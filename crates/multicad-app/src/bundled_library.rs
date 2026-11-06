@@ -214,10 +214,11 @@ mod tests {
     fn bundled_cards_use_checked_projects_and_do_not_evaluate_native_geometry() {
         let directory = fixture();
         let entries = load(directory.path()).unwrap();
-        assert_eq!(entries.len(), 57);
+        assert_eq!(entries.len(), 76);
         let mut bearings = 0;
         let mut washers = BTreeSet::new();
         let mut screws = BTreeSet::new();
+        let mut nuts = BTreeSet::new();
         let mut plants = 0;
         let mut equipment = std::collections::BTreeSet::new();
         for entry in entries {
@@ -250,6 +251,37 @@ mod tests {
                     (card.dimensions_mm["Underhead length"] * 1000.) as u32,
                     card.representation.starts_with("Socket-cap head"),
                 ));
+            } else if card.family == "Hex nut" {
+                let facts = card.catalog_facts.as_ref().unwrap();
+                let nominal = facts.nominal_fastener_diameter_mm.unwrap();
+                let series = facts.series.as_deref().unwrap();
+                assert!(matches!(series, "DIN 934:1987" | "ISO 4032:2012"));
+                assert_eq!(card.dimensions_mm["Nominal thread diameter"], nominal);
+                assert_eq!(card.representation, "Modeled internal thread");
+                assert!(card.problem.is_none());
+                assert!(card.symbol.is_some());
+                assert!(facts.material.is_none());
+                assert!(facts.grade.is_none());
+                assert!(card.designation.as_ref().unwrap().contains(series));
+                assert!(card.source_url.as_ref().unwrap().starts_with("https://"));
+                if nominal == 10. {
+                    let expected = if series == "DIN 934:1987" {
+                        (17., 8.)
+                    } else {
+                        (16., 8.4)
+                    };
+                    assert_eq!(
+                        (
+                            card.dimensions_mm["Across flats"],
+                            card.dimensions_mm["Height"]
+                        ),
+                        expected
+                    );
+                }
+                assert!(
+                    nuts.insert((series.to_owned(), (nominal * 1000.) as u32)),
+                    "Duplicate nut family/nominal card"
+                );
             } else if card.family == "Plain washer" {
                 let facts = card.catalog_facts.as_ref().unwrap();
                 washers.insert((facts.nominal_fastener_diameter_mm.unwrap() * 1000.0) as u32);
@@ -267,6 +299,26 @@ mod tests {
         }
         assert_eq!((bearings, plants), (4, 2));
         assert_eq!(screws.len(), 19);
+        assert_eq!(nuts.len(), 19);
+        for (series, expected) in [
+            (
+                "DIN 934:1987",
+                vec![2000, 2500, 3000, 3500, 4000, 5000, 6000, 7000, 8000, 10000],
+            ),
+            (
+                "ISO 4032:2012",
+                vec![2000, 2500, 3000, 3500, 4000, 5000, 6000, 8000, 10000],
+            ),
+        ] {
+            assert_eq!(
+                nuts.iter()
+                    .filter(|(family, _)| family == series)
+                    .map(|(_, nominal)| *nominal)
+                    .collect::<BTreeSet<_>>(),
+                expected.into_iter().collect()
+            );
+        }
+        assert_eq!(equipment.len(), 22);
         assert_eq!(
             screws.iter().map(|s| s.0).collect::<BTreeSet<_>>(),
             [2000, 2500, 3000, 4000, 5000, 6000, 8000, 10000].into()

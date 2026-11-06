@@ -122,7 +122,7 @@ export function validateBundledLibrary(directory=join(root,'library')){
     projects.push({file:entry.file,...project});files.add(entry.file);identities.add(entry.document);
   }
   for(const required of manifest.requires){inside(required);files.add(required);}
-  for(const required of ['curation.json','washers-curation.json','README.md','sources/bolts/bearings.blt','sources/bolts/washer.blt','sources/bolts/WASHER-NOTICES.md','machine-screws-curation.json','sources/bolts/hex_socket.blt','sources/bolts/hex.blt','sources/bolts/MACHINE-SCREW-NOTICES.md','sources/bolts/COPYING.LESSER'])if(!files.has(required))throw new Error(`Bundled Library notice/source closure is missing ${required}`);
+  for(const required of ['curation.json','washers-curation.json','README.md','sources/bolts/bearings.blt','sources/bolts/washer.blt','sources/bolts/WASHER-NOTICES.md','machine-screws-curation.json','sources/bolts/hex_socket.blt','sources/bolts/hex.blt','sources/bolts/MACHINE-SCREW-NOTICES.md','nuts-curation.json','sources/bolts/nut.blt','sources/bolts/NUT-NOTICES.md','sources/bolts/COPYING.LESSER'])if(!files.has(required))throw new Error(`Bundled Library notice/source closure is missing ${required}`);
   const curation=JSON.parse(readFileSync(inside('curation.json'),'utf8'));
   if(curation.data_license!=='LGPL-2.1-or-later'||createHash('sha256').update(readFileSync(inside('sources/bolts/bearings.blt'))).digest('hex')!==curation.data_sha256)throw new Error('Bundled Library reference license/hash differs from curation');
   const washers=JSON.parse(readFileSync(inside('washers-curation.json'),'utf8'));
@@ -130,6 +130,9 @@ export function validateBundledLibrary(directory=join(root,'library')){
   const screws=JSON.parse(readFileSync(inside('machine-screws-curation.json'),'utf8'));
   if(screws.format!=='toskcad.machine-screw-curation'||screws.version!==1||!Array.isArray(screws.data_sources)||screws.data_sources.length!==2)throw new Error('Invalid bundled machine screw curation');
   for(const source of screws.data_sources)if(!files.has(source.file)||source.license!=='LGPL-2.1-or-later'||createHash('sha256').update(readFileSync(inside(source.file))).digest('hex')!==source.sha256)throw new Error('Bundled Library machine screw source license/hash differs from curation');
+  const nuts=JSON.parse(readFileSync(inside('nuts-curation.json'),'utf8'));
+  if(nuts.format!=='toskcad.nut-curation'||nuts.version!==1||!Array.isArray(nuts.entries)||nuts.entries.length!==19||!Array.isArray(nuts.coverage)||nuts.coverage.length!==24||nuts.entries.some(entry=>!files.has(entry.file)))throw new Error('Invalid bundled nut curation or project closure');
+  if(nuts.data_license!=='LGPL-2.1-or-later'||createHash('sha256').update(readFileSync(inside('sources/bolts/nut.blt'))).digest('hex')!==nuts.data_sha256)throw new Error('Bundled Library nut reference license/hash differs from curation');
   const unlisted=readdirSync(directory).filter(name=>name.endsWith('.tcd')&&!files.has(name));
   if(unlisted.length)throw new Error(`Unlisted bundled Library projects: ${unlisted.join(', ')}`);
   return {files:[...files].sort(),projects};

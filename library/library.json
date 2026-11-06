@@ -284,6 +284,101 @@
       "document": "cad23500-0000-4000-8000-131971b816c0",
       "file": "screw-hex-m10-l30.tcd",
       "sha256": "7e9603a34ff4f331e42678ffbae7a2eca2acc6be504c5523a90feac4342af5c0"
+    },
+    {
+      "document": "cad23400-0000-4000-8000-000005f8ee40",
+      "file": "nut-din934-1987-m2.tcd",
+      "sha256": "546111b26e90f81d58b1cc4fedcbccfb61bb89462dcd924988c8d34c0660dbc8"
+    },
+    {
+      "document": "cad23400-0000-4000-8000-000005f9b190",
+      "file": "nut-din934-1987-m2-5.tcd",
+      "sha256": "b52ef9458a1a04017ca1d65b2286ced1f58906e8d5b7946a4901a338d351186a"
+    },
+    {
+      "document": "cad23400-0000-4000-8000-000005fa74e0",
+      "file": "nut-din934-1987-m3.tcd",
+      "sha256": "25e70b124317a6d3f0f4dec8f4d7c051c689d84b129ff9ae56d6d212fd8f19a8"
+    },
+    {
+      "document": "cad23400-0000-4000-8000-000005fb3830",
+      "file": "nut-din934-1987-m3-5.tcd",
+      "sha256": "f1d5361a0d28a075b62e2acf9a4e3316eba3bebfe44679abcee0e15db45b6394"
+    },
+    {
+      "document": "cad23400-0000-4000-8000-000005fbfb80",
+      "file": "nut-din934-1987-m4.tcd",
+      "sha256": "95a2e1670e957f53993a20663b73b7dd05dd67fef54d348f701ecfac39bf3574"
+    },
+    {
+      "document": "cad23400-0000-4000-8000-000005fd8220",
+      "file": "nut-din934-1987-m5.tcd",
+      "sha256": "f26c499dcfea9e28c491b350eb9532f1906f80bfbae3e04496215d9441ced207"
+    },
+    {
+      "document": "cad23400-0000-4000-8000-000005ff08c0",
+      "file": "nut-din934-1987-m6.tcd",
+      "sha256": "a87e4f6b16acf5669a63c1e27cf1000d8500a5f63b58e4f1e41cf79248a643c1"
+    },
+    {
+      "document": "cad23400-0000-4000-8000-000006008f60",
+      "file": "nut-din934-1987-m7.tcd",
+      "sha256": "8d1cbec4c445e6ad25278a1b06ccb9ed87a995cc8bbad71715c36085e8db5e7e"
+    },
+    {
+      "document": "cad23400-0000-4000-8000-000006021600",
+      "file": "nut-din934-1987-m8.tcd",
+      "sha256": "c6fb71c73623faa99e4a5763b0ddd9ed38d89d4bda6a49ea1fab093f07afc4ce"
+    },
+    {
+      "document": "cad23400-0000-4000-8000-000006052340",
+      "file": "nut-din934-1987-m10.tcd",
+      "sha256": "27b562d15a380bcc6def9e086dfe2d8700617c5f7e8cfee7a614b5cbc564e749"
+    },
+    {
+      "document": "cad23400-0000-4000-8000-00000beecf40",
+      "file": "nut-iso4032-2012-m2.tcd",
+      "sha256": "7946bc25fe1509b95ef1b72452af6daf54ee97ae3c47bfab170dfb8fc9df8f67"
+    },
+    {
+      "document": "cad23400-0000-4000-8000-00000bef9290",
+      "file": "nut-iso4032-2012-m2-5.tcd",
+      "sha256": "6b43151abf2a75f9a91a0ad78b835ec0f01c92fc2235039b8109a404ca7b9e8f"
+    },
+    {
+      "document": "cad23400-0000-4000-8000-00000bf055e0",
+      "file": "nut-iso4032-2012-m3.tcd",
+      "sha256": "44c58258ec540af86298b8da668d2d5501c85a3ce12cc504398d74cda88d19a7"
+    },
+    {
+      "document": "cad23400-0000-4000-8000-00000bf11930",
+      "file": "nut-iso4032-2012-m3-5.tcd",
+      "sha256": "9f3a30e912750dd106ba284077374f037a21ee2c5740c2c242a47deccc9ad263"
+    },
+    {
+      "document": "cad23400-0000-4000-8000-00000bf1dc80",
+      "file": "nut-iso4032-2012-m4.tcd",
+      "sha256": "fe62f76ad95e81e87792448767126c0413846881e0374c29f18ef57120ab5644"
+    },
+    {
+      "document": "cad23400-0000-4000-8000-00000bf36320",
+      "file": "nut-iso4032-2012-m5.tcd",
+      "sha256": "a9d9ee84c4709474f6eec57146f9c238507dc5bda4699e8f8d4ba3e4e74cda78"
+    },
+    {
+      "document": "cad23400-0000-4000-8000-00000bf4e9c0",
+      "file": "nut-iso4032-2012-m6.tcd",
+      "sha256": "0782dd13b2e3e0b699b94454ceae6565532caf3b4167afb836ca5ad14c349aa3"
+    },
+    {
+      "document": "cad23400-0000-4000-8000-00000bf7f700",
+      "file": "nut-iso4032-2012-m8.tcd",
+      "sha256": "8ab94b2b0703b7dbf1639cec4a91f677ae30321616b8af354350d66ca2cc8cec"
+    },
+    {
+      "document": "cad23400-0000-4000-8000-00000bfb0440",
+      "file": "nut-iso4032-2012-m10.tcd",
+      "sha256": "3384b64006ae825e8738a2f32e1c319cc826eea257b2e17a4a2c653047e4ea00"
     }
   ],
   "format": "toskcad.bundled-library",
@@ -298,8 +393,11 @@
     "machine-screws-curation.json",
     "sources/bolts/hex_socket.blt",
     "sources/bolts/hex.blt",
-    "sources/bolts/MACHINE-SCREW-NOTICES.md"
+    "sources/bolts/MACHINE-SCREW-NOTICES.md",
+    "nuts-curation.json",
+    "sources/bolts/nut.blt",
+    "sources/bolts/NUT-NOTICES.md"
   ],
-  "revision": "6",
+  "revision": "7",
   "version": 1
 }

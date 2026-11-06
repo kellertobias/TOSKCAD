@@ -23,7 +23,7 @@ test('hardware packaging refuses damaged data, missing notices, duplicate IDs an
     cpSync(new URL('../library/',import.meta.url),directory,{recursive:true});
     const path=join(directory,'library.json'),original=readFileSync(path,'utf8');
     const change=fn=>{const value=JSON.parse(original);fn(value);writeFileSync(path,JSON.stringify(value));};
-    assert.equal(validateBundledLibrary(directory).projects.length,57);
+    assert.equal(validateBundledLibrary(directory).projects.length,76);
     change(m=>{m.entries[0].file='../bearing.tcd';});
     assert.throws(()=>validateBundledLibrary(directory),/Invalid.*Library/);
     change(m=>{m.entries[1].document=m.entries[0].document;});
@@ -46,6 +46,18 @@ test('hardware packaging refuses damaged data, missing notices, duplicate IDs an
     writeFileSync(screwSource,'changed screw reference');
     assert.throws(()=>validateBundledLibrary(directory),/machine screw source license\/hash/);
     writeFileSync(screwSource,screwBytes);
+    change(m=>{m.requires=m.requires.filter(x=>!x.endsWith('NUT-NOTICES.md'));});
+    assert.throws(()=>validateBundledLibrary(directory),/notice\/source closure/);
+    writeFileSync(path,original);
+    const nutSource=join(directory,'sources/bolts/nut.blt'),nutBytes=readFileSync(nutSource);
+    writeFileSync(nutSource,'changed nut reference');
+    assert.throws(()=>validateBundledLibrary(directory),/nut reference license\/hash/);
+    writeFileSync(nutSource,nutBytes);
+    const nutCuration=join(directory,'nuts-curation.json'),nutCurationBytes=readFileSync(nutCuration);
+    const changedNuts=JSON.parse(nutCurationBytes);changedNuts.data_license='unverified';
+    writeFileSync(nutCuration,JSON.stringify(changedNuts));
+    assert.throws(()=>validateBundledLibrary(directory),/nut reference license\/hash/);
+    writeFileSync(nutCuration,nutCurationBytes);
     change(m=>{m.requires.push('../outside.txt');});
     assert.throws(()=>validateBundledLibrary(directory),/Invalid bundled Library path/);
     writeFileSync(path,original);
@@ -113,7 +125,7 @@ test('native development layout includes a copied executable, identity pin and n
     assert.deepEqual(readdirSync(examples).sort(),[...new Set(shipped.map(f=>f.split('/')[0]))].sort());
     for(const name of shipped)assert.deepEqual(readFileSync(join(examples,...name.split('/'))),readFileSync(new URL(`../examples/${name}`,import.meta.url)),name);
     const hardware=validateBundledLibrary();
-    assert.equal(hardware.projects.length,57);
+    assert.equal(hardware.projects.length,76);
     for(const name of hardware.files)assert.deepEqual(readFileSync(join(layout.resources,'library',...name.split('/'))),readFileSync(new URL(`../library/${name}`,import.meta.url)),name);
     if(process.platform==='darwin')assert.equal(layout.resources,join(stage,'MultiCAD.app/Contents/Resources'));
     else assert.equal(layout.resources,join(stage,'resources'));

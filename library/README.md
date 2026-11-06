@@ -1,7 +1,7 @@
 <!-- Kind: reference; Audience: catalog maintainers and reviewers; Purpose: record source, geometry and coverage of the bundled Library; Non-goals: certify manufactured parts or reproduce vendor CAD. -->
 # Included Library definitions
 
-The Library includes metric machine screws, normal-series plain washers, generic trees and shrubs, four curated bearing mounting envelopes and generic apartment equipment. All use dynamic, pinned native symbol definitions.
+The Library includes metric machine screws, hex-nut dimensional references, normal-series plain washers, generic trees and shrubs, four curated bearing mounting envelopes and generic apartment equipment. All use dynamic, pinned native symbol definitions.
 
 ## Mechanical envelopes
 
@@ -18,6 +18,14 @@ The solids describe external mounting envelopes. They omit races, rolling elemen
 [Machine-screw source notices](sources/bolts/MACHINE-SCREW-NOTICES.md) record the pinned LGPL-2.1-or-later BOLTS starting data, engineering targets, source discrepancies and geometry omissions. Internal hex drives are six-sided recesses with a disclosed flat floor; outer socket-cap surfaces are unspecified envelopes. DIN M10 across flats remains 17 mm, distinct from the 16 mm ISO 4017 variant. Head/drive dimensions do not establish ISO 965 thread fits, current-standard compliance or manufactured fit.
 
 Underhead length and thread length are independently editable. The canonical mounting frame is at the underhead plane, with the head behind it and the shaft toward the tip. Source reference dimensions remain literal when a configured instance becomes custom; placed definitions retain their pins until an explicit update. Only listed source rows are presets, and unavailable/custom cases do not assert commercial unavailability.
+
+### Metric hex nuts
+
+[nuts-curation.json](nuts-curation.json) owns nineteen edition-specific presets and all twenty-four family/nominal coverage statuses: ten DIN 934:1987 rows and nine ISO 4032:2012 rows. M4.5 and M9 are unavailable in both selected families; ISO 4032:2012 has no M7 row. These statements describe the selected source coverage, rather than commercial availability. M10 remains 17 mm across flats and 8 mm high in DIN, versus 16 mm and 8.4 mm in ISO. The different heights at other sizes also remain distinct.
+
+[Nut source notices](sources/bolts/NUT-NOTICES.md) retain the pinned LGPL-2.1-or-later BOLTS data, primary cross-checks, exact editions and limits of each verification. The original [nut.blt](sources/bolts/nut.blt) is unchanged. Across-flats and height targets use the retained source maxima. The native blank is a sharp hexagon with a nominal-basic JIS B 0205-2/4:2001 internal thread; standard chamfers, washer faces, entry details and dimensional tolerances are omitted. The source reference does not certify an ISO 965 fit class, current-standard compliance, material, grade or stock.
+
+Each pin exposes nominal thread diameter, pitch, across flats, height and thread representation. Library placement and instance editing offer Cosmetic envelope and Modeled helix as named choices. Representation is independently retained per instance; it does not require replacing a pin or changing sibling instances. Cosmetic geometry remains display-only and manufacturing refuses it. Modeled geometry contains the actual internal helix. Physical dimension edits retain their literal source facts and become configured/custom; a representation-only change preserves those dimensional facts.
 
 ### Plain washers
 
@@ -44,16 +52,17 @@ Only the licensed reference dimensions are adapted. No manufacturer CAD, meshes,
 
 ## Generation and revisions
 
-The Rust developer example `mechanical_library` builds the selected hardware family through the same typed transactions and native compiler as the application. Saved previews render those native solids. The default mode reads the washer curation; `--machine-screws` reads the screw curation. Both create dynamic symbol definitions and `.tcd` files with the bounded `library.json` manifest. Projects outside the selected family are checksum-checked and copied byte for byte, preserving their identities, revisions and pins. The output folder must be empty. Required source data, notices and this README accompany the result.
+The Rust developer example `mechanical_library` builds the selected hardware family through the same typed transactions and native compiler as the application. Saved previews render those native solids. The default mode reads the washer curation; `--machine-screws` reads the screw curation and `--hex-nuts` reads the nut curation. Each creates dynamic symbol definitions and `.tcd` files with the bounded `library.json` manifest. Projects outside the selected family are checksum-checked and copied byte for byte, preserving their identities, revisions and pins. The output folder must be empty. Required source data, notices and this README accompany the result.
 
 Regenerate into an empty review folder:
 
 ```sh
 cargo run -p multicad-app --example mechanical_library --locked -- /tmp/toskcad-hardware-review
 cargo run -p multicad-app --example mechanical_library --locked -- /tmp/toskcad-screw-review --machine-screws
+cargo run -p multicad-app --example mechanical_library --locked -- /tmp/toskcad-nut-review --hex-nuts
 ```
 
-Washer identities use exact scaled nominal keys. Screw identities add explicit head-family and underhead-length keys in a separate namespace. Bearing identities retain their existing designation-derived namespace. Adding an entry does not renumber another definition. A dimensional or definition change requires a new catalog/symbol revision and explicit update review. Runtime geometry comes from retained native source, never a lookup in a newer dimension table.
+Washer identities use exact scaled nominal keys. Nut identities add the exact family/edition in their own namespace; representation remains an instance input. Screw identities add explicit head-family and underhead-length keys in a separate namespace. Bearing identities retain their existing designation-derived namespace. Adding an entry does not renumber another definition. A dimensional or definition change requires a new catalog/symbol revision and explicit update review. Runtime geometry comes from retained native source, never a lookup in a newer dimension table.
 
 ## Generic planting presets
 
@@ -69,6 +78,6 @@ The 22 `equipment-*.tcd` projects supply owned generic electrical/lighting, heat
 
 ## Hardware coverage still open
 
-The washer curation owns its bounded normal-series nominal coverage and explicit unavailable/custom cases. The Library also supplies four open bearing mounting envelopes. Sealed/shielded variants, detailed bearing internals, sourced hex-nut presets and screw families beyond the listed machine-screw matrix remain outside these entries.
+The washer and nut curations own their bounded nominal coverage and explicit unavailable/custom cases. The Library also supplies four open bearing mounting envelopes. Sealed/shielded variants, detailed bearing internals and screw families beyond the listed machine-screw matrix remain outside these entries.
 
-The washer and screw curations share the requested nominal-size set and record their own supported choices, with larger sizes extensible through explicit reviewed revisions. Additional head/drive combinations, wood-thread conventions, material variants and fastener-connection integration require their own sourced definitions. Reference metadata does not assert stock availability.
+The washer, nut and screw curations share the requested nominal-size set and record their own supported choices, with larger sizes extensible through explicit reviewed revisions. Additional head/drive combinations, wood-thread conventions, material variants and fastener-connection integration require their own sourced definitions. Reference metadata does not assert stock availability.

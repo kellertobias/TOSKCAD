@@ -1,0 +1,563 @@
+{
+  "format": "toskcad.nut-curation",
+  "version": 1,
+  "revision": "1",
+  "data_source": "https://github.com/boltsparts/boltsparts/blob/5c83300a57761f70db87f50c9a1f647c7278a4c2/data/nut.blt",
+  "data_revision": "5c83300a57761f70db87f50c9a1f647c7278a4c2",
+  "data_license": "LGPL-2.1-or-later",
+  "data_sha256": "55932f107596d255c008eac910e9c7a4dad3482160d2a1b4f4b56df11a59142b",
+  "verified_on": "2026-11-06",
+  "scope": "Selected BOLTS hexagonnut2 and hexagonnut1 dimensional rows adapted as separate DIN 934:1987 and ISO 4032:2012 reference families. Primary cross-checks and their edition/date limits are explicit per entry. All 19 source rows are retained unchanged; the BOLTS ISO-labeled M7 is excluded because ISO 4032:2012 has no M7 row. Across flats use s nominal=max and height uses m max as disclosed modeling references. The sharp regular hexagon derives its ideal corner diameter from s; source e_min remains provenance, not an independently imposed corner diameter. Coarse pitch is verified separately because BOLTS nut rows contain no pitch. Native recipes use the shared JIS B 0205-2/4:2001 nominal-basic internal thread, with modeled and cosmetic representation handled explicitly. Dimensional tolerances, external/end chamfers, washer faces, thread-entry mouth details, material, grade, coating and stock are unspecified or omitted. No ISO 965 fit class, current-standard compliance, strength, physical/gage fit or print-success certification. No ISO 4032:2023 dimensions are mixed into these families.",
+  "entries": [
+    {
+      "id": "nut.din934-1987.m2",
+      "file": "nut-din934-1987-m2.tcd",
+      "designation": "M2",
+      "family": "din934-1987",
+      "nominal_mm": 2,
+      "pitch_mm": 0.4,
+      "across_flats_mm": 4,
+      "height_mm": 1.6,
+      "source_class": "hexagonnut2",
+      "source_row": [
+        2,
+        4,
+        1.6,
+        4.32
+      ],
+      "verification_url": "https://eshop.boellhoff.de/out/media/pdf/DIN_934_Edelstahl_A2___en.pdf",
+      "verification_reference": "B\u00f6llhoff DIN 934 A2 product data sheet, PDF page 1: coarse P, s max, m max and e min; no standard edition or publication date identified. DIN 934:1987-10 edition identity is separately recorded in the notices.",
+      "correction": null
+    },
+    {
+      "id": "nut.din934-1987.m2-5",
+      "file": "nut-din934-1987-m2-5.tcd",
+      "designation": "M2.5",
+      "family": "din934-1987",
+      "nominal_mm": 2.5,
+      "pitch_mm": 0.45,
+      "across_flats_mm": 5,
+      "height_mm": 2,
+      "source_class": "hexagonnut2",
+      "source_row": [
+        2.5,
+        5,
+        2,
+        5.45
+      ],
+      "verification_url": "https://eshop.boellhoff.de/out/media/pdf/DIN_934_Edelstahl_A2___en.pdf",
+      "verification_reference": "B\u00f6llhoff DIN 934 A2 product data sheet, PDF page 1: coarse P, s max, m max and e min; no standard edition or publication date identified. DIN 934:1987-10 edition identity is separately recorded in the notices.",
+      "correction": null
+    },
+    {
+      "id": "nut.din934-1987.m3",
+      "file": "nut-din934-1987-m3.tcd",
+      "designation": "M3",
+      "family": "din934-1987",
+      "nominal_mm": 3,
+      "pitch_mm": 0.5,
+      "across_flats_mm": 5.5,
+      "height_mm": 2.4,
+      "source_class": "hexagonnut2",
+      "source_row": [
+        3,
+        5.5,
+        2.4,
+        6.01
+      ],
+      "verification_url": "https://eshop.boellhoff.de/out/media/pdf/DIN_934_Edelstahl_A2___en.pdf",
+      "verification_reference": "B\u00f6llhoff DIN 934 A2 product data sheet, PDF page 1: coarse P, s max, m max and e min; no standard edition or publication date identified. DIN 934:1987-10 edition identity is separately recorded in the notices.",
+      "correction": null
+    },
+    {
+      "id": "nut.din934-1987.m3-5",
+      "file": "nut-din934-1987-m3-5.tcd",
+      "designation": "M3.5",
+      "family": "din934-1987",
+      "nominal_mm": 3.5,
+      "pitch_mm": 0.6,
+      "across_flats_mm": 6,
+      "height_mm": 2.8,
+      "source_class": "hexagonnut2",
+      "source_row": [
+        3.5,
+        6,
+        2.8,
+        6.58
+      ],
+      "verification_url": "https://eshop.boellhoff.de/out/media/pdf/DIN_934_Edelstahl_A2___en.pdf",
+      "verification_reference": "B\u00f6llhoff DIN 934 A2 product data sheet, PDF page 1: coarse P, s max, m max and e min; no standard edition or publication date identified. DIN 934:1987-10 edition identity is separately recorded in the notices.",
+      "correction": null
+    },
+    {
+      "id": "nut.din934-1987.m4",
+      "file": "nut-din934-1987-m4.tcd",
+      "designation": "M4",
+      "family": "din934-1987",
+      "nominal_mm": 4,
+      "pitch_mm": 0.7,
+      "across_flats_mm": 7,
+      "height_mm": 3.2,
+      "source_class": "hexagonnut2",
+      "source_row": [
+        4,
+        7,
+        3.2,
+        7.66
+      ],
+      "verification_url": "https://eshop.boellhoff.de/out/media/pdf/DIN_934_Edelstahl_A2___en.pdf",
+      "verification_reference": "B\u00f6llhoff DIN 934 A2 product data sheet, PDF page 1: coarse P, s max, m max and e min; no standard edition or publication date identified. DIN 934:1987-10 edition identity is separately recorded in the notices.",
+      "correction": null
+    },
+    {
+      "id": "nut.din934-1987.m5",
+      "file": "nut-din934-1987-m5.tcd",
+      "designation": "M5",
+      "family": "din934-1987",
+      "nominal_mm": 5,
+      "pitch_mm": 0.8,
+      "across_flats_mm": 8,
+      "height_mm": 4,
+      "source_class": "hexagonnut2",
+      "source_row": [
+        5,
+        8,
+        4,
+        8.79
+      ],
+      "verification_url": "https://bsnfastener.com/pdf/Section04/catalog_P4-11_DIN_Nut_Steel.pdf",
+      "verification_reference": "BSN catalog page 4-11, explicit DIN 934:1987 dimensional table: coarse P, s max, m max and e min; no catalog publication date identified.",
+      "correction": null
+    },
+    {
+      "id": "nut.din934-1987.m6",
+      "file": "nut-din934-1987-m6.tcd",
+      "designation": "M6",
+      "family": "din934-1987",
+      "nominal_mm": 6,
+      "pitch_mm": 1,
+      "across_flats_mm": 10,
+      "height_mm": 5,
+      "source_class": "hexagonnut2",
+      "source_row": [
+        6,
+        10,
+        5,
+        11.05
+      ],
+      "verification_url": "https://bsnfastener.com/pdf/Section04/catalog_P4-11_DIN_Nut_Steel.pdf",
+      "verification_reference": "BSN catalog page 4-11, explicit DIN 934:1987 dimensional table: coarse P, s max, m max and e min; no catalog publication date identified.",
+      "correction": null
+    },
+    {
+      "id": "nut.din934-1987.m7",
+      "file": "nut-din934-1987-m7.tcd",
+      "designation": "M7",
+      "family": "din934-1987",
+      "nominal_mm": 7,
+      "pitch_mm": 1,
+      "across_flats_mm": 11,
+      "height_mm": 5.5,
+      "source_class": "hexagonnut2",
+      "source_row": [
+        7,
+        11,
+        5.5,
+        12.12
+      ],
+      "verification_url": "https://library.walraven.com/repository/rnd/documents/EN-INT/BIS%20Hexagon%20Nut%20-%20K%2045%2035%20%28EN-INT%29.pdf",
+      "verification_reference": "Walraven BIS Hexagon Nut K45 35, EN-INT 10/2024, page 1, part 6123007 M7B: coarse P=1, H=5.5 and SW1=11 mm. Original BOLTS e_min=12.12 retained as source data; this sheet does not specify e_min or a DIN edition.",
+      "correction": null
+    },
+    {
+      "id": "nut.din934-1987.m8",
+      "file": "nut-din934-1987-m8.tcd",
+      "designation": "M8",
+      "family": "din934-1987",
+      "nominal_mm": 8,
+      "pitch_mm": 1.25,
+      "across_flats_mm": 13,
+      "height_mm": 6.5,
+      "source_class": "hexagonnut2",
+      "source_row": [
+        8,
+        13,
+        6.5,
+        14.38
+      ],
+      "verification_url": "https://bsnfastener.com/pdf/Section04/catalog_P4-11_DIN_Nut_Steel.pdf",
+      "verification_reference": "BSN catalog page 4-11, explicit DIN 934:1987 dimensional table: coarse P, s max, m max and e min; no catalog publication date identified.",
+      "correction": null
+    },
+    {
+      "id": "nut.din934-1987.m10",
+      "file": "nut-din934-1987-m10.tcd",
+      "designation": "M10",
+      "family": "din934-1987",
+      "nominal_mm": 10,
+      "pitch_mm": 1.5,
+      "across_flats_mm": 17,
+      "height_mm": 8,
+      "source_class": "hexagonnut2",
+      "source_row": [
+        10,
+        17,
+        8,
+        18.9
+      ],
+      "verification_url": "https://bsnfastener.com/pdf/Section04/catalog_P4-11_DIN_Nut_Steel.pdf",
+      "verification_reference": "BSN catalog page 4-11, explicit DIN 934:1987 dimensional table: coarse P, s max, m max and e min; no catalog publication date identified.",
+      "correction": null
+    },
+    {
+      "id": "nut.iso4032-2012.m2",
+      "file": "nut-iso4032-2012-m2.tcd",
+      "designation": "M2",
+      "family": "iso4032-2012",
+      "nominal_mm": 2,
+      "pitch_mm": 0.4,
+      "across_flats_mm": 4,
+      "height_mm": 1.6,
+      "source_class": "hexagonnut1",
+      "source_row": [
+        2,
+        4,
+        1.6,
+        4.32
+      ],
+      "verification_url": "https://cdn.standards.iteh.ai/samples/61668/94af161ed14040e09a945fb5b094ae16/ISO-4032-2012.pdf",
+      "verification_reference": "ISO 4032:2012, fourth edition 2012-12-15, Table 1 (preferred threads), PDF page 8 / printed page 2; P, s nominal=max, m max and e min.",
+      "correction": null
+    },
+    {
+      "id": "nut.iso4032-2012.m2-5",
+      "file": "nut-iso4032-2012-m2-5.tcd",
+      "designation": "M2.5",
+      "family": "iso4032-2012",
+      "nominal_mm": 2.5,
+      "pitch_mm": 0.45,
+      "across_flats_mm": 5,
+      "height_mm": 2,
+      "source_class": "hexagonnut1",
+      "source_row": [
+        2.5,
+        5,
+        2,
+        5.45
+      ],
+      "verification_url": "https://cdn.standards.iteh.ai/samples/61668/94af161ed14040e09a945fb5b094ae16/ISO-4032-2012.pdf",
+      "verification_reference": "ISO 4032:2012, fourth edition 2012-12-15, Table 1 (preferred threads), PDF page 8 / printed page 2; P, s nominal=max, m max and e min.",
+      "correction": null
+    },
+    {
+      "id": "nut.iso4032-2012.m3",
+      "file": "nut-iso4032-2012-m3.tcd",
+      "designation": "M3",
+      "family": "iso4032-2012",
+      "nominal_mm": 3,
+      "pitch_mm": 0.5,
+      "across_flats_mm": 5.5,
+      "height_mm": 2.4,
+      "source_class": "hexagonnut1",
+      "source_row": [
+        3,
+        5.5,
+        2.4,
+        6.01
+      ],
+      "verification_url": "https://cdn.standards.iteh.ai/samples/61668/94af161ed14040e09a945fb5b094ae16/ISO-4032-2012.pdf",
+      "verification_reference": "ISO 4032:2012, fourth edition 2012-12-15, Table 1 (preferred threads), PDF page 8 / printed page 2; P, s nominal=max, m max and e min.",
+      "correction": null
+    },
+    {
+      "id": "nut.iso4032-2012.m3-5",
+      "file": "nut-iso4032-2012-m3-5.tcd",
+      "designation": "M3.5",
+      "family": "iso4032-2012",
+      "nominal_mm": 3.5,
+      "pitch_mm": 0.6,
+      "across_flats_mm": 6,
+      "height_mm": 2.8,
+      "source_class": "hexagonnut1",
+      "source_row": [
+        3.5,
+        6,
+        2.8,
+        6.58
+      ],
+      "verification_url": "https://cdn.standards.iteh.ai/samples/61668/94af161ed14040e09a945fb5b094ae16/ISO-4032-2012.pdf",
+      "verification_reference": "ISO 4032:2012, fourth edition 2012-12-15, Table 2 (nonpreferred thread), PDF page 9 / printed page 3; P, s nominal=max, m max and e min.",
+      "correction": null
+    },
+    {
+      "id": "nut.iso4032-2012.m4",
+      "file": "nut-iso4032-2012-m4.tcd",
+      "designation": "M4",
+      "family": "iso4032-2012",
+      "nominal_mm": 4,
+      "pitch_mm": 0.7,
+      "across_flats_mm": 7,
+      "height_mm": 3.2,
+      "source_class": "hexagonnut1",
+      "source_row": [
+        4,
+        7,
+        3.2,
+        7.66
+      ],
+      "verification_url": "https://cdn.standards.iteh.ai/samples/61668/94af161ed14040e09a945fb5b094ae16/ISO-4032-2012.pdf",
+      "verification_reference": "ISO 4032:2012, fourth edition 2012-12-15, Table 1 (preferred threads), PDF page 8 / printed page 2; P, s nominal=max, m max and e min.",
+      "correction": null
+    },
+    {
+      "id": "nut.iso4032-2012.m5",
+      "file": "nut-iso4032-2012-m5.tcd",
+      "designation": "M5",
+      "family": "iso4032-2012",
+      "nominal_mm": 5,
+      "pitch_mm": 0.8,
+      "across_flats_mm": 8,
+      "height_mm": 4.7,
+      "source_class": "hexagonnut1",
+      "source_row": [
+        5,
+        8,
+        4.7,
+        8.79
+      ],
+      "verification_url": "https://cdn.standards.iteh.ai/samples/61668/94af161ed14040e09a945fb5b094ae16/ISO-4032-2012.pdf",
+      "verification_reference": "ISO 4032:2012, fourth edition 2012-12-15, Table 1 (preferred threads), PDF page 8 / printed page 2; P, s nominal=max, m max and e min.",
+      "correction": null
+    },
+    {
+      "id": "nut.iso4032-2012.m6",
+      "file": "nut-iso4032-2012-m6.tcd",
+      "designation": "M6",
+      "family": "iso4032-2012",
+      "nominal_mm": 6,
+      "pitch_mm": 1,
+      "across_flats_mm": 10,
+      "height_mm": 5.2,
+      "source_class": "hexagonnut1",
+      "source_row": [
+        6,
+        10,
+        5.2,
+        11.05
+      ],
+      "verification_url": "https://cdn.standards.iteh.ai/samples/61668/94af161ed14040e09a945fb5b094ae16/ISO-4032-2012.pdf",
+      "verification_reference": "ISO 4032:2012, fourth edition 2012-12-15, Table 1 (preferred threads), PDF page 8 / printed page 2; P, s nominal=max, m max and e min.",
+      "correction": null
+    },
+    {
+      "id": "nut.iso4032-2012.m8",
+      "file": "nut-iso4032-2012-m8.tcd",
+      "designation": "M8",
+      "family": "iso4032-2012",
+      "nominal_mm": 8,
+      "pitch_mm": 1.25,
+      "across_flats_mm": 13,
+      "height_mm": 6.8,
+      "source_class": "hexagonnut1",
+      "source_row": [
+        8,
+        13,
+        6.8,
+        14.38
+      ],
+      "verification_url": "https://cdn.standards.iteh.ai/samples/61668/94af161ed14040e09a945fb5b094ae16/ISO-4032-2012.pdf",
+      "verification_reference": "ISO 4032:2012, fourth edition 2012-12-15, Table 1 (preferred threads), PDF page 8 / printed page 2; P, s nominal=max, m max and e min.",
+      "correction": null
+    },
+    {
+      "id": "nut.iso4032-2012.m10",
+      "file": "nut-iso4032-2012-m10.tcd",
+      "designation": "M10",
+      "family": "iso4032-2012",
+      "nominal_mm": 10,
+      "pitch_mm": 1.5,
+      "across_flats_mm": 16,
+      "height_mm": 8.4,
+      "source_class": "hexagonnut1",
+      "source_row": [
+        10,
+        16,
+        8.4,
+        17.77
+      ],
+      "verification_url": "https://cdn.standards.iteh.ai/samples/61668/94af161ed14040e09a945fb5b094ae16/ISO-4032-2012.pdf",
+      "verification_reference": "ISO 4032:2012, fourth edition 2012-12-15, Table 1 (preferred threads), PDF page 8 / printed page 2; P, s nominal=max, m max and e min.",
+      "correction": null
+    }
+  ],
+  "coverage": [
+    {
+      "family": "din934-1987",
+      "nominal_mm": 2,
+      "status": "supported",
+      "entry_id": "nut.din934-1987.m2",
+      "reason": "Pinned BOLTS row retained with the named primary dimensional cross-check. Across flats and height use the source maxima as modeling references, not tolerance or fit certification."
+    },
+    {
+      "family": "din934-1987",
+      "nominal_mm": 2.5,
+      "status": "supported",
+      "entry_id": "nut.din934-1987.m2-5",
+      "reason": "Pinned BOLTS row retained with the named primary dimensional cross-check. Across flats and height use the source maxima as modeling references, not tolerance or fit certification."
+    },
+    {
+      "family": "din934-1987",
+      "nominal_mm": 3,
+      "status": "supported",
+      "entry_id": "nut.din934-1987.m3",
+      "reason": "Pinned BOLTS row retained with the named primary dimensional cross-check. Across flats and height use the source maxima as modeling references, not tolerance or fit certification."
+    },
+    {
+      "family": "din934-1987",
+      "nominal_mm": 3.5,
+      "status": "supported",
+      "entry_id": "nut.din934-1987.m3-5",
+      "reason": "Pinned BOLTS row retained with the named primary dimensional cross-check. Across flats and height use the source maxima as modeling references, not tolerance or fit certification."
+    },
+    {
+      "family": "din934-1987",
+      "nominal_mm": 4,
+      "status": "supported",
+      "entry_id": "nut.din934-1987.m4",
+      "reason": "Pinned BOLTS row retained with the named primary dimensional cross-check. Across flats and height use the source maxima as modeling references, not tolerance or fit certification."
+    },
+    {
+      "family": "din934-1987",
+      "nominal_mm": 4.5,
+      "status": "unavailable",
+      "entry_id": null,
+      "reason": "No row in the selected pinned BOLTS class or selected edition cross-check; no preset is supplied. This does not assert commercial unavailability; use an explicitly custom recipe if supported."
+    },
+    {
+      "family": "din934-1987",
+      "nominal_mm": 5,
+      "status": "supported",
+      "entry_id": "nut.din934-1987.m5",
+      "reason": "Pinned BOLTS row retained with the named primary dimensional cross-check. Across flats and height use the source maxima as modeling references, not tolerance or fit certification."
+    },
+    {
+      "family": "din934-1987",
+      "nominal_mm": 6,
+      "status": "supported",
+      "entry_id": "nut.din934-1987.m6",
+      "reason": "Pinned BOLTS row retained with the named primary dimensional cross-check. Across flats and height use the source maxima as modeling references, not tolerance or fit certification."
+    },
+    {
+      "family": "din934-1987",
+      "nominal_mm": 7,
+      "status": "supported",
+      "entry_id": "nut.din934-1987.m7",
+      "reason": "Pinned BOLTS row retained with the named primary dimensional cross-check. Across flats and height use the source maxima as modeling references, not tolerance or fit certification."
+    },
+    {
+      "family": "din934-1987",
+      "nominal_mm": 8,
+      "status": "supported",
+      "entry_id": "nut.din934-1987.m8",
+      "reason": "Pinned BOLTS row retained with the named primary dimensional cross-check. Across flats and height use the source maxima as modeling references, not tolerance or fit certification."
+    },
+    {
+      "family": "din934-1987",
+      "nominal_mm": 9,
+      "status": "unavailable",
+      "entry_id": null,
+      "reason": "No row in the selected pinned BOLTS class or selected edition cross-check; no preset is supplied. This does not assert commercial unavailability; use an explicitly custom recipe if supported."
+    },
+    {
+      "family": "din934-1987",
+      "nominal_mm": 10,
+      "status": "supported",
+      "entry_id": "nut.din934-1987.m10",
+      "reason": "Pinned BOLTS row retained with the named primary dimensional cross-check. Across flats and height use the source maxima as modeling references, not tolerance or fit certification."
+    },
+    {
+      "family": "iso4032-2012",
+      "nominal_mm": 2,
+      "status": "supported",
+      "entry_id": "nut.iso4032-2012.m2",
+      "reason": "Pinned BOLTS row retained with the named primary dimensional cross-check. Across flats and height use the source maxima as modeling references, not tolerance or fit certification."
+    },
+    {
+      "family": "iso4032-2012",
+      "nominal_mm": 2.5,
+      "status": "supported",
+      "entry_id": "nut.iso4032-2012.m2-5",
+      "reason": "Pinned BOLTS row retained with the named primary dimensional cross-check. Across flats and height use the source maxima as modeling references, not tolerance or fit certification."
+    },
+    {
+      "family": "iso4032-2012",
+      "nominal_mm": 3,
+      "status": "supported",
+      "entry_id": "nut.iso4032-2012.m3",
+      "reason": "Pinned BOLTS row retained with the named primary dimensional cross-check. Across flats and height use the source maxima as modeling references, not tolerance or fit certification."
+    },
+    {
+      "family": "iso4032-2012",
+      "nominal_mm": 3.5,
+      "status": "supported",
+      "entry_id": "nut.iso4032-2012.m3-5",
+      "reason": "Pinned BOLTS row retained with the named primary dimensional cross-check. Across flats and height use the source maxima as modeling references, not tolerance or fit certification."
+    },
+    {
+      "family": "iso4032-2012",
+      "nominal_mm": 4,
+      "status": "supported",
+      "entry_id": "nut.iso4032-2012.m4",
+      "reason": "Pinned BOLTS row retained with the named primary dimensional cross-check. Across flats and height use the source maxima as modeling references, not tolerance or fit certification."
+    },
+    {
+      "family": "iso4032-2012",
+      "nominal_mm": 4.5,
+      "status": "unavailable",
+      "entry_id": null,
+      "reason": "No row in the selected pinned BOLTS class or selected edition cross-check; no preset is supplied. This does not assert commercial unavailability; use an explicitly custom recipe if supported."
+    },
+    {
+      "family": "iso4032-2012",
+      "nominal_mm": 5,
+      "status": "supported",
+      "entry_id": "nut.iso4032-2012.m5",
+      "reason": "Pinned BOLTS row retained with the named primary dimensional cross-check. Across flats and height use the source maxima as modeling references, not tolerance or fit certification."
+    },
+    {
+      "family": "iso4032-2012",
+      "nominal_mm": 6,
+      "status": "supported",
+      "entry_id": "nut.iso4032-2012.m6",
+      "reason": "Pinned BOLTS row retained with the named primary dimensional cross-check. Across flats and height use the source maxima as modeling references, not tolerance or fit certification."
+    },
+    {
+      "family": "iso4032-2012",
+      "nominal_mm": 7,
+      "status": "unavailable",
+      "entry_id": null,
+      "reason": "ISO 4032:2012 Tables 1 and 2 omit M7; the edition-unspecified BOLTS ISO-labeled M7 row is deliberately excluded. ISO 4032:2023 adds a different M7 height and is not substituted."
+    },
+    {
+      "family": "iso4032-2012",
+      "nominal_mm": 8,
+      "status": "supported",
+      "entry_id": "nut.iso4032-2012.m8",
+      "reason": "Pinned BOLTS row retained with the named primary dimensional cross-check. Across flats and height use the source maxima as modeling references, not tolerance or fit certification."
+    },
+    {
+      "family": "iso4032-2012",
+      "nominal_mm": 9,
+      "status": "unavailable",
+      "entry_id": null,
+      "reason": "No row in the selected pinned BOLTS class or selected edition cross-check; no preset is supplied. This does not assert commercial unavailability; use an explicitly custom recipe if supported."
+    },
+    {
+      "family": "iso4032-2012",
+      "nominal_mm": 10,
+      "status": "supported",
+      "entry_id": "nut.iso4032-2012.m10",
+      "reason": "Pinned BOLTS row retained with the named primary dimensional cross-check. Across flats and height use the source maxima as modeling references, not tolerance or fit certification."
+    }
+  ]
+}
