@@ -150,6 +150,17 @@ class ThreadRidgeLoss : public std::runtime_error {
 public:
   ThreadRidgeLoss():std::runtime_error("Native Boolean did not retain the requested thread crests and gaps"){}
 };
+constexpr double rootRetryPadding=.125;
+constexpr bool within_thread_extent_budget(double heightOverPitch,uint32_t starts,double extraLeads=0.) {
+  return heightOverPitch+(2.+extraLeads)*starts<=128.;
+}
+static_assert(within_thread_extent_budget(126.,1));
+static_assert(!within_thread_extent_budget(126.,1,rootRetryPadding));
+static_assert(within_thread_extent_budget(125.875,1,rootRetryPadding));
+class ThreadRootUnionInvalid : public std::runtime_error {
+public:
+  ThreadRootUnionInvalid():std::runtime_error("Untrimmed rounded thread is not one valid solid"){}
+};
 class ThreadSweepNotDone : public std::runtime_error {
 public:
   ThreadSweepNotDone():std::runtime_error("Native continuous helical sweep did not complete"){}
@@ -336,13 +347,15 @@ bool thread_meridian_frame_probe() {
   }
   return samples==80&&legacyError>1e-5;
 }
-static std::unique_ptr<Shape> build_helical_thread(const ThreadData &s,bool segmented,ThreadProfile &trace) {
+static std::unique_ptr<Shape> build_helical_thread(const ThreadData &s,bool segmented,ThreadProfile &trace,double rootSweepPadding=0.) {
  try {
   trace.start(segmented);
   auto measured=trace.mark();
   const double pi=std::acos(-1.),lead=s.pitch*s.starts;
   const double root=s.radius-s.depth,z0=-2*lead,z1=s.height+2*lead;
   const bool symmetricRoot=s.root_rounding>0&&std::abs(s.lower_slope-s.upper_slope)<1e-14;
+  if(rootSweepPadding!=0.&&(!symmetricRoot||rootSweepPadding!=rootRetryPadding))
+    throw std::runtime_error("Unsupported symmetric-root construction padding");
   double rootCenterZ=0,rootCenterRadius=0;
   const double lowerAngle=std::atan(s.lower_slope),upperAngle=std::atan(s.upper_slope);
   if(s.knuckle_root_radius>0) {
@@ -364,7 +377,7 @@ static std::unique_ptr<Shape> build_helical_thread(const ThreadData &s,bool segm
       throw std::runtime_error("Root circle and core must share the same exact minimum radius");
   }
   if(s.starts<1||s.starts>8||!std::isfinite(lead)||lead<=0||s.height<s.pitch||
-      s.height/s.pitch+2*s.starts>128||root+s.taper*z0<=0||root+s.taper*z1<=0)
+      !within_thread_extent_budget(s.height/s.pitch,s.starts,rootSweepPadding)||root+s.taper*z0<=0||root+s.taper*z1<=0)
     throw std::runtime_error("Thread exceeds the validated radius, length or start budget");
   const gp_Ax2 axis(gp_Pnt(0,0,z0),gp_Dir(0,0,1));
   TopoDS_Shape solid=s.taper==0?
@@ -384,7 +397,9 @@ static std::unique_ptr<Shape> build_helical_thread(const ThreadData &s,bool segm
     measured=trace.mark();
     const double phase=2*pi*start/s.starts,z=-lead;
     Handle(Geom2d_Line) line=new Geom2d_Line(gp_Pnt2d(phase,z/c),gp_Dir2d(sign*2*pi,lead/c));
-    const double end=(s.height+2*lead)/lead*std::hypot(2*pi,lead/c);
+    // Fractional padding changes only the temporary sweep endpoint. The exact
+    // helix phase and final authored [0,height] trim remain unchanged.
+    const double end=(s.height+(2.+rootSweepPadding)*lead)/lead*std::hypot(2*pi,lead/c);
     // Keep the exact authored helix, extent and phase. New rounded sweeps use
     // half-turn parallel and quarter-turn tapered domains. Root-only asymmetric
     // and knuckle sectors use quarter-turn domains to keep fused face wires valid. Wider trimmed
@@ -478,7 +493,7 @@ static std::unique_ptr<Shape> build_helical_thread(const ThreadData &s,bool segm
       };
       std::vector<TopoDS_Edge> edges;
       for(uint32_t i=0;i<4;++i)edges.push_back(edge(points[i],points[(i+1)%4]));
-      sweep(edges,-1);
+      if(!symmetricRoot)sweep(edges,-1);
       if(s.root_rounding>0) {
         const double left=-(pi/2-upperAngle),right=pi/2-lowerAngle;
         const auto circle=[&](double angle) {
@@ -494,6 +509,7 @@ static std::unique_ptr<Shape> build_helical_thread(const ThreadData &s,bool segm
         sweep({edge(belowA,before),edge(before,a),arc(a,circle(left/2),b),edge(b,belowB),edge(belowB,belowA)},-1,0);
         sweep({edge(belowB,b),arc(b,circle(right/2),d),edge(d,after),edge(after,belowD),edge(belowD,belowB)},-1,1);
       }
+      if(symmetricRoot)sweep(edges,-1);
     } else if(s.taper==0) {
       // Full-period closed profiles self-contact at their valley seam. Sweep
       // three narrower exact profiles instead: the crest/flanks and the two
@@ -575,8 +591,10 @@ static std::unique_ptr<Shape> build_helical_thread(const ThreadData &s,bool segm
   const auto limit=BRepPrimAPI_MakeBox(gp_Pnt(-bound,-bound,0),2*bound,2*bound,s.height).Shape();
   if(s.rounding>0||s.root_rounding>0||s.axial_flat) {
     int count=0;for(TopExp_Explorer it(solid,TopAbs_SOLID);it.More();it.Next())++count;
-    if(count!=1||!BRepCheck_Analyzer(solid).IsValid())
+    if(count!=1||!BRepCheck_Analyzer(solid).IsValid()) {
+      if(symmetricRoot)throw ThreadRootUnionInvalid();
       throw std::runtime_error("Untrimmed rounded thread is not one valid solid");
+    }
   }
   BRepAlgoAPI_Common trim;boolean_inputs(trim,solid,limit);
   ancestry=carry_thread_faces(trim,ancestry);solid=trim.Shape();
@@ -760,7 +778,18 @@ static std::unique_ptr<Shape> helical_thread_impl(const ThreadData &s,bool useCa
   // narrowly typed reconstruction rules below.
   if(s.rounding>0||s.root_rounding>0||s.axial_flat) {
     ++cache.stats.bounded_attempts;
-    auto result=build_helical_thread(s,true,trace);
+    std::unique_ptr<Shape> result;
+    try {
+      result=build_helical_thread(s,true,trace);
+    } catch(const ThreadRootUnionInvalid &) {
+      if(!within_thread_extent_budget(s.height/s.pitch,s.starts,rootRetryPadding))throw;
+      trace.retry("symmetric_root_union_invalid");
+      // Retry only this typed untrimmed union failure, once, with a different
+      // temporary end section inside the same total construction budget.
+      // Final trim, phase, validity, physical, volume and ancestry guards remain.
+      ++cache.stats.bounded_attempts;
+      result=build_helical_thread(s,true,trace,rootRetryPadding);
+    }
     const auto measured=trace.mark();
     volume(*result);
     trace.stage("volume_guard",measured);
