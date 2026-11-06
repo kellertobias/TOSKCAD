@@ -354,7 +354,7 @@ impl GearPanel {
         p.hub = self.hub.resolve(document)?;
         p.profile_shift = self.shift.resolve(document)?;
         p.shift_mate = if self.shift_mate_enabled {
-            Some(multicad_core::model::ShiftedSpurMate {
+            Some(multicad_core::model::ShiftedGearMate {
                 teeth: self.shift_mate_teeth.resolve(document)?,
                 profile_shift: self.shift_mate_shift.resolve(document)?,
             })
@@ -424,12 +424,8 @@ impl GearPanel {
         if self.family == family {
             return;
         }
-        if family != GearFamily::Spur {
-            self.shift_mate_enabled = false;
-        }
         if !external_cylindrical(family) {
             self.select_pitch_input(GearPitchInput::Module);
-            self.shift.set_literal(0., "ratio");
         }
         if self.family == GearFamily::Worm && family != GearFamily::Worm {
             self.system = GearModuleSystem::Normal;
@@ -456,8 +452,6 @@ impl GearPanel {
             self.fields[9].set_literal(0., "ratio");
             self.worm_mate.set_literal(32., "count");
             self.worm_quotient.set_literal(10., "ratio");
-            self.request.parameters.profile_shift = multicad_core::model::ratio(0.);
-            self.shift.set_literal(0., "ratio");
             return;
         }
         if matches!(
@@ -859,25 +853,42 @@ impl GearPanel {
             external_cylindrical(self.family),
             "Intrinsic hub",
         );
-        if self.family == GearFamily::Spur
+        if external_cylindrical(self.family)
             && (self.shift_mate_enabled || self.shift.text.trim().parse::<f64>() != Ok(0.))
         {
-            ui.small(multicad_core::model::SHIFTED_SPUR_SOURCE);
+            ui.small(multicad_core::model::SHIFTED_GEAR_SOURCE);
             ui.hyperlink_to(
-                "Shifted Spur reference",
-                multicad_core::model::SHIFTED_SPUR_SOURCE_URL,
+                "Shifted external gear reference",
+                multicad_core::model::SHIFTED_GEAR_SOURCE_URL,
+            );
+            ui.hyperlink_to(
+                "Shifted undercut reference",
+                multicad_core::model::SHIFTED_GEAR_UNDERCUT_SOURCE_URL,
             );
         }
-        if external_cylindrical(self.family) {
-            changed|=self.shift.show_named(ui,(self.request.feature,"gear-shift"),"Profile shift coefficient","Only external20° Spur supports nonzero shift: engineering range -0.5..1; undercut, crest, root and bore limits still apply. Other families require zero.");
-            ui.small("Nonzero shifts: external 20° Spur only, -0.5 to1 subject to source undercut and actual profile limits. Thinning remains separate.");
+        let shifted_draft =
+            self.shift_mate_enabled || self.shift.text.trim().parse::<f64>() != Ok(0.);
+        if !paired && !external_cylindrical(self.family) && shifted_draft {
+            ui.colored_label(egui::Color32::LIGHT_RED,"This family does not support the retained profile shift or matched context. Clear them explicitly to use an unshifted recipe.");
+            if ui.button("Clear profile shift and mate context").clicked() {
+                self.shift.set_literal(0., "ratio");
+                self.shift_mate_enabled = false;
+                changed = true;
+            }
         }
-        if !paired && self.family == GearFamily::Spur {
+        if external_cylindrical(self.family) || shifted_draft {
+            changed|=self.shift.show_named(ui,(self.request.feature,"gear-shift"),"Profile shift coefficient","External Spur, Helical, Herringbone and Double-helical support source-defined shifts in either selected pitch plane. Authored coefficient -0.5..1; selected-plane source undercut, crest, root and bore limits still apply. Other families require zero.");
+            ui.small("External shifts: selected pressure14.5–35°, coefficient -0.5 to1 in the selected module plane. The selected-plane source undercut equation and actual profile/contact limits remain. Thinning stays separate.");
+        }
+        if !paired && (external_cylindrical(self.family) || self.shift_mate_enabled) {
             changed |= ui
-                .checkbox(&mut self.shift_mate_enabled, "Clearance-matched Spur mate")
+                .checkbox(
+                    &mut self.shift_mate_enabled,
+                    "Clearance-matched external mate",
+                )
                 .changed();
             if self.shift_mate_enabled {
-                ui.small("Retained mate count/shift selects KHK paired tip shortening. Without this context the standalone tip is unshortened.");
+                ui.small("Retained mate count/shift selects KHK paired tip shortening in this pitch plane. Without context the standalone tip is unshortened; shifted helical pairs require matching selected conventions.");
                 changed |= self.shift_mate_teeth.show_named(
                     ui,
                     (self.request.feature, "shift-mate-count"),
@@ -1358,40 +1369,117 @@ mod coverage_fields_tests {
         assert!(!s.can_undo());
     }
     #[test]
-    fn switching_matched_spur_to_helical_clears_the_hidden_spur_only_context() {
-        let s = Session::new(Document::new("Family switch").unwrap()).unwrap();
-        let mut panel = GearPanel::new(
-            GearRequest::new(
-                "Matched Spur",
-                model::GearParameters {
-                    profile_shift: model::ratio(0.2),
-                    shift_mate: Some(model::ShiftedSpurMate {
-                        teeth: Dimension::Literal {
-                            value: 36.,
-                            unit: "count".into(),
+    fn external_family_switches_retain_shift_context_in_both_planes_and_unsupported_clear_is_explicit()
+     {
+        let s = Session::new(Document::new("Retained external shifts").unwrap()).unwrap();
+        for system in [GearModuleSystem::Normal, GearModuleSystem::Transverse] {
+            let mut panel = GearPanel::new(
+                GearRequest::new(
+                    "Matched external",
+                    model::GearParameters {
+                        module_system: system,
+                        pressure_angle: model::angle(25.),
+                        profile_shift: model::ratio(0.2),
+                        shift_mate: Some(model::ShiftedGearMate {
+                            teeth: Dimension::Literal {
+                                value: 36.,
+                                unit: "count".into(),
+                            },
+                            profile_shift: model::ratio(0.1),
+                        }),
+                        ..Default::default()
+                    },
+                ),
+                s.parameters().clone(),
+                false,
+            )
+            .unwrap();
+            for family in [
+                GearFamily::Helical,
+                GearFamily::Herringbone,
+                GearFamily::DoubleHelical,
+                GearFamily::Spur,
+            ] {
+                panel.select_family(family);
+                let request = panel.request(s.document(), true).unwrap();
+                assert_eq!(request.parameters.profile_shift, model::ratio(0.2));
+                assert_eq!(
+                    request
+                        .parameters
+                        .shift_mate
+                        .as_ref()
+                        .unwrap()
+                        .profile_shift,
+                    model::ratio(0.1)
+                );
+                assert_eq!(request.parameters.module_system, system);
+                assert!(panel.shift_mate_enabled);
+            }
+            panel.select_family(GearFamily::Rack);
+            assert!(panel.shift_mate_enabled);
+            assert_eq!(
+                panel.shift.resolve(s.document()).unwrap(),
+                model::ratio(0.2)
+            );
+            assert!(panel.request(s.document(), true).is_err());
+            let ctx = egui::Context::default();
+            fn frame(
+                ctx: &egui::Context,
+                panel: &mut GearPanel,
+                s: &Session,
+                events: Vec<egui::Event>,
+            ) -> egui::FullOutput {
+                ctx.run_ui(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(650., 3600.),
+                        )),
+                        events,
+                        focused: true,
+                        ..Default::default()
+                    },
+                    |ui| {
+                        panel.show(ui, s.document(), true, PreviewState::Idle);
+                    },
+                )
+            }
+            let out = frame(&ctx, &mut panel, &s, vec![]);
+            let pos = out
+                .shapes
+                .iter()
+                .find_map(|shape| match &shape.shape {
+                    egui::Shape::Text(t)
+                        if t.galley.text() == "Clear profile shift and mate context" =>
+                    {
+                        Some(t.pos + t.galley.size() / 2.)
+                    }
+                    _ => None,
+                })
+                .expect("explicit unsupported-family clear action");
+            out.drop_without_applying_deltas();
+            for pressed in [true, false] {
+                frame(
+                    &ctx,
+                    &mut panel,
+                    &s,
+                    vec![
+                        egui::Event::PointerMoved(pos),
+                        egui::Event::PointerButton {
+                            pos,
+                            button: egui::PointerButton::Primary,
+                            pressed,
+                            modifiers: Default::default(),
                         },
-                        profile_shift: model::ratio(0.1),
-                    }),
-                    ..Default::default()
-                },
-            ),
-            s.parameters().clone(),
-            false,
-        )
-        .unwrap();
-        panel.select_family(GearFamily::Helical);
-        panel.hand = GearHand::Right;
-        panel.fields[4].set_literal(15., "deg");
-        panel.shift.set_literal(0., "ratio");
-        assert!(!panel.shift_mate_enabled);
-        assert!(
-            panel
-                .request(s.document(), true)
-                .unwrap()
-                .parameters
-                .shift_mate
-                .is_none()
-        );
+                    ],
+                )
+                .drop_without_applying_deltas();
+            }
+            let request = panel.request(s.document(), true).unwrap();
+            assert_eq!(request.parameters.profile_shift, model::ratio(0.));
+            assert!(request.parameters.shift_mate.is_none());
+        }
         assert_eq!(s.revision(), 0);
+        assert!(!s.can_undo());
     }
 }

@@ -115,15 +115,20 @@ pub(super) fn inspect_gear_pair(
         .any(|m| !m["source"]["parameters"]["shift_mate"].is_null())
     {
         match (r.gears[0].rotary(), r.gears[1].rotary()) {
-            (Some(a), Some(b)) => Some(model::shifted_spur_pair_geometry(a, b)?),
+            (Some(a), Some(b)) => Some(model::shifted_gear_pair_geometry(a, b)?),
             _ => None,
         }
     } else {
         None
     };
+    let spur_subset = shifted.as_ref().filter(|_| {
+        r.gears
+            .iter()
+            .all(|g| g.family() == model::GearFamily::Spur)
+    });
     Ok(
         json!({"revision":revision,"pair":pair,"source":source,"members":members,
-        "resolved":{"center_distance_mm":r.center_distance_mm,"phases_rad":r.phases_rad,"mating_frames":r.mating,"rack_travel":r.rack_travel,"bevel":r.bevel,"worm":r.worm,"shifted_spur":shifted},
+        "resolved":{"center_distance_mm":r.center_distance_mm,"phases_rad":r.phases_rad,"mating_frames":r.mating,"rack_travel":r.rack_travel,"bevel":r.bevel,"worm":r.worm,"shifted_gear":shifted,"shifted_spur":spur_subset},
         "scope":"Canonical source and resolved placement only. evaluate_model reports actual native pair checks and physical leaves."}),
     )
 }
@@ -255,13 +260,13 @@ fn couple_shifted_intent(
     if recipes.iter().any(|p| p.shift_mate.is_some()) {
         let originals = recipes.clone();
         for i in 0..2 {
-            recipes[i].shift_mate = Some(model::ShiftedSpurMate {
+            recipes[i].shift_mate = Some(model::ShiftedGearMate {
                 teeth: originals[1 - i].teeth.clone(),
                 profile_shift: originals[1 - i].profile_shift.clone(),
             });
         }
     }
-    model::couple_shifted_spur_pair_recipes(&mut recipes)?;
+    model::couple_shifted_gear_pair_recipes(&mut recipes)?;
     if (0..2)
         .any(|i| supplied[i].is_some_and(|a| a.clear_shift_mate) && recipes[i].shift_mate.is_some())
     {

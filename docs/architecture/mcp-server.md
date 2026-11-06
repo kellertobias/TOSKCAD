@@ -600,20 +600,28 @@ Creating or switching to Rack defaults backing to 4 mm and clears inapplicable
 rotary defaults before applying explicit arguments. Explicit unsupported bore,
 helix or outside diameter still refuses. Omitted/null backing edits retain the
 saved value. Inspection reports actual rack pitch, length and backing, with
-no invented rotary diameters. Nonzero `profile_shift` is available only for
-20-degree external Spur within the engineering bound `-0.5..1`, further limited
-by undercut, crest/root separation and native geometry checks. A standalone
-gear may retain `shift_mate { teeth, profile_shift }` to declare the sourced
-clearance-matched tip shortening. `clear_shift_mate: true` removes that context;
-omission/null retains it, and clear plus replacement fails. Matched pairs retain
-both opposite original typed sources and require atomic shared edits. Other
-families continue to refuse nonzero shift. The retained gear contract owns the
-center, phase, contact-ratio and actual-fillet interference equations.
+no invented rotary diameters. Nonzero `profile_shift` is available for the four
+external cylindrical families within the selected-plane engineering bound
+`-0.5..1`, further limited by exact basic-rack undercut, crest/root separation,
+actual-fillet contact and native geometry checks. Pressure retains the existing
+selected-plane bounds. A standalone gear may retain
+`shift_mate { teeth, profile_shift }` to declare sourced clearance-matched tip
+shortening. `clear_shift_mate: true` removes that context; omission/null retains
+it for a standalone edit, and clear plus replacement fails. Matched pairs retain
+both opposite original typed sources and require atomic shared edits. Shifted
+non-Spur pairs require matching selected module systems. Internal ring, Rack,
+Bevel and Worm still refuse nonzero shift. The
+[current retained-gear decision](0035-retained-gear-pitch-hubs-and-shift.md#2026-11-06-extend-retained-shift-to-external-helical-families)
+owns the normal/transverse center, phase, contact and interference equations.
 The worm recipe contract below does not establish product availability;
 `gear_profiles.families[].supported` reports the current family gate.
-The conservative rotary gear/pinion tooth-count policy uses the normal pressure
-angle without virtual-tooth credit for a helix. No fit, accuracy grade, load rating
-or cutter-generation certification follows from a successful preview.
+Zero shift without matched context keeps the conservative normal-angle count
+policy. Active shifted/matched intent uses the direct transverse basic-rack
+projection, with no approximate virtual count. The custom fillet is not a hob-tip
+radius. `model.gear.shifted_external.1` protects expanded saved intent, including
+suppressed/template data; it is separate from pitch-unit and coverage gates. No
+fit, accuracy grade, load rating or cutter-generation certification follows from
+a successful preview.
 
 The [spherical-involute straight bevel subset](gears.md#spherical-involute-straight-bevel-subset)
 uses `family: "bevel"` and `bevel_system: "spherical_involute_straight"`.
@@ -692,15 +700,24 @@ compatible. A drive-only edit preserves the gear definitions exactly. Explicit
 for racks, `rack_travel` supplies member roles, allowed translation/drive ranges,
 current translation and the pinion tooth period. Here center distance means
 pitch-line-to-pinion-center distance.
+`resolved.shifted_gear` reports working pressure, center, tip shortening and
+transverse contact ratio for any matched shifted external family. The legacy
+`resolved.shifted_spur` field remains populated only for Spur.
 For bevels, `resolved.bevel` reports the shared shaft angle, cone distance,
 cone face width and both pitch-cone angles. Their shared apex makes
 `center_distance_mm` zero.
 For worm pairs, `resolved.worm` identifies the worm and wheel members,
 wheel count, center distance, crossed shaft angle and full worm-turn period.
 `evaluate_model` reports actual native pair checks and physical leaf paths.
+For shifted Spur/Helical, named-flank proximity may return
+`shifted_spur_flank_faces` or `shifted_helical_flank_faces`; a candidate miss uses
+`whole_solid_fallback`. Shifted chevrons require both bands independently and
+report `shifted_chevron_both_bands` with the farther accepted band witness.
+Whole-solid overlap checks run first. All face ordinals are evaluation-local;
+these are existence witnesses, not global minima or continuous-contact claims.
 
-For matched shifted Spur pairs, omitted mate fields follow the edited opposite
-member's original typed tooth-count and shift sources. Explicit mate fields must
+For matched shifted external cylindrical pairs, omitted mate fields follow the
+edited opposite member's original typed tooth-count and shift sources. Explicit mate fields must
 match those sources before normalization; equal evaluated values with different
 bindings are conflicting intent. To remove matched-profile intent, supply
 literal-zero shifts and `clear_shift_mate: true` for both members. A drive-only

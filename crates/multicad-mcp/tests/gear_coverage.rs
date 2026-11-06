@@ -193,3 +193,112 @@ fn sourced_shifted_dp_hub_pair_partial_edits_native_history_and_reopen_retain_au
     assert_eq!(native["gear_pairs"][0]["current_pose_checked"], true);
     assert_eq!(native["gear_pairs"][0]["maximum_overlap_volume_mm3"], 0.);
 }
+
+#[test]
+fn shifted_external_helical_and_chevron_pairs_keep_sources_through_native_edits() {
+    for (family, plane) in [
+        ("helical", "normal"),
+        ("herringbone", "transverse"),
+        ("double_helical", "normal"),
+    ] {
+        let d = Document::new("Shifted external native interface")
+            .unwrap()
+            .edited(&[Mutation::Insert(Entity::new(
+                "shift_b",
+                EntityData::Parameter {
+                    expression: "0.1".into(),
+                    unit: "ratio".into(),
+                    exposed: false,
+                    inputs: vec![],
+                },
+            ))])
+            .unwrap();
+        let h = host(d);
+        let created = run(
+            &h,
+            "set_gear_pair",
+            json!({"expected_revision":0,"name":"Shifted external pair","first":{"family":family,"pitch_input":"diametral_pitch","module":scalar(12.7,"teeth_per_in"),"module_system":plane,"teeth":scalar(24.,"count"),"helix_angle":scalar(15.,"deg"),"hand":"right","center_gap":scalar(if family=="double_helical"{2.}else{0.},"mm"),"profile_shift":scalar(0.2,"ratio")},"second":{"teeth":scalar(36.,"count"),"profile_shift":expression("=$shift_b","ratio")}}),
+        );
+        let pair: EntityId = serde_json::from_value(created["pair"].clone()).unwrap();
+        let a: EntityId = serde_json::from_value(created["members"][0]["gear"].clone()).unwrap();
+        let b: EntityId = serde_json::from_value(created["members"][1]["gear"].clone()).unwrap();
+        let original = h.document();
+        let native = run(&h, "evaluate_model", json!({}));
+        assert_eq!(native["physical_leaves"].as_array().unwrap().len(), 2);
+        assert_eq!(native["gear_pairs"][0]["current_pose_checked"], true);
+        assert_eq!(native["gear_pairs"][0]["maximum_overlap_volume_mm3"], 0.);
+        let inspect = run(&h, "inspect_gear_pair", json!({"pair":pair}));
+        assert!(
+            inspect["resolved"]["shifted_gear"]["contact_ratio"]
+                .as_f64()
+                .unwrap()
+                > 1.
+        );
+        assert!(inspect["resolved"]["shifted_spur"].is_null());
+        let history = run(&h, "history", json!({}));
+        for patch in [
+            json!({"first":{"shift_mate":{"profile_shift":scalar(0.1,"ratio")}}}),
+            json!({"second":{"module_system":if plane=="normal"{"transverse"}else{"normal"}}}),
+            json!({"first":{"profile_shift":scalar(1.01,"ratio")}}),
+        ] {
+            let mut args = json!({"expected_revision":1,"pair":pair});
+            args.as_object_mut()
+                .unwrap()
+                .extend(patch.as_object().unwrap().clone());
+            assert!(dispatch(&h, &call(false), "set_gear_pair", args).is_err());
+            assert_eq!(h.document(), original);
+            assert_eq!(run(&h, "history", json!({})), history);
+        }
+        let edited = run(
+            &h,
+            "set_gear_pair",
+            json!({"expected_revision":1,"pair":pair,"first":{"profile_shift":scalar(0.25,"ratio")}}),
+        );
+        assert_eq!(edited["members"], created["members"]);
+        assert_eq!(edited["assembly"], created["assembly"]);
+        let changed = h.document();
+        let pa = model::read_gear(&changed, a).unwrap();
+        let pb = model::read_gear(&changed, b).unwrap();
+        assert_eq!(
+            pa.parameters.module,
+            model::read_gear(&original, a).unwrap().parameters.module
+        );
+        assert_eq!(
+            pb.parameters.profile_shift,
+            model::read_gear(&original, b)
+                .unwrap()
+                .parameters
+                .profile_shift
+        );
+        assert_eq!(
+            pb.parameters.shift_mate.as_ref().unwrap().profile_shift,
+            pa.parameters.profile_shift
+        );
+        run(&h, "undo", json!({"expected_revision":2}));
+        assert_eq!(h.document(), original);
+        run(&h, "redo", json!({"expected_revision":3}));
+        assert_eq!(h.document(), changed);
+        let mut bytes = vec![];
+        multicad_core::project_file::write(
+            &multicad_core::project_file::ProjectFile::new(changed.clone()).unwrap(),
+            &mut bytes,
+            Default::default(),
+        )
+        .unwrap();
+        let opened = multicad_core::project_file::read(
+            &mut bytes.as_slice(),
+            Default::default(),
+            &multicad_core::project_file::supported_capabilities(),
+        )
+        .unwrap();
+        let reopened = host(opened.project.document);
+        assert_eq!(reopened.document(), changed);
+        let inspect = run(&reopened, "inspect_gear_pair", json!({"pair":pair}));
+        assert!(
+            inspect["resolved"]["shifted_gear"]["contact_ratio"]
+                .as_f64()
+                .unwrap()
+                > 1.
+        );
+    }
+}

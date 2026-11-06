@@ -888,6 +888,33 @@ fn painted_za_worm_roles_preview_cancel_apply_history_and_reopen_keep_independen
 
 #[test]
 fn painted_shifted_dp_intrinsic_hub_pair_uses_native_preview_cancel_apply_history_and_reopen() {
+    shifted_hub_pair_workflow(
+        model::GearFamily::Spur,
+        model::GearModuleSystem::Normal,
+        true,
+    );
+}
+#[test]
+fn painted_shifted_external_helical_and_chevrons_retain_sources_and_native_lifecycle() {
+    for (family, system) in [
+        (model::GearFamily::Helical, model::GearModuleSystem::Normal),
+        (
+            model::GearFamily::Herringbone,
+            model::GearModuleSystem::Transverse,
+        ),
+        (
+            model::GearFamily::DoubleHelical,
+            model::GearModuleSystem::Normal,
+        ),
+    ] {
+        shifted_hub_pair_workflow(family, system, false);
+    }
+}
+fn shifted_hub_pair_workflow(
+    family: model::GearFamily,
+    system: model::GearModuleSystem,
+    edit_after_reopen: bool,
+) {
     use multicad_core::constraint_sketch::Dimension;
     let mut s = Session::new(Document::new("Painted shifted DP hub pair").unwrap()).unwrap();
     let before = s.document().clone();
@@ -895,6 +922,7 @@ fn painted_shifted_dp_intrinsic_hub_pair_uses_native_preview_cancel_apply_histor
     let request = model::GearRequest::new(
         "KHK matched pair",
         model::GearParameters {
+            module_system: system,
             pitch_input: model::GearPitchInput::DiametralPitch,
             module: Dimension::Literal {
                 value: 25.4 / 3.,
@@ -931,6 +959,10 @@ fn painted_shifted_dp_intrinsic_hub_pair_uses_native_preview_cancel_apply_histor
     let ctx = egui::Context::default();
     ctx.enable_accesskit();
     crate::theme::configure(&ctx);
+    if family != model::GearFamily::Spur {
+        ring_click(&ctx, &mut c, &mut s, model::GearFamily::Spur.label());
+        ring_click(&ctx, &mut c, &mut s, family.label());
+    }
     ring_click(&ctx, &mut c, &mut s, "Create mating pair");
     let ModelForm::Gear(panel) = c.form.as_ref().unwrap() else {
         panic!("gear")
@@ -941,7 +973,19 @@ fn painted_shifted_dp_intrinsic_hub_pair_uses_native_preview_cancel_apply_histor
     };
     let pair = command.pair();
     let resolved = command.resolved(s.document(), s.parameters()).unwrap();
-    assert!((resolved.center_distance_mm - 56.4999).abs() < 0.001);
+    if family == model::GearFamily::Spur {
+        assert!((resolved.center_distance_mm - 56.4999).abs() < 0.001);
+    } else {
+        assert!(
+            resolved.center_distance_mm
+                > resolved
+                    .gears
+                    .iter()
+                    .map(|g| g.rotary().unwrap().pitch_radius_mm)
+                    .sum::<f64>()
+        );
+    }
+    assert!(resolved.gears.iter().all(|g| g.family() == family));
     assert!(resolved.gears[0].rotary().unwrap().hub.is_some());
     assert!(resolved.gears[1].rotary().unwrap().hub.is_none());
     ring_click(&ctx, &mut c, &mut s, "Preview");
@@ -981,6 +1025,23 @@ fn painted_shifted_dp_intrinsic_hub_pair_uses_native_preview_cancel_apply_histor
     assert_eq!(reopened.document(), &committed);
     c.begin_existing(&reopened, &Default::default(), pair, Channel::Ui)
         .unwrap();
+    if !edit_after_reopen {
+        for feature in source.parameters.gears {
+            let gear = model::read_gear(reopened.document(), feature).unwrap();
+            assert_eq!(gear.parameters.family, family);
+            assert_eq!(gear.parameters.module_system, system);
+            assert_eq!(
+                gear.parameters.pitch_input,
+                model::GearPitchInput::DiametralPitch
+            );
+            assert!(gear.parameters.shift_mate.is_some());
+        }
+        c.cancel();
+        assert_eq!(reopened.document(), &committed);
+        assert_eq!(reopened.revision(), 0);
+        return;
+    }
+
     ring_click(&ctx, &mut c, &mut reopened, "Update both gear recipes");
     // Change the actual persistent hub input with keyboard events. The pitch
     // source and matched contexts must remain the authored definitions.
