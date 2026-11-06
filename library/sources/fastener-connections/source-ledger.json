@@ -1,0 +1,16 @@
+{
+  "format": "toskcad.fastener-connection-source-ledger",
+  "version": 1,
+  "verified_on": "2026-11-06",
+  "sources": [
+    {
+      "id": "norelem-technical-screws-nuts-undated",
+      "url": "https://norelem.co.uk/medias/Technische-Hinweise-Schrauben-Muttern-EN.pdf?context=bWFzdGVyfHJvb3R8MjAxMTYxfGFwcGxpY2F0aW9uL3BkZnxhR1UyTDJoaU1pODVNamc1TURNd05UTXpNVFV3TDFSbFkyaHVhWE5qYUdVdFNHbHVkMlZwYzJVdFUyTm9jbUYxWW1WdUxVMTFkSFJsY201ZlJVNHVjR1JtfDNkOGZmNzZiMzAyMDRjZGQzMzIzZWIzNGEzY2I5NjA0MzkxNjY2ZTdkMDNmZjU2NDg2YWY3N2YyODUxZmFlMTA",
+      "sha256": "6cfa810ed7f72405110f1ba40b5bf9a23f3136fbdf76417424014bbac9010c54",
+      "reference": "Manufacturer technical notes, PDF/printed pages 3 and 4; no publication date or cited standard editions identified.",
+      "role": "Bounded M3, M4, M5, M6, M8 and M10 coarse pitches, pre-tapping drills, fine/medium clearance holes, Form A medium countersinks and Form K socket cap counterbores.",
+      "verification": "Source PDF downloaded, hashed, rendered with Poppler and both pages visually inspected. Numerical defaults are independently implemented in model/fastener_standards.rs.",
+      "rights": "No source PDF, artwork or CAD redistribution grant established; none bundled."
+    }
+  ]
+}
