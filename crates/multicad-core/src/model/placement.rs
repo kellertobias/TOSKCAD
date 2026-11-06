@@ -128,6 +128,10 @@ pub(super) fn header(data: &EntityData) -> Result<(EntityId, PlacementBase), Doc
             let s = crate::equipment::Attachment::from_definition(definition)?;
             Ok((s.owner, crate::equipment::attachment_base()))
         }
+        super::SCREW_HARDWARE_PLACEMENT_TYPE => {
+            let s = super::ScrewHardwarePlacementDefinition::from_definition(definition)?;
+            Ok((s.owner, s.base()))
+        }
         INSTANCE_PLACEMENT_TYPE => {
             let s = InstancePlacementDefinition::from_definition(definition)?;
             Ok((s.owner, s.base))
@@ -147,6 +151,7 @@ pub(super) fn header(data: &EntityData) -> Result<(EntityId, PlacementBase), Doc
 pub(super) enum Driver {
     Equipment(crate::equipment::Attachment),
     Numeric(InstancePlacementDefinition),
+    ScrewHardware(super::ScrewHardwarePlacementDefinition),
     Joint(Box<super::JointDefinition>, Vec<super::AlignmentInput>),
     Alignment(
         super::InstanceAlignmentDefinition,
@@ -165,6 +170,9 @@ impl Driver {
             crate::equipment::ATTACHMENT_TYPE => Ok(Self::Equipment(
                 crate::equipment::read_attachment(document, id)?,
             )),
+            super::SCREW_HARDWARE_PLACEMENT_TYPE => Ok(Self::ScrewHardware(
+                super::read_screw_hardware_placement(document, id)?,
+            )),
             INSTANCE_PLACEMENT_TYPE => Ok(Self::Numeric(read_instance_placement(document, id)?)),
             super::JOINT_TYPE => {
                 let (s, r) = super::read_joint(document, id)?;
@@ -181,6 +189,7 @@ impl Driver {
         match self {
             Self::Equipment(s) => s.owner,
             Self::Numeric(s) => s.owner,
+            Self::ScrewHardware(s) => s.owner,
             Self::Joint(s, _) => s.owner,
             Self::Alignment(s, _) => s.owner,
         }
@@ -189,6 +198,7 @@ impl Driver {
         match self {
             Self::Equipment(_) => crate::equipment::attachment_base(),
             Self::Numeric(s) => s.base.clone(),
+            Self::ScrewHardware(s) => s.base(),
             Self::Joint(s, _) => s.base.clone(),
             Self::Alignment(s, _) => s.base.clone(),
         }
@@ -197,6 +207,7 @@ impl Driver {
         match self {
             Self::Equipment(_) => debug_assert_eq!(base, crate::equipment::attachment_base()),
             Self::Numeric(s) => s.base = base,
+            Self::ScrewHardware(s) => debug_assert_eq!(base, s.base()),
             Self::Joint(s, _) => s.base = base,
             Self::Alignment(s, _) => s.base = base,
         }
@@ -205,6 +216,7 @@ impl Driver {
         match self {
             Self::Equipment(s) => s.owner = owner,
             Self::Numeric(s) => s.owner = owner,
+            Self::ScrewHardware(s) => s.owner = owner,
             Self::Joint(s, refs) => {
                 s.owner = owner;
                 for input in refs {
@@ -241,6 +253,7 @@ impl Driver {
         let (definition, inputs) = match self {
             Self::Equipment(s) => (s.definition()?, s.links()),
             Self::Numeric(s) => (s.definition()?, s.inputs()?),
+            Self::ScrewHardware(s) => (s.definition()?, s.inputs()?),
             Self::Joint(s, r) => (s.definition()?, s.inputs(r)?),
             Self::Alignment(s, r) => (s.definition()?, s.inputs(r)?),
         };
@@ -330,6 +343,7 @@ pub fn resolve_placement_base_with_snapshots(
         let delta = match control {
             Driver::Equipment(s) => s.resolve(document, parameters)?.pose,
             Driver::Numeric(s) => s.parameters.resolve(parameters)?,
+            Driver::ScrewHardware(s) => s.resolve(document, parameters, revision, snapshots)?,
             Driver::Joint(s, r) => {
                 super::resolve_joint(document, revision, parameters, &s, &r, snapshots, pose)?
             }
@@ -375,6 +389,7 @@ pub(super) fn validate_document(document: &Document) -> Result<(), DocumentError
                 if [
                     crate::equipment::ATTACHMENT_TYPE,
                     INSTANCE_PLACEMENT_TYPE,
+                    super::SCREW_HARDWARE_PLACEMENT_TYPE,
                     super::INSTANCE_ALIGNMENT_TYPE,
                     super::JOINT_TYPE,
                 ]

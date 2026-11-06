@@ -49,6 +49,9 @@ fn provider(d: &Definition) -> Result<(), DocumentError> {
         model::INSTANCE_ALIGNMENT_TYPE => {
             model::InstanceAlignmentDefinition::from_definition(d)?;
         }
+        model::SCREW_HARDWARE_PLACEMENT_TYPE => {
+            model::ScrewHardwarePlacementDefinition::from_definition(d)?;
+        }
         model::SCREW_CONNECTION_AXIS_TYPE => {
             model::ScrewConnectionAxisDefinition::from_definition(d)?;
         }

@@ -394,3 +394,215 @@ fn axis_inherits_manufacturing_limitations_of_its_actual_receiving_geometry() {
         ManufacturingLimitationKind::SimplifiedWoodScrew
     );
 }
+
+#[test]
+fn hardware_driver_uses_axis_once_preserves_bindings_and_has_no_owner_dependency() {
+    let mut f = fixture();
+    let placement = ComponentPlacementRequest::new(f.body.body, NumericTransform::default());
+    let q = prepare_place_component(&f.session, f.session.revision(), actor(), &placement).unwrap();
+    f.session.commit(q.prepared).unwrap();
+    let definition = ScrewHardwarePlacementDefinition {
+        owner: placement.instance,
+        axis: f.source,
+        station: Dimension::Expression {
+            expression: BoundExpression::bind(f.session.document(), "=$distance", "mm", None)
+                .unwrap(),
+        },
+        roll: angle(90.),
+        local_mount: RigidPose {
+            translation_mm: [1., 2., 3.],
+            ..Default::default()
+        },
+    };
+    let driver = Entity::new(
+        "Hardware axis driver",
+        EntityData::Extension {
+            definition: definition.definition().unwrap(),
+            inputs: definition.inputs().unwrap(),
+        },
+    );
+    let driver_id = driver.id;
+    let mut instance = f
+        .session
+        .document()
+        .get(placement.instance)
+        .unwrap()
+        .clone();
+    if let EntityData::Instance {
+        placement_source, ..
+    } = &mut instance.data
+    {
+        *placement_source = Some(driver_id);
+    }
+    let before = f.session.document().clone();
+    f.session
+        .apply(Request {
+            expected_revision: f.session.revision(),
+            actor: actor(),
+            label: "Bind hardware".into(),
+            edits: vec![Mutation::Insert(driver), Mutation::Replace(instance)],
+        })
+        .unwrap();
+    let bound = f.session.document().clone();
+    let dependencies = f
+        .session
+        .document()
+        .evaluation_dependencies(driver_id)
+        .unwrap();
+    assert!(dependencies.contains(&f.source));
+    assert!(dependencies.contains(&f.parameter));
+    assert!(!dependencies.contains(&placement.instance));
+    f.topology.revision = f.session.revision();
+    let actual = resolve_instance_pose_with_snapshots(
+        f.session.document(),
+        placement.instance,
+        f.session.parameters(),
+        f.session.revision(),
+        &BTreeMap::from([(f.body.feature, f.topology.clone())]),
+    )
+    .unwrap();
+    assert_eq!(actual.point([1., 2., 3.]), [100., 202., 312.]);
+    f.session.undo(f.session.revision(), actor()).unwrap();
+    assert_eq!(*f.session.document(), before);
+    f.session.redo(f.session.revision(), actor()).unwrap();
+    assert_eq!(*f.session.document(), bound);
+    let project = ProjectFile::new(f.session.document().clone()).unwrap();
+    assert!(
+        project
+            .capabilities()
+            .contains(SCREW_HARDWARE_PLACEMENT_CAPABILITY)
+    );
+    let mut bytes = vec![];
+    project_file::write(&project, &mut bytes, Default::default()).unwrap();
+    let mut old = project_file::supported_capabilities();
+    old.remove(SCREW_HARDWARE_PLACEMENT_CAPABILITY);
+    assert!(
+        project_file::read(&mut bytes.as_slice(), Default::default(), &old)
+            .unwrap_err()
+            .contains(SCREW_HARDWARE_PLACEMENT_CAPABILITY)
+    );
+    let restored = project_file::read(
+        &mut bytes.as_slice(),
+        Default::default(),
+        &project_file::supported_capabilities(),
+    )
+    .unwrap()
+    .project
+    .document;
+    assert_eq!(restored, *f.session.document());
+    let template = multicad_core::symbols::SymbolDefinition {
+        symbol: EntityId::new(),
+        revision: "1".into(),
+        name: "Saved axis-driven hardware".into(),
+        kind: multicad_core::symbols::SymbolKind::Static,
+        template: bound.clone(),
+        root: f.body.body,
+        exposed: vec![],
+        plan: None,
+    };
+    let mut only_template = Session::new(Document::new("Template only").unwrap()).unwrap();
+    let imported =
+        multicad_core::symbols::prepare_import(&only_template, 0, actor(), &template).unwrap();
+    only_template.commit(imported.prepared).unwrap();
+    let project = ProjectFile::new(only_template.document().clone()).unwrap();
+    let mut bytes = vec![];
+    project_file::write(&project, &mut bytes, Default::default()).unwrap();
+    for capability in [
+        SCREW_CONNECTION_AXIS_CAPABILITY,
+        SCREW_HARDWARE_PLACEMENT_CAPABILITY,
+    ] {
+        assert!(project.capabilities().contains(capability));
+        let mut old = project_file::supported_capabilities();
+        old.remove(capability);
+        assert!(
+            project_file::read(&mut bytes.as_slice(), Default::default(), &old)
+                .unwrap_err()
+                .contains(capability)
+        );
+    }
+    for copy in [false, true] {
+        let request = ScaleBatchRequest::new(
+            f.session.document(),
+            vec![ScaleTarget::Instance {
+                instance: placement.instance,
+            }],
+            ScaleParameters {
+                factors: std::array::from_fn(|_| ratio(2.)),
+                ..Default::default()
+            },
+            copy,
+        )
+        .unwrap();
+        let revision = f.session.revision();
+        assert!(prepare_scale_batch(&f.session, revision, actor(), &request).is_err());
+        assert_eq!(f.session.revision(), revision);
+        assert_eq!(*f.session.document(), bound);
+    }
+    let mut parameter = f.session.document().get(f.parameter).unwrap().clone();
+    if let EntityData::Parameter { expression, .. } = &mut parameter.data {
+        *expression = "4".into();
+    }
+    f.session
+        .apply(Request {
+            expected_revision: f.session.revision(),
+            actor: actor(),
+            label: "Stack change".into(),
+            edits: vec![Mutation::Replace(parameter)],
+        })
+        .unwrap();
+    f.topology.revision = f.session.revision();
+    let actual = resolve_instance_pose_with_snapshots(
+        f.session.document(),
+        placement.instance,
+        f.session.parameters(),
+        f.session.revision(),
+        &BTreeMap::from([(f.body.feature, f.topology)]),
+    )
+    .unwrap();
+    assert_eq!(actual.point([1., 2., 3.]), [100., 204., 314.]);
+    assert_eq!(
+        read_screw_hardware_placement(f.session.document(), driver_id).unwrap(),
+        definition
+    );
+}
+
+#[test]
+fn hardware_driver_refuses_forged_links_and_wrong_owner_without_changing_source() {
+    let f = fixture();
+    let invalid = ScrewHardwarePlacementDefinition {
+        owner: f.source,
+        axis: f.source,
+        station: length(0.),
+        roll: angle(0.),
+        local_mount: RigidPose::default(),
+    };
+    assert!(invalid.validate().is_err());
+    let before = f.session.document().clone();
+    let source = ScrewHardwarePlacementDefinition {
+        owner: f.instance.instance,
+        axis: f.source,
+        station: length(0.),
+        roll: angle(0.),
+        local_mount: RigidPose::default(),
+    };
+    for inputs in [
+        vec![],
+        vec![Link::new(f.body.feature, "connection_axis")],
+        vec![
+            Link::new(f.source, "connection_axis"),
+            Link::new(f.body.body, "unexpected"),
+        ],
+    ] {
+        let mut document = before.clone();
+        let driver = Entity::new(
+            "Forged driver",
+            EntityData::Extension {
+                definition: source.definition().unwrap(),
+                inputs,
+            },
+        );
+        assert!(document.insert(driver).is_err());
+        assert_eq!(document, before);
+    }
+    assert_eq!(*f.session.document(), before);
+}

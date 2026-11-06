@@ -48,6 +48,14 @@ fn instance_source(
     else {
         return Err(error("Select a supported Part Instance to scale"));
     };
+    if driver_chain(document, instance)?
+        .iter()
+        .any(|(_, driver)| matches!(driver, Driver::ScrewHardware(_)))
+    {
+        return Err(error(
+            "Edit the screw connection dimensions instead of scaling its controlled hardware",
+        ));
+    }
     if !matches!(
         document.get(*component).map(|e| &e.data),
         Some(EntityData::Part { .. })
@@ -96,6 +104,11 @@ fn clone_drivers(
     }
     for (id, mut driver) in chain {
         match &mut driver {
+            Driver::ScrewHardware(_) => {
+                return Err(error(
+                    "Edit the screw connection dimensions instead of scaling its controlled hardware",
+                ));
+            }
             Driver::Equipment(_) => {
                 return Err(error(
                     "Edit hosted equipment type dimensions instead of baking a scaled placement",
@@ -435,6 +448,9 @@ pub fn prepare_scale_edit(
     revision(session, expected_revision)?;
     parameters.resolve(session.parameters())?;
     let mut source = read_scale(session.document(), feature_id)?;
+    if let ScaleInput::Component { owner, .. } = &source.input {
+        instance_source(session.document(), *owner)?;
+    }
     source.parameters = parameters.clone();
     let mut feature = session
         .document()

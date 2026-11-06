@@ -193,6 +193,20 @@ its own directed axis while holding its origin fixed, using the native helix
 start convention. The derived receipt remains analytical: native collision,
 receiving material, blind clearance and strength checks are separate gates.
 
+`ScrewHardwarePlacementDefinition` anchors an outer hardware Instance to a
+retained connection axis. Its station and roll retain ordinary parameter
+expressions; its component-local mounting frame maps to that axis station.
+The driver applies the world axis once, independently of the Instance's former
+literal placement. Numeric placement controls may follow this absolute anchor.
+The conditional `model.screw_hardware_placement.1` reader capability covers
+active and template-only sources. Scaling a controlled occurrence, including
+scaled copies, is refused in favor of editing its connection dimensions.
+The current provider requires hardware at a root occurrence; hierarchy folders
+remain available. Hardware beneath a placed assembly requires an explicit
+parent-local pose binding before that placement is supported. Receiving axes
+can already reference placed receivers. This provider is a connection-editor
+integration component, not a completed graphical connection workflow.
+
 ## Custom metric endpoint geometry
 
 Optional `end_treatments` names a start treatment at local z=0 and an end

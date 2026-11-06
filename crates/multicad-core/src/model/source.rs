@@ -787,6 +787,33 @@ fn saved_feature_matches(
     })
 }
 
+fn saved_extension_matches(document: &Document, provider: &str) -> bool {
+    document.entities().any(|entity| match &entity.data {
+        EntityData::Extension { definition, .. } if definition.type_id == provider => true,
+        EntityData::Extension { definition, .. }
+            if definition.type_id == crate::symbols::DEFINITION_TYPE =>
+        {
+            definition
+                .data
+                .pointer("/template/entities")
+                .and_then(serde_json::Value::as_object)
+                .is_some_and(|entities| {
+                    entities.values().any(|entity| {
+                        entity
+                            .pointer("/data/kind")
+                            .and_then(serde_json::Value::as_str)
+                            == Some("extension")
+                            && entity
+                                .pointer("/data/definition/type_id")
+                                .and_then(serde_json::Value::as_str)
+                                == Some(provider)
+                    })
+                })
+        }
+        _ => false,
+    })
+}
+
 pub fn required_capabilities(document: &Document) -> BTreeSet<String> {
     let mut capabilities: BTreeSet<String> = document
         .entities()
@@ -843,6 +870,7 @@ pub fn required_capabilities(document: &Document) -> BTreeSet<String> {
                     super::NAMED_POSE_TYPE,
                     super::TRANSFER_GROUP_TYPE,
                     super::SCREW_CONNECTION_AXIS_TYPE,
+                    super::SCREW_HARDWARE_PLACEMENT_TYPE,
                     super::WALL_TYPE_KIND,
                     super::FENCE_TYPE_KIND,
                     super::FENCE_RUN_KIND,
@@ -884,6 +912,20 @@ pub fn required_capabilities(document: &Document) -> BTreeSet<String> {
             _ => None,
         })
         .collect();
+    for (provider, capability) in [
+        (
+            super::SCREW_CONNECTION_AXIS_TYPE,
+            super::SCREW_CONNECTION_AXIS_CAPABILITY,
+        ),
+        (
+            super::SCREW_HARDWARE_PLACEMENT_TYPE,
+            super::SCREW_HARDWARE_PLACEMENT_CAPABILITY,
+        ),
+    ] {
+        if saved_extension_matches(document, provider) {
+            capabilities.insert(capability.into());
+        }
+    }
     if saved_feature_matches(document, |type_id, data| {
         type_id == super::GEAR_TYPE
             && (data
