@@ -19,6 +19,13 @@ mod ffi {
         pub edge_pairs: u32,
         pub vertex_links: u32,
         pub removed_native_pole_triangles: u32,
+        pub removed_exact_zero_triangles: u32,
+        pub exact_vertex_pairs: u32,
+        pub internal_constraint_edges: u32,
+        pub removed_meshing_internal_edges: u32,
+        pub removed_meshing_constraint_wire_containers: u32,
+        pub removed_meshing_internal_vertices: u32,
+        pub remeshed_without_internal_constraints: bool,
     }
     #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
     pub struct MeshCacheStats {

@@ -177,7 +177,9 @@ fn manufacturing_sphere_poles_and_torus_double_periodic_seams_are_closed() {
         let raw = shape.mesh(options).unwrap();
         assert_eq!(
             raw.indices.len() / 3,
-            receipt.mesh.indices.len() / 3 + receipt.removed_native_pole_triangles as usize
+            receipt.mesh.indices.len() / 3
+                + receipt.removed_native_pole_triangles as usize
+                + receipt.removed_exact_zero_triangles as usize
         );
         if torus {
             assert_eq!(receipt.removed_native_pole_triangles, 0);
@@ -190,5 +192,94 @@ fn manufacturing_sphere_poles_and_torus_double_periodic_seams_are_closed() {
         );
         assert_eq!(before, shape.topology_snapshot(id, 0).unwrap());
         assert!(receipt.maximum_displacement_mm <= 1e-7);
+    }
+}
+#[test]
+fn native_buttress_internal_constraints_are_not_cross_face_mesh_seams() {
+    use multicad_core::{
+        commands::Session,
+        document::Document,
+        model::{self, ButtressLoadFlankSide},
+    };
+    use multicad_kernel::{HelicalThread, RootRoundedHelicalThread};
+    let session = Session::new(Document::new("Internal buttress seam").unwrap()).unwrap();
+    for hand in [model::ThreadHand::Right, model::ThreadHand::Left] {
+        let mut parameters = model::buttress_thread_presets()
+            .remove(0)
+            .parameters(ButtressLoadFlankSide::PositiveAxisSide);
+        parameters.hand = hand;
+        parameters.length = model::length(13.48);
+        parameters.radial_allowance = model::length(0.005);
+        let r = parameters
+            .resolve(session.parameters(), model::ThreadMode::NewExternal)
+            .unwrap();
+        let profile = r.profile;
+        let id = EntityId::new();
+        let shape = Solid::root_rounded_helical_thread_named(
+            RootRoundedHelicalThread {
+                profile: HelicalThread {
+                    major_radius_mm: r.major_radius_mm,
+                    pitch_mm: r.pitch_mm,
+                    length_mm: r.length_mm,
+                    depth_mm: profile.depth_mm,
+                    crest_width_mm: profile.crest_width_mm,
+                    lower_flank_deg: profile.lower_flank_deg,
+                    upper_flank_deg: profile.upper_flank_deg,
+                    radial_taper: 0.,
+                    starts: 1,
+                    left_hand: hand == model::ThreadHand::Left,
+                },
+                root_radius_mm: r
+                    .buttress
+                    .as_ref()
+                    .unwrap()
+                    .root_circle
+                    .as_ref()
+                    .unwrap()
+                    .radius_mm,
+            },
+            id,
+            Default::default(),
+        )
+        .unwrap()
+        .transformed(Default::default())
+        .unwrap();
+        let source_brep = shape.to_brep().unwrap();
+        let before = shape.topology_snapshot(id, 3).unwrap();
+        let options = MeshOptions {
+            linear_deflection_mm: 0.003,
+            angular_deflection_rad: 5_f64.to_radians(),
+            maximum_triangles: 2_000_000,
+        };
+        let raw = shape.mesh(options).unwrap();
+        let receipt = shape.manufacturing_mesh_with_receipt(options).unwrap();
+        closed(&receipt.mesh);
+        assert!(
+            receipt.internal_constraint_edges > 0 || receipt.removed_meshing_internal_edges > 0,
+            "fixture must exercise native INTERNAL constraints"
+        );
+        assert!(receipt.maximum_displacement_mm <= 1e-7);
+        if receipt.remeshed_without_internal_constraints {
+            assert!(receipt.removed_meshing_internal_edges > 0);
+            assert!(receipt.removed_meshing_constraint_wire_containers > 0);
+        } else {
+            assert_eq!(
+                raw.indices.len() / 3,
+                receipt.mesh.indices.len() / 3
+                    + receipt.removed_native_pole_triangles as usize
+                    + receipt.removed_exact_zero_triangles as usize
+            );
+        }
+        assert_eq!(source_brep, shape.to_brep().unwrap());
+        assert_eq!(before, shape.topology_snapshot(id, 3).unwrap());
+        assert_eq!(raw, shape.mesh(options).unwrap());
+        eprintln!(
+            "buttress manufacturing internal_constraints={} exact_duplicates={} removed_exact_zero={} removed_pole={} maximum_displacement_mm={:.17}",
+            receipt.internal_constraint_edges,
+            receipt.exact_vertex_pairs,
+            receipt.removed_exact_zero_triangles,
+            receipt.removed_native_pole_triangles,
+            receipt.maximum_displacement_mm
+        );
     }
 }

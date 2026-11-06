@@ -535,3 +535,386 @@ fn transformed_fused_plate_and_blind_cross_holes_use_proven_native_seams_without
     assert_eq!(object, 0);
     assert_eq!(transform, [1., 0., 0., 0., 1., 0., 0., 0., 1., 0., 0., 0.]);
 }
+
+#[test]
+fn actual_positive_load_right_hand_buttress_omits_only_exact_duplicate_native_xyz_triangles() {
+    use multicad_core::model::{ButtressLoadFlankSide, ThreadHand, ThreadRequest};
+    use multicad_kernel::{GeometryPolicy, MeshOptions};
+    let mut session =
+        Session::new(Document::new("Buttress exact native triangle").unwrap()).unwrap();
+    let mut parameters = model::buttress_thread_presets()
+        .remove(0)
+        .parameters(ButtressLoadFlankSide::PositiveAxisSide);
+    parameters.hand = ThreadHand::Right;
+    parameters.length = length(13.48);
+    parameters.radial_allowance = length(0.005);
+    let request = ThreadRequest::new("Positive-side right-hand buttress", parameters);
+    let prepared =
+        model::prepare_thread(&session, 0, Actor::local(Channel::Mcp), &request).unwrap();
+    session.commit(prepared.prepared).unwrap();
+    let document = session.document().clone();
+    let compiled = multicad_model::Compiler {
+        omit_display: true,
+        ..Default::default()
+    }
+    .compile(session.document(), session.revision())
+    .unwrap();
+    let shape = compiled.solid(request.feature).unwrap();
+    let native_before = shape.to_brep().unwrap();
+    let topology = shape
+        .topology_snapshot(request.feature, session.revision())
+        .unwrap();
+    let quality = MeshQuality {
+        chord_deviation_mm: 0.003,
+        angular_deviation_deg: 5.,
+    };
+    let options = MeshOptions {
+        linear_deflection_mm: quality.chord_deviation_mm,
+        angular_deflection_rad: quality.angular_deviation_deg.to_radians(),
+        maximum_triangles: 2_000_000,
+    };
+    let raw = shape.mesh(options).unwrap();
+    let vertices = raw.vertices.as_chunks::<3>().0;
+    let original_faces = raw.face_indices.iter().copied().collect::<BTreeSet<_>>();
+    assert_eq!(original_faces.len(), shape.faces().unwrap().len());
+    let mut retained_faces = BTreeSet::new();
+    let mut survivors = vec![];
+    let mut removed = 0;
+    for (triangle, face) in raw.indices.as_chunks::<3>().0.iter().zip(&raw.face_indices) {
+        let p = triangle.map(|v| vertices[v as usize]);
+        if p[0] == p[1] || p[1] == p[2] || p[2] == p[0] {
+            removed += 1;
+        } else {
+            survivors.push(p);
+            retained_faces.insert(*face);
+        }
+    }
+    eprintln!(
+        "buttress_positive_right_exact_xyz_triangles_removed={removed}; observed_native_faces={}",
+        original_faces.len()
+    );
+    assert!(
+        removed > 0,
+        "fixture must reproduce actual exact duplicate XYZ, not a near-equal or small-area triangle"
+    );
+    assert_eq!(
+        retained_faces, original_faces,
+        "no native face may disappear"
+    );
+    let raw_object = mesh::tessellate(shape, &quality, "Unfiltered native buttress").unwrap();
+    assert_eq!(raw_object.triangles.len(), raw.indices.len() / 3);
+    assert!(
+        mesh::three_mf(
+            &[raw_object],
+            &[BuildItem::identity(0)],
+            LengthUnit::Millimeter
+        )
+        .is_err(),
+        "the direct writer remains strict for arbitrary mesh input"
+    );
+    let manufacturing =
+        mesh::tessellate_manufacturing(shape, &quality, "Manufacturing buttress").unwrap();
+    let actual = manufacturing
+        .triangles
+        .iter()
+        .map(|t| t.map(|v| manufacturing.vertices[v as usize]))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        actual, survivors,
+        "all and only exact-duplicate triangles may be omitted; survivor positions/order/winding must be identical"
+    );
+    assert_eq!(
+        manufacturing.triangles.len() + removed,
+        raw.indices.len() / 3
+    );
+    let parsed = parse(&write(
+        std::slice::from_ref(&manufacturing),
+        &[BuildItem::identity(0)],
+    ));
+    assert_eq!(parsed.objects.len(), 1);
+    assert_eq!(parsed.items.len(), 1);
+    assert_eq!(manifold(&parsed.objects[0]), 1);
+    assert_preserved(&manufacturing, &parsed.objects[0]);
+    let stored = &parsed.objects[0];
+    let signed: f64 = stored
+        .triangles
+        .iter()
+        .map(|t| {
+            let [a, b, c] = t.map(|v| stored.vertices[v as usize]);
+            (a[0] * (b[1] * c[2] - b[2] * c[1]) - a[1] * (b[0] * c[2] - b[2] * c[0])
+                + a[2] * (b[0] * c[1] - b[1] * c[0]))
+                / 6.
+        })
+        .sum();
+    assert!(signed > 0.);
+    let volume = shape.volume_mm3().unwrap();
+    let area: f64 = shape.faces().unwrap().iter().map(|f| f.area_mm2).sum();
+    assert!(
+        (signed - volume).abs()
+            <= quality.chord_deviation_mm * area
+                + GeometryPolicy::default().linear_tolerance_mm * area
+                + 1e-7 * volume
+    );
+    assert_eq!(
+        shape.mesh(options).unwrap(),
+        raw,
+        "the ordinary native/display mesh must retain its original triangles"
+    );
+    assert_eq!(shape.to_brep().unwrap(), native_before);
+    assert_eq!(
+        shape
+            .topology_snapshot(request.feature, session.revision())
+            .unwrap(),
+        topology
+    );
+    assert_eq!(session.document(), &document);
+    assert_eq!(session.revision(), 1);
+}
+
+#[test]
+fn actual_positive_load_left_hand_buttress_retriangulates_detached_internal_constraints_only() {
+    use multicad_core::model::{ButtressLoadFlankSide, ThreadHand, ThreadRequest};
+    let mut session =
+        Session::new(Document::new("Positive left buttress manufacturing").unwrap()).unwrap();
+    let mut parameters = model::buttress_thread_presets()
+        .remove(0)
+        .parameters(ButtressLoadFlankSide::PositiveAxisSide);
+    parameters.hand = ThreadHand::Left;
+    parameters.length = length(13.48);
+    parameters.radial_allowance = length(0.005);
+    let request = ThreadRequest::new("Positive-side left-hand buttress", parameters);
+    let prepared =
+        model::prepare_thread(&session, 0, Actor::local(Channel::Mcp), &request).unwrap();
+    session.commit(prepared.prepared).unwrap();
+    let compiled = multicad_model::Compiler {
+        omit_display: true,
+        ..Default::default()
+    }
+    .compile(session.document(), session.revision())
+    .unwrap();
+    let shape = compiled.solid(request.feature).unwrap();
+    let quality = MeshQuality {
+        chord_deviation_mm: 0.003,
+        angular_deviation_deg: 5.,
+    };
+    let options = multicad_kernel::MeshOptions {
+        linear_deflection_mm: quality.chord_deviation_mm,
+        angular_deflection_rad: quality.angular_deviation_deg.to_radians(),
+        maximum_triangles: 2_000_000,
+    };
+    let raw = shape.mesh(options).unwrap();
+    let source = session.document().clone();
+    let before = shape.to_brep().unwrap();
+    let topology = shape
+        .topology_snapshot(request.feature, session.revision())
+        .unwrap();
+    let bounds = shape.bounds().unwrap();
+    let volume = shape.volume_mm3().unwrap();
+    let raw_object = mesh::tessellate(shape, &quality, "Raw left buttress").unwrap();
+    assert!(
+        mesh::three_mf(
+            &[raw_object],
+            &[BuildItem::identity(0)],
+            LengthUnit::Millimeter
+        )
+        .is_err(),
+        "original raw mesh must reproduce indexed closure refusal"
+    );
+    let native = shape.manufacturing_mesh_with_receipt(options).unwrap();
+    assert!(
+        shape.to_brep().unwrap() == before,
+        "direct manufacturing tessellation must preserve source BRep bytes"
+    );
+    eprintln!(
+        "buttress_positive_left_removed_meshing_internal_edges={}; raw_triangles={}; corrected_triangles={}; maximum_displacement_mm={}",
+        native.removed_meshing_internal_edges,
+        raw.indices.len() / 3,
+        native.mesh.indices.len() / 3,
+        native.maximum_displacement_mm
+    );
+    assert!(native.remeshed_without_internal_constraints);
+    assert!(native.removed_meshing_internal_edges > 0);
+    assert!(native.removed_meshing_constraint_wire_containers > 0);
+    assert_eq!(
+        native
+            .mesh
+            .face_indices
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>(),
+        raw.face_indices.iter().copied().collect::<BTreeSet<_>>(),
+        "every original face must remain represented"
+    );
+    let tolerance = multicad_kernel::GeometryPolicy::default()
+        .linear_tolerance_mm
+        .min(quality.chord_deviation_mm / 16.);
+    assert!(native.maximum_displacement_mm <= tolerance);
+    let expected = native
+        .mesh
+        .indices
+        .as_chunks::<3>()
+        .0
+        .iter()
+        .map(|t| {
+            t.map(|v| {
+                let i = 3 * v as usize;
+                [
+                    native.mesh.vertices[i],
+                    native.mesh.vertices[i + 1],
+                    native.mesh.vertices[i + 2],
+                ]
+            })
+        })
+        .collect::<Vec<_>>();
+    let manufacturing =
+        mesh::tessellate_manufacturing(shape, &quality, "Detached retriangulated buttress")
+            .unwrap();
+    assert!(
+        shape.to_brep().unwrap() == before,
+        "model manufacturing helper must preserve source BRep bytes"
+    );
+    let actual = manufacturing
+        .triangles
+        .iter()
+        .map(|t| t.map(|v| manufacturing.vertices[v as usize]))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        actual, expected,
+        "helper must preserve the actual native cleanup tessellation exactly, not invent facets across holes"
+    );
+    let package = parse(&write(
+        std::slice::from_ref(&manufacturing),
+        &[BuildItem::identity(0)],
+    ));
+    assert_eq!(package.objects.len(), 1);
+    assert_eq!(package.items.len(), 1);
+    let stored = &package.objects[0];
+    assert_eq!(manifold(stored), 1);
+    assert_preserved(&manufacturing, stored);
+    let signed: f64 = stored
+        .triangles
+        .iter()
+        .map(|t| {
+            let [a, b, c] = t.map(|v| stored.vertices[v as usize]);
+            (a[0] * (b[1] * c[2] - b[2] * c[1]) - a[1] * (b[0] * c[2] - b[2] * c[0])
+                + a[2] * (b[0] * c[1] - b[1] * c[0]))
+                / 6.
+        })
+        .sum();
+    assert!(signed > 0.);
+    let area: f64 = shape.faces().unwrap().iter().map(|f| f.area_mm2).sum();
+    assert!((signed - volume).abs() <= quality.chord_deviation_mm * area + 1e-7 * volume);
+    for axis in 0..3 {
+        let lo = stored
+            .vertices
+            .iter()
+            .map(|p| p[axis])
+            .reduce(f64::min)
+            .unwrap();
+        let hi = stored
+            .vertices
+            .iter()
+            .map(|p| p[axis])
+            .reduce(f64::max)
+            .unwrap();
+        assert!((lo - bounds.min[axis]).abs() <= quality.chord_deviation_mm + tolerance);
+        assert!((hi - bounds.max[axis]).abs() <= quality.chord_deviation_mm + tolerance);
+    }
+    // The raw graph had actual holes. Compare the final mesh's material with
+    // independent native Boolean cubes, including the threaded radial band.
+    // Reparse the unchanged native BRep into independent OCCT topology.
+    // Proper identity transforms intentionally share TShapes in production,
+    // so they would not isolate Boolean bookkeeping flags for this oracle.
+    let oracle = Solid::from_brep(&before, Default::default()).unwrap();
+    assert!(
+        shape.to_brep().unwrap() == before,
+        "independent oracle creation must preserve source bytes"
+    );
+    for point in [
+        [1., 0., 6.74],
+        [12., 0., 6.74],
+        [9., 0., 6.74],
+        [0., 9., 6.74],
+    ] {
+        let side: f64 = 0.01;
+        let cube = Solid::box_solid([side; 3], Default::default())
+            .unwrap()
+            .transformed(multicad_kernel::RigidTransform {
+                translation_mm: point.map(|v| v - side / 2.),
+                ..Default::default()
+            })
+            .unwrap();
+        let fraction = oracle
+            .boolean(
+                &cube,
+                multicad_kernel::BooleanOperation::Intersect,
+                Default::default(),
+            )
+            .unwrap()
+            .map_or(0., |s| s.volume_mm3().unwrap() / side.powi(3));
+        assert!(
+            fraction < 1e-4 || fraction > 1. - 1e-4,
+            "material sample must lie away from a source boundary: {point:?}, {fraction}"
+        );
+        assert_eq!(
+            mesh_contains(stored, point),
+            fraction > 0.5,
+            "native material mismatch at {point:?}"
+        );
+    }
+    assert_eq!(shape.mesh(options).unwrap(), raw);
+    assert!(
+        shape.to_brep().unwrap() == before,
+        "source BRep bytes must remain unchanged after independent Boolean oracles"
+    );
+    assert_eq!(
+        shape
+            .topology_snapshot(request.feature, session.revision())
+            .unwrap(),
+        topology
+    );
+    assert_eq!(shape.bounds().unwrap(), bounds);
+    assert_eq!(shape.volume_mm3().unwrap(), volume);
+    assert_eq!(session.document(), &source);
+    assert_eq!(session.revision(), 1);
+}
+fn mesh_contains(mesh: &MeshObject, point: [f64; 3]) -> bool {
+    let direction = [1., 0.17320508075688773, 0.113798013];
+    let sub = |a: [f64; 3], b: [f64; 3]| std::array::from_fn(|i| a[i] - b[i]);
+    let cross = |a: [f64; 3], b: [f64; 3]| {
+        [
+            a[1] * b[2] - a[2] * b[1],
+            a[2] * b[0] - a[0] * b[2],
+            a[0] * b[1] - a[1] * b[0],
+        ]
+    };
+    let dot = |a: [f64; 3], b: [f64; 3]| a.into_iter().zip(b).map(|(a, b)| a * b).sum::<f64>();
+    let mut hits = vec![];
+    for triangle in &mesh.triangles {
+        let [a, b, c] = triangle.map(|v| mesh.vertices[v as usize]);
+        let e1 = sub(b, a);
+        let e2 = sub(c, a);
+        let p = cross(direction, e2);
+        let determinant = dot(e1, p);
+        if determinant.abs() < 1e-14 {
+            continue;
+        }
+        let t = sub(point, a);
+        let u = dot(t, p) / determinant;
+        if !(0. ..=1.).contains(&u) {
+            continue;
+        }
+        let q = cross(t, e1);
+        let v = dot(direction, q) / determinant;
+        if v < 0. || u + v > 1. {
+            continue;
+        }
+        let distance = dot(e2, q) / determinant;
+        if distance > 1e-10 {
+            hits.push(distance);
+        }
+    }
+    hits.sort_by(f64::total_cmp);
+    hits.dedup_by(|a, b| (*a - *b).abs() < 1e-10);
+    hits.len() % 2 == 1
+}

@@ -6,7 +6,7 @@ use multicad_core::{
     materials::Appearance,
 };
 use multicad_kernel::{MeshOptions, Solid};
-use std::fmt::Write;
+use std::{collections::BTreeSet, fmt::Write};
 
 /// One mesh in millimeters. For 3MF it is a resource object; for OBJ it is
 /// written in world coordinates.
@@ -58,18 +58,26 @@ fn unit_name(unit: LengthUnit) -> &'static str {
 
 /// Tessellate an exact solid at the recipe's chord and angular deviation.
 pub fn tessellate(solid: &Solid, quality: &MeshQuality, name: &str) -> Result<MeshObject, String> {
-    tessellate_with_connectivity(solid, quality, name, false)
+    tessellate_with_connectivity(solid, quality, name, false, false)
 }
 
-/// Tessellate with shared-edge connectivity from the native solid. Stored
-/// 3MF indices must describe a closed surface, including face seams whose
+/// Preserve exact indexed closure when it already succeeds. Otherwise obtain
+/// shared-edge connectivity from the native solid to resolve face seams whose
 /// independently evaluated coordinates differ by numerical roundoff.
 pub fn tessellate_manufacturing(
     solid: &Solid,
     quality: &MeshQuality,
     name: &str,
 ) -> Result<MeshObject, String> {
-    tessellate_with_connectivity(solid, quality, name, true)
+    let raw = tessellate_with_connectivity(solid, quality, name, false, true)?;
+    match super::mesh_indexing::closed_indexed(&raw) {
+        Ok(closed) => Ok(closed),
+        Err(exact_error) => {
+            let transported = tessellate_with_connectivity(solid, quality, name, true, true)
+                .map_err(|native| format!("{exact_error}; native topology transport: {native}"))?;
+            super::mesh_indexing::closed_indexed(&transported)
+        }
+    }
 }
 
 fn tessellate_with_connectivity(
@@ -77,6 +85,7 @@ fn tessellate_with_connectivity(
     quality: &MeshQuality,
     name: &str,
     manufacturing: bool,
+    normalize_exact_zero_triangles: bool,
 ) -> Result<MeshObject, String> {
     let options = MeshOptions {
         linear_deflection_mm: quality.chord_deviation_mm,
@@ -89,17 +98,49 @@ fn tessellate_with_connectivity(
         solid.mesh(options)
     }
     .map_err(|e| e.to_string())?;
-    if mesh.vertices.len() % 3 != 0 || mesh.indices.len() % 3 != 0 || mesh.indices.is_empty() {
+    if mesh.vertices.len() % 3 != 0
+        || mesh.indices.len() % 3 != 0
+        || mesh.indices.is_empty()
+        || mesh.face_indices.len() != mesh.indices.len() / 3
+        || mesh.vertices.iter().any(|value| !value.is_finite())
+    {
         return Err("Native tessellation returned an invalid mesh".into());
     }
     let vertices: Vec<_> = mesh.vertices.as_chunks::<3>().0.to_vec();
-    let triangles: Vec<_> = mesh.indices.as_chunks::<3>().0.to_vec();
+    let mut triangles: Vec<_> = mesh.indices.as_chunks::<3>().0.to_vec();
     if triangles
         .iter()
         .flatten()
         .any(|i| *i as usize >= vertices.len())
     {
         return Err("Native tessellation referenced a missing vertex".into());
+    }
+    if normalize_exact_zero_triangles {
+        let original_faces: BTreeSet<_> = mesh.face_indices.iter().copied().collect();
+        let mut retained_faces = BTreeSet::new();
+        let original_count = triangles.len();
+        let mut ordinal = 0;
+        triangles.retain(|triangle| {
+            let face = mesh.face_indices[ordinal];
+            ordinal += 1;
+            let [a, b, c] = triangle.map(|index| vertices[index as usize]);
+            // Exact numeric equality includes signed zeros. Such a triangle
+            // has precisely zero area and volume, without an epsilon or a
+            // rounded cross-product test. This applies only to native-derived
+            // manufacturing meshes; arbitrary writer input stays strict.
+            if a == b || b == c || c == a {
+                false
+            } else {
+                retained_faces.insert(face);
+                true
+            }
+        });
+        if original_faces != retained_faces || triangles.is_empty() {
+            return Err(format!(
+                "Removing {} exact zero-area native triangles would erase a native face",
+                original_count - triangles.len()
+            ));
+        }
     }
     Ok(MeshObject {
         name: name.into(),

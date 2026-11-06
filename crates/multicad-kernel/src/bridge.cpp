@@ -58,6 +58,8 @@
 #include <STEPControl_Writer.hxx>
 #include <Standard_Failure.hxx>
 #include <TopExp_Explorer.hxx>
+#include <TopoDS_Iterator.hxx>
+#include <functional>
 #include <BRepTools.hxx>
 #include <BRep_Builder.hxx>
 #include <StepRepr_RepresentationItem.hxx>
@@ -512,6 +514,74 @@ Mesh detached_mesh(const MeshBuffer &buffer) {
   return result;
 }
 }
+class ManufacturingMeshClosureFailure:public std::runtime_error {
+public:explicit ManufacturingMeshClosureFailure(const std::string &message):std::runtime_error(message){}
+};
+struct MeshProtectedOccurrence {
+  TopoDS_Shape shape;
+  Handle(Geom_Surface) surface;
+  Handle(Geom_Curve) curve;
+  Handle(Geom2d_Curve) pcurve;
+  TopLoc_Location geometry_location;
+  double first=0,last=0,pfirst=0,plast=0,tolerance=0;
+  gp_Pnt point;
+  bool same_parameter=false,same_range=false,pcurve_stored=false,pcurve_present=false;
+};
+static std::vector<TopoDS_Shape> mesh_containers(const TopoDS_Shape &shape) {
+  std::vector<TopoDS_Shape> result;
+  std::function<void(const TopoDS_Shape&)> visit=[&](const TopoDS_Shape &s){
+    if(s.ShapeType()<=TopAbs_FACE)result.push_back(s);
+    for(TopoDS_Iterator it(s,true);it.More();it.Next())visit(it.Value());
+  };visit(shape);return result;
+}
+static std::vector<MeshProtectedOccurrence> mesh_boundaries(const TopoDS_Shape &shape) {
+  std::vector<MeshProtectedOccurrence> result;
+  for(TopExp_Explorer faces(shape,TopAbs_FACE);faces.More();faces.Next()){
+    const auto face=TopoDS::Face(faces.Current());MeshProtectedOccurrence f;f.shape=face;
+    f.surface=BRep_Tool::Surface(face,f.geometry_location);f.tolerance=BRep_Tool::Tolerance(face);result.push_back(f);
+    std::function<void(const TopoDS_Shape&)> visit=[&](const TopoDS_Shape &s){
+      if(s.Orientation()==TopAbs_INTERNAL)return;
+      if(s.ShapeType()==TopAbs_WIRE){bool boundary=false;
+        for(TopoDS_Iterator it(s,true);it.More();it.Next())if(it.Value().Orientation()!=TopAbs_INTERNAL)boundary=true;
+        // A FORWARD container holding only INTERNAL edge constraints is not
+        // a material-boundary wire; it may disappear when those hints go.
+        if(!boundary)return;
+      }
+      MeshProtectedOccurrence o;o.shape=s;
+      if(s.ShapeType()==TopAbs_EDGE){const auto e=TopoDS::Edge(s);o.curve=BRep_Tool::Curve(e,o.geometry_location,o.first,o.last);o.tolerance=BRep_Tool::Tolerance(e);o.same_parameter=BRep_Tool::SameParameter(e);o.same_range=BRep_Tool::SameRange(e);
+        Standard_Boolean stored=false;o.pcurve=BRep_Tool::CurveOnSurface(e,face,o.pfirst,o.plast,&stored);o.pcurve_stored=stored;o.pcurve_present=!o.pcurve.IsNull();
+        // Planar pcurves may be derived afresh; their immutable plane/3D
+        // curve/location/ranges below determine them, not handle identity.
+        if(!stored)o.pcurve.Nullify();
+      }else if(s.ShapeType()==TopAbs_VERTEX){const auto v=TopoDS::Vertex(s);o.point=BRep_Tool::Pnt(v);o.tolerance=BRep_Tool::Tolerance(v);}
+      result.push_back(o);for(TopoDS_Iterator it(s,true);it.More();it.Next())visit(it.Value());
+    };
+    for(TopoDS_Iterator it(face,true);it.More();it.Next())visit(it.Value());
+  }
+  return result;
+}
+struct MeshHintRemoval{uint32_t edges,wires,vertices;};
+static MeshHintRemoval remove_meshing_internal_constraints(TopoDS_Shape &detached) {
+  const auto containers=mesh_containers(detached);const auto boundary=mesh_boundaries(detached);
+  TopTools_IndexedMapOfShape oldEdges,oldWires,oldVertices;TopExp::MapShapes(detached,TopAbs_EDGE,oldEdges);TopExp::MapShapes(detached,TopAbs_WIRE,oldWires);TopExp::MapShapes(detached,TopAbs_VERTEX,oldVertices);
+  // Public, non-forced, orientation-only removal on a DEEP detached copy.
+  // It performs no classification, geometry update, healing or tolerance change.
+  BRepTools::RemoveInternals(detached,false);
+  const auto afterContainers=mesh_containers(detached);const auto afterBoundary=mesh_boundaries(detached);
+  if(containers.size()!=afterContainers.size()||boundary.size()!=afterBoundary.size())throw std::runtime_error("Meshing hint cleanup changed a protected container or boundary occurrence");
+  for(size_t i=0;i<containers.size();++i)if(!containers[i].IsEqual(afterContainers[i]))throw std::runtime_error("Meshing hint cleanup changed native face/shell/solid ownership");
+  for(size_t i=0;i<boundary.size();++i){const auto&a=boundary[i];const auto&b=afterBoundary[i];
+    if(!a.shape.IsEqual(b.shape)||a.surface!=b.surface||a.curve!=b.curve||a.pcurve!=b.pcurve||a.pcurve_stored!=b.pcurve_stored||a.pcurve_present!=b.pcurve_present||!a.geometry_location.IsEqual(b.geometry_location)||a.first!=b.first||a.last!=b.last||a.pfirst!=b.pfirst||a.plast!=b.plast||a.tolerance!=b.tolerance||a.same_parameter!=b.same_parameter||a.same_range!=b.same_range||a.point.X()!=b.point.X()||a.point.Y()!=b.point.Y()||a.point.Z()!=b.point.Z())
+      throw std::runtime_error("Meshing hint cleanup changed protected geometry, location, orientation, endpoint or tolerance");
+  }
+  if(!BRepCheck_Analyzer(detached).IsValid())throw std::runtime_error("Meshing hint cleanup invalidated the detached native boundary");
+  TopTools_IndexedMapOfShape newEdges,newWires,newVertices;TopExp::MapShapes(detached,TopAbs_EDGE,newEdges);TopExp::MapShapes(detached,TopAbs_WIRE,newWires);TopExp::MapShapes(detached,TopAbs_VERTEX,newVertices);
+  if(newEdges.Extent()>oldEdges.Extent()||newWires.Extent()>oldWires.Extent()||newVertices.Extent()>oldVertices.Extent())throw std::runtime_error("Meshing hint cleanup introduced topology");
+  const MeshHintRemoval removed{static_cast<uint32_t>(oldEdges.Extent()-newEdges.Extent()),static_cast<uint32_t>(oldWires.Extent()-newWires.Extent()),static_cast<uint32_t>(oldVertices.Extent()-newVertices.Extent())};
+  if(!removed.edges&&!removed.wires&&!removed.vertices)throw std::runtime_error("No removable INTERNAL meshing constraints after indexed closure failure");
+  return removed;
+}
+
 // Canonicalize only detached native-topology seams. Distinct native edges or
 // vertices are never paired by position. Display tessellation stays face-local.
 static void manufacturing_connectivity(const TopoDS_Shape &display,
@@ -520,6 +590,7 @@ static void manufacturing_connectivity(const TopoDS_Shape &display,
   if(!std::isfinite(tolerance)||tolerance<=0)
     throw std::runtime_error("Invalid manufacturing seam tolerance");
   if(mesh.vertices.size()%3||mesh.indices.size()%3||mesh.face_indices.size()!=mesh.indices.size()/3)throw std::runtime_error("Malformed native manufacturing mesh arrays");
+  for(double coordinate:mesh.vertices)if(!std::isfinite(coordinate))throw std::runtime_error("Nonfinite native manufacturing coordinate");
   const size_t count=mesh.vertices.size()/3;
   for(auto index:mesh.indices)if(index>=count)throw std::runtime_error("Native manufacturing triangle references an absent node");
   std::vector<bool> nativePole(count,false);
@@ -533,7 +604,7 @@ static void manufacturing_connectivity(const TopoDS_Shape &display,
     a=root(a);b=root(b);parent[std::max(a,b)]=std::min(a,b);
   };
   TopTools_IndexedMapOfShape edges,vertices;TopExp::MapShapes(display,TopAbs_EDGE,edges);TopExp::MapShapes(display,TopAbs_VERTEX,vertices);
-  struct Boundary {std::vector<uint32_t> nodes;std::vector<double> parameters;};
+  struct Boundary {std::vector<uint32_t> nodes;std::vector<double> parameters;int face=0,orientation=0;std::array<uint32_t,4> segment_uses{};};
   std::vector<std::vector<Boundary>> boundaries(edges.Extent());
   const uint32_t absent=std::numeric_limits<uint32_t>::max();
   std::vector<uint32_t> endpoint(vertices.Extent(),absent);
@@ -547,6 +618,19 @@ static void manufacturing_connectivity(const TopoDS_Shape &display,
     const auto face=TopoDS::Face(copy.ModifiedShape(exactFaces(f)));
     TopLoc_Location location;const auto tri=BRep_Tool::Triangulation(face,location);
     if(tri.IsNull())throw std::runtime_error("Manufacturing face lacks triangulation");
+    // Exact numerical duplicates inside one native face need no displacement
+    // budget or spatial inference. Preserve them as one index for incidence
+    // analysis and zero-facet normalization; final fan checks remain separate.
+    std::map<std::array<double,3>,uint32_t> exactNodes;
+    std::vector<uint32_t> faceCanonical(tri->NbNodes());
+    for(int j=0;j<tri->NbNodes();++j){const auto p=point(offset+j);const auto key=std::array<double,3>{p.X(),p.Y(),p.Z()};const auto inserted=exactNodes.emplace(key,offset+j);faceCanonical[j]=inserted.first->second;if(!inserted.second){join(offset+j,inserted.first->second);++receipt.exact_vertex_pairs;}}
+    struct FaceUse{uint32_t count=0;int orientation=0;};
+    std::unordered_map<uint64_t,FaceUse> faceUses;
+    auto same_point=[&](uint32_t a,uint32_t b){const auto p=point(a),q=point(b);return p.X()==q.X()&&p.Y()==q.Y()&&p.Z()==q.Z();};
+    for(int j=1;j<=tri->NbTriangles();++j){int a,b,c;tri->Triangle(j).Get(a,b,c);const uint32_t nodes[3]={faceCanonical.at(a-1),faceCanonical.at(b-1),faceCanonical.at(c-1)};
+      if(same_point(nodes[0],nodes[1])||same_point(nodes[1],nodes[2])||same_point(nodes[2],nodes[0]))continue;
+      for(int k=0;k<3;++k){const auto x=nodes[k],y=nodes[(k+1)%3];auto &use=faceUses[(uint64_t(std::min(x,y))<<32)|std::max(x,y)];++use.count;use.orientation+=x<y?1:-1;}
+    }
     for(TopExp_Explorer it(face,TopAbs_EDGE);it.More();it.Next()){
       const auto edge=TopoDS::Edge(it.Current());const int index=edges.FindIndex(edge);
       if(index<=0)throw std::runtime_error("Manufacturing boundary lacks native edge identity");
@@ -557,11 +641,17 @@ static void manufacturing_connectivity(const TopoDS_Shape &display,
       const auto polygon=BRep_Tool::PolygonOnTriangulation(edge,tri,location);
       if(polygon.IsNull()||polygon->NbNodes()<1||(!degenerate&&(polygon->NbNodes()<2||!polygon->HasParameters())))
         throw std::runtime_error("Manufacturing edge lacks a bounded parameterized polygon");
-      Boundary boundary;
+      Boundary boundary;boundary.face=f;boundary.orientation=int(edge.Orientation());
       for(int j=1;j<=polygon->NbNodes();++j){const int node=polygon->Node(j);const double parameter=polygon->HasParameters()?polygon->Parameter(j):0.;
         if(node<1||node>tri->NbNodes()||!std::isfinite(parameter))throw std::runtime_error("Invalid native seam polygon");
         boundary.nodes.push_back(offset+node-1);boundary.parameters.push_back(parameter);
       }
+      bool internal=true;uint32_t realSegments=0;
+      for(size_t j=1;j<boundary.nodes.size();++j){const auto x=faceCanonical.at(boundary.nodes[j-1]-offset),y=faceCanonical.at(boundary.nodes[j]-offset);if(x==y)continue;++realSegments;const auto found=faceUses.find((uint64_t(std::min(x,y))<<32)|std::max(x,y));const auto count=found==faceUses.end()?0:found->second.count;++boundary.segment_uses[std::min(count,3u)];if(found==faceUses.end()||count!=2||found->second.orientation!=0)internal=false;}
+      // INTERNAL coedges are constraints, not opposite-face boundaries. Skip
+      // only with affirmative proof that EVERY nonzero polygon segment is
+      // already paired with opposite orientation in this face's triangles.
+      if(edge.Orientation()==TopAbs_INTERNAL&&internal&&realSegments>0){++receipt.internal_constraint_edges;continue;}
       TopoDS_Vertex first,last;TopExp::Vertices(TopoDS::Edge(edge.Oriented(TopAbs_FORWARD)),first,last);
       if(first.IsNull()||last.IsNull())throw std::runtime_error("Manufacturing edge has no bounded endpoints");
       if(degenerate){
@@ -580,10 +670,14 @@ static void manufacturing_connectivity(const TopoDS_Shape &display,
     offset+=tri->NbNodes();
   }
   if(offset!=count)throw std::runtime_error("Manufacturing triangulation node layout changed");
-  for(const auto &uses:boundaries){
+  for(size_t edgeIndex=0;edgeIndex<boundaries.size();++edgeIndex){
+    const auto &uses=boundaries[edgeIndex];
     if(uses.empty())continue;
-    if(uses.size()!=2||uses[0].nodes.size()!=uses[1].nodes.size())
-      throw std::runtime_error("Native seam has unmatched edge incidence or node counts");
+    if(uses.size()!=2||uses[0].nodes.size()!=uses[1].nodes.size()){
+      std::ostringstream message;message<<"Native seam edge="<<edgeIndex+1<<" has unmatched incidence uses="<<uses.size();
+      for(const auto &use:uses)message<<" [face="<<use.face<<" orientation="<<use.orientation<<" nodes="<<use.nodes.size()<<" segment_uses_0_1_2_3plus="<<use.segment_uses[0]<<","<<use.segment_uses[1]<<","<<use.segment_uses[2]<<","<<use.segment_uses[3]<<"]";
+      throw std::runtime_error(message.str());
+    }
     const auto &a=uses[0];const auto &b=uses[1];const size_t n=a.nodes.size();
     const bool forward=a.parameters.front()==b.parameters.front()&&a.parameters.back()==b.parameters.back();
     const bool reverse=a.parameters.front()==b.parameters.back()&&a.parameters.back()==b.parameters.front();
@@ -605,33 +699,39 @@ static void manufacturing_connectivity(const TopoDS_Shape &display,
     if(remap[representative]==absent){remap[representative]=static_cast<uint32_t>(shared.size()/3);const auto p=point(representative);shared.push_back(p.X());shared.push_back(p.Y());shared.push_back(p.Z());}
     remap[i]=remap[representative];
   }
-  // A mesher can emit a triangle along an analytically zero-length pole
-  // boundary using separately evaluated coordinates. Remove it ONLY when
-  // every collapsed pair belongs to a native DEGENERATED-edge vertex group.
-  // There is no area threshold, spatial search, winding change or other drop.
+  // Two distinct zero-geometry cases: raw exactly equal coordinates, or
+  // near-equal pole coordinates whose collapsed pairs are proven by an actual
+  // native DEGENERATED-edge vertex group. Count them separately; every other
+  // collapse refuses. No area threshold, spatial search or winding change.
   rust::Vec<uint32_t> retained,retainedFaces;
   std::vector<bool> represented(exactFaces.Extent(),false);
   for(size_t i=0;i<mesh.indices.size();i+=3){
     const uint32_t original[3]={mesh.indices[i],mesh.indices[i+1],mesh.indices[i+2]};
     const uint32_t t[3]={remap[original[0]],remap[original[1]],remap[original[2]]};bool collapsed=false;
-    for(int j=0;j<3;++j)if(t[j]==t[(j+1)%3]){
-      collapsed=true;if(!poleGroup[root(original[j])])throw std::runtime_error("Native seam transport collapses a non-pole triangle");
-    }
+    const auto same_original=[&](int a,int b){const auto p=point(original[a]),q=point(original[b]);return p.X()==q.X()&&p.Y()==q.Y()&&p.Z()==q.Z();};
     const auto face=mesh.face_indices[i/3];if(face>=represented.size())throw std::runtime_error("Manufacturing triangle has absent face ancestry");
-    if(collapsed){++receipt.removed_native_pole_triangles;continue;}
+    const bool exactZero=same_original(0,1)||same_original(1,2)||same_original(2,0);bool poleOnly=true;
+    for(int j=0;j<3;++j)if(t[j]==t[(j+1)%3]){collapsed=true;if(!poleGroup[root(original[j])])poleOnly=false;}
+    if(collapsed&&poleOnly){++receipt.removed_native_pole_triangles;continue;}
+    if(exactZero){++receipt.removed_exact_zero_triangles;continue;}
+    if(collapsed)throw std::runtime_error("Native seam transport collapses a non-pole triangle");
     represented[face]=true;for(auto index:t)retained.push_back(index);retainedFaces.push_back(face);
   }
   if(std::any_of(represented.begin(),represented.end(),[](bool value){return !value;}))throw std::runtime_error("Native pole transport removed an entire manufacturing face");
   mesh.vertices=std::move(shared);mesh.indices=std::move(retained);mesh.face_indices=std::move(retainedFaces);
-  struct Uses{uint32_t count=0;int orientation=0;};std::unordered_map<uint64_t,Uses> incidence;
+  struct Uses{uint32_t count=0;int orientation=0;std::array<uint32_t,4> faces{};};std::unordered_map<uint64_t,Uses> incidence;
   for(size_t i=0;i<mesh.indices.size();i+=3){const uint32_t t[3]={mesh.indices[i],mesh.indices[i+1],mesh.indices[i+2]};
-    for(int j=0;j<3;++j){const auto a=t[j],b=t[(j+1)%3];auto &use=incidence[(uint64_t(std::min(a,b))<<32)|std::max(a,b)];++use.count;use.orientation+=a<b?1:-1;}
+    for(int j=0;j<3;++j){const auto a=t[j],b=t[(j+1)%3];auto &use=incidence[(uint64_t(std::min(a,b))<<32)|std::max(a,b)];if(use.count<use.faces.size())use.faces[use.count]=mesh.face_indices[i/3];++use.count;use.orientation+=a<b?1:-1;}
   }
-  for(const auto &entry:incidence)if(entry.second.count!=2||entry.second.orientation!=0)
-    throw std::runtime_error("Manufacturing native topology is not a closed oriented indexed mesh");
+  for(const auto &entry:incidence)if(entry.second.count!=2||entry.second.orientation!=0){
+    const uint32_t a=uint32_t(entry.first>>32),b=uint32_t(entry.first);std::ostringstream message;
+    message<<std::setprecision(17)<<"Manufacturing native topology is not closed oriented indexed: edge="<<a<<","<<b<<" uses="<<entry.second.count<<" orientation_sum="<<entry.second.orientation<<" coordinates=("<<mesh.vertices[3*a]<<","<<mesh.vertices[3*a+1]<<","<<mesh.vertices[3*a+2]<<") to ("<<mesh.vertices[3*b]<<","<<mesh.vertices[3*b+1]<<","<<mesh.vertices[3*b+2]<<") faces=";
+    for(uint32_t i=0;i<std::min(entry.second.count,uint32_t(entry.second.faces.size()));++i)message<<entry.second.faces[i]<<",";
+    throw ManufacturingMeshClosureFailure(message.str());
+  }
 }
 
-static Mesh tessellate_impl(const Shape &s,double tolerance,double angle,uint32_t limit,bool cached,ManufacturingMesh *manufacturing=nullptr,double seamTolerance=0) {
+static Mesh tessellate_impl(const Shape &s,double tolerance,double angle,uint32_t limit,bool cached,ManufacturingMesh *manufacturing=nullptr,double seamTolerance=0,bool boundaryOnly=false) {
   return guard([&] {
     auto &memo=mesh_memo();if(!manufacturing){++memo.stats.requests;purge_meshes(memo);}
     const auto key=mesh_key(tolerance,angle,limit);
@@ -643,6 +743,7 @@ static Mesh tessellate_impl(const Shape &s,double tolerance,double angle,uint32_
     // cannot modify a cached modeling operand or its manufacturing geometry.
     BRepBuilderAPI_Copy copy(s.value, true, false);
     auto display = copy.Shape();
+    if(boundaryOnly){const auto removed=remove_meshing_internal_constraints(display);manufacturing->removed_meshing_internal_edges=removed.edges;manufacturing->removed_meshing_constraint_wire_containers=removed.wires;manufacturing->removed_meshing_internal_vertices=removed.vertices;}
     auto exactFaces = topology_map(s.value, 0);
     // A valid curved face can have an open discretized wire at a coarse
     // deflection. Retry a bounded finer mesh on this detached copy; every
@@ -705,7 +806,15 @@ static Mesh tessellate_impl(const Shape &s,double tolerance,double angle,uint32_
 }
 ManufacturingMesh tessellate_manufacturing(const Shape &s,double tolerance,double angle,uint32_t limit,double seamTolerance) {
   if(!std::isfinite(seamTolerance)||seamTolerance<=0||seamTolerance>tolerance/16)throw std::runtime_error("Invalid manufacturing seam budget");
-  ManufacturingMesh result;result.mesh=tessellate_impl(s,tolerance,angle,limit,false,&result,seamTolerance);return result;
+  ManufacturingMesh result;
+  try{result.mesh=tessellate_impl(s,tolerance,angle,limit,false,&result,seamTolerance);}
+  catch(const ManufacturingMeshClosureFailure&){
+    // One bounded retriangulation at IDENTICAL recipe quality, only after a
+    // triangle-closure failure. Source/display shapes and caches stay untouched.
+    result=ManufacturingMesh{};result.remeshed_without_internal_constraints=true;
+    result.mesh=tessellate_impl(s,tolerance,angle,limit,false,&result,seamTolerance,true);
+  }
+  return result;
 }
 Mesh tessellate(const Shape &s,double tolerance,double angle,uint32_t limit) {return tessellate_impl(s,tolerance,angle,limit,true);}
 Mesh tessellate_fresh(const Shape &s,double tolerance,double angle,uint32_t limit) {return tessellate_impl(s,tolerance,angle,limit,false);}

@@ -55,8 +55,15 @@ The [mesh writers](../../crates/multicad-model/src/export/mesh.rs) tessellate ex
 
 3MF adjacency uses shared vertex indices, as required by
 [Core 1.3, section 4.1](https://3mf.io/wp-content/uploads/sites/106/2025/02/3MF_Core_Specification_v1.3.0.pdf).
-Production 3MF tessellation first derives connectivity from the detached native
-body's shared edges and vertices. It pairs edge polygons only with matching
+Native-derived manufacturing tessellation first omits only triangles with two
+exactly equal finite XYZ vertices. These have exactly zero geometric area;
+there is no distance or small-area threshold. Every original native face must
+retain a triangle. All surviving positions, order and winding remain unchanged,
+and ordinary display or mesh-writer input receives no such normalization.
+Production 3MF then validates exact-coordinate indexed closure. Only an
+indexed-connectivity refusal invokes the detached
+native body's shared edges and vertices. Native tessellation, settings and
+budget errors propagate directly. The fallback pairs edge polygons only with matching
 native identities and parameter samples, including periodic seam occurrences.
 Every coordinate transported to its deterministic representative must remain
 within `min(chord deviation / 16, native linear policy tolerance)`. No spatial
@@ -66,6 +73,21 @@ collapsed by a proven native degenerate-edge vertex group; all other triangle
 collapses fail. Every original face must still contribute triangles, and every
 resulting indexed edge must have two opposite uses. Display meshes and the
 ordinary OBJ, STL and GLB tessellation path are unchanged.
+An INTERNAL native edge needs no cross-face partner only when every nonzero
+polygon segment already has two opposite triangle uses within that same face,
+using exact local coordinate identity. Other unmatched edges still fail.
+
+Only a final indexed-closure failure permits one retriangulation on a fresh
+deep detached copy. It removes redundant INTERNAL meshing constraints with
+`BRepTools::RemoveInternals(copy, false)`. Immutable before/after records must
+preserve every face, support surface, location and material-boundary occurrence,
+including wire/coedge order, multiplicity, endpoints, curves, ranges and
+tolerances. A wire container may disappear only if all its coedges were INTERNAL;
+no true boundary may disappear through a shared descendant. The retry keeps the
+original mesher, chord/angular quality, seam-transport bound and triangle budget.
+It must still represent every original face and pass final indexed validation.
+Settings, budget, index, geometry and parameter errors receive no such retry.
+The source BRep and ordinary display mesh remain unchanged.
 
 The shared writer preserves an already closed, consistently oriented index
 graph, including separately indexed coincident closed components. For native
