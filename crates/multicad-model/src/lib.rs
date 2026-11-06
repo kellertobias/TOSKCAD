@@ -7,6 +7,7 @@ pub mod assembly_inspection;
 mod cabinetry;
 mod compiler;
 mod compound_cutouts;
+mod connection_receivers;
 mod drawings;
 mod edge_treatment;
 mod eval_cache;

@@ -935,6 +935,22 @@ impl Compiler {
                 (model::COMPOUND_CUTOUT_RECEIVER_TYPE, model::COMPOUND_CUTOUT_SCHEMA) => {
                     compound_cutouts.take(id)?
                 }
+                (model::CONNECTION_RECEIVER_TYPE, 1) => {
+                    let source = model::read_connection_receiver(document, id)
+                        .map_err(|e| error(Some(id), e))?;
+                    crate::connection_receivers::build(
+                        crate::connection_receivers::Inputs {
+                            document,
+                            parameters: context.parameters(),
+                            revision,
+                            snapshots: &topologies,
+                            solids: &solids,
+                            policy: self.policy,
+                        },
+                        id,
+                        &source,
+                    )?
+                }
                 (model::THREAD_TYPE, model::THREAD_SCHEMA) => {
                     let source =
                         model::read_thread(document, id).map_err(|e| error(Some(id), e))?;
