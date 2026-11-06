@@ -66,14 +66,13 @@ pub fn couple_shifted_spur_pair_recipes(
         ));
     }
     for i in 0..2 {
-        if let Some(mate) = &recipes[i].shift_mate {
-            if mate.teeth != recipes[1 - i].teeth
-                || mate.profile_shift != recipes[1 - i].profile_shift
-            {
-                return Err(invalid(
-                    "Explicit shifted mate sources disagree with the opposite original typed recipe",
-                ));
-            }
+        if let Some(mate) = &recipes[i].shift_mate
+            && (mate.teeth != recipes[1 - i].teeth
+                || mate.profile_shift != recipes[1 - i].profile_shift)
+        {
+            return Err(invalid(
+                "Explicit shifted mate sources disagree with the opposite original typed recipe",
+            ));
         }
     }
     let sources = recipes.clone();

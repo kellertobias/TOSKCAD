@@ -566,14 +566,26 @@ mixed or incomplete frame choices fail.
 For rotary gears, the module system selects the convention for both module and
 pressure angle. Worm recipes use axial module with a normal pressure angle, as
 defined below.
+External cylindrical gears also accept `pitch_input: "diametral_pitch"`.
+`module` remains the one active authored scalar: a length for the default
+`pitch_input: "module"`, or a `teeth_per_in` value for diametral pitch. For
+example, `{"pitch_input":"diametral_pitch","module":{"value":12.7,"unit":"teeth_per_in"}}`
+represents a 2 mm module in the selected plane. Changing the marker requires a
+compatible authored scalar; it does not convert or reinterpret a saved length.
+Omitted fields preserve the original convention, formula and bindings.
 Helix angle is a positive magnitude with separate handedness. Design backlash
 is tangential tooth-thickness reduction **per gear** at its reference circle.
 Fabrication allowance adds further tangential thinning; neither changes the
 reference, base or tip circles. A pair's total backlash is not represented by
 a single gear's setting.
 
-Current geometry covers unshifted external spur, helical, continuous-center
-herringbone and gapped double-helical gears with a through bore. Root fillets
+Current geometry covers external spur, helical, continuous-center
+herringbone and gapped double-helical gears with a through bore and optional
+intrinsic `hub { diameter, axial_start, axial_end }`. Hub dimensions use the
+member's local Z frame, with its tooth band at `0..face_width`. Omitted/null
+hub edits retain source; `clear_hub: true` removes it. Clear and replacement
+together fail. The [retained gear contract](0035-retained-gear-pitch-hubs-and-shift.md)
+owns the overlap, bore-wall and root-clearance limits. Root fillets
 are custom circular arcs, not a generated cutter trochoid. The separate
 [internal-ring subset](gears.md#internal-ring-subset) supports unshifted
 20-degree 48/60-tooth spur rings with a 24-tooth pinion. `outer_diameter` is
@@ -588,7 +600,15 @@ Creating or switching to Rack defaults backing to 4 mm and clears inapplicable
 rotary defaults before applying explicit arguments. Explicit unsupported bore,
 helix or outside diameter still refuses. Omitted/null backing edits retain the
 saved value. Inspection reports actual rack pitch, length and backing, with
-no invented rotary diameters. Nonzero profile shift remains unavailable.
+no invented rotary diameters. Nonzero `profile_shift` is available only for
+20-degree external Spur within the engineering bound `-0.5..1`, further limited
+by undercut, crest/root separation and native geometry checks. A standalone
+gear may retain `shift_mate { teeth, profile_shift }` to declare the sourced
+clearance-matched tip shortening. `clear_shift_mate: true` removes that context;
+omission/null retains it, and clear plus replacement fails. Matched pairs retain
+both opposite original typed sources and require atomic shared edits. Other
+families continue to refuse nonzero shift. The retained gear contract owns the
+center, phase, contact-ratio and actual-fillet interference equations.
 The worm recipe contract below does not establish product availability;
 `gear_profiles.families[].supported` reports the current family gate.
 The conservative rotary gear/pinion tooth-count policy uses the normal pressure
@@ -648,8 +668,11 @@ native failures, cancellation and stale revisions leave the document unchanged.
 `set_gear_pair` creates two named gear Parts, a reusable Assembly, its internal
 relationships and one placed occurrence in a single transaction. Creation
 requires a name. A rotary first member defaults to 20 teeth, or 24 when its
-requested family is bevel. For external pairs, the second inherits the first recipe with 30 teeth and opposite helix hand,
-then applies explicit second-member overrides. An internal-ring first member
+requested family is bevel. For external pairs, the second inherits the first
+recipe with 30 teeth and opposite helix hand, while defaulting to no hub, zero
+profile shift and no explicit matched context. It then applies explicit
+second-member overrides and derives any required matched context from the
+opposite original typed sources. An internal-ring first member
 instead defaults its second member to a 24-tooth spur pinion without an
 outside-diameter field. A first rack also defaults its second member to a
 24-tooth spur pinion, without inheriting rack-only backing. Either member may
@@ -675,6 +698,13 @@ cone face width and both pitch-cone angles. Their shared apex makes
 For worm pairs, `resolved.worm` identifies the worm and wheel members,
 wheel count, center distance, crossed shaft angle and full worm-turn period.
 `evaluate_model` reports actual native pair checks and physical leaf paths.
+
+For matched shifted Spur pairs, omitted mate fields follow the edited opposite
+member's original typed tooth-count and shift sources. Explicit mate fields must
+match those sources before normalization; equal evaluated values with different
+bindings are conflicting intent. To remove matched-profile intent, supply
+literal-zero shifts and `clear_shift_mate: true` for both members. A drive-only
+edit leaves both recipes intact.
 
 Bevel pairs derive each member's `mate_teeth` from the opposite original typed
 `teeth` source. Omitted or null mate counts follow that source, including changes

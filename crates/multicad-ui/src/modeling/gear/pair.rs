@@ -91,6 +91,8 @@ pub(super) struct GearPairPanel {
     template: GearPairRequest,
     name: String,
     secondary: [DimensionField; 4],
+    secondary_shift: DimensionField,
+    secondary_hub: HubFields,
     secondary_ring: bool,
     rack_member: Option<usize>,
     worm_member: Option<usize>,
@@ -143,9 +145,17 @@ impl GearPairPanel {
         )
         .expect("worm pair width");
         let secondary_backing = primary.rack_backing.clone();
+        let secondary_shift = if primary.shift_mate_enabled {
+            primary.shift_mate_shift.clone()
+        } else {
+            DimensionField::from_dimension(&model::ratio(0.), "ratio").expect("mate shift")
+        };
+        let secondary_hub = HubFields::new(None).expect("hub defaults");
         let secondary = [
             if primary.family == GearFamily::Worm {
                 primary.worm_mate.clone()
+            } else if primary.family == GearFamily::Spur && primary.shift_mate_enabled {
+                primary.shift_mate_teeth.clone()
             } else if primary.family == GearFamily::Bevel {
                 primary.bevel_mate.clone()
             } else {
@@ -161,6 +171,8 @@ impl GearPairPanel {
             primary,
             template,
             secondary,
+            secondary_shift,
+            secondary_hub,
             secondary_ring: false,
             rack_member,
             worm_member,
@@ -208,6 +220,8 @@ impl GearPairPanel {
         let field = DimensionField::from_dimension;
         let b = &template.gears[1].parameters;
         Ok(Self {
+            secondary_shift: field(&b.profile_shift, "ratio")?,
+            secondary_hub: HubFields::new(b.hub.as_ref())?,
             secondary_ring: b.family == GearFamily::InternalRing,
             worm_member: template.gears[0]
                 .parameters
@@ -278,6 +292,14 @@ impl GearPairPanel {
         p.request.parameters.frame = self.template.parameters.frame.clone();
         p.origin = self.origin.clone();
         p.plane = self.plane;
+        if p.family == GearFamily::Spur {
+            p.shift_mate_enabled |= p.shift.text.trim().parse::<f64>() != Ok(0.)
+                || self.secondary_shift.text.trim().parse::<f64>() != Ok(0.);
+            if p.shift_mate_enabled {
+                p.shift_mate_teeth = self.secondary[0].clone();
+                p.shift_mate_shift = self.secondary_shift.clone();
+            }
+        }
         if p.family == GearFamily::Worm {
             p.worm_mate = self.secondary[0].clone();
         }
@@ -311,6 +333,7 @@ impl GearPairPanel {
         }
         self.worm_member = member;
         if let Some(index) = member {
+            self.secondary_shift.set_literal(0., "ratio");
             self.primary.worm_role = if index == 0 {
                 WormMember::Worm
             } else {
@@ -337,6 +360,9 @@ impl GearPairPanel {
         }
         self.rack_member = member;
         if let Some(index) = member {
+            self.primary.shift.set_literal(0., "ratio");
+            self.primary.shift_mate_enabled = false;
+            self.secondary_shift.set_literal(0., "ratio");
             self.secondary_ring = false;
             self.primary.select_family(if index == 0 {
                 GearFamily::Rack
@@ -374,7 +400,10 @@ impl GearPairPanel {
             }
         } else {
             let first = self.primary.authored_request(document, enabled)?.parameters;
-            let second = GearParameters {
+            let mut second = GearParameters {
+                hub: self.secondary_hub.resolve(document)?,
+                profile_shift: self.secondary_shift.resolve(document)?,
+                shift_mate: None,
                 worm: if first.family == GearFamily::Worm {
                     Some(WormDimensions {
                         role: if self.worm_member == Some(0) {
@@ -447,6 +476,38 @@ impl GearPairPanel {
                 frame: self.template.gears[1].parameters.frame.clone(),
                 ..first.clone()
             };
+            if self.editing {
+                let old = &self.template.gears[0].parameters;
+                let other = &self.template.gears[1].parameters;
+                if first.family == old.family && second.family == other.family {
+                    if first.pitch_input == old.pitch_input
+                        && first.module == old.module
+                        && first.module_system == old.module_system
+                    {
+                        second.pitch_input = other.pitch_input;
+                        second.module = other.module.clone();
+                        second.module_system = other.module_system;
+                    }
+                    if first.pressure_angle == old.pressure_angle {
+                        second.pressure_angle = other.pressure_angle.clone();
+                    }
+                    if first.helix_angle == old.helix_angle {
+                        second.helix_angle = other.helix_angle.clone();
+                    }
+                    if first.family != GearFamily::Worm && first.face_width == old.face_width {
+                        second.face_width = other.face_width.clone();
+                    }
+                    if first.center_gap == old.center_gap {
+                        second.center_gap = other.center_gap.clone();
+                    }
+                    if first.root_fillet_ratio == old.root_fillet_ratio {
+                        second.root_fillet_ratio = other.root_fillet_ratio.clone();
+                    }
+                    if first.minimum_wall == old.minimum_wall {
+                        second.minimum_wall = other.minimum_wall.clone();
+                    }
+                }
+            }
             let [first, second] = if first.family == GearFamily::Worm {
                 model::couple_worm_pair_recipes(&[first, second]).map_err(|e| e.to_string())?
             } else if first.family == GearFamily::Bevel {
@@ -458,6 +519,25 @@ impl GearPairPanel {
             } else {
                 [first, second]
             };
+            let mut recipes = [first, second];
+            if recipes[0].family == GearFamily::Spur
+                && (self.primary.shift_mate_enabled
+                    || self
+                        .template
+                        .gears
+                        .iter()
+                        .any(|g| g.parameters.shift_mate.is_some()))
+            {
+                let original = recipes.clone();
+                for i in 0..2 {
+                    recipes[i].shift_mate = Some(model::ShiftedSpurMate {
+                        teeth: original[1 - i].teeth.clone(),
+                        profile_shift: original[1 - i].profile_shift.clone(),
+                    });
+                }
+            }
+            model::couple_shifted_spur_pair_recipes(&mut recipes).map_err(|e| e.to_string())?;
+            let [first, second] = recipes;
             if self.editing {
                 GearPairCommand::Edit {
                     pair: self.template.pair,
@@ -490,6 +570,14 @@ impl GearPairPanel {
         ui.small("The full pinion tip-circle projection must stay within the finite rack ends. Out-of-range drive is refused.");
     }
     fn show_resolved(ui: &mut egui::Ui, resolved: &ResolvedGearPair) {
+        if let (Some(a), Some(b)) = (resolved.gears[0].rotary(), resolved.gears[1].rotary())
+            && a.family == GearFamily::Spur
+            && b.family == GearFamily::Spur
+            && (a.profile_shift_coefficient != 0. || b.profile_shift_coefficient != 0.)
+            && let Ok(shift) = model::shifted_spur_pair_geometry(a, b)
+        {
+            ui.small(format!("Shifted operating pressure {:.4}° · center {:.4} mm · contact ratio {:.4} · tip shortening {:.6}",shift.working_pressure_angle_rad.to_degrees(),shift.center_distance_mm,shift.contact_ratio,shift.tip_shortening_coefficient));
+        }
         if let Some(worm) = &resolved.worm {
             ui.small(format!("ZA worm {:?} / wheel {:?} · crossed axes 90° · center distance {:.4} mm · one start : {} wheel teeth",worm.worm_member,worm.wheel_member,worm.center_distance_mm,worm.wheel_teeth));
             ui.small("Drive is the worm angle for either member order. Native proximity is a geometry witness, not a load or manufactured-contact certificate.");
@@ -635,6 +723,10 @@ impl GearPairPanel {
             if self.primary.family != GearFamily::Worm {
                 self.worm_member = None;
             }
+            if previous_family != self.primary.family && !external_cylindrical(self.primary.family)
+            {
+                self.secondary_shift.set_literal(0., "ratio");
+            }
             if self.primary.family == GearFamily::Rack && self.rack_member.is_none() {
                 self.set_rack_member(Some(0));
                 changed = true;
@@ -660,6 +752,7 @@ impl GearPairPanel {
                     .changed()
             {
                 changed = true;
+                self.secondary_shift.set_literal(0., "ratio");
                 self.secondary[0] = DimensionField::from_dimension(
                     &multicad_core::constraint_sketch::Dimension::Literal {
                         value: if self.secondary_ring { 48. } else { 36. },
@@ -734,6 +827,16 @@ impl GearPairPanel {
                     "Independent wheel value; formulas may reference project parameters",
                 );
             }
+            if external_cylindrical(self.primary.family) && !ring {
+                changed|=self.secondary_shift.show_named(ui,(self.template.gears[1].feature,"gear-shift"),"Mating profile shift coefficient","Independent sourced Spur coefficient; matched contexts clone original opposite count/shift sources");
+                ui.small("Shifted pairs derive the KHK operating center and paired tip shortening from both authored shifts. Nonzero shifts require external20° Spur; contact ratio and native interference gates remain.");
+            }
+            changed |= self.secondary_hub.show(
+                ui,
+                self.template.gears[1].feature,
+                external_cylindrical(self.primary.family) && !ring,
+                "Mating intrinsic hub",
+            );
             if self.worm_member.is_some() {
                 changed |= self.secondary_width.show_named(
                     ui,
@@ -1300,6 +1403,281 @@ mod worm_pair_fields_tests {
         p.primary.worm_system = WormToothSystem::ZaAxialStraight;
         p.secondary_width.set_literal(15., "mm");
         assert!(p.request(s.document(), true).is_err());
+        assert_eq!(s.revision(), 0);
+        assert!(!s.can_undo());
+    }
+}
+
+#[cfg(test)]
+mod coverage_pair_fields_tests {
+    use super::*;
+    use multicad_core::commands::Channel;
+    use multicad_core::{
+        constraint_sketch::Dimension,
+        document::{Entity, Mutation},
+        parameters::BoundExpression,
+    };
+    #[test]
+    fn hub_only_pair_edit_preserves_independent_dp_conventions_and_original_sources() {
+        let d = Document::new("Independent pitch sources")
+            .unwrap()
+            .edited(&[
+                Mutation::Insert(Entity::new(
+                    "module_a",
+                    EntityData::Parameter {
+                        expression: "2 mm".into(),
+                        unit: "mm".into(),
+                        exposed: false,
+                        inputs: vec![],
+                    },
+                )),
+                Mutation::Insert(Entity::new(
+                    "dp_b",
+                    EntityData::Parameter {
+                        expression: "12.7 teeth_per_in".into(),
+                        unit: "teeth_per_in".into(),
+                        exposed: false,
+                        inputs: vec![],
+                    },
+                )),
+            ])
+            .unwrap();
+        let d = d
+            .edited(
+                &[
+                    ("alpha_a", "20 deg"),
+                    ("alpha_b", "20 deg"),
+                    ("beta_a", "0 deg"),
+                    ("beta_b", "0 deg"),
+                ]
+                .map(|(name, expression)| {
+                    Mutation::Insert(Entity::new(
+                        name,
+                        EntityData::Parameter {
+                            expression: expression.into(),
+                            unit: "deg".into(),
+                            exposed: false,
+                            inputs: vec![],
+                        },
+                    ))
+                }),
+            )
+            .unwrap();
+        let mut s = Session::new(d.clone()).unwrap();
+        let expression = |text, unit| Dimension::Expression {
+            expression: BoundExpression::bind(&d, text, unit, None).unwrap(),
+        };
+        let alpha_a = Dimension::Expression {
+            expression: BoundExpression::bind(&d, "=$alpha_a", "deg", None).unwrap(),
+        };
+        let alpha_b = Dimension::Expression {
+            expression: BoundExpression::bind(&d, "=$alpha_b", "deg", None).unwrap(),
+        };
+        let beta_a = Dimension::Expression {
+            expression: BoundExpression::bind(&d, "=$beta_a", "deg", None).unwrap(),
+        };
+        let beta_b = Dimension::Expression {
+            expression: BoundExpression::bind(&d, "=$beta_b", "deg", None).unwrap(),
+        };
+        let a = GearParameters {
+            pressure_angle: alpha_a,
+            helix_angle: beta_a,
+            module: expression("=$module_a", "mm"),
+            hub: Some(model::GearHub {
+                diameter: model::length(20.),
+                axial_start: model::length(-3.),
+                axial_end: model::length(13.),
+            }),
+            ..Default::default()
+        };
+        let b = GearParameters {
+            pressure_angle: alpha_b,
+            helix_angle: beta_b,
+            module: expression("=$dp_b", "teeth_per_in"),
+            pitch_input: GearPitchInput::DiametralPitch,
+            module_system: GearModuleSystem::Transverse,
+            teeth: Dimension::Literal {
+                value: 36.,
+                unit: "count".into(),
+            },
+            hub: Some(model::GearHub {
+                diameter: model::length(24.),
+                axial_start: model::length(0.),
+                axial_end: model::length(15.),
+            }),
+            ..Default::default()
+        };
+        let request = GearPairRequest::new(
+            "Mixed authored sources",
+            [
+                GearRequest::new("A", a.clone()),
+                GearRequest::new("B", b.clone()),
+            ],
+        );
+        let prepared =
+            model::prepare_gear_pair(&s, 0, Actor::local(Channel::Ui), &request).unwrap();
+        s.commit(prepared.prepared).unwrap();
+        let before = s.document().clone();
+        let mut panel =
+            GearPairPanel::existing(s.document(), request.pair, s.parameters().clone()).unwrap();
+        panel.update_geometry = true;
+        panel.secondary_hub.dimensions[2].set_literal(17., "mm");
+        let GearPairCommand::Edit {
+            pair,
+            gears: Some(gears),
+            ..
+        } = panel.request(s.document(), true).unwrap()
+        else {
+            panic!("grouped geometry edit")
+        };
+        assert_eq!(pair, request.pair);
+        assert_eq!(gears[0].module, a.module);
+        assert_eq!(gears[1].module, b.module);
+        assert_eq!(gears[1].pitch_input, b.pitch_input);
+        assert_eq!(gears[1].module_system, b.module_system);
+        assert_eq!(gears[0].hub, a.hub);
+        let hub = gears[1].hub.as_ref().unwrap();
+        assert_eq!(hub.diameter, b.hub.as_ref().unwrap().diameter);
+        assert_eq!(hub.axial_start, b.hub.as_ref().unwrap().axial_start);
+        assert_eq!(hub.axial_end, model::length(17.));
+        assert!(gears.iter().all(|g| g.shift_mate.is_none()));
+        panel.primary.fields[0].set_literal(3., "mm");
+        let GearPairCommand::Edit {
+            gears: Some(module_edit),
+            ..
+        } = panel.request(s.document(), true).unwrap()
+        else {
+            panic!("module edit")
+        };
+        assert_eq!(
+            module_edit[1].pressure_angle, b.pressure_angle,
+            "module-only edit must retain the independent second pressure binding"
+        );
+        assert_eq!(
+            module_edit[1].helix_angle, b.helix_angle,
+            "module-only edit must retain the independent second helix source"
+        );
+        assert_eq!(module_edit[1].module, model::length(3.));
+        assert_eq!(s.document(), &before);
+        assert_eq!(s.revision(), 1);
+    }
+    #[test]
+    fn shifted_pair_contexts_follow_own_sources_without_literalizing_or_changing_outputs() {
+        let s = Session::new(Document::new("Shifted pair form").unwrap()).unwrap();
+        let mut primary = GearPanel::new(
+            GearRequest::new(
+                "KHK pair",
+                GearParameters {
+                    module: model::length(3.),
+                    teeth: multicad_core::constraint_sketch::Dimension::Literal {
+                        value: 12.,
+                        unit: "count".into(),
+                    },
+                    profile_shift: model::ratio(0.6),
+                    shift_mate: Some(model::ShiftedSpurMate {
+                        teeth: multicad_core::constraint_sketch::Dimension::Literal {
+                            value: 24.,
+                            unit: "count".into(),
+                        },
+                        profile_shift: model::ratio(0.36),
+                    }),
+                    ..Default::default()
+                },
+            ),
+            s.parameters().clone(),
+            false,
+        )
+        .unwrap();
+        primary.hub.enabled = true;
+        let mut pair = GearPairPanel::from_single(primary);
+        let GearPairCommand::Create(first) = pair.request(s.document(), true).unwrap() else {
+            panic!("create")
+        };
+        assert_eq!(first.gears[1].parameters.profile_shift, model::ratio(0.36));
+        assert!(first.gears[1].parameters.hub.is_none());
+        let resolved = first
+            .parameters
+            .resolve_recipes(
+                [&first.gears[0].parameters, &first.gears[1].parameters],
+                s.parameters(),
+            )
+            .unwrap();
+        assert!((resolved.center_distance_mm - 56.4999).abs() < 0.001);
+        pair.secondary_shift.set_literal(0.4, "ratio");
+        let GearPairCommand::Create(changed) = pair.request(s.document(), true).unwrap() else {
+            panic!("create")
+        };
+        assert_eq!(first.pair, changed.pair);
+        assert_eq!(first.outputs, changed.outputs);
+        assert_eq!(first.placement, changed.placement);
+        assert_eq!(
+            changed.gears[0]
+                .parameters
+                .shift_mate
+                .as_ref()
+                .unwrap()
+                .profile_shift,
+            changed.gears[1].parameters.profile_shift
+        );
+        pair.primary.shift.set_literal(-0.5, "ratio");
+        assert!(pair.request(s.document(), true).is_err());
+        assert_eq!(s.revision(), 0);
+        assert!(!s.can_undo());
+    }
+    #[test]
+    fn paired_spur_to_helical_keeps_unsupported_secondary_shift_visible_until_cleared() {
+        let s = Session::new(Document::new("Visible shift correction").unwrap()).unwrap();
+        let primary = GearPanel::new(
+            GearRequest::new(
+                "Matched Spur",
+                GearParameters {
+                    profile_shift: model::ratio(0.2),
+                    shift_mate: Some(model::ShiftedSpurMate {
+                        teeth: multicad_core::constraint_sketch::Dimension::Literal {
+                            value: 36.,
+                            unit: "count".into(),
+                        },
+                        profile_shift: model::ratio(0.1),
+                    }),
+                    ..Default::default()
+                },
+            ),
+            s.parameters().clone(),
+            false,
+        )
+        .unwrap();
+        let mut pair = GearPairPanel::from_single(primary);
+        pair.primary.select_family(GearFamily::Helical);
+        pair.primary.hand = GearHand::Right;
+        pair.primary.fields[4].set_literal(15., "deg");
+        pair.primary.shift.set_literal(0., "ratio");
+        assert!(!pair.primary.shift_mate_enabled);
+        assert!(pair.request(s.document(), true).is_err());
+        let ctx = egui::Context::default();
+        let output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(650., 3600.),
+                )),
+                ..Default::default()
+            },
+            |ui| {
+                pair.show(ui, s.document(), true, PreviewState::Idle);
+            },
+        );
+        assert!(output.shapes.iter().any(|shape|matches!(&shape.shape,egui::Shape::Text(t) if t.galley.text()=="Mating profile shift coefficient (ratio)")));
+        output.drop_without_applying_deltas();
+        pair.secondary_shift.set_literal(0., "ratio");
+        let GearPairCommand::Create(request) = pair.request(s.document(), true).unwrap() else {
+            panic!("helical pair")
+        };
+        assert!(
+            request
+                .gears
+                .iter()
+                .all(|g| g.parameters.shift_mate.is_none())
+        );
         assert_eq!(s.revision(), 0);
         assert!(!s.can_undo());
     }

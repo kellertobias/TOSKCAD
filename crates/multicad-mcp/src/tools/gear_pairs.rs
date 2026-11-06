@@ -110,9 +110,20 @@ pub(super) fn inspect_gear_pair(
                 .map(|s| json!({"gear":feature,"part":s.output.body,"source":s}))
         })
         .collect::<Result<Vec<_>, _>>()?;
+    let shifted = if members
+        .iter()
+        .any(|m| !m["source"]["parameters"]["shift_mate"].is_null())
+    {
+        match (r.gears[0].rotary(), r.gears[1].rotary()) {
+            (Some(a), Some(b)) => Some(model::shifted_spur_pair_geometry(a, b)?),
+            _ => None,
+        }
+    } else {
+        None
+    };
     Ok(
         json!({"revision":revision,"pair":pair,"source":source,"members":members,
-        "resolved":{"center_distance_mm":r.center_distance_mm,"phases_rad":r.phases_rad,"mating_frames":r.mating,"rack_travel":r.rack_travel,"bevel":r.bevel,"worm":r.worm},
+        "resolved":{"center_distance_mm":r.center_distance_mm,"phases_rad":r.phases_rad,"mating_frames":r.mating,"rack_travel":r.rack_travel,"bevel":r.bevel,"worm":r.worm,"shifted_spur":shifted},
         "scope":"Canonical source and resolved placement only. evaluate_model reports actual native pair checks and physical leaves."}),
     )
 }
@@ -221,6 +232,46 @@ fn couple_worm_intent(
     model::couple_worm_pair_recipes(&recipes).map_err(Into::into)
 }
 
+fn couple_shifted_intent(
+    mut recipes: [GearParameters; 2],
+    supplied: [Option<&GearRecipeArgs>; 2],
+) -> Result<[GearParameters; 2], ToolError> {
+    for i in 0..2 {
+        if let Some(context) = supplied[i].and_then(|a| a.shift_mate.as_ref()) {
+            let mate = recipes[i]
+                .shift_mate
+                .as_ref()
+                .ok_or_else(|| ToolError::invalid("Missing shifted mate context"))?;
+            if (context.teeth.is_some() && mate.teeth != recipes[1 - i].teeth)
+                || (context.profile_shift.is_some()
+                    && mate.profile_shift != recipes[1 - i].profile_shift)
+            {
+                return Err(ToolError::invalid(
+                    "Explicit shifted mate fields must match the opposite original typed count/shift sources",
+                ));
+            }
+        }
+    }
+    if recipes.iter().any(|p| p.shift_mate.is_some()) {
+        let originals = recipes.clone();
+        for i in 0..2 {
+            recipes[i].shift_mate = Some(model::ShiftedSpurMate {
+                teeth: originals[1 - i].teeth.clone(),
+                profile_shift: originals[1 - i].profile_shift.clone(),
+            });
+        }
+    }
+    model::couple_shifted_spur_pair_recipes(&mut recipes)?;
+    if (0..2)
+        .any(|i| supplied[i].is_some_and(|a| a.clear_shift_mate) && recipes[i].shift_mate.is_some())
+    {
+        return Err(ToolError::invalid(
+            "Active shifted pairs require both matched contexts; clear both contexts and use literal zero shifts to restore an unshifted pair",
+        ));
+    }
+    Ok(recipes)
+}
+
 pub(super) fn set_gear_pair(host: &dyn Host, call: &Request, args: GearPairArgs) -> ToolResult {
     let (document, revision, evaluated) = snapshot(host)?;
     if revision != args.expected_revision {
@@ -283,6 +334,9 @@ pub(super) fn set_gear_pair(host: &dyn Host, call: &Request, args: GearPairArgs)
         ));
     }
     let default_second = GearParameters {
+        hub: None,
+        shift_mate: None,
+        profile_shift: model::ratio(0.),
         worm: first.worm.as_ref().map(|w| model::WormDimensions {
             role: if w.role == model::WormMember::Worm {
                 model::WormMember::Wheel
@@ -369,6 +423,8 @@ pub(super) fn set_gear_pair(host: &dyn Host, call: &Request, args: GearPairArgs)
         couple_bevel_intent([first, second], [args.first.as_ref(), args.second.as_ref()])?;
     let [first, second] =
         couple_worm_intent([first, second], [args.first.as_ref(), args.second.as_ref()])?;
+    let [first, second] =
+        couple_shifted_intent([first, second], [args.first.as_ref(), args.second.as_ref()])?;
     let request = if edit.is_none() {
         let name = args
             .name

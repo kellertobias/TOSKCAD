@@ -10,8 +10,8 @@ use multicad_core::{
     constraint_sketch::Dimension,
     document::Document,
     model::{
-        self, BevelToothSystem, GearFamily, GearHand, GearModuleSystem, GearParameters, WormMember,
-        WormToothSystem,
+        self, BevelToothSystem, GearFamily, GearHand, GearModuleSystem, GearParameters,
+        GearPitchInput, WormMember, WormToothSystem,
     },
     parameters::{BoundExpression, EvaluatedParameters, Unit},
     sketch::Datum,
@@ -61,6 +61,8 @@ argument_enum!(
     WormToothSystem,
     [ZaAxialStraight, Zi, Zn, Zk]
 );
+
+argument_enum!(GearPitchInputArg, GearPitchInput, [Module, DiametralPitch]);
 
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -128,7 +130,20 @@ pub struct GearRecipeArgs {
     #[serde(default)]
     pub module_system: Option<GearModuleSystemArg>,
     #[serde(default)]
-    pub module: Option<Quantity>,
+    pub module: Option<GearScalarArg>,
+    /// Selects the one authored module scalar: mm or teeth_per_in.
+    #[serde(default)]
+    pub pitch_input: Option<GearPitchInputArg>,
+    /// Intrinsic external rotary hub, along the member local Z axis.
+    #[serde(default)]
+    pub hub: Option<GearHubArgs>,
+    #[serde(default)]
+    pub clear_hub: bool,
+    /// Explicit standalone clearance-matched shifted Spur mate context.
+    #[serde(default)]
+    pub shift_mate: Option<ShiftedSpurMateArgs>,
+    #[serde(default)]
+    pub clear_shift_mate: bool,
     #[serde(default)]
     pub teeth: Option<GearScalarArg>,
     #[serde(default)]
@@ -182,7 +197,7 @@ pub struct GearRecipeArgs {
     pub root_fillet_ratio: Option<GearScalarArg>,
     #[serde(default)]
     pub minimum_wall: Option<Quantity>,
-    /// Only zero is currently implemented.
+    /// Nonzero is bounded to sourced external Spur geometry.
     #[serde(default)]
     pub profile_shift: Option<GearScalarArg>,
     #[serde(default)]
@@ -193,6 +208,24 @@ pub struct GearRecipeArgs {
     pub axis_u: Option<[f64; 3]>,
     #[serde(default)]
     pub axis_v: Option<[f64; 3]>,
+}
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct GearHubArgs {
+    #[serde(default)]
+    pub diameter: Option<Quantity>,
+    #[serde(default)]
+    pub axial_start: Option<Quantity>,
+    #[serde(default)]
+    pub axial_end: Option<Quantity>,
+}
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ShiftedSpurMateArgs {
+    #[serde(default)]
+    pub teeth: Option<GearScalarArg>,
+    #[serde(default)]
+    pub profile_shift: Option<GearScalarArg>,
 }
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -232,6 +265,7 @@ pub(super) fn patched_parameters(
                 p.rack = None;
                 p.module_system = GearModuleSystem::Axial;
                 p.hand = GearHand::Right;
+                p.pitch_input = GearPitchInput::Module;
                 p.module = model::length(1.);
                 p.teeth = Dimension::Literal {
                     value: if role == WormMember::Worm { 1. } else { 32. },
@@ -291,6 +325,87 @@ pub(super) fn patched_parameters(
             backing_thickness: backing.dimension(document, evaluated)?.0,
         });
     }
+    if let Some(value) = args.pitch_input {
+        p.pitch_input = value.into();
+    }
+    if let Some(value) = &args.module {
+        p.module = value.dimension(
+            document,
+            evaluated,
+            match p.pitch_input {
+                GearPitchInput::Module => Unit::Millimeter,
+                GearPitchInput::DiametralPitch => Unit::TeethPerInch,
+            },
+        )?;
+    }
+    if args.clear_hub && args.hub.is_some() {
+        return Err(ToolError::invalid(
+            "Choose hub replacement/patch or clearing",
+        ));
+    }
+    if args.clear_hub {
+        p.hub = None;
+    }
+    if let Some(hub) = &args.hub {
+        let previous = p.hub.as_ref();
+        let length = |value: &Option<Quantity>,
+                      old: Option<&Dimension>,
+                      name: &str|
+         -> Result<Dimension, ToolError> {
+            match value {
+                Some(v) => Ok(v.dimension(document, evaluated)?.0),
+                None => old.cloned().ok_or_else(|| {
+                    ToolError::invalid(format!("A new intrinsic hub requires {name}"))
+                }),
+            }
+        };
+        p.hub = Some(model::GearHub {
+            diameter: length(&hub.diameter, previous.map(|h| &h.diameter), "diameter")?,
+            axial_start: length(
+                &hub.axial_start,
+                previous.map(|h| &h.axial_start),
+                "axial_start",
+            )?,
+            axial_end: length(&hub.axial_end, previous.map(|h| &h.axial_end), "axial_end")?,
+        });
+    }
+    if args.clear_shift_mate && args.shift_mate.is_some() {
+        return Err(ToolError::invalid(
+            "Choose shifted mate context patch or clearing",
+        ));
+    }
+    if args.clear_shift_mate {
+        p.shift_mate = None;
+    }
+    if let Some(mate) = &args.shift_mate {
+        let previous = p.shift_mate.as_ref();
+        let scalar = |value: &Option<GearScalarArg>,
+                      old: Option<&Dimension>,
+                      unit: Unit,
+                      name: &str|
+         -> Result<Dimension, ToolError> {
+            match value {
+                Some(v) => v.dimension(document, evaluated, unit),
+                None => old.cloned().ok_or_else(|| {
+                    ToolError::invalid(format!("A new shifted mate context requires {name}"))
+                }),
+            }
+        };
+        p.shift_mate = Some(model::ShiftedSpurMate {
+            teeth: scalar(
+                &mate.teeth,
+                previous.map(|m| &m.teeth),
+                Unit::Count,
+                "teeth",
+            )?,
+            profile_shift: scalar(
+                &mate.profile_shift,
+                previous.map(|m| &m.profile_shift),
+                Unit::Ratio,
+                "profile_shift",
+            )?,
+        });
+    }
     if let Some(value) = args.module_system {
         p.module_system = value.into();
     }
@@ -298,7 +413,6 @@ pub(super) fn patched_parameters(
         p.hand = value.into();
     }
     for (field, value) in [
-        (&mut p.module, &args.module),
         (&mut p.face_width, &args.face_width),
         (&mut p.center_gap, &args.center_gap),
         (&mut p.bore_diameter, &args.bore_diameter),
@@ -439,6 +553,7 @@ pub(super) fn gear_profiles(_: &dyn Host, _: &Request, _: NoArgs) -> ToolResult 
         json!({"families":GearFamily::ALL.map(|f| json!({"family":f,"label":f.label(),"supported":f.supported(),"source":f.source()})),
         "sources":[model::GEAR_DIMENSIONS_SOURCE_URL,model::GEAR_PROFILE_SOURCE_URL,model::GEAR_FILLET_SOURCE_URL,model::BEVEL_PROFILE_SOURCE_URL,model::BEVEL_DIMENSIONS_SOURCE_URL],
         "worm":{"source":model::WORM_PROFILE_SOURCE,"tooth_system":"za_axial_straight","module_system":"axial","normal_pressure_angle_degrees":20,"axial_module_mm":[0.5,2.0],"diameter_quotient":10,"worm_starts":1,"hand":"right","wheel_teeth":[32,64],"worm_length":"Independent face_width, 16–32 times module","wheel_face_width":"Independent face_width, 0.5–2 times module","thinning":"Backlash plus fabrication allowance at most 0.1 times module","datum":"Members centered on their own axial Z=0; wheel axis crossed 90 degrees","unsupported_systems":["zi","zn","zk"],"limits":"No load, contact, efficiency or manufacturing certification"},
+        "external_profile_coverage":{"pitch_input":["module","diametral_pitch"],"authored_scalar":"module is the ONE active scalar: mm for module, teeth_per_in for diametral_pitch; no numeric-copy conversion","convention":"Independent normal/transverse pitch and pressure convention","hub":"Optional intrinsic diameter and localZ axial_start/axial_end; positive band overlap and minimum bore wall; radius below root","shifted_spur":{"source":model::SHIFTED_SPUR_SOURCE,"source_url":model::SHIFTED_SPUR_SOURCE_URL,"coefficient":[-0.5,1.0],"pressure_degrees":20,"limits":"External Spur only; source undercut, positive crest/root, contact ratio and native interference limits remain","matched_context":"Retained original mate teeth/profile_shift, with KHK paired tip shortening"}},
         "internal_ring":{"teeth":[48,60],"pressure_angle_degrees":20,"pinion_teeth":24,"helix":false,"profile_shift":0,"outer_diameter":"Explicit; rim beyond root must meet minimum_wall","bore_diameter":"Zero; inward toothed opening is derived","root":"Custom circular fillet, not a simulated cutter trochoid"},
         "rack":{"teeth":[4,64],"length":"Derived as teeth*pi*module; whole centered pitch cells","backing_thickness":"Explicit connected base below root line","root":"Custom tangent circular fillet, not a cutter trochoid","pair":"One rack and one matching unshifted non-undercut spur pinion; conservative finite travel keeps full pinion tip-circle projection within rack ends","drive":"Positive pinion CCW advances rack along positive local X"},
         "bevel":{"tooth_system":"spherical_involute_straight","teeth":[24,64],"pressure_angle_degrees":20,"shaft_angle_degrees":90,
@@ -500,13 +615,20 @@ pub(super) fn inspect_gear(host: &dyn Host, _: &Request, args: InspectGearArgs) 
         );
     }
     let r = geometry.rotary().expect("rotary geometry");
+    let shifted_source = r.family == GearFamily::Spur
+        && (r.profile_shift_coefficient != 0.
+            || source.parameters.shift_mate.is_some()
+            || source.parameters.profile_shift.expression().is_some());
     Ok(
         json!({"revision":revision,"gear":feature,"part":source.output.body,"source":source,
         "resolved":{"normal_module_mm":r.normal_module_mm,"transverse_module_mm":r.transverse_module_mm,"teeth":r.teeth,
         "normal_pressure_angle_rad":r.normal_pressure_angle_rad,"transverse_pressure_angle_rad":r.transverse_pressure_angle_rad,
         "pitch_diameter_mm":2.*r.pitch_radius_mm,"base_diameter_mm":2.*r.base_radius_mm,"tip_diameter_mm":2.*r.tip_radius_mm,"root_diameter_mm":2.*r.root_radius_mm,
         "outer_diameter_mm":r.outer_radius_mm.map(|v|2.*v),"rim_thickness_mm":r.outer_radius_mm.map(|v|v-r.root_radius_mm),
-        "nominal_tooth_thickness_mm":r.nominal_tooth_thickness_mm,"design_tooth_thickness_mm":r.design_tooth_thickness_mm,"physical_tooth_thickness_mm":r.physical_tooth_thickness_mm,"twist_rad_per_mm":r.twist_rad_per_mm},
+        "nominal_tooth_thickness_mm":r.nominal_tooth_thickness_mm,"design_tooth_thickness_mm":r.design_tooth_thickness_mm,"physical_tooth_thickness_mm":r.physical_tooth_thickness_mm,"twist_rad_per_mm":r.twist_rad_per_mm,
+        "profile_shift_coefficient":r.profile_shift_coefficient,"tip_shortening_coefficient":r.tip_shortening_coefficient,
+        "hub":r.hub.as_ref().map(|h|json!({"diameter_mm":2.*h.radius_mm,"axial_start_mm":h.axial_start_mm,"axial_end_mm":h.axial_end_mm}))},
+        "profile_source":shifted_source.then_some(model::SHIFTED_SPUR_SOURCE),"profile_source_url":shifted_source.then_some(model::SHIFTED_SPUR_SOURCE_URL),
         "scope":"Canonical source and resolved dimensions; use evaluate_model for native geometry"}),
     )
 }
@@ -649,5 +771,99 @@ mod worm_recipe_tests {
             .is_err()
         );
         assert_eq!(session.revision(), 0);
+    }
+}
+
+#[cfg(test)]
+mod coverage_recipe_tests {
+    use super::*;
+    #[test]
+    fn pitch_unit_and_hub_partial_edits_preserve_original_dimensions_and_explicit_clearing() {
+        let s =
+            multicad_core::commands::Session::new(Document::new("Gear patch contract").unwrap())
+                .unwrap();
+        let parse = |value| serde_json::from_value::<GearRecipeArgs>(value).unwrap();
+        let a=parameters(&parse(json!({"pitch_input":"diametral_pitch","module":{"value":12.7,"unit":"teeth_per_in"},"hub":{"diameter":{"value":20.,"unit":"mm"},"axial_start":{"value":-2.,"unit":"mm"},"axial_end":{"value":12.,"unit":"mm"}}})),None,s.document(),s.parameters()).unwrap();
+        let r = a.resolve_geometry(s.parameters()).unwrap();
+        assert!((r.rotary().unwrap().normal_module_mm - 2.).abs() < 1e-12);
+        let b = parameters(
+            &parse(json!({"hub":{"axial_end":{"value":14.,"unit":"mm"}}})),
+            Some(&a),
+            s.document(),
+            s.parameters(),
+        )
+        .unwrap();
+        assert_eq!(a.module, b.module);
+        assert_eq!(a.pitch_input, b.pitch_input);
+        assert_eq!(
+            a.hub.as_ref().unwrap().diameter,
+            b.hub.as_ref().unwrap().diameter
+        );
+        assert_eq!(b.hub.as_ref().unwrap().axial_end, model::length(14.));
+        for bad in [
+            json!({"pitch_input":"module"}),
+            json!({"module":{"value":2.,"unit":"mm"}}),
+            json!({"clear_hub":true,"hub":{}}),
+            json!({"hub":{"diameter":{"value":100.,"unit":"mm"}}}),
+        ] {
+            assert!(parameters(&parse(bad), Some(&a), s.document(), s.parameters()).is_err());
+        }
+        let cleared = parameters(
+            &parse(json!({"clear_hub":true})),
+            Some(&a),
+            s.document(),
+            s.parameters(),
+        )
+        .unwrap();
+        assert!(cleared.hub.is_none());
+        assert_eq!(cleared.module, a.module);
+        let legacy = parameters(&parse(json!({})), None, s.document(), s.parameters()).unwrap();
+        assert_eq!(legacy, model::GearParameters::default());
+        assert!(
+            serde_json::to_value(legacy)
+                .unwrap()
+                .get("pitch_input")
+                .is_none()
+        );
+    }
+    #[test]
+    fn dp_wire_keeps_the_authored_source_in_both_helical_pitch_planes() {
+        let s = multicad_core::commands::Session::new(Document::new("DP plane contract").unwrap())
+            .unwrap();
+        let beta = 15_f64.to_radians();
+        let normal = 20_f64.to_radians();
+        let mut radii = vec![];
+        for (plane, dp, angle) in [
+            ("normal", 12.7, 20.),
+            (
+                "transverse",
+                12.7 * beta.cos(),
+                (normal.tan() / beta.cos()).atan().to_degrees(),
+            ),
+        ] {
+            let args:GearRecipeArgs=serde_json::from_value(json!({"family":"helical","pitch_input":"diametral_pitch","module_system":plane,"module":{"value":dp,"unit":"teeth_per_in"},"pressure_angle":{"value":angle,"unit":"deg"},"helix_angle":{"value":15.,"unit":"deg"},"hand":"right"})).unwrap();
+            let p = parameters(&args, None, s.document(), s.parameters()).unwrap();
+            assert_eq!(
+                p.module,
+                Dimension::Literal {
+                    value: dp,
+                    unit: "teeth_per_in".into()
+                }
+            );
+            assert_eq!(p.pitch_input, GearPitchInput::DiametralPitch);
+            let r = p.resolve_geometry(s.parameters()).unwrap();
+            let r = r.rotary().unwrap();
+            radii.push([
+                r.normal_module_mm,
+                r.transverse_module_mm,
+                r.pitch_radius_mm,
+                r.base_radius_mm,
+                r.tip_radius_mm,
+                r.root_radius_mm,
+            ]);
+        }
+        for (a, b) in radii[0].into_iter().zip(radii[1]) {
+            assert!((a - b).abs() < 1e-12);
+        }
     }
 }

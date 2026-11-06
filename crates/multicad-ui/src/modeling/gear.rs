@@ -9,8 +9,8 @@ use crate::{controls, egui};
 use multicad_core::{
     document::Document,
     model::{
-        BevelDimensions, BevelToothSystem, GearFamily, GearHand, GearModuleSystem, GearRequest,
-        PrimitiveFrame, WormDimensions, WormMember, WormToothSystem, angle,
+        BevelDimensions, BevelToothSystem, GearFamily, GearHand, GearModuleSystem, GearPitchInput,
+        GearRequest, PrimitiveFrame, WormDimensions, WormMember, WormToothSystem, angle,
     },
     parameters::EvaluatedParameters,
     sketch::Datum,
@@ -49,10 +49,100 @@ fn show_bevel_summary(ui: &mut egui::Ui, r: &multicad_core::model::ResolvedBevel
 }
 
 #[derive(Clone)]
+struct HubFields {
+    enabled: bool,
+    dimensions: [DimensionField; 3],
+}
+impl HubFields {
+    fn new(source: Option<&multicad_core::model::GearHub>) -> Result<Self, String> {
+        let defaults = [
+            multicad_core::model::length(20.),
+            multicad_core::model::length(-5.),
+            multicad_core::model::length(15.),
+        ];
+        let values = source
+            .map(|h| [&h.diameter, &h.axial_start, &h.axial_end])
+            .unwrap_or(defaults.each_ref());
+        Ok(Self {
+            enabled: source.is_some(),
+            dimensions: [
+                DimensionField::from_dimension(values[0], "mm")?,
+                DimensionField::from_dimension(values[1], "mm")?,
+                DimensionField::from_dimension(values[2], "mm")?,
+            ],
+        })
+    }
+    fn resolve(
+        &self,
+        document: &Document,
+    ) -> Result<Option<multicad_core::model::GearHub>, String> {
+        Ok(if self.enabled {
+            Some(multicad_core::model::GearHub {
+                diameter: self.dimensions[0].resolve(document)?,
+                axial_start: self.dimensions[1].resolve(document)?,
+                axial_end: self.dimensions[2].resolve(document)?,
+            })
+        } else {
+            None
+        })
+    }
+    fn show(
+        &mut self,
+        ui: &mut egui::Ui,
+        owner: multicad_core::document::EntityId,
+        supported: bool,
+        label: &str,
+    ) -> bool {
+        let mut changed = ui
+            .add_enabled(
+                supported || self.enabled,
+                egui::Checkbox::new(&mut self.enabled, label),
+            )
+            .changed();
+        if !supported {
+            ui.small("Hubs require an external cylindrical gear; other families are unavailable.");
+        }
+        if self.enabled {
+            ui.small("One connected hub along local Z; start/end measured from the gear base at Z=0. Through bore spans the combined body. Radius stays below the root; overlap ≥0.01 mm and bore wall must remain.");
+            for (i, (field, label)) in self
+                .dimensions
+                .iter_mut()
+                .zip(["Hub diameter", "Hub axial start", "Hub axial end"])
+                .enumerate()
+            {
+                changed |= field.show_named(
+                    ui,
+                    (owner, "gear-hub", i),
+                    label,
+                    "Authored intrinsic geometry; no standard stock proportions are inferred",
+                );
+            }
+        }
+        changed
+    }
+}
+fn external_cylindrical(family: GearFamily) -> bool {
+    matches!(
+        family,
+        GearFamily::Spur
+            | GearFamily::Helical
+            | GearFamily::Herringbone
+            | GearFamily::DoubleHelical
+    )
+}
+
+#[derive(Clone)]
 pub(super) struct GearPanel {
     request: GearRequest,
     parameters: EvaluatedParameters,
     fields: [DimensionField; 11],
+    pitch_input: GearPitchInput,
+    alternate_pitch: DimensionField,
+    hub: HubFields,
+    shift: DimensionField,
+    shift_mate_enabled: bool,
+    shift_mate_teeth: DimensionField,
+    shift_mate_shift: DimensionField,
     outside: DimensionField,
     rack_backing: DimensionField,
     bevel_mate: DimensionField,
@@ -80,6 +170,36 @@ impl GearPanel {
         let p = &request.parameters;
         let field = DimensionField::from_dimension;
         Ok(Self {
+            pitch_input: p.pitch_input,
+            alternate_pitch: field(
+                &if p.pitch_input == GearPitchInput::Module {
+                    multicad_core::constraint_sketch::Dimension::Literal {
+                        value: 12.7,
+                        unit: "teeth_per_in".into(),
+                    }
+                } else {
+                    multicad_core::model::length(2.)
+                },
+                if p.pitch_input == GearPitchInput::Module {
+                    "teeth_per_in"
+                } else {
+                    "mm"
+                },
+            )?,
+            hub: HubFields::new(p.hub.as_ref())?,
+            shift: field(&p.profile_shift, "ratio")?,
+            shift_mate_enabled: p.shift_mate.is_some(),
+            shift_mate_teeth: field(
+                p.shift_mate.as_ref().map(|m| &m.teeth).unwrap_or(&p.teeth),
+                "count",
+            )?,
+            shift_mate_shift: field(
+                p.shift_mate
+                    .as_ref()
+                    .map(|m| &m.profile_shift)
+                    .unwrap_or(&multicad_core::model::ratio(0.)),
+                "ratio",
+            )?,
             worm_role: p.worm.as_ref().map_or(WormMember::Worm, |w| w.role),
             worm_system: p
                 .worm
@@ -132,7 +252,14 @@ impl GearPanel {
                 "mm",
             )?,
             fields: [
-                field(&p.module, "mm")?,
+                field(
+                    &p.module,
+                    if p.pitch_input == GearPitchInput::Module {
+                        "mm"
+                    } else {
+                        "teeth_per_in"
+                    },
+                )?,
                 field(&p.teeth, "count")?,
                 field(&p.pressure_angle, "deg")?,
                 field(&p.face_width, "mm")?,
@@ -222,7 +349,18 @@ impl GearPanel {
         p.family = self.family;
         p.module_system = self.system;
         p.hand = self.hand;
+        p.pitch_input = self.pitch_input;
         p.module = self.fields[0].resolve(document)?;
+        p.hub = self.hub.resolve(document)?;
+        p.profile_shift = self.shift.resolve(document)?;
+        p.shift_mate = if self.shift_mate_enabled {
+            Some(multicad_core::model::ShiftedSpurMate {
+                teeth: self.shift_mate_teeth.resolve(document)?,
+                profile_shift: self.shift_mate_shift.resolve(document)?,
+            })
+        } else {
+            None
+        };
         p.teeth = self.fields[1].resolve(document)?;
         p.pressure_angle = self.fields[2].resolve(document)?;
         p.face_width = self.fields[3].resolve(document)?;
@@ -276,9 +414,22 @@ impl GearPanel {
         };
         Ok(request)
     }
+    fn select_pitch_input(&mut self, input: GearPitchInput) {
+        if input != self.pitch_input {
+            std::mem::swap(&mut self.fields[0], &mut self.alternate_pitch);
+            self.pitch_input = input;
+        }
+    }
     fn select_family(&mut self, family: GearFamily) {
         if self.family == family {
             return;
+        }
+        if family != GearFamily::Spur {
+            self.shift_mate_enabled = false;
+        }
+        if !external_cylindrical(family) {
+            self.select_pitch_input(GearPitchInput::Module);
+            self.shift.set_literal(0., "ratio");
         }
         if self.family == GearFamily::Worm && family != GearFamily::Worm {
             self.system = GearModuleSystem::Normal;
@@ -306,6 +457,7 @@ impl GearPanel {
             self.worm_mate.set_literal(32., "count");
             self.worm_quotient.set_literal(10., "ratio");
             self.request.parameters.profile_shift = multicad_core::model::ratio(0.);
+            self.shift.set_literal(0., "ratio");
             return;
         }
         if matches!(
@@ -479,7 +631,30 @@ impl GearPanel {
             ui.small("Straight basic rack · custom circular root fillets, not generated cutter runout. 4–64 complete pitch cells; 14.5–35° pressure; root radius/module 0.01–0.2. No accuracy or strength certification.");
             ui.small("Centered local X length = cells × π × module. Pitch line Y = 0; teeth point toward +Y; face width follows +Z. Zero helix, bore, center gap and profile shift.");
         } else {
-            ui.small("Unshifted involute profile with circular root fillets. No accuracy, strength or cutter-generation certification.");
+            ui.small("Involute profile with custom circular root fillets. No accuracy, strength or cutter-generation certification.");
+        }
+        if external_cylindrical(self.family) {
+            let mut input = self.pitch_input;
+            controls::inspector_combo(ui, (self.request.feature, "gear-pitch-input"))
+                .selected_text(if input == GearPitchInput::Module {
+                    "Module"
+                } else {
+                    "Diametral pitch"
+                })
+                .show_ui(ui, |ui| {
+                    changed |= ui
+                        .selectable_value(&mut input, GearPitchInput::Module, "Module (mm)")
+                        .changed();
+                    changed |= ui
+                        .selectable_value(
+                            &mut input,
+                            GearPitchInput::DiametralPitch,
+                            "Diametral pitch (teeth/in)",
+                        )
+                        .changed();
+                });
+            self.select_pitch_input(input);
+            ui.small("One authored pitch input. Diametral pitch counts teeth per inch of reference diameter; module mm =25.4/DP. Normal/transverse convention is independent.");
         }
         controls::inspector_combo(ui, "gear-module-system")
             .selected_text(if self.family == GearFamily::Worm {
@@ -488,8 +663,8 @@ impl GearPanel {
                 "Outer module (normal = transverse)"
             } else {
                 match self.system {
-                    GearModuleSystem::Normal => "Normal module and pressure angle",
-                    GearModuleSystem::Transverse => "Transverse module and pressure angle",
+                    GearModuleSystem::Normal => "Normal pitch and pressure angle",
+                    GearModuleSystem::Transverse => "Transverse pitch and pressure angle",
                     GearModuleSystem::Axial => "Axial module; normal pressure angle",
                 }
             })
@@ -508,14 +683,16 @@ impl GearPanel {
         for (i, label, help) in [
             (
                 0,
-                if self.family == GearFamily::Worm {
+                if self.pitch_input == GearPitchInput::DiametralPitch {
+                    "Diametral pitch"
+                } else if self.family == GearFamily::Worm {
                     "Axial module"
                 } else if self.family == GearFamily::Bevel {
                     "Outer module"
                 } else {
                     "Module"
                 },
-                "Basic module in the selected normal/transverse system",
+                "Active authored pitch scalar in the selected normal/transverse convention; module in mm or DP in teeth_per_in",
             ),
             (
                 1,
@@ -533,7 +710,7 @@ impl GearPanel {
                 if self.family == GearFamily::Rack {
                     "Whole complete pitch-cell count; finite rack length is count × π × module"
                 } else {
-                    "Whole tooth count; conservative unshifted undercut policy applies"
+                    "Whole tooth count; unshifted undercut bound or sourced shifted Spur envelope applies"
                 },
             ),
             (
@@ -676,6 +853,45 @@ impl GearPanel {
                 help,
             );
         }
+        changed |= self.hub.show(
+            ui,
+            self.request.feature,
+            external_cylindrical(self.family),
+            "Intrinsic hub",
+        );
+        if self.family == GearFamily::Spur
+            && (self.shift_mate_enabled || self.shift.text.trim().parse::<f64>() != Ok(0.))
+        {
+            ui.small(multicad_core::model::SHIFTED_SPUR_SOURCE);
+            ui.hyperlink_to(
+                "Shifted Spur reference",
+                multicad_core::model::SHIFTED_SPUR_SOURCE_URL,
+            );
+        }
+        if external_cylindrical(self.family) {
+            changed|=self.shift.show_named(ui,(self.request.feature,"gear-shift"),"Profile shift coefficient","Only external20° Spur supports nonzero shift: engineering range -0.5..1; undercut, crest, root and bore limits still apply. Other families require zero.");
+            ui.small("Nonzero shifts: external 20° Spur only, -0.5 to1 subject to source undercut and actual profile limits. Thinning remains separate.");
+        }
+        if !paired && self.family == GearFamily::Spur {
+            changed |= ui
+                .checkbox(&mut self.shift_mate_enabled, "Clearance-matched Spur mate")
+                .changed();
+            if self.shift_mate_enabled {
+                ui.small("Retained mate count/shift selects KHK paired tip shortening. Without this context the standalone tip is unshortened.");
+                changed |= self.shift_mate_teeth.show_named(
+                    ui,
+                    (self.request.feature, "shift-mate-count"),
+                    "Shift mate teeth",
+                    "Original typed mate tooth-count source",
+                );
+                changed |= self.shift_mate_shift.show_named(
+                    ui,
+                    (self.request.feature, "shift-mate-shift"),
+                    "Shift mate coefficient",
+                    "Original typed mate shift; -0.5..1",
+                );
+            }
+        }
         if self.family == GearFamily::Rack {
             changed |= self.rack_backing.show_named(ui, (self.request.feature, "gear-backing"), "Rack backing thickness", "Material below the tooth root line, excluding the 1.25-module dedendum and one-module addendum");
         }
@@ -767,6 +983,18 @@ impl GearPanel {
                         2. * r.base_radius_mm,
                         2. * r.tip_radius_mm
                     ));
+                    ui.small(format!(
+                        "Shift x={:.6} · tip shortening coefficient {:.6}",
+                        r.profile_shift_coefficient, r.tip_shortening_coefficient
+                    ));
+                    if let Some(h) = &r.hub {
+                        ui.small(format!(
+                            "Intrinsic hub Ø {:.4} mm · local Z {:.4} to {:.4} mm",
+                            2. * h.radius_mm,
+                            h.axial_start_mm,
+                            h.axial_end_mm
+                        ));
+                    }
                 }
                 Ok(multicad_core::model::ResolvedGearGeometry::Rack(r)) => {
                     ui.small(format!(
@@ -1050,5 +1278,120 @@ mod bevel_fields_tests {
         assert!(panel.request(&document, true).is_err());
         assert_eq!(session.document(), &document);
         assert_eq!(session.revision(), 0);
+    }
+}
+
+#[cfg(test)]
+mod coverage_fields_tests {
+    use super::*;
+    use multicad_core::{
+        commands::Session,
+        constraint_sketch::Dimension,
+        document::{Entity, EntityData, Mutation},
+        model,
+        parameters::BoundExpression,
+    };
+    #[test]
+    fn active_dp_and_hub_sources_retain_bindings_and_pitch_drafts_do_not_numeric_copy() {
+        let d = Document::new("Retained DP")
+            .unwrap()
+            .edited(&[
+                Mutation::Insert(Entity::new(
+                    "pitch",
+                    EntityData::Parameter {
+                        expression: "12.7 teeth_per_in".into(),
+                        unit: "teeth_per_in".into(),
+                        exposed: false,
+                        inputs: vec![],
+                    },
+                )),
+                Mutation::Insert(Entity::new(
+                    "hub_d",
+                    EntityData::Parameter {
+                        expression: "20 mm".into(),
+                        unit: "mm".into(),
+                        exposed: false,
+                        inputs: vec![],
+                    },
+                )),
+            ])
+            .unwrap();
+        let s = Session::new(d.clone()).unwrap();
+        let expression = |text, unit| Dimension::Expression {
+            expression: BoundExpression::bind(&d, text, unit, None).unwrap(),
+        };
+        let dp = expression("=$pitch", "teeth_per_in");
+        let diameter = expression("=$hub_d", "mm");
+        let request = GearRequest::new(
+            "Authored DP",
+            model::GearParameters {
+                pitch_input: GearPitchInput::DiametralPitch,
+                module: dp.clone(),
+                hub: Some(model::GearHub {
+                    diameter: diameter.clone(),
+                    axial_start: model::length(-3.),
+                    axial_end: model::length(13.),
+                }),
+                ..Default::default()
+            },
+        );
+        let feature = request.feature;
+        let body = request.body;
+        let mut panel = GearPanel::new(request, s.parameters().clone(), false).unwrap();
+        let a = panel.request(&d, true).unwrap();
+        assert_eq!(a.parameters.module, dp);
+        assert_eq!(a.parameters.hub.as_ref().unwrap().diameter, diameter);
+        panel.select_pitch_input(GearPitchInput::Module);
+        panel.fields[0].set_literal(3., "mm");
+        let module = panel.request(&d, true).unwrap();
+        assert_eq!(module.parameters.module, model::length(3.));
+        panel.select_pitch_input(GearPitchInput::DiametralPitch);
+        let restored = panel.request(&d, true).unwrap();
+        assert_eq!(restored.parameters.module, dp);
+        assert_eq!(restored.feature, feature);
+        assert_eq!(restored.body, body);
+        assert_eq!(restored.parameters.hub, a.parameters.hub);
+        panel.hub.dimensions[2].set_literal(-4., "mm");
+        assert!(panel.request(&d, true).is_err());
+        assert_eq!(s.document(), &d);
+        assert_eq!(s.revision(), 0);
+        assert!(!s.can_undo());
+    }
+    #[test]
+    fn switching_matched_spur_to_helical_clears_the_hidden_spur_only_context() {
+        let s = Session::new(Document::new("Family switch").unwrap()).unwrap();
+        let mut panel = GearPanel::new(
+            GearRequest::new(
+                "Matched Spur",
+                model::GearParameters {
+                    profile_shift: model::ratio(0.2),
+                    shift_mate: Some(model::ShiftedSpurMate {
+                        teeth: Dimension::Literal {
+                            value: 36.,
+                            unit: "count".into(),
+                        },
+                        profile_shift: model::ratio(0.1),
+                    }),
+                    ..Default::default()
+                },
+            ),
+            s.parameters().clone(),
+            false,
+        )
+        .unwrap();
+        panel.select_family(GearFamily::Helical);
+        panel.hand = GearHand::Right;
+        panel.fields[4].set_literal(15., "deg");
+        panel.shift.set_literal(0., "ratio");
+        assert!(!panel.shift_mate_enabled);
+        assert!(
+            panel
+                .request(s.document(), true)
+                .unwrap()
+                .parameters
+                .shift_mate
+                .is_none()
+        );
+        assert_eq!(s.revision(), 0);
     }
 }

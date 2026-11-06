@@ -377,20 +377,18 @@ fn shifted_gear_with_intrinsic_hub_and_dp_source_exports_one_closed_bored_print_
         );
         let volume = mesh::volume(&mesh.vertices, &mesh.triangles);
         assert!(volume > 1000.);
-        for (axis, expected_min, expected_max) in [(2, -2., 6.)] {
-            let min = mesh
-                .vertices
-                .iter()
-                .map(|v| v[axis])
-                .fold(f64::INFINITY, f64::min);
-            let max = mesh
-                .vertices
-                .iter()
-                .map(|v| v[axis])
-                .fold(f64::NEG_INFINITY, f64::max);
-            assert!((min - expected_min).abs() < 1e-6);
-            assert!((max - expected_max).abs() < 1e-6);
-        }
+        let min_z = mesh
+            .vertices
+            .iter()
+            .map(|v| v[2])
+            .fold(f64::INFINITY, f64::min);
+        let max_z = mesh
+            .vertices
+            .iter()
+            .map(|v| v[2])
+            .fold(f64::NEG_INFINITY, f64::max);
+        assert!((min_z + 2.).abs() < 1e-6);
+        assert!((max_z - 6.).abs() < 1e-6);
         let stl = std::fs::read_dir(dir.path())
             .unwrap()
             .map(|e| e.unwrap().path())

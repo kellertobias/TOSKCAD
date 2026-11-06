@@ -885,3 +885,200 @@ fn painted_za_worm_roles_preview_cancel_apply_history_and_reopen_keep_independen
         assert_eq!(reopened.revision(), 0);
     }
 }
+
+#[test]
+fn painted_shifted_dp_intrinsic_hub_pair_uses_native_preview_cancel_apply_history_and_reopen() {
+    use multicad_core::constraint_sketch::Dimension;
+    let mut s = Session::new(Document::new("Painted shifted DP hub pair").unwrap()).unwrap();
+    let before = s.document().clone();
+    let mut c = controller();
+    let request = model::GearRequest::new(
+        "KHK matched pair",
+        model::GearParameters {
+            pitch_input: model::GearPitchInput::DiametralPitch,
+            module: Dimension::Literal {
+                value: 25.4 / 3.,
+                unit: "teeth_per_in".into(),
+            },
+            teeth: Dimension::Literal {
+                value: 12.,
+                unit: "count".into(),
+            },
+            profile_shift: model::ratio(0.6),
+            shift_mate: Some(model::ShiftedSpurMate {
+                teeth: Dimension::Literal {
+                    value: 24.,
+                    unit: "count".into(),
+                },
+                profile_shift: model::ratio(0.36),
+            }),
+            hub: Some(model::GearHub {
+                diameter: model::length(20.),
+                axial_start: model::length(-2.),
+                axial_end: model::length(12.),
+            }),
+            ..Default::default()
+        },
+    );
+    let panel = GearPanel::new(request, s.parameters().clone(), false).unwrap();
+    c.begin_form(
+        &s,
+        &Default::default(),
+        Channel::Ui,
+        ModelForm::Gear(Box::new(panel)),
+    )
+    .unwrap();
+    let ctx = egui::Context::default();
+    ctx.enable_accesskit();
+    crate::theme::configure(&ctx);
+    ring_click(&ctx, &mut c, &mut s, "Create mating pair");
+    let ModelForm::Gear(panel) = c.form.as_ref().unwrap() else {
+        panic!("gear")
+    };
+    let saved = panel.clone();
+    let ModelRequest::GearPair(command) = panel.model_request(s.document(), true).unwrap() else {
+        panic!("pair")
+    };
+    let pair = command.pair();
+    let resolved = command.resolved(s.document(), s.parameters()).unwrap();
+    assert!((resolved.center_distance_mm - 56.4999).abs() < 0.001);
+    assert!(resolved.gears[0].rotary().unwrap().hub.is_some());
+    assert!(resolved.gears[1].rotary().unwrap().hub.is_none());
+    ring_click(&ctx, &mut c, &mut s, "Preview");
+    wait(&mut c, &s);
+    assert!(c.can_apply(&s, &Default::default()), "{:?}", c.error());
+    assert_eq!(s.document(), &before);
+    ring_click(&ctx, &mut c, &mut s, "Cancel");
+    assert_eq!(s.document(), &before);
+    assert_eq!(s.revision(), 0);
+    c.begin_form(&s, &Default::default(), Channel::Ui, ModelForm::Gear(saved))
+        .unwrap();
+    ring_click(&ctx, &mut c, &mut s, "Preview");
+    wait(&mut c, &s);
+    assert!(c.can_apply(&s, &Default::default()), "{:?}", c.error());
+    ring_click(&ctx, &mut c, &mut s, "Apply");
+    assert_eq!(s.revision(), 1);
+    let source = model::read_gear_pair(s.document(), pair).unwrap();
+    let committed = s.document().clone();
+    s.undo(s.revision(), Actor::local(Channel::Ui)).unwrap();
+    assert_eq!(s.document(), &before);
+    s.redo(s.revision(), Actor::local(Channel::Ui)).unwrap();
+    assert_eq!(s.document(), &committed);
+    let mut bytes = vec![];
+    multicad_core::project_file::write(
+        &multicad_core::project_file::ProjectFile::new(committed.clone()).unwrap(),
+        &mut bytes,
+        Default::default(),
+    )
+    .unwrap();
+    let read = multicad_core::project_file::read(
+        &mut bytes.as_slice(),
+        Default::default(),
+        &multicad_core::project_file::supported_capabilities(),
+    )
+    .unwrap();
+    let mut reopened = Session::new(read.project.document).unwrap();
+    assert_eq!(reopened.document(), &committed);
+    c.begin_existing(&reopened, &Default::default(), pair, Channel::Ui)
+        .unwrap();
+    ring_click(&ctx, &mut c, &mut reopened, "Update both gear recipes");
+    // Change the actual persistent hub input with keyboard events. The pitch
+    // source and matched contexts must remain the authored definitions.
+    let output = ring_frame(&ctx, &mut c, &mut reopened, vec![]);
+    let y = output
+        .shapes
+        .iter()
+        .find_map(|shape| match &shape.shape {
+            egui::Shape::Text(t) if t.galley.text() == "Hub axial end (mm)" => Some(t.pos.y),
+            _ => None,
+        })
+        .expect("visible hub extent");
+    let bounds = output
+        .platform_output
+        .accesskit_update
+        .as_ref()
+        .unwrap()
+        .nodes
+        .iter()
+        .filter_map(|(_, n)| {
+            (n.role() == egui::accesskit::Role::TextInput)
+                .then(|| n.bounds())
+                .flatten()
+        })
+        .filter(|r| r.y0 > f64::from(y))
+        .min_by(|a, b| a.y0.total_cmp(&b.y0))
+        .unwrap();
+    let position = egui::pos2(
+        ((bounds.x0 + bounds.x1) / 2.) as f32,
+        ((bounds.y0 + bounds.y1) / 2.) as f32,
+    );
+    output.drop_without_applying_deltas();
+    for pressed in [true, false] {
+        ring_frame(
+            &ctx,
+            &mut c,
+            &mut reopened,
+            vec![
+                egui::Event::PointerMoved(position),
+                egui::Event::PointerButton {
+                    pos: position,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: Default::default(),
+                },
+            ],
+        )
+        .drop_without_applying_deltas();
+    }
+    ring_frame(
+        &ctx,
+        &mut c,
+        &mut reopened,
+        vec![
+            egui::Event::Key {
+                key: egui::Key::A,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::COMMAND,
+            },
+            egui::Event::Text("14".into()),
+        ],
+    )
+    .drop_without_applying_deltas();
+    assert_eq!(reopened.document(), &committed);
+    assert_eq!(reopened.revision(), 0);
+    ring_click(&ctx, &mut c, &mut reopened, "Preview");
+    wait(&mut c, &reopened);
+    assert!(
+        c.can_apply(&reopened, &Default::default()),
+        "{:?}",
+        c.error()
+    );
+    ring_click(&ctx, &mut c, &mut reopened, "Apply");
+    assert_eq!(reopened.revision(), 1);
+    let edited = model::read_gear_pair(reopened.document(), pair).unwrap();
+    assert_eq!(edited.outputs, source.outputs);
+    assert_eq!(edited.parameters.gears, source.parameters.gears);
+    let a = model::read_gear(reopened.document(), source.parameters.gears[0]).unwrap();
+    let b = model::read_gear(reopened.document(), source.parameters.gears[1]).unwrap();
+    assert_eq!(
+        a.parameters.pitch_input,
+        model::GearPitchInput::DiametralPitch
+    );
+    assert_eq!(
+        a.parameters.module,
+        model::read_gear(&committed, source.parameters.gears[0])
+            .unwrap()
+            .parameters
+            .module
+    );
+    assert_eq!(
+        a.parameters.hub.as_ref().unwrap().axial_end,
+        model::length(14.)
+    );
+    assert_eq!(
+        a.parameters.shift_mate.as_ref().unwrap().profile_shift,
+        b.parameters.profile_shift
+    );
+}

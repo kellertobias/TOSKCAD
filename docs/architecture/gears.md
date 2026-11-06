@@ -7,8 +7,8 @@ prepare the same canonical transactions. A single gear stores a
 [`model.gear` recipe](../../crates/multicad-core/src/model/gears/mod.rs).
 A pair retains two independent recipes and a
 [`model.gear_pair` definition](../../crates/multicad-core/src/model/gears/pair.rs).
-[CAD-199](https://plans.tokenet.de/CAD/199) owns the complete generator outcome;
-the external foundation does not complete its remaining families or parameters.
+[CAD-199](https://plans.tokenet.de/CAD/199) owns the complete generator outcome
+and its acceptance across the implemented families and parameter coverage.
 
 ## Coverage
 
@@ -18,18 +18,19 @@ inspector and refused by canonical preparation and MCP.
 
 | Family | Single gear | Compatible pair | Current limits or remaining work |
 | --- | --- | --- | --- |
-| External spur | Native involute solid | Parallel axes, derived center and phase | Unshifted; through bore |
-| External helical | Native twisted involute solid | Matching helix magnitude, opposite hands | Unshifted; through bore |
-| Herringbone | Continuous center, opposite-handed tooth bands | Matching external family and width | Hand names the lower band; no center groove |
-| Double-helical | Two tooth bands separated by a root-core center gap | Matching external family, width and gap | Distinct from continuous-center herringbone |
+| External spur | Native involute solid, optional hub and through bore | Parallel axes, derived center and phase | Module or DP; bounded 20-degree shifted profiles and retained matched tips |
+| External helical | Native twisted involute solid, optional hub and through bore | Matching helix magnitude, opposite hands | Module or DP; unshifted |
+| Herringbone | Continuous center, opposite-handed tooth bands; optional hub and through bore | Matching external family and width | Module or DP; unshifted; hand names the lower band |
+| Double-helical | Two tooth bands separated by a root-core center gap; optional hub and through bore | Matching external family, width and gap | Module or DP; unshifted; root core remains connected |
 | Internal ring | Native inward involute teeth and connected outer rim | 24-tooth spur pinion with 48/60-tooth ring; either member order | Unshifted 20-degree spur subset; explicit outside diameter |
 | Rack | Native straight flanks, circular root transitions and connected backing | One matching unshifted spur pinion; either member order | 4-64 whole centered pitch cells, zero helix, conservative finite travel |
 | Straight bevel | Spherical-involute flanks, back-cone heel/toe boundaries and custom spherical-circle root transitions | Intersecting 90-degree shafts with a shared pitch apex and derived tooth-count ratio | Declared 20-degree, zero-shift subset; 24-64 teeth per member; availability follows the registry |
 | Worm and wheel | ZA axial-straight worm or generated single-envelope wheel | One right-hand start, perpendicular shafts, derived center and worm-owned drive | Axial module 0.5–2 mm, normal pressure 20°, quotient 10 and 32–64 wheel teeth; see the declared subset below |
 
-Intrinsic hubs, nonzero profile shift and explicit diametral-pitch input remain
-[CAD-231](https://plans.tokenet.de/CAD/231). Rotary, rack and bevel recipes use
-normal or transverse module and pressure angle. Worm gearing uses axial module
+[ADR-0035](0035-retained-gear-pitch-hubs-and-shift.md) owns the retained pitch,
+intrinsic hub and shifted-Spur contracts. The four external cylindrical families
+accept module or diametral pitch in an explicit normal/transverse plane. Rack,
+internal ring and bevel retain module input. Worm gearing uses axial module
 with normal pressure angle, as declared below. Recipes retain tooth count, face width,
 helix magnitude/hand, bore, center gap, circular-root-fillet ratio, minimum
 root wall and two separate tangential thinning inputs. Design backlash applies
@@ -41,7 +42,8 @@ teeth (rack count is 4-64 cells; bevel and worm subsets have separate limits bel
 0-45 degrees. Additional resolved geometry checks can refuse a recipe within
 those input ranges. In particular, the conservative unshifted rotary gear/pinion tooth-count
 policy uses `ceil(2 / sin(normal_pressure_angle)^2)` without virtual-tooth
-credit for a helix. This is the supported envelope, not a universal cutting or
+credit for a helix. Shifted Spur instead applies its sourced shift-dependent
+undercut inequality and the additional profile/contact constraints in ADR-0035. This is the supported envelope, not a universal cutting or
 undercut theorem. Root fillets are circular arcs rather than cutter trochoids.
 
 The dimensional derivation follows the normal/transverse conventions in
@@ -79,6 +81,35 @@ checks have a bounded worker-owned cache keyed by actual geometry inputs,
 frames, identities and policy. Current pose is always checked; a partial or
 cancelled cycle is never reusable. These finite samples do not establish
 continuous collision-free motion or manufacturing fit.
+
+## Retained pitch, hubs and shifted Spur
+
+The [coverage resolver](../../crates/multicad-core/src/model/gears/coverage.rs)
+keeps one active `GearParameters.module` dimension. `pitch_input` declares
+whether that scalar is module in millimeters or diametral pitch in
+`teeth_per_in`. `module_system` independently selects the normal/transverse
+plane. Expressions and bindings remain authored source; conversion supplies
+resolved millimeter geometry. Omitted new fields preserve legacy module input,
+no hub and unshifted geometry.
+
+Optional intrinsic hubs share the gear axis and retain diameter plus local axial
+start/end coordinates relative to the tooth band. The native generator includes
+the hub in one solid and cuts a continuous bore through the complete extent.
+A hub wholly inside the existing root core is allowed. Double-helical root-core
+gaps keep their existing connected core; the hub does not fill the tooth gap.
+[ADR-0035](0035-retained-gear-pitch-hubs-and-shift.md) owns dimensional constraints,
+shift equations, source references and conditional reader capabilities.
+
+Matched shifted Spur members retain each other's original typed count and shift
+sources. Shared edits update both recipes atomically; drive-only edits preserve
+them. Canonical checks require a valid contact path above both actual custom
+fillet joins. Native evaluation retains whole-solid overlap refusal at every
+sample and the current pose. `shifted_spur_flank_faces` records a close named
+native-face existence witness; a candidate miss uses `whole_solid_fallback`.
+These witnesses do not claim a global closest distance or loaded contact.
+The cycle cache includes the engagement mode as well as complete native geometry,
+frames and policy. Final test runs and actual macOS checks belong in verification
+records; this reference states the implementation contract.
 
 ## Internal ring subset
 
