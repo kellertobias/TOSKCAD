@@ -1462,3 +1462,198 @@ fn embedded_place_precedes_source_dimensions_and_long_placement_parent_wraps_ins
     output.drop_without_applying_deltas();
     assert_eq!(session.document(), &before);
 }
+
+#[test]
+fn update_review_keeps_two_instance_representation_controls_distinct_and_independent() {
+    use multicad_core::{document::Placement, symbols::SymbolPlaceRequest};
+    let bytes = std::fs::read(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../library/nut-din934-1987-m3.tcd"),
+    )
+    .unwrap();
+    let source = project_file::read(
+        &mut bytes.as_slice(),
+        Default::default(),
+        &project_file::supported_capabilities(),
+    )
+    .unwrap()
+    .project
+    .document;
+    let (_, definition) = symbols::definitions(&source).unwrap().remove(0);
+    let binding = *model::thread_representation_parameters(&definition.template)
+        .unwrap()
+        .iter()
+        .next()
+        .unwrap();
+    let mut s = Session::new(Document::new("Two update controls").unwrap()).unwrap();
+    let import = symbols::prepare_import(&s, 0, actor(), &definition).unwrap();
+    let embedded = import.definition;
+    s.commit(import.prepared).unwrap();
+    let mut placed = vec![];
+    for (name, value) in [("Modeled first", 1.), ("Cosmetic second", 0.)] {
+        let request = SymbolPlaceRequest::new(
+            s.document(),
+            embedded,
+            name,
+            BTreeMap::from([(
+                binding,
+                SymbolValue {
+                    value,
+                    unit: "count".into(),
+                },
+            )]),
+            Placement::default(),
+        )
+        .unwrap();
+        s.commit(
+            symbols::prepare_place(&s, s.revision(), actor(), &request)
+                .unwrap()
+                .prepared,
+        )
+        .unwrap();
+        placed.push(request);
+    }
+    let before = s.document().clone();
+    let mut c = controller();
+    begin(
+        &mut c,
+        &s,
+        SymbolTool::Update,
+        SymbolSelection {
+            instance: Some(placed[0].instance),
+            ..Default::default()
+        },
+    );
+    let mut incoming = definition.clone();
+    incoming.revision = "QA-2".into();
+    c.form
+        .as_mut()
+        .unwrap()
+        .set_replacement(s.document(), incoming.clone())
+        .unwrap();
+    let ctx = egui::Context::default();
+    ctx.enable_accesskit();
+    let (out, _) = frame(&ctx, &mut c, &mut s, vec![], 2200.);
+    let combos: Vec<_> = out
+        .platform_output
+        .accesskit_update
+        .as_ref()
+        .unwrap()
+        .nodes
+        .iter()
+        .filter(|(_, node)| {
+            node.role() == egui::accesskit::Role::ComboBox
+                && matches!(node.value(), Some("Modeled helix" | "Cosmetic envelope"))
+        })
+        .map(|(id, node)| {
+            (
+                *id,
+                node.value().unwrap().to_owned(),
+                node.bounds().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        combos.len(),
+        2,
+        "Both current instance choices must be accessible independently: {combos:?}"
+    );
+    assert_ne!(
+        combos[0].0, combos[1].0,
+        "Two instance editors must not alias the same accessible control"
+    );
+    assert_eq!(
+        combos
+            .iter()
+            .map(|(_, value, _)| value.as_str())
+            .collect::<std::collections::BTreeSet<_>>(),
+        ["Cosmetic envelope", "Modeled helix"].into()
+    );
+    let bounds = combos
+        .iter()
+        .find(|(_, value, _)| value == "Modeled helix")
+        .unwrap()
+        .2;
+    let pos = egui::pos2(
+        ((bounds.x0 + bounds.x1) / 2.) as f32,
+        ((bounds.y0 + bounds.y1) / 2.) as f32,
+    );
+    out.drop_without_applying_deltas();
+    click(&ctx, &mut c, &mut s, pos, 2200.);
+    // Use the painted popup option; its activation changes the owning instance,
+    // while the other instance already has the same selected value.
+    let (out, _) = frame(&ctx, &mut c, &mut s, vec![], 2200.);
+    let popup = out
+        .platform_output
+        .accesskit_update
+        .as_ref()
+        .unwrap()
+        .nodes
+        .iter()
+        .filter(|(_, node)| node.label() == Some("Cosmetic envelope"))
+        .filter_map(|(_, node)| node.bounds())
+        .max_by(|a, b| a.y0.total_cmp(&b.y0))
+        .expect("accessible cosmetic popup choice");
+    let pos = egui::pos2(
+        ((popup.x0 + popup.x1) / 2.) as f32,
+        ((popup.y0 + popup.y1) / 2.) as f32,
+    );
+    out.drop_without_applying_deltas();
+    click(&ctx, &mut c, &mut s, pos, 2200.);
+    let Operation::Update { values, .. } = &c.form.as_ref().unwrap().operation else {
+        unreachable!()
+    };
+    assert_eq!(
+        values[&placed[0].record].resolve(&incoming).unwrap()[&binding].value,
+        0.
+    );
+    assert_eq!(
+        values[&placed[1].record].resolve(&incoming).unwrap()[&binding].value,
+        0.
+    );
+    // Now open the other owner's identical cosmetic choice and change only it.
+    let bounds = combos
+        .iter()
+        .find(|(_, value, _)| value == "Cosmetic envelope")
+        .unwrap()
+        .2;
+    let pos = egui::pos2(
+        ((bounds.x0 + bounds.x1) / 2.) as f32,
+        ((bounds.y0 + bounds.y1) / 2.) as f32,
+    );
+    click(&ctx, &mut c, &mut s, pos, 2200.);
+    let (out, _) = frame(&ctx, &mut c, &mut s, vec![], 2200.);
+    let popup = out
+        .platform_output
+        .accesskit_update
+        .as_ref()
+        .unwrap()
+        .nodes
+        .iter()
+        .filter(|(_, node)| node.label() == Some("Modeled helix"))
+        .filter_map(|(_, node)| node.bounds())
+        .max_by(|a, b| a.y0.total_cmp(&b.y0))
+        .expect("accessible modeled popup choice");
+    let pos = egui::pos2(
+        ((popup.x0 + popup.x1) / 2.) as f32,
+        ((popup.y0 + popup.y1) / 2.) as f32,
+    );
+    out.drop_without_applying_deltas();
+    click(&ctx, &mut c, &mut s, pos, 2200.);
+    let Operation::Update { values, .. } = &c.form.as_ref().unwrap().operation else {
+        unreachable!()
+    };
+    assert_eq!(
+        values[&placed[0].record].resolve(&incoming).unwrap()[&binding].value,
+        0.
+    );
+    assert_eq!(
+        values[&placed[1].record].resolve(&incoming).unwrap()[&binding].value,
+        1.
+    );
+    assert_eq!(
+        s.document(),
+        &before,
+        "Editing review inputs never commits the update"
+    );
+}

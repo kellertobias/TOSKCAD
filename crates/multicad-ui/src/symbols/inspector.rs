@@ -225,15 +225,19 @@ pub(super) fn show(
                 for conflict in &report.conflicts{ui.colored_label(egui::Color32::LIGHT_YELLOW,format!("Override needs review: {} · {}",instance_label(document,conflict.instance),conflict.reason));}
                 for instance in &report.affected_instances{ui.label(format!("Affected: {}",instance_label(document,*instance)));}
                 for (record,fields) in values {
-                    ui.group(|ui|{ui.strong(instance_label(document,*record));changed|=fields.show(ui,replacement);});
+                    ui.push_id(("symbol-update-instance",*record),|ui| {
+                        ui.group(|ui|{ui.strong(instance_label(document,*record));changed|=fields.show(ui,replacement);});
+                    });
                 }
                 for change in &report.architecture_changes {
+                    ui.push_id(("symbol-update-architecture",change.record),|ui| {
                     ui.group(|ui| {
                         ui.strong(instance_label(document,change.output.anchors()[1]));
                         for layer in &change.removed_layers { ui.label(format!("Removed layer: {}",layer.name)); }
                         for recipe in &change.changed_recipes { ui.label(format!("Replaced infill: {}",recipe.name)); }
                         if !change.removed_members.is_empty() { ui.label(format!("{} physical members will be removed",change.removed_members.len())); }
                         if let Some(fields)=architecture_values.get_mut(&change.record) { fields.show_changes(ui,change); changed|=fields.show(ui); }
+                    });
                     });
                 }
                 if let Some(error)=&report.architecture_error { ui.colored_label(egui::Color32::LIGHT_YELLOW,error); }
