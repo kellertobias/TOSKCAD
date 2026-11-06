@@ -42,6 +42,7 @@ pub enum Unit {
     Degree,
     Radian,
     Count,
+    TeethPerInch,
     Ratio,
     Percent,
 }
@@ -56,6 +57,7 @@ impl Unit {
             "deg" => Self::Degree,
             "rad" => Self::Radian,
             "count" => Self::Count,
+            "teeth_per_in" => Self::TeethPerInch,
             "ratio" => Self::Ratio,
             "%" => Self::Percent,
             _ => return None,
@@ -71,6 +73,7 @@ impl Unit {
             Self::Degree => "deg",
             Self::Radian => "rad",
             Self::Count => "count",
+            Self::TeethPerInch => "teeth_per_in",
             Self::Ratio => "ratio",
             Self::Percent => "%",
         }
@@ -82,6 +85,11 @@ impl Unit {
             }
             Self::Degree | Self::Radian => Dimension::ANGLE,
             Self::Count => Dimension::COUNT,
+            Self::TeethPerInch => Dimension {
+                length: -1,
+                angle: 0,
+                count: 1,
+            },
             Self::Ratio | Self::Percent => Dimension::RATIO,
         }
     }
@@ -91,6 +99,7 @@ impl Unit {
             Self::Centimeter => 0.01,
             Self::Meter | Self::Radian | Self::Count | Self::Ratio => 1.0,
             Self::Inch => 0.0254,
+            Self::TeethPerInch => 1. / 0.0254,
             Self::Foot => 0.3048,
             Self::Degree => std::f64::consts::PI / 180.0,
             Self::Percent => 0.01,

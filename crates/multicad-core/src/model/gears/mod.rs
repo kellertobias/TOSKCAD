@@ -1,5 +1,6 @@
 //! Canonical involute gear intent. Native receipts still gate geometry Apply.
 mod bevel;
+mod coverage;
 mod pair;
 mod pair_prepare;
 mod prepare;
@@ -19,6 +20,7 @@ use crate::{
     sketch::Frame,
 };
 pub use bevel::*;
+pub use coverage::*;
 pub use pair::*;
 pub use pair_prepare::*;
 pub use prepare::*;
@@ -56,7 +58,14 @@ pub struct GearParameters {
     pub bevel: Option<BevelDimensions>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worm: Option<WormDimensions>,
+    #[serde(default, skip_serializing_if = "GearPitchInput::is_module")]
+    pub pitch_input: GearPitchInput,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hub: Option<GearHub>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shift_mate: Option<ShiftedSpurMate>,
     pub module_system: GearModuleSystem,
+    /// The sole authored pitch scalar: millimeters for Module, teeth_per_in for DiametralPitch.
     pub module: Dimension,
     pub teeth: Dimension,
     /// Normal or transverse according to module_system; Worm always uses normal pressure with axial module.
@@ -78,7 +87,8 @@ pub struct GearParameters {
     /// This is direct-designed geometry, not a generated cutter trochoid.
     pub root_fillet_ratio: Dimension,
     pub minimum_wall: Dimension,
-    /// Only unshifted full-depth profiles are implemented.
+    /// Rack shift coefficient; nonzero support is bounded to external 20-degree Spur
+    /// with coefficient -0.5..1, subject to undercut, crest and custom-root guards.
     pub profile_shift: Dimension,
     pub frame: PrimitiveFrame,
 }
@@ -89,6 +99,9 @@ impl Default for GearParameters {
             rack: None,
             bevel: None,
             worm: None,
+            pitch_input: GearPitchInput::Module,
+            hub: None,
+            shift_mate: None,
             module_system: GearModuleSystem::Normal,
             module: length(2.),
             teeth: Dimension::Literal {
@@ -120,6 +133,9 @@ fn ratio(value: f64) -> Dimension {
 #[derive(Clone, Debug, PartialEq)]
 pub struct ResolvedGear {
     pub family: GearFamily,
+    pub hub: Option<ResolvedGearHub>,
+    pub profile_shift_coefficient: f64,
+    pub tip_shortening_coefficient: f64,
     pub teeth: u32,
     pub normal_module_mm: f64,
     pub transverse_module_mm: f64,
@@ -146,7 +162,7 @@ pub struct ResolvedGear {
 impl GearParameters {
     fn dimensions(&self) -> Vec<(&Dimension, Unit)> {
         let mut dimensions = vec![
-            (&self.module, Unit::Millimeter),
+            (&self.module, self.pitch_input.unit()),
             (&self.teeth, Unit::Count),
             (&self.pressure_angle, Unit::Degree),
             (&self.face_width, Unit::Millimeter),
@@ -173,11 +189,25 @@ impl GearParameters {
             dimensions.push((&worm.mate_teeth, Unit::Count));
             dimensions.push((&worm.diameter_quotient, Unit::Ratio));
         }
+        if let Some(hub) = &self.hub {
+            dimensions.extend([
+                (&hub.diameter, Unit::Millimeter),
+                (&hub.axial_start, Unit::Millimeter),
+                (&hub.axial_end, Unit::Millimeter),
+            ]);
+        }
+        if let Some(mate) = &self.shift_mate {
+            dimensions.extend([
+                (&mate.teeth, Unit::Count),
+                (&mate.profile_shift, Unit::Ratio),
+            ]);
+        }
         dimensions.extend(self.frame.origin.iter().map(|d| (d, Unit::Millimeter)));
         dimensions
     }
     pub fn validate(&self) -> Result<(), DocumentError> {
         self.frame.validate()?;
+        self.validate_coverage()?;
         for (dimension, unit) in self.dimensions() {
             check_dimension(dimension, unit)?;
         }
@@ -249,7 +279,7 @@ impl GearParameters {
                 "Bevel geometry has no cylindrical rotary radii; use resolve_geometry",
             ));
         }
-        let module = number(&self.module, Unit::Millimeter, parameters)?;
+        let module = self.resolved_module_mm(parameters)?;
         let count = number(&self.teeth, Unit::Count, parameters)?;
         let pressure = number(&self.pressure_angle, Unit::Radian, parameters)?;
         let beta = number(&self.helix_angle, Unit::Radian, parameters)?;
@@ -278,9 +308,13 @@ impl GearParameters {
                 "Gear needs module ≥0.01 mm, 4–128 whole teeth, 14.5–35 degree pressure angle, 0–45 degree helix magnitude, positive width/wall, nonnegative bore/clearance and root-fillet ratio 0.01–0.2",
             ));
         }
-        if shift != 0. {
+        if shift != 0.
+            && (self.family != GearFamily::Spur
+                || (pressure - 20_f64.to_radians()).abs() > 1e-12
+                || !(-0.5..=1.).contains(&shift))
+        {
             return Err(invalid(
-                "Nonzero gear profile shift is not implemented; select an unshifted profile",
+                "Nonzero shift currently requires external 20-degree Spur and coefficient -0.5..1 (engineering coverage bound)",
             ));
         }
         if matches!(self.family, GearFamily::Spur | GearFamily::InternalRing) {
@@ -327,10 +361,20 @@ impl GearParameters {
         // Conservative unshifted policy: no virtual-tooth helix credit or
         // generated undercut relief is assumed by this direct-design model.
         let minimum = (2. / an.sin().powi(2)).ceil() as u32;
-        if count < f64::from(minimum) {
-            return Err(invalid(format!(
-                "This unshifted profile needs at least {minimum} teeth under the conservative normal-angle undercut policy; profile-shifted/undercut geometry is unavailable"
-            )));
+        if (shift == 0. && count < f64::from(minimum))
+            || (shift != 0. && shift < 1. - count * an.sin().powi(2) / 2.)
+        {
+            return Err(invalid(if shift == 0. {
+                format!(
+                    "This unshifted profile needs at least {minimum} teeth under the conservative normal-angle undercut policy; no virtual-tooth helix credit is assumed"
+                )
+            } else {
+                format!(
+                    "The source rack-undercut bound requires profile shift at least {:.9} for {count} teeth at {:.6} degrees; the supplied coefficient is {shift}",
+                    1. - count * an.sin().powi(2) / 2.,
+                    an.to_degrees()
+                )
+            }));
         }
         let teeth = count as u32;
         let internal = self.family == GearFamily::InternalRing;
@@ -345,14 +389,24 @@ impl GearParameters {
         }
         let pitch = mt * count / 2.;
         let base = pitch * at.cos();
-        let tip = pitch + if internal { -module } else { module };
+        let shortening = self.shift_shortening(parameters, count, shift, pressure)?;
+        let tip = pitch
+            + if internal {
+                -module
+            } else {
+                module * (1. + shift - shortening)
+            };
         let root = pitch
             + if internal {
                 1.25 * module
             } else {
-                -1.25 * module
+                module * (-1.25 + shift)
             };
-        let nominal = PI * mt / 2.;
+        let nominal = if shift == 0. {
+            PI * mt / 2.
+        } else {
+            mt * (PI / 2. + 2. * shift * at.tan())
+        };
         let design = nominal - backlash;
         let physical = design - allowance;
         let half_base = physical / (2. * pitch)
@@ -389,6 +443,10 @@ impl GearParameters {
                 "Gear bore leaves insufficient root wall, or clearance leaves a pointed/missing tooth",
             ));
         }
+        if !internal && (!(root < pitch && pitch < tip) || !tip.is_finite()) {
+            return Err(invalid("Shifted profile must retain root < pitch < tip"));
+        }
+        let hub = self.resolve_hub(parameters, root, bore / 2., wall, width)?;
         let sign = if self.hand == GearHand::Left { -1. } else { 1. };
         let twist = sign * beta.tan() / pitch;
         if (twist * width).abs() > PI {
@@ -396,8 +454,11 @@ impl GearParameters {
                 "Gear face width and helix angle exceed the bounded half-turn sweep",
             ));
         }
-        Ok(ResolvedGear {
+        let resolved = ResolvedGear {
             family: self.family,
+            hub,
+            profile_shift_coefficient: shift,
+            tip_shortening_coefficient: shortening,
             teeth,
             normal_module_mm: mn,
             transverse_module_mm: mt,
@@ -420,7 +481,11 @@ impl GearParameters {
             twist_rad_per_mm: twist,
             minimum_unshifted_teeth: minimum,
             frame: self.frame.resolve(parameters)?,
-        })
+        };
+        if shift != 0. || self.shift_mate.is_some() {
+            coverage::validate_shifted_profile(&resolved)?;
+        }
+        Ok(resolved)
     }
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

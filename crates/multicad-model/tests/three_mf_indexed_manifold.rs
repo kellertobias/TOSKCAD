@@ -292,6 +292,117 @@ fn canonical_print_export_has_real_closed_indices_without_mutating_source() {
     assert_eq!(s.document(), &before);
     assert_eq!(s.revision(), 1);
 }
+
+#[test]
+fn shifted_gear_with_intrinsic_hub_and_dp_source_exports_one_closed_bored_print_object() {
+    use multicad_core::constraint_sketch::Dimension;
+    use multicad_core::model::{
+        GearFamily, GearHand, GearHub, GearParameters, GearPitchInput, GearRequest, angle, ratio,
+    };
+    for family in [
+        GearFamily::Spur,
+        GearFamily::Helical,
+        GearFamily::Herringbone,
+        GearFamily::DoubleHelical,
+    ] {
+        let mut s = Session::new(Document::new("Retained DP hub print").unwrap()).unwrap();
+        let actor = Actor::local(Channel::Ui);
+        let request = GearRequest::new(
+            "Shifted DP hub",
+            GearParameters {
+                family,
+                helix_angle: angle(if family == GearFamily::Spur { 0. } else { 20. }),
+                hand: if family == GearFamily::Spur {
+                    GearHand::None
+                } else {
+                    GearHand::Right
+                },
+                center_gap: length(if family == GearFamily::DoubleHelical {
+                    0.5
+                } else {
+                    0.
+                }),
+                pitch_input: GearPitchInput::DiametralPitch,
+                module: Dimension::Literal {
+                    value: 25.4,
+                    unit: "teeth_per_in".into(),
+                },
+                face_width: length(4.),
+                bore_diameter: length(2.),
+                backlash: length(0.02),
+                root_fillet_ratio: ratio(0.2),
+                profile_shift: ratio(if family == GearFamily::Spur { 0.2 } else { 0. }),
+                minimum_wall: length(0.5),
+                hub: Some(GearHub {
+                    diameter: length(8.),
+                    axial_start: length(-2.),
+                    axial_end: length(6.),
+                }),
+                ..Default::default()
+            },
+        );
+        let prepared = model::prepare_gear(&s, 0, actor.clone(), &request).unwrap();
+        s.commit(prepared.prepared).unwrap();
+        let before = s.document().clone();
+        let print = PrintRequest {
+            source: PrintSource::Parts {
+                parts: vec![request.body],
+            },
+            aids: AidPolicy::ExcludeRemovable,
+            quality: MeshQuality::default(),
+            stl_per_part: true,
+        };
+        let exporter = Exporter::default();
+        let preview = exporter
+            .print_preview(s.document(), 1, &print, &actor, None)
+            .unwrap();
+        assert!(preview.can_write());
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("gear.3mf");
+        let receipt = exporter
+            .write_print(s.document(), 1, &print, &preview.key, &path, &actor, None)
+            .unwrap();
+        assert_eq!(receipt.files.len(), 2);
+        let parsed = parse(&std::fs::read(&path).unwrap());
+        assert_eq!(parsed.objects.len(), 1);
+        assert_eq!(parsed.items.len(), 1);
+        let mesh = &parsed.objects[0];
+        assert_eq!(manifold(mesh), 1);
+        let vertices = mesh.vertices.len() as i64;
+        let faces = mesh.triangles.len() as i64;
+        assert_eq!(
+            vertices - 3 * faces / 2 + faces,
+            0,
+            "A single through bore retains a toroidal shell"
+        );
+        let volume = mesh::volume(&mesh.vertices, &mesh.triangles);
+        assert!(volume > 1000.);
+        for (axis, expected_min, expected_max) in [(2, -2., 6.)] {
+            let min = mesh
+                .vertices
+                .iter()
+                .map(|v| v[axis])
+                .fold(f64::INFINITY, f64::min);
+            let max = mesh
+                .vertices
+                .iter()
+                .map(|v| v[axis])
+                .fold(f64::NEG_INFINITY, f64::max);
+            assert!((min - expected_min).abs() < 1e-6);
+            assert!((max - expected_max).abs() < 1e-6);
+        }
+        let stl = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .find(|p| p.extension().is_some_and(|s| s == "stl"))
+            .unwrap();
+        let stl = mesh::read_stl(&std::fs::read(stl).unwrap()).unwrap();
+        assert!((stl.volume_mm3() - volume).abs() < 0.005);
+        assert_eq!(s.document(), &before);
+        assert_eq!(s.revision(), 1);
+    }
+}
+
 #[test]
 fn actual_za_worm_and_generated_wheel_keep_all_native_triangles_and_indexed_closure() {
     let policy = Default::default();

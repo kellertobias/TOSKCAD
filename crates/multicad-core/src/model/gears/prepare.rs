@@ -108,23 +108,34 @@ fn prepare_gear_edit_impl(
     if !pair_edit
         && (matches!(
             source.parameters.family,
-            GearFamily::Bevel | GearFamily::Worm
-        ) || matches!(parameters.family, GearFamily::Bevel | GearFamily::Worm))
+            GearFamily::Bevel | GearFamily::Worm | GearFamily::Spur
+        ) || matches!(
+            parameters.family,
+            GearFamily::Bevel | GearFamily::Worm | GearFamily::Spur
+        ))
     {
         let old = &source.parameters;
-        let coupled_changed = old.family != parameters.family
-            || old.teeth != parameters.teeth
-            || old.bevel != parameters.bevel
-            || old.worm != parameters.worm
-            || old.module_system != parameters.module_system
-            || old.module != parameters.module
-            || old.pressure_angle != parameters.pressure_angle
-            || old.face_width != parameters.face_width;
+        let shifted = old.shift_mate.is_some() || parameters.shift_mate.is_some();
+        let coupled_changed = (shifted
+            || matches!(old.family, GearFamily::Bevel | GearFamily::Worm)
+            || matches!(parameters.family, GearFamily::Bevel | GearFamily::Worm))
+            && (old.family != parameters.family
+                || old.teeth != parameters.teeth
+                || old.bevel != parameters.bevel
+                || old.worm != parameters.worm
+                || old.pitch_input != parameters.pitch_input
+                || old.hub != parameters.hub
+                || old.shift_mate != parameters.shift_mate
+                || old.profile_shift != parameters.profile_shift
+                || old.module_system != parameters.module_system
+                || old.module != parameters.module
+                || old.pressure_angle != parameters.pressure_angle
+                || old.face_width != parameters.face_width);
         if coupled_changed && session.document().entities().any(|entity| {
             matches!(&entity.data, EntityData::Extension { definition, .. } if definition.type_id == GEAR_PAIR_TYPE)
                 && read_gear_pair(session.document(), entity.id).is_ok_and(|pair| pair.parameters.gears.contains(&feature))
         }) {
-            return Err(crate::model::common::error("Edit coupled bevel or worm dimensions through the complete pair so both recipes and placements update atomically"));
+            return Err(crate::model::common::error("Edit coupled gear dimensions through the complete pair so both recipes and placements update atomically"));
         }
     }
     source.parameters = parameters.clone();

@@ -884,6 +884,40 @@ pub fn required_capabilities(document: &Document) -> BTreeSet<String> {
         .collect();
     if saved_feature_matches(document, |type_id, data| {
         type_id == super::GEAR_TYPE
+            && (data
+                .pointer("/parameters/pitch_input")
+                .and_then(serde_json::Value::as_str)
+                == Some("diametral_pitch")
+                || data
+                    .pointer("/parameters/hub")
+                    .is_some_and(|v| !v.is_null())
+                || data
+                    .pointer("/parameters/shift_mate")
+                    .is_some_and(|v| !v.is_null())
+                || data.pointer("/parameters/profile_shift").is_some_and(|v| {
+                    v.get("value").and_then(serde_json::Value::as_f64) != Some(0.)
+                }))
+    }) {
+        capabilities.insert(super::GEAR_COVERAGE_CAPABILITY.into());
+    }
+    fn has_pitch_unit(v: &serde_json::Value) -> bool {
+        match v {
+            serde_json::Value::Object(fields) => {
+                fields.get("unit").and_then(serde_json::Value::as_str) == Some("teeth_per_in")
+                    || fields.values().any(has_pitch_unit)
+            }
+            serde_json::Value::Array(values) => values.iter().any(has_pitch_unit),
+            _ => false,
+        }
+    }
+    if document
+        .entities()
+        .any(|entity| serde_json::to_value(entity).is_ok_and(|v| has_pitch_unit(&v)))
+    {
+        capabilities.insert(super::TEETH_PER_INCH_CAPABILITY.into());
+    }
+    if saved_feature_matches(document, |type_id, data| {
+        type_id == super::GEAR_TYPE
             && data
                 .pointer("/parameters/family")
                 .and_then(serde_json::Value::as_str)

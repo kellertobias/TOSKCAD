@@ -137,6 +137,9 @@ mod ffi {
         height: f64,
         bore: f64,
         outer: f64,
+        hub_radius: f64,
+        hub_start: f64,
+        hub_end: f64,
         twist: f64,
         gap: f64,
         style: u8,
@@ -634,7 +637,7 @@ pub use threads::{
     RoundedHelicalThread, ThreadFactoryStats, thread_factory_stats,
 };
 mod gears;
-pub use gears::{GearSweep, InvoluteGear};
+pub use gears::{GearHub, GearSweep, InvoluteGear};
 mod bevel;
 pub use bevel::SphericalBevelGear;
 mod worm;

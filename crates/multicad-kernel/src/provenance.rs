@@ -102,6 +102,9 @@ impl Solid {
                 }
                 2 => "gear/bore".into(),
                 3 => "gear/root.core".into(),
+                9 => "gear/hub.side".into(),
+                10 => "gear/hub.end.start".into(),
+                11 => "gear/hub.end.end".into(),
                 8 if matches!(sweep, crate::GearSweep::InternalSpur { .. }) => {
                     "gear/rim.outer".into()
                 }

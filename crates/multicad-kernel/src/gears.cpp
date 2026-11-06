@@ -271,13 +271,17 @@ std::unique_ptr<Shape> involute_gear(const GearData&s) {
   try {
     if(s.style==4)return internal_ring(s);
     for(double v:{s.pitch_radius,s.base_radius,s.tip_radius,s.root_radius,s.fillet_radius,
-        s.half_base,s.height,s.bore,s.twist,s.gap,s.tolerance})
+        s.half_base,s.height,s.bore,s.twist,s.gap,s.hub_radius,s.hub_start,s.hub_end,s.tolerance})
       if(!std::isfinite(v))throw std::runtime_error("Nonfinite native gear input");
     if(s.teeth<4||s.teeth>128||s.style>3||s.base_radius<=0||s.pitch_radius<s.base_radius||
         s.root_radius<=0||s.root_radius>=s.pitch_radius||s.tip_radius<=s.pitch_radius||
         s.fillet_radius<=0||s.bore<0||s.bore>=s.root_radius||s.height<=0||s.tolerance<=0||
         s.gap<0||s.gap>=s.height||std::abs(s.twist*s.height)>pi)
       throw std::runtime_error("Native gear exceeds its validated input bounds");
+    if(s.hub_radius<0 || (s.hub_radius>0 &&
+        (s.hub_radius>=s.root_radius || s.hub_radius<=s.bore ||
+         s.hub_end<=s.hub_start || std::min(s.hub_end,s.height)-std::max(s.hub_start,0.)<=s.tolerance)))
+      throw std::runtime_error("Native gear hub has no connected overlap, root clearance or bore wall");
     Built built;
     if(s.style<2)built=sweep(s,s.height,s.twist*s.height,0,0,6);
     else {
@@ -289,8 +293,21 @@ std::unique_ptr<Shape> involute_gear(const GearData&s) {
       BRepAlgoAPI_Fuse lower;built=boolean(lower,built,sweep(s,band,s.twist*band,0,0,6));
       BRepAlgoAPI_Fuse upper;built=boolean(upper,built,sweep(s,band,-s.twist*band,s.twist*band,s.height-band,7));
     }
+    if(s.hub_radius>0) {
+      Built hub{BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(0,0,s.hub_start),gp_Dir(0,0,1)),
+          s.hub_radius,s.hub_end-s.hub_start).Shape(),{}};
+      for(TopExp_Explorer it(hub.shape,TopAbs_FACE);it.More();it.Next()) {
+        const BRepAdaptor_Surface surface(TopoDS::Face(it.Current()));
+        const uint8_t role=surface.GetType()==GeomAbs_Cylinder?9:
+            (std::abs(surface.Plane().Location().Z()-s.hub_start)<s.tolerance*16?10:11);
+        hub.faces.push_back({it.Current(),0,role});
+      }
+      BRepAlgoAPI_Fuse fuse;built=boolean(fuse,built,hub);
+    }
     if(s.bore>0) {
-      Built tool{BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(0,0,-1),gp_Dir(0,0,1)),s.bore,s.height+2).Shape(),{}};
+      const double low=s.hub_radius>0?std::min(0.,s.hub_start):0.;
+      const double high=s.hub_radius>0?std::max(s.height,s.hub_end):s.height;
+      Built tool{BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(0,0,low-1),gp_Dir(0,0,1)),s.bore,high-low+2).Shape(),{}};
       BRepAlgoAPI_Cut cut;built=boolean(cut,built,tool);
     }
     if(!BRepCheck_Analyzer(built.shape).IsValid())throw std::runtime_error("Finished native gear is invalid");
@@ -317,11 +334,12 @@ std::unique_ptr<Shape> involute_gear(const GearData&s) {
         else if(s.style==3&&std::abs(z-(s.height-s.gap)/2)<s.tolerance*16)cap=4;
         else if(s.style==3&&std::abs(z-(s.height+s.gap)/2)<s.tolerance*16)cap=5;
       }
-      if(cap>=0) {result->seeds.push_back({static_cast<uint32_t>(i-1),0,static_cast<uint8_t>(cap)});continue;}
+      bool found=false;
+      if(cap>=0) {result->seeds.push_back({static_cast<uint32_t>(i-1),0,static_cast<uint8_t>(cap)});found=true;}
       if(s.bore>0&&surface.GetType()==GeomAbs_Cylinder&&std::abs(surface.Cylinder().Radius()-s.bore)<s.tolerance*16) {
         result->seeds.push_back({static_cast<uint32_t>(i-1),0,2});continue;
       }
-      bool found=false;for(const auto &source:built.faces)if(source.face.IsSame(faces(i))) {
+      for(const auto &source:built.faces)if(source.face.IsSame(faces(i))) {
         result->seeds.push_back({static_cast<uint32_t>(i-1),source.source,source.role});found=true;
       }
       if(!found)throw std::runtime_error("Gear face has no exact native ancestry");

@@ -264,6 +264,7 @@ impl GearPairParameters {
         self.validate()?;
         super::bevel::validate_bevel_pair_sources(recipes)?;
         super::worm::validate_worm_pair_sources(recipes)?;
+        super::coverage::validate_shifted_pair_sources(recipes)?;
         let gears = [
             recipes[0].resolve_geometry(evaluated)?,
             recipes[1].resolve_geometry(evaluated)?,
@@ -344,7 +345,20 @@ impl GearPairParameters {
                 "Gear pair drive angle exceeds the bounded 1000-turn coordinate",
             ));
         }
-        let center = if internal {
+        let shifted = a.profile_shift_coefficient != 0.
+            || b.profile_shift_coefficient != 0.
+            || recipes.iter().any(|p| p.shift_mate.is_some());
+        if shifted && recipes.iter().any(|p| p.shift_mate.is_none()) {
+            return Err(invalid(
+                "Shifted pairs require retained matched mate contexts on both members",
+            ));
+        }
+        if internal && shifted {
+            return Err(invalid("Shifted internal pairs are unavailable"));
+        }
+        let center = if shifted {
+            shifted_spur_pair_geometry(a, b)?.center_distance_mm
+        } else if internal {
             (a.pitch_radius_mm - b.pitch_radius_mm).abs()
         } else {
             a.pitch_radius_mm + b.pitch_radius_mm

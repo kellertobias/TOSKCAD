@@ -3,7 +3,8 @@ use multicad_core::{
     references::{AnalyticGeometry, TopologyKind},
 };
 use multicad_kernel::{
-    BooleanOperation, GearSweep, GeometryPolicy, InvoluteGear, MeshOptions, RigidTransform, Solid,
+    BooleanOperation, GearHub, GearSweep, GeometryPolicy, InvoluteGear, MeshOptions,
+    RigidTransform, Solid,
 };
 use std::f64::consts::{PI, TAU};
 
@@ -25,12 +26,199 @@ fn normal(teeth: u32, beta: f64, sweep: GearSweep) -> InvoluteGear {
             - 0.05 / (2. * pitch),
         face_width_mm: 8.,
         bore_radius_mm: 2.,
+        hub: None,
         twist_rad_per_mm: beta.tan() / pitch,
         sweep,
     }
 }
 fn build(spec: InvoluteGear) -> Solid {
     Solid::involute_gear_named(spec, EntityId::new(), GeometryPolicy::default()).unwrap()
+}
+
+#[test]
+fn intrinsic_hubs_extend_one_solid_and_one_continuous_bore_with_exact_face_ancestry() {
+    for (beta, sweep) in [
+        (0., GearSweep::Spur),
+        (20_f64.to_radians(), GearSweep::Helical),
+        (20_f64.to_radians(), GearSweep::Chevron),
+        (20_f64.to_radians(), GearSweep::GappedChevron { gap_mm: 2. }),
+    ] {
+        let base = normal(20, beta, sweep);
+        let plain = build(base);
+        let feature = EntityId::new();
+        let spec = InvoluteGear {
+            hub: Some(GearHub {
+                radius_mm: 10.,
+                axial_start_mm: -3.,
+                axial_end_mm: 11.,
+            }),
+            ..base
+        };
+        let solid = Solid::involute_gear_named(spec, feature, GeometryPolicy::default()).unwrap();
+        assert_eq!(solid.solid_count().unwrap(), 1);
+        let added = 6. * PI * (100. - base.bore_radius_mm.powi(2));
+        assert!((solid.volume_mm3().unwrap() - plain.volume_mm3().unwrap() - added).abs() < 0.005);
+        let bounds = solid.bounds().unwrap();
+        assert!((bounds.min[2] + 3.).abs() < 1e-6);
+        assert!((bounds.max[2] - 11.).abs() < 1e-6);
+        for z in [-2.3, 0.3, 4., 7.7, 10.3] {
+            assert!(probe(&solid, 0., 0., z) < 1e-5);
+            assert!(probe(&solid, base.bore_radius_mm - 0.1, 0., z) < 1e-5);
+            assert!(probe(&solid, base.bore_radius_mm + 0.1, 0., z) > 0.999);
+        }
+        for z in [-2.3, 10.3] {
+            assert!(probe(&solid, 9.9, 0., z) > 0.999);
+            assert!(probe(&solid, 10.1, 0., z) < 1e-5);
+        }
+        if matches!(sweep, GearSweep::GappedChevron { .. }) {
+            assert!(probe(&solid, base.pitch_radius_mm, 0., 4.) < 1e-5);
+        }
+        let snapshot = solid.topology_snapshot(feature, 0).unwrap();
+        for role in [
+            "gear/hub.side",
+            "gear/hub.end.start",
+            "gear/hub.end.end",
+            "gear/bore",
+            "gear/end.start",
+            "gear/end.end",
+        ] {
+            assert!(
+                snapshot
+                    .elements
+                    .iter()
+                    .any(|e| e.key.kind == TopologyKind::Face
+                        && e.origins
+                            .iter()
+                            .any(|o| o.source == feature && o.role == role)),
+                "{sweep:?}: {role}"
+            );
+        }
+        assert!(
+            snapshot
+                .elements
+                .iter()
+                .filter(|e| e.key.kind == TopologyKind::Face)
+                .all(|e| !e.origins.is_empty())
+        );
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("hub.step");
+        solid.write_step(&path).unwrap();
+        let read = Solid::read_step(&path, GeometryPolicy::default()).unwrap();
+        assert_eq!(read.solid_count().unwrap(), 1);
+        assert!((read.volume_mm3().unwrap() - solid.volume_mm3().unwrap()).abs() < 0.005);
+        for z in [-2.3, 4., 10.3] {
+            assert!(probe(&read, base.bore_radius_mm - 0.1, 0., z) < 1e-5);
+            assert!(probe(&read, base.bore_radius_mm + 0.1, 0., z) > 0.999);
+        }
+    }
+}
+
+#[test]
+fn detached_thin_root_erasing_and_nonfinite_hubs_are_rejected() {
+    let base = normal(20, 0., GearSweep::Spur);
+    for hub in [
+        GearHub {
+            radius_mm: 10.,
+            axial_start_mm: 9.,
+            axial_end_mm: 11.,
+        },
+        GearHub {
+            radius_mm: 10.,
+            axial_start_mm: -2.,
+            axial_end_mm: 0.,
+        },
+        GearHub {
+            radius_mm: 10.,
+            axial_start_mm: 2.,
+            axial_end_mm: 2.,
+        },
+        GearHub {
+            radius_mm: 1.,
+            axial_start_mm: -2.,
+            axial_end_mm: 2.,
+        },
+        GearHub {
+            radius_mm: base.root_radius_mm,
+            axial_start_mm: -2.,
+            axial_end_mm: 2.,
+        },
+        GearHub {
+            radius_mm: f64::NAN,
+            axial_start_mm: -2.,
+            axial_end_mm: 2.,
+        },
+        GearHub {
+            radius_mm: 10.,
+            axial_start_mm: f64::NEG_INFINITY,
+            axial_end_mm: 2.,
+        },
+    ] {
+        assert!(
+            Solid::involute_gear_named(
+                InvoluteGear {
+                    hub: Some(hub),
+                    ..base
+                },
+                EntityId::new(),
+                GeometryPolicy::default()
+            )
+            .is_err(),
+            "{hub:?}"
+        );
+    }
+}
+
+#[test]
+fn coincident_or_hidden_hub_caps_preserve_every_surviving_face_and_gear_end() {
+    let base = normal(20, 0., GearSweep::Spur);
+    let plain = build(base).volume_mm3().unwrap();
+    for (start, end, extension) in [(-3., 8., 3.), (0., 11., 3.), (0., 8., 0.)] {
+        let feature = EntityId::new();
+        let solid = Solid::involute_gear_named(
+            InvoluteGear {
+                hub: Some(GearHub {
+                    radius_mm: 10.,
+                    axial_start_mm: start,
+                    axial_end_mm: end,
+                }),
+                ..base
+            },
+            feature,
+            GeometryPolicy::default(),
+        )
+        .unwrap();
+        assert_eq!(solid.solid_count().unwrap(), 1);
+        assert!((solid.volume_mm3().unwrap() - plain - extension * PI * 96.).abs() < 0.005);
+        let snapshot = solid.topology_snapshot(feature, 0).unwrap();
+        assert!(
+            snapshot
+                .elements
+                .iter()
+                .filter(|e| e.key.kind == TopologyKind::Face)
+                .all(|e| !e.origins.is_empty())
+        );
+        for role in ["gear/end.start", "gear/end.end", "gear/bore"] {
+            assert!(
+                snapshot
+                    .elements
+                    .iter()
+                    .any(|e| e.origins.iter().any(|o| o.role == role))
+            );
+        }
+        if extension > 0. {
+            let role = if start < 0. {
+                "gear/hub.end.start"
+            } else {
+                "gear/hub.end.end"
+            };
+            assert!(
+                snapshot
+                    .elements
+                    .iter()
+                    .any(|e| e.origins.iter().any(|o| o.role == role))
+            );
+        }
+    }
 }
 fn probe(solid: &Solid, r: f64, a: f64, z: f64) -> f64 {
     let size = 0.005;

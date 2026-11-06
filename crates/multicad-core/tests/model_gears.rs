@@ -104,7 +104,7 @@ fn unsupported_families_and_unsafe_or_ambiguous_profiles_fail_closed() {
     }
     let invalid = [
         GearParameters {
-            profile_shift: scalar(0.1, "ratio"),
+            profile_shift: scalar(1.01, "ratio"),
             ..Default::default()
         },
         GearParameters {

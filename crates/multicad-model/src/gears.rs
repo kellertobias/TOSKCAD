@@ -6,7 +6,7 @@ use multicad_core::{
     parameters::EvaluatedParameters,
 };
 use multicad_kernel::{
-    GearSweep, GeneratedZaWormWheel, GeometryPolicy, InvoluteGear, RigidTransform, Solid,
+    GearHub, GearSweep, GeneratedZaWormWheel, GeometryPolicy, InvoluteGear, RigidTransform, Solid,
     SphericalBevelGear, StraightRack, ZaWorm,
 };
 
@@ -94,6 +94,11 @@ pub(crate) fn specification(
         half_base_angle_rad: r.half_base_angle_rad,
         face_width_mm: r.face_width_mm,
         bore_radius_mm: r.bore_radius_mm,
+        hub: r.hub.as_ref().map(|hub| GearHub {
+            radius_mm: hub.radius_mm,
+            axial_start_mm: hub.axial_start_mm,
+            axial_end_mm: hub.axial_end_mm,
+        }),
         twist_rad_per_mm: r.twist_rad_per_mm,
         sweep,
     }))

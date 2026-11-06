@@ -11,6 +11,7 @@ fn ring(teeth: u32, thinning: f64) -> InvoluteGear {
     let a = 20_f64.to_radians();
     let pitch = f64::from(teeth) / 2.;
     InvoluteGear {
+        hub: None,
         teeth,
         pitch_radius_mm: pitch,
         base_radius_mm: pitch * a.cos(),

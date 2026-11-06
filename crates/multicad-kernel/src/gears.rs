@@ -12,6 +12,13 @@ pub enum GearSweep {
     GappedChevron { gap_mm: f64 },
 }
 #[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GearHub {
+    pub radius_mm: f64,
+    /// Axial coordinates in the gear's local frame, whose tooth band is 0..width.
+    pub axial_start_mm: f64,
+    pub axial_end_mm: f64,
+}
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct InvoluteGear {
     pub teeth: u32,
     pub pitch_radius_mm: f64,
@@ -24,6 +31,7 @@ pub struct InvoluteGear {
     pub half_base_angle_rad: f64,
     pub face_width_mm: f64,
     pub bore_radius_mm: f64,
+    pub hub: Option<GearHub>,
     /// Rotation of the transverse section per axial millimetre. The sign
     /// defines hand; Chevron reverses it at the middle of the face width.
     pub twist_rad_per_mm: f64,
@@ -39,6 +47,23 @@ fn failure(kind: GeometryErrorKind, message: impl Into<String>) -> GeometryError
 impl InvoluteGear {
     fn checked(self, policy: GeometryPolicy) -> Result<ffi::GearData, GeometryError> {
         policy.validate()?;
+        if let Some(hub) = self.hub {
+            policy.length(hub.radius_mm)?;
+            policy.length(hub.axial_end_mm - hub.axial_start_mm)?;
+            policy.point([0., 0., hub.axial_start_mm])?;
+            policy.point([0., 0., hub.axial_end_mm])?;
+            let overlap = hub.axial_end_mm.min(self.face_width_mm) - hub.axial_start_mm.max(0.);
+            if matches!(self.sweep, GearSweep::InternalSpur { .. })
+                || hub.radius_mm > self.root_radius_mm - policy.minimum_feature_mm
+                || hub.radius_mm - self.bore_radius_mm < policy.minimum_feature_mm
+                || overlap < policy.minimum_feature_mm
+            {
+                return Err(failure(
+                    GeometryErrorKind::Input,
+                    "External gear hub needs a positive axial overlap, a bore wall and clearance below the tooth root",
+                ));
+            }
+        }
         if let GearSweep::InternalSpur { outer_radius_mm } = self.sweep {
             return self.checked_internal(outer_radius_mm, policy);
         }
@@ -110,6 +135,9 @@ impl InvoluteGear {
             half_base: self.half_base_angle_rad,
             height: self.face_width_mm,
             bore: self.bore_radius_mm,
+            hub_radius: self.hub.map_or(0., |h| h.radius_mm),
+            hub_start: self.hub.map_or(0., |h| h.axial_start_mm),
+            hub_end: self.hub.map_or(0., |h| h.axial_end_mm),
             outer: 0.,
             twist: self.twist_rad_per_mm,
             gap,
@@ -169,6 +197,9 @@ impl InvoluteGear {
             half_base: self.half_base_angle_rad,
             height: self.face_width_mm,
             bore: 0.,
+            hub_radius: 0.,
+            hub_start: 0.,
+            hub_end: 0.,
             outer,
             twist: 0.,
             gap: 0.,
