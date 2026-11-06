@@ -31,6 +31,9 @@ pub fn dependency_hash(
                 .or(crate::model::screw_connection_axis_pose_projection(
                     document, entity.id,
                 )?)
+                .or(crate::model::connection_receiver_pose_projection(
+                    document, entity.id,
+                )?)
                 .or(crate::sketch_external::external_pose_projection(
                     document, entity.id,
                 )?)

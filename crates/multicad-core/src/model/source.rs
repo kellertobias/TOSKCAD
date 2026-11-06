@@ -706,6 +706,9 @@ pub(crate) fn validate(document: &Document) -> Result<(), DocumentError> {
                 super::PRIMITIVE_TYPE => {
                     super::read_primitive(document, entity.id)?;
                 }
+                super::CONNECTION_RECEIVER_TYPE => {
+                    super::read_connection_receiver(document, entity.id)?;
+                }
                 super::THREAD_TYPE => {
                     super::read_thread(document, entity.id)?;
                 }
@@ -756,6 +759,16 @@ fn saved_feature_matches(
     document: &Document,
     needs_reader: impl Fn(&str, &serde_json::Value) -> bool,
 ) -> bool {
+    let needs_reader = |type_id: &str, data: &serde_json::Value| {
+        needs_reader(type_id, data)
+            || (type_id == super::CONNECTION_RECEIVER_TYPE
+                && data.pointer("/cut/thread").is_some_and(|thread| {
+                    needs_reader(
+                        super::THREAD_TYPE,
+                        &serde_json::json!({"parameters":thread}),
+                    )
+                }))
+    };
     document.entities().any(|entity| match &entity.data {
         EntityData::Feature { definition, .. } => {
             needs_reader(&definition.type_id, &definition.data)
@@ -822,6 +835,7 @@ pub fn required_capabilities(document: &Document) -> BTreeSet<String> {
                 if [
                     EXTRUDE_TYPE,
                     super::PRIMITIVE_TYPE,
+                    super::CONNECTION_RECEIVER_TYPE,
                     super::THREAD_TYPE,
                     super::GEAR_TYPE,
                     super::MECHANICAL_PART_TYPE,
@@ -1005,6 +1019,10 @@ pub fn required_capabilities(document: &Document) -> BTreeSet<String> {
     }
     // Reusable symbol templates retain provider source without active features.
     for (type_id, capability) in [
+        (
+            super::CONNECTION_RECEIVER_TYPE,
+            super::CONNECTION_RECEIVER_CAPABILITY,
+        ),
         (super::THREAD_TYPE, super::THREAD_CAPABILITY),
         (
             super::MECHANICAL_PART_TYPE,

@@ -56,6 +56,9 @@ impl Document {
         if let Some(deps) = crate::model::screw_axis_evaluation_dependencies(self, id)? {
             return Ok(deps);
         }
+        if let Some(deps) = crate::model::connection_receiver_evaluation_dependencies(self, id)? {
+            return Ok(deps);
+        }
         crate::model::transfer_evaluation_dependencies(self, id)
     }
     fn edges(&self) -> Result<BTreeMap<EntityId, BTreeSet<EntityId>>, DocumentError> {

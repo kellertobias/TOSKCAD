@@ -28,6 +28,9 @@ fn provider(d: &Definition) -> Result<(), DocumentError> {
         model::PRIMITIVE_TYPE => {
             model::PrimitiveDefinition::from_definition(d)?;
         }
+        model::CONNECTION_RECEIVER_TYPE => {
+            model::ConnectionReceiverDefinition::from_definition(d)?;
+        }
         model::THREAD_TYPE => {
             model::ThreadDefinition::from_definition(d)?;
         }
