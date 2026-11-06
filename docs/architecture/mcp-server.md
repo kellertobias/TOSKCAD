@@ -300,6 +300,18 @@ Unsupported classes, sizes, modes, multiple starts and out-of-class allowances
 fail before commit. Nested mechanical-part inspection exposes the same
 `metric_fit` receipt; existing catalog definitions are not upgraded silently.
 
+The optional `metric_fit_engagement` recipe accepts
+`{"kind":"intended_length","length":{"value":3,"unit":"mm"}}` or
+`{"kind":"normal_group_assumed"}`. Intended length also accepts a bound
+expression. Physical thread length stays independent; an explicit group
+assumption supplies no numeric or verified engagement. Omission/null preserves
+an edit's saved intent. `clear_metric_fit_engagement:true` restores the legacy
+complete-profile rule and cannot accompany a replacement. Thread and nested
+hardware inspection report `resolved.metric_fit_engagement` with its basis,
+intended length (null for assumed), complete-profile interval and normal limits.
+This does not prove assembled overlap, strength or blind clearance. See the
+[fit reference](threads.md#metric-fit-classes) for source and reader capability.
+
 Standalone metric `end_treatments` is an explicit replacement object with
 `start` and `end` entries. Start is `"flat_cut"` or
 `{"chamfer45":{"radial_depth":{"value":0.2,"unit":"mm"}}}`. End is

@@ -205,9 +205,21 @@ pub struct ThreadArgs {
     #[serde(flatten)]
     pub recipe: ThreadRecipeArgs,
 }
+#[derive(Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum MetricFitEngagementArgs {
+    IntendedLength { length: Quantity },
+    NormalGroupAssumed {},
+}
 #[derive(Default, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ThreadRecipeArgs {
+    /// Separate metric fit context from physical thread length. Omitted edits retain it.
+    #[serde(default)]
+    pub metric_fit_engagement: Option<MetricFitEngagementArgs>,
+    /// Restore legacy complete-profile engagement validation.
+    #[serde(default)]
+    pub clear_metric_fit_engagement: bool,
     /// Replace custom metric endpoint geometry. Omitted edits retain it.
     #[serde(default)]
     pub end_treatments: Option<ThreadEndTreatmentsArgs>,
@@ -414,6 +426,26 @@ pub(super) fn parameters(
     evaluated: &EvaluatedParameters,
 ) -> Result<ThreadParameters, ToolError> {
     let mut p = previous.cloned().unwrap_or_default();
+    if args.clear_metric_fit_engagement && args.metric_fit_engagement.is_some() {
+        return Err(ToolError::invalid(
+            "Choose metric_fit_engagement or clear_metric_fit_engagement, not both",
+        ));
+    }
+    if args.clear_metric_fit_engagement {
+        p.metric_fit_engagement = None;
+    }
+    if let Some(intent) = &args.metric_fit_engagement {
+        p.metric_fit_engagement = Some(match intent {
+            MetricFitEngagementArgs::IntendedLength { length } => {
+                model::MetricFitEngagement::IntendedLength {
+                    length: length.dimension(document, evaluated)?.0,
+                }
+            }
+            MetricFitEngagementArgs::NormalGroupAssumed {} => {
+                model::MetricFitEngagement::NormalGroupAssumed {}
+            }
+        });
+    }
     if args.clear_end_treatments && args.end_treatments.is_some() {
         return Err(ToolError::invalid(
             "Choose replacement end_treatments or clear_end_treatments, not both",
@@ -627,6 +659,7 @@ pub(super) fn thread_profiles(_: &dyn Host, _: &Request, _: NoArgs) -> ToolResul
         "metric_source":model::METRIC_THREAD_SOURCE_URL,
         "metric_fit_source":model::METRIC_FIT_SOURCE,"metric_fit_source_url":model::METRIC_FIT_SOURCE_URL,"metric_root_source_url":model::METRIC_ROOT_SOURCE_URL,
         "metric_fit_presets":model::metric_fit_presets(),
+        "metric_fit_engagement":{"kinds":["intended_length","normal_group_assumed"],"omitted":"legacy complete-profile length","source_url":model::METRIC_ROOT_SOURCE_URL,"scope":"IS14962-1:2001 clause12 supports explicit normal-group assumption when engagement is unknown. Intent does not prove actual mating overlap, strength or blind clearance; physical geometry and original normal intervals remain independently validated."},
         "end_treatments":{"family":"iso_metric","starts":[1],"representation":"modeled","standalone_thread_only":true,"start":["flat_cut","chamfer45"],"end":["flat_cut","cylindrical_relief"],"scope":"Custom engineering dimensions inside unchanged authored length; retains at least one full pitch. No DIN76 shoulder relief or natural helical runout."},
         "representation_binding":{"parameter_unit":"count","values":{"0":"cosmetic_envelope","1":"modeled"},"authority":"representation_parameter when present; literal otherwise","clear":"clear_representation_parameter","scope":"Exact evaluated values only; omitted edits retain the binding."},
         "metric_presets":model::metric_thread_presets().into_iter().map(|p|json!({"designation":p.designation,"diameter_mm":p.diameter_mm,"pitch_mm":p.pitch_mm})).collect::<Vec<_>>(),
@@ -654,7 +687,7 @@ pub(super) fn inspect_thread(host: &dyn Host, _: &Request, args: InspectThreadAr
     let source = model::read_thread(&document, feature)?;
     let resolved = source.parameters.resolve(&evaluated, source.mode)?;
     Ok(
-        json!({"revision":revision,"thread":feature,"part":source.output.body,"source":source,"resolved":{"nominal_major_diameter_mm":2.*resolved.nominal_major_radius_mm,"nominal_pitch_diameter_mm":resolved.nominal_pitch_diameter_mm,"actual_pitch_diameter_mm":resolved.actual_pitch_diameter_mm,"fit":resolved.fit,"pipe":resolved.pipe,"npt":resolved.npt,"lead_screw":resolved.lead_screw,"buttress":resolved.buttress,"round":resolved.round,"metric_fit":resolved.metric_fit,"end_treatments":resolved.end_treatments,"major_radius_mm":resolved.major_radius_mm,"pitch_mm":resolved.pitch_mm,"lead_mm":resolved.lead_mm,"starts":resolved.starts,"hand":resolved.hand,"representation":resolved.representation,"representation_parameter":source.parameters.representation_parameter,"profile":{"depth_mm":resolved.profile.depth_mm,"crest_width_mm":resolved.profile.crest_width_mm,"rounding_radius_mm":resolved.profile.rounding_radius_mm,"radial_taper":resolved.profile.radial_taper,"lower_flank_deg":resolved.profile.lower_flank_deg,"upper_flank_deg":resolved.profile.upper_flank_deg}},"scope":"Canonical source and resolved construction dimensions; nominal pitch diameter is basic, actual_pitch_diameter_mm and fit describe sourced fitted construction, not a measured or certified manufactured thread; use evaluate_model for current native geometry"}),
+        json!({"revision":revision,"thread":feature,"part":source.output.body,"source":source,"resolved":{"nominal_major_diameter_mm":2.*resolved.nominal_major_radius_mm,"nominal_pitch_diameter_mm":resolved.nominal_pitch_diameter_mm,"actual_pitch_diameter_mm":resolved.actual_pitch_diameter_mm,"fit":resolved.fit,"pipe":resolved.pipe,"npt":resolved.npt,"lead_screw":resolved.lead_screw,"buttress":resolved.buttress,"round":resolved.round,"metric_fit":resolved.metric_fit,"metric_fit_engagement":resolved.metric_fit_engagement,"physical_length_mm":resolved.length_mm,"end_treatments":resolved.end_treatments,"major_radius_mm":resolved.major_radius_mm,"pitch_mm":resolved.pitch_mm,"lead_mm":resolved.lead_mm,"starts":resolved.starts,"hand":resolved.hand,"representation":resolved.representation,"representation_parameter":source.parameters.representation_parameter,"profile":{"depth_mm":resolved.profile.depth_mm,"crest_width_mm":resolved.profile.crest_width_mm,"rounding_radius_mm":resolved.profile.rounding_radius_mm,"radial_taper":resolved.profile.radial_taper,"lower_flank_deg":resolved.profile.lower_flank_deg,"upper_flank_deg":resolved.profile.upper_flank_deg}},"scope":"Canonical source and resolved construction dimensions; nominal pitch diameter is basic, actual_pitch_diameter_mm and fit describe sourced fitted construction, not a measured or certified manufactured thread; use evaluate_model for current native geometry"}),
     )
 }
 pub(super) fn set_thread(host: &dyn Host, call: &Request, args: ThreadArgs) -> ToolResult {
@@ -749,6 +782,52 @@ pub(super) fn set_thread(host: &dyn Host, call: &Request, args: ThreadArgs) -> T
 #[cfg(test)]
 mod recipe_wire_tests {
     use super::*;
+    #[test]
+    fn metric_engagement_patch_retains_clears_and_rejects_conflicting_intent() {
+        let document = Document::new("Engagement wire").unwrap();
+        let evaluated = multicad_core::parameters::evaluate(&document).unwrap();
+        let parse = |v| serde_json::from_value::<ThreadRecipeArgs>(v).unwrap();
+        for intent in [
+            json!({"kind":"intended_length","length":{"value":3.,"unit":"mm"}}),
+            json!({"kind":"normal_group_assumed"}),
+        ] {
+            let args = parse(
+                json!({"major_diameter":{"value":3.,"unit":"mm"},"pitch":{"value":0.5,"unit":"mm"},"length":{"value":8.,"unit":"mm"},"fit":"metric_6g_external","metric_fit_engagement":intent}),
+            );
+            let p = parameters(&args, None, &document, &evaluated).unwrap();
+            assert!(
+                p.resolve(&evaluated, model::ThreadMode::NewExternal)
+                    .is_ok()
+            );
+            let retained = parameters(&parse(json!({})), Some(&p), &document, &evaluated).unwrap();
+            assert_eq!(p, retained);
+            assert!(
+                parameters(
+                    &parse(
+                        json!({"metric_fit_engagement":intent,"clear_metric_fit_engagement":true})
+                    ),
+                    Some(&p),
+                    &document,
+                    &evaluated
+                )
+                .is_err()
+            );
+            let cleared = parameters(
+                &parse(json!({"clear_metric_fit_engagement":true})),
+                Some(&p),
+                &document,
+                &evaluated,
+            )
+            .unwrap();
+            assert!(cleared.metric_fit_engagement.is_none());
+            assert!(
+                cleared
+                    .resolve(&evaluated, model::ThreadMode::NewExternal)
+                    .is_err()
+            );
+        }
+        assert!(serde_json::from_value::<ThreadRecipeArgs>(json!({"metric_fit_engagement":{"kind":"normal_group_assumed","length":{"value":3.,"unit":"mm"}}})).is_err());
+    }
     #[test]
     fn shared_recipe_preserves_the_flat_thread_contract_and_rejects_controls_inside_recipes() {
         let args:ThreadArgs=serde_json::from_value(json!({"expected_revision":0,"name":"Thread","mode":"new_external","major_diameter":{"value":6.,"unit":"mm"},"pitch":{"value":1.,"unit":"mm"},"length":{"value":5.2,"unit":"mm"}})).unwrap();

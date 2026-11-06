@@ -143,6 +143,8 @@ pub struct ThreadParameters {
     pub hand: ThreadHand,
     pub starts: u32,
     pub fit: ThreadFit,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metric_fit_engagement: Option<MetricFitEngagement>,
     /// Positive clearance shrinks external material and enlarges an internal cut.
     pub radial_allowance: Dimension,
     /// Total axial tooth-width clearance, independent of nominal basic dimensions.
@@ -172,6 +174,7 @@ impl Default for ThreadParameters {
             hand: ThreadHand::Right,
             starts: 1,
             fit: ThreadFit::NominalBasic,
+            metric_fit_engagement: None,
             radial_allowance: length(0.),
             axial_allowance: length(0.),
             minimum_wall: length(1.),
@@ -187,6 +190,7 @@ impl Default for ThreadParameters {
 pub struct ResolvedThread {
     pub end_treatments: Option<ResolvedThreadEndTreatments>,
     pub metric_fit: Option<ResolvedMetricFit>,
+    pub metric_fit_engagement: Option<ResolvedMetricFitEngagement>,
     pub buttress: Option<ResolvedButtressThread>,
     pub round: Option<ResolvedRoundThread>,
     pub lead_screw: Option<ResolvedLeadScrew>,
@@ -252,6 +256,9 @@ impl ThreadParameters {
             &self.minimum_wall,
         ];
         dimensions.extend(self.frame.origin.iter());
+        if let Some(MetricFitEngagement::IntendedLength { length }) = &self.metric_fit_engagement {
+            dimensions.push(length);
+        }
         if let Some(treatments) = &self.end_treatments {
             dimensions.extend(treatments.dimensions());
         }
@@ -262,6 +269,20 @@ impl ThreadParameters {
     }
     pub fn validate(&self) -> Result<(), DocumentError> {
         self.frame.validate()?;
+        if self.metric_fit_engagement.is_some()
+            && (self.family != ThreadFamily::IsoMetric
+                || !matches!(
+                    self.fit,
+                    ThreadFit::Metric6gExternal | ThreadFit::Metric6HInternal
+                ))
+        {
+            return Err(invalid(
+                "Metric engagement intent requires a supported metric 6g/6H fit",
+            ));
+        }
+        if let Some(MetricFitEngagement::IntendedLength { length }) = &self.metric_fit_engagement {
+            check_dimension(length, Unit::Millimeter)?;
+        }
         if self.representation_parameter.is_some_and(|id| id.is_nil()) {
             return Err(invalid("Thread representation parameter identity is nil"));
         }
@@ -643,9 +664,21 @@ impl ThreadParameters {
             .as_ref()
             .map(|t| t.resolve(parameters, radius, root, pitch, length, mode))
             .transpose()?;
-        let full_profile_length = end_treatments
+        let metric_fit_engagement = metric
             .as_ref()
-            .map_or(length, |t| t.full_profile_length_mm);
+            .map(|(m, _)| {
+                let (start, end) = end_treatments.as_ref().map_or((0., length), |t| {
+                    (t.full_profile_start_mm, t.full_profile_end_mm)
+                });
+                metric_fit::resolve_engagement(
+                    self.metric_fit_engagement.as_ref(),
+                    parameters,
+                    &m.preset,
+                    start,
+                    end,
+                )
+            })
+            .transpose()?;
         let fit = if let Some((metric, _)) = &metric {
             Some(metric_fit::resolve_metric_fit(
                 metric,
@@ -654,7 +687,6 @@ impl ThreadParameters {
                 actual_pitch_diameter_mm
                     .ok_or_else(|| invalid("Metric fit requires a pitch diameter"))?,
                 2. * root,
-                full_profile_length,
             )?)
         } else if let Some(preset) = rounded {
             Some(whitworth::resolve_rounded_fit(
@@ -682,6 +714,7 @@ impl ThreadParameters {
         };
         Ok(ResolvedThread {
             end_treatments,
+            metric_fit_engagement,
             metric_fit: metric.map(|(m, _)| m),
             round,
             buttress,

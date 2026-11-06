@@ -25,6 +25,8 @@ pub(super) struct ThreadPanel {
     mode: ThreadMode,
     family: ThreadFamily,
     fit: ThreadFit,
+    engagement_basis: model::MetricFitEngagementBasis,
+    engagement_length: DimensionField,
     end_treatments_enabled: bool,
     start_chamfer: bool,
     end_relief: bool,
@@ -88,6 +90,22 @@ impl ThreadPanel {
             mode: request.mode,
             family: p.family,
             fit: p.fit,
+            engagement_basis: match &p.metric_fit_engagement {
+                None => model::MetricFitEngagementBasis::LegacyCompleteProfile,
+                Some(model::MetricFitEngagement::IntendedLength { .. }) => {
+                    model::MetricFitEngagementBasis::IntendedLength
+                }
+                Some(model::MetricFitEngagement::NormalGroupAssumed {}) => {
+                    model::MetricFitEngagementBasis::NormalGroupAssumed
+                }
+            },
+            engagement_length: field(
+                match &p.metric_fit_engagement {
+                    Some(model::MetricFitEngagement::IntendedLength { length }) => length,
+                    _ => &p.length,
+                },
+                "mm",
+            )?,
             end_treatments_enabled: p.end_treatments.is_some(),
             start_chamfer: start.is_some(),
             end_relief: end.is_some(),
@@ -220,6 +238,17 @@ impl ThreadPanel {
                 v: basis.map_or(self.request.parameters.frame.v, |b| b.v),
             },
             fit: self.fit,
+            metric_fit_engagement: match self.engagement_basis {
+                model::MetricFitEngagementBasis::LegacyCompleteProfile => None,
+                model::MetricFitEngagementBasis::IntendedLength => {
+                    Some(model::MetricFitEngagement::IntendedLength {
+                        length: self.engagement_length.resolve(document)?,
+                    })
+                }
+                model::MetricFitEngagementBasis::NormalGroupAssumed => {
+                    Some(model::MetricFitEngagement::NormalGroupAssumed {})
+                }
+            },
             runout: self.request.parameters.runout,
             end_treatments: if self.end_treatments_enabled {
                 Some(model::ThreadEndTreatments {
@@ -494,6 +523,39 @@ impl ThreadPanel {
                     "Explicit custom axial profile; diameter taper is twice radius taper",
                 );
             }
+        }
+        if matches!(
+            self.fit,
+            ThreadFit::Metric6gExternal | ThreadFit::Metric6HInternal
+        ) || self.engagement_basis != model::MetricFitEngagementBasis::LegacyCompleteProfile
+        {
+            ui.strong("Metric fit engagement");
+            for (basis, label) in [
+                (
+                    model::MetricFitEngagementBasis::LegacyCompleteProfile,
+                    "Use complete physical thread",
+                ),
+                (
+                    model::MetricFitEngagementBasis::IntendedLength,
+                    "Declare intended engagement",
+                ),
+                (
+                    model::MetricFitEngagementBasis::NormalGroupAssumed,
+                    "Assume normal group; mate unknown",
+                ),
+            ] {
+                changed |= ui
+                    .radio_value(&mut self.engagement_basis, basis, label)
+                    .changed();
+            }
+            if self.engagement_basis == model::MetricFitEngagementBasis::IntendedLength {
+                changed |= self.engagement_length.show(
+                    ui,
+                    "Intended engagement",
+                    "Mating length inside the complete thread profile; does not shorten the screw",
+                );
+            }
+            ui.small("Fit intent does not verify assembled engagement, strength or blind-hole clearance.");
         }
         ui.separator();
         ui.strong("Fabrication allowance");
@@ -1290,6 +1352,25 @@ impl ThreadPanel {
                         } else {
                             ui.small("The source table specifies no engagement-length bound; native construction limits still apply.");
                         }
+                        if let Some(engagement) = &resolved.metric_fit_engagement {
+                            ui.small(format!(
+                                "Physical thread {:.4} mm · complete profile {:.4} to {:.4} mm",
+                                resolved.length_mm,
+                                engagement.full_profile_start_mm,
+                                engagement.full_profile_end_mm
+                            ));
+                            match engagement.basis {
+                                model::MetricFitEngagementBasis::NormalGroupAssumed => {
+                                    ui.small("Normal group assumed; actual mating engagement is unknown.");
+                                }
+                                model::MetricFitEngagementBasis::IntendedLength => {
+                                    ui.small(format!("Intended engagement {:.4} mm; assembled overlap not yet verified.", engagement.intended_length_mm.expect("intended receipt")));
+                                }
+                                model::MetricFitEngagementBasis::LegacyCompleteProfile => {
+                                    ui.small("Fit group uses the complete physical profile (legacy source).");
+                                }
+                            }
+                        }
                         if let Some(radius) = resolved.profile.rounding_radius_mm {
                             ui.small(format!("Rounded crest and root · radius {radius:.6} mm · 55° included angle"));
                         }
@@ -1352,6 +1433,130 @@ mod representation_binding_tests {
         document::{Entity, EntityData},
         parameters,
     };
+
+    #[test]
+    fn painted_engagement_choice_changes_the_canonical_recipe_without_applying() {
+        let document = Document::new("Painted engagement").unwrap();
+        let before = document.clone();
+        let mut panel = ThreadPanel::new(
+            ThreadRequest::new(
+                "Long metric",
+                ThreadParameters {
+                    major_diameter: model::length(3.),
+                    pitch: model::length(0.5),
+                    length: model::length(8.),
+                    fit: ThreadFit::Metric6gExternal,
+                    metric_fit_engagement: Some(model::MetricFitEngagement::NormalGroupAssumed {}),
+                    ..Default::default()
+                },
+            ),
+            parameters::evaluate(&document).unwrap(),
+            vec![],
+            &Default::default(),
+            true,
+        )
+        .unwrap();
+        panel.engagement_length.set_literal(3., "mm");
+        let context = egui::Context::default();
+        let mut frame = |events| {
+            let mut output = context.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(600., 2400.),
+                    )),
+                    events,
+                    focused: true,
+                    ..Default::default()
+                },
+                |ui| {
+                    panel.recipe_controls(
+                        ui,
+                        ThreadMode::NewExternal,
+                        "Physical thread length",
+                        true,
+                    );
+                },
+            );
+            output.textures_delta.clear();
+            output
+        };
+        let output = frame(vec![]);
+        let position = output
+            .shapes
+            .iter()
+            .find_map(|s| match &s.shape {
+                egui::Shape::Text(t) if t.galley.text() == "Declare intended engagement" => {
+                    Some(t.pos + t.galley.size() / 2.)
+                }
+                _ => None,
+            })
+            .expect("visible engagement choice");
+        for pressed in [true, false] {
+            frame(vec![
+                egui::Event::PointerMoved(position),
+                egui::Event::PointerButton {
+                    pos: position,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: Default::default(),
+                },
+            ]);
+        }
+        assert_eq!(
+            panel
+                .request(&document, true)
+                .unwrap()
+                .parameters
+                .metric_fit_engagement,
+            Some(model::MetricFitEngagement::IntendedLength {
+                length: model::length(3.)
+            })
+        );
+        assert_eq!(document, before);
+    }
+
+    #[test]
+    fn engagement_edit_retains_intent_and_can_restore_legacy_validation() {
+        let document = Document::new("Engagement form").unwrap();
+        for intent in [
+            model::MetricFitEngagement::IntendedLength {
+                length: model::length(3.),
+            },
+            model::MetricFitEngagement::NormalGroupAssumed {},
+        ] {
+            let source = ThreadParameters {
+                major_diameter: model::length(3.),
+                pitch: model::length(0.5),
+                length: model::length(8.),
+                fit: ThreadFit::Metric6gExternal,
+                metric_fit_engagement: Some(intent.clone()),
+                ..Default::default()
+            };
+            let mut panel = ThreadPanel::new(
+                ThreadRequest::new("Long screw", source),
+                parameters::evaluate(&document).unwrap(),
+                vec![],
+                &Default::default(),
+                true,
+            )
+            .unwrap();
+            panel.length.set_literal(9., "mm");
+            let edited = panel.request(&document, true).unwrap();
+            assert_eq!(edited.parameters.metric_fit_engagement, Some(intent));
+            panel.engagement_basis = model::MetricFitEngagementBasis::LegacyCompleteProfile;
+            assert!(panel.request(&document, true).is_err());
+            panel.length.set_literal(4., "mm");
+            assert_eq!(
+                panel
+                    .request(&document, true)
+                    .unwrap()
+                    .parameters
+                    .metric_fit_engagement,
+                None
+            );
+        }
+    }
 
     #[test]
     fn bound_representation_is_retained_and_fixed_action_adopts_effective_mode() {

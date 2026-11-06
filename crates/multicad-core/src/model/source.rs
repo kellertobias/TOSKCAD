@@ -973,6 +973,21 @@ pub fn required_capabilities(document: &Document) -> BTreeSet<String> {
             capabilities.insert(capability.into());
         }
     }
+    if saved_feature_matches(document, |type_id, data| {
+        let paths: &[&str] = match type_id {
+            super::THREAD_TYPE => &["/parameters/metric_fit_engagement"],
+            super::MECHANICAL_PART_TYPE => &[
+                "/parameters/thread/metric_fit_engagement",
+                "/provenance/reference_geometry/thread/metric_fit_engagement",
+            ],
+            _ => return false,
+        };
+        paths
+            .iter()
+            .any(|path| data.pointer(path).is_some_and(|v| !v.is_null()))
+    }) {
+        capabilities.insert(super::METRIC_FIT_ENGAGEMENT_CAPABILITY.into());
+    }
     // Saved suppressed features and nested nut recipes need this reader
     // capability too; visible/evaluated feature iterators omit them.
     if saved_feature_matches(document, |type_id, data| {

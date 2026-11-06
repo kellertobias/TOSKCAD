@@ -2,7 +2,7 @@
 use super::*;
 use std::collections::BTreeMap;
 fn thread_reference_values(thread: &ResolvedThread) -> BTreeMap<&'static str, f64> {
-    BTreeMap::from([
+    let mut values = BTreeMap::from([
         ("height_mm", thread.length_mm),
         ("nominal_major_radius_mm", thread.nominal_major_radius_mm),
         ("major_radius_mm", thread.major_radius_mm),
@@ -21,7 +21,21 @@ fn thread_reference_values(thread: &ResolvedThread) -> BTreeMap<&'static str, f6
         ("lower_flank_deg", thread.profile.lower_flank_deg),
         ("upper_flank_deg", thread.profile.upper_flank_deg),
         ("radial_taper", thread.profile.radial_taper),
-    ])
+    ]);
+    if let Some(engagement) = &thread.metric_fit_engagement
+        && let Some(length) = engagement.intended_length_mm
+    {
+        values.insert("metric_fit_intended_length_mm", length);
+    }
+    values
+}
+fn engagement_kind(
+    thread: &ThreadParameters,
+) -> Option<std::mem::Discriminant<super::super::MetricFitEngagement>> {
+    thread
+        .metric_fit_engagement
+        .as_ref()
+        .map(std::mem::discriminant)
 }
 impl ResolvedMechanicalPart {
     fn reference_values(&self) -> BTreeMap<&'static str, f64> {
@@ -150,6 +164,7 @@ impl MechanicalPartDefinition {
         ) = (&self.parameters, &reference.reference_geometry)
             && (a.family != b.family
                 || a.fit != b.fit
+                || engagement_kind(a) != engagement_kind(b)
                 || a.runout != b.runout
                 || a.end_treatments != b.end_treatments
                 || a.pipe != b.pipe
@@ -176,6 +191,7 @@ impl MechanicalPartDefinition {
                 || std::mem::discriminant(ad) != std::mem::discriminant(bd)
                 || at.family != bt.family
                 || at.fit != bt.fit
+                || engagement_kind(at) != engagement_kind(bt)
                 || at.pipe != bt.pipe
                 || at.npt != bt.npt
                 || at.buttress != bt.buttress

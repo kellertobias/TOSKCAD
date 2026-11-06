@@ -740,3 +740,59 @@ fn custom_left_multistart_taper_keeps_unit_formulas_and_preserves_omitted_profil
     );
     assert_eq!(h.document(), before);
 }
+
+#[test]
+fn engagement_expression_inspection_omission_and_failed_clear_are_atomic() {
+    let h = empty();
+    run(
+        &h,
+        "set_parameter",
+        json!({"expected_revision":0,"name":"engagement","expression":"3","unit":"mm"}),
+    );
+    let created = run(
+        &h,
+        "set_thread",
+        json!({"expected_revision":1,"name":"Long fitted metric","major_diameter":mm(3.),"pitch":mm(0.5),"length":mm(8.),"fit":"metric_6g_external","metric_fit_engagement":{"kind":"intended_length","length":{"expression":"=$engagement","unit":"mm"}}}),
+    );
+    let report = run(&h, "inspect_thread", json!({"thread":created["thread"]}));
+    assert_eq!(report["resolved"]["physical_length_mm"], 8.);
+    assert_eq!(
+        report["resolved"]["metric_fit_engagement"]["basis"],
+        "intended_length"
+    );
+    assert_eq!(
+        report["resolved"]["metric_fit_engagement"]["intended_length_mm"],
+        3.
+    );
+    let source = model::read_thread(&h.document(), feature(&created)).unwrap();
+    run(
+        &h,
+        "set_thread",
+        json!({"expected_revision":2,"thread":created["thread"]}),
+    );
+    assert_eq!(
+        model::read_thread(&h.document(), feature(&created)).unwrap(),
+        source
+    );
+    let before = h.document();
+    for patch in [
+        json!({"expected_revision":2,"thread":created["thread"],"clear_metric_fit_engagement":true}),
+        json!({"expected_revision":2,"thread":created["thread"],"metric_fit_engagement":{"kind":"intended_length","length":mm(5.)}}),
+        json!({"expected_revision":2,"thread":created["thread"],"metric_fit_engagement":{"kind":"normal_group_assumed","length":mm(3.)}}),
+    ] {
+        assert!(dispatch(&h, &call(false), "set_thread", patch).is_err());
+        assert_eq!(h.document(), before);
+    }
+    run(
+        &h,
+        "set_thread",
+        json!({"expected_revision":2,"thread":created["thread"],"metric_fit_engagement":{"kind":"normal_group_assumed"}}),
+    );
+    let report = run(&h, "inspect_thread", json!({"thread":created["thread"]}));
+    assert_eq!(report["resolved"]["physical_length_mm"], 8.);
+    assert_eq!(
+        report["resolved"]["metric_fit_engagement"]["basis"],
+        "normal_group_assumed"
+    );
+    assert!(report["resolved"]["metric_fit_engagement"]["intended_length_mm"].is_null());
+}

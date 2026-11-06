@@ -520,6 +520,7 @@ pub fn supported_capabilities() -> BTreeSet<String> {
         crate::model::BUTTRESS_THREAD_CAPABILITY.into(),
         crate::model::ROUND_THREAD_CAPABILITY.into(),
         crate::model::METRIC_FIT_CAPABILITY.into(),
+        crate::model::METRIC_FIT_ENGAGEMENT_CAPABILITY.into(),
         crate::model::THREAD_END_TREATMENT_CAPABILITY.into(),
         crate::model::GEAR_CAPABILITY.into(),
         crate::model::GEAR_COVERAGE_CAPABILITY.into(),

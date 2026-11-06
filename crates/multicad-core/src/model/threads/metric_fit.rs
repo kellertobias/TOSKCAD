@@ -2,11 +2,93 @@
 use super::*;
 
 pub const METRIC_FIT_CAPABILITY: &str = "model.thread.metric_fit.1";
+pub const METRIC_FIT_ENGAGEMENT_CAPABILITY: &str = "model.thread.metric_fit_engagement.1";
 pub const METRIC_FIT_SOURCE: &str = "BIS IS 14962 Parts 1/2:2001, identical ISO 965-1/2:1998; M3/M6 coarse, uncoated 6g/6H, normal engagement";
 pub const METRIC_FIT_SOURCE_URL: &str =
     "https://law.resource.org/pub/in/bis/S01/is.14962.2.2001.pdf";
 pub const METRIC_ROOT_SOURCE_URL: &str =
     "https://law.resource.org/pub/in/bis/S01/is.14962.1.2001.pdf";
+
+/// Tolerance-group intent, independent of the physical thread span. Neither
+/// variant proves that a mating part exists or that its engagement is adequate.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum MetricFitEngagement {
+    IntendedLength { length: Dimension },
+    NormalGroupAssumed {},
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MetricFitEngagementBasis {
+    LegacyCompleteProfile,
+    IntendedLength,
+    NormalGroupAssumed,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct ResolvedMetricFitEngagement {
+    pub basis: MetricFitEngagementBasis,
+    /// None for an assumed group: no synthetic engagement length is invented.
+    pub intended_length_mm: Option<f64>,
+    pub full_profile_start_mm: f64,
+    pub full_profile_end_mm: f64,
+    pub normal_over_mm: f64,
+    pub normal_up_to_mm: f64,
+    pub scope: &'static str,
+}
+
+pub(super) fn resolve_engagement(
+    intent: Option<&MetricFitEngagement>,
+    parameters: &EvaluatedParameters,
+    preset: &MetricFitPreset,
+    start: f64,
+    end: f64,
+) -> Result<ResolvedMetricFitEngagement, DocumentError> {
+    let available = end - start;
+    let (basis, intended) = match intent {
+        None => (
+            MetricFitEngagementBasis::LegacyCompleteProfile,
+            Some(available),
+        ),
+        Some(MetricFitEngagement::IntendedLength { length }) => (
+            MetricFitEngagementBasis::IntendedLength,
+            Some(number(length, Unit::Millimeter, parameters)?),
+        ),
+        Some(MetricFitEngagement::NormalGroupAssumed {}) => {
+            (MetricFitEngagementBasis::NormalGroupAssumed, None)
+        }
+    };
+    if let Some(length) = intended {
+        if !length.is_finite()
+            || length <= preset.engagement_over_mm
+            || length > preset.engagement_up_to_mm
+        {
+            return Err(invalid(format!(
+                "{} fit requires normal engagement over {} and up to {} mm",
+                preset.designation, preset.engagement_over_mm, preset.engagement_up_to_mm
+            )));
+        }
+        if length > available {
+            return Err(invalid(
+                "Intended metric engagement exceeds the available complete thread profile",
+            ));
+        }
+    } else if !available.is_finite() || available <= preset.engagement_over_mm {
+        return Err(invalid(
+            "Complete thread profile is too short for any supported normal engagement",
+        ));
+    }
+    Ok(ResolvedMetricFitEngagement {
+        basis,
+        intended_length_mm: intended,
+        full_profile_start_mm: start,
+        full_profile_end_mm: end,
+        normal_over_mm: preset.engagement_over_mm,
+        normal_up_to_mm: preset.engagement_up_to_mm,
+        scope: "Tolerance-group intent only; assumed N follows IS14962-1:2001 clause12. Actual placed complete-profile overlap, strength and blind clearance require separate connection checks",
+    })
+}
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct MetricFitPreset {
@@ -158,15 +240,8 @@ pub(super) fn resolve_metric_fit(
     major: f64,
     pitch: f64,
     minor: f64,
-    length: f64,
 ) -> Result<ResolvedThreadFit, DocumentError> {
     let p = &construction.preset;
-    if length <= p.engagement_over_mm || length > p.engagement_up_to_mm {
-        return Err(invalid(format!(
-            "{} fit requires normal engagement over {} and up to {} mm",
-            p.designation, p.engagement_over_mm, p.engagement_up_to_mm
-        )));
-    }
     let limits = if class == ThreadFit::Metric6gExternal {
         p.external
     } else {

@@ -109,7 +109,7 @@ research copies are not redistributed. This is historical uncoated dimensional
 coverage; it does not establish current-standard, gage, strength or physical-fit
 certification. Other sizes and classes remain unavailable for these selections.
 
-| Size | Normal complete-profile engagement (mm) | 6g major (mm) | 6g pitch (mm) | Printed minimum external root radius (mm) | 6H pitch (mm) | 6H minor (mm) |
+| Size | Normal engagement (mm) | 6g major (mm) | 6g pitch (mm) | Printed minimum external root radius (mm) | 6H pitch (mm) | 6H minor (mm) |
 | --- | --- | --- | --- | --- | --- | --- |
 | M3x0.5 | >1.5 and <=4.5 | 2.874-2.980 | 2.580-2.655 | 0.063 | 2.675-2.775 | 2.459-2.599 |
 | M6x1 | >3 and <=9 | 5.794-5.974 | 5.212-5.324 | 0.125 | 5.350-5.500 | 4.917-5.153 |
@@ -151,6 +151,36 @@ The saved fit enum uses existing canonical fields. The conditional
 template-only sources, nested hardware and retained reference recipes.
 Existing Nominal basic shapes and literal catalog references are unchanged.
 
+`ThreadParameters.metric_fit_engagement` optionally separates fit context from
+physical `length`. Omission preserves the legacy rule: the complete physical
+profile after endpoint treatments must lie within the table's normal interval.
+`{ "kind": "intended_length", "length": Dimension }` declares a mating length
+within that same interval and no longer than the available complete profile.
+`{ "kind": "normal_group_assumed" }` explicitly selects normal group while the
+mate is unknown. Part 1 clause 12, printed page 15, recommends this group when
+actual engagement is unknown, including standard bolt manufacture. This branch
+reports no numeric engagement. As an engineering feasibility check, enough
+complete profile must remain to permit some engagement above the table's lower
+bound. All physical length, diameter, root, allowance and native geometry guards
+continue to apply to the entire thread.
+
+The conditional `model.thread.metric_fit_engagement.1` reader capability covers
+both tags in active, suppressed, private, template and retained reference
+sources. Legacy omitted fields do not require it. The UI exposes the three
+choices; MCP thread and nested hardware recipes accept the same tagged intent.
+MCP edits preserve omitted intent, and `clear_metric_fit_engagement: true`
+restores legacy validation; supplying both clear and replacement is an error.
+The intended length accepts the usual unit-bearing literal or bound expression.
+Inspection reports physical length, complete-profile interval, engagement basis
+and normal limits separately. For example, an 8 mm M3 thread with an intended
+3 mm engagement still constructs 8 mm of fitted thread.
+
+Intended or assumed fit context does not prove installed overlap. A connection
+must independently check the placed complete-profile intervals, compatibility,
+actual normal engagement, required strength and blind clearance. Unknown usable
+insert-thread endpoints remain unknown. This source field supplies no assembled
+connection acceptance or manufacturing certification.
+
 ## Custom metric endpoint geometry
 
 Optional `end_treatments` names a start treatment at local z=0 and an end
@@ -165,8 +195,9 @@ its radial depth. A square cylindrical relief consumes the final authored
 axial extent. External relief radius is the thread root radius minus its
 radial depth; internal relief enlarges the cutter beyond its major radius.
 Authored total length stays unchanged. The receipt reports the complete
-central profile interval and length; at least one pitch must remain, and a
-selected fitted class must satisfy its engagement interval there.
+central profile interval and length; at least one pitch must remain. Metric
+fit engagement uses that complete interval by default or the explicit
+[engagement intent](#metric-fit-classes), bounded by the available profile.
 
 The evaluator intersects the external thread with an exact revolved mask or
 unites the internal cutter with it before the receiving-body operation.
