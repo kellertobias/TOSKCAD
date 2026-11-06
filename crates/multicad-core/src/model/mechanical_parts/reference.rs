@@ -26,6 +26,33 @@ fn thread_reference_values(thread: &ResolvedThread) -> BTreeMap<&'static str, f6
 impl ResolvedMechanicalPart {
     fn reference_values(&self) -> BTreeMap<&'static str, f64> {
         match self {
+            Self::WoodScrew { parameters: p } => {
+                let mut values = BTreeMap::from([
+                    ("underhead_length_mm", p.underhead_length_mm),
+                    ("nominal_wood_diameter_mm", p.nominal_diameter_mm),
+                    ("head_height_mm", p.head.height_mm()),
+                    ("reference_pitch_mm", p.reference_profile.pitch_mm),
+                    (
+                        "reference_core_diameter_mm",
+                        p.reference_profile.core_diameter_mm,
+                    ),
+                    (
+                        "reference_included_angle_deg",
+                        p.reference_profile.included_angle_deg,
+                    ),
+                    (
+                        "minimum_tip_inclusive_thread_extent_mm",
+                        p.minimum_tip_inclusive_thread_extent_mm,
+                    ),
+                ]);
+                if let ResolvedScrewHead::ExternalHex {
+                    across_flats_mm, ..
+                } = &p.head
+                {
+                    values.insert("head_across_flats_mm", *across_flats_mm);
+                }
+                values
+            }
             Self::MachineScrew {
                 underhead_length_mm,
                 shank_radius_mm,
@@ -106,6 +133,17 @@ impl MechanicalPartDefinition {
         let Some(reference) = &self.provenance else {
             return Ok(false);
         };
+        if let (
+            MechanicalPartParameters::WoodScrew { parameters: a },
+            MechanicalPartParameters::WoodScrew { parameters: b },
+        ) = (&self.parameters, &reference.reference_geometry)
+            && (a.point != b.point
+                || a.representation != b.representation
+                || std::mem::discriminant(&a.head) != std::mem::discriminant(&b.head)
+                || std::mem::discriminant(&a.drive) != std::mem::discriminant(&b.drive))
+        {
+            return Ok(false);
+        }
         if let (
             MechanicalPartParameters::HexNut { thread: a, .. },
             MechanicalPartParameters::HexNut { thread: b, .. },

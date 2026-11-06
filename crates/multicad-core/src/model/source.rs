@@ -1138,6 +1138,21 @@ pub fn required_capabilities(document: &Document) -> BTreeSet<String> {
         capabilities.insert(super::MECHANICAL_PART_CATALOG_FACTS_CAPABILITY.into());
     }
     if saved_feature_matches(document, |type_id, data| {
+        fn wood(value: &serde_json::Value) -> bool {
+            match value {
+                serde_json::Value::Object(map) => {
+                    map.get("kind").and_then(serde_json::Value::as_str) == Some("wood_screw")
+                        || map.values().any(wood)
+                }
+                serde_json::Value::Array(values) => values.iter().any(wood),
+                _ => false,
+            }
+        }
+        type_id == super::MECHANICAL_PART_TYPE && wood(data)
+    }) {
+        capabilities.insert(super::WOOD_SCREW_CAPABILITY.into());
+    }
+    if saved_feature_matches(document, |type_id, data| {
         type_id == super::MECHANICAL_PART_TYPE
             && data
                 .pointer("/parameters/kind")
@@ -1147,7 +1162,18 @@ pub fn required_capabilities(document: &Document) -> BTreeSet<String> {
         capabilities.insert(super::MACHINE_SCREW_CAPABILITY.into());
     }
     if saved_feature_matches(document, |type_id, data| {
-        type_id == super::MECHANICAL_PART_TYPE && data.pointer("/parameters/length_input").is_some()
+        fn machine_length(value: &serde_json::Value) -> bool {
+            match value {
+                serde_json::Value::Object(map) => {
+                    (map.get("kind").and_then(serde_json::Value::as_str) == Some("machine_screw")
+                        && map.contains_key("length_input"))
+                        || map.values().any(machine_length)
+                }
+                serde_json::Value::Array(values) => values.iter().any(machine_length),
+                _ => false,
+            }
+        }
+        type_id == super::MECHANICAL_PART_TYPE && machine_length(data)
     }) {
         capabilities.insert(super::MACHINE_SCREW_LENGTH_INPUT_CAPABILITY.into());
     }

@@ -5,6 +5,7 @@ mod prepare;
 mod reference;
 mod screw_profiles;
 mod screws;
+mod wood;
 use super::{
     BodyOutput, PrimitiveFrame, ResolvedThread, ThreadMode, ThreadParameters,
     common::*,
@@ -22,6 +23,7 @@ pub use prepare::*;
 pub use screw_profiles::*;
 pub use screws::*;
 use serde::{Deserialize, Serialize};
+pub use wood::*;
 
 pub const MECHANICAL_PART_TYPE: &str = "model.mechanical_part";
 pub const MECHANICAL_PART_SCHEMA: u32 = 1;
@@ -31,6 +33,10 @@ pub const MECHANICAL_PART_CATALOG_FACTS_CAPABILITY: &str = "model.mechanical_par
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum MechanicalPartParameters {
+    WoodScrew {
+        #[serde(flatten)]
+        parameters: Box<WoodScrewParameters>,
+    },
     /// The thread frame is the neck datum; +N points to the tip.
     /// Existing cap/hex heads bear at this plane.
     /// Thread length is retained once in `thread.length`; full/partial is derived.
@@ -66,6 +72,9 @@ pub enum MechanicalPartParameters {
 }
 #[derive(Clone, Debug, PartialEq)]
 pub enum ResolvedMechanicalPart {
+    WoodScrew {
+        parameters: Box<ResolvedWoodScrew>,
+    },
     MachineScrew {
         underhead_length_mm: f64,
         authored_length_mm: f64,
@@ -98,11 +107,12 @@ impl MechanicalPartParameters {
             Self::HexNut { thread, .. } | Self::MachineScrew { thread, .. } => {
                 Some(thread.as_ref())
             }
-            Self::Washer { .. } | Self::BearingEnvelope { .. } => None,
+            Self::Washer { .. } | Self::BearingEnvelope { .. } | Self::WoodScrew { .. } => None,
         }
     }
     pub fn label(&self) -> &'static str {
         match self {
+            Self::WoodScrew { .. } => "Wood screw envelope",
             Self::MachineScrew { .. } => "Machine screw",
             Self::Washer { .. } => "Plain washer",
             Self::HexNut { .. } => "Hex nut",
@@ -111,12 +121,14 @@ impl MechanicalPartParameters {
     }
     pub fn frame(&self) -> &PrimitiveFrame {
         match self {
+            Self::WoodScrew { parameters } => &parameters.frame,
             Self::Washer { frame, .. } | Self::BearingEnvelope { frame, .. } => frame,
             Self::HexNut { thread, .. } | Self::MachineScrew { thread, .. } => &thread.frame,
         }
     }
     fn dimensions(&self) -> Vec<&Dimension> {
         let mut fields = match self {
+            Self::WoodScrew { parameters } => parameters.dimensions(),
             Self::MachineScrew {
                 underhead_length,
                 length_input,
@@ -160,6 +172,7 @@ impl MechanicalPartParameters {
     pub fn validate(&self) -> Result<(), DocumentError> {
         self.frame().validate()?;
         match self {
+            Self::WoodScrew { parameters } => parameters.validate()?,
             Self::MachineScrew {
                 underhead_length,
                 length_input,
@@ -242,6 +255,9 @@ impl MechanicalPartParameters {
             Ok((bore / 2., outside / 2., height))
         };
         Ok(match self {
+            Self::WoodScrew { parameters } => ResolvedMechanicalPart::WoodScrew {
+                parameters: Box::new(parameters.resolve(evaluated)?),
+            },
             Self::MachineScrew {
                 underhead_length,
                 length_input,

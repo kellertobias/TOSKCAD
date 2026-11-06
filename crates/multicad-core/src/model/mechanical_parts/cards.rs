@@ -74,6 +74,18 @@ fn cards(document: &Document, symbol: Option<(EntityId, String)>) -> Vec<Mechani
                     .resolve(evaluated)
                     .map_err(|e| e.to_string())?;
                 let (values, representation) = match resolved {
+                    ResolvedMechanicalPart::WoodScrew {parameters:p} => {
+                        card.profile_details.extend([
+                            format!("Authored length convention: {}",match p.length_convention {ScrewLengthConvention::Underhead=>"underhead",ScrewLengthConvention::Overall=>"overall"}),
+                            format!("Reference V included angle: {} degrees",p.reference_profile.included_angle_deg),
+                            "Minimum tip-inclusive extent is a source lower bound, not the actual thread length or start".into(),
+                            "Manufacturer point detail unspecified; nominal stock ends at a flat envelope plane".into(),
+                            super::super::ManufacturingLimitationKind::SimplifiedWoodScrew.message().into(),
+                        ]);
+                        let mut values=vec![("Authored length",p.authored_length_mm),("Nominal wood diameter",p.nominal_diameter_mm),("Underhead stock-envelope length",p.underhead_length_mm),("Overall stock-envelope length",p.overall_length_mm),("Head height",p.head.height_mm()),("Reference V pitch",p.reference_profile.pitch_mm),("Reference core diameter",p.reference_profile.core_diameter_mm),("Minimum tip-inclusive thread extent",p.minimum_tip_inclusive_thread_extent_mm),("Maximum possible plain length",p.maximum_possible_plain_length_mm)];
+                        if let ResolvedScrewHead::ExternalHex {across_flats_mm,..}=p.head {values.push(("Head across flats",across_flats_mm));}
+                        (values,"Simplified wood stock envelope · thread and point detail unspecified · manufacturing unavailable".into())
+                    },
                     ResolvedMechanicalPart::MachineScrew {
                         underhead_length_mm,
                         authored_length_mm,

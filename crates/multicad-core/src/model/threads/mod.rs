@@ -809,7 +809,7 @@ pub fn read_thread(
 /// A cosmetic thread anywhere in a producer's input history remains display
 /// geometry, including a thread retained inside a mechanical nut or screw.
 /// Manufacturing callers refuse it until the representation is Modeled.
-fn cosmetic_feature(
+pub(super) fn cosmetic_feature(
     document: &Document,
     id: EntityId,
     evaluated: &mut Option<EvaluatedParameters>,
