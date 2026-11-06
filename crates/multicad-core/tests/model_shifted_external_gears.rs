@@ -421,8 +421,10 @@ fn expanded_reader_covers_suppressed_and_template_intent_without_reclassifying_l
             .capabilities()
             .contains(SHIFTED_EXTERNAL_GEAR_CAPABILITY)
     );
-    let mut p = GearParameters::default();
-    p.profile_shift = ratio(0.2);
+    let p = GearParameters {
+        profile_shift: ratio(0.2),
+        ..Default::default()
+    };
     let old = GearRequest::new("Original shifted Spur20", p);
     let mut s = session();
     s.commit(prepare_gear(&s, 0, actor(), &old).unwrap().prepared)
