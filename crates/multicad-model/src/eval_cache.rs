@@ -308,7 +308,7 @@ pub struct EvaluationCache {
     retained_bytes: usize,
     max_entries: usize,
     last: CompileStats,
-    pub(crate) gear_pairs: crate::gear_pairs::PairValidationCache,
+    pub(crate) gear_pairs: crate::PairCycleProofStore,
     symbol_proofs: BTreeSet<ContentHash>,
     pending_symbol_proofs: BTreeSet<ContentHash>,
     symbol_proof_hits: usize,

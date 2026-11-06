@@ -1895,6 +1895,7 @@ fn evaluate_model(host: &dyn Host, call: &Request, _: NoArgs) -> ToolResult {
         "consumed_parts": snapshot.consumed_bodies,
         "references": references,
         "gear_pairs":model.gear_pair_checks().values().collect::<Vec<_>>(),
+        "native_timings":model.timings(),
         "physical_leaves":model.assembly_evaluation().leaves,
         "source_hash":snapshot.stamp.source_hash,
     }))

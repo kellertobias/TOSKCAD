@@ -127,9 +127,11 @@ impl MeasurementWorker {
             stop: AtomicBool::new(false),
         });
         let thread = shared.clone();
+        let pair_proofs = crate::current_pair_cycle_proofs();
         std::thread::Builder::new()
             .name("multicad-measurements".into())
             .spawn(move || {
+                let _proof_owner = crate::pair_cycle_proofs::ProofOwner::enter(pair_proofs);
                 let _exit = Exit(thread.clone()); // Native processor/cache drops before Exit on unwind.
                 let mut process = factory();
                 loop {

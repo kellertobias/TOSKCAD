@@ -17,11 +17,15 @@ use std::{
 };
 
 struct WindowHost {
+    pair_cycle_proofs: Option<multicad_model::PairCycleProofStore>,
     connection: u64,
     jobs: Mutex<Sender<ControlRequest>>,
     wake: egui::Context,
 }
 impl Host for WindowHost {
+    fn pair_cycle_proofs(&self) -> Option<multicad_model::PairCycleProofStore> {
+        self.pair_cycle_proofs.clone()
+    }
     fn scope(&self) -> Scope {
         Scope {
             mode: "application",
@@ -54,6 +58,7 @@ pub fn default_endpoint() -> Result<PathBuf, String> {
 }
 
 pub struct WindowControl {
+    pair_cycle_proofs: Option<multicad_model::PairCycleProofStore>,
     endpoint: Result<PathBuf, String>,
     wake: egui::Context,
     sender: Sender<ControlRequest>,
@@ -67,6 +72,7 @@ impl WindowControl {
     pub fn new(wake: egui::Context, endpoint: Result<PathBuf, String>) -> Self {
         let (sender, receiver) = mpsc::channel();
         Self {
+            pair_cycle_proofs: multicad_model::current_pair_cycle_proofs(),
             endpoint,
             wake,
             sender,
@@ -83,11 +89,13 @@ impl WindowControl {
         let sender = self.sender.clone();
         let wake = self.wake.clone();
         let clients = Arc::clone(&self.clients);
+        let pair_cycle_proofs = self.pair_cycle_proofs.clone();
         let events_wake = self.wake.clone();
         self.listener = Some(multicad_mcp::local_socket::Listener::bind(
             path,
             move |connection| {
                 Arc::new(WindowHost {
+                    pair_cycle_proofs: pair_cycle_proofs.clone(),
                     connection,
                     jobs: Mutex::new(sender.clone()),
                     wake: wake.clone(),

@@ -28,6 +28,10 @@ pub mod imports;
 pub mod inspection;
 mod levels;
 mod occurrences;
+mod pair_cycle_proofs;
+pub use pair_cycle_proofs::{
+    PairCycleProofStats, PairCycleProofStore, current_pair_cycle_proofs, with_pair_cycle_proofs,
+};
 mod plant_plans;
 pub mod project_references;
 mod runtime;

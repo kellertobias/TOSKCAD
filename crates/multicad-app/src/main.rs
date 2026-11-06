@@ -129,7 +129,10 @@ fn run_application(project: Option<PathBuf>) -> Result<(), String> {
     app.set_sketch_queries(std::sync::Arc::new(|| {
         Ok(Box::new(multicad_kernel::NativeRegionQueries::default()))
     }));
-    let models = modeling::Backend::factory()?;
+    // One detached store survives project/editor/connection changes in this app.
+    let pair_proofs = multicad_model::PairCycleProofStore::default();
+    let models =
+        multicad_model::with_pair_cycle_proofs(pair_proofs.clone(), modeling::Backend::factory)?;
     app.set_scene_backends(std::sync::Arc::clone(&models));
     // Preview and canonical lanes share native evaluation results while their
     // request stamps, cancellation and authoritative publications stay separate.
@@ -138,19 +141,47 @@ fn run_application(project: Option<PathBuf>) -> Result<(), String> {
         Ok(Box::new(external_queries::Backend::new()))
     }))?;
     app.set_repair_set_checker(std::sync::Arc::new(reference_repairs::check));
-    app.set_measurement_backends(std::sync::Arc::new(|| Box::new(inspection::Backend::new())));
-    app.set_assembly_query_backends(std::sync::Arc::new(|| {
-        Box::new(assembly_inspection::Backend::new())
+    let proofs = pair_proofs.clone();
+    app.set_measurement_backends(std::sync::Arc::new(move || {
+        multicad_model::with_pair_cycle_proofs(proofs.clone(), || {
+            Box::new(inspection::Backend::new())
+        })
     }));
-    app.set_drawing_backends(std::sync::Arc::new(|| Box::new(drawings::Backend::new())));
+    let proofs = pair_proofs.clone();
+    app.set_assembly_query_backends(std::sync::Arc::new(move || {
+        multicad_model::with_pair_cycle_proofs(proofs.clone(), || {
+            Box::new(assembly_inspection::Backend::new())
+        })
+    }));
+    let proofs = pair_proofs.clone();
+    app.set_drawing_backends(std::sync::Arc::new(move || {
+        multicad_model::with_pair_cycle_proofs(
+            proofs.clone(),
+            || Box::new(drawings::Backend::new()),
+        )
+    }));
     app.set_mechanical_import_backend(std::sync::Arc::new(mechanical_imports::Backend));
-    app.set_export_backends(std::sync::Arc::new(|| Box::new(exchange::Backend::new())))?;
-    app.set_print_backends(std::sync::Arc::new(|| Box::new(print::Backend::new())))?;
+    let proofs = pair_proofs.clone();
+    app.set_export_backends(std::sync::Arc::new(move || {
+        multicad_model::with_pair_cycle_proofs(
+            proofs.clone(),
+            || Box::new(exchange::Backend::new()),
+        )
+    }))?;
+    let proofs = pair_proofs.clone();
+    app.set_print_backends(std::sync::Arc::new(move || {
+        multicad_model::with_pair_cycle_proofs(proofs.clone(), || Box::new(print::Backend::new()))
+    }))?;
     multicad_ui::launch_with(Box::new(move |context| {
         app.set_file_picker(Box::new(file_picker::NativePicker::new(context)));
-        app.set_external_control(Box::new(app_control::WindowControl::new(
-            context.egui_ctx.clone(),
-            app_control::default_endpoint(),
+        app.set_external_control(Box::new(multicad_model::with_pair_cycle_proofs(
+            pair_proofs.clone(),
+            || {
+                app_control::WindowControl::new(
+                    context.egui_ctx.clone(),
+                    app_control::default_endpoint(),
+                )
+            },
         )));
         Ok(Box::new(app))
     }))

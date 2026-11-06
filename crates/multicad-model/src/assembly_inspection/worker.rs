@@ -106,9 +106,11 @@ impl AssemblyInspectionWorker {
             stop: AtomicBool::new(false),
         });
         let thread = shared.clone();
+        let pair_proofs = crate::current_pair_cycle_proofs();
         std::thread::Builder::new()
             .name("multicad-assembly-inspection".into())
             .spawn(move || {
+                let _proof_owner = crate::pair_cycle_proofs::ProofOwner::enter(pair_proofs);
                 let _exit = Exit(thread.clone());
                 let mut process = factory();
                 loop {

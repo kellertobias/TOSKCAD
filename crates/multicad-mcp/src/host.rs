@@ -26,6 +26,10 @@ pub struct Scope {
 }
 
 pub trait Host: Send + Sync + 'static {
+    /// Detached evidence owned by this application or headless host.
+    fn pair_cycle_proofs(&self) -> Option<multicad_model::PairCycleProofStore> {
+        None
+    }
     fn scope(&self) -> Scope;
     /// Run `job` exactly once on the owner, or return an error without
     /// running it. Jobs are short; native evaluation happens outside them.

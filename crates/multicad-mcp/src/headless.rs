@@ -100,6 +100,7 @@ impl Target for Workspace {
 }
 
 pub struct Headless {
+    pair_cycle_proofs: multicad_model::PairCycleProofStore,
     workspace: Mutex<Workspace>,
     scope: Scope,
 }
@@ -113,6 +114,7 @@ impl Headless {
             read_only,
         };
         Self {
+            pair_cycle_proofs: Default::default(),
             workspace: Mutex::new(workspace),
             scope,
         }
@@ -128,6 +130,9 @@ impl Headless {
     }
 }
 impl Host for Headless {
+    fn pair_cycle_proofs(&self) -> Option<multicad_model::PairCycleProofStore> {
+        Some(self.pair_cycle_proofs.clone())
+    }
     fn scope(&self) -> Scope {
         self.scope.clone()
     }

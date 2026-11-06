@@ -59,25 +59,13 @@ pub struct GearPairCheck {
     pub current_engagement: Option<GearEngagementWitness>,
     pub cycle_drive_angles_rad: Vec<f64>,
     pub cycle_reused: bool,
+    /// Wall time in native sampled checks; zero when a completed cycle is reused.
+    pub sampled_cycle_ms: f64,
+    pub current_pose_ms: f64,
     pub current_drive_angle_rad: f64,
     pub current_pose_checked: bool,
     pub maximum_overlap_volume_mm3: f64,
     pub scope: &'static str,
-}
-#[derive(Default)]
-pub(crate) struct PairValidationCache {
-    completed: BTreeMap<String, Vec<f64>>,
-}
-impl PairValidationCache {
-    pub(crate) fn clear(&mut self) {
-        self.completed.clear();
-    }
-    fn insert(&mut self, key: String, phases: Vec<f64>) {
-        if self.completed.len() >= MAX_PAIRS {
-            self.completed.pop_first();
-        }
-        self.completed.insert(key, phases);
-    }
 }
 fn placed(solid: &Solid, pose: model::RigidPose, pair: EntityId) -> Result<Solid, ModelError> {
     solid
@@ -581,7 +569,7 @@ pub(crate) fn validate(
     solids: &BTreeMap<EntityId, Solid>,
     policy: GeometryPolicy,
     interrupt: Option<&dyn Fn() -> bool>,
-    mut cache: Option<&mut PairValidationCache>,
+    mut cache: Option<&mut crate::pair_cycle_proofs::CycleTransaction>,
 ) -> Result<BTreeMap<EntityId, GearPairCheck>, ModelError> {
     let pairs=document.entities().filter(|e|matches!(&e.data,EntityData::Extension{definition,..} if definition.type_id==model::GEAR_PAIR_TYPE)).collect::<Vec<_>>();
     if pairs.len() > MAX_PAIRS {
@@ -621,7 +609,8 @@ pub(crate) fn validate(
                 .is_ok_and(|gear| gear.parameters.shift_mate.is_some())
         });
         let key = format!(
-            "gear-pair-cycle/4/{SAMPLES}|{pair:?}|{:?}|{:?}|{specifications:?}|{:?}|{base:?}|{policy:?}|shifted-engagement:{shifted_engagement}",
+            "gear-pair-cycle/5/{SAMPLES}|{:?}|{pair:?}|{:?}|{:?}|{specifications:?}|{:?}|{base:?}|{policy:?}|shifted-engagement:{shifted_engagement}",
+            document.id(),
             source.parameters.gears,
             source.outputs,
             resolved.gears.each_ref().map(|g| g.frame())
@@ -640,11 +629,9 @@ pub(crate) fn validate(
         } else {
             key
         };
-        let previous = cache
-            .as_deref()
-            .and_then(|c| c.completed.get(&key))
-            .cloned();
+        let previous = cache.as_deref().and_then(|c| c.lookup(&key));
         let reused = previous.is_some();
+        let cycle_started = std::time::Instant::now();
         let phases = if let Some(phases) = previous {
             phases
         } else {
@@ -671,9 +658,14 @@ pub(crate) fn validate(
                 check_pose(&sample, evaluated, &source, pair, [a, b], *drive, policy)?;
             }
             if let Some(cache) = cache.as_deref_mut() {
-                cache.insert(key, phases.clone());
+                cache.stage(key, phases.clone());
             }
             phases
+        };
+        let sampled_cycle_ms = if reused {
+            0.
+        } else {
+            cycle_started.elapsed().as_secs_f64() * 1000.
         };
         checkpoint(interrupt)?;
         let current = source
@@ -681,9 +673,11 @@ pub(crate) fn validate(
             .drive_angle
             .value_in(multicad_core::parameters::Unit::Radian, Some(evaluated))
             .map_err(|e| error(Some(pair), e))?;
+        let current_started = std::time::Instant::now();
         let current_engagement =
             check_pose(document, evaluated, &source, pair, [a, b], current, policy)?;
-        reports.insert(pair,GearPairCheck{pair,current_engagement,center_distance_mm:resolved.center_distance_mm,bevel:resolved.bevel.clone(),worm:resolved.worm.clone(),cycle_drive_angles_rad:phases,cycle_reused:reused,current_drive_angle_rad:current,current_pose_checked:true,maximum_overlap_volume_mm3:0.,scope:if resolved.worm.is_some() { "Native current pose and nine sampled phases over one full ZA worm turn with native no-overlap and engagement proximity witnesses for its generated wheel. No continuous collision-free motion, strength or manufacturing-fit certification." } else if resolved.rack_travel.is_some() { "Native current pose, nine sampled phases over one pinion tooth period and both conservative finite travel endpoints. No continuous collision-free motion, strength or manufacturing-fit certification." } else if resolved.bevel.is_some() { "Native current pose and nine sampled phases over one spherical-involute bevel tooth cycle with native no-overlap and engagement proximity witnesses. No continuous collision-free motion, strength or manufacturing-fit certification." } else if shifted_engagement { "Native current pose and nine sampled phases over one matched shifted external tooth cycle, with whole-solid no-overlap and native named-flank proximity in each chevron band, or a whole-solid fallback for single-band gears. No continuous collision-free motion, strength or manufacturing-fit certification." } else { "Native current pose and nine sampled phases over one pinion tooth cycle, under the unmodified periodic generator assumption. No continuous collision-free motion, strength or manufacturing-fit certification." }});
+        let current_pose_ms = current_started.elapsed().as_secs_f64() * 1000.;
+        reports.insert(pair,GearPairCheck{pair,current_engagement,center_distance_mm:resolved.center_distance_mm,bevel:resolved.bevel.clone(),worm:resolved.worm.clone(),cycle_drive_angles_rad:phases,cycle_reused:reused,sampled_cycle_ms,current_pose_ms,current_drive_angle_rad:current,current_pose_checked:true,maximum_overlap_volume_mm3:0.,scope:if resolved.worm.is_some() { "Native current pose and nine sampled phases over one full ZA worm turn with native no-overlap and engagement proximity witnesses for its generated wheel. No continuous collision-free motion, strength or manufacturing-fit certification." } else if resolved.rack_travel.is_some() { "Native current pose, nine sampled phases over one pinion tooth period and both conservative finite travel endpoints. No continuous collision-free motion, strength or manufacturing-fit certification." } else if resolved.bevel.is_some() { "Native current pose and nine sampled phases over one spherical-involute bevel tooth cycle with native no-overlap and engagement proximity witnesses. No continuous collision-free motion, strength or manufacturing-fit certification." } else if shifted_engagement { "Native current pose and nine sampled phases over one matched shifted external tooth cycle, with whole-solid no-overlap and native named-flank proximity in each chevron band, or a whole-solid fallback for single-band gears. No continuous collision-free motion, strength or manufacturing-fit certification." } else { "Native current pose and nine sampled phases over one pinion tooth cycle, under the unmodified periodic generator assumption. No continuous collision-free motion, strength or manufacturing-fit certification." }});
     }
     Ok(reports)
 }
@@ -744,6 +738,39 @@ mod tests {
         (session, request, solids)
     }
     #[test]
+    fn cancellation_after_last_sample_and_after_current_pose_publish_nothing() {
+        let (session, request, _) = candidate();
+        for after_pending_visits in [0, 1] {
+            let store = crate::PairCycleProofStore::default();
+            let visits = Cell::new(0);
+            let interrupt = || {
+                if crate::pair_cycle_proofs::pending_entries() > 0 {
+                    visits.set(visits.get() + 1);
+                    visits.get() > after_pending_visits
+                } else {
+                    false
+                }
+            };
+            let result = crate::with_pair_cycle_proofs(store.clone(), || {
+                crate::Compiler {
+                    omit_display: true,
+                    ..Default::default()
+                }
+                .compile_interruptible(session.document(), 1, Some(&interrupt))
+            });
+            assert!(result.is_err());
+            assert_eq!(store.stats().entries, 0);
+            assert!(visits.get() > after_pending_visits);
+            assert_eq!(session.revision(), 1);
+            assert_eq!(
+                read_gear_pair(session.document(), request.pair)
+                    .unwrap()
+                    .outputs,
+                request.outputs
+            );
+        }
+    }
+    #[test]
     fn deliberately_wrong_phase_produces_a_real_native_overlap_diagnostic() {
         let (session, request, solids) = candidate();
         let source = read_gear_pair(session.document(), request.pair).unwrap();
@@ -776,7 +803,8 @@ mod tests {
     #[test]
     fn superseded_cycle_never_stores_a_partial_validation_proof() {
         let (session, request, solids) = candidate();
-        let mut cache = PairValidationCache::default();
+        let store = crate::PairCycleProofStore::default();
+        let mut cache = crate::pair_cycle_proofs::CycleTransaction::new(Some(store.clone()));
         let visits = Cell::new(0);
         let interrupt = || {
             visits.set(visits.get() + 1);
@@ -792,7 +820,7 @@ mod tests {
         );
         assert!(result.is_err());
         assert!(visits.get() > 2);
-        assert!(cache.completed.is_empty());
+        assert_eq!(store.stats().entries, 0);
         assert_eq!(session.revision(), 1);
         assert_eq!(
             read_gear_pair(session.document(), request.pair)

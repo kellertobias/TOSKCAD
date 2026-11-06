@@ -230,9 +230,11 @@ impl ExportWorker {
             stop: AtomicBool::new(false),
         });
         let worker = Arc::clone(&shared);
+        let pair_proofs = crate::current_pair_cycle_proofs();
         std::thread::Builder::new()
             .name("multicad-export".into())
             .spawn(move || {
+                let _proof_owner = crate::pair_cycle_proofs::ProofOwner::enter(pair_proofs);
                 // This guard publishes failures after handler-local native models unwind.
                 let _exit = Exit(Arc::clone(&worker));
                 loop {

@@ -27,23 +27,27 @@ pub(crate) struct NativeWorker {
 impl NativeWorker {
     pub fn new(host: Arc<dyn Host>) -> Self {
         let owner = Arc::clone(&host);
+        let pair_proofs = host.pair_cycle_proofs().unwrap_or_default();
         let (sender, receiver) = mpsc::sync_channel::<Job>(MAX_QUEUED);
         let started = std::thread::Builder::new()
             .name("multicad-mcp-native".into())
             .spawn(move || {
-                multicad_model::with_evaluation_cache(|| {
-                    while let Ok(job) = receiver.recv() {
-                        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                            (job.run)(owner.as_ref())
-                        }));
-                        let failed = result.is_err();
-                        let _ = job.reply.send(result.map_err(|_| ()));
-                        if failed {
-                            // Drop every native cache on this owner; queued callers
-                            // receive disconnection instead of reusing partial state.
-                            break;
+                multicad_model::with_pair_cycle_proofs(pair_proofs, || {
+                    multicad_model::with_evaluation_cache(|| {
+                        while let Ok(job) = receiver.recv() {
+                            let result =
+                                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                    (job.run)(owner.as_ref())
+                                }));
+                            let failed = result.is_err();
+                            let _ = job.reply.send(result.map_err(|_| ()));
+                            if failed {
+                                // Drop every native cache on this owner; queued callers
+                                // receive disconnection instead of reusing partial state.
+                                break;
+                            }
                         }
-                    }
+                    })
                 });
             });
         Self {

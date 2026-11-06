@@ -709,6 +709,19 @@ cone face width and both pitch-cone angles. Their shared apex makes
 For worm pairs, `resolved.worm` identifies the worm and wheel members,
 wheel count, center distance, crossed shaft angle and full worm-turn period.
 `evaluate_model` reports actual native pair checks and physical leaf paths.
+Each pair includes `cycle_reused`, `sampled_cycle_ms` and `current_pose_ms`.
+Reuse skips only completed sampled-cycle work; the current native pose is
+checked on every full evaluation. `sampled_cycle_ms` is zero on a hit.
+The additional `native_timings` object reports successful compiler wall times
+in milliseconds: `total_ms`, `gear_construction_ms`,
+`assembly_and_occurrence_ms`, `shape_publication_ms` and `pair_validation_ms`.
+Pair validation contains the per-pair sampled/current timings. The other
+buckets are partial and need not sum to total; they exclude later manufacturing
+serialization and OS paint. Failed/cancelled evaluations return their usual
+error rather than a successful timing object. These are diagnostic measurements,
+not latency guarantees or new geometry evidence.
+Application and standalone host ownership, bounded reuse and publication are
+defined in [ADR-0036](0036-shared-gear-cycle-evidence.md).
 For shifted Spur/Helical, named-flank proximity may return
 `shifted_spur_flank_faces` or `shifted_helical_flank_faces`; a candidate miss uses
 `whole_solid_fallback`. Shifted chevrons require both bands independently and

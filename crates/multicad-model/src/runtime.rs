@@ -166,9 +166,11 @@ impl<T: Send + 'static> Runtime<T> {
             wake: Condvar::new(),
         });
         let worker = Arc::clone(&shared);
+        let pair_proofs = crate::current_pair_cycle_proofs();
         std::thread::Builder::new()
             .name("multicad-model".into())
             .spawn(move || {
+                let _proof_owner = crate::pair_cycle_proofs::ProofOwner::enter(pair_proofs);
                 // Keep this guard before retained: native models must be
                 // destroyed on their owner thread before failure publication.
                 let _exit = WorkerExit {

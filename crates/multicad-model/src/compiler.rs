@@ -227,6 +227,16 @@ impl Profiles<'_> {
 }
 
 /// An evaluated model owns genuine B-reps, never reconstructed display meshes.
+/// Diagnostic wall times, not a cache key, source property or latency guarantee.
+#[derive(Clone, Debug, Default, serde::Serialize)]
+pub struct ModelTimings {
+    pub total_ms: f64,
+    pub gear_construction_ms: f64,
+    pub assembly_and_occurrence_ms: f64,
+    /// Bounds, mass, tessellation and display payload preparation.
+    pub shape_publication_ms: f64,
+    pub pair_validation_ms: f64,
+}
 /// The kernel's !Send/!Sync ownership also applies to this container.
 pub struct Model {
     pub(crate) policy: GeometryPolicy,
@@ -234,8 +244,12 @@ pub struct Model {
     snapshot: ModelSnapshot,
     leaves: crate::assemblies::LeafStore,
     gear_pair_checks: BTreeMap<EntityId, crate::GearPairCheck>,
+    timings: ModelTimings,
 }
 impl Model {
+    pub fn timings(&self) -> &ModelTimings {
+        &self.timings
+    }
     pub fn gear_pair_checks(&self) -> &BTreeMap<EntityId, crate::GearPairCheck> {
         &self.gear_pair_checks
     }
@@ -365,11 +379,26 @@ impl Compiler {
         interrupt: Option<&dyn Fn() -> bool>,
         mut cache: Option<&mut crate::EvaluationCache>,
     ) -> Result<Model, ModelError> {
+        let started = std::time::Instant::now();
+        let full_evaluation = roots.is_none();
+        let publication = crate::pair_cycle_proofs::PublicationScope::begin();
+        // An injected application store takes precedence over worker-local
+        // receipts, including after clear or a change of application owner.
+        let store = crate::current_pair_cycle_proofs()
+            .or_else(|| cache.as_deref().map(|cache| cache.gear_pairs.clone()));
+        let mut pair_proofs = crate::pair_cycle_proofs::CycleTransaction::new(store);
         if let Some(cache) = cache.as_deref_mut() {
             cache.begin_symbol_proofs();
         }
-        let result = self
-            .compile_scoped_unchecked(document, revision, roots, interrupt, cache.as_deref_mut())
+        let mut result = self
+            .compile_scoped_unchecked(
+                document,
+                revision,
+                roots,
+                interrupt,
+                cache.as_deref_mut(),
+                &mut pair_proofs,
+            )
             .and_then(|model| {
                 checkpoint(interrupt)?;
                 Ok(model)
@@ -384,6 +413,29 @@ impl Compiler {
         if let Some(cache) = cache {
             cache.finish_symbol_proofs(result.is_ok());
         }
+        publication.finish(result.is_ok() && full_evaluation);
+        if let Ok(model) = &mut result {
+            model.timings.total_ms = started.elapsed().as_secs_f64() * 1000.;
+            // Opt-in local diagnostics for controlled operator-path measurements.
+            // No model source, native handle or manufacturing payload is logged.
+            if let Some(path) = std::env::var_os("MULTICAD_MODEL_TIMINGS_JSONL") {
+                use std::io::Write;
+                if let Ok(mut output) = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(path)
+                    && let Ok(mut line) = serde_json::to_vec(&serde_json::json!({
+                        "document":document.id(), "revision":revision,
+                        "owner":std::thread::current().name(), "omit_display":self.omit_display,
+                        "scope":format!("{:?}",model.snapshot.scope),
+                        "timings":model.timings, "gear_pairs":model.gear_pair_checks,
+                    }))
+                {
+                    line.push(b'\n');
+                    let _ = output.write_all(&line);
+                }
+            }
+        }
         result
     }
     fn compile_scoped_unchecked(
@@ -393,7 +445,9 @@ impl Compiler {
         roots: Option<Vec<EntityId>>,
         interrupt: Option<&dyn Fn() -> bool>,
         mut cache: Option<&mut crate::EvaluationCache>,
+        pair_proofs: &mut crate::pair_cycle_proofs::CycleTransaction,
     ) -> Result<Model, ModelError> {
+        let mut timings = ModelTimings::default();
         checkpoint(interrupt)?;
         document.validate().map_err(|e| error(None, e))?;
         self.policy.validate().map_err(|e| error(None, e))?;
@@ -501,7 +555,7 @@ impl Compiler {
                 }
             }
         }
-        let mut cached = cache.as_deref_mut().map(|cache| {
+        let mut cached = cache.map(|cache| {
             crate::eval_cache::Session::new(cache, self, document, context.parameters())
         });
         let mut profiles = Profiles {
@@ -584,6 +638,7 @@ impl Compiler {
                 {
                     cache.evaluated_symbol(id);
                 }
+                let assembly_started = std::time::Instant::now();
                 let solid = crate::assemblies::component(
                     document,
                     id,
@@ -598,6 +653,9 @@ impl Compiler {
                     .map_err(|e| error(Some(id), e))?;
                 multicad_core::model::wall_face_materials(document, &topology)
                     .map_err(|e| error(Some(id), e))?;
+                timings.assembly_and_occurrence_ms +=
+                    assembly_started.elapsed().as_secs_f64() * 1000.;
+                let publication_started = std::time::Instant::now();
                 let snapshot = ShapeSnapshot {
                     producer: id,
                     bounds: solid.bounds().map_err(|e| error(Some(id), e))?,
@@ -626,6 +684,7 @@ impl Compiler {
                     },
                     topology: topology.clone(),
                 };
+                timings.shape_publication_ms += publication_started.elapsed().as_secs_f64() * 1000.;
                 triangles = triangles.saturating_add(snapshot.mesh.indices.len() / 3);
                 if triangles > MAX_MODEL_TRIANGLES {
                     return Err(error(
@@ -681,6 +740,7 @@ impl Compiler {
                 {
                     cache.evaluated_symbol(id);
                 }
+                let occurrence_started = std::time::Instant::now();
                 let (occurrence, solid) = crate::occurrences::build(
                     crate::occurrences::Inputs {
                         document,
@@ -695,6 +755,8 @@ impl Compiler {
                 )?;
                 topologies.insert(id, occurrence.topology.clone());
                 leaves.instance(document, &occurrence, revision)?;
+                timings.assembly_and_occurrence_ms +=
+                    occurrence_started.elapsed().as_secs_f64() * 1000.;
                 let occurrence = Arc::new(occurrence);
                 if let (Some(key), Some(cache)) = (symbol_key, cached.as_mut())
                     && let (Ok(shared), Some(leaf)) = (solid.share(), leaves.capture(id))
@@ -884,7 +946,11 @@ impl Compiler {
                 }
                 (model::GEAR_TYPE, model::GEAR_SCHEMA) => {
                     let source = model::read_gear(document, id).map_err(|e| error(Some(id), e))?;
-                    crate::gears::build(id, &source, context.parameters(), self.policy)?
+                    let started = std::time::Instant::now();
+                    let solid =
+                        crate::gears::build(id, &source, context.parameters(), self.policy)?;
+                    timings.gear_construction_ms += started.elapsed().as_secs_f64() * 1000.;
+                    solid
                 }
                 (model::STAIR_TYPE, 1) => {
                     crate::levels::build_stair(document, context.parameters(), id, self.policy)?
@@ -1206,6 +1272,7 @@ impl Compiler {
             let topology = solid
                 .topology_snapshot(id, revision)
                 .map_err(|e| error(Some(id), e))?;
+            let publication_started = std::time::Instant::now();
             let snapshot = ShapeSnapshot {
                 producer: id,
                 bounds: solid.bounds().map_err(|e| error(Some(id), e))?,
@@ -1234,6 +1301,7 @@ impl Compiler {
                 },
                 topology: topology.clone(),
             };
+            timings.shape_publication_ms += publication_started.elapsed().as_secs_f64() * 1000.;
             triangles = triangles.saturating_add(snapshot.mesh.indices.len() / 3);
             if triangles > MAX_MODEL_TRIANGLES {
                 return Err(error(
@@ -1261,6 +1329,7 @@ impl Compiler {
             solids.insert(id, solid);
         }
         drop(cached);
+        let pair_started = std::time::Instant::now();
         let gear_pair_checks = if roots.is_none() {
             crate::gear_pairs::validate(
                 document,
@@ -1268,12 +1337,13 @@ impl Compiler {
                 &solids,
                 self.policy,
                 interrupt,
-                cache.map(|c| &mut c.gear_pairs),
+                Some(pair_proofs),
             )?
         } else {
             BTreeMap::new()
         };
         checkpoint(interrupt)?;
+        timings.pair_validation_ms = pair_started.elapsed().as_secs_f64() * 1000.;
         let mut references = references::inspect(document, revision, &topologies);
         crate::external::complete_report(
             self,
@@ -1380,6 +1450,7 @@ impl Compiler {
             solids,
             leaves,
             gear_pair_checks,
+            timings,
             snapshot: ModelSnapshot {
                 scope: roots.map_or(EvaluationScope::Full, EvaluationScope::Sources),
                 stamp,

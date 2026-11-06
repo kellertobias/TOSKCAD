@@ -15,6 +15,7 @@ use std::sync::Arc;
 mod cache;
 type Tables = Vec<(ScheduleSpec, Result<ScheduleTable, String>)>;
 pub struct Backend {
+    pair_cycle_proofs: Option<multicad_model::PairCycleProofStore>,
     runtime: Result<Runtime<Arc<DrawingEvaluation>>, String>,
     expected: Option<(u64, DrawingStamp)>,
     /// Schedules run on their own worker, created on first use, so view
@@ -58,6 +59,7 @@ impl Backend {
     pub(crate) fn with_cache(cache: Option<cache::Cache>) -> Self {
         let reader = cache.clone();
         Self {
+            pair_cycle_proofs: multicad_model::current_pair_cycle_proofs(),
             runtime: Runtime::with_cached_model_publisher(
                 Compiler {
                     omit_display: true,
@@ -134,9 +136,16 @@ impl DrawingBackend for Backend {
         let runtime = self
             .schedules
             .get_or_insert_with(|| {
-                Runtime::with_model_publisher(Compiler::default(), |document, model, mask| {
-                    Ok(build_tables(document, model, mask))
-                })
+                let create = || {
+                    Runtime::with_model_publisher(Compiler::default(), |document, model, mask| {
+                        Ok(build_tables(document, model, mask))
+                    })
+                };
+                if let Some(store) = &self.pair_cycle_proofs {
+                    multicad_model::with_pair_cycle_proofs(store.clone(), create)
+                } else {
+                    create()
+                }
             })
             .as_mut()
             .map_err(|e| e.clone())?;
