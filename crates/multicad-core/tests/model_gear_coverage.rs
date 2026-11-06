@@ -194,10 +194,9 @@ fn unsupported_and_incompatible_shift_inputs_refuse_without_a_transaction() {
         shifted(24., -0.5),
         shifted(12., 1.),
         GearParameters {
-            family: GearFamily::Helical,
-            helix_angle: angle(20.),
-            hand: GearHand::Right,
-            ..shifted(24., 0.2)
+            family: GearFamily::InternalRing,
+            outer_diameter: Some(length(100.)),
+            ..shifted(48., 0.2)
         },
         GearParameters {
             pitch_input: GearPitchInput::DiametralPitch,

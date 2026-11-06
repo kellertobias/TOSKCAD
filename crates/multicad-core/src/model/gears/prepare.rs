@@ -108,10 +108,20 @@ fn prepare_gear_edit_impl(
     if !pair_edit
         && (matches!(
             source.parameters.family,
-            GearFamily::Bevel | GearFamily::Worm | GearFamily::Spur
+            GearFamily::Bevel
+                | GearFamily::Worm
+                | GearFamily::Spur
+                | GearFamily::Helical
+                | GearFamily::Herringbone
+                | GearFamily::DoubleHelical
         ) || matches!(
             parameters.family,
-            GearFamily::Bevel | GearFamily::Worm | GearFamily::Spur
+            GearFamily::Bevel
+                | GearFamily::Worm
+                | GearFamily::Spur
+                | GearFamily::Helical
+                | GearFamily::Herringbone
+                | GearFamily::DoubleHelical
         ))
     {
         let old = &source.parameters;
@@ -130,7 +140,10 @@ fn prepare_gear_edit_impl(
                 || old.module_system != parameters.module_system
                 || old.module != parameters.module
                 || old.pressure_angle != parameters.pressure_angle
-                || old.face_width != parameters.face_width);
+                || old.face_width != parameters.face_width
+                || old.helix_angle != parameters.helix_angle
+                || old.hand != parameters.hand
+                || old.center_gap != parameters.center_gap);
         if coupled_changed && session.document().entities().any(|entity| {
             matches!(&entity.data, EntityData::Extension { definition, .. } if definition.type_id == GEAR_PAIR_TYPE)
                 && read_gear_pair(session.document(), entity.id).is_ok_and(|pair| pair.parameters.gears.contains(&feature))

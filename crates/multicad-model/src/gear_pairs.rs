@@ -176,6 +176,71 @@ fn rotary_engagement(
     policy: GeometryPolicy,
     bevel: bool,
 ) -> Result<GearEngagementWitness, ModelError> {
+    if bevel {
+        return rotary_engagement_band(
+            pair,
+            features,
+            resolved,
+            solids,
+            policy,
+            ("bevel/tooth", "spherical_involute", true),
+        );
+    }
+    let family = resolved.gears[0].rotary().expect("external pair").family;
+    if matches!(
+        family,
+        model::GearFamily::Herringbone | model::GearFamily::DoubleHelical
+    ) {
+        // Opposite bands each need their own actual native flank witness.
+        // Whole-body proximity cannot establish engagement in both bands.
+        let lower = rotary_engagement_band(
+            pair,
+            features,
+            resolved,
+            solids,
+            policy,
+            ("gear/lower/tooth", "involute", false),
+        )?;
+        let upper = rotary_engagement_band(
+            pair,
+            features,
+            resolved,
+            solids,
+            policy,
+            ("gear/upper/tooth", "involute", false),
+        )?;
+        let mut result = if lower.distance_mm >= upper.distance_mm {
+            lower
+        } else {
+            upper
+        };
+        result.kind = "shifted_chevron_both_bands";
+        return Ok(result);
+    }
+    let mut result = rotary_engagement_band(
+        pair,
+        features,
+        resolved,
+        solids,
+        policy,
+        ("gear/whole/tooth", "involute", true),
+    )?;
+    if family == model::GearFamily::Helical && result.kind != "whole_solid_fallback" {
+        result.kind = "shifted_helical_flank_faces";
+    }
+    Ok(result)
+}
+fn rotary_engagement_band(
+    pair: EntityId,
+    features: [EntityId; 2],
+    resolved: &model::ResolvedGearPair,
+    solids: [&Solid; 2],
+    policy: GeometryPolicy,
+    band: (&str, &str, bool),
+) -> Result<GearEngagementWitness, ModelError> {
+    let bevel = band.0 == "bevel/tooth";
+    let names = (band.0, band.1);
+    let allow_whole_fallback = band.2;
     let members = resolved.gears.each_ref().map(|gear| {
         if bevel {
             let g = gear.bevel().expect("resolved bevel pair");
@@ -184,18 +249,13 @@ fn rotary_engagement(
                 g.nominal_tooth_thickness_mm - g.physical_tooth_thickness_mm,
             )
         } else {
-            let g = gear.rotary().expect("resolved shifted spur pair");
+            let g = gear.rotary().expect("resolved shifted external pair");
             (
                 g.teeth,
                 g.nominal_tooth_thickness_mm - g.physical_tooth_thickness_mm,
             )
         }
     });
-    let names = if bevel {
-        ("bevel/tooth", "spherical_involute")
-    } else {
-        ("gear/whole/tooth", "involute")
-    };
     let faces = [
         engagement_flanks(
             solids[0],
@@ -244,6 +304,15 @@ fn rotary_engagement(
                 });
             }
         }
+    }
+    if !allow_whole_fallback {
+        return Err(error(
+            Some(pair),
+            format!(
+                "Gear band {} has no named native engagement proximity: nearest candidate flank gap {nearest} mm exceeds authored total thinning {clearance} mm",
+                names.0,
+            ),
+        ));
     }
     let distance = solids[0]
         .minimum_distance(BRepSelection::Whole, solids[1], BRepSelection::Whole)
@@ -388,8 +457,13 @@ fn check_pose(
                 .map_err(|e| error(Some(pair), e))?;
         placed_solids.push(placed(solid, pose, pair)?);
     }
-    let resolved = model::resolve_gear_pair_parameters(document, evaluated, &source.parameters)
-        .map_err(|e| error(Some(pair), e))?;
+    // Sample documents carry the tested drive. The original source retained by
+    // the cycle loop still carries its initial drive and cannot select the
+    // current native tooth flanks at another sampled or wrapped angle.
+    let current_source = model::read_gear_pair(document, pair).map_err(|e| error(Some(pair), e))?;
+    let resolved =
+        model::resolve_gear_pair_parameters(document, evaluated, &current_source.parameters)
+            .map_err(|e| error(Some(pair), e))?;
     if resolved.worm.is_some() {
         overlap_checked(
             pair,
@@ -423,13 +497,10 @@ fn check_pose(
         )
         .map(Some);
     }
-    let shifted_spur = resolved.gears.iter().all(|gear| {
-        gear.rotary()
-            .is_some_and(|r| r.family == model::GearFamily::Spur)
-    }) && source.parameters.gears.iter().any(|&feature| {
+    let shifted_external = source.parameters.gears.iter().any(|&feature| {
         model::read_gear(document, feature).is_ok_and(|g| g.parameters.shift_mate.is_some())
     });
-    if shifted_spur {
+    if shifted_external {
         return rotary_engagement(
             pair,
             source.parameters.gears,
@@ -550,7 +621,7 @@ pub(crate) fn validate(
                 .is_ok_and(|gear| gear.parameters.shift_mate.is_some())
         });
         let key = format!(
-            "gear-pair-cycle/3/{SAMPLES}|{pair:?}|{:?}|{:?}|{specifications:?}|{:?}|{base:?}|{policy:?}|shifted-engagement:{shifted_engagement}",
+            "gear-pair-cycle/4/{SAMPLES}|{pair:?}|{:?}|{:?}|{specifications:?}|{:?}|{base:?}|{policy:?}|shifted-engagement:{shifted_engagement}",
             source.parameters.gears,
             source.outputs,
             resolved.gears.each_ref().map(|g| g.frame())
@@ -612,7 +683,7 @@ pub(crate) fn validate(
             .map_err(|e| error(Some(pair), e))?;
         let current_engagement =
             check_pose(document, evaluated, &source, pair, [a, b], current, policy)?;
-        reports.insert(pair,GearPairCheck{pair,current_engagement,center_distance_mm:resolved.center_distance_mm,bevel:resolved.bevel.clone(),worm:resolved.worm.clone(),cycle_drive_angles_rad:phases,cycle_reused:reused,current_drive_angle_rad:current,current_pose_checked:true,maximum_overlap_volume_mm3:0.,scope:if resolved.worm.is_some() { "Native current pose and nine sampled phases over one full ZA worm turn with native no-overlap and engagement proximity witnesses for its generated wheel. No continuous collision-free motion, strength or manufacturing-fit certification." } else if resolved.rack_travel.is_some() { "Native current pose, nine sampled phases over one pinion tooth period and both conservative finite travel endpoints. No continuous collision-free motion, strength or manufacturing-fit certification." } else if resolved.bevel.is_some() { "Native current pose and nine sampled phases over one spherical-involute bevel tooth cycle with native no-overlap and engagement proximity witnesses. No continuous collision-free motion, strength or manufacturing-fit certification." } else if shifted_engagement { "Native current pose and nine sampled phases over one matched shifted Spur tooth cycle, with whole-solid no-overlap and native named-flank proximity witnesses or whole-solid fallback. No continuous collision-free motion, strength or manufacturing-fit certification." } else { "Native current pose and nine sampled phases over one pinion tooth cycle, under the unmodified periodic generator assumption. No continuous collision-free motion, strength or manufacturing-fit certification." }});
+        reports.insert(pair,GearPairCheck{pair,current_engagement,center_distance_mm:resolved.center_distance_mm,bevel:resolved.bevel.clone(),worm:resolved.worm.clone(),cycle_drive_angles_rad:phases,cycle_reused:reused,current_drive_angle_rad:current,current_pose_checked:true,maximum_overlap_volume_mm3:0.,scope:if resolved.worm.is_some() { "Native current pose and nine sampled phases over one full ZA worm turn with native no-overlap and engagement proximity witnesses for its generated wheel. No continuous collision-free motion, strength or manufacturing-fit certification." } else if resolved.rack_travel.is_some() { "Native current pose, nine sampled phases over one pinion tooth period and both conservative finite travel endpoints. No continuous collision-free motion, strength or manufacturing-fit certification." } else if resolved.bevel.is_some() { "Native current pose and nine sampled phases over one spherical-involute bevel tooth cycle with native no-overlap and engagement proximity witnesses. No continuous collision-free motion, strength or manufacturing-fit certification." } else if shifted_engagement { "Native current pose and nine sampled phases over one matched shifted external tooth cycle, with whole-solid no-overlap and native named-flank proximity in each chevron band, or a whole-solid fallback for single-band gears. No continuous collision-free motion, strength or manufacturing-fit certification." } else { "Native current pose and nine sampled phases over one pinion tooth cycle, under the unmodified periodic generator assumption. No continuous collision-free motion, strength or manufacturing-fit certification." }});
     }
     Ok(reports)
 }

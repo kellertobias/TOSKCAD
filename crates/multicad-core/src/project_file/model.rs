@@ -522,6 +522,7 @@ pub fn supported_capabilities() -> BTreeSet<String> {
         crate::model::THREAD_END_TREATMENT_CAPABILITY.into(),
         crate::model::GEAR_CAPABILITY.into(),
         crate::model::GEAR_COVERAGE_CAPABILITY.into(),
+        crate::model::SHIFTED_EXTERNAL_GEAR_CAPABILITY.into(),
         crate::model::TEETH_PER_INCH_CAPABILITY.into(),
         crate::model::INTERNAL_GEAR_CAPABILITY.into(),
         crate::model::RACK_GEAR_CAPABILITY.into(),

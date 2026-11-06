@@ -299,11 +299,17 @@ fn shifted_gear_with_intrinsic_hub_and_dp_source_exports_one_closed_bored_print_
     use multicad_core::model::{
         GearFamily, GearHand, GearHub, GearParameters, GearPitchInput, GearRequest, angle, ratio,
     };
-    for family in [
-        GearFamily::Spur,
-        GearFamily::Helical,
-        GearFamily::Herringbone,
-        GearFamily::DoubleHelical,
+    for (family, module_system) in [
+        (GearFamily::Spur, model::GearModuleSystem::Normal),
+        (GearFamily::Helical, model::GearModuleSystem::Normal),
+        (GearFamily::Herringbone, model::GearModuleSystem::Normal),
+        (GearFamily::DoubleHelical, model::GearModuleSystem::Normal),
+        (GearFamily::Helical, model::GearModuleSystem::Transverse),
+        (GearFamily::Herringbone, model::GearModuleSystem::Transverse),
+        (
+            GearFamily::DoubleHelical,
+            model::GearModuleSystem::Transverse,
+        ),
     ] {
         let mut s = Session::new(Document::new("Retained DP hub print").unwrap()).unwrap();
         let actor = Actor::local(Channel::Ui);
@@ -311,6 +317,7 @@ fn shifted_gear_with_intrinsic_hub_and_dp_source_exports_one_closed_bored_print_
             "Shifted DP hub",
             GearParameters {
                 family,
+                module_system,
                 helix_angle: angle(if family == GearFamily::Spur { 0. } else { 20. }),
                 hand: if family == GearFamily::Spur {
                     GearHand::None
@@ -331,7 +338,7 @@ fn shifted_gear_with_intrinsic_hub_and_dp_source_exports_one_closed_bored_print_
                 bore_diameter: length(2.),
                 backlash: length(0.02),
                 root_fillet_ratio: ratio(0.2),
-                profile_shift: ratio(if family == GearFamily::Spur { 0.2 } else { 0. }),
+                profile_shift: ratio(0.2),
                 minimum_wall: length(0.5),
                 hub: Some(GearHub {
                     diameter: length(8.),

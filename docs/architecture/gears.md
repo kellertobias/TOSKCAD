@@ -18,17 +18,17 @@ inspector and refused by canonical preparation and MCP.
 
 | Family | Single gear | Compatible pair | Current limits or remaining work |
 | --- | --- | --- | --- |
-| External spur | Native involute solid, optional hub and through bore | Parallel axes, derived center and phase | Module or DP; bounded 20-degree shifted profiles and retained matched tips |
-| External helical | Native twisted involute solid, optional hub and through bore | Matching helix magnitude, opposite hands | Module or DP; unshifted |
-| Herringbone | Continuous center, opposite-handed tooth bands; optional hub and through bore | Matching external family and width | Module or DP; unshifted; hand names the lower band |
-| Double-helical | Two tooth bands separated by a root-core center gap; optional hub and through bore | Matching external family, width and gap | Module or DP; unshifted; root core remains connected |
+| External spur | Native involute solid, optional hub and through bore | Parallel axes, derived center and phase | Module or DP; bounded shifted profiles and retained matched tips |
+| External helical | Native twisted involute solid, optional hub and through bore | Matching helix magnitude, opposite hands | Module or DP; retained normal/transverse shift context |
+| Herringbone | Continuous center, opposite-handed tooth bands; optional hub and through bore | Matching external family and width | Module or DP; retained shift; hand names the lower band |
+| Double-helical | Two tooth bands separated by a root-core center gap; optional hub and through bore | Matching external family, width and gap | Module or DP; retained shift; root core remains connected |
 | Internal ring | Native inward involute teeth and connected outer rim | 24-tooth spur pinion with 48/60-tooth ring; either member order | Unshifted 20-degree spur subset; explicit outside diameter |
 | Rack | Native straight flanks, circular root transitions and connected backing | One matching unshifted spur pinion; either member order | 4-64 whole centered pitch cells, zero helix, conservative finite travel |
 | Straight bevel | Spherical-involute flanks, back-cone heel/toe boundaries and custom spherical-circle root transitions | Intersecting 90-degree shafts with a shared pitch apex and derived tooth-count ratio | Declared 20-degree, zero-shift subset; 24-64 teeth per member; availability follows the registry |
 | Worm and wheel | ZA axial-straight worm or generated single-envelope wheel | One right-hand start, perpendicular shafts, derived center and worm-owned drive | Axial module 0.5–2 mm, normal pressure 20°, quotient 10 and 32–64 wheel teeth; see the declared subset below |
 
 [ADR-0035](0035-retained-gear-pitch-hubs-and-shift.md) owns the retained pitch,
-intrinsic hub and shifted-Spur contracts. The four external cylindrical families
+intrinsic hub and shifted external-profile contracts. The four external cylindrical families
 accept module or diametral pitch in an explicit normal/transverse plane. Rack,
 internal ring and bevel retain module input. Worm gearing uses axial module
 with normal pressure angle, as declared below. Recipes retain tooth count, face width,
@@ -42,9 +42,11 @@ teeth (rack count is 4-64 cells; bevel and worm subsets have separate limits bel
 0-45 degrees. Additional resolved geometry checks can refuse a recipe within
 those input ranges. In particular, the conservative unshifted rotary gear/pinion tooth-count
 policy uses `ceil(2 / sin(normal_pressure_angle)^2)` without virtual-tooth
-credit for a helix. Shifted Spur instead applies its sourced shift-dependent
-undercut inequality and the additional profile/contact constraints in ADR-0035. This is the supported envelope, not a universal cutting or
-undercut theorem. Root fillets are circular arcs rather than cutter trochoids.
+credit for a helix. Nonzero shift or retained matched context
+applies the direct basic-rack transverse undercut projection and additional
+profile/contact constraints in the
+[current ADR-0035 expansion](0035-retained-gear-pitch-hubs-and-shift.md#2026-11-06-extend-retained-shift-to-external-helical-families).
+This is the supported envelope, not a universal cutting or undercut theorem. Root fillets are circular arcs rather than cutter trochoids.
 
 The dimensional derivation follows the normal/transverse conventions in
 [KHK's gear calculation reference](https://khkgears.net/new/gear_knowledge/gear_technical_reference/calculation_gear_dimensions.html)
@@ -82,7 +84,7 @@ frames, identities and policy. Current pose is always checked; a partial or
 cancelled cycle is never reusable. These finite samples do not establish
 continuous collision-free motion or manufacturing fit.
 
-## Retained pitch, hubs and shifted Spur
+## Retained pitch, hubs and shifted external profiles
 
 The [coverage resolver](../../crates/multicad-core/src/model/gears/coverage.rs)
 keeps one active `GearParameters.module` dimension. `pitch_input` declares
@@ -100,13 +102,17 @@ gaps keep their existing connected core; the hub does not fill the tooth gap.
 [ADR-0035](0035-retained-gear-pitch-hubs-and-shift.md) owns dimensional constraints,
 shift equations, source references and conditional reader capabilities.
 
-Matched shifted Spur members retain each other's original typed count and shift
-sources. Shared edits update both recipes atomically; drive-only edits preserve
+Matched shifted external members retain each other's original typed count and
+shift sources. Non-Spur pairs require the same selected module system; their
+selected-plane radial depths remain distinct from reference pitch conversion. Shared edits update both recipes atomically; drive-only edits preserve
 them. Canonical checks require a valid contact path above both actual custom
 fillet joins. Native evaluation retains whole-solid overlap refusal at every
-sample and the current pose. `shifted_spur_flank_faces` records a close named
-native-face existence witness; a candidate miss uses `whole_solid_fallback`.
-These witnesses do not claim a global closest distance or loaded contact.
+sample and the current pose. Spur and Helical use named-flank existence witnesses
+with whole-solid distance fallback. Herringbone and DoubleHelical require a
+separate named-flank witness in each band; whole-body proximity cannot stand in
+for either one. These witnesses do not claim a global closest distance or loaded
+contact. The current ADR expansion owns the exact normal/transverse equations,
+basic-rack versus custom-root distinction and conditional reader gate.
 The cycle cache includes the engagement mode as well as complete native geometry,
 frames and policy. Final test runs and actual macOS checks belong in verification
 records; this reference states the implementation contract.

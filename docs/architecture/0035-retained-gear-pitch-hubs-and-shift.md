@@ -152,3 +152,98 @@ single-generator pair validation and leave the through-bore and provenance
 split across outputs. An intrinsic hub keeps that material within the generator.
 Restricting shift to zero-sum pairs would avoid changed center distance, but
 would exclude the sourced positive and negative center modifications.
+
+## 2026-11-06: Extend retained shift to external helical families
+
+This dated decision supersedes the initial decision's Spur-only, 20-degree shift
+restriction and its Spur-specific equations where helix is nonzero. The pitch,
+hub, source ownership and atomic-edit decisions above continue to apply. The
+implementation supports shifted Spur, Helical, Herringbone and DoubleHelical
+within their existing whole-count, selected-pressure and helix bounds, further
+narrowed by actual profile and pair checks. The selected-plane shift coefficient
+remains within the engineering interval `-0.5..1`. Other families refuse shift.
+
+[KHK Table 4.9, PDF page 23/printed 615](https://khkgears.us/media/izojpong/gear_guide1.pdf)
+defines normal-system shifted helical dimensions; Table 4.11, PDF page 25/printed
+617, defines the transverse system. Equations 4.16 and 4.17 on PDF pages 24-25
+convert the reference quantities. Herringbone and DoubleHelical retain these
+transverse sections in their opposite-handed bands. Their custom circular root
+construction remains separate from rack/hob-generated root geometry.
+
+Let beta be helix magnitude and `(m,alpha,x)` the selected module, pressure and
+shift. Normal mode has `mn=m`, `mt=m/cos(beta)`, `an=alpha` and
+`at=atan(tan(an)/cos(beta))`. Transverse mode has `mt=m`, `mn=m*cos(beta)`,
+`at=alpha` and `an=atan(tan(at)*cos(beta))`. Normal/transverse DP follows the
+same selected-plane module conversion above. The physical shift converts as
+`xt=xn*cos(beta)`. Reference conversion does not make the two standard addendum
+conventions identical.
+
+Reference and base radii are `rp=mt*z/2` and `rb=rp*cos(at)`. Before authored
+transverse thinning t, transverse thickness is
+`st=mt*(pi/2+2*x*tan(alpha))`. In Normal mode this equals the normal thickness
+divided by `cos(beta)`. The physical base half-angle is
+`(st-t)/(2*rp)+inv(at)`. Standalone tip/root radii remain
+`rp+m*(1+x)` and `rp+m*(x-1.25)`, using the selected module for radial depth.
+
+For matched members, retain the same `shift_mate` wire object and typed-source
+coupling. Both members require the same family and, for non-Spur families, the
+same selected module system. With `Z=z1+z2`, `X=x1+x2` and `f=mt/m`, solve
+`inv(atw)=inv(at)+2*X*tan(alpha)/Z`, then calculate
+`y=f*Z/2*(cos(at)/cos(atw)-1)`, `delta=X-y` and
+`ac=mt*Z/2+m*y`. Each matched tip is `rp+m*(1+x-delta)`; its root remains
+`rp+m*(x-1.25)`. No resolved literal replaces an authored mate binding.
+
+Use the direct basic-rack undercut projection for nonzero shift or retained
+matched intent. [Regalado, Gear Technology, June 2007, printed page 40/PDF page 3,
+equations 14-15](https://ik.imagekit.io/agmamedia/gt/issues/0607x/regalado.pdf)
+gives the normal coefficient bound
+`X>=y_tool-z*sin(at)^2/(2*cos(beta))`, with
+`y_tool=Ah-Rh*(1-sin(an))` for the generating tool. Specialize to KHK's unit
+active rack height from equation 3.8, so `y_tool=1`. The resulting bounds are
+`xn>=1-z*sin(at)^2/(2*cos(beta))` in Normal mode and
+`xt>=1-z*sin(at)^2/2` in Transverse mode. They are exact transverse projections
+of that declared active-rack geometry and use no virtual-tooth-count
+approximation. Zero shift with no matched context keeps the legacy conservative
+normal-angle count policy. The custom native fillet radius is not a tool-tip
+radius and is never substituted for Rh; this gate certifies no unspecified hob.
+
+Actual crest, root separation, bore wall and circular-fillet constraints remain
+mandatory. Approach/recess use transverse radii and working angle atw; their
+contact-ratio denominator is `pi*mt*cos(at)`. Require transverse contact ratio
+greater than one and the entire active path above both actual custom-fillet
+joins. Axial tooth overlap does not replace that requirement. Opposite hands
+share helix magnitude, and the pair's drive/centerline phases retain the law
+above.
+
+For handed twist `k=hand*tan(beta)/rp`, local section phase is `k*z` for Helical,
+`k*min(z,width-z)` for Herringbone and `k*min(z,width-z,band)` for DoubleHelical,
+where `band=(width-gap)/2`. DoubleHelical retains only root-core material in the
+center tooth gap. These definitions preserve the mirrored bands and make the
+opposite-member axial phase contributions cancel at corresponding sections.
+The hub remains part of the complete native collision body.
+
+After whole-solid overlap refusal, single-band Spur/Helical searches actual
+named native involute faces and retains whole-solid distance fallback. Witness
+kinds distinguish `shifted_spur_flank_faces` and `shifted_helical_flank_faces`.
+Herringbone/DoubleHelical require separate lower and upper named-flank proximity
+witnesses; whole-body proximity cannot substitute for a missing band. Their
+`shifted_chevron_both_bands` summary retains the farther accepted band witness.
+All checks use the same authored-thinning threshold plus ten linear tolerances.
+Face ordinals remain ephemeral. Complete constructor and engagement-policy
+inputs enter cycle-cache keys; current pose still runs independently.
+
+`model.gear.shifted_external.1` additionally gates active shifted or matched
+non-Spur external recipes and shifted/matched Spur at pressure other than
+20 degrees. Discovery evaluates saved shift intent, including suppressed and
+template source. A zero-valued expression without matched context remains under
+the legacy policy; an unresolved expanded intent fails closed. Existing
+`model.gear.coverage.1` and unit capabilities still apply. Inspection adds
+`resolved.shifted_gear`; `resolved.shifted_spur` remains populated only for the
+Spur subset. Backward-compatible helper aliases preserve the old Rust names.
+
+This expansion accepts the cost of selected-plane-aware source validation,
+additional reader capability and per-band native engagement checks. Retaining
+only the initial Spur subset would be simpler, but would leave the applicable
+helical families without their sourced shift contract. Native testing,
+manufacturing readback and actual interactive workflows remain execution gates,
+not consequences of the source equations.

@@ -87,8 +87,8 @@ pub struct GearParameters {
     /// This is direct-designed geometry, not a generated cutter trochoid.
     pub root_fillet_ratio: Dimension,
     pub minimum_wall: Dimension,
-    /// Rack shift coefficient; nonzero support is bounded to external 20-degree Spur
-    /// with coefficient -0.5..1, subject to undercut, crest and custom-root guards.
+    /// Rack shift coefficient in the selected normal/transverse module plane.
+    /// External cylindrical coefficients -0.5..1 remain subject to undercut/profile guards.
     pub profile_shift: Dimension,
     pub frame: PrimitiveFrame,
 }
@@ -133,6 +133,7 @@ fn ratio(value: f64) -> Dimension {
 #[derive(Clone, Debug, PartialEq)]
 pub struct ResolvedGear {
     pub family: GearFamily,
+    pub module_system: GearModuleSystem,
     pub hub: Option<ResolvedGearHub>,
     pub profile_shift_coefficient: f64,
     pub tip_shortening_coefficient: f64,
@@ -308,13 +309,9 @@ impl GearParameters {
                 "Gear needs module ≥0.01 mm, 4–128 whole teeth, 14.5–35 degree pressure angle, 0–45 degree helix magnitude, positive width/wall, nonnegative bore/clearance and root-fillet ratio 0.01–0.2",
             ));
         }
-        if shift != 0.
-            && (self.family != GearFamily::Spur
-                || (pressure - 20_f64.to_radians()).abs() > 1e-12
-                || !(-0.5..=1.).contains(&shift))
-        {
+        if shift != 0. && (!external_shift_family(self.family) || !(-0.5..=1.).contains(&shift)) {
             return Err(invalid(
-                "Nonzero shift currently requires external 20-degree Spur and coefficient -0.5..1 (engineering coverage bound)",
+                "Nonzero shift requires an external cylindrical gear and selected-plane coefficient -0.5..1 (engineering coverage bound)",
             ));
         }
         if matches!(self.family, GearFamily::Spur | GearFamily::InternalRing) {
@@ -361,18 +358,28 @@ impl GearParameters {
         // Conservative unshifted policy: no virtual-tooth helix credit or
         // generated undercut relief is assumed by this direct-design model.
         let minimum = (2. / an.sin().powi(2)).ceil() as u32;
-        if (shift == 0. && count < f64::from(minimum))
-            || (shift != 0. && shift < 1. - count * an.sin().powi(2) / 2.)
+        let expanded_shift_intent = shift != 0. || self.shift_mate.is_some();
+        // Regalado, Gear Technology June 2007, Eq14, basic active rack y=1.
+        // This is direct transverse rack projection, not a virtual tooth count;
+        // the native custom circular fillet is not a cutter/hob radius.
+        let minimum_shift = 1.
+            - count * at.sin().powi(2)
+                / (2.
+                    * if self.module_system == GearModuleSystem::Normal {
+                        beta.cos()
+                    } else {
+                        1.
+                    });
+        if (!expanded_shift_intent && count < f64::from(minimum))
+            || (expanded_shift_intent && shift < minimum_shift)
         {
-            return Err(invalid(if shift == 0. {
+            return Err(invalid(if !expanded_shift_intent {
                 format!(
                     "This unshifted profile needs at least {minimum} teeth under the conservative normal-angle undercut policy; no virtual-tooth helix credit is assumed"
                 )
             } else {
                 format!(
-                    "The source rack-undercut bound requires profile shift at least {:.9} for {count} teeth at {:.6} degrees; the supplied coefficient is {shift}",
-                    1. - count * an.sin().powi(2) / 2.,
-                    an.to_degrees()
+                    "The primary basic-rack undercut bound requires selected-plane profile shift at least {minimum_shift:.9} for {count} teeth; the supplied coefficient is {shift}"
                 )
             }));
         }
@@ -389,7 +396,7 @@ impl GearParameters {
         }
         let pitch = mt * count / 2.;
         let base = pitch * at.cos();
-        let shortening = self.shift_shortening(parameters, count, shift, pressure)?;
+        let shortening = self.shift_shortening(parameters, count, shift, pressure, at, beta)?;
         let tip = pitch
             + if internal {
                 -module
@@ -405,7 +412,7 @@ impl GearParameters {
         let nominal = if shift == 0. {
             PI * mt / 2.
         } else {
-            mt * (PI / 2. + 2. * shift * at.tan())
+            mt * (PI / 2. + 2. * shift * pressure.tan())
         };
         let design = nominal - backlash;
         let physical = design - allowance;
@@ -456,6 +463,7 @@ impl GearParameters {
         }
         let resolved = ResolvedGear {
             family: self.family,
+            module_system: self.module_system,
             hub,
             profile_shift_coefficient: shift,
             tip_shortening_coefficient: shortening,

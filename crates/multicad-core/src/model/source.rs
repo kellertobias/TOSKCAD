@@ -900,6 +900,9 @@ pub fn required_capabilities(document: &Document) -> BTreeSet<String> {
     }) {
         capabilities.insert(super::GEAR_COVERAGE_CAPABILITY.into());
     }
+    if super::gears::requires_expanded_shift_capability(document) {
+        capabilities.insert(super::SHIFTED_EXTERNAL_GEAR_CAPABILITY.into());
+    }
     fn has_pitch_unit(v: &serde_json::Value) -> bool {
         match v {
             serde_json::Value::Object(fields) => {

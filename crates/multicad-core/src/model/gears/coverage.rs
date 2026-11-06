@@ -1,6 +1,11 @@
-//! Retained pitch convention, intrinsic hubs and KHK shifted external spur profiles.
+//! Retained pitch convention, intrinsic hubs and KHK shifted external cylindrical profiles.
 use super::*;
 pub const GEAR_COVERAGE_CAPABILITY: &str = "model.gear.coverage.1";
+pub const SHIFTED_EXTERNAL_GEAR_CAPABILITY: &str = "model.gear.shifted_external.1";
+pub const SHIFTED_GEAR_UNDERCUT_SOURCE_URL: &str =
+    "https://ik.imagekit.io/agmamedia/gt/issues/0607x/regalado.pdf";
+pub const SHIFTED_GEAR_SOURCE_URL: &str = SHIFTED_SPUR_SOURCE_URL;
+pub const SHIFTED_GEAR_SOURCE: &str = "KHK Gear Guide printed 604/608 Spur and 615/617 normal/transverse Helical tables; opposite helical bands retain the same transverse profile in Herringbone and DoubleHelical. Custom circular roots, not generated rack trochoids. Selected-plane coefficient -0.5..1 is an engineering coverage bound; Regalado, Gear Technology June 2007 Eq14 gives direct basic-rack undercut projection without a virtual-tooth-count approximation.";
 pub const TEETH_PER_INCH_CAPABILITY: &str = "parameters.teeth_per_inch.1";
 pub const SHIFTED_SPUR_SOURCE_URL: &str = "https://khkgears.us/media/izojpong/gear_guide1.pdf";
 pub const SHIFTED_SPUR_SOURCE: &str = "KHK Gear Guide, printed 604 Table 3.5 and 608 Table 4.3; custom circular root fillets, not generated rack trochoids. External 20-degree Spur only; coefficient -0.5..1 is an engineering coverage bound, not a standard limit.";
@@ -48,10 +53,21 @@ pub struct ResolvedShiftedSpurPair {
     pub tip_shortening_coefficient: f64,
     pub contact_ratio: f64,
 }
+pub type ShiftedGearMate = ShiftedSpurMate;
+pub type ResolvedShiftedGearPair = ResolvedShiftedSpurPair;
+pub(super) fn external_shift_family(family: GearFamily) -> bool {
+    matches!(
+        family,
+        GearFamily::Spur
+            | GearFamily::Helical
+            | GearFamily::Herringbone
+            | GearFamily::DoubleHelical
+    )
+}
 fn literal_zero(d: &Dimension) -> bool {
     matches!(d,Dimension::Literal{value,..} if *value == 0.)
 }
-pub fn couple_shifted_spur_pair_recipes(
+pub fn couple_shifted_gear_pair_recipes(
     recipes: &mut [GearParameters; 2],
 ) -> Result<(), DocumentError> {
     if recipes
@@ -60,9 +76,9 @@ pub fn couple_shifted_spur_pair_recipes(
     {
         return Ok(());
     }
-    if recipes.iter().any(|p| p.family != GearFamily::Spur) {
+    if recipes.iter().any(|p| !external_shift_family(p.family)) {
         return Err(invalid(
-            "Shifted matched profiles require two external Spur members",
+            "Shifted matched profiles require two external cylindrical members",
         ));
     }
     for i in 0..2 {
@@ -88,12 +104,20 @@ pub(super) fn validate_shifted_pair_sources(
     recipes: [&GearParameters; 2],
 ) -> Result<(), DocumentError> {
     if recipes.iter().any(|p| p.shift_mate.is_some()) {
+        if recipes[0].family != recipes[1].family
+            || (recipes[0].family != GearFamily::Spur
+                && recipes[0].module_system != recipes[1].module_system)
+        {
+            return Err(invalid(
+                "Shifted cylindrical pairs require matching family and selected module system; zero-helix Spur conventions coincide",
+            ));
+        }
         for i in 0..2 {
             let mate = recipes[i]
                 .shift_mate
                 .as_ref()
                 .ok_or_else(|| invalid("Both matched shifted profiles must retain mate sources"))?;
-            if recipes[i].family != GearFamily::Spur
+            if !external_shift_family(recipes[i].family)
                 || mate.teeth != recipes[1 - i].teeth
                 || mate.profile_shift != recipes[1 - i].profile_shift
             {
@@ -105,8 +129,14 @@ pub(super) fn validate_shifted_pair_sources(
     }
     Ok(())
 }
-fn operating(z: f64, sum: f64, alpha: f64) -> Result<(f64, f64, f64), DocumentError> {
-    let target = alpha.tan() - alpha + 2. * sum * alpha.tan() / z;
+fn operating(
+    z: f64,
+    sum: f64,
+    alpha: f64,
+    transverse_alpha: f64,
+    transverse_factor: f64,
+) -> Result<(f64, f64, f64), DocumentError> {
+    let target = transverse_alpha.tan() - transverse_alpha + 2. * sum * alpha.tan() / z;
     if target <= 0. || !target.is_finite() {
         return Err(invalid(
             "Shift sum has no positive acute working pressure angle",
@@ -122,7 +152,7 @@ fn operating(z: f64, sum: f64, alpha: f64) -> Result<(f64, f64, f64), DocumentEr
         }
     }
     let aw = (lo + hi) / 2.;
-    let y = z / 2. * (alpha.cos() / aw.cos() - 1.);
+    let y = z / 2. * transverse_factor * (transverse_alpha.cos() / aw.cos() - 1.);
     Ok((aw, y, sum - y))
 }
 impl GearParameters {
@@ -150,9 +180,9 @@ impl GearParameters {
                 "Intrinsic hubs and diametral pitch currently require external cylindrical gears",
             ));
         }
-        if self.shift_mate.is_some() && self.family != GearFamily::Spur {
+        if self.shift_mate.is_some() && !external_shift_family(self.family) {
             return Err(invalid(
-                "Matched shift context belongs only to external Spur",
+                "Matched shift context belongs only to external cylindrical gears",
             ));
         }
         Ok(())
@@ -163,13 +193,12 @@ impl GearParameters {
         z: f64,
         x: f64,
         alpha: f64,
+        transverse_alpha: f64,
+        beta: f64,
     ) -> Result<f64, DocumentError> {
         let Some(mate) = &self.shift_mate else {
             return Ok(0.);
         };
-        if (alpha - 20_f64.to_radians()).abs() > 1e-12 {
-            return Err(invalid("Matched shifted Spur requires 20-degree pressure"));
-        }
         let zm = number(&mate.teeth, Unit::Count, p)?;
         let xm = number(&mate.profile_shift, Unit::Ratio, p)?;
         if !(4. ..=128.).contains(&zm) || zm.fract().abs() > 1e-9 || !(-0.5..=1.).contains(&xm) {
@@ -177,7 +206,18 @@ impl GearParameters {
                 "Shift mate needs whole 4–128 teeth and shift -0.5..1",
             ));
         }
-        Ok(operating(z + zm, x + xm, alpha)?.2)
+        Ok(operating(
+            z + zm,
+            x + xm,
+            alpha,
+            transverse_alpha,
+            if self.module_system == GearModuleSystem::Normal {
+                1. / beta.cos()
+            } else {
+                1.
+            },
+        )?
+        .2)
     }
     pub(super) fn resolve_hub(
         &self,
@@ -220,29 +260,52 @@ fn flank_start(g: &ResolvedGear) -> f64 {
             - g.root_fillet_radius_mm / g.base_radius_mm
     }
 }
-pub fn shifted_spur_pair_geometry(
+pub fn shifted_gear_pair_geometry(
     a: &ResolvedGear,
     b: &ResolvedGear,
 ) -> Result<ResolvedShiftedSpurPair, DocumentError> {
-    if a.family != GearFamily::Spur || b.family != GearFamily::Spur {
-        return Err(invalid("Shifted pair geometry requires external Spur"));
+    if !external_shift_family(a.family)
+        || a.family != b.family
+        || (a.family != GearFamily::Spur && a.module_system != b.module_system)
+    {
+        return Err(invalid(
+            "Shifted pair geometry needs matching external cylindrical family and selected module system",
+        ));
     }
-    let m = a.transverse_module_mm;
+    let m = if a.module_system == GearModuleSystem::Normal {
+        a.normal_module_mm
+    } else {
+        a.transverse_module_mm
+    };
     let z = f64::from(a.teeth + b.teeth);
     let alpha = a.transverse_pressure_angle_rad;
     let (aw, y, delta) = operating(
         z,
         a.profile_shift_coefficient + b.profile_shift_coefficient,
+        if a.module_system == GearModuleSystem::Normal {
+            a.normal_pressure_angle_rad
+        } else {
+            alpha
+        },
         alpha,
+        if a.module_system == GearModuleSystem::Normal {
+            1. / a.helix_angle_rad.cos()
+        } else {
+            1.
+        },
     )?;
-    let center = m * (z / 2. + y);
+    let center = if a.family == GearFamily::Spur {
+        m * (z / 2. + y)
+    } else {
+        a.pitch_radius_mm + b.pitch_radius_mm + m * y
+    };
     let rw1 = center * f64::from(a.teeth) / z;
     let rw2 = center * f64::from(b.teeth) / z;
     let q1 = (a.tip_radius_mm.powi(2) - a.base_radius_mm.powi(2)).sqrt();
     let q2 = (b.tip_radius_mm.powi(2) - b.base_radius_mm.powi(2)).sqrt();
     let approach = q2 - rw2 * aw.sin();
     let recess = q1 - rw1 * aw.sin();
-    let contact = (approach + recess) / (PI * m * alpha.cos());
+    let contact = (approach + recess) / (PI * a.transverse_module_mm * alpha.cos());
     if !contact.is_finite()
         || contact <= 1.
         || approach <= 0.
@@ -291,4 +354,62 @@ pub(super) fn validate_shifted_profile(g: &ResolvedGear) -> Result<(), DocumentE
         ));
     }
     Ok(())
+}
+
+/// Backward-compatible helper name for the previously supported Spur subset.
+pub fn couple_shifted_spur_pair_recipes(
+    recipes: &mut [GearParameters; 2],
+) -> Result<(), DocumentError> {
+    couple_shifted_gear_pair_recipes(recipes)
+}
+/// Backward-compatible readout name; the receipt now covers external cylindrical families.
+pub fn shifted_spur_pair_geometry(
+    a: &ResolvedGear,
+    b: &ResolvedGear,
+) -> Result<ResolvedShiftedSpurPair, DocumentError> {
+    shifted_gear_pair_geometry(a, b)
+}
+
+/// Conditional reader gate follows evaluated saved intent, including standalone
+/// expression sources that currently remain unshifted under the legacy reader.
+pub(crate) fn requires_expanded_shift_capability(document: &Document) -> bool {
+    fn scope(document: &Document) -> bool {
+        if !document.entities().any(|e| matches!(&e.data, EntityData::Feature { definition, .. } if definition.type_id == GEAR_TYPE)) { return false; }
+        let evaluated = crate::parameters::evaluate(document).ok();
+        document.entities().any(|entity| match &entity.data {
+            EntityData::Feature { definition, .. } if definition.type_id == GEAR_TYPE => {
+                let Ok(gear) = serde_json::from_value::<GearDefinition>(definition.data.clone())
+                else {
+                    return true;
+                };
+                let p = &gear.parameters;
+                if !external_shift_family(p.family) {
+                    return false;
+                }
+                let shift = p.profile_shift.value_in(Unit::Ratio, evaluated.as_ref());
+                if p.shift_mate.is_none() && shift.as_ref().is_ok_and(|x| *x == 0.) {
+                    return false;
+                }
+                if p.family != GearFamily::Spur {
+                    return true;
+                }
+                p.pressure_angle
+                    .value_in(Unit::Radian, evaluated.as_ref())
+                    .map_or(true, |angle| (angle - 20_f64.to_radians()).abs() > 1e-12)
+            }
+            _ => false,
+        })
+    }
+    scope(document)
+        || document.entities().any(|entity| match &entity.data {
+            EntityData::Extension { definition, .. }
+                if definition.type_id == crate::symbols::DEFINITION_TYPE =>
+            {
+                definition.data.get("template").is_some_and(|v| {
+                    serde_json::from_value::<Document>(v.clone())
+                        .map_or(true, |template| scope(&template))
+                })
+            }
+            _ => false,
+        })
 }

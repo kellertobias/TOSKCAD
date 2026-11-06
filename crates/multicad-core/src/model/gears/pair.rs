@@ -357,7 +357,7 @@ impl GearPairParameters {
             return Err(invalid("Shifted internal pairs are unavailable"));
         }
         let center = if shifted {
-            shifted_spur_pair_geometry(a, b)?.center_distance_mm
+            shifted_gear_pair_geometry(a, b)?.center_distance_mm
         } else if internal {
             (a.pitch_radius_mm - b.pitch_radius_mm).abs()
         } else {
