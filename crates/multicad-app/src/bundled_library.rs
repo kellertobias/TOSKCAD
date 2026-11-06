@@ -214,7 +214,7 @@ mod tests {
     fn bundled_cards_use_checked_projects_and_do_not_evaluate_native_geometry() {
         let directory = fixture();
         let entries = load(directory.path()).unwrap();
-        assert_eq!(entries.len(), 128);
+        assert_eq!(entries.len(), 172);
         let mut bearings = 0;
         let mut washers = BTreeSet::new();
         let mut screws = BTreeSet::new();
