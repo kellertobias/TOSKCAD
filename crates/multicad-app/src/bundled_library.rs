@@ -223,6 +223,10 @@ mod tests {
             "../../../library/machine-screws-curation.json"
         ))
         .unwrap();
+        let mut wood_screws = BTreeSet::new();
+        let wood_curation: serde_json::Value =
+            serde_json::from_slice(include_bytes!("../../../library/wood-screws-curation.json"))
+                .unwrap();
         let mut nuts = BTreeSet::new();
         let mut plants = 0;
         let mut equipment = std::collections::BTreeSet::new();
@@ -290,6 +294,47 @@ mod tests {
                         card.representation.starts_with("Socket-cap head"),
                     ));
                 }
+            } else if card.family == "Wood screw envelope" {
+                let facts = card.catalog_facts.as_ref().unwrap();
+                let nominal = facts.nominal_fastener_diameter_mm.unwrap();
+                let underhead = card.dimensions_mm["Underhead stock-envelope length"];
+                let source = wood_curation["entries"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|source| {
+                        source["nominal_mm"].as_f64() == Some(nominal)
+                            && source["underhead_length_mm"].as_f64() == Some(underhead)
+                    })
+                    .unwrap();
+                assert_eq!(card.dimensions_mm["Nominal wood diameter"], nominal);
+                assert_eq!(
+                    card.dimensions_mm["Head across flats"],
+                    source["head"]["across_flats_max_mm"].as_f64().unwrap()
+                );
+                assert_eq!(
+                    card.dimensions_mm["Head height"],
+                    source["head"]["height_nominal_mm"].as_f64().unwrap()
+                );
+                assert!(
+                    (card.dimensions_mm["Minimum tip-inclusive thread extent"] - 0.6 * underhead)
+                        .abs()
+                        < 1e-10
+                );
+                assert!(
+                    (card.dimensions_mm["Maximum possible plain length"] - 0.4 * underhead).abs()
+                        < 1e-10
+                );
+                assert!(
+                    card.representation
+                        .contains("Simplified wood stock envelope")
+                );
+                assert!(card.representation.contains("manufacturing unavailable"));
+                assert!(!card.designation.as_ref().unwrap().starts_with('M'));
+                assert!(!card.dimensions_mm.contains_key("Nominal thread diameter"));
+                assert!(facts.material.is_none() && facts.grade.is_none());
+                assert!(card.symbol.is_some());
+                assert!(wood_screws.insert(((nominal * 1000.) as u32, (underhead * 1000.) as u32)));
             } else if card.family == "Hex nut" {
                 let facts = card.catalog_facts.as_ref().unwrap();
                 let nominal = facts.nominal_fastener_diameter_mm.unwrap();
@@ -339,6 +384,7 @@ mod tests {
         assert_eq!((bearings, plants), (4, 2));
         assert_eq!(screws.len(), 19);
         assert_eq!(profile_screws.len(), 52);
+        assert_eq!(wood_screws.len(), 44);
         assert_eq!(nuts.len(), 19);
         for (series, expected) in [
             (
