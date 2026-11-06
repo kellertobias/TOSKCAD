@@ -254,7 +254,8 @@ fn nested_hardware_and_template_only_pipe_sources_require_the_pipe_reader() {
             }
         } else {
             MechanicalPartParameters::MachineScrew {
-                underhead_length: thread.length.clone(),
+                underhead_length: Some(thread.length.clone()),
+                length_input: None,
                 shank_diameter: thread.major_diameter.clone(),
                 head: ScrewHead::ExternalHex {
                     across_flats: length(16.),

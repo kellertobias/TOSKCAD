@@ -32,6 +32,7 @@ impl ResolvedMechanicalPart {
                 head,
                 drive,
                 thread,
+                ..
             } => {
                 let mut values = thread_reference_values(thread);
                 values.insert("underhead_length_mm", *underhead_length_mm);

@@ -126,7 +126,8 @@ fn literal(entry: &Entry) -> Result<MechanicalPartParameters, Error> {
         ),
     };
     Ok(MechanicalPartParameters::MachineScrew {
-        underhead_length: length(entry.underhead_length_mm),
+        underhead_length: Some(length(entry.underhead_length_mm)),
+        length_input: None,
         shank_diameter: length(entry.shank_diameter_mm),
         head,
         drive,
@@ -402,11 +403,12 @@ fn build(c: &Curation, entry: &Entry) -> Result<ProjectFile, Error> {
         head,
         drive,
         thread,
+        ..
     } = &mut parameters
     else {
         unreachable!()
     };
-    *underhead_length = dimension("underhead_length")?;
+    *underhead_length = Some(dimension("underhead_length")?);
     *shank_diameter = dimension("shank_diameter")?;
     thread.major_diameter = dimension("nominal_thread_diameter")?;
     thread.pitch = dimension("pitch")?;

@@ -71,6 +71,7 @@ fn both_head_drive_pairs_resolve_full_and_partial_threads_without_rewriting_auth
                 head,
                 drive,
                 thread,
+                ..
             } = parameters.resolve(s.parameters()).unwrap()
             else {
                 unreachable!()

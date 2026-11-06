@@ -73,10 +73,13 @@ fn cards(document: &Document, symbol: Option<(EntityId, String)>) -> Vec<Mechani
                 let (values, representation) = match resolved {
                     ResolvedMechanicalPart::MachineScrew {
                         underhead_length_mm,
+                        authored_length_mm,
+                        length_convention,
                         shank_radius_mm,
                         head,
                         drive,
                         thread,
+                        ..
                     } => {
                         let mut values = vec![
                             (
@@ -90,6 +93,9 @@ fn cards(document: &Document, symbol: Option<(EntityId, String)>) -> Vec<Mechani
                             ("Shank diameter", shank_radius_mm * 2.),
                             ("Head height", head.height_mm()),
                         ];
+                        if length_convention == ScrewLengthConvention::Overall {
+                            values.push(("Overall length", authored_length_mm));
+                        }
                         let head_label = match head {
                             ResolvedScrewHead::SocketCap { radius_mm, .. } => {
                                 values.push(("Head diameter", radius_mm * 2.));

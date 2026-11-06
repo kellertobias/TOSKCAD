@@ -33,6 +33,7 @@ fn screw_key(resolved: &ResolvedMechanicalPart, policy: GeometryPolicy) -> Optio
         head,
         drive,
         thread,
+        ..
     } = resolved
     else {
         return None;
@@ -328,6 +329,7 @@ pub(crate) fn build(
             head,
             drive,
             mut thread,
+            ..
         } => {
             let frame = thread.frame;
             let shank_length = underhead_length_mm - thread.length_mm;
@@ -725,7 +727,7 @@ mod screw_factory_tests {
                 underhead_length, ..
             } = &mut recipe.parameters
             {
-                *underhead_length = length(10. + index as f64 * 0.1);
+                *underhead_length = Some(length(10. + index as f64 * 0.1));
             }
             build(EntityId::new(), &recipe, &values, policy).unwrap();
             assert!(stats().3 <= SCREW_FACTORY_ENTRIES && stats().4 <= SCREW_FACTORY_BYTES);
@@ -760,6 +762,7 @@ mod screw_factory_tests {
                 head,
                 drive,
                 thread,
+                ..
             } = &mut changed
             else {
                 unreachable!()

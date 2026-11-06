@@ -114,6 +114,7 @@ pub enum MechanicalRecipeArgs {
     },
     MachineScrew {
         underhead_length: Option<Quantity>,
+        length_input: Option<ScrewLengthInputArgs>,
         shank_diameter: Option<Quantity>,
         head: Option<ScrewHeadArgs>,
         drive: Option<ScrewDriveArgs>,
@@ -131,6 +132,12 @@ pub enum MechanicalRecipeArgs {
         #[serde(flatten)]
         frame: MechanicalFrameArgs,
     },
+}
+#[derive(Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ScrewLengthInputArgs {
+    Underhead { value: Quantity },
+    Overall { value: Quantity },
 }
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -248,6 +255,7 @@ fn parameters(
         }
         MechanicalRecipeArgs::MachineScrew {
             underhead_length,
+            length_input,
             shank_diameter,
             head,
             drive,
@@ -256,6 +264,7 @@ fn parameters(
             let default = model::default_machine_screw();
             let MechanicalPartParameters::MachineScrew {
                 underhead_length: l,
+                length_input: old_length_input,
                 shank_diameter: d,
                 head: old_head,
                 drive: old_drive,
@@ -263,6 +272,30 @@ fn parameters(
             } = previous.unwrap_or(&default)
             else {
                 return Err(mismatch());
+            };
+            if underhead_length.is_some() && length_input.is_some() {
+                return Err(ToolError::invalid(
+                    "Specify only one of underhead_length and length_input",
+                ));
+            }
+            let (legacy_length, typed_length) = if let Some(input) = length_input {
+                let (overall, value) = match input {
+                    ScrewLengthInputArgs::Underhead { value } => (false, value),
+                    ScrewLengthInputArgs::Overall { value } => (true, value),
+                };
+                let value = value.dimension(doc, eval)?.0;
+                (
+                    None,
+                    Some(if overall {
+                        model::ScrewLengthInput::Overall { value }
+                    } else {
+                        model::ScrewLengthInput::Underhead { value }
+                    }),
+                )
+            } else if let Some(value) = underhead_length {
+                (Some(value.dimension(doc, eval)?.0), None)
+            } else {
+                (l.clone(), old_length_input.clone())
             };
             let required = |q: &Option<Quantity>,
                             old: Option<&multicad_core::constraint_sketch::Dimension>,
@@ -340,7 +373,8 @@ fn parameters(
                 }
             };
             MechanicalPartParameters::MachineScrew {
-                underhead_length: mm(underhead_length, l)?,
+                underhead_length: legacy_length,
+                length_input: typed_length,
                 shank_diameter: mm(shank_diameter, d)?,
                 head,
                 drive,
@@ -353,7 +387,7 @@ fn parameters(
 }
 pub(super) fn mechanical_part_profiles(_: &dyn Host, _: &Request, _: NoArgs) -> ToolResult {
     Ok(
-        json!({"supported_geometry":["washer","hex_nut","bearing_envelope","machine_screw"],"catalog_status":"Generic parametric geometry only; verified standard-parts catalog is under development","nut_thread":"Uses the shared thread recipe. thread.length is nut height and thread frame locates its body; creation defaults to a cosmetic envelope. Select modeled for manufacturing export.","machine_screw":"Socket-cap/internal-hex or external-hex head and drive. underhead_length ends at the tip; thread.length is threaded extent ending at that tip. thread.frame is the underhead bearing plane; head extends opposite its normal. Modeled uses the shared builder; cosmetic manufacturing export is refused. Head/recess/runout simplifications and nominal-basic metric profile do not imply standards or fit certification.","bearing":"External mounting envelope only; races, rolling elements and seals are not modeled","limits":"No standard compliance, stock availability, fit, strength or lifetime certification"}),
+        json!({"supported_geometry":["washer","hex_nut","bearing_envelope","machine_screw"],"catalog_status":"Generic parametric geometry only; verified standard-parts catalog is under development","nut_thread":"Uses the shared thread recipe. thread.length is nut height and thread frame locates its body; creation defaults to a cosmetic envelope. Select modeled for manufacturing export.","machine_screw":"Socket-cap/internal-hex or external-hex head and drive. underhead_length retains its legacy neck-to-tip meaning. Alternatively length_input selects underhead or overall with one typed value; overall includes actual head height. Supplying either length replaces the other source; supplying both refuses; omission preserves the source expression and convention. thread.length is threaded extent ending at the tip. thread.frame is the neck datum; head extends opposite its normal. Modeled uses the shared builder; cosmetic manufacturing export is refused. Head/recess/runout simplifications and nominal-basic metric profile do not imply standards or fit certification.","bearing":"External mounting envelope only; races, rolling elements and seals are not modeled","limits":"No standard compliance, stock availability, fit, strength or lifetime certification"}),
     )
 }
 fn frame_value(frame: multicad_core::sketch::Frame) -> Value {
@@ -392,10 +426,13 @@ pub(super) fn inspect_mechanical_part(
         }
         model::ResolvedMechanicalPart::MachineScrew {
             underhead_length_mm,
+            authored_length_mm,
+            length_convention,
             shank_radius_mm,
             head,
             drive,
             thread,
+            ..
         } => {
             let head = match head {
                 model::ResolvedScrewHead::SocketCap {
@@ -418,7 +455,7 @@ pub(super) fn inspect_mechanical_part(
                 }
                 model::ResolvedScrewDrive::ExternalHex => json!({"kind":"external_hex"}),
             };
-            json!({"kind":"machine_screw","underhead_length_mm":underhead_length_mm,"shank_diameter_mm":2.*shank_radius_mm,"thread_start_mm":underhead_length_mm-thread.length_mm,"thread_length_mm":thread.length_mm,"fully_threaded":underhead_length_mm==thread.length_mm,"head":head,"drive":drive,"nominal_thread_diameter_mm":2.*thread.nominal_major_radius_mm,"nominal_pitch_diameter_mm":thread.nominal_pitch_diameter_mm,"actual_pitch_diameter_mm":thread.actual_pitch_diameter_mm,"fit":thread.fit,"pipe":thread.pipe,"npt":thread.npt,"lead_screw":thread.lead_screw,"buttress":thread.buttress,"round":thread.round,"metric_fit":thread.metric_fit,"radial_taper":thread.profile.radial_taper,"pitch_mm":thread.pitch_mm,"hand":thread.hand,"representation":thread.representation,"frame":frame_value(thread.frame)})
+            json!({"kind":"machine_screw","underhead_length_mm":underhead_length_mm,"authored_length_mm":authored_length_mm,"length_convention":length_convention,"shank_diameter_mm":2.*shank_radius_mm,"thread_start_mm":underhead_length_mm-thread.length_mm,"thread_length_mm":thread.length_mm,"fully_threaded":underhead_length_mm==thread.length_mm,"head":head,"drive":drive,"nominal_thread_diameter_mm":2.*thread.nominal_major_radius_mm,"nominal_pitch_diameter_mm":thread.nominal_pitch_diameter_mm,"actual_pitch_diameter_mm":thread.actual_pitch_diameter_mm,"fit":thread.fit,"pipe":thread.pipe,"npt":thread.npt,"lead_screw":thread.lead_screw,"buttress":thread.buttress,"round":thread.round,"metric_fit":thread.metric_fit,"radial_taper":thread.profile.radial_taper,"pitch_mm":thread.pitch_mm,"hand":thread.hand,"representation":thread.representation,"frame":frame_value(thread.frame)})
         }
     };
     Ok(
@@ -485,4 +522,40 @@ pub(super) fn set_mechanical_part(
     let owned = call.clone();
     let committed = with(host, move |target| commit(target, &owned, prepared))??;
     Ok(json!({"revision":committed,"feature":feature,"part":part}))
+}
+
+#[cfg(test)]
+mod length_contract_tests {
+    use super::*;
+    use multicad_core::commands::Session;
+    #[test]
+    fn typed_length_omission_replacement_and_conflict() {
+        let s = Session::new(Document::new("Length wire contract").unwrap()).unwrap();
+        let parse = |value: Value, old: Option<&MechanicalPartParameters>| {
+            let args: MechanicalRecipeArgs = serde_json::from_value(value).unwrap();
+            parameters(&args, old, s.document(), s.parameters())
+        };
+        let typed = parse(json!({"kind":"machine_screw","length_input":{"kind":"overall","value":{"value":13.,"unit":"mm"}}}),None).unwrap();
+        let retained = parse(
+            json!({"kind":"machine_screw","shank_diameter":{"value":3.,"unit":"mm"}}),
+            Some(&typed),
+        )
+        .unwrap();
+        assert_eq!(retained, typed);
+        let old = parse(
+            json!({"kind":"machine_screw","underhead_length":{"value":10.,"unit":"mm"}}),
+            Some(&typed),
+        )
+        .unwrap();
+        assert_eq!(old, model::default_machine_screw());
+        assert!(parse(json!({"kind":"machine_screw","underhead_length":{"value":10.,"unit":"mm"},"length_input":{"kind":"overall","value":{"value":13.,"unit":"mm"}}}),Some(&typed)).is_err());
+        let resolved = typed.resolve(s.parameters()).unwrap();
+        assert!(matches!(
+            resolved,
+            model::ResolvedMechanicalPart::MachineScrew {
+                underhead_length_mm: 10.,
+                ..
+            }
+        ));
+    }
 }

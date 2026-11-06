@@ -1,5 +1,6 @@
 //! Self-contained hardware geometry. Catalog references never drive dimensions.
 mod cards;
+mod hexalobular;
 mod prepare;
 mod reference;
 mod screws;
@@ -15,6 +16,7 @@ use crate::{
     sketch::Frame,
 };
 pub use cards::*;
+pub use hexalobular::*;
 pub use prepare::*;
 pub use screws::*;
 use serde::{Deserialize, Serialize};
@@ -27,10 +29,14 @@ pub const MECHANICAL_PART_CATALOG_FACTS_CAPABILITY: &str = "model.mechanical_par
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum MechanicalPartParameters {
-    /// The thread frame is the underhead bearing plane; +N points to the tip.
+    /// The thread frame is the neck datum; +N points to the tip.
+    /// Existing cap/hex heads bear at this plane.
     /// Thread length is retained once in `thread.length`; full/partial is derived.
     MachineScrew {
-        underhead_length: Dimension,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        underhead_length: Option<Dimension>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        length_input: Option<ScrewLengthInput>,
         shank_diameter: Dimension,
         head: ScrewHead,
         drive: ScrewDrive,
@@ -60,6 +66,8 @@ pub enum MechanicalPartParameters {
 pub enum ResolvedMechanicalPart {
     MachineScrew {
         underhead_length_mm: f64,
+        authored_length_mm: f64,
+        length_convention: ScrewLengthConvention,
         shank_radius_mm: f64,
         head: ResolvedScrewHead,
         drive: ResolvedScrewDrive,
@@ -109,12 +117,15 @@ impl MechanicalPartParameters {
         let mut fields = match self {
             Self::MachineScrew {
                 underhead_length,
+                length_input,
                 shank_diameter,
                 head,
                 drive,
                 thread,
             } => {
-                let mut fields = vec![underhead_length, shank_diameter];
+                let mut fields = vec![shank_diameter];
+                fields.extend(underhead_length.iter());
+                fields.extend(length_input.iter().map(ScrewLengthInput::value));
                 fields.extend(head.dimensions());
                 fields.extend(drive.dimensions());
                 fields.extend(thread.dimensions());
@@ -149,12 +160,14 @@ impl MechanicalPartParameters {
         match self {
             Self::MachineScrew {
                 underhead_length,
+                length_input,
                 shank_diameter,
                 head,
                 drive,
                 thread,
             } => {
-                for d in [underhead_length, shank_diameter]
+                let (_, length) = screw_length_source(underhead_length, length_input)?;
+                for d in [length, shank_diameter]
                     .into_iter()
                     .chain(head.dimensions())
                     .chain(drive.dimensions())
@@ -215,14 +228,21 @@ impl MechanicalPartParameters {
         Ok(match self {
             Self::MachineScrew {
                 underhead_length,
+                length_input,
                 shank_diameter,
                 head,
                 drive,
                 thread,
             } => {
-                let underhead_length_mm = mm(underhead_length)?;
+                let (length_convention, source) =
+                    screw_length_source(underhead_length, length_input)?;
+                let authored_length_mm = mm(source)?;
                 let shank_radius_mm = mm(shank_diameter)? / 2.;
                 let head = head.resolve(evaluated)?;
+                let underhead_length_mm = match length_convention {
+                    ScrewLengthConvention::Underhead => authored_length_mm,
+                    ScrewLengthConvention::Overall => authored_length_mm - head.height_mm(),
+                };
                 let drive = drive.resolve(evaluated)?;
                 let thread = thread.resolve(evaluated, ThreadMode::NewExternal)?;
                 let thread_max = thread
@@ -258,6 +278,8 @@ impl MechanicalPartParameters {
                 }
                 ResolvedMechanicalPart::MachineScrew {
                     underhead_length_mm,
+                    authored_length_mm,
+                    length_convention,
                     shank_radius_mm,
                     head,
                     drive,

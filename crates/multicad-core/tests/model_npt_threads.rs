@@ -173,7 +173,8 @@ fn nested_npt_screw_head_clearance_uses_stock_clipped_extent() {
     let s = session();
     let thread = intent(NptThreadForm::External, NptThreadSize::OneQuarter).parameters();
     let recipe = MechanicalPartParameters::MachineScrew {
-        underhead_length: thread.length.clone(),
+        underhead_length: Some(thread.length.clone()),
+        length_input: None,
         shank_diameter: length(13.6),
         head: ScrewHead::ExternalHex {
             across_flats: length(13.76),
@@ -278,7 +279,8 @@ fn nested_hardware_and_template_only_npt_sources_require_the_npt_reader() {
             }
         } else {
             MechanicalPartParameters::MachineScrew {
-                underhead_length: thread.length.clone(),
+                underhead_length: Some(thread.length.clone()),
+                length_input: None,
                 shank_diameter: thread.major_diameter.clone(),
                 head: ScrewHead::ExternalHex {
                     across_flats: length(16.),

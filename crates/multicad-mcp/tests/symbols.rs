@@ -89,9 +89,9 @@ fn fixture(ambiguous: bool, cosmetic: bool) -> Fixture {
     else {
         unreachable!()
     };
-    *underhead_length = Dimension::Expression {
+    *underhead_length = Some(Dimension::Expression {
         expression: BoundExpression::bind(s.document(), "=$underhead_length", "mm", None).unwrap(),
-    };
+    });
     thread.length = length(1.5);
     if cosmetic {
         thread.representation = ThreadRepresentation::CosmeticEnvelope;

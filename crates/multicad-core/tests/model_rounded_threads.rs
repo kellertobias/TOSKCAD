@@ -383,7 +383,8 @@ fn rounded_reader_gate_covers_direct_suppressed_template_only_and_nested_nuts_an
                 }
             } else {
                 MechanicalPartParameters::MachineScrew {
-                    underhead_length: thread.length.clone(),
+                    underhead_length: Some(thread.length.clone()),
+                    length_input: None,
                     shank_diameter: length(preset.diameter_mm),
                     head: ScrewHead::ExternalHex {
                         across_flats: length(2. * preset.diameter_mm),

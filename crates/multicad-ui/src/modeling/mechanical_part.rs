@@ -40,6 +40,8 @@ pub(super) struct MechanicalPartPanel {
     thread: ThreadPanel,
     screw_fields: [DimensionField; 6],
     screw_hex: bool,
+    screw_length_convention: model::ScrewLengthConvention,
+    screw_length_typed: bool,
     origin: [DimensionField; 3],
     plane: Option<Datum>,
     stamp: FormStamp,
@@ -62,6 +64,7 @@ impl MechanicalPartPanel {
         };
         let MechanicalPartParameters::MachineScrew {
             underhead_length,
+            length_input,
             shank_diameter,
             head,
             drive,
@@ -84,8 +87,12 @@ impl MechanicalPartPanel {
             } => (across_flats.clone(), depth.clone()),
             ScrewDrive::ExternalHex => (length(2.55), length(1.3)),
         };
+        let (screw_length_convention, screw_length) =
+            model::screw_length_source(underhead_length, length_input)
+                .map_err(|e| e.to_string())?;
+        let screw_length_typed = length_input.is_some();
         let screw_dimensions = [
-            underhead_length.clone(),
+            screw_length.clone(),
             shank_diameter.clone(),
             head_size.clone(),
             head_height.clone(),
@@ -140,6 +147,8 @@ impl MechanicalPartPanel {
         Ok(Self {
             kind,
             screw_hex,
+            screw_length_convention,
+            screw_length_typed,
             screw_fields: [
                 field(&screw_dimensions[0])?,
                 field(&screw_dimensions[1])?,
@@ -230,7 +239,24 @@ impl MechanicalPartPanel {
                 let head_size = self.screw_fields[2].resolve(document)?;
                 let height = self.screw_fields[3].resolve(document)?;
                 MechanicalPartParameters::MachineScrew {
-                    underhead_length: self.screw_fields[0].resolve(document)?,
+                    underhead_length: if self.screw_length_typed {
+                        None
+                    } else {
+                        Some(self.screw_fields[0].resolve(document)?)
+                    },
+                    length_input: if self.screw_length_typed {
+                        let value = self.screw_fields[0].resolve(document)?;
+                        Some(match self.screw_length_convention {
+                            model::ScrewLengthConvention::Underhead => {
+                                model::ScrewLengthInput::Underhead { value }
+                            }
+                            model::ScrewLengthConvention::Overall => {
+                                model::ScrewLengthInput::Overall { value }
+                            }
+                        })
+                    } else {
+                        None
+                    },
                     shank_diameter: self.screw_fields[1].resolve(document)?,
                     head: if self.screw_hex {
                         ScrewHead::ExternalHex {
@@ -366,8 +392,27 @@ impl MechanicalPartPanel {
                         .selectable_value(&mut self.screw_hex, true, "External hex head")
                         .changed();
                 });
+            egui::ComboBox::from_id_salt("screw_length_convention")
+                .selected_text(match self.screw_length_convention {
+                    model::ScrewLengthConvention::Underhead => "Underhead length",
+                    model::ScrewLengthConvention::Overall => "Overall length",
+                })
+                .show_ui(ui, |ui| {
+                    for (value, label) in [
+                        (model::ScrewLengthConvention::Underhead, "Underhead length"),
+                        (model::ScrewLengthConvention::Overall, "Overall length"),
+                    ] {
+                        if ui
+                            .selectable_value(&mut self.screw_length_convention, value, label)
+                            .changed()
+                        {
+                            self.screw_length_typed = true;
+                            changed = true;
+                        }
+                    }
+                });
             for (index, label) in [
-                "Underhead length",
+                "Length",
                 "Shank diameter",
                 if self.screw_hex {
                     "Head across flats"
@@ -385,7 +430,7 @@ impl MechanicalPartPanel {
                     changed |= self.screw_fields[index].show(ui, label, "Authored millimeters or a bound project parameter; validation precedes native Preview");
                 }
             }
-            ui.small("Underhead length runs toward the tip. The head lies behind the underhead plane. Thread length is independent: shorter threads leave a plain shank beside the head.");
+            ui.small("The head extends behind the neck datum. Overall length includes its actual height; underhead length runs from the neck datum to the tip. Thread length is independent and ends at the tip. Changing convention retains the authored value or expression.");
             changed |=
                 self.thread
                     .recipe_controls(ui, ThreadMode::NewExternal, "Thread length", false);
@@ -502,5 +547,54 @@ impl MechanicalPartPanel {
             }
             _ => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod length_contract_tests {
+    use super::*;
+    use multicad_core::{
+        commands::Session, constraint_sketch::Dimension, parameters::BoundExpression,
+    };
+    #[test]
+    fn one_length_control_retains_expression_and_request_ids() {
+        let s = Session::new(Document::new("Length form").unwrap()).unwrap();
+        // A constant expression still has authored syntax which must survive loading/editing.
+        let expression = Dimension::Expression {
+            expression: BoundExpression::bind(s.document(), "=13", "mm", None).unwrap(),
+        };
+        let mut p = model::default_machine_screw();
+        let MechanicalPartParameters::MachineScrew {
+            underhead_length,
+            length_input,
+            ..
+        } = &mut p
+        else {
+            unreachable!()
+        };
+        *underhead_length = None;
+        *length_input = Some(model::ScrewLengthInput::Overall {
+            value: expression.clone(),
+        });
+        let request = MechanicalPartRequest::new("Length form", p);
+        let mut panel =
+            MechanicalPartPanel::new(request.clone(), s.parameters().clone(), true).unwrap();
+        assert_eq!(panel.request(s.document(), true).unwrap(), request);
+        panel.screw_hex = true;
+        let changed = panel.request(s.document(), true).unwrap();
+        assert_eq!(changed.feature, request.feature);
+        let MechanicalPartParameters::MachineScrew {
+            underhead_length,
+            length_input,
+            ..
+        } = changed.parameters
+        else {
+            unreachable!()
+        };
+        assert_eq!(underhead_length, None);
+        assert_eq!(
+            length_input,
+            Some(model::ScrewLengthInput::Overall { value: expression })
+        );
     }
 }

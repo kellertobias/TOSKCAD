@@ -263,7 +263,7 @@ fn painted_machine_screw_heads_share_native_preview_cancel_apply_history_and_sav
             unreachable!()
         };
         // Deliberately partial: opening the form must retain both lengths.
-        *underhead_length = length(6.);
+        *underhead_length = Some(length(6.));
         thread.length = length(3.);
         if external_hex {
             *head = model::ScrewHead::ExternalHex {
@@ -367,7 +367,7 @@ fn painted_machine_screw_heads_share_native_preview_cancel_apply_history_and_sav
         else {
             unreachable!()
         };
-        *underhead_length = length(7.);
+        *underhead_length = Some(length(7.));
         assert_eq!(
             model::read_mechanical_part(s.document(), request.feature)
                 .unwrap()
@@ -409,7 +409,7 @@ fn invalid_machine_screw_lengths_socket_walls_and_depths_keep_source_unchanged()
             unreachable!()
         };
         match case {
-            0 => *underhead_length = length(0.),
+            0 => *underhead_length = Some(length(0.)),
             1 => thread.length = length(11.),
             2 => {
                 *drive = model::ScrewDrive::HexSocket {

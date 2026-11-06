@@ -57,11 +57,12 @@ fn parameters(hex: bool, partial: bool, left: bool, rotated: bool) -> Mechanical
         head,
         drive,
         thread,
+        ..
     } = &mut p
     else {
         panic!()
     };
-    *underhead_length = length(6.);
+    *underhead_length = Some(length(6.));
     *shank_diameter = length(3.);
     thread.length = length(if partial { 2.5 } else { 6. });
     thread.hand = if left {
@@ -455,7 +456,7 @@ fn impossible_socket_floor_corner_wall_thread_extent_and_pitch_fail_atomically()
                     depth: length(1.3),
                 }
             }
-            2 => *underhead_length = length(2.),
+            2 => *underhead_length = Some(length(2.)),
             _ => thread.pitch = length(5.),
         }
         assert!(
@@ -521,11 +522,12 @@ fn sourced_stock_length_representatives_preserve_fractional_turns_and_step_volum
             head,
             drive,
             thread,
+            ..
         } = &mut parameters
         else {
             panic!()
         };
-        *underhead_length = length(l);
+        *underhead_length = Some(length(l));
         *shank_diameter = length(d);
         *head = ScrewHead::SocketCap {
             diameter: length(dk),
