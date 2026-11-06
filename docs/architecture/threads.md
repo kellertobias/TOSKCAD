@@ -181,6 +181,18 @@ actual normal engagement, required strength and blind clearance. Unknown usable
 insert-thread endpoints remain unknown. This source field supplies no assembled
 connection acceptance or manufacturing certification.
 
+`resolve_metric_thread_mating` derives overlap from two placed, known complete
+profile intervals. It requires modeled 6g/6H components, compatible diameter,
+pitch and hand, coincident axes across the physical span, the unchanged normal
+interval on both sides and a caller-supplied minimum engagement. An explicitly
+intended length must agree with the derived overlap. Opposed local axes are
+projected into the external thread's directed axis before intersecting intervals.
+`machine_screw_thread_start` includes the unthreaded `U-B` section and actual
+occurrence pose. `straight_thread_phase` supplies the follower rotation about
+its own directed axis while holding its origin fixed, using the native helix
+start convention. The derived receipt remains analytical: native collision,
+receiving material, blind clearance and strength checks are separate gates.
+
 ## Custom metric endpoint geometry
 
 Optional `end_treatments` names a start treatment at local z=0 and an end
