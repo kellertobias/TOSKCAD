@@ -681,6 +681,7 @@ pub(crate) fn validate(document: &Document) -> Result<(), DocumentError> {
     super::assembly::validate_document(document)?;
     super::gears::validate_pairs(document)?;
     super::transfer::validate_document(document)?;
+    super::screw_connection_axis::validate_document(document)?;
     super::wall::validate_document(document)?;
     super::fence::validate_fences(document)?;
     super::level::validate_document(document)?;
@@ -841,6 +842,7 @@ pub fn required_capabilities(document: &Document) -> BTreeSet<String> {
                     super::ASSEMBLY_TYPE,
                     super::NAMED_POSE_TYPE,
                     super::TRANSFER_GROUP_TYPE,
+                    super::SCREW_CONNECTION_AXIS_TYPE,
                     super::WALL_TYPE_KIND,
                     super::FENCE_TYPE_KIND,
                     super::FENCE_RUN_KIND,
