@@ -1,7 +1,9 @@
 # ADR-0037: Thread representation as a retained instance input
 
 Status: accepted implementation design, 2026-11-06. Engineering verification is
-in progress under [CAD-234](https://plans.tokenet.de/CAD/234).
+[recorded](../verification/hex-nut-catalog-2026-11-06.md) under
+[CAD-234](https://plans.tokenet.de/CAD/234); human review and acceptance remain
+separate.
 
 A placed cosmetic nut needs an explicit route to a modeled internal helix.
 Separate source revisions make this a definition-wide update and can block
@@ -56,4 +58,6 @@ dimension change still becomes configured/custom through the existing reference
 comparison. DIN 934:1987 and ISO 4032:2012 reference rows remain distinct; the
 binding does not certify thread fit, stock availability, tolerances or omitted
 chamfers. Real native section/STEP checks, source/history/reader regressions and
-actual macOS configuration must establish the completed workflow separately.
+actual macOS configuration establish the completed workflow in the linked
+verification record. It separates the catalog-baseline full suite from the
+subsequent UI-only correction and its complete UI-package/native checks.
