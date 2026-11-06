@@ -832,6 +832,16 @@ mod coverage_recipe_tests {
             .unwrap();
         let beta = 15_f64.to_radians();
         let normal = 20_f64.to_radians();
+        let dimensions = |r: &model::ResolvedGear| {
+            [
+                r.normal_module_mm,
+                r.transverse_module_mm,
+                r.pitch_radius_mm,
+                r.base_radius_mm,
+                r.tip_radius_mm,
+                r.root_radius_mm,
+            ]
+        };
         let mut radii = vec![];
         for (plane, dp, angle) in [
             ("normal", 12.7, 20.),
@@ -841,7 +851,8 @@ mod coverage_recipe_tests {
                 (normal.tan() / beta.cos()).atan().to_degrees(),
             ),
         ] {
-            let args:GearRecipeArgs=serde_json::from_value(json!({"family":"helical","pitch_input":"diametral_pitch","module_system":plane,"module":{"value":dp,"unit":"teeth_per_in"},"pressure_angle":{"value":angle,"unit":"deg"},"helix_angle":{"value":15.,"unit":"deg"},"hand":"right"})).unwrap();
+            let wire = json!({"family":"helical","pitch_input":"diametral_pitch","module_system":plane,"module":{"value":dp,"unit":"teeth_per_in"},"pressure_angle":{"value":angle,"unit":"deg"},"helix_angle":{"value":15.,"unit":"deg"},"hand":"right"});
+            let args: GearRecipeArgs = serde_json::from_value(wire.clone()).unwrap();
             let p = parameters(&args, None, s.document(), s.parameters()).unwrap();
             assert_eq!(
                 p.module,
@@ -851,19 +862,34 @@ mod coverage_recipe_tests {
                 }
             );
             assert_eq!(p.pitch_input, GearPitchInput::DiametralPitch);
-            let r = p.resolve_geometry(s.parameters()).unwrap();
-            let r = r.rotary().unwrap();
-            radii.push([
-                r.normal_module_mm,
-                r.transverse_module_mm,
-                r.pitch_radius_mm,
-                r.base_radius_mm,
-                r.tip_radius_mm,
-                r.root_radius_mm,
-            ]);
+            let resolved = p.resolve_geometry(s.parameters()).unwrap();
+            let dp_dimensions = dimensions(resolved.rotary().unwrap());
+            // A DP input is physically equivalent to an explicit module input
+            // in the SAME plane, including that plane's tip/root convention.
+            let mut module_wire = wire;
+            module_wire["pitch_input"] = json!("module");
+            module_wire["module"] = json!({"value":25.4/dp,"unit":"mm"});
+            let module_args: GearRecipeArgs = serde_json::from_value(module_wire).unwrap();
+            let module = parameters(&module_args, None, s.document(), s.parameters()).unwrap();
+            assert_eq!(module.module, model::length(25.4 / dp));
+            let module_geometry = module.resolve_geometry(s.parameters()).unwrap();
+            for (a, b) in dp_dimensions
+                .into_iter()
+                .zip(dimensions(module_geometry.rotary().unwrap()))
+            {
+                assert!((a - b).abs() < 1e-12);
+            }
+            radii.push(dp_dimensions);
         }
-        for (a, b) in radii[0].into_iter().zip(radii[1]) {
+        // Converted planes share reference quantities, while the established
+        // addendum/dedendum convention uses each selected module explicitly.
+        for (a, b) in radii[0][..4].iter().zip(&radii[1][..4]) {
             assert!((a - b).abs() < 1e-12);
         }
+        let selected_difference = 2. / beta.cos() - 2.;
+        assert!(radii[1][4] > radii[0][4]);
+        assert!(radii[1][5] < radii[0][5]);
+        assert!((radii[1][4] - radii[0][4] - selected_difference).abs() < 1e-12);
+        assert!((radii[1][5] - radii[0][5] + 1.25 * selected_difference).abs() < 1e-12);
     }
 }

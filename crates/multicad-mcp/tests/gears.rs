@@ -88,7 +88,7 @@ fn stale_cancelled_unsupported_and_invalid_requests_leave_no_recipe_or_solid() {
         json!({"expected_revision":0,"name":"Undercut","teeth":scalar(17.,"count")}),
         json!({"expected_revision":0,"name":"Wrong units","teeth":scalar(24.,"mm")}),
         json!({"expected_revision":0,"name":"Ambiguous","teeth":{"value":24.,"expression":"24","unit":"count"}}),
-        json!({"expected_revision":0,"name":"Shift","profile_shift":scalar(0.1,"ratio")}),
+        json!({"expected_revision":0,"name":"Shift","profile_shift":scalar(1.01,"ratio")}),
         json!({"expected_revision":0,"name":"Wall","bore_diameter":scalar(43.,"mm")}),
         json!({"expected_revision":0,"name":"Below native resolution","face_width":scalar(0.00000001,"mm")}),
         json!({"expected_revision":0,"name":"Missing hand","family":"helical","helix_angle":scalar(15.,"deg")}),
