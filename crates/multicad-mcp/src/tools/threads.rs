@@ -249,6 +249,12 @@ pub struct ThreadRecipeArgs {
     pub minimum_wall: Option<Quantity>,
     #[serde(default)]
     pub representation: Option<ThreadRepresentationArg>,
+    /// Existing Count parameter UUID: exact 0 selects cosmetic, exact 1 modeled; sole authority while bound.
+    #[serde(default)]
+    pub representation_parameter: Option<String>,
+    /// Explicitly restore a fixed representation; omitted edits retain the binding.
+    #[serde(default)]
+    pub clear_representation_parameter: bool,
     #[serde(default)]
     pub origin: Option<[Quantity; 3]>,
     /// Principal plane normal defines the thread axis. Do not combine with axis_u/axis_v.
@@ -522,6 +528,29 @@ pub(super) fn parameters(
     if let Some(starts) = args.starts {
         p.starts = starts;
     }
+    if args.clear_representation_parameter && args.representation_parameter.is_some() {
+        return Err(ToolError::invalid(
+            "Choose representation_parameter or clear_representation_parameter, not both",
+        ));
+    }
+    if args.clear_representation_parameter {
+        if p.representation_parameter.is_some() && args.representation.is_none() {
+            p.representation = p.resolved_representation(evaluated).map_err(|error| {
+                ToolError::invalid(format!(
+                    "Cannot retain the effective thread representation: {error}; choose an explicit fixed representation when clearing the binding"
+                ))
+            })?;
+        }
+        p.representation_parameter = None;
+    }
+    if let Some(parameter) = &args.representation_parameter {
+        p.representation_parameter = Some(id(parameter)?);
+    }
+    if p.representation_parameter.is_some() && args.representation.is_some() {
+        return Err(ToolError::invalid(
+            "Thread representation follows a parameter; edit that parameter or explicitly clear_representation_parameter before choosing a fixed representation",
+        ));
+    }
     if let Some(representation) = args.representation {
         p.representation = match representation {
             ThreadRepresentationArg::Modeled => ThreadRepresentation::Modeled,
@@ -599,6 +628,7 @@ pub(super) fn thread_profiles(_: &dyn Host, _: &Request, _: NoArgs) -> ToolResul
         "metric_fit_source":model::METRIC_FIT_SOURCE,"metric_fit_source_url":model::METRIC_FIT_SOURCE_URL,"metric_root_source_url":model::METRIC_ROOT_SOURCE_URL,
         "metric_fit_presets":model::metric_fit_presets(),
         "end_treatments":{"family":"iso_metric","starts":[1],"representation":"modeled","standalone_thread_only":true,"start":["flat_cut","chamfer45"],"end":["flat_cut","cylindrical_relief"],"scope":"Custom engineering dimensions inside unchanged authored length; retains at least one full pitch. No DIN76 shoulder relief or natural helical runout."},
+        "representation_binding":{"parameter_unit":"count","values":{"0":"cosmetic_envelope","1":"modeled"},"authority":"representation_parameter when present; literal otherwise","clear":"clear_representation_parameter","scope":"Exact evaluated values only; omitted edits retain the binding."},
         "metric_presets":model::metric_thread_presets().into_iter().map(|p|json!({"designation":p.designation,"diameter_mm":p.diameter_mm,"pitch_mm":p.pitch_mm})).collect::<Vec<_>>(),
         "unified_source":model::UNIFIED_THREAD_SOURCE,"unified_source_url":model::UNIFIED_THREAD_SOURCE_URL,"unified_profile_source_url":model::UNIFIED_PROFILE_SOURCE_URL,
         "unified_presets":unified_presets,
@@ -624,7 +654,7 @@ pub(super) fn inspect_thread(host: &dyn Host, _: &Request, args: InspectThreadAr
     let source = model::read_thread(&document, feature)?;
     let resolved = source.parameters.resolve(&evaluated, source.mode)?;
     Ok(
-        json!({"revision":revision,"thread":feature,"part":source.output.body,"source":source,"resolved":{"nominal_major_diameter_mm":2.*resolved.nominal_major_radius_mm,"nominal_pitch_diameter_mm":resolved.nominal_pitch_diameter_mm,"actual_pitch_diameter_mm":resolved.actual_pitch_diameter_mm,"fit":resolved.fit,"pipe":resolved.pipe,"npt":resolved.npt,"lead_screw":resolved.lead_screw,"buttress":resolved.buttress,"round":resolved.round,"metric_fit":resolved.metric_fit,"end_treatments":resolved.end_treatments,"major_radius_mm":resolved.major_radius_mm,"pitch_mm":resolved.pitch_mm,"lead_mm":resolved.lead_mm,"starts":resolved.starts,"hand":resolved.hand,"representation":resolved.representation,"profile":{"depth_mm":resolved.profile.depth_mm,"crest_width_mm":resolved.profile.crest_width_mm,"rounding_radius_mm":resolved.profile.rounding_radius_mm,"radial_taper":resolved.profile.radial_taper,"lower_flank_deg":resolved.profile.lower_flank_deg,"upper_flank_deg":resolved.profile.upper_flank_deg}},"scope":"Canonical source and resolved construction dimensions; nominal pitch diameter is basic, actual_pitch_diameter_mm and fit describe sourced fitted construction, not a measured or certified manufactured thread; use evaluate_model for current native geometry"}),
+        json!({"revision":revision,"thread":feature,"part":source.output.body,"source":source,"resolved":{"nominal_major_diameter_mm":2.*resolved.nominal_major_radius_mm,"nominal_pitch_diameter_mm":resolved.nominal_pitch_diameter_mm,"actual_pitch_diameter_mm":resolved.actual_pitch_diameter_mm,"fit":resolved.fit,"pipe":resolved.pipe,"npt":resolved.npt,"lead_screw":resolved.lead_screw,"buttress":resolved.buttress,"round":resolved.round,"metric_fit":resolved.metric_fit,"end_treatments":resolved.end_treatments,"major_radius_mm":resolved.major_radius_mm,"pitch_mm":resolved.pitch_mm,"lead_mm":resolved.lead_mm,"starts":resolved.starts,"hand":resolved.hand,"representation":resolved.representation,"representation_parameter":source.parameters.representation_parameter,"profile":{"depth_mm":resolved.profile.depth_mm,"crest_width_mm":resolved.profile.crest_width_mm,"rounding_radius_mm":resolved.profile.rounding_radius_mm,"radial_taper":resolved.profile.radial_taper,"lower_flank_deg":resolved.profile.lower_flank_deg,"upper_flank_deg":resolved.profile.upper_flank_deg}},"scope":"Canonical source and resolved construction dimensions; nominal pitch diameter is basic, actual_pitch_diameter_mm and fit describe sourced fitted construction, not a measured or certified manufactured thread; use evaluate_model for current native geometry"}),
     )
 }
 pub(super) fn set_thread(host: &dyn Host, call: &Request, args: ThreadArgs) -> ToolResult {
@@ -744,5 +774,105 @@ mod recipe_wire_tests {
             assert_eq!(ThreadFit::from(recipe.fit.unwrap()), expected_fit);
         }
         assert!(serde_json::from_value::<ThreadRecipeArgs>(json!({"fit":"2A"})).is_err());
+    }
+    #[test]
+    fn representation_binding_omission_clear_and_manual_conflicts_preserve_authority() {
+        use multicad_core::document::{Entity, EntityData};
+        let mut document = Document::new("Thread mode wire").unwrap();
+        let parameter = Entity::new(
+            "thread_mode",
+            EntityData::Parameter {
+                expression: "0".into(),
+                unit: "count".into(),
+                exposed: true,
+                inputs: vec![],
+            },
+        );
+        let binding = parameter.id;
+        document.insert(parameter).unwrap();
+        let evaluated = multicad_core::parameters::evaluate(&document).unwrap();
+        let before = document.clone();
+        let previous = ThreadParameters {
+            representation: ThreadRepresentation::Modeled,
+            representation_parameter: Some(binding),
+            ..Default::default()
+        };
+        let parse = |value| serde_json::from_value::<ThreadRecipeArgs>(value).unwrap();
+        let retained = parameters(
+            &parse(json!({"length":{"value":8.,"unit":"mm"}})),
+            Some(&previous),
+            &document,
+            &evaluated,
+        )
+        .unwrap();
+        assert_eq!(retained.representation_parameter, Some(binding));
+        assert_eq!(retained.representation, previous.representation);
+        assert_eq!(
+            retained.resolved_representation(&evaluated).unwrap(),
+            ThreadRepresentation::CosmeticEnvelope
+        );
+        for args in [
+            json!({"representation":"modeled"}),
+            json!({"representation_parameter":binding.to_string(),"representation":"cosmetic_envelope"}),
+            json!({"representation_parameter":binding.to_string(),"clear_representation_parameter":true}),
+        ] {
+            assert!(parameters(&parse(args), Some(&previous), &document, &evaluated).is_err());
+        }
+        let fixed = parameters(
+            &parse(
+                json!({"clear_representation_parameter":true,"representation":"cosmetic_envelope"}),
+            ),
+            Some(&previous),
+            &document,
+            &evaluated,
+        )
+        .unwrap();
+        assert_eq!(fixed.representation_parameter, None);
+        assert_eq!(fixed.representation, ThreadRepresentation::CosmeticEnvelope);
+        let fixed_current = parameters(
+            &parse(json!({"clear_representation_parameter":true})),
+            Some(&previous),
+            &document,
+            &evaluated,
+        )
+        .unwrap();
+        assert_eq!(fixed_current.representation_parameter, None);
+        assert_eq!(
+            fixed_current.representation,
+            ThreadRepresentation::CosmeticEnvelope
+        );
+        let bound = parameters(
+            &parse(json!({"representation_parameter":binding.to_string()})),
+            None,
+            &document,
+            &evaluated,
+        )
+        .unwrap();
+        assert_eq!(bound.representation_parameter, Some(binding));
+        assert_eq!(
+            bound.resolved_representation(&evaluated).unwrap(),
+            ThreadRepresentation::CosmeticEnvelope
+        );
+        assert!(
+            parameters(
+                &parse(json!({"representation_parameter":"not-a-uuid"})),
+                None,
+                &document,
+                &evaluated
+            )
+            .is_err()
+        );
+        let missing = parameters(&parse(json!({"representation_parameter":multicad_core::document::EntityId::new().to_string()})),
+            None, &document, &evaluated).unwrap();
+        assert!(
+            missing
+                .resolve(&evaluated, ThreadMode::NewExternal)
+                .is_err(),
+            "missing binding must not use literal fallback"
+        );
+        assert_eq!(document, before);
+        let schema = serde_json::to_value(schemars::schema_for!(ThreadArgs)).unwrap();
+        assert!(schema["properties"]["representation_parameter"].is_object());
+        assert!(schema["properties"]["clear_representation_parameter"].is_object());
     }
 }

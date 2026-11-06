@@ -7,6 +7,8 @@ mod inspector;
 mod installed;
 mod proof;
 #[cfg(test)]
+mod representation_tests;
+#[cfg(test)]
 mod tests;
 pub use architecture::Command as ArchitecturalSymbolCommand;
 pub use controller::SymbolController;

@@ -580,6 +580,17 @@ bore. A cosmetic thread in a selected producer's dependency history makes
 STEP, mesh, planar manufacturing-outline and Print output unsupported.
 Switching the source to Modeled rebuilds manufacturing geometry.
 
+A thread may bind its representation to an existing Count parameter through
+`representation_parameter`. That input has sole authority: exact 0 selects
+Cosmetic envelope and exact 1 selects Modeled helix. The optional binding is
+retained by standalone and nested hardware source, captured as a dependency and
+remapped into pinned instances. Library configuration presents named choices
+with independent overrides and reset behavior. Every manufacturing-history
+guard resolves the effective receiving value, including private instance
+parameters. Invalid bindings fail without using the dormant literal.
+[ADR-0037](0037-parameterized-thread-representation.md) owns the reader capability
+and semantic update rules; unbound legacy source keeps its existing wire form.
+
 The test sources cover
 [kernel pitch, handedness, starts, taper and STEP readback](../../crates/multicad-kernel/tests/threads.rs),
 [canonical transactions and persistence](../../crates/multicad-core/tests/model_threads.rs),

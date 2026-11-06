@@ -511,6 +511,7 @@ pub fn supported_capabilities() -> BTreeSet<String> {
         crate::model::CAPABILITY.into(),
         crate::model::PRIMITIVE_CAPABILITY.into(),
         crate::model::THREAD_CAPABILITY.into(),
+        crate::model::THREAD_REPRESENTATION_PARAMETER_CAPABILITY.into(),
         crate::model::UNIFIED_THREAD_CAPABILITY.into(),
         crate::model::ROUNDED_THREAD_CAPABILITY.into(),
         crate::model::BSPT_THREAD_CAPABILITY.into(),

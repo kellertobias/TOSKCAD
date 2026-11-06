@@ -83,6 +83,14 @@ pub enum ResolvedMechanicalPart {
     },
 }
 impl MechanicalPartParameters {
+    pub fn thread_parameters(&self) -> Option<&ThreadParameters> {
+        match self {
+            Self::HexNut { thread, .. } | Self::MachineScrew { thread, .. } => {
+                Some(thread.as_ref())
+            }
+            Self::Washer { .. } | Self::BearingEnvelope { .. } => None,
+        }
+    }
     pub fn label(&self) -> &'static str {
         match self {
             Self::MachineScrew { .. } => "Machine screw",
@@ -385,6 +393,10 @@ impl MechanicalPartProvenance {
             .dimensions()
             .iter()
             .any(|d| d.expression().is_some())
+            || self
+                .reference_geometry
+                .thread_parameters()
+                .is_some_and(|thread| thread.representation_parameter.is_some())
         {
             return Err(invalid(
                 "Catalog reference dimensions must be literal, self-contained facts",
@@ -442,7 +454,16 @@ impl MechanicalPartDefinition {
     }
     pub fn inputs(&self) -> Result<Vec<Link>, DocumentError> {
         self.validate()?;
-        Ok(parameter_links(self.parameters.dimensions()))
+        let mut links = parameter_links(self.parameters.dimensions());
+        if let Some(thread) = self.parameters.thread_parameters() {
+            for link in thread.input_links() {
+                if !links.contains(&link) {
+                    links.push(link);
+                }
+            }
+            links.sort_by_key(|link| link.target);
+        }
+        Ok(links)
     }
 }
 pub fn read_mechanical_part(

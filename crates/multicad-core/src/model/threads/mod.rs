@@ -40,6 +40,8 @@ pub use whitworth::*;
 pub const THREAD_TYPE: &str = "model.thread";
 pub const THREAD_SCHEMA: u32 = 1;
 pub const THREAD_CAPABILITY: &str = "model.thread.1";
+pub const THREAD_REPRESENTATION_PARAMETER_CAPABILITY: &str =
+    "model.thread.representation_parameter.1";
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ThreadMode {
@@ -60,6 +62,21 @@ pub enum ThreadRepresentation {
     CosmeticEnvelope,
 }
 impl ThreadRepresentation {
+    pub fn parameter_value(self) -> f64 {
+        match self {
+            Self::CosmeticEnvelope => 0.,
+            Self::Modeled => 1.,
+        }
+    }
+    pub fn from_parameter_value(value: f64) -> Result<Self, DocumentError> {
+        match value {
+            0. => Ok(Self::CosmeticEnvelope),
+            1. => Ok(Self::Modeled),
+            _ => Err(invalid(
+                "Thread representation requires count 0 (Cosmetic envelope) or 1 (Modeled helix)",
+            )),
+        }
+    }
     pub fn label(self) -> &'static str {
         match self {
             Self::Modeled => "Modeled helix",
@@ -132,6 +149,10 @@ pub struct ThreadParameters {
     pub axial_allowance: Dimension,
     pub minimum_wall: Dimension,
     pub representation: ThreadRepresentation,
+    /// When bound, this Count parameter is the sole representation authority.
+    /// The literal above remains authoritative only for unbound legacy source.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub representation_parameter: Option<EntityId>,
     pub runout: ThreadRunout,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub end_treatments: Option<ThreadEndTreatments>,
@@ -155,6 +176,7 @@ impl Default for ThreadParameters {
             axial_allowance: length(0.),
             minimum_wall: length(1.),
             representation: ThreadRepresentation::Modeled,
+            representation_parameter: None,
             runout: ThreadRunout::FlatCutEnds,
             end_treatments: None,
             frame: PrimitiveFrame::default(),
@@ -187,6 +209,39 @@ pub struct ResolvedThread {
     pub frame: Frame,
 }
 impl ThreadParameters {
+    pub fn resolved_representation(
+        &self,
+        parameters: &EvaluatedParameters,
+    ) -> Result<ThreadRepresentation, DocumentError> {
+        let Some(parameter) = self.representation_parameter else {
+            return Ok(self.representation);
+        };
+        if parameter.is_nil()
+            || !parameters
+                .document
+                .get(parameter)
+                .is_some_and(|entity| matches!(entity.data, EntityData::Parameter { .. }))
+        {
+            return Err(invalid(
+                "Thread representation must bind an existing Count parameter",
+            ));
+        }
+        let value = parameters
+            .value(parameter, Unit::Count)
+            .map_err(|error| invalid(format!("Thread representation parameter: {error}")))?;
+        ThreadRepresentation::from_parameter_value(value)
+    }
+    pub(super) fn input_links(&self) -> Vec<Link> {
+        let mut links = parameter_links(self.dimensions());
+        if let Some(parameter) = self.representation_parameter {
+            let link = Link::new(parameter, format!("parameter/{parameter}"));
+            if !links.contains(&link) {
+                links.push(link);
+                links.sort_by_key(|link| link.target);
+            }
+        }
+        links
+    }
     pub(super) fn dimensions(&self) -> Vec<&Dimension> {
         let mut dimensions = vec![
             &self.major_diameter,
@@ -207,11 +262,15 @@ impl ThreadParameters {
     }
     pub fn validate(&self) -> Result<(), DocumentError> {
         self.frame.validate()?;
+        if self.representation_parameter.is_some_and(|id| id.is_nil()) {
+            return Err(invalid("Thread representation parameter identity is nil"));
+        }
         if let Some(treatments) = &self.end_treatments {
             treatments.validate()?;
             if self.family != ThreadFamily::IsoMetric
                 || self.starts != 1
-                || self.representation != ThreadRepresentation::Modeled
+                || (self.representation_parameter.is_none()
+                    && self.representation != ThreadRepresentation::Modeled)
             {
                 return Err(invalid(
                     "Custom end treatments currently require a modeled parallel single-start metric thread",
@@ -380,6 +439,12 @@ impl ThreadParameters {
         mode: ThreadMode,
     ) -> Result<ResolvedThread, DocumentError> {
         self.validate_for_mode(mode)?;
+        let representation = self.resolved_representation(parameters)?;
+        if self.end_treatments.is_some() && representation != ThreadRepresentation::Modeled {
+            return Err(invalid(
+                "Custom end treatments require a modeled thread representation",
+            ));
+        }
         let diameter = number(&self.major_diameter, Unit::Millimeter, parameters)?;
         let pitch = number(&self.pitch, Unit::Millimeter, parameters)?;
         let length = number(&self.length, Unit::Millimeter, parameters)?;
@@ -635,7 +700,7 @@ impl ThreadParameters {
             hand: self.hand,
             starts: self.starts,
             minimum_wall_mm: wall,
-            representation: self.representation,
+            representation,
             frame: self.frame.resolve(parameters)?,
         })
     }
@@ -687,7 +752,7 @@ impl ThreadDefinition {
     }
     pub fn inputs(&self) -> Result<Vec<Link>, DocumentError> {
         self.validate()?;
-        let mut links = parameter_links(self.parameters.dimensions());
+        let mut links = self.parameters.input_links();
         if let Some(target) = &self.target {
             links.push(Link::new(
                 target.producer,
@@ -744,22 +809,38 @@ pub fn read_thread(
 /// A cosmetic thread anywhere in a producer's input history remains display
 /// geometry, including a thread retained inside a mechanical nut or screw.
 /// Manufacturing callers refuse it until the representation is Modeled.
-fn cosmetic_feature(document: &Document, id: EntityId) -> Result<bool, DocumentError> {
+fn cosmetic_feature(
+    document: &Document,
+    id: EntityId,
+    evaluated: &mut Option<EvaluatedParameters>,
+) -> Result<bool, DocumentError> {
     let Some(EntityData::Feature { definition, .. }) = document.get(id).map(|e| &e.data) else {
         return Ok(false);
     };
-    Ok(match definition.type_id.as_str() {
-        THREAD_TYPE => {
-            read_thread(document, id)?.parameters.representation
-                == ThreadRepresentation::CosmeticEnvelope
-        }
-        super::MECHANICAL_PART_TYPE => {
-            matches!(super::read_mechanical_part(document, id)?.parameters,
-            super::MechanicalPartParameters::HexNut { thread, .. } | super::MechanicalPartParameters::MachineScrew {thread,..}
-                if thread.representation == ThreadRepresentation::CosmeticEnvelope)
-        }
-        _ => false,
-    })
+    let thread = match definition.type_id.as_str() {
+        THREAD_TYPE => Some(read_thread(document, id)?.parameters),
+        super::MECHANICAL_PART_TYPE => super::read_mechanical_part(document, id)?
+            .parameters
+            .thread_parameters()
+            .cloned(),
+        _ => None,
+    };
+    let Some(thread) = thread else {
+        return Ok(false);
+    };
+    if thread.representation_parameter.is_none() {
+        return Ok(thread.representation == ThreadRepresentation::CosmeticEnvelope);
+    }
+    // Legacy literal-only history does not incur parameter evaluation. Bound
+    // history evaluates the receiving document once, including private inputs.
+    let parameters = match evaluated {
+        Some(parameters) => parameters,
+        None => evaluated.insert(
+            crate::parameters::evaluate(document)
+                .map_err(|error| invalid(format!("Thread representation inputs: {error}")))?,
+        ),
+    };
+    Ok(thread.resolved_representation(parameters)? == ThreadRepresentation::CosmeticEnvelope)
 }
 pub fn cosmetic_thread_in_history(
     document: &Document,
@@ -767,6 +848,7 @@ pub fn cosmetic_thread_in_history(
 ) -> Result<Option<EntityId>, DocumentError> {
     let mut pending = vec![producer];
     let mut visited = std::collections::BTreeSet::new();
+    let mut evaluated = None;
     while let Some(id) = pending.pop() {
         if !visited.insert(id) {
             continue;
@@ -774,7 +856,7 @@ pub fn cosmetic_thread_in_history(
         if document.get(id).is_none() {
             return Err(invalid("Thread export history has a missing dependency"));
         }
-        if cosmetic_feature(document, id)? {
+        if cosmetic_feature(document, id, &mut evaluated)? {
             return Ok(Some(id));
         }
         pending.extend(document.evaluation_dependencies(id)?);
@@ -782,10 +864,50 @@ pub fn cosmetic_thread_in_history(
     Ok(None)
 }
 pub fn has_cosmetic_threads(document: &Document) -> Result<bool, DocumentError> {
+    let mut evaluated = None;
     for entity in document.entities() {
-        if cosmetic_feature(document, entity.id)? {
+        if cosmetic_feature(document, entity.id, &mut evaluated)? {
             return Ok(true);
         }
     }
     Ok(false)
+}
+
+/// Typed semantic inputs used by Library configuration and explicit upgrades.
+/// Names and incidental Count values never determine this role.
+pub fn thread_representation_parameters(
+    document: &Document,
+) -> Result<std::collections::BTreeSet<EntityId>, DocumentError> {
+    let mut parameters = std::collections::BTreeSet::new();
+    for entity in document.entities() {
+        let EntityData::Feature { definition, .. } = &entity.data else {
+            continue;
+        };
+        let parameter = match definition.type_id.as_str() {
+            THREAD_TYPE
+                if definition
+                    .data
+                    .pointer("/parameters/representation_parameter")
+                    .is_some_and(|value| !value.is_null()) =>
+            {
+                ThreadDefinition::from_definition(definition)?
+                    .parameters
+                    .representation_parameter
+            }
+            super::MECHANICAL_PART_TYPE
+                if definition
+                    .data
+                    .pointer("/parameters/thread/representation_parameter")
+                    .is_some_and(|value| !value.is_null()) =>
+            {
+                super::MechanicalPartDefinition::from_definition(definition)?
+                    .parameters
+                    .thread_parameters()
+                    .and_then(|thread| thread.representation_parameter)
+            }
+            _ => None,
+        };
+        parameters.extend(parameter);
+    }
+    Ok(parameters)
 }

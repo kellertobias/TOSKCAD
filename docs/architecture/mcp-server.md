@@ -412,6 +412,19 @@ Omitted optional edit fields retain their canonical values. Creation uses
 `ThreadParameters::default()` for omitted settings. Explicit `null` on an
 optional field has the same effect as omission; it does not clear saved data.
 All linear dimensions accept unit-bearing literals or formulas.
+
+The shared recipe optionally accepts `representation_parameter`, an existing
+Count parameter UUID. Exact count 0 selects Cosmetic envelope and 1 selects
+Modeled helix. While bound, that input is the sole authority and a manual
+`representation` is refused. Omitted or null binding fields preserve the saved
+binding. `clear_representation_parameter: true` explicitly switches to fixed
+representation; when no fixed choice is supplied it retains the current
+effective choice. Setting and clearing a binding together is refused. Invalid
+bindings never fall back to a dormant literal. The same source is used by
+nested nut/screw recipes and existing per-instance symbol overrides.
+[ADR-0037](0037-parameterized-thread-representation.md) records dependencies,
+reader compatibility and semantic update conflicts.
+
 For a listed UNC/UNF size, supply `fit: "unified_2a"` for external modes or
 `fit: "unified_2b"` for an internal cut or nested hex nut. Omitting `fit` on
 an edit retains its saved value. Creation defaults to `nominal_basic`, which

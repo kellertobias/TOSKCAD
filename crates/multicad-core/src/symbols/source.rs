@@ -372,6 +372,10 @@ pub(super) fn override_errors(
     def: &SymbolDefinition,
     values: &BTreeMap<EntityId, SymbolValue>,
 ) -> Vec<(EntityId, String)> {
+    let roles = match crate::model::thread_representation_parameters(&def.template) {
+        Ok(roles) => roles,
+        Err(error) => return values.keys().map(|id| (*id, error.to_string())).collect(),
+    };
     values
         .iter()
         .filter_map(|(id, value)| {
@@ -381,6 +385,14 @@ pub(super) fn override_errors(
                 Some("Parameter is no longer exposed by this definition".into())
             } else {
                 match def.template.get(*id).map(|e| &e.data) {
+                    Some(EntityData::Parameter { unit, .. }) if roles.contains(id) => {
+                        if parameters::Unit::parse(unit) != Some(parameters::Unit::Count)
+                            || parameters::Unit::parse(&value.unit) != Some(parameters::Unit::Count)
+                            || crate::model::ThreadRepresentation::from_parameter_value(value.value).is_err()
+                        {
+                            Some("Thread representation requires Count 0 (Cosmetic envelope) or 1 (Modeled helix)".into())
+                        } else { None }
+                    }
                     Some(EntityData::Parameter { unit, .. }) => match (
                         parameters::Unit::parse(unit),
                         parameters::Unit::parse(&value.unit),
@@ -411,4 +423,20 @@ pub fn symbol_plan(
     Ok(def
         .plan
         .map(|plan| (instance.instance, instance.ids[&plan.sketch])))
+}
+
+/// Existing overrides cannot silently acquire or lose their typed meaning when
+/// an explicit source update reuses a parameter identity.
+pub(super) fn representation_role_changes(
+    old: &SymbolDefinition,
+    replacement: &SymbolDefinition,
+    previous: &BTreeMap<EntityId, SymbolValue>,
+    proposed: &BTreeMap<EntityId, SymbolValue>,
+) -> Result<Vec<(EntityId, String)>, DocumentError> {
+    let before = crate::model::thread_representation_parameters(&old.template)?;
+    let after = crate::model::thread_representation_parameters(&replacement.template)?;
+    Ok(before.symmetric_difference(&after)
+        .filter(|id| previous.contains_key(id) && proposed.contains_key(id))
+        .map(|id| (*id, "Parameter's thread representation role changed; explicitly remove its existing override before updating".into()))
+        .collect())
 }

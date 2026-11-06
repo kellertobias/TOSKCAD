@@ -1,6 +1,7 @@
 use crate::{controls, egui};
 use multicad_core::{
     document::{Document, EntityId, Placement},
+    model::{ThreadRepresentation, thread_representation_parameters},
     parameters::{self, Unit},
     symbols::{SymbolDefinition, SymbolKind, SymbolValue},
 };
@@ -67,6 +68,8 @@ impl Overrides {
         definition: &SymbolDefinition,
     ) -> Result<BTreeMap<EntityId, SymbolValue>, String> {
         let mut values = BTreeMap::new();
+        let representation_inputs = thread_representation_parameters(&definition.template)
+            .map_err(|error| error.to_string())?;
         for (id, field) in &self.0 {
             if !field.enabled {
                 continue;
@@ -98,6 +101,15 @@ impl Overrides {
                     "{name}: override unit is incompatible; reset it to the new default"
                 ));
             }
+            if representation_inputs.contains(id) {
+                if unit != Unit::Count {
+                    return Err(format!(
+                        "{name}: thread representation requires a Count input"
+                    ));
+                }
+                ThreadRepresentation::from_parameter_value(value)
+                    .map_err(|error| error.to_string())?;
+            }
             values.insert(
                 *id,
                 SymbolValue {
@@ -114,10 +126,24 @@ impl Overrides {
             return false;
         }
         let mut changed = false;
+        let representation_inputs = match thread_representation_parameters(&definition.template) {
+            Ok(inputs) => inputs,
+            Err(error) => {
+                ui.colored_label(egui::Color32::LIGHT_RED, error.to_string());
+                return false;
+            }
+        };
         for (id, field) in &mut self.0 {
             changed |= ui
                 .push_id(*id, |ui| {
-                    show_value(ui, *id, field, definition, self.1.get(id))
+                    show_value(
+                        ui,
+                        *id,
+                        field,
+                        definition,
+                        self.1.get(id),
+                        representation_inputs.contains(id),
+                    )
                 })
                 .inner;
             ui.add_space(4.);
@@ -138,11 +164,17 @@ fn show_value(
     field: &mut ValueInput,
     definition: &SymbolDefinition,
     default: Option<&SymbolValue>,
+    representation_input: bool,
 ) -> bool {
     let entity = definition.template.get(id);
     let allowed = definition.kind == SymbolKind::Dynamic && definition.exposed.contains(&id);
     let name = entity.map_or("Removed parameter", |e| e.name.as_str());
-    let mut changed=ui.checkbox(&mut field.enabled,format!("Override {name}")).on_hover_text("Checked values replace this instance's default formula. Uncheck to restore the definition's default").changed();
+    let label = if representation_input {
+        "Thread representation"
+    } else {
+        name
+    };
+    let mut changed=ui.checkbox(&mut field.enabled,format!("Override {label}")).on_hover_text("Checked values replace this instance's default formula. Uncheck to restore the definition's default").changed();
     if changed && !field.enabled {
         reset(field, default);
     }
@@ -155,7 +187,60 @@ fn show_value(
         }
         return changed;
     }
-    if field.enabled {
+    if representation_input {
+        if field.enabled {
+            let before = if Unit::parse(&field.unit) == Some(Unit::Count) {
+                field
+                    .text
+                    .parse::<f64>()
+                    .ok()
+                    .and_then(|value| ThreadRepresentation::from_parameter_value(value).ok())
+            } else {
+                None
+            };
+            let mut selected = before;
+            egui::ComboBox::from_id_salt("thread-representation")
+                .selected_text(selected.map_or("Choose representation", representation_label))
+                .show_ui(ui, |ui| {
+                    for representation in [
+                        ThreadRepresentation::CosmeticEnvelope,
+                        ThreadRepresentation::Modeled,
+                    ] {
+                        let _ = ui
+                            .selectable_value(
+                                &mut selected,
+                                Some(representation),
+                                representation_label(representation),
+                            )
+                            .on_hover_text(representation.label());
+                    }
+                });
+            if selected != before
+                && let Some(representation) = selected
+            {
+                field.text = representation.parameter_value().to_string();
+                field.unit = Unit::Count.symbol().into();
+                changed = true;
+            }
+        }
+        if let Some(default) = default {
+            match (
+                Unit::parse(&default.unit),
+                ThreadRepresentation::from_parameter_value(default.value),
+            ) {
+                (Some(Unit::Count), Ok(representation)) => {
+                    ui.small(format!("Default: {}", representation_label(representation)));
+                }
+                _ => {
+                    ui.colored_label(
+                        egui::Color32::LIGHT_RED,
+                        "The definition's thread representation default is invalid",
+                    );
+                }
+            }
+        }
+        ui.small("Modeled helix is required for manufacturing.");
+    } else if field.enabled {
         ui.horizontal(|ui| {
             changed |= ui
                 .add(
@@ -167,10 +252,11 @@ fn show_value(
             ui.label(&field.unit);
         });
     }
-    if let Some(default) = default {
+    if !representation_input && let Some(default) = default {
         ui.small(format!("Default: {} {}", default.value, default.unit));
     }
-    if let Some(entity) = entity
+    if !representation_input
+        && let Some(entity) = entity
         && let multicad_core::document::EntityData::Parameter { expression, .. } = &entity.data
     {
         ui.small(format!("Definition: {expression}"));
@@ -197,6 +283,13 @@ fn show_value(
         }
     }
     changed
+}
+
+fn representation_label(representation: ThreadRepresentation) -> &'static str {
+    match representation {
+        ThreadRepresentation::CosmeticEnvelope => "Cosmetic envelope",
+        ThreadRepresentation::Modeled => "Modeled helix",
+    }
 }
 
 pub(super) fn number(text: &str, label: &str) -> Result<f64, String> {

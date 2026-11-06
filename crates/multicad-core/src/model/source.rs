@@ -975,6 +975,19 @@ pub fn required_capabilities(document: &Document) -> BTreeSet<String> {
     // capability too; visible/evaluated feature iterators omit them.
     if saved_feature_matches(document, |type_id, data| {
         let paths: &[&str] = match type_id {
+            super::THREAD_TYPE => &["/parameters/representation_parameter"],
+            super::MECHANICAL_PART_TYPE => &[
+                "/parameters/thread/representation_parameter",
+                "/provenance/reference_geometry/thread/representation_parameter",
+            ],
+            _ => return false,
+        };
+        paths.iter().any(|path| data.pointer(path).is_some())
+    }) {
+        capabilities.insert(super::THREAD_REPRESENTATION_PARAMETER_CAPABILITY.into());
+    }
+    if saved_feature_matches(document, |type_id, data| {
+        let paths: &[&str] = match type_id {
             super::THREAD_TYPE => &["/parameters/family"],
             super::MECHANICAL_PART_TYPE => &[
                 "/parameters/thread/family",

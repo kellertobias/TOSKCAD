@@ -37,6 +37,7 @@ pub(super) struct ThreadPanel {
     hand: ThreadHand,
     starts: u32,
     representation: ThreadRepresentation,
+    representation_parameter: Option<EntityId>,
     name: String,
     diameter: DimensionField,
     pitch: DimensionField,
@@ -99,6 +100,7 @@ impl ThreadPanel {
             hand: p.hand,
             starts: p.starts,
             representation: p.representation,
+            representation_parameter: p.representation_parameter,
             name: request.name.clone(),
             diameter: field(&p.major_diameter, "mm")?,
             pitch: field(&p.pitch, "mm")?,
@@ -207,6 +209,7 @@ impl ThreadPanel {
             axial_allowance: self.axial.resolve(document)?,
             minimum_wall: self.wall.resolve(document)?,
             representation: self.representation,
+            representation_parameter: self.representation_parameter,
             frame: PrimitiveFrame {
                 origin: [
                     self.origin[0].resolve(document)?,
@@ -520,26 +523,7 @@ impl ThreadPanel {
                 "Required material around the complete thread, beyond the major radius",
             );
         }
-        ui.separator();
-        ui.strong("Representation");
-        for representation in [
-            ThreadRepresentation::Modeled,
-            ThreadRepresentation::CosmeticEnvelope,
-        ] {
-            changed |= ui
-                .radio_value(
-                    &mut self.representation,
-                    representation,
-                    representation.label(),
-                )
-                .changed();
-        }
-        if self.representation == ThreadRepresentation::CosmeticEnvelope {
-            ui.colored_label(
-                egui::Color32::YELLOW,
-                "Display only. Switch to Modeled before STEP, mesh or print export.",
-            );
-        }
+        changed |= self.representation_controls(ui);
         if show_frame && self.family == ThreadFamily::IsoMetric {
             changed |= ui
                 .checkbox(
@@ -601,6 +585,61 @@ impl ThreadPanel {
                     "Explicit axis placement; formulas may reference $parameters",
                 );
             }
+        }
+        changed
+    }
+    fn representation_controls(&mut self, ui: &mut egui::Ui) -> bool {
+        let mut changed = false;
+        ui.separator();
+        ui.strong("Representation");
+        let effective = ThreadParameters {
+            representation: self.representation,
+            representation_parameter: self.representation_parameter,
+            ..Default::default()
+        }
+        .resolved_representation(&self.parameters);
+        if self.representation_parameter.is_some() {
+            ui.add(egui::Label::new("Thread representation follows a parameter; edit its value in Project or the Library instance").wrap());
+            match &effective {
+                Ok(value) => {
+                    ui.label(format!("Effective representation: {}", value.label()));
+                }
+                Err(error) => {
+                    ui.colored_label(egui::Color32::LIGHT_RED, error.to_string());
+                }
+            }
+            if ui.button("Use fixed thread representation").clicked() {
+                if let Ok(value) = &effective {
+                    self.representation = *value;
+                }
+                self.representation_parameter = None;
+                changed = true;
+            }
+        }
+        if self.representation_parameter.is_none() {
+            for representation in [
+                ThreadRepresentation::Modeled,
+                ThreadRepresentation::CosmeticEnvelope,
+            ] {
+                changed |= ui
+                    .radio_value(
+                        &mut self.representation,
+                        representation,
+                        representation.label(),
+                    )
+                    .changed();
+            }
+        }
+        let cosmetic = if self.representation_parameter.is_some() {
+            matches!(effective, Ok(ThreadRepresentation::CosmeticEnvelope))
+        } else {
+            self.representation == ThreadRepresentation::CosmeticEnvelope
+        };
+        if cosmetic {
+            ui.colored_label(
+                egui::Color32::YELLOW,
+                "Display only. Switch to Modeled before STEP, mesh or print export.",
+            );
         }
         changed
     }
@@ -1303,5 +1342,146 @@ impl ThreadPanel {
             }
             _ => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod representation_binding_tests {
+    use super::*;
+    use multicad_core::{
+        document::{Entity, EntityData},
+        parameters,
+    };
+
+    #[test]
+    fn bound_representation_is_retained_and_fixed_action_adopts_effective_mode() {
+        let mut document = Document::new("Thread choice form").unwrap();
+        let parameter = Entity::new(
+            "thread_mode",
+            EntityData::Parameter {
+                expression: "0".into(),
+                unit: "count".into(),
+                exposed: true,
+                inputs: vec![],
+            },
+        );
+        let binding = parameter.id;
+        document.insert(parameter).unwrap();
+        let before = document.clone();
+        let recipe = ThreadParameters {
+            representation: ThreadRepresentation::Modeled,
+            representation_parameter: Some(binding),
+            ..Default::default()
+        };
+        let request = ThreadRequest::new("Bound thread", recipe.clone());
+        let feature = request.feature;
+        let mut panel = ThreadPanel::new(
+            request,
+            parameters::evaluate(&document).unwrap(),
+            vec![],
+            &Default::default(),
+            true,
+        )
+        .unwrap();
+        panel.length.set_literal(8., "mm");
+        let edited = panel.request(&document, true).unwrap();
+        assert_eq!(edited.feature, feature);
+        assert_eq!(edited.parameters.representation_parameter, Some(binding));
+        assert_eq!(edited.parameters.representation, recipe.representation);
+        assert_eq!(
+            edited
+                .parameters
+                .resolved_representation(&panel.parameters)
+                .unwrap(),
+            ThreadRepresentation::CosmeticEnvelope
+        );
+        let context = egui::Context::default();
+        fn frame(
+            context: &egui::Context,
+            panel: &mut ThreadPanel,
+            events: Vec<egui::Event>,
+        ) -> egui::FullOutput {
+            context.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(500., 500.),
+                    )),
+                    events,
+                    focused: true,
+                    ..Default::default()
+                },
+                |ui| {
+                    panel.representation_controls(ui);
+                },
+            )
+        }
+        let output = frame(&context, &mut panel, vec![]);
+        let texts: Vec<_> = output
+            .shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) => Some(text.galley.text().to_owned()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            texts
+                .iter()
+                .any(|t| t.contains("Thread representation follows a parameter"))
+        );
+        assert!(texts.iter().any(|t| t
+            == &format!(
+                "Effective representation: {}",
+                ThreadRepresentation::CosmeticEnvelope.label()
+            )));
+        assert!(
+            !texts
+                .iter()
+                .any(|t| t == ThreadRepresentation::Modeled.label())
+        );
+        assert!(
+            !texts
+                .iter()
+                .any(|t| t == ThreadRepresentation::CosmeticEnvelope.label())
+        );
+        let pos = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text)
+                    if text.galley.text() == "Use fixed thread representation" =>
+                {
+                    Some(text.pos + text.galley.size() / 2.)
+                }
+                _ => None,
+            })
+            .expect("explicit unbinding action");
+        output.drop_without_applying_deltas();
+        for pressed in [true, false] {
+            frame(
+                &context,
+                &mut panel,
+                vec![
+                    egui::Event::PointerMoved(pos),
+                    egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: Default::default(),
+                    },
+                ],
+            )
+            .drop_without_applying_deltas();
+        }
+        let fixed = panel.request(&document, true).unwrap();
+        assert_eq!(fixed.feature, feature);
+        assert_eq!(fixed.parameters.representation_parameter, None);
+        assert_eq!(
+            fixed.parameters.representation,
+            ThreadRepresentation::CosmeticEnvelope
+        );
+        assert_eq!(fixed.parameters.length, model::length(8.));
+        assert_eq!(document, before);
     }
 }

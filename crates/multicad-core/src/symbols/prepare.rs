@@ -1,6 +1,6 @@
 use super::{
     materialize::{generated, record_entity},
-    source::{author, entity, invalid, override_errors},
+    source::{author, entity, invalid, override_errors, representation_role_changes},
     *,
 };
 use crate::{
@@ -488,6 +488,37 @@ pub fn compare_update_request(
             }),
         );
     }
+    for (record, value) in &placed {
+        let proposed = request
+            .instance_overrides
+            .get(record)
+            .unwrap_or(&value.overrides);
+        conflicts.extend(
+            representation_role_changes(&old, replacement, &value.overrides, proposed)?
+                .into_iter()
+                .map(|(parameter, reason)| SymbolOverrideConflict {
+                    instance: value.instance,
+                    parameter,
+                    reason,
+                }),
+        );
+    }
+    for (record, value) in architecture::architecture_instances(doc, definition)? {
+        let proposed = &request
+            .architecture_inputs
+            .get(&record)
+            .unwrap_or(&value.inputs)
+            .parameters;
+        conflicts.extend(
+            representation_role_changes(&old, replacement, &value.inputs.parameters, proposed)?
+                .into_iter()
+                .map(|(parameter, reason)| SymbolOverrideConflict {
+                    instance: value.output.anchors()[1],
+                    parameter,
+                    reason,
+                }),
+        );
+    }
     let mut report = SymbolUpgradeReport {
         old_pin,
         new_pin,
@@ -613,6 +644,39 @@ pub(super) fn update_edits(
         return Err(
             invalid("An update must explicitly cover each affected symbol instance").into(),
         );
+    }
+    // Enforce semantic conflicts here too: callers may prepare an update
+    // directly without first requesting a comparison report.
+    for (record, value) in &previous {
+        if let Some((_, reason)) = representation_role_changes(
+            &old,
+            &request.replacement,
+            &value.overrides,
+            &request.instance_overrides[record],
+        )?
+        .into_iter()
+        .next()
+        {
+            return Err(invalid(reason).into());
+        }
+    }
+    for (record, value) in architecture::architecture_instances(doc, request.definition)? {
+        let proposed = &request
+            .architecture_inputs
+            .get(&record)
+            .unwrap_or(&value.inputs)
+            .parameters;
+        if let Some((_, reason)) = representation_role_changes(
+            &old,
+            &request.replacement,
+            &value.inputs.parameters,
+            proposed,
+        )?
+        .into_iter()
+        .next()
+        {
+            return Err(invalid(reason).into());
+        }
     }
     let keys = super::remap::identities(&request.replacement)?;
     let mut edits = vec![Mutation::Replace(entity(
