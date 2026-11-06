@@ -414,6 +414,7 @@ pub fn prepare_connection_receiver_edit(
         ));
     }
     source.resolve(session.parameters())?;
+    super::read_screw_connection_axis(session.document(), source.axis)?;
     super::validate_transfer_path(session.document(), &source.occurrence, source.input.body)?;
     prepare_edit(
         session,

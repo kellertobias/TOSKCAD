@@ -166,6 +166,12 @@ fn prepare_is_neutral_history_and_parameter_dependencies_survive_reopen() {
     assert!(
         project_file::read(&mut std::io::Cursor::new(&bytes), Default::default(), &old).is_err()
     );
+    let mut invalid = r.source.clone();
+    invalid.axis = EntityId::new();
+    assert!(
+        prepare_connection_receiver_edit(&s, s.revision(), actor(), r.feature, &invalid).is_err()
+    );
+    assert_eq!(*s.document(), after);
     let mut edit = r.source.clone();
     edit.extent = ConnectionReceiverExtent::Through {};
     s.commit(
