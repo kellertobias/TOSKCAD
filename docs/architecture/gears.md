@@ -370,8 +370,11 @@ The native tests cover
 [pair transactions](../../crates/multicad-core/tests/model_gear_pairs.rs),
 [native pair placements and failure controls](../../crates/multicad-model/tests/gear_pairs.rs),
 and [MCP control](../../crates/multicad-mcp/tests/gear_pairs.rs).
-Actual macOS interaction and artifact readbacks are recorded in CAD-199's
-Working Log; they are separate from tests and Windows/Linux runtime evidence.
+The [aggregate gear verification](../verification/gears-complete-2026-11-06.md)
+maps the original acceptance criteria to family geometry, persistence, actual
+macOS interaction and manufacturing readbacks. Those records retain separate
+test, runtime and historical source attribution; Windows/Linux runtime and
+human acceptance remain separate.
 
 The first herringbone pair preview remains expensive in the development build.
 Separate Preview, canonical display and export lanes can repeat cycle work;
