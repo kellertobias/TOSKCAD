@@ -2,6 +2,7 @@
 //! `cargo run -p multicad-app --example mechanical_library -- /tmp/library-review`
 //! Add `--machine-screws` after the folder to extend it with sourced screws.
 //! Use `--hex-nuts` for edition-specific nuts with retained thread choices.
+//! Use `--screw-heads` for the additional sourced head and recess families.
 //! Existing files are refused. Every identity and preview is reproducible;
 //! dimension changes require an explicit new symbol/catalog revision.
 #[allow(dead_code)]
@@ -11,6 +12,8 @@ mod equipment_library;
 mod machine_screw_catalog;
 #[path = "support/nut_catalog.rs"]
 pub mod nut_catalog;
+#[path = "support/screw_head_catalog.rs"]
+pub mod screw_head_catalog;
 use equipment_library::plant_library;
 use multicad_core::{
     commands::{Actor, Channel, Request, Session},
@@ -492,8 +495,14 @@ fn main() -> Result<(), Error> {
     match std::env::args().nth(2).as_deref() {
         Some("--machine-screws") => return machine_screw_catalog::generate(output),
         Some("--hex-nuts") => return nut_catalog::generate(output),
+        Some("--screw-heads") => return screw_head_catalog::generate(output),
         None => {}
-        _ => return Err("Optional catalog mode must be --machine-screws or --hex-nuts".into()),
+        _ => {
+            return Err(
+                "Optional catalog mode must be --machine-screws, --hex-nuts or --screw-heads"
+                    .into(),
+            );
+        }
     }
     let curation = curated_washers()?;
     let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../library");

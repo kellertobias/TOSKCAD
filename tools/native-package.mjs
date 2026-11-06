@@ -122,7 +122,7 @@ export function validateBundledLibrary(directory=join(root,'library')){
     projects.push({file:entry.file,...project});files.add(entry.file);identities.add(entry.document);
   }
   for(const required of manifest.requires){inside(required);files.add(required);}
-  for(const required of ['curation.json','washers-curation.json','README.md','sources/bolts/bearings.blt','sources/bolts/washer.blt','sources/bolts/WASHER-NOTICES.md','machine-screws-curation.json','sources/bolts/hex_socket.blt','sources/bolts/hex.blt','sources/bolts/MACHINE-SCREW-NOTICES.md','nuts-curation.json','sources/bolts/nut.blt','sources/bolts/NUT-NOTICES.md','sources/bolts/COPYING.LESSER'])if(!files.has(required))throw new Error(`Bundled Library notice/source closure is missing ${required}`);
+  for(const required of ['curation.json','washers-curation.json','README.md','sources/bolts/bearings.blt','sources/bolts/washer.blt','sources/bolts/WASHER-NOTICES.md','machine-screws-curation.json','sources/bolts/hex_socket.blt','sources/bolts/hex.blt','sources/bolts/MACHINE-SCREW-NOTICES.md','sources/bolts/SCREW-PROFILE-NOTICES.md','nuts-curation.json','sources/bolts/nut.blt','sources/bolts/NUT-NOTICES.md','sources/bolts/COPYING.LESSER'])if(!files.has(required))throw new Error(`Bundled Library notice/source closure is missing ${required}`);
   const curation=JSON.parse(readFileSync(inside('curation.json'),'utf8'));
   if(curation.data_license!=='LGPL-2.1-or-later'||createHash('sha256').update(readFileSync(inside('sources/bolts/bearings.blt'))).digest('hex')!==curation.data_sha256)throw new Error('Bundled Library reference license/hash differs from curation');
   const washers=JSON.parse(readFileSync(inside('washers-curation.json'),'utf8'));
@@ -130,6 +130,24 @@ export function validateBundledLibrary(directory=join(root,'library')){
   const screws=JSON.parse(readFileSync(inside('machine-screws-curation.json'),'utf8'));
   if(screws.format!=='toskcad.machine-screw-curation'||screws.version!==1||!Array.isArray(screws.data_sources)||screws.data_sources.length!==2)throw new Error('Invalid bundled machine screw curation');
   for(const source of screws.data_sources)if(!files.has(source.file)||source.license!=='LGPL-2.1-or-later'||createHash('sha256').update(readFileSync(inside(source.file))).digest('hex')!==source.sha256)throw new Error('Bundled Library machine screw source license/hash differs from curation');
+  if(screws.profile_revision!=='1'||!Array.isArray(screws.profile_entries)||screws.profile_entries.length!==52||!Array.isArray(screws.profile_coverage)||screws.profile_coverage.length!==96||!Array.isArray(screws.profile_sources)||screws.profile_sources.length!==11)throw new Error('Invalid bundled screw profile curation');
+  const profileIds=new Set(),profileFiles=new Set(),profileSources=new Set();
+  for(const source of screws.profile_sources){
+    if(typeof source.id!=='string'||profileSources.has(source.id)||!/^https:\/\//.test(source.url??'')||!/^[0-9a-f]{64}$/.test(source.sha256??'')||!source.edition||!source.reference||!source.rights)throw new Error('Invalid bundled screw profile source reference');
+    profileSources.add(source.id);
+  }
+  for(const entry of screws.profile_entries){
+    const source=entry.source_facts?.verification;
+    if(typeof entry.id!=='string'||profileIds.has(entry.id)||profileFiles.has(entry.file)||!files.has(entry.file)||!screws.profile_sources.some(ref=>ref.url===entry.verification_url&&ref.sha256===source?.source_sha256)||!source?.reference||!entry.source_reference||!Array.isArray(entry.modifications)||!entry.modifications.length)throw new Error('Invalid bundled screw profile project/source closure');
+    profileIds.add(entry.id);profileFiles.add(entry.file);
+  }
+  const coverageCells=new Set(),coveredProfiles=new Set();
+  for(const cell of screws.profile_coverage){
+    const key=JSON.stringify([cell.family,cell.nominal_mm]);
+    if(coverageCells.has(key)||!cell.reason||!['supported','unavailable'].includes(cell.status)||(cell.status==='supported'?(!screws.profile_entries.some(entry=>entry.id===cell.entry_id&&entry.family===cell.family&&entry.nominal_mm===cell.nominal_mm)||coveredProfiles.has(cell.entry_id)):cell.entry_id!=null))throw new Error('Invalid bundled screw profile coverage');
+    coverageCells.add(key);if(cell.status==='supported')coveredProfiles.add(cell.entry_id);
+  }
+  if(coveredProfiles.size!==profileIds.size)throw new Error('Bundled screw profile coverage omits a project');
   const nuts=JSON.parse(readFileSync(inside('nuts-curation.json'),'utf8'));
   if(nuts.format!=='toskcad.nut-curation'||nuts.version!==1||!Array.isArray(nuts.entries)||nuts.entries.length!==19||!Array.isArray(nuts.coverage)||nuts.coverage.length!==24||nuts.entries.some(entry=>!files.has(entry.file)))throw new Error('Invalid bundled nut curation or project closure');
   if(nuts.data_license!=='LGPL-2.1-or-later'||createHash('sha256').update(readFileSync(inside('sources/bolts/nut.blt'))).digest('hex')!==nuts.data_sha256)throw new Error('Bundled Library nut reference license/hash differs from curation');

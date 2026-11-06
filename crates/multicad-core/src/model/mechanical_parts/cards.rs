@@ -11,6 +11,8 @@ pub struct MechanicalPartCard {
     /// not the possibly edited authoring Part outside the immutable template.
     pub symbol: Option<(EntityId, String)>,
     pub dimensions_mm: BTreeMap<String, f64>,
+    /// Non-length configured profile facts with explicit units; not catalog certification.
+    pub profile_details: Vec<String>,
     pub representation: String,
     pub designation: Option<String>,
     pub source_url: Option<String>,
@@ -54,6 +56,7 @@ fn cards(document: &Document, symbol: Option<(EntityId, String)>) -> Vec<Mechani
                 family: "Unsupported hardware".into(),
                 symbol: symbol.clone(),
                 dimensions_mm: BTreeMap::new(),
+                profile_details: Vec::new(),
                 representation: String::new(),
                 designation: None,
                 source_url: None,
@@ -96,7 +99,35 @@ fn cards(document: &Document, symbol: Option<(EntityId, String)>) -> Vec<Mechani
                         if length_convention == ScrewLengthConvention::Overall {
                             values.push(("Overall length", authored_length_mm));
                         }
+                        for (label, value) in head
+                            .additional_profile_values()
+                            .into_iter()
+                            .chain(drive.additional_profile_values())
+                        {
+                            if label.contains("(degrees)") {
+                                card.profile_details.push(format!(
+                                    "{}: {value} degrees",
+                                    label.replace(" (degrees)", "")
+                                ));
+                            } else if label == "Phillips H size" {
+                                card.profile_details.push(format!("Phillips H{value:.0}"));
+                            } else {
+                                values.push((label, value));
+                            }
+                        }
                         let head_label = match head {
+                            ResolvedScrewHead::Pan { radius_mm, .. } => {
+                                values.push(("Head diameter", radius_mm * 2.));
+                                "Pan head"
+                            }
+                            ResolvedScrewHead::Button { radius_mm, .. } => {
+                                values.push(("Head diameter", radius_mm * 2.));
+                                "Button head"
+                            }
+                            ResolvedScrewHead::Countersunk { radius_mm, .. } => {
+                                values.push(("Head diameter", radius_mm * 2.));
+                                "Countersunk head · neck construction datum"
+                            }
                             ResolvedScrewHead::SocketCap { radius_mm, .. } => {
                                 values.push(("Head diameter", radius_mm * 2.));
                                 "Socket-cap head"
@@ -117,6 +148,8 @@ fn cards(document: &Document, symbol: Option<(EntityId, String)>) -> Vec<Mechani
                                 values.push(("Socket depth", depth_mm));
                                 "flat-floor hex socket"
                             }
+                            ResolvedScrewDrive::Hexalobular { .. } => "hexalobular recess",
+                            ResolvedScrewDrive::PhillipsH { .. } => "Phillips H recess",
                             ResolvedScrewDrive::ExternalHex => "external hex flats",
                         };
                         let profile = match thread.representation {

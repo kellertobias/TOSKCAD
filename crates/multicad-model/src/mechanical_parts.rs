@@ -1,4 +1,5 @@
 //! Native mounting geometry and nut threads from retained canonical parameters.
+mod screw_profiles;
 use crate::{ModelError, error};
 use multicad_core::{
     document::EntityId,
@@ -67,6 +68,74 @@ fn screw_key(resolved: &ResolvedMechanicalPart, policy: GeometryPolicy) -> Optio
         ResolvedScrewHead::ExternalHex {
             across_flats_mm, ..
         } => numbers.push(*across_flats_mm),
+        ResolvedScrewHead::Pan {
+            radius_mm,
+            crown_radius_mm,
+            top_land_radius_mm,
+            neck_radius_mm,
+            ..
+        }
+        | ResolvedScrewHead::Button {
+            radius_mm,
+            crown_radius_mm,
+            top_land_radius_mm,
+            neck_radius_mm,
+            ..
+        } => numbers.extend([
+            *radius_mm,
+            *crown_radius_mm,
+            *top_land_radius_mm,
+            *neck_radius_mm,
+        ]),
+        ResolvedScrewHead::Countersunk {
+            radius_mm,
+            included_angle_deg,
+            edge_chamfer_mm,
+            neck_radius_mm,
+            ..
+        } => numbers.extend([
+            *radius_mm,
+            *included_angle_deg,
+            *edge_chamfer_mm,
+            *neck_radius_mm,
+        ]),
+    }
+    match drive {
+        ResolvedScrewDrive::Hexalobular {
+            major_radius_mm,
+            minor_radius_mm,
+            outer_lobe_radius_mm,
+            depth_mm,
+            bottom_angle_deg,
+        } => numbers.extend([
+            *major_radius_mm,
+            *minor_radius_mm,
+            *outer_lobe_radius_mm,
+            *depth_mm,
+            *bottom_angle_deg,
+        ]),
+        ResolvedScrewDrive::PhillipsH { profile: p } => {
+            numbers.extend([
+                p.mouth_diameter_mm,
+                p.mouth_radius_mm,
+                p.b_width_mm,
+                p.g_diameter_mm,
+                p.tilt_angle_deg,
+                p.outer_flank_angle_deg,
+                p.floor_angle_deg,
+                p.outer_corner_angle_deg,
+            ]);
+            match p.inner {
+                multicad_core::model::ResolvedPhillipsInnerForm::Rounded { radius_mm } => {
+                    numbers.push(radius_mm)
+                }
+                multicad_core::model::ResolvedPhillipsInnerForm::ShallowV {
+                    angle_deg,
+                    e_width_mm,
+                } => numbers.extend([angle_deg, e_width_mm]),
+            }
+        }
+        _ => {}
     }
     if let ResolvedScrewDrive::HexSocket {
         across_flats_mm,
@@ -337,6 +406,7 @@ pub(crate) fn build(
                 across_flats_mm,
                 depth_mm,
             } = &drive
+                && matches!(head, ResolvedScrewHead::SocketCap { .. })
                 && (head.height_mm() - depth_mm < policy.minimum_feature_mm
                     || head.minimum_radius_mm() - across_flats_mm / 3_f64.sqrt()
                         < policy.minimum_feature_mm)
@@ -347,6 +417,15 @@ pub(crate) fn build(
                 ));
             }
             policy.validate().map_err(|e| error(Some(feature), e))?;
+            screw_profiles::validate_native_clearance(
+                feature,
+                &head,
+                &drive,
+                shank_radius_mm,
+                underhead_length_mm,
+                &thread,
+                policy,
+            )?;
             let factory_key = factory_key
                 .ok_or_else(|| error(Some(feature), "Missing resolved screw factory key"))?;
             if let Some(cached) = cached_screw(&factory_key, feature) {
@@ -358,25 +437,35 @@ pub(crate) fn build(
                     radius_mm,
                 }]
             };
-            let head_outer = match head {
-                ResolvedScrewHead::SocketCap { radius_mm, .. } => circle(radius_mm),
-                ResolvedScrewHead::ExternalHex {
-                    across_flats_mm, ..
-                } => hexagon(across_flats_mm),
-            };
+            let new_profile = screw_profiles::new_head(&head);
             let height = head.height_mm();
-            let mut result = screw_prism(feature, "head", -height, height, head_outer, policy)?;
-            if let ResolvedScrewDrive::HexSocket {
-                across_flats_mm,
-                depth_mm,
-            } = drive
+            let early_socket = matches!(head, ResolvedScrewHead::SocketCap { .. })
+                && matches!(drive, ResolvedScrewDrive::HexSocket { .. });
+            let mut result = if new_profile {
+                screw_profiles::blank(feature, &head, shank_radius_mm, shank_length, policy)?
+            } else {
+                let head_outer = match head {
+                    ResolvedScrewHead::SocketCap { radius_mm, .. } => circle(radius_mm),
+                    ResolvedScrewHead::ExternalHex {
+                        across_flats_mm, ..
+                    } => hexagon(across_flats_mm),
+                    _ => unreachable!("New head profile dispatched above"),
+                };
+                screw_prism(feature, "head", -height, height, head_outer, policy)?
+            };
+            // Preserve the old flat-cap/flat-hex-socket construction exactly.
+            if early_socket
+                && let ResolvedScrewDrive::HexSocket {
+                    across_flats_mm,
+                    depth_mm,
+                } = &drive
             {
                 let socket = screw_prism(
                     feature,
                     "socket",
                     -height,
-                    depth_mm,
-                    hexagon(across_flats_mm),
+                    *depth_mm,
+                    hexagon(*across_flats_mm),
                     policy,
                 )?;
                 result = screw_boolean(
@@ -387,7 +476,7 @@ pub(crate) fn build(
                     policy,
                 )?;
             }
-            if shank_length > 0. {
+            if !new_profile && shank_length > 0. {
                 let shank = screw_prism(
                     feature,
                     "shank",
@@ -416,6 +505,20 @@ pub(crate) fn build(
             .map_err(|e| error(Some(feature), e))?;
             result = screw_boolean(feature, &result, &threaded, BooleanOperation::Union, policy)
                 .map_err(|e| error(Some(feature), format!("Screw thread fuse: {e}")))?;
+            // New recesses may legitimately reach through a countersunk head
+            // into its neck. Cut the complete head/shank/thread body so a later
+            // union cannot refill the retained cavity.
+            if !early_socket
+                && let Some(cutter) = screw_profiles::cutter(feature, &head, &drive, policy)?
+            {
+                result = screw_boolean(
+                    feature,
+                    &result,
+                    &cutter,
+                    BooleanOperation::Subtract,
+                    policy,
+                )?;
+            }
             let topology = result
                 .topology_snapshot(feature, 0)
                 .map_err(|e| error(Some(feature), e))?;
@@ -804,5 +907,112 @@ mod screw_factory_tests {
             *value = f64::from_bits(value.to_bits() + 1);
             assert!(screw_key(&resolved, p).unwrap() != base);
         }
+    }
+}
+
+#[cfg(test)]
+mod screw_profile_shared_thread_tests {
+    use super::*;
+    use multicad_core::{
+        document::Document,
+        model::{self, BodyOutput, MechanicalPartParameters, ScrewDrive, ScrewHead, length},
+        parameters,
+    };
+    #[test]
+    fn new_screw_profile_booleans_and_step_preserve_shared_native_thread_factory_source() {
+        SCREWS.with(|cache| *cache.borrow_mut() = ScrewFactory::default());
+        let doc = Document::new("Shared thread source").unwrap();
+        let evaluated = parameters::evaluate(&doc).unwrap();
+        let mut p = model::default_machine_screw();
+        let MechanicalPartParameters::MachineScrew {
+            underhead_length,
+            head,
+            drive,
+            thread,
+            ..
+        } = &mut p
+        else {
+            unreachable!()
+        };
+        *underhead_length = Some(length(6.));
+        thread.length = length(3.);
+        *head = ScrewHead::Pan {
+            profile: Box::new(model::CrownedScrewHeadParameters {
+                diameter: length(5.6),
+                height: length(2.4),
+                crown_radius: length(5.),
+                top_land_diameter: length(4.1),
+                neck_radius: length(0.1),
+            }),
+        };
+        *drive = ScrewDrive::Hexalobular {
+            profile: Box::new(model::HexalobularDriveParameters {
+                major_diameter: length(2.8),
+                minor_diameter: length(2.05),
+                outer_lobe_radius: length(0.28),
+                depth: length(1.1),
+                bottom_angle: model::angle(120.),
+            }),
+        };
+        let resolved = thread.resolve(&evaluated, ThreadMode::NewExternal).unwrap();
+        let spec = multicad_kernel::HelicalThread {
+            major_radius_mm: resolved.major_radius_mm,
+            pitch_mm: resolved.pitch_mm,
+            length_mm: resolved.length_mm,
+            depth_mm: resolved.profile.depth_mm,
+            crest_width_mm: resolved.profile.crest_width_mm,
+            lower_flank_deg: resolved.profile.lower_flank_deg,
+            upper_flank_deg: resolved.profile.upper_flank_deg,
+            radial_taper: resolved.profile.radial_taper,
+            starts: resolved.starts,
+            left_hand: false,
+        };
+        let owner = EntityId::new();
+        let policy = GeometryPolicy::default();
+        let retained = Solid::helical_thread_named(spec, owner, policy).unwrap();
+        let topology = retained.topology_snapshot(owner, 0).unwrap();
+        let volume = retained.volume_mm3().unwrap();
+        let bounds = retained.bounds().unwrap();
+        let faces = retained.faces().unwrap();
+        let bytes = retained.to_brep().unwrap();
+        let before = multicad_kernel::thread_factory_stats().unwrap();
+        let feature = EntityId::new();
+        let source = MechanicalPartDefinition {
+            output: BodyOutput {
+                body: EntityId::new(),
+            },
+            parameters: p,
+            provenance: None,
+        };
+        let completed = build(feature, &source, &evaluated, policy).unwrap();
+        assert!(
+            multicad_kernel::thread_factory_stats().unwrap().hits > before.hits,
+            "Actual construction must exercise a shared thread factory hit"
+        );
+        assert_eq!(
+            retained.to_brep().unwrap(),
+            bytes,
+            "Constructing a new head/recess must not modify the cached thread's native source"
+        );
+        let dir = tempfile::tempdir().unwrap();
+        completed
+            .write_step(&dir.path().join("profile.step"))
+            .unwrap();
+        assert_eq!(
+            retained.to_brep().unwrap(),
+            bytes,
+            "Exporting the completed screw must not modify its shared thread source"
+        );
+        assert_eq!(retained.volume_mm3().unwrap(), volume);
+        assert_eq!(retained.bounds().unwrap(), bounds);
+        assert_eq!(retained.faces().unwrap(), faces);
+        assert_eq!(retained.topology_snapshot(owner, 0).unwrap(), topology);
+        let own = completed.topology_snapshot(feature, 0).unwrap();
+        assert!(
+            own.elements
+                .iter()
+                .filter(|e| e.key.kind == multicad_core::references::TopologyKind::Face)
+                .all(|e| !e.origins.is_empty() && e.origins.iter().all(|o| o.source == feature))
+        );
     }
 }

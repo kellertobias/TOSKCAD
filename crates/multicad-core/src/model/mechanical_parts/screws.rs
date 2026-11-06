@@ -49,6 +49,18 @@ pub fn screw_length_source<'a>(
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ScrewHead {
+    Pan {
+        #[serde(flatten)]
+        profile: Box<CrownedScrewHeadParameters>,
+    },
+    Button {
+        #[serde(flatten)]
+        profile: Box<CrownedScrewHeadParameters>,
+    },
+    Countersunk {
+        #[serde(flatten)]
+        profile: Box<CountersunkScrewHeadParameters>,
+    },
     SocketCap {
         diameter: Dimension,
         height: Dimension,
@@ -62,6 +74,13 @@ pub enum ScrewHead {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ScrewDrive {
+    Hexalobular {
+        #[serde(flatten)]
+        profile: Box<HexalobularDriveParameters>,
+    },
+    PhillipsH {
+        profile: Box<PhillipsHParameters>,
+    },
     /// A flat-ended six-sided recess. Depth is measured from the head top;
     /// mouth treatments and conical tooling bottoms are not modeled.
     HexSocket {
@@ -73,6 +92,27 @@ pub enum ScrewDrive {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum ResolvedScrewHead {
+    Pan {
+        radius_mm: f64,
+        height_mm: f64,
+        crown_radius_mm: f64,
+        top_land_radius_mm: f64,
+        neck_radius_mm: f64,
+    },
+    Button {
+        radius_mm: f64,
+        height_mm: f64,
+        crown_radius_mm: f64,
+        top_land_radius_mm: f64,
+        neck_radius_mm: f64,
+    },
+    Countersunk {
+        radius_mm: f64,
+        height_mm: f64,
+        included_angle_deg: f64,
+        edge_chamfer_mm: f64,
+        neck_radius_mm: f64,
+    },
     SocketCap {
         radius_mm: f64,
         height_mm: f64,
@@ -85,12 +125,19 @@ pub enum ResolvedScrewHead {
 impl ResolvedScrewHead {
     pub fn height_mm(&self) -> f64 {
         match self {
-            Self::SocketCap { height_mm, .. } | Self::ExternalHex { height_mm, .. } => *height_mm,
+            Self::SocketCap { height_mm, .. }
+            | Self::ExternalHex { height_mm, .. }
+            | Self::Pan { height_mm, .. }
+            | Self::Button { height_mm, .. }
+            | Self::Countersunk { height_mm, .. } => *height_mm,
         }
     }
     pub fn minimum_radius_mm(&self) -> f64 {
         match self {
-            Self::SocketCap { radius_mm, .. } => *radius_mm,
+            Self::SocketCap { radius_mm, .. }
+            | Self::Pan { radius_mm, .. }
+            | Self::Button { radius_mm, .. }
+            | Self::Countersunk { radius_mm, .. } => *radius_mm,
             Self::ExternalHex {
                 across_flats_mm, ..
             } => across_flats_mm / 2.,
@@ -98,7 +145,10 @@ impl ResolvedScrewHead {
     }
     pub fn maximum_radius_mm(&self) -> f64 {
         match self {
-            Self::SocketCap { radius_mm, .. } => *radius_mm,
+            Self::SocketCap { radius_mm, .. }
+            | Self::Pan { radius_mm, .. }
+            | Self::Button { radius_mm, .. }
+            | Self::Countersunk { radius_mm, .. } => *radius_mm,
             Self::ExternalHex {
                 across_flats_mm, ..
             } => across_flats_mm / 3_f64.sqrt(),
@@ -108,7 +158,20 @@ impl ResolvedScrewHead {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum ResolvedScrewDrive {
-    HexSocket { across_flats_mm: f64, depth_mm: f64 },
+    Hexalobular {
+        major_radius_mm: f64,
+        minor_radius_mm: f64,
+        outer_lobe_radius_mm: f64,
+        depth_mm: f64,
+        bottom_angle_deg: f64,
+    },
+    PhillipsH {
+        profile: Box<ResolvedPhillipsHParameters>,
+    },
+    HexSocket {
+        across_flats_mm: f64,
+        depth_mm: f64,
+    },
     ExternalHex,
 }
 
@@ -120,6 +183,20 @@ impl ScrewHead {
                 across_flats,
                 height,
             } => vec![across_flats, height],
+            Self::Pan { profile } | Self::Button { profile } => vec![
+                &profile.diameter,
+                &profile.height,
+                &profile.crown_radius,
+                &profile.top_land_diameter,
+                &profile.neck_radius,
+            ],
+            Self::Countersunk { profile } => vec![
+                &profile.diameter,
+                &profile.height,
+                &profile.included_angle,
+                &profile.edge_chamfer,
+                &profile.neck_radius,
+            ],
         }
     }
     pub(super) fn resolve(
@@ -139,6 +216,27 @@ impl ScrewHead {
                 across_flats_mm: mm(across_flats)?,
                 height_mm: mm(height)?,
             },
+            Self::Pan { profile } => ResolvedScrewHead::Pan {
+                radius_mm: mm(&profile.diameter)? / 2.,
+                height_mm: mm(&profile.height)?,
+                crown_radius_mm: mm(&profile.crown_radius)?,
+                top_land_radius_mm: mm(&profile.top_land_diameter)? / 2.,
+                neck_radius_mm: mm(&profile.neck_radius)?,
+            },
+            Self::Button { profile } => ResolvedScrewHead::Button {
+                radius_mm: mm(&profile.diameter)? / 2.,
+                height_mm: mm(&profile.height)?,
+                crown_radius_mm: mm(&profile.crown_radius)?,
+                top_land_radius_mm: mm(&profile.top_land_diameter)? / 2.,
+                neck_radius_mm: mm(&profile.neck_radius)?,
+            },
+            Self::Countersunk { profile } => ResolvedScrewHead::Countersunk {
+                radius_mm: mm(&profile.diameter)? / 2.,
+                height_mm: mm(&profile.height)?,
+                included_angle_deg: number(&profile.included_angle, Unit::Degree, evaluated)?,
+                edge_chamfer_mm: mm(&profile.edge_chamfer)?,
+                neck_radius_mm: mm(&profile.neck_radius)?,
+            },
         })
     }
 }
@@ -150,21 +248,40 @@ impl ScrewDrive {
                 depth,
             } => vec![across_flats, depth],
             Self::ExternalHex => vec![],
+            Self::Hexalobular { profile } => vec![
+                &profile.major_diameter,
+                &profile.minor_diameter,
+                &profile.outer_lobe_radius,
+                &profile.depth,
+                &profile.bottom_angle,
+            ],
+            Self::PhillipsH { profile } => profile.fields().into_iter().map(|(d, _)| d).collect(),
         }
     }
     pub(super) fn resolve(
         &self,
         evaluated: &EvaluatedParameters,
     ) -> Result<ResolvedScrewDrive, DocumentError> {
+        let mm = |d| number(d, Unit::Millimeter, evaluated);
         Ok(match self {
             Self::HexSocket {
                 across_flats,
                 depth,
             } => ResolvedScrewDrive::HexSocket {
-                across_flats_mm: number(across_flats, Unit::Millimeter, evaluated)?,
-                depth_mm: number(depth, Unit::Millimeter, evaluated)?,
+                across_flats_mm: mm(across_flats)?,
+                depth_mm: mm(depth)?,
             },
             Self::ExternalHex => ResolvedScrewDrive::ExternalHex,
+            Self::Hexalobular { profile } => ResolvedScrewDrive::Hexalobular {
+                major_radius_mm: mm(&profile.major_diameter)? / 2.,
+                minor_radius_mm: mm(&profile.minor_diameter)? / 2.,
+                outer_lobe_radius_mm: mm(&profile.outer_lobe_radius)?,
+                depth_mm: mm(&profile.depth)?,
+                bottom_angle_deg: number(&profile.bottom_angle, Unit::Degree, evaluated)?,
+            },
+            Self::PhillipsH { profile } => ResolvedScrewDrive::PhillipsH {
+                profile: Box::new(profile.resolve(evaluated)?),
+            },
         })
     }
 }

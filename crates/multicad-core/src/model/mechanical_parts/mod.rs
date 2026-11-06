@@ -3,6 +3,7 @@ mod cards;
 mod hexalobular;
 mod prepare;
 mod reference;
+mod screw_profiles;
 mod screws;
 use super::{
     BodyOutput, PrimitiveFrame, ResolvedThread, ThreadMode, ThreadParameters,
@@ -18,6 +19,7 @@ use crate::{
 pub use cards::*;
 pub use hexalobular::*;
 pub use prepare::*;
+pub use screw_profiles::*;
 pub use screws::*;
 use serde::{Deserialize, Serialize};
 
@@ -167,13 +169,11 @@ impl MechanicalPartParameters {
                 thread,
             } => {
                 let (_, length) = screw_length_source(underhead_length, length_input)?;
-                for d in [length, shank_diameter]
-                    .into_iter()
-                    .chain(head.dimensions())
-                    .chain(drive.dimensions())
-                {
+                for d in [length, shank_diameter] {
                     check_dimension(d, Unit::Millimeter)?;
                 }
+                head.validate_dimensions()?;
+                drive.validate_dimensions()?;
                 thread.validate_for_mode(ThreadMode::NewExternal)?;
                 if thread.end_treatments.is_some() {
                     return Err(invalid(
@@ -182,8 +182,24 @@ impl MechanicalPartParameters {
                 }
                 if !matches!(
                     (head, drive),
-                    (ScrewHead::SocketCap { .. }, ScrewDrive::HexSocket { .. })
-                        | (ScrewHead::ExternalHex { .. }, ScrewDrive::ExternalHex)
+                    (
+                        ScrewHead::SocketCap { .. },
+                        ScrewDrive::HexSocket { .. } | ScrewDrive::Hexalobular { .. }
+                    ) | (ScrewHead::ExternalHex { .. }, ScrewDrive::ExternalHex)
+                        | (
+                            ScrewHead::Pan { .. },
+                            ScrewDrive::Hexalobular { .. } | ScrewDrive::PhillipsH { .. }
+                        )
+                        | (
+                            ScrewHead::Button { .. },
+                            ScrewDrive::HexSocket { .. } | ScrewDrive::Hexalobular { .. }
+                        )
+                        | (
+                            ScrewHead::Countersunk { .. },
+                            ScrewDrive::HexSocket { .. }
+                                | ScrewDrive::Hexalobular { .. }
+                                | ScrewDrive::PhillipsH { .. }
+                        )
                 ) {
                     return Err(invalid(
                         "Machine screw head and drive forms must be a supported pair",
@@ -263,19 +279,29 @@ impl MechanicalPartParameters {
                         "Machine screw needs a positive head and shank, a wider head, and thread length no greater than underhead length",
                     ));
                 }
-                if let ResolvedScrewDrive::HexSocket {
-                    across_flats_mm,
-                    depth_mm,
-                } = drive
-                    && (across_flats_mm <= 0.
-                        || depth_mm <= 0.
-                        || depth_mm >= head.height_mm()
+                if let (
+                    ResolvedScrewHead::SocketCap { .. },
+                    ResolvedScrewDrive::HexSocket {
+                        across_flats_mm,
+                        depth_mm,
+                    },
+                ) = (&head, &drive)
+                    && (*across_flats_mm <= 0.
+                        || *depth_mm <= 0.
+                        || *depth_mm >= head.height_mm()
                         || across_flats_mm / 3_f64.sqrt() >= head.minimum_radius_mm())
                 {
                     return Err(invalid(
                         "Hex socket needs positive depth, an axial floor and wall around its corners",
                     ));
                 }
+                validate_screw_profile_envelope(
+                    &head,
+                    &drive,
+                    shank_radius_mm,
+                    underhead_length_mm,
+                    &thread,
+                )?;
                 ResolvedMechanicalPart::MachineScrew {
                     underhead_length_mm,
                     authored_length_mm,

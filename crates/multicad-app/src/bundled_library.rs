@@ -214,10 +214,15 @@ mod tests {
     fn bundled_cards_use_checked_projects_and_do_not_evaluate_native_geometry() {
         let directory = fixture();
         let entries = load(directory.path()).unwrap();
-        assert_eq!(entries.len(), 76);
+        assert_eq!(entries.len(), 128);
         let mut bearings = 0;
         let mut washers = BTreeSet::new();
         let mut screws = BTreeSet::new();
+        let mut profile_screws = BTreeSet::new();
+        let profile_curation: serde_json::Value = serde_json::from_slice(include_bytes!(
+            "../../../library/machine-screws-curation.json"
+        ))
+        .unwrap();
         let mut nuts = BTreeSet::new();
         let mut plants = 0;
         let mut equipment = std::collections::BTreeSet::new();
@@ -246,11 +251,45 @@ mod tests {
                 );
                 assert!(facts.material.is_none());
                 assert!(facts.grade.is_none());
-                screws.insert((
-                    (nominal * 1000.) as u32,
-                    (card.dimensions_mm["Underhead length"] * 1000.) as u32,
-                    card.representation.starts_with("Socket-cap head"),
-                ));
+                let series = facts.series.as_deref().unwrap();
+                if let Some(family) =
+                    series.strip_suffix("; source dimensions with explicit engineering profile")
+                {
+                    let source = profile_curation["profile_entries"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .find(|source| {
+                            source["family"] == family
+                                && source["nominal_mm"].as_f64() == Some(nominal)
+                        })
+                        .unwrap();
+                    let length = source["length_mm"].as_f64().unwrap();
+                    let key = if source["length_convention"] == "overall" {
+                        "Overall length"
+                    } else {
+                        "Underhead length"
+                    };
+                    assert_eq!(card.dimensions_mm[key], length);
+                    assert!(card.problem.is_none());
+                    assert!(card.symbol.is_some());
+                    if source["head"]["kind"] == "countersunk"
+                        || source["drive"]["kind"] != "hex_socket"
+                    {
+                        assert!(!card.profile_details.is_empty());
+                    }
+                    assert_eq!(
+                        card.source_url.as_deref(),
+                        source["verification_url"].as_str()
+                    );
+                    assert!(profile_screws.insert((family.to_owned(), (nominal * 1000.) as u32)));
+                } else {
+                    screws.insert((
+                        (nominal * 1000.) as u32,
+                        (card.dimensions_mm["Underhead length"] * 1000.) as u32,
+                        card.representation.starts_with("Socket-cap head"),
+                    ));
+                }
             } else if card.family == "Hex nut" {
                 let facts = card.catalog_facts.as_ref().unwrap();
                 let nominal = facts.nominal_fastener_diameter_mm.unwrap();
@@ -299,6 +338,7 @@ mod tests {
         }
         assert_eq!((bearings, plants), (4, 2));
         assert_eq!(screws.len(), 19);
+        assert_eq!(profile_screws.len(), 52);
         assert_eq!(nuts.len(), 19);
         for (series, expected) in [
             (

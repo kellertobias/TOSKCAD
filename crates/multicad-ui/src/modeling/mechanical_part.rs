@@ -1,4 +1,5 @@
 //! Generic hardware forms share canonical geometry and thread recipe controls.
+mod screw_shape;
 use super::{
     FormStamp, PreviewState,
     dimension::DimensionField,
@@ -9,12 +10,13 @@ use crate::{controls, egui};
 use multicad_core::{
     document::Document,
     model::{
-        self, MechanicalPartParameters, MechanicalPartRequest, PrimitiveFrame, ScrewDrive,
-        ScrewHead, ThreadMode, ThreadParameters, ThreadRepresentation, ThreadRequest, length,
+        self, MechanicalPartParameters, MechanicalPartRequest, PrimitiveFrame, ThreadMode,
+        ThreadParameters, ThreadRepresentation, ThreadRequest, length,
     },
     parameters::EvaluatedParameters,
     sketch::Datum,
 };
+use screw_shape::ScrewShapeForm;
 #[derive(Clone, Copy, PartialEq)]
 enum Kind {
     Washer,
@@ -38,8 +40,8 @@ pub(super) struct MechanicalPartPanel {
     kind: Kind,
     fields: [DimensionField; 3],
     thread: ThreadPanel,
-    screw_fields: [DimensionField; 6],
-    screw_hex: bool,
+    screw_fields: [DimensionField; 2],
+    screw_shape: ScrewShapeForm,
     screw_length_convention: model::ScrewLengthConvention,
     screw_length_typed: bool,
     origin: [DimensionField; 3],
@@ -73,32 +75,12 @@ impl MechanicalPartPanel {
         else {
             unreachable!("canonical screw default")
         };
-        let (head_size, head_height, screw_hex) = match head {
-            ScrewHead::SocketCap { diameter, height } => (diameter, height, false),
-            ScrewHead::ExternalHex {
-                across_flats,
-                height,
-            } => (across_flats, height, true),
-        };
-        let (socket_size, socket_depth) = match drive {
-            ScrewDrive::HexSocket {
-                across_flats,
-                depth,
-            } => (across_flats.clone(), depth.clone()),
-            ScrewDrive::ExternalHex => (length(2.55), length(1.3)),
-        };
         let (screw_length_convention, screw_length) =
             model::screw_length_source(underhead_length, length_input)
                 .map_err(|e| e.to_string())?;
         let screw_length_typed = length_input.is_some();
-        let screw_dimensions = [
-            screw_length.clone(),
-            shank_diameter.clone(),
-            head_size.clone(),
-            head_height.clone(),
-            socket_size,
-            socket_depth,
-        ];
+        let screw_dimensions = [screw_length.clone(), shank_diameter.clone()];
+        let screw_shape = ScrewShapeForm::new(head, drive)?;
         let (kind, dimensions, thread) = match &request.parameters {
             MechanicalPartParameters::Washer {
                 bore_diameter,
@@ -146,17 +128,10 @@ impl MechanicalPartPanel {
         let field = |d| DimensionField::from_dimension(d, "mm");
         Ok(Self {
             kind,
-            screw_hex,
+            screw_shape,
             screw_length_convention,
             screw_length_typed,
-            screw_fields: [
-                field(&screw_dimensions[0])?,
-                field(&screw_dimensions[1])?,
-                field(&screw_dimensions[2])?,
-                field(&screw_dimensions[3])?,
-                field(&screw_dimensions[4])?,
-                field(&screw_dimensions[5])?,
-            ],
+            screw_fields: [field(&screw_dimensions[0])?, field(&screw_dimensions[1])?],
             fields: [
                 field(&dimensions[0])?,
                 field(&dimensions[1])?,
@@ -236,8 +211,7 @@ impl MechanicalPartPanel {
             Kind::MachineScrew => {
                 let mut thread = self.thread.recipe(document, ThreadMode::NewExternal)?;
                 thread.frame = frame;
-                let head_size = self.screw_fields[2].resolve(document)?;
-                let height = self.screw_fields[3].resolve(document)?;
+                let (head, drive) = self.screw_shape.resolve(document)?;
                 MechanicalPartParameters::MachineScrew {
                     underhead_length: if self.screw_length_typed {
                         None
@@ -258,25 +232,8 @@ impl MechanicalPartPanel {
                         None
                     },
                     shank_diameter: self.screw_fields[1].resolve(document)?,
-                    head: if self.screw_hex {
-                        ScrewHead::ExternalHex {
-                            across_flats: head_size,
-                            height,
-                        }
-                    } else {
-                        ScrewHead::SocketCap {
-                            diameter: head_size,
-                            height,
-                        }
-                    },
-                    drive: if self.screw_hex {
-                        ScrewDrive::ExternalHex
-                    } else {
-                        ScrewDrive::HexSocket {
-                            across_flats: self.screw_fields[4].resolve(document)?,
-                            depth: self.screw_fields[5].resolve(document)?,
-                        }
-                    },
+                    head,
+                    drive,
                     thread: Box::new(thread),
                 }
             }
@@ -355,6 +312,7 @@ impl MechanicalPartPanel {
             .add_enabled(
                 !self.editing,
                 egui::TextEdit::singleline(&mut self.request.name)
+                    .id(ui.make_persistent_id(("hardware_name", self.request.feature)))
                     .desired_width(ui.available_width()),
             )
             .changed();
@@ -378,20 +336,6 @@ impl MechanicalPartPanel {
             changed = true;
         }
         if self.kind == Kind::MachineScrew {
-            controls::inspector_combo(ui, "screw-head-drive")
-                .selected_text(if self.screw_hex {
-                    "External hex head"
-                } else {
-                    "Socket cap · hex socket"
-                })
-                .show_ui(ui, |ui| {
-                    changed |= ui
-                        .selectable_value(&mut self.screw_hex, false, "Socket cap · hex socket")
-                        .changed();
-                    changed |= ui
-                        .selectable_value(&mut self.screw_hex, true, "External hex head")
-                        .changed();
-                });
             egui::ComboBox::from_id_salt("screw_length_convention")
                 .selected_text(match self.screw_length_convention {
                     model::ScrewLengthConvention::Underhead => "Underhead length",
@@ -411,25 +355,10 @@ impl MechanicalPartPanel {
                         }
                     }
                 });
-            for (index, label) in [
-                "Length",
-                "Shank diameter",
-                if self.screw_hex {
-                    "Head across flats"
-                } else {
-                    "Head diameter"
-                },
-                "Head height",
-                "Socket across flats",
-                "Socket depth",
-            ]
-            .into_iter()
-            .enumerate()
-            {
-                if index < 4 || !self.screw_hex {
-                    changed |= self.screw_fields[index].show(ui, label, "Authored millimeters or a bound project parameter; validation precedes native Preview");
-                }
+            for (index, label) in ["Length", "Shank diameter"].into_iter().enumerate() {
+                changed |= self.screw_fields[index].show_named(ui,(self.request.feature,"screw",index),label,"Retained millimeters or a bound expression; the selected length convention is explicit.");
             }
+            changed |= self.screw_shape.show(ui, self.request.feature);
             ui.small("The head extends behind the neck datum. Overall length includes its actual height; underhead length runs from the neck datum to the tip. Thread length is independent and ends at the tip. Changing convention retains the authored value or expression.");
             changed |=
                 self.thread
@@ -580,7 +509,8 @@ mod length_contract_tests {
         let mut panel =
             MechanicalPartPanel::new(request.clone(), s.parameters().clone(), true).unwrap();
         assert_eq!(panel.request(s.document(), true).unwrap(), request);
-        panel.screw_hex = true;
+        panel.screw_shape.head = screw_shape::HeadKind::ExternalHex;
+        panel.screw_shape.drive = screw_shape::DriveKind::ExternalHex;
         let changed = panel.request(s.document(), true).unwrap();
         assert_eq!(changed.feature, request.feature);
         let MechanicalPartParameters::MachineScrew {

@@ -39,7 +39,10 @@ impl ResolvedMechanicalPart {
                 values.insert("shank_radius_mm", *shank_radius_mm);
                 values.insert("head_height_mm", head.height_mm());
                 match head {
-                    ResolvedScrewHead::SocketCap { radius_mm, .. } => {
+                    ResolvedScrewHead::SocketCap { radius_mm, .. }
+                    | ResolvedScrewHead::Pan { radius_mm, .. }
+                    | ResolvedScrewHead::Button { radius_mm, .. }
+                    | ResolvedScrewHead::Countersunk { radius_mm, .. } => {
                         values.insert("head_radius_mm", *radius_mm);
                     }
                     ResolvedScrewHead::ExternalHex {
@@ -56,6 +59,8 @@ impl ResolvedMechanicalPart {
                     values.insert("socket_across_flats_mm", *across_flats_mm);
                     values.insert("socket_depth_mm", *depth_mm);
                 }
+                values.extend(head.additional_profile_values());
+                values.extend(drive.additional_profile_values());
                 values
             }
             Self::Washer {

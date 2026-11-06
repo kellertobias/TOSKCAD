@@ -53,6 +53,10 @@ struct Curation {
     data_sources: Vec<Source>,
     entries: Vec<Entry>,
     coverage: Vec<Coverage>,
+    profile_revision: String,
+    profile_sources: Vec<super::screw_head_catalog::Source>,
+    profile_entries: Vec<super::screw_head_catalog::Entry>,
+    profile_coverage: Vec<super::screw_head_catalog::Coverage>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -151,6 +155,10 @@ fn curated() -> Result<Curation, Error> {
         || c.verified_on.is_empty()
         || c.scope.is_empty()
         || c.data_sources.len() != 2
+        || c.profile_revision != "1"
+        || c.profile_sources.len() != 11
+        || c.profile_entries.len() != 52
+        || c.profile_coverage.len() != 96
     {
         return Err("Unsupported machine screw curation or incomplete coverage".into());
     }
@@ -320,6 +328,9 @@ fn curated() -> Result<Curation, Error> {
     }
     Ok(c)
 }
+pub(super) fn validate_legacy_curation() -> Result<(), Error> {
+    curated().map(|_| ())
+}
 fn build(c: &Curation, entry: &Entry) -> Result<ProjectFile, Error> {
     let kind = form(entry)?;
     let name = format!(
@@ -425,6 +436,7 @@ fn build(c: &Curation, entry: &Entry) -> Result<ProjectFile, Error> {
             *across_flats = dimension("head_across_flats")?;
             *height = dimension("head_height")?;
         }
+        _ => return Err("Legacy screw curation cannot construct new head variants".into()),
     }
     if let ScrewDrive::HexSocket {
         across_flats,

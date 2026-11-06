@@ -13,11 +13,17 @@ The solids describe external mounting envelopes. They omit races, rolling elemen
 
 ### Metric machine screws
 
-[machine-screws-curation.json](machine-screws-curation.json) owns nineteen discrete dimensional presets: fourteen socket-cap/internal-hex rows and five external-hex rows, with separate underhead/thread lengths and explicit status for all twelve requested nominal diameters. Socket dimensions combine explicit HPC 2025 SKU rows with NBK's ISO 4762:2004 / JIS B 1176:2015 limits. External-hex rows follow the selected Norelem DIN 933 dimensional matrix; the separate dated Nufast drawing supplies only the documented cross-checks. Material and grade remain unspecified.
+[machine-screws-curation.json](machine-screws-curation.json) retains nineteen original dimensional presets: fourteen socket-cap/internal-hex rows and five external-hex rows, with separate underhead/thread lengths and explicit status for all twelve requested nominal diameters. Socket dimensions combine explicit HPC 2025 SKU rows with NBK's ISO 4762:2004 / JIS B 1176:2015 limits. External-hex rows follow the selected Norelem DIN 933 dimensional matrix; the separate dated Nufast drawing supplies only the documented cross-checks. Material and grade remain unspecified.
 
 [Machine-screw source notices](sources/bolts/MACHINE-SCREW-NOTICES.md) record the pinned LGPL-2.1-or-later BOLTS starting data, engineering targets, source discrepancies and geometry omissions. Internal hex drives are six-sided recesses with a disclosed flat floor; outer socket-cap surfaces are unspecified envelopes. DIN M10 across flats remains 17 mm, distinct from the 16 mm ISO 4017 variant. Head/drive dimensions do not establish ISO 965 thread fits, current-standard compliance or manufactured fit.
 
 Underhead length and thread length are independently editable. The canonical mounting frame is at the underhead plane, with the head behind it and the shaft toward the tip. Source reference dimensions remain literal when a configured instance becomes custom; placed definitions retain their pins until an explicit update. Only listed source rows are presets, and unavailable/custom cases do not assert commercial unavailability.
+
+The same curation adds 52 profile presets across eight separately identified families: ISO 14583:2011 pan/hexalobular, ISO 14581:2013 countersunk/hexalobular, ISO 7045:2011 pan/Phillips H, ISO 7046-1:2011 countersunk/Phillips H, ISO 7380-1:2011 button/internal hex, ISO 10642:2004 countersunk/internal hex, three FILA socket-cap/hexalobular product rows and one Accu button/hexalobular product. Historical editions and manufacturer-specific coverage remain explicit. Its 96 family/nominal cells record 52 selected rows and 44 unavailable cases over all twelve requested diameters. Each selected row names its one curated discrete length; other lengths and stock are not implied.
+
+These definitions retain one typed authored length. Countersunk length includes the head; other families use underhead length. Thread extent remains an expression subtracting the head where needed and the retained plain transition. The countersunk frame is a neck construction datum. Each pin exposes a modeled/cosmetic choice independently per instance. Manufacturing refuses cosmetic envelopes.
+
+[Profile source notices](sources/bolts/SCREW-PROFILE-NOTICES.md) distinguish exact source limits and gauge facts from the independently authored native contour. Heads have physical front lands and tangent neck blends. Hexalobular recesses use tangent circular arcs; Phillips H0–H4 retain their inclined-section geometry and separate mouth rounding. These models do not certify complete standard gauges, physical driver engagement or thread fit. Original facts remain attached when dimensional edits create a custom configuration. Source PDFs, artwork and supplier CAD are not bundled.
 
 ### Metric hex nuts
 
@@ -52,13 +58,14 @@ Only the licensed reference dimensions are adapted. No manufacturer CAD, meshes,
 
 ## Generation and revisions
 
-The Rust developer example `mechanical_library` builds the selected hardware family through the same typed transactions and native compiler as the application. Saved previews render those native solids. The default mode reads the washer curation; `--machine-screws` reads the screw curation and `--hex-nuts` reads the nut curation. Each creates dynamic symbol definitions and `.tcd` files with the bounded `library.json` manifest. Projects outside the selected family are checksum-checked and copied byte for byte, preserving their identities, revisions and pins. The output folder must be empty. Required source data, notices and this README accompany the result.
+The Rust developer example `mechanical_library` builds the selected hardware family through the same typed transactions and native compiler as the application. Saved previews render those native solids. The default mode reads the washer curation; `--machine-screws` reads its original screw rows, `--screw-heads` reads the additional profile rows, and `--hex-nuts` reads the nut curation. Each creates dynamic symbol definitions and `.tcd` files with the bounded `library.json` manifest. Projects outside the selected family are checksum-checked and copied byte for byte, preserving their identities, revisions and pins. The output folder must be empty. Required source data, notices and this README accompany the result.
 
 Regenerate into an empty review folder:
 
 ```sh
 cargo run -p multicad-app --example mechanical_library --locked -- /tmp/toskcad-hardware-review
 cargo run -p multicad-app --example mechanical_library --locked -- /tmp/toskcad-screw-review --machine-screws
+cargo run -p multicad-app --example mechanical_library --locked -- /tmp/toskcad-screw-head-review --screw-heads
 cargo run -p multicad-app --example mechanical_library --locked -- /tmp/toskcad-nut-review --hex-nuts
 ```
 
@@ -80,4 +87,4 @@ The 22 `equipment-*.tcd` projects supply owned generic electrical/lighting, heat
 
 The washer and nut curations own their bounded nominal coverage and explicit unavailable/custom cases. The Library also supplies four open bearing mounting envelopes. Sealed/shielded variants, detailed bearing internals and screw families beyond the listed machine-screw matrix remain outside these entries.
 
-The washer, nut and screw curations share the requested nominal-size set and record their own supported choices, with larger sizes extensible through explicit reviewed revisions. Additional head/drive combinations, wood-thread conventions, material variants and fastener-connection integration require their own sourced definitions. Reference metadata does not assert stock availability.
+The washer, nut and screw curations share the requested nominal-size set and record their own supported choices, with larger sizes extensible through explicit reviewed revisions. Head/drive combinations beyond the listed profile matrix, wood-thread conventions, material variants and fastener-connection integration require their own sourced definitions. Reference metadata does not assert stock availability.

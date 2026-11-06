@@ -147,7 +147,7 @@ fn nut_uses_shared_thread_recipe_and_manufacturing_guard_while_bearing_is_explic
         profiles["catalog_status"]
             .as_str()
             .unwrap()
-            .contains("under development")
+            .contains("sourced dimensional references")
     );
 }
 #[test]
@@ -530,6 +530,7 @@ fn both_machine_screw_heads_and_thread_extents_keep_native_drives_history_saved_
             match head {
                 model::ScrewHead::SocketCap { height, .. }
                 | model::ScrewHead::ExternalHex { height, .. } => *height = model::length(3.2),
+                _ => panic!("Legacy fixture must retain its original head form"),
             }
             assert_eq!(
                 updated, expected,

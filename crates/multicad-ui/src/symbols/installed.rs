@@ -134,6 +134,10 @@ impl SearchIndex {
                     card.representation,
                     card.dimensions_mm
                 );
+                for detail in &card.profile_details {
+                    text.push(' ');
+                    text.push_str(detail);
+                }
                 if let Some(facts) = &card.catalog_facts {
                     for value in [&facts.series, &facts.material, &facts.grade]
                         .into_iter()
@@ -195,6 +199,9 @@ fn show_card(ui: &mut egui::Ui, part: &MechanicalPartCard) {
     }
     for (name, value) in &part.dimensions_mm {
         ui.small(format!("{name}: {value} mm"));
+    }
+    for detail in &part.profile_details {
+        ui.small(detail);
     }
     let facts = part.catalog_facts.as_ref();
     if let Some(nominal) = facts.and_then(|f| f.nominal_fastener_diameter_mm) {
@@ -275,6 +282,7 @@ mod tests {
             name: "Detailed hardware".into(),
             family: "Fixture".into(),
             symbol: Some((EntityId::new(), "1".into())),
+            profile_details: Vec::new(),
             dimensions_mm: (0..48)
                 .map(|index| (format!("Dimension {index:02}"), index as f64))
                 .collect(),
@@ -351,6 +359,7 @@ mod tests {
             name: "Thin ring".into(),
             family: "Plain washer".into(),
             symbol: Some((EntityId::new(), "1".into())),
+            profile_details: Vec::new(),
             dimensions_mm: [("Bore".into(), 3.2), ("Thickness".into(), 0.5)].into(),
             representation: "Plain annular solid".into(),
             designation: Some("Fixture W".into()),
@@ -395,6 +404,7 @@ mod tests {
                 name: name.into(),
                 family: "Plain washer".into(),
                 symbol: None,
+                profile_details: Vec::new(),
                 dimensions_mm: [("Bore".into(), bore)].into(),
                 representation: "Annular solid".into(),
                 designation: Some(name.into()),
@@ -439,5 +449,51 @@ mod tests {
         assert!(!small.matches(&SearchQuery::new("M30"), ""));
         assert!(small.matches(&SearchQuery::new("washer 3.2"), "Plain washer"));
         assert!(!small.matches(&SearchQuery::new("M3"), "Hex nut"));
+    }
+    #[test]
+    fn configured_profile_details_are_searchable_and_painted_with_angle_units() {
+        let card = MechanicalPartCard {
+            feature: EntityId::new(),
+            name: "Configured pan".into(),
+            family: "Machine screw".into(),
+            symbol: None,
+            dimensions_mm: [("Head diameter".into(), 5.6)].into(),
+            profile_details: vec![
+                "Phillips H1".into(),
+                "Outer corner included angle: 92 degrees".into(),
+            ],
+            representation: "Configured engineering profile".into(),
+            designation: None,
+            source_url: None,
+            catalog_facts: None,
+            matches_reference_dimensions: false,
+            problem: None,
+        };
+        let index = SearchIndex::new("Configured source".into(), vec![card.clone()]);
+        assert!(index.matches(&SearchQuery::new("Phillips H1 92 degrees"), "Machine screw"));
+        let ctx = egui::Context::default();
+        let out = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(350., 1200.),
+                )),
+                ..Default::default()
+            },
+            |ui| show_card(ui, &card),
+        );
+        let text = out
+            .shapes
+            .iter()
+            .filter_map(|s| match &s.shape {
+                egui::Shape::Text(t) => Some(t.galley.job.text.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(text.contains("Head diameter: 5.6 mm"));
+        assert!(text.contains("92 degrees"));
+        assert!(!text.contains("92 mm"));
+        out.drop_without_applying_deltas();
     }
 }

@@ -82,6 +82,27 @@ pub enum ScrewHeadArgs {
         across_flats: Option<Quantity>,
         height: Option<Quantity>,
     },
+    Pan {
+        diameter: Option<Quantity>,
+        height: Option<Quantity>,
+        crown_radius: Option<Quantity>,
+        top_land_diameter: Option<Quantity>,
+        neck_radius: Option<Quantity>,
+    },
+    Button {
+        diameter: Option<Quantity>,
+        height: Option<Quantity>,
+        crown_radius: Option<Quantity>,
+        top_land_diameter: Option<Quantity>,
+        neck_radius: Option<Quantity>,
+    },
+    Countersunk {
+        diameter: Option<Quantity>,
+        height: Option<Quantity>,
+        included_angle: Option<Quantity>,
+        edge_chamfer: Option<Quantity>,
+        neck_radius: Option<Quantity>,
+    },
 }
 #[derive(Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -91,6 +112,50 @@ pub enum ScrewDriveArgs {
         depth: Option<Quantity>,
     },
     ExternalHex,
+    Hexalobular {
+        major_diameter: Option<Quantity>,
+        minor_diameter: Option<Quantity>,
+        outer_lobe_radius: Option<Quantity>,
+        depth: Option<Quantity>,
+        bottom_angle: Option<Quantity>,
+    },
+    PhillipsH {
+        profile: Option<Box<PhillipsHProfileArgs>>,
+    },
+}
+#[derive(Clone, Copy, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum PhillipsHSizeArgs {
+    H0,
+    H1,
+    H2,
+    H3,
+    H4,
+}
+#[derive(Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum PhillipsInnerArgs {
+    Rounded {
+        radius: Option<Quantity>,
+    },
+    ShallowV {
+        angle: Option<Quantity>,
+        e_width: Option<Quantity>,
+    },
+}
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PhillipsHProfileArgs {
+    size: Option<PhillipsHSizeArgs>,
+    mouth_diameter: Option<Quantity>,
+    mouth_radius: Option<Quantity>,
+    b_width: Option<Quantity>,
+    g_diameter: Option<Quantity>,
+    tilt_angle: Option<Quantity>,
+    outer_flank_angle: Option<Quantity>,
+    floor_angle: Option<Quantity>,
+    outer_corner_angle: Option<Quantity>,
+    inner: Option<PhillipsInnerArgs>,
 }
 #[derive(Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -116,8 +181,8 @@ pub enum MechanicalRecipeArgs {
         underhead_length: Option<Quantity>,
         length_input: Option<ScrewLengthInputArgs>,
         shank_diameter: Option<Quantity>,
-        head: Option<ScrewHeadArgs>,
-        drive: Option<ScrewDriveArgs>,
+        head: Option<Box<ScrewHeadArgs>>,
+        drive: Option<Box<ScrewDriveArgs>>,
         /// Thread length is the threaded extent; frame is the underhead datum.
         #[serde(default)]
         thread: Box<ThreadRecipeArgs>,
@@ -156,6 +221,169 @@ pub struct MechanicalPartArgs {
 #[serde(deny_unknown_fields)]
 pub struct InspectMechanicalPartArgs {
     pub feature: String,
+}
+fn patched_dimension(
+    quantity: &Option<Quantity>,
+    old: Option<&multicad_core::constraint_sketch::Dimension>,
+    field: &str,
+    expected: multicad_core::parameters::Unit,
+    document: &Document,
+    evaluated: &EvaluatedParameters,
+) -> Result<multicad_core::constraint_sketch::Dimension, ToolError> {
+    use multicad_core::{
+        constraint_sketch::Dimension,
+        parameters::{BoundExpression, Unit},
+    };
+    let explicit = quantity
+        .as_ref()
+        .map(|q| {
+            let unit = Unit::parse(&q.unit)
+                .filter(|u| u.dimension() == expected.dimension())
+                .ok_or_else(|| {
+                    ToolError::invalid(format!("{field} requires {} units", expected.symbol()))
+                })?;
+            match (q.value, &q.expression) {
+                (Some(value), None) if value.is_finite() => Ok(Dimension::Literal {
+                    value,
+                    unit: q.unit.clone(),
+                }),
+                (None, Some(text)) => {
+                    let expression = BoundExpression::bind(document, text, unit.symbol(), None)?;
+                    expression
+                        .evaluate(evaluated)?
+                        .in_unit(expected)
+                        .ok_or_else(|| {
+                            ToolError::invalid(format!("{field} has incompatible expression units"))
+                        })?;
+                    Ok(Dimension::Expression { expression })
+                }
+                _ => Err(ToolError::invalid(format!(
+                    "{field}: give exactly one finite value or expression"
+                ))),
+            }
+        })
+        .transpose()?;
+    explicit.or_else(|| old.cloned()).ok_or_else(|| {
+        ToolError::invalid(format!(
+            "Changing head/drive kind requires explicit {field}"
+        ))
+    })
+}
+fn phillips_profile_patch(
+    args: &PhillipsHProfileArgs,
+    old: Option<&model::PhillipsHParameters>,
+    document: &Document,
+    evaluated: &EvaluatedParameters,
+) -> Result<model::PhillipsHParameters, ToolError> {
+    let field = |q, previous, label| {
+        patched_dimension(
+            q,
+            previous,
+            label,
+            multicad_core::parameters::Unit::Millimeter,
+            document,
+            evaluated,
+        )
+    };
+    let angle = |q, previous, label| {
+        patched_dimension(
+            q,
+            previous,
+            label,
+            multicad_core::parameters::Unit::Degree,
+            document,
+            evaluated,
+        )
+    };
+    let size = args
+        .size
+        .map(|size| match size {
+            PhillipsHSizeArgs::H0 => model::PhillipsHSize::H0,
+            PhillipsHSizeArgs::H1 => model::PhillipsHSize::H1,
+            PhillipsHSizeArgs::H2 => model::PhillipsHSize::H2,
+            PhillipsHSizeArgs::H3 => model::PhillipsHSize::H3,
+            PhillipsHSizeArgs::H4 => model::PhillipsHSize::H4,
+        })
+        .or_else(|| old.map(|p| p.size))
+        .ok_or_else(|| ToolError::invalid("A new Phillips H drive requires its size"))?;
+    let inner = match &args.inner {
+        None => old
+            .map(|p| p.inner.clone())
+            .ok_or_else(|| ToolError::invalid("A new Phillips H drive requires its inner form"))?,
+        Some(PhillipsInnerArgs::Rounded { radius }) => model::PhillipsInnerForm::Rounded {
+            radius: field(
+                radius,
+                old.and_then(|p| {
+                    if let model::PhillipsInnerForm::Rounded { radius } = &p.inner {
+                        Some(radius)
+                    } else {
+                        None
+                    }
+                }),
+                "Phillips inner radius",
+            )?,
+        },
+        Some(PhillipsInnerArgs::ShallowV { angle, e_width }) => {
+            let previous = old.and_then(|p| {
+                if let model::PhillipsInnerForm::ShallowV { angle, e_width } = &p.inner {
+                    Some((angle, e_width))
+                } else {
+                    None
+                }
+            });
+            model::PhillipsInnerForm::ShallowV {
+                angle: patched_dimension(
+                    angle,
+                    previous.map(|v| v.0),
+                    "Phillips inner angle",
+                    multicad_core::parameters::Unit::Degree,
+                    document,
+                    evaluated,
+                )?,
+                e_width: field(e_width, previous.map(|v| v.1), "Phillips e width")?,
+            }
+        }
+    };
+    Ok(model::PhillipsHParameters {
+        size,
+        inner,
+        mouth_diameter: field(
+            &args.mouth_diameter,
+            old.map(|p| &p.mouth_diameter),
+            "Phillips mouth diameter",
+        )?,
+        mouth_radius: field(
+            &args.mouth_radius,
+            old.map(|p| &p.mouth_radius),
+            "Phillips mouth radius",
+        )?,
+        b_width: field(&args.b_width, old.map(|p| &p.b_width), "Phillips b width")?,
+        g_diameter: field(
+            &args.g_diameter,
+            old.map(|p| &p.g_diameter),
+            "Phillips g diameter",
+        )?,
+        tilt_angle: angle(
+            &args.tilt_angle,
+            old.map(|p| &p.tilt_angle),
+            "Phillips section tilt",
+        )?,
+        outer_flank_angle: angle(
+            &args.outer_flank_angle,
+            old.map(|p| &p.outer_flank_angle),
+            "Phillips outer flank angle",
+        )?,
+        floor_angle: angle(
+            &args.floor_angle,
+            old.map(|p| &p.floor_angle),
+            "Phillips floor angle",
+        )?,
+        outer_corner_angle: angle(
+            &args.outer_corner_angle,
+            old.map(|p| &p.outer_corner_angle),
+            "Phillips outer corner angle",
+        )?,
+    })
 }
 fn parameters(
     args: &MechanicalRecipeArgs,
@@ -310,7 +538,7 @@ fn parameters(
                         ))
                     })
             };
-            let head = match head {
+            let head = match head.as_deref() {
                 None => old_head.clone(),
                 Some(ScrewHeadArgs::SocketCap { diameter, height }) => {
                     let old = if let ScrewHead::SocketCap { diameter, height } = old_head {
@@ -345,8 +573,131 @@ fn parameters(
                         height: required(height, old.map(|v| v.1), "head height")?,
                     }
                 }
+                Some(ScrewHeadArgs::Pan {
+                    diameter,
+                    height,
+                    crown_radius,
+                    top_land_diameter,
+                    neck_radius,
+                }) => {
+                    let old = if let ScrewHead::Pan { profile } = old_head {
+                        Some([
+                            &profile.diameter,
+                            &profile.height,
+                            &profile.crown_radius,
+                            &profile.top_land_diameter,
+                            &profile.neck_radius,
+                        ])
+                    } else {
+                        None
+                    };
+                    ScrewHead::Pan {
+                        profile: Box::new(model::CrownedScrewHeadParameters {
+                            diameter: required(diameter, old.map(|v| v[0]), "head diameter")?,
+                            height: required(height, old.map(|v| v[1]), "head height")?,
+                            crown_radius: required(
+                                crown_radius,
+                                old.map(|v| v[2]),
+                                "head crown_radius",
+                            )?,
+                            top_land_diameter: required(
+                                top_land_diameter,
+                                old.map(|v| v[3]),
+                                "head top_land_diameter",
+                            )?,
+                            neck_radius: required(
+                                neck_radius,
+                                old.map(|v| v[4]),
+                                "head neck_radius",
+                            )?,
+                        }),
+                    }
+                }
+                Some(ScrewHeadArgs::Button {
+                    diameter,
+                    height,
+                    crown_radius,
+                    top_land_diameter,
+                    neck_radius,
+                }) => {
+                    let old = if let ScrewHead::Button { profile } = old_head {
+                        Some([
+                            &profile.diameter,
+                            &profile.height,
+                            &profile.crown_radius,
+                            &profile.top_land_diameter,
+                            &profile.neck_radius,
+                        ])
+                    } else {
+                        None
+                    };
+                    ScrewHead::Button {
+                        profile: Box::new(model::CrownedScrewHeadParameters {
+                            diameter: required(diameter, old.map(|v| v[0]), "head diameter")?,
+                            height: required(height, old.map(|v| v[1]), "head height")?,
+                            crown_radius: required(
+                                crown_radius,
+                                old.map(|v| v[2]),
+                                "head crown_radius",
+                            )?,
+                            top_land_diameter: required(
+                                top_land_diameter,
+                                old.map(|v| v[3]),
+                                "head top_land_diameter",
+                            )?,
+                            neck_radius: required(
+                                neck_radius,
+                                old.map(|v| v[4]),
+                                "head neck_radius",
+                            )?,
+                        }),
+                    }
+                }
+                Some(ScrewHeadArgs::Countersunk {
+                    diameter,
+                    height,
+                    included_angle,
+                    edge_chamfer,
+                    neck_radius,
+                }) => {
+                    let old = if let ScrewHead::Countersunk { profile } = old_head {
+                        Some([
+                            &profile.diameter,
+                            &profile.height,
+                            &profile.included_angle,
+                            &profile.edge_chamfer,
+                            &profile.neck_radius,
+                        ])
+                    } else {
+                        None
+                    };
+                    ScrewHead::Countersunk {
+                        profile: Box::new(model::CountersunkScrewHeadParameters {
+                            diameter: required(diameter, old.map(|v| v[0]), "head diameter")?,
+                            height: required(height, old.map(|v| v[1]), "head height")?,
+                            included_angle: patched_dimension(
+                                included_angle,
+                                old.map(|v| v[2]),
+                                "head included_angle",
+                                multicad_core::parameters::Unit::Degree,
+                                doc,
+                                eval,
+                            )?,
+                            edge_chamfer: required(
+                                edge_chamfer,
+                                old.map(|v| v[3]),
+                                "head edge_chamfer",
+                            )?,
+                            neck_radius: required(
+                                neck_radius,
+                                old.map(|v| v[4]),
+                                "head neck_radius",
+                            )?,
+                        }),
+                    }
+                }
             };
-            let drive = match drive {
+            let drive = match drive.as_deref() {
                 None => old_drive.clone(),
                 Some(ScrewDriveArgs::ExternalHex) => ScrewDrive::ExternalHex,
                 Some(ScrewDriveArgs::HexSocket {
@@ -371,6 +722,71 @@ fn parameters(
                         depth: required(depth, old.map(|v| v.1), "socket depth")?,
                     }
                 }
+                Some(ScrewDriveArgs::Hexalobular {
+                    major_diameter,
+                    minor_diameter,
+                    outer_lobe_radius,
+                    depth,
+                    bottom_angle,
+                }) => {
+                    let old = if let ScrewDrive::Hexalobular { profile } = old_drive {
+                        Some([
+                            &profile.major_diameter,
+                            &profile.minor_diameter,
+                            &profile.outer_lobe_radius,
+                            &profile.depth,
+                            &profile.bottom_angle,
+                        ])
+                    } else {
+                        None
+                    };
+                    ScrewDrive::Hexalobular {
+                        profile: Box::new(model::HexalobularDriveParameters {
+                            major_diameter: required(
+                                major_diameter,
+                                old.map(|v| v[0]),
+                                "hexalobular major_diameter",
+                            )?,
+                            minor_diameter: required(
+                                minor_diameter,
+                                old.map(|v| v[1]),
+                                "hexalobular minor_diameter",
+                            )?,
+                            outer_lobe_radius: required(
+                                outer_lobe_radius,
+                                old.map(|v| v[2]),
+                                "hexalobular outer_lobe_radius",
+                            )?,
+                            depth: required(depth, old.map(|v| v[3]), "hexalobular depth")?,
+                            bottom_angle: patched_dimension(
+                                bottom_angle,
+                                old.map(|v| v[4]),
+                                "hexalobular bottom_angle",
+                                multicad_core::parameters::Unit::Degree,
+                                doc,
+                                eval,
+                            )?,
+                        }),
+                    }
+                }
+                Some(ScrewDriveArgs::PhillipsH { profile }) => {
+                    let old = if let ScrewDrive::PhillipsH { profile } = old_drive {
+                        Some(profile.as_ref())
+                    } else {
+                        None
+                    };
+                    let profile = match profile {
+                        Some(args) => phillips_profile_patch(args, old, doc, eval)?,
+                        None => old.cloned().ok_or_else(|| {
+                            ToolError::invalid(
+                                "A new Phillips H drive requires an explicit profile",
+                            )
+                        })?,
+                    };
+                    ScrewDrive::PhillipsH {
+                        profile: Box::new(profile),
+                    }
+                }
             };
             MechanicalPartParameters::MachineScrew {
                 underhead_length: legacy_length,
@@ -386,9 +802,17 @@ fn parameters(
     Ok(p)
 }
 pub(super) fn mechanical_part_profiles(_: &dyn Host, _: &Request, _: NoArgs) -> ToolResult {
-    Ok(
-        json!({"supported_geometry":["washer","hex_nut","bearing_envelope","machine_screw"],"catalog_status":"Generic parametric geometry only; verified standard-parts catalog is under development","nut_thread":"Uses the shared thread recipe. thread.length is nut height and thread frame locates its body; creation defaults to a cosmetic envelope. Select modeled for manufacturing export.","machine_screw":"Socket-cap/internal-hex or external-hex head and drive. underhead_length retains its legacy neck-to-tip meaning. Alternatively length_input selects underhead or overall with one typed value; overall includes actual head height. Supplying either length replaces the other source; supplying both refuses; omission preserves the source expression and convention. thread.length is threaded extent ending at the tip. thread.frame is the neck datum; head extends opposite its normal. Modeled uses the shared builder; cosmetic manufacturing export is refused. Head/recess/runout simplifications and nominal-basic metric profile do not imply standards or fit certification.","bearing":"External mounting envelope only; races, rolling elements and seals are not modeled","limits":"No standard compliance, stock availability, fit, strength or lifetime certification"}),
-    )
+    Ok(json!({
+        "supported_geometry": ["washer", "hex_nut", "bearing_envelope", "machine_screw"],
+        "head_forms": ["socket_cap", "external_hex", "pan", "button", "countersunk"],
+        "drive_forms": ["hex_socket", "external_hex", "hexalobular", "phillips_h"],
+        "catalog_status": "Library supplies sourced dimensional references. Generic configurations and configured deviations do not establish supplier stock or fit certification.",
+        "nut_thread": "Generic nut creation defaults to a cosmetic envelope. Library sources retain their own thread representation input. Select modeled for manufacturing export.",
+        "machine_screw": "underhead_length retains its legacy neck-to-tip meaning. Alternatively length_input selects underhead or overall with one typed value; overall includes the physical head-top height. Supplying either length replaces the other source; supplying both refuses; omission preserves the exact source expression and convention. thread.length is the threaded extent ending at the tip. thread.frame is the neck/construction datum; it is not a flat bearing seat for countersunk heads. Omitted head/drive inputs retain their source; kind changes need explicit dimensions. Cosmetic manufacturing export is refused.",
+        "recess_profiles": "Hexalobular uses twelve tangent circular arcs, an explicit functional depth and a separately selected conical bottom. Phillips H retains actual inclined-section dimensions, the H0 rounded or H1-H4 shallow-V inner form, and the mouth roundover. Product gauge penetration is distinct from removed depth.",
+        "bearing": "External mounting envelope only; races, rolling elements and seals are not modeled",
+        "limits": "Engineering profile targets and nominal-basic threads do not certify gauge acceptance, physical fit, material, strength or current-standard compliance. Inspect retained source facts and configured status separately."
+    }))
 }
 fn frame_value(frame: multicad_core::sketch::Frame) -> Value {
     json!({"origin_mm":frame.origin,"axis_u":frame.u,"axis_v":frame.v,"axis_n":frame.n})
@@ -445,6 +869,33 @@ pub(super) fn inspect_mechanical_part(
                 } => {
                     json!({"kind":"external_hex","across_flats_mm":across_flats_mm,"height_mm":height_mm})
                 }
+                model::ResolvedScrewHead::Pan {
+                    radius_mm,
+                    height_mm,
+                    crown_radius_mm,
+                    top_land_radius_mm,
+                    neck_radius_mm,
+                } => {
+                    json!({"kind":"pan","diameter_mm":2.*radius_mm,"height_mm":height_mm,"crown_radius_mm":crown_radius_mm,"top_land_diameter_mm":2.*top_land_radius_mm,"neck_radius_mm":neck_radius_mm})
+                }
+                model::ResolvedScrewHead::Button {
+                    radius_mm,
+                    height_mm,
+                    crown_radius_mm,
+                    top_land_radius_mm,
+                    neck_radius_mm,
+                } => {
+                    json!({"kind":"button","diameter_mm":2.*radius_mm,"height_mm":height_mm,"crown_radius_mm":crown_radius_mm,"top_land_diameter_mm":2.*top_land_radius_mm,"neck_radius_mm":neck_radius_mm})
+                }
+                model::ResolvedScrewHead::Countersunk {
+                    radius_mm,
+                    height_mm,
+                    included_angle_deg,
+                    edge_chamfer_mm,
+                    neck_radius_mm,
+                } => {
+                    json!({"kind":"countersunk","diameter_mm":2.*radius_mm,"height_mm":height_mm,"included_angle_deg":included_angle_deg,"edge_chamfer_mm":edge_chamfer_mm,"neck_radius_mm":neck_radius_mm})
+                }
             };
             let drive = match drive {
                 model::ResolvedScrewDrive::HexSocket {
@@ -454,6 +905,29 @@ pub(super) fn inspect_mechanical_part(
                     json!({"kind":"hex_socket","across_flats_mm":across_flats_mm,"depth_mm":depth_mm})
                 }
                 model::ResolvedScrewDrive::ExternalHex => json!({"kind":"external_hex"}),
+                model::ResolvedScrewDrive::Hexalobular {
+                    major_radius_mm,
+                    minor_radius_mm,
+                    outer_lobe_radius_mm,
+                    depth_mm,
+                    bottom_angle_deg,
+                } => {
+                    json!({"kind":"hexalobular","major_diameter_mm":2.*major_radius_mm,"minor_diameter_mm":2.*minor_radius_mm,"outer_lobe_radius_mm":outer_lobe_radius_mm,"depth_mm":depth_mm,"bottom_angle_deg":bottom_angle_deg})
+                }
+                model::ResolvedScrewDrive::PhillipsH { profile } => {
+                    let inner = match profile.inner {
+                        model::ResolvedPhillipsInnerForm::Rounded { radius_mm } => {
+                            json!({"kind":"rounded","radius_mm":radius_mm})
+                        }
+                        model::ResolvedPhillipsInnerForm::ShallowV {
+                            angle_deg,
+                            e_width_mm,
+                        } => {
+                            json!({"kind":"shallow_v","angle_deg":angle_deg,"e_width_mm":e_width_mm})
+                        }
+                    };
+                    json!({"kind":"phillips_h","profile":{"size":profile.size,"mouth_diameter_mm":profile.mouth_diameter_mm,"mouth_radius_mm":profile.mouth_radius_mm,"b_width_mm":profile.b_width_mm,"g_diameter_mm":profile.g_diameter_mm,"tilt_angle_deg":profile.tilt_angle_deg,"outer_flank_angle_deg":profile.outer_flank_angle_deg,"floor_angle_deg":profile.floor_angle_deg,"outer_corner_angle_deg":profile.outer_corner_angle_deg,"inner":inner}})
+                }
             };
             json!({"kind":"machine_screw","underhead_length_mm":underhead_length_mm,"authored_length_mm":authored_length_mm,"length_convention":length_convention,"shank_diameter_mm":2.*shank_radius_mm,"thread_start_mm":underhead_length_mm-thread.length_mm,"thread_length_mm":thread.length_mm,"fully_threaded":underhead_length_mm==thread.length_mm,"head":head,"drive":drive,"nominal_thread_diameter_mm":2.*thread.nominal_major_radius_mm,"nominal_pitch_diameter_mm":thread.nominal_pitch_diameter_mm,"actual_pitch_diameter_mm":thread.actual_pitch_diameter_mm,"fit":thread.fit,"pipe":thread.pipe,"npt":thread.npt,"lead_screw":thread.lead_screw,"buttress":thread.buttress,"round":thread.round,"metric_fit":thread.metric_fit,"radial_taper":thread.profile.radial_taper,"pitch_mm":thread.pitch_mm,"hand":thread.hand,"representation":thread.representation,"frame":frame_value(thread.frame)})
         }
@@ -557,5 +1031,173 @@ mod length_contract_tests {
                 ..
             }
         ));
+    }
+}
+
+#[cfg(test)]
+mod profile_contract_tests {
+    use super::*;
+    use multicad_core::{
+        commands::Session, constraint_sketch::Dimension, parameters::BoundExpression,
+    };
+    fn q(value: f64) -> Value {
+        json!({"value":value,"unit":"mm"})
+    }
+    fn angle(value: f64) -> Value {
+        json!({"value":value,"unit":"deg"})
+    }
+    fn parse(
+        s: &Session,
+        value: Value,
+        old: Option<&MechanicalPartParameters>,
+    ) -> Result<MechanicalPartParameters, ToolError> {
+        let args: MechanicalRecipeArgs =
+            serde_json::from_value(value).map_err(|e| ToolError::invalid(e.to_string()))?;
+        parameters(&args, old, s.document(), s.parameters())
+    }
+    fn pan() -> Value {
+        json!({"kind":"pan","diameter":q(5.6),"height":q(2.4),"crown_radius":q(5.),"top_land_diameter":q(4.),"neck_radius":q(0.1)})
+    }
+    fn lobes() -> Value {
+        json!({"kind":"hexalobular","major_diameter":q(2.8),"minor_diameter":q(2.05),"outer_lobe_radius":q(0.28),"depth":q(1.),"bottom_angle":angle(120.)})
+    }
+    fn h1() -> Value {
+        json!({"kind":"phillips_h","profile":{"size":"h1","mouth_diameter":q(3.),"mouth_radius":q(0.5),"b_width":q(0.955),"g_diameter":q(1.295),"tilt_angle":angle(7.125),"outer_flank_angle":angle(26.625),"floor_angle":angle(27.75),"outer_corner_angle":angle(91.875),"inner":{"kind":"shallow_v","angle":angle(137.875),"e_width":q(0.435)}}})
+    }
+    #[test]
+    fn head_drive_partial_edits_preserve_source_and_require_explicit_new_kind_fields() {
+        let s = Session::new(Document::new("Profile wire").unwrap()).unwrap();
+        let mut source = parse(
+            &s,
+            json!({"kind":"machine_screw","head":pan(),"drive":lobes(),"thread":{"length":q(9.5)}}),
+            None,
+        )
+        .unwrap();
+        let bound = Dimension::Expression {
+            expression: BoundExpression::bind(s.document(), "=5.6", "mm", None).unwrap(),
+        };
+        if let MechanicalPartParameters::MachineScrew {
+            head: ScrewHead::Pan { profile },
+            ..
+        } = &mut source
+        {
+            profile.diameter = bound.clone();
+        } else {
+            panic!()
+        }
+        let unchanged = source.clone();
+        let edited = parse(
+            &s,
+            json!({"kind":"machine_screw","head":{"kind":"pan","height":q(2.5)}}),
+            Some(&source),
+        )
+        .unwrap();
+        let MechanicalPartParameters::MachineScrew {
+            head: ScrewHead::Pan { profile },
+            drive,
+            ..
+        } = &edited
+        else {
+            panic!()
+        };
+        assert_eq!(profile.diameter, bound);
+        assert_eq!(profile.height, length(2.5));
+        let MechanicalPartParameters::MachineScrew {
+            drive: old_drive, ..
+        } = &source
+        else {
+            panic!()
+        };
+        assert_eq!(drive, old_drive);
+        assert!(
+            parse(
+                &s,
+                json!({"kind":"machine_screw","head":{"kind":"button","height":q(2.)}}),
+                Some(&source)
+            )
+            .is_err()
+        );
+        assert!(
+            parse(
+                &s,
+                json!({"kind":"machine_screw","drive":{"kind":"phillips_h"}}),
+                Some(&source)
+            )
+            .is_err()
+        );
+        assert!(parse(&s,json!({"kind":"machine_screw","drive":{"kind":"hexalobular","bottom_angle":q(120.)}}),Some(&source)).is_err());
+        let radians=parse(&s,json!({"kind":"machine_screw","drive":{"kind":"hexalobular","bottom_angle":{"value":std::f64::consts::TAU/3.,"unit":"rad"}}}),Some(&source)).unwrap();
+        let model::ResolvedMechanicalPart::MachineScrew {
+            drive:
+                model::ResolvedScrewDrive::Hexalobular {
+                    bottom_angle_deg, ..
+                },
+            ..
+        } = radians.resolve(s.parameters()).unwrap()
+        else {
+            panic!()
+        };
+        assert!((bottom_angle_deg - 120.).abs() < 1e-10);
+        assert_eq!(
+            source, unchanged,
+            "Partial argument preparation cannot commit or rewrite its input"
+        );
+    }
+    #[test]
+    fn phillips_inner_form_and_overall_length_keep_distinct_typed_authorities() {
+        let s = Session::new(Document::new("Phillips wire").unwrap()).unwrap();
+        let source = parse(
+            &s,
+            json!({"kind":"machine_screw","head":pan(),"drive":h1(),"thread":{"length":q(9.5)}}),
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            parse(&s, json!({"kind":"machine_screw"}), Some(&source)).unwrap(),
+            source
+        );
+        assert!(parse(&s,json!({"kind":"machine_screw","drive":{"kind":"phillips_h","profile":{"size":"h0"}}}),Some(&source)).is_err());
+        let h0=parse(&s,json!({"kind":"machine_screw","drive":{"kind":"phillips_h","profile":{"size":"h0","mouth_diameter":q(1.9),"mouth_radius":q(0.3),"b_width":q(0.595),"g_diameter":q(0.835),"inner":{"kind":"rounded","radius":q(0.25)}}}}),Some(&source)).unwrap();
+        let MechanicalPartParameters::MachineScrew {
+            drive: ScrewDrive::PhillipsH { profile },
+            ..
+        } = &h0
+        else {
+            panic!()
+        };
+        assert!(matches!(
+            profile.inner,
+            model::PhillipsInnerForm::Rounded { .. }
+        ));
+        let wire = serde_json::to_value(&profile.inner).unwrap();
+        assert!(wire.get("angle").is_none() && wire.get("e_width").is_none());
+        assert!(parse(&s,json!({"kind":"machine_screw","drive":{"kind":"phillips_h","profile":{"inner":{"kind":"rounded","radius":q(0.25),"angle":angle(138.)}}}}),Some(&h0)).is_err());
+        let csk = json!({"kind":"countersunk","diameter":q(5.5),"height":q(1.65),"included_angle":angle(90.),"edge_chamfer":q(0.05),"neck_radius":q(0.1)});
+        let overall=parse(&s,json!({"kind":"machine_screw","length_input":{"kind":"overall","value":{"expression":"=13","unit":"mm"}},"head":csk,"drive":lobes(),"thread":{"length":q(9.5)}}),None).unwrap();
+        let raised = parse(
+            &s,
+            json!({"kind":"machine_screw","head":{"kind":"countersunk","height":q(2.05)}}),
+            Some(&overall),
+        )
+        .unwrap();
+        let model::ResolvedMechanicalPart::MachineScrew {
+            authored_length_mm,
+            underhead_length_mm,
+            ..
+        } = raised.resolve(s.parameters()).unwrap()
+        else {
+            panic!()
+        };
+        assert_eq!(authored_length_mm, 13.);
+        assert!((underhead_length_mm - 10.95).abs() < 1e-12);
+        let MechanicalPartParameters::MachineScrew {
+            underhead_length: None,
+            length_input: Some(model::ScrewLengthInput::Overall { value }),
+            ..
+        } = raised
+        else {
+            panic!()
+        };
+        assert_eq!(value.expression().unwrap().text, "=13");
     }
 }

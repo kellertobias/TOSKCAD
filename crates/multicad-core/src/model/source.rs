@@ -1151,6 +1151,26 @@ pub fn required_capabilities(document: &Document) -> BTreeSet<String> {
     }) {
         capabilities.insert(super::MACHINE_SCREW_LENGTH_INPUT_CAPABILITY.into());
     }
+    if saved_feature_matches(document, |type_id, data| {
+        fn new_profile(value: &serde_json::Value) -> bool {
+            match value {
+                serde_json::Value::Object(map) => {
+                    map.get("kind")
+                        .and_then(serde_json::Value::as_str)
+                        .is_some_and(|kind| {
+                            ["pan", "button", "countersunk", "hexalobular", "phillips_h"]
+                                .contains(&kind)
+                        })
+                        || map.values().any(new_profile)
+                }
+                serde_json::Value::Array(values) => values.iter().any(new_profile),
+                _ => false,
+            }
+        }
+        type_id == super::MECHANICAL_PART_TYPE && new_profile(data)
+    }) {
+        capabilities.insert(super::SCREW_PROFILES_CAPABILITY.into());
+    }
     if document.entities().any(|entity|matches!(&entity.data,EntityData::Feature {definition,..} if definition.type_id==super::WALL_TYPE && definition.data.pointer("/layer_placement/junctions").and_then(serde_json::Value::as_array).is_some_and(|j|!j.is_empty()))) {
         capabilities.insert(super::WALL_JUNCTION_CAPABILITY.into());
     }

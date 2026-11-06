@@ -536,16 +536,173 @@ fn painted_new_screw_selection_and_head_drive_choices_use_the_canonical_default(
         }
     }
     assert_eq!(read(&c, &s), model::default_machine_screw());
-    screw_click(&ctx, &mut c, &mut s, "Socket cap · hex socket");
+    screw_click(&ctx, &mut c, &mut s, "Socket cap");
     screw_click(&ctx, &mut c, &mut s, "External hex head");
+    if let ModelForm::MechanicalPart(panel) = c.form.as_ref().unwrap() {
+        assert!(
+            panel.request(s.document(), true).is_err(),
+            "Head selection must not silently convert the drive"
+        );
+    }
+    screw_click(&ctx, &mut c, &mut s, "Hex socket");
+    screw_click(&ctx, &mut c, &mut s, "External hex flats");
     let model::MechanicalPartParameters::MachineScrew { head, drive, .. } = read(&c, &s) else {
         unreachable!()
     };
     assert!(matches!(head, model::ScrewHead::ExternalHex { .. }));
     assert_eq!(drive, model::ScrewDrive::ExternalHex);
     screw_click(&ctx, &mut c, &mut s, "External hex head");
-    screw_click(&ctx, &mut c, &mut s, "Socket cap · hex socket");
+    screw_click(&ctx, &mut c, &mut s, "Socket cap");
+    screw_click(&ctx, &mut c, &mut s, "External hex flats");
+    screw_click(&ctx, &mut c, &mut s, "Hex socket");
     assert_eq!(read(&c, &s), model::default_machine_screw());
     c.cancel();
     assert_eq!(s.document(), &before);
+}
+
+#[test]
+fn painted_phillips_pan_retains_overall_expression_through_native_preview_cancel_apply_and_reopen()
+{
+    use multicad_core::{constraint_sketch::Dimension, parameters::BoundExpression};
+    let mut s = Session::new(Document::new("Configured Phillips pan").unwrap()).unwrap();
+    let before = s.document().clone();
+    let angle = |value| Dimension::Literal {
+        value,
+        unit: "deg".into(),
+    };
+    let mut parameters = model::default_machine_screw();
+    let model::MechanicalPartParameters::MachineScrew {
+        underhead_length,
+        length_input,
+        head,
+        drive,
+        thread,
+        ..
+    } = &mut parameters
+    else {
+        unreachable!()
+    };
+    *underhead_length = None;
+    *length_input = Some(model::ScrewLengthInput::Overall {
+        value: Dimension::Expression {
+            expression: BoundExpression::bind(s.document(), "=14", "mm", None).unwrap(),
+        },
+    });
+    *head = model::ScrewHead::Pan {
+        profile: Box::new(model::CrownedScrewHeadParameters {
+            diameter: length(5.6),
+            height: length(2.4),
+            crown_radius: length(5.),
+            top_land_diameter: length(4.),
+            neck_radius: length(0.1),
+        }),
+    };
+    *drive = model::ScrewDrive::PhillipsH {
+        profile: Box::new(model::PhillipsHParameters {
+            size: model::PhillipsHSize::H1,
+            mouth_diameter: length(3.1),
+            mouth_radius: length(0.5),
+            b_width: length(0.96),
+            g_diameter: length(1.27),
+            tilt_angle: angle(7.),
+            outer_flank_angle: angle(26.5),
+            floor_angle: angle(28.),
+            outer_corner_angle: angle(92.),
+            inner: model::PhillipsInnerForm::ShallowV {
+                angle: angle(138.),
+                e_width: length(0.435),
+            },
+        }),
+    };
+    thread.representation = model::ThreadRepresentation::Modeled;
+    let request = model::MechanicalPartRequest::new("Configured H1 pan", parameters.clone());
+    let mut c = controller();
+    let ctx = egui::Context::default();
+    ctx.enable_accesskit();
+    for cancel in [true, false] {
+        c.begin_form(
+            &s,
+            &Default::default(),
+            Channel::Ui,
+            ModelForm::MechanicalPart(Box::new(
+                MechanicalPartPanel::new(request.clone(), s.parameters().clone(), false).unwrap(),
+            )),
+        )
+        .unwrap();
+        let output = screw_frame(&ctx, &mut c, &mut s, vec![]);
+        let text = output
+            .shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::Shape::Text(t) => Some(t.galley.job.text.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(
+            text.contains("Pan head")
+                && text.contains("Phillips H recess")
+                && text.contains("Outer corner included angle (deg)")
+        );
+        output.drop_without_applying_deltas();
+        screw_click(&ctx, &mut c, &mut s, "Preview");
+        wait(&mut c, &s);
+        assert!(c.can_apply(&s, &Default::default()), "{:?}", c.error());
+        assert_eq!(s.document(), &before);
+        screw_click(
+            &ctx,
+            &mut c,
+            &mut s,
+            if cancel { "Cancel" } else { "Apply" },
+        );
+        if cancel {
+            assert_eq!(s.revision(), 0);
+            assert_eq!(s.document(), &before);
+        } else {
+            assert_eq!(s.revision(), 1);
+            assert_eq!(
+                model::read_mechanical_part(s.document(), request.feature)
+                    .unwrap()
+                    .parameters,
+                parameters
+            );
+        }
+    }
+    let saved = s.document().clone();
+    s.undo(s.revision(), Actor::local(Channel::Ui)).unwrap();
+    assert_eq!(s.document(), &before);
+    s.redo(s.revision(), Actor::local(Channel::Ui)).unwrap();
+    assert_eq!(s.document(), &saved);
+    let mut bytes = vec![];
+    multicad_core::project_file::write(
+        &multicad_core::project_file::ProjectFile::new(saved.clone()).unwrap(),
+        &mut bytes,
+        Default::default(),
+    )
+    .unwrap();
+    let reopened = multicad_core::project_file::read(
+        &mut bytes.as_slice(),
+        Default::default(),
+        &multicad_core::project_file::supported_capabilities(),
+    )
+    .unwrap()
+    .project;
+    let mut independent = Session::new(reopened.document).unwrap();
+    assert_eq!(independent.revision(), 0);
+    c.begin_existing(
+        &independent,
+        &Default::default(),
+        request.feature,
+        Channel::Ui,
+    )
+    .unwrap();
+    screw_click(&ctx, &mut c, &mut independent, "Preview");
+    wait(&mut c, &independent);
+    assert!(
+        c.can_apply(&independent, &Default::default()),
+        "{:?}",
+        c.error()
+    );
+    screw_click(&ctx, &mut c, &mut independent, "Cancel");
+    assert_eq!(independent.document(), &saved);
 }

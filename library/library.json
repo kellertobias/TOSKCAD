@@ -379,6 +379,266 @@
       "document": "cad23400-0000-4000-8000-00000bfb0440",
       "file": "nut-iso4032-2012-m10.tcd",
       "sha256": "3384b64006ae825e8738a2f32e1c319cc826eea257b2e17a4a2c653047e4ea00"
+    },
+    {
+      "document": "cad23600-0000-4000-8000-0946df72bf80",
+      "file": "screw-iso14583-2011-m2-l12.tcd",
+      "sha256": "fe579f405b27f5958d700d7f0c4fc424e057a3af965cc4edf2bcb84e55a39a0a"
+    },
+    {
+      "document": "cad23600-0000-4000-8000-095283ae3380",
+      "file": "screw-iso14583-2011-m2-5-l12.tcd",
+      "sha256": "57341b62f56b1f868521a3e57d55a6f99922d0eafcbabca2aaf76e2a6155ae48"
+    },
+    {
+      "document": "cad23600-0000-4000-8000-095e27e9a780",
+      "file": "screw-iso14583-2011-m3-l12.tcd",
+      "sha256": "ebc982119717f66591344abfadba5a4660f97f8d3fdedde48468c900551cf387"
+    },
+    {
+      "document": "cad23600-0000-4000-8000-0969cc251b80",
+      "file": "screw-iso14583-2011-m3-5-l12.tcd",
+      "sha256": "aed827031b5f3179907df8ab70383cac7b6b26f16ad851bdd65db891ff472e63"
+    },
+    {
+      "document": "cad23600-0000-4000-8000-097570608f80",
+      "file": "screw-iso14583-2011-m4-l12.tcd",
+      "sha256": "b328c6953056ddf104bb0a493527458de70895a5af3a081388041854e4903115"
+    },
+    {
+      "document": "cad23600-0000-4000-8000-098cb8d77780",
+      "file": "screw-iso14583-2011-m5-l12.tcd",
+      "sha256": "e4db9c6867b5fb0f7f51181503fd8e89a0390bd1795958981e8161aaa7d042a0"
+    },
+    {
+      "document": "cad23600-0000-4000-8000-09a4014e5f80",
+      "file": "screw-iso14583-2011-m6-l12.tcd",
+      "sha256": "1bfeb1b49ffbe245551226678b2404222248353799a1539262b8e90aff7f05d8"
+    },
+    {
+      "document": "cad23600-0000-4000-8000-09d2923c2f80",
+      "file": "screw-iso14583-2011-m8-l12.tcd",
+      "sha256": "d246f245729b82dc5e67fe0ba167e2144336d53fe3e134365b637b902e94863f"
+    },
+    {
+      "document": "cad23600-0000-4000-8000-0a012329ff80",
+      "file": "screw-iso14583-2011-m10-l12.tcd",
+      "sha256": "4c67f70a19fc150e78003639fcf3a90e2d618eef4423599a6e84a26b2989479d"
+    },
+    {
+      "document": "cad23600-0000-4000-8000-125f2de55f80",
+      "file": "screw-iso14581-2013-m2-l12.tcd",
+      "sha256": "7f3b3f83f7afbf0890069414844f47291490d81115fe4e257a59b9c7dd55eded"
+    },
+    {
+      "document": "cad23600-0000-4000-8000-126ad220d380",
+      "file": "screw-iso14581-2013-m2-5-l12.tcd",
+      "sha256": "ad677fbb134db5e65fd5950fb194cf5a8365b7f0f8e207a01e56f7461f12b0ad"
+    },
+    {
+      "document": "cad23600-0000-4000-8000-1276765c4780",
+      "file": "screw-iso14581-2013-m3-l12.tcd",
+      "sha256": "461066b385d778ec234078d9b0cac786126ca5ad26320e2213bc9fcc008bca7e"
+    },
+    {
+      "document": "cad23600-0000-4000-8000-12821a97bb80",
+      "file": "screw-iso14581-2013-m3-5-l12.tcd",
+      "sha256": "39cadb3d79f1451bc9e87ab1fb01d97a62ec1ee74b39f7ca7bd17b7e828d9086"
+    },
+    {
+      "document": "cad23600-0000-4000-8000-128dbed32f80",
+      "file": "screw-iso14581-2013-m4-l12.tcd",
+      "sha256": "778df697014772f8701ac5b1d93cd367d8fb014bcbd27d69f33bfdefb504448a"
+    },
+    {
+      "document": "cad23600-0000-4000-8000-12a5074a1780",
+      "file": "screw-iso14581-2013-m5-l12.tcd",
+      "sha256": "b4b8e92551e4373e213c819c9941a56f3c5c692b1df64a326b652f6e2b237578"
+    },
+    {
+      "document": "cad23600-0000-4000-8000-12bc4fc0ff80",
+      "file": "screw-iso14581-2013-m6-l12.tcd",
+      "sha256": "507d638207a9fcb155392be0ac4c7af21286de0f6e7311193c80f5e47d4405e8"
+    },
+    {
+      "document": "cad23600-0000-4000-8000-12eae0aecf80",
+      "file": "screw-iso14581-2013-m8-l12.tcd",
+      "sha256": "f192fd6131fbbfe994132fc2f1ece1c4f6336b7563bfe0bbe5b6dbab0595de0f"
+    },
+    {
+      "document": "cad23600-0000-4000-8000-1319719c9f80",
+      "file": "screw-iso14581-2013-m10-l12.tcd",
+      "sha256": "cd1122bba013b29d6fe91b02c9c12d24636388e70e485a42a607afb7bf00e0fa"
+    },
+    {
+      "document": "cad23600-0000-4000-8000-1b777c57ff80",
+      "file": "screw-iso7045-2011-h-m2-l12.tcd",
+      "sha256": "0fb31f9ee10b335975df841367f3a3e2ac28088f748be53da683597fcdb15e36"
+    },
+    {
+      "document": "cad23600-0000-4000-8000-1b8320937380",
+      "file": "screw-iso7045-2011-h-m2-5-l12.tcd",
+      "sha256": "e1b7fd6be9cd3a21d9a3d1e9c7ddbb10882d5cdfe34c6a5d8a6786d0adecfd3d"
+    },
+    {
+      "document": "cad23600-0000-4000-8000-1b8ec4cee780",
+      "file": "screw-iso7045-2011-h-m3-l12.tcd",
+      "sha256": "31a666a4f013da4b2b52d0db8815873c4b3c3660858d4fba80e3f1ed7046c7ab"
+    },
+    {
+      "document": "cad23600-0000-4000-8000-1b9a690a5b80",
+      "file": "screw-iso7045-2011-h-m3-5-l12.tcd",
+      "sha256": "e847d4bb8f1c5b8e58291a2b4372aafe00430b4e09e45a75b99f3ef831859cf4"
+    },
+    {
+      "document": "cad23600-0000-4000-8000-1ba60d45cf80",
+      "file": "screw-iso7045-2011-h-m4-l12.tcd",
+      "sha256": "973fc531267c8d65957e1a646b8cbb9cd34d7398fea441777cddb9b4e6a4c943"
+    },
+    {
+      "document": "cad23600-0000-4000-8000-1bbd55bcb780",
+      "file": "screw-iso7045-2011-h-m5-l12.tcd",
+      "sha256": "91a7e69e336c36010db2efa47adbc74bb5105f17b4de780ca51810bfbfa233dd"
+    },
+    {
+      "document": "cad23600-0000-4000-8000-1bd49e339f80",
+      "file": "screw-iso7045-2011-h-m6-l12.tcd",
+      "sha256": "43732f16a6be191820f2adb263ffff19463e279926ef335ac7d46c9fa3073251"
+    },
+    {
+      "document": "cad23600-0000-4000-8000-1c032f216f80",
+      "file": "screw-iso7045-2011-h-m8-l12.tcd",
+      "sha256": "f55aa3ab8b74704f9dbe64967e8a2f809f3d20fd4b4f469aa819e8dfcf9ccb6a"
+    },
+    {
+      "document": "cad23600-0000-4000-8000-1c31c00f3f80",
+      "file": "screw-iso7045-2011-h-m10-l12.tcd",
+      "sha256": "09bb1aae9fe8eec46cb1c0c7833708569bc80515126ca1699f9a83af265d6524"
+    },
+    {
+      "document": "cad23600-0000-4000-8000-248fcaca9f80",
+      "file": "screw-iso7046-1-2011-h-m2-l12.tcd",
+      "sha256": "e801336a1e1f7e1306df1eaf6a3d86e49d442834fe80a8ef1316d7b5b9edbe51"
+    },
+    {
+      "document": "cad23600-0000-4000-8000-249b6f061380",
+      "file": "screw-iso7046-1-2011-h-m2-5-l12.tcd",
+      "sha256": "9d102cd0e2c456ab8d4054e9039a1c02cda3f310ef25ac74806c466a4458b7b9"
+    },
+    {
+      "document": "cad23600-0000-4000-8000-24a713418780",
+      "file": "screw-iso7046-1-2011-h-m3-l12.tcd",
+      "sha256": "79d504d58d821fa68e38bd98d76e4c7c6bca13d05849cb121baadc0ce19d90df"
+    },
+    {
+      "document": "cad23600-0000-4000-8000-24b2b77cfb80",
+      "file": "screw-iso7046-1-2011-h-m3-5-l12.tcd",
+      "sha256": "7abecae059540e645a05f434ae4eb717ccedc41bfe05feb3577ad2ac903eb8a9"
+    },
+    {
+      "document": "cad23600-0000-4000-8000-24be5bb86f80",
+      "file": "screw-iso7046-1-2011-h-m4-l12.tcd",
+      "sha256": "a40e737d89bdf1dbef40697f179066f37344cbf5518f21b6a9ce0e43e10123fa"
+    },
+    {
+      "document": "cad23600-0000-4000-8000-24d5a42f5780",
+      "file": "screw-iso7046-1-2011-h-m5-l12.tcd",
+      "sha256": "38dd4519face725ea9c59bd81fa26ee5e10403de83fb98df7dcca2870bc50851"
+    },
+    {
+      "document": "cad23600-0000-4000-8000-24ececa63f80",
+      "file": "screw-iso7046-1-2011-h-m6-l12.tcd",
+      "sha256": "63ba2ee5453be58a71a7280a6bcfc132f943c5cb6a2d78c4b5aefbf9ac2d41b8"
+    },
+    {
+      "document": "cad23600-0000-4000-8000-251b7d940f80",
+      "file": "screw-iso7046-1-2011-h-m8-l12.tcd",
+      "sha256": "ea87e574d7af5e24919c0bd511776fb3fd20f0a75b638d9dce1f2089faa7c542"
+    },
+    {
+      "document": "cad23600-0000-4000-8000-254a0e81df80",
+      "file": "screw-iso7046-1-2011-h-m10-l12.tcd",
+      "sha256": "916403b99508d85884b4749c03552cefddb5f487d7212c25eef37c5bb0808e20"
+    },
+    {
+      "document": "cad23600-0000-4000-8000-2e053b3456c0",
+      "file": "screw-fila-iso14579-m6-l30.tcd",
+      "sha256": "e61538fc9b8dc5cb2992cf58fe7dc490b074401e5c5eed26a76626faaea34b10"
+    },
+    {
+      "document": "cad23600-0000-4000-8000-2e33cc316900",
+      "file": "screw-fila-iso14579-m8-l40.tcd",
+      "sha256": "caea42848e98afeaa53bdd8ca1561703dccbb1d127820fde13b9cce67a5a77b9"
+    },
+    {
+      "document": "cad23600-0000-4000-8000-2e625d1f3900",
+      "file": "screw-fila-iso14579-m10-l40.tcd",
+      "sha256": "c35a9efd6eac9693e4fae8ed6a4248cf7070a557cc04235fa2a6d41adfbd020a"
+    },
+    {
+      "document": "cad23600-0000-4000-8000-36d7b026c780",
+      "file": "screw-iso7380-1-2011-m3-l12.tcd",
+      "sha256": "7814b83f23a726ead6dd4d2377868c3bf1eea5c755a9484c79d924fd72307ba1"
+    },
+    {
+      "document": "cad23600-0000-4000-8000-36eef89daf80",
+      "file": "screw-iso7380-1-2011-m4-l12.tcd",
+      "sha256": "275b03890b767d2794b354ddcdc08e18a980f5d822c3b327fb11565a3447bfe5"
+    },
+    {
+      "document": "cad23600-0000-4000-8000-370641149780",
+      "file": "screw-iso7380-1-2011-m5-l12.tcd",
+      "sha256": "865725711529576a795fadd6b7a44cfc09f0111198aaca89dd68bf1e131fca46"
+    },
+    {
+      "document": "cad23600-0000-4000-8000-371d898b7f80",
+      "file": "screw-iso7380-1-2011-m6-l12.tcd",
+      "sha256": "7ede18eb754b88911958c9203967d62fec5d03622b1fb97ddc4087c08c5e9485"
+    },
+    {
+      "document": "cad23600-0000-4000-8000-374c1a794f80",
+      "file": "screw-iso7380-1-2011-m8-l12.tcd",
+      "sha256": "5e42cdd73c245a0fa27820c686c5a12a7f3dbe828c1035ec78c88501ccca8601"
+    },
+    {
+      "document": "cad23600-0000-4000-8000-377aab6d3a00",
+      "file": "screw-iso7380-1-2011-m10-l16.tcd",
+      "sha256": "8a33a05465b97a25892b69eb86f6bd4e5a37381a80b158b4d0e43251c57021f6"
+    },
+    {
+      "document": "cad23600-0000-4000-8000-3feffe996780",
+      "file": "screw-iso10642-2004-m3-l12.tcd",
+      "sha256": "29bb9a7611f9c8404ade89a505572573317f2f00411ac8dbd669917afc7d470a"
+    },
+    {
+      "document": "cad23600-0000-4000-8000-400747104f80",
+      "file": "screw-iso10642-2004-m4-l12.tcd",
+      "sha256": "e6ed1407b5a802dcef63b762ceddf2189b8f9ff636a0d7711c0ddc196297d621"
+    },
+    {
+      "document": "cad23600-0000-4000-8000-401e8f873780",
+      "file": "screw-iso10642-2004-m5-l12.tcd",
+      "sha256": "6974103ac3146bfacd61a742e5a569e6dad3cd895bc07f6c025f1a35116a151e"
+    },
+    {
+      "document": "cad23600-0000-4000-8000-4035d7fe1f80",
+      "file": "screw-iso10642-2004-m6-l12.tcd",
+      "sha256": "a29df3abbc7c2f8a5b7d148066fd2e8656d4238f4c89ccb04ada638a6b11cd2e"
+    },
+    {
+      "document": "cad23600-0000-4000-8000-406468ebef80",
+      "file": "screw-iso10642-2004-m8-l12.tcd",
+      "sha256": "3f5e120a548f118de7d261272c681bb1e1baca913438e61d5811e69f0f8f90ad"
+    },
+    {
+      "document": "cad23600-0000-4000-8000-4092f9d9bf80",
+      "file": "screw-iso10642-2004-m10-l12.tcd",
+      "sha256": "2aad1cfb4d3f0556904a7e1a915224f2f65e632283e2defb65cfa0b21b0942ed"
+    },
+    {
+      "document": "cad23600-0000-4000-8000-49084d08fa40",
+      "file": "screw-accu-shb-m3-10-a2-r360-m3-l10.tcd",
+      "sha256": "21ef5ab3deea0c85eb26fb2bed2ec58f471d4f7ea2ca56b8cb2472b8b4d2cf86"
     }
   ],
   "format": "toskcad.bundled-library",
@@ -396,8 +656,9 @@
     "sources/bolts/MACHINE-SCREW-NOTICES.md",
     "nuts-curation.json",
     "sources/bolts/nut.blt",
-    "sources/bolts/NUT-NOTICES.md"
+    "sources/bolts/NUT-NOTICES.md",
+    "sources/bolts/SCREW-PROFILE-NOTICES.md"
   ],
-  "revision": "7",
+  "revision": "8",
   "version": 1
 }
