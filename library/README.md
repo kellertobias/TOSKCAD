@@ -23,7 +23,7 @@ The same curation adds 52 profile presets across eight separately identified fam
 
 These definitions retain one typed authored length. Countersunk length includes the head; other families use underhead length. Thread extent remains an expression subtracting the head where needed and the retained plain transition. The countersunk frame is a neck construction datum. Each pin exposes a modeled/cosmetic choice independently per instance. Manufacturing refuses cosmetic envelopes.
 
-[Profile source notices](sources/bolts/SCREW-PROFILE-NOTICES.md) distinguish exact source limits and gauge facts from the independently authored native contour. Heads have physical front lands and tangent neck blends. Hexalobular recesses use tangent circular arcs; Phillips H0–H4 retain their inclined-section geometry and separate mouth rounding. These models do not certify complete standard gauges, physical driver engagement or thread fit. Original facts remain attached when dimensional edits create a custom configuration. Source PDFs, artwork and supplier CAD are not bundled.
+[Profile source notices](sources/bolts/SCREW-PROFILE-NOTICES.md) distinguish exact source limits and gauge facts from the independently authored native contour. Pan, button and countersunk heads have physical front lands and tangent neck blends; FILA socket caps retain their disclosed cylindrical envelope without a neck-radius input. Hexalobular recesses use tangent circular arcs; Phillips H0–H4 retain their inclined-section geometry and separate mouth rounding. These models do not certify complete standard gauges, physical driver engagement or thread fit. Original facts remain attached when dimensional edits create a custom configuration. Source PDFs, artwork and supplier CAD are not bundled.
 
 ### Metric hex nuts
 
@@ -69,7 +69,7 @@ cargo run -p multicad-app --example mechanical_library --locked -- /tmp/toskcad-
 cargo run -p multicad-app --example mechanical_library --locked -- /tmp/toskcad-nut-review --hex-nuts
 ```
 
-Washer identities use exact scaled nominal keys. Nut identities add the exact family/edition in their own namespace; representation remains an instance input. Screw identities add explicit head-family and underhead-length keys in a separate namespace. Bearing identities retain their existing designation-derived namespace. Adding an entry does not renumber another definition. A dimensional or definition change requires a new catalog/symbol revision and explicit update review. Runtime geometry comes from retained native source, never a lookup in a newer dimension table.
+Washer identities use exact scaled nominal keys. Nut identities add the exact family/edition in their own namespace; representation remains an instance input. Legacy screw identities retain their head-family and underhead-length namespace. Additional profile identities use explicit family codes and the authored length in that family's retained convention, including overall length for countersunk heads. Bearing identities retain their existing designation-derived namespace. Adding an entry does not renumber another definition. A dimensional or definition change requires a new catalog/symbol revision and explicit update review. Runtime geometry comes from retained native source, never a lookup in a newer dimension table.
 
 ## Generic planting presets
 
