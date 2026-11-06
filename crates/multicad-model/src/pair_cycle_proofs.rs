@@ -4,6 +4,8 @@ use serde::Serialize;
 use std::{
     cell::RefCell,
     collections::BTreeMap,
+    marker::PhantomData,
+    rc::Rc,
     sync::{Arc, Mutex},
 };
 
@@ -147,10 +149,10 @@ pub fn with_pair_cycle_proofs<R>(store: PairCycleProofStore, run: impl FnOnce() 
 pub fn current_pair_cycle_proofs() -> Option<PairCycleProofStore> {
     CURRENT.with(|s| s.borrow().clone())
 }
-pub(crate) struct ProofOwner(Option<PairCycleProofStore>);
+pub(crate) struct ProofOwner(Option<PairCycleProofStore>, PhantomData<Rc<()>>);
 impl ProofOwner {
     pub(crate) fn enter(store: Option<PairCycleProofStore>) -> Self {
-        Self(CURRENT.with(|s| s.replace(store)))
+        Self(CURRENT.with(|s| s.replace(store)), PhantomData)
     }
 }
 impl Drop for ProofOwner {
@@ -213,11 +215,11 @@ impl CycleTransaction {
 }
 /// Nested template compiles join their outer compile's success boundary.
 /// Failure or unwinding drops new receipts, including successful child work.
-pub(crate) struct PublicationScope(bool);
+pub(crate) struct PublicationScope(bool, PhantomData<Rc<()>>);
 impl PublicationScope {
     pub(crate) fn begin() -> Self {
         PUBLICATIONS.with(|s| s.borrow_mut().push(Vec::new()));
-        Self(true)
+        Self(true, PhantomData)
     }
     pub(crate) fn finish(mut self, success: bool) {
         let publish = PUBLICATIONS.with(|s| {

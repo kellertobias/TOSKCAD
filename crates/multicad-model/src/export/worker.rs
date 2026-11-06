@@ -237,6 +237,10 @@ impl ExportWorker {
                 let _proof_owner = crate::pair_cycle_proofs::ProofOwner::enter(pair_proofs);
                 // This guard publishes failures after handler-local native models unwind.
                 let _exit = Exit(Arc::clone(&worker));
+                // Preview/write jobs retain exact source-keyed native features
+                // on this worker only, with the existing bounded cache policy.
+                // Drop it before Exit publishes any owner-failure replies.
+                let _evaluation_owner = crate::worker_cache::EvaluationOwner::enter();
                 loop {
                     let job = {
                         let mut slots = worker.slots.lock().unwrap_or_else(|e| e.into_inner());

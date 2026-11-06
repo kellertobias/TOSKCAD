@@ -36,6 +36,15 @@ repopulating the store. An injected store takes precedence over worker-local
 receipts, so clearing or switching it cannot fall back to older local proofs.
 Clearing a native feature cache leaves the application store intact.
 
+Print and Common Export also retain the existing bounded `EvaluationCache`
+for their worker lifetime. Controlled measurement found that shared cycle
+evidence alone left repeated Print jobs reconstructing both gears. Unchanged
+source-keyed native features can be reused between Preview and Write on that
+same owner thread. This cache never transfers solids between workers or uses
+viewport meshes for manufacturing. It is destroyed on its native owner before
+the worker publishes an unexpected-exit failure. Current-pose checks and
+manufacturing guards still run on every compile.
+
 This removes repeated cycle work, not first construction, required current-pose
 Booleans, occurrence provenance or tessellation. Controlled lane timings and
 actual macOS progress/cancellation checks must establish the observed result.
