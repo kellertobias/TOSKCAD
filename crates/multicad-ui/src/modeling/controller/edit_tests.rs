@@ -294,9 +294,10 @@ fn reopening_extrusion_and_revolve_preserves_saved_profiles_and_parameters() {
         controller
             .preview(&session, &Default::default(), Channel::Ui)
             .unwrap();
-        let candidate = &state.lock().unwrap().requests[0].0;
+        // Release the scripted provider's lock before invoking its cancellation hook.
+        let candidate = state.lock().unwrap().requests[0].0.clone();
         assert_eq!(
-            candidate, &before,
+            &candidate, &before,
             "Unchanged controls must preserve canonical source exactly"
         );
         let output = &controller.candidate.as_ref().unwrap().outputs[0];

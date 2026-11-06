@@ -1566,6 +1566,9 @@ impl ModelToolController {
         )
     }
     pub fn cancel(&mut self) {
+        if let Some(backend) = &mut self.backend {
+            backend.cancel();
+        }
         self.preparation.cancel();
         self.placement_interaction = Default::default();
         self.scale_interaction = Default::default();
@@ -1610,6 +1613,9 @@ impl ModelToolController {
         Ok(())
     }
     fn invalidate(&mut self) {
+        if let Some(backend) = &mut self.backend {
+            backend.cancel();
+        }
         self.preparation.cancel();
         self.placement_confirm = None;
         self.scale_confirm = None;
@@ -1847,12 +1853,7 @@ impl ModelToolController {
         if self.active()
             && let Err(error) = self.current(session, resources, false)
         {
-            self.preparation.cancel();
-            self.candidate = None;
-            self.discovery = None;
-            if let Some(operations) = &mut self.operations {
-                operations.invalidate();
-            }
+            self.invalidate();
             self.error = Some(error);
         }
         if let Some(reply) = self.preparation.poll() {

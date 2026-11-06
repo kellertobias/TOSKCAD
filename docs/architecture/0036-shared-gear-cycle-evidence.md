@@ -54,7 +54,15 @@ No near-instant generation, continuous engagement or physical fit is promised.
 compiler wall times. Pair-validation time contains the per-pair sampled-cycle
 and current-pose times. The remaining buckets are partial, non-exhaustive work
 categories, not a sum of total time. Optional `MULTICAD_MODEL_TIMINGS_JSONL`
-appends these diagnostics, document/revision, owner name, display setting and
+appends these diagnostics, document/revision/source hash, owner name, display setting and
 pair receipts to a local file. Total is captured before diagnostic writing.
 Failed/cancelled jobs require external timing; these records do not measure
 input-to-visible-frame latency or later export serialization.
+
+The Model tool controller forwards Cancel, input invalidation and invalidated
+session/resource context to its backend's cancellation hook. Clearing the form
+alone only hides a pending job. The hook supersedes its native Runtime lane so
+an abandoned compile observes interruption at the next Rust checkpoint and
+cannot publish a new cycle completion. An already-running native call still
+returns to Rust before stopping. Completed evaluations cancelled afterward
+remain valid bounded evidence; cancellation never commits source.

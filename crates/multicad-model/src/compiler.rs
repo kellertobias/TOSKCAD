@@ -426,6 +426,7 @@ impl Compiler {
                     .open(path)
                     && let Ok(mut line) = serde_json::to_vec(&serde_json::json!({
                         "document":document.id(), "revision":revision,
+                        "source_hash":model.snapshot.stamp.source_hash,
                         "owner":std::thread::current().name(), "omit_display":self.omit_display,
                         "scope":format!("{:?}",model.snapshot.scope),
                         "timings":model.timings, "gear_pairs":model.gear_pair_checks,

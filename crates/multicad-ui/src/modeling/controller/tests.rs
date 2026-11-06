@@ -18,6 +18,7 @@ struct State {
     requests: Vec<(Document, ProjectResources, SceneStamp)>,
     replies: VecDeque<SceneReply>,
     reject: bool,
+    cancellations: usize,
     evaluations: Vec<multicad_core::model::EvaluationOptions>,
 }
 struct ScriptedBackend(Arc<Mutex<State>>);
@@ -51,6 +52,9 @@ impl SceneBackend for ScriptedBackend {
         } else {
             Ok(())
         }
+    }
+    fn cancel(&mut self) {
+        self.0.lock().unwrap().cancellations += 1;
     }
     fn poll(&mut self) -> Option<SceneReply> {
         self.0.lock().unwrap().replies.pop_front()
@@ -128,6 +132,44 @@ fn reply(state: &Arc<Mutex<State>>, index: usize) -> Arc<Scene> {
         result: Ok(scene.clone()),
     });
     scene
+}
+#[test]
+fn abandoning_pending_native_preview_notifies_its_owner_and_rejects_late_replies() {
+    let (session, sketch, profiles) = fixture();
+    let before = session.document().clone();
+    let (mut controller, state) = controller(&session, sketch, profiles);
+    controller
+        .preview(&session, &Default::default(), Channel::Ui)
+        .unwrap();
+    assert!(controller.pending());
+    let cancellations = state.lock().unwrap().cancellations;
+    // Changing a form invalidates its pending native request without committing.
+    controller.invalidate();
+    assert_eq!(state.lock().unwrap().cancellations, cancellations + 1);
+    assert!(!controller.pending());
+    assert!(controller.active());
+    controller
+        .preview(&session, &Default::default(), Channel::Ui)
+        .unwrap();
+    assert!(controller.pending());
+    let cancellations = state.lock().unwrap().cancellations;
+    controller.cancel();
+    assert_eq!(state.lock().unwrap().cancellations, cancellations + 1);
+    assert!(!controller.active());
+    // A misbehaving provider can still deliver old replies; neither is accepted.
+    reply(&state, 0);
+    reply(&state, 1);
+    controller.poll(&session, &Default::default());
+    assert!(!controller.pending());
+    assert!(!controller.can_apply(&session, &Default::default()));
+    assert!(
+        controller
+            .display_scene(&session, &Default::default())
+            .is_none()
+    );
+    assert_eq!(session.document(), &before);
+    assert_eq!(session.revision(), 0);
+    assert!(!session.can_undo());
 }
 #[test]
 fn begin_preview_and_cancel_never_mutate_source_or_canonical_display_lane() {
@@ -262,7 +304,9 @@ fn source_revision_and_resource_changes_invalidate_native_receipts() {
                 .unwrap();
         }
         let before = session.document().clone();
+        let cancellations = state.lock().unwrap().cancellations;
         controller.poll(&session, &resources);
+        assert_eq!(state.lock().unwrap().cancellations, cancellations + 1);
         assert!(!controller.can_apply(&session, &resources));
         assert!(controller.display_scene(&session, &resources).is_none());
         assert!(controller.apply(&mut session, &resources).is_err());
