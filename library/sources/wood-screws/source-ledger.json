@@ -1,0 +1,50 @@
+{
+  "format": "toskcad.wood-screw-source-ledger",
+  "version": 1,
+  "verified_on": "2026-11-06",
+  "sources": [
+    {
+      "id": "bitork-din571-undated",
+      "url": "https://www.bitorkfasteners.com/_files/ugd/179fe5_75017d246622499e8e22164ae1b4ed59.pdf",
+      "sha256": "8012551843685e2fe5a4514650ed4c411137db05f176e627192c24c9796ee6bf",
+      "reference": "Manufacturer DIN 571 Hexagon Head Wood Screws sheet, PDF page 1; no publication date or standard edition identified.",
+      "role": "Discrete diameter/length/weight cells, underhead length drawing and head dimensions.",
+      "rights": "No source PDF, artwork or CAD redistribution grant established."
+    },
+    {
+      "id": "placencia-din7998-undated",
+      "url": "https://www.tornilleriaplacencia.com/temas/bootstrap/uploads/archivos/Apartado_Tecnico.pdf",
+      "sha256": "c4e1d550a264484f044c6c6675a2a50c636f61a198eda3ac463ba62a8b0f821f",
+      "reference": "Manufacturer Apartado Técnico, PDF page 18, section 1.3.2; no publication date identified.",
+      "role": "Separate DIN 7998 wood V-reference pitch, screw core diameter, 60°±6° included angle, h15 notation and manufacturer-selected thread end.",
+      "rights": "No source PDF, artwork or CAD redistribution grant established."
+    },
+    {
+      "id": "westfield-din571-undated",
+      "url": "https://www.westfieldfasteners.co.uk/Standards/Woodscrew-CoachScr.pdf",
+      "sha256": "b984e632bd5016745bf60d78e5c07b3771f408a920d72397250a4662834be610",
+      "reference": "Supplier Woodscrew-CoachScr specification, Figure 1; no publication date identified.",
+      "role": "Minimum tip-inclusive threaded extent b≥0.6l, including point and thread-start transition; not exact actual b.",
+      "rights": "No source PDF, artwork or CAD redistribution grant established."
+    }
+  ],
+  "excluded_source": {
+    "id": "fischer-catalog-506632-2026-01",
+    "url": "https://www.fischer.de/-/media/fixing-systems/rebrush/fide/service/infos-und-updates/informationsmaterial/documents/kataloge/katalog-schrauben.pdf",
+    "sha256": "65ed43155f8296dfe90587da0dcdc1b1ab8aff96f4a80fcd482cc0c9679c57e0",
+    "reference": "Catalog 506632 · 01/2026, pages42–46; no product geometry used.",
+    "status": "excluded"
+  },
+  "edition_records": [
+    {
+      "url": "https://www.dinmedia.de/de/norm/din-571/264089011",
+      "edition": "DIN 571:2016-12",
+      "scope": "Publisher identity only; complete normative table not inspected or reproduced."
+    },
+    {
+      "url": "https://www.dinmedia.de/en/standard/din-7998/547572",
+      "edition": "DIN 7998:1975-02",
+      "scope": "Publisher identity only; not attributed as the edition of an undated manufacturer sheet."
+    }
+  ]
+}

@@ -1,0 +1,1513 @@
+{
+  "format": "toskcad.wood-screw-curation",
+  "version": 1,
+  "revision": "1",
+  "verified_on": "2026-11-06",
+  "scope": "All 44 populated discrete Bitork DIN 571-related diameter/length cells for requested diameters 4,5,6,8,10 mm. Undated manufacturer dimensional references; no current DIN compliance, stock guarantee, material/coating/load/fit certification. No M designation. Reference wood V-profile is separately sourced and is not modeled.",
+  "representation": "simplified_envelope",
+  "modeling_targets": {
+    "head_height": "published nominal k",
+    "across_flats": "published s max",
+    "underhead_length": "published nominal l",
+    "stock_diameter": "nominal wood diameter",
+    "distal_end": "flat nominal stock end conservatively enclosing unspecified manufacturer point",
+    "point": "unspecified_manufacturer_end",
+    "manufacturing": "unavailable",
+    "thread_extent": "minimum 0.6 nominal underhead length including point and run-in, not actual b or actual thread start"
+  },
+  "sources": [
+    {
+      "id": "bitork-din571-undated",
+      "url": "https://www.bitorkfasteners.com/_files/ugd/179fe5_75017d246622499e8e22164ae1b4ed59.pdf",
+      "sha256": "8012551843685e2fe5a4514650ed4c411137db05f176e627192c24c9796ee6bf",
+      "reference": "Manufacturer DIN 571 Hexagon Head Wood Screws sheet, PDF page 1; no publication date or standard edition identified.",
+      "role": "Discrete diameter/length/weight cells, underhead length drawing and head dimensions.",
+      "rights": "No source PDF, artwork or CAD redistribution grant established."
+    },
+    {
+      "id": "placencia-din7998-undated",
+      "url": "https://www.tornilleriaplacencia.com/temas/bootstrap/uploads/archivos/Apartado_Tecnico.pdf",
+      "sha256": "c4e1d550a264484f044c6c6675a2a50c636f61a198eda3ac463ba62a8b0f821f",
+      "reference": "Manufacturer Apartado Técnico, PDF page 18, section 1.3.2; no publication date identified.",
+      "role": "Separate DIN 7998 wood V-reference pitch, screw core diameter, 60°±6° included angle, h15 notation and manufacturer-selected thread end.",
+      "rights": "No source PDF, artwork or CAD redistribution grant established."
+    },
+    {
+      "id": "westfield-din571-undated",
+      "url": "https://www.westfieldfasteners.co.uk/Standards/Woodscrew-CoachScr.pdf",
+      "sha256": "b984e632bd5016745bf60d78e5c07b3771f408a920d72397250a4662834be610",
+      "reference": "Supplier Woodscrew-CoachScr specification, Figure 1; no publication date identified.",
+      "role": "Minimum tip-inclusive threaded extent b≥0.6l, including point and thread-start transition; not exact actual b.",
+      "rights": "No source PDF, artwork or CAD redistribution grant established."
+    }
+  ],
+  "entries": [
+    {
+      "id": "wood-screw.bitork-din571.d4-l16",
+      "file": "wood-screw-bitork-din571-d4-l16.tcd",
+      "designation": "4 × 16",
+      "family": "bitork-din571",
+      "nominal_mm": 4,
+      "underhead_length_mm": 16,
+      "length_min_mm": 15.1,
+      "length_max_mm": 16.9,
+      "head": {
+        "height_nominal_mm": 2.8,
+        "height_min_mm": 2.5,
+        "height_max_mm": 3.1,
+        "across_flats_min_mm": 6.64,
+        "across_flats_max_mm": 7,
+        "diagonal_reference_mm": 7.5
+      },
+      "v_reference": {
+        "pitch_mm": 1.8,
+        "core_diameter_mm": 2.8,
+        "included_angle_deg": 60,
+        "included_angle_tolerance_deg": 6
+      },
+      "minimum_thread_extent_ratio": 0.6,
+      "source_weight_g": 1.71,
+      "dimensional_source": "bitork-din571-undated",
+      "profile_reference_source": "placencia-din7998-undated",
+      "minimum_extent_source": "westfield-din571-undated",
+      "correction": null
+    },
+    {
+      "id": "wood-screw.bitork-din571.d4-l20",
+      "file": "wood-screw-bitork-din571-d4-l20.tcd",
+      "designation": "4 × 20",
+      "family": "bitork-din571",
+      "nominal_mm": 4,
+      "underhead_length_mm": 20,
+      "length_min_mm": 18.95,
+      "length_max_mm": 21.05,
+      "head": {
+        "height_nominal_mm": 2.8,
+        "height_min_mm": 2.5,
+        "height_max_mm": 3.1,
+        "across_flats_min_mm": 6.64,
+        "across_flats_max_mm": 7,
+        "diagonal_reference_mm": 7.5
+      },
+      "v_reference": {
+        "pitch_mm": 1.8,
+        "core_diameter_mm": 2.8,
+        "included_angle_deg": 60,
+        "included_angle_tolerance_deg": 6
+      },
+      "minimum_thread_extent_ratio": 0.6,
+      "source_weight_g": 2.01,
+      "dimensional_source": "bitork-din571-undated",
+      "profile_reference_source": "placencia-din7998-undated",
+      "minimum_extent_source": "westfield-din571-undated",
+      "correction": null
+    },
+    {
+      "id": "wood-screw.bitork-din571.d4-l25",
+      "file": "wood-screw-bitork-din571-d4-l25.tcd",
+      "designation": "4 × 25",
+      "family": "bitork-din571",
+      "nominal_mm": 4,
+      "underhead_length_mm": 25,
+      "length_min_mm": 23.95,
+      "length_max_mm": 26.05,
+      "head": {
+        "height_nominal_mm": 2.8,
+        "height_min_mm": 2.5,
+        "height_max_mm": 3.1,
+        "across_flats_min_mm": 6.64,
+        "across_flats_max_mm": 7,
+        "diagonal_reference_mm": 7.5
+      },
+      "v_reference": {
+        "pitch_mm": 1.8,
+        "core_diameter_mm": 2.8,
+        "included_angle_deg": 60,
+        "included_angle_tolerance_deg": 6
+      },
+      "minimum_thread_extent_ratio": 0.6,
+      "source_weight_g": 2.41,
+      "dimensional_source": "bitork-din571-undated",
+      "profile_reference_source": "placencia-din7998-undated",
+      "minimum_extent_source": "westfield-din571-undated",
+      "correction": null
+    },
+    {
+      "id": "wood-screw.bitork-din571.d4-l30",
+      "file": "wood-screw-bitork-din571-d4-l30.tcd",
+      "designation": "4 × 30",
+      "family": "bitork-din571",
+      "nominal_mm": 4,
+      "underhead_length_mm": 30,
+      "length_min_mm": 28.95,
+      "length_max_mm": 31.05,
+      "head": {
+        "height_nominal_mm": 2.8,
+        "height_min_mm": 2.5,
+        "height_max_mm": 3.1,
+        "across_flats_min_mm": 6.64,
+        "across_flats_max_mm": 7,
+        "diagonal_reference_mm": 7.5
+      },
+      "v_reference": {
+        "pitch_mm": 1.8,
+        "core_diameter_mm": 2.8,
+        "included_angle_deg": 60,
+        "included_angle_tolerance_deg": 6
+      },
+      "minimum_thread_extent_ratio": 0.6,
+      "source_weight_g": 2.81,
+      "dimensional_source": "bitork-din571-undated",
+      "profile_reference_source": "placencia-din7998-undated",
+      "minimum_extent_source": "westfield-din571-undated",
+      "correction": null
+    },
+    {
+      "id": "wood-screw.bitork-din571.d4-l35",
+      "file": "wood-screw-bitork-din571-d4-l35.tcd",
+      "designation": "4 × 35",
+      "family": "bitork-din571",
+      "nominal_mm": 4,
+      "underhead_length_mm": 35,
+      "length_min_mm": 33.75,
+      "length_max_mm": 36.25,
+      "head": {
+        "height_nominal_mm": 2.8,
+        "height_min_mm": 2.5,
+        "height_max_mm": 3.1,
+        "across_flats_min_mm": 6.64,
+        "across_flats_max_mm": 7,
+        "diagonal_reference_mm": 7.5
+      },
+      "v_reference": {
+        "pitch_mm": 1.8,
+        "core_diameter_mm": 2.8,
+        "included_angle_deg": 60,
+        "included_angle_tolerance_deg": 6
+      },
+      "minimum_thread_extent_ratio": 0.6,
+      "source_weight_g": 3.11,
+      "dimensional_source": "bitork-din571-undated",
+      "profile_reference_source": "placencia-din7998-undated",
+      "minimum_extent_source": "westfield-din571-undated",
+      "correction": null
+    },
+    {
+      "id": "wood-screw.bitork-din571.d4-l40",
+      "file": "wood-screw-bitork-din571-d4-l40.tcd",
+      "designation": "4 × 40",
+      "family": "bitork-din571",
+      "nominal_mm": 4,
+      "underhead_length_mm": 40,
+      "length_min_mm": 38.75,
+      "length_max_mm": 41.25,
+      "head": {
+        "height_nominal_mm": 2.8,
+        "height_min_mm": 2.5,
+        "height_max_mm": 3.1,
+        "across_flats_min_mm": 6.64,
+        "across_flats_max_mm": 7,
+        "diagonal_reference_mm": 7.5
+      },
+      "v_reference": {
+        "pitch_mm": 1.8,
+        "core_diameter_mm": 2.8,
+        "included_angle_deg": 60,
+        "included_angle_tolerance_deg": 6
+      },
+      "minimum_thread_extent_ratio": 0.6,
+      "source_weight_g": 3.51,
+      "dimensional_source": "bitork-din571-undated",
+      "profile_reference_source": "placencia-din7998-undated",
+      "minimum_extent_source": "westfield-din571-undated",
+      "correction": null
+    },
+    {
+      "id": "wood-screw.bitork-din571.d5-l16",
+      "file": "wood-screw-bitork-din571-d5-l16.tcd",
+      "designation": "5 × 16",
+      "family": "bitork-din571",
+      "nominal_mm": 5,
+      "underhead_length_mm": 16,
+      "length_min_mm": 15.1,
+      "length_max_mm": 16.9,
+      "head": {
+        "height_nominal_mm": 3.5,
+        "height_min_mm": 3.13,
+        "height_max_mm": 3.88,
+        "across_flats_min_mm": 7.64,
+        "across_flats_max_mm": 8,
+        "diagonal_reference_mm": 8.63
+      },
+      "v_reference": {
+        "pitch_mm": 2.2,
+        "core_diameter_mm": 3.5,
+        "included_angle_deg": 60,
+        "included_angle_tolerance_deg": 6
+      },
+      "minimum_thread_extent_ratio": 0.6,
+      "source_weight_g": 2.92,
+      "dimensional_source": "bitork-din571-undated",
+      "profile_reference_source": "placencia-din7998-undated",
+      "minimum_extent_source": "westfield-din571-undated",
+      "correction": null
+    },
+    {
+      "id": "wood-screw.bitork-din571.d5-l20",
+      "file": "wood-screw-bitork-din571-d5-l20.tcd",
+      "designation": "5 × 20",
+      "family": "bitork-din571",
+      "nominal_mm": 5,
+      "underhead_length_mm": 20,
+      "length_min_mm": 18.95,
+      "length_max_mm": 21.05,
+      "head": {
+        "height_nominal_mm": 3.5,
+        "height_min_mm": 3.13,
+        "height_max_mm": 3.88,
+        "across_flats_min_mm": 7.64,
+        "across_flats_max_mm": 8,
+        "diagonal_reference_mm": 8.63
+      },
+      "v_reference": {
+        "pitch_mm": 2.2,
+        "core_diameter_mm": 3.5,
+        "included_angle_deg": 60,
+        "included_angle_tolerance_deg": 6
+      },
+      "minimum_thread_extent_ratio": 0.6,
+      "source_weight_g": 3.42,
+      "dimensional_source": "bitork-din571-undated",
+      "profile_reference_source": "placencia-din7998-undated",
+      "minimum_extent_source": "westfield-din571-undated",
+      "correction": null
+    },
+    {
+      "id": "wood-screw.bitork-din571.d5-l25",
+      "file": "wood-screw-bitork-din571-d5-l25.tcd",
+      "designation": "5 × 25",
+      "family": "bitork-din571",
+      "nominal_mm": 5,
+      "underhead_length_mm": 25,
+      "length_min_mm": 23.95,
+      "length_max_mm": 26.05,
+      "head": {
+        "height_nominal_mm": 3.5,
+        "height_min_mm": 3.13,
+        "height_max_mm": 3.88,
+        "across_flats_min_mm": 7.64,
+        "across_flats_max_mm": 8,
+        "diagonal_reference_mm": 8.63
+      },
+      "v_reference": {
+        "pitch_mm": 2.2,
+        "core_diameter_mm": 3.5,
+        "included_angle_deg": 60,
+        "included_angle_tolerance_deg": 6
+      },
+      "minimum_thread_extent_ratio": 0.6,
+      "source_weight_g": 4.02,
+      "dimensional_source": "bitork-din571-undated",
+      "profile_reference_source": "placencia-din7998-undated",
+      "minimum_extent_source": "westfield-din571-undated",
+      "correction": null
+    },
+    {
+      "id": "wood-screw.bitork-din571.d5-l30",
+      "file": "wood-screw-bitork-din571-d5-l30.tcd",
+      "designation": "5 × 30",
+      "family": "bitork-din571",
+      "nominal_mm": 5,
+      "underhead_length_mm": 30,
+      "length_min_mm": 28.95,
+      "length_max_mm": 31.05,
+      "head": {
+        "height_nominal_mm": 3.5,
+        "height_min_mm": 3.13,
+        "height_max_mm": 3.88,
+        "across_flats_min_mm": 7.64,
+        "across_flats_max_mm": 8,
+        "diagonal_reference_mm": 8.63
+      },
+      "v_reference": {
+        "pitch_mm": 2.2,
+        "core_diameter_mm": 3.5,
+        "included_angle_deg": 60,
+        "included_angle_tolerance_deg": 6
+      },
+      "minimum_thread_extent_ratio": 0.6,
+      "source_weight_g": 4.62,
+      "dimensional_source": "bitork-din571-undated",
+      "profile_reference_source": "placencia-din7998-undated",
+      "minimum_extent_source": "westfield-din571-undated",
+      "correction": null
+    },
+    {
+      "id": "wood-screw.bitork-din571.d5-l35",
+      "file": "wood-screw-bitork-din571-d5-l35.tcd",
+      "designation": "5 × 35",
+      "family": "bitork-din571",
+      "nominal_mm": 5,
+      "underhead_length_mm": 35,
+      "length_min_mm": 33.75,
+      "length_max_mm": 36.25,
+      "head": {
+        "height_nominal_mm": 3.5,
+        "height_min_mm": 3.13,
+        "height_max_mm": 3.88,
+        "across_flats_min_mm": 7.64,
+        "across_flats_max_mm": 8,
+        "diagonal_reference_mm": 8.63
+      },
+      "v_reference": {
+        "pitch_mm": 2.2,
+        "core_diameter_mm": 3.5,
+        "included_angle_deg": 60,
+        "included_angle_tolerance_deg": 6
+      },
+      "minimum_thread_extent_ratio": 0.6,
+      "source_weight_g": 5.12,
+      "dimensional_source": "bitork-din571-undated",
+      "profile_reference_source": "placencia-din7998-undated",
+      "minimum_extent_source": "westfield-din571-undated",
+      "correction": null
+    },
+    {
+      "id": "wood-screw.bitork-din571.d5-l40",
+      "file": "wood-screw-bitork-din571-d5-l40.tcd",
+      "designation": "5 × 40",
+      "family": "bitork-din571",
+      "nominal_mm": 5,
+      "underhead_length_mm": 40,
+      "length_min_mm": 38.75,
+      "length_max_mm": 41.25,
+      "head": {
+        "height_nominal_mm": 3.5,
+        "height_min_mm": 3.13,
+        "height_max_mm": 3.88,
+        "across_flats_min_mm": 7.64,
+        "across_flats_max_mm": 8,
+        "diagonal_reference_mm": 8.63
+      },
+      "v_reference": {
+        "pitch_mm": 2.2,
+        "core_diameter_mm": 3.5,
+        "included_angle_deg": 60,
+        "included_angle_tolerance_deg": 6
+      },
+      "minimum_thread_extent_ratio": 0.6,
+      "source_weight_g": 5.82,
+      "dimensional_source": "bitork-din571-undated",
+      "profile_reference_source": "placencia-din7998-undated",
+      "minimum_extent_source": "westfield-din571-undated",
+      "correction": null
+    },
+    {
+      "id": "wood-screw.bitork-din571.d5-l45",
+      "file": "wood-screw-bitork-din571-d5-l45.tcd",
+      "designation": "5 × 45",
+      "family": "bitork-din571",
+      "nominal_mm": 5,
+      "underhead_length_mm": 45,
+      "length_min_mm": 43.75,
+      "length_max_mm": 46.25,
+      "head": {
+        "height_nominal_mm": 3.5,
+        "height_min_mm": 3.13,
+        "height_max_mm": 3.88,
+        "across_flats_min_mm": 7.64,
+        "across_flats_max_mm": 8,
+        "diagonal_reference_mm": 8.63
+      },
+      "v_reference": {
+        "pitch_mm": 2.2,
+        "core_diameter_mm": 3.5,
+        "included_angle_deg": 60,
+        "included_angle_tolerance_deg": 6
+      },
+      "minimum_thread_extent_ratio": 0.6,
+      "source_weight_g": 6.43,
+      "dimensional_source": "bitork-din571-undated",
+      "profile_reference_source": "placencia-din7998-undated",
+      "minimum_extent_source": "westfield-din571-undated",
+      "correction": null
+    },
+    {
+      "id": "wood-screw.bitork-din571.d5-l50",
+      "file": "wood-screw-bitork-din571-d5-l50.tcd",
+      "designation": "5 × 50",
+      "family": "bitork-din571",
+      "nominal_mm": 5,
+      "underhead_length_mm": 50,
+      "length_min_mm": 48.75,
+      "length_max_mm": 51.25,
+      "head": {
+        "height_nominal_mm": 3.5,
+        "height_min_mm": 3.13,
+        "height_max_mm": 3.88,
+        "across_flats_min_mm": 7.64,
+        "across_flats_max_mm": 8,
+        "diagonal_reference_mm": 8.63
+      },
+      "v_reference": {
+        "pitch_mm": 2.2,
+        "core_diameter_mm": 3.5,
+        "included_angle_deg": 60,
+        "included_angle_tolerance_deg": 6
+      },
+      "minimum_thread_extent_ratio": 0.6,
+      "source_weight_g": 7.03,
+      "dimensional_source": "bitork-din571-undated",
+      "profile_reference_source": "placencia-din7998-undated",
+      "minimum_extent_source": "westfield-din571-undated",
+      "correction": null
+    },
+    {
+      "id": "wood-screw.bitork-din571.d6-l20",
+      "file": "wood-screw-bitork-din571-d6-l20.tcd",
+      "designation": "6 × 20",
+      "family": "bitork-din571",
+      "nominal_mm": 6,
+      "underhead_length_mm": 20,
+      "length_min_mm": 18.95,
+      "length_max_mm": 21.05,
+      "head": {
+        "height_nominal_mm": 4,
+        "height_min_mm": 3.63,
+        "height_max_mm": 4.38,
+        "across_flats_min_mm": 9.64,
+        "across_flats_max_mm": 10,
+        "diagonal_reference_mm": 10.89
+      },
+      "v_reference": {
+        "pitch_mm": 2.6,
+        "core_diameter_mm": 4.2,
+        "included_angle_deg": 60,
+        "included_angle_tolerance_deg": 6
+      },
+      "minimum_thread_extent_ratio": 0.6,
+      "source_weight_g": 5.02,
+      "dimensional_source": "bitork-din571-undated",
+      "profile_reference_source": "placencia-din7998-undated",
+      "minimum_extent_source": "westfield-din571-undated",
+      "correction": null
+    },
+    {
+      "id": "wood-screw.bitork-din571.d6-l25",
+      "file": "wood-screw-bitork-din571-d6-l25.tcd",
+      "designation": "6 × 25",
+      "family": "bitork-din571",
+      "nominal_mm": 6,
+      "underhead_length_mm": 25,
+      "length_min_mm": 23.95,
+      "length_max_mm": 26.05,
+      "head": {
+        "height_nominal_mm": 4,
+        "height_min_mm": 3.63,
+        "height_max_mm": 4.38,
+        "across_flats_min_mm": 9.64,
+        "across_flats_max_mm": 10,
+        "diagonal_reference_mm": 10.89
+      },
+      "v_reference": {
+        "pitch_mm": 2.6,
+        "core_diameter_mm": 4.2,
+        "included_angle_deg": 60,
+        "included_angle_tolerance_deg": 6
+      },
+      "minimum_thread_extent_ratio": 0.6,
+      "source_weight_g": 5.82,
+      "dimensional_source": "bitork-din571-undated",
+      "profile_reference_source": "placencia-din7998-undated",
+      "minimum_extent_source": "westfield-din571-undated",
+      "correction": null
+    },
+    {
+      "id": "wood-screw.bitork-din571.d6-l30",
+      "file": "wood-screw-bitork-din571-d6-l30.tcd",
+      "designation": "6 × 30",
+      "family": "bitork-din571",
+      "nominal_mm": 6,
+      "underhead_length_mm": 30,
+      "length_min_mm": 28.95,
+      "length_max_mm": 31.05,
+      "head": {
+        "height_nominal_mm": 4,
+        "height_min_mm": 3.63,
+        "height_max_mm": 4.38,
+        "across_flats_min_mm": 9.64,
+        "across_flats_max_mm": 10,
+        "diagonal_reference_mm": 10.89
+      },
+      "v_reference": {
+        "pitch_mm": 2.6,
+        "core_diameter_mm": 4.2,
+        "included_angle_deg": 60,
+        "included_angle_tolerance_deg": 6
+      },
+      "minimum_thread_extent_ratio": 0.6,
+      "source_weight_g": 6.62,
+      "dimensional_source": "bitork-din571-undated",
+      "profile_reference_source": "placencia-din7998-undated",
+      "minimum_extent_source": "westfield-din571-undated",
+      "correction": null
+    },
+    {
+      "id": "wood-screw.bitork-din571.d6-l35",
+      "file": "wood-screw-bitork-din571-d6-l35.tcd",
+      "designation": "6 × 35",
+      "family": "bitork-din571",
+      "nominal_mm": 6,
+      "underhead_length_mm": 35,
+      "length_min_mm": 33.75,
+      "length_max_mm": 36.25,
+      "head": {
+        "height_nominal_mm": 4,
+        "height_min_mm": 3.63,
+        "height_max_mm": 4.38,
+        "across_flats_min_mm": 9.64,
+        "across_flats_max_mm": 10,
+        "diagonal_reference_mm": 10.89
+      },
+      "v_reference": {
+        "pitch_mm": 2.6,
+        "core_diameter_mm": 4.2,
+        "included_angle_deg": 60,
+        "included_angle_tolerance_deg": 6
+      },
+      "minimum_thread_extent_ratio": 0.6,
+      "source_weight_g": 7.42,
+      "dimensional_source": "bitork-din571-undated",
+      "profile_reference_source": "placencia-din7998-undated",
+      "minimum_extent_source": "westfield-din571-undated",
+      "correction": null
+    },
+    {
+      "id": "wood-screw.bitork-din571.d6-l40",
+      "file": "wood-screw-bitork-din571-d6-l40.tcd",
+      "designation": "6 × 40",
+      "family": "bitork-din571",
+      "nominal_mm": 6,
+      "underhead_length_mm": 40,
+      "length_min_mm": 38.75,
+      "length_max_mm": 41.25,
+      "head": {
+        "height_nominal_mm": 4,
+        "height_min_mm": 3.63,
+        "height_max_mm": 4.38,
+        "across_flats_min_mm": 9.64,
+        "across_flats_max_mm": 10,
+        "diagonal_reference_mm": 10.89
+      },
+      "v_reference": {
+        "pitch_mm": 2.6,
+        "core_diameter_mm": 4.2,
+        "included_angle_deg": 60,
+        "included_angle_tolerance_deg": 6
+      },
+      "minimum_thread_extent_ratio": 0.6,
+      "source_weight_g": 8.22,
+      "dimensional_source": "bitork-din571-undated",
+      "profile_reference_source": "placencia-din7998-undated",
+      "minimum_extent_source": "westfield-din571-undated",
+      "correction": null
+    },
+    {
+      "id": "wood-screw.bitork-din571.d6-l45",
+      "file": "wood-screw-bitork-din571-d6-l45.tcd",
+      "designation": "6 × 45",
+      "family": "bitork-din571",
+      "nominal_mm": 6,
+      "underhead_length_mm": 45,
+      "length_min_mm": 43.75,
+      "length_max_mm": 46.25,
+      "head": {
+        "height_nominal_mm": 4,
+        "height_min_mm": 3.63,
+        "height_max_mm": 4.38,
+        "across_flats_min_mm": 9.64,
+        "across_flats_max_mm": 10,
+        "diagonal_reference_mm": 10.89
+      },
+      "v_reference": {
+        "pitch_mm": 2.6,
+        "core_diameter_mm": 4.2,
+        "included_angle_deg": 60,
+        "included_angle_tolerance_deg": 6
+      },
+      "minimum_thread_extent_ratio": 0.6,
+      "source_weight_g": 8.94,
+      "dimensional_source": "bitork-din571-undated",
+      "profile_reference_source": "placencia-din7998-undated",
+      "minimum_extent_source": "westfield-din571-undated",
+      "correction": null
+    },
+    {
+      "id": "wood-screw.bitork-din571.d6-l50",
+      "file": "wood-screw-bitork-din571-d6-l50.tcd",
+      "designation": "6 × 50",
+      "family": "bitork-din571",
+      "nominal_mm": 6,
+      "underhead_length_mm": 50,
+      "length_min_mm": 48.75,
+      "length_max_mm": 51.25,
+      "head": {
+        "height_nominal_mm": 4,
+        "height_min_mm": 3.63,
+        "height_max_mm": 4.38,
+        "across_flats_min_mm": 9.64,
+        "across_flats_max_mm": 10,
+        "diagonal_reference_mm": 10.89
+      },
+      "v_reference": {
+        "pitch_mm": 2.6,
+        "core_diameter_mm": 4.2,
+        "included_angle_deg": 60,
+        "included_angle_tolerance_deg": 6
+      },
+      "minimum_thread_extent_ratio": 0.6,
+      "source_weight_g": 9.64,
+      "dimensional_source": "bitork-din571-undated",
+      "profile_reference_source": "placencia-din7998-undated",
+      "minimum_extent_source": "westfield-din571-undated",
+      "correction": null
+    },
+    {
+      "id": "wood-screw.bitork-din571.d6-l55",
+      "file": "wood-screw-bitork-din571-d6-l55.tcd",
+      "designation": "6 × 55",
+      "family": "bitork-din571",
+      "nominal_mm": 6,
+      "underhead_length_mm": 55,
+      "length_min_mm": 53.5,
+      "length_max_mm": 56.5,
+      "head": {
+        "height_nominal_mm": 4,
+        "height_min_mm": 3.63,
+        "height_max_mm": 4.38,
+        "across_flats_min_mm": 9.64,
+        "across_flats_max_mm": 10,
+        "diagonal_reference_mm": 10.89
+      },
+      "v_reference": {
+        "pitch_mm": 2.6,
+        "core_diameter_mm": 4.2,
+        "included_angle_deg": 60,
+        "included_angle_tolerance_deg": 6
+      },
+      "minimum_thread_extent_ratio": 0.6,
+      "source_weight_g": 10.5,
+      "dimensional_source": "bitork-din571-undated",
+      "profile_reference_source": "placencia-din7998-undated",
+      "minimum_extent_source": "westfield-din571-undated",
+      "correction": null
+    },
+    {
+      "id": "wood-screw.bitork-din571.d6-l60",
+      "file": "wood-screw-bitork-din571-d6-l60.tcd",
+      "designation": "6 × 60",
+      "family": "bitork-din571",
+      "nominal_mm": 6,
+      "underhead_length_mm": 60,
+      "length_min_mm": 58.5,
+      "length_max_mm": 61.5,
+      "head": {
+        "height_nominal_mm": 4,
+        "height_min_mm": 3.63,
+        "height_max_mm": 4.38,
+        "across_flats_min_mm": 9.64,
+        "across_flats_max_mm": 10,
+        "diagonal_reference_mm": 10.89
+      },
+      "v_reference": {
+        "pitch_mm": 2.6,
+        "core_diameter_mm": 4.2,
+        "included_angle_deg": 60,
+        "included_angle_tolerance_deg": 6
+      },
+      "minimum_thread_extent_ratio": 0.6,
+      "source_weight_g": 11.2,
+      "dimensional_source": "bitork-din571-undated",
+      "profile_reference_source": "placencia-din7998-undated",
+      "minimum_extent_source": "westfield-din571-undated",
+      "correction": null
+    },
+    {
+      "id": "wood-screw.bitork-din571.d8-l25",
+      "file": "wood-screw-bitork-din571-d8-l25.tcd",
+      "designation": "8 × 25",
+      "family": "bitork-din571",
+      "nominal_mm": 8,
+      "underhead_length_mm": 25,
+      "length_min_mm": 23.95,
+      "length_max_mm": 26.05,
+      "head": {
+        "height_nominal_mm": 5.5,
+        "height_min_mm": 5.13,
+        "height_max_mm": 5.88,
+        "across_flats_min_mm": 12.57,
+        "across_flats_max_mm": 13,
+        "diagonal_reference_mm": 14.2
+      },
+      "v_reference": {
+        "pitch_mm": 3.6,
+        "core_diameter_mm": 5.6,
+        "included_angle_deg": 60,
+        "included_angle_tolerance_deg": 6
+      },
+      "minimum_thread_extent_ratio": 0.6,
+      "source_weight_g": 11.5,
+      "dimensional_source": "bitork-din571-undated",
+      "profile_reference_source": "placencia-din7998-undated",
+      "minimum_extent_source": "westfield-din571-undated",
+      "correction": null
+    },
+    {
+      "id": "wood-screw.bitork-din571.d8-l30",
+      "file": "wood-screw-bitork-din571-d8-l30.tcd",
+      "designation": "8 × 30",
+      "family": "bitork-din571",
+      "nominal_mm": 8,
+      "underhead_length_mm": 30,
+      "length_min_mm": 28.95,
+      "length_max_mm": 31.05,
+      "head": {
+        "height_nominal_mm": 5.5,
+        "height_min_mm": 5.13,
+        "height_max_mm": 5.88,
+        "across_flats_min_mm": 12.57,
+        "across_flats_max_mm": 13,
+        "diagonal_reference_mm": 14.2
+      },
+      "v_reference": {
+        "pitch_mm": 3.6,
+        "core_diameter_mm": 5.6,
+        "included_angle_deg": 60,
+        "included_angle_tolerance_deg": 6
+      },
+      "minimum_thread_extent_ratio": 0.6,
+      "source_weight_g": 12.9,
+      "dimensional_source": "bitork-din571-undated",
+      "profile_reference_source": "placencia-din7998-undated",
+      "minimum_extent_source": "westfield-din571-undated",
+      "correction": null
+    },
+    {
+      "id": "wood-screw.bitork-din571.d8-l35",
+      "file": "wood-screw-bitork-din571-d8-l35.tcd",
+      "designation": "8 × 35",
+      "family": "bitork-din571",
+      "nominal_mm": 8,
+      "underhead_length_mm": 35,
+      "length_min_mm": 33.75,
+      "length_max_mm": 36.25,
+      "head": {
+        "height_nominal_mm": 5.5,
+        "height_min_mm": 5.13,
+        "height_max_mm": 5.88,
+        "across_flats_min_mm": 12.57,
+        "across_flats_max_mm": 13,
+        "diagonal_reference_mm": 14.2
+      },
+      "v_reference": {
+        "pitch_mm": 3.6,
+        "core_diameter_mm": 5.6,
+        "included_angle_deg": 60,
+        "included_angle_tolerance_deg": 6
+      },
+      "minimum_thread_extent_ratio": 0.6,
+      "source_weight_g": 14.2,
+      "dimensional_source": "bitork-din571-undated",
+      "profile_reference_source": "placencia-din7998-undated",
+      "minimum_extent_source": "westfield-din571-undated",
+      "correction": null
+    },
+    {
+      "id": "wood-screw.bitork-din571.d8-l40",
+      "file": "wood-screw-bitork-din571-d8-l40.tcd",
+      "designation": "8 × 40",
+      "family": "bitork-din571",
+      "nominal_mm": 8,
+      "underhead_length_mm": 40,
+      "length_min_mm": 38.75,
+      "length_max_mm": 41.25,
+      "head": {
+        "height_nominal_mm": 5.5,
+        "height_min_mm": 5.13,
+        "height_max_mm": 5.88,
+        "across_flats_min_mm": 12.57,
+        "across_flats_max_mm": 13,
+        "diagonal_reference_mm": 14.2
+      },
+      "v_reference": {
+        "pitch_mm": 3.6,
+        "core_diameter_mm": 5.6,
+        "included_angle_deg": 60,
+        "included_angle_tolerance_deg": 6
+      },
+      "minimum_thread_extent_ratio": 0.6,
+      "source_weight_g": 15.6,
+      "dimensional_source": "bitork-din571-undated",
+      "profile_reference_source": "placencia-din7998-undated",
+      "minimum_extent_source": "westfield-din571-undated",
+      "correction": null
+    },
+    {
+      "id": "wood-screw.bitork-din571.d8-l45",
+      "file": "wood-screw-bitork-din571-d8-l45.tcd",
+      "designation": "8 × 45",
+      "family": "bitork-din571",
+      "nominal_mm": 8,
+      "underhead_length_mm": 45,
+      "length_min_mm": 43.75,
+      "length_max_mm": 46.25,
+      "head": {
+        "height_nominal_mm": 5.5,
+        "height_min_mm": 5.13,
+        "height_max_mm": 5.88,
+        "across_flats_min_mm": 12.57,
+        "across_flats_max_mm": 13,
+        "diagonal_reference_mm": 14.2
+      },
+      "v_reference": {
+        "pitch_mm": 3.6,
+        "core_diameter_mm": 5.6,
+        "included_angle_deg": 60,
+        "included_angle_tolerance_deg": 6
+      },
+      "minimum_thread_extent_ratio": 0.6,
+      "source_weight_g": 16.9,
+      "dimensional_source": "bitork-din571-undated",
+      "profile_reference_source": "placencia-din7998-undated",
+      "minimum_extent_source": "westfield-din571-undated",
+      "correction": null
+    },
+    {
+      "id": "wood-screw.bitork-din571.d8-l50",
+      "file": "wood-screw-bitork-din571-d8-l50.tcd",
+      "designation": "8 × 50",
+      "family": "bitork-din571",
+      "nominal_mm": 8,
+      "underhead_length_mm": 50,
+      "length_min_mm": 48.75,
+      "length_max_mm": 51.25,
+      "head": {
+        "height_nominal_mm": 5.5,
+        "height_min_mm": 5.13,
+        "height_max_mm": 5.88,
+        "across_flats_min_mm": 12.57,
+        "across_flats_max_mm": 13,
+        "diagonal_reference_mm": 14.2
+      },
+      "v_reference": {
+        "pitch_mm": 3.6,
+        "core_diameter_mm": 5.6,
+        "included_angle_deg": 60,
+        "included_angle_tolerance_deg": 6
+      },
+      "minimum_thread_extent_ratio": 0.6,
+      "source_weight_g": 18.2,
+      "dimensional_source": "bitork-din571-undated",
+      "profile_reference_source": "placencia-din7998-undated",
+      "minimum_extent_source": "westfield-din571-undated",
+      "correction": null
+    },
+    {
+      "id": "wood-screw.bitork-din571.d8-l55",
+      "file": "wood-screw-bitork-din571-d8-l55.tcd",
+      "designation": "8 × 55",
+      "family": "bitork-din571",
+      "nominal_mm": 8,
+      "underhead_length_mm": 55,
+      "length_min_mm": 53.5,
+      "length_max_mm": 56.5,
+      "head": {
+        "height_nominal_mm": 5.5,
+        "height_min_mm": 5.13,
+        "height_max_mm": 5.88,
+        "across_flats_min_mm": 12.57,
+        "across_flats_max_mm": 13,
+        "diagonal_reference_mm": 14.2
+      },
+      "v_reference": {
+        "pitch_mm": 3.6,
+        "core_diameter_mm": 5.6,
+        "included_angle_deg": 60,
+        "included_angle_tolerance_deg": 6
+      },
+      "minimum_thread_extent_ratio": 0.6,
+      "source_weight_g": 19.6,
+      "dimensional_source": "bitork-din571-undated",
+      "profile_reference_source": "placencia-din7998-undated",
+      "minimum_extent_source": "westfield-din571-undated",
+      "correction": null
+    },
+    {
+      "id": "wood-screw.bitork-din571.d8-l60",
+      "file": "wood-screw-bitork-din571-d8-l60.tcd",
+      "designation": "8 × 60",
+      "family": "bitork-din571",
+      "nominal_mm": 8,
+      "underhead_length_mm": 60,
+      "length_min_mm": 58.5,
+      "length_max_mm": 61.5,
+      "head": {
+        "height_nominal_mm": 5.5,
+        "height_min_mm": 5.13,
+        "height_max_mm": 5.88,
+        "across_flats_min_mm": 12.57,
+        "across_flats_max_mm": 13,
+        "diagonal_reference_mm": 14.2
+      },
+      "v_reference": {
+        "pitch_mm": 3.6,
+        "core_diameter_mm": 5.6,
+        "included_angle_deg": 60,
+        "included_angle_tolerance_deg": 6
+      },
+      "minimum_thread_extent_ratio": 0.6,
+      "source_weight_g": 20.9,
+      "dimensional_source": "bitork-din571-undated",
+      "profile_reference_source": "placencia-din7998-undated",
+      "minimum_extent_source": "westfield-din571-undated",
+      "correction": null
+    },
+    {
+      "id": "wood-screw.bitork-din571.d8-l70",
+      "file": "wood-screw-bitork-din571-d8-l70.tcd",
+      "designation": "8 × 70",
+      "family": "bitork-din571",
+      "nominal_mm": 8,
+      "underhead_length_mm": 70,
+      "length_min_mm": 68.5,
+      "length_max_mm": 71.5,
+      "head": {
+        "height_nominal_mm": 5.5,
+        "height_min_mm": 5.13,
+        "height_max_mm": 5.88,
+        "across_flats_min_mm": 12.57,
+        "across_flats_max_mm": 13,
+        "diagonal_reference_mm": 14.2
+      },
+      "v_reference": {
+        "pitch_mm": 3.6,
+        "core_diameter_mm": 5.6,
+        "included_angle_deg": 60,
+        "included_angle_tolerance_deg": 6
+      },
+      "minimum_thread_extent_ratio": 0.6,
+      "source_weight_g": 23.6,
+      "dimensional_source": "bitork-din571-undated",
+      "profile_reference_source": "placencia-din7998-undated",
+      "minimum_extent_source": "westfield-din571-undated",
+      "correction": null
+    },
+    {
+      "id": "wood-screw.bitork-din571.d8-l80",
+      "file": "wood-screw-bitork-din571-d8-l80.tcd",
+      "designation": "8 × 80",
+      "family": "bitork-din571",
+      "nominal_mm": 8,
+      "underhead_length_mm": 80,
+      "length_min_mm": 78.5,
+      "length_max_mm": 81.5,
+      "head": {
+        "height_nominal_mm": 5.5,
+        "height_min_mm": 5.13,
+        "height_max_mm": 5.88,
+        "across_flats_min_mm": 12.57,
+        "across_flats_max_mm": 13,
+        "diagonal_reference_mm": 14.2
+      },
+      "v_reference": {
+        "pitch_mm": 3.6,
+        "core_diameter_mm": 5.6,
+        "included_angle_deg": 60,
+        "included_angle_tolerance_deg": 6
+      },
+      "minimum_thread_extent_ratio": 0.6,
+      "source_weight_g": 26.5,
+      "dimensional_source": "bitork-din571-undated",
+      "profile_reference_source": "placencia-din7998-undated",
+      "minimum_extent_source": "westfield-din571-undated",
+      "correction": null
+    },
+    {
+      "id": "wood-screw.bitork-din571.d8-l100",
+      "file": "wood-screw-bitork-din571-d8-l100.tcd",
+      "designation": "8 × 100",
+      "family": "bitork-din571",
+      "nominal_mm": 8,
+      "underhead_length_mm": 100,
+      "length_min_mm": 98.25,
+      "length_max_mm": 101.75,
+      "head": {
+        "height_nominal_mm": 5.5,
+        "height_min_mm": 5.13,
+        "height_max_mm": 5.88,
+        "across_flats_min_mm": 12.57,
+        "across_flats_max_mm": 13,
+        "diagonal_reference_mm": 14.2
+      },
+      "v_reference": {
+        "pitch_mm": 3.6,
+        "core_diameter_mm": 5.6,
+        "included_angle_deg": 60,
+        "included_angle_tolerance_deg": 6
+      },
+      "minimum_thread_extent_ratio": 0.6,
+      "source_weight_g": 32,
+      "dimensional_source": "bitork-din571-undated",
+      "profile_reference_source": "placencia-din7998-undated",
+      "minimum_extent_source": "westfield-din571-undated",
+      "correction": null
+    },
+    {
+      "id": "wood-screw.bitork-din571.d10-l30",
+      "file": "wood-screw-bitork-din571-d10-l30.tcd",
+      "designation": "10 × 30",
+      "family": "bitork-din571",
+      "nominal_mm": 10,
+      "underhead_length_mm": 30,
+      "length_min_mm": 28.95,
+      "length_max_mm": 31.05,
+      "head": {
+        "height_nominal_mm": 7,
+        "height_min_mm": 6.55,
+        "height_max_mm": 7.45,
+        "across_flats_min_mm": 16.57,
+        "across_flats_max_mm": 17,
+        "diagonal_reference_mm": 18.72
+      },
+      "v_reference": {
+        "pitch_mm": 4.5,
+        "core_diameter_mm": 7,
+        "included_angle_deg": 60,
+        "included_angle_tolerance_deg": 6
+      },
+      "minimum_thread_extent_ratio": 0.6,
+      "source_weight_g": 23.6,
+      "dimensional_source": "bitork-din571-undated",
+      "profile_reference_source": "placencia-din7998-undated",
+      "minimum_extent_source": "westfield-din571-undated",
+      "correction": null
+    },
+    {
+      "id": "wood-screw.bitork-din571.d10-l35",
+      "file": "wood-screw-bitork-din571-d10-l35.tcd",
+      "designation": "10 × 35",
+      "family": "bitork-din571",
+      "nominal_mm": 10,
+      "underhead_length_mm": 35,
+      "length_min_mm": 33.75,
+      "length_max_mm": 36.25,
+      "head": {
+        "height_nominal_mm": 7,
+        "height_min_mm": 6.55,
+        "height_max_mm": 7.45,
+        "across_flats_min_mm": 16.57,
+        "across_flats_max_mm": 17,
+        "diagonal_reference_mm": 18.72
+      },
+      "v_reference": {
+        "pitch_mm": 4.5,
+        "core_diameter_mm": 7,
+        "included_angle_deg": 60,
+        "included_angle_tolerance_deg": 6
+      },
+      "minimum_thread_extent_ratio": 0.6,
+      "source_weight_g": 25.8,
+      "dimensional_source": "bitork-din571-undated",
+      "profile_reference_source": "placencia-din7998-undated",
+      "minimum_extent_source": "westfield-din571-undated",
+      "correction": null
+    },
+    {
+      "id": "wood-screw.bitork-din571.d10-l40",
+      "file": "wood-screw-bitork-din571-d10-l40.tcd",
+      "designation": "10 × 40",
+      "family": "bitork-din571",
+      "nominal_mm": 10,
+      "underhead_length_mm": 40,
+      "length_min_mm": 38.75,
+      "length_max_mm": 41.25,
+      "head": {
+        "height_nominal_mm": 7,
+        "height_min_mm": 6.55,
+        "height_max_mm": 7.45,
+        "across_flats_min_mm": 16.57,
+        "across_flats_max_mm": 17,
+        "diagonal_reference_mm": 18.72
+      },
+      "v_reference": {
+        "pitch_mm": 4.5,
+        "core_diameter_mm": 7,
+        "included_angle_deg": 60,
+        "included_angle_tolerance_deg": 6
+      },
+      "minimum_thread_extent_ratio": 0.6,
+      "source_weight_g": 28,
+      "dimensional_source": "bitork-din571-undated",
+      "profile_reference_source": "placencia-din7998-undated",
+      "minimum_extent_source": "westfield-din571-undated",
+      "correction": null
+    },
+    {
+      "id": "wood-screw.bitork-din571.d10-l45",
+      "file": "wood-screw-bitork-din571-d10-l45.tcd",
+      "designation": "10 × 45",
+      "family": "bitork-din571",
+      "nominal_mm": 10,
+      "underhead_length_mm": 45,
+      "length_min_mm": 43.75,
+      "length_max_mm": 46.25,
+      "head": {
+        "height_nominal_mm": 7,
+        "height_min_mm": 6.55,
+        "height_max_mm": 7.45,
+        "across_flats_min_mm": 16.57,
+        "across_flats_max_mm": 17,
+        "diagonal_reference_mm": 18.72
+      },
+      "v_reference": {
+        "pitch_mm": 4.5,
+        "core_diameter_mm": 7,
+        "included_angle_deg": 60,
+        "included_angle_tolerance_deg": 6
+      },
+      "minimum_thread_extent_ratio": 0.6,
+      "source_weight_g": 30,
+      "dimensional_source": "bitork-din571-undated",
+      "profile_reference_source": "placencia-din7998-undated",
+      "minimum_extent_source": "westfield-din571-undated",
+      "correction": null
+    },
+    {
+      "id": "wood-screw.bitork-din571.d10-l50",
+      "file": "wood-screw-bitork-din571-d10-l50.tcd",
+      "designation": "10 × 50",
+      "family": "bitork-din571",
+      "nominal_mm": 10,
+      "underhead_length_mm": 50,
+      "length_min_mm": 48.75,
+      "length_max_mm": 51.25,
+      "head": {
+        "height_nominal_mm": 7,
+        "height_min_mm": 6.55,
+        "height_max_mm": 7.45,
+        "across_flats_min_mm": 16.57,
+        "across_flats_max_mm": 17,
+        "diagonal_reference_mm": 18.72
+      },
+      "v_reference": {
+        "pitch_mm": 4.5,
+        "core_diameter_mm": 7,
+        "included_angle_deg": 60,
+        "included_angle_tolerance_deg": 6
+      },
+      "minimum_thread_extent_ratio": 0.6,
+      "source_weight_g": 32.1,
+      "dimensional_source": "bitork-din571-undated",
+      "profile_reference_source": "placencia-din7998-undated",
+      "minimum_extent_source": "westfield-din571-undated",
+      "correction": null
+    },
+    {
+      "id": "wood-screw.bitork-din571.d10-l55",
+      "file": "wood-screw-bitork-din571-d10-l55.tcd",
+      "designation": "10 × 55",
+      "family": "bitork-din571",
+      "nominal_mm": 10,
+      "underhead_length_mm": 55,
+      "length_min_mm": 53.5,
+      "length_max_mm": 56.5,
+      "head": {
+        "height_nominal_mm": 7,
+        "height_min_mm": 6.55,
+        "height_max_mm": 7.45,
+        "across_flats_min_mm": 16.57,
+        "across_flats_max_mm": 17,
+        "diagonal_reference_mm": 18.72
+      },
+      "v_reference": {
+        "pitch_mm": 4.5,
+        "core_diameter_mm": 7,
+        "included_angle_deg": 60,
+        "included_angle_tolerance_deg": 6
+      },
+      "minimum_thread_extent_ratio": 0.6,
+      "source_weight_g": 34.3,
+      "dimensional_source": "bitork-din571-undated",
+      "profile_reference_source": "placencia-din7998-undated",
+      "minimum_extent_source": "westfield-din571-undated",
+      "correction": null
+    },
+    {
+      "id": "wood-screw.bitork-din571.d10-l60",
+      "file": "wood-screw-bitork-din571-d10-l60.tcd",
+      "designation": "10 × 60",
+      "family": "bitork-din571",
+      "nominal_mm": 10,
+      "underhead_length_mm": 60,
+      "length_min_mm": 58.5,
+      "length_max_mm": 61.5,
+      "head": {
+        "height_nominal_mm": 7,
+        "height_min_mm": 6.55,
+        "height_max_mm": 7.45,
+        "across_flats_min_mm": 16.57,
+        "across_flats_max_mm": 17,
+        "diagonal_reference_mm": 18.72
+      },
+      "v_reference": {
+        "pitch_mm": 4.5,
+        "core_diameter_mm": 7,
+        "included_angle_deg": 60,
+        "included_angle_tolerance_deg": 6
+      },
+      "minimum_thread_extent_ratio": 0.6,
+      "source_weight_g": 36.5,
+      "dimensional_source": "bitork-din571-undated",
+      "profile_reference_source": "placencia-din7998-undated",
+      "minimum_extent_source": "westfield-din571-undated",
+      "correction": null
+    },
+    {
+      "id": "wood-screw.bitork-din571.d10-l70",
+      "file": "wood-screw-bitork-din571-d10-l70.tcd",
+      "designation": "10 × 70",
+      "family": "bitork-din571",
+      "nominal_mm": 10,
+      "underhead_length_mm": 70,
+      "length_min_mm": 68.5,
+      "length_max_mm": 71.5,
+      "head": {
+        "height_nominal_mm": 7,
+        "height_min_mm": 6.55,
+        "height_max_mm": 7.45,
+        "across_flats_min_mm": 16.57,
+        "across_flats_max_mm": 17,
+        "diagonal_reference_mm": 18.72
+      },
+      "v_reference": {
+        "pitch_mm": 4.5,
+        "core_diameter_mm": 7,
+        "included_angle_deg": 60,
+        "included_angle_tolerance_deg": 6
+      },
+      "minimum_thread_extent_ratio": 0.6,
+      "source_weight_g": 40.7,
+      "dimensional_source": "bitork-din571-undated",
+      "profile_reference_source": "placencia-din7998-undated",
+      "minimum_extent_source": "westfield-din571-undated",
+      "correction": null
+    },
+    {
+      "id": "wood-screw.bitork-din571.d10-l80",
+      "file": "wood-screw-bitork-din571-d10-l80.tcd",
+      "designation": "10 × 80",
+      "family": "bitork-din571",
+      "nominal_mm": 10,
+      "underhead_length_mm": 80,
+      "length_min_mm": 78.5,
+      "length_max_mm": 81.5,
+      "head": {
+        "height_nominal_mm": 7,
+        "height_min_mm": 6.55,
+        "height_max_mm": 7.45,
+        "across_flats_min_mm": 16.57,
+        "across_flats_max_mm": 17,
+        "diagonal_reference_mm": 18.72
+      },
+      "v_reference": {
+        "pitch_mm": 4.5,
+        "core_diameter_mm": 7,
+        "included_angle_deg": 60,
+        "included_angle_tolerance_deg": 6
+      },
+      "minimum_thread_extent_ratio": 0.6,
+      "source_weight_g": 45.2,
+      "dimensional_source": "bitork-din571-undated",
+      "profile_reference_source": "placencia-din7998-undated",
+      "minimum_extent_source": "westfield-din571-undated",
+      "correction": null
+    },
+    {
+      "id": "wood-screw.bitork-din571.d10-l100",
+      "file": "wood-screw-bitork-din571-d10-l100.tcd",
+      "designation": "10 × 100",
+      "family": "bitork-din571",
+      "nominal_mm": 10,
+      "underhead_length_mm": 100,
+      "length_min_mm": 98.25,
+      "length_max_mm": 101.75,
+      "head": {
+        "height_nominal_mm": 7,
+        "height_min_mm": 6.55,
+        "height_max_mm": 7.45,
+        "across_flats_min_mm": 16.57,
+        "across_flats_max_mm": 17,
+        "diagonal_reference_mm": 18.72
+      },
+      "v_reference": {
+        "pitch_mm": 4.5,
+        "core_diameter_mm": 7,
+        "included_angle_deg": 60,
+        "included_angle_tolerance_deg": 6
+      },
+      "minimum_thread_extent_ratio": 0.6,
+      "source_weight_g": 54,
+      "dimensional_source": "bitork-din571-undated",
+      "profile_reference_source": "placencia-din7998-undated",
+      "minimum_extent_source": "westfield-din571-undated",
+      "correction": null
+    }
+  ],
+  "coverage": [
+    {
+      "family": "bitork-din571",
+      "nominal_mm": 2,
+      "status": "unavailable",
+      "entry_ids": [],
+      "reason": "No populated diameter/length cell in the selected Bitork DIN 571 dimensional family; no interpolation or other-family substitution."
+    },
+    {
+      "family": "bitork-din571",
+      "nominal_mm": 2.5,
+      "status": "unavailable",
+      "entry_ids": [],
+      "reason": "No populated diameter/length cell in the selected Bitork DIN 571 dimensional family; no interpolation or other-family substitution."
+    },
+    {
+      "family": "bitork-din571",
+      "nominal_mm": 3,
+      "status": "unavailable",
+      "entry_ids": [],
+      "reason": "No populated diameter/length cell in the selected Bitork DIN 571 dimensional family; no interpolation or other-family substitution."
+    },
+    {
+      "family": "bitork-din571",
+      "nominal_mm": 3.5,
+      "status": "unavailable",
+      "entry_ids": [],
+      "reason": "No populated diameter/length cell in the selected Bitork DIN 571 dimensional family; no interpolation or other-family substitution."
+    },
+    {
+      "family": "bitork-din571",
+      "nominal_mm": 4,
+      "status": "supported",
+      "entry_ids": [
+        "wood-screw.bitork-din571.d4-l16",
+        "wood-screw.bitork-din571.d4-l20",
+        "wood-screw.bitork-din571.d4-l25",
+        "wood-screw.bitork-din571.d4-l30",
+        "wood-screw.bitork-din571.d4-l35",
+        "wood-screw.bitork-din571.d4-l40"
+      ],
+      "reason": null
+    },
+    {
+      "family": "bitork-din571",
+      "nominal_mm": 4.5,
+      "status": "unavailable",
+      "entry_ids": [],
+      "reason": "No populated diameter/length cell in the selected Bitork DIN 571 dimensional family; no interpolation or other-family substitution."
+    },
+    {
+      "family": "bitork-din571",
+      "nominal_mm": 5,
+      "status": "supported",
+      "entry_ids": [
+        "wood-screw.bitork-din571.d5-l16",
+        "wood-screw.bitork-din571.d5-l20",
+        "wood-screw.bitork-din571.d5-l25",
+        "wood-screw.bitork-din571.d5-l30",
+        "wood-screw.bitork-din571.d5-l35",
+        "wood-screw.bitork-din571.d5-l40",
+        "wood-screw.bitork-din571.d5-l45",
+        "wood-screw.bitork-din571.d5-l50"
+      ],
+      "reason": null
+    },
+    {
+      "family": "bitork-din571",
+      "nominal_mm": 6,
+      "status": "supported",
+      "entry_ids": [
+        "wood-screw.bitork-din571.d6-l20",
+        "wood-screw.bitork-din571.d6-l25",
+        "wood-screw.bitork-din571.d6-l30",
+        "wood-screw.bitork-din571.d6-l35",
+        "wood-screw.bitork-din571.d6-l40",
+        "wood-screw.bitork-din571.d6-l45",
+        "wood-screw.bitork-din571.d6-l50",
+        "wood-screw.bitork-din571.d6-l55",
+        "wood-screw.bitork-din571.d6-l60"
+      ],
+      "reason": null
+    },
+    {
+      "family": "bitork-din571",
+      "nominal_mm": 7,
+      "status": "unavailable",
+      "entry_ids": [],
+      "reason": "Head and V-reference dimensions exist, but Bitork has no populated discrete length cell for diameter 7."
+    },
+    {
+      "family": "bitork-din571",
+      "nominal_mm": 8,
+      "status": "supported",
+      "entry_ids": [
+        "wood-screw.bitork-din571.d8-l25",
+        "wood-screw.bitork-din571.d8-l30",
+        "wood-screw.bitork-din571.d8-l35",
+        "wood-screw.bitork-din571.d8-l40",
+        "wood-screw.bitork-din571.d8-l45",
+        "wood-screw.bitork-din571.d8-l50",
+        "wood-screw.bitork-din571.d8-l55",
+        "wood-screw.bitork-din571.d8-l60",
+        "wood-screw.bitork-din571.d8-l70",
+        "wood-screw.bitork-din571.d8-l80",
+        "wood-screw.bitork-din571.d8-l100"
+      ],
+      "reason": null
+    },
+    {
+      "family": "bitork-din571",
+      "nominal_mm": 9,
+      "status": "unavailable",
+      "entry_ids": [],
+      "reason": "No populated diameter/length cell in the selected Bitork DIN 571 dimensional family; no interpolation or other-family substitution."
+    },
+    {
+      "family": "bitork-din571",
+      "nominal_mm": 10,
+      "status": "supported",
+      "entry_ids": [
+        "wood-screw.bitork-din571.d10-l30",
+        "wood-screw.bitork-din571.d10-l35",
+        "wood-screw.bitork-din571.d10-l40",
+        "wood-screw.bitork-din571.d10-l45",
+        "wood-screw.bitork-din571.d10-l50",
+        "wood-screw.bitork-din571.d10-l55",
+        "wood-screw.bitork-din571.d10-l60",
+        "wood-screw.bitork-din571.d10-l70",
+        "wood-screw.bitork-din571.d10-l80",
+        "wood-screw.bitork-din571.d10-l100"
+      ],
+      "reason": null
+    }
+  ],
+  "excluded_families": [
+    {
+      "family": "fischer-powerfast-ii-ctf-bc",
+      "status": "unavailable",
+      "reason": "Real manufacturer TX SKU/length/head-diameter/thread-extent rows exist, but complete head-height, recess-depth and proprietary point/thread geometry are not established. No DIN 7998 profile facts may be transplanted."
+    },
+    {
+      "family": "phillips-h-wood-screw",
+      "status": "unavailable",
+      "reason": "No pinned complete product-specific diameter/length/head/recess/point row established. PZ/Z products are not Phillips H."
+    }
+  ]
+}

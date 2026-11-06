@@ -2020,10 +2020,12 @@ fn export_step(host: &dyn Host, call: &Request, args: ExportStep) -> ToolResult 
         .ok_or_else(|| {
             ToolError::new("model_failed", "The part has no final solid").involving(part)
         })?;
-    if multicad_core::model::cosmetic_thread_in_history(&document, feature)?.is_some() {
+    if let Some(limitation) =
+        multicad_core::model::manufacturing_limitation_in_history(&document, feature)?
+    {
         return Err(ToolError::new(
             "unsupported",
-            "Cosmetic thread envelopes contain no helical manufacturing geometry; switch the thread to Modeled before exporting STEP",
+            format!("{}; exporting STEP is unavailable", limitation.message()),
         )
         .involving(part));
     }

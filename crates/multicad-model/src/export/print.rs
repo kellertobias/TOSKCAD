@@ -254,7 +254,7 @@ impl Exporter {
         }
         checkpoint(interrupt)?;
         let mut selection = resolve_print(document, revision, request)?;
-        let cosmetic_threads = model::has_cosmetic_threads(document)
+        let manufacturing_limitations = model::has_manufacturing_limitations(document)
             .map_err(|e| failure(ErrorKind::Invalid, None, e))?;
         let parameters = multicad_core::parameters::evaluate(document)
             .map_err(|e| failure(ErrorKind::Invalid, None, e))?;
@@ -348,18 +348,20 @@ impl Exporter {
                     }));
                     continue;
                 };
-                if cosmetic_threads
-                    && let Some(thread) = model::cosmetic_thread_in_history(document, producer)
-                        .map_err(|e| invalid(e.to_string()))?
+                if manufacturing_limitations
+                    && let Some(limitation) =
+                        model::manufacturing_limitation_in_history(document, producer)
+                            .map_err(|e| invalid(e.to_string()))?
                 {
                     let name = document
-                        .get(thread)
-                        .map_or_else(|| thread.to_string(), |e| e.name.clone());
+                        .get(limitation.feature)
+                        .map_or_else(|| limitation.feature.to_string(), |e| e.name.clone());
                     return Err(failure(
                         ErrorKind::Unsupported,
-                        Some(thread),
+                        Some(limitation.feature),
                         format!(
-                            "{name} is a cosmetic thread envelope. Switch it to Modeled before creating a print package."
+                            "{name}: {} Creating a print package is unavailable.",
+                            limitation.message()
                         ),
                     ));
                 }

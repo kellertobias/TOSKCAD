@@ -148,6 +148,9 @@ impl SearchIndex {
                     }
                     if let Some(nominal) = facts.nominal_fastener_diameter_mm {
                         text.push_str(&format!(" nominal fastener {nominal} mm"));
+                        if card.family == "Wood screw envelope" {
+                            text.push_str(&format!(" d{nominal}"));
+                        }
                     }
                 }
                 CardSearch {
@@ -162,11 +165,13 @@ impl SearchIndex {
         !query.conflicting_nominals
             && (family.is_empty() || part.card.family == family)
             && query.nominal.is_none_or(|nominal| {
-                part.card
-                    .catalog_facts
-                    .as_ref()
-                    .and_then(|facts| facts.nominal_fastener_diameter_mm)
-                    == Some(nominal)
+                part.card.family != "Wood screw envelope"
+                    && part
+                        .card
+                        .catalog_facts
+                        .as_ref()
+                        .and_then(|facts| facts.nominal_fastener_diameter_mm)
+                        == Some(nominal)
             })
             && query.contains(&part.text)
     }
@@ -418,6 +423,11 @@ mod tests {
                     grade: None,
                 }),
             };
+        let mut wood = card("DIN571-related wood screw d6", Some(6.), 6., "");
+        wood.family = "Wood screw envelope".into();
+        let wood = SearchIndex::new("Wood source".into(), vec![wood]);
+        assert!(wood.matches(&SearchQuery::new("wood d6"), ""));
+        assert!(!wood.matches(&SearchQuery::new("M6"), ""));
         let three = card("Small fixture", Some(3.), 3.2, "Fixture steel");
         let decimal = card("Decimal fixture", Some(3.5), 3.7, "Fixture steel");
         let thirty = card("Large fixture", Some(30.), 31., "Fixture brass");

@@ -1,7 +1,7 @@
 <!-- Kind: reference; Audience: catalog maintainers and reviewers; Purpose: record source, geometry and coverage of the bundled Library; Non-goals: certify manufactured parts or reproduce vendor CAD. -->
 # Included Library definitions
 
-The Library includes metric machine screws, hex-nut dimensional references, normal-series plain washers, generic trees and shrubs, four curated bearing mounting envelopes and generic apartment equipment. All use dynamic, pinned native symbol definitions.
+The Library includes metric machine screws, simplified wood-screw stock envelopes, hex-nut dimensional references, normal-series plain washers, generic trees and shrubs, four curated bearing mounting envelopes and generic apartment equipment. All use dynamic, pinned native symbol definitions.
 
 ## Mechanical envelopes
 
@@ -33,6 +33,14 @@ These definitions retain one typed authored length. Countersunk length includes 
 
 Each pin exposes nominal thread diameter, pitch, across flats, height and thread representation. Library placement and instance editing offer Cosmetic envelope and Modeled helix as named choices. Representation is independently retained per instance; it does not require replacing a pin or changing sibling instances. Cosmetic geometry remains display-only and manufacturing refuses it. Modeled geometry contains the actual internal helix. Physical dimension edits retain their literal source facts and become configured/custom; a representation-only change preserves those dimensional facts.
 
+### Wood-screw stock envelopes
+
+[wood-screws-curation.json](wood-screws-curation.json) retains 44 discrete Bitork DIN 571-related external-hex dimensional rows: d4 × 16–40 mm, d5 × 16–50 mm, d6 × 20–60 mm, d8 × 25–100 mm and d10 × 30–100 mm. These ranges contain only the individually listed source lengths. The twelve requested nominal diameters each have explicit supported or unavailable status; d7 has head facts but no populated length row. Fischer TX and Phillips H combinations remain excluded because complete supported dimensions are unverified. These are wood designations, without a machine-thread M prefix. Technical table membership does not establish current supplier inventory, material or strength.
+
+Each native preview shows a connected smooth nominal-diameter cylinder and external-hex head, using nominal head height and maximum across flats. The sharp hexagonal envelope does not reproduce the source diagonal or head chamfers. A flat distal plane encloses the manufacturer-unspecified point. Separate DIN 7998-related pitch, core and V-angle references are retained as intent; they do not create a metric helix or recover a wood-thread profile. The minimum threaded extent is 0.6 times underhead length and includes the point and thread-start transition. It is a lower bound, not actual thread length or start. All manufacturing exports refuse this simplified source, including through placed symbols and downstream geometry.
+
+Seven instance inputs retain the nominal diameter, underhead length, head dimensions and reference profile. The minimum extent remains bound to underhead length; the immutable literal reference stays unchanged when a configuration becomes custom. Generic hardware editing also supports an explicit overall-length convention. [Source notices](sources/wood-screws/WOOD-SCREW-NOTICES.md) and the [source ledger](sources/wood-screws/source-ledger.json) record the dimensional evidence, conflicting d5 head-height maximum and rights boundaries. No source PDF, artwork, third-party CAD or FreeCAD code is bundled.
+
 ### Plain washers
 
 [washers-curation.json](washers-curation.json) owns the exact requested nominal coverage, physical dimensions, source commit/hash, cross-checks and the explicit M10 bore correction. Fastener nominal diameter is a retained catalog fact, separate from physical bore. Material and grade remain unspecified. The selected series is BOLTS `plainwasher1` normal-series reference dimensions at the pinned revision; upstream standard labels without editions do not certify a current standard.
@@ -58,7 +66,7 @@ Only the licensed reference dimensions are adapted. No manufacturer CAD, meshes,
 
 ## Generation and revisions
 
-The Rust developer example `mechanical_library` builds the selected hardware family through the same typed transactions and native compiler as the application. Saved previews render those native solids. The default mode reads the washer curation; `--machine-screws` reads its original screw rows, `--screw-heads` reads the additional profile rows, and `--hex-nuts` reads the nut curation. Each creates dynamic symbol definitions and `.tcd` files with the bounded `library.json` manifest. Projects outside the selected family are checksum-checked and copied byte for byte, preserving their identities, revisions and pins. The output folder must be empty. Required source data, notices and this README accompany the result.
+The Rust developer example `mechanical_library` builds the selected hardware family through the same typed transactions and native compiler as the application. Saved previews render those native solids. The default mode reads the washer curation; `--machine-screws` reads its original screw rows, `--screw-heads` reads the additional profile rows, `--hex-nuts` reads the nut curation, and `--wood-screws` reads the simplified wood-envelope curation. Each creates dynamic symbol definitions and `.tcd` files with the bounded `library.json` manifest. Projects outside the selected family are checksum-checked and copied byte for byte, preserving their identities, revisions and pins. The output folder must be empty. Required source data, notices and this README accompany the result.
 
 Regenerate into an empty review folder:
 
@@ -67,9 +75,10 @@ cargo run -p multicad-app --example mechanical_library --locked -- /tmp/toskcad-
 cargo run -p multicad-app --example mechanical_library --locked -- /tmp/toskcad-screw-review --machine-screws
 cargo run -p multicad-app --example mechanical_library --locked -- /tmp/toskcad-screw-head-review --screw-heads
 cargo run -p multicad-app --example mechanical_library --locked -- /tmp/toskcad-nut-review --hex-nuts
+cargo run -p multicad-app --example mechanical_library --locked -- /tmp/toskcad-wood-review --wood-screws
 ```
 
-Washer identities use exact scaled nominal keys. Nut identities add the exact family/edition in their own namespace; representation remains an instance input. Legacy screw identities retain their head-family and underhead-length namespace. Additional profile identities use explicit family codes and the authored length in that family's retained convention, including overall length for countersunk heads. Bearing identities retain their existing designation-derived namespace. Adding an entry does not renumber another definition. A dimensional or definition change requires a new catalog/symbol revision and explicit update review. Runtime geometry comes from retained native source, never a lookup in a newer dimension table.
+Washer identities use exact scaled nominal keys. Nut identities add the exact family/edition in their own namespace; representation remains an instance input. Legacy screw identities retain their head-family and underhead-length namespace. Additional profile identities use explicit family codes and the authored length in that family's retained convention, including overall length for countersunk heads. Wood-envelope identities use a separate namespace keyed by exact nominal diameter and underhead length; same-pin regeneration refuses differing project bytes or definition content. Bearing identities retain their existing designation-derived namespace. Adding an entry does not renumber another definition. A dimensional or definition change requires a new catalog/symbol revision and explicit update review. Runtime geometry comes from retained native source, never a lookup in a newer dimension table.
 
 ## Generic planting presets
 
@@ -85,6 +94,6 @@ The 22 `equipment-*.tcd` projects supply owned generic electrical/lighting, heat
 
 ## Hardware coverage still open
 
-The washer and nut curations own their bounded nominal coverage and explicit unavailable/custom cases. The Library also supplies four open bearing mounting envelopes. Sealed/shielded variants, detailed bearing internals and screw families beyond the listed machine-screw matrix remain outside these entries.
+The washer and nut curations own their bounded nominal coverage and explicit unavailable/custom cases. The Library also supplies four open bearing mounting envelopes. Sealed/shielded variants, detailed bearing internals and screw families beyond the listed machine-screw and simplified wood-envelope matrices remain outside these entries.
 
-The washer, nut and screw curations share the requested nominal-size set and record their own supported choices, with larger sizes extensible through explicit reviewed revisions. Head/drive combinations beyond the listed profile matrix, wood-thread conventions, material variants and fastener-connection integration require their own sourced definitions. Reference metadata does not assert stock availability.
+The washer, nut and screw curations share the requested nominal-size set and record their own supported choices, with larger sizes extensible through explicit reviewed revisions. Head/drive combinations beyond the listed profile matrix, modeled wood-thread and point geometry, material variants and fastener-connection integration require their own sourced definitions. Reference metadata does not assert stock availability.

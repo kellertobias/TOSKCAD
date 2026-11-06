@@ -666,8 +666,9 @@ impl Exporter {
         }
         let names = filenames(&effective, document.name())?;
         let aid_parts = multicad_core::model::aid_parts(document);
-        let cosmetic_threads = multicad_core::model::has_cosmetic_threads(document)
-            .map_err(|e| failure(ErrorKind::Invalid, None, e))?;
+        let manufacturing_limitations =
+            multicad_core::model::has_manufacturing_limitations(document)
+                .map_err(|e| failure(ErrorKind::Invalid, None, e))?;
         let mut recipes = Vec::new();
         let mut artifacts = Vec::new();
         let mut generated = BTreeMap::new();
@@ -689,7 +690,7 @@ impl Exporter {
             } else {
                 RecipeStatus::Ready
             };
-            if cosmetic_threads
+            if manufacturing_limitations
                 && status == RecipeStatus::Ready
                 && matches!(
                     recipe.output,
@@ -706,16 +707,18 @@ impl Exporter {
                     };
                     for part in parts {
                         if let Some((_, producer, ..)) = selected.get(part)
-                            && let Some(thread) = multicad_core::model::cosmetic_thread_in_history(
-                                document, *producer,
-                            )
-                            .map_err(|e| failure(ErrorKind::Invalid, Some(*producer), e))?
+                            && let Some(limitation) =
+                                multicad_core::model::manufacturing_limitation_in_history(
+                                    document, *producer,
+                                )
+                                .map_err(|e| failure(ErrorKind::Invalid, Some(*producer), e))?
                         {
                             let name = document
-                                .get(thread)
-                                .map_or_else(|| thread.to_string(), |e| e.name.clone());
+                                .get(limitation.feature)
+                                .map_or_else(|| limitation.feature.to_string(), |e| e.name.clone());
                             status = RecipeStatus::Unsupported(format!(
-                                "{name} is a cosmetic thread envelope. Switch it to Modeled before STEP, mesh or manufacturing-outline export."
+                                "{name}: {} STEP, mesh or manufacturing-outline export is unavailable.",
+                                limitation.message()
                             ));
                             break;
                         }

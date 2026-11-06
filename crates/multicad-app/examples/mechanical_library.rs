@@ -14,6 +14,8 @@ mod machine_screw_catalog;
 pub mod nut_catalog;
 #[path = "support/screw_head_catalog.rs"]
 pub mod screw_head_catalog;
+#[path = "support/wood_screw_catalog.rs"]
+pub mod wood_screw_catalog;
 use equipment_library::plant_library;
 use multicad_core::{
     commands::{Actor, Channel, Request, Session},
@@ -496,10 +498,11 @@ fn main() -> Result<(), Error> {
         Some("--machine-screws") => return machine_screw_catalog::generate(output),
         Some("--hex-nuts") => return nut_catalog::generate(output),
         Some("--screw-heads") => return screw_head_catalog::generate(output),
+        Some("--wood-screws") => return wood_screw_catalog::generate(output),
         None => {}
         _ => {
             return Err(
-                "Optional catalog mode must be --machine-screws, --hex-nuts or --screw-heads"
+                "Optional catalog mode must be --machine-screws, --hex-nuts, --screw-heads or --wood-screws"
                     .into(),
             );
         }

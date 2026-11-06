@@ -1,5 +1,6 @@
 //! Native mounting geometry and nut threads from retained canonical parameters.
 mod screw_profiles;
+mod wood_screws;
 use crate::{ModelError, error};
 use multicad_core::{
     document::EntityId,
@@ -392,6 +393,9 @@ pub(crate) fn build(
         .map_err(|e| error(Some(feature), e))?;
     let factory_key = screw_key(&resolved, policy);
     match resolved {
+        ResolvedMechanicalPart::WoodScrew { parameters } => {
+            wood_screws::build(feature, &parameters, policy)
+        }
         ResolvedMechanicalPart::MachineScrew {
             underhead_length_mm,
             shank_radius_mm,

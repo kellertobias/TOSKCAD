@@ -102,6 +102,53 @@ export function bundleExamples(resources,directory=join(root,'examples')){
   for(const file of checked.files){const destination=join(target,...file.split('/'));mkdirSync(dirname(destination),{recursive:true});copyFileSync(join(directory,...file.split('/')),destination);}
   return checked;
 }
+// Wood catalog facts are independently checked here; no imported PDF/art is needed.
+function validateWoodCatalog(inside,files,projects){
+  const wood=JSON.parse(readFileSync(inside('wood-screws-curation.json'),'utf8'));
+  const ledger=JSON.parse(readFileSync(inside('sources/wood-screws/source-ledger.json'),'utf8'));
+  const only=(v,keys)=>v!=null&&typeof v==='object'&&!Array.isArray(v)&&Object.keys(v).every(k=>keys.includes(k));
+  const stable=v=>JSON.stringify(v,(_key,value)=>value&&typeof value==='object'&&!Array.isArray(value)?Object.fromEntries(Object.entries(value).sort(([a],[b])=>a.localeCompare(b))):value);
+  if(!only(wood,['format','version','revision','verified_on','scope','representation','modeling_targets','sources','entries','coverage','excluded_families'])||wood.format!=='toskcad.wood-screw-curation'||wood.version!==1||wood.revision!=='1'||!wood.verified_on||!wood.scope||wood.representation!=='simplified_envelope'||!Array.isArray(wood.entries)||wood.entries.length!==44||!Array.isArray(wood.coverage)||wood.coverage.length!==12||!Array.isArray(wood.sources)||wood.sources.length!==3)throw new Error('Invalid bundled wood screw curation');
+  if(!only(wood.modeling_targets,['head_height','across_flats','underhead_length','stock_diameter','distal_end','point','manufacturing','thread_extent'])||wood.modeling_targets.manufacturing!=='unavailable'||wood.modeling_targets.point!=='unspecified_manufacturer_end'||Object.values(wood.modeling_targets).some(v=>typeof v!=='string'||!v))throw new Error('Invalid bundled wood envelope representation');
+  const sourceHashes=new Map([
+    ['bitork-din571-undated','8012551843685e2fe5a4514650ed4c411137db05f176e627192c24c9796ee6bf'],
+    ['placencia-din7998-undated','c4e1d550a264484f044c6c6675a2a50c636f61a198eda3ac463ba62a8b0f821f'],
+    ['westfield-din571-undated','b984e632bd5016745bf60d78e5c07b3771f408a920d72397250a4662834be610'],
+  ]),sourceIds=new Set();
+  const sourceUrls=new Map([['bitork-din571-undated','https://www.bitorkfasteners.com/_files/ugd/179fe5_75017d246622499e8e22164ae1b4ed59.pdf'],['placencia-din7998-undated','https://www.tornilleriaplacencia.com/temas/bootstrap/uploads/archivos/Apartado_Tecnico.pdf'],['westfield-din571-undated','https://www.westfieldfasteners.co.uk/Standards/Woodscrew-CoachScr.pdf']]);
+  for(const s of wood.sources){if(!only(s,['id','url','sha256','reference','role','rights'])||sourceIds.has(s.id)||sourceHashes.get(s.id)!==s.sha256||sourceUrls.get(s.id)!==s.url||![s.reference,s.role,s.rights].every(x=>typeof x==='string'&&x))throw new Error('Invalid bundled wood source reference');sourceIds.add(s.id);}
+  if(!only(ledger,['format','version','verified_on','sources','excluded_source','edition_records'])||ledger.format!=='toskcad.wood-screw-source-ledger'||ledger.version!==1||stable(ledger.sources)!==stable(wood.sources))throw new Error('Bundled wood source ledger differs from curation');
+  const specs=new Map([
+    [4,{lengths:[16,20,25,30,35,40],head:[2.8,2.5,3.1,6.64,7,7.50],profile:[1.8,2.8]}],
+    [5,{lengths:[16,20,25,30,35,40,45,50],head:[3.5,3.13,3.88,7.64,8,8.63],profile:[2.2,3.5]}],
+    [6,{lengths:[20,25,30,35,40,45,50,55,60],head:[4,3.63,4.38,9.64,10,10.89],profile:[2.6,4.2]}],
+    [8,{lengths:[25,30,35,40,45,50,55,60,70,80,100],head:[5.5,5.13,5.88,12.57,13,14.20],profile:[3.6,5.6]}],
+    [10,{lengths:[30,35,40,45,50,55,60,70,80,100],head:[7,6.55,7.45,16.57,17,18.72],profile:[4.5,7]}],
+  ]),ids=new Set(),woodFiles=new Set(),cells=new Set();
+  const headKeys=['height_nominal_mm','height_min_mm','height_max_mm','across_flats_min_mm','across_flats_max_mm','diagonal_reference_mm'];
+  const lengthLimits=new Map([[16,[15.1,16.9]],[20,[18.95,21.05]],[25,[23.95,26.05]],[30,[28.95,31.05]],[35,[33.75,36.25]],[40,[38.75,41.25]],[45,[43.75,46.25]],[50,[48.75,51.25]],[55,[53.5,56.5]],[60,[58.5,61.5]],[70,[68.5,71.5]],[80,[78.5,81.5]],[100,[98.25,101.75]]]);
+  for(const e of wood.entries){
+    const spec=specs.get(e.nominal_mm),slug=`d${e.nominal_mm}-l${e.underhead_length_mm}`,cell=JSON.stringify([e.nominal_mm,e.underhead_length_mm]);
+    if(!only(e,['id','file','designation','family','nominal_mm','underhead_length_mm','length_min_mm','length_max_mm','head','v_reference','minimum_thread_extent_ratio','source_weight_g','dimensional_source','profile_reference_source','minimum_extent_source','correction'])||!spec?.lengths.includes(e.underhead_length_mm)||cells.has(cell)||e.id!==`wood-screw.bitork-din571.${slug}`||e.file!==`wood-screw-bitork-din571-${slug}.tcd`||e.designation!==`${e.nominal_mm} × ${e.underhead_length_mm}`||e.family!=='bitork-din571'||ids.has(e.id)||woodFiles.has(e.file)||!files.has(e.file)||e.correction!==null||e.minimum_thread_extent_ratio!==0.6||e.dimensional_source!=='bitork-din571-undated'||e.profile_reference_source!=='placencia-din7998-undated'||e.minimum_extent_source!=='westfield-din571-undated'||!Number.isFinite(e.source_weight_g)||e.source_weight_g<=0||e.length_min_mm!==lengthLimits.get(e.underhead_length_mm)?.[0]||e.length_max_mm!==lengthLimits.get(e.underhead_length_mm)?.[1]||!only(e.head,headKeys)||headKeys.some((key,i)=>e.head[key]!==spec.head[i])||!only(e.v_reference,['pitch_mm','core_diameter_mm','included_angle_deg','included_angle_tolerance_deg'])||e.v_reference.pitch_mm!==spec.profile[0]||e.v_reference.core_diameter_mm!==spec.profile[1]||e.v_reference.included_angle_deg!==60||e.v_reference.included_angle_tolerance_deg!==6)throw new Error('Invalid bundled wood project/source closure');
+    const key=(BigInt(e.nominal_mm*1000)*1000000n+BigInt(e.underhead_length_mm*1000))*100n;
+    const identity=`cad23700-0000-4000-8000-${key.toString(16).padStart(12,'0')}`;
+    if(projects.find(p=>p.file===e.file)?.document!==identity)throw new Error('Bundled wood project identity differs from curation');
+    const raw=readFileSync(inside(e.file)),n=Number(raw.readBigUInt64LE(12)),manifest=JSON.parse(raw.subarray(52,52+n)),doc=JSON.parse(raw.subarray(52+n,52+n+manifest.source.length));
+    const mechanical=Object.values(doc.entities).filter(entity=>entity.data?.definition?.type_id==='model.mechanical_part');
+    if(!manifest.required_capabilities?.includes('model.mechanical_part.wood_screw.1')||mechanical.length!==1||mechanical[0].data.definition.data.parameters.kind!=='wood_screw'||mechanical[0].data.definition.data.parameters.representation!=='simplified_envelope'||mechanical[0].data.definition.data.provenance?.source_url!==sourceUrls.get(e.dimensional_source)||mechanical[0].data.definition.data.provenance?.catalog_id!==`toskcad.sourced.${e.id}`||mechanical[0].data.definition.data.provenance?.reference_geometry.kind!=='wood_screw'||mechanical[0].data.definition.data.provenance.reference_geometry.representation!=='simplified_envelope')throw new Error('Bundled wood project representation/capability differs from curation');
+    ids.add(e.id);woodFiles.add(e.file);cells.add(cell);
+  }
+  const nominals=new Set([2,2.5,3,3.5,4,4.5,5,6,7,8,9,10]),covered=new Set();
+  for(const c of wood.coverage){
+    const expected=wood.entries.filter(e=>e.nominal_mm===c.nominal_mm).map(e=>e.id).sort();
+    if(!only(c,['family','nominal_mm','status','entry_ids','reason'])||c.family!=='bitork-din571'||!nominals.delete(c.nominal_mm)||!Array.isArray(c.entry_ids)||stable([...c.entry_ids].sort())!==stable(expected)||(expected.length?(c.status!=='supported'||c.reason!==null):(c.status!=='unavailable'||typeof c.reason!=='string'||!c.reason)))throw new Error('Invalid bundled wood coverage');
+    for(const id of c.entry_ids){if(covered.has(id))throw new Error('Duplicate bundled wood coverage');covered.add(id);}
+  }
+  if(nominals.size||covered.size!==44)throw new Error('Bundled wood coverage omits a project');
+  const excluded=new Set(['fischer-powerfast-ii-ctf-bc','phillips-h-wood-screw']);
+  if(!Array.isArray(wood.excluded_families)||wood.excluded_families.length!==2)throw new Error('Invalid bundled wood exclusions');
+  for(const f of wood.excluded_families)if(!only(f,['family','status','reason'])||!excluded.delete(f.family)||f.status!=='unavailable'||typeof f.reason!=='string'||!f.reason)throw new Error('Invalid bundled wood exclusions');
+}
 export function validateBundledLibrary(directory=join(root,'library')){
   const base=realpathSync(directory),manifest=JSON.parse(readFileSync(join(directory,'library.json'),'utf8'));
   const only=(value,keys)=>Object.keys(value??{}).every(key=>keys.includes(key));
@@ -122,7 +169,7 @@ export function validateBundledLibrary(directory=join(root,'library')){
     projects.push({file:entry.file,...project});files.add(entry.file);identities.add(entry.document);
   }
   for(const required of manifest.requires){inside(required);files.add(required);}
-  for(const required of ['curation.json','washers-curation.json','README.md','sources/bolts/bearings.blt','sources/bolts/washer.blt','sources/bolts/WASHER-NOTICES.md','machine-screws-curation.json','sources/bolts/hex_socket.blt','sources/bolts/hex.blt','sources/bolts/MACHINE-SCREW-NOTICES.md','sources/bolts/SCREW-PROFILE-NOTICES.md','nuts-curation.json','sources/bolts/nut.blt','sources/bolts/NUT-NOTICES.md','sources/bolts/COPYING.LESSER'])if(!files.has(required))throw new Error(`Bundled Library notice/source closure is missing ${required}`);
+  for(const required of ['curation.json','washers-curation.json','README.md','sources/bolts/bearings.blt','sources/bolts/washer.blt','sources/bolts/WASHER-NOTICES.md','machine-screws-curation.json','sources/bolts/hex_socket.blt','sources/bolts/hex.blt','sources/bolts/MACHINE-SCREW-NOTICES.md','sources/bolts/SCREW-PROFILE-NOTICES.md','nuts-curation.json','sources/bolts/nut.blt','sources/bolts/NUT-NOTICES.md','sources/bolts/COPYING.LESSER','wood-screws-curation.json','sources/wood-screws/source-ledger.json','sources/wood-screws/WOOD-SCREW-NOTICES.md'])if(!files.has(required))throw new Error(`Bundled Library notice/source closure is missing ${required}`);
   const curation=JSON.parse(readFileSync(inside('curation.json'),'utf8'));
   if(curation.data_license!=='LGPL-2.1-or-later'||createHash('sha256').update(readFileSync(inside('sources/bolts/bearings.blt'))).digest('hex')!==curation.data_sha256)throw new Error('Bundled Library reference license/hash differs from curation');
   const washers=JSON.parse(readFileSync(inside('washers-curation.json'),'utf8'));
@@ -151,6 +198,7 @@ export function validateBundledLibrary(directory=join(root,'library')){
   const nuts=JSON.parse(readFileSync(inside('nuts-curation.json'),'utf8'));
   if(nuts.format!=='toskcad.nut-curation'||nuts.version!==1||!Array.isArray(nuts.entries)||nuts.entries.length!==19||!Array.isArray(nuts.coverage)||nuts.coverage.length!==24||nuts.entries.some(entry=>!files.has(entry.file)))throw new Error('Invalid bundled nut curation or project closure');
   if(nuts.data_license!=='LGPL-2.1-or-later'||createHash('sha256').update(readFileSync(inside('sources/bolts/nut.blt'))).digest('hex')!==nuts.data_sha256)throw new Error('Bundled Library nut reference license/hash differs from curation');
+  validateWoodCatalog(inside,files,projects);
   const unlisted=readdirSync(directory).filter(name=>name.endsWith('.tcd')&&!files.has(name));
   if(unlisted.length)throw new Error(`Unlisted bundled Library projects: ${unlisted.join(', ')}`);
   return {files:[...files].sort(),projects};

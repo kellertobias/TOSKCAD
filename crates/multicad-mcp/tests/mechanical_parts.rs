@@ -141,7 +141,13 @@ fn nut_uses_shared_thread_recipe_and_manufacturing_guard_while_bearing_is_explic
     let profiles = run(&h, "mechanical_part_profiles", json!({}));
     assert_eq!(
         profiles["supported_geometry"],
-        json!(["washer", "hex_nut", "bearing_envelope", "machine_screw"])
+        json!([
+            "washer",
+            "hex_nut",
+            "bearing_envelope",
+            "machine_screw",
+            "wood_screw"
+        ])
     );
     assert!(
         profiles["catalog_status"]

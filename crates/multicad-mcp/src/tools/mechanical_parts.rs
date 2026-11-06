@@ -160,6 +160,18 @@ pub struct PhillipsHProfileArgs {
 #[derive(Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum MechanicalRecipeArgs {
+    WoodScrew {
+        length_input: Option<ScrewLengthInputArgs>,
+        nominal_diameter: Option<Quantity>,
+        head: Option<Box<ScrewHeadArgs>>,
+        drive: Option<Box<ScrewDriveArgs>>,
+        reference_profile: Option<Box<WoodReferenceArgs>>,
+        minimum_tip_inclusive_thread_extent: Option<Quantity>,
+        point: Option<WoodPointArgs>,
+        representation: Option<WoodRepresentationArgs>,
+        #[serde(flatten)]
+        frame: MechanicalFrameArgs,
+    },
     Washer {
         #[serde(default)]
         bore_diameter: Option<Quantity>,
@@ -197,6 +209,23 @@ pub enum MechanicalRecipeArgs {
         #[serde(flatten)]
         frame: MechanicalFrameArgs,
     },
+}
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct WoodReferenceArgs {
+    pitch: Option<Quantity>,
+    core_diameter: Option<Quantity>,
+    included_angle: Option<Quantity>,
+}
+#[derive(Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum WoodPointArgs {
+    ManufacturerUnspecified,
+}
+#[derive(Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum WoodRepresentationArgs {
+    SimplifiedEnvelope,
 }
 #[derive(Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -399,6 +428,96 @@ fn parameters(
     };
     let mismatch = || ToolError::invalid("A mechanical Part edit retains its generator family");
     let p = match args {
+        MechanicalRecipeArgs::WoodScrew {
+            length_input,
+            nominal_diameter,
+            head,
+            drive,
+            reference_profile,
+            minimum_tip_inclusive_thread_extent,
+            point: _,
+            representation: _,
+            frame,
+        } => {
+            let default = model::default_wood_screw();
+            let MechanicalPartParameters::WoodScrew { parameters: old } =
+                previous.unwrap_or(&default)
+            else {
+                return Err(mismatch());
+            };
+            let mut wood = old.as_ref().clone();
+            if let Some(value) = length_input {
+                wood.length_input = match value {
+                    ScrewLengthInputArgs::Underhead { value } => {
+                        model::ScrewLengthInput::Underhead {
+                            value: value.dimension(doc, eval)?.0,
+                        }
+                    }
+                    ScrewLengthInputArgs::Overall { value } => model::ScrewLengthInput::Overall {
+                        value: value.dimension(doc, eval)?.0,
+                    },
+                };
+            }
+            wood.nominal_diameter = mm(nominal_diameter, &wood.nominal_diameter)?;
+            wood.minimum_tip_inclusive_thread_extent = mm(
+                minimum_tip_inclusive_thread_extent,
+                &wood.minimum_tip_inclusive_thread_extent,
+            )?;
+            if let Some(profile) = reference_profile {
+                wood.reference_profile.pitch = mm(&profile.pitch, &wood.reference_profile.pitch)?;
+                wood.reference_profile.core_diameter = mm(
+                    &profile.core_diameter,
+                    &wood.reference_profile.core_diameter,
+                )?;
+                wood.reference_profile.included_angle = patched_dimension(
+                    &profile.included_angle,
+                    Some(&wood.reference_profile.included_angle),
+                    "Wood reference included_angle",
+                    multicad_core::parameters::Unit::Degree,
+                    doc,
+                    eval,
+                )?;
+            }
+            if let Some(head) = head {
+                let ScrewHeadArgs::ExternalHex {
+                    across_flats,
+                    height,
+                } = head.as_ref()
+                else {
+                    return Err(ToolError::new(
+                        "unsupported",
+                        "Wood screw envelopes support only an external_hex head",
+                    ));
+                };
+                let ScrewHead::ExternalHex {
+                    across_flats: a,
+                    height: h,
+                } = &wood.head
+                else {
+                    return Err(ToolError::new(
+                        "unsupported",
+                        "Unsupported retained wood head",
+                    ));
+                };
+                wood.head = ScrewHead::ExternalHex {
+                    across_flats: mm(across_flats, a)?,
+                    height: mm(height, h)?,
+                };
+            }
+            if drive
+                .as_ref()
+                .is_some_and(|drive| !matches!(drive.as_ref(), ScrewDriveArgs::ExternalHex))
+            {
+                return Err(ToolError::new(
+                    "unsupported",
+                    "Wood screw envelopes support only an external_hex drive",
+                ));
+            }
+            wood.frame = frame.apply(wood.frame, doc, eval)?;
+            MechanicalPartParameters::WoodScrew {
+                parameters: Box::new(wood),
+            }
+        }
         MechanicalRecipeArgs::Washer {
             bore_diameter,
             outside_diameter,
@@ -803,12 +922,13 @@ fn parameters(
 }
 pub(super) fn mechanical_part_profiles(_: &dyn Host, _: &Request, _: NoArgs) -> ToolResult {
     Ok(json!({
-        "supported_geometry": ["washer", "hex_nut", "bearing_envelope", "machine_screw"],
+        "supported_geometry": ["washer", "hex_nut", "bearing_envelope", "machine_screw", "wood_screw"],
         "head_forms": ["socket_cap", "external_hex", "pan", "button", "countersunk"],
         "drive_forms": ["hex_socket", "external_hex", "hexalobular", "phillips_h"],
         "catalog_status": "Library supplies sourced dimensional references. Generic configurations and configured deviations do not establish supplier stock or fit certification.",
         "nut_thread": "Generic nut creation defaults to a cosmetic envelope. Library sources retain their own thread representation input. Select modeled for manufacturing export.",
         "machine_screw": "underhead_length retains its legacy neck-to-tip meaning. Alternatively length_input selects underhead or overall with one typed value; overall includes the physical head-top height. Supplying either length replaces the other source; supplying both refuses; omission preserves the exact source expression and convention. thread.length is the threaded extent ending at the tip. thread.frame is the neck/construction datum; it is not a flat bearing seat for countersunk heads. Omitted head/drive inputs retain their source; kind changes need explicit dimensions. Cosmetic manufacturing export is refused.",
+        "wood_screw": "Distinct wood source, never a metric M thread: external_hex head and drive only, simplified_envelope representation, manufacturer_unspecified point. length_input retains underhead or overall authorship. reference_profile pitch/core_diameter/included_angle are reference facts, not recovered helical geometry; minimum_tip_inclusive_thread_extent includes the unknown point and transition and is not an actual thread start. Omitted fields preserve exact source. No modeled wood option or machine-thread controls. STEP, mesh, manufacturing-outline and Print exports refuse the envelope, including placed instances and downstream history.",
         "recess_profiles": "Hexalobular uses twelve tangent circular arcs, an explicit functional depth and a separately selected conical bottom. Phillips H retains actual inclined-section dimensions, the H0 rounded or H1-H4 shallow-V inner form, and the mouth roundover. Product gauge penetration is distinct from removed depth.",
         "bearing": "External mounting envelope only; races, rolling elements and seals are not modeled",
         "limits": "Engineering profile targets and nominal-basic threads do not certify gauge acceptance, physical fit, material, strength or current-standard compliance. Inspect retained source facts and configured status separately."
@@ -826,6 +946,19 @@ pub(super) fn inspect_mechanical_part(
     let feature = id(&args.feature)?;
     let source = model::read_mechanical_part(&doc, feature)?;
     let resolved = match source.parameters.resolve(&eval)? {
+        model::ResolvedMechanicalPart::WoodScrew { parameters: wood } => {
+            let model::ResolvedScrewHead::ExternalHex {
+                across_flats_mm,
+                height_mm,
+            } = wood.head
+            else {
+                return Err(ToolError::new(
+                    "unsupported",
+                    "Unsupported resolved wood head",
+                ));
+            };
+            json!({"kind":"wood_screw","authored_length_mm":wood.authored_length_mm,"length_convention":wood.length_convention,"underhead_length_mm":wood.underhead_length_mm,"overall_length_mm":wood.overall_length_mm,"nominal_diameter_mm":wood.nominal_diameter_mm,"head":{"kind":"external_hex","across_flats_mm":across_flats_mm,"height_mm":height_mm},"drive":{"kind":"external_hex"},"reference_profile":{"pitch_mm":wood.reference_profile.pitch_mm,"core_diameter_mm":wood.reference_profile.core_diameter_mm,"included_angle_deg":wood.reference_profile.included_angle_deg},"minimum_tip_inclusive_thread_extent_mm":wood.minimum_tip_inclusive_thread_extent_mm,"maximum_possible_plain_length_mm":wood.maximum_possible_plain_length_mm,"point":wood.point,"representation":wood.representation,"manufacturing_available":false,"representation_limit":"Nominal stock envelope with a flat distal limit plane; actual thread and manufacturer point geometry are unknown","frame":frame_value(wood.frame)})
+        }
         model::ResolvedMechanicalPart::Washer {
             bore_radius_mm,
             outside_radius_mm,

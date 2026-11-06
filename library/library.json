@@ -639,6 +639,226 @@
       "document": "cad23600-0000-4000-8000-49084d08fa40",
       "file": "screw-accu-shb-m3-10-a2-r360-m3-l10.tcd",
       "sha256": "21ef5ab3deea0c85eb26fb2bed2ec58f471d4f7ea2ca56b8cb2472b8b4d2cf86"
+    },
+    {
+      "document": "cad23700-0000-4000-8000-005d21f40a00",
+      "file": "wood-screw-bitork-din571-d4-l16.tcd",
+      "sha256": "b85d341e6b47fa13cdf3e9f3b73d913df9b80f98e4cdf89e639aff46822147ce"
+    },
+    {
+      "document": "cad23700-0000-4000-8000-005d21fa2480",
+      "file": "wood-screw-bitork-din571-d4-l20.tcd",
+      "sha256": "91bd0f2a5a00e5b804de86baf8b38807720b09c4949685d209407a3f77ddcbcb"
+    },
+    {
+      "document": "cad23700-0000-4000-8000-005d2201c5a0",
+      "file": "wood-screw-bitork-din571-d4-l25.tcd",
+      "sha256": "ab373ea3bfeb8d0d47ed5c832b1ff5cc9938962a8b9818d6737391463aa65d74"
+    },
+    {
+      "document": "cad23700-0000-4000-8000-005d220966c0",
+      "file": "wood-screw-bitork-din571-d4-l30.tcd",
+      "sha256": "b5377f28140c65bc84daf5880eb633836cf9c8245629ed119716b7834519566f"
+    },
+    {
+      "document": "cad23700-0000-4000-8000-005d221107e0",
+      "file": "wood-screw-bitork-din571-d4-l35.tcd",
+      "sha256": "053f6c2c42793e1a0d6e0e44abf42f9bf5563113bcb32b102e049b461958f5df"
+    },
+    {
+      "document": "cad23700-0000-4000-8000-005d2218a900",
+      "file": "wood-screw-bitork-din571-d4-l40.tcd",
+      "sha256": "563009da13585110a260cb4a446e7aace8cb9322740d6dd003eeb66e4cdc34c8"
+    },
+    {
+      "document": "cad23700-0000-4000-8000-00746a6af200",
+      "file": "wood-screw-bitork-din571-d5-l16.tcd",
+      "sha256": "6a4d981a9c53e0c097d2031d2b010a57fe04f2eb9a2bb8c9a2c6fd17942de2cb"
+    },
+    {
+      "document": "cad23700-0000-4000-8000-00746a710c80",
+      "file": "wood-screw-bitork-din571-d5-l20.tcd",
+      "sha256": "379bc42cc399fdd1096d2303a2b278a4b221895630eb0d3aa1181fa96eef7080"
+    },
+    {
+      "document": "cad23700-0000-4000-8000-00746a78ada0",
+      "file": "wood-screw-bitork-din571-d5-l25.tcd",
+      "sha256": "44efc59d20b5940f2429596edca43c69ba095cbb9ddf973e17478dca896fcc1c"
+    },
+    {
+      "document": "cad23700-0000-4000-8000-00746a804ec0",
+      "file": "wood-screw-bitork-din571-d5-l30.tcd",
+      "sha256": "f459702b1f5b4f282a18485c57c010d1180eb03467080e673f6e23df3cec2382"
+    },
+    {
+      "document": "cad23700-0000-4000-8000-00746a87efe0",
+      "file": "wood-screw-bitork-din571-d5-l35.tcd",
+      "sha256": "8a052e3ee8e67b207d5a730060ddd26bf748328da11674747eb7c7d7e43ac361"
+    },
+    {
+      "document": "cad23700-0000-4000-8000-00746a8f9100",
+      "file": "wood-screw-bitork-din571-d5-l40.tcd",
+      "sha256": "6efef78f41ce4e4890de2044d6bb4defbffea54a99f5316d607112c88dc7d7c5"
+    },
+    {
+      "document": "cad23700-0000-4000-8000-00746a973220",
+      "file": "wood-screw-bitork-din571-d5-l45.tcd",
+      "sha256": "692db799f3f9413bae01bcb9ffcbbfc33ccbcafbc6bff34616f64dd97f234be6"
+    },
+    {
+      "document": "cad23700-0000-4000-8000-00746a9ed340",
+      "file": "wood-screw-bitork-din571-d5-l50.tcd",
+      "sha256": "6109a49a9e3aba483ca00f2510e802e8f9d2c100b6ccecec7e2e8b39dc594114"
+    },
+    {
+      "document": "cad23700-0000-4000-8000-008bb2e7f480",
+      "file": "wood-screw-bitork-din571-d6-l20.tcd",
+      "sha256": "f9e667e3d976b2d5ca2028b550e6743bb70ea03bfef26c55896b2d501ffd9895"
+    },
+    {
+      "document": "cad23700-0000-4000-8000-008bb2ef95a0",
+      "file": "wood-screw-bitork-din571-d6-l25.tcd",
+      "sha256": "173730e8162089a5935ef6ec138dead73b7d9366f4813600d4b12fc20015ec70"
+    },
+    {
+      "document": "cad23700-0000-4000-8000-008bb2f736c0",
+      "file": "wood-screw-bitork-din571-d6-l30.tcd",
+      "sha256": "e6d1dad38f670ddc6d3217d09370ca193955264d6133f7a68cc07a768193459c"
+    },
+    {
+      "document": "cad23700-0000-4000-8000-008bb2fed7e0",
+      "file": "wood-screw-bitork-din571-d6-l35.tcd",
+      "sha256": "b9bfce3e847dcebec73a9ea05636ec5a9a044dafaae52b487f7ac9b3c8991a29"
+    },
+    {
+      "document": "cad23700-0000-4000-8000-008bb3067900",
+      "file": "wood-screw-bitork-din571-d6-l40.tcd",
+      "sha256": "5712576d9511e5ba0fc67d4d24307f2f5e6964324b0d0783e2a47e4c4a961008"
+    },
+    {
+      "document": "cad23700-0000-4000-8000-008bb30e1a20",
+      "file": "wood-screw-bitork-din571-d6-l45.tcd",
+      "sha256": "4c6963db4b93cbbf64e19b0a698fd4cf1b9f0f07a6021a8eb18fc677d354794a"
+    },
+    {
+      "document": "cad23700-0000-4000-8000-008bb315bb40",
+      "file": "wood-screw-bitork-din571-d6-l50.tcd",
+      "sha256": "ddfb564a374c82ac4d879d7857eb0169783c94552372f2ab491c9d38f3831ec6"
+    },
+    {
+      "document": "cad23700-0000-4000-8000-008bb31d5c60",
+      "file": "wood-screw-bitork-din571-d6-l55.tcd",
+      "sha256": "1a9eafb89bce78810bddc5f44eb903e34bbf5153ee38a20fe2fc0a1b5bf05ef9"
+    },
+    {
+      "document": "cad23700-0000-4000-8000-008bb324fd80",
+      "file": "wood-screw-bitork-din571-d6-l60.tcd",
+      "sha256": "82482f0fb83a3df227081fc85b6e1b065a463295cd0ef38949511a851663f70d"
+    },
+    {
+      "document": "cad23700-0000-4000-8000-00ba43dd65a0",
+      "file": "wood-screw-bitork-din571-d8-l25.tcd",
+      "sha256": "b04bc005ca5ae6a2a865faebc669ffc5badfe80f419e9b58fc7423a7e831a74c"
+    },
+    {
+      "document": "cad23700-0000-4000-8000-00ba43e506c0",
+      "file": "wood-screw-bitork-din571-d8-l30.tcd",
+      "sha256": "1cb9659b625d8b578c2a244a54e79d8a50c76a4ed49ef7375f50a50567d511d6"
+    },
+    {
+      "document": "cad23700-0000-4000-8000-00ba43eca7e0",
+      "file": "wood-screw-bitork-din571-d8-l35.tcd",
+      "sha256": "431e591b8053eb385868f230d703f02d242aa94089e3dbb7256ac5ce034d2e69"
+    },
+    {
+      "document": "cad23700-0000-4000-8000-00ba43f44900",
+      "file": "wood-screw-bitork-din571-d8-l40.tcd",
+      "sha256": "f3d9064f583ab188b7219d8e84e5e725ec1a9bc09aff52abddb4658d2811843a"
+    },
+    {
+      "document": "cad23700-0000-4000-8000-00ba43fbea20",
+      "file": "wood-screw-bitork-din571-d8-l45.tcd",
+      "sha256": "f36ee559c6e56c1d0131fe9aabb60fd15b7d73a544e2fef52f3c38ed8b12e27f"
+    },
+    {
+      "document": "cad23700-0000-4000-8000-00ba44038b40",
+      "file": "wood-screw-bitork-din571-d8-l50.tcd",
+      "sha256": "df698b4197dabb67e74ef267860f675abb000dc05417361f59506ec377322140"
+    },
+    {
+      "document": "cad23700-0000-4000-8000-00ba440b2c60",
+      "file": "wood-screw-bitork-din571-d8-l55.tcd",
+      "sha256": "c7d445ae82c75dc35e27e7724aafca6471815c0cd1fa7ed200837451085446e9"
+    },
+    {
+      "document": "cad23700-0000-4000-8000-00ba4412cd80",
+      "file": "wood-screw-bitork-din571-d8-l60.tcd",
+      "sha256": "7a4cf2a2c6b02afb3c9ceab4a74eb6ccf455a8d8e7057ac472e43259a43865e3"
+    },
+    {
+      "document": "cad23700-0000-4000-8000-00ba44220fc0",
+      "file": "wood-screw-bitork-din571-d8-l70.tcd",
+      "sha256": "9e282fd99f6a0ab2abeb6476059904840e3bba96c5d39d307cd63d98b9a5a9eb"
+    },
+    {
+      "document": "cad23700-0000-4000-8000-00ba44315200",
+      "file": "wood-screw-bitork-din571-d8-l80.tcd",
+      "sha256": "64be7e569921b427abf13c6e5da37a7532c5b55922781975da0faebf23e58ebd"
+    },
+    {
+      "document": "cad23700-0000-4000-8000-00ba444fd680",
+      "file": "wood-screw-bitork-din571-d8-l100.tcd",
+      "sha256": "9e94b0418af2a4b77fa6af47a5f502e0cf1a5491b88704d8f17cd2f7bb69bb8e"
+    },
+    {
+      "document": "cad23700-0000-4000-8000-00e8d4d2d6c0",
+      "file": "wood-screw-bitork-din571-d10-l30.tcd",
+      "sha256": "1f017448132072c5b35d707e2b28e5625acdb51cf7b24066c8ad200344c22020"
+    },
+    {
+      "document": "cad23700-0000-4000-8000-00e8d4da77e0",
+      "file": "wood-screw-bitork-din571-d10-l35.tcd",
+      "sha256": "0284af2e7c59d116ee8ec9430dd870162f3ae59ebbe65bf4ab17f81b3da798d5"
+    },
+    {
+      "document": "cad23700-0000-4000-8000-00e8d4e21900",
+      "file": "wood-screw-bitork-din571-d10-l40.tcd",
+      "sha256": "8962c56007559472e314cfc047a3a6937d29fd7abcfc11772508dbe8a1bc665d"
+    },
+    {
+      "document": "cad23700-0000-4000-8000-00e8d4e9ba20",
+      "file": "wood-screw-bitork-din571-d10-l45.tcd",
+      "sha256": "885a75d3bdded7884ff3be7569f3a0cc9954d2de7efaf7f99918f46cb003ebdd"
+    },
+    {
+      "document": "cad23700-0000-4000-8000-00e8d4f15b40",
+      "file": "wood-screw-bitork-din571-d10-l50.tcd",
+      "sha256": "ecf548d53c760d6679ab4e6bb2906befdf38d9417e18132f3e4ff1360e2e6408"
+    },
+    {
+      "document": "cad23700-0000-4000-8000-00e8d4f8fc60",
+      "file": "wood-screw-bitork-din571-d10-l55.tcd",
+      "sha256": "9709ab7adc5d9dbd28e9d7ad88ea4a416658e52d9acd1f632e93adb1960ed1fe"
+    },
+    {
+      "document": "cad23700-0000-4000-8000-00e8d5009d80",
+      "file": "wood-screw-bitork-din571-d10-l60.tcd",
+      "sha256": "288b40ef99c696b5944f298638c0ca69fd73b0848f82add7f9e316266b2bf529"
+    },
+    {
+      "document": "cad23700-0000-4000-8000-00e8d50fdfc0",
+      "file": "wood-screw-bitork-din571-d10-l70.tcd",
+      "sha256": "dae7a45606ea3ebf9892998ea569fd09a97bcee42f80b972a1898b7f8e448fb4"
+    },
+    {
+      "document": "cad23700-0000-4000-8000-00e8d51f2200",
+      "file": "wood-screw-bitork-din571-d10-l80.tcd",
+      "sha256": "20ccf519bff099a0b8d467ce74f83994e9ba6cc4f92a4622489d6527585f55c5"
+    },
+    {
+      "document": "cad23700-0000-4000-8000-00e8d53da680",
+      "file": "wood-screw-bitork-din571-d10-l100.tcd",
+      "sha256": "a9b17110579934640ba3d678d709831b4f28d7d997047735c3cdd64f4b5d97ba"
     }
   ],
   "format": "toskcad.bundled-library",
@@ -657,8 +877,11 @@
     "nuts-curation.json",
     "sources/bolts/nut.blt",
     "sources/bolts/NUT-NOTICES.md",
-    "sources/bolts/SCREW-PROFILE-NOTICES.md"
+    "sources/bolts/SCREW-PROFILE-NOTICES.md",
+    "wood-screws-curation.json",
+    "sources/wood-screws/source-ledger.json",
+    "sources/wood-screws/WOOD-SCREW-NOTICES.md"
   ],
-  "revision": "8",
+  "revision": "9",
   "version": 1
 }

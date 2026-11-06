@@ -1,5 +1,6 @@
 //! Generic hardware forms share canonical geometry and thread recipe controls.
 mod screw_shape;
+mod wood;
 use super::{
     FormStamp, PreviewState,
     dimension::DimensionField,
@@ -22,6 +23,7 @@ enum Kind {
     Washer,
     HexNut,
     MachineScrew,
+    WoodScrew,
     BearingEnvelope,
 }
 impl Kind {
@@ -30,6 +32,7 @@ impl Kind {
             Self::Washer => "Plain washer",
             Self::HexNut => "Hex nut",
             Self::MachineScrew => "Machine screw",
+            Self::WoodScrew => "Wood screw envelope",
             Self::BearingEnvelope => "Bearing mounting envelope",
         }
     }
@@ -42,6 +45,7 @@ pub(super) struct MechanicalPartPanel {
     thread: ThreadPanel,
     screw_fields: [DimensionField; 2],
     screw_shape: ScrewShapeForm,
+    wood: wood::WoodForm,
     screw_length_convention: model::ScrewLengthConvention,
     screw_length_typed: bool,
     origin: [DimensionField; 3],
@@ -55,6 +59,21 @@ impl MechanicalPartPanel {
         parameters: EvaluatedParameters,
         editing: bool,
     ) -> Result<Self, String> {
+        let wood_defaults = model::default_wood_screw();
+        let MechanicalPartParameters::WoodScrew {
+            parameters: wood_source,
+        } = (if matches!(
+            request.parameters,
+            MechanicalPartParameters::WoodScrew { .. }
+        ) {
+            &request.parameters
+        } else {
+            &wood_defaults
+        })
+        else {
+            unreachable!("canonical wood default")
+        };
+        let wood = wood::WoodForm::new(wood_source)?;
         let defaults = model::default_machine_screw();
         let screw_source = if matches!(
             request.parameters,
@@ -110,6 +129,11 @@ impl MechanicalPartPanel {
                 ],
                 Self::default_thread(),
             ),
+            MechanicalPartParameters::WoodScrew { .. } => (
+                Kind::WoodScrew,
+                [length(0.), length(0.), length(0.)],
+                Self::default_thread(),
+            ),
             MechanicalPartParameters::MachineScrew { thread, .. } => (
                 Kind::MachineScrew,
                 [length(0.), length(0.), length(0.)],
@@ -129,6 +153,7 @@ impl MechanicalPartPanel {
         Ok(Self {
             kind,
             screw_shape,
+            wood,
             screw_length_convention,
             screw_length_typed,
             screw_fields: [field(&screw_dimensions[0])?, field(&screw_dimensions[1])?],
@@ -208,6 +233,7 @@ impl MechanicalPartPanel {
                 width: self.fields[2].resolve(document)?,
                 frame,
             },
+            Kind::WoodScrew => self.wood.resolve(document, frame)?,
             Kind::MachineScrew => {
                 let mut thread = self.thread.recipe(document, ThreadMode::NewExternal)?;
                 thread.frame = frame;
@@ -260,7 +286,7 @@ impl MechanicalPartPanel {
             Kind::Washer => [3.2, 7., 0.5],
             Kind::BearingEnvelope => [10., 30., 9.],
             Kind::HexNut => [10., 0., 0.],
-            Kind::MachineScrew => [0., 0., 0.],
+            Kind::MachineScrew | Kind::WoodScrew => [0., 0., 0.],
         };
         if kind == Kind::MachineScrew {
             // A new selection starts from the canonical default. Reopening an
@@ -325,6 +351,7 @@ impl MechanicalPartPanel {
                         Kind::Washer,
                         Kind::HexNut,
                         Kind::MachineScrew,
+                        Kind::WoodScrew,
                         Kind::BearingEnvelope,
                     ] {
                         ui.selectable_value(&mut selected, kind, kind.label());
@@ -335,7 +362,9 @@ impl MechanicalPartPanel {
             self.change_kind(selected);
             changed = true;
         }
-        if self.kind == Kind::MachineScrew {
+        if self.kind == Kind::WoodScrew {
+            changed |= self.wood.show(ui, self.request.feature);
+        } else if self.kind == Kind::MachineScrew {
             egui::ComboBox::from_id_salt("screw_length_convention")
                 .selected_text(match self.screw_length_convention {
                     model::ScrewLengthConvention::Underhead => "Underhead length",
@@ -416,7 +445,7 @@ impl MechanicalPartPanel {
             changed |= field.show(
                 ui,
                 label,
-                if self.kind == Kind::MachineScrew {
+                if matches!(self.kind, Kind::MachineScrew | Kind::WoodScrew) {
                     "Underhead center; shaft extends along the normal and head behind it"
                 } else {
                     "The part extends along the plane normal from this base center"
@@ -485,6 +514,34 @@ mod length_contract_tests {
     use multicad_core::{
         commands::Session, constraint_sketch::Dimension, parameters::BoundExpression,
     };
+    #[test]
+    fn wood_parent_form_reopens_retained_source_and_keeps_machine_controls_separate() {
+        let session = Session::new(Document::new("Wood parent form").unwrap()).unwrap();
+        let mut parameters = model::default_wood_screw();
+        let MechanicalPartParameters::WoodScrew { parameters: wood } = &mut parameters else {
+            unreachable!()
+        };
+        wood.length_input = model::ScrewLengthInput::Overall {
+            value: Dimension::Expression {
+                expression: BoundExpression::bind(session.document(), "=44", "mm", None).unwrap(),
+            },
+        };
+        wood.frame.origin[0] = length(15.);
+        let request = MechanicalPartRequest::new("Wood parent", parameters);
+        let mut panel =
+            MechanicalPartPanel::new(request.clone(), session.parameters().clone(), true).unwrap();
+        assert!(panel.kind == Kind::WoodScrew);
+        assert_eq!(panel.request(session.document(), true).unwrap(), request);
+        // Machine recipe drafts must not leak into a reopened wood source.
+        panel.screw_fields[0].text = "=".into();
+        assert_eq!(panel.request(session.document(), true).unwrap(), request);
+        panel.origin[1].text = "21".into();
+        let edited = panel.request(session.document(), true).unwrap();
+        assert_eq!(edited.feature, request.feature);
+        assert_eq!(edited.body, request.body);
+        assert_ne!(edited.parameters.frame(), request.parameters.frame());
+        assert!(panel.request(session.document(), false).is_err());
+    }
     #[test]
     fn one_length_control_retains_expression_and_request_ids() {
         let s = Session::new(Document::new("Length form").unwrap()).unwrap();
