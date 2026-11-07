@@ -187,3 +187,59 @@ fn cancelled_valid_canonical_request_never_commits_owned_geometry() {
     assert_eq!(failure.code, "cancelled");
     assert_eq!(host.document(), original);
 }
+
+#[test]
+fn custom_hardware_inspection_preserves_engineered_profile_identity_and_known_intervals() {
+    use multicad_core::{commands::Session, model::*};
+    for (parameters, kind, key) in [
+        (
+            default_custom_connection_wood_screw(),
+            "wood_screw",
+            "wood_complete_interval_mm",
+        ),
+        (
+            default_custom_connection_wood_insert(),
+            "wood_insert",
+            "inner_complete_interval_mm",
+        ),
+        (
+            default_custom_connection_hanger_bolt(),
+            "hanger_bolt",
+            "metric_complete_interval_mm",
+        ),
+    ] {
+        // This is a source-inspection test. Native geometry is tested by the
+        // provider and whole-connection targets, not inferred from this read.
+        let mut session = Session::new(Document::new("Custom source inspection").unwrap()).unwrap();
+        let request = MechanicalPartRequest::new("Explicit engineered hardware", parameters);
+        session
+            .commit(
+                prepare_mechanical_part(&session, 0, call(false).actor, &request)
+                    .unwrap()
+                    .prepared,
+            )
+            .unwrap();
+        let host = Headless::new(
+            Workspace::new(session.document().clone()).unwrap(),
+            None,
+            true,
+        );
+        let value = dispatch(
+            &host,
+            &call(false),
+            "inspect_mechanical_part",
+            json!({"feature":request.feature}),
+        )
+        .unwrap();
+        assert_eq!(value["resolved"]["kind"], "custom_connection");
+        assert_eq!(value["resolved"]["connection_kind"], kind);
+        let interval = value["resolved"][key].as_array().unwrap();
+        assert!(interval[1].as_f64().unwrap() > interval[0].as_f64().unwrap());
+        assert!(
+            value["resolved"]["scope"]
+                .as_str()
+                .unwrap()
+                .contains("no purchased-part")
+        );
+    }
+}

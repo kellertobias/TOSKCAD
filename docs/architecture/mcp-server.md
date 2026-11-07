@@ -552,6 +552,16 @@ objects use the shared core serializers, not the shorter recipe arguments of
 `set_mechanical_part` or `place_symbol`. A Library connection role must resolve
 to a single mechanical Part; arbitrary multi-part symbols are refused.
 
+Explicit engineered wood screws, female wood inserts and hanger bolts use the
+canonical mechanical source `{"kind":"custom_connection","parameters":...}`.
+Its nested `parameters.connection_kind` selects `wood_screw`, `wood_insert` or
+`hanger_bolt`. These sources retain their actual modeled thread starts and
+complete intervals. They remain distinct from the manufacturer
+`wood_screw` envelope, whose actual thread and point are unknown.
+`inspect_mechanical_part` reports the custom starts, intervals, frame and
+resolved profile scalars; this source inspection does not perform native
+validation or establish purchased-part identity.
+
 A literal dimension is `{"value":10,"unit":"mm"}`. An expression dimension contains
 `expression`, whose bound source retains its unit and explicit parameter UUID
 bindings. The receiving source retains its output body, frozen input body and

@@ -937,6 +937,73 @@ pub(super) fn mechanical_part_profiles(_: &dyn Host, _: &Request, _: NoArgs) -> 
 fn frame_value(frame: multicad_core::sketch::Frame) -> Value {
     json!({"origin_mm":frame.origin,"axis_u":frame.u,"axis_v":frame.v,"axis_n":frame.n})
 }
+fn connection_thread_value(thread: &model::ResolvedThread) -> Value {
+    json!({"nominal_diameter_mm":2.*thread.nominal_major_radius_mm,
+        "major_radius_mm":thread.major_radius_mm,"pitch_mm":thread.pitch_mm,
+        "lead_mm":thread.lead_mm,"length_mm":thread.length_mm,"hand":thread.hand,
+        "starts":thread.starts,"representation":thread.representation,
+        "depth_mm":thread.profile.depth_mm,"crest_width_mm":thread.profile.crest_width_mm,
+        "lower_flank_deg":thread.profile.lower_flank_deg,"upper_flank_deg":thread.profile.upper_flank_deg,
+        "fit":thread.fit,"metric_fit_engagement":thread.metric_fit_engagement})
+}
+fn custom_connection_value(parameters: &model::ResolvedCustomConnectionHardware) -> Value {
+    let mut value = match parameters {
+        model::ResolvedCustomConnectionHardware::WoodScrew {
+            wood_thread,
+            plain_length_mm,
+            plain_radius_mm,
+            head,
+            drive,
+            underhead_frame,
+            wood_thread_start,
+            wood_complete_interval_mm,
+            ..
+        } => {
+            json!({"connection_kind":"wood_screw","wood_thread":connection_thread_value(wood_thread),
+                "plain_length_mm":plain_length_mm,"plain_diameter_mm":2.*plain_radius_mm,
+                "head_height_mm":head.height_mm(),"drive_entry_radius_mm":drive.entry_radius_mm(),
+                "drive_removed_depth_mm":drive.removed_depth_mm(),"underhead_frame":underhead_frame,
+                "wood_thread_start":wood_thread_start,"wood_complete_interval_mm":wood_complete_interval_mm})
+        }
+        model::ResolvedCustomConnectionHardware::WoodInsert {
+            outer_thread,
+            inner_thread,
+            outer_thread_start,
+            inner_thread_start,
+            outer_complete_interval_mm,
+            inner_complete_interval_mm,
+            ..
+        } => {
+            json!({"connection_kind":"wood_insert","outer_thread":connection_thread_value(outer_thread),
+                "inner_thread":connection_thread_value(inner_thread),"outer_thread_start":outer_thread_start,
+                "inner_thread_start":inner_thread_start,"outer_complete_interval_mm":outer_complete_interval_mm,
+                "inner_complete_interval_mm":inner_complete_interval_mm})
+        }
+        model::ResolvedCustomConnectionHardware::HangerBolt {
+            wood_thread,
+            plain_length_mm,
+            plain_radius_mm,
+            metric_thread,
+            wood_thread_start,
+            metric_thread_start,
+            wood_complete_interval_mm,
+            metric_complete_interval_mm,
+            ..
+        } => {
+            json!({"connection_kind":"hanger_bolt","wood_thread":connection_thread_value(wood_thread),
+                "metric_thread":connection_thread_value(metric_thread),"plain_length_mm":plain_length_mm,
+                "plain_diameter_mm":2.*plain_radius_mm,"wood_thread_start":wood_thread_start,
+                "metric_thread_start":metric_thread_start,"wood_complete_interval_mm":wood_complete_interval_mm,
+                "metric_complete_interval_mm":metric_complete_interval_mm})
+        }
+    };
+    value["kind"] = json!("custom_connection");
+    value["frame"] = frame_value(parameters.frame());
+    value["scope"] = json!(
+        "Explicit custom engineered modeled profiles and flat ends; no purchased-part, strength or installation certification"
+    );
+    value
+}
 pub(super) fn inspect_mechanical_part(
     host: &dyn Host,
     _: &Request,
@@ -946,6 +1013,9 @@ pub(super) fn inspect_mechanical_part(
     let feature = id(&args.feature)?;
     let source = model::read_mechanical_part(&doc, feature)?;
     let resolved = match source.parameters.resolve(&eval)? {
+        model::ResolvedMechanicalPart::CustomConnection { parameters } => {
+            custom_connection_value(&parameters)
+        }
         model::ResolvedMechanicalPart::WoodScrew { parameters: wood } => {
             let model::ResolvedScrewHead::ExternalHex {
                 across_flats_mm,
