@@ -187,6 +187,35 @@ pub fn resolve_metric_thread_mating(
     minimum_engagement_mm: f64,
     linear_tolerance_mm: f64,
 ) -> Result<ResolvedMetricThreadMating, DocumentError> {
+    resolve_metric_thread_mating_clipped(
+        external,
+        external_start,
+        internal,
+        internal_start,
+        minimum_engagement_mm,
+        linear_tolerance_mm,
+        MetricThreadMatingIntervals::default(),
+    )
+}
+
+/// Derived physical material intervals, never a replacement for authored thread
+/// lengths or helix-start frames. Only subsets of the canonical complete profile
+/// may be supplied; callers must establish the material removal independently.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct MetricThreadMatingIntervals {
+    pub external: Option<[f64; 2]>,
+    pub internal: Option<[f64; 2]>,
+}
+
+pub fn resolve_metric_thread_mating_clipped(
+    external: &ResolvedThread,
+    external_start: ReferenceFrame,
+    internal: &ResolvedThread,
+    internal_start: ReferenceFrame,
+    minimum_engagement_mm: f64,
+    linear_tolerance_mm: f64,
+    intervals: MetricThreadMatingIntervals,
+) -> Result<ResolvedMetricThreadMating, DocumentError> {
     if !minimum_engagement_mm.is_finite() || minimum_engagement_mm <= 0. {
         return Err(invalid(
             "Required complete-thread engagement must be finite and positive",
@@ -246,8 +275,21 @@ pub fn resolve_metric_thread_mating(
         }
         Ok(interval)
     };
-    let (a0, a1) = complete(external)?;
-    let (b0, b1) = complete(internal)?;
+    let clipped = |full: (f64, f64),
+                   requested: Option<[f64; 2]>|
+     -> Result<(f64, f64), DocumentError> {
+        let Some([a, b]) = requested else {
+            return Ok(full);
+        };
+        if !a.is_finite() || !b.is_finite() || a < full.0 || b > full.1 || b <= a {
+            return Err(invalid(
+                "Derived mating interval must be a positive subset of the canonical complete profile",
+            ));
+        }
+        Ok((a, b))
+    };
+    let (a0, a1) = clipped(complete(external)?, intervals.external)?;
+    let (b0, b1) = clipped(complete(internal)?, intervals.internal)?;
     let direction = dot(external_start.normal(), internal_start.normal());
     let b0 = phase.axial_station_mm + direction * b0;
     let b1 = phase.axial_station_mm + direction * b1;
