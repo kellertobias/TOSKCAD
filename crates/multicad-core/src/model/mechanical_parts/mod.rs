@@ -22,6 +22,9 @@ pub use cards::*;
 pub use custom_connection::*;
 pub use hexalobular::*;
 pub use prepare::*;
+pub use reference::{
+    MechanicalAttributionBasis, MechanicalCatalogAttribution, MechanicalPartAttribution,
+};
 pub use screw_profiles::*;
 pub use screws::*;
 use serde::{Deserialize, Serialize};

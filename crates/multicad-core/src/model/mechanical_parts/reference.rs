@@ -1,6 +1,48 @@
 //! Dimensional attribution is separate from catalog trust and stock availability.
 use super::*;
 use std::collections::BTreeMap;
+
+/// The basis of the current authored part, not a purchasing or fit claim.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MechanicalAttributionBasis {
+    Authored,
+    ReferenceDimensions,
+    CustomDerived,
+}
+
+impl MechanicalAttributionBasis {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Authored => "Authored hardware",
+            Self::ReferenceDimensions => "Reference dimensions",
+            Self::CustomDerived => "Custom / derived",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct MechanicalCatalogAttribution {
+    pub catalog_id: String,
+    pub revision: String,
+    pub designation: String,
+    pub source_url: String,
+    pub material: Option<String>,
+    pub grade: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct MechanicalPartAttribution {
+    pub basis: MechanicalAttributionBasis,
+    pub reference: Option<MechanicalCatalogAttribution>,
+    pub actual_material: Option<String>,
+    pub template_material: Option<String>,
+    /// `None` means there is no retained catalog geometry to compare.
+    pub dimensions_match: Option<bool>,
+    /// A label comparison when both the assigned and retained materials are
+    /// known. It does not verify composition, grade or physical equivalence.
+    pub material_match: Option<bool>,
+}
 fn thread_reference_values(thread: &ResolvedThread) -> BTreeMap<&'static str, f64> {
     let mut values = BTreeMap::from([
         ("height_mm", thread.length_mm),
@@ -137,6 +179,65 @@ impl ResolvedMechanicalPart {
     }
 }
 impl MechanicalPartDefinition {
+    /// Describe current source values alongside the retained reference. The
+    /// caller resolves the actual and pinned-template material assignments
+    /// independently. Catalog text never supplies the actual material.
+    pub fn attribution(
+        &self,
+        evaluated: &EvaluatedParameters,
+        actual_material: Option<&str>,
+        template_material: Option<&str>,
+    ) -> Result<MechanicalPartAttribution, DocumentError> {
+        let dimensions_match = self
+            .provenance
+            .as_ref()
+            .map(|_| self.matches_reference_dimensions(evaluated))
+            .transpose()?;
+        let reference = self
+            .provenance
+            .as_ref()
+            .map(|source| MechanicalCatalogAttribution {
+                catalog_id: source.catalog_id.clone(),
+                revision: source.revision.clone(),
+                designation: source.designation.clone(),
+                source_url: source.source_url.clone(),
+                material: source
+                    .catalog_facts
+                    .as_ref()
+                    .and_then(|facts| facts.material.clone()),
+                grade: source
+                    .catalog_facts
+                    .as_ref()
+                    .and_then(|facts| facts.grade.clone()),
+            });
+        let retained_material = reference
+            .as_ref()
+            .and_then(|reference| reference.material.as_deref())
+            .or(template_material);
+        let material_match = actual_material
+            .zip(retained_material)
+            .map(|(actual, retained)| actual.trim().eq_ignore_ascii_case(retained.trim()));
+        let assigned_outside_reference = actual_material.is_some() && retained_material.is_none();
+        let basis = if dimensions_match == Some(false)
+            || material_match == Some(false)
+            || (reference.is_some() && assigned_outside_reference)
+        {
+            MechanicalAttributionBasis::CustomDerived
+        } else if dimensions_match == Some(true) {
+            MechanicalAttributionBasis::ReferenceDimensions
+        } else {
+            MechanicalAttributionBasis::Authored
+        };
+        Ok(MechanicalPartAttribution {
+            basis,
+            reference,
+            actual_material: actual_material.map(str::to_owned),
+            template_material: template_material.map(str::to_owned),
+            dimensions_match,
+            material_match,
+        })
+    }
+
     /// Compare physical/profile dimensions to the retained literal reference.
     /// Placement and cosmetic/modeled display choice do not change the basis.
     /// A match does not verify the reference, availability, fit or standard.

@@ -22,6 +22,75 @@ fn washer() -> MechanicalPartParameters {
         frame: Default::default(),
     }
 }
+
+#[test]
+fn hardware_attribution_keeps_assigned_material_and_retained_source_distinct() {
+    let s = session();
+    let mut part = MechanicalPartDefinition {
+        output: BodyOutput {
+            body: EntityId::new(),
+        },
+        parameters: washer(),
+        provenance: Some(MechanicalPartProvenance {
+            catalog_id: "test-only".into(),
+            revision: "fixture-1".into(),
+            designation: "Test ring".into(),
+            source_url: "https://example.invalid/fixture".into(),
+            reference_geometry: washer(),
+            catalog_facts: Some(MechanicalPartCatalogFacts {
+                material: Some("Steel".into()),
+                ..Default::default()
+            }),
+        }),
+    };
+    let unassigned = part.attribution(s.parameters(), None, None).unwrap();
+    assert_eq!(
+        unassigned.basis,
+        MechanicalAttributionBasis::ReferenceDimensions
+    );
+    assert_eq!(unassigned.material_match, None);
+    assert_eq!(unassigned.actual_material, None);
+    assert_eq!(
+        unassigned.reference.unwrap().material.as_deref(),
+        Some("Steel")
+    );
+
+    let changed = part
+        .attribution(s.parameters(), Some("Brass"), None)
+        .unwrap();
+    assert_eq!(changed.basis, MechanicalAttributionBasis::CustomDerived);
+    assert_eq!(changed.dimensions_match, Some(true));
+    assert_eq!(changed.material_match, Some(false));
+    assert_eq!(changed.actual_material.as_deref(), Some("Brass"));
+    assert_eq!(changed.reference.unwrap().designation, "Test ring");
+
+    let reference = part.provenance.as_mut().unwrap();
+    reference.catalog_facts = None;
+    let retained = part
+        .attribution(s.parameters(), Some("Brass"), Some("Brass"))
+        .unwrap();
+    assert_eq!(
+        retained.basis,
+        MechanicalAttributionBasis::ReferenceDimensions
+    );
+    assert_eq!(retained.material_match, Some(true));
+    assert!(retained.reference.unwrap().material.is_none());
+    let assigned = part
+        .attribution(s.parameters(), Some("Brass"), None)
+        .unwrap();
+    assert_eq!(assigned.basis, MechanicalAttributionBasis::CustomDerived);
+    assert_eq!(assigned.material_match, None);
+
+    let MechanicalPartParameters::Washer { thickness, .. } = &mut part.parameters else {
+        panic!()
+    };
+    *thickness = length(1.);
+    let changed = part.attribution(s.parameters(), None, None).unwrap();
+    assert_eq!(changed.basis, MechanicalAttributionBasis::CustomDerived);
+    assert_eq!(changed.dimensions_match, Some(false));
+    assert_eq!(changed.reference.unwrap().revision, "fixture-1");
+}
+
 #[test]
 fn library_cards_describe_pinned_defaults_not_changed_authoring_geometry() {
     let mut s = session();
