@@ -233,6 +233,10 @@ impl Profiles<'_> {
 pub struct ModelTimings {
     pub total_ms: f64,
     pub gear_construction_ms: f64,
+    pub thread_construction_ms: f64,
+    pub hardware_construction_ms: f64,
+    pub receiving_cut_ms: f64,
+    pub connection_validation_ms: f64,
     pub assembly_and_occurrence_ms: f64,
     /// Bounds, mass, tessellation and display payload preparation.
     pub shape_publication_ms: f64,
@@ -939,7 +943,8 @@ impl Compiler {
                 (model::CONNECTION_RECEIVER_TYPE, 1) => {
                     let source = model::read_connection_receiver(document, id)
                         .map_err(|e| error(Some(id), e))?;
-                    crate::connection_receivers::build(
+                    let started = std::time::Instant::now();
+                    let solid = crate::connection_receivers::build(
                         crate::connection_receivers::Inputs {
                             document,
                             parameters: context.parameters(),
@@ -950,17 +955,36 @@ impl Compiler {
                         },
                         id,
                         &source,
-                    )?
+                    )?;
+                    timings.receiving_cut_ms += started.elapsed().as_secs_f64() * 1000.;
+                    solid
                 }
                 (model::THREAD_TYPE, model::THREAD_SCHEMA) => {
                     let source =
                         model::read_thread(document, id).map_err(|e| error(Some(id), e))?;
-                    crate::threads::build(id, &source, context.parameters(), &solids, self.policy)?
+                    let started = std::time::Instant::now();
+                    let solid = crate::threads::build(
+                        id,
+                        &source,
+                        context.parameters(),
+                        &solids,
+                        self.policy,
+                    )?;
+                    timings.thread_construction_ms += started.elapsed().as_secs_f64() * 1000.;
+                    solid
                 }
                 (model::MECHANICAL_PART_TYPE, model::MECHANICAL_PART_SCHEMA) => {
                     let source = model::read_mechanical_part(document, id)
                         .map_err(|e| error(Some(id), e))?;
-                    crate::mechanical_parts::build(id, &source, context.parameters(), self.policy)?
+                    let started = std::time::Instant::now();
+                    let solid = crate::mechanical_parts::build(
+                        id,
+                        &source,
+                        context.parameters(),
+                        self.policy,
+                    )?;
+                    timings.hardware_construction_ms += started.elapsed().as_secs_f64() * 1000.;
+                    solid
                 }
                 (model::GEAR_TYPE, model::GEAR_SCHEMA) => {
                     let source = model::read_gear(document, id).map_err(|e| error(Some(id), e))?;
@@ -1491,6 +1515,7 @@ impl Compiler {
             },
         };
         if full {
+            let connection_started = std::time::Instant::now();
             model.snapshot.screw_connection_checks = crate::screw_connections::validate(
                 document,
                 revision,
@@ -1498,6 +1523,8 @@ impl Compiler {
                 &model,
                 interrupt,
             )?;
+            model.timings.connection_validation_ms =
+                connection_started.elapsed().as_secs_f64() * 1000.;
             model.snapshot.envelope_boxes = model.envelope_boxes(document);
             model.snapshot.guide_outlines = model.guide_outlines(document);
             if model::aids(document).next().is_some() {
