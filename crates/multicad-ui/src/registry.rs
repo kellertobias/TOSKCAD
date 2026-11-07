@@ -404,6 +404,13 @@ impl Default for Registry {
                 aliases: tool.aliases(),
             });
         }
+        registry.tools.push(Tool {
+            id: "profile-member",
+            label: "Profile member",
+            icon: ModelingTool::Member.icon(),
+            action: Command::Modeling(ModelingTool::Member),
+            aliases: &["line-8-member", "aluminum-profile"],
+        });
         for (id, label, operation, aliases) in BOOLEAN_OPERATIONS {
             registry.tools.push(Tool {
                 id,
@@ -646,6 +653,7 @@ impl Default for Registry {
                             "gear",
                             "mechanical-part",
                             "screw-connection",
+                            "profile-member",
                             "profile-connection",
                         ],
                     ),
@@ -1045,6 +1053,14 @@ mod tests {
                 assert_eq!(
                     tool.action,
                     Command::Modeling(ModelingTool::ScrewConnection)
+                );
+            } else if *id == "profile-member" {
+                assert_eq!(tool.label, "Profile member");
+                assert_eq!(tool.action, Command::Modeling(ModelingTool::Member));
+            } else if *id == "profile-connection" {
+                assert_eq!(
+                    tool.action,
+                    Command::Modeling(ModelingTool::ProfileConnection)
                 );
             } else if *id == "library" {
                 assert_eq!(tool.action, Command::Extension("library"));
