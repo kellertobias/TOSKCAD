@@ -16,11 +16,22 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 pub const SCREW_HARDWARE_PLACEMENT_TYPE: &str = "model.screw_hardware_placement";
 pub const SCREW_HARDWARE_PLACEMENT_CAPABILITY: &str = "model.screw_hardware_placement.1";
+pub const ASSOCIATIVE_SCREW_HARDWARE_CAPABILITY: &str =
+    "model.screw_hardware_placement.associative.1";
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ScrewHardwareConnectionBinding {
+    pub connection: EntityId,
+    /// Stable role key inside the canonical connection record.
+    pub role: EntityId,
+}
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ScrewHardwarePlacementDefinition {
     pub owner: EntityId,
     pub axis: EntityId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub connection: Option<ScrewHardwareConnectionBinding>,
     pub station: Dimension,
     pub roll: Dimension,
     /// Recognized component-local mounting frame; maps to the axis station.
@@ -40,7 +51,27 @@ impl ScrewHardwarePlacementDefinition {
         }
         check_dimension(&self.station, Unit::Millimeter)?;
         check_dimension(&self.roll, Unit::Radian)?;
-        self.local_mount.validate()
+        self.local_mount.validate()?;
+        if let Some(binding) = &self.connection {
+            if binding.connection.is_nil()
+                || binding.role.is_nil()
+                || binding.connection == self.owner
+                || binding.connection == self.axis
+            {
+                return Err(invalid(
+                    "Associative hardware needs a distinct owning connection and non-nil role key",
+                ));
+            }
+            let zero =
+                |d: &Dimension| matches!(d, Dimension::Literal { value, .. } if *value == 0.);
+            if !zero(&self.station) || !zero(&self.roll) || self.local_mount != RigidPose::default()
+            {
+                return Err(invalid(
+                    "Associative hardware stores no dormant station, roll or mount authority",
+                ));
+            }
+        }
+        Ok(())
     }
     pub fn definition(&self) -> Result<Definition, DocumentError> {
         self.validate()?;
@@ -65,6 +96,9 @@ impl ScrewHardwarePlacementDefinition {
         self.validate()?;
         let mut inputs = parameter_links(vec![&self.station, &self.roll]);
         inputs.push(Link::new(self.axis, "connection_axis"));
+        if let Some(binding) = &self.connection {
+            inputs.push(Link::new(binding.connection, "connection_record"));
+        }
         Ok(inputs)
     }
     pub fn resolve(
@@ -76,6 +110,11 @@ impl ScrewHardwarePlacementDefinition {
     ) -> Result<RigidPose, DocumentError> {
         self.validate()?;
         require_root_hardware(document, self.owner)?;
+        if let Some(binding) = &self.connection {
+            return super::resolve_connection_hardware_pose(
+                document, parameters, binding, self.owner, self.axis, revision, snapshots,
+            );
+        }
         let (axis, face) = read_screw_connection_axis(document, self.axis)?;
         let axis = axis.resolve(document, parameters, &face, revision, snapshots)?;
         let control = NumericTransform {
@@ -135,5 +174,24 @@ pub fn read_screw_hardware_placement(
         }
     }
     require_root_hardware(document, source.owner)?;
+    if let Some(binding) = &source.connection
+        && document.get(binding.connection).is_some()
+    {
+        let record = super::read_screw_connection(document, binding.connection)?;
+        let row = record
+            .hardware
+            .iter()
+            .find(|row| row.role_id == binding.role)
+            .ok_or_else(|| invalid("Associative driver role is absent from its connection"))?;
+        if record.axis != source.axis || row.instance != source.owner || row.driver != id {
+            return Err(invalid(
+                "Associative hardware role, driver, owner and axis disagree",
+            ));
+        }
+        if document.get(source.owner).is_some_and(|entity|
+            !matches!(&entity.data,EntityData::Instance{placement_source:Some(driver),..}if *driver==id)) {
+            return Err(invalid("Associative hardware owner no longer uses this driver"));
+        }
+    }
     Ok(source)
 }

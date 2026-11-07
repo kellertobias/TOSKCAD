@@ -28,6 +28,9 @@ pub fn dependency_hash(
         if let Some(entity) = entity {
             pending.extend(document.evaluation_dependencies(id)?);
             if let Some(projection) = crate::model::transfer_pose_projection(document, entity.id)?
+                .or(crate::model::screw_hardware_connection_pose_projection(
+                    document, entity.id,
+                )?)
                 .or(crate::model::screw_connection_axis_pose_projection(
                     document, entity.id,
                 )?)

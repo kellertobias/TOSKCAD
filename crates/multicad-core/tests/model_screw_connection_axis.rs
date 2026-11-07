@@ -402,6 +402,7 @@ fn hardware_driver_uses_axis_once_preserves_bindings_and_has_no_owner_dependency
     let q = prepare_place_component(&f.session, f.session.revision(), actor(), &placement).unwrap();
     f.session.commit(q.prepared).unwrap();
     let definition = ScrewHardwarePlacementDefinition {
+        connection: None,
         owner: placement.instance,
         axis: f.source,
         station: Dimension::Expression {
@@ -570,6 +571,7 @@ fn hardware_driver_uses_axis_once_preserves_bindings_and_has_no_owner_dependency
 fn hardware_driver_refuses_forged_links_and_wrong_owner_without_changing_source() {
     let f = fixture();
     let invalid = ScrewHardwarePlacementDefinition {
+        connection: None,
         owner: f.source,
         axis: f.source,
         station: length(0.),
@@ -579,6 +581,7 @@ fn hardware_driver_refuses_forged_links_and_wrong_owner_without_changing_source(
     assert!(invalid.validate().is_err());
     let before = f.session.document().clone();
     let source = ScrewHardwarePlacementDefinition {
+        connection: None,
         owner: f.instance.instance,
         axis: f.source,
         station: length(0.),
@@ -913,4 +916,376 @@ fn captured_grip_uses_exact_planar_predecessor_and_rejects_conflicting_authority
             .get("end_reference")
             .is_none()
     );
+}
+
+fn enable_associative(f: &mut Fixture, request: &ScrewConnectionRequest) {
+    let edits = request
+        .hardware
+        .iter()
+        .map(|row| {
+            let mut source =
+                read_screw_hardware_placement(f.session.document(), row.driver).unwrap();
+            source.connection = Some(ScrewHardwareConnectionBinding {
+                connection: request.connection,
+                role: row.role_id,
+            });
+            source.station = length(0.);
+            source.roll = angle(0.);
+            source.local_mount = RigidPose::default();
+            let mut entity = f.session.document().get(row.driver).unwrap().clone();
+            entity.data = EntityData::Extension {
+                definition: source.definition().unwrap(),
+                inputs: source.inputs().unwrap(),
+            };
+            Mutation::Replace(entity)
+        })
+        .collect();
+    f.session
+        .apply(Request {
+            expected_revision: f.session.revision(),
+            actor: actor(),
+            label: "Bind canonical connection roles".into(),
+            edits,
+        })
+        .unwrap();
+}
+fn change_scalar(f: &mut Fixture, id: EntityId, value: &str) {
+    let mut entity = f.session.document().get(id).unwrap().clone();
+    let EntityData::Parameter { expression, .. } = &mut entity.data else {
+        unreachable!()
+    };
+    *expression = value.into();
+    f.session
+        .apply(Request {
+            expected_revision: f.session.revision(),
+            actor: actor(),
+            label: "Change retained supplier".into(),
+            edits: vec![Mutation::Replace(entity)],
+        })
+        .unwrap();
+}
+#[test]
+fn associative_roles_follow_live_washer_pitch_underhead_and_mount_sources_without_record_recompose()
+{
+    // Synthetic face snapshots prove source kinematics/cache binding, not CAD fit.
+    let mut f = fixture();
+    let mut ids = vec![];
+    let mut edits = vec![];
+    for (name, value) in [
+        ("washer_live", "0.2"),
+        ("underhead_live", "14"),
+        ("pitch_live", "0.5"),
+        ("mount_live", "0"),
+    ] {
+        let entity = Entity::new(
+            name,
+            EntityData::Parameter {
+                expression: value.into(),
+                unit: "mm".into(),
+                exposed: true,
+                inputs: vec![],
+            },
+        );
+        ids.push(entity.id);
+        edits.push(Mutation::Insert(entity));
+    }
+    f.session
+        .apply(Request {
+            expected_revision: f.session.revision(),
+            actor: actor(),
+            label: "Author scalar sources".into(),
+            edits,
+        })
+        .unwrap();
+    let dim = |name: &str| Dimension::Expression {
+        expression: BoundExpression::bind(f.session.document(), &format!("=${name}"), "mm", None)
+            .unwrap(),
+    };
+    let mut request = connection_request(&f);
+    for row in &mut request.hardware {
+        let ScrewConnectionHardwareSource::Generated { part } = &mut row.source else {
+            unreachable!()
+        };
+        match &mut part.parameters {
+            MechanicalPartParameters::MachineScrew {
+                underhead_length,
+                thread,
+                ..
+            } => {
+                *underhead_length = Some(dim("underhead_live"));
+                thread.fit = ThreadFit::NominalBasic;
+                thread.metric_fit_engagement = None;
+                thread.family = ThreadFamily::Custom;
+                thread.custom = Some(CustomThreadProfile {
+                    depth: length(0.2),
+                    crest_width: length(0.05),
+                    lower_flank: angle(30.),
+                    upper_flank: angle(30.),
+                    ..Default::default()
+                });
+                thread.pitch = dim("pitch_live");
+                thread.frame.origin[0] = dim("mount_live");
+            }
+            MechanicalPartParameters::HexNut { thread, .. } => {
+                thread.fit = ThreadFit::NominalBasic;
+                thread.metric_fit_engagement = None;
+                thread.family = ThreadFamily::Custom;
+                thread.custom = Some(CustomThreadProfile {
+                    depth: length(0.2),
+                    crest_width: length(0.05),
+                    lower_flank: angle(30.),
+                    upper_flank: angle(30.),
+                    ..Default::default()
+                });
+                thread.pitch = dim("pitch_live");
+            }
+            _ => unreachable!(),
+        }
+    }
+    request.hardware.insert(
+        1,
+        ScrewConnectionHardwareRequest {
+            role_id: EntityId::new(),
+            role: ScrewConnectionHardwareRole::HeadWasher,
+            name: "Live head washer".into(),
+            source: ScrewConnectionHardwareSource::Generated {
+                part: Box::new(MechanicalPartRequest::new(
+                    "Live washer",
+                    MechanicalPartParameters::Washer {
+                        bore_diameter: length(3.4),
+                        outside_diameter: length(6.),
+                        thickness: dim("washer_live"),
+                        frame: Default::default(),
+                    },
+                )),
+            },
+            instance: EntityId::new(),
+            driver: EntityId::new(),
+        },
+    );
+    let prepared =
+        prepare_screw_connection(&f.session, f.session.revision(), actor(), &request).unwrap();
+    f.session.commit(prepared.prepared).unwrap();
+    enable_associative(&mut f, &request);
+    let connection = f
+        .session
+        .document()
+        .get(request.connection)
+        .unwrap()
+        .clone();
+    let nut = request
+        .hardware
+        .iter()
+        .find(|r| r.role == ScrewConnectionHardwareRole::Nut)
+        .unwrap();
+    let screw = &request.hardware[0];
+    let deps = f
+        .session
+        .document()
+        .evaluation_dependencies(nut.driver)
+        .unwrap();
+    assert!(deps.contains(&request.axis.id));
+    assert!(ids.iter().all(|id| deps.contains(id)));
+    assert!(!deps.contains(&request.connection));
+    assert!(!deps.contains(&screw.instance));
+    assert!(
+        f.session
+            .document()
+            .get(nut.driver)
+            .unwrap()
+            .references()
+            .iter()
+            .any(|r| r.target == request.connection)
+    );
+    assert!(
+        f.session
+            .document()
+            .get(request.connection)
+            .unwrap()
+            .references()
+            .iter()
+            .any(|r| r.target == nut.driver)
+    );
+    let pose = |f: &Fixture, instance| {
+        let mut topology = f.topology.clone();
+        topology.revision = f.session.revision();
+        resolve_instance_pose_with_snapshots(
+            f.session.document(),
+            instance,
+            f.session.parameters(),
+            f.session.revision(),
+            &BTreeMap::from([(f.body.feature, topology)]),
+        )
+        .unwrap()
+    };
+    let old_pose = pose(&f, nut.instance);
+    let old_screw = pose(&f, screw.instance);
+    let old_hash = references::dependency_hash(f.session.document(), nut.driver).unwrap();
+    change_scalar(&mut f, ids[0], "0.3");
+    assert_ne!(
+        pose(&f, screw.instance).translation_mm,
+        old_screw.translation_mm
+    );
+    assert_ne!(pose(&f, nut.instance).rotation, old_pose.rotation);
+    assert_ne!(
+        references::dependency_hash(f.session.document(), nut.driver).unwrap(),
+        old_hash
+    );
+    let before_pitch = pose(&f, nut.instance);
+    change_scalar(&mut f, ids[2], "0.6");
+    assert_ne!(pose(&f, nut.instance).rotation, before_pitch.rotation);
+    let before_underhead = pose(&f, nut.instance);
+    change_scalar(&mut f, ids[1], "14.1");
+    assert_ne!(pose(&f, nut.instance).rotation, before_underhead.rotation);
+    let before_mount = pose(&f, screw.instance);
+    change_scalar(&mut f, ids[3], "2");
+    assert_ne!(
+        pose(&f, screw.instance).translation_mm,
+        before_mount.translation_mm
+    );
+    assert_eq!(
+        f.session.document().get(request.connection),
+        Some(&connection)
+    );
+    assert!(f.session.document().topological_order().is_ok());
+    let project = ProjectFile::new(f.session.document().clone()).unwrap();
+    assert!(
+        project
+            .capabilities()
+            .contains(ASSOCIATIVE_SCREW_HARDWARE_CAPABILITY)
+    );
+    let mut bytes = vec![];
+    project_file::write(&project, &mut bytes, Default::default()).unwrap();
+    let mut old = project_file::supported_capabilities();
+    old.remove(ASSOCIATIVE_SCREW_HARDWARE_CAPABILITY);
+    assert!(
+        project_file::read(&mut bytes.as_slice(), Default::default(), &old)
+            .unwrap_err()
+            .contains(ASSOCIATIVE_SCREW_HARDWARE_CAPABILITY)
+    );
+}
+#[test]
+fn associative_bindings_refuse_dormant_authority_foreign_roles_and_extra_geometry_links() {
+    let mut f = fixture();
+    let request = connection_request(&f);
+    let q = prepare_screw_connection(&f.session, f.session.revision(), actor(), &request).unwrap();
+    f.session.commit(q.prepared).unwrap();
+    enable_associative(&mut f, &request);
+    let row = &request.hardware[0];
+    let source = read_screw_hardware_placement(f.session.document(), row.driver).unwrap();
+    let mut dormant = source.clone();
+    dormant.station = length(1.);
+    assert!(dormant.definition().is_err());
+    dormant = source.clone();
+    dormant.roll = angle(1.);
+    assert!(dormant.definition().is_err());
+    dormant = source.clone();
+    dormant.local_mount.translation_mm[0] = 1.;
+    assert!(dormant.definition().is_err());
+    for case in 0..3 {
+        let mut document = f.session.document().clone();
+        let mut entity = document.get(row.driver).unwrap().clone();
+        if case == 0 {
+            let mut wrong = source.clone();
+            wrong.connection.as_mut().unwrap().role = EntityId::new();
+            entity.data = EntityData::Extension {
+                definition: wrong.definition().unwrap(),
+                inputs: wrong.inputs().unwrap(),
+            };
+        } else if let EntityData::Extension { inputs, .. } = &mut entity.data {
+            inputs.push(Link::new(
+                if case == 1 {
+                    request.receivers[0].feature
+                } else {
+                    request.connection
+                },
+                "foreign",
+            ));
+        }
+        assert!(document.replace(entity).is_err());
+        assert_eq!(document, f.session.document().clone());
+    }
+    let mut missing = f.session.document().clone();
+    missing.remove(request.connection).unwrap();
+    assert!(
+        screw_hardware_connection_pose_projection(&missing, row.driver)
+            .unwrap()
+            .is_some()
+    );
+    assert!(
+        resolve_instance_pose_with_snapshots(
+            &missing,
+            row.instance,
+            f.session.parameters(),
+            f.session.revision(),
+            &BTreeMap::new()
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn associative_projection_preserves_legacy_bytes_and_rejects_real_axis_geometry_cycles() {
+    let mut f = fixture();
+    let request = connection_request(&f);
+    let q = prepare_screw_connection(&f.session, f.session.revision(), actor(), &request).unwrap();
+    f.session.commit(q.prepared).unwrap();
+    let row = &request.hardware[0];
+    let legacy = read_screw_hardware_placement(f.session.document(), row.driver).unwrap();
+    let data = legacy.definition().unwrap().data;
+    assert!(data.get("connection").is_none());
+    let decoded =
+        ScrewHardwarePlacementDefinition::from_definition(&legacy.definition().unwrap()).unwrap();
+    assert_eq!(decoded.definition().unwrap().data, data);
+    assert!(
+        !ProjectFile::new(f.session.document().clone())
+            .unwrap()
+            .capabilities()
+            .contains(ASSOCIATIVE_SCREW_HARDWARE_CAPABILITY)
+    );
+    enable_associative(&mut f, &request);
+    let ScrewConnectionHardwareSource::Generated { part } = &row.source else {
+        unreachable!()
+    };
+    let mut topology = f.topology.clone();
+    topology.owner = part.feature;
+    for e in &mut topology.elements {
+        e.origins = e
+            .origins
+            .iter()
+            .map(|origin| Origin {
+                source: part.feature,
+                role: origin.role.clone(),
+            })
+            .collect();
+        for frame in &mut e.frames {
+            frame.origin.source = part.feature;
+        }
+    }
+    let face = capture_profile_face(&topology, topology.elements[0].key, None).unwrap();
+    let axis = ScrewConnectionAxisDefinition::new(
+        BodyInput {
+            body: part.body,
+            producer: part.feature,
+        },
+        OccurrencePath {
+            root: row.instance,
+            members: vec![],
+        },
+        face.intent.id,
+    );
+    let mut entity = f.session.document().get(request.axis.id).unwrap().clone();
+    entity.data = EntityData::Extension {
+        definition: axis.definition().unwrap(),
+        inputs: axis.inputs(&face).unwrap(),
+    };
+    let before = f.session.document().clone();
+    let mut bad = before.clone();
+    let err = bad.replace(entity).unwrap_err();
+    assert!(
+        matches!(err, multicad_core::document::DocumentError::Cycle(_))
+            || err.to_string().contains("cycle"),
+        "{err}"
+    );
+    assert_eq!(bad, before);
 }

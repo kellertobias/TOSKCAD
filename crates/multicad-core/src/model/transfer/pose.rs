@@ -309,6 +309,16 @@ impl Collector<'_> {
                     else {
                         continue;
                     };
+                    if let Some(projection) =
+                        model::screw_hardware_connection_pose_projection(self.document, id)?
+                    {
+                        self.geometry.extend(projection.geometry_dependencies);
+                        self.structure.insert(
+                            id,
+                            serde_json::json!({"connection_pose":projection.fingerprint}),
+                        );
+                        continue;
+                    }
                     let known = match definition.type_id.as_str() {
                         model::INSTANCE_PLACEMENT_TYPE => {
                             if let Ok(source) =

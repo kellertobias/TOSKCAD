@@ -129,6 +129,7 @@ fn connection_axis_rebinds_to_native_receiver_dimensions_and_occurrence_pose() {
         prepare_place_component(&session, session.revision(), actor.clone(), &hardware).unwrap();
     session.commit(q.prepared).unwrap();
     let control = ScrewHardwarePlacementDefinition {
+        connection: None,
         owner: hardware.instance,
         axis: axis_id,
         station: Dimension::Expression {

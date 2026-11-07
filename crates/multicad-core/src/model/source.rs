@@ -996,6 +996,34 @@ pub fn required_capabilities(document: &Document) -> BTreeSet<String> {
             capabilities.insert(capability.into());
         }
     }
+    if document.entities().any(|entity| {
+        let matches = |value: &serde_json::Value| {
+            value
+                .pointer("/data/definition/type_id")
+                .and_then(serde_json::Value::as_str)
+                == Some(super::SCREW_HARDWARE_PLACEMENT_TYPE)
+                && value
+                    .pointer("/data/definition/data/connection")
+                    .is_some_and(|v| !v.is_null())
+        };
+        if matches!(entity.data, EntityData::Extension { .. })
+            && serde_json::to_value(entity).is_ok_and(|v| matches(&v))
+        {
+            return true;
+        }
+        if let EntityData::Extension { definition, .. } = &entity.data
+            && definition.type_id == crate::symbols::DEFINITION_TYPE
+        {
+            return definition
+                .data
+                .pointer("/template/entities")
+                .and_then(serde_json::Value::as_object)
+                .is_some_and(|entities| entities.values().any(matches));
+        }
+        false
+    }) {
+        capabilities.insert(super::ASSOCIATIVE_SCREW_HARDWARE_CAPABILITY.into());
+    }
     if saved_feature_matches(document, |type_id, data| {
         type_id == super::GEAR_TYPE
             && (data

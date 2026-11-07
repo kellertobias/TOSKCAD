@@ -53,6 +53,11 @@ impl Document {
         if let Some(deps) = crate::sketch_external::external_evaluation_dependencies(self, id)? {
             return Ok(deps);
         }
+        if let Some(deps) =
+            crate::model::screw_hardware_connection_evaluation_dependencies(self, id)?
+        {
+            return Ok(deps);
+        }
         if let Some(deps) = crate::model::screw_axis_evaluation_dependencies(self, id)? {
             return Ok(deps);
         }
