@@ -762,13 +762,36 @@ fn saved_feature_matches(
 ) -> bool {
     let needs_reader = |type_id: &str, data: &serde_json::Value| {
         needs_reader(type_id, data)
-            || (type_id == super::CONNECTION_RECEIVER_TYPE
-                && data.pointer("/cut/thread").is_some_and(|thread| {
-                    needs_reader(
-                        super::THREAD_TYPE,
-                        &serde_json::json!({"parameters":thread}),
-                    )
-                }))
+            || match type_id {
+                super::CONNECTION_RECEIVER_TYPE => {
+                    data.pointer("/cut/thread").is_some_and(|thread| {
+                        needs_reader(
+                            super::THREAD_TYPE,
+                            &serde_json::json!({"parameters":thread}),
+                        )
+                    })
+                }
+                super::MECHANICAL_PART_TYPE => [
+                    "/parameters/parameters/wood_thread",
+                    "/parameters/parameters/outer_thread",
+                    "/parameters/parameters/inner_thread",
+                    "/parameters/parameters/metric_thread",
+                    "/provenance/reference_geometry/parameters/wood_thread",
+                    "/provenance/reference_geometry/parameters/outer_thread",
+                    "/provenance/reference_geometry/parameters/inner_thread",
+                    "/provenance/reference_geometry/parameters/metric_thread",
+                ]
+                .iter()
+                .any(|path| {
+                    data.pointer(path).is_some_and(|thread| {
+                        needs_reader(
+                            super::THREAD_TYPE,
+                            &serde_json::json!({"parameters":thread}),
+                        )
+                    })
+                }),
+                _ => false,
+            }
     };
     document.entities().any(|entity| match &entity.data {
         EntityData::Feature { definition, .. } => {
@@ -1038,6 +1061,17 @@ pub fn required_capabilities(document: &Document) -> BTreeSet<String> {
         if saved_feature_matches(document, |saved_type, _| saved_type == type_id) {
             capabilities.insert(capability.into());
         }
+    }
+    if saved_feature_matches(document, |type_id, data| {
+        type_id == super::MECHANICAL_PART_TYPE
+            && ["/parameters/kind", "/provenance/reference_geometry/kind"]
+                .iter()
+                .any(|path| {
+                    data.pointer(path).and_then(serde_json::Value::as_str)
+                        == Some("custom_connection")
+                })
+    }) {
+        capabilities.insert(super::CUSTOM_CONNECTION_HARDWARE_CAPABILITY.into());
     }
     if saved_feature_matches(document, |type_id, data| {
         let paths: &[&str] = match type_id {

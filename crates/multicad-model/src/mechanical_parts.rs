@@ -1,4 +1,5 @@
 //! Native mounting geometry and nut threads from retained canonical parameters.
+mod custom_connection;
 mod screw_profiles;
 mod wood_screws;
 use crate::{ModelError, error};
@@ -391,8 +392,18 @@ pub(crate) fn build(
         .parameters
         .resolve(evaluated)
         .map_err(|e| error(Some(feature), e))?;
+    build_resolved(feature, resolved, policy)
+}
+pub(super) fn build_resolved(
+    feature: EntityId,
+    resolved: ResolvedMechanicalPart,
+    policy: GeometryPolicy,
+) -> Result<Solid, ModelError> {
     let factory_key = screw_key(&resolved, policy);
     match resolved {
+        ResolvedMechanicalPart::CustomConnection { parameters } => {
+            custom_connection::build(feature, *parameters, policy)
+        }
         ResolvedMechanicalPart::WoodScrew { parameters } => {
             wood_screws::build(feature, &parameters, policy)
         }

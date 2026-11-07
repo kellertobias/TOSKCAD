@@ -549,7 +549,16 @@ pub fn prepare_remove_screw_connection(
     })
 }
 fn mount(part: &ResolvedMechanicalPart) -> RigidPose {
+    if let ResolvedMechanicalPart::CustomConnection { parameters } = part {
+        let frame = parameters.mount_frame();
+        let normal = frame.normal();
+        return RigidPose {
+            rotation: std::array::from_fn(|i| [frame.u[i], frame.v[i], normal[i]]),
+            translation_mm: frame.origin_mm,
+        };
+    }
     let frame = match part {
+        ResolvedMechanicalPart::CustomConnection { .. } => unreachable!("handled custom mount"),
         ResolvedMechanicalPart::WoodScrew { parameters } => parameters.frame,
         ResolvedMechanicalPart::MachineScrew { thread, .. }
         | ResolvedMechanicalPart::HexNut { thread, .. } => thread.frame,
@@ -804,6 +813,18 @@ pub fn prepare_screw_connection(
             thread.pitch_mm,
             thread.hand,
         )),
+        ResolvedMechanicalPart::CustomConnection { parameters } => match parameters.as_ref() {
+            ResolvedCustomConnectionHardware::HangerBolt {
+                metric_thread,
+                plain_length_mm,
+                ..
+            } => Some((
+                grip - plain_length_mm - metric_thread.length_mm,
+                metric_thread.pitch_mm,
+                metric_thread.hand,
+            )),
+            _ => None,
+        },
         _ => None,
     };
     let mut screw_roll = 0.;
@@ -827,7 +848,11 @@ pub fn prepare_screw_connection(
         }
     }
     let mut head_station = -head_sum;
-    let mut nut_station = grip;
+    let mut nut_station = if request.mode == ScrewConnectionMode::HangerBolt {
+        -nut_sum
+    } else {
+        grip
+    };
     for (row, part) in request.hardware.iter().zip(&resolved) {
         let (station, roll) = match row.role {
             ScrewConnectionHardwareRole::HeadWasher => {
@@ -841,7 +866,14 @@ pub fn prepare_screw_connection(
                 (s, 0.)
             }
             ScrewConnectionHardwareRole::Nut => {
-                let station = grip + nut_sum;
+                let station = if request.mode == ScrewConnectionMode::HangerBolt {
+                    let ResolvedMechanicalPart::HexNut { thread, .. } = part else {
+                        return Err(error("A hanger bolt needs an actual hex nut"));
+                    };
+                    -nut_sum - thread.length_mm
+                } else {
+                    grip + nut_sum
+                };
                 let roll = screw_data.map_or(0., |(start, pitch, hand)| {
                     screw_roll
                         + if hand == ThreadHand::Right { 1. } else { -1. }
@@ -851,10 +883,15 @@ pub fn prepare_screw_connection(
                 });
                 (station, roll)
             }
-            ScrewConnectionHardwareRole::Screw | ScrewConnectionHardwareRole::HangerBolt => {
-                (-head_sum, screw_roll)
-            }
-            ScrewConnectionHardwareRole::Insert => (grip, 0.),
+            ScrewConnectionHardwareRole::Screw => (-head_sum, screw_roll),
+            ScrewConnectionHardwareRole::HangerBolt => (grip, 0.),
+            ScrewConnectionHardwareRole::Insert => (
+                grip,
+                screw_data.map_or(0., |(start, pitch, hand)| {
+                    let sign = if hand == ThreadHand::Right { 1. } else { -1. };
+                    screw_roll + sign * std::f64::consts::TAU * (grip - start) / pitch
+                }),
+            ),
         };
         let source = ScrewHardwarePlacementDefinition {
             owner: row.instance,

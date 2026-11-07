@@ -40,6 +40,7 @@ fn engagement_kind(
 impl ResolvedMechanicalPart {
     fn reference_values(&self) -> BTreeMap<&'static str, f64> {
         match self {
+            Self::CustomConnection { .. } => BTreeMap::new(),
             Self::WoodScrew { parameters: p } => {
                 let mut values = BTreeMap::from([
                     ("underhead_length_mm", p.underhead_length_mm),

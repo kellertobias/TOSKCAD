@@ -40,7 +40,11 @@ fn station(axis: ReferenceFrame, point: [f64; 3]) -> (f64, f64) {
     (axial, dot(radial, radial).sqrt())
 }
 fn placed_frame(part: &ResolvedMechanicalPart, pose: RigidPose) -> ReferenceFrame {
+    if let ResolvedMechanicalPart::CustomConnection { parameters } = part {
+        return pose.frame(parameters.mount_frame());
+    }
     let local = match part {
+        ResolvedMechanicalPart::CustomConnection { .. } => unreachable!("handled custom mount"),
         ResolvedMechanicalPart::MachineScrew { thread, .. }
         | ResolvedMechanicalPart::HexNut { thread, .. } => thread.frame,
         ResolvedMechanicalPart::Washer { frame, .. }

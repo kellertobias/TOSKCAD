@@ -66,6 +66,15 @@ impl ThreadSources {
                             .map_err(|e| e.to_string())?
                         {
                             ResolvedMechanicalPart::HexNut { thread, .. } => Some(*thread),
+                            ResolvedMechanicalPart::CustomConnection { parameters } => {
+                                match *parameters {
+                                    model::ResolvedCustomConnectionHardware::WoodInsert {
+                                        inner_thread,
+                                        ..
+                                    } => Some(*inner_thread),
+                                    _ => None,
+                                }
+                            }
                             _ => None,
                         }
                     }

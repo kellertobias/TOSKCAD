@@ -1,5 +1,6 @@
 //! Self-contained hardware geometry. Catalog references never drive dimensions.
 mod cards;
+mod custom_connection;
 mod hexalobular;
 mod prepare;
 mod reference;
@@ -18,6 +19,7 @@ use crate::{
     sketch::Frame,
 };
 pub use cards::*;
+pub use custom_connection::*;
 pub use hexalobular::*;
 pub use prepare::*;
 pub use screw_profiles::*;
@@ -33,6 +35,9 @@ pub const MECHANICAL_PART_CATALOG_FACTS_CAPABILITY: &str = "model.mechanical_par
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum MechanicalPartParameters {
+    CustomConnection {
+        parameters: Box<CustomConnectionHardwareParameters>,
+    },
     WoodScrew {
         #[serde(flatten)]
         parameters: Box<WoodScrewParameters>,
@@ -72,6 +77,9 @@ pub enum MechanicalPartParameters {
 }
 #[derive(Clone, Debug, PartialEq)]
 pub enum ResolvedMechanicalPart {
+    CustomConnection {
+        parameters: Box<ResolvedCustomConnectionHardware>,
+    },
     WoodScrew {
         parameters: Box<ResolvedWoodScrew>,
     },
@@ -107,11 +115,15 @@ impl MechanicalPartParameters {
             Self::HexNut { thread, .. } | Self::MachineScrew { thread, .. } => {
                 Some(thread.as_ref())
             }
-            Self::Washer { .. } | Self::BearingEnvelope { .. } | Self::WoodScrew { .. } => None,
+            Self::CustomConnection { .. }
+            | Self::Washer { .. }
+            | Self::BearingEnvelope { .. }
+            | Self::WoodScrew { .. } => None,
         }
     }
     pub fn label(&self) -> &'static str {
         match self {
+            Self::CustomConnection { parameters } => parameters.label(),
             Self::WoodScrew { .. } => "Wood screw envelope",
             Self::MachineScrew { .. } => "Machine screw",
             Self::Washer { .. } => "Plain washer",
@@ -121,6 +133,7 @@ impl MechanicalPartParameters {
     }
     pub fn frame(&self) -> &PrimitiveFrame {
         match self {
+            Self::CustomConnection { parameters } => parameters.frame(),
             Self::WoodScrew { parameters } => &parameters.frame,
             Self::Washer { frame, .. } | Self::BearingEnvelope { frame, .. } => frame,
             Self::HexNut { thread, .. } | Self::MachineScrew { thread, .. } => &thread.frame,
@@ -128,6 +141,7 @@ impl MechanicalPartParameters {
     }
     fn dimensions(&self) -> Vec<&Dimension> {
         let mut fields = match self {
+            Self::CustomConnection { parameters } => return parameters.dimensions(),
             Self::WoodScrew { parameters } => parameters.dimensions(),
             Self::MachineScrew {
                 underhead_length,
@@ -172,6 +186,7 @@ impl MechanicalPartParameters {
     pub fn validate(&self) -> Result<(), DocumentError> {
         self.frame().validate()?;
         match self {
+            Self::CustomConnection { parameters } => parameters.validate()?,
             Self::WoodScrew { parameters } => parameters.validate()?,
             Self::MachineScrew {
                 underhead_length,
@@ -255,6 +270,9 @@ impl MechanicalPartParameters {
             Ok((bore / 2., outside / 2., height))
         };
         Ok(match self {
+            Self::CustomConnection { parameters } => ResolvedMechanicalPart::CustomConnection {
+                parameters: Box::new(parameters.resolve(evaluated)?),
+            },
             Self::WoodScrew { parameters } => ResolvedMechanicalPart::WoodScrew {
                 parameters: Box::new(parameters.resolve(evaluated)?),
             },
@@ -487,6 +505,15 @@ impl MechanicalPartDefinition {
             return Err(invalid("Hardware output identity is nil"));
         }
         self.parameters.validate()?;
+        if matches!(
+            self.parameters,
+            MechanicalPartParameters::CustomConnection { .. }
+        ) && self.provenance.is_some()
+        {
+            return Err(invalid(
+                "Custom connection hardware is authored engineering geometry, not a purchased catalog reference",
+            ));
+        }
         if let Some(provenance) = &self.provenance {
             provenance.validate()?;
             if std::mem::discriminant(&self.parameters)
@@ -519,6 +546,15 @@ impl MechanicalPartDefinition {
     pub fn inputs(&self) -> Result<Vec<Link>, DocumentError> {
         self.validate()?;
         let mut links = parameter_links(self.parameters.dimensions());
+        if let MechanicalPartParameters::CustomConnection { parameters } = &self.parameters {
+            for thread in parameters.threads() {
+                for link in thread.input_links() {
+                    if !links.contains(&link) {
+                        links.push(link);
+                    }
+                }
+            }
+        }
         if let Some(thread) = self.parameters.thread_parameters() {
             for link in thread.input_links() {
                 if !links.contains(&link) {

@@ -74,6 +74,15 @@ fn cards(document: &Document, symbol: Option<(EntityId, String)>) -> Vec<Mechani
                     .resolve(evaluated)
                     .map_err(|e| e.to_string())?;
                 let (values, representation) = match resolved {
+                    ResolvedMechanicalPart::CustomConnection {parameters:p} => {
+                        card.profile_details.push("Explicit authored thread profiles and flat-cut endpoints; no proprietary wood profile, installation pilot, strength or purchased standard is inferred".into());
+                        let values=match *p {
+                            ResolvedCustomConnectionHardware::WoodScrew{wood_thread,plain_length_mm,plain_radius_mm,head,..}=>vec![("Wood thread diameter",wood_thread.major_radius_mm*2.),("Wood pitch",wood_thread.pitch_mm),("Actual wood thread length",wood_thread.length_mm),("Plain length",plain_length_mm),("Plain diameter",plain_radius_mm*2.),("Head height",head.height_mm())],
+                            ResolvedCustomConnectionHardware::WoodInsert{outer_thread,inner_thread,..}=>vec![("Outer diameter",outer_thread.major_radius_mm*2.),("Actual outer length",outer_thread.length_mm),("Actual inner length",inner_thread.length_mm),("Inner nominal diameter",inner_thread.nominal_major_radius_mm*2.)],
+                            ResolvedCustomConnectionHardware::HangerBolt{wood_thread,metric_thread,plain_length_mm,plain_radius_mm,..}=>vec![("Wood diameter",wood_thread.major_radius_mm*2.),("Actual wood length",wood_thread.length_mm),("Metric nominal diameter",metric_thread.nominal_major_radius_mm*2.),("Actual metric length",metric_thread.length_mm),("Plain length",plain_length_mm),("Plain diameter",plain_radius_mm*2.)],
+                        };
+                        (values,"Custom modeled engineering geometry · flat ends · strength unverified".into())
+                    },
                     ResolvedMechanicalPart::WoodScrew {parameters:p} => {
                         card.profile_details.extend([
                             format!("Authored length convention: {}",match p.length_convention {ScrewLengthConvention::Underhead=>"underhead",ScrewLengthConvention::Overall=>"overall"}),
