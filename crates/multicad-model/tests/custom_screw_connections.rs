@@ -26,25 +26,32 @@ fn all_three_custom_modes_require_actual_wood_material_and_independent_metric_ma
         let (doc, r) = fixture(mode);
         let mut s = Session::new(doc.clone()).unwrap();
         let q = prepare_screw_connection(&s, 0, actor(), &r).unwrap();
-        if mode == ScrewConnectionMode::HangerBolt {
-            let nut = r
-                .hardware
-                .iter()
-                .find(|h| h.role == ScrewConnectionHardwareRole::Nut)
-                .unwrap();
-            let driver = read_screw_hardware_placement(q.prepared.document(), nut.driver).unwrap();
-            let radians = driver
-                .roll
-                .value_in(multicad_core::parameters::Unit::Radian, None)
-                .unwrap();
-            assert!(
-                radians.sin().abs() > 0.5,
-                "fixture must exercise nonzero nut phase"
-            );
-        }
         let model = compiler()
             .compile(q.prepared.document(), 1)
             .unwrap_or_else(|e| panic!("mode{mode:?}: {e}"));
+        if mode == ScrewConnectionMode::HangerBolt {
+            let pose = |role| {
+                let row = r.hardware.iter().find(|row| row.role == role).unwrap();
+                model
+                    .leaf_snapshot(&OccurrencePath {
+                        root: row.instance,
+                        members: vec![],
+                    })
+                    .unwrap()
+                    .pose
+            };
+            // Both fixture mounts use the same local basis. The relative rotation
+            // measures actual native nut phase instead of the dormant source roll.
+            let nut_x = pose(ScrewConnectionHardwareRole::Nut).vector([1., 0., 0.]);
+            let nut_x_in_hanger = pose(ScrewConnectionHardwareRole::HangerBolt)
+                .inverse()
+                .unwrap()
+                .vector(nut_x);
+            assert!(
+                nut_x_in_hanger[1].abs() > 0.5,
+                "fixture must exercise nonzero nut phase"
+            );
+        }
         let checks = &model.snapshot().screw_connection_checks;
         assert_eq!(checks.len(), 1);
         let c = &checks[0];

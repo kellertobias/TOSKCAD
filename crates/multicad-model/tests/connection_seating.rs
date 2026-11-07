@@ -41,6 +41,47 @@ fn washer(r: &mut ScrewConnectionRequest, thickness: f64) {
         driver: EntityId::new(),
     });
 }
+
+fn assert_seated_screw(
+    document: &Document,
+    model: &Model,
+    request: &ScrewConnectionRequest,
+    front_z: f64,
+    station: f64,
+) {
+    let screw = request
+        .hardware
+        .iter()
+        .find(|row| row.role == ScrewConnectionHardwareRole::Screw)
+        .unwrap();
+    let driver = read_screw_hardware_placement(document, screw.driver).unwrap();
+    assert_eq!(driver.station, length(0.));
+    assert_eq!(
+        driver.connection,
+        Some(ScrewHardwareConnectionBinding {
+            connection: request.connection,
+            role: screw.role_id,
+        })
+    );
+    let pose = model
+        .leaf_snapshot(&OccurrencePath {
+            root: screw.instance,
+            members: vec![],
+        })
+        .unwrap()
+        .pose;
+    // These fixtures place the screw mount at its local origin and drill into −Z.
+    let expected = [10., 10., front_z - station];
+    assert!(
+        pose.translation_mm
+            .into_iter()
+            .zip(expected)
+            .all(|(actual, expected)| (actual - expected).abs() < 1e-7),
+        "seated screw mount: expected {expected:?}, got {:?}",
+        pose.translation_mm
+    );
+}
+
 #[test]
 fn actual_flat_counterbore_and_matched_countersink_have_native_bearing_not_just_clearance() {
     for cone in [false, true] {
@@ -89,12 +130,7 @@ fn actual_flat_counterbore_and_matched_countersink_have_native_bearing_not_just_
         }
         let (candidate, model) = compile(&doc, &r).unwrap_or_else(|e| panic!("cone{cone}: {e}"));
         assert_eq!(model.snapshot().screw_connection_checks.len(), 1);
-        let driver = read_screw_hardware_placement(&candidate, r.hardware[0].driver).unwrap();
-        let b = driver
-            .station
-            .value_in(multicad_core::parameters::Unit::Millimeter, None)
-            .unwrap();
-        assert!((b - if cone { 1.5 } else { 0.8 }).abs() < 1e-10);
+        assert_seated_screw(&candidate, &model, &r, 4.1, if cone { 1.5 } else { 0.8 });
         assert_eq!(
             read_screw_connection_request(&candidate, r.connection).unwrap(),
             r
@@ -225,12 +261,6 @@ fn custom_wood_and_insert_modes_share_the_actual_front_counterbore_bearing_rules
         assert!(
             check.actual_wood_engagement_mm.unwrap() >= if insert { 4. - 1e-7 } else { 12. - 1e-7 }
         );
-        let screw = r
-            .hardware
-            .iter()
-            .find(|h| h.role == ScrewConnectionHardwareRole::Screw)
-            .unwrap();
-        let driver = read_screw_hardware_placement(&candidate, screw.driver).unwrap();
-        assert_eq!(driver.station, length(1.));
+        assert_seated_screw(&candidate, &model, &r, if insert { 4.1 } else { 20. }, 1.);
     }
 }
