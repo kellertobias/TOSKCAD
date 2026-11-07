@@ -1,0 +1,17 @@
+# item Line 8 profile source
+
+The bundled profile is a native member with one editable Length input. Its typed stock identifies item article 0.0.026.03, Profile 8 40 × 40, natural, standard design. The 160 mm default is a Library preset. The source lists anodized aluminum and a maximum cut-off length of 6,000 mm.
+
+The manufacturer's dimensioned section gives a 40 × 40 mm envelope, R4 outside corners, a Ø6.8 mm central bore and four 8 mm groove openings. The back of each lip lies 4.5 mm below the outer face and the groove floor lies 12.25 mm below it. The sheet is dated 15 January 2019 and carries status 18.07.25. The inspected PDF SHA-256 is `ef0142ab368e41e9667111db4fe25b2b6bdb44e27a1bd858115e8b07c1040be4`. [Manufacturer dimensional sheet, page 1](https://cdn.item24.com/product-assets/DOK_PROD_2603_%23SEN_%23AIN_%23V1.pdf)
+
+The drawing leaves the complete cavity outline undimensioned. The model uses straight tapered flanks and omits the internal fillets. The engineering targets for the groove's half-width are 9.25 mm at 4.5 mm depth, 7.75 mm at 8 mm, 5.75 mm at 10 mm and 2.75 mm at the floor. The modeled area is about 983.449 mm². The manufacturer lists 916 mm² for the purchased extrusion. The material record leaves density unspecified, and the model does not carry supplier weight, load, fit or tolerance ratings.
+
+The generator authors the geometry and renders the preview from the native solid. The package redistributes independently authored geometry and the cited numerical facts. The supplier retains rights in its PDF, artwork and CAD, which are outside this package. [Library generator](../../../crates/multicad-app/examples/profile_library.rs)
+
+## Connector presets
+
+- The 40 × 40 steel angle bracket (0.0.692.14) uses 5 mm stock and two Ø9.8 mm countersunk mounting openings at the 20 mm stations. The native bracket uses an independently modeled bend and countersink. [Manufacturer part](https://www.item24.com/en-de/angle-bracket-8-40-st-white-aluminium-similar-to-ral-9006-69214), [dimensional drawing](https://cdn.item24.com/product-assets/GRA_PMA_SUB_69214_%23SALL_%23AINO_%23V2.svg)
+- The 80 × 40 steel joining plate (0.0.692.16) uses 5 mm stock and the same countersunk openings at 40 mm pitch. The angle and plate use M8 × 14 countersunk screws and Line 8 T-slot nuts from the 5 mm fastening set (0.0.680.96). Both mount on the groove without machining the profile. [Plate drawing](https://cdn.item24.com/product-assets/GRA_PMA_SUB_69216_%23SALL_%23AINO_%23V1.svg), [fastening set](https://www.item24.com/en-nl/fastening-set-8-2-5mm-with-countersunk-screw-m8-68096), [DIN 7991 screw dimensions](https://eshop.boellhoff.de/out/media/pdf/DIN_7991_Stahl_8.8___en.pdf)
+- The universal end connection uses a pair of 0.0.026.92 sets with Ø20 mm connector barrels, M8 × 30 button-head screws and Line 8 T-slot nuts. The model machines the end member at a 20 mm station using Ø20 × 16 mm and Ø7 × 33 mm radial bore steps. [Manufacturer universal connector sheet](https://cdn.item24.com/product-assets/DOK_PROD_2692_%23SEN_%23AIN_%23V1.pdf), [stepped-bore specification](https://www.item24.com/de-de/bearbeitung-profil-stufenbohrung-nutseitig-8-d20x16-2697), [T-slot nut sheet](https://cdn.item24.com/product-assets/DOK_PROD_2618_%23SEN_%23AIN_%23V1.pdf)
+
+The modeled M8 screws and nuts have geometric assembly clearances. Bend, nut crown, seat and barrel details are engineering targets. The model carries no supplier tolerance or load ratings.

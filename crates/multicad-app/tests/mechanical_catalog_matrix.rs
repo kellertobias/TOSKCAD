@@ -524,7 +524,7 @@ fn checked_projects_reproduce_all_148_curated_default_recipes() {
     }
     assert_eq!(rows.len(), 148);
     let entries = array(&bundle["entries"]);
-    assert_eq!(entries.len(), 172);
+    assert_eq!(entries.len(), 173);
     let capabilities = project_file::supported_capabilities();
     let mut pins = BTreeSet::new();
     let mut file_names = BTreeSet::new();
@@ -662,7 +662,7 @@ fn checked_projects_reproduce_all_148_curated_default_recipes() {
         );
     }
     assert!(rows.is_empty());
-    assert_eq!(unrelated, 24);
+    assert_eq!(unrelated, 25);
     let actual = fs::read_dir(&root)
         .unwrap()
         .map(|entry| entry.unwrap().file_name().into_string().unwrap())

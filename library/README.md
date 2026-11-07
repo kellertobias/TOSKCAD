@@ -1,7 +1,9 @@
 <!-- Kind: reference; Audience: catalog maintainers and reviewers; Purpose: record source, geometry and coverage of the bundled Library; Non-goals: certify manufactured parts or reproduce vendor CAD. -->
 # Included Library definitions
 
-The Library includes metric machine screws, simplified wood-screw stock envelopes, hex-nut dimensional references, normal-series plain washers, generic trees and shrubs, four curated bearing mounting envelopes and generic apartment equipment. All use dynamic, pinned native symbol definitions.
+The Library includes metric machine screws, simplified wood-screw stock envelopes, hex-nut dimensional references, normal-series plain washers, generic trees and shrubs, four curated bearing mounting envelopes, generic apartment equipment and an item Line 8 40 × 40 profile. All use dynamic, pinned native symbol definitions.
+
+The Line 8 profile exposes member Length and retains the source stock and material. [Profile dimensional source and geometry limits](sources/profiles/ITEM-LINE-8-NOTICE.md)
 
 ## Tested hardware coverage
 

@@ -214,7 +214,7 @@ mod tests {
     fn bundled_cards_use_checked_projects_and_do_not_evaluate_native_geometry() {
         let directory = fixture();
         let entries = load(directory.path()).unwrap();
-        assert_eq!(entries.len(), 172);
+        assert_eq!(entries.len(), 173);
         let mut bearings = 0;
         let mut washers = BTreeSet::new();
         let mut screws = BTreeSet::new();
@@ -229,6 +229,7 @@ mod tests {
                 .unwrap();
         let mut nuts = BTreeSet::new();
         let mut plants = 0;
+        let mut profiles = 0;
         let mut equipment = std::collections::BTreeSet::new();
         for entry in entries {
             assert_eq!(entry.origin, LibraryOrigin::Bundled);
@@ -238,6 +239,10 @@ mod tests {
             if entry.mechanical_parts.is_empty() {
                 if entry.name.starts_with("Generic ") {
                     plants += 1;
+                } else if entry.name == "item Line 8 profile 40 × 40" {
+                    assert!(entry.path.ends_with("profile-item-line8-40x40.tcd"));
+                    assert!(entry.description.contains("0.0.026.03"));
+                    profiles += 1;
                 } else {
                     equipment.insert(entry.name);
                 }
@@ -390,7 +395,7 @@ mod tests {
                 assert!(card.catalog_facts.is_none());
             }
         }
-        assert_eq!((bearings, plants), (4, 2));
+        assert_eq!((bearings, plants, profiles), (4, 2, 1));
         assert_eq!(screws.len(), 19);
         assert_eq!(profile_screws.len(), 52);
         assert_eq!(wood_screws.len(), 44);

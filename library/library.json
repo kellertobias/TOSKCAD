@@ -859,6 +859,11 @@
       "document": "cad23700-0000-4000-8000-00e8d53da680",
       "file": "wood-screw-bitork-din571-d10-l100.tcd",
       "sha256": "a9b17110579934640ba3d678d709831b4f28d7d997047735c3cdd64f4b5d97ba"
+    },
+    {
+      "document": "cad20800-0000-4000-8000-000000000001",
+      "file": "profile-item-line8-40x40.tcd",
+      "sha256": "cc55f270a4e04178d75d4c815602fd54badca1311c3b6568a9720e0d5513fed0"
     }
   ],
   "format": "toskcad.bundled-library",
@@ -880,8 +885,9 @@
     "sources/bolts/SCREW-PROFILE-NOTICES.md",
     "wood-screws-curation.json",
     "sources/wood-screws/source-ledger.json",
-    "sources/wood-screws/WOOD-SCREW-NOTICES.md"
+    "sources/wood-screws/WOOD-SCREW-NOTICES.md",
+    "sources/profiles/ITEM-LINE-8-NOTICE.md"
   ],
-  "revision": "10",
+  "revision": "11",
   "version": 1
 }
