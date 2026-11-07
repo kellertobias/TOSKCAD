@@ -187,3 +187,57 @@ fn two_connection_drafts_allocate_independent_owned_hardware_and_receiver_source
     }
     assert_eq!(document.entities().count(), 0);
 }
+
+#[test]
+fn mode_defaults_distinguish_headless_hangers_and_independent_receiving_cut_purposes() {
+    let document = Document::new("Mode-specific connection defaults").unwrap();
+    let mut panel = ScrewConnectionPanel::new(&document).unwrap();
+    let washer = panel
+        .hardware
+        .iter()
+        .find(|role| role.role == ScrewConnectionHardwareRole::HeadWasher)
+        .unwrap()
+        .role_id;
+    panel.select_mode(ScrewConnectionMode::HangerBolt);
+    assert!(
+        !panel
+            .hardware
+            .iter()
+            .any(|role| role.role == ScrewConnectionHardwareRole::HeadWasher)
+    );
+    let input = BodyInput {
+        body: EntityId::new(),
+        producer: EntityId::new(),
+    };
+    let occurrence = OccurrencePath {
+        root: input.body,
+        members: vec![],
+    };
+    panel.add_receiver(input.clone(), occurrence.clone());
+    assert!(
+        matches!(&panel.receivers[0].source.cut, ConnectionReceiverCut::Round { diameter } if *diameter == length(4.))
+    );
+    panel.select_mode(ScrewConnectionMode::WoodInsert);
+    assert!(
+        matches!(&panel.receivers[0].source.cut, ConnectionReceiverCut::Round { diameter } if *diameter == length(8.))
+    );
+    panel.select_mode(ScrewConnectionMode::TappedReceiver);
+    let ConnectionReceiverCut::Tapped { thread } = &panel.receivers[0].source.cut else {
+        panic!("modeled receiving thread")
+    };
+    assert_eq!(thread.fit, ThreadFit::Metric6HInternal);
+    assert!(matches!(
+        thread.metric_fit_engagement,
+        Some(MetricFitEngagement::NormalGroupAssumed {})
+    ));
+    panel.select_mode(ScrewConnectionMode::ThroughNut);
+    assert!(panel.hardware.iter().any(|role| role.role_id == washer));
+    // A newly picked receiver uses the selected mode even before any mode switch
+    // has a receiving cut to rewrite.
+    panel.select_mode(ScrewConnectionMode::TappedReceiver);
+    panel.receivers.clear();
+    panel.add_receiver(input, occurrence);
+    assert!(
+        matches!(&panel.receivers[0].source.cut, ConnectionReceiverCut::Tapped { thread } if thread.fit == ThreadFit::Metric6HInternal)
+    );
+}

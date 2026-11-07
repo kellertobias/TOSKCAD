@@ -21,6 +21,7 @@ fn scene(document: &Document, stamp: SceneStamp) -> Scene {
     Scene::new(stamp, vec![], vec![])
         .unwrap()
         .with_model_evaluation(Arc::new(ModelEvaluationInfo {
+            screw_connection_checks: vec![],
             source_hash: ContentHash::document(document).unwrap(),
             consumed_bodies: BTreeSet::new(),
             cut_targets: vec![],
@@ -95,6 +96,7 @@ fn native_reference_reports_require_matching_source_revision_and_preserve_hidden
     assert!(
         hidden
             .with_model_evaluation(Arc::new(ModelEvaluationInfo {
+                screw_connection_checks: vec![],
                 source_hash: ContentHash::of(b"foreign replacement"),
                 consumed_bodies: BTreeSet::new(),
                 cut_targets: vec![],

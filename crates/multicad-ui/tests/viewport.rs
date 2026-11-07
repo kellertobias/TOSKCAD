@@ -84,6 +84,7 @@ fn transfer_counts_require_matching_complete_receipts_and_never_escape_source_in
         Scene::new(stamp(), vec![geometry.clone()], vec![placed.clone()])
             .unwrap()
             .with_model_evaluation(Arc::new(ModelEvaluationInfo {
+                screw_connection_checks: vec![],
                 source_hash: source,
                 consumed_bodies: BTreeSet::new(),
                 cut_targets: vec![],
@@ -146,6 +147,7 @@ fn explicit_leaf_inspection_uses_the_complete_path_receipt_instead_of_its_outer_
         .with_reference_aliases(BTreeMap::from([(component, geometry.id())]))
         .unwrap()
         .with_model_evaluation(Arc::new(multicad_core::model::ModelEvaluationInfo {
+            screw_connection_checks: vec![],
             source_hash,
             consumed_bodies: BTreeSet::new(),
             cut_targets: vec![],
@@ -193,6 +195,7 @@ fn assembly_receipts_require_current_complete_known_leaf_sources() {
             .with_reference_aliases(BTreeMap::from([(component, geometry.id())]))
             .unwrap()
             .with_model_evaluation(Arc::new(multicad_core::model::ModelEvaluationInfo {
+                screw_connection_checks: vec![],
                 source_hash: source,
                 consumed_bodies: BTreeSet::new(),
                 cut_targets: vec![],
@@ -893,6 +896,7 @@ fn evaluation_metadata_is_shared_without_relabeling_across_visibility_and_stale_
         producer: geometry.id(),
     };
     let info = Arc::new(ModelEvaluationInfo {
+        screw_connection_checks: vec![],
         source_hash: ContentHash::of(b"Exact immutable source snapshot"),
         consumed_bodies: BTreeSet::from([consumed]),
         cut_targets: vec![
@@ -967,6 +971,7 @@ fn scene_rejects_malformed_or_contradictory_evaluation_metadata() {
             .with_model_evaluation(Arc::new(info))
     };
     let empty = ModelEvaluationInfo {
+        screw_connection_checks: vec![],
         source_hash: ContentHash::of(b"source"),
         consumed_bodies: BTreeSet::new(),
         cut_targets: vec![],

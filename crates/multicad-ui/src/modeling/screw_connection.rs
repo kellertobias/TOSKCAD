@@ -203,6 +203,33 @@ fn generated(role: ScrewConnectionHardwareRole) -> Option<ScrewConnectionHardwar
     })
 }
 
+fn default_receiver_cut(mode: ScrewConnectionMode) -> ConnectionReceiverCut {
+    match mode {
+        ScrewConnectionMode::TappedReceiver => ConnectionReceiverCut::Tapped {
+            thread: Box::new(ThreadParameters {
+                major_diameter: length(3.),
+                pitch: length(0.5),
+                length: length(4.),
+                fit: ThreadFit::Metric6HInternal,
+                metric_fit_engagement: Some(MetricFitEngagement::NormalGroupAssumed {}),
+                minimum_wall: length(0.5),
+                ..Default::default()
+            }),
+        },
+        ScrewConnectionMode::ThroughNut => ConnectionReceiverCut::Round {
+            diameter: length(3.4),
+        },
+        ScrewConnectionMode::DirectWood | ScrewConnectionMode::HangerBolt => {
+            ConnectionReceiverCut::Round {
+                diameter: length(4.),
+            }
+        }
+        ScrewConnectionMode::WoodInsert => ConnectionReceiverCut::Round {
+            diameter: length(8.),
+        },
+    }
+}
+
 impl ScrewConnectionPanel {
     pub fn new(document: &Document) -> Result<Self, String> {
         Ok(Self {
@@ -376,9 +403,7 @@ impl ScrewConnectionPanel {
                 occurrence,
                 axis: self.axis_id,
                 station: length(0.),
-                cut: ConnectionReceiverCut::Round {
-                    diameter: length(3.4),
-                },
+                cut: default_receiver_cut(self.mode),
                 extent: ConnectionReceiverExtent::Through {},
                 minimum_wall: length(0.5),
                 seat: None,
@@ -412,7 +437,8 @@ impl ScrewConnectionPanel {
             self.fields = Default::default();
             self.overrides.clear();
             self.hardware.retain(|role| {
-                matches!(role.role, ScrewConnectionHardwareRole::HeadWasher)
+                (role.role == ScrewConnectionHardwareRole::HeadWasher
+                    && mode != ScrewConnectionMode::HangerBolt)
                     || (role.role == ScrewConnectionHardwareRole::NutWasher
                         && matches!(
                             mode,
@@ -444,25 +470,7 @@ impl ScrewConnectionPanel {
                     .extend(generated(ScrewConnectionHardwareRole::Insert));
             }
             for receiver in &mut self.receivers {
-                receiver.source.cut = if mode == ScrewConnectionMode::TappedReceiver {
-                    ConnectionReceiverCut::Tapped {
-                        thread: Box::new(ThreadParameters {
-                            major_diameter: length(3.),
-                            pitch: length(0.5),
-                            length: length(4.),
-                            minimum_wall: length(0.5),
-                            ..Default::default()
-                        }),
-                    }
-                } else {
-                    ConnectionReceiverCut::Round {
-                        diameter: length(if mode == ScrewConnectionMode::DirectWood {
-                            4.
-                        } else {
-                            3.4
-                        }),
-                    }
-                };
+                receiver.source.cut = default_receiver_cut(mode);
             }
         }
         self.pick = None;

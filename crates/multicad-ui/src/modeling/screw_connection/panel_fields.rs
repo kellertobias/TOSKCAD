@@ -241,7 +241,9 @@ impl ScrewConnectionPanel {
             ] {
                 if ui
                     .add_enabled(
-                        self.hardware.len() < 64,
+                        self.hardware.len() < 64
+                            && !(self.mode == ScrewConnectionMode::HangerBolt
+                                && role == ScrewConnectionHardwareRole::HeadWasher),
                         egui::Button::new(format!("Add {}", role_name(role))),
                     )
                     .clicked()
@@ -420,6 +422,18 @@ impl ScrewConnectionPanel {
                             }
                         };
                         *changed = true;
+                    }
+                    if matches!(receiver.source.cut, ConnectionReceiverCut::Round { .. }) {
+                        ui.small("Engineering diameter presets are separate from stock installation guidance. Choose each clamp clearance or wood/insert pilot independently.");
+                        ui.horizontal_wrapped(|ui| {
+                            for (label, diameter) in [("Metric clearance 3.4", 3.4), ("Wood pilot 4", 4.), ("Insert pilot 8", 8.)] {
+                                if ui.button(label).clicked() {
+                                    receiver.source.cut = ConnectionReceiverCut::Round { diameter: length(diameter) };
+                                    self.fields.remove_field(receiver.feature, "hole-diameter");
+                                    *changed = true;
+                                }
+                            }
+                        });
                     }
                     match &mut receiver.source.cut {
                         ConnectionReceiverCut::Round { diameter } => self.fields.dimension(

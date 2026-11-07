@@ -12,6 +12,9 @@ impl Fields {
     pub fn remove_owner(&mut self, owner: EntityId) {
         self.values.retain(|(id, _), _| *id != owner);
     }
+    pub fn remove_field(&mut self, owner: EntityId, key: &'static str) {
+        self.values.remove(&(owner, key));
+    }
     pub fn start(&mut self) {
         self.error = None;
         self.changed = false;
