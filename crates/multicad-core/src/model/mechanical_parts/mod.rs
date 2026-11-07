@@ -112,6 +112,32 @@ pub enum ResolvedMechanicalPart {
         frame: Frame,
     },
 }
+
+impl ResolvedMechanicalPart {
+    /// Hardware mounting datum in definition coordinates. Connection placement
+    /// and occurrence inspection use this same origin and axis.
+    pub fn mount_pose(&self) -> super::RigidPose {
+        if let Self::CustomConnection { parameters } = self {
+            let frame = parameters.mount_frame();
+            let normal = frame.normal();
+            return super::RigidPose {
+                rotation: std::array::from_fn(|i| [frame.u[i], frame.v[i], normal[i]]),
+                translation_mm: frame.origin_mm,
+            };
+        }
+        let frame = match self {
+            Self::CustomConnection { .. } => unreachable!("handled custom mount"),
+            Self::WoodScrew { parameters } => parameters.frame,
+            Self::MachineScrew { thread, .. } | Self::HexNut { thread, .. } => thread.frame,
+            Self::Washer { frame, .. } | Self::BearingEnvelope { frame, .. } => *frame,
+        };
+        super::RigidPose {
+            rotation: std::array::from_fn(|i| [frame.u[i], frame.v[i], frame.n[i]]),
+            translation_mm: frame.origin,
+        }
+    }
+}
+
 impl MechanicalPartParameters {
     pub fn thread_parameters(&self) -> Option<&ThreadParameters> {
         match self {

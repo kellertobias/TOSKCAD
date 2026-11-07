@@ -654,28 +654,6 @@ pub fn prepare_remove_screw_connection(
         edits: super::extrude_boolean::delta(session.document(), &candidate)?,
     })
 }
-pub(super) fn mount(part: &ResolvedMechanicalPart) -> RigidPose {
-    if let ResolvedMechanicalPart::CustomConnection { parameters } = part {
-        let frame = parameters.mount_frame();
-        let normal = frame.normal();
-        return RigidPose {
-            rotation: std::array::from_fn(|i| [frame.u[i], frame.v[i], normal[i]]),
-            translation_mm: frame.origin_mm,
-        };
-    }
-    let frame = match part {
-        ResolvedMechanicalPart::CustomConnection { .. } => unreachable!("handled custom mount"),
-        ResolvedMechanicalPart::WoodScrew { parameters } => parameters.frame,
-        ResolvedMechanicalPart::MachineScrew { thread, .. }
-        | ResolvedMechanicalPart::HexNut { thread, .. } => thread.frame,
-        ResolvedMechanicalPart::Washer { frame, .. }
-        | ResolvedMechanicalPart::BearingEnvelope { frame, .. } => *frame,
-    };
-    RigidPose {
-        rotation: std::array::from_fn(|i| [frame.u[i], frame.v[i], frame.n[i]]),
-        translation_mm: frame.origin,
-    }
-}
 fn washer_thickness(part: &ResolvedMechanicalPart) -> Result<f64, CommandError> {
     match part {
         ResolvedMechanicalPart::Washer { thickness_mm, .. } => Ok(*thickness_mm),
@@ -1020,7 +998,7 @@ pub fn prepare_screw_connection(
             connection: None,
             station: length(station),
             roll: angle(roll.to_degrees()),
-            local_mount: mount(part),
+            local_mount: part.mount_pose(),
         };
         let driver = Entity {
             description: String::new(),

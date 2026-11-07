@@ -495,7 +495,7 @@ pub fn resolve_connection_hardware_pose(
             Role::HangerBolt | Role::Insert => (grip, 0.),
         };
         if row.role_id == binding.role {
-            let mount = super::screw_connections::mount(part);
+            let mount = part.mount_pose();
             let control = model::NumericTransform {
                 translation: [length(0.), length(0.), length(station)],
                 angle: angle(roll.to_degrees()),
