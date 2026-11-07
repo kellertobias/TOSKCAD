@@ -94,9 +94,8 @@ fn collision(
         ));
     }
     *queries += 1;
-    if a.intersect_parallel(b, model.policy)
+    if !crate::native_intersection_proofs::no_intersection(a, b, model.policy)
         .map_err(|e| error(Some(id), e))?
-        .is_some()
     {
         return Err(error(
             Some(id),
