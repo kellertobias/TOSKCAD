@@ -250,6 +250,7 @@ impl SketchEditor {
         self.connection_section = None;
         self.connection_axis_pose = None;
         if self.measurement.active() {
+            self.fit_requested |= self.connection_exploded_axis.take().is_some();
             return Ok(scene.clone());
         }
         let Some((section, explode)) = self.model.connection_view_options() else {
@@ -592,10 +593,63 @@ mod tests {
             receiving
         );
 
+        // Enable the actual display option through its painted checkbox.
+        let context = egui::Context::default();
+        let mut frame = |events| {
+            context.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(800., 20000.),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    editor
+                        .model
+                        .show(ui, &mut session, &Default::default())
+                        .unwrap();
+                },
+            )
+        };
+        let output = frame(vec![]);
+        let checkbox = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.job.text == "Exploded stack" => {
+                    Some(text.pos + text.galley.size() * 0.5)
+                }
+                _ => None,
+            })
+            .expect("painted exploded display control");
+        output.drop_without_applying_deltas();
+        for pressed in [true, false] {
+            frame(vec![
+                egui::Event::PointerMoved(checkbox),
+                egui::Event::PointerButton {
+                    pos: checkbox,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: Default::default(),
+                },
+            ])
+            .drop_without_applying_deltas();
+        }
+        assert_eq!(
+            editor
+                .model
+                .connection_view_options()
+                .map(|(_, explode)| explode),
+            Some(true)
+        );
         let view = editor
             .connection_presentation(&session, &committed)
             .unwrap();
         assert_eq!(view.scope(), &crate::viewport::SceneScope::Presentation);
+        assert!(editor.connection_exploded_axis.is_some());
+        editor.fit_requested = false;
         editor.connection_section = Some(SectionPlane::new([0., 0., 1.], 50.).unwrap());
         editor.measurement.open();
         assert_eq!(editor.modeling_section(), normal_section);
@@ -609,6 +663,20 @@ mod tests {
             .connection_presentation(&session, &committed)
             .unwrap();
         assert!(Arc::ptr_eq(&measured, &committed));
+        assert!(editor.connection_exploded_axis.is_none());
+        assert!(
+            editor.fit_requested,
+            "Measure entry fits committed geometry"
+        );
+        // Simulate consuming that fit, then manually fitting within Measure.
+        editor.fit_requested = false;
+        editor
+            .connection_presentation(&session, &committed)
+            .unwrap();
+        assert!(
+            !editor.fit_requested,
+            "Measure must not request repeated fits"
+        );
         assert!(
             measured
                 .pick_face_section(ray, editor.modeling_section())
@@ -621,6 +689,11 @@ mod tests {
             .connection_presentation(&session, &committed)
             .unwrap();
         assert_eq!(resumed.scope(), &crate::viewport::SceneScope::Presentation);
+        assert!(
+            editor.fit_requested,
+            "Resume fits the complete exploded layout"
+        );
+        assert!(editor.connection_exploded_axis.is_some());
         assert_eq!(editor.model.stamp(), stamp);
     }
 
