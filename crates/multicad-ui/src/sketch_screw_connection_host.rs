@@ -289,21 +289,58 @@ impl SketchEditor {
         let Some(receipt) = scene.assembly_evaluation() else {
             return Ok(scene.clone());
         };
-        let exploded_stations = exploded_role_stations(&roles);
+        let receiving = self.model.connection_receiving_paths();
+        let mut hardware_bounds = BTreeMap::new();
+        let mut stock_bounds = None;
+        if explode {
+            for leaf in &receipt.leaves {
+                let hardware = roles.iter().any(|(id, _)| leaf.path.root == *id);
+                let receiver = receiving.contains(&leaf.path);
+                if !hardware && !receiver {
+                    continue;
+                }
+                let bounds = scene
+                    .leaf_display_bounds(&leaf.path)
+                    .ok_or("Current connection leaf has no display bounds for exploded layout")?;
+                let interval = projected_interval(bounds, pose)?;
+                if hardware {
+                    include_interval(
+                        hardware_bounds.entry(leaf.path.root).or_insert(interval),
+                        interval,
+                    );
+                }
+                if receiver {
+                    include_interval(stock_bounds.get_or_insert(interval), interval);
+                }
+            }
+        }
+        let exploded_stations = if explode {
+            let Some(stock_bounds) = stock_bounds else {
+                return Ok(scene.clone());
+            };
+            exploded_role_stations(&roles, &hardware_bounds, stock_bounds)?
+        } else {
+            BTreeMap::new()
+        };
         let mut offsets = BTreeMap::new();
         for leaf in &receipt.leaves {
             if let Some((id, _)) = roles.iter().find(|(id, _)| leaf.path.root == *id) {
                 offsets.insert(
                     leaf.path.clone(),
                     if explode {
-                        pose.vector([0., 0., exploded_stations[id]])
+                        pose.vector([
+                            0.,
+                            0.,
+                            *exploded_stations
+                                .get(id)
+                                .ok_or("Displayed hardware has no valid exploded layout")?,
+                        ])
                     } else {
                         [0.; 3]
                     },
                 );
             }
         }
-        let receiving = self.model.connection_receiving_paths();
         for leaf in &receipt.leaves {
             if receiving.iter().any(|path| path == &leaf.path) {
                 offsets.entry(leaf.path.clone()).or_insert([0.; 3]);
@@ -330,50 +367,96 @@ impl SketchEditor {
     }
 }
 
-/// View-only offsets retain actual role order on each side of the receiving stack.
+fn include_interval(target: &mut [f64; 2], interval: [f64; 2]) {
+    target[0] = target[0].min(interval[0]);
+    target[1] = target[1].max(interval[1]);
+}
+
+/// Conservative projection of all eight corners encloses every drawn triangle.
+fn projected_interval(
+    bounds: [[f64; 3]; 2],
+    axis: multicad_core::model::RigidPose,
+) -> Result<[f64; 2], String> {
+    if bounds.iter().flatten().any(|value| !value.is_finite())
+        || (0..3).any(|i| bounds[0][i] > bounds[1][i])
+    {
+        return Err("Exploded layout needs finite ordered display bounds".into());
+    }
+    let normal = axis.vector([0., 0., 1.]);
+    let mut interval = [f64::INFINITY, f64::NEG_INFINITY];
+    for corner in 0..8 {
+        let station = (0..3)
+            .map(|i| {
+                (bounds[usize::from(corner & (1 << i) != 0)][i] - axis.translation_mm[i])
+                    * normal[i]
+            })
+            .sum::<f64>();
+        include_interval(&mut interval, [station; 2]);
+    }
+    Ok(interval)
+}
+
+/// Move complete occupied intervals outward, retaining role and washer order.
 fn exploded_role_stations(
     roles: &[(EntityId, multicad_core::model::ScrewConnectionHardwareRole)],
-) -> BTreeMap<EntityId, f64> {
+    bounds: &BTreeMap<EntityId, [f64; 2]>,
+    stock: [f64; 2],
+) -> Result<BTreeMap<EntityId, f64>, String> {
     use multicad_core::model::ScrewConnectionHardwareRole as Role;
-    let head_count = roles
-        .iter()
-        .filter(|(_, role)| *role == Role::HeadWasher)
-        .count();
-    let nut_count = roles
-        .iter()
-        .filter(|(_, role)| *role == Role::NutWasher)
-        .count();
-    let insert_count = usize::from(roles.iter().any(|(_, role)| *role == Role::Insert));
     let hanger = roles.iter().any(|(_, role)| *role == Role::HangerBolt);
-    let mut head = 0;
-    let mut nut = 0;
-    roles
-        .iter()
-        .map(|(id, role)| {
-            let station = match role {
-                Role::HangerBolt => -15. * (nut_count + 2) as f64,
-                Role::Screw => -15. * (head_count + insert_count + 1) as f64,
-                Role::HeadWasher => {
-                    let value = -15. * (head_count + insert_count - head) as f64;
-                    head += 1;
-                    value
-                }
-                Role::NutWasher => {
-                    let offset = if hanger {
-                        -15. * (nut_count - nut) as f64
-                    } else {
-                        15. * (nut + 1) as f64
-                    };
-                    nut += 1;
-                    offset
-                }
-                Role::Nut => (if hanger { -15. } else { 15. }) * (nut_count + 1) as f64,
-                Role::Insert => -15.,
+    let ids = |role| {
+        roles
+            .iter()
+            .filter(move |(_, candidate)| *candidate == role)
+            .map(|(id, _)| *id)
+            .collect::<Vec<_>>()
+    };
+    let mut negative = ids(Role::Insert);
+    negative.extend(ids(Role::HeadWasher).into_iter().rev());
+    if hanger {
+        negative.extend(ids(Role::NutWasher).into_iter().rev());
+        negative.extend(ids(Role::Nut));
+        negative.extend(ids(Role::HangerBolt));
+    } else {
+        negative.extend(ids(Role::Screw));
+    }
+    let mut positive = vec![];
+    if !hanger {
+        positive.extend(ids(Role::NutWasher));
+        positive.extend(ids(Role::Nut));
+    }
+    let mut offsets = BTreeMap::new();
+    for (group, mut cursor, sign) in [(negative, stock[0], -1.), (positive, stock[1], 1.)] {
+        for id in group {
+            let Some(interval) = bounds.get(&id) else {
+                continue;
             };
-            (*id, station)
-        })
-        .collect()
+            if interval.iter().any(|value| !value.is_finite()) || interval[0] > interval[1] {
+                return Err("Exploded hardware has invalid occupied bounds".into());
+            }
+            let offset = if sign < 0. {
+                (cursor - 15. - interval[1]).min(-15.)
+            } else {
+                (cursor + 15. - interval[0]).max(15.)
+            };
+            if !offset.is_finite() || offset.abs() > 1e7 {
+                return Err(
+                    "Exploded hardware separation exceeds the display coordinate budget".into(),
+                );
+            }
+            cursor = interval[usize::from(sign > 0.)] + offset;
+            offsets.insert(id, offset);
+        }
+    }
+    if bounds.keys().any(|id| !offsets.contains_key(id)) {
+        return Err("Displayed hardware roles do not form a valid exploded layout".into());
+    }
+    Ok(offsets)
 }
+
+#[cfg(test)]
+#[path = "../../multicad-model/tests/support/custom_screw_connections.rs"]
+mod custom_fixture;
 
 #[cfg(test)]
 mod tests {
@@ -542,6 +625,200 @@ mod tests {
     }
 
     #[test]
+    fn exploded_projection_encloses_world_bounds_on_a_rotated_axis() {
+        let axis = multicad_core::model::RigidPose {
+            rotation: [[1., 0., 0.], [0., 0., -1.], [0., 1., 0.]],
+            translation_mm: [0.; 3],
+        };
+        assert_eq!(
+            projected_interval([[1., 2., 3.], [4., 6., 8.]], axis).unwrap(),
+            [-6., -2.]
+        );
+        assert!(projected_interval([[f64::NAN; 3], [1.; 3]], axis).is_err());
+    }
+
+    #[test]
+    fn exploded_native_bounds_separate_twelve_twelve_hanger_and_long_screw() {
+        use multicad_core::model::{self, ScrewConnectionHardwareRole as Role};
+        let (hanger_document, mut hanger) =
+            custom_fixture::fixture(model::ScrewConnectionMode::HangerBolt);
+        for row in &mut hanger.hardware {
+            let model::ScrewConnectionHardwareSource::Generated { part } = &mut row.source else {
+                unreachable!()
+            };
+            match &mut part.parameters {
+                model::MechanicalPartParameters::HexNut { thread, .. } => {
+                    thread.length = model::length(2.5)
+                }
+                model::MechanicalPartParameters::Washer { thickness, .. } => {
+                    *thickness = model::length(0.5)
+                }
+                model::MechanicalPartParameters::CustomConnection { parameters } => {
+                    let model::CustomConnectionHardwareParameters::HangerBolt {
+                        wood_thread,
+                        metric_thread,
+                        ..
+                    } = parameters.as_ref()
+                    else {
+                        unreachable!()
+                    };
+                    assert_eq!(wood_thread.length, model::length(12.));
+                    assert_eq!(metric_thread.length, model::length(12.));
+                }
+                _ => unreachable!(),
+            }
+        }
+        let (screw_document, mut long_screw, _) = fixture::fixture();
+        let model::ScrewConnectionHardwareSource::Generated { part } =
+            &mut long_screw.hardware[0].source
+        else {
+            unreachable!()
+        };
+        let model::MechanicalPartParameters::MachineScrew {
+            length_input,
+            thread,
+            ..
+        } = &mut part.parameters
+        else {
+            unreachable!()
+        };
+        *length_input = Some(model::ScrewLengthInput::Underhead {
+            value: model::length(24.),
+        });
+        thread.length = model::length(24.);
+        for (document, request, is_hanger) in [
+            (hanger_document, hanger, true),
+            (screw_document, long_screw, false),
+        ] {
+            let mut session = Session::new(document).unwrap();
+            let prepared =
+                model::prepare_screw_connection(&session, 0, Actor::local(Channel::Ui), &request)
+                    .unwrap();
+            session.commit(prepared.prepared).unwrap();
+            let source = session.document().clone();
+            let native = multicad_model::Compiler::default()
+                .compile(session.document(), session.revision())
+                .unwrap();
+            assert_eq!(native.snapshot().screw_connection_checks.len(), 1);
+            let scene =
+                crate::modeling::native_fixture::scene(session.document(), native.snapshot(), 1)
+                    .unwrap();
+            let pose = request
+                .axis
+                .source
+                .resolve(
+                    session.document(),
+                    session.parameters(),
+                    &request.axis.face,
+                    session.revision(),
+                    &scene.reference_snapshots(),
+                )
+                .unwrap();
+            let roles = request
+                .hardware
+                .iter()
+                .map(|row| (row.instance, row.role))
+                .collect::<Vec<_>>();
+            let receipt = scene.assembly_evaluation().unwrap();
+            let mut hardware = BTreeMap::new();
+            let mut stock = None;
+            for leaf in &receipt.leaves {
+                let interval =
+                    projected_interval(scene.leaf_display_bounds(&leaf.path).unwrap(), pose)
+                        .unwrap();
+                if roles.iter().any(|(id, _)| *id == leaf.path.root) {
+                    include_interval(hardware.entry(leaf.path.root).or_insert(interval), interval);
+                }
+                if request
+                    .receivers
+                    .iter()
+                    .any(|row| row.source.occurrence == leaf.path)
+                {
+                    include_interval(stock.get_or_insert(interval), interval);
+                }
+            }
+            let stock = stock.unwrap();
+            let shifts = exploded_role_stations(&roles, &hardware, stock).unwrap();
+            let shifted = |id: EntityId| hardware[&id].map(|value| value + shifts[&id]);
+            let gap = |a: [f64; 2], b: [f64; 2]| (a[0] - b[1]).max(b[0] - a[1]);
+            for (i, (id, _)) in roles.iter().enumerate() {
+                assert!(gap(shifted(*id), stock) >= 15. - 1e-8);
+                for (other, _) in &roles[i + 1..] {
+                    assert!(
+                        gap(shifted(*id), shifted(*other)) >= 15. - 1e-8,
+                        "Every occupied hardware interval must be visibly separated"
+                    );
+                }
+            }
+            if is_hanger {
+                let id = |role| {
+                    roles
+                        .iter()
+                        .find(|(_, candidate)| *candidate == role)
+                        .unwrap()
+                        .0
+                };
+                assert!(shifted(id(Role::HangerBolt))[1] < shifted(id(Role::Nut))[0]);
+                assert!(shifted(id(Role::Nut))[1] < shifted(id(Role::NutWasher))[0]);
+                let old_bolt = hardware[&id(Role::HangerBolt)].map(|value| value - 45.);
+                let old_nut = hardware[&id(Role::Nut)].map(|value| value - 30.);
+                assert!(
+                    gap(old_bolt, old_nut) < -0.1,
+                    "The original fixed offsets reproduce the reported hanger overlap"
+                );
+            } else {
+                let screw = roles
+                    .iter()
+                    .find(|(_, role)| *role == Role::Screw)
+                    .unwrap()
+                    .0;
+                assert!(
+                    gap(hardware[&screw].map(|value| value - 15.), stock) < -0.1,
+                    "The original fixed offset leaves the long screw in stock"
+                );
+            }
+            let offsets = receipt
+                .leaves
+                .iter()
+                .map(|leaf| {
+                    (
+                        leaf.path.clone(),
+                        pose.vector([0., 0., shifts.get(&leaf.path.root).copied().unwrap_or(0.)]),
+                    )
+                })
+                .collect();
+            let presented = scene
+                .presentation_leaf_offsets(&offsets, &BTreeMap::new())
+                .unwrap();
+            for receiver in &request.receivers {
+                let display = presented
+                    .display_leaf_paths()
+                    .iter()
+                    .find(|(_, path)| *path == &receiver.source.occurrence)
+                    .unwrap()
+                    .0;
+                assert_eq!(
+                    presented.instance_bounds(*display),
+                    scene.leaf_display_bounds(&receiver.source.occurrence)
+                );
+            }
+            assert_eq!(session.document(), &source);
+        }
+    }
+
+    #[test]
+    fn exploded_layout_rejects_visible_mixed_screw_and_hanger_roles() {
+        use multicad_core::model::ScrewConnectionHardwareRole as Role;
+        let roles = [Role::Screw, Role::HangerBolt].map(|role| (EntityId::new(), role));
+        let bounds = roles.iter().map(|(id, _)| (*id, [0., 12.])).collect();
+        assert!(exploded_role_stations(&roles, &bounds, [0., 4.1]).is_err());
+        // A new draft role without a presented native leaf receives no invented offset.
+        let shown = [(roles[1].0, [0., 12.])].into();
+        let offsets = exploded_role_stations(&roles, &shown, [0., 4.1]).unwrap();
+        assert!(!offsets.contains_key(&roles[0].0));
+    }
+
+    #[test]
     fn exploded_stack_separates_head_and_nut_sides_without_changing_authored_roles() {
         use multicad_core::model::ScrewConnectionHardwareRole as Role;
         let roles = [
@@ -554,7 +831,11 @@ mod tests {
         ]
         .map(|role| (EntityId::new(), role));
         let before = roles;
-        let moved = exploded_role_stations(&roles);
+        let layout = |roles: &[(EntityId, Role)]| {
+            let bounds = roles.iter().map(|(id, _)| (*id, [0., 1.])).collect();
+            exploded_role_stations(roles, &bounds, [0., 10.]).unwrap()
+        };
+        let moved = layout(&roles);
         assert!(moved[&roles[2].0] < moved[&roles[1].0] && moved[&roles[1].0] < moved[&roles[3].0]);
         assert!(moved[&roles[3].0] < 0. && moved[&roles[0].0] > 0.);
         assert!(moved[&roles[0].0] < moved[&roles[4].0] && moved[&roles[4].0] < moved[&roles[5].0]);
@@ -566,14 +847,14 @@ mod tests {
             Role::Nut,
         ]
         .map(|role| (EntityId::new(), role));
-        let hanger = exploded_role_stations(&hanger_roles);
+        let hanger = layout(&hanger_roles);
         assert!(hanger.values().all(|offset| *offset < 0.));
         assert!(hanger[&hanger_roles[0].0] < hanger[&hanger_roles[3].0]);
         assert!(hanger[&hanger_roles[3].0] < hanger[&hanger_roles[1].0]);
         assert!(hanger[&hanger_roles[1].0] < hanger[&hanger_roles[2].0]);
         let insert_roles =
             [Role::HeadWasher, Role::Screw, Role::Insert].map(|role| (EntityId::new(), role));
-        let installed = exploded_role_stations(&insert_roles);
+        let installed = layout(&insert_roles);
         assert!(installed[&insert_roles[1].0] < installed[&insert_roles[0].0]);
         assert!(
             installed[&insert_roles[0].0] < installed[&insert_roles[2].0]
