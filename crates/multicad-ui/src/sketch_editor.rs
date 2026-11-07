@@ -40,6 +40,8 @@ mod face_profiles;
 mod mechanical_import_host;
 #[path = "model_target_selection.rs"]
 mod model_target_selection;
+#[path = "sketch_profile_connection_host.rs"]
+mod profile_connection_host;
 #[cfg(test)]
 #[path = "sketch_scale_host_tests.rs"]
 mod scale_host_tests;
@@ -197,6 +199,7 @@ pub struct SketchEditor {
     transfer: crate::transfer::TransferController,
     transfer_source_view: Option<transfer_host::TransferSourceView>,
     connection_pick_view: Option<screw_connection_host::ConnectionPickView>,
+    profile_connection_pick_view: Option<profile_connection_host::ProfileConnectionPickView>,
     connection_section: Option<crate::viewport::SectionPlane>,
     connection_axis_pose: Option<multicad_core::model::RigidPose>,
     connection_exploded_axis: Option<EntityId>,
@@ -299,6 +302,7 @@ impl Default for SketchEditor {
             transfer: Default::default(),
             transfer_source_view: None,
             connection_pick_view: None,
+            profile_connection_pick_view: None,
             connection_section: None,
             connection_axis_pose: None,
             connection_exploded_axis: None,
@@ -3490,6 +3494,7 @@ impl SketchEditor {
             && !self.model.edge_treatment_picking()
             && !self.model.advanced_picking()
             && self.model.screw_connection_picker().is_none()
+            && self.model.profile_connection_picker().is_none()
             && !assembly_view
             && let Some(candidate) = self.model.display_scene(session, resources)
         {
@@ -3498,6 +3503,14 @@ impl SketchEditor {
             model_view = true;
         }
         match self.connection_pick_scene(session, feed) {
+            Ok(Some(view)) => {
+                scene = Some(view);
+                current = false;
+            }
+            Err(error) => self.message = error,
+            _ => {}
+        }
+        match self.profile_connection_pick_scene(session, feed) {
             Ok(Some(view)) => {
                 scene = Some(view);
                 current = false;
@@ -4093,6 +4106,13 @@ impl SketchEditor {
                 rect,
             );
             self.paint_connection_axis(&painter, rect);
+            self.profile_connection_viewport(
+                &response,
+                session,
+                context.resources,
+                scene.as_deref(),
+                rect,
+            );
             self.advanced_viewport(
                 ui,
                 &response,

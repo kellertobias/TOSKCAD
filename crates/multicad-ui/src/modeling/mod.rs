@@ -43,6 +43,7 @@ pub(crate) mod panel_fixture;
 mod placement;
 mod plant;
 mod primitive;
+mod profile_connection;
 mod revolve;
 mod scale_gizmo;
 mod scaling;
@@ -73,6 +74,7 @@ pub use object_basis::{ObjectGizmoBasis, object_gizmo_basis};
 pub use operation_guide::{GuideLine, ProfileGuide, anchor as profile_anchor};
 pub(crate) use panel_face::{seeded_message, selected_panels, with_opposite_sides};
 pub use placement::{PlacementCommand, PlacementMode};
+pub(crate) use profile_connection::ProfileConnectorPick;
 pub use scale_gizmo::ScaleViewport;
 pub use scaling::ScaleCommand;
 pub use screw_connection::ScrewConnectionCommand;
@@ -91,6 +93,7 @@ pub enum ModelingTool {
     Gear,
     MechanicalPart,
     ScrewConnection,
+    ProfileConnection,
     Revolve,
     Boolean,
     Split,
@@ -134,13 +137,14 @@ impl ModelingTool {
             _ => None,
         }
     }
-    pub const ALL: [Self; 45] = [
+    pub const ALL: [Self; 46] = [
         Self::Box,
         Self::Cylinder,
         Self::Thread,
         Self::Gear,
         Self::MechanicalPart,
         Self::ScrewConnection,
+        Self::ProfileConnection,
         Self::Wall,
         Self::Fence,
         Self::Door,
@@ -194,6 +198,7 @@ impl ModelingTool {
             Self::Cylinder => "cylinder",
             Self::Thread => "thread",
             Self::ScrewConnection => "screw-connection",
+            Self::ProfileConnection => "profile-connection",
             Self::Gear => "gear",
             Self::MechanicalPart => "mechanical-part",
             Self::Revolve => "revolve",
@@ -245,6 +250,7 @@ impl ModelingTool {
             Self::Cylinder => "Cylinder",
             Self::Thread => "Thread",
             Self::ScrewConnection => "Attach screw connection",
+            Self::ProfileConnection => "Connect aluminum profiles",
             Self::Gear => "Gear",
             Self::MechanicalPart => "Hardware",
             Self::Revolve => "Revolve",
@@ -296,6 +302,7 @@ impl ModelingTool {
             Self::Cylinder => crate::icons::Icon::Cylinder,
             Self::Thread => crate::icons::Icon::Revolve,
             Self::ScrewConnection => crate::icons::Icon::Revolve,
+            Self::ProfileConnection => crate::icons::Icon::Revolve,
             Self::Gear => crate::icons::Icon::Revolve,
             Self::MechanicalPart => crate::icons::Icon::Revolve,
             Self::Revolve => crate::icons::Icon::Revolve,
@@ -342,6 +349,7 @@ impl ModelingTool {
             Self::Cylinder => &["cyl", "add-cylinder"],
             Self::Thread => &["screw-thread", "tap-thread", "helical-thread"],
             Self::ScrewConnection => &["attach-screw", "fastener-connection"],
+            Self::ProfileConnection => &["profile-connector", "connect-profiles"],
             Self::Gear => &["spur-gear", "helical-gear", "herringbone-gear"],
             Self::MechanicalPart => &["washer", "hex-nut", "bearing-envelope"],
             Self::Revolve => &["rev", "lathe"],
@@ -398,6 +406,9 @@ impl ModelingTool {
         match self {
             Self::ScrewConnection => {
                 "Usage: screw-connection (choose mode, hardware stack and real receiving faces; Preview and Apply once)"
+            }
+            Self::ProfileConnection => {
+                "Usage: profile-connection (choose connector family and two supported profile sites; Preview and Apply)"
             }
             Self::MechanicalPart => {
                 "Usage: mechanical-part (configure a washer, hex nut or bearing mounting envelope; Preview and Apply)"
@@ -511,6 +522,9 @@ impl ModelingTool {
         match self {
             Self::ScrewConnection => {
                 "Requires current native receiving geometry and complete source-specific hardware/installation inputs; no guessed usable thread or wood point."
+            }
+            Self::ProfileConnection => {
+                "Requires current native item Line 8 40 × 40 members. The connector and required hardware must match the selected grooves or end."
             }
             Self::MechanicalPart => {
                 "Requires native modeling and no pending edits. Generic washers, hex nuts and bearing mounting envelopes; no verified stocked catalog designation."

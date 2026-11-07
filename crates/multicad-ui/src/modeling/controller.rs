@@ -183,7 +183,9 @@ impl ModelToolController {
         matches.next().is_none().then_some(first)
     }
     pub fn editable(document: &multicad_core::document::Document, feature: EntityId) -> bool {
-        if Self::screw_connection_for(document, feature).is_some() {
+        if multicad_core::model::profile_connection_for(document, feature).is_some()
+            || Self::screw_connection_for(document, feature).is_some()
+        {
             return true;
         }
         if multicad_core::model::wood_box_owner(document, feature).is_some() {
@@ -238,6 +240,18 @@ impl ModelToolController {
     ) -> Result<(), String> {
         use multicad_core::model;
         let document = session.document();
+        if let Some(connection) = multicad_core::model::profile_connection_for(document, feature) {
+            let request = model::read_profile_connection_request(document, connection)
+                .map_err(|error| error.to_string())?;
+            let panel =
+                super::profile_connection::ProfileConnectionPanel::existing(document, request)?;
+            return self.begin_form(
+                session,
+                resources,
+                channel,
+                ModelForm::ProfileConnection(Box::new(panel)),
+            );
+        }
         if let Some(connection) = Self::screw_connection_for(document, feature) {
             let mut panel =
                 super::screw_connection::ScrewConnectionPanel::existing(document, connection)?;
@@ -1708,7 +1722,10 @@ impl ModelToolController {
         if matches!(execution, Execution::Create)
             && matches!(
                 request,
-                ModelRequest::Thread(_) | ModelRequest::Gear(_) | ModelRequest::ScrewConnection(_)
+                ModelRequest::Thread(_)
+                    | ModelRequest::Gear(_)
+                    | ModelRequest::ScrewConnection(_)
+                    | ModelRequest::ProfileConnection(_)
             )
         {
             self.generation = self
@@ -1739,7 +1756,7 @@ impl ModelToolController {
                             .collect();
                         SceneProof::edited(prepared.outputs.clone(), &[], removed)
                     }
-                    ModelRequest::CompoundCutout(_) => {
+                    ModelRequest::CompoundCutout(_) | ModelRequest::ProfileConnection(_) => {
                         SceneProof::edited(prepared.outputs.clone(), &[], vec![])
                     }
                     ModelRequest::ScrewConnection(command) => SceneProof::ScrewConnection {
@@ -1867,6 +1884,7 @@ impl ModelToolController {
                     | ModelRequest::GearPair(_)
                     | ModelRequest::ScrewConnection(_)
                     | ModelRequest::MechanicalPart(_)
+                    | ModelRequest::ProfileConnection(_)
                     | ModelRequest::CompoundCutout(_)
                     | ModelRequest::WoodBox(_)
             ) || !matches!(execution, Execution::Create),
@@ -1901,6 +1919,9 @@ impl ModelToolController {
                             super::ScrewConnectionCommand::Remove { .. }
                         ),
                     },
+                    ModelRequest::ProfileConnection(_) => {
+                        SceneProof::edited(prepared.outputs.clone(), &[], vec![])
+                    }
                     _ => SceneProof::Create,
                 };
                 self.publish_prepared(
@@ -2380,6 +2401,7 @@ mod operations;
 mod placement_interaction;
 mod preparation;
 pub use operation_interaction::OperationViewport;
+mod profile_connection;
 mod scale_interaction;
 mod screw_connection;
 #[cfg(test)]

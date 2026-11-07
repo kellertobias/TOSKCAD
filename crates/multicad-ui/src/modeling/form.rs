@@ -17,6 +17,7 @@ use super::{
     opening::{OpeningCommand, OpeningPanel},
     placement::PlacementPanel,
     primitive::PrimitivePanel,
+    profile_connection::ProfileConnectionPanel,
     revolve::RevolvePanel,
     scaling::ScalePanel,
     screw_connection::{ScrewConnectionCommand, ScrewConnectionPanel},
@@ -48,6 +49,7 @@ pub enum ModelRequest {
     MechanicalPart(Box<model::MechanicalPartRequest>),
     GearPair(Box<GearPairCommand>),
     ScrewConnection(Box<ScrewConnectionCommand>),
+    ProfileConnection(Box<model::ProfileConnectionRequest>),
     Revolve(Box<RevolveRequest>),
     Booleans(Vec<BooleanRequest>),
     ExtrudeBoolean(Box<model::ExtrudeBooleanRequest>),
@@ -94,6 +96,11 @@ impl ModelRequest {
             }
             Self::Fence(_) => {
                 return Err("Reopen the complete fence run to edit generated members".into());
+            }
+            Self::ProfileConnection(_) => {
+                return Err(
+                    "Reopen the complete profile connection to edit its owned outputs".into(),
+                );
             }
             Self::ScrewConnection(_) => {
                 return Err(
@@ -339,6 +346,9 @@ impl ModelRequest {
             Self::Gear(request) => model::prepare_gear(session, session.revision(), actor, request),
             Self::GearPair(command) => return command.prepare(session, actor),
             Self::ScrewConnection(command) => return command.prepare(session, actor),
+            Self::ProfileConnection(request) => {
+                model::prepare_profile_connection(session, session.revision(), actor, request)
+            }
             Self::Revolve(request) => {
                 model::prepare_revolve(session, session.revision(), actor, request)
             }
@@ -448,6 +458,7 @@ pub(super) enum ModelForm {
     Thread(Box<ThreadPanel>),
     Gear(Box<GearPanel>),
     ScrewConnection(Box<ScrewConnectionPanel>),
+    ProfileConnection(Box<ProfileConnectionPanel>),
     MechanicalPart(Box<MechanicalPartPanel>),
     Revolve(Box<RevolvePanel>),
     Boolean(Box<BooleanPanel>),
@@ -482,6 +493,7 @@ impl ModelForm {
             Self::Thread(panel) => panel.stamp(),
             Self::Gear(panel) => panel.stamp(),
             Self::ScrewConnection(panel) => panel.stamp(),
+            Self::ProfileConnection(panel) => panel.stamp(),
             Self::MechanicalPart(panel) => panel.stamp(),
             Self::Revolve(panel) => panel.stamp(),
             Self::Boolean(panel) => panel.stamp(),
@@ -516,6 +528,7 @@ impl ModelForm {
             Self::Thread(panel) => panel.label(),
             Self::Gear(panel) => panel.label(),
             Self::ScrewConnection(panel) => panel.label(),
+            Self::ProfileConnection(panel) => panel.label(),
             Self::MechanicalPart(panel) => panel.label(),
             Self::Revolve(_) => "Revolve",
             Self::Boolean(_) => "Boolean",
@@ -618,6 +631,9 @@ impl ModelForm {
             Self::ScrewConnection(panel) => panel
                 .request(document, capabilities.new_body)
                 .map(|command| ModelRequest::ScrewConnection(Box::new(command))),
+            Self::ProfileConnection(panel) => panel
+                .request(document, capabilities.new_body)
+                .map(|request| ModelRequest::ProfileConnection(Box::new(request))),
             Self::Revolve(panel) => panel
                 .request(document, capabilities.new_body)
                 .map(|request| ModelRequest::Revolve(Box::new(request))),
@@ -659,6 +675,9 @@ impl ModelForm {
             Self::MechanicalPart(panel) => panel.show(ui, document, capabilities.new_body, preview),
             Self::Gear(panel) => panel.show(ui, document, capabilities.new_body, preview),
             Self::ScrewConnection(panel) => {
+                panel.show(ui, document, capabilities.new_body, preview)
+            }
+            Self::ProfileConnection(panel) => {
                 panel.show(ui, document, capabilities.new_body, preview)
             }
             Self::Revolve(panel) => panel.show(ui, document, capabilities.new_body, preview),

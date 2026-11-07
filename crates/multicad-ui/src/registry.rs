@@ -592,6 +592,7 @@ impl Default for Registry {
                                         | ModelingTool::Gear
                                         | ModelingTool::MechanicalPart
                                         | ModelingTool::ScrewConnection
+                                        | ModelingTool::ProfileConnection
                                         | ModelingTool::Boolean
                                         | ModelingTool::Wall
                                         | ModelingTool::Fence
@@ -640,7 +641,13 @@ impl Default for Registry {
                     tab("Relationships", &["align"]),
                     tab(
                         "Mechanical",
-                        &["thread", "gear", "mechanical-part", "screw-connection"],
+                        &[
+                            "thread",
+                            "gear",
+                            "mechanical-part",
+                            "screw-connection",
+                            "profile-connection",
+                        ],
                     ),
                 ],
             },
@@ -1230,6 +1237,7 @@ mod tests {
                         | ModelingTool::Gear
                         | ModelingTool::MechanicalPart
                         | ModelingTool::ScrewConnection
+                        | ModelingTool::ProfileConnection
                         | ModelingTool::Boolean
                         | ModelingTool::Wall
                         | ModelingTool::Fence
