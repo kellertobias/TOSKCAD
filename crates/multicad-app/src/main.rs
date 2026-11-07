@@ -3,6 +3,7 @@ mod app_control;
 mod assembly_inspection;
 mod bundled_examples;
 mod bundled_library;
+mod command;
 mod drawings;
 mod exchange;
 mod external_queries;
@@ -30,9 +31,13 @@ enum Action {
     Diagnostics,
     SelfTest(PathBuf),
     Mcp(mcp::Options),
+    Command(command::Options),
 }
 fn parse_action(arguments: impl Iterator<Item = OsString>) -> Result<Action, String> {
     let arguments: Vec<_> = arguments.collect();
+    if arguments.first().is_some_and(|a| a == "--command") {
+        return command::parse(&arguments[1..]).map(Action::Command);
+    }
     if arguments.first().is_some_and(|a| a == "--mcp") {
         return mcp::parse(&arguments[1..]).map(Action::Mcp);
     }
@@ -73,7 +78,7 @@ fn main() -> ExitCode {
         }
         Action::Help => {
             println!(
-                "{} {}\n\nUsage: multicad [PROJECT.tcd | --help | --version | --diagnostics | --self-test OUTPUT_DIRECTORY]\n       multicad --mcp [--project FILE.tcd] [--export-dir DIRECTORY] [--read-only]\n       multicad --mcp --app [--socket PATH]\n\nLaunches the native application host with no arguments, or opens PROJECT.tcd in it.\nIncludes Project, constrained Sketch and initial New body extrusion. Native .tcd project containers include atomic saves, embedded payloads, explicit JSON import and recovery copies; existing .multicad projects still open and save in place. Advanced modeling and manufacturing exports remain under development.\n\n--mcp serves the Model Context Protocol on stdin/stdout for a local client that launches this process. It controls one headless document: the --project file (opened, or created on first save), else an unsaved document. Exports write only into --export-dir. --mcp --app instead bridges to the open window once \"Allow local MCP connections\" is on (macOS and Linux; same-user local socket). No network port is opened.",
+                "{} {}\n\nUsage: multicad [PROJECT.tcd | --help | --version | --diagnostics | --self-test OUTPUT_DIRECTORY]\n       multicad --mcp [--project FILE.tcd] [--export-dir DIRECTORY] [--read-only]\n       multicad --mcp --app [--socket PATH]\n       multicad --command REQUEST.json --project FILE.tcd [--read-only] [--save]\n\nLaunches the native application host with no arguments, or opens PROJECT.tcd in it.\nIncludes Project, constrained Sketch and initial New body extrusion. Native .tcd project containers include atomic saves, embedded payloads, explicit JSON import and recovery copies; existing .multicad projects still open and save in place. Advanced modeling and manufacturing exports remain under development.\n\n--mcp serves the Model Context Protocol on stdin/stdout for a local client that launches this process. It controls one headless document: the --project file (opened, or created on first save), else an unsaved document. Exports write only into --export-dir. --mcp --app instead bridges to the open window once \"Allow local MCP connections\" is on (macOS and Linux; same-user local socket). No network port is opened.\n\n--command dispatches one JSON {{tool,arguments}} through the same canonical MCP/native validation path. It prints one JSON receipt and exits. Changes remain memory-only unless --save is present; failed commands never save. --read-only refuses mutations.",
                 build.product, build.version
             );
             Ok(())
@@ -96,6 +101,7 @@ fn main() -> ExitCode {
         }
         Action::SelfTest(path) => self_test::run(&path).map_err(|e| e.to_string()),
         Action::Mcp(options) => mcp::run(options),
+        Action::Command(options) => command::run(options),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,

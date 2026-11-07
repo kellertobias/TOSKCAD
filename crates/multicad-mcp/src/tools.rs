@@ -50,6 +50,11 @@ use compound_cutouts::{
 };
 mod engraving;
 mod fdm;
+mod screw_connections;
+use screw_connections::{
+    ScrewConnectionArgs, ScrewConnectionInspectArgs, ScrewConnectionRemoveArgs,
+    inspect_screw_connection, remove_screw_connection, set_screw_connection,
+};
 mod gear_pairs;
 mod gears;
 mod guides;
@@ -353,6 +358,12 @@ tools! {
     "set_gear" => GearArgs, "Create or edit gear", false,
         "Create a parametric involute gear or finite straight rack, or edit by feature ID, preserving omitted fields and Part identity. The one module scalar uses pitch_input module (mm, legacy default) or diametral_pitch (teeth_per_in), independently of normal/transverse convention; no inactive numeric copy. Switching pitch_input requires a correctly typed authored scalar. Optional intrinsic hub diameter/axial_start/axial_end is along localZ, not another Part. hub patches retain omitted dimensions; clear_hub explicitly removes it. Nonzero profile_shift is bounded to external Spur/Helical/Herringbone/Double-helical x[-0.5,1] in the selected normal/transverse module plane. Selected pressure14.5–35deg and selected-plane source undercut, crest/root/active-line/contact-ratio guards remain. Optional shift_mate teeth/profile_shift retains a KHK clearance-matched tip context in the same selected plane; absent is standalone unshortened. clear_shift_mate explicitly removes standalone context. Custom roots are not generated rack trochoids. Helix magnitude and hand are separate. Backlash is per-gear reference-circle tooth thinning; fabrication_allowance is additional thinning. Supports spur, helical, continuous herringbone, gapped double-helical, bounded internal ring, straight rack, spherical-involute straight bevel, and bounded ZA worm/wheel. Standalone worm requires worm_role and mate_teeth. Worm module_system is axial with NORMAL pressure_angle20deg (derived axial angle), q10, one right-hand start; module0.5–2mm, wheel32–64 teeth. face_width independently means worm threaded length16–32 times module or wheel axial width0.5–2 times module. No ZI/ZN/ZK, efficiency, load or physical contact certification. Standalone bevel creation requires mate_teeth and shaft_angle; only 20-degree pressure, 90-degree shafts and 24–64 teeth are supported. Bevel origin is the pitch apex and face_width runs along the pitch cone; KG/KHK backcones and explicitly custom spherical-circle roots apply. Gleason/octoid/spiral/Zerol remain unavailable. Rack teeth means whole centered pitch cells, length is teeth*pi*module, and backing_thickness defines its connected base below the root line. Rack helix, bore and profile shift are unsupported. Native evaluation precedes one attributable transaction or owner review. Unsupported family/shift combinations, source undercut policy, insufficient walls and failed geometry change nothing. Pair placement is not provided by this tool.",
         set_gear;
+    "set_screw_connection" => ScrewConnectionArgs, "Create or edit screw connection", false,
+        "Atomically create or edit a connection using the complete canonical ScrewConnectionRequest. Stable connection IDs edit in place. Native candidate validation precedes commit; no partial hardware or receiver changes on failure.", set_screw_connection;
+    "inspect_screw_connection" => ScrewConnectionInspectArgs, "Inspect screw connection", true,
+        "Read the complete canonical editable request and normalized owned references for a screw connection.", inspect_screw_connection;
+    "remove_screw_connection" => ScrewConnectionRemoveArgs, "Remove screw connection", false,
+        "Atomically remove owned connection hardware and receiving features. Refuse foreign/downstream ownership conflicts; preserve unrelated geometry.", remove_screw_connection;
     "inspect_gear_pair" => InspectGearPairArgs, "Inspect gear pair", true,
         "Read canonical member recipes, tooth phase and mating frames, plus rotary center distance, finite rack travel, explicit bevel shared-apex/cone context or explicit worm/wheel crossed-axis roles without evaluating geometry. evaluate_model reports the actual native current-pose and sampled interference checks.",
         inspect_gear_pair;
@@ -1895,6 +1906,7 @@ fn evaluate_model(host: &dyn Host, call: &Request, _: NoArgs) -> ToolResult {
         "consumed_parts": snapshot.consumed_bodies,
         "references": references,
         "gear_pairs":model.gear_pair_checks().values().collect::<Vec<_>>(),
+        "screw_connections":model.snapshot().screw_connection_checks,
         "native_timings":model.timings(),
         "physical_leaves":model.assembly_evaluation().leaves,
         "source_hash":snapshot.stamp.source_hash,

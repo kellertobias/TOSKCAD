@@ -70,6 +70,7 @@ pub fn parse(arguments: &[OsString]) -> Result<Options, String> {
 struct NativeStorage {
     store: crate::files::ProjectStore,
     stamp: Option<FileStamp>,
+    save_enabled: bool,
 }
 impl Storage for NativeStorage {
     fn open(&mut self, path: &Path) -> Result<ProjectFile, String> {
@@ -78,6 +79,9 @@ impl Storage for NativeStorage {
         Ok(loaded.file)
     }
     fn save(&mut self, path: &Path, project: &ProjectFile) -> Result<(), String> {
+        if !self.save_enabled {
+            return Err("File persistence requires --save in command mode".into());
+        }
         let mode = self.stamp.map_or(SaveMode::Create, SaveMode::Replace);
         let saved = self
             .store
@@ -102,7 +106,13 @@ pub fn run(options: Options) -> Result<(), String> {
             socket.display()
         ));
     }
-    // stdout carries JSON-RPC; native diagnostics must not interleave with it.
+    let host = headless(options, true)?;
+    multicad_mcp::run_stdio(Arc::new(host))
+}
+
+/// Shared native storage/scope construction for stdio and one-shot commands.
+pub(crate) fn headless(options: Options, save_enabled: bool) -> Result<Headless, String> {
+    // stdout carries machine-readable replies, never native diagnostics.
     multicad_kernel::route_native_output_to_stderr();
     let export_directory = options
         .export_directory
@@ -119,14 +129,18 @@ pub fn run(options: Options) -> Result<(), String> {
             Box::new(NativeStorage {
                 store: crate::files::ProjectStore::default(),
                 stamp: None,
+                save_enabled,
             }),
         )?,
         None => Workspace::new(
             multicad_core::document::Document::new("Untitled").map_err(|e| e.to_string())?,
         )?,
     };
-    let host = Headless::new(workspace, export_directory, options.read_only);
-    multicad_mcp::run_stdio(Arc::new(host))
+    Ok(Headless::new(
+        workspace,
+        export_directory,
+        options.read_only,
+    ))
 }
 
 #[cfg(test)]

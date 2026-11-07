@@ -38,6 +38,37 @@ Neither mode opens a network port, and remote control is not offered.
 - **Windows.** Window control is reported as unavailable on Windows. Headless
   mode works on every platform.
 
+## One-shot command line
+
+`multicad --command REQUEST.json --project FILE.tcd [--read-only] [--save]`
+runs one public tool through the same dispatcher, revision guards and native
+candidate validation as MCP. It does not start a window or socket. The request
+file is a JSON object with exactly two fields: `tool` (string, a name from
+`tools/list`) and `arguments` (the tool's argument object). For example:
+
+```json
+{"tool":"inspect_screw_connection","arguments":{"connection":"CONNECTION_UUID"}}
+```
+
+The command prints one JSON receipt. Success has `ok: true`, the tool's
+`result`, and `persistence`: `read_only`, `memory_only`, or `saved`. The optional
+`save` receipt names the written project. Exit status is 0 on success, 1 for a
+command or storage failure, and 2 for invalid command-line options.
+
+A successful mutation remains in the private process unless `--save` is
+present. File persistence is disabled without that flag, including an envelope
+that invokes `save_project` directly. With `--save`, successful mutating tools
+are followed by `save_project` at the resulting revision, using the desktop's
+atomic, conflict-checked store. A failed dispatch never triggers this save.
+`--read-only` refuses mutating tools and conflicts with `--save`. Export folders
+and desktop connection flags are unavailable in this one-shot route.
+
+Each invocation opens a fresh Session at revision 0 from the saved canonical
+file. A mutation's returned revision belongs to that process; the next
+invocation uses revision 0 again. Saving retains the document, not the process's
+Undo/Redo history. Use the long-lived MCP server when several commands must
+share one revision sequence and history.
+
 ## Scope
 
 `document_info` reports the scope, and no tool can widen it.
@@ -485,6 +516,76 @@ Inspection returns the retained pin, linked plan sketch, resolved dimensions,
 size meaning and current occurrence pose. Generic dimensions carry no botanical
 or growth claim. Plan visibility is separate from physical section/elevation
 geometry. [Planting source and drawing policy](plants.md) defines that behavior.
+
+## Screw connection control
+
+| Tool | Mutation | Meaning |
+| --- | --- | --- |
+| `set_screw_connection` | yes | Create or edit the complete canonical connection in one native-checked transaction |
+| `inspect_screw_connection` | no | Return the editable canonical request and normalized owned references |
+| `remove_screw_connection` | yes | Remove owned hardware, receiver features, axis and connection record |
+
+Source: [connection tools](../../crates/multicad-mcp/src/tools/screw_connections.rs).
+The generated tool catalog owns the outer argument schemas.
+`set_screw_connection` requires `expected_revision` (nonnegative integer) and
+`request` (the complete canonical `ScrewConnectionRequest` object). It is a
+replacement request, not an omitted-field patch: use the request returned by
+inspection, change its authored values, then submit the current revision.
+The canonical request has these required fields; omission and `null` do not
+mean “retain”. Source: `model/screw_connections.rs` in `multicad-core`.
+
+| Field | JSON value | Meaning |
+| --- | --- | --- |
+| `connection` | UUID string | Stable connection identity; new for creation, retained for an edit |
+| `name` | string | Connection display name |
+| `mode` | string | `through_nut`, `tapped_receiver`, `direct_wood`, `wood_insert`, or `hanger_bolt`; choosing a mode does not establish source or native support |
+| `axis` | object | `id`, exact `source` axis definition and retained `face` capture |
+| `hardware` | array, 1-64 rows | Ordered rows with `role_id`, `role`, `name`, `source`, `instance` and `driver` |
+| `receivers` | array, 1-16 rows | Receiving requests with `feature`, `name` and full typed `source` |
+| `parameters` | object | Typed `grip`, `minimum_engagement` and `blind_tip_clearance` dimensions |
+
+Hardware roles are `screw`, `hanger_bolt`, `head_washer`, `nut_washer`, `nut` and
+`insert`. A hardware source is `{"kind":"generated","part":...}` using the canonical
+mechanical-part request, or `{"kind":"library","definition":...,"placement":...}` using
+a pinned symbol definition and canonical placement request. These nested
+objects use the shared core serializers, not the shorter recipe arguments of
+`set_mechanical_part` or `place_symbol`. A Library connection role must resolve
+to a single mechanical Part; arbitrary multi-part symbols are refused.
+
+A literal dimension is `{"value":10,"unit":"mm"}`. An expression dimension contains
+`expression`, whose bound source retains its unit and explicit parameter UUID
+bindings. The receiving source retains its output body, frozen input body and
+producer, occurrence path, shared axis, station, round or tapped cut, through or
+blind extent, minimum wall, and optional counterbore or countersink seat.
+Through extent is `{"kind":"through"}`; blind extent additionally requires
+`depth` and `floor`. No field infers a missing usable insert-thread interval or
+silently converts wood intent to a metric machine thread.
+
+A retained connection identity edits the existing connection. Typed dimensions,
+source choices, ordered hardware, receiver intent and stable identities retain
+the canonical editor's meanings and validation; no transport-specific recipe
+is substituted. Missing or invalid canonical fields refuse the request.
+
+Inspection requires `connection` (UUID string) and returns `revision`,
+`connection`, `request` and `definition`. Removal requires that UUID and
+`expected_revision`. Unknown outer fields are refused. Removal refuses foreign
+or downstream ownership conflicts rather than deleting unrelated geometry.
+Both mutations compile the prepared native candidate before committing once;
+invalid source, native failure, cancellation and stale revision leave the
+canonical document unchanged. Set returns `revision`, `connection`, `native_geometry_checked: true` and the
+current native `checks`; removal returns `revision` and
+`native_geometry_checked: true`. `evaluate_model.screw_connections` returns
+the same current-model receipts. This reports native evaluation, not strength,
+installation suitability or standards certification. Native validation refuses
+models beyond its 64-connection or 4096 candidate Boolean collision-query
+budgets; disjoint native bounding boxes do not consume collision queries.
+
+The CLI accepts these same argument objects. For an edit, save the inspected
+`request` object in a `set_screw_connection` envelope and invoke:
+
+```sh
+multicad --command edit-connection.json --project owned.tcd --save
+```
 
 ## Mechanical part control
 
