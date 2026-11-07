@@ -6,7 +6,9 @@ The exact upstream commit, source URLs and SHA256 hashes are recorded in [machin
 
 ## Adaptation notice, 2026-11-03
 
-MultiCAD's catalog maintainers selected nineteen discrete metric machine-screw presets: fourteen socket-cap/internal-hex rows and five external-hex rows. The curation owns each nominal diameter, coarse pitch, underhead length, thread length, head/drive dimensions, dimensional limits, source reference and modeling modification. These are dimensional presets with material, grade, coating and stock unspecified. Source product identifiers identify dimensional rows and do not transfer a supplier's product certification.
+MultiCAD's catalog maintainers selected nineteen discrete metric machine-screw presets: fourteen socket-cap/internal-hex rows and five external-hex rows. The curation owns each nominal diameter, coarse pitch, underhead length, thread length, head/drive dimensions, dimensional limits, source reference and modeling modification.
+
+The selected HPC CHC rows retain Steel and class 12.9. The selected Norelem 07171-ST DIN 933 rows retain Steel and class 8.8. These labels describe the source rows. Project material assignments and manufacturing certification are separate. [HPC 2025, pages 554-557](https://shop.hpceurope.com/pdf/fr/CHCSS.pdf), [Norelem 07171-ST](https://www.norelemusa.com/en-us/Product-Overview/Flexible-standard-component-system/07000/Nuts-screws-washers-securing-elements/Hexagon-head-bolts-DIN-933-ISO-4017/Hexagon-head-bolts-DIN-933-ISO-4017-steel/p/agid.19862)
 
 ### Socket-cap heads and internal hex drives
 

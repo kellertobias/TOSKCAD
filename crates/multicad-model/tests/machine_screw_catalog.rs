@@ -557,7 +557,11 @@ fn all_nineteen_shipped_screws_and_pinned_templates_have_source_dimensions_hex_d
                 .as_ref()
                 .unwrap();
             assert_eq!(facts.nominal_fastener_diameter_mm, Some(row.nominal));
-            assert!(facts.material.is_none() && facts.grade.is_none());
+            assert_eq!(facts.material.as_deref(), Some("Steel"));
+            assert_eq!(
+                facts.grade.as_deref(),
+                Some(if row.hex { "8.8" } else { "12.9" })
+            );
             let built = Compiler {
                 omit_display: true,
                 ..Default::default()

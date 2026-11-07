@@ -65,6 +65,9 @@ pub struct Entry {
     pub id: String,
     pub file: String,
     pub family: String,
+    pub symbol_revision: Option<String>,
+    pub source_material: Option<String>,
+    pub source_grade: Option<String>,
     pub nominal_mm: f64,
     pub pitch_mm: f64,
     pub length_mm: f64,
@@ -304,6 +307,11 @@ fn bounds(value: f64, min: Option<f64>, max: Option<f64>) -> bool {
     min.is_none_or(|m| value >= m) && max.is_none_or(|m| value <= m)
 }
 fn validate_entry(entry: &Entry) -> Result<(), Error> {
+    super::machine_screw_catalog::validate_source_metadata(
+        entry.symbol_revision.as_deref(),
+        entry.source_material.as_deref(),
+        entry.source_grade.as_deref(),
+    )?;
     let sf = &entry.source_facts;
     let h = &sf.source_head;
     let d = &sf.source_drive;
@@ -901,9 +909,10 @@ pub fn build(c: &Curation, index: usize) -> Result<ProjectFile, Error> {
     let mut request = MechanicalPartRequest::new(&name, parameters);
     request.feature = identity(entry, 80)?;
     request.body = identity(entry, 81)?;
+    let revision = entry.symbol_revision.as_ref().unwrap_or(&c.revision);
     request.provenance = Some(MechanicalPartProvenance {
         catalog_id: format!("toskcad.sourced.{}", entry.id),
-        revision: format!("screw profile curation {}", c.revision),
+        revision: format!("screw profile curation {revision}"),
         designation: format!(
             "{} M{} × {} dimensional reference",
             entry.family, entry.nominal_mm, entry.length_mm
@@ -916,8 +925,8 @@ pub fn build(c: &Curation, index: usize) -> Result<ProjectFile, Error> {
                 "{}; source dimensions with explicit engineering profile",
                 entry.family
             )),
-            material: None,
-            grade: None,
+            material: entry.source_material.clone(),
+            grade: entry.source_grade.clone(),
         }),
     });
     let prepared = model::prepare_mechanical_part(&session, session.revision(), actor(), &request)?;
@@ -927,7 +936,7 @@ pub fn build(c: &Curation, index: usize) -> Result<ProjectFile, Error> {
         SymbolAuthorRequest::new(&name, request.body, SymbolKind::Dynamic, exposed, None);
     author.definition = identity(entry, 82)?;
     author.symbol = identity(entry, 83)?;
-    author.revision = c.revision.clone();
+    author.revision = revision.clone();
     let prepared = symbols::prepare_author(&session, session.revision(), actor(), &author)?;
     session.commit(prepared.prepared)?;
     let preview = plant_library::native_preview::render_symbol_preview_with_placement(
@@ -966,8 +975,12 @@ pub fn build(c: &Curation, index: usize) -> Result<ProjectFile, Error> {
 pub struct RegenerationReceipt {
     bytes: Vec<u8>,
     pin: project_file::ContentHash,
+    revision: String,
 }
-fn profile_pin(entry: &Entry, project: &ProjectFile) -> Result<project_file::ContentHash, Error> {
+fn profile_identity(
+    entry: &Entry,
+    project: &ProjectFile,
+) -> Result<(String, project_file::ContentHash), Error> {
     let definitions = symbols::definitions(&project.document)?;
     if project.document.id() != identity(entry, 0)?
         || definitions.len() != 1
@@ -977,7 +990,8 @@ fn profile_pin(entry: &Entry, project: &ProjectFile) -> Result<project_file::Con
     {
         return Err("Existing sourced screw identity differs; explicit migration required".into());
     }
-    Ok(definitions[0].1.pin()?)
+    let definition = &definitions[0].1;
+    Ok((definition.revision.clone(), definition.pin()?))
 }
 pub fn checked_existing_profile(
     entry: &Entry,
@@ -999,9 +1013,11 @@ pub fn checked_existing_profile(
     if manifest_entry["document"].as_str() != Some(project.document.id().to_string().as_str()) {
         return Err("Existing sourced screw manifest identity differs".into());
     }
+    let (revision, pin) = profile_identity(entry, &project)?;
     Ok(RegenerationReceipt {
         bytes: bytes.to_vec(),
-        pin: profile_pin(entry, &project)?,
+        pin,
+        revision,
     })
 }
 pub fn verify_unchanged_profile(
@@ -1010,7 +1026,8 @@ pub fn verify_unchanged_profile(
     rebuilt: &ProjectFile,
     bytes: &[u8],
 ) -> Result<(), Error> {
-    if profile_pin(entry, rebuilt)? != existing.pin || bytes != existing.bytes {
+    let (revision, pin) = profile_identity(entry, rebuilt)?;
+    if revision != existing.revision || pin != existing.pin || bytes != existing.bytes {
         return Err(
             "Rebuilt sourced screw pin or bytes differ; explicit migration required".into(),
         );
@@ -1077,7 +1094,19 @@ pub fn generate(output: &Path) -> Result<(), Error> {
         let mut bytes = Vec::new();
         project_file::write(&project, &mut bytes, Default::default())?;
         if let Some(existing) = selected.get(&entry.file) {
-            verify_unchanged_profile(entry, existing, &project, &bytes)?;
+            if let Some(revision) = &entry.symbol_revision
+                && revision != &existing.revision
+            {
+                let (rebuilt_revision, rebuilt_pin) = profile_identity(entry, &project)?;
+                if rebuilt_revision != *revision
+                    || rebuilt_pin == existing.pin
+                    || revision.parse::<u64>()? <= existing.revision.parse::<u64>()?
+                {
+                    return Err("Sourced screw update must advance its explicit revision".into());
+                }
+            } else {
+                verify_unchanged_profile(entry, existing, &project, &bytes)?;
+            }
         }
         write_new(&output.join(&entry.file), &bytes)?;
         entries.push(serde_json::json!({"file":entry.file,"document":project.document.id(),"sha256":project_file::ContentHash::of(&bytes).to_string()}));

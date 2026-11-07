@@ -639,79 +639,79 @@ const LEGACY_PROJECTS: &[(&str, &str)] = &[
     ),
     (
         "screw-socket-m2-l10.tcd",
-        "6e912341adedfa7f87a6c430f760cbc6c1dd7973f275054a4dba924ef12b42e0",
+        "c8b329ac9681580ad046e8a0bb7feee9c9e5f166f406a17d3ee9a8bf28724a80",
     ),
     (
         "screw-socket-m2-5-l12.tcd",
-        "1bf2301a37369ee00b35885d9fcbc152015338305cfced3dd750477c6316fa8c",
+        "58f3922077593a57055078084cd23ba168463649a067d73894d3239ec76fea48",
     ),
     (
         "screw-socket-m3-l10.tcd",
-        "8c5731668dd1b2f64d94cf2704d4cfc5466bf85e1c8f02bd3f48e65e193a30ed",
+        "1054de1af3c4e80228639dade846d0f9b64e5554cdb0534ed1fc406789bc42fe",
     ),
     (
         "screw-socket-m3-l30.tcd",
-        "d06fe92d354dd546daf0f8bbae4f124cf1fbbb8fa97f6f4369f2a6d6c4041418",
+        "b5caba51f3dc449a7848197b68cc1af03ea7a5788634e5d1292e77748d6316c7",
     ),
     (
         "screw-socket-m4-l12.tcd",
-        "cbd1d829423c2bc054e55308e81b385c6680ebf269b2d1c7c78a3e2dc6a27af0",
+        "1e56419df9544adc80b055ee54f378c46f7d08cfc1c004840cfc3e3bcd55feaa",
     ),
     (
         "screw-socket-m4-l30.tcd",
-        "9e9e765da5a04fd7d9853f38bb3c724567173b19556d5216735be0fe82137bb3",
+        "3a3c796920f862302ed51f913cc84cad6c8d8bc210d568ca261a4af4931f23b9",
     ),
     (
         "screw-socket-m5-l16.tcd",
-        "7f24df8aaae6373428b098dd864546fbd97dcf4726ff3e8dcad894edefff9edf",
+        "9f0b1b75476b54a0c0732e9b4abf5547e926a7a21de2f18e41f95a2075f2c3d7",
     ),
     (
         "screw-socket-m5-l30.tcd",
-        "1d8917dc65ed7ffd48cd6e0682f545ca7f93ee8931c14d41eeca98075b581454",
+        "d2d0ec2d0950e80ef77f78fd3376ef5e8ee024bec4ebb7a593ca13d7181a5723",
     ),
     (
         "screw-socket-m6-l20.tcd",
-        "d742adb7b3fe455637f2d0c6f0f37a052e44a1792d3d801175739c82c71a85e3",
+        "012226f0f581f8a702e257e1e0623ffac0299f02493f0b27ba1798f29f768974",
     ),
     (
         "screw-socket-m6-l40.tcd",
-        "045d8f397ab1cf4fca43c145cc281e1c2e62ec6e816e8550d2e687803c1d3abf",
+        "8c53beedd6f66448ad48758adf429f511da0176b00e0ce37814f90fa036aeb19",
     ),
     (
         "screw-socket-m8-l25.tcd",
-        "83a2f1432670003c9329b6cb59e2ab793571c23878e7b9b16681683642cdda33",
+        "dd564eead89125f2a18dbfcbe1f90a57598e1f002df1b77a93ae6270ba9212ea",
     ),
     (
         "screw-socket-m8-l40.tcd",
-        "560ea64199624ecb4ac733a65ad3fd2d94037b44c94fd9d9defe06cfc971ab35",
+        "774ab50f5d42fd79c9d5e23bdea7086318e57e85ca767e525260cb3bbe12024a",
     ),
     (
         "screw-socket-m10-l30.tcd",
-        "4a8179a147c1b58fe4d80512ce832bd4a3f9c407983b24bbc952f0c48547d3b1",
+        "d1aea9c311fa20ac570537063eb8a5d490c2942dc961725f62dc17c95102d1fa",
     ),
     (
         "screw-socket-m10-l50.tcd",
-        "6e0fc8cf0e9b31fc718e0c19b9db8e05f8590b574a4ddcccea8976db27a4b3d1",
+        "d285bcdae693973fa7dd61b0e777cd1357286fffe0c2febb67c1ca5ce6e0eabe",
     ),
     (
         "screw-hex-m4-l16.tcd",
-        "ecff4ef3d2a4fd3e0213b44aa1baab6388a78390984fb723592f4ec8115fa996",
+        "bd3d8f32ee1e189e0aa7829b792b0f76e9614d8a00fb1ab2fe7a456a4a62a49f",
     ),
     (
         "screw-hex-m5-l16.tcd",
-        "a107ed269eb8eca2ea9da48994fa3036c2c97ad8f11d0e14cc2a463f8a0a680d",
+        "2a61b52a6c110ce402f88e6294821993048b39d5a31421ac10928d8c02bdde2b",
     ),
     (
         "screw-hex-m6-l20.tcd",
-        "8d98cf0c75bf87b7933c34a48ca9488af0b3198b494bf83f52f7f85aa3a299cb",
+        "4a0d7fd1371456139cad45c0f9ece136984c4f60b4b53c6d014a048f697f0f58",
     ),
     (
         "screw-hex-m8-l25.tcd",
-        "90b1f207852f05e5d806931d829430c6d7ab4f5e09be71ba623c3b74ed1b1a00",
+        "9b0135cf129fe4179dce8160f4a662ebb0dad6283a4881e9ea42b353b989b6f9",
     ),
     (
         "screw-hex-m10-l30.tcd",
-        "7e9603a34ff4f331e42678ffbae7a2eca2acc6be504c5523a90feac4342af5c0",
+        "7627a834de1a4534234bd886fb162219751499df1f88e342f5c39d215cf3acda",
     ),
     (
         "nut-din934-1987-m2.tcd",
@@ -935,15 +935,15 @@ const LEGACY_PROJECTS: &[(&str, &str)] = &[
     ),
     (
         "screw-fila-iso14579-m6-l30.tcd",
-        "e61538fc9b8dc5cb2992cf58fe7dc490b074401e5c5eed26a76626faaea34b10",
+        "ffce5a2a0cf664d66fb82702cf82f9499a29bd2b2865c4d8dab9106ad49755b5",
     ),
     (
         "screw-fila-iso14579-m8-l40.tcd",
-        "caea42848e98afeaa53bdd8ca1561703dccbb1d127820fde13b9cce67a5a77b9",
+        "89fa8fab2e3c3db02ea84c3daca3b06a96f0c31a21529f5b1afbd259a5e574e0",
     ),
     (
         "screw-fila-iso14579-m10-l40.tcd",
-        "c35a9efd6eac9693e4fae8ed6a4248cf7070a557cc04235fa2a6d41adfbd020a",
+        "5c252231721a088c210973cc4ade50e26a04a7538836e8e935b6b2edeb99bcb7",
     ),
     (
         "screw-iso7380-1-2011-m3-l12.tcd",
@@ -995,6 +995,6 @@ const LEGACY_PROJECTS: &[(&str, &str)] = &[
     ),
     (
         "screw-accu-shb-m3-10-a2-r360-m3-l10.tcd",
-        "21ef5ab3deea0c85eb26fb2bed2ec58f471d4f7ea2ca56b8cb2472b8b4d2cf86",
+        "fe5187c1c86a4ac786b13f7bf47373de30dbe45c515ec31f90af25ef00c1697a",
     ),
 ];

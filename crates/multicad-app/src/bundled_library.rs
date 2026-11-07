@@ -253,8 +253,6 @@ mod tests {
                 assert!(
                     card.dimensions_mm["Thread length"] <= card.dimensions_mm["Underhead length"]
                 );
-                assert!(facts.material.is_none());
-                assert!(facts.grade.is_none());
                 let series = facts.series.as_deref().unwrap();
                 if let Some(family) =
                     series.strip_suffix("; source dimensions with explicit engineering profile")
@@ -268,6 +266,11 @@ mod tests {
                                 && source["nominal_mm"].as_f64() == Some(nominal)
                         })
                         .unwrap();
+                    assert_eq!(
+                        facts.material.as_deref(),
+                        source["source_material"].as_str()
+                    );
+                    assert_eq!(facts.grade.as_deref(), source["source_grade"].as_str());
                     let length = source["length_mm"].as_f64().unwrap();
                     let key = if source["length_convention"] == "overall" {
                         "Overall length"
@@ -288,10 +291,16 @@ mod tests {
                     );
                     assert!(profile_screws.insert((family.to_owned(), (nominal * 1000.) as u32)));
                 } else {
+                    let socket_cap = card.representation.starts_with("Socket-cap head");
+                    assert_eq!(facts.material.as_deref(), Some("Steel"));
+                    assert_eq!(
+                        facts.grade.as_deref(),
+                        Some(if socket_cap { "12.9" } else { "8.8" })
+                    );
                     screws.insert((
                         (nominal * 1000.) as u32,
                         (card.dimensions_mm["Underhead length"] * 1000.) as u32,
-                        card.representation.starts_with("Socket-cap head"),
+                        socket_cap,
                     ));
                 }
             } else if card.family == "Wood screw envelope" {

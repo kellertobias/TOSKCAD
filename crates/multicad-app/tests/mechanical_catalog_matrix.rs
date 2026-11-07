@@ -428,7 +428,9 @@ fn compare_geometry(part: &ResolvedMechanicalPart, source: &MechanicalPartParame
 }
 
 fn source_receipt<'a>(manifest: &str, source: &'a Value, row: &'a Value) -> (&'a str, String) {
-    let revision = text(&source["revision"]);
+    let revision = row["symbol_revision"]
+        .as_str()
+        .unwrap_or_else(|| text(&source["revision"]));
     match manifest {
         "curation.json" => (
             text(&source["data_source"]),
@@ -446,7 +448,9 @@ fn source_receipt<'a>(manifest: &str, source: &'a Value, row: &'a Value) -> (&'a
             text(&row["verification_url"]),
             format!(
                 "screw profile curation {}",
-                text(&source["profile_revision"])
+                row["symbol_revision"]
+                    .as_str()
+                    .unwrap_or_else(|| text(&source["profile_revision"]))
             ),
         ),
         "machine-screws-curation.json" => {
@@ -596,10 +600,43 @@ fn checked_projects_reproduce_all_148_curated_default_recipes() {
             row["nominal_mm"].as_f64(),
             "{name}"
         );
-        assert!(
-            facts.is_none_or(|f| f.material.is_none() && f.grade.is_none()),
-            "supplier SKU text is not an assigned material: {name}"
+        let sourced_material = match row["family"].as_str() {
+            Some("socket_cap") => (Some("Steel"), Some("12.9")),
+            Some("external_hex") => (Some("Steel"), Some("8.8")),
+            Some("fila-iso14579") => (Some("Stainless steel"), None),
+            Some("accu-shb-m3-10-a2-r360") => (Some("Stainless steel"), Some("A2")),
+            _ => (None, None),
+        };
+        assert_eq!(
+            (
+                facts.and_then(|f| f.material.as_deref()),
+                facts.and_then(|f| f.grade.as_deref()),
+            ),
+            sourced_material,
+            "{name}"
         );
+        assert_eq!(
+            row["source_material"].as_str(),
+            sourced_material.0,
+            "{name}"
+        );
+        assert_eq!(row["source_grade"].as_str(), sourced_material.1, "{name}");
+        if sourced_material.0.is_some() {
+            assert_eq!(row["symbol_revision"], "2", "{name}");
+            assert_eq!(definition.revision, "2", "{name}");
+            for (document, part) in [
+                (&saved.document, &author),
+                (&definition.template, &template),
+            ] {
+                assert!(
+                    multicad_core::materials::resolve(document, part.output.body)
+                        .unwrap()
+                        .material
+                        .is_none(),
+                    "source material does not assign project stock: {name}"
+                );
+            }
+        }
         let a = parameters::evaluate(&saved.document).unwrap();
         let t = parameters::evaluate(&definition.template).unwrap();
         assert!(author.matches_reference_dimensions(&a).unwrap(), "{name}");

@@ -14,6 +14,8 @@ The curation's `profile_sources` records the primary URLs, editions where known,
 
 Public access to a source PDF is not a redistribution license. No ISO/manufacturer PDF, diagram, catalog prose, logo, CAD model or mesh is distributed with this data. Only selected dimensional facts, original references and independently authored adaptations are retained. Source standards' thread-fit, material, grade, finish and mechanical-property requirements are not transferred to an unspecified native model.
 
+Accu SHB-M3-10-A2-R360 retains Stainless steel and the A2 material designation. The FILA ISO 14579 rows retain Stainless steel. Their source offers A2 and A4, so the generic dimensional presets leave grade unspecified. The reference fields leave project material assignments independent. [Accu product specification](https://www.accu.co.uk/torx-button-screws/256076-SHB-M3-10-A2-R360), [FILA ISO 14579 data sheet](https://www.filafixations.com/userfiles/Fiches_techniques/fiches_techniques_PDF/Fiche_Technique_ISO_14579.pdf)
+
 Named standard length rows and manufacturer product lengths are distinct. Four principal pan/countersunk families select only L12. Button hex selects L12 except M10 L16. FILA selects only M6 L30, M8 L40 and M10 L40; Accu retains its one identified M3 L10 product. These selections do not promise current stock or imply intermediate lengths. All twelve requested nominals have an explicit status for each additional family; unavailable describes this curation rather than global commercial nonexistence.
 
 ## Engineering geometry

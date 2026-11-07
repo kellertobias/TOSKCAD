@@ -3,6 +3,31 @@
 
 The Library includes metric machine screws, simplified wood-screw stock envelopes, hex-nut dimensional references, normal-series plain washers, generic trees and shrubs, four curated bearing mounting envelopes and generic apartment equipment. All use dynamic, pinned native symbol definitions.
 
+## Tested hardware coverage
+
+The packaged Library contains 148 mechanical presets. The table covers every requested nominal diameter in millimeters. `Yes` means one washer or nut preset, numbers are the exact screw lengths in millimeters, and `-` means the family has no bundled preset at that size. Machine threads use M designations. Wood screws use the source's nominal diameters. The `mechanical_catalog_matrix` test checks the packaged entries against the dimensional records.
+
+| Family and drive | 2 | 2.5 | 3 | 3.5 | 4 | 4.5 | 5 | 6 | 7 | 8 | 9 | 10 | Presets |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Normal-series plain washer | Yes | Yes | Yes | Yes | Yes | - | Yes | Yes | Yes | Yes | - | Yes | 10 |
+| DIN 934:1987 hex nut | Yes | Yes | Yes | Yes | Yes | - | Yes | Yes | Yes | Yes | - | Yes | 10 |
+| ISO 4032:2012 hex nut | Yes | Yes | Yes | Yes | Yes | - | Yes | Yes | - | Yes | - | Yes | 9 |
+| ISO 4762 socket cap, internal hex | 10 | 12 | 10, 30 | - | 12, 30 | - | 16, 30 | 20, 40 | - | 25, 40 | - | 30, 50 | 14 |
+| DIN 933 hex head, external hex | - | - | - | - | 16 | - | 16 | 20 | - | 25 | - | 30 | 5 |
+| ISO 14583:2011 pan, hexalobular | 12 | 12 | 12 | 12 | 12 | - | 12 | 12 | - | 12 | - | 12 | 9 |
+| ISO 14581:2013 countersunk, hexalobular | 12 | 12 | 12 | 12 | 12 | - | 12 | 12 | - | 12 | - | 12 | 9 |
+| ISO 7045:2011 pan, Phillips H | 12 | 12 | 12 | 12 | 12 | - | 12 | 12 | - | 12 | - | 12 | 9 |
+| ISO 7046-1:2011 countersunk, Phillips H | 12 | 12 | 12 | 12 | 12 | - | 12 | 12 | - | 12 | - | 12 | 9 |
+| FILA ISO 14579 socket cap, hexalobular | - | - | - | - | - | - | - | 30 | - | 40 | - | 40 | 3 |
+| ISO 7380-1:2011 button, internal hex | - | - | 12 | - | 12 | - | 12 | 12 | - | 12 | - | 16 | 6 |
+| ISO 10642:2004 countersunk, internal hex | - | - | 12 | - | 12 | - | 12 | 12 | - | 12 | - | 12 | 6 |
+| Accu SHB-M3-10-A2-R360 button, hexalobular | - | - | 10 | - | - | - | - | - | - | - | - | - | 1 |
+| Bitork DIN 571-related wood screw, external hex | - | - | - | - | 16, 20, 25, 30, 35, 40 | - | 16, 20, 25, 30, 35, 40, 45, 50 | 20, 25, 30, 35, 40, 45, 50, 55, 60 | - | 25, 30, 35, 40, 45, 50, 55, 60, 70, 80, 100 | - | 30, 35, 40, 45, 50, 55, 60, 70, 80, 100 | 44 |
+
+Four open bearing mounting envelopes complete the preset count. Their sizes are indexed by bearing designation in the [bearing table](#bearing-mounting-envelopes). The dimensional records supply pitches, thread extents, source editions and reasons for unavailable combinations. [Washer records](washers-curation.json), [nut records](nuts-curation.json), [machine-screw records](machine-screws-curation.json), [wood-screw records](wood-screws-curation.json)
+
+The source material filter offers Steel for the HPC and Norelem rows and Stainless steel for the FILA and Accu rows. Assigned project material and configured dimensions are shown separately from the retained reference. The source notices record grades and their scope. [Machine-screw source notices](sources/bolts/MACHINE-SCREW-NOTICES.md), [profile source notices](sources/bolts/SCREW-PROFILE-NOTICES.md)
+
 ## Mechanical envelopes
 
 The bearing projects contain dynamic, pinned bearing-envelope definitions. Bore, outside diameter and width are exposed instance inputs. Each definition retains its own literal dimensional reference; changing an input creates custom dimensions without changing that reference. Updating a library file does not update placed instances automatically.
@@ -13,7 +38,7 @@ The solids describe external mounting envelopes. They omit races, rolling elemen
 
 ### Metric machine screws
 
-[machine-screws-curation.json](machine-screws-curation.json) retains nineteen original dimensional presets: fourteen socket-cap/internal-hex rows and five external-hex rows, with separate underhead/thread lengths and explicit status for all twelve requested nominal diameters. Socket dimensions combine explicit HPC 2025 SKU rows with NBK's ISO 4762:2004 / JIS B 1176:2015 limits. External-hex rows follow the selected Norelem DIN 933 dimensional matrix; the separate dated Nufast drawing supplies only the documented cross-checks. Material and grade remain unspecified.
+[machine-screws-curation.json](machine-screws-curation.json) retains nineteen original dimensional presets: fourteen socket-cap/internal-hex rows and five external-hex rows, with separate underhead/thread lengths and explicit status for all twelve requested nominal diameters. Socket dimensions combine explicit HPC 2025 SKU rows with NBK's ISO 4762:2004 / JIS B 1176:2015 limits. External-hex rows follow the selected Norelem DIN 933 dimensional matrix; the separate dated Nufast drawing supplies only the documented cross-checks.
 
 [Machine-screw source notices](sources/bolts/MACHINE-SCREW-NOTICES.md) record the pinned LGPL-2.1-or-later BOLTS starting data, engineering targets, source discrepancies and geometry omissions. Internal hex drives are six-sided recesses with a disclosed flat floor; outer socket-cap surfaces are unspecified envelopes. DIN M10 across flats remains 17 mm, distinct from the 16 mm ISO 4017 variant. Head/drive dimensions do not establish ISO 965 thread fits, current-standard compliance or manufactured fit.
 
@@ -92,8 +117,8 @@ The 22 `equipment-*.tcd` projects supply owned generic electrical/lighting, heat
 
 `equipment_library` regenerates these 22 projects alone. Every Library preview renders a deterministic temporary native occurrence without adding it to the saved definition or changing its pin. The renderer rejects empty or blank output. These are planning envelopes and original generic symbols; no manufacturer geometry or standards artwork is included. `mechanical_library` preserves their existing files when extending the complete bundled catalog.
 
-## Hardware coverage still open
+## Hardware coverage limits
 
 The washer and nut curations own their bounded nominal coverage and explicit unavailable/custom cases. The Library also supplies four open bearing mounting envelopes. Sealed/shielded variants, detailed bearing internals and screw families beyond the listed machine-screw and simplified wood-envelope matrices remain outside these entries.
 
-The washer, nut and screw curations share the requested nominal-size set and record their own supported choices, with larger sizes extensible through explicit reviewed revisions. Head/drive combinations beyond the listed profile matrix, modeled wood-thread and point geometry, material variants and fastener-connection integration require their own sourced definitions. Reference metadata does not assert stock availability.
+Assemblies and screw connections use the same pinned Library definitions. The bill of materials reports the physical occurrences and their retained reference facts. The matrix limits bundled head and drive combinations, and the bundled wood screws describe mounting envelopes. Additional presets can extend the curations through reviewed source revisions.

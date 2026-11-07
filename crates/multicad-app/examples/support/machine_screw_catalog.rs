@@ -64,6 +64,9 @@ struct Entry {
     id: String,
     file: String,
     family: String,
+    symbol_revision: Option<String>,
+    source_material: Option<String>,
+    source_grade: Option<String>,
     nominal_mm: f64,
     pitch_mm: f64,
     underhead_length_mm: f64,
@@ -97,6 +100,30 @@ fn form(entry: &Entry) -> Result<&'static str, Error> {
         "external_hex" => Ok("hex"),
         _ => Err("Unsupported screw head family".into()),
     }
+}
+pub(super) fn validate_source_metadata(
+    revision: Option<&str>,
+    material: Option<&str>,
+    grade: Option<&str>,
+) -> Result<(), Error> {
+    if let Some(revision) = revision {
+        if !revision
+            .parse::<u64>()
+            .is_ok_and(|value| value > 1 && value.to_string() == revision)
+        {
+            return Err(
+                "An explicit machine screw revision must be a canonical integer above 1".into(),
+            );
+        }
+    } else if material.is_some() || grade.is_some() {
+        return Err(
+            "New machine screw source material or grade needs an explicit symbol revision".into(),
+        );
+    }
+    if grade.is_some() && material.is_none() {
+        return Err("A sourced grade needs a sourced material".into());
+    }
+    Ok(())
 }
 fn identity(entry: &Entry, role: u64) -> Result<EntityId, Error> {
     let family = if form(entry)? == "socket" { 1 } else { 2 };
@@ -192,6 +219,11 @@ fn curated() -> Result<Curation, Error> {
     let mut ids = BTreeSet::new();
     let mut files = BTreeSet::new();
     for entry in &c.entries {
+        validate_source_metadata(
+            entry.symbol_revision.as_deref(),
+            entry.source_material.as_deref(),
+            entry.source_grade.as_deref(),
+        )?;
         let kind = form(entry)?;
         if !ids.insert(entry.id.as_str())
             || !files.insert(entry.file.as_str())
@@ -333,6 +365,7 @@ pub(super) fn validate_legacy_curation() -> Result<(), Error> {
 }
 fn build(c: &Curation, entry: &Entry) -> Result<ProjectFile, Error> {
     let kind = form(entry)?;
+    let revision = entry.symbol_revision.as_deref().unwrap_or(&c.revision);
     let name = format!(
         "M{} × {} · {} screw reference",
         entry.nominal_mm,
@@ -452,8 +485,7 @@ fn build(c: &Curation, entry: &Entry) -> Result<ProjectFile, Error> {
     request.provenance = Some(MechanicalPartProvenance {
         catalog_id: format!("toskcad.bolts.{}", entry.id),
         revision: format!(
-            "5c83300a57761f70db87f50c9a1f647c7278a4c2 / machine screw curation {}",
-            c.revision
+            "5c83300a57761f70db87f50c9a1f647c7278a4c2 / machine screw curation {revision}"
         ),
         designation: format!("{} · dimensional reference", entry.source_product),
         source_url: c
@@ -480,8 +512,8 @@ fn build(c: &Curation, entry: &Entry) -> Result<ProjectFile, Error> {
                 }
                 .into(),
             ),
-            material: None,
-            grade: None,
+            material: entry.source_material.clone(),
+            grade: entry.source_grade.clone(),
         }),
     });
     let p = model::prepare_mechanical_part(&s, s.revision(), actor(), &request)?;
@@ -491,7 +523,7 @@ fn build(c: &Curation, entry: &Entry) -> Result<ProjectFile, Error> {
         SymbolAuthorRequest::new(&name, request.body, SymbolKind::Dynamic, exposed, None);
     author.definition = identity(entry, 12)?;
     author.symbol = identity(entry, 13)?;
-    author.revision = c.revision.clone();
+    author.revision = revision.to_owned();
     let p = symbols::prepare_author(&s, s.revision(), actor(), &author)?;
     s.commit(p.prepared)?;
     let preview = plant_library::native_preview::render_symbol_preview_with_placement(
