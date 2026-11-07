@@ -146,6 +146,7 @@ pub fn fixture() -> (Document, ScrewConnectionRequest, EntityId) {
             },
         }],
         parameters: ScrewConnectionParameters {
+            end_reference: None,
             grip: length(4.1),
             minimum_engagement: length(2.),
             blind_tip_clearance: length(1.),

@@ -19,6 +19,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 pub const SCREW_CONNECTION_TYPE: &str = "model.screw_connection";
 pub const SCREW_CONNECTION_CAPABILITY: &str = "model.screw_connection.1";
+pub const SCREW_CONNECTION_GRIP_CAPABILITY: &str = "model.screw_connection.face_grip.1";
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ScrewConnectionCheck {
@@ -84,7 +85,36 @@ pub struct ScrewConnectionHardwareRequest {
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct ScrewConnectionEndReference {
+    pub receiver: BodyInput,
+    pub occurrence: OccurrencePath,
+    pub face: FaceInput,
+}
+impl ScrewConnectionEndReference {
+    pub fn axis(&self) -> ScrewConnectionAxisDefinition {
+        ScrewConnectionAxisDefinition::new(
+            self.receiver.clone(),
+            self.occurrence.clone(),
+            self.face.intent.id,
+        )
+    }
+    pub fn inputs(&self) -> Result<Vec<Link>, DocumentError> {
+        self.axis().inputs(&self.face).map(|links| {
+            links
+                .into_iter()
+                .map(|mut link| {
+                    link.role = format!("connection/end/{}", link.role);
+                    link
+                })
+                .collect()
+        })
+    }
+}
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ScrewConnectionParameters {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end_reference: Option<ScrewConnectionEndReference>,
     pub grip: Dimension,
     pub minimum_engagement: Dimension,
     pub blind_tip_clearance: Dimension,
@@ -92,6 +122,7 @@ pub struct ScrewConnectionParameters {
 impl Default for ScrewConnectionParameters {
     fn default() -> Self {
         Self {
+            end_reference: None,
             grip: length(10.),
             minimum_engagement: length(2.),
             blind_tip_clearance: length(1.),
@@ -107,6 +138,14 @@ impl ScrewConnectionParameters {
         ]
     }
     fn validate(&self) -> Result<(), DocumentError> {
+        if let Some(end) = &self.end_reference {
+            end.inputs()?;
+            if self.grip != length(0.) {
+                return Err(invalid(
+                    "A captured grip end face requires zero manual grip; the native face is authoritative",
+                ));
+            }
+        }
         for d in self.dimensions() {
             check_dimension(d, Unit::Millimeter)?;
         }
@@ -215,6 +254,9 @@ impl ScrewConnectionDefinition {
     pub fn inputs(&self) -> Result<Vec<Link>, DocumentError> {
         self.definition()?;
         let mut links = parameter_links(self.parameters.dimensions());
+        if let Some(end) = &self.parameters.end_reference {
+            links.extend(end.inputs()?);
+        }
         links.push(Link::new(self.axis, "connection/axis"));
         for row in &self.hardware {
             links.push(Link::new(
@@ -373,6 +415,68 @@ pub fn read_screw_connection_request(
         receivers,
         parameters: source.parameters,
     })
+}
+/// Exact native planar face intersection; stock continuity is proved separately
+/// by the full native connection validator, never inferred from this distance.
+pub fn resolve_screw_connection_grip(
+    document: &Document,
+    parameters: &EvaluatedParameters,
+    request: &ScrewConnectionRequest,
+    revision: u64,
+    snapshots: &BTreeMap<EntityId, crate::references::TopologySnapshot>,
+) -> Result<f64, DocumentError> {
+    request.parameters.validate()?;
+    let Some(end) = &request.parameters.end_reference else {
+        return number(&request.parameters.grip, Unit::Millimeter, parameters);
+    };
+    validate_end_reference(request)?;
+    let axis = request.axis.source.resolve(
+        document,
+        parameters,
+        &request.axis.face,
+        revision,
+        snapshots,
+    )?;
+    let plane = end
+        .axis()
+        .resolve(document, parameters, &end.face, revision, snapshots)?;
+    let normal = plane.vector([0., 0., 1.]);
+    let direction = axis.vector([0., 0., 1.]);
+    let denominator = normal
+        .iter()
+        .zip(direction)
+        .map(|(a, b)| a * b)
+        .sum::<f64>();
+    if denominator.abs() < 1. - 1e-9 {
+        return Err(invalid(
+            "The captured grip end face must be parallel to the entry face",
+        ));
+    }
+    let grip = (0..3)
+        .map(|i| (plane.translation_mm[i] - axis.translation_mm[i]) * normal[i])
+        .sum::<f64>()
+        / denominator;
+    if !grip.is_finite() || grip < -1e-7 {
+        return Err(invalid(
+            "The captured grip end face is behind the fastening entry",
+        ));
+    }
+    Ok(grip.max(0.))
+}
+fn validate_end_reference(request: &ScrewConnectionRequest) -> Result<(), DocumentError> {
+    if let Some(end) = &request.parameters.end_reference {
+        end.inputs()?;
+        if !request
+            .receivers
+            .iter()
+            .any(|row| row.source.input == end.receiver && row.source.occurrence == end.occurrence)
+        {
+            return Err(invalid(
+                "Capture the grip end on an exact selected receiving predecessor and occurrence",
+            ));
+        }
+    }
+    Ok(())
 }
 pub fn resolve_screw_connection_hardware(
     document: &Document,
@@ -594,6 +698,7 @@ pub fn prepare_screw_connection(
         ));
     }
     request.parameters.validate()?;
+    validate_end_reference(request)?;
     let definition = ScrewConnectionDefinition {
         name: request.name.clone(),
         mode: request.mode,

@@ -258,7 +258,14 @@ pub(super) fn validate(mut input: Inputs<'_>) -> Result<ScrewConnectionCheck, Mo
     let id = input.source.connection;
     let mode = input.source.mode;
     let tol = input.model.policy.linear_tolerance_mm;
-    let grip = mm(&input.source.parameters.grip, input.parameters, id)?;
+    let grip = multicad_core::model::resolve_screw_connection_grip(
+        input.document,
+        input.parameters,
+        input.source,
+        input.revision,
+        input.topologies,
+    )
+    .map_err(|e| error(Some(id), e))?;
     let minimum = mm(
         &input.source.parameters.minimum_engagement,
         input.parameters,

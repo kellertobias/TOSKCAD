@@ -772,3 +772,106 @@ fn failing_last_receiver_never_partially_applies_composite_hardware() {
     assert!(prepare_screw_connection(&f.session, f.session.revision(), actor(), &request).is_err());
     assert_eq!(*f.session.document(), before);
 }
+
+#[test]
+fn captured_grip_uses_exact_planar_predecessor_and_rejects_conflicting_authority() {
+    let f = fixture();
+    let mut request = connection_request(&f);
+    request.axis.source.reverse = true;
+    request.parameters.grip = length(0.);
+    let mut topology = f.topology.clone();
+    let bottom = ReferenceFrame {
+        origin_mm: [0.; 3],
+        u: [1., 0., 0.],
+        v: [0., 1., 0.],
+    };
+    let origin = Origin {
+        source: f.body.feature,
+        role: "cap.start".into(),
+    };
+    let key = TopologyKey {
+        kind: TopologyKind::Face,
+        ordinal: 1,
+    };
+    topology.elements.push(TopologyElement {
+        key,
+        origins: BTreeSet::from([origin.clone()]),
+        boundary: Default::default(),
+        frames: vec![AnchoredFrame {
+            origin,
+            frame: bottom,
+        }],
+        geometry: Some(AnalyticGeometry::Plane { frame: bottom }),
+    });
+    let face = capture_profile_face(&topology, key, None).unwrap();
+    request.parameters.end_reference = Some(ScrewConnectionEndReference {
+        receiver: request.receivers[0].source.input.clone(),
+        occurrence: request.receivers[0].source.occurrence.clone(),
+        face,
+    });
+    let resolve = |request: &ScrewConnectionRequest, topology: TopologySnapshot| {
+        resolve_screw_connection_grip(
+            f.session.document(),
+            f.session.parameters(),
+            request,
+            f.session.revision(),
+            &BTreeMap::from([(f.body.feature, topology)]),
+        )
+    };
+    assert!((resolve(&request, topology.clone()).unwrap() - 10.).abs() < 1e-9);
+    // The same stable top face follows receiving thickness; there is no stored
+    // bounding-box estimate or copied numeric grip authority.
+    topology.elements[0].frames[0].frame.origin_mm[2] = 18.;
+    let AnalyticGeometry::Plane { frame } = topology.elements[0].geometry.as_mut().unwrap() else {
+        unreachable!()
+    };
+    frame.origin_mm[2] = 18.;
+    assert!((resolve(&request, topology.clone()).unwrap() - 18.).abs() < 1e-9);
+    let prepared =
+        prepare_screw_connection(&f.session, f.session.revision(), actor(), &request).unwrap();
+    assert_eq!(
+        read_screw_connection_request(prepared.prepared.document(), request.connection).unwrap(),
+        request
+    );
+    let capabilities = required_capabilities(prepared.prepared.document());
+    assert!(capabilities.contains(SCREW_CONNECTION_GRIP_CAPABILITY));
+    let links = read_screw_connection(prepared.prepared.document(), request.connection)
+        .unwrap()
+        .inputs()
+        .unwrap();
+    assert!(
+        links
+            .iter()
+            .any(|l| l.role == "connection/end/screw_axis/face" && l.geometry.is_some())
+    );
+    request.parameters.grip = length(10.);
+    assert!(
+        resolve(&request, topology.clone())
+            .unwrap_err()
+            .to_string()
+            .contains("authoritative")
+    );
+    request.parameters.grip = length(0.);
+    request
+        .parameters
+        .end_reference
+        .as_mut()
+        .unwrap()
+        .occurrence
+        .root = EntityId::new();
+    assert!(
+        resolve(&request, topology.clone())
+            .unwrap_err()
+            .to_string()
+            .contains("selected receiving predecessor")
+    );
+    request.parameters.end_reference = None;
+    request.parameters.grip = length(7.);
+    assert_eq!(resolve(&request, topology).unwrap(), 7.);
+    assert!(
+        serde_json::to_value(&request.parameters)
+            .unwrap()
+            .get("end_reference")
+            .is_none()
+    );
+}

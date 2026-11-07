@@ -224,6 +224,7 @@ pub fn fixture(mode: ScrewConnectionMode) -> (Document, ScrewConnectionRequest) 
             hardware: h,
             receivers,
             parameters: ScrewConnectionParameters {
+                end_reference: None,
                 grip: length(grip),
                 minimum_engagement: length(2.),
                 blind_tip_clearance: length(1.),

@@ -951,6 +951,27 @@ pub fn required_capabilities(document: &Document) -> BTreeSet<String> {
             _ => None,
         })
         .collect();
+    fn has_face_grip(value: &serde_json::Value) -> bool {
+        match value {
+            serde_json::Value::Object(fields) => {
+                (fields.get("type_id").and_then(serde_json::Value::as_str)
+                    == Some(super::SCREW_CONNECTION_TYPE)
+                    && fields
+                        .get("data")
+                        .and_then(|v| v.pointer("/parameters/end_reference"))
+                        .is_some_and(|v| !v.is_null()))
+                    || fields.values().any(has_face_grip)
+            }
+            serde_json::Value::Array(values) => values.iter().any(has_face_grip),
+            _ => false,
+        }
+    }
+    if document
+        .entities()
+        .any(|e| serde_json::to_value(e).is_ok_and(|v| has_face_grip(&v)))
+    {
+        capabilities.insert(super::SCREW_CONNECTION_GRIP_CAPABILITY.into());
+    }
     for (provider, capability) in [
         (
             super::SCREW_CONNECTION_TYPE,

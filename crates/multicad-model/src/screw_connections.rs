@@ -253,7 +253,14 @@ pub(crate) fn validate(
                 ));
             }
         }
-        let grip = mm(&source.parameters.grip, p, id)?;
+        let grip = multicad_core::model::resolve_screw_connection_grip(
+            document,
+            p,
+            &source,
+            revision,
+            &topologies,
+        )
+        .map_err(|e| error(Some(id), e))?;
         let engagement = mm(&source.parameters.minimum_engagement, p, id)?;
         let clearance = mm(&source.parameters.blind_tip_clearance, p, id)?;
         if !grip.is_finite()

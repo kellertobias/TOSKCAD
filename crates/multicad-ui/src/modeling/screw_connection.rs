@@ -250,6 +250,7 @@ impl ScrewConnectionPanel {
             .collect(),
             receivers: vec![],
             parameters: ScrewConnectionParameters {
+                end_reference: None,
                 grip: length(4.),
                 minimum_engagement: length(1.),
                 blind_tip_clearance: length(1.),
