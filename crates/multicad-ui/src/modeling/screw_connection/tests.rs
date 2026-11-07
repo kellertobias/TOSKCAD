@@ -241,3 +241,39 @@ fn mode_defaults_distinguish_headless_hangers_and_independent_receiving_cut_purp
         matches!(&panel.receivers[0].source.cut, ConnectionReceiverCut::Tapped { thread } if thread.fit == ThreadFit::Metric6HInternal)
     );
 }
+
+#[test]
+fn choosing_a_unique_hardware_role_reuses_its_identity_without_adding_duplicates() {
+    let document = Document::new("Unique hardware roles").unwrap();
+    let mut panel = ScrewConnectionPanel::new(&document).unwrap();
+    let before = panel.hardware.clone();
+    panel
+        .choose_hardware(ScrewConnectionHardwareRole::Screw)
+        .unwrap();
+    assert!(panel.library.active());
+    assert!(panel.pending_roles.is_empty());
+    assert_eq!(panel.hardware, before);
+    panel.library.cancel();
+    assert!(
+        panel
+            .choose_hardware(ScrewConnectionHardwareRole::HangerBolt)
+            .is_err()
+    );
+    assert!(
+        panel
+            .choose_hardware(ScrewConnectionHardwareRole::Insert)
+            .is_err()
+    );
+    panel.select_mode(ScrewConnectionMode::WoodInsert);
+    let before = panel.hardware.clone();
+    panel
+        .choose_hardware(ScrewConnectionHardwareRole::Insert)
+        .unwrap();
+    assert!(panel.pending_roles.is_empty());
+    assert_eq!(panel.hardware, before);
+    assert!(!panel.role_available(ScrewConnectionHardwareRole::Nut));
+    panel.select_mode(ScrewConnectionMode::HangerBolt);
+    assert!(!panel.role_available(ScrewConnectionHardwareRole::Screw));
+    assert!(!panel.role_available(ScrewConnectionHardwareRole::HeadWasher));
+    assert!(panel.role_available(ScrewConnectionHardwareRole::Nut));
+}

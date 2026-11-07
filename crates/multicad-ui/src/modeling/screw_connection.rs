@@ -325,6 +325,39 @@ impl ScrewConnectionPanel {
         panel.editing = editing;
         Ok(panel)
     }
+    pub(super) fn role_available(&self, role: ScrewConnectionHardwareRole) -> bool {
+        match role {
+            ScrewConnectionHardwareRole::Screw => self.mode != ScrewConnectionMode::HangerBolt,
+            ScrewConnectionHardwareRole::HangerBolt => self.mode == ScrewConnectionMode::HangerBolt,
+            ScrewConnectionHardwareRole::Insert => self.mode == ScrewConnectionMode::WoodInsert,
+            ScrewConnectionHardwareRole::HeadWasher => self.mode != ScrewConnectionMode::HangerBolt,
+            ScrewConnectionHardwareRole::Nut | ScrewConnectionHardwareRole::NutWasher => matches!(
+                self.mode,
+                ScrewConnectionMode::ThroughNut | ScrewConnectionMode::HangerBolt
+            ),
+        }
+    }
+    pub(super) fn choose_hardware(
+        &mut self,
+        role: ScrewConnectionHardwareRole,
+    ) -> Result<(), String> {
+        if !self.role_available(role) {
+            return Err("This hardware role does not apply to the selected connection mode".into());
+        }
+        let id = if let Some(existing) = self.hardware.iter().find(|hardware| hardware.role == role)
+        {
+            existing.role_id
+        } else {
+            if self.hardware.len() >= 64 {
+                return Err("A connection supports at most 64 hardware roles".into());
+            }
+            let id = EntityId::new();
+            self.pending_roles.insert(id, role);
+            id
+        };
+        self.library.begin(id);
+        Ok(())
+    }
     pub fn set_review(&mut self, review: Option<ScrewConnectionCheck>) {
         self.review = review;
     }

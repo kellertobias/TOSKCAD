@@ -242,8 +242,9 @@ impl ScrewConnectionPanel {
                 if ui
                     .add_enabled(
                         self.hardware.len() < 64
-                            && !(self.mode == ScrewConnectionMode::HangerBolt
-                                && role == ScrewConnectionHardwareRole::HeadWasher),
+                            && self.role_available(role)
+                            && (role != ScrewConnectionHardwareRole::Nut
+                                || !self.hardware.iter().any(|hardware| hardware.role == role)),
                         egui::Button::new(format!("Add {}", role_name(role))),
                     )
                     .clicked()
@@ -261,14 +262,17 @@ impl ScrewConnectionPanel {
             ] {
                 if ui
                     .add_enabled(
-                        self.hardware.len() < 64,
+                        self.role_available(role)
+                            && (self.hardware.iter().any(|hardware| hardware.role == role)
+                                || self.hardware.len() < 64),
                         egui::Button::new(format!("Choose {}", role_name(role))),
                     )
                     .clicked()
                 {
-                    let id = EntityId::new();
-                    self.pending_roles.insert(id, role);
-                    self.library.begin(id);
+                    match self.choose_hardware(role) {
+                        Ok(()) => *changed = true,
+                        Err(error) => self.error = Some(error),
+                    }
                 }
             }
         });

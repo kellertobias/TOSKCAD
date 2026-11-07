@@ -40,7 +40,17 @@ fn wait(controller: &mut ModelToolController, session: &Session) {
 
 #[test]
 fn native_connection_preview_cancel_apply_history_and_reopen_keep_every_owned_identity() {
-    let (document, request, _) = fixture::fixture();
+    successful_lifecycle(fixture::fixture());
+}
+
+#[test]
+fn native_tapped_connection_preview_cancel_apply_history_and_reopen_keep_every_owned_identity() {
+    successful_lifecycle(fixture::tapped_fixture());
+}
+
+fn successful_lifecycle(
+    (document, request, _): (Document, model::ScrewConnectionRequest, EntityId),
+) {
     let mut session = Session::new(document.clone()).unwrap();
     let connection = request.connection;
     let instances = request
@@ -79,12 +89,13 @@ fn native_connection_preview_cancel_apply_history_and_reopen_keep_every_owned_id
     .unwrap()
     .with_model_evaluation(Arc::new(missing))
     .unwrap();
+    let refusal = candidate
+        .proof
+        .validate(candidate.prepared.document(), &stripped, &candidate.outputs)
+        .expect_err("geometry and poses alone cannot authorize Apply");
     assert!(
-        candidate
-            .proof
-            .validate(candidate.prepared.document(), &stripped, &candidate.outputs)
-            .is_err(),
-        "geometry and poses alone cannot authorize Apply"
+        refusal.contains("scoped geometry alone cannot authorize Apply"),
+        "Missing-receipt control must fail at the full connection gate: {refusal}"
     );
     controller.cancel();
     assert_eq!(session.document(), &document);
