@@ -30,6 +30,8 @@ pub struct ScrewConnectionCheck {
     pub minimum_engagement_mm: f64,
     pub blind_tip_clearance_mm: f64,
     pub actual_engagement_mm: Option<f64>,
+    #[serde(default)]
+    pub actual_wood_engagement_mm: Option<f64>,
     pub native_component_collision_checked: bool,
     pub scope: String,
 }

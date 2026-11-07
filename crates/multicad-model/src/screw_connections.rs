@@ -529,7 +529,7 @@ pub(crate) fn validate(
                 collision(a.solid, other, model, id, &mut collision_queries)?;
             }
         }
-        checks.push(ScrewConnectionCheck{connection:id,mode:source.mode,hardware_instances:hardware.iter().map(|r|r.instance).collect(),receiver_features:source.receivers.iter().map(|r|r.feature).collect(),grip_mm:grip,minimum_engagement_mm:engagement,blind_tip_clearance_mm:clearance,actual_engagement_mm:actual_engagement,native_component_collision_checked:true,scope:"Current placed complete-profile metric engagement, phase, ordered hardware, receiving stack and strict native component non-interference; no strength or installation certification".into()});
+        checks.push(ScrewConnectionCheck{connection:id,mode:source.mode,hardware_instances:hardware.iter().map(|r|r.instance).collect(),receiver_features:source.receivers.iter().map(|r|r.feature).collect(),grip_mm:grip,minimum_engagement_mm:engagement,blind_tip_clearance_mm:clearance,actual_engagement_mm:actual_engagement,actual_wood_engagement_mm:None,native_component_collision_checked:true,scope:"Current placed complete-profile metric engagement, phase, ordered hardware, receiving stack and strict native component non-interference; no strength or installation certification".into()});
     }
     Ok(checks)
 }
