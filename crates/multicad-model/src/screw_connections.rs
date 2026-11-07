@@ -94,7 +94,7 @@ fn collision(
         ));
     }
     *queries += 1;
-    if a.boolean(b, BooleanOperation::Intersect, model.policy)
+    if a.intersect_parallel(b, model.policy)
         .map_err(|e| error(Some(id), e))?
         .is_some()
     {
