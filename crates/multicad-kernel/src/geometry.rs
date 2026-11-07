@@ -843,6 +843,22 @@ impl Solid {
     pub fn to_brep(&self) -> Result<String, GeometryError> {
         ffi::shape_to_brep(&self.native.0).map_err(|e| native("write BRep", e))
     }
+    /// Lossless native BRep representation digest for exact proof-cache keys.
+    ///
+    /// Hashes bounded (16 MiB) OCCT binary v4 output without triangulations or
+    /// normals. Includes native geometry, tolerances, topology orientations and
+    /// locations; excludes Rust provenance and display data. Equal physical
+    /// geometry need not have an equal digest if its native representation or
+    /// flags differ. This is not a canonical or cross-version geometry identity.
+    /// Serialization/size failures return an error: callers must run the native
+    /// query rather than substituting a lossy key or accepting a cached proof.
+    pub fn exact_geometry_digest(
+        &self,
+    ) -> Result<multicad_core::project_file::ContentHash, GeometryError> {
+        let bytes = ffi::shape_binary_geometry(&self.native.0, 16 * 1024 * 1024)
+            .map_err(|e| native("binary geometry digest", e))?;
+        Ok(multicad_core::project_file::ContentHash::of(&bytes))
+    }
     /// Rebuild an exact shape from OCCT BRep text.
     pub fn from_brep(text: &str, policy: GeometryPolicy) -> Result<Self, GeometryError> {
         policy.validate()?;
@@ -1379,5 +1395,112 @@ mod face_cache_tests {
             assert_eq!(solid.faces().unwrap().len(), 3);
         }
         assert_eq!(count(&solid), initial);
+    }
+}
+
+#[cfg(test)]
+mod exact_geometry_digest_tests {
+    use super::*;
+    use multicad_core::document::EntityId;
+
+    #[test]
+    fn exact_geometry_digest_is_owner_independent_stable_and_display_independent() {
+        let policy = GeometryPolicy::default();
+        let owner = EntityId::new();
+        let source = Solid::box_named([4., 5., 6.], owner, policy).unwrap();
+        let bytes = source.to_brep().unwrap();
+        let digest = source.exact_geometry_digest().unwrap();
+        assert_eq!(
+            source.share().unwrap().exact_geometry_digest().unwrap(),
+            digest
+        );
+        assert_eq!(
+            source
+                .rebind_exclusive_owner(owner, EntityId::new())
+                .unwrap()
+                .exact_geometry_digest()
+                .unwrap(),
+            digest
+        );
+        let independent = Solid::box_named([4., 5., 6.], EntityId::new(), policy).unwrap();
+        assert_eq!(independent.exact_geometry_digest().unwrap(), digest);
+        let _ = source.mesh(MeshOptions::default()).unwrap();
+        assert_eq!(source.exact_geometry_digest().unwrap(), digest);
+        assert_eq!(source.to_brep().unwrap(), bytes);
+        let changed = Solid::box_named([4., 5., 6.0001], owner, policy).unwrap();
+        assert_ne!(changed.exact_geometry_digest().unwrap(), digest);
+    }
+
+    #[test]
+    fn exact_geometry_digest_retains_translation_bits_lost_by_ascii_and_rotation() {
+        let source = Solid::box_solid([4., 5., 6.], GeometryPolicy::default()).unwrap();
+        let before = source.to_brep().unwrap();
+        let moved = |x| {
+            source
+                .transformed(RigidTransform {
+                    translation_mm: [x, 0., 0.],
+                    ..Default::default()
+                })
+                .unwrap()
+        };
+        let a = moved(1.);
+        let b = moved(f64::from_bits(1f64.to_bits() + 1));
+        assert_eq!(
+            a.to_brep().unwrap(),
+            b.to_brep().unwrap(),
+            "Pinned ASCII15 output must demonstrate the unsafe key collision"
+        );
+        assert_ne!(
+            a.exact_geometry_digest().unwrap(),
+            b.exact_geometry_digest().unwrap()
+        );
+        let angle = 0.123f64;
+        let (s, c) = angle.sin_cos();
+        let rotated = source
+            .transformed(RigidTransform {
+                rotation: [[c, -s, 0.], [s, c, 0.], [0., 0., 1.]],
+                ..Default::default()
+            })
+            .unwrap();
+        assert_ne!(
+            rotated.exact_geometry_digest().unwrap(),
+            source.exact_geometry_digest().unwrap()
+        );
+        assert_eq!(source.to_brep().unwrap(), before);
+    }
+
+    #[test]
+    fn exact_geometry_digest_includes_native_tolerance_and_curved_surfaces() {
+        let policy = GeometryPolicy::default();
+        let source = Solid::cylinder(PlaneFrame::default(), 3., 4., policy).unwrap();
+        let before = source.to_brep().unwrap();
+        let digest = source.exact_geometry_digest().unwrap();
+        let independent = Solid::cylinder(PlaneFrame::default(), 3., 4., policy).unwrap();
+        assert_eq!(independent.exact_geometry_digest().unwrap(), digest);
+        let _ = source.mesh(MeshOptions::default()).unwrap();
+        assert_eq!(source.exact_geometry_digest().unwrap(), digest);
+        // Change only an actual stored vertex tolerance in the pinned public
+        // BRep codec. No geometry constructor or tolerance policy is changed.
+        let start = before.find("\nVe\n").unwrap() + 4;
+        let end = start + before[start..].find('\n').unwrap();
+        let tolerance: f64 = before[start..end].parse().unwrap();
+        let mut edited = before.clone();
+        edited.replace_range(start..end, &(tolerance * 2.).to_string());
+        let changed = Solid::from_brep(&edited, policy).unwrap();
+        assert_ne!(changed.exact_geometry_digest().unwrap(), digest);
+        assert!((changed.volume_mm3().unwrap() - source.volume_mm3().unwrap()).abs() < 1e-10);
+        assert_eq!(source.to_brep().unwrap(), before);
+    }
+
+    #[test]
+    fn exact_geometry_digest_refuses_partial_or_unbounded_serialization() {
+        let source = Solid::box_solid([4., 5., 6.], GeometryPolicy::default()).unwrap();
+        let before = source.to_brep().unwrap();
+        let complete = source.exact_geometry_digest().unwrap();
+        for limit in [0, 16, 128, 16 * 1024 * 1024 + 1] {
+            assert!(ffi::shape_binary_geometry(&source.native.0, limit).is_err());
+            assert_eq!(source.exact_geometry_digest().unwrap(), complete);
+        }
+        assert_eq!(source.to_brep().unwrap(), before);
     }
 }

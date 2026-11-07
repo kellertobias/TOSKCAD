@@ -61,6 +61,8 @@
 #include <TopoDS_Iterator.hxx>
 #include <functional>
 #include <BRepTools.hxx>
+#include <BinTools.hxx>
+#include <streambuf>
 #include <BRep_Builder.hxx>
 #include <StepRepr_RepresentationItem.hxx>
 #include <TCollection_HAsciiString.hxx>
@@ -931,6 +933,83 @@ rust::String shape_to_brep(const Shape &s) {
     std::ostringstream text;
     BRepTools::Write(s.value, text);
     return rust::String(text.str());
+  });
+}
+// A bounded binary stream avoids building an unbounded intermediate string.
+// BinTools 7.9.3 writes Standard_Real values as raw doubles; unlike ASCII
+// BRep output, stream decimal precision cannot discard geometry bits.
+rust::Vec<uint8_t> shape_binary_geometry(const Shape &s, uint64_t maximum_bytes) {
+  return guard([&] {
+    constexpr uint64_t limit = 16ULL * 1024ULL * 1024ULL;
+    if (maximum_bytes == 0 || maximum_bytes > limit)
+      throw std::runtime_error("Binary geometry digest budget must be in 1..=16 MiB");
+    // Triangulation-only faces have no exact manufacturing surface. BinTools
+    // includes their mesh even with WithTriangles=false, so refuse them here.
+    for (TopExp_Explorer face(s.value, TopAbs_FACE); face.More(); face.Next()) {
+      TopLoc_Location location;
+      if (BRep_Tool::Surface(TopoDS::Face(face.Current()), location).IsNull())
+        throw std::runtime_error("Binary geometry digest requires native face surfaces");
+    }
+    for (TopExp_Explorer edge(s.value, TopAbs_EDGE); edge.More(); edge.Next()) {
+      const auto &native_edge = TopoDS::Edge(edge.Current());
+      if (BRep_Tool::Degenerated(native_edge))
+        continue;
+      TopLoc_Location location;
+      Standard_Real first, last;
+      if (!BRep_Tool::Curve(native_edge, location, first, last).IsNull())
+        continue;
+      Handle(Geom2d_Curve) curve;
+      Handle(Geom_Surface) surface;
+      BRep_Tool::CurveOnSurface(native_edge, curve, surface, location, first, last);
+      if (curve.IsNull() || surface.IsNull())
+        throw std::runtime_error("Binary geometry digest refuses polygon-only edges");
+    }
+    class Buffer final : public std::streambuf {
+      size_t maximum;
+      std::vector<uint8_t> bytes;
+      void append(const char *data, size_t count) {
+        if (count == 0)
+          return;
+        if (count > maximum - bytes.size())
+          throw std::runtime_error("Binary geometry digest exceeds its write budget");
+        const size_t needed = bytes.size() + count;
+        if (needed > bytes.capacity())
+          bytes.reserve(std::min(maximum, std::max(needed, std::max(size_t(4096), bytes.capacity() * 2))));
+        bytes.insert(bytes.end(), data, data + count);
+      }
+      std::streamsize xsputn(const char *data, std::streamsize count) override {
+        if (count < 0)
+          throw std::runtime_error("Invalid binary geometry write length");
+        append(data, size_t(count));
+        return count;
+      }
+      int_type overflow(int_type value) override {
+        if (traits_type::eq_int_type(value, traits_type::eof()))
+          return traits_type::not_eof(value);
+        const char byte = traits_type::to_char_type(value);
+        append(&byte, 1);
+        return value;
+      }
+    public:
+      explicit Buffer(size_t budget) : maximum(budget) {}
+      rust::Vec<uint8_t> result() const {
+        if (bytes.empty())
+          throw std::runtime_error("Binary geometry serialization returned no bytes");
+        rust::Vec<uint8_t> out;
+        out.reserve(bytes.size());
+        for (uint8_t byte : bytes)
+          out.push_back(byte);
+        return out;
+      }
+    } buffer{size_t(maximum_bytes)};
+    std::ostream stream(&buffer);
+    stream.exceptions(std::ios::badbit | std::ios::failbit);
+    BinTools::Write(s.value, stream, Standard_False, Standard_False,
+                    BinTools_FormatVersion_VERSION_4);
+    stream.flush();
+    if (!stream.good())
+      throw std::runtime_error("Binary geometry serialization failed");
+    return buffer.result();
   });
 }
 std::unique_ptr<Shape> shape_from_brep(rust::Str text) {

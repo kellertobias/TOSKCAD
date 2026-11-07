@@ -441,6 +441,7 @@ mod ffi {
         fn read_step(path: &str) -> Result<UniquePtr<Shape>>;
         fn step_solids(path: &str) -> Result<Vec<StepSolidData>>;
         fn shape_to_brep(shape: &Shape) -> Result<String>;
+        fn shape_binary_geometry(shape: &Shape, maximum_bytes: u64) -> Result<Vec<u8>>;
         fn shape_from_brep(text: &str) -> Result<UniquePtr<Shape>>;
         fn shape_from_thread_prototype(text: &str, seeds: &[Seed]) -> Result<UniquePtr<Shape>>;
         fn route_native_output_to_stderr();

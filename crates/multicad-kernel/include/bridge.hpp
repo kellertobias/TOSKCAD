@@ -139,6 +139,7 @@ void write_step(const Shape &, rust::Str path);
 std::unique_ptr<Shape> read_step(rust::Str path);
 rust::Vec<StepSolidData> step_solids(rust::Str path);
 rust::String shape_to_brep(const Shape &);
+rust::Vec<uint8_t> shape_binary_geometry(const Shape &, uint64_t maximum_bytes);
 std::unique_ptr<Shape> shape_from_brep(rust::Str text);
 std::unique_ptr<Shape> shape_from_thread_prototype(rust::Str,rust::Slice<const Seed>);
 void route_native_output_to_stderr();
