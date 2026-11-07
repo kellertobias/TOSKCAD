@@ -58,6 +58,7 @@ struct Candidate {
     prepared: Prepared,
     architecture_levels: std::sync::OnceLock<crate::architecture_view::Levels>,
     connection_entry_stations: std::sync::OnceLock<BTreeMap<EntityId, f64>>,
+    profile_hardware_view: std::sync::OnceLock<Option<Arc<Scene>>>,
     content: ContentHash,
     form: FormStamp,
     stamp: SceneStamp,
@@ -73,6 +74,25 @@ struct Candidate {
     aid: Option<EntityId>,
     /// Why a ready preview still cannot be applied.
     blocked: Option<String>,
+}
+impl Candidate {
+    fn profile_hardware_view(&self) -> Option<&Arc<Scene>> {
+        self.profile_hardware_view
+            .get_or_init(|| {
+                let scene = self.scene.as_ref()?;
+                let bodies = self.outputs.iter().map(|output| output.body).collect();
+                self.outputs
+                    .iter()
+                    .all(|output| {
+                        scene.instances().iter().any(|instance| {
+                            instance.id == output.body && instance.geometry == output.feature
+                        })
+                    })
+                    .then(|| scene.presentation_subset(&bodies).ok())
+                    .flatten()
+            })
+            .as_ref()
+    }
 }
 struct Discovery {
     cut: CutDiscovery,
@@ -1854,6 +1874,7 @@ impl ModelToolController {
             prepared: prepared.prepared,
             architecture_levels: Default::default(),
             connection_entry_stations: Default::default(),
+            profile_hardware_view: Default::default(),
             content,
             form,
             stamp,
@@ -2174,10 +2195,14 @@ impl ModelToolController {
         resources: &ProjectResources,
     ) -> Option<Arc<Scene>> {
         if self.preview_visible(session, resources) {
-            return self
-                .candidate
-                .as_ref()
-                .and_then(|candidate| candidate.scene.clone());
+            let candidate = self.candidate.as_ref()?;
+            let scene = candidate.scene.as_ref()?;
+            if matches!(&self.form, Some(ModelForm::ProfileConnection(panel)) if panel.hardware_only())
+                && let Some(view) = candidate.profile_hardware_view()
+            {
+                return Some(view.clone());
+            }
+            return Some(scene.clone());
         }
         self.handoff
             .as_ref()
@@ -2191,14 +2216,20 @@ impl ModelToolController {
     /// The viewport may still show checked geometry after Apply while its
     /// canonical revision rebuilds. Both views use solid bounds for camera Fit.
     pub(crate) fn owns_display_scene(&self, scene: &Arc<Scene>) -> bool {
-        self.candidate
-            .as_ref()
-            .and_then(|candidate| candidate.scene.as_ref())
-            .is_some_and(|preview| Arc::ptr_eq(preview, scene))
-            || self
-                .handoff
+        self.candidate.as_ref().is_some_and(|candidate| {
+            candidate
+                .scene
                 .as_ref()
-                .is_some_and(|handoff| Arc::ptr_eq(&handoff.scene, scene))
+                .is_some_and(|preview| Arc::ptr_eq(preview, scene))
+                || candidate
+                    .profile_hardware_view
+                    .get()
+                    .and_then(Option::as_ref)
+                    .is_some_and(|preview| Arc::ptr_eq(preview, scene))
+        }) || self
+            .handoff
+            .as_ref()
+            .is_some_and(|handoff| Arc::ptr_eq(&handoff.scene, scene))
     }
     pub fn canonical_ready(&mut self, session: &Session) {
         if self.handoff.as_ref().is_some_and(|handoff| {
@@ -2222,6 +2253,17 @@ impl ModelToolController {
                 self.operation_changed();
             }
             ui.separator();
+        }
+        if matches!(self.form, Some(ModelForm::ProfileConnection(_))) {
+            let available = self.preview_visible(session, resources)
+                && self
+                    .candidate
+                    .as_ref()
+                    .and_then(Candidate::profile_hardware_view)
+                    .is_some();
+            if let Some(ModelForm::ProfileConnection(panel)) = &mut self.form {
+                panel.set_hardware_view_available(available);
+            }
         }
         let stamp = self.stamp();
         let preview = match (&self.error, &self.candidate, stamp) {

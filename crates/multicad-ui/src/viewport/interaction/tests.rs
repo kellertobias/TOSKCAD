@@ -491,6 +491,34 @@ fn linked_duplication_is_one_undoable_transaction_and_rejects_stale_selection() 
 }
 
 #[test]
+fn profile_connection_hardware_presentation_keeps_only_selected_world_poses() {
+    let (_, scene, ids) = fixture();
+    let visible = BTreeSet::from([ids[1], ids[3]]);
+    let view = scene.presentation_subset(&visible).unwrap();
+    assert_eq!(view.scope(), &crate::viewport::SceneScope::Presentation);
+    assert_eq!(view.stamp(), scene.stamp());
+    assert_eq!(
+        view.instances()
+            .iter()
+            .map(|item| item.id)
+            .collect::<BTreeSet<_>>(),
+        visible
+    );
+    for id in visible {
+        assert_eq!(view.instance_bounds(id), scene.instance_bounds(id));
+    }
+    assert_eq!(scene.instances().len(), ids.len());
+    let ray = Ray::new([40., 6., 100.], [0., 0., -1.]).unwrap();
+    assert!(scene.pick_face(ray).unwrap().intent.is_some());
+    assert!(view.pick_face(ray).is_none());
+    assert!(
+        scene
+            .presentation_subset(&BTreeSet::from([EntityId::new()]))
+            .is_err()
+    );
+}
+
+#[test]
 fn canonical_tree_selection_maps_definition_occurrences_without_mutating_source() {
     let (session, scene, ids) = fixture();
     let part = session

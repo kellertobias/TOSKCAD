@@ -68,6 +68,7 @@ pub(super) struct ProfileConnectionPanel {
     seed: Option<ProfileConnectionRequest>,
     editing: bool,
     pick: Option<ProfileConnectorPick>,
+    hardware_only: Option<bool>,
 }
 
 fn kind_label(kind: ProfileConnectionKind) -> &'static str {
@@ -160,6 +161,7 @@ impl ProfileConnectionPanel {
             seed: None,
             editing: false,
             pick: None,
+            hardware_only: None,
         })
     }
 
@@ -191,6 +193,12 @@ impl ProfileConnectionPanel {
 
     pub fn stamp(&self) -> FormStamp {
         self.stamp
+    }
+    pub fn hardware_only(&self) -> bool {
+        self.hardware_only == Some(true)
+    }
+    pub fn set_hardware_view_available(&mut self, available: bool) {
+        self.hardware_only = available.then_some(self.hardware_only());
     }
     pub fn label(&self) -> &'static str {
         "Profile connection"
@@ -285,6 +293,13 @@ impl ProfileConnectionPanel {
             "Connect aluminum profiles"
         });
         form::preview_status(ui, self.stamp, preview);
+        if preview.ready(self.stamp)
+            && let Some(show) = &mut self.hardware_only
+        {
+            ui.checkbox(show, "Show hardware only").on_hover_text(
+                "Temporarily hide everything except this connector and its fasteners.",
+            );
+        }
         ui.small("Supported section: item Line 8, 40 × 40 mm. Preview checks the chosen connector, mating profile sites and required hardware.");
         ui.label("Connection name");
         let mut changed = ui
@@ -473,6 +488,7 @@ impl ProfileConnectionPanel {
         }
         if changed {
             self.stamp = FormStamp::new();
+            self.hardware_only = None;
         }
         let request = self.request(document, enabled);
         if let Err(error) = &request {

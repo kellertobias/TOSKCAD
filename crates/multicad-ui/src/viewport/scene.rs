@@ -961,6 +961,30 @@ impl Scene {
     pub fn instances(&self) -> &[Instance] {
         &self.instances
     }
+    /// Display only the requested instances at their checked poses, without
+    /// carrying native model or reference authority into the presentation.
+    pub(crate) fn presentation_subset(
+        &self,
+        visible: &BTreeSet<EntityId>,
+    ) -> Result<Arc<Self>, String> {
+        let instances: Vec<_> = self
+            .instances
+            .iter()
+            .filter(|instance| visible.contains(&instance.id))
+            .cloned()
+            .collect();
+        if !self.is_full_model() || visible.is_empty() || instances.len() != visible.len() {
+            return Err("Hardware display requires each output in a complete Preview".into());
+        }
+        let producers: BTreeSet<_> = instances.iter().map(|instance| instance.geometry).collect();
+        let geometries = producers
+            .iter()
+            .map(|producer| self.geometries[producer].clone())
+            .collect();
+        let mut view = Self::new(self.stamp, geometries, instances)?;
+        view.scope = SceneScope::Presentation;
+        Ok(Arc::new(view))
+    }
     /// Offset visible objects for an exploded illustration. Native bounds and
     /// model proof are deliberately absent; source references remain assembled.
     pub fn presentation_offsets(
