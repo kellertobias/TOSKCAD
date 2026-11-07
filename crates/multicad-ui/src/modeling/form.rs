@@ -727,12 +727,13 @@ pub(super) fn actions(
     preview: PreviewState<'_>,
 ) -> Option<FormAction> {
     use crate::inspector_actions::{self, Button, Owner};
-    let clicked = inspector_actions::row(
+    let pending = matches!(preview, PreviewState::Pending { stamp: active } if active == stamp);
+    let clicked = inspector_actions::row_with_progress(
         ui,
         Owner::Model,
         Some(Button::new(
             "Preview",
-            valid,
+            valid && !pending,
             "Validate these exact local inputs using native geometry",
         )),
         Button::new(
@@ -745,6 +746,7 @@ pub(super) fn actions(
             true,
             "Discard the form and its uncommitted native preview",
         ),
+        pending.then_some("Generating native preview…"),
     );
     if clicked.cancel {
         Some(FormAction::Cancel)

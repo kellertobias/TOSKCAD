@@ -151,6 +151,18 @@ pub(crate) fn row(
     apply: Button<'_>,
     cancel: Button<'_>,
 ) -> Clicks {
+    row_with_progress(ui, owner, preview, apply, cancel, None)
+}
+/// A pending native job remains visible beside the fixed actions even when the
+/// operator has scrolled away from its form header. No percentage is inferred.
+pub(crate) fn row_with_progress(
+    ui: &mut egui::Ui,
+    owner: Owner,
+    preview: Option<Button<'_>>,
+    apply: Button<'_>,
+    cancel: Button<'_>,
+    pending: Option<&str>,
+) -> Clicks {
     let footer = ui.ctx().data(|data| data.get_temp::<Footer>(key()));
     if footer.as_ref().is_some_and(|f| f.owner != owner) {
         return Clicks::default();
@@ -198,7 +210,23 @@ pub(crate) fn row(
             Some(Color32::WHITE),
             Some("Cancel"),
         );
+        if let Some(message) = pending {
+            let status_rect = Rect::from_min_size(
+                egui::pos2(rect.left(), rect.top() + 28.),
+                egui::vec2(rect.width(), 14.),
+            );
+            let mut status = actions.new_child(
+                egui::UiBuilder::new()
+                    .id_salt("pending-status")
+                    .max_rect(status_rect),
+            );
+            status.set_clip_rect(footer.clip.intersect(status_rect));
+            pending_status(&mut status, message);
+        }
     } else {
+        if let Some(message) = pending {
+            pending_status(ui, message);
+        }
         ui.horizontal_wrapped(|ui| {
             if let Some(preview) = preview {
                 clicks.preview = button(ui, preview, Vec2::ZERO, None, None).clicked();
@@ -208,6 +236,16 @@ pub(crate) fn row(
         });
     }
     clicks
+}
+fn pending_status(ui: &mut egui::Ui, message: &str) {
+    let previous_height = ui.spacing().interact_size.y;
+    ui.spacing_mut().interact_size.y = 12.;
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 4.;
+        ui.add(egui::Spinner::new().size(12.));
+        ui.label(egui::RichText::new(message).size(11.));
+    });
+    ui.spacing_mut().interact_size.y = previous_height;
 }
 fn button(
     ui: &mut egui::Ui,

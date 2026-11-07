@@ -52,7 +52,7 @@ impl ScrewConnectionPanel {
                     "Click the entry face on the additional receiver."
                 }
                 ScrewConnectionPickKind::GripEnd => {
-                    "Click the far face of the receiving stack to derive grip."
+                    "Click the far face of the clamped clearance stack to derive grip."
                 }
             });
         }
@@ -89,7 +89,8 @@ impl ScrewConnectionPanel {
 
     pub(super) fn show_grip(&mut self, ui: &mut egui::Ui, document: &Document, changed: &mut bool) {
         ui.separator();
-        ui.strong("Receiving stack grip");
+        ui.strong("Clamped stack grip");
+        ui.small("Grip covers the clamped clearance stack only. Exclude the tapped or wood receiver; use 0 when hardware mounts directly into that receiver.");
         if let Some(end) = &self.parameters.end_reference {
             ui.small(format!(
                 "Far face selected · {}",

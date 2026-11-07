@@ -5,6 +5,7 @@ struct Harness {
     ctx: Context,
     enabled: bool,
     preview: bool,
+    pending: bool,
     applies: usize,
     cancels: usize,
 }
@@ -23,16 +24,17 @@ impl Harness {
                     for i in 0..100 {
                         ui.label(format!("Long control {i}"));
                     }
-                    let click = row(
+                    let click = row_with_progress(
                         ui,
                         Owner::Model,
                         self.preview.then_some(Button::new(
                             "Preview",
-                            true,
+                            !self.pending,
                             "Validate current inputs",
                         )),
                         Button::new("Apply", self.enabled, "Commit the checked transaction"),
                         Button::new("Cancel", true, "Discard uncommitted inputs"),
+                        self.pending.then_some("Generating native preview…"),
                     );
                     self.applies += usize::from(click.apply);
                     self.cancels += usize::from(click.cancel);
@@ -323,4 +325,71 @@ fn independent_footer_respects_the_non_scroll_parents_disabled_state() {
         disabled,
         "Detached actions bypassed a disabled/modal parent"
     );
+}
+
+#[test]
+fn pending_generation_status_stays_in_fixed_footer_with_a_live_cancel_action() {
+    for height in [120., 180., 300.] {
+        let accent = crate::registry::Mode::Model.color();
+        let mut harness = Harness {
+            pending: true,
+            preview: true,
+            enabled: false,
+            ..Default::default()
+        };
+        harness
+            .frame(height, vec![], accent)
+            .drop_without_applying_deltas();
+        let output = harness.frame(height, vec![], accent);
+        let (status, status_clip) = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.job.text == "Generating native preview…" => {
+                    Some((
+                        Rect::from_min_size(text.pos, text.galley.size()),
+                        shape.clip_rect,
+                    ))
+                }
+                _ => None,
+            })
+            .expect("Pending status must be actually painted in the fixed footer");
+        assert!(
+            status_clip.contains_rect(status),
+            "Pending label clipped: {status:?} within {status_clip:?}"
+        );
+        let preview = bounds(&output, "Preview");
+        let apply = bounds(&output, "Apply");
+        let cancel = bounds(&output, "Cancel");
+        assert!(status.top() >= preview.bottom() && status.bottom() <= apply.top());
+        assert!(status.left() >= 0. && status.right() <= 250. && status.bottom() <= height);
+        let nodes = &output
+            .platform_output
+            .accesskit_update
+            .as_ref()
+            .unwrap()
+            .nodes;
+        for label in ["Preview", "Apply"] {
+            assert!(
+                nodes
+                    .iter()
+                    .find(|(_, node)| node.label() == Some(label))
+                    .unwrap()
+                    .1
+                    .is_disabled()
+            );
+        }
+        assert!(
+            !nodes
+                .iter()
+                .find(|(_, node)| node.label() == Some("Cancel"))
+                .unwrap()
+                .1
+                .is_disabled()
+        );
+        output.drop_without_applying_deltas();
+        harness.click(height, cancel.center(), accent);
+        assert_eq!(harness.cancels, 1);
+        assert_eq!(harness.applies, 0);
+    }
 }
