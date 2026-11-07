@@ -1,0 +1,243 @@
+use multicad_core::{
+    commands::{Actor, Channel, Request, Session},
+    document::{Document, Entity, EntityData, EntityId, Mutation},
+    materials::{LibraryDefinition, ProfileShape, Stock, StockKind},
+    model::{
+        self, BodyInput, BodyOutput, MemberDefinition, MemberEnd, MemberPath, MemberRequest,
+        OccurrencePath, ProfileAttachment, ProfileConnectionKind, ProfileConnectionRequest,
+        ProfileConnectorAnchor, ProfileGrooveSide, length,
+    },
+    project_file::{self, ProjectFile},
+};
+use multicad_model::{Compiler, Model};
+
+fn actor() -> Actor {
+    Actor::local(Channel::Ui)
+}
+
+fn prepare_members(paths: [([f64; 3], [f64; 3]); 2]) -> (Session, [MemberRequest; 2]) {
+    let mut session = Session::new(Document::new("Line 8 connection").unwrap()).unwrap();
+    let material = Entity::new(
+        "Aluminum",
+        EntityData::Material {
+            density_kg_m3: None,
+            color_rgba: [160, 165, 170, 255],
+            section_hatch: None,
+        },
+    );
+    let stock = EntityId::new();
+    let definition = LibraryDefinition::Stock(Stock {
+        material: material.id,
+        specification: StockKind::Profile {
+            designation: "item 0.0.026.03".into(),
+            length_mm: 6000.0,
+            width_mm: 40.0,
+            height_mm: 40.0,
+            wall_mm: None,
+            shape: ProfileShape::ItemLine8_40x40,
+        },
+    })
+    .entity(stock, "Line 8 section")
+    .unwrap();
+    session
+        .apply(Request {
+            expected_revision: 0,
+            actor: actor(),
+            label: "Profile stock".into(),
+            edits: vec![Mutation::Insert(material), Mutation::Insert(definition)],
+        })
+        .unwrap();
+    let requests = paths.map(|(start, end)| {
+        MemberRequest::new(
+            "Profile member",
+            MemberDefinition {
+                output: BodyOutput {
+                    body: EntityId::nil(),
+                },
+                stock,
+                path: MemberPath::Points {
+                    start: start.map(length),
+                    end: end.map(length),
+                },
+                anchor: Default::default(),
+                rotation: None,
+                extend_start: None,
+                extend_end: None,
+            },
+        )
+    });
+    let members = model::prepare_members(&session, 1, actor(), &requests, None).unwrap();
+    session.commit(members.prepared).unwrap();
+    (session, requests)
+}
+
+fn attach(member: &MemberRequest, anchor: ProfileConnectorAnchor) -> ProfileAttachment {
+    let body = member.member.output.body;
+    ProfileAttachment {
+        member: BodyInput {
+            body,
+            producer: member.feature,
+        },
+        occurrence: OccurrencePath {
+            root: body,
+            members: vec![],
+        },
+        anchor,
+    }
+}
+
+fn groove(member: &MemberRequest, side: ProfileGrooveSide, station: f64) -> ProfileAttachment {
+    attach(
+        member,
+        ProfileConnectorAnchor::Groove {
+            side,
+            station: length(station),
+        },
+    )
+}
+
+fn compile(document: &Document, revision: u64) -> Result<Model, multicad_model::ModelError> {
+    Compiler {
+        omit_display: true,
+        ..Default::default()
+    }
+    .compile(document, revision)
+}
+
+#[test]
+fn angle_and_flat_connections_create_five_parts_and_never_machine_the_profiles() {
+    use ProfileConnectionKind::{AngleBracket, JoiningPlate};
+    use ProfileGrooveSide::{MaxX, MaxY};
+    for (kind, paths, second_side, station) in [
+        (
+            AngleBracket,
+            [
+                ([0., 0., 0.], [100., 0., 0.]),
+                ([-20., 0., 20.], [-20., 0., 120.]),
+            ],
+            MaxX,
+            20.,
+        ),
+        (
+            JoiningPlate,
+            [
+                ([0., 0., 0.], [100., 0., 0.]),
+                ([0., 40., 0.], [100., 40., 0.]),
+            ],
+            MaxY,
+            40.,
+        ),
+    ] {
+        let (mut session, members) = prepare_members(paths);
+        let request = ProfileConnectionRequest::new(
+            kind.label(),
+            kind,
+            groove(&members[0], MaxY, station),
+            groove(&members[1], second_side, station),
+        );
+        let original = session.document().clone();
+        let draft =
+            model::prepare_profile_connection(&session, session.revision(), actor(), &request)
+                .unwrap();
+        assert_eq!(session.document(), &original);
+        let native = compile(draft.prepared.document(), session.revision() + 1).unwrap();
+        assert_eq!(native.snapshot().leaf_occurrences.len(), 7);
+        assert_eq!(draft.outputs.len(), 5);
+        for member in &members {
+            let id = member.member.output.body;
+            assert_eq!(original.get(id), draft.prepared.document().get(id));
+        }
+        let ids = draft.outputs;
+        session.commit(draft.prepared).unwrap();
+        for part in &ids {
+            assert_eq!(
+                model::profile_connection_for(session.document(), part.body),
+                Some(request.connection)
+            );
+        }
+        let mut edit = request.clone();
+        edit.name = "Retained connector".into();
+        let prepared =
+            model::prepare_profile_connection(&session, session.revision(), actor(), &edit)
+                .unwrap();
+        assert_eq!(ids, prepared.outputs);
+        if kind == JoiningPlate {
+            edit.second = groove(&members[1], MaxY, 41.);
+            let invalid =
+                model::prepare_profile_connection(&session, session.revision(), actor(), &edit)
+                    .unwrap();
+            let problem = compile(invalid.prepared.document(), session.revision() + 1)
+                .err()
+                .unwrap();
+            assert!(
+                problem.to_string().contains("coplanar parallel grooves"),
+                "{problem}"
+            );
+        }
+    }
+}
+
+#[test]
+fn paired_end_connection_machines_only_the_host_and_survives_reopen_and_undo() {
+    let (mut session, members) = prepare_members([
+        ([-100., 0., 0.], [0., 0., 0.]),
+        ([20., 0., -50.], [20., 0., 50.]),
+    ]);
+    let request = ProfileConnectionRequest::new(
+        "Paired universal end fasteners",
+        ProfileConnectionKind::UniversalEnd,
+        attach(
+            &members[0],
+            ProfileConnectorAnchor::End {
+                end: MemberEnd::End,
+            },
+        ),
+        groove(&members[1], ProfileGrooveSide::MinX, 50.0),
+    );
+    let original = session.document().clone();
+    let draft =
+        model::prepare_profile_connection(&session, session.revision(), actor(), &request).unwrap();
+    assert_eq!(draft.outputs.len(), 6);
+    let native = compile(draft.prepared.document(), session.revision() + 1).unwrap();
+    assert_eq!(native.snapshot().leaf_occurrences.len(), 8);
+    let host = members[0].member.output.body;
+    let cut = native.snapshot().bodies[&host];
+    assert_ne!(cut, members[0].feature);
+    assert_eq!(native.solid(cut).unwrap().solid_count().unwrap(), 1);
+    let volume = |feature| native.solid(feature).unwrap().volume_mm3().unwrap();
+    assert!(volume(members[0].feature) - volume(cut) > 100.);
+    let other = members[1].member.output.body;
+    assert_eq!(native.snapshot().bodies[&other], members[1].feature);
+    session.commit(draft.prepared).unwrap();
+    let mut bytes = vec![];
+    let file = ProjectFile::new(session.document().clone()).unwrap();
+    assert!(
+        file.capabilities()
+            .contains(model::PROFILE_CONNECTION_CAPABILITY)
+    );
+    project_file::write(&file, &mut bytes, Default::default()).unwrap();
+    let reopened = project_file::read(
+        &mut bytes.as_slice(),
+        Default::default(),
+        &project_file::supported_capabilities(),
+    )
+    .unwrap()
+    .project;
+    assert_eq!(&reopened.document, session.document());
+    assert_eq!(
+        model::read_profile_connection_request(&reopened.document, request.connection).unwrap(),
+        request
+    );
+    let removed = model::prepare_remove_profile_connection(
+        &session,
+        session.revision(),
+        actor(),
+        request.connection,
+    )
+    .unwrap();
+    assert_eq!(removed.document(), &original);
+    session.undo(session.revision(), actor()).unwrap();
+    assert_eq!(session.document(), &original);
+    session.redo(session.revision(), actor()).unwrap();
+    assert_eq!(session.document(), &reopened.document);
+}

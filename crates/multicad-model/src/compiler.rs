@@ -1079,6 +1079,18 @@ impl Compiler {
                     member_paths.insert(id, member.path);
                     solid
                 }
+                (model::PROFILE_CONNECTION_OUTPUT_TYPE, 1) => crate::profile_connections::build(
+                    crate::profile_connections::Inputs {
+                        document,
+                        parameters: context.parameters(),
+                        revision,
+                        snapshots: &topologies,
+                        paths: &member_paths,
+                        solids: &solids,
+                        policy: self.policy,
+                    },
+                    id,
+                )?,
                 (model::SHEET_TYPE, model::SHEET_SCHEMA) => {
                     let (solid, layout) = crate::sheet_metal::build(
                         document,

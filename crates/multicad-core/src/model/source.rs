@@ -683,6 +683,7 @@ pub(crate) fn validate(document: &Document) -> Result<(), DocumentError> {
     super::transfer::validate_document(document)?;
     super::screw_connection_axis::validate_document(document)?;
     super::screw_connections::validate_document(document)?;
+    super::profile_connections::validate_document(document)?;
     super::wall::validate_document(document)?;
     super::fence::validate_fences(document)?;
     super::level::validate_document(document)?;
@@ -979,6 +980,10 @@ pub fn required_capabilities(document: &Document) -> BTreeSet<String> {
         capabilities.insert(super::SCREW_CONNECTION_GRIP_CAPABILITY.into());
     }
     for (provider, capability) in [
+        (
+            super::PROFILE_CONNECTION_TYPE,
+            super::PROFILE_CONNECTION_CAPABILITY,
+        ),
         (
             super::SCREW_CONNECTION_TYPE,
             super::SCREW_CONNECTION_CAPABILITY,

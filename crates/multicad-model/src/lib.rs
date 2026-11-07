@@ -37,6 +37,7 @@ pub use pair_cycle_proofs::{
     PairCycleProofStats, PairCycleProofStore, current_pair_cycle_proofs, with_pair_cycle_proofs,
 };
 mod plant_plans;
+mod profile_connections;
 pub mod project_references;
 mod runtime;
 mod scale;
