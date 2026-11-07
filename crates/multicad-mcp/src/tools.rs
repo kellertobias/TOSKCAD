@@ -50,6 +50,11 @@ use compound_cutouts::{
 };
 mod engraving;
 mod fdm;
+mod profile_connections;
+use profile_connections::{
+    ProfileConnectionArgs, ProfileConnectionInspectArgs, ProfileConnectionRemoveArgs,
+    inspect_profile_connection, remove_profile_connection, set_profile_connection,
+};
 mod screw_connections;
 use screw_connections::{
     ScrewConnectionArgs, ScrewConnectionInspectArgs, ScrewConnectionRemoveArgs,
@@ -364,6 +369,12 @@ tools! {
         "Read the complete canonical editable request and normalized owned references for a screw connection.", inspect_screw_connection;
     "remove_screw_connection" => ScrewConnectionRemoveArgs, "Remove screw connection", false,
         "Atomically remove owned connection hardware and receiving features. Refuse foreign/downstream ownership conflicts; preserve unrelated geometry.", remove_screw_connection;
+    "set_profile_connection" => ProfileConnectionArgs, "Create or edit profile connection", false,
+        "Create or edit one item Line 8 40 × 40 profile connection using the complete canonical request. Supported kinds are angle_bracket and joining_plate (two groove anchors), and universal_end (first member end and second member groove, with access bores in a unique receiving Part). Groove stations are typed lengths measured from the current extended start. Supply exact member body/producer IDs and occurrence paths. Keep the connection UUID when editing to retain owned Part IDs. Native candidate validation precedes one transaction or owner review.", set_profile_connection;
+    "inspect_profile_connection" => ProfileConnectionInspectArgs, "Inspect profile connection", true,
+        "Read the retained supplier article and complete editable canonical request for a profile connection. This is source inspection.", inspect_profile_connection;
+    "remove_profile_connection" => ProfileConnectionRemoveArgs, "Remove profile connection", false,
+        "Atomically remove a profile connection, its owned hardware and its access bores where applicable. Downstream ownership conflicts and failed native validation preserve the current source.", remove_profile_connection;
     "inspect_gear_pair" => InspectGearPairArgs, "Inspect gear pair", true,
         "Read canonical member recipes, tooth phase and mating frames, plus rotary center distance, finite rack travel, explicit bevel shared-apex/cone context or explicit worm/wheel crossed-axis roles without evaluating geometry. evaluate_model reports the actual native current-pose and sampled interference checks.",
         inspect_gear_pair;
