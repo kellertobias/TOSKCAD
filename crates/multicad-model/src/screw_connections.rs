@@ -1,4 +1,5 @@
 //! Native connection validation over reconstructed canonical sources and physical leaves.
+mod custom;
 use crate::{Model, ModelError, compiler::checkpoint, error};
 use multicad_core::{
     document::{Document, EntityData, EntityId},
@@ -240,6 +241,18 @@ pub(crate) fn validate(
                 "Connection head seating requires a verified bearing/contact and remaining-thread interval; recessed connection seats are not ready yet",
             ));
         }
+        for receiver in &source.receivers {
+            if !model
+                .snapshot()
+                .leaf_occurrences
+                .contains_key(&receiver.source.occurrence)
+            {
+                return Err(error(
+                    Some(id),
+                    "Receiving target must be a current physical leaf occurrence, not a hidden or unplaced definition",
+                ));
+            }
+        }
         let grip = mm(&source.parameters.grip, p, id)?;
         let engagement = mm(&source.parameters.minimum_engagement, p, id)?;
         let clearance = mm(&source.parameters.blind_tip_clearance, p, id)?;
@@ -271,6 +284,24 @@ pub(crate) fn validate(
             .iter()
             .map(|row| hardware(document, p, model, row, id))
             .collect::<Result<Vec<_>, _>>()?;
+        if matches!(
+            source.mode,
+            Mode::DirectWood | Mode::WoodInsert | Mode::HangerBolt
+        ) {
+            checks.push(custom::validate(custom::Inputs {
+                document,
+                revision,
+                parameters: p,
+                model,
+                source: &source,
+                hardware: &hardware,
+                axis,
+                topologies: &topologies,
+                queries: &mut collision_queries,
+                interrupt,
+            })?);
+            continue;
+        }
         if hardware.iter().any(|row| match source.mode {
             Mode::ThroughNut => !matches!(
                 row.role,
