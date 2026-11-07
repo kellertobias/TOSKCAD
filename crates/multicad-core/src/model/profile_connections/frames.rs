@@ -33,6 +33,107 @@ pub struct ProfileConnectionFrames {
     pub access: Option<[ReferenceFrame; 2]>,
 }
 
+fn footprint(kind: ProfileConnectionKind) -> f64 {
+    if kind == ProfileConnectionKind::UniversalEnd {
+        ITEM_LINE_8_WIDTH_MM / 2.0 - PROFILE_BARREL_DEPTH_MM / 2.0 + NUT_LONG_SIDE_MM
+    } else {
+        BRACKET_STATION_MM
+    }
+}
+
+fn validate_station(station: f64, length: f64, footprint: f64) -> Result<(), DocumentError> {
+    if !length.is_finite()
+        || !station.is_finite()
+        || !(0.0..=length).contains(&station)
+        || station < footprint - MOUNT_TOLERANCE_MM
+        || length - station < footprint - MOUNT_TOLERANCE_MM
+    {
+        return Err(invalid(format!(
+            "Move the groove station at least {footprint} mm from both member ends to support the full fastening footprint"
+        )));
+    }
+    Ok(())
+}
+
+/// End center or groove mouth center at station zero, in the current occurrence pose.
+#[derive(Clone, Copy, Debug)]
+pub struct ProfileStationDatum {
+    pub frame: ReferenceFrame,
+    pub length_mm: f64,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum ProfileStation {
+    End,
+    Literal(f64),
+    Bound(f64),
+}
+
+/// Return exact replacement values for literal groove drafts. The supplied
+/// datums must come from current member geometry in world coordinates.
+pub fn snap_profile_connection_stations(
+    kind: ProfileConnectionKind,
+    [first, second]: [ProfileStationDatum; 2],
+    stations: [ProfileStation; 2],
+) -> Result<[Option<f64>; 2], DocumentError> {
+    use ProfileStation::{Bound, End, Literal};
+    for datum in [first, second] {
+        datum.frame.validate().map_err(invalid)?;
+        if !datum.length_mm.is_finite() || datum.length_mm <= 0. {
+            return Err(invalid("The current profile length is unavailable"));
+        }
+    }
+    let [a, b] = [first.frame, second.frame];
+    let between = sub(b.origin_mm, a.origin_mm);
+    let exact = match (kind, stations) {
+        (ProfileConnectionKind::UniversalEnd, [End, Literal(_) | Bound(_)]) => {
+            [None, Some(-dot(between, b.u))]
+        }
+        (ProfileConnectionKind::AngleBracket, [Literal(_) | Bound(_), Literal(_) | Bound(_)]) => {
+            let delta = sub(
+                scale(sub(a.normal(), b.normal()), BRACKET_STATION_MM),
+                between,
+            );
+            [Some(-dot(delta, a.u)), Some(dot(delta, b.u))]
+        }
+        (ProfileConnectionKind::JoiningPlate, [Literal(_) | Bound(_), Bound(s)]) => {
+            [Some(dot(add(between, scale(b.u, s)), a.u)), Some(s)]
+        }
+        (ProfileConnectionKind::JoiningPlate, [Literal(s) | Bound(s), Literal(_)]) => {
+            [Some(s), Some(dot(sub(scale(a.u, s), between), b.u))]
+        }
+        _ => {
+            return Err(invalid(
+                "Choose the required groove and end anchors before snapping",
+            ));
+        }
+    };
+    let mut sites = [a, b];
+    let mut replacements = [None; 2];
+    for (index, datum) in [first, second].into_iter().enumerate() {
+        let Some(exact) = exact[index] else { continue };
+        let value = match stations[index] {
+            Literal(current) => {
+                if current != exact {
+                    replacements[index] = Some(exact);
+                }
+                exact
+            }
+            Bound(value) if (value - exact).abs() <= MOUNT_TOLERANCE_MM => value,
+            Bound(_) => {
+                return Err(invalid(
+                    "A bound groove station does not match the connector. Adjust its parameter or explicitly replace that station.",
+                ));
+            }
+            End => unreachable!("anchor combinations checked above"),
+        };
+        validate_station(value, datum.length_mm, footprint(kind))?;
+        sites[index].origin_mm = add(datum.frame.origin_mm, scale(datum.frame.u, value));
+    }
+    validate_mount(kind, sites, first.length_mm)?;
+    Ok(replacements)
+}
+
 fn site(
     attachment: &ProfileAttachment,
     member: &ResolvedMember,
@@ -44,13 +145,7 @@ fn site(
             let station = attachment
                 .groove_station(parameters)?
                 .ok_or_else(|| invalid("A groove needs a station"))?;
-            if station < footprint - MOUNT_TOLERANCE_MM
-                || member.length_mm() - station < footprint - MOUNT_TOLERANCE_MM
-            {
-                return Err(invalid(format!(
-                    "Move the groove station at least {footprint} mm from both member ends to support the full fastening footprint"
-                )));
-            }
+            validate_station(station, member.length_mm(), footprint)?;
             member.groove_frame(*side, station)
         }
         ProfileConnectorAnchor::End { end } => member.slotted_end_frame(*end),
@@ -73,13 +168,7 @@ pub fn resolve_profile_connection_frames(
     snapshots: &BTreeMap<EntityId, TopologySnapshot>,
 ) -> Result<ProfileConnectionFrames, DocumentError> {
     request.validate()?;
-    let half_width = ITEM_LINE_8_WIDTH_MM / 2.0;
-    let universal_offset = half_width - PROFILE_BARREL_DEPTH_MM / 2.0;
-    let footprint = if request.kind == ProfileConnectionKind::UniversalEnd {
-        universal_offset + NUT_LONG_SIDE_MM
-    } else {
-        BRACKET_STATION_MM
-    };
+    let footprint = footprint(request.kind);
     let resolve = |attachment: &ProfileAttachment, member: &ResolvedMember| {
         attachment.validate_member(document)?;
         let local = site(attachment, member, parameters, footprint)?;
@@ -97,8 +186,20 @@ pub fn resolve_profile_connection_frames(
             v: pose.vector(local.v),
         })
     };
-    let first = resolve(&request.first, members[0])?;
-    let second = resolve(&request.second, members[1])?;
+    let sites = [
+        resolve(&request.first, members[0])?,
+        resolve(&request.second, members[1])?,
+    ];
+    validate_mount(request.kind, sites, members[0].length_mm())
+}
+
+fn validate_mount(
+    kind: ProfileConnectionKind,
+    [first, second]: [ReferenceFrame; 2],
+    first_length: f64,
+) -> Result<ProfileConnectionFrames, DocumentError> {
+    let half_width = ITEM_LINE_8_WIDTH_MM / 2.0;
+    let universal_offset = half_width - PROFILE_BARREL_DEPTH_MM / 2.0;
     let normals = [first.normal(), second.normal()];
     let between = sub(second.origin_mm, first.origin_mm);
     let aligned = |a, b| dot(a, b) > 1.0 - ALIGNMENT_TOLERANCE;
@@ -106,7 +207,7 @@ pub fn resolve_profile_connection_frames(
     let perpendicular = |a, b| dot(a, b).abs() < ALIGNMENT_TOLERANCE;
     let close = |a, b| distance(a, b) <= MOUNT_TOLERANCE_MM;
 
-    let (fasteners, access) = match request.kind {
+    let (fasteners, access) = match kind {
         ProfileConnectionKind::AngleBracket => {
             if !perpendicular(normals[0], normals[1])
                 || !parallel(first.u, normals[1])
@@ -144,7 +245,7 @@ pub fn resolve_profile_connection_frames(
                     "Align the member end face against the receiving groove. Its bore center must meet the selected station and one pair of host grooves must align with the receiving groove direction.",
                 ));
             }
-            if members[0].length_mm()
+            if first_length
                 < PROFILE_ACCESS_FROM_END_MM + PROFILE_ACCESS_RADIUS_MM + MOUNT_TOLERANCE_MM
             {
                 return Err(invalid(

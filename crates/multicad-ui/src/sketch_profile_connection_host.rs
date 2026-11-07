@@ -1,15 +1,13 @@
 //! Profile picks come from an isolated current physical member occurrence.
 use super::*;
 use crate::{
-    modeling::ProfileConnectorPick,
+    modeling::{ProfileConnectorPick, profile_cap_frame},
     viewport::{PickFilter, PickOptions, Scene, SceneFeed, Selection},
 };
 use multicad_core::{
     model::{self, MemberEnd, ProfileConnectorAnchor, ProfileGrooveSide},
     project_file::ProjectResources,
-    references::{
-        AnalyticGeometry, ReferenceFrame, TopologyElement, TopologyKind, TopologySnapshot,
-    },
+    references::{AnalyticGeometry, TopologyElement, TopologyKind, TopologySnapshot},
 };
 use std::sync::Arc;
 
@@ -55,25 +53,6 @@ fn groove_face(element: &TopologyElement, owner: EntityId) -> Option<ProfileGroo
     sides.next().is_none().then_some(side)
 }
 
-fn cap_frame(
-    snapshot: &TopologySnapshot,
-    owner: EntityId,
-    end: MemberEnd,
-) -> Option<ReferenceFrame> {
-    let role = cap_role(end);
-    let mut frames = snapshot
-        .elements
-        .iter()
-        .filter(|element| {
-            element.key.kind == TopologyKind::Face
-                && matches!(element.geometry, Some(AnalyticGeometry::Plane { .. }))
-        })
-        .flat_map(|element| &element.frames)
-        .filter(|frame| frame.origin.source == owner && frame.origin.role == role);
-    let frame = frames.next()?.frame;
-    frames.next().is_none().then_some(frame)
-}
-
 fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
     a.into_iter().zip(b).map(|(a, b)| a * b).sum()
 }
@@ -83,9 +62,9 @@ fn station(
     owner: EntityId,
     point_mm: [f64; 3],
 ) -> Result<(f64, f64), String> {
-    let start = cap_frame(snapshot, owner, MemberEnd::Start)
+    let start = profile_cap_frame(snapshot, owner, MemberEnd::Start)
         .ok_or("The native member start face needs repair")?;
-    let end = cap_frame(snapshot, owner, MemberEnd::End)
+    let end = profile_cap_frame(snapshot, owner, MemberEnd::End)
         .ok_or("The native member end face needs repair")?;
     let ends = std::array::from_fn(|i| end.origin_mm[i] - start.origin_mm[i]);
     let end_axis = end.normal();
@@ -261,6 +240,7 @@ impl SketchEditor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use multicad_core::references::ReferenceFrame;
     use multicad_core::references::{AnchoredFrame, Origin, TopologyKey};
 
     #[test]

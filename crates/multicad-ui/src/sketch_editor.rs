@@ -3162,6 +3162,11 @@ impl SketchEditor {
                             return;
                         }
                         if self.model.active() {
+                            self.model.set_profile_connection_snap_scene(
+                                session,
+                                resources,
+                                feed.visible(),
+                            );
                             let label=self.model.label();
                             let fit = !self.model.placement_active() && !self.model.scaling_active();
                             match self.model.show(ui,session,resources) {

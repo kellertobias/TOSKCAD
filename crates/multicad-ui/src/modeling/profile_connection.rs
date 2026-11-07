@@ -4,7 +4,7 @@ use super::{
     dimension::DimensionField,
     form::{self, FormAction, ModelEvent},
 };
-use crate::{controls, egui};
+use crate::{controls, egui, viewport::Scene};
 use multicad_core::{
     document::{Document, EntityId},
     model::{
@@ -14,7 +14,10 @@ use multicad_core::{
     },
     parameters::Unit,
 };
-use std::collections::BTreeSet;
+use std::{collections::BTreeSet, sync::Arc};
+
+mod snap;
+pub(crate) use snap::profile_cap_frame;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ProfileMemberTarget {
@@ -68,6 +71,8 @@ pub(super) struct ProfileConnectionPanel {
     seed: Option<ProfileConnectionRequest>,
     editing: bool,
     pick: Option<ProfileConnectorPick>,
+    snap_scene: Option<Arc<Scene>>,
+    snap_notice: Option<String>,
     hardware_only: Option<bool>,
 }
 
@@ -161,6 +166,8 @@ impl ProfileConnectionPanel {
             seed: None,
             editing: false,
             pick: None,
+            snap_scene: None,
+            snap_notice: None,
             hardware_only: None,
         })
     }
@@ -207,6 +214,30 @@ impl ProfileConnectionPanel {
         self.pick.as_ref()
     }
 
+    pub fn set_snap_scene(&mut self, scene: Option<Arc<Scene>>) {
+        self.snap_scene = scene;
+    }
+
+    fn snap_stations(
+        &mut self,
+        request: &ProfileConnectionRequest,
+        parameters: &multicad_core::parameters::EvaluatedParameters,
+    ) -> Result<bool, String> {
+        let scene = self
+            .snap_scene
+            .as_deref()
+            .ok_or("Wait for the current native profiles")?;
+        let snapped = snap::stations(scene, request, parameters)?;
+        let mut changed = false;
+        for (site, value) in self.sites.iter_mut().zip(snapped) {
+            if let Some(value) = value {
+                site.station.set_exact_literal(value, "mm");
+                changed = true;
+            }
+        }
+        Ok(changed)
+    }
+
     pub fn capture(
         &mut self,
         pick: &ProfileConnectorPick,
@@ -229,6 +260,7 @@ impl ProfileConnectionPanel {
         });
         site.length_mm = Some(length_mm);
         self.pick = None;
+        self.snap_notice = None;
         self.stamp = FormStamp::new();
         self.ensure_seed();
         Ok(())
@@ -487,10 +519,37 @@ impl ProfileConnectionPanel {
             }
         }
         if changed {
+            self.snap_notice = None;
+        }
+        let mut request = self.request(document, enabled);
+        if ui
+            .add_enabled(
+                self.snap_scene.is_some() && request.is_ok(),
+                egui::Button::new("Snap stations to connector"),
+            )
+            .on_hover_text("Align the draft to the selected native grooves and end. Bound dimensions stay linked.")
+            .clicked()
+            && let Ok(draft) = &request
+        {
+            let result = multicad_core::parameters::evaluate(document)
+                .map_err(|error| error.to_string())
+                .and_then(|parameters| self.snap_stations(draft, &parameters));
+            self.snap_notice = Some(match result {
+                Ok(updated) => {
+                    changed |= updated;
+                    "Stations aligned in this draft. Preview to check the complete connection.".into()
+                }
+                Err(error) => error,
+            });
+            request = self.request(document, enabled);
+        }
+        if let Some(notice) = &self.snap_notice {
+            ui.small(notice);
+        }
+        if changed {
             self.stamp = FormStamp::new();
             self.hardware_only = None;
         }
-        let request = self.request(document, enabled);
         if let Err(error) = &request {
             ui.small(error);
         }
@@ -650,5 +709,210 @@ mod tests {
         let reopened = ProfileConnectionPanel::existing(&document, edited.clone()).unwrap();
         assert_eq!(reopened.request(&document, true).unwrap(), edited);
         assert_eq!(document.entities().count(), 0);
+    }
+    #[test]
+    fn snapping_native_datums_aligns_all_connector_drafts_without_changing_source() {
+        use ProfileConnectionKind::{AngleBracket, JoiningPlate, UniversalEnd};
+        use ProfileGrooveSide::{MaxX, MaxY, MinX};
+        let groove = |side, value| ProfileConnectorAnchor::Groove {
+            side,
+            station: model::length(value),
+        };
+        for (kind, paths, anchors, expected) in [
+            (
+                AngleBracket,
+                [
+                    ([0., 0., 0.], [100., 0., 0.]),
+                    ([-20., 0., 20.], [-20., 0., 120.]),
+                ],
+                [groove(MaxY, 19.979), groove(MaxX, 20.031)],
+                [Some(20.), Some(20.)],
+            ),
+            (
+                UniversalEnd,
+                [
+                    ([-100., 0., 0.], [0., 0., 0.]),
+                    ([20., 0., -50.], [20., 0., 50.]),
+                ],
+                [
+                    ProfileConnectorAnchor::End {
+                        end: MemberEnd::End,
+                    },
+                    groove(MinX, 50.152),
+                ],
+                [None, Some(50.)],
+            ),
+            (
+                JoiningPlate,
+                [
+                    ([0., 0., 0.], [100., 0., 0.]),
+                    ([0., 40., 0.], [100., 40., 0.]),
+                ],
+                [groove(MaxY, 40.25), groove(MaxY, 40.75)],
+                [Some(40.25), Some(40.25)],
+            ),
+        ] {
+            let actor = Actor::local(Channel::Ui);
+            let mut session = Session::new(Document::new("Native station snap").unwrap()).unwrap();
+            let material = Entity::new(
+                "Aluminum",
+                EntityData::Material {
+                    density_kg_m3: None,
+                    color_rgba: [150, 160, 170, 255],
+                    section_hatch: None,
+                },
+            );
+            let stock = LibraryDefinition::Stock(Stock {
+                material: material.id,
+                specification: StockKind::Profile {
+                    designation: "item 0.0.026.03".into(),
+                    length_mm: 6000.,
+                    width_mm: 40.,
+                    height_mm: 40.,
+                    wall_mm: None,
+                    shape: ProfileShape::ItemLine8_40x40,
+                },
+            })
+            .entity(EntityId::new(), "Line 8 stock")
+            .unwrap();
+            let stock_id = stock.id;
+            let station_parameter = Entity::new(
+                "station",
+                EntityData::Parameter {
+                    expression: "47.25".into(),
+                    unit: "mm".into(),
+                    exposed: false,
+                    inputs: vec![],
+                },
+            );
+            session
+                .apply(Request {
+                    expected_revision: 0,
+                    actor: actor.clone(),
+                    label: "Source stock and station".into(),
+                    edits: vec![
+                        Mutation::Insert(material),
+                        Mutation::Insert(stock),
+                        Mutation::Insert(station_parameter),
+                    ],
+                })
+                .unwrap();
+            let members = paths.map(|(start, end)| {
+                MemberRequest::new(
+                    "Profile",
+                    MemberDefinition {
+                        output: BodyOutput {
+                            body: EntityId::nil(),
+                        },
+                        stock: stock_id,
+                        path: MemberPath::Points {
+                            start: start.map(model::length),
+                            end: end.map(model::length),
+                        },
+                        anchor: Default::default(),
+                        rotation: None,
+                        extend_start: None,
+                        extend_end: None,
+                    },
+                )
+            });
+            let prepared = model::prepare_members(&session, 1, actor, &members, None).unwrap();
+            session.commit(prepared.prepared).unwrap();
+            let document = session.document();
+            let original = document.clone();
+            let native = multicad_model::Compiler::default()
+                .compile(document, session.revision())
+                .unwrap();
+            let scene =
+                crate::modeling::native_fixture::scene(document, native.snapshot(), 1).unwrap();
+            let mut panel = ProfileConnectionPanel::new(document, &BTreeSet::new()).unwrap();
+            panel.kind = kind;
+            for (index, (member, anchor)) in members.iter().zip(anchors).enumerate() {
+                let body = member.member.output.body;
+                let pick = ProfileConnectorPick {
+                    index,
+                    target: ProfileMemberTarget {
+                        member: BodyInput {
+                            body,
+                            producer: member.feature,
+                        },
+                        occurrence: OccurrencePath {
+                            root: body,
+                            members: vec![],
+                        },
+                        label: member.name.clone(),
+                    },
+                    end: matches!(anchor, ProfileConnectorAnchor::End { .. }),
+                };
+                panel.pick = Some(pick.clone());
+                panel.capture(&pick, anchor, 100.).unwrap();
+            }
+            let draft = panel.request(document, true).unwrap();
+            let resolved = members.each_ref().map(|member| {
+                let path = model::point_path(&member.member.path, session.parameters())
+                    .unwrap()
+                    .unwrap();
+                model::resolve_member(document, session.parameters(), &member.member, path).unwrap()
+            });
+            let snapshots = scene.reference_snapshots();
+            let check = |draft| {
+                model::resolve_profile_connection_frames(
+                    document,
+                    draft,
+                    [&resolved[0], &resolved[1]],
+                    session.parameters(),
+                    session.revision(),
+                    &snapshots,
+                )
+            };
+            assert!(check(&draft).is_err(), "{kind:?}");
+            panel.set_snap_scene(Some(scene));
+            assert!(panel.snap_stations(&draft, session.parameters()).unwrap());
+            let snapped = panel.request(document, true).unwrap();
+            check(&snapped).unwrap();
+            assert_eq!(snapped.connection, draft.connection);
+            assert_eq!(snapped.first.occurrence, draft.first.occurrence);
+            assert_eq!(snapped.second.occurrence, draft.second.occurrence);
+            for (actual, expected) in [&snapped.first, &snapped.second].into_iter().zip(expected) {
+                let actual = actual.groove_station(session.parameters()).unwrap();
+                match (actual, expected) {
+                    (Some(a), Some(b)) => assert!((a - b).abs() < 1e-9, "{a} != {b}"),
+                    (None, None) => {}
+                    _ => panic!("Unexpected station on end anchor"),
+                }
+            }
+            let expression = multicad_core::constraint_sketch::Dimension::Expression {
+                expression: multicad_core::parameters::BoundExpression::bind(
+                    document,
+                    "=$station",
+                    "mm",
+                    None,
+                )
+                .unwrap(),
+            };
+            panel.sites[1].station = DimensionField::from_dimension(&expression, "mm").unwrap();
+            let bound = panel.request(document, true).unwrap();
+            if kind == JoiningPlate {
+                assert!(panel.snap_stations(&bound, session.parameters()).unwrap());
+                let with_anchor = panel.request(document, true).unwrap();
+                check(&with_anchor).unwrap();
+                assert_eq!(
+                    with_anchor
+                        .first
+                        .groove_station(session.parameters())
+                        .unwrap(),
+                    Some(47.25)
+                );
+                assert_eq!(with_anchor.second, bound.second);
+            } else {
+                let error = panel
+                    .snap_stations(&bound, session.parameters())
+                    .unwrap_err();
+                assert!(error.contains("bound groove station"), "{error}");
+                assert_eq!(panel.request(document, true).unwrap(), bound);
+            }
+            assert_eq!(session.document(), &original);
+            assert_eq!(session.revision(), 2);
+        }
     }
 }

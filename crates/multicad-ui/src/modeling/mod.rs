@@ -74,7 +74,7 @@ pub use object_basis::{ObjectGizmoBasis, object_gizmo_basis};
 pub use operation_guide::{GuideLine, ProfileGuide, anchor as profile_anchor};
 pub(crate) use panel_face::{seeded_message, selected_panels, with_opposite_sides};
 pub use placement::{PlacementCommand, PlacementMode};
-pub(crate) use profile_connection::ProfileConnectorPick;
+pub(crate) use profile_connection::{ProfileConnectorPick, profile_cap_frame};
 pub use scale_gizmo::ScaleViewport;
 pub use scaling::ScaleCommand;
 pub use screw_connection::ScrewConnectionCommand;

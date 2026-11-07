@@ -23,6 +23,23 @@ impl ModelToolController {
         )
     }
 
+    pub(crate) fn set_profile_connection_snap_scene(
+        &mut self,
+        session: &Session,
+        resources: &ProjectResources,
+        scene: Option<&Arc<Scene>>,
+    ) {
+        if !matches!(self.form, Some(ModelForm::ProfileConnection(_))) {
+            return;
+        }
+        let scene = scene
+            .filter(|scene| self.verify_context(session, resources, scene).is_ok())
+            .cloned();
+        if let Some(ModelForm::ProfileConnection(panel)) = &mut self.form {
+            panel.set_snap_scene(scene);
+        }
+    }
+
     pub(crate) fn profile_connection_picker(&self) -> Option<ProfileConnectorPick> {
         match self.form.as_ref()? {
             ModelForm::ProfileConnection(panel) => panel.picker().cloned(),
