@@ -3,6 +3,7 @@ use super::{SymbolDefinition, SymbolValue, source};
 use crate::{
     document::{DocumentError, EntityData, EntityId},
     materials, model, parameters,
+    project_file::ContentHash,
 };
 use std::collections::BTreeMap;
 
@@ -15,6 +16,72 @@ pub struct ConfiguredHardwarePart {
     /// Literal catalog geometry when sourced, otherwise the immutable template defaults.
     pub retained: model::ResolvedMechanicalPart,
     pub attribution: model::MechanicalPartAttribution,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct PinnedHardwareBaseline {
+    pub pin: ContentHash,
+    pub revision: String,
+    pub material: Option<String>,
+    pub geometry: model::ResolvedMechanicalPart,
+}
+
+/// Find the exact template for a current mapped hardware feature. A part name,
+/// a matching designation or a shared definition alone cannot establish ownership.
+pub fn pinned_hardware_baseline(
+    document: &crate::document::Document,
+    part: EntityId,
+    feature: EntityId,
+) -> Result<Option<PinnedHardwareBaseline>, DocumentError> {
+    let mut result = None;
+    for record in document.entities().filter(|entity| {
+        matches!(&entity.data,
+        EntityData::Extension { definition, .. } if definition.type_id == super::INSTANCE_TYPE)
+    }) {
+        let instance = super::read_instance(document, record.id)?;
+        let Some(template_part) = instance
+            .ids
+            .iter()
+            .find_map(|(id, mapped)| (*mapped == part).then_some(*id))
+        else {
+            continue;
+        };
+        let template_feature = instance
+            .ids
+            .iter()
+            .find_map(|(id, mapped)| (*mapped == feature).then_some(*id))
+            .ok_or_else(|| source::invalid("Hardware feature is missing from its Library pin"))?;
+        if result.is_some() {
+            return Err(source::invalid(
+                "Hardware belongs to more than one Library pin",
+            ));
+        }
+        let definition = super::read_definition(document, instance.definition)?;
+        if definition.pin()? != instance.pin {
+            return Err(source::invalid(
+                "Hardware Library pin does not match the embedded definition",
+            ));
+        }
+        let template = model::read_mechanical_part(&definition.template, template_feature)?;
+        if template.output.body != template_part {
+            return Err(source::invalid(
+                "The pinned hardware feature belongs to another Part",
+            ));
+        }
+        let evaluated = parameters::evaluate(&definition.template)
+            .map_err(|error| source::invalid(error.to_string()))?;
+        let material = materials::resolve(&definition.template, template_part)?
+            .material
+            .and_then(|id| definition.template.get(id))
+            .map(|entity| entity.name.clone());
+        result = Some(PinnedHardwareBaseline {
+            pin: instance.pin,
+            revision: definition.revision,
+            material,
+            geometry: template.parameters.resolve(&evaluated)?,
+        });
+    }
+    Ok(result)
 }
 
 /// Read draft dimensions without changing the pin, placing a Part or granting

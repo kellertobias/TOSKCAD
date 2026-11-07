@@ -9,12 +9,14 @@ use crate::{
 };
 use multicad_core::{
     document::Document,
+    materials,
     model::{
         self, MechanicalPartParameters, PrimitiveFrame, ScrewDrive, ScrewHead, ThreadParameters,
         ThreadRepresentation, length,
     },
     parameters::EvaluatedParameters,
     sketch::Datum,
+    symbols,
 };
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -1012,7 +1014,25 @@ pub(super) fn inspect_mechanical_part(
     let (doc, revision, eval) = snapshot(host)?;
     let feature = id(&args.feature)?;
     let source = model::read_mechanical_part(&doc, feature)?;
-    let resolved = match source.parameters.resolve(&eval)? {
+    let assigned_material = materials::resolve(&doc, source.output.body)?
+        .material
+        .and_then(|id| doc.get(id))
+        .map(|entity| entity.name.as_str());
+    let baseline = symbols::pinned_hardware_baseline(&doc, source.output.body, feature)?;
+    let mut attribution = source.attribution(
+        &eval,
+        assigned_material,
+        baseline.as_ref().and_then(|pin| pin.material.as_deref()),
+    )?;
+    let actual = source.parameters.resolve(&eval)?;
+    if attribution.reference.is_none()
+        && baseline.as_ref().is_some_and(|pin| pin.geometry != actual)
+    {
+        attribution.basis = model::MechanicalAttributionBasis::CustomDerived;
+    }
+    let library_pin =
+        baseline.map(|pin| json!({"content_hash":pin.pin.to_string(),"revision":pin.revision}));
+    let resolved = match actual {
         model::ResolvedMechanicalPart::CustomConnection { parameters } => {
             custom_connection_value(&parameters)
         }
@@ -1136,7 +1156,7 @@ pub(super) fn inspect_mechanical_part(
         }
     };
     Ok(
-        json!({"revision":revision,"feature":feature,"matches_reference_dimensions":source.matches_reference_dimensions(&eval)?,"source":source,"resolved":resolved,"native_validation":"Not performed by this source inspection; use evaluate_model","catalog_verification":"A retained reference and dimensional match do not establish verified catalog membership or stock availability"}),
+        json!({"revision":revision,"feature":feature,"matches_reference_dimensions":attribution.dimensions_match.unwrap_or(false),"source":source,"resolved":resolved,"attribution":attribution,"library_pin":library_pin,"native_validation":"Not performed by this source inspection; use evaluate_model","catalog_verification":"A retained reference and dimensional match do not establish verified catalog membership or stock availability"}),
     )
 }
 pub(super) fn set_mechanical_part(

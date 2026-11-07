@@ -16,7 +16,10 @@ mod materialize;
 pub use materialize::{owned_entities, owned_entities_in_session, validate};
 
 mod mechanical_attribution;
-pub use mechanical_attribution::{ConfiguredHardwarePart, configured_hardware_parts};
+pub use mechanical_attribution::{
+    ConfiguredHardwarePart, PinnedHardwareBaseline, configured_hardware_parts,
+    pinned_hardware_baseline,
+};
 
 mod prepare;
 pub use prepare::*;

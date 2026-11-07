@@ -10,6 +10,7 @@ use super::{
 use crate::{controls, egui};
 use multicad_core::{
     document::Document,
+    materials,
     model::{
         self, MechanicalPartParameters, MechanicalPartRequest, PrimitiveFrame, ThreadMode,
         ThreadParameters, ThreadRepresentation, ThreadRequest, length,
@@ -40,6 +41,8 @@ impl Kind {
 pub(super) struct MechanicalPartPanel {
     request: MechanicalPartRequest,
     parameters: EvaluatedParameters,
+    assigned_material: Option<String>,
+    pinned_material: Option<String>,
     kind: Kind,
     fields: [DimensionField; 3],
     thread: ThreadPanel,
@@ -151,6 +154,26 @@ impl MechanicalPartPanel {
                 *thread.clone(),
             ),
         };
+        let assigned_material = if editing && parameters.document.get(request.body).is_some() {
+            materials::resolve(&parameters.document, request.body)
+                .map_err(|error| error.to_string())?
+                .material
+                .and_then(|id| parameters.document.get(id))
+                .map(|entity| entity.name.clone())
+        } else {
+            None
+        };
+        let pinned_material = if editing && parameters.document.get(request.feature).is_some() {
+            multicad_core::symbols::pinned_hardware_baseline(
+                &parameters.document,
+                request.body,
+                request.feature,
+            )
+            .map_err(|error| error.to_string())?
+            .and_then(|baseline| baseline.material)
+        } else {
+            None
+        };
         let frame = request.parameters.frame();
         let field = |d| DimensionField::from_dimension(d, "mm");
         Ok(Self {
@@ -181,6 +204,8 @@ impl MechanicalPartPanel {
                 editing,
             )?,
             parameters,
+            assigned_material,
+            pinned_material,
             request,
             stamp: FormStamp::new(),
             editing,
@@ -463,21 +488,40 @@ impl MechanicalPartPanel {
                     parameters: request.parameters.clone(),
                     provenance: request.provenance.clone(),
                 };
-                if let Some(reference) = &source.provenance {
-                    ui.small(format!(
-                        "Reference: {} · {}",
-                        reference.designation,
-                        if source
-                            .matches_reference_dimensions(&self.parameters)
-                            .unwrap_or(false)
-                        {
-                            "dimensions match"
-                        } else {
-                            "custom / derived dimensions"
+                if source.provenance.is_some() {
+                    match source.attribution(
+                        &self.parameters,
+                        self.assigned_material.as_deref(),
+                        self.pinned_material.as_deref(),
+                    ) {
+                        Ok(attribution) => {
+                            let reference = attribution.reference.expect("sourced hardware");
+                            ui.small(format!(
+                                "{} · reference: {}",
+                                attribution.basis.label(),
+                                reference.designation
+                            ));
+                            ui.small(format!(
+                                "Assigned material: {}",
+                                attribution
+                                    .actual_material
+                                    .as_deref()
+                                    .unwrap_or("Unassigned")
+                            ));
+                            ui.small(format!(
+                                "Catalog material: {}",
+                                reference.material.as_deref().unwrap_or("Not stated")
+                            ));
                         }
-                    ));
+                        Err(error) => {
+                            ui.small(format!("Hardware reference unavailable: {error}"));
+                        }
+                    }
                 } else {
                     ui.small("Custom geometry · no verified catalog designation");
+                    if let Some(material) = &self.assigned_material {
+                        ui.small(format!("Assigned material: {material}"));
+                    }
                 }
             }
             Err(error) => {

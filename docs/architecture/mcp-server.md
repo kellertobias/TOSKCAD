@@ -673,11 +673,12 @@ external annular mounting geometry; exported geometry does not include races,
 rolling elements or seals. No fit, load or standards compliance is implied.
 
 `inspect_mechanical_part` reads retained source, resolved dimensions and whether
-they match an optional literal source reference. Placement and display-detail
-choice do not alter dimensional attribution. A match establishes neither
-trusted catalog membership nor stock availability; changed dimensions retain
-the reference while becoming a derived/custom variant. Source inspection does
-not evaluate native geometry; use `evaluate_model` for that.
+they match an optional literal source reference. `attribution` separates the
+assigned material from the catalog description and names the basis: `authored`,
+`reference_dimensions`, or `custom_derived`. A mapped Library feature also
+returns its `library_pin` with a hexadecimal `content_hash` and the revision.
+Placement does not change the dimension comparison. A reference match does not
+certify catalog membership or stock. Use `evaluate_model` to check native geometry.
 
 ## Pinned symbol control
 

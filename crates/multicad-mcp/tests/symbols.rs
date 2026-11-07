@@ -549,6 +549,9 @@ fn shipped_socket_partial_and_hex_full_screw_pins_keep_catalog_facts_after_confi
         assert_eq!(original["resolved"]["thread_length_mm"], threaded);
         assert_eq!(original["resolved"]["fully_threaded"], total == threaded);
         assert_eq!(original["matches_reference_dimensions"], true);
+        assert_eq!(original["attribution"]["basis"], "reference_dimensions");
+        assert!(original["attribution"]["actual_material"].is_null());
+        assert_eq!(original["library_pin"]["content_hash"], pin.to_string());
         assert_eq!(
             original["source"]["provenance"]["catalog_facts"]["nominal_fastener_diameter_mm"],
             nominal
@@ -560,6 +563,8 @@ fn shipped_socket_partial_and_hex_full_screw_pins_keep_catalog_facts_after_confi
         );
         let changed = run(&h, "inspect_mechanical_part", json!({"feature":feature}));
         assert_eq!(changed["matches_reference_dimensions"], false);
+        assert_eq!(changed["attribution"]["basis"], "custom_derived");
+        assert_eq!(changed["library_pin"], original["library_pin"]);
         assert_eq!(
             changed["source"]["provenance"],
             original["source"]["provenance"]
