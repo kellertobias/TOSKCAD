@@ -2,6 +2,7 @@
 use crate::{ModelError, ModelSnapshot, error};
 use multicad_core::{
     document::{Document, EntityData, EntityId},
+    materials,
     model::{self, OccurrencePath, ResolvedMechanicalPart},
     parameters::{self, EvaluatedParameters},
     project_file::ContentHash,
@@ -34,8 +35,9 @@ pub struct BomHardwareRole {
 #[derive(Clone, Debug, PartialEq)]
 pub struct BomHardwareOccurrence {
     pub path: OccurrencePath,
-    /// Evaluated world mounting datum of the hardware recipe.
-    pub mount: ReferenceFrame,
+    /// Current world mounting datum when the hardware recipe is the final producer.
+    /// Later operations may move or remove that datum.
+    pub mount: Option<ReferenceFrame>,
     pub connection: Option<BomHardwareRole>,
 }
 
@@ -66,13 +68,45 @@ pub(super) fn source_feature(
     let EntityData::Part { features, .. } = &document.get(part)?.data else {
         return None;
     };
-    let head = features.iter().position(|id| *id == producer)?;
-    features[..=head].iter().rev().copied().find(|id| {
-        snapshot.shapes.contains_key(id)
-            && matches!(document.get(*id).map(|entity| &entity.data),
-                Some(EntityData::Feature { definition, suppressed: false, .. })
-                    if definition.type_id == model::MECHANICAL_PART_TYPE)
-    })
+    let mut head = features.iter().position(|id| *id == producer)?;
+    let target_role = format!("target/{part}/producer");
+    let body_role = format!("body/{part}/producer");
+    loop {
+        let feature = features[head];
+        if !snapshot.shapes.contains_key(&feature) {
+            return None;
+        }
+        let EntityData::Feature {
+            definition,
+            inputs,
+            suppressed: false,
+        } = &document.get(feature)?.data
+        else {
+            return None;
+        };
+        if definition.type_id == model::MECHANICAL_PART_TYPE {
+            return Some(feature);
+        }
+        // Native compilation has validated each provider's canonical inputs.
+        // Follow only a unique retained-solid link within this Part's earlier
+        // history. Tool, sketch, face and parameter inputs cannot transfer its
+        // hardware identity to a replacement solid.
+        let mut predecessors = inputs
+            .iter()
+            .filter(|link| {
+                matches!(
+                    link.role.as_str(),
+                    "source" | "prior_solid" | "receiver_producer"
+                ) || link.role == target_role
+                    || link.role == body_role
+            })
+            .filter_map(|link| features[..head].iter().position(|id| *id == link.target));
+        let predecessor = predecessors.next()?;
+        if predecessors.next().is_some() {
+            return None;
+        }
+        head = predecessor;
+    }
 }
 
 struct RoleSource {
@@ -88,6 +122,7 @@ pub(super) struct HardwareIndex<'a> {
     instances: BTreeMap<EntityId, SymbolInstance>,
     definitions: BTreeMap<EntityId, SymbolDefinition>,
     template_parameters: BTreeMap<EntityId, EvaluatedParameters>,
+    template_materials: BTreeMap<(EntityId, EntityId), Option<String>>,
     roles: BTreeMap<EntityId, RoleSource>,
 }
 
@@ -157,6 +192,7 @@ impl<'a> HardwareIndex<'a> {
             instances,
             definitions: BTreeMap::new(),
             template_parameters: BTreeMap::new(),
+            template_materials: BTreeMap::new(),
             roles,
         })
     }
@@ -177,9 +213,8 @@ impl<'a> HardwareIndex<'a> {
                     .map_err(|e| error(Some(record), e))?,
             ),
         };
-        let Some(EntityData::Part {
-            material, features, ..
-        }) = definition.template.get(template_part).map(|e| &e.data)
+        let Some(EntityData::Part { features, .. }) =
+            definition.template.get(template_part).map(|e| &e.data)
         else {
             return Err(error(
                 Some(record),
@@ -196,9 +231,22 @@ impl<'a> HardwareIndex<'a> {
                     "Hardware feature does not match its pinned Library template",
                 )
             })?;
-        let template_material = material
-            .and_then(|id| definition.template.get(id))
-            .map(|e| e.name.clone());
+        let template_material = match self
+            .template_materials
+            .entry((instance.definition, template_part))
+        {
+            Entry::Occupied(entry) => entry.get().clone(),
+            Entry::Vacant(entry) => {
+                let resolved = materials::Resolver::new(&definition.template)
+                    .and_then(|resolver| resolver.resolve(template_part))
+                    .map_err(|e| error(Some(record), e))?;
+                let name = resolved
+                    .material
+                    .and_then(|id| definition.template.get(id))
+                    .map(|e| e.name.clone());
+                entry.insert(name).clone()
+            }
+        };
         let pin = BomHardwarePin {
             record,
             instance: instance.instance,
@@ -297,14 +345,19 @@ impl<'a> HardwareIndex<'a> {
                         Ok(owner.role.clone())
                     })
                     .transpose()?;
-                let world_mount = mount.then(leaf.pose).map_err(|e| error(Some(part), e))?;
+                let mount = (feature == final_producer)
+                    .then(|| -> Result<ReferenceFrame, ModelError> {
+                        let world = mount.then(leaf.pose).map_err(|e| error(Some(part), e))?;
+                        Ok(ReferenceFrame {
+                            origin_mm: world.translation_mm,
+                            u: world.vector([1., 0., 0.]),
+                            v: world.vector([0., 1., 0.]),
+                        })
+                    })
+                    .transpose()?;
                 Ok(BomHardwareOccurrence {
                     path: path.clone(),
-                    mount: ReferenceFrame {
-                        origin_mm: world_mount.translation_mm,
-                        u: world_mount.vector([1., 0., 0.]),
-                        v: world_mount.vector([0., 1., 0.]),
-                    },
+                    mount,
                     connection,
                 })
             })
@@ -334,7 +387,7 @@ impl BomHardware {
     pub(super) fn schedule_cells(&self) -> [String; 3] {
         let mut basis = self.attribution.basis.label().to_owned();
         if self.feature != self.final_producer {
-            basis.push_str(" · later machining");
+            basis.push_str(" · later feature");
         }
         let reference = self
             .attribution

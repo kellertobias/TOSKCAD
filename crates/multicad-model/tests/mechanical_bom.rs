@@ -57,6 +57,41 @@ fn reopen(session: &Session) -> Session {
     Session::new(read(&bytes)).unwrap()
 }
 
+fn assign_material(session: &mut Session, part: EntityId, name: &str, density: f64) -> EntityId {
+    let material = Entity::new(
+        name,
+        EntityData::Material {
+            density_kg_m3: Some(density),
+            color_rgba: [128, 128, 128, 255],
+            section_hatch: None,
+        },
+    );
+    let material_id = material.id;
+    session
+        .apply(Request {
+            expected_revision: session.revision(),
+            actor: actor(),
+            label: "Add material".into(),
+            edits: vec![Mutation::Insert(material)],
+        })
+        .unwrap();
+    let assignment = prepare_assignment(
+        session,
+        session.revision(),
+        actor(),
+        &[part],
+        &Assignment {
+            material: Some(material_id),
+            stock: None,
+            appearance: None,
+            hatch: None,
+        },
+    )
+    .unwrap();
+    session.commit(assignment).unwrap();
+    material_id
+}
+
 #[test]
 fn pinned_bearing_keeps_reference_while_two_physical_rows_report_live_dimensions() {
     let library_bytes = include_bytes!("../../../library/bearing-open-608.tcd");
@@ -172,7 +207,7 @@ fn pinned_bearing_keeps_reference_while_two_physical_rows_report_live_dimensions
         assert_eq!(row.occurrences[0].root, request.instance);
         assert_eq!(hardware.occurrences[0].path, row.occurrences[0]);
         assert!(hardware.occurrences[0].connection.is_none());
-        close(hardware.occurrences[0].mount.origin_mm[0], x);
+        close(hardware.occurrences[0].mount.unwrap().origin_mm[0], x);
         assert_eq!(hardware.final_producer, hardware.feature);
         assert_eq!(hardware.final_solid_count, 1);
         let dimensions = |recipe: &ResolvedMechanicalPart| match recipe {
@@ -237,37 +272,7 @@ fn repeated_assembly_leaves_share_one_part_row_and_keep_effective_material_separ
     });
     let prepared = prepare_mechanical_part(&session, 0, actor(), &washer).unwrap();
     session.commit(prepared.prepared).unwrap();
-    let material = Entity::new(
-        "Assigned aluminum",
-        EntityData::Material {
-            density_kg_m3: Some(2700.),
-            color_rgba: [128, 128, 128, 255],
-            section_hatch: None,
-        },
-    );
-    let material_id = material.id;
-    session
-        .apply(Request {
-            expected_revision: session.revision(),
-            actor: actor(),
-            label: "Add material".into(),
-            edits: vec![Mutation::Insert(material)],
-        })
-        .unwrap();
-    let assignment = prepare_assignment(
-        &session,
-        session.revision(),
-        actor(),
-        &[washer.body],
-        &Assignment {
-            material: Some(material_id),
-            stock: None,
-            appearance: None,
-            hatch: None,
-        },
-    )
-    .unwrap();
-    session.commit(assignment).unwrap();
+    let material_id = assign_material(&mut session, washer.body, "Assigned aluminum", 2700.);
     let mut members = Vec::new();
     for x in [0., 20.] {
         let placement = ComponentPlacementRequest::new(
@@ -339,7 +344,7 @@ fn repeated_assembly_leaves_share_one_part_row_and_keep_effective_material_separ
             .find(|leaf| leaf.path.members == [member])
             .unwrap();
         assert_eq!(occurrence.path.root, placement.instance);
-        close(occurrence.mount.origin_mm[0], x);
+        close(occurrence.mount.unwrap().origin_mm[0], x);
     }
     let csv = bom_schedule(&bom).csv();
     assert!(csv.contains("Assigned aluminum"));
@@ -386,6 +391,7 @@ fn connection_generated_and_library_hardware_use_the_same_physical_bom_roles() {
     let mut author = Session::new(Document::new("Pinned connection nut").unwrap()).unwrap();
     let prepared = prepare_mechanical_part(&author, 0, actor(), part).unwrap();
     author.commit(prepared.prepared).unwrap();
+    let template_material = assign_material(&mut author, part.body, "Pinned nut steel", 7800.);
     let symbol = SymbolAuthorRequest::new(
         "Modeled M3 nut",
         part.body,
@@ -406,6 +412,7 @@ fn connection_generated_and_library_hardware_use_the_same_physical_bom_roles() {
     )
     .unwrap();
     let expected_record = placement.record;
+    let mapped_material = placement.ids[&template_material];
     nut.instance = placement.instance;
     nut.source = ScrewConnectionHardwareSource::Library {
         definition: Box::new(definition),
@@ -448,12 +455,144 @@ fn connection_generated_and_library_hardware_use_the_same_physical_bom_roles() {
         );
         let leaf = model.leaf_snapshot(&occurrence.path).unwrap();
         assert_eq!(row.part, leaf.component);
-        assert_eq!(occurrence.mount.origin_mm, leaf.pose.translation_mm);
+        assert_eq!(
+            occurrence.mount.unwrap().origin_mm,
+            leaf.pose.translation_mm
+        );
         if role.role == ScrewConnectionHardwareRole::Nut {
             let library = hardware.library.as_ref().unwrap();
             assert_eq!((library.record, library.pin), (expected_record, pin));
+            assert_eq!(
+                row.material,
+                Some((mapped_material, "Pinned nut steel".into()))
+            );
+            assert_eq!(
+                hardware.attribution.actual_material.as_deref(),
+                Some("Pinned nut steel")
+            );
+            assert_eq!(
+                hardware.attribution.template_material.as_deref(),
+                Some("Pinned nut steel")
+            );
+            assert_eq!(hardware.attribution.material_match, Some(true));
         } else {
             assert!(hardware.library.is_none());
         }
     }
+}
+
+#[test]
+fn bom_follows_retained_solid_links_and_skips_obsolete_evaluated_hardware() {
+    let mut session = Session::new(Document::new("Retained hardware lineage").unwrap()).unwrap();
+    let washer = MechanicalPartRequest::new(
+        "Washer source",
+        MechanicalPartParameters::Washer {
+            bore_diameter: length(4.3),
+            outside_diameter: length(9.),
+            thickness: length(0.8),
+            frame: Default::default(),
+        },
+    );
+    let prepared = prepare_mechanical_part(&session, 0, actor(), &washer).unwrap();
+    session.commit(prepared.prepared).unwrap();
+    let moved = TransformRequest::new(
+        BodyInput {
+            body: washer.body,
+            producer: washer.feature,
+        },
+        NumericTransform {
+            translation: [10., 10., 1.].map(length),
+            ..Default::default()
+        },
+    );
+    let prepared = prepare_transform(&session, session.revision(), actor(), &moved).unwrap();
+    session.commit(prepared.prepared).unwrap();
+    let stock = PrimitiveRequest::new(
+        "Separate stock",
+        PrimitiveParameters::Box {
+            size: [20., 20., 4.].map(length),
+            frame: Default::default(),
+        },
+    );
+    let prepared = prepare_primitive(&session, session.revision(), actor(), &stock).unwrap();
+    session.commit(prepared.prepared).unwrap();
+    let mut cut = BooleanRequest::new(
+        Operation::Cut,
+        BodyInput {
+            body: stock.body,
+            producer: stock.feature,
+        },
+        vec![BodyInput {
+            body: washer.body,
+            producer: moved.feature,
+        }],
+    );
+    cut.keep_tools = true;
+    let prepared = prepare_boolean(&session, session.revision(), actor(), &cut).unwrap();
+    session.commit(prepared.prepared).unwrap();
+
+    let model = native(&session);
+    let bom = model
+        .bom(session.document(), &BomOptions::default())
+        .unwrap();
+    let row = bom.rows.iter().find(|row| row.part == washer.body).unwrap();
+    let hardware = row.hardware.as_ref().unwrap();
+    assert_eq!(
+        (hardware.feature, hardware.final_producer),
+        (washer.feature, moved.feature)
+    );
+    close(hardware.final_bounds.min[2], 1.);
+    assert!(hardware.occurrences[0].mount.is_none());
+    assert!(
+        bom.rows
+            .iter()
+            .find(|row| row.part == stock.body)
+            .unwrap()
+            .hardware
+            .is_none()
+    );
+
+    // Retain the earlier native washer for the other Part's frozen Boolean tool
+    // while making an independent, typed solid the washer Part's current head.
+    let replacement = PrimitiveDefinition {
+        output: BodyOutput { body: washer.body },
+        parameters: PrimitiveParameters::Box {
+            size: [3., 4., 5.].map(length),
+            frame: Default::default(),
+        },
+    };
+    let replacement = Entity::new(
+        "Independent replacement",
+        EntityData::Feature {
+            definition: replacement.definition().unwrap(),
+            inputs: replacement.inputs().unwrap(),
+            suppressed: false,
+        },
+    );
+    let replacement_id = replacement.id;
+    let mut part = session.document().get(washer.body).unwrap().clone();
+    let EntityData::Part { features, .. } = &mut part.data else {
+        panic!()
+    };
+    features.push(replacement_id);
+    session
+        .apply(Request {
+            expected_revision: session.revision(),
+            actor: actor(),
+            label: "Replace current solid".into(),
+            edits: vec![Mutation::Insert(replacement), Mutation::Replace(part)],
+        })
+        .unwrap();
+
+    let model = native(&session);
+    let snapshot = model.snapshot();
+    assert!(snapshot.shapes.contains_key(&washer.feature));
+    assert!(snapshot.shapes.contains_key(&moved.feature));
+    assert_eq!(snapshot.bodies[&washer.body], replacement_id);
+    close(snapshot.shapes[&replacement_id].volume_mm3, 60.);
+    let bom = model
+        .bom(session.document(), &BomOptions::default())
+        .unwrap();
+    assert_eq!(bom.rows.len(), 2);
+    assert!(bom.rows.iter().all(|row| row.hardware.is_none()));
 }
