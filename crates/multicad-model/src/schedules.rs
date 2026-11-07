@@ -13,6 +13,9 @@ use multicad_core::{
 };
 use std::collections::BTreeMap;
 
+mod mechanical_bom;
+pub use mechanical_bom::{BomHardware, BomHardwareOccurrence, BomHardwarePin, BomHardwareRole};
+
 /// Build one schedule of the whole evaluated model. Every window command,
 /// export recipe and MCP call goes through this, so a CSV file, a drawing
 /// table and an MCP reply for the same source always agree.
@@ -101,6 +104,7 @@ pub struct BomRow {
     pub supply: Supply,
     /// The stack the Part is a layer of; layers are listed individually.
     pub stack: Option<(EntityId, String)>,
+    pub hardware: Option<BomHardware>,
 }
 #[derive(Clone, Debug, PartialEq)]
 pub struct Bom {
@@ -144,6 +148,17 @@ impl Model {
     /// The BOM of the evaluated model: one row per Part, quantity from its
     /// physical leaf occurrences, sorted by supply then name.
     pub fn bom(&self, document: &Document, options: &BomOptions) -> Result<Bom, ModelError> {
+        let snapshot = self.snapshot();
+        let source = ContentHash::document(document).map_err(|e| error(None, e))?;
+        if snapshot.scope != crate::EvaluationScope::Full
+            || snapshot.stamp.document != document.id()
+            || snapshot.stamp.source_hash != source
+        {
+            return Err(error(
+                None,
+                "The BOM requires a full evaluation of the current document",
+            ));
+        }
         let aids = model::aid_parts(document);
         let resolver = materials::Resolver::new(document).map_err(|e| error(None, e))?;
         let mut stacks = BTreeMap::new();
@@ -168,6 +183,7 @@ impl Model {
         }
         let mut rows = vec![];
         let mut excluded = vec![];
+        let mut hardware_index = None;
         for (part, occurrences) in found {
             let supply = supply(document, part, &aids);
             if supply == Supply::Aid && !options.include_aids {
@@ -180,21 +196,46 @@ impl Model {
                 continue;
             }
             let props = resolver.resolve(part).map_err(|e| error(Some(part), e))?;
+            let material = props.material.map(|m| (m, name(document, m)));
+            let producer = snapshot.leaf_occurrences[&occurrences[0]].producer;
+            let hardware = match mechanical_bom::source_feature(document, snapshot, part, producer)
+            {
+                Some(feature) => {
+                    if hardware_index.is_none() {
+                        hardware_index =
+                            Some(mechanical_bom::HardwareIndex::new(document, snapshot)?);
+                    }
+                    Some(
+                        hardware_index
+                            .as_mut()
+                            .expect("hardware index initialized")
+                            .read(
+                                part,
+                                feature,
+                                producer,
+                                material.as_ref().map(|(_, name)| name.as_str()),
+                                &occurrences,
+                            )?,
+                    )
+                }
+                None => None,
+            };
             rows.push(BomRow {
                 part,
                 name: name(document, part),
                 quantity: occurrences.len(),
                 occurrences,
-                material: props.material.map(|m| (m, name(document, m))),
+                material,
                 stock: props.stock.map(|(s, _)| (s, name(document, s))),
                 supply,
                 stack: stacks.get(&part).cloned(),
+                hardware,
             });
         }
         rows.sort_by(|a, b| (a.supply, &a.name, a.part).cmp(&(b.supply, &b.name, b.part)));
         Ok(Bom {
-            revision: self.snapshot().stamp.revision,
-            source: ContentHash::document(document).map_err(|e| error(None, e))?,
+            revision: snapshot.stamp.revision,
+            source,
             rows,
             excluded,
         })
@@ -309,6 +350,16 @@ impl Schedule {
 
 /// The BOM as a schedule.
 pub fn bom_schedule(bom: &Bom) -> Schedule {
+    let hardware = bom.rows.iter().any(|row| row.hardware.is_some());
+    let mut columns = [
+        "Item", "Part", "Qty", "Material", "Stock", "Supply", "Stack",
+    ]
+    .map(String::from)
+    .to_vec();
+    if hardware {
+        columns
+            .extend(["Hardware basis", "Resolved recipe", "Catalog reference"].map(String::from));
+    }
     Schedule {
         kind: "bom",
         title: "Bill of materials".into(),
@@ -319,17 +370,13 @@ pub fn bom_schedule(bom: &Bom) -> Schedule {
             "Stack layers are listed individually with their stack".into(),
             format!("{} Parts excluded by inclusion rules", bom.excluded.len()),
         ],
-        columns: [
-            "Item", "Part", "Qty", "Material", "Stock", "Supply", "Stack",
-        ]
-        .map(String::from)
-        .to_vec(),
+        columns,
         rows: bom
             .rows
             .iter()
             .enumerate()
             .map(|(i, r)| {
-                vec![
+                let mut cells = vec![
                     (i + 1).to_string(),
                     r.name.clone(),
                     r.quantity.to_string(),
@@ -337,7 +384,15 @@ pub fn bom_schedule(bom: &Bom) -> Schedule {
                     r.stock.as_ref().map(|s| s.1.clone()).unwrap_or_default(),
                     r.supply.label().into(),
                     r.stack.as_ref().map(|s| s.1.clone()).unwrap_or_default(),
-                ]
+                ];
+                if hardware {
+                    cells.extend(
+                        r.hardware
+                            .as_ref()
+                            .map_or_else(Default::default, BomHardware::schedule_cells),
+                    );
+                }
+                cells
             })
             .collect(),
     }
