@@ -551,6 +551,7 @@ pub fn supported_capabilities() -> BTreeSet<String> {
         crate::model::ADVANCED_CAPABILITY.into(),
         crate::model::TRANSFER_CAPABILITY.into(),
         crate::model::TRANSFER_GROUP_CAPABILITY.into(),
+        crate::model::SCREW_CONNECTION_CAPABILITY.into(),
         crate::model::SCREW_CONNECTION_AXIS_CAPABILITY.into(),
         crate::model::SCREW_HARDWARE_PLACEMENT_CAPABILITY.into(),
         crate::model::JOINT_CAPABILITY.into(),

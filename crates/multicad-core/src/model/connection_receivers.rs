@@ -335,7 +335,7 @@ pub(crate) fn connection_receiver_evaluation_dependencies(
     deps.extend(projection.geometry_dependencies);
     Ok(Some(deps))
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ConnectionReceiverRequest {
     pub feature: EntityId,

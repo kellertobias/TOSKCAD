@@ -682,6 +682,7 @@ pub(crate) fn validate(document: &Document) -> Result<(), DocumentError> {
     super::gears::validate_pairs(document)?;
     super::transfer::validate_document(document)?;
     super::screw_connection_axis::validate_document(document)?;
+    super::screw_connections::validate_document(document)?;
     super::wall::validate_document(document)?;
     super::fence::validate_fences(document)?;
     super::level::validate_document(document)?;
@@ -883,6 +884,7 @@ pub fn required_capabilities(document: &Document) -> BTreeSet<String> {
                     super::ASSEMBLY_TYPE,
                     super::NAMED_POSE_TYPE,
                     super::TRANSFER_GROUP_TYPE,
+                    super::SCREW_CONNECTION_TYPE,
                     super::SCREW_CONNECTION_AXIS_TYPE,
                     super::SCREW_HARDWARE_PLACEMENT_TYPE,
                     super::WALL_TYPE_KIND,
@@ -927,6 +929,10 @@ pub fn required_capabilities(document: &Document) -> BTreeSet<String> {
         })
         .collect();
     for (provider, capability) in [
+        (
+            super::SCREW_CONNECTION_TYPE,
+            super::SCREW_CONNECTION_CAPABILITY,
+        ),
         (
             super::SCREW_CONNECTION_AXIS_TYPE,
             super::SCREW_CONNECTION_AXIS_CAPABILITY,

@@ -43,6 +43,7 @@ pub enum EvaluationScope {
 }
 #[derive(Clone, Debug)]
 pub struct ModelSnapshot {
+    pub screw_connection_checks: Vec<crate::ScrewConnectionCheck>,
     pub scope: EvaluationScope,
     pub stamp: ModelStamp,
     /// Includes upstream producers needed by attached sketches and repair.
@@ -1469,6 +1470,7 @@ impl Compiler {
             gear_pair_checks,
             timings,
             snapshot: ModelSnapshot {
+                screw_connection_checks: vec![],
                 scope: roots.map_or(EvaluationScope::Full, EvaluationScope::Sources),
                 stamp,
                 shapes,
@@ -1489,6 +1491,13 @@ impl Compiler {
             },
         };
         if full {
+            model.snapshot.screw_connection_checks = crate::screw_connections::validate(
+                document,
+                revision,
+                context.parameters(),
+                &model,
+                interrupt,
+            )?;
             model.snapshot.envelope_boxes = model.envelope_boxes(document);
             model.snapshot.guide_outlines = model.guide_outlines(document);
             if model::aids(document).next().is_some() {

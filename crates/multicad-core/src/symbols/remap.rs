@@ -55,6 +55,9 @@ fn provider(d: &Definition) -> Result<(), DocumentError> {
         model::SCREW_HARDWARE_PLACEMENT_TYPE => {
             model::ScrewHardwarePlacementDefinition::from_definition(d)?;
         }
+        model::SCREW_CONNECTION_TYPE => {
+            model::ScrewConnectionDefinition::from_definition(d)?;
+        }
         model::SCREW_CONNECTION_AXIS_TYPE => {
             model::ScrewConnectionAxisDefinition::from_definition(d)?;
         }

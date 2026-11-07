@@ -83,6 +83,7 @@ fn mixed_probe_receipts_preserve_source_frozen_producers_and_explicit_failure() 
     let ok = EntityId::new();
     let failed = EntityId::new();
     let info = ModelEvaluationInfo {
+        screw_connection_checks: vec![],
         source_hash: hash,
         consumed_bodies: BTreeSet::from([tool]),
         cut_targets: vec![
@@ -150,6 +151,7 @@ fn unknown_wire_fields_are_rejected_at_request_and_receipt_boundaries() {
     wire["fallback"] = true.into();
     assert!(serde_json::from_value::<ModelQueryError>(wire).is_err());
     let info = ModelEvaluationInfo {
+        screw_connection_checks: vec![],
         source_hash: ContentHash::of(b"source"),
         consumed_bodies: BTreeSet::new(),
         cut_targets: vec![],
@@ -177,6 +179,7 @@ fn receipt_budgets_allow_shared_producers_explicit_overrides_and_large_nonhit_ex
             .collect(),
     };
     let info = ModelEvaluationInfo {
+        screw_connection_checks: vec![],
         source_hash: ContentHash::of(b"receipt source"),
         consumed_bodies: BTreeSet::new(),
         cut_targets: vec![CutTargetProbeResult {
@@ -225,6 +228,7 @@ fn failed_probe_receipt_can_report_the_nil_input_without_becoming_current_geomet
     };
     assert!(error.to_string().contains(&nil.to_string()));
     let info = ModelEvaluationInfo {
+        screw_connection_checks: vec![],
         source_hash: ContentHash::of(b"failed source"),
         consumed_bodies: BTreeSet::new(),
         cut_targets: vec![CutTargetProbeResult {

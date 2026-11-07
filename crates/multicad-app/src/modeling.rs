@@ -306,6 +306,7 @@ fn scene(
                 source_hash: model.stamp.source_hash,
                 consumed_bodies: model.consumed_bodies.clone(),
                 cut_targets: model.cut_targets.clone(),
+                screw_connection_checks: model.screw_connection_checks.clone(),
             }))
         })
         .and_then(|scene| {

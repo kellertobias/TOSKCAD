@@ -75,13 +75,15 @@ pub struct CutTargetProbeResult {
     pub id: EntityId,
     pub result: Result<CutTargetSelection, ModelQueryError>,
 }
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ModelEvaluationInfo {
     /// Receipt geometry and query results belong to this exact canonical source.
     pub source_hash: ContentHash,
     pub consumed_bodies: BTreeSet<EntityId>,
     pub cut_targets: Vec<CutTargetProbeResult>,
+    #[serde(default)]
+    pub screw_connection_checks: Vec<super::ScrewConnectionCheck>,
 }
 fn identities(
     ids: impl IntoIterator<Item = EntityId>,

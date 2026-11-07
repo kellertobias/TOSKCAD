@@ -606,3 +606,169 @@ fn hardware_driver_refuses_forged_links_and_wrong_owner_without_changing_source(
     }
     assert_eq!(*f.session.document(), before);
 }
+
+fn connection_request(f: &Fixture) -> ScrewConnectionRequest {
+    let mut face = f.face.clone();
+    face.intent.id = EntityId::new();
+    let mut axis = ScrewConnectionAxisDefinition::new(
+        BodyInput {
+            body: f.body.body,
+            producer: f.body.feature,
+        },
+        OccurrencePath {
+            root: f.instance.instance,
+            members: vec![],
+        },
+        face.intent.id,
+    );
+    axis.reverse = true;
+    let axis_id = EntityId::new();
+    let mut screw = default_machine_screw();
+    if let MechanicalPartParameters::MachineScrew {
+        thread,
+        underhead_length,
+        ..
+    } = &mut screw
+    {
+        *underhead_length = Some(length(14.));
+        thread.length = length(14.);
+        thread.fit = ThreadFit::Metric6gExternal;
+        thread.metric_fit_engagement = Some(MetricFitEngagement::NormalGroupAssumed {});
+    }
+    let nut = MechanicalPartParameters::HexNut {
+        across_flats: length(5.5),
+        thread: Box::new(ThreadParameters {
+            major_diameter: length(3.),
+            pitch: length(0.5),
+            length: length(2.5),
+            fit: ThreadFit::Metric6HInternal,
+            ..Default::default()
+        }),
+    };
+    let hardware = [
+        (ScrewConnectionHardwareRole::Screw, "Screw", screw),
+        (ScrewConnectionHardwareRole::Nut, "Nut", nut),
+    ]
+    .into_iter()
+    .map(|(role, name, parameters)| ScrewConnectionHardwareRequest {
+        role_id: EntityId::new(),
+        role,
+        name: name.into(),
+        source: ScrewConnectionHardwareSource::Generated {
+            part: Box::new(MechanicalPartRequest::new(name, parameters)),
+        },
+        instance: EntityId::new(),
+        driver: EntityId::new(),
+    })
+    .collect();
+    ScrewConnectionRequest {
+        connection: EntityId::new(),
+        name: "Metric through connection".into(),
+        mode: ScrewConnectionMode::ThroughNut,
+        axis: ScrewConnectionAxisRequest {
+            id: axis_id,
+            source: axis,
+            face,
+        },
+        hardware,
+        receivers: vec![ConnectionReceiverRequest {
+            feature: EntityId::new(),
+            name: "Clearance".into(),
+            source: ConnectionReceiverDefinition {
+                output: BodyOutput { body: f.body.body },
+                input: BodyInput {
+                    body: f.body.body,
+                    producer: f.body.feature,
+                },
+                occurrence: OccurrencePath {
+                    root: f.instance.instance,
+                    members: vec![],
+                },
+                axis: axis_id,
+                station: length(0.),
+                cut: ConnectionReceiverCut::Round {
+                    diameter: length(3.4),
+                },
+                extent: ConnectionReceiverExtent::Through {},
+                minimum_wall: length(1.),
+                seat: None,
+            },
+        }],
+        parameters: ScrewConnectionParameters {
+            grip: length(10.),
+            ..Default::default()
+        },
+    }
+}
+
+#[test]
+fn composite_connection_is_one_transaction_reopens_and_removes_only_owned_source() {
+    // Synthetic receiving capture: proves canonical transactions, not native fit.
+    let mut f = fixture();
+    let request = connection_request(&f);
+    let baseline = f.session.document().clone();
+    let revision = f.session.revision();
+    let first = prepare_screw_connection(&f.session, revision, actor(), &request).unwrap();
+    let second = prepare_screw_connection(&f.session, revision, actor(), &request).unwrap();
+    assert_eq!(first.prepared.document(), second.prepared.document());
+    assert_eq!(*f.session.document(), baseline);
+    f.session.commit(first.prepared).unwrap();
+    assert_eq!(f.session.revision(), revision + 1);
+    let authored = f.session.document().clone();
+    assert_eq!(
+        read_screw_connection_request(f.session.document(), request.connection).unwrap(),
+        request
+    );
+    f.session.undo(f.session.revision(), actor()).unwrap();
+    assert_eq!(*f.session.document(), baseline);
+    f.session.redo(f.session.revision(), actor()).unwrap();
+    assert_eq!(*f.session.document(), authored);
+    let mut bytes = vec![];
+    project_file::write(
+        &ProjectFile::new(authored.clone()).unwrap(),
+        &mut bytes,
+        Default::default(),
+    )
+    .unwrap();
+    let mut old = project_file::supported_capabilities();
+    old.remove(SCREW_CONNECTION_CAPABILITY);
+    assert!(
+        project_file::read(&mut bytes.as_slice(), Default::default(), &old)
+            .unwrap_err()
+            .contains(SCREW_CONNECTION_CAPABILITY)
+    );
+    let reopened = project_file::read(
+        &mut bytes.as_slice(),
+        Default::default(),
+        &project_file::supported_capabilities(),
+    )
+    .unwrap()
+    .project
+    .document;
+    assert_eq!(reopened, authored);
+    let q = prepare_screw_connection(&f.session, f.session.revision(), actor(), &request).unwrap();
+    let revision = f.session.revision();
+    f.session.commit(q.prepared).unwrap();
+    assert_eq!(f.session.revision(), revision);
+    let q = prepare_remove_screw_connection(
+        &f.session,
+        f.session.revision(),
+        actor(),
+        &ScrewConnectionRemoveRequest {
+            connection: request.connection,
+        },
+    )
+    .unwrap();
+    f.session.commit(q).unwrap();
+    assert_eq!(*f.session.document(), baseline);
+}
+
+#[test]
+fn failing_last_receiver_never_partially_applies_composite_hardware() {
+    let f = fixture();
+    let mut request = connection_request(&f);
+    let before = f.session.document().clone();
+    request.receivers[0].source.axis = EntityId::new();
+    assert!(prepare_screw_connection(&f.session, f.session.revision(), actor(), &request).is_err());
+    assert_eq!(*f.session.document(), before);
+}

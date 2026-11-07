@@ -361,7 +361,7 @@ pub fn read_named_pose(
     Ok(source)
 }
 pub fn assembly_definition_parts(document: &Document) -> Result<BTreeSet<EntityId>, DocumentError> {
-    let mut parts = BTreeSet::new();
+    let mut parts = crate::model::screw_connection_definition_parts(document)?;
     let mut owners = BTreeSet::new();
     for entity in document.entities() {
         if matches!(&entity.data,EntityData::Extension{definition,..}if definition.type_id==ASSEMBLY_TYPE)
