@@ -17,6 +17,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 pub const CONNECTION_RECEIVER_TYPE: &str = "model.connection_receiver";
 pub const CONNECTION_RECEIVER_CAPABILITY: &str = "model.connection_receiver.1";
+pub const CONNECTION_RECEIVER_ENTRY_CAPABILITY: &str = "model.connection_receiver.face_entry.1";
 const POSE_ROLE: &str = "connection_receiver/pose/";
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -51,6 +52,8 @@ pub struct ConnectionReceiverDefinition {
     pub axis: EntityId,
     /// Entry station along the shared positive axis. No world position is copied.
     pub station: Dimension,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entry_reference: Option<super::FaceInput>,
     pub cut: ConnectionReceiverCut,
     pub extent: ConnectionReceiverExtent,
     pub minimum_wall: Dimension,
@@ -108,6 +111,14 @@ impl ConnectionReceiverDefinition {
                 "Receiving cut requires a frozen predecessor, same output Part, axis and bounded occurrence path",
             ));
         }
+        if let Some(face) = &self.entry_reference {
+            super::validate_profile_face(face)?;
+            if face.source != self.input.producer || self.station != super::length(0.) {
+                return Err(invalid(
+                    "A captured receiving entry must belong to its frozen predecessor and requires zero manual station",
+                ));
+            }
+        }
         for field in self.dimensions() {
             // Thread angles are validated by its own schema.
             if !matches!(&self.cut, ConnectionReceiverCut::Tapped { .. }) {
@@ -157,6 +168,13 @@ impl ConnectionReceiverDefinition {
     pub fn inputs(&self) -> Result<Vec<Link>, DocumentError> {
         self.validate()?;
         let mut links = parameter_links(self.dimensions());
+        if let Some(face) = &self.entry_reference {
+            links.push(Link {
+                target: face.source,
+                role: "connection_receiver/entry".into(),
+                geometry: Some(face.intent.clone()),
+            });
+        }
         if let ConnectionReceiverCut::Tapped { thread } = &self.cut {
             for link in thread.input_links() {
                 if !links.contains(&link) {
@@ -244,6 +262,50 @@ impl ConnectionReceiverDefinition {
             thread,
         })
     }
+    /// Resolve captured entry from current native planar geometry. Scalar-only
+    /// resolve remains available for structural preparation, never publication.
+    pub fn resolve_current(
+        &self,
+        document: &Document,
+        p: &EvaluatedParameters,
+        revision: u64,
+        snapshots: &BTreeMap<EntityId, TopologySnapshot>,
+    ) -> Result<ResolvedConnectionReceiver, DocumentError> {
+        let mut resolved = self.resolve(p)?;
+        if let Some(face) = &self.entry_reference {
+            let (axis_source, axis_face) = super::read_screw_connection_axis(document, self.axis)?;
+            let axis = axis_source.resolve(document, p, &axis_face, revision, snapshots)?;
+            let source = super::ScrewConnectionAxisDefinition::new(
+                self.input.clone(),
+                self.occurrence.clone(),
+                face.intent.id,
+            );
+            let plane = source.resolve(document, p, face, revision, snapshots)?;
+            let normal = plane.vector([0., 0., 1.]);
+            let direction = axis.vector([0., 0., 1.]);
+            let denominator = normal
+                .iter()
+                .zip(direction)
+                .map(|(a, b)| a * b)
+                .sum::<f64>();
+            if denominator.abs() < 1. - 1e-9 {
+                return Err(invalid(
+                    "The receiving entry face must be perpendicular to the fastening axis",
+                ));
+            }
+            let station = (0..3)
+                .map(|i| (plane.translation_mm[i] - axis.translation_mm[i]) * normal[i])
+                .sum::<f64>()
+                / denominator;
+            if !station.is_finite() || station.abs() > 1e9 {
+                return Err(invalid(
+                    "The captured receiving entry is outside model bounds",
+                ));
+            }
+            resolved.station_mm = station;
+        }
+        Ok(resolved)
+    }
     pub fn local_pose(
         &self,
         document: &Document,
@@ -262,7 +324,12 @@ impl ConnectionReceiverDefinition {
             snapshots,
         )?;
         RigidPose {
-            translation_mm: [0., 0., self.resolve(p)?.station_mm],
+            translation_mm: [
+                0.,
+                0.,
+                self.resolve_current(document, p, revision, snapshots)?
+                    .station_mm,
+            ],
             ..Default::default()
         }
         .then(world)?

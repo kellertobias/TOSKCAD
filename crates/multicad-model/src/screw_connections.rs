@@ -406,7 +406,10 @@ pub(crate) fn validate(
         let mut tapped = vec![];
         for receiver in &source.receivers {
             checkpoint(interrupt)?;
-            let resolved = receiver.source.resolve(p).map_err(|e| error(Some(id), e))?;
+            let resolved = receiver
+                .source
+                .resolve_current(document, p, revision, &topologies)
+                .map_err(|e| error(Some(id), e))?;
             let predecessor = model.solid(receiver.source.input.producer).ok_or_else(|| {
                 error(
                     Some(id),

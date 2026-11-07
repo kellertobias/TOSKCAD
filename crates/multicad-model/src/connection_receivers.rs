@@ -157,7 +157,12 @@ pub(crate) fn build(
 ) -> Result<Solid, ModelError> {
     let policy = inputs.policy;
     let resolved = source
-        .resolve(inputs.parameters)
+        .resolve_current(
+            inputs.document,
+            inputs.parameters,
+            inputs.revision,
+            inputs.snapshots,
+        )
         .map_err(|e| error(Some(id), e))?;
     let pose = source
         .local_pose(

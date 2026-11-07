@@ -675,6 +675,7 @@ fn connection_request(f: &Fixture) -> ScrewConnectionRequest {
             feature: EntityId::new(),
             name: "Clearance".into(),
             source: ConnectionReceiverDefinition {
+                entry_reference: None,
                 output: BodyOutput { body: f.body.body },
                 input: BodyInput {
                     body: f.body.body,
@@ -843,6 +844,44 @@ fn captured_grip_uses_exact_planar_predecessor_and_rejects_conflicting_authority
         links
             .iter()
             .any(|l| l.role == "connection/end/screw_axis/face" && l.geometry.is_some())
+    );
+    let mut entry = request.receivers[0].source.clone();
+    entry.entry_reference = Some(
+        request
+            .parameters
+            .end_reference
+            .as_ref()
+            .unwrap()
+            .face
+            .clone(),
+    );
+    let snapshots = BTreeMap::from([(f.body.feature, topology.clone())]);
+    // Retained axis identity is resolved from the prepared canonical source.
+    let prepared_session = Session::new(prepared.prepared.document().clone()).unwrap();
+    let station = entry
+        .resolve_current(
+            prepared_session.document(),
+            prepared_session.parameters(),
+            f.session.revision(),
+            &snapshots,
+        )
+        .unwrap()
+        .station_mm;
+    assert!((station - 18.).abs() < 1e-9);
+    assert!(
+        entry
+            .inputs()
+            .unwrap()
+            .iter()
+            .any(|l| l.role == "connection_receiver/entry" && l.geometry.is_some())
+    );
+    entry.station = length(1.);
+    assert!(
+        entry
+            .definition()
+            .unwrap_err()
+            .to_string()
+            .contains("zero manual station")
     );
     request.parameters.grip = length(10.);
     assert!(

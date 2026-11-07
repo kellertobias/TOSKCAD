@@ -129,6 +129,7 @@ pub fn fixture() -> (Document, ScrewConnectionRequest, EntityId) {
             feature: EntityId::new(),
             name: "Owned clearance hole".into(),
             source: ConnectionReceiverDefinition {
+                entry_reference: None,
                 output: BodyOutput { body: stock.body },
                 input: BodyInput {
                     body: stock.body,

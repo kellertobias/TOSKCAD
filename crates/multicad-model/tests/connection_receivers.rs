@@ -92,6 +92,7 @@ fn fixture() -> (Session, ConnectionReceiverRequest) {
             feature: EntityId::new(),
             name: "Receiving cut".into(),
             source: ConnectionReceiverDefinition {
+                entry_reference: None,
                 output: BodyOutput { body: stock.body },
                 input: BodyInput {
                     body: stock.body,

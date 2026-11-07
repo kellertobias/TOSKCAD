@@ -96,6 +96,7 @@ fn fixture() -> (Session, ConnectionReceiverRequest, EntityId) {
     })
     .unwrap();
     let source = ConnectionReceiverDefinition {
+        entry_reference: None,
         output: BodyOutput { body: p.body },
         input: BodyInput {
             body: p.body,

@@ -88,7 +88,12 @@ fn receivers<'a>(input: &Inputs<'a>) -> Result<Vec<Receiver<'a>>, ModelError> {
         checkpoint(input.interrupt)?;
         let settings = request
             .source
-            .resolve(input.parameters)
+            .resolve_current(
+                input.document,
+                input.parameters,
+                input.revision,
+                input.topologies,
+            )
             .map_err(|e| error(Some(input.source.connection), e))?;
         if settings.thread.is_some() {
             return Err(error(

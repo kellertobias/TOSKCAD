@@ -156,6 +156,7 @@ pub fn fixture(mode: ScrewConnectionMode) -> (Document, ScrewConnectionRequest) 
             feature: EntityId::new(),
             name: "Finite clamp clearance".into(),
             source: ConnectionReceiverDefinition {
+                entry_reference: None,
                 output: BodyOutput { body: c.body },
                 input: BodyInput {
                     body: c.body,
@@ -180,6 +181,7 @@ pub fn fixture(mode: ScrewConnectionMode) -> (Document, ScrewConnectionRequest) 
         feature: EntityId::new(),
         name: "Independent engineering pilot".into(),
         source: ConnectionReceiverDefinition {
+            entry_reference: None,
             output: BodyOutput { body: wood.body },
             input: BodyInput {
                 body: wood.body,

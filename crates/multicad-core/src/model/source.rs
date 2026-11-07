@@ -951,6 +951,12 @@ pub fn required_capabilities(document: &Document) -> BTreeSet<String> {
             _ => None,
         })
         .collect();
+    if saved_feature_matches(document, |type_id, data| {
+        type_id == super::CONNECTION_RECEIVER_TYPE
+            && data.get("entry_reference").is_some_and(|v| !v.is_null())
+    }) {
+        capabilities.insert(super::CONNECTION_RECEIVER_ENTRY_CAPABILITY.into());
+    }
     fn has_face_grip(value: &serde_json::Value) -> bool {
         match value {
             serde_json::Value::Object(fields) => {

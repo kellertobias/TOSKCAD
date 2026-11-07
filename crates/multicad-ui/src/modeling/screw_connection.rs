@@ -432,6 +432,7 @@ impl ScrewConnectionPanel {
             feature: EntityId::new(),
             name: format!("Connection receiver {}", self.receivers.len() + 1),
             source: ConnectionReceiverDefinition {
+                entry_reference: None,
                 output: BodyOutput { body: input.body },
                 input,
                 occurrence,
