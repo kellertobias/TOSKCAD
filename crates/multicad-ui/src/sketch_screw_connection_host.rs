@@ -77,8 +77,42 @@ impl SketchEditor {
         session: &Session,
         resources: &ProjectResources,
         feed: &SceneFeed,
+        presented: Option<&Scene>,
         rect: Rect,
     ) {
+        if self.model.screw_connection_picker().is_none() {
+            if self.model.connection_view_options().is_none() {
+                return;
+            }
+            self.solid.highlight_reference(None);
+            if let Some(presented) = presented.filter(|scene| {
+                self.model
+                    .connection_display_current(session, resources, scene)
+            }) {
+                let hit = response
+                    .hover_pos()
+                    .and_then(|pointer| self.camera.ray(pointer, rect))
+                    .and_then(|ray| presented.pick_display_leaf(ray, self.connection_section))
+                    .filter(|hit| self.model.connection_leaf_selectable(&hit.path));
+                if response.clicked()
+                    && let Some(hit) = &hit
+                {
+                    self.model
+                        .focus_connection_leaf(session, resources, presented, &hit.path);
+                }
+                let selected = hit.map(|hit| hit.display_instance).or_else(|| {
+                    presented
+                        .display_leaf_paths()
+                        .iter()
+                        .find_map(|(id, path)| {
+                            self.model.connection_leaf_focused(path).then_some(*id)
+                        })
+                });
+                self.solid
+                    .highlight_reference(selected.map(Selection::Part));
+            }
+            return;
+        }
         let Ok(Some(view)) = self.connection_pick_scene(session, feed) else {
             return;
         };
@@ -229,7 +263,6 @@ impl SketchEditor {
         }
         if !explode {
             self.fit_requested |= self.connection_exploded_axis.take().is_some();
-            return Ok(scene.clone());
         }
         let roles = self.model.connection_hardware_roles();
         let Some(receipt) = scene.assembly_evaluation() else {
@@ -238,14 +271,21 @@ impl SketchEditor {
         let exploded_stations = exploded_role_stations(&roles);
         let mut offsets = BTreeMap::new();
         for leaf in &receipt.leaves {
-            if let Some((id, _)) = roles
-                .iter()
-                .find(|(id, _)| leaf.path.root == *id || leaf.path.members.contains(id))
-            {
+            if let Some((id, _)) = roles.iter().find(|(id, _)| leaf.path.root == *id) {
                 offsets.insert(
                     leaf.path.clone(),
-                    pose.vector([0., 0., exploded_stations[id]]),
+                    if explode {
+                        pose.vector([0., 0., exploded_stations[id]])
+                    } else {
+                        [0.; 3]
+                    },
                 );
+            }
+        }
+        let receiving = self.model.connection_receiving_paths();
+        for leaf in &receipt.leaves {
+            if receiving.iter().any(|path| path == &leaf.path) {
+                offsets.entry(leaf.path.clone()).or_insert([0.; 3]);
             }
         }
         if offsets.is_empty() {
@@ -261,7 +301,7 @@ impl SketchEditor {
             }
         }
         let presented = scene.presentation_leaf_offsets(&offsets, &BTreeMap::new())?;
-        if self.connection_exploded_axis != Some(axis.id) {
+        if explode && self.connection_exploded_axis != Some(axis.id) {
             self.connection_exploded_axis = Some(axis.id);
             self.fit_requested = true;
         }

@@ -162,10 +162,14 @@ impl ScrewConnectionPanel {
             .iter()
             .map(|hardware| hardware.role)
             .collect::<Vec<_>>();
+        let mut cards = vec![];
         for (index, hardware) in self.hardware.iter_mut().enumerate() {
-            ui.push_id(hardware.role_id, |ui| {
+            let card = ui.push_id(hardware.role_id, |ui| {
                 ui.group(|ui| {
                     ui.strong(format!("{} · {}", index + 1, role_name(hardware.role)));
+                    if self.focus == Some(ConnectionPanelFocus::Hardware(hardware.role_id)) {
+                        ui.small("Selected in preview");
+                    }
                     ui.horizontal_wrapped(|ui| {
                         if ui.button("Choose from Library").clicked() {
                             self.library.begin(hardware.role_id);
@@ -250,6 +254,13 @@ impl ScrewConnectionPanel {
                     }
                 })
             });
+            cards.push((
+                card.inner.response,
+                ConnectionPanelFocus::Hardware(hardware.role_id),
+            ));
+        }
+        for (response, target) in cards {
+            self.focus_card(ui, &response, target);
         }
         if let Some((index, kind)) = action {
             match kind {
@@ -434,8 +445,9 @@ impl ScrewConnectionPanel {
             *changed = true;
         }
         let mut remove = None;
+        let mut cards = vec![];
         for (index, receiver) in self.receivers.iter_mut().enumerate() {
-            ui.push_id(receiver.feature, |ui| {
+            let card = ui.push_id(receiver.feature, |ui| {
                 ui.group(|ui| {
                     ui.strong(format!(
                         "{} · {}",
@@ -444,6 +456,9 @@ impl ScrewConnectionPanel {
                             .get(receiver.source.input.body)
                             .map_or("Receiving Part", |entity| entity.name.as_str())
                     ));
+                    if self.focus == Some(ConnectionPanelFocus::Receiver(receiver.feature)) {
+                        ui.small("Selected in preview");
+                    }
                     ui.small("Uses the selected receiving geometry");
                     if ui.button("Remove receiver").clicked() {
                         remove = Some(index);
@@ -605,6 +620,13 @@ impl ScrewConnectionPanel {
                     }
                 })
             });
+            cards.push((
+                card.inner.response,
+                ConnectionPanelFocus::Receiver(receiver.feature),
+            ));
+        }
+        for (response, target) in cards {
+            self.focus_card(ui, &response, target);
         }
         if let Some(index) = remove {
             let receiver = self.receivers.remove(index);

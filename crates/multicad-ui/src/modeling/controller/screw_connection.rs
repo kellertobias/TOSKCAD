@@ -87,6 +87,53 @@ impl ModelToolController {
         matches!(self.form, Some(ModelForm::ScrewConnection(_)))
             && self.connection_entries.is_empty()
     }
+    /// Display focus never edits a draft or replaces its checked candidate.
+    pub(crate) fn connection_display_current(
+        &self,
+        session: &Session,
+        resources: &ProjectResources,
+        presented: &Scene,
+    ) -> bool {
+        self.screw_connection_picker().is_none()
+            && self.preview_visible(session, resources)
+            && self
+                .candidate
+                .as_ref()
+                .and_then(|candidate| candidate.scene.as_ref())
+                .is_some_and(|source| presented.display_origin_matches(source))
+    }
+    pub(crate) fn focus_connection_leaf(
+        &mut self,
+        session: &Session,
+        resources: &ProjectResources,
+        presented: &Scene,
+        path: &model::OccurrencePath,
+    ) -> bool {
+        if !self.connection_display_current(session, resources, presented)
+            || !presented
+                .display_leaf_paths()
+                .values()
+                .any(|leaf| leaf == path)
+        {
+            return false;
+        }
+        let Some(ModelForm::ScrewConnection(panel)) = &mut self.form else {
+            return false;
+        };
+        panel.focus_path(path)
+    }
+    pub(crate) fn connection_leaf_selectable(&self, path: &model::OccurrencePath) -> bool {
+        matches!(&self.form, Some(ModelForm::ScrewConnection(panel)) if panel.owns_display_path(path))
+    }
+    pub(crate) fn connection_leaf_focused(&self, path: &model::OccurrencePath) -> bool {
+        matches!(&self.form, Some(ModelForm::ScrewConnection(panel)) if panel.focused_path(path))
+    }
+    pub(crate) fn connection_receiving_paths(&self) -> Vec<model::OccurrencePath> {
+        match &self.form {
+            Some(ModelForm::ScrewConnection(panel)) => panel.receiving_paths(),
+            _ => vec![],
+        }
+    }
     pub(crate) fn connection_view_options(&self) -> Option<(bool, bool)> {
         match self.form.as_ref()? {
             ModelForm::ScrewConnection(panel) => Some((panel.section, panel.explode)),
@@ -112,3 +159,7 @@ impl ModelToolController {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "screw_connection_selection_tests.rs"]
+mod selection_tests;

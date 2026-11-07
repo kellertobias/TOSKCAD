@@ -4084,7 +4084,14 @@ impl SketchEditor {
         {
             self.assembly_viewport(&response, session, context.resources, context.feed, rect);
             self.transfer_viewport(&response, session, context.resources, rect);
-            self.connection_viewport(&response, session, context.resources, context.feed, rect);
+            self.connection_viewport(
+                &response,
+                session,
+                context.resources,
+                context.feed,
+                scene.as_deref(),
+                rect,
+            );
             self.paint_connection_axis(&painter, rect);
             self.advanced_viewport(
                 ui,

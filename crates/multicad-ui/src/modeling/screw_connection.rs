@@ -113,6 +113,11 @@ struct ModeDraft {
     overrides: BTreeMap<EntityId, crate::symbols::SymbolOverrides>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ConnectionPanelFocus {
+    Hardware(EntityId),
+    Receiver(EntityId),
+}
 pub(super) struct ScrewConnectionPanel {
     stamp: FormStamp,
     connection: EntityId,
@@ -139,6 +144,8 @@ pub(super) struct ScrewConnectionPanel {
     pub explode: bool,
     review: Option<ScrewConnectionCheck>,
     entry_review: BTreeMap<EntityId, f64>,
+    focus: Option<ConnectionPanelFocus>,
+    scroll_focus: bool,
 }
 
 fn modes() -> [(ScrewConnectionMode, &'static str); 5] {
@@ -282,6 +289,8 @@ impl ScrewConnectionPanel {
             explode: false,
             review: None,
             entry_review: BTreeMap::new(),
+            focus: None,
+            scroll_focus: false,
         })
     }
     pub fn existing(document: &Document, connection: EntityId) -> Result<Self, String> {
@@ -385,6 +394,61 @@ impl ScrewConnectionPanel {
     }
     pub fn connection(&self) -> EntityId {
         self.connection
+    }
+    fn target_for_path(&self, path: &OccurrencePath) -> Option<ConnectionPanelFocus> {
+        self.hardware
+            .iter()
+            .find(|row| row.instance == path.root)
+            .map(|row| ConnectionPanelFocus::Hardware(row.role_id))
+            .or_else(|| {
+                self.receivers
+                    .iter()
+                    .find(|row| &row.source.occurrence == path)
+                    .map(|row| ConnectionPanelFocus::Receiver(row.feature))
+            })
+    }
+    pub(super) fn owns_display_path(&self, path: &OccurrencePath) -> bool {
+        self.target_for_path(path).is_some()
+    }
+    pub(super) fn focus_path(&mut self, path: &OccurrencePath) -> bool {
+        if self.pick.is_some() {
+            return false;
+        }
+        let Some(target) = self.target_for_path(path) else {
+            return false;
+        };
+        self.focus = Some(target);
+        self.scroll_focus = true;
+        true
+    }
+    pub(super) fn receiving_paths(&self) -> Vec<OccurrencePath> {
+        self.receivers
+            .iter()
+            .map(|row| row.source.occurrence.clone())
+            .collect()
+    }
+    pub(super) fn focused_path(&self, path: &OccurrencePath) -> bool {
+        self.focus.is_some() && self.target_for_path(path) == self.focus
+    }
+    fn focus_card(
+        &mut self,
+        ui: &egui::Ui,
+        response: &egui::Response,
+        target: ConnectionPanelFocus,
+    ) {
+        if self.focus == Some(target) {
+            ui.painter().rect_stroke(
+                response.rect,
+                4.,
+                ui.visuals().selection.stroke,
+                egui::StrokeKind::Inside,
+            );
+            if self.scroll_focus {
+                response.scroll_to_me(Some(egui::Align::TOP));
+                response.request_focus();
+                self.scroll_focus = false;
+            }
+        }
     }
     pub fn stamp(&self) -> FormStamp {
         self.stamp
@@ -773,3 +837,6 @@ impl ScrewConnectionPanel {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod selection_tests;

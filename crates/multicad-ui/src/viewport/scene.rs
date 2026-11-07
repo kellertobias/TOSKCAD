@@ -550,6 +550,8 @@ pub struct Scene {
     envelope_boxes: Arc<BTreeMap<EntityId, [Point; 8]>>,
     guide_outlines: Arc<BTreeMap<EntityId, Vec<[Point; 4]>>>,
     fdm_reviews: Option<Arc<fdm_review::AidReviews>>,
+    display_leaf_paths: BTreeMap<EntityId, multicad_core::model::OccurrencePath>,
+    display_origin: Option<(SceneStamp, multicad_core::project_file::ContentHash)>,
 }
 struct NativeBounds {
     source: multicad_core::project_file::ContentHash,
@@ -569,6 +571,12 @@ pub struct Hit {
     /// None means body selection only; an unnamed face cannot become source intent.
     pub intent: Option<GeometryIntent>,
     pub stamp: SceneStamp,
+}
+/// Display-only identity receipt. It cannot capture a face intent or authorize
+/// a modeling operation, including when its source view is exploded.
+pub(crate) struct DisplayLeafHit {
+    pub display_instance: EntityId,
+    pub path: multicad_core::model::OccurrencePath,
 }
 impl Scene {
     pub fn set_architecture_plan(
@@ -657,6 +665,8 @@ impl Scene {
             envelope_boxes: Arc::new(BTreeMap::new()),
             guide_outlines: Arc::new(BTreeMap::new()),
             fdm_reviews: None,
+            display_leaf_paths: BTreeMap::new(),
+            display_origin: None,
         })
     }
     /// Attach immutable results from this exact source evaluation. Structural
@@ -1123,6 +1133,7 @@ impl Scene {
             .filter(|instance| !roots.contains(&instance.id))
             .cloned()
             .collect();
+        let mut display_leaf_paths = BTreeMap::new();
         for (path, delta) in offsets {
             let Some(root) = self
                 .instances
@@ -1140,8 +1151,16 @@ impl Scene {
                 }
             }
             let transform = Transform::from_rigid_pose(pose)?;
+            // Stable display-only IDs keep a selected highlight attached across
+            // frames. The exact canonical path comes from the native receipt,
+            // never from this derived ID or an unsaved document lookup.
+            let mut identity = b"multicad.presentation.leaf/1\0".to_vec();
+            identity.extend(serde_json::to_vec(path).map_err(|e| e.to_string())?);
+            let digest = multicad_core::project_file::ContentHash::of(&identity).to_string();
+            let display_id = EntityId::parse(&digest[..32]).map_err(|e| e.to_string())?;
+            display_leaf_paths.insert(display_id, path.clone());
             instances.push(Instance {
-                id: EntityId::new(),
+                id: display_id,
                 geometry: leaf.producer,
                 transform,
                 color: colors.get(&leaf.component).copied().unwrap_or(root.color),
@@ -1152,10 +1171,61 @@ impl Scene {
             self.geometries.values().cloned().collect(),
             instances,
         )?;
+        view.display_leaf_paths = display_leaf_paths;
+        view.display_origin = self
+            .model_evaluation()
+            .map(|info| (self.stamp, info.source_hash));
         view.scope = SceneScope::Presentation;
         view.reference_instances = self.reference_instances.clone();
         view.reference_aliases = self.reference_aliases.clone();
         Ok(Arc::new(view))
+    }
+    /// Presentation interaction only. Semantic pickers continue to reject this
+    /// scene; neither topology keys nor GeometryIntent escape this path.
+    pub(crate) fn pick_display_leaf(
+        &self,
+        ray: Ray,
+        section: Option<super::SectionPlane>,
+    ) -> Option<DisplayLeafHit> {
+        if self.scope != SceneScope::Presentation || self.display_origin.is_none() {
+            return None;
+        }
+        let (minimum, mut limit) = if let Some(section) = section {
+            section.ray_interval(ray)?
+        } else {
+            (0., f64::INFINITY)
+        };
+        let mut closest = None;
+        // Rank every actually drawn instance, so an unrelated foreground part
+        // occludes a connection target instead of allowing a click through it.
+        for instance in self.instances.iter() {
+            let geometry = &self.geometries[&instance.geometry];
+            if let Some((distance, _)) =
+                geometry.hit(instance.transform.inverse_ray(ray), minimum, limit)
+            {
+                limit = distance;
+                closest = Some(instance.id);
+            }
+        }
+        let display_instance = closest?;
+        Some(DisplayLeafHit {
+            path: self.display_leaf_paths.get(&display_instance)?.clone(),
+            display_instance,
+        })
+    }
+    pub(crate) fn display_origin_matches(&self, source: &Scene) -> bool {
+        self.scope == SceneScope::Presentation
+            && self.display_origin.is_some_and(|(stamp, hash)| {
+                stamp == source.stamp
+                    && source
+                        .model_evaluation()
+                        .is_some_and(|info| info.source_hash == hash)
+            })
+    }
+    pub(crate) fn display_leaf_paths(
+        &self,
+    ) -> &BTreeMap<EntityId, multicad_core::model::OccurrencePath> {
+        &self.display_leaf_paths
     }
     /// All evaluated occurrences remain available for semantic references even
     /// when a source visibility view omits them from drawing and picking.
