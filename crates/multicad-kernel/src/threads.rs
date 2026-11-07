@@ -194,7 +194,7 @@ impl HelicalThread {
     }
 }
 impl RootRoundedHelicalThread {
-    fn checked(self, policy: GeometryPolicy) -> Result<ffi::ThreadData, GeometryError> {
+    pub(crate) fn checked(self, policy: GeometryPolicy) -> Result<ffi::ThreadData, GeometryError> {
         let p = self.profile;
         let mut data = p.checked(policy)?;
         policy.length(self.root_radius_mm)?;
@@ -366,8 +366,20 @@ impl Solid {
                 "Thread feature identity must not be nil",
             ));
         }
-        let native = ffi::helical_thread(&spec.checked(policy)?)
+        let data = spec.checked(policy)?;
+        let cached = ffi::cached_helical_thread(&data)
             .map_err(|error| failure(GeometryErrorKind::Native, error.to_string()))?;
+        let (native, from_prototype) = if !cached.is_null() {
+            (cached, false)
+        } else if let Some(native) = crate::thread_prototypes::load_root_rounded(&data, policy)? {
+            (native, true)
+        } else {
+            (
+                ffi::helical_thread_after_miss(&data)
+                    .map_err(|error| failure(GeometryErrorKind::Native, error.to_string()))?,
+                false,
+            )
+        };
         let mut solid = Self::adopt(native, policy, "root-rounded thread")?;
         if solid.solid_count()? != 1 {
             return Err(failure(
@@ -376,7 +388,36 @@ impl Solid {
             ));
         }
         solid.name_thread(feature, 1)?;
-        let _ = ffi::remember_validated_thread(&solid.native.0);
+        if from_prototype {
+            let _ = ffi::remember_thread_prototype(&solid.native.0, &data);
+        } else {
+            let _ = ffi::remember_validated_thread(&solid.native.0);
+        }
+        Ok(solid)
+    }
+    /// Developer derivation path preserving every native root/physical guard
+    /// while bypassing compiled assets and owner-thread factory retention.
+    pub fn root_rounded_helical_thread_named_fresh(
+        spec: RootRoundedHelicalThread,
+        feature: EntityId,
+        policy: GeometryPolicy,
+    ) -> Result<Self, GeometryError> {
+        if feature.is_nil() {
+            return Err(failure(
+                GeometryErrorKind::Input,
+                "Thread feature identity must not be nil",
+            ));
+        }
+        let native = ffi::helical_thread_fresh(&spec.checked(policy)?)
+            .map_err(|error| failure(GeometryErrorKind::Native, error.to_string()))?;
+        let mut solid = Self::adopt(native, policy, "fresh root-rounded thread")?;
+        if solid.solid_count()? != 1 {
+            return Err(failure(
+                GeometryErrorKind::InvalidResult,
+                "Thread must remain one connected solid",
+            ));
+        }
+        solid.name_thread(feature, 1)?;
         Ok(solid)
     }
     pub fn axial_flat_helical_thread_named(

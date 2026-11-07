@@ -1,6 +1,9 @@
 //! Application-owned derived native geometry; never an authored project payload.
 //! A mismatching or damaged registration is an ordinary construction-cache miss.
-use crate::{GeometryError, GeometryErrorKind, GeometryPolicy, HelicalThread, Solid, ffi};
+use crate::{
+    GeometryError, GeometryErrorKind, GeometryPolicy, HelicalThread, RootRoundedHelicalThread,
+    Solid, ffi,
+};
 use multicad_core::{document::EntityId, project_file::ContentHash};
 
 struct Registration {
@@ -13,6 +16,75 @@ struct Registration {
     receipt: Receipt<'static>,
 }
 include!("../assets/thread-prototypes/metric.rs");
+include!("../assets/thread-prototypes/fitted_flat.rs");
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RootKind {
+    SymmetricRounded,
+}
+struct RootRegistration {
+    kind: RootKind,
+    inputs: [u64; 14],
+    starts: u32,
+    left: bool,
+    axial_flat: bool,
+    policy: [u64; 4],
+    source: &'static str,
+    brep: &'static str,
+    receipt: Receipt<'static>,
+}
+include!("../assets/thread-prototypes/root_rounded.rs");
+fn root_inputs(data: &ffi::ThreadData) -> [u64; 14] {
+    let base = input_bits(data);
+    std::array::from_fn(|i| {
+        if i < 11 {
+            base[i]
+        } else {
+            [
+                data.crest_limit,
+                data.root_rounding,
+                data.knuckle_root_radius,
+            ][i - 11]
+                .to_bits()
+        }
+    })
+}
+fn symmetric_root(data: &ffi::ThreadData) -> bool {
+    !data.axial_flat
+        && data.crest_limit.to_bits() == 0
+        && data.knuckle_root_radius.to_bits() == 0
+        && data.rounding.to_bits() == 0
+        && data.root_rounding.is_finite()
+        && data.root_rounding > 0.
+        && data.taper.to_bits() == 0
+        && data.starts == 1
+        && data.lower_slope.to_bits() == 30_f64.to_radians().tan().to_bits()
+        && data.upper_slope.to_bits() == 30_f64.to_radians().tan().to_bits()
+}
+fn root_matches(
+    entry: &RootRegistration,
+    data: &ffi::ThreadData,
+    policy: GeometryPolicy,
+    source: &str,
+) -> bool {
+    symmetric_root(data)
+        && entry.kind == RootKind::SymmetricRounded
+        && entry.inputs == root_inputs(data)
+        && entry.starts == data.starts
+        && entry.left == data.left
+        && entry.axial_flat == data.axial_flat
+        && entry.policy == policy_bits(policy)
+        && entry.source == source
+}
+fn root_entry(data: &ffi::ThreadData, policy: GeometryPolicy) -> Option<&'static RootRegistration> {
+    if !symmetric_root(data) {
+        return None;
+    }
+    let source = source_fingerprint();
+    ROOT_REGISTRY
+        .iter()
+        .find(|r| root_matches(r, data, policy, &source))
+}
+
 fn registered_entry(
     data: &ffi::ThreadData,
     policy: GeometryPolicy,
@@ -26,13 +98,16 @@ fn registered_entry(
     {
         return None;
     }
-    REGISTRY.iter().find(|entry| {
-        entry.inputs == input_bits(data)
-            && entry.starts == data.starts
-            && entry.left == data.left
-            && entry.policy == policy_bits(policy)
-            && entry.source == source_fingerprint()
-    })
+    REGISTRY
+        .iter()
+        .chain(FITTED_FLAT_REGISTRY.iter())
+        .find(|entry| {
+            entry.inputs == input_bits(data)
+                && entry.starts == data.starts
+                && entry.left == data.left
+                && entry.policy == policy_bits(policy)
+                && entry.source == source_fingerprint()
+        })
 }
 #[cfg(test)]
 mod registered {
@@ -209,6 +284,39 @@ pub(crate) fn load(
         .ok()
         .map(|solid| solid.native.0))
 }
+/// Typed root-rounded lookup. It cannot consume flat, asymmetric or stock-clipped receipts.
+pub(crate) fn load_root_rounded(
+    data: &ffi::ThreadData,
+    policy: GeometryPolicy,
+) -> Result<Option<cxx::UniquePtr<ffi::Shape>>, GeometryError> {
+    let Some(entry) = root_entry(data, policy) else {
+        return Ok(None);
+    };
+    Ok(restore(entry.brep, &entry.receipt, policy)
+        .ok()
+        .map(|solid| solid.native.0))
+}
+/// Exact symmetric root profile, all native inputs and policy identity. The
+/// distinct kind prefix preserves every existing flat key and filename.
+pub fn root_rounded_key(
+    spec: RootRoundedHelicalThread,
+    policy: GeometryPolicy,
+) -> Result<String, GeometryError> {
+    let data = spec.checked(policy)?;
+    if !symmetric_root(&data) {
+        return Err(failure(
+            "Only symmetric 30/30 root-rounded prototypes are supported",
+        ));
+    }
+    let mut bytes = b"multicad.thread-prototype/symmetric-root-rounded/1".to_vec();
+    for bits in root_inputs(&data).into_iter().chain(policy_bits(policy)) {
+        bytes.extend_from_slice(&bits.to_le_bytes());
+    }
+    bytes.extend_from_slice(&data.starts.to_le_bytes());
+    bytes.push(u8::from(data.left));
+    bytes.push(u8::from(data.axial_flat));
+    Ok(ContentHash::of(&bytes).to_string())
+}
 /// Exact native geometry and policy identity used to deduplicate developer assets.
 /// This is a derived cache key, never a sourced hardware designation.
 pub fn key(spec: HelicalThread, policy: GeometryPolicy) -> Result<String, GeometryError> {
@@ -229,6 +337,8 @@ pub struct GeneratedPrototype {
     pub load_seconds: f64,
     pub volume_mm3: f64,
     pub face_count: usize,
+    pub raw_seed_count: usize,
+    pub seed_count: usize,
 }
 /// Generate and independently roundtrip one canonical caller-supplied recipe.
 /// The fresh constructor bypasses both the factory cache and compiled assets.
@@ -237,9 +347,39 @@ pub fn generate(
     feature: EntityId,
     policy: GeometryPolicy,
 ) -> Result<GeneratedPrototype, GeometryError> {
-    let data = spec.checked(policy)?;
+    generate_impl(GenerationSpec::Flat(spec), feature, policy)
+}
+/// Force-fresh derivation for the distinct symmetric circular-root profile.
+/// Asymmetric buttress roots and other rounded profiles remain ordinary misses.
+pub fn generate_root_rounded(
+    spec: RootRoundedHelicalThread,
+    feature: EntityId,
+    policy: GeometryPolicy,
+) -> Result<GeneratedPrototype, GeometryError> {
+    root_rounded_key(spec, policy)?;
+    generate_impl(GenerationSpec::Root(spec), feature, policy)
+}
+#[derive(Clone, Copy)]
+enum GenerationSpec {
+    Flat(HelicalThread),
+    Root(RootRoundedHelicalThread),
+}
+fn generate_impl(
+    spec: GenerationSpec,
+    feature: EntityId,
+    policy: GeometryPolicy,
+) -> Result<GeneratedPrototype, GeometryError> {
+    let data = match spec {
+        GenerationSpec::Flat(s) => s.checked(policy)?,
+        GenerationSpec::Root(s) => s.checked(policy)?,
+    };
     let started = std::time::Instant::now();
-    let fresh = Solid::helical_thread_named_fresh(spec, feature, policy)?;
+    let fresh = match spec {
+        GenerationSpec::Flat(s) => Solid::helical_thread_named_fresh(s, feature, policy)?,
+        GenerationSpec::Root(s) => {
+            Solid::root_rounded_helical_thread_named_fresh(s, feature, policy)?
+        }
+    };
     let fresh_seconds = started.elapsed().as_secs_f64();
     let brep = fresh.to_brep()?;
     let sha = ContentHash::of(brep.as_bytes()).to_string();
@@ -258,11 +398,26 @@ pub fn generate(
             face.area_mm2,
         ];
     }
-    let seeds: Vec<_> = ffi::seeds(&fresh.native.0)
+    let mut seeds: Vec<_> = ffi::seeds(&fresh.native.0)
         .map_err(|e| failure(e.to_string()))?
         .into_iter()
         .map(|s| (s.face, s.source_index, s.role))
         .collect();
+    let raw_seed_count = seeds.len();
+    if matches!(spec, GenerationSpec::Root(_)) {
+        // Native Boolean history can repeat the same semantic association.
+        // Keep every distinct role and its original order; strict restoration
+        // still rejects duplicate registered receipts and incomplete ancestry.
+        let mut unique = std::collections::BTreeSet::new();
+        seeds.retain(|seed| unique.insert(*seed));
+        #[cfg(test)]
+        eprintln!(
+            "Root prototype ancestry: raw={} distinct={} faces={}",
+            raw_seed_count,
+            seeds.len(),
+            faces.len()
+        );
+    }
     let receipt = Receipt {
         sha: &sha,
         bounds: [bounds.min, bounds.max],
@@ -272,7 +427,7 @@ pub fn generate(
     };
     let started = std::time::Instant::now();
     let mut loaded = restore(&brep, &receipt, policy)?;
-    loaded.name_thread(feature, spec.starts)?;
+    loaded.name_thread(feature, data.starts)?;
     // Compare complete current native topology and every owner-bound face role.
     let fresh_topology = fresh.topology_snapshot(feature, 0)?;
     let loaded_topology = loaded.topology_snapshot(feature, 0)?;
@@ -288,19 +443,35 @@ pub fn generate(
         ));
     }
     let load_seconds = started.elapsed().as_secs_f64();
-    let registration = format!(
-        "Registration {{ inputs: {:?}, starts: {}, left: {}, policy: {:?}, source: {:?}, brep: include_str!(\"__BREP_FILE__\"), receipt: Receipt {{ sha: {:?}, bounds: {:?}, volume: {:?}, seeds: &{:?}, faces: &{:?} }} }}",
-        input_bits(&data),
-        data.starts,
-        data.left,
-        policy_bits(policy),
-        source_fingerprint(),
-        sha,
-        [bounds.min, bounds.max],
-        volume,
-        seeds,
-        faces
-    );
+    let registration = match spec {
+        GenerationSpec::Flat(_) => format!(
+            "Registration {{ inputs: {:?}, starts: {}, left: {}, policy: {:?}, source: {:?}, brep: include_str!(\"__BREP_FILE__\"), receipt: Receipt {{ sha: {:?}, bounds: {:?}, volume: {:?}, seeds: &{:?}, faces: &{:?} }} }}",
+            input_bits(&data),
+            data.starts,
+            data.left,
+            policy_bits(policy),
+            source_fingerprint(),
+            sha,
+            [bounds.min, bounds.max],
+            volume,
+            seeds,
+            faces
+        ),
+        GenerationSpec::Root(_) => format!(
+            "RootRegistration {{ kind: RootKind::SymmetricRounded, inputs: {:?}, starts: {}, left: {}, axial_flat: {}, policy: {:?}, source: {:?}, brep: include_str!(\"__BREP_FILE__\"), receipt: Receipt {{ sha: {:?}, bounds: {:?}, volume: {:?}, seeds: &{:?}, faces: &{:?} }} }}",
+            root_inputs(&data),
+            data.starts,
+            data.left,
+            data.axial_flat,
+            policy_bits(policy),
+            source_fingerprint(),
+            sha,
+            [bounds.min, bounds.max],
+            volume,
+            seeds,
+            faces
+        ),
+    };
     Ok(GeneratedPrototype {
         brep,
         registration,
@@ -308,6 +479,8 @@ pub fn generate(
         load_seconds,
         volume_mm3: volume,
         face_count: faces.len(),
+        raw_seed_count,
+        seed_count: seeds.len(),
     })
 }
 
@@ -610,3 +783,6 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod fitted_tests;
