@@ -910,13 +910,27 @@ pub fn prepare_screw_connection(
             )
         })
         .ok_or_else(|| error("Select exactly one screw or hanger bolt"))?;
+    let bearing_station = if request.mode == ScrewConnectionMode::HangerBolt {
+        if request
+            .receivers
+            .iter()
+            .any(|row| row.source.seat.is_some())
+        {
+            return Err(error(
+                "Headless hanger connections do not support a screw-head seat",
+            ));
+        }
+        -head_sum
+    } else {
+        resolve_screw_connection_head_station(request, scratch.parameters(), screw.1, head_sum)?
+    };
     let screw_data = match screw.1 {
         ResolvedMechanicalPart::MachineScrew {
             underhead_length_mm,
             thread,
             ..
         } => Some((
-            *underhead_length_mm - thread.length_mm - head_sum,
+            *underhead_length_mm - thread.length_mm + bearing_station,
             thread.pitch_mm,
             thread.hand,
         )),
@@ -954,7 +968,7 @@ pub fn prepare_screw_connection(
                 / pitch;
         }
     }
-    let mut head_station = -head_sum;
+    let mut head_station = bearing_station;
     let mut nut_station = if request.mode == ScrewConnectionMode::HangerBolt {
         -nut_sum
     } else {
@@ -990,7 +1004,7 @@ pub fn prepare_screw_connection(
                 });
                 (station, roll)
             }
-            ScrewConnectionHardwareRole::Screw => (-head_sum, screw_roll),
+            ScrewConnectionHardwareRole::Screw => (bearing_station, screw_roll),
             ScrewConnectionHardwareRole::HangerBolt => (grip, 0.),
             ScrewConnectionHardwareRole::Insert => (
                 grip,
