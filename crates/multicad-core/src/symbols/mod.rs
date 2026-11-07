@@ -15,6 +15,9 @@ pub const MAX_SYMBOL_PARAMETERS: usize = 256;
 mod materialize;
 pub use materialize::{owned_entities, owned_entities_in_session, validate};
 
+mod mechanical_attribution;
+pub use mechanical_attribution::{ConfiguredHardwarePart, configured_hardware_parts};
+
 mod prepare;
 pub use prepare::*;
 

@@ -3,10 +3,13 @@ use multicad_core::{
     document::{Document, EntityId, Placement},
     model::{ThreadRepresentation, thread_representation_parameters},
     parameters::{self, Unit},
-    symbols::{SymbolDefinition, SymbolKind, SymbolValue},
+    symbols::{
+        ConfiguredHardwarePart, SymbolDefinition, SymbolKind, SymbolValue,
+        configured_hardware_parts,
+    },
 };
 use std::collections::BTreeMap;
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 pub(super) struct ValueInput {
     pub text: String,
     pub unit: String,
@@ -16,7 +19,17 @@ pub(super) struct ValueInput {
 pub(crate) struct Overrides(
     pub(super) BTreeMap<EntityId, ValueInput>,
     BTreeMap<EntityId, SymbolValue>,
+    Option<Box<CachedHardwareAttribution>>,
 );
+
+#[derive(Clone)]
+struct CachedHardwareAttribution {
+    symbol: EntityId,
+    revision: String,
+    template: EntityId,
+    inputs: BTreeMap<EntityId, ValueInput>,
+    result: Result<Vec<ConfiguredHardwarePart>, String>,
+}
 impl Overrides {
     pub fn new(
         definition: &SymbolDefinition,
@@ -61,7 +74,7 @@ impl Overrides {
                 },
             );
         }
-        Ok(Self(inputs, defaults))
+        Ok(Self(inputs, defaults, None))
     }
     pub fn resolve(
         &self,
@@ -119,6 +132,52 @@ impl Overrides {
             );
         }
         Ok(values)
+    }
+
+    pub(super) fn show_hardware_attribution(
+        &mut self,
+        ui: &mut egui::Ui,
+        definition: &SymbolDefinition,
+    ) {
+        if self.2.as_ref().is_none_or(|cache| {
+            cache.symbol != definition.symbol
+                || cache.revision != definition.revision
+                || cache.template != definition.template.id()
+                || cache.inputs != self.0
+        }) {
+            let is_hardware = definition.template.entities().any(|entity| {
+                matches!(
+                    &entity.data, multicad_core::document::EntityData::Feature { definition, .. }
+                        if definition.type_id == multicad_core::model::MECHANICAL_PART_TYPE
+                )
+            });
+            let result = if is_hardware {
+                self.resolve(definition).and_then(|values| {
+                    configured_hardware_parts(definition, &values)
+                        .map_err(|error| error.to_string())
+                })
+            } else {
+                Ok(Vec::new())
+            };
+            self.2 = Some(Box::new(CachedHardwareAttribution {
+                symbol: definition.symbol,
+                revision: definition.revision.clone(),
+                template: definition.template.id(),
+                inputs: self.0.clone(),
+                result,
+            }));
+        }
+        match &self
+            .2
+            .as_ref()
+            .expect("attribution cache initialized")
+            .result
+        {
+            Ok(parts) => super::hardware_details::show(ui, parts),
+            Err(error) => {
+                ui.small(format!("Hardware dimensions unavailable: {error}"));
+            }
+        }
     }
     pub fn show(&mut self, ui: &mut egui::Ui, definition: &SymbolDefinition) -> bool {
         if self.0.is_empty() {

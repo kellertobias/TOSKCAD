@@ -3,6 +3,7 @@ pub(crate) mod architecture;
 mod controller;
 mod fields;
 mod forms;
+mod hardware_details;
 mod inspector;
 mod installed;
 mod proof;

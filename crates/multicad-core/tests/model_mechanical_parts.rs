@@ -437,6 +437,21 @@ fn pinned_variants_remap_real_parameters_but_never_uuid_looking_catalog_prose() 
         Placement::default(),
     )
     .unwrap();
+    let default_draft = symbols::configured_hardware_parts(&definition, &BTreeMap::new()).unwrap();
+    assert_eq!(default_draft.len(), 1);
+    assert_eq!(
+        default_draft[0].attribution.basis,
+        MechanicalAttributionBasis::ReferenceDimensions
+    );
+    let draft = symbols::configured_hardware_parts(&definition, &placement.overrides).unwrap();
+    assert_eq!(draft.len(), 1);
+    assert_eq!(
+        draft[0].attribution.basis,
+        MechanicalAttributionBasis::CustomDerived
+    );
+    assert_eq!(draft[0].retained, default_draft[0].current);
+    assert_eq!(draft[0].attribution.actual_material, None);
+    assert_eq!(definition.pin().unwrap(), pinned);
     let p = symbols::prepare_place(&host, host.revision(), actor(), &placement).unwrap();
     host.commit(p.prepared).unwrap();
     let record = symbols::read_instance(host.document(), placement.instance).unwrap();
@@ -445,6 +460,10 @@ fn pinned_variants_remap_real_parameters_but_never_uuid_looking_catalog_prose() 
     assert_ne!(mapped_feature, request.feature);
     let part = read_mechanical_part(host.document(), mapped_feature).unwrap();
     assert_eq!(part.provenance, Some(provenance));
+    assert_eq!(
+        part.parameters.resolve(host.parameters()).unwrap(),
+        draft[0].current
+    );
     let ResolvedMechanicalPart::Washer {
         outside_radius_mm, ..
     } = part.parameters.resolve(host.parameters()).unwrap()
