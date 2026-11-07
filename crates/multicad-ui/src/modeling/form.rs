@@ -19,6 +19,7 @@ use super::{
     primitive::PrimitivePanel,
     revolve::RevolvePanel,
     scaling::ScalePanel,
+    screw_connection::{ScrewConnectionCommand, ScrewConnectionPanel},
     sheet::{SheetCommand, SheetPanel},
     split::{SplitEvent, SplitPanel},
     thread::ThreadPanel,
@@ -46,6 +47,7 @@ pub enum ModelRequest {
     Gear(Box<model::GearRequest>),
     MechanicalPart(Box<model::MechanicalPartRequest>),
     GearPair(Box<GearPairCommand>),
+    ScrewConnection(Box<ScrewConnectionCommand>),
     Revolve(Box<RevolveRequest>),
     Booleans(Vec<BooleanRequest>),
     ExtrudeBoolean(Box<model::ExtrudeBooleanRequest>),
@@ -92,6 +94,11 @@ impl ModelRequest {
             }
             Self::Fence(_) => {
                 return Err("Reopen the complete fence run to edit generated members".into());
+            }
+            Self::ScrewConnection(_) => {
+                return Err(
+                    "Reopen the complete screw connection to edit its owned outputs".into(),
+                );
             }
             Self::GearPair(_) => {
                 return Err(
@@ -331,6 +338,7 @@ impl ModelRequest {
             }
             Self::Gear(request) => model::prepare_gear(session, session.revision(), actor, request),
             Self::GearPair(command) => return command.prepare(session, actor),
+            Self::ScrewConnection(command) => return command.prepare(session, actor),
             Self::Revolve(request) => {
                 model::prepare_revolve(session, session.revision(), actor, request)
             }
@@ -439,6 +447,7 @@ pub(super) enum ModelForm {
     Primitive(Box<PrimitivePanel>),
     Thread(Box<ThreadPanel>),
     Gear(Box<GearPanel>),
+    ScrewConnection(Box<ScrewConnectionPanel>),
     MechanicalPart(Box<MechanicalPartPanel>),
     Revolve(Box<RevolvePanel>),
     Boolean(Box<BooleanPanel>),
@@ -472,6 +481,7 @@ impl ModelForm {
             Self::Primitive(panel) => panel.stamp(),
             Self::Thread(panel) => panel.stamp(),
             Self::Gear(panel) => panel.stamp(),
+            Self::ScrewConnection(panel) => panel.stamp(),
             Self::MechanicalPart(panel) => panel.stamp(),
             Self::Revolve(panel) => panel.stamp(),
             Self::Boolean(panel) => panel.stamp(),
@@ -505,6 +515,7 @@ impl ModelForm {
             Self::Primitive(panel) => panel.label(),
             Self::Thread(panel) => panel.label(),
             Self::Gear(panel) => panel.label(),
+            Self::ScrewConnection(panel) => panel.label(),
             Self::MechanicalPart(panel) => panel.label(),
             Self::Revolve(_) => "Revolve",
             Self::Boolean(_) => "Boolean",
@@ -604,6 +615,9 @@ impl ModelForm {
                 .request(document, capabilities.new_body)
                 .map(|r| ModelRequest::MechanicalPart(Box::new(r))),
             Self::Gear(panel) => panel.model_request(document, capabilities.new_body),
+            Self::ScrewConnection(panel) => panel
+                .request(document, capabilities.new_body)
+                .map(|command| ModelRequest::ScrewConnection(Box::new(command))),
             Self::Revolve(panel) => panel
                 .request(document, capabilities.new_body)
                 .map(|request| ModelRequest::Revolve(Box::new(request))),
@@ -644,6 +658,9 @@ impl ModelForm {
             Self::Thread(panel) => panel.show(ui, document, capabilities.new_body, preview),
             Self::MechanicalPart(panel) => panel.show(ui, document, capabilities.new_body, preview),
             Self::Gear(panel) => panel.show(ui, document, capabilities.new_body, preview),
+            Self::ScrewConnection(panel) => {
+                panel.show(ui, document, capabilities.new_body, preview)
+            }
             Self::Revolve(panel) => panel.show(ui, document, capabilities.new_body, preview),
             Self::Boolean(panel) => panel.show(ui, document, capabilities.new_body, preview),
             Self::BooleanEdit(panel) => panel.show(ui, document, capabilities.new_body, preview),

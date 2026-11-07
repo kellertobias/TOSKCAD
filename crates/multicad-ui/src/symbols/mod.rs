@@ -12,6 +12,7 @@ mod representation_tests;
 mod tests;
 pub use architecture::Command as ArchitecturalSymbolCommand;
 pub use controller::SymbolController;
+pub(crate) use fields::Overrides as SymbolOverrides;
 use multicad_core::document::EntityId;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SymbolTool {

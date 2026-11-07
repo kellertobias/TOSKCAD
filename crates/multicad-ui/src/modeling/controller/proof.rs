@@ -5,6 +5,11 @@ use multicad_core::document::Document;
 use std::collections::BTreeSet;
 pub(super) enum SceneProof {
     Create,
+    ScrewConnection {
+        connection: EntityId,
+        removed: bool,
+        owned: Vec<EntityId>,
+    },
     GearPair {
         pair: EntityId,
         occurrence: Option<EntityId>,
@@ -45,6 +50,79 @@ impl SceneProof {
         outputs: &[CreatedBody],
     ) -> Result<(), String> {
         match self {
+            Self::ScrewConnection {
+                connection,
+                removed,
+                owned,
+            } => {
+                if *removed {
+                    if owned.iter().any(|id| document.get(*id).is_some()) {
+                        return Err("Removed connection source survived its preview".into());
+                    }
+                    return placements(document, scene.stamp().revision, scene);
+                }
+                let request =
+                    multicad_core::model::read_screw_connection_request(document, *connection)
+                        .map_err(|error| error.to_string())?;
+                let info = scene.model_evaluation().ok_or(
+                    "Connection preview requires a source-bound complete native evaluation",
+                )?;
+                let checks = info
+                    .screw_connection_checks
+                    .iter()
+                    .filter(|check| check.connection == *connection)
+                    .collect::<Vec<_>>();
+                if checks.len() != 1 {
+                    return Err("The native model did not validate this complete screw connection; scoped geometry alone cannot authorize Apply".into());
+                }
+                let check = checks[0];
+                let hardware = request
+                    .hardware
+                    .iter()
+                    .map(|role| role.instance)
+                    .collect::<Vec<_>>();
+                let receivers = request
+                    .receivers
+                    .iter()
+                    .map(|receiver| receiver.feature)
+                    .collect::<Vec<_>>();
+                if check.mode != request.mode
+                    || check.hardware_instances != hardware
+                    || check.receiver_features != receivers
+                    || !check.native_component_collision_checked
+                {
+                    return Err("The native connection receipt does not match every requested hardware role and receiving cut".into());
+                }
+
+                Self::edited(outputs.to_vec(), &[], vec![]).validate(document, scene, outputs)?;
+                placements(document, scene.stamp().revision, scene)?;
+                let leaves = scene
+                    .assembly_evaluation()
+                    .ok_or("A connection requires actual native hardware occurrence evidence")?;
+                for role in &request.hardware {
+                    let matches = leaves
+                        .leaves
+                        .iter()
+                        .filter(|leaf| {
+                            leaf.path.root == role.instance
+                                || leaf.path.members.contains(&role.instance)
+                        })
+                        .count();
+                    if matches != 1 {
+                        return Err("Native connection preview did not retain each actual hardware stack occurrence exactly once".into());
+                    }
+                }
+                for receiver in &request.receivers {
+                    if !outputs.iter().any(|output| {
+                        output.feature == receiver.feature
+                            && output.body == receiver.source.output.body
+                    }) {
+                        return Err(
+                            "Native connection preview changed a receiving output identity".into(),
+                        );
+                    }
+                }
+            }
             Self::GearPair { pair, occurrence } => {
                 let source = multicad_core::model::read_gear_pair(document, *pair)
                     .map_err(|e| e.to_string())?;

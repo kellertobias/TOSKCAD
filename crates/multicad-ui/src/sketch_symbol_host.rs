@@ -34,6 +34,7 @@ impl SketchEditor {
         &mut self,
         entries: std::sync::Arc<Vec<crate::library::LibraryEntry>>,
     ) {
+        self.model.set_connection_library_entries(entries.clone());
         self.symbols.set_installed_library(entries);
     }
     pub fn begin_architectural_symbol(

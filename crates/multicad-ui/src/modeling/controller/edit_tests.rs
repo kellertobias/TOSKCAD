@@ -111,6 +111,7 @@ fn receipt(
         Scene::new(stamp, geometries, instances)
             .unwrap()
             .with_model_evaluation(Arc::new(ModelEvaluationInfo {
+                screw_connection_checks: vec![],
                 source_hash: if wrong_hash {
                     ContentHash::of(b"another source")
                 } else {

@@ -24,6 +24,7 @@ mod project;
 mod render;
 mod save_preview;
 mod schedule_files;
+mod screw_connections;
 mod settings;
 mod symbol_files;
 mod welcome;
@@ -1345,6 +1346,7 @@ impl Application {
                 if !matches!(self.mode, Mode::Sketch | Mode::Model) {
                     return Err("Open Sketch or Model before starting a modeling tool".into());
                 }
+                let installed = std::sync::Arc::new(self.library.entries.clone());
                 let project = self.current_mut();
                 if let Some(preset) = wood_preset {
                     project.sketch.begin_wood_preset(
@@ -1368,6 +1370,9 @@ impl Application {
                         tool,
                         channel,
                     )?;
+                }
+                if tool == crate::modeling::ModelingTool::ScrewConnection {
+                    project.sketch.set_installed_symbol_library(installed);
                 }
                 let origin = wood_preset.map_or_else(
                     || equipment_preset.map_or(command, Command::EquipmentPreset),
@@ -2411,6 +2416,7 @@ impl Application {
             ctx.request_repaint_after(std::time::Duration::from_millis(16));
         }
         self.poll_files();
+        self.drive_connection_hardware_reads();
         self.handle_close_request(&ctx);
         controls::block_modal_background(
             ui,
@@ -4346,6 +4352,7 @@ mod tests {
         )
         .unwrap()
         .with_model_evaluation(Arc::new(model::ModelEvaluationInfo {
+            screw_connection_checks: vec![],
             source_hash: multicad_core::project_file::ContentHash::document(
                 app.current().session.document(),
             )

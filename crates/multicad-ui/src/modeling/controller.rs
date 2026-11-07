@@ -111,6 +111,7 @@ pub struct ModelToolController {
     operation: operation_interaction::OperationState,
     boolean_preset: Option<multicad_core::model::Operation>,
     fence_type: Option<EntityId>,
+    connection_entries: Arc<Vec<crate::library::LibraryEntry>>,
 }
 pub enum ModelToolOutcome {
     Applied(Vec<CreatedBody>),
@@ -180,6 +181,9 @@ impl ModelToolController {
         matches.next().is_none().then_some(first)
     }
     pub fn editable(document: &multicad_core::document::Document, feature: EntityId) -> bool {
+        if Self::screw_connection_for(document, feature).is_some() {
+            return true;
+        }
         if multicad_core::model::wood_box_owner(document, feature).is_some() {
             return true;
         }
@@ -232,6 +236,17 @@ impl ModelToolController {
     ) -> Result<(), String> {
         use multicad_core::model;
         let document = session.document();
+        if let Some(connection) = Self::screw_connection_for(document, feature) {
+            let mut panel =
+                super::screw_connection::ScrewConnectionPanel::existing(document, connection)?;
+            panel.set_entries(self.connection_entries.clone());
+            return self.begin_form(
+                session,
+                resources,
+                channel,
+                ModelForm::ScrewConnection(Box::new(panel)),
+            );
+        }
         if !Self::editable(document, feature) {
             return Err(
                 "Choose a supported, unsuppressed applied feature or owned placement driver".into(),
@@ -1689,7 +1704,10 @@ impl ModelToolController {
             _ => self.scope.as_ref().expect("current scope").execution,
         };
         if matches!(execution, Execution::Create)
-            && matches!(request, ModelRequest::Thread(_) | ModelRequest::Gear(_))
+            && matches!(
+                request,
+                ModelRequest::Thread(_) | ModelRequest::Gear(_) | ModelRequest::ScrewConnection(_)
+            )
         {
             self.generation = self
                 .generation
@@ -1722,6 +1740,14 @@ impl ModelToolController {
                     ModelRequest::CompoundCutout(_) => {
                         SceneProof::edited(prepared.outputs.clone(), &[], vec![])
                     }
+                    ModelRequest::ScrewConnection(command) => SceneProof::ScrewConnection {
+                        connection: command.connection(),
+                        owned: command.removed_outputs(session.document())?,
+                        removed: matches!(
+                            command.as_ref(),
+                            super::ScrewConnectionCommand::Remove { .. }
+                        ),
+                    },
                     ModelRequest::GearPair(command) => SceneProof::GearPair {
                         pair: command.pair(),
                         occurrence: command.occurrence(),
@@ -1802,6 +1828,7 @@ impl ModelToolController {
             ModelRequest::Scale(command) => command.instances(),
             ModelRequest::Alignment(command) => command.instances(),
             ModelRequest::GearPair(command) => command.instances(prepared.prepared.document())?,
+            ModelRequest::ScrewConnection(command) => command.instances(),
             _ => vec![],
         };
         self.candidate = Some(Candidate {
@@ -1818,6 +1845,7 @@ impl ModelToolController {
                     | ModelRequest::Scale(_)
                     | ModelRequest::Alignment(_)
                     | ModelRequest::GearPair(_)
+                    | ModelRequest::ScrewConnection(_)
             ),
             tools,
             proof,
@@ -1834,6 +1862,7 @@ impl ModelToolController {
                     | ModelRequest::Advanced(_)
                     | ModelRequest::Alignment(_)
                     | ModelRequest::GearPair(_)
+                    | ModelRequest::ScrewConnection(_)
                     | ModelRequest::MechanicalPart(_)
                     | ModelRequest::CompoundCutout(_)
                     | ModelRequest::WoodBox(_)
@@ -1860,6 +1889,17 @@ impl ModelToolController {
             let result = (|| {
                 self.current(session, resources, true)?;
                 let (prepared, content) = reply.result?;
+                let proof = match &reply.request {
+                    ModelRequest::ScrewConnection(command) => SceneProof::ScrewConnection {
+                        connection: command.connection(),
+                        owned: command.removed_outputs(session.document())?,
+                        removed: matches!(
+                            command.as_ref(),
+                            super::ScrewConnectionCommand::Remove { .. }
+                        ),
+                    },
+                    _ => SceneProof::Create,
+                };
                 self.publish_prepared(
                     session,
                     resources,
@@ -1867,7 +1907,7 @@ impl ModelToolController {
                     &reply.request,
                     Execution::Create,
                     prepared,
-                    SceneProof::Create,
+                    proof,
                     content,
                 )
             })();
@@ -2202,6 +2242,23 @@ impl ModelToolController {
             ui.small("Preview rebuilds this producer and its downstream model. Apply retains all body, feature and profile identities.");
             ui.separator();
         }
+        let connection_review = self
+            .candidate
+            .as_ref()
+            .filter(|candidate| !candidate.pending)
+            .and_then(|candidate| candidate.scene.as_ref())
+            .and_then(|scene| scene.model_evaluation())
+            .and_then(|info| match &self.form {
+                Some(ModelForm::ScrewConnection(panel)) => info
+                    .screw_connection_checks
+                    .iter()
+                    .find(|check| check.connection == panel.connection())
+                    .cloned(),
+                _ => None,
+            });
+        if let Some(ModelForm::ScrewConnection(panel)) = self.form.as_mut() {
+            panel.set_review(connection_review);
+        }
         let review = self.fdm_review();
         if let Some(ModelForm::FdmAid(panel)) = self.form.as_mut() {
             panel.set_review(review);
@@ -2280,6 +2337,9 @@ mod placement_interaction;
 mod preparation;
 pub use operation_interaction::OperationViewport;
 mod scale_interaction;
+mod screw_connection;
+#[cfg(test)]
+mod screw_connection_tests;
 pub use placement_interaction::PlacementViewportResult;
 #[cfg(test)]
 mod architecture_tests;

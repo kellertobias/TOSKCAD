@@ -117,6 +117,7 @@ fn fixture() -> (Session, Arc<Scene>, BTreeSet<EntityId>) {
     )
     .unwrap()
     .with_model_evaluation(Arc::new(ModelEvaluationInfo {
+        screw_connection_checks: vec![],
         source_hash: ContentHash::document(s.document()).unwrap(),
         consumed_bodies: BTreeSet::new(),
         cut_targets: vec![],
@@ -619,6 +620,7 @@ fn moving_definition_and_its_own_instance_is_explicitly_rejected_but_copy_is_ind
     )
     .unwrap()
     .with_model_evaluation(Arc::new(ModelEvaluationInfo {
+        screw_connection_checks: vec![],
         source_hash: ContentHash::document(&d).unwrap(),
         consumed_bodies: BTreeSet::new(),
         cut_targets: vec![],

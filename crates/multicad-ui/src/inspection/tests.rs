@@ -143,6 +143,7 @@ fn native_scene(s: &Session) -> Arc<Scene> {
         .with_reference_aliases(snapshot.body_sources.clone())
         .unwrap()
         .with_model_evaluation(Arc::new(ModelEvaluationInfo {
+            screw_connection_checks: vec![],
             source_hash: snapshot.stamp.source_hash,
             consumed_bodies: snapshot.consumed_bodies.clone(),
             cut_targets: snapshot.cut_targets.clone(),

@@ -35,6 +35,7 @@ impl SceneBackend for Backend {
             self.scene.reference_instances().to_vec(),
         )?
         .with_model_evaluation(Arc::new(multicad_core::model::ModelEvaluationInfo {
+            screw_connection_checks: vec![],
             source_hash: multicad_core::project_file::ContentHash::document(document)?,
             consumed_bodies: Default::default(),
             cut_targets: vec![],

@@ -96,6 +96,7 @@ fn nested_placement_expands_whole_root_and_preserves_unselected_sibling_pose() {
     let member = EntityId::new();
     let hash = ContentHash::of(b"placement fixture");
     scene.model_evaluation = Some(Arc::new(multicad_core::model::ModelEvaluationInfo {
+        screw_connection_checks: vec![],
         source_hash: hash,
         consumed_bodies: Default::default(),
         cut_targets: vec![],

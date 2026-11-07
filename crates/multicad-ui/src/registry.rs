@@ -591,6 +591,7 @@ impl Default for Registry {
                                         | ModelingTool::Thread
                                         | ModelingTool::Gear
                                         | ModelingTool::MechanicalPart
+                                        | ModelingTool::ScrewConnection
                                         | ModelingTool::Boolean
                                         | ModelingTool::Wall
                                         | ModelingTool::Fence
@@ -637,7 +638,10 @@ impl Default for Registry {
                     tab("Weld", &["tube", "cope", "weld-joint", "weld-list"]),
                     tab("Other", &["fdm-aid", "fdm-bridge", "fdm-support"]),
                     tab("Relationships", &["align"]),
-                    tab("Mechanical", &["thread", "gear", "mechanical-part"]),
+                    tab(
+                        "Mechanical",
+                        &["thread", "gear", "mechanical-part", "screw-connection"],
+                    ),
                 ],
             },
             Workspace {
@@ -1030,6 +1034,11 @@ mod tests {
                 assert_eq!(tool.action, Command::Modeling(ModelingTool::Gear));
             } else if *id == "mechanical-part" {
                 assert_eq!(tool.action, Command::Modeling(ModelingTool::MechanicalPart));
+            } else if *id == "screw-connection" {
+                assert_eq!(
+                    tool.action,
+                    Command::Modeling(ModelingTool::ScrewConnection)
+                );
             } else if *id == "library" {
                 assert_eq!(tool.action, Command::Extension("library"));
             } else {
@@ -1220,6 +1229,7 @@ mod tests {
                         | ModelingTool::Thread
                         | ModelingTool::Gear
                         | ModelingTool::MechanicalPart
+                        | ModelingTool::ScrewConnection
                         | ModelingTool::Boolean
                         | ModelingTool::Wall
                         | ModelingTool::Fence

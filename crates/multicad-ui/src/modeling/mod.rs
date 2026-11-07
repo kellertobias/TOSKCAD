@@ -46,6 +46,7 @@ mod primitive;
 mod revolve;
 mod scale_gizmo;
 mod scaling;
+mod screw_connection;
 mod sheet;
 mod split;
 mod termination;
@@ -74,6 +75,8 @@ pub(crate) use panel_face::{seeded_message, selected_panels, with_opposite_sides
 pub use placement::{PlacementCommand, PlacementMode};
 pub use scale_gizmo::ScaleViewport;
 pub use scaling::ScaleCommand;
+pub use screw_connection::ScrewConnectionCommand;
+pub(crate) use screw_connection::{HardwareLibraryRequest, ScrewConnectionPick};
 pub(crate) use split::SplitInputField;
 pub use termination::TerminationViewport;
 
@@ -85,6 +88,7 @@ pub enum ModelingTool {
     Thread,
     Gear,
     MechanicalPart,
+    ScrewConnection,
     Revolve,
     Boolean,
     Split,
@@ -128,12 +132,13 @@ impl ModelingTool {
             _ => None,
         }
     }
-    pub const ALL: [Self; 44] = [
+    pub const ALL: [Self; 45] = [
         Self::Box,
         Self::Cylinder,
         Self::Thread,
         Self::Gear,
         Self::MechanicalPart,
+        Self::ScrewConnection,
         Self::Wall,
         Self::Fence,
         Self::Door,
@@ -186,6 +191,7 @@ impl ModelingTool {
             Self::Box => "box",
             Self::Cylinder => "cylinder",
             Self::Thread => "thread",
+            Self::ScrewConnection => "screw-connection",
             Self::Gear => "gear",
             Self::MechanicalPart => "mechanical-part",
             Self::Revolve => "revolve",
@@ -236,6 +242,7 @@ impl ModelingTool {
             Self::Box => "Box",
             Self::Cylinder => "Cylinder",
             Self::Thread => "Thread",
+            Self::ScrewConnection => "Attach screw connection",
             Self::Gear => "Gear",
             Self::MechanicalPart => "Hardware",
             Self::Revolve => "Revolve",
@@ -286,6 +293,7 @@ impl ModelingTool {
             Self::Box => crate::icons::Icon::Box,
             Self::Cylinder => crate::icons::Icon::Cylinder,
             Self::Thread => crate::icons::Icon::Revolve,
+            Self::ScrewConnection => crate::icons::Icon::Revolve,
             Self::Gear => crate::icons::Icon::Revolve,
             Self::MechanicalPart => crate::icons::Icon::Revolve,
             Self::Revolve => crate::icons::Icon::Revolve,
@@ -331,6 +339,7 @@ impl ModelingTool {
             Self::Box => &["cube", "add-box"],
             Self::Cylinder => &["cyl", "add-cylinder"],
             Self::Thread => &["screw-thread", "tap-thread", "helical-thread"],
+            Self::ScrewConnection => &["attach-screw", "fastener-connection"],
             Self::Gear => &["spur-gear", "helical-gear", "herringbone-gear"],
             Self::MechanicalPart => &["washer", "hex-nut", "bearing-envelope"],
             Self::Revolve => &["rev", "lathe"],
@@ -385,6 +394,9 @@ impl ModelingTool {
     }
     pub fn usage(self) -> &'static str {
         match self {
+            Self::ScrewConnection => {
+                "Usage: screw-connection (choose mode, hardware stack and real receiving faces; Preview and Apply once)"
+            }
             Self::MechanicalPart => {
                 "Usage: mechanical-part (configure a washer, hex nut or bearing mounting envelope; Preview and Apply)"
             }
@@ -495,6 +507,9 @@ impl ModelingTool {
     }
     pub fn requirements(self) -> &'static str {
         match self {
+            Self::ScrewConnection => {
+                "Requires current native receiving geometry and complete source-specific hardware/installation inputs; no guessed usable thread or wood point."
+            }
             Self::MechanicalPart => {
                 "Requires native modeling and no pending edits. Generic washers, hex nuts and bearing mounting envelopes; no verified stocked catalog designation."
             }

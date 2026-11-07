@@ -13,8 +13,8 @@ pub(super) struct ValueInput {
     pub enabled: bool,
 }
 #[derive(Clone, Default)]
-pub(super) struct Overrides(
-    pub BTreeMap<EntityId, ValueInput>,
+pub(crate) struct Overrides(
+    pub(super) BTreeMap<EntityId, ValueInput>,
     BTreeMap<EntityId, SymbolValue>,
 );
 impl Overrides {

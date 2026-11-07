@@ -28,6 +28,12 @@ pub(super) enum PendingFile {
         guard: multicad_core::commands::Prepared,
         resources: ProjectResources,
     },
+    ConnectionHardware {
+        local: EntityId,
+        request: crate::modeling::HardwareLibraryRequest,
+        guard: multicad_core::commands::Prepared,
+        resources: ProjectResources,
+    },
     SymbolSave,
     Discover,
     Snapshot {
@@ -238,6 +244,45 @@ impl Application {
     }
     fn accept_file_reply(&mut self, pending: PendingFile, reply: FileResult) -> Result<(), String> {
         match (pending, reply) {
+            (
+                PendingFile::ConnectionHardware {
+                    local,
+                    request,
+                    guard,
+                    resources,
+                },
+                FileResult::Loaded(result),
+            ) => {
+                let project = self
+                    .projects
+                    .iter_mut()
+                    .find(|project| project.local_id == local)
+                    .ok_or("The connection project was closed")?;
+                let definitions = (|| {
+                    project
+                        .session
+                        .validate_preview(&guard)
+                        .map_err(|error| error.to_string())?;
+                    if project.resources != resources {
+                        return Err(
+                            "Project resources changed while reading connection hardware".into(),
+                        );
+                    }
+                    let loaded = result.map_err(|error| error.to_string())?;
+                    multicad_core::symbols::definitions(&loaded.file.document)
+                        .map(|values| {
+                            values
+                                .into_iter()
+                                .map(|(_, definition)| definition)
+                                .collect()
+                        })
+                        .map_err(|error| error.to_string())
+                })();
+                project
+                    .sketch
+                    .accept_connection_library(&request, definitions)?;
+            }
+
             (
                 PendingFile::SymbolOpen {
                     place,

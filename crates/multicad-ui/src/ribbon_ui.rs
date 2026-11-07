@@ -1000,7 +1000,7 @@ mod tests {
         chosen
     }
     #[test]
-    fn wood_hardware_menu_reuses_parts_and_library_and_marks_connections_unavailable() {
+    fn wood_hardware_menu_routes_parts_library_and_canonical_connections() {
         let registry = Registry::default();
         let tab = registry
             .workspace(Mode::Model)
@@ -1014,6 +1014,10 @@ mod tests {
                 Command::WoodPreset(crate::wood_navigation::Preset::Hardware),
             ),
             ("Browse Library", Command::Extension("library")),
+            (
+                "Attach screw connection",
+                Command::Modeling(crate::modeling::ModelingTool::ScrewConnection),
+            ),
         ] {
             let ctx = egui::Context::default();
             ctx.enable_accesskit();
@@ -1046,7 +1050,7 @@ mod tests {
                     .nodes
                     .iter()
                     .any(|(_, node)| node.label() == Some("Attach screw connection")
-                        && node.is_disabled())
+                        && !node.is_disabled())
             );
             let pos = text(&output, label);
             output.drop_without_applying_deltas();

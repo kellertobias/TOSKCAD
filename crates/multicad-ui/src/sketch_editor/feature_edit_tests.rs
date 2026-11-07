@@ -45,6 +45,7 @@ impl SceneBackend for Backend {
         if !self.missing_info {
             scene = scene
                 .with_model_evaluation(Arc::new(model::ModelEvaluationInfo {
+                    screw_connection_checks: vec![],
                     source_hash: if self.wrong_hash {
                         ContentHash::of(b"different source")
                     } else {

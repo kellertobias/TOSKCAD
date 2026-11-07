@@ -748,6 +748,7 @@ fn split_requires_both_native_outputs_and_original_input_consumption_before_atom
             )
             .unwrap()
             .with_model_evaluation(Arc::new(ModelEvaluationInfo {
+                screw_connection_checks: vec![],
                 source_hash: ContentHash::document(session.document()).unwrap(),
                 consumed_bodies: BTreeSet::new(),
                 cut_targets: vec![],
@@ -810,6 +811,7 @@ fn split_requires_both_native_outputs_and_original_input_consumption_before_atom
                 )
                 .unwrap()
                 .with_model_evaluation(Arc::new(ModelEvaluationInfo {
+                    screw_connection_checks: vec![],
                     source_hash: ContentHash::document(&candidate).unwrap(),
                     consumed_bodies: consumed,
                     cut_targets: vec![],

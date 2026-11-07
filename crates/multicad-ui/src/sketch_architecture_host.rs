@@ -6,6 +6,12 @@ use std::collections::BTreeSet;
 
 impl SketchEditor {
     pub(super) fn modeling_section(&self) -> Option<crate::viewport::SectionPlane> {
+        if self.model.screw_connection_picker().is_some() {
+            return None;
+        }
+        if let Some(section) = self.connection_section {
+            return Some(section);
+        }
         if self.architecture.planar() {
             None
         } else {

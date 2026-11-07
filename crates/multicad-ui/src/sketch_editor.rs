@@ -43,6 +43,8 @@ mod model_target_selection;
 #[cfg(test)]
 #[path = "sketch_scale_host_tests.rs"]
 mod scale_host_tests;
+#[path = "sketch_screw_connection_host.rs"]
+mod screw_connection_host;
 #[path = "sketch_snap.rs"]
 mod snap;
 #[path = "sketch_snap_host.rs"]
@@ -194,6 +196,9 @@ pub struct SketchEditor {
     assembly_pick_view: Option<assembly_host::AnchorView>,
     transfer: crate::transfer::TransferController,
     transfer_source_view: Option<transfer_host::TransferSourceView>,
+    connection_pick_view: Option<screw_connection_host::ConnectionPickView>,
+    connection_section: Option<crate::viewport::SectionPlane>,
+    connection_axis_pose: Option<multicad_core::model::RigidPose>,
     acquisition: Option<model_target_selection::Acquisition>,
     advanced_context_stamp: Option<(Option<crate::sketch_evaluation::EvaluationStamp>, usize)>,
     materials: crate::materials::MaterialsEditor,
@@ -292,6 +297,9 @@ impl Default for SketchEditor {
             assembly_pick_view: None,
             transfer: Default::default(),
             transfer_source_view: None,
+            connection_pick_view: None,
+            connection_section: None,
+            connection_axis_pose: None,
             acquisition: None,
             advanced_context_stamp: None,
             materials: Default::default(),
@@ -676,6 +684,18 @@ impl SketchEditor {
         }
         crate::modeling::cabinet_edit::carcass_target(document, *self.tree_selection.first()?)
     }
+    fn selected_screw_connection(&self, document: &Document) -> Option<EntityId> {
+        let owners: std::collections::BTreeSet<_> = self
+            .tree_selection
+            .iter()
+            .copied()
+            .chain(self.solid.selected_ids())
+            .filter_map(|id| {
+                crate::modeling::ModelToolController::screw_connection_for(document, id)
+            })
+            .collect();
+        (owners.len() == 1).then(|| *owners.first().expect("one connection"))
+    }
     fn selected_gear_pair(&self, document: &Document) -> Option<EntityId> {
         let pairs: std::collections::BTreeSet<_> = self
             .tree_selection
@@ -701,6 +721,11 @@ impl SketchEditor {
             return None;
         }
         let id = *self.tree_selection.first()?;
+        if let Some(connection) =
+            crate::modeling::ModelToolController::screw_connection_for(document, id)
+        {
+            return Some((connection, true));
+        }
         if let Some(run) = crate::modeling::fence_target(document, id) {
             return Some((run, true));
         }
@@ -765,8 +790,13 @@ impl SketchEditor {
     ) -> bool {
         self.primitive_ready()
             && !self.editing
-            && multicad_core::symbols::owned_entities_in_session(session)
-                .is_ok_and(|ids| !ids.contains(&feature))
+            && (crate::modeling::ModelToolController::screw_connection_for(
+                session.document(),
+                feature,
+            )
+            .is_some()
+                || multicad_core::symbols::owned_entities_in_session(session)
+                    .is_ok_and(|ids| !ids.contains(&feature)))
             && (crate::modeling::ModelToolController::editable(session.document(), feature)
                 || crate::transfer::TransferController::editable(session.document(), feature))
     }
@@ -3146,16 +3176,25 @@ impl SketchEditor {
                             self.handle_tree_events(session,scene.as_deref(),events);
                         }
                         if hierarchy_tool {return;}
+                        let connection = self.selected_screw_connection(session.document());
+                        if let Some(connection) = connection {
+                            let ready=self.feature_edit_ready(session,feed,connection);
+                            if ui.add_enabled(ready,egui::Button::new("Edit screw connection")).on_hover_text("Edit the complete hardware stack and every receiving cut together").clicked()
+                                && let Err(error)=self.begin_feature_edit(session,resources,feed,connection,Channel::Ui) {self.message=error;}
+                            if self.model_active() {return;}
+                        }
                         if let Some(pair)=self.selected_gear_pair(session.document()) {
                             let ready=self.feature_edit_ready(session,feed,pair);
                             if ui.add_enabled(ready,egui::Button::new("Edit gear pair")).on_hover_text("Edit both mating recipes together, or change their shared drive and layout").clicked()
                                 && let Err(error)=self.begin_feature_edit(session,resources,feed,pair,Channel::Ui) {self.message=error;}
                             if self.model_active() {return;}
                         }
-                        self.assembly_edit_controls(ui,session,resources,feed);
-                        if self.assembly.active(){return;}
-                        self.symbol_edit_controls(ui,session,resources,feed);
-                        if self.symbols.active(){return;}
+                        if connection.is_none() {
+                            self.assembly_edit_controls(ui,session,resources,feed);
+                            if self.assembly.active(){return;}
+                            self.symbol_edit_controls(ui,session,resources,feed);
+                            if self.symbols.active(){return;}
+                        } else {ui.small("This hardware belongs to a connection; edit its complete stack and receiving cuts together.");}
                         if let Some(error)=feed.error() {ui.colored_label(Color32::LIGHT_RED,error);if ui.button("Retry model update").on_hover_text("Rebuild the current source while retaining the previous visible model").clicked(){feed.retry();}}
                         else if feed.refining() {ui.small("Refining display…");}
                         else if feed.pending() {ui.small("Rebuilding model…");}
@@ -3448,12 +3487,29 @@ impl SketchEditor {
             && !self.model.alignment_picking()
             && !self.model.edge_treatment_picking()
             && !self.model.advanced_picking()
+            && self.model.screw_connection_picker().is_none()
             && !assembly_view
             && let Some(candidate) = self.model.display_scene(session, resources)
         {
             scene = Some(candidate);
             current = false;
             model_view = true;
+        }
+        match self.connection_pick_scene(session, feed) {
+            Ok(Some(view)) => {
+                scene = Some(view);
+                current = false;
+            }
+            Err(error) => self.message = error,
+            _ => {}
+        }
+        if self.model.screw_connection_picker().is_none()
+            && let Some(current_scene) = scene.as_ref()
+        {
+            match self.connection_presentation(session, current_scene) {
+                Ok(view) => scene = Some(view),
+                Err(error) => self.message = error,
+            }
         }
         if !self.measurement.active() && self.model.edge_treatment_picking() {
             match self.edge_source_scene(session, feed) {
@@ -4026,6 +4082,8 @@ impl SketchEditor {
         {
             self.assembly_viewport(&response, session, context.resources, context.feed, rect);
             self.transfer_viewport(&response, session, context.resources, rect);
+            self.connection_viewport(&response, session, context.resources, context.feed, rect);
+            self.paint_connection_axis(&painter, rect);
             self.advanced_viewport(
                 ui,
                 &response,

@@ -102,6 +102,7 @@ pub(crate) fn scene(fixture: &Fixture, generation: u64) -> Arc<Scene> {
         )
         .unwrap()
         .with_model_evaluation(Arc::new(model::ModelEvaluationInfo {
+            screw_connection_checks: vec![],
             source_hash: ContentHash::document(fixture.session.document()).unwrap(),
             consumed_bodies: BTreeSet::new(),
             cut_targets: vec![],

@@ -125,6 +125,7 @@ pub(crate) fn scene(
         };
         let scene = scene
             .with_model_evaluation(Arc::new(ModelEvaluationInfo {
+                screw_connection_checks: model.screw_connection_checks.clone(),
                 source_hash: model.stamp.source_hash,
                 consumed_bodies: model.consumed_bodies.clone(),
                 cut_targets: model.cut_targets.clone(),

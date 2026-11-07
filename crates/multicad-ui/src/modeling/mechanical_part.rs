@@ -129,6 +129,9 @@ impl MechanicalPartPanel {
                 ],
                 Self::default_thread(),
             ),
+            MechanicalPartParameters::CustomConnection { .. } => {
+                return Err("Edit custom connection hardware through its Screw connection editor so the complete receiving stack is validated".into());
+            }
             MechanicalPartParameters::WoodScrew { .. } => (
                 Kind::WoodScrew,
                 [length(0.), length(0.), length(0.)],

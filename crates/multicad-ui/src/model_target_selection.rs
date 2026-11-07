@@ -320,6 +320,15 @@ impl SketchEditor {
                 "Hardware · configure a washer, nut or mounting envelope, then Preview".into();
             return Ok(());
         }
+        if tool == ModelingTool::ScrewConnection {
+            self.finish()?;
+            self.model
+                .begin_screw_connection(session, resources, channel)?;
+            self.message =
+                "Screw connection · choose a mode, hardware and receiving face, then Preview"
+                    .into();
+            return Ok(());
+        }
         if tool == ModelingTool::Gear {
             self.finish()?;
             self.model.begin_gear(session, resources, channel)?;

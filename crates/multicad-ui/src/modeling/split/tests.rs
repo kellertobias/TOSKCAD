@@ -67,6 +67,7 @@ fn display(doc: &Document, revision: u64, outputs: &[CreatedBody], metadata: boo
     Arc::new(if metadata {
         scene
             .with_model_evaluation(Arc::new(ModelEvaluationInfo {
+                screw_connection_checks: vec![],
                 source_hash: ContentHash::document(doc).unwrap(),
                 consumed_bodies: BTreeSet::new(),
                 cut_targets: vec![],

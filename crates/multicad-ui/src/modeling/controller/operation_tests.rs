@@ -51,6 +51,7 @@ fn scene(
         )
         .unwrap()
         .with_model_evaluation(Arc::new(ModelEvaluationInfo {
+            screw_connection_checks: vec![],
             source_hash: ContentHash::document(document).unwrap(),
             consumed_bodies: consumed,
             cut_targets: probes,

@@ -117,6 +117,7 @@ fn fixture(
     )
     .unwrap()
     .with_model_evaluation(Arc::new(ModelEvaluationInfo {
+        screw_connection_checks: vec![],
         source_hash: ContentHash::document(session.document()).unwrap(),
         consumed_bodies: Default::default(),
         cut_targets: vec![],
@@ -230,6 +231,7 @@ fn stale_candidate_missing_model_info_transformed_occurrence_and_self_faces_reje
     assert!(picker.message().unwrap().contains("own result"));
     let bad = scene
         .with_model_evaluation(Arc::new(ModelEvaluationInfo {
+            screw_connection_checks: vec![],
             source_hash: ContentHash::of(b"candidate"),
             consumed_bodies: Default::default(),
             cut_targets: vec![],

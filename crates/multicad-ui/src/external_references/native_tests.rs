@@ -23,6 +23,7 @@ impl Backend {
             self.base.reference_instances().to_vec(),
         )?
         .with_model_evaluation(Arc::new(multicad_core::model::ModelEvaluationInfo {
+            screw_connection_checks: vec![],
             source_hash: if self.bad_hash {
                 ContentHash::of(b"unrelated source")
             } else {

@@ -89,6 +89,7 @@ pub fn tab_tools() -> Vec<&'static str> {
         "batten",
         "wood-hardware",
         "wood-library",
+        "screw-connection",
         "drill",
         "pocket",
         "wood-joint",
@@ -112,15 +113,21 @@ pub fn groups() -> Vec<Group> {
     .into_iter()
     .map(|(label, tools)| Group {
         label,
-        entries: tools.into_iter().map(|id| {
-            if id == "wood-hardware" {
-                Entry::Menu {
-                    label: "Screw / Hardware", icon: Icon::Revolve,
-                    tools: vec!["wood-hardware", "wood-library"],
-                    unavailable: Some(("Attach screw connection", "Unavailable in the native editor: attaching a screw to receiving Parts requires a connection workflow.")),
+        entries: tools
+            .into_iter()
+            .map(|id| {
+                if id == "wood-hardware" {
+                    Entry::Menu {
+                        label: "Screw / Hardware",
+                        icon: Icon::Revolve,
+                        tools: vec!["wood-hardware", "wood-library", "screw-connection"],
+                        unavailable: None,
+                    }
+                } else {
+                    Entry::Tool(id)
                 }
-            } else { Entry::Tool(id) }
-        }).collect(),
+            })
+            .collect(),
     })
     .collect()
 }
@@ -146,7 +153,7 @@ mod tests {
                 Entry::Menu {
                     tools, unavailable, ..
                 } => {
-                    assert!(unavailable.is_some());
+                    assert!(unavailable.is_none());
                     tools.clone()
                 }
             })

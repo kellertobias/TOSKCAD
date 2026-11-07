@@ -149,6 +149,7 @@ pub(super) fn scene(
         Scene::new(stamp, geometries, instances)
             .unwrap()
             .with_model_evaluation(Arc::new(model::ModelEvaluationInfo {
+                screw_connection_checks: vec![],
                 source_hash: ContentHash::document(document).unwrap(),
                 consumed_bodies: consumed,
                 cut_targets: vec![],
