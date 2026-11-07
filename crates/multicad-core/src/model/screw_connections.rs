@@ -737,7 +737,32 @@ pub fn prepare_screw_connection(
         vec![edit],
     )?;
     let mut outputs = vec![];
-    for row in &request.hardware {
+    for (row, current) in request.hardware.iter().zip(&definition.hardware) {
+        let previous = old.as_ref().and_then(|source| {
+            source
+                .hardware
+                .iter()
+                .find(|binding| binding.instance == row.instance)
+        });
+        if candidate.get(row.instance).is_some()
+            && !previous.is_some_and(|binding| {
+                binding.role_id == row.role_id
+                    && binding.role == row.role
+                    && binding.driver == row.driver
+            })
+        {
+            return Err(error(
+                "Hardware occurrence belongs to another role or source",
+            ));
+        }
+        if let Some(ScrewConnectionHardwareBinding::Library { record }) =
+            previous.map(|binding| &binding.source)
+            && current.source != (ScrewConnectionHardwareBinding::Library { record: *record })
+        {
+            // The old symbol record requires the occurrence to point to its
+            // private wrapper. Retire the record before changing that component.
+            remove_owned(&mut candidate, &actor, &BTreeSet::from([*record]))?;
+        }
         let scratch = candidate_session(&candidate)?;
         match &row.source {
             ScrewConnectionHardwareSource::Generated { part } => {
@@ -802,7 +827,8 @@ pub fn prepare_screw_connection(
                         return Err(error("Library occurrence belongs to another source"));
                     }
                     let existing = symbols::read_instance(&candidate, placement.record)?;
-                    if existing.definition != placement.definition
+                    if existing.instance != row.instance
+                        || existing.definition != placement.definition
                         || existing.pin != definition.pin()?
                         || existing.ids != placement.ids
                     {
@@ -818,6 +844,14 @@ pub fn prepare_screw_connection(
                             record: placement.record,
                             overrides: placement.overrides.clone(),
                         },
+                    )?
+                } else if previous.is_some() {
+                    symbols::prepare_library_rebind(
+                        &scratch,
+                        0,
+                        actor.clone(),
+                        definition,
+                        placement,
                     )?
                 } else {
                     symbols::prepare_library_place(

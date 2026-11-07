@@ -168,6 +168,93 @@ fn reopened(document: &Document) -> Document {
     .project
     .document
 }
+
+#[test]
+fn replacing_saved_hardware_source_preserves_the_single_physical_occurrence() {
+    let (document, mut request, _) = fixture::fixture();
+    let parameters = MechanicalPartParameters::Washer {
+        bore_diameter: length(3.2),
+        outside_diameter: length(7.),
+        thickness: length(0.5),
+        frame: Default::default(),
+    };
+    let part = MechanicalPartRequest::new("Generated washer", parameters.clone());
+    let generated = ScrewConnectionHardwareRequest {
+        role_id: EntityId::new(),
+        role: ScrewConnectionHardwareRole::HeadWasher,
+        name: part.name.clone(),
+        instance: EntityId::new(),
+        driver: EntityId::new(),
+        source: ScrewConnectionHardwareSource::Generated {
+            part: Box::new(part.clone()),
+        },
+    };
+    request.hardware.insert(1, generated.clone());
+    let mut session = Session::new(document.clone()).unwrap();
+    let initial = prepare_screw_connection(&session, 0, actor(), &request).unwrap();
+    session.commit(initial.prepared).unwrap();
+    let before = reopened(session.document());
+    let mut session = Session::new(before.clone()).unwrap();
+    let source = project_file::read(
+        &mut include_bytes!("../../../library/washer-normal-m3.tcd").as_slice(),
+        Default::default(),
+        &project_file::supported_capabilities(),
+    )
+    .unwrap();
+    let mut definitions = symbols::definitions(&source.project.document).unwrap();
+    let (_, shipped) = definitions.pop().unwrap();
+    assert!(definitions.is_empty());
+    let (_, alternate, _) = author(parameters, false);
+    let mut retired = vec![part.body, part.feature];
+    for definition in [shipped, alternate] {
+        let mut incoming = SymbolPlaceRequest::from_definition(
+            EntityId::new(),
+            &definition,
+            &definition.name,
+            BTreeMap::new(),
+            Placement::default(),
+        )
+        .unwrap();
+        incoming.instance = generated.instance;
+        request.hardware[1].source = ScrewConnectionHardwareSource::Library {
+            definition: Box::new(definition.clone()),
+            placement: Box::new(incoming.clone()),
+        };
+        let original = session.document().clone();
+        let edit =
+            prepare_screw_connection(&session, session.revision(), actor(), &request).unwrap();
+        assert_eq!(session.document(), &original);
+        let candidate = edit.prepared.document();
+        assert!(retired.iter().all(|id| candidate.get(*id).is_none()));
+        let saved = read_screw_connection_request(candidate, request.connection).unwrap();
+        assert_eq!(saved.hardware[1].instance, generated.instance);
+        assert_eq!(saved.hardware[1].role_id, generated.role_id);
+        assert_eq!(saved.hardware[1].driver, generated.driver);
+        assert_eq!(saved, request);
+        let pin = symbols::read_instance(candidate, incoming.record).unwrap();
+        assert_eq!(pin.pin, definition.pin().unwrap());
+        retired.extend([incoming.record, incoming.wrapper]);
+        session.commit(edit.prepared).unwrap();
+        assert_eq!(reopened(session.document()), *session.document());
+        session.undo(session.revision(), actor()).unwrap();
+        assert_eq!(session.document(), &original);
+        session.redo(session.revision(), actor()).unwrap();
+    }
+    let native = compiler()
+        .compile(session.document(), session.revision())
+        .unwrap();
+    assert_native(&native, &request, 0.5);
+
+    request.hardware[1] = generated;
+    let edit = prepare_screw_connection(&session, session.revision(), actor(), &request).unwrap();
+    let candidate = edit.prepared.document();
+    assert!(retired[2..].iter().all(|id| candidate.get(*id).is_none()));
+    assert_eq!(
+        read_screw_connection_request(candidate, request.connection).unwrap(),
+        request
+    );
+}
+
 #[test]
 fn pinned_metric_nut_and_dynamic_library_washer_follow_overrides_with_native_proof_and_reopen() {
     let (document, mut request, _) = fixture::fixture();

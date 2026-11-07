@@ -228,11 +228,16 @@ pub fn library_placement_definition(
     Ok(None)
 }
 
+enum PlacementTarget {
+    New(Option<EntityId>),
+    Existing,
+}
+
 fn placement_edits(
     document: &Document,
     definition: &SymbolDefinition,
     request: &SymbolPlaceRequest,
-    parent: Option<EntityId>,
+    target: PlacementTarget,
 ) -> Result<(Vec<Mutation>, SymbolInstance), DocumentError> {
     if super::architecture::blueprint_for_definition(definition)?.is_some() {
         return Err(invalid(
@@ -254,17 +259,33 @@ fn placement_edits(
         .into_values()
         .map(Mutation::Insert)
         .collect::<Vec<_>>();
-    edits.push(Mutation::Insert(entity(
-        request.instance,
-        request.name.clone(),
-        EntityData::Instance {
-            component: request.wrapper,
-            placement: request.placement,
-            placement_source: None,
-        },
-    )));
+    edits.push(match target {
+        PlacementTarget::New(_) => Mutation::Insert(entity(
+            request.instance,
+            request.name.clone(),
+            EntityData::Instance {
+                component: request.wrapper,
+                placement: request.placement,
+                placement_source: None,
+            },
+        )),
+        PlacementTarget::Existing => {
+            let mut instance = document
+                .get(request.instance)
+                .ok_or(DocumentError::Missing(request.instance))?
+                .clone();
+            let EntityData::Instance { component, .. } = &mut instance.data else {
+                return Err(invalid(
+                    "Library hardware must replace an existing Instance",
+                ));
+            };
+            *component = request.wrapper;
+            instance.name.clone_from(&request.name);
+            Mutation::Replace(instance)
+        }
+    });
     edits.push(Mutation::Insert(record_entity(request.record, &value)?));
-    if let Some(parent) = parent {
+    if let PlacementTarget::New(Some(parent)) = target {
         if parent != document.id() {
             let container = document.get(parent).ok_or_else(|| {
                 invalid("The placement parent is missing; choose a current assembly, group or root")
@@ -312,7 +333,12 @@ pub fn prepare_place_in(
     stale(session, revision)?;
     super::validate(session.document())?;
     let definition = read_definition(session.document(), request.definition)?;
-    let (edits, value) = placement_edits(session.document(), &definition, request, parent)?;
+    let (edits, value) = placement_edits(
+        session.document(),
+        &definition,
+        request,
+        PlacementTarget::New(parent),
+    )?;
     finish(
         session,
         revision,
@@ -333,13 +359,49 @@ pub fn prepare_library_place(
     request: &SymbolPlaceRequest,
     parent: Option<EntityId>,
 ) -> Result<SymbolPrepared, CommandError> {
+    prepare_library_placement(
+        session,
+        revision,
+        actor,
+        content,
+        request,
+        PlacementTarget::New(parent),
+    )
+}
+
+/// Rebind a connection-owned occurrence after the composer checks its role identity.
+pub(crate) fn prepare_library_rebind(
+    session: &Session,
+    revision: u64,
+    actor: Actor,
+    content: &SymbolDefinition,
+    request: &SymbolPlaceRequest,
+) -> Result<SymbolPrepared, CommandError> {
+    prepare_library_placement(
+        session,
+        revision,
+        actor,
+        content,
+        request,
+        PlacementTarget::Existing,
+    )
+}
+
+fn prepare_library_placement(
+    session: &Session,
+    revision: u64,
+    actor: Actor,
+    content: &SymbolDefinition,
+    request: &SymbolPlaceRequest,
+    target: PlacementTarget,
+) -> Result<SymbolPrepared, CommandError> {
     stale(session, revision)?;
     super::validate(session.document())?;
     let existing = library_placement_definition(session.document(), content)?;
     if existing.is_some_and(|id| id != request.definition) {
         return Err(invalid("Placement must reuse the exact embedded definition identity").into());
     }
-    let (mut edits, value) = placement_edits(session.document(), content, request, parent)?;
+    let (mut edits, value) = placement_edits(session.document(), content, request, target)?;
     if existing.is_none() {
         edits.insert(
             0,
