@@ -1017,6 +1017,7 @@ pub fn prepare_screw_connection(
         let source = ScrewHardwarePlacementDefinition {
             owner: row.instance,
             axis: request.axis.id,
+            connection: None,
             station: length(station),
             roll: angle(roll.to_degrees()),
             local_mount: mount(part),
@@ -1131,15 +1132,43 @@ pub fn prepare_screw_connection(
             inputs: definition.inputs()?,
         },
     };
-    stage(
-        &mut candidate,
-        &actor,
-        "Retain canonical connection ownership",
-        vec![Mutation::Insert(record)],
-    )?;
+    // Remove obsolete roles while the previous ownership record is detached.
+    // Publishing the new record before this cleanup would make old associative
+    // drivers refer to roles which intentionally no longer exist.
     let keep = owned(&candidate, request.connection, &definition)?;
     let obsolete = old_owned.difference(&keep).copied().collect();
     remove_owned(&mut candidate, &actor, &obsolete)?;
+    let mut ownership = vec![Mutation::Insert(record)];
+    for row in &request.hardware {
+        let mut driver = candidate
+            .get(row.driver)
+            .ok_or_else(|| error("The composed hardware driver is missing"))?
+            .clone();
+        let source = ScrewHardwarePlacementDefinition {
+            owner: row.instance,
+            axis: request.axis.id,
+            connection: Some(ScrewHardwareConnectionBinding {
+                connection: request.connection,
+                role: row.role_id,
+            }),
+            // The canonical providers are the sole pose authority. There is
+            // no stale copied station, helical phase or component mount.
+            station: length(0.),
+            roll: angle(0.),
+            local_mount: RigidPose::default(),
+        };
+        driver.data = EntityData::Extension {
+            definition: source.definition()?,
+            inputs: source.inputs()?,
+        };
+        ownership.push(Mutation::Replace(driver));
+    }
+    stage(
+        &mut candidate,
+        &actor,
+        "Retain associative connection ownership",
+        ownership,
+    )?;
     let prepared = session.prepare(Request {
         expected_revision,
         actor,

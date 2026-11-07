@@ -1230,6 +1230,31 @@ fn associative_projection_preserves_legacy_bytes_and_rejects_real_axis_geometry_
     let request = connection_request(&f);
     let q = prepare_screw_connection(&f.session, f.session.revision(), actor(), &request).unwrap();
     f.session.commit(q.prepared).unwrap();
+    // The compositor now authors live bindings by default. Explicitly restore
+    // the old source form to prove its omitted-field wire compatibility.
+    let edits = request
+        .hardware
+        .iter()
+        .map(|row| {
+            let mut source =
+                read_screw_hardware_placement(f.session.document(), row.driver).unwrap();
+            source.connection = None;
+            let mut driver = f.session.document().get(row.driver).unwrap().clone();
+            driver.data = EntityData::Extension {
+                definition: source.definition().unwrap(),
+                inputs: source.inputs().unwrap(),
+            };
+            Mutation::Replace(driver)
+        })
+        .collect();
+    f.session
+        .apply(Request {
+            expected_revision: f.session.revision(),
+            actor: actor(),
+            label: "Restore explicit legacy driver fixture".into(),
+            edits,
+        })
+        .unwrap();
     let row = &request.hardware[0];
     let legacy = read_screw_hardware_placement(f.session.document(), row.driver).unwrap();
     let data = legacy.definition().unwrap().data;
@@ -1288,4 +1313,62 @@ fn associative_projection_preserves_legacy_bytes_and_rejects_real_axis_geometry_
         "{err}"
     );
     assert_eq!(bad, before);
+}
+
+#[test]
+fn associative_composition_removes_obsolete_roles_before_publishing_new_bindings() {
+    let mut f = fixture();
+    let baseline = f.session.document().clone();
+    let mut request = connection_request(&f);
+    let washer = ScrewConnectionHardwareRequest {
+        role_id: EntityId::new(),
+        role: ScrewConnectionHardwareRole::HeadWasher,
+        name: "Removable washer".into(),
+        source: ScrewConnectionHardwareSource::Generated {
+            part: Box::new(MechanicalPartRequest::new(
+                "Removable washer",
+                MechanicalPartParameters::Washer {
+                    bore_diameter: length(3.2),
+                    outside_diameter: length(7.),
+                    thickness: length(0.5),
+                    frame: Default::default(),
+                },
+            )),
+        },
+        instance: EntityId::new(),
+        driver: EntityId::new(),
+    };
+    request.hardware.insert(1, washer.clone());
+    let first =
+        prepare_screw_connection(&f.session, f.session.revision(), actor(), &request).unwrap();
+    f.session.commit(first.prepared).unwrap();
+    for row in &request.hardware {
+        let source = read_screw_hardware_placement(f.session.document(), row.driver).unwrap();
+        assert_eq!(source.connection.unwrap().role, row.role_id);
+        assert_eq!(source.station, length(0.));
+        assert_eq!(source.local_mount, RigidPose::default());
+    }
+    request.hardware.remove(1);
+    let edit =
+        prepare_screw_connection(&f.session, f.session.revision(), actor(), &request).unwrap();
+    // Successful preparation publishes nothing into the live document.
+    assert!(f.session.document().get(washer.driver).is_some());
+    f.session.commit(edit.prepared).unwrap();
+    assert!(f.session.document().get(washer.driver).is_none());
+    assert!(f.session.document().get(washer.instance).is_none());
+    assert_eq!(
+        read_screw_connection_request(f.session.document(), request.connection).unwrap(),
+        request
+    );
+    let remove = prepare_remove_screw_connection(
+        &f.session,
+        f.session.revision(),
+        actor(),
+        &ScrewConnectionRemoveRequest {
+            connection: request.connection,
+        },
+    )
+    .unwrap();
+    f.session.commit(remove).unwrap();
+    assert_eq!(f.session.document(), &baseline);
 }
