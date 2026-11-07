@@ -292,7 +292,11 @@ fn fitted_registered_assets_preserve_native_mass_profiles_step_and_owner_lifetim
     let fresh = Solid::root_rounded_helical_thread_named_fresh(spec, owner, policy).unwrap();
     same_topology(&fresh, &first, owner);
     root_probes(&fresh, spec);
-    root_probes(&first, spec);
+    // COMMON may mark an operand's root non-free. Exercise the exact loaded
+    // payload on a separate native restore so the cached owner immutability
+    // check below still compares every stored bit across head construction.
+    let loaded_for_probes = restore(entry.brep, &entry.receipt, policy).unwrap();
+    root_probes(&loaded_for_probes, spec);
     let expected = analytic_volume(spec.profile, Some(spec.root_radius_mm));
     volume_matches(&fresh, expected, policy);
     volume_matches(&first, expected, policy);
