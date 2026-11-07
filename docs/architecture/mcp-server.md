@@ -542,7 +542,7 @@ mean “retain”. Source: `model/screw_connections.rs` in `multicad-core`.
 | `axis` | object | `id`, exact `source` axis definition and retained `face` capture |
 | `hardware` | array, 1-64 rows | Ordered rows with `role_id`, `role`, `name`, `source`, `instance` and `driver` |
 | `receivers` | array, 1-16 rows | Receiving requests with `feature`, `name` and full typed `source` |
-| `parameters` | object | Typed `grip`, `minimum_engagement` and `blind_tip_clearance` dimensions |
+| `parameters` | object | Typed `grip`, `minimum_engagement` and `blind_tip_clearance` dimensions, plus optional `end_reference` |
 
 Hardware roles are `screw`, `hanger_bolt`, `head_washer`, `nut_washer`, `nut` and
 `insert`. A hardware source is `{"kind":"generated","part":...}` using the canonical
@@ -570,6 +570,33 @@ blind extent, minimum wall, and optional counterbore or countersink seat.
 Through extent is `{"kind":"through"}`; blind extent additionally requires
 `depth` and `floor`. No field infers a missing usable insert-thread interval or
 silently converts wood intent to a metric machine thread.
+
+Captured faces make the connection follow receiving geometry changes. These
+optional fields use the same canonical face captures as the graphical editor:
+
+| Field | JSON value | Omitted or `null` | Constraints and meaning |
+| --- | --- | --- | --- |
+| `parameters.end_reference` | object with `receiver`, `occurrence`, `face` | Use the required manual `grip` dimension | `receiver` contains `body` and frozen `producer` UUIDs; `occurrence` contains `root` (UUID) and `members` (ordered UUID array); `face` contains `source` (UUID) and `intent` (geometry intent). The receiver and occurrence must match a selected receiving request. The current native planar face determines the end of the clamped clearance stack. `grip` must be the literal `{"value":0,"unit":"mm"}`. |
+| `receivers[].source.entry_reference` | canonical face-capture object | Use the required manual `station` dimension | The face must belong to this receiving cut's frozen input producer. Its current native plane determines the cut entry along the shared axis. `station` must be the literal `{"value":0,"unit":"mm"}`. |
+
+The clamped grip excludes the tapped or wood receiving material. A single
+tapped or wood receiver can therefore use zero grip. A captured grip end must
+be parallel to the entry face and lie on or beyond it in the fastening
+direction. Native material checks still prove the actual contiguous stock;
+the face distance alone does not establish a valid connection. Outputs omit
+absent captures. On a replacement request, omission or `null` clears the
+capture rather than retaining it. Source:
+[connection parameters and grip resolution](../../crates/multicad-core/src/model/screw_connections.rs),
+[receiving entry resolution](../../crates/multicad-core/src/model/connection_receivers.rs).
+
+Saved hardware drivers derive stations, component mounts and metric helix
+phase from the connection's current canonical providers. Changing a retained
+parameter or Library override updates those poses without creating another
+connection. The driver stores zero station, zero roll and an identity mount
+when its connection binding is present; conflicting manual pose values are
+refused. Missing or cyclic suppliers require repair. Source:
+[hardware placement](../../crates/multicad-core/src/model/screw_hardware_placement.rs),
+[connection kinematics](../../crates/multicad-core/src/model/screw_connection_kinematics.rs).
 
 A retained connection identity edits the existing connection. Typed dimensions,
 source choices, ordered hardware, receiver intent and stable identities retain
