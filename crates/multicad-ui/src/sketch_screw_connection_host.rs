@@ -2,7 +2,7 @@
 //! connection's view-only section and exploded stack presentation.
 use super::*;
 use crate::{
-    modeling::{HardwareLibraryRequest, ScrewConnectionPick},
+    modeling::{HardwareLibraryRequest, ScrewConnectionPick, ScrewConnectionPickKind},
     viewport::{PickFilter, PickOptions, Scene, SceneFeed, SectionPlane, Selection},
 };
 use multicad_core::{
@@ -87,6 +87,7 @@ impl SketchEditor {
         };
         let canonical = cache.canonical.clone();
         let producer = cache.pick.receiver.producer;
+        let capture_kind = cache.pick.kind;
         let Some(snapshot) = canonical.geometry_snapshot(producer) else {
             return;
         };
@@ -151,9 +152,11 @@ impl SketchEditor {
         );
         match result {
             Ok(()) => {
-                self.message =
-                    "Connection face and axis selected · Preview validates the complete connection"
-                        .into()
+                self.message = match capture_kind {
+                    ScrewConnectionPickKind::EntryAxis => "Connection entry face and axis selected · Preview validates the complete connection",
+                    ScrewConnectionPickKind::ReceiverEntry => "Receiving entry face captured · Preview follows its current native station",
+                    ScrewConnectionPickKind::GripEnd => "Grip end face captured · Preview derives the current native stack grip",
+                }.into()
             }
             Err(error) => self.message = error,
         }
@@ -226,19 +229,20 @@ impl SketchEditor {
         if !explode {
             return Ok(scene.clone());
         }
-        let roles = self.model.connection_hardware_instances();
+        let roles = self.model.connection_hardware_roles();
         let Some(receipt) = scene.assembly_evaluation() else {
             return Ok(scene.clone());
         };
+        let exploded_stations = exploded_role_stations(&roles);
         let mut offsets = BTreeMap::new();
         for leaf in &receipt.leaves {
-            if let Some(index) = roles
+            if let Some((id, _)) = roles
                 .iter()
-                .position(|role| leaf.path.root == *role || leaf.path.members.contains(role))
+                .find(|(id, _)| leaf.path.root == *id || leaf.path.members.contains(id))
             {
                 offsets.insert(
                     leaf.path.clone(),
-                    pose.vector([0., 0., 15. * (index + 1) as f64]),
+                    pose.vector([0., 0., exploded_stations[id]]),
                 );
             }
         }
@@ -255,5 +259,75 @@ impl SketchEditor {
             }
         }
         scene.presentation_leaf_offsets(&offsets, &BTreeMap::new())
+    }
+}
+
+/// View-only offsets retain actual role order on each side of the receiving stack.
+fn exploded_role_stations(
+    roles: &[(EntityId, multicad_core::model::ScrewConnectionHardwareRole)],
+) -> BTreeMap<EntityId, f64> {
+    use multicad_core::model::ScrewConnectionHardwareRole as Role;
+    let head_count = roles
+        .iter()
+        .filter(|(_, role)| *role == Role::HeadWasher)
+        .count();
+    let nut_count = roles
+        .iter()
+        .filter(|(_, role)| *role == Role::NutWasher)
+        .count();
+    let insert_count = usize::from(roles.iter().any(|(_, role)| *role == Role::Insert));
+    let mut head = 0;
+    let mut nut = 0;
+    roles
+        .iter()
+        .map(|(id, role)| {
+            let station = match role {
+                Role::Screw | Role::HangerBolt => -15. * (head_count + insert_count + 1) as f64,
+                Role::HeadWasher => {
+                    let value = -15. * (head_count + insert_count - head) as f64;
+                    head += 1;
+                    value
+                }
+                Role::NutWasher => {
+                    nut += 1;
+                    15. * nut as f64
+                }
+                Role::Nut => 15. * (nut_count + 1) as f64,
+                Role::Insert => -15.,
+            };
+            (*id, station)
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn exploded_stack_separates_head_and_nut_sides_without_changing_authored_roles() {
+        use multicad_core::model::ScrewConnectionHardwareRole as Role;
+        let roles = [
+            Role::NutWasher,
+            Role::HeadWasher,
+            Role::Screw,
+            Role::HeadWasher,
+            Role::NutWasher,
+            Role::Nut,
+        ]
+        .map(|role| (EntityId::new(), role));
+        let before = roles;
+        let moved = exploded_role_stations(&roles);
+        assert!(moved[&roles[2].0] < moved[&roles[1].0] && moved[&roles[1].0] < moved[&roles[3].0]);
+        assert!(moved[&roles[3].0] < 0. && moved[&roles[0].0] > 0.);
+        assert!(moved[&roles[0].0] < moved[&roles[4].0] && moved[&roles[4].0] < moved[&roles[5].0]);
+        assert_eq!(roles, before);
+        let insert_roles =
+            [Role::HeadWasher, Role::Screw, Role::Insert].map(|role| (EntityId::new(), role));
+        let installed = exploded_role_stations(&insert_roles);
+        assert!(installed[&insert_roles[1].0] < installed[&insert_roles[0].0]);
+        assert!(
+            installed[&insert_roles[0].0] < installed[&insert_roles[2].0]
+                && installed[&insert_roles[2].0] < 0.
+        );
     }
 }

@@ -277,3 +277,109 @@ fn choosing_a_unique_hardware_role_reuses_its_identity_without_adding_duplicates
     assert!(!panel.role_available(ScrewConnectionHardwareRole::HeadWasher));
     assert!(panel.role_available(ScrewConnectionHardwareRole::Nut));
 }
+
+// Synthetic named planes below exercise editor source retention only. Native
+// geometry and associative publication are separate NativeBackend controls.
+fn editor_face(source: EntityId, z: f64) -> FaceInput {
+    use multicad_core::references::*;
+    let origin = Origin {
+        source,
+        role: format!("editor-plane-{z}"),
+    };
+    let frame = ReferenceFrame {
+        origin_mm: [0., 0., z],
+        u: [1., 0., 0.],
+        v: [0., 1., 0.],
+    };
+    let key = TopologyKey {
+        kind: TopologyKind::Face,
+        ordinal: 0,
+    };
+    let snapshot = TopologySnapshot {
+        owner: source,
+        revision: 0,
+        elements: vec![TopologyElement {
+            key,
+            origins: std::collections::BTreeSet::from([origin.clone()]),
+            boundary: Default::default(),
+            frames: vec![AnchoredFrame { origin, frame }],
+            geometry: Some(AnalyticGeometry::Plane { frame }),
+        }],
+    };
+    capture_profile_face(&snapshot, key, None).unwrap()
+}
+
+#[test]
+fn captured_end_and_receiver_entries_have_one_authority_and_restore_the_manual_binding() {
+    let parameter = Entity::new(
+        "grip",
+        EntityData::Parameter {
+            expression: "4.1".into(),
+            unit: "mm".into(),
+            exposed: true,
+            inputs: vec![],
+        },
+    );
+    let document = Document::new("Associative editor sources")
+        .unwrap()
+        .edited(&[Mutation::Insert(parameter)])
+        .unwrap();
+    let original = document.clone();
+    let mut panel = ScrewConnectionPanel::new(&document).unwrap();
+    let manual = Dimension::Expression {
+        expression: BoundExpression::bind(&document, "=$grip", "mm", None).unwrap(),
+    };
+    panel.parameters.grip = manual.clone();
+    let input = BodyInput {
+        body: EntityId::new(),
+        producer: EntityId::new(),
+    };
+    let occurrence = OccurrencePath {
+        root: input.body,
+        members: vec![],
+    };
+    let entry = editor_face(input.producer, 0.);
+    panel.pick = Some(ScrewConnectionPick {
+        receiver: input.clone(),
+        occurrence: occurrence.clone(),
+        kind: ScrewConnectionPickKind::EntryAxis,
+    });
+    panel.capture(entry.clone()).unwrap();
+    assert_eq!(panel.receivers[0].source.entry_reference, Some(entry));
+    assert_eq!(panel.receivers[0].source.station, length(0.));
+    let end = editor_face(input.producer, 4.1);
+    panel.pick = Some(ScrewConnectionPick {
+        receiver: input.clone(),
+        occurrence: occurrence.clone(),
+        kind: ScrewConnectionPickKind::GripEnd,
+    });
+    panel.capture(end.clone()).unwrap();
+    assert_eq!(panel.parameters.grip, length(0.));
+    assert_eq!(panel.parameters.end_reference.as_ref().unwrap().face, end);
+    let context = egui::Context::default();
+    let output = frame(&context, &mut panel, &document, vec![], 320.);
+    let texts = output
+        .shapes
+        .iter()
+        .filter_map(|shape| match &shape.shape {
+            egui::Shape::Text(text) => Some(text.galley.job.text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert!(texts.contains(&"Use explicit grip"));
+    assert!(
+        !texts.contains(&"Grip"),
+        "Dormant manual grip must not appear as a second driving value"
+    );
+    assert!(
+        !texts.contains(&"Cut start along axis"),
+        "Captured entry must not expose a dormant station control"
+    );
+    output.drop_without_applying_deltas();
+    panel.select_mode(ScrewConnectionMode::DirectWood);
+    panel.select_mode(ScrewConnectionMode::ThroughNut);
+    panel.use_explicit_grip();
+    assert_eq!(panel.parameters.grip, manual);
+    assert!(panel.parameters.end_reference.is_none());
+    assert_eq!(document, original);
+}

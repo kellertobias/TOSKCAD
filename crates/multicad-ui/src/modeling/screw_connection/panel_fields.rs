@@ -6,21 +6,13 @@ impl ScrewConnectionPanel {
         ui.strong("Receiving face and axis");
         let selected = self.choices.get(self.choice);
         controls::inspector_combo(ui, (self.connection, "receiver-choice"))
-            .selected_text(selected.map_or("Choose a receiving occurrence", |choice| {
-                document
-                    .get(choice.component)
-                    .map_or("Receiving occurrence", |entity| entity.name.as_str())
-            }))
+            .selected_text(selected.map_or_else(
+                || "Choose a receiving occurrence".into(),
+                |choice| occurrence_name(document, choice),
+            ))
             .show_ui(ui, |ui| {
                 for (index, choice) in self.choices.iter().enumerate() {
-                    let name = document
-                        .get(choice.component)
-                        .map_or("Receiving Part", |entity| entity.name.as_str());
-                    ui.selectable_value(
-                        &mut self.choice,
-                        index,
-                        format!("{name} · {}", choice.path.root),
-                    );
+                    ui.selectable_value(&mut self.choice, index, occurrence_name(document, choice));
                 }
             });
         ui.horizontal_wrapped(|ui| {
@@ -42,7 +34,7 @@ impl ScrewConnectionPanel {
                         producer: choice.producer,
                     },
                     occurrence: choice.path.clone(),
-                    axis: true,
+                    kind: ScrewConnectionPickKind::EntryAxis,
                 });
                 *changed = true;
             }
@@ -52,16 +44,22 @@ impl ScrewConnectionPanel {
             }
         });
         if let Some(pick) = &self.pick {
-            ui.label(if pick.axis {
-                "Click a planar receiving face in the viewer."
-            } else {
-                "Click a planar face on the additional receiver."
+            ui.label(match pick.kind {
+                ScrewConnectionPickKind::EntryAxis => {
+                    "Click a planar receiving face in the viewer."
+                }
+                ScrewConnectionPickKind::ReceiverEntry => {
+                    "Click the entry face on the additional receiver."
+                }
+                ScrewConnectionPickKind::GripEnd => {
+                    "Click the far face of the receiving stack to derive grip."
+                }
             });
         }
         if let Some(axis) = &mut self.axis {
             ui.small(format!(
-                "Captured predecessor {} · face {}",
-                axis.source.receiver.producer, axis.face.intent.id
+                "Entry face selected · {}",
+                part_name(document, axis.source.receiver.body)
             ));
             for (index, key, label) in [
                 (0, "axis-u", "Axis U offset"),
@@ -87,6 +85,65 @@ impl ScrewConnectionPanel {
                 .checkbox(&mut axis.source.reverse, "Reverse connection direction")
                 .changed();
         }
+    }
+
+    pub(super) fn show_grip(&mut self, ui: &mut egui::Ui, document: &Document, changed: &mut bool) {
+        ui.separator();
+        ui.strong("Receiving stack grip");
+        if let Some(end) = &self.parameters.end_reference {
+            ui.small(format!(
+                "Far face selected · {}",
+                part_name(document, end.receiver.body)
+            ));
+            if let Some(review) = &self.review {
+                ui.label(format!("Native Preview grip: {:.3} mm", review.grip_mm));
+            } else {
+                ui.small("Preview derives grip from the current native entry and far faces.");
+            }
+            if ui.button("Use explicit grip").clicked() {
+                self.use_explicit_grip();
+                *changed = true;
+            }
+        } else {
+            self.fields.dimension(
+                ui,
+                document,
+                self.connection,
+                ("grip", "Grip", "mm"),
+                &mut self.parameters.grip,
+            );
+        }
+        let selected = self.choices.get(self.choice);
+        let eligible = selected.is_some_and(|choice| {
+            self.receivers.iter().any(|receiver| {
+                receiver.source.input.body == choice.component
+                    && receiver.source.input.producer == choice.producer
+                    && receiver.source.occurrence == choice.path
+            })
+        });
+        if ui
+            .add_enabled(
+                self.axis.is_some() && eligible,
+                egui::Button::new(if self.parameters.end_reference.is_some() {
+                    "Replace grip end face"
+                } else {
+                    "Pick grip end face"
+                }),
+            )
+            .clicked()
+            && let Some(choice) = selected
+        {
+            self.pick = Some(ScrewConnectionPick {
+                receiver: BodyInput {
+                    body: choice.component,
+                    producer: choice.producer,
+                },
+                occurrence: choice.path.clone(),
+                kind: ScrewConnectionPickKind::GripEnd,
+            });
+            *changed = true;
+        }
+        ui.small("Choose an included receiving occurrence above, then pick its far face. Captured grip follows source dimensions; explicit grip retains your typed value or expression.");
     }
 
     pub(super) fn show_hardware(
@@ -371,7 +428,7 @@ impl ScrewConnectionPanel {
                     producer: choice.producer,
                 },
                 occurrence: choice.path.clone(),
-                axis: false,
+                kind: ScrewConnectionPickKind::ReceiverEntry,
             });
             *changed = true;
         }
@@ -386,20 +443,24 @@ impl ScrewConnectionPanel {
                             .get(receiver.source.input.body)
                             .map_or("Receiving Part", |entity| entity.name.as_str())
                     ));
-                    ui.small(format!(
-                        "Exact predecessor {}",
-                        receiver.source.input.producer
-                    ));
+                    ui.small("Uses the selected receiving geometry");
                     if ui.button("Remove receiver").clicked() {
                         remove = Some(index);
                     }
-                    self.fields.dimension(
-                        ui,
-                        document,
-                        receiver.feature,
-                        ("station", "Cut start along axis", "mm"),
-                        &mut receiver.source.station,
-                    );
+                    if receiver.source.entry_reference.is_some() {
+                        ui.small("Receiving entry face selected");
+                        if let Some(station) = self.entry_review.get(&receiver.feature) {
+                            ui.label(format!("Native Preview entry: {station:.3} mm along axis"));
+                        } else {
+                            ui.small("Preview resolves the entry from the current receiving geometry.");
+                        }
+                        if ui.button("Use explicit cut station").clicked() {
+                            receiver.source.entry_reference = None;
+                            *changed = true;
+                        }
+                    } else {
+                        self.fields.dimension(ui, document, receiver.feature, ("station", "Cut start along axis", "mm"), &mut receiver.source.station);
+                    }
                     let mut tapped =
                         matches!(receiver.source.cut, ConnectionReceiverCut::Tapped { .. });
                     if ui
@@ -920,5 +981,22 @@ fn show_thread_named(
             ("custom-upper", "Upper flank angle", "deg"),
             &mut profile.upper_flank,
         );
+    }
+}
+
+fn part_name(document: &Document, part: EntityId) -> &str {
+    document
+        .get(part)
+        .map_or("Missing receiving Part", |entity| entity.name.as_str())
+}
+fn occurrence_name(document: &Document, choice: &TransferOccurrence) -> String {
+    let names = std::iter::once(choice.path.root)
+        .chain(choice.path.members.iter().copied())
+        .filter_map(|id| document.get(id).map(|entity| entity.name.clone()))
+        .collect::<Vec<_>>();
+    if names.is_empty() {
+        part_name(document, choice.component).into()
+    } else {
+        names.join(" / ")
     }
 }

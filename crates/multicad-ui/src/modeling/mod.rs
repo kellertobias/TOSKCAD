@@ -76,7 +76,9 @@ pub use placement::{PlacementCommand, PlacementMode};
 pub use scale_gizmo::ScaleViewport;
 pub use scaling::ScaleCommand;
 pub use screw_connection::ScrewConnectionCommand;
-pub(crate) use screw_connection::{HardwareLibraryRequest, ScrewConnectionPick};
+pub(crate) use screw_connection::{
+    HardwareLibraryRequest, ScrewConnectionPick, ScrewConnectionPickKind,
+};
 pub(crate) use split::SplitInputField;
 pub use termination::TerminationViewport;
 

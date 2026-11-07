@@ -99,11 +99,15 @@ impl ModelToolController {
             _ => None,
         }
     }
-    pub(crate) fn connection_hardware_instances(&self) -> Vec<EntityId> {
+    pub(crate) fn connection_hardware_roles(
+        &self,
+    ) -> Vec<(EntityId, model::ScrewConnectionHardwareRole)> {
         match self.form.as_ref() {
-            Some(ModelForm::ScrewConnection(panel)) => {
-                panel.hardware.iter().map(|role| role.instance).collect()
-            }
+            Some(ModelForm::ScrewConnection(panel)) => panel
+                .hardware
+                .iter()
+                .map(|role| (role.instance, role.role))
+                .collect(),
             _ => vec![],
         }
     }

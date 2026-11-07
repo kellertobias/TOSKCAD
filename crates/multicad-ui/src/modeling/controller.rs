@@ -36,6 +36,7 @@ use multicad_core::{
     sketch_regions::RegionIntent,
 };
 use proof::SceneProof;
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 struct Scope {
@@ -56,6 +57,7 @@ enum Execution {
 struct Candidate {
     prepared: Prepared,
     architecture_levels: std::sync::OnceLock<crate::architecture_view::Levels>,
+    connection_entry_stations: std::sync::OnceLock<BTreeMap<EntityId, f64>>,
     content: ContentHash,
     form: FormStamp,
     stamp: SceneStamp,
@@ -1834,6 +1836,7 @@ impl ModelToolController {
         self.candidate = Some(Candidate {
             prepared: prepared.prepared,
             architecture_levels: Default::default(),
+            connection_entry_stations: Default::default(),
             content,
             form,
             stamp,
@@ -2256,8 +2259,49 @@ impl ModelToolController {
                     .cloned(),
                 _ => None,
             });
+        let connection_entries = self
+            .candidate
+            .as_ref()
+            .filter(|candidate| !candidate.pending)
+            .and_then(|candidate| {
+                let scene = candidate.scene.as_ref()?;
+                let Some(ModelForm::ScrewConnection(panel)) = &self.form else {
+                    return None;
+                };
+                Some(
+                    candidate
+                        .connection_entry_stations
+                        .get_or_init(|| {
+                            let Ok(source) = model::read_screw_connection_request(
+                                candidate.prepared.document(),
+                                panel.connection(),
+                            ) else {
+                                return BTreeMap::new();
+                            };
+                            let snapshots = scene.reference_snapshots();
+                            source
+                                .receivers
+                                .iter()
+                                .filter_map(|receiver| {
+                                    receiver
+                                        .source
+                                        .resolve_current(
+                                            candidate.prepared.document(),
+                                            session.parameters(),
+                                            scene.stamp().revision,
+                                            &snapshots,
+                                        )
+                                        .ok()
+                                        .map(|resolved| (receiver.feature, resolved.station_mm))
+                                })
+                                .collect()
+                        })
+                        .clone(),
+                )
+            })
+            .unwrap_or_default();
         if let Some(ModelForm::ScrewConnection(panel)) = self.form.as_mut() {
-            panel.set_review(connection_review);
+            panel.set_review(connection_review, connection_entries);
         }
         let review = self.fdm_review();
         if let Some(ModelForm::FdmAid(panel)) = self.form.as_mut() {

@@ -4129,6 +4129,7 @@ impl SketchEditor {
             if self.architecture.planar() {
                 self.solid.filter = crate::viewport::PickFilter::Parts;
             }
+            self.solid.set_section_override(self.modeling_section());
             self.solid.show(
                 ui,
                 &response,

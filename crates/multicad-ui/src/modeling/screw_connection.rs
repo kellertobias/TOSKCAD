@@ -88,17 +88,25 @@ impl ScrewConnectionCommand {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ScrewConnectionPickKind {
+    EntryAxis,
+    ReceiverEntry,
+    GripEnd,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct ScrewConnectionPick {
     pub receiver: BodyInput,
     pub occurrence: OccurrencePath,
-    pub axis: bool,
+    pub kind: ScrewConnectionPickKind,
 }
 
 #[derive(Clone)]
 struct ModeDraft {
     axis: Option<ScrewConnectionAxisRequest>,
     parameters: ScrewConnectionParameters,
+    manual_grip: Option<Dimension>,
     pub(super) hardware: Vec<ScrewConnectionHardwareRequest>,
     receivers: Vec<ConnectionReceiverRequest>,
     fields: fields::Fields,
@@ -115,6 +123,7 @@ pub(super) struct ScrewConnectionPanel {
     pub(super) hardware: Vec<ScrewConnectionHardwareRequest>,
     receivers: Vec<ConnectionReceiverRequest>,
     parameters: ScrewConnectionParameters,
+    manual_grip: Option<Dimension>,
     drafts: BTreeMap<&'static str, ModeDraft>,
     fields: fields::Fields,
     library: library::HardwareLibrary,
@@ -129,6 +138,7 @@ pub(super) struct ScrewConnectionPanel {
     pub section: bool,
     pub explode: bool,
     review: Option<ScrewConnectionCheck>,
+    entry_review: BTreeMap<EntityId, f64>,
 }
 
 fn modes() -> [(ScrewConnectionMode, &'static str); 5] {
@@ -255,6 +265,7 @@ impl ScrewConnectionPanel {
                 minimum_engagement: length(1.),
                 blind_tip_clearance: length(1.),
             },
+            manual_grip: None,
             drafts: BTreeMap::new(),
             fields: Default::default(),
             library: Default::default(),
@@ -270,6 +281,7 @@ impl ScrewConnectionPanel {
             section: false,
             explode: false,
             review: None,
+            entry_review: BTreeMap::new(),
         })
     }
     pub fn existing(document: &Document, connection: EntityId) -> Result<Self, String> {
@@ -359,8 +371,17 @@ impl ScrewConnectionPanel {
         self.library.begin(id);
         Ok(())
     }
-    pub fn set_review(&mut self, review: Option<ScrewConnectionCheck>) {
+    pub fn set_review(
+        &mut self,
+        review: Option<ScrewConnectionCheck>,
+        entries: BTreeMap<EntityId, f64>,
+    ) {
         self.review = review;
+        self.entry_review = entries;
+    }
+    fn use_explicit_grip(&mut self) {
+        self.parameters.end_reference = None;
+        self.parameters.grip = self.manual_grip.take().unwrap_or_else(|| length(0.));
     }
     pub fn connection(&self) -> EntityId {
         self.connection
@@ -395,32 +416,65 @@ impl ScrewConnectionPanel {
         if face.source != pick.receiver.producer {
             return Err("Choose a face on the explicit receiving predecessor".into());
         }
-        if pick.axis {
-            let mut source = ScrewConnectionAxisDefinition::new(
-                pick.receiver.clone(),
-                pick.occurrence.clone(),
-                face.intent.id,
-            );
-            source.reverse = true;
-            if let Some(previous) = &self.axis {
-                source.offset = previous.source.offset.clone();
-                source.roll = previous.source.roll.clone();
-                source.reverse = previous.source.reverse;
+        match pick.kind {
+            ScrewConnectionPickKind::EntryAxis => {
+                let mut source = ScrewConnectionAxisDefinition::new(
+                    pick.receiver.clone(),
+                    pick.occurrence.clone(),
+                    face.intent.id,
+                );
+                source.reverse = true;
+                if let Some(previous) = &self.axis {
+                    source.offset = previous.source.offset.clone();
+                    source.roll = previous.source.roll.clone();
+                    source.reverse = previous.source.reverse;
+                }
+                self.axis = Some(ScrewConnectionAxisRequest {
+                    id: self.axis_id,
+                    source,
+                    face: face.clone(),
+                });
+                self.add_current_receiver(pick.receiver, pick.occurrence, face);
             }
-            self.axis = Some(ScrewConnectionAxisRequest {
-                id: self.axis_id,
-                source,
-                face,
-            });
-            if self.receivers.is_empty() {
-                self.add_receiver(pick.receiver, pick.occurrence);
+            ScrewConnectionPickKind::ReceiverEntry => {
+                self.add_current_receiver(pick.receiver, pick.occurrence, face)
             }
-        } else {
-            self.add_receiver(pick.receiver, pick.occurrence);
+            ScrewConnectionPickKind::GripEnd => {
+                if !self.receivers.iter().any(|receiver| {
+                    receiver.source.input == pick.receiver
+                        && receiver.source.occurrence == pick.occurrence
+                }) {
+                    return Err("Add this receiving predecessor before picking its grip end".into());
+                }
+                if self.parameters.end_reference.is_none() {
+                    self.manual_grip = Some(self.parameters.grip.clone());
+                }
+                self.parameters.grip = length(0.);
+                self.parameters.end_reference = Some(ScrewConnectionEndReference {
+                    receiver: pick.receiver,
+                    occurrence: pick.occurrence,
+                    face,
+                });
+            }
         }
         self.pick = None;
         self.stamp = FormStamp::new();
         Ok(())
+    }
+    fn add_current_receiver(
+        &mut self,
+        input: BodyInput,
+        occurrence: OccurrencePath,
+        face: FaceInput,
+    ) {
+        self.add_receiver(input.clone(), occurrence.clone());
+        if let Some(receiver) = self.receivers.iter_mut().find(|receiver| {
+            receiver.source.input == input && receiver.source.occurrence == occurrence
+        }) {
+            receiver.source.entry_reference = Some(face);
+            receiver.source.station = length(0.);
+            self.fields.remove_field(receiver.feature, "station");
+        }
     }
     fn add_receiver(&mut self, input: BodyInput, occurrence: OccurrencePath) {
         if self.receivers.iter().any(|receiver| {
@@ -454,6 +508,7 @@ impl ScrewConnectionPanel {
             ModeDraft {
                 axis: self.axis.clone(),
                 parameters: self.parameters.clone(),
+                manual_grip: self.manual_grip.clone(),
                 hardware: self.hardware.clone(),
                 receivers: self.receivers.clone(),
                 fields: self.fields.clone(),
@@ -464,6 +519,7 @@ impl ScrewConnectionPanel {
         if let Some(draft) = self.drafts.remove(mode_name(mode)) {
             self.axis = draft.axis;
             self.parameters = draft.parameters;
+            self.manual_grip = draft.manual_grip;
             self.hardware = draft.hardware;
             self.receivers = draft.receivers;
             self.fields = draft.fields;
@@ -641,15 +697,10 @@ impl ScrewConnectionPanel {
             };
         }
         self.show_axis(ui, document, &mut changed);
+        self.show_grip(ui, document, &mut changed);
         self.show_hardware(ui, document, &mut changed);
         self.show_receivers(ui, document, &mut changed);
-        self.fields.dimension(
-            ui,
-            document,
-            self.connection,
-            ("grip", "Grip", "mm"),
-            &mut self.parameters.grip,
-        );
+
         self.fields.dimension(
             ui,
             document,
@@ -676,6 +727,12 @@ impl ScrewConnectionPanel {
             if let Some(engagement) = review.actual_engagement_mm {
                 ui.label(format!(
                     "Actual engagement: {:.3} mm; required: {:.3} mm",
+                    engagement, review.minimum_engagement_mm
+                ));
+            }
+            if let Some(engagement) = review.actual_wood_engagement_mm {
+                ui.label(format!(
+                    "Actual wood engagement: {:.3} mm; required: {:.3} mm",
                     engagement, review.minimum_engagement_mm
                 ));
             }

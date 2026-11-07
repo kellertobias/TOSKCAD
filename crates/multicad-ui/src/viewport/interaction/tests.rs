@@ -616,3 +616,23 @@ fn duplication_of_a_driven_instance_clones_pose_ownership_instead_of_sharing_a_d
         .unwrap();
     assert_eq!(session.document(), &before);
 }
+
+#[test]
+fn host_section_override_is_used_and_isolated_source_can_explicitly_disable_it() {
+    let mut interaction = Interaction::default();
+    let plane = SectionPlane::new([1., 0., 0.], 10.).unwrap();
+    interaction.set_section_override(Some(plane));
+    let effective = interaction.effective_section(false).unwrap();
+    assert!(!effective.contains([9., 0., 0.]));
+    assert!(effective.contains([11., 0., 0.]));
+    assert_eq!(interaction.effective_section(false), Some(plane));
+    assert!(
+        interaction.effective_section(true).is_none(),
+        "Derived plan surfaces remain unsectioned"
+    );
+    interaction.set_section_override(None);
+    assert!(
+        interaction.effective_section(false).is_none(),
+        "Frozen predecessor picking must not inherit a host clip"
+    );
+}

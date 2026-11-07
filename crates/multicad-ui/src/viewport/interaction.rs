@@ -27,6 +27,7 @@ pub struct Interaction {
     action_error: Option<String>,
     pub filter: PickFilter,
     pub section: SectionView,
+    section_override: Option<Option<SectionPlane>>,
     reference_highlight: Option<Selection>,
     last_stamp: Option<SceneStamp>,
     display_scene: Option<Arc<Scene>>,
@@ -44,6 +45,19 @@ impl Interaction {
     /// queries. A stale or foreign surface is never used by show().
     pub fn set_display_scene(&mut self, scene: Option<Arc<Scene>>) {
         self.display_scene = scene;
+    }
+    /// Explicit host clipping, including an unsectioned predecessor inspection.
+    /// Other hosts retain their ordinary SectionView until they opt in.
+    pub fn set_section_override(&mut self, section: Option<SectionPlane>) {
+        self.section_override = Some(section);
+    }
+    fn effective_section(&self, derived: bool) -> Option<SectionPlane> {
+        if derived {
+            None
+        } else {
+            self.section_override
+                .unwrap_or_else(|| self.section.plane())
+        }
     }
     pub fn highlight_reference(&mut self, selection: Option<Selection>) {
         self.reference_highlight = selection;
@@ -507,11 +521,7 @@ impl Interaction {
                         == scene.model_evaluation().map(|info| info.source_hash)
             })
             .cloned();
-        let section = if derived.is_some() {
-            None
-        } else {
-            self.section.plane()
-        };
+        let section = self.effective_section(derived.is_some());
         if self.last_stamp != Some(scene.stamp()) {
             if self.last_stamp.is_some_and(|old| {
                 old.document == scene.stamp().document && old.revision == scene.stamp().revision
