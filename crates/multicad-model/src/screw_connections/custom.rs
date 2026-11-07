@@ -17,6 +17,7 @@ pub(super) struct Inputs<'a> {
     pub topologies: &'a BTreeMap<EntityId, TopologySnapshot>,
     pub queries: &'a mut usize,
     pub interrupt: Option<&'a dyn Fn() -> bool>,
+    pub head_station_mm: Option<f64>,
 }
 fn query<'a>(
     a: &Solid,
@@ -187,7 +188,7 @@ fn washer_stack(input: &Inputs<'_>, grip: f64) -> Result<(f64, f64), ModelError>
             }
         }
     }
-    let mut a = -head;
+    let mut a = input.head_station_mm.unwrap_or(-head);
     let mut b = if input.source.mode == Mode::HangerBolt {
         -nut
     } else {
@@ -281,17 +282,6 @@ pub(super) fn validate(mut input: Inputs<'_>) -> Result<ScrewConnectionCheck, Mo
         input.parameters,
         id,
     )?;
-    if input
-        .source
-        .receivers
-        .iter()
-        .any(|r| r.source.seat.is_some())
-    {
-        return Err(error(
-            Some(id),
-            "Custom wood connections currently require flat verified entries; recessed seating remains unsupported",
-        ));
-    }
     if input.hardware.iter().any(|r| !match mode {
         Mode::DirectWood => matches!(r.role, Role::Screw | Role::HeadWasher),
         Mode::WoodInsert => matches!(r.role, Role::Screw | Role::HeadWasher | Role::Insert),
@@ -330,7 +320,7 @@ pub(super) fn validate(mut input: Inputs<'_>) -> Result<ScrewConnectionCheck, Mo
             at(
                 input.axis,
                 placed_frame(&h.part, h.pose),
-                -head_washers,
+                input.head_station_mm.unwrap_or(-head_washers),
                 tol,
                 id,
             )?;
@@ -379,7 +369,7 @@ pub(super) fn validate(mut input: Inputs<'_>) -> Result<ScrewConnectionCheck, Mo
             at(
                 input.axis,
                 placed_frame(&screw.part, screw.pose),
-                -head_washers,
+                input.head_station_mm.unwrap_or(-head_washers),
                 tol,
                 id,
             )?;
@@ -396,7 +386,7 @@ pub(super) fn validate(mut input: Inputs<'_>) -> Result<ScrewConnectionCheck, Mo
             .map_err(|e| error(Some(id), e))?;
             no_phase_correction(&mating, id)?;
             metric = Some(mating.overlap_length_mm);
-            let tip = -head_washers + underhead_length_mm;
+            let tip = input.head_station_mm.unwrap_or(-head_washers) + underhead_length_mm;
             metric_tip = Some(tip);
             if inner_thread.length_mm < outer_thread.length_mm
                 && tip > grip + inner_thread.length_mm - clearance + tol

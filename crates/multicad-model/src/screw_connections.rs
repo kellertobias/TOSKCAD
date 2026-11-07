@@ -1,5 +1,6 @@
 //! Native connection validation over reconstructed canonical sources and physical leaves.
 mod custom;
+mod seating;
 use crate::{Model, ModelError, compiler::checkpoint, error};
 use multicad_core::{
     document::{Document, EntityData, EntityId},
@@ -231,16 +232,6 @@ pub(crate) fn validate(
         let id = entity.id;
         let source =
             model::read_screw_connection_request(document, id).map_err(|e| error(Some(id), e))?;
-        if source
-            .receivers
-            .iter()
-            .any(|receiver| receiver.source.seat.is_some())
-        {
-            return Err(error(
-                Some(id),
-                "Connection head seating requires a verified bearing/contact and remaining-thread interval; recessed connection seats are not ready yet",
-            ));
-        }
         for receiver in &source.receivers {
             if !model
                 .snapshot()
@@ -291,6 +282,19 @@ pub(crate) fn validate(
             .iter()
             .map(|row| hardware(document, p, model, row, id))
             .collect::<Result<Vec<_>, _>>()?;
+        let screw_neck = seating::validate(seating::Inputs {
+            document,
+            revision,
+            parameters: p,
+            model,
+            source: &source,
+            hardware: &hardware,
+            axis,
+            topologies: &topologies,
+            queries: &mut collision_queries,
+            interrupt,
+            grip,
+        })?;
         if matches!(
             source.mode,
             Mode::DirectWood | Mode::WoodInsert | Mode::HangerBolt
@@ -306,6 +310,7 @@ pub(crate) fn validate(
                 topologies: &topologies,
                 queries: &mut collision_queries,
                 interrupt,
+                head_station_mm: screw_neck,
             })?);
             continue;
         }
@@ -322,7 +327,6 @@ pub(crate) fn validate(
                 "Hardware role is incompatible with this connection mode",
             ));
         }
-        let mut head_thickness = 0.;
         let mut nut_thickness = 0.;
         for row in &hardware {
             if matches!(row.role, Role::HeadWasher | Role::NutWasher) {
@@ -332,14 +336,14 @@ pub(crate) fn validate(
                         "Washer connection roles must resolve to actual washer geometry",
                     ));
                 };
-                if row.role == Role::HeadWasher {
-                    head_thickness += thickness_mm;
-                } else {
+                if row.role == Role::NutWasher {
                     nut_thickness += thickness_mm;
                 }
             }
         }
-        let mut head_station = -head_thickness;
+        let neck = screw_neck
+            .ok_or_else(|| error(Some(id), "Metric screw needs a derived head station"))?;
+        let mut head_station = neck;
         let mut nut_station = grip;
         for row in &hardware {
             if let ResolvedMechanicalPart::Washer { thickness_mm, .. } = row.part {
@@ -389,11 +393,11 @@ pub(crate) fn validate(
         at(
             axis,
             placed_frame(&screw.part, screw.pose),
-            -head_thickness,
+            neck,
             tolerance,
             id,
         )?;
-        let tip = -head_thickness + underhead_length_mm;
+        let tip = neck + underhead_length_mm;
         if tip <= grip {
             return Err(error(
                 Some(id),
@@ -459,7 +463,12 @@ pub(crate) fn validate(
                     .then(occurrence)
                     .map_err(|e| error(Some(id), e))?;
                 let internal_start = world_pose.frame(frame(thread.frame));
-                tapped.push((resolved.station_mm, thread, internal_start));
+                tapped.push((
+                    resolved.station_mm,
+                    thread,
+                    internal_start,
+                    resolved.seat.map_or(0., |(_, _, depth)| depth),
+                ));
             } else {
                 intervals.push((resolved.station_mm, resolved.station_mm + depth));
             }
@@ -512,7 +521,7 @@ pub(crate) fn validate(
                 Some(mating.overlap_length_mm)
             }
             Mode::TappedReceiver => {
-                let [(start, internal, internal_start)] = tapped.as_slice() else {
+                let [(start, internal, internal_start, removed_start)] = tapped.as_slice() else {
                     return Err(error(
                         Some(id),
                         "Tapped mode requires exactly one modeled receiving thread",
@@ -528,13 +537,23 @@ pub(crate) fn validate(
                         "Tapped entry must follow the clamped grip and cannot carry nut-side hardware",
                     ));
                 }
-                let mating = model::resolve_metric_thread_mating(
+                let full = internal
+                    .end_treatments
+                    .as_ref()
+                    .map_or([0., internal.length_mm], |t| {
+                        [t.full_profile_start_mm, t.full_profile_end_mm]
+                    });
+                let mating = model::resolve_metric_thread_mating_clipped(
                     external,
                     external_start,
                     internal,
                     *internal_start,
                     engagement,
                     tolerance,
+                    model::MetricThreadMatingIntervals {
+                        internal: Some([full[0].max(*removed_start), full[1]]),
+                        ..Default::default()
+                    },
                 )
                 .map_err(|e| error(Some(id), e))?;
                 no_phase_correction(&mating, id)?;
