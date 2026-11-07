@@ -22,6 +22,7 @@ pub(super) enum PendingFile {
         expected: Option<RecoveryInfo>,
     },
     SymbolOpen {
+        path: PathBuf,
         place: bool,
         placement_intent: Option<u64>,
         local: EntityId,
@@ -269,14 +270,18 @@ impl Application {
                         );
                     }
                     let loaded = result.map_err(|error| error.to_string())?;
-                    multicad_core::symbols::definitions(&loaded.file.document)
-                        .map(|values| {
-                            values
-                                .into_iter()
-                                .map(|(_, definition)| definition)
-                                .collect()
-                        })
-                        .map_err(|error| error.to_string())
+                    let document = &loaded.file.document;
+                    let definitions = multicad_core::symbols::definitions(document)
+                        .map_err(|error| error.to_string())?
+                        .into_iter()
+                        .map(|(_, definition)| definition)
+                        .collect();
+                    let file_text =
+                        crate::library::facets::file_search_text(document, &request.path)?;
+                    Ok(crate::library::facets::LoadedHardware {
+                        definitions,
+                        file_text,
+                    })
                 })();
                 project
                     .sketch
@@ -285,6 +290,7 @@ impl Application {
 
             (
                 PendingFile::SymbolOpen {
+                    path,
                     place,
                     placement_intent,
                     local,
@@ -322,7 +328,10 @@ impl Application {
                 if definitions.is_empty() {
                     return Err("This project contains no authored symbol definitions".into());
                 }
-                p.sketch.set_symbol_library(definitions)?;
+                let file_text =
+                    crate::library::facets::file_search_text(&loaded.file.document, &path)?;
+                p.sketch
+                    .set_symbol_library_from_file(definitions, &file_text)?;
                 if place {
                     p.sketch.place_loaded_library(&p.session, &p.resources)?;
                 }

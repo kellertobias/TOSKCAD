@@ -237,6 +237,7 @@ fn library_load_is_read_only_and_stale_target_cannot_receive_it() {
         })
         .unwrap();
     let pending = PendingFile::SymbolOpen {
+        path: "library.tcd".into(),
         place: false,
         placement_intent: None,
         local: p.local_id,
@@ -378,6 +379,7 @@ fn direct_library_app() -> (
 fn pending_direct_place(app: &Application) -> PendingFile {
     let project = app.current();
     PendingFile::SymbolOpen {
+        path: "library.tcd".into(),
         place: true,
         placement_intent: project.sketch.library_placement_intent(),
         local: project.local_id,

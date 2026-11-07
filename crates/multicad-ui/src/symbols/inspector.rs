@@ -74,15 +74,9 @@ pub(super) fn show(
             }
             if shown==0{ui.label("No matching embedded symbols");}
             ui.separator();ui.strong("Loaded library · choose a definition to place");
-            let structured_filter = filter.structured_only();
-            let loaded_filter = if facets.active() || filter.has_structured_nominal() {
-                &structured_filter
-            } else {
-                &filter
-            };
             let mut shown=0;
             for ((definition,pin),search) in library.iter().zip(catalogue.library_pins).zip(catalogue.library_search) {
-                if !search.matches(loaded_filter, facets){continue;}
+                if !search.matches(&filter, facets){continue;}
                 shown+=1;
                 ui.group(|ui|{
                     summary(ui,definition);
@@ -96,7 +90,7 @@ pub(super) fn show(
                     if let Some(reason) = &unavailable { ui.colored_label(egui::Color32::LIGHT_RED, reason); }
                     if ui.add_enabled(unavailable.is_none(), egui::Button::new("Place")).on_hover_text("Preview and Apply embed this exact pin and place one occurrence in one transaction").clicked(){next=Some(Next::PlaceLibrary(Box::new(definition.clone())));}
                     if !embedded && ui.button("Import definition").on_hover_text("Explicitly embed this immutable definition without placing an occurrence").clicked(){next=Some(Next::Import(Box::new(definition.clone())));}
-                    super::installed::show_cards(ui, search, loaded_filter, facets);
+                    super::installed::show_cards(ui, search, &filter, facets);
                 });
             }
             if shown==0{ui.label("No matching library symbols loaded");}

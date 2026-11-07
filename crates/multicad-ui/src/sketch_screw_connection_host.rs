@@ -28,7 +28,7 @@ impl SketchEditor {
     pub(crate) fn accept_connection_library(
         &mut self,
         request: &HardwareLibraryRequest,
-        definitions: Result<Vec<multicad_core::symbols::SymbolDefinition>, String>,
+        definitions: Result<crate::library::facets::LoadedHardware, String>,
     ) -> Result<(), String> {
         self.model.accept_connection_library(request, definitions)
     }

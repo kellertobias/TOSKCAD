@@ -10,6 +10,11 @@ use multicad_core::{
 };
 use std::{borrow::Cow, cmp::Ordering};
 
+pub(crate) struct LoadedHardware {
+    pub definitions: Vec<SymbolDefinition>,
+    pub file_text: String,
+}
+
 #[derive(Clone, Copy)]
 enum Facet {
     Family,
@@ -238,16 +243,6 @@ impl SearchQuery {
         self.nominal.is_some()
     }
 
-    /// File names and descriptions can match the original listing. Only the
-    /// structured terms must also match its freshly read definition.
-    pub fn structured_only(&self) -> Self {
-        Self {
-            terms: vec![],
-            nominal: self.nominal,
-            conflicting_nominals: self.conflicting_nominals,
-        }
-    }
-
     fn contains(&self, text: &str) -> bool {
         self.terms.iter().all(|term| text.contains(term))
     }
@@ -350,10 +345,30 @@ pub(crate) fn entry_search(entry: &LibraryEntry) -> SearchIndex {
 }
 /// Construct once when a definition snapshot changes, never during painting.
 pub(crate) fn definition_search(definition: &SymbolDefinition) -> SearchIndex {
+    definition_search_in_file(definition, "")
+}
+
+pub(crate) fn definition_search_in_file(
+    definition: &SymbolDefinition,
+    file_text: &str,
+) -> SearchIndex {
     SearchIndex::new(
-        format!("{} {}", definition.name, definition.revision),
+        format!("{} {} {file_text}", definition.name, definition.revision),
         mechanical_part_definition_cards(definition),
     )
+}
+
+pub(crate) fn file_search_text(
+    document: &multicad_core::document::Document,
+    path: &std::path::Path,
+) -> Result<String, String> {
+    let info = multicad_core::project_file::info::read(document)?;
+    Ok(format!(
+        "{} {} {}",
+        info.name,
+        info.description,
+        path.display()
+    ))
 }
 
 #[cfg(test)]
@@ -606,11 +621,12 @@ mod tests {
         assert!(!SearchQuery::new("bronze").has_structured_nominal());
         assert!(entry_search(&original_entry(&session)).matches(&query, &facets));
         assert!(!definition_search(&short).matches(&query, &facets));
-        let structured = query.structured_only();
-        assert!(definition_search(&short).matches(&structured, &facets));
-        assert!(!definition_search(&replacement).matches(&structured, &facets));
-        let conflicting = SearchQuery::new("M3 M4 bronze").structured_only();
-        assert!(!definition_search(&replacement).matches(&conflicting, &facets));
+        let loaded = definition_search_in_file(&short, "bronze in the original file name");
+        assert!(loaded.matches(&query, &facets));
+        assert!(!loaded.matches(&SearchQuery::new("M3 brass"), &facets));
+        let replaced = definition_search_in_file(&replacement, "bronze in the original file name");
+        assert!(!replaced.matches(&query, &facets));
+        assert!(!loaded.matches(&SearchQuery::new("M3 M4 bronze"), &facets));
     }
 
     #[test]

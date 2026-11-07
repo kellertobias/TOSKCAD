@@ -71,6 +71,13 @@ impl SymbolController {
         &mut self,
         definitions: Vec<SymbolDefinition>,
     ) -> Result<(), String> {
+        self.set_library_file_snapshot(definitions, "")
+    }
+    pub(crate) fn set_library_file_snapshot(
+        &mut self,
+        definitions: Vec<SymbolDefinition>,
+        file_text: &str,
+    ) -> Result<(), String> {
         if definitions.len() > 256 {
             return Err("A library snapshot may contain at most 256 definitions".into());
         }
@@ -94,7 +101,9 @@ impl SymbolController {
         self.library_search = self
             .library
             .iter()
-            .map(super::installed::definition_search)
+            .map(|definition| {
+                crate::library::facets::definition_search_in_file(definition, file_text)
+            })
             .collect();
         Ok(())
     }

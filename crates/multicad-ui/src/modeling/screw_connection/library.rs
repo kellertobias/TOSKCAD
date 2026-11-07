@@ -4,7 +4,10 @@ use crate::{
     controls, egui,
     library::{
         LibraryEntry,
-        facets::{CatalogFilters, SearchIndex, SearchQuery, definition_search, entry_search},
+        facets::{
+            CatalogFilters, LoadedHardware, SearchIndex, SearchQuery, definition_search_in_file,
+            entry_search,
+        },
     },
 };
 use multicad_core::{document::EntityId, symbols::SymbolDefinition};
@@ -69,21 +72,27 @@ impl HardwareLibrary {
     pub fn accept(
         &mut self,
         request: &HardwareLibraryRequest,
-        result: Result<Vec<SymbolDefinition>, String>,
+        result: Result<LoadedHardware, String>,
     ) -> Result<(), String> {
         if self.request.as_ref() != Some(request) || self.role != Some(request.role) {
             return Err("This hardware choice belongs to an earlier connection draft".into());
         }
         self.request = None;
         match result {
-            Ok(definitions) => {
+            Ok(LoadedHardware {
+                definitions,
+                file_text,
+            }) => {
                 if definitions.is_empty() {
                     self.error = Some("This file contains no reusable hardware definitions".into());
                 } else {
                     for definition in &definitions {
                         definition.validate().map_err(|error| error.to_string())?;
                     }
-                    self.loaded_search = definitions.iter().map(definition_search).collect();
+                    self.loaded_search = definitions
+                        .iter()
+                        .map(|definition| definition_search_in_file(definition, &file_text))
+                        .collect();
                     self.loaded = definitions;
                 }
             }
@@ -107,7 +116,6 @@ impl HardwareLibrary {
         );
         self.facets.show(ui, &self.entries);
         let query = SearchQuery::new(&self.query);
-        let loaded_query = query.structured_only();
         if let Some(error) = &self.error {
             ui.colored_label(egui::Color32::LIGHT_RED, error);
         }
@@ -115,7 +123,7 @@ impl HardwareLibrary {
         let mut shown = 0;
         for (definition, search) in self.loaded.iter().zip(&self.loaded_search) {
             // The original may have changed after its listing was read.
-            if !search.matches(&loaded_query, &self.facets) {
+            if !search.matches(&query, &self.facets) {
                 continue;
             }
             shown += 1;
@@ -203,9 +211,15 @@ mod tests {
         };
         library.request = Some(request.clone());
         library.cancel();
-        assert!(library.accept(&request, Ok(vec![])).is_err());
+        let empty_file = || {
+            Ok(LoadedHardware {
+                definitions: vec![],
+                file_text: String::new(),
+            })
+        };
+        assert!(library.accept(&request, empty_file()).is_err());
         library.begin(EntityId::new());
-        assert!(library.accept(&request, Ok(vec![])).is_err());
+        assert!(library.accept(&request, empty_file()).is_err());
         assert!(library.loaded.is_empty());
     }
 }

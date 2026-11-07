@@ -119,10 +119,11 @@ impl Application {
             })
             .map_err(|e| e.to_string())?;
         let resources = p.resources.clone();
-        let id = self.storage.submit(FileRequest::Open(path))?;
+        let id = self.storage.submit(FileRequest::Open(path.clone()))?;
         self.pending_files.insert(
             id,
             PendingFile::SymbolOpen {
+                path,
                 place,
                 placement_intent,
                 local,

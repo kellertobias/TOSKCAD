@@ -1,6 +1,5 @@
 use super::*;
 use crate::modeling::{HardwareLibraryRequest, ScrewConnectionPick};
-use multicad_core::symbols::SymbolDefinition;
 
 impl ModelToolController {
     pub fn begin_screw_connection(
@@ -76,7 +75,7 @@ impl ModelToolController {
     pub(crate) fn accept_connection_library(
         &mut self,
         request: &HardwareLibraryRequest,
-        definitions: Result<Vec<SymbolDefinition>, String>,
+        definitions: Result<crate::library::facets::LoadedHardware, String>,
     ) -> Result<(), String> {
         let Some(ModelForm::ScrewConnection(panel)) = &mut self.form else {
             return Err("The connection hardware chooser is no longer open".into());

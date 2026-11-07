@@ -88,6 +88,14 @@ impl SketchEditor {
     ) -> Result<(), String> {
         self.symbols.set_library_snapshot(definitions)
     }
+    pub(crate) fn set_symbol_library_from_file(
+        &mut self,
+        definitions: Vec<multicad_core::symbols::SymbolDefinition>,
+        file_text: &str,
+    ) -> Result<(), String> {
+        self.symbols
+            .set_library_file_snapshot(definitions, file_text)
+    }
     pub(crate) fn library_placement_intent(&self) -> Option<u64> {
         self.symbols.library_placement_intent()
     }

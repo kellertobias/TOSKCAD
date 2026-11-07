@@ -472,7 +472,7 @@ impl ScrewConnectionPanel {
     pub fn accept_library(
         &mut self,
         request: &HardwareLibraryRequest,
-        result: Result<Vec<SymbolDefinition>, String>,
+        result: Result<crate::library::facets::LoadedHardware, String>,
     ) -> Result<(), String> {
         self.library.accept(request, result)
     }
