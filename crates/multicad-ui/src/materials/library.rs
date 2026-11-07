@@ -628,18 +628,30 @@ fn stock_controls(ui: &mut egui::Ui, s: &mut StockKind) {
             ui.text_edit_singleline(designation)
                 .labelled_by(designation_label.id);
             let previous_shape = *shape;
+            let shape_label = |shape: ProfileShape| match shape {
+                ProfileShape::Rectangular => "Rectangular",
+                ProfileShape::Round => "Round",
+                ProfileShape::Angle => "Angle",
+                ProfileShape::ItemLine8_40x40 => "item Line 8 40×40",
+            };
             egui::ComboBox::from_id_salt("profile-shape")
-                .selected_text(format!("{shape:?}"))
+                .selected_text(shape_label(*shape))
                 .show_ui(ui, |ui| {
                     for s in [
                         ProfileShape::Rectangular,
                         ProfileShape::Round,
                         ProfileShape::Angle,
+                        ProfileShape::ItemLine8_40x40,
                     ] {
-                        ui.selectable_value(shape, s, format!("{s:?}"));
+                        ui.selectable_value(shape, s, shape_label(s));
                     }
                 });
             if previous_shape != *shape {
+                if *shape == ProfileShape::ItemLine8_40x40 {
+                    *width_mm = 40.;
+                    *height_mm = 40.;
+                    *wall_mm = None;
+                }
                 if *shape == ProfileShape::Round {
                     *height_mm = *width_mm;
                 }
@@ -648,6 +660,11 @@ fn stock_controls(ui: &mut egui::Ui, s: &mut StockKind) {
                 }
             }
             number(ui, "Stock length", length_mm, " mm");
+            if *shape == ProfileShape::ItemLine8_40x40 {
+                ui.label("40 × 40 mm · four open 8 mm grooves · Ø6.8 mm core");
+                ui.label("item 0.0.026.03 mounting dimensions with simplified groove flanks");
+                return;
+            }
             if *shape == ProfileShape::Round {
                 let previous_diameter = *width_mm;
                 number(ui, "Outside diameter", width_mm, " mm");

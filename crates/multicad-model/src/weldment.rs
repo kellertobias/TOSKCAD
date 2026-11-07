@@ -7,7 +7,7 @@ use multicad_core::{
     materials::{self, ProfileShape},
     model::{
         self, EndCut, EndTreatment, MemberDefinition, MemberFrame, MemberPath, PathSegment,
-        ResolvedConnection, ResolvedMember, SectionLoop,
+        ResolvedConnection, ResolvedMember, SectionEdge, SectionLoop,
     },
     parameters::EvaluatedParameters,
     references::Origin,
@@ -86,6 +86,18 @@ fn edges(section_loop: &SectionLoop) -> Vec<CurvedEdge2d> {
                 b: points[(i + 1) % points.len()],
             })
             .collect(),
+        SectionLoop::Curved(edges) => edges
+            .iter()
+            .map(|edge| match *edge {
+                SectionEdge::Line { a, b } => CurvedEdge2d::Line { a, b },
+                SectionEdge::Arc { center, a, b } => CurvedEdge2d::Arc {
+                    center,
+                    a,
+                    b,
+                    clockwise: false,
+                },
+            })
+            .collect(),
         SectionLoop::Circle { center, radius_mm } => vec![CurvedEdge2d::Circle {
             center: *center,
             radius_mm: *radius_mm,
@@ -114,8 +126,18 @@ pub(crate) fn section_profile(
         holes,
     }
 }
-fn origins(owner: EntityId, profile: &CurvedProfile, prefix: &str) -> Vec<Origin> {
-    let outer = (0..profile.outer.len()).map(|i| format!("{prefix}.outer.{i}"));
+fn origins(
+    owner: EntityId,
+    member: &ResolvedMember,
+    profile: &CurvedProfile,
+    prefix: &str,
+) -> Vec<Origin> {
+    let outer = (0..profile.outer.len()).map(|i| {
+        member.section.slotted_outer_role(i).map_or_else(
+            || format!("{prefix}.outer.{i}"),
+            |role| format!("{prefix}.{role}"),
+        )
+    });
     let inner = profile
         .holes
         .iter()
@@ -146,7 +168,7 @@ pub(crate) fn prism(
         &profile,
         member.frame.axis.map(|a| a * length),
         owner,
-        &origins(owner, &profile, prefix),
+        &origins(owner, member, &profile, prefix),
         policy,
     )
     .map_err(|e| error(Some(owner), e))
@@ -198,6 +220,12 @@ pub(crate) fn joints(
             )
         })?;
         let partner_member = other(feature)?;
+        if member.section.is_item_line_8_40x40() || partner_member.section.is_item_line_8_40x40() {
+            return Err(error(
+                Some(id),
+                "Slotted extrusion members use Mechanical profile connectors; welded end cuts are unavailable",
+            ));
+        }
         let gap = connection.gap_mm(parameters).map_err(e)?;
         let (a, b) = if index == 0 {
             (member, &partner_member)

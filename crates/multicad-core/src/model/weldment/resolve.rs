@@ -3,7 +3,10 @@
 //! put the bounding box at [0, width] × [0, height]; an angle's heel is the
 //! origin with legs along +x and +y.
 use super::*;
-use crate::{materials::ProfileShape, model::common::number, parameters::EvaluatedParameters};
+use crate::{
+    materials::ProfileShape, model::common::number, parameters::EvaluatedParameters,
+    references::ReferenceFrame,
+};
 
 pub(crate) const PATH_TOLERANCE_MM: f64 = 1e-3;
 
@@ -40,16 +43,138 @@ pub(crate) mod vec3 {
 }
 use vec3::*;
 
+/// One exact segment of a section boundary, in section millimeters.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum SectionEdge {
+    Line {
+        a: [f64; 2],
+        b: [f64; 2],
+    },
+    Arc {
+        center: [f64; 2],
+        a: [f64; 2],
+        b: [f64; 2],
+    },
+}
+
 /// One closed section boundary in section coordinates.
 #[derive(Clone, Debug, PartialEq)]
 pub enum SectionLoop {
     /// Counterclockwise vertices.
     Polygon(Vec<[f64; 2]>),
+    /// Exact lines and counterclockwise circular arcs.
+    Curved(Vec<SectionEdge>),
     Circle {
         center: [f64; 2],
         radius_mm: f64,
     },
 }
+/// A stable side of the profile cross-section, independent of member rotation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProfileGrooveSide {
+    MinX,
+    MaxX,
+    MinY,
+    MaxY,
+}
+impl ProfileGrooveSide {
+    pub const ALL: [Self; 4] = [Self::MinX, Self::MaxX, Self::MinY, Self::MaxY];
+
+    pub fn token(self) -> &'static str {
+        match self {
+            Self::MinX => "min_x",
+            Self::MaxX => "max_x",
+            Self::MinY => "min_y",
+            Self::MaxY => "max_y",
+        }
+    }
+
+    /// Identify a current native face by its semantic extrusion provenance.
+    pub fn from_member_role(role: &str) -> Option<Self> {
+        let (side, _) = role.strip_prefix("member.groove.")?.split_once('.')?;
+        Self::ALL.into_iter().find(|s| s.token() == side)
+    }
+}
+
+pub const ITEM_LINE_8_WIDTH_MM: f64 = 40.;
+pub const ITEM_LINE_8_CORE_DIAMETER_MM: f64 = 6.8;
+pub const ITEM_LINE_8_GROOVE_MOUTH_MM: f64 = 8.;
+pub const ITEM_LINE_8_GROOVE_LIP_DEPTH_MM: f64 = 4.5;
+pub const ITEM_LINE_8_GROOVE_DEPTH_MM: f64 = 12.25;
+
+const ITEM_LINE_8_CORNER_RADIUS_MM: f64 = 4.;
+// The item 0.0.026.03 sheet (status 18.07.25) dimensions the outer
+// section, core, mouth and depths. These independent taper targets
+// approximate the undimensioned groove flanks and omit internal fillets.
+// (Half-width from groove center, depth from the outer face.)
+const ITEM_LINE_8_GROOVE_FLANK: [[f64; 2]; 4] = [
+    [9.25, ITEM_LINE_8_GROOVE_LIP_DEPTH_MM],
+    [7.75, 8.],
+    [5.75, 10.],
+    [2.75, ITEM_LINE_8_GROOVE_DEPTH_MM],
+];
+const ITEM_LINE_8_EDGES_PER_SIDE: usize = 6 + 2 * ITEM_LINE_8_GROOVE_FLANK.len();
+const ITEM_LINE_8_SIDES: [ProfileGrooveSide; 4] = [
+    ProfileGrooveSide::MinY,
+    ProfileGrooveSide::MaxX,
+    ProfileGrooveSide::MaxY,
+    ProfileGrooveSide::MinX,
+];
+
+fn item_line_8_outer() -> Vec<SectionEdge> {
+    let w = ITEM_LINE_8_WIDTH_MM;
+    let c = w / 2.;
+    let r = ITEM_LINE_8_CORNER_RADIUS_MM;
+    let m = ITEM_LINE_8_GROOVE_MOUTH_MM / 2.;
+    let lip = ITEM_LINE_8_GROOVE_LIP_DEPTH_MM;
+    let mut side = vec![[r, 0.], [c - m, 0.], [c - m, lip]];
+    side.extend(ITEM_LINE_8_GROOVE_FLANK.map(|[half, depth]| [c - half, depth]));
+    side.extend(
+        ITEM_LINE_8_GROOVE_FLANK
+            .iter()
+            .rev()
+            .map(|&[half, depth]| [c + half, depth]),
+    );
+    side.extend([[c + m, lip], [c + m, 0.], [w - r, 0.]]);
+    let rotate = |[x, y]: [f64; 2]| [w - y, x];
+    let mut center = [w - r, r];
+    let mut edges = Vec::with_capacity(4 * ITEM_LINE_8_EDGES_PER_SIDE);
+    for _ in ITEM_LINE_8_SIDES {
+        edges.extend(
+            side.windows(2)
+                .map(|p| SectionEdge::Line { a: p[0], b: p[1] }),
+        );
+        edges.push(SectionEdge::Arc {
+            center,
+            a: side[side.len() - 1],
+            b: rotate(side[0]),
+        });
+        for point in &mut side {
+            *point = rotate(*point);
+        }
+        center = rotate(center);
+    }
+    edges
+}
+
+fn item_line_8_area() -> f64 {
+    let r = ITEM_LINE_8_CORNER_RADIUS_MM;
+    let core = ITEM_LINE_8_CORE_DIAMETER_MM / 2.;
+    let groove = ITEM_LINE_8_GROOVE_MOUTH_MM * ITEM_LINE_8_GROOVE_LIP_DEPTH_MM
+        + ITEM_LINE_8_GROOVE_FLANK
+            .windows(2)
+            .map(|p| {
+                let [a, b] = [p[0], p[1]];
+                (a[0] + b[0]) * (b[1] - a[1])
+            })
+            .sum::<f64>();
+    ITEM_LINE_8_WIDTH_MM.powi(2)
+        - (4. - std::f64::consts::PI) * r * r
+        - std::f64::consts::PI * core * core
+        - 4. * groove
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct ProfileSection {
     pub designation: String,
@@ -83,8 +208,12 @@ impl ProfileSection {
             stock_length_mm: *length_mm,
         })
     }
+    pub fn is_item_line_8_40x40(&self) -> bool {
+        self.shape == ProfileShape::ItemLine8_40x40
+    }
+
     pub fn is_hollow(&self) -> bool {
-        self.wall_mm.is_some() && self.shape != ProfileShape::Angle
+        self.is_item_line_8_40x40() || (self.wall_mm.is_some() && self.shape != ProfileShape::Angle)
     }
     /// The outside boundary, grown outward by `grow_mm` (0 for the section
     /// itself; a positive value for a clearance envelope).
@@ -109,10 +238,46 @@ impl ProfileSection {
                     [-g, h + g],
                 ])
             }
+            ProfileShape::ItemLine8_40x40 if g == 0. => SectionLoop::Curved(item_line_8_outer()),
+            // A conservative outside cover. The native evaluator refuses
+            // weld/cope operations on the slotted mounting section.
+            ProfileShape::ItemLine8_40x40 => {
+                SectionLoop::Polygon(vec![[-g, -g], [w + g, -g], [w + g, h + g], [-g, h + g]])
+            }
         }
+    }
+
+    /// Preserve semantic groove and lip identities instead of native face indices.
+    pub fn slotted_outer_role(&self, edge: usize) -> Option<String> {
+        if !self.is_item_line_8_40x40() {
+            return None;
+        }
+        let side = ITEM_LINE_8_SIDES
+            .get(edge / ITEM_LINE_8_EDGES_PER_SIDE)?
+            .token();
+        let segment = edge % ITEM_LINE_8_EDGES_PER_SIDE;
+        let role = match segment {
+            0 => "land_before".to_owned(),
+            1 => "mouth_before".to_owned(),
+            2 => "retention_before".to_owned(),
+            6 => "floor".to_owned(),
+            10 => "retention_after".to_owned(),
+            11 => "mouth_after".to_owned(),
+            12 => "land_after".to_owned(),
+            13 => return Some(format!("corner_after.{side}")),
+            _ => format!("flank.{segment}"),
+        };
+        Some(format!("groove.{side}.{role}"))
     }
     /// Inner boundaries of a hollow section.
     pub fn holes(&self) -> Vec<SectionLoop> {
+        if self.is_item_line_8_40x40() {
+            let center = [ITEM_LINE_8_WIDTH_MM / 2.; 2];
+            return vec![SectionLoop::Circle {
+                center,
+                radius_mm: ITEM_LINE_8_CORE_DIAMETER_MM / 2.,
+            }];
+        }
         let Some(t) = self.wall_mm.filter(|_| self.is_hollow()) else {
             return vec![];
         };
@@ -128,10 +293,10 @@ impl ProfileSection {
                 center: [w / 2., h / 2.],
                 radius_mm: w / 2. - t,
             }],
-            ProfileShape::Angle => vec![],
+            ProfileShape::Angle | ProfileShape::ItemLine8_40x40 => vec![],
         }
     }
-    /// Exact cross-section area of the modeled (sharp-cornered) section.
+    /// Exact cross-section area of the modeled section.
     pub fn area_mm2(&self) -> f64 {
         let (w, h) = (self.width_mm, self.height_mm);
         match (self.shape, self.wall_mm) {
@@ -146,6 +311,7 @@ impl ProfileSection {
                 let t = t.unwrap_or(0.);
                 w * t + (h - t) * t
             }
+            (ProfileShape::ItemLine8_40x40, _) => item_line_8_area(),
         }
     }
     /// Points describing the outside shape: polygon vertices, or the four
@@ -154,6 +320,12 @@ impl ProfileSection {
     pub fn outline_points(&self) -> Vec<[f64; 2]> {
         match self.outer(0.) {
             SectionLoop::Polygon(points) => points,
+            SectionLoop::Curved(edges) => edges
+                .into_iter()
+                .map(|edge| match edge {
+                    SectionEdge::Line { a, .. } | SectionEdge::Arc { a, .. } => a,
+                })
+                .collect(),
             SectionLoop::Circle { center, radius_mm } => vec![
                 center,
                 [center[0] + radius_mm, center[1]],
@@ -170,6 +342,7 @@ impl ProfileSection {
             (ProfileShape::Round, Some(_)) => "round tube",
             (ProfileShape::Round, None) => "round bar",
             (ProfileShape::Angle, _) => "angle",
+            (ProfileShape::ItemLine8_40x40, _) => "item Line 8 40×40 · four open grooves",
         };
         format!("{} ({shape})", self.designation)
     }
@@ -231,6 +404,54 @@ impl ResolvedMember {
     /// section coordinate (0, 0). Section u and v are the frame x and y.
     pub fn section_origin(&self, s: f64) -> [f64; 3] {
         self.point([0., 0.], s)
+    }
+
+    /// Groove mouth frame at a distance from the current extended start.
+    /// U runs along the member, V completes a right-handed frame, and N
+    /// points outward. The host occurrence pose is applied separately.
+    pub fn groove_frame(
+        &self,
+        side: ProfileGrooveSide,
+        station_mm: f64,
+    ) -> Result<ReferenceFrame, DocumentError> {
+        if !self.section.is_item_line_8_40x40() {
+            return Err(invalid("Choose a compatible item Line 8 slotted member"));
+        }
+        if !station_mm.is_finite() || !(0. ..=self.length_mm()).contains(&station_mm) {
+            return Err(invalid(
+                "The groove station falls outside the current member span",
+            ));
+        }
+        let w = ITEM_LINE_8_WIDTH_MM;
+        let h = w / 2.;
+        let (point, normal) = match side {
+            ProfileGrooveSide::MinX => ([0., h], scale(self.frame.x, -1.)),
+            ProfileGrooveSide::MaxX => ([w, h], self.frame.x),
+            ProfileGrooveSide::MinY => ([h, 0.], scale(self.frame.y, -1.)),
+            ProfileGrooveSide::MaxY => ([h, w], self.frame.y),
+        };
+        Ok(ReferenceFrame {
+            origin_mm: self.point(point, self.start_offset_mm() + station_mm),
+            u: self.frame.axis,
+            v: cross(normal, self.frame.axis),
+        })
+    }
+
+    /// Actual modeled end plane at the central bore, with outward N.
+    pub fn slotted_end_frame(&self, end: MemberEnd) -> Result<ReferenceFrame, DocumentError> {
+        if !self.section.is_item_line_8_40x40() {
+            return Err(invalid("Choose a compatible item Line 8 slotted member"));
+        }
+        let (station, sign) = match end {
+            MemberEnd::Start => (self.start_offset_mm(), -1.),
+            MemberEnd::End => (self.start_offset_mm() + self.length_mm(), 1.),
+        };
+        let h = ITEM_LINE_8_WIDTH_MM / 2.;
+        Ok(ReferenceFrame {
+            origin_mm: self.point([h, h], station),
+            u: self.frame.x,
+            v: scale(self.frame.y, sign),
+        })
     }
     /// Axial coordinate of a world point, from the path start.
     pub fn axial(&self, p: [f64; 3]) -> f64 {
@@ -323,8 +544,15 @@ pub fn resolve_member(
             .as_ref()
             .map_or(Ok(0.), |d| mm(d, parameters))?,
     ];
-    if path_length_mm + extend_mm[0] + extend_mm[1] < PATH_TOLERANCE_MM {
+    let member_length = path_length_mm + extend_mm[0] + extend_mm[1];
+    if member_length < PATH_TOLERANCE_MM {
         return Err(invalid("The end extensions trim away the whole member"));
+    }
+    if section.is_item_line_8_40x40() && member_length > section.stock_length_mm + PATH_TOLERANCE_MM
+    {
+        return Err(invalid(
+            "The item Line 8 member exceeds the selected stock length",
+        ));
     }
     let anchor_mm = [
         member.anchor[0].fraction() * section.width_mm,

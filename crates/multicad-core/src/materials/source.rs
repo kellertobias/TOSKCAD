@@ -66,7 +66,12 @@ pub enum ProfileShape {
     Round,
     /// Angle (L) section: legs of width and height, wall = leg thickness.
     Angle,
+    /// Standard item Line 8, article 0.0.026.03, with four open grooves.
+    #[serde(rename = "item_line_8_40x40")]
+    ItemLine8_40x40,
 }
+
+pub const ITEM_LINE_8_PROFILE_CAPABILITY: &str = "materials.profile.item_line_8_40x40.1";
 impl ProfileShape {
     pub fn is_rectangular(&self) -> bool {
         *self == Self::Rectangular
@@ -275,6 +280,12 @@ impl LibraryDefinition {
                                     ProfileShape::Rectangular => true,
                                     ProfileShape::Round => width_mm == height_mm,
                                     ProfileShape::Angle => wall_mm.is_some(),
+                                    ProfileShape::ItemLine8_40x40 => {
+                                        *width_mm == 40.
+                                            && *height_mm == 40.
+                                            && wall_mm.is_none()
+                                            && *length_mm <= 6000.
+                                    }
                                 }
                         }
                         StockKind::Print {
@@ -341,6 +352,40 @@ pub fn required_capability(document: &Document) -> bool {
             || matches!(&e.data,EntityData::Material{section_hatch:Some(h),..} if h.type_id=="materials.hatch.inline"),
     )
 }
+
+pub fn requires_item_line_8_profile(document: &Document) -> bool {
+    let slotted_stock = |data: &serde_json::Value| {
+        data.pointer("/value/specification/shape")
+            .and_then(serde_json::Value::as_str)
+            == Some("item_line_8_40x40")
+    };
+    document.entities().any(|entity| match &entity.data {
+        EntityData::Extension { definition, .. } if definition.type_id == "materials.stock" => {
+            slotted_stock(&definition.data)
+        }
+        EntityData::Extension { definition, .. }
+            if definition.type_id == crate::symbols::DEFINITION_TYPE =>
+        {
+            definition
+                .data
+                .pointer("/template/entities")
+                .and_then(serde_json::Value::as_object)
+                .is_some_and(|entities| {
+                    entities.values().any(|entity| {
+                        entity
+                            .pointer("/data/definition/type_id")
+                            .and_then(serde_json::Value::as_str)
+                            == Some("materials.stock")
+                            && entity
+                                .pointer("/data/definition/data")
+                                .is_some_and(slotted_stock)
+                    })
+                })
+        }
+        _ => false,
+    })
+}
+
 pub fn validate(document: &Document) -> Result<(), DocumentError> {
     let mut owners = BTreeSet::new();
     for entity in document.entities() {
