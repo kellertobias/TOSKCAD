@@ -550,7 +550,7 @@ pub fn prepare_remove_screw_connection(
         edits: super::extrude_boolean::delta(session.document(), &candidate)?,
     })
 }
-fn mount(part: &ResolvedMechanicalPart) -> RigidPose {
+pub(super) fn mount(part: &ResolvedMechanicalPart) -> RigidPose {
     if let ResolvedMechanicalPart::CustomConnection { parameters } = part {
         let frame = parameters.mount_frame();
         let normal = frame.normal();
