@@ -5,6 +5,8 @@
 //! Save and never changes definitions already embedded (pinned) in consuming
 //! projects. File-system access belongs to the application's `LibraryStore`;
 //! this module owns the nonblocking worker and preview textures.
+pub(crate) mod facets;
+
 use crate::storage::FileStamp;
 use eframe::egui;
 use multicad_core::{

@@ -1,8 +1,12 @@
 //! Browse the same included/original-file Library used by Project.
 use super::SymbolAction;
+pub(super) use crate::library::facets::{SearchIndex, definition_search};
 use crate::{
     egui,
-    library::{LibraryEntry, PreviewTextures},
+    library::{
+        LibraryEntry, PreviewTextures,
+        facets::{CatalogFilters, SearchQuery, entry_search},
+    },
 };
 use multicad_core::model::MechanicalPartCard;
 use std::sync::Arc;
@@ -12,7 +16,7 @@ pub(super) struct Installed {
     entries: Arc<Vec<LibraryEntry>>,
     search: Vec<SearchIndex>,
     previews: PreviewTextures,
-    family: String,
+    facets: CatalogFilters,
 }
 impl Installed {
     pub fn set_entries(&mut self, entries: Arc<Vec<LibraryEntry>>) {
@@ -22,34 +26,21 @@ impl Installed {
         self.search = entries.iter().map(entry_search).collect();
         self.entries = entries;
     }
+    pub fn facets(&self) -> &CatalogFilters {
+        &self.facets
+    }
     pub fn show(&mut self, ui: &mut egui::Ui, query: &SearchQuery) -> Option<SymbolAction> {
         ui.strong("Installation Library");
         ui.small("Included definitions and files listed with Add to Library. Place a pinned definition directly, or load a file to inspect and choose its definitions.");
-        let families = self
-            .entries
-            .iter()
-            .flat_map(|e| &e.mechanical_parts)
-            .map(|p| p.family.as_str())
-            .collect::<std::collections::BTreeSet<_>>();
-        crate::controls::inspector_combo(ui, "installed-library-family")
-            .selected_text(if self.family.is_empty() {
-                "All part families"
-            } else {
-                &self.family
-            })
-            .show_ui(ui, |ui| {
-                ui.selectable_value(&mut self.family, String::new(), "All part families");
-                for family in families {
-                    ui.selectable_value(&mut self.family, family.into(), family);
-                }
-            });
+        self.facets.show(ui, &self.entries);
+        let exact = self.facets.active();
         let mut action = None;
         let mut shown = 0;
         for entry in self
             .entries
             .iter()
             .zip(&self.search)
-            .filter(|(_, search)| search.matches(query, &self.family))
+            .filter(|(_, search)| search.matches(query, &self.facets))
         {
             let (entry, search) = entry;
             shown += 1;
@@ -61,138 +52,41 @@ impl Installed {
                     ui.colored_label(egui::Color32::LIGHT_RED, problem);
                 }
                 ui.horizontal_wrapped(|ui| {
-                    let place = ui.add_enabled(unavailable.is_none(), egui::Button::new("Place"));
+                    let place = ui.add_enabled(unavailable.is_none(), egui::Button::new(if exact { "Choose matching definition" } else { "Place" }));
                     let place = if let Some(reason) = unavailable { place.on_disabled_hover_text(reason) } else { place.on_hover_text("Choose this file's pinned definition and placement; Preview and Apply embed and place it together") };
-                    if place.clicked() { action = Some(SymbolAction::OpenInstalledForPlace(entry.path.clone())); }
-                    if ui.add_enabled(unavailable.is_none(), egui::Button::new("Load definitions")).clicked() {
+                    if place.clicked() {
+                        // Re-read originals and let the exact filters inspect the
+                        // loaded definition before it can start a placement.
+                        action = Some(if exact { SymbolAction::OpenInstalled(entry.path.clone()) } else { SymbolAction::OpenInstalledForPlace(entry.path.clone()) });
+                    }
+                    if !exact && ui.add_enabled(unavailable.is_none(), egui::Button::new("Load definitions")).clicked() {
                         action = Some(SymbolAction::OpenInstalled(entry.path.clone()));
                     }
                 });
                 self.previews.show(ui, entry.preview.as_ref(), egui::vec2(140., 80.), &entry.name);
                 if !entry.description.is_empty() { ui.add(egui::Label::new(egui::RichText::new(&entry.description).small()).truncate()).on_hover_text(&entry.description); }
                 ui.small(entry.path.display().to_string());
-                search.show_cards(ui, query, &self.family);
+                show_cards(ui, search, query, &self.facets);
             }));
         }
         if shown == 0 {
-            ui.small("No matching listed files. Save a file with reusable symbols and choose Add to Library in Project.");
+            if exact {
+                ui.small("No source recipe matches the hardware filters. Clear or change a filter to browse other files.");
+            } else {
+                ui.small("No matching listed files. Save a file with reusable symbols and choose Add to Library in Project.");
+            }
         }
         action
     }
 }
-pub(super) struct SearchQuery {
-    terms: Vec<String>,
-    nominal: Option<f64>,
-    conflicting_nominals: bool,
-}
-impl SearchQuery {
-    pub fn new(filter: &str) -> Self {
-        let mut query = Self {
-            terms: vec![],
-            nominal: None,
-            conflicting_nominals: false,
-        };
-        for term in filter.split_whitespace().map(str::to_lowercase) {
-            let nominal = term
-                .strip_prefix('m')
-                .filter(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit() || c == '.'))
-                .and_then(|n| n.parse::<f64>().ok())
-                .filter(|n| n.is_finite());
-            if let Some(nominal) = nominal {
-                query.conflicting_nominals |=
-                    query.nominal.is_some_and(|previous| previous != nominal);
-                query.nominal = Some(nominal);
-            } else {
-                query.terms.push(term);
-            }
-        }
-        query
-    }
-    fn contains(&self, text: &str) -> bool {
-        self.terms.iter().all(|term| text.contains(term))
-    }
-}
-struct CardSearch {
-    card: MechanicalPartCard,
-    text: String,
-}
-pub(super) struct SearchIndex {
-    base: String,
-    parts: Vec<CardSearch>,
-}
-impl SearchIndex {
-    fn new(base: String, cards: Vec<MechanicalPartCard>) -> Self {
-        let base = base.to_lowercase();
-        let parts = cards
-            .into_iter()
-            .map(|card| {
-                let mut text = format!(
-                    "{base} {} {} {} {} {:?}",
-                    card.name,
-                    card.family,
-                    card.designation.as_deref().unwrap_or(""),
-                    card.representation,
-                    card.dimensions_mm
-                );
-                for detail in &card.profile_details {
-                    text.push(' ');
-                    text.push_str(detail);
-                }
-                if let Some(facts) = &card.catalog_facts {
-                    for value in [&facts.series, &facts.material, &facts.grade]
-                        .into_iter()
-                        .flatten()
-                    {
-                        text.push(' ');
-                        text.push_str(value);
-                    }
-                    if let Some(nominal) = facts.nominal_fastener_diameter_mm {
-                        text.push_str(&format!(" nominal fastener {nominal} mm"));
-                        if card.family == "Wood screw envelope" {
-                            text.push_str(&format!(" d{nominal}"));
-                        }
-                    }
-                }
-                CardSearch {
-                    card,
-                    text: text.to_lowercase(),
-                }
-            })
-            .collect();
-        Self { base, parts }
-    }
-    fn card_matches(part: &CardSearch, query: &SearchQuery, family: &str) -> bool {
-        !query.conflicting_nominals
-            && (family.is_empty() || part.card.family == family)
-            && query.nominal.is_none_or(|nominal| {
-                part.card.family != "Wood screw envelope"
-                    && part
-                        .card
-                        .catalog_facts
-                        .as_ref()
-                        .and_then(|facts| facts.nominal_fastener_diameter_mm)
-                        == Some(nominal)
-            })
-            && query.contains(&part.text)
-    }
-    pub fn matches(&self, query: &SearchQuery, family: &str) -> bool {
-        if query.conflicting_nominals {
-            return false;
-        }
-        (query.nominal.is_none() && family.is_empty() && query.contains(&self.base))
-            || self
-                .parts
-                .iter()
-                .any(|part| Self::card_matches(part, query, family))
-    }
-    pub fn show_cards(&self, ui: &mut egui::Ui, query: &SearchQuery, family: &str) {
-        for part in self
-            .parts
-            .iter()
-            .filter(|part| Self::card_matches(part, query, family))
-        {
-            show_card(ui, &part.card);
-        }
+pub(super) fn show_cards(
+    ui: &mut egui::Ui,
+    search: &SearchIndex,
+    query: &SearchQuery,
+    facets: &CatalogFilters,
+) {
+    for card in search.matching_cards(query, facets) {
+        show_card(ui, card);
     }
 }
 fn show_card(ui: &mut egui::Ui, part: &MechanicalPartCard) {
@@ -246,39 +140,15 @@ fn show_card(ui: &mut egui::Ui, part: &MechanicalPartCard) {
         ui.colored_label(egui::Color32::LIGHT_RED, problem);
     }
 }
-fn entry_search(entry: &LibraryEntry) -> SearchIndex {
-    SearchIndex::new(
-        format!(
-            "{} {} {}",
-            entry.name,
-            entry.description,
-            entry.path.display()
-        ),
-        entry.mechanical_parts.clone(),
-    )
-}
-/// Construct once when a definition snapshot changes, never during painting.
-pub(super) fn definition_search(
-    definition: &multicad_core::symbols::SymbolDefinition,
-) -> SearchIndex {
-    let mut cards = multicad_core::model::mechanical_part_cards(&definition.template);
-    for card in &mut cards {
-        if card.symbol.is_none() {
-            card.symbol = Some((definition.symbol, definition.revision.clone()));
-        }
-    }
-    SearchIndex::new(
-        format!("{} {}", definition.name, definition.revision),
-        cards,
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use multicad_core::{document::EntityId, model::MechanicalPartCard};
     fn matches(entry: &LibraryEntry, filter: &str, family: &str) -> bool {
-        entry_search(entry).matches(&SearchQuery::new(filter), family)
+        entry_search(entry).matches(
+            &SearchQuery::new(filter),
+            &CatalogFilters::for_family(family),
+        )
     }
     #[test]
     fn installed_place_actions_precede_long_metadata_and_dimensions_without_scrolling() {
@@ -287,6 +157,7 @@ mod tests {
             name: "Detailed hardware".into(),
             family: "Fixture".into(),
             symbol: Some((EntityId::new(), "1".into())),
+            recipe_facets: Default::default(),
             profile_details: Vec::new(),
             dimensions_mm: (0..48)
                 .map(|index| (format!("Dimension {index:02}"), index as f64))
@@ -364,6 +235,7 @@ mod tests {
             name: "Thin ring".into(),
             family: "Plain washer".into(),
             symbol: Some((EntityId::new(), "1".into())),
+            recipe_facets: Default::default(),
             profile_details: Vec::new(),
             dimensions_mm: [("Bore".into(), 3.2), ("Thickness".into(), 0.5)].into(),
             representation: "Plain annular solid".into(),
@@ -409,6 +281,7 @@ mod tests {
                 name: name.into(),
                 family: "Plain washer".into(),
                 symbol: None,
+                recipe_facets: Default::default(),
                 profile_details: Vec::new(),
                 dimensions_mm: [("Bore".into(), bore)].into(),
                 representation: "Annular solid".into(),
@@ -426,8 +299,8 @@ mod tests {
         let mut wood = card("DIN571-related wood screw d6", Some(6.), 6., "");
         wood.family = "Wood screw envelope".into();
         let wood = SearchIndex::new("Wood source".into(), vec![wood]);
-        assert!(wood.matches(&SearchQuery::new("wood d6"), ""));
-        assert!(!wood.matches(&SearchQuery::new("M6"), ""));
+        assert!(wood.matches(&SearchQuery::new("wood d6"), &CatalogFilters::default()));
+        assert!(!wood.matches(&SearchQuery::new("M6"), &CatalogFilters::default()));
         let three = card("Small fixture", Some(3.), 3.2, "Fixture steel");
         let decimal = card("Decimal fixture", Some(3.5), 3.7, "Fixture steel");
         let thirty = card("Large fixture", Some(30.), 31., "Fixture brass");
@@ -442,23 +315,35 @@ mod tests {
             ],
         );
         for query in ["M3", "m3.0 steel normal", "M3 3.2"] {
-            assert!(index.matches(&SearchQuery::new(query), ""), "{query}");
+            assert!(
+                index.matches(&SearchQuery::new(query), &CatalogFilters::default()),
+                "{query}"
+            );
         }
         for query in ["M3 M30", "M3 brass", "M3 31", "M3 grade-8.8", "M4.5", "M9"] {
-            assert!(!index.matches(&SearchQuery::new(query), ""), "{query}");
+            assert!(
+                !index.matches(&SearchQuery::new(query), &CatalogFilters::default()),
+                "{query}"
+            );
         }
         assert!(
             !SearchIndex::new(
                 "M3 only in file name".into(),
                 vec![decimal, thirty, unknown]
             )
-            .matches(&SearchQuery::new("M3"), "")
+            .matches(&SearchQuery::new("M3"), &CatalogFilters::default())
         );
         let small = SearchIndex::new("Small source".into(), vec![three]);
-        assert!(!small.matches(&SearchQuery::new("M3.5"), ""));
-        assert!(!small.matches(&SearchQuery::new("M30"), ""));
-        assert!(small.matches(&SearchQuery::new("washer 3.2"), "Plain washer"));
-        assert!(!small.matches(&SearchQuery::new("M3"), "Hex nut"));
+        assert!(!small.matches(&SearchQuery::new("M3.5"), &CatalogFilters::default()));
+        assert!(!small.matches(&SearchQuery::new("M30"), &CatalogFilters::default()));
+        assert!(small.matches(
+            &SearchQuery::new("washer 3.2"),
+            &CatalogFilters::for_family("Plain washer")
+        ));
+        assert!(!small.matches(
+            &SearchQuery::new("M3"),
+            &CatalogFilters::for_family("Hex nut")
+        ));
     }
     #[test]
     fn configured_profile_details_are_searchable_and_painted_with_angle_units() {
@@ -468,6 +353,7 @@ mod tests {
             family: "Machine screw".into(),
             symbol: None,
             dimensions_mm: [("Head diameter".into(), 5.6)].into(),
+            recipe_facets: Default::default(),
             profile_details: vec![
                 "Phillips H1".into(),
                 "Outer corner included angle: 92 degrees".into(),
@@ -480,7 +366,10 @@ mod tests {
             problem: None,
         };
         let index = SearchIndex::new("Configured source".into(), vec![card.clone()]);
-        assert!(index.matches(&SearchQuery::new("Phillips H1 92 degrees"), "Machine screw"));
+        assert!(index.matches(
+            &SearchQuery::new("Phillips H1 92 degrees"),
+            &CatalogFilters::for_family("Machine screw")
+        ));
         let ctx = egui::Context::default();
         let out = ctx.run_ui(
             egui::RawInput {

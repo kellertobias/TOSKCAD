@@ -3,7 +3,7 @@ use super::{
     fields::{self, entity_choice, entity_label},
     forms::{Form, Operation},
 };
-use crate::{controls, egui};
+use crate::{controls, egui, library::facets::SearchQuery};
 use multicad_core::{
     commands::Session,
     document::{Document, EntityData, EntityId},
@@ -49,14 +49,15 @@ pub(super) fn show(
         Operation::Library=>{
             changed|=fields::text(ui,"Filter symbols",&mut form.filter,"Search listed files, embedded and loaded definitions");
             ui.small("M3 selects a sourced nominal fastener diameter of exactly 3 mm. Other terms search names and source dimensions.");
-            let filter=super::installed::SearchQuery::new(&form.filter);
+            let filter=SearchQuery::new(&form.filter);
             action=catalogue.installed.show(ui,&filter);
+            let facets = catalogue.installed.facets();
             ui.separator();
             if ui.button("Open library file…").on_hover_text("Load definitions without changing this project. Embedded pins continue working when the file is unavailable").clicked(){action=Some(SymbolAction::ImportLibrary);}
             ui.strong("Embedded in this project");
             let mut shown=0;
             for (id,definition) in definitions {
-                if !catalogue.embedded_search[id].matches(&filter, ""){continue;}
+                if !catalogue.embedded_search[id].matches(&filter, facets){continue;}
                 shown+=1;
                 ui.group(|ui|{
                     summary(ui,definition);
@@ -68,14 +69,14 @@ pub(super) fn show(
                         if ui.small_button("Save definition…").clicked(){action=Some(SymbolAction::SaveDefinition(*id));}
                         if ui.small_button("Compare update").on_hover_text("Choose a revision explicitly; this never upgrades instances automatically").clicked(){next=Some(Next::Update(*id));}
                     });
-                    catalogue.embedded_search[id].show_cards(ui,&filter,"");
+                    super::installed::show_cards(ui, &catalogue.embedded_search[id], &filter, facets);
                 });
             }
             if shown==0{ui.label("No matching embedded symbols");}
             ui.separator();ui.strong("Loaded library · choose a definition to place");
             let mut shown=0;
             for ((definition,pin),search) in library.iter().zip(catalogue.library_pins).zip(catalogue.library_search) {
-                if !search.matches(&filter, ""){continue;}
+                if !search.matches(&filter, facets){continue;}
                 shown+=1;
                 ui.group(|ui|{
                     summary(ui,definition);
@@ -89,7 +90,7 @@ pub(super) fn show(
                     if let Some(reason) = &unavailable { ui.colored_label(egui::Color32::LIGHT_RED, reason); }
                     if ui.add_enabled(unavailable.is_none(), egui::Button::new("Place")).on_hover_text("Preview and Apply embed this exact pin and place one occurrence in one transaction").clicked(){next=Some(Next::PlaceLibrary(Box::new(definition.clone())));}
                     if !embedded && ui.button("Import definition").on_hover_text("Explicitly embed this immutable definition without placing an occurrence").clicked(){next=Some(Next::Import(Box::new(definition.clone())));}
-                    search.show_cards(ui,&filter,"");
+                    super::installed::show_cards(ui, search, &filter, facets);
                 });
             }
             if shown==0{ui.label("No matching library symbols loaded");}
@@ -179,6 +180,7 @@ pub(super) fn show(
                 ui.add(egui::Label::new(format!("Parent: {parent_label}")).wrap());
                 changed|=fields::text(ui,"Instance name",name,"Name for this occurrence; the source definition and other instances are unchanged");
                 changed|=values.show(ui,source);
+                values.show_hardware_attribution(ui, source);
                 changed|=pose.show(ui);
             }else{ui.small("Choose an embedded definition or use Place on a Library card.");}
         }
@@ -191,6 +193,7 @@ pub(super) fn show(
             summary(ui,definition);ui.small(format!("Instance: {}",instance_label(document,request.record)));
             if let Ok(instance)=symbols::read_instance(document,request.record)&&let Ok(Some((_,source)))=symbols::project_source_of(document,instance.definition){ui.small(format!("Referenced project: {} · pinned revision {}",source.path,definition.revision));}
             changed|=values.show(ui,definition);
+            values.show_hardware_attribution(ui, definition);
             ui.small("Only this instance's exposed inputs change. Move changes its shared 2D/3D placement.");
         }
         Operation::Update{definition,replacement,request,values,architecture_values,report}=>{

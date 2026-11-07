@@ -11,6 +11,7 @@ pub struct MechanicalPartCard {
     /// not the possibly edited authoring Part outside the immutable template.
     pub symbol: Option<(EntityId, String)>,
     pub dimensions_mm: BTreeMap<String, f64>,
+    pub recipe_facets: MechanicalRecipeFacets,
     /// Non-length configured profile facts with explicit units; not catalog certification.
     pub profile_details: Vec<String>,
     pub representation: String,
@@ -19,6 +20,75 @@ pub struct MechanicalPartCard {
     pub catalog_facts: Option<MechanicalPartCatalogFacts>,
     pub matches_reference_dimensions: bool,
     pub problem: Option<String>,
+}
+
+/// Applicable recipe defaults, projected without parsing display text or
+/// changing the retained catalog source. Washer thickness and nut height are
+/// not screw lengths.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct MechanicalRecipeFacets {
+    pub length: Option<MechanicalRecipeLength>,
+    pub pitch: Option<MechanicalRecipePitch>,
+    pub head: Option<MechanicalHeadForm>,
+    pub drive: Option<MechanicalDriveForm>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, PartialOrd)]
+pub enum MechanicalRecipeLength {
+    Underhead(f64),
+    Overall(f64),
+}
+impl MechanicalRecipeLength {
+    fn new(mm: f64, convention: ScrewLengthConvention) -> Self {
+        match convention {
+            ScrewLengthConvention::Underhead => Self::Underhead(mm),
+            ScrewLengthConvention::Overall => Self::Overall(mm),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, PartialOrd)]
+pub enum MechanicalRecipePitch {
+    Thread(f64),
+    WoodReference(f64),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum MechanicalHeadForm {
+    SocketCap,
+    ExternalHex,
+    Pan,
+    Button,
+    Countersunk,
+}
+impl From<&ResolvedScrewHead> for MechanicalHeadForm {
+    fn from(head: &ResolvedScrewHead) -> Self {
+        match head {
+            ResolvedScrewHead::SocketCap { .. } => Self::SocketCap,
+            ResolvedScrewHead::ExternalHex { .. } => Self::ExternalHex,
+            ResolvedScrewHead::Pan { .. } => Self::Pan,
+            ResolvedScrewHead::Button { .. } => Self::Button,
+            ResolvedScrewHead::Countersunk { .. } => Self::Countersunk,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum MechanicalDriveForm {
+    HexSocket,
+    ExternalHex,
+    Hexalobular,
+    PhillipsH,
+}
+impl From<&ResolvedScrewDrive> for MechanicalDriveForm {
+    fn from(drive: &ResolvedScrewDrive) -> Self {
+        match drive {
+            ResolvedScrewDrive::HexSocket { .. } => Self::HexSocket,
+            ResolvedScrewDrive::ExternalHex => Self::ExternalHex,
+            ResolvedScrewDrive::Hexalobular { .. } => Self::Hexalobular,
+            ResolvedScrewDrive::PhillipsH { .. } => Self::PhillipsH,
+        }
+    }
 }
 
 /// If reusable definitions exist, describe exactly those pinned templates.
@@ -30,14 +100,20 @@ pub fn mechanical_part_cards(document: &Document) -> Vec<MechanicalPartCard> {
     } else {
         definitions
             .into_iter()
-            .flat_map(|(_, definition)| {
-                cards(
-                    &definition.template,
-                    Some((definition.symbol, definition.revision)),
-                )
-            })
+            .flat_map(|(_, definition)| mechanical_part_definition_cards(&definition))
             .collect()
     }
+}
+
+/// Use the same template defaults when listing a file and when choosing a
+/// freshly loaded definition from that file.
+pub fn mechanical_part_definition_cards(
+    definition: &crate::symbols::SymbolDefinition,
+) -> Vec<MechanicalPartCard> {
+    cards(
+        &definition.template,
+        Some((definition.symbol, definition.revision.clone())),
+    )
 }
 fn cards(document: &Document, symbol: Option<(EntityId, String)>) -> Vec<MechanicalPartCard> {
     let evaluated = crate::parameters::evaluate(document).map_err(|e| e.to_string());
@@ -56,6 +132,7 @@ fn cards(document: &Document, symbol: Option<(EntityId, String)>) -> Vec<Mechani
                 family: "Unsupported hardware".into(),
                 symbol: symbol.clone(),
                 dimensions_mm: BTreeMap::new(),
+                recipe_facets: Default::default(),
                 profile_details: Vec::new(),
                 representation: String::new(),
                 designation: None,
@@ -84,6 +161,12 @@ fn cards(document: &Document, symbol: Option<(EntityId, String)>) -> Vec<Mechani
                         (values,"Custom modeled engineering geometry · flat ends · strength unverified".into())
                     },
                     ResolvedMechanicalPart::WoodScrew {parameters:p} => {
+                        card.recipe_facets = MechanicalRecipeFacets {
+                            length: Some(MechanicalRecipeLength::new(p.authored_length_mm, p.length_convention)),
+                            pitch: Some(MechanicalRecipePitch::WoodReference(p.reference_profile.pitch_mm)),
+                            head: Some((&p.head).into()),
+                            drive: Some((&p.drive).into()),
+                        };
                         card.profile_details.extend([
                             format!("Authored length convention: {}",match p.length_convention {ScrewLengthConvention::Underhead=>"underhead",ScrewLengthConvention::Overall=>"overall"}),
                             format!("Reference V included angle: {} degrees",p.reference_profile.included_angle_deg),
@@ -105,6 +188,12 @@ fn cards(document: &Document, symbol: Option<(EntityId, String)>) -> Vec<Mechani
                         thread,
                         ..
                     } => {
+                        card.recipe_facets = MechanicalRecipeFacets {
+                            length: Some(MechanicalRecipeLength::new(authored_length_mm, length_convention)),
+                            pitch: Some(MechanicalRecipePitch::Thread(thread.pitch_mm)),
+                            head: Some((&head).into()),
+                            drive: Some((&drive).into()),
+                        };
                         let mut values = vec![
                             (
                                 "Nominal thread diameter",
@@ -210,7 +299,9 @@ fn cards(document: &Document, symbol: Option<(EntityId, String)>) -> Vec<Mechani
                     ResolvedMechanicalPart::HexNut {
                         across_flats_mm,
                         thread,
-                    } => (
+                    } => {
+                        card.recipe_facets.pitch = Some(MechanicalRecipePitch::Thread(thread.pitch_mm));
+                        (
                         vec![
                             (
                                 "Nominal thread diameter",
@@ -229,7 +320,8 @@ fn cards(document: &Document, symbol: Option<(EntityId, String)>) -> Vec<Mechani
                             }
                         }
                         .into(),
-                    ),
+                        )
+                    },
                 };
                 card.dimensions_mm = values
                     .into_iter()

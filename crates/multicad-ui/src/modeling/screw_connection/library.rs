@@ -1,6 +1,12 @@
 //! Detached hardware selection for one connection role. Selecting a card never
 //! imports a definition or starts the independent Library placement tool.
-use crate::{controls, egui, library::LibraryEntry};
+use crate::{
+    controls, egui,
+    library::{
+        LibraryEntry,
+        facets::{CatalogFilters, SearchIndex, SearchQuery, definition_search, entry_search},
+    },
+};
 use multicad_core::{document::EntityId, symbols::SymbolDefinition};
 use std::{path::PathBuf, sync::Arc};
 
@@ -15,17 +21,23 @@ pub(crate) struct HardwareLibraryRequest {
 #[derive(Default)]
 pub(super) struct HardwareLibrary {
     entries: Arc<Vec<LibraryEntry>>,
+    search: Vec<SearchIndex>,
+    facets: CatalogFilters,
     role: Option<EntityId>,
     query: String,
     generation: u64,
     request: Option<HardwareLibraryRequest>,
     loaded: Vec<SymbolDefinition>,
+    loaded_search: Vec<SearchIndex>,
     error: Option<String>,
 }
 
 impl HardwareLibrary {
     pub fn set_entries(&mut self, entries: Arc<Vec<LibraryEntry>>) {
-        self.entries = entries;
+        if !Arc::ptr_eq(&self.entries, &entries) {
+            self.search = entries.iter().map(entry_search).collect();
+            self.entries = entries;
+        }
     }
 
     pub fn begin(&mut self, role: EntityId) {
@@ -33,6 +45,7 @@ impl HardwareLibrary {
         self.role = Some(role);
         self.request = None;
         self.loaded.clear();
+        self.loaded_search.clear();
         self.error = None;
     }
 
@@ -41,6 +54,7 @@ impl HardwareLibrary {
         self.role = None;
         self.request = None;
         self.loaded.clear();
+        self.loaded_search.clear();
         self.error = None;
     }
 
@@ -69,6 +83,7 @@ impl HardwareLibrary {
                     for definition in &definitions {
                         definition.validate().map_err(|error| error.to_string())?;
                     }
+                    self.loaded_search = definitions.iter().map(definition_search).collect();
                     self.loaded = definitions;
                 }
             }
@@ -90,11 +105,20 @@ impl HardwareLibrary {
                 .hint_text("Search included or registered hardware")
                 .desired_width(controls::inspector_width(ui)),
         );
+        self.facets.show(ui, &self.entries);
+        let query = SearchQuery::new(&self.query);
+        let loaded_query = SearchQuery::new("");
         if let Some(error) = &self.error {
             ui.colored_label(egui::Color32::LIGHT_RED, error);
         }
         let mut chosen = None;
-        for definition in &self.loaded {
+        let mut shown = 0;
+        for (definition, search) in self.loaded.iter().zip(&self.loaded_search) {
+            // The original may have changed after its listing was read.
+            if !search.matches(&loaded_query, &self.facets) {
+                continue;
+            }
+            shown += 1;
             ui.push_id(definition.symbol, |ui| {
                 ui.group(|ui| {
                     ui.label(&definition.name);
@@ -108,23 +132,15 @@ impl HardwareLibrary {
         if self.request.is_some() {
             ui.label("Reading hardware definition…");
         } else if self.loaded.is_empty() {
-            let query = self.query.to_lowercase();
             egui::ScrollArea::vertical()
                 .id_salt(("connection-hardware-cards", role))
                 .max_height(240.)
                 .show(ui, |ui| {
-                    for entry in self.entries.iter().filter(|entry| {
-                        query.is_empty()
-                            || entry.name.to_lowercase().contains(&query)
-                            || entry.description.to_lowercase().contains(&query)
-                            || entry.mechanical_parts.iter().any(|part| {
-                                part.family.to_lowercase().contains(&query)
-                                    || part
-                                        .designation
-                                        .as_deref()
-                                        .is_some_and(|name| name.to_lowercase().contains(&query))
-                            })
-                    }) {
+                    for (entry, search) in self.entries.iter().zip(&self.search) {
+                        if !search.matches(&query, &self.facets) {
+                            continue;
+                        }
+                        shown += 1;
                         ui.push_id(entry.id, |ui| {
                             ui.group(|ui| {
                                 ui.label(&entry.name);
@@ -154,6 +170,11 @@ impl HardwareLibrary {
                         });
                     }
                 });
+        }
+        if self.request.is_none() && shown == 0 {
+            ui.small(
+                "No matching hardware source. Clear or change the filters to see other choices.",
+            );
         }
         if ui.button("Cancel hardware choice").clicked() {
             self.cancel();
