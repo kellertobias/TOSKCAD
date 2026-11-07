@@ -58,7 +58,7 @@ pub fn build(
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Supply {
     Manufactured,
-    /// Tagged `purchased`.
+    /// Tagged `purchased` or owned by a sourced profile connection.
     Purchased,
     /// A STEP or KiCad import, unless tagged `manufactured`.
     Imported,
@@ -129,7 +129,20 @@ fn supply(
     if aids.contains(&part) {
         return Supply::Aid;
     }
-    if tags.contains("purchased") {
+    if tags.contains("purchased")
+        || (!tags.contains("manufactured")
+            && features.iter().any(|&feature| {
+                matches!(document.get(feature).map(|entity| &entity.data),
+                    Some(EntityData::Feature { definition, .. })
+                        if definition.type_id == model::PROFILE_CONNECTION_OUTPUT_TYPE)
+                    && model::read_profile_connection_output(document, feature).is_ok_and(
+                        |output| {
+                            output.output.body == part
+                                && matches!(output.geometry, model::ProfileOutputKind::Part { .. })
+                        },
+                    )
+            }))
+    {
         return Supply::Purchased;
     }
     let imported = features.iter().any(|f| {

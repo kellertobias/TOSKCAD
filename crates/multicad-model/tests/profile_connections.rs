@@ -215,6 +215,29 @@ fn paired_end_connection_machines_only_the_host_and_survives_reopen_and_undo() {
     assert!(volume(members[0].feature) - volume(cut) > 100.);
     let other = members[1].member.output.body;
     assert_eq!(native.snapshot().bodies[&other], members[1].feature);
+    use multicad_model::schedules::{BomOptions, Supply};
+    let bom = native
+        .bom(draft.prepared.document(), &BomOptions::default())
+        .unwrap();
+    for row in &bom.rows {
+        let expected = if row.part == host || row.part == other {
+            Supply::Manufactured
+        } else {
+            Supply::Purchased
+        };
+        assert_eq!(row.supply, expected, "{}", row.name);
+    }
+    let made_parts = native
+        .bom(
+            draft.prepared.document(),
+            &BomOptions {
+                include_purchased: false,
+                ..BomOptions::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(made_parts.rows.len(), 2);
+    assert_eq!(made_parts.excluded.len(), draft.outputs.len());
     session.commit(draft.prepared).unwrap();
     let mut bytes = vec![];
     let file = ProjectFile::new(session.document().clone()).unwrap();
