@@ -733,7 +733,7 @@ pub(super) fn actions(
         Owner::Model,
         Some(Button::new(
             "Preview",
-            valid && !pending,
+            valid,
             "Validate these exact local inputs using native geometry",
         )),
         Button::new(

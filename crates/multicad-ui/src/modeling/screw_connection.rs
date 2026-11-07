@@ -827,7 +827,14 @@ impl ScrewConnectionPanel {
         if let Err(error) = &request {
             ui.colored_label(egui::Color32::LIGHT_RED, error);
         }
-        match form::actions(ui, request.is_ok(), changed, self.stamp, preview) {
+        let pending = matches!(preview, PreviewState::Pending { stamp } if stamp == self.stamp);
+        match form::actions(
+            ui,
+            request.is_ok() && !pending,
+            changed,
+            self.stamp,
+            preview,
+        ) {
             Some(FormAction::Preview) => request.ok().map(|request| ModelEvent::Preview {
                 stamp: self.stamp,
                 request: ModelRequest::ScrewConnection(Box::new(request)),
