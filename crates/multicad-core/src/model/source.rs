@@ -825,9 +825,11 @@ fn saved_feature_matches(
     })
 }
 
-fn saved_extension_matches(document: &Document, provider: &str) -> bool {
+fn saved_extension_matches(
+    document: &Document,
+    needs_reader: impl Fn(&str, &serde_json::Value) -> bool,
+) -> bool {
     document.entities().any(|entity| match &entity.data {
-        EntityData::Extension { definition, .. } if definition.type_id == provider => true,
         EntityData::Extension { definition, .. }
             if definition.type_id == crate::symbols::DEFINITION_TYPE =>
         {
@@ -844,9 +846,13 @@ fn saved_extension_matches(document: &Document, provider: &str) -> bool {
                             && entity
                                 .pointer("/data/definition/type_id")
                                 .and_then(serde_json::Value::as_str)
-                                == Some(provider)
+                                .zip(entity.pointer("/data/definition/data"))
+                                .is_some_and(|(type_id, data)| needs_reader(type_id, data))
                     })
                 })
+        }
+        EntityData::Extension { definition, .. } => {
+            needs_reader(&definition.type_id, &definition.data)
         }
         _ => false,
     })
@@ -997,9 +1003,14 @@ pub fn required_capabilities(document: &Document) -> BTreeSet<String> {
             super::SCREW_HARDWARE_PLACEMENT_CAPABILITY,
         ),
     ] {
-        if saved_extension_matches(document, provider) {
+        if saved_extension_matches(document, |type_id, _| type_id == provider) {
             capabilities.insert(capability.into());
         }
+    }
+    if saved_extension_matches(document, |type_id, data| {
+        type_id == super::PROFILE_CONNECTION_TYPE && data.pointer("/request/nut").is_some()
+    }) {
+        capabilities.insert(super::PROFILE_CONNECTION_NUT_CAPABILITY.into());
     }
     if document.entities().any(|entity| {
         let matches = |value: &serde_json::Value| {

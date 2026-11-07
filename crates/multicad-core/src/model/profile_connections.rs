@@ -18,6 +18,7 @@ use std::collections::BTreeSet;
 
 pub const PROFILE_CONNECTION_TYPE: &str = "model.profile_connection";
 pub const PROFILE_CONNECTION_CAPABILITY: &str = "model.profile_connection.1";
+pub const PROFILE_CONNECTION_NUT_CAPABILITY: &str = "model.profile_connection.nut.1";
 pub const PROFILE_CONNECTION_OUTPUT_TYPE: &str = "model.profile_connection_output";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -63,6 +64,47 @@ impl ProfileConnectionKind {
     }
 }
 
+/// Supplier alternatives with the same dimensioned Line 8 M8 mounting interface.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProfileConnectionNut {
+    #[default]
+    ZincPlated,
+    Stainless,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ProfileConnectionNutDimensions {
+    pub length_mm: f64,
+    pub width_mm: f64,
+    pub depth_mm: f64,
+    pub bore_from_end_mm: f64,
+}
+
+impl ProfileConnectionNut {
+    fn is_default(&self) -> bool {
+        *self == Self::ZincPlated
+    }
+
+    pub fn article(self) -> &'static str {
+        match self {
+            Self::ZincPlated => "0.0.026.18",
+            Self::Stainless => "0.0.388.49",
+        }
+    }
+
+    pub fn dimensions(self) -> ProfileConnectionNutDimensions {
+        match self {
+            Self::ZincPlated | Self::Stainless => ProfileConnectionNutDimensions {
+                length_mm: 23.0,
+                width_mm: 13.8,
+                depth_mm: 7.3,
+                bore_from_end_mm: 7.5,
+            },
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProfilePartRole {
     Connector(usize),
@@ -70,14 +112,35 @@ pub enum ProfilePartRole {
     Nut(usize),
 }
 impl ProfilePartRole {
-    fn name(self, kind: ProfileConnectionKind) -> String {
+    fn name(self, request: &ProfileConnectionRequest) -> String {
         match self {
-            Self::Connector(index) if kind == ProfileConnectionKind::UniversalEnd => {
+            Self::Connector(index) if request.kind == ProfileConnectionKind::UniversalEnd => {
                 format!("Line 8 universal fastener {}", index + 1)
             }
-            Self::Connector(_) => kind.label().into(),
+            Self::Connector(_) => request.kind.label().into(),
             Self::Screw(index) => format!("Line 8 M8 screw {}", index + 1),
+            Self::Nut(index) if request.nut == ProfileConnectionNut::Stainless => {
+                format!(
+                    "Line 8 M8 stainless T-slot nut {} · item {}",
+                    index + 1,
+                    request.nut.article()
+                )
+            }
             Self::Nut(index) => format!("Line 8 M8 T-slot nut {}", index + 1),
+        }
+    }
+
+    fn description(self, request: &ProfileConnectionRequest) -> String {
+        if matches!(self, Self::Nut(_)) && request.nut == ProfileConnectionNut::Stainless {
+            format!(
+                "item {} · stainless steel · retained connection hardware",
+                request.nut.article()
+            )
+        } else {
+            format!(
+                "item {} · retained connection recipe",
+                request.kind.article()
+            )
         }
     }
 }
@@ -167,6 +230,8 @@ pub struct ProfileConnectionRequest {
     pub kind: ProfileConnectionKind,
     pub first: ProfileAttachment,
     pub second: ProfileAttachment,
+    #[serde(default, skip_serializing_if = "ProfileConnectionNut::is_default")]
+    pub nut: ProfileConnectionNut,
 }
 impl ProfileConnectionRequest {
     pub fn new(
@@ -181,6 +246,7 @@ impl ProfileConnectionRequest {
             kind,
             first,
             second,
+            nut: ProfileConnectionNut::default(),
         }
     }
 
@@ -196,6 +262,13 @@ impl ProfileConnectionRequest {
         }
         self.first.validate()?;
         self.second.validate()?;
+        if self.kind == ProfileConnectionKind::UniversalEnd
+            && self.nut != ProfileConnectionNut::ZincPlated
+        {
+            return Err(invalid(
+                "The stainless T-slot nut is available for the angle bracket and joining plate. The universal end connection uses its original fastener set.",
+            ));
+        }
         let compatible = match self.kind {
             ProfileConnectionKind::AngleBracket | ProfileConnectionKind::JoiningPlate => {
                 matches!(self.first.anchor, ProfileConnectorAnchor::Groove { .. })
@@ -553,6 +626,26 @@ pub fn prepare_profile_connection(
         if prior.machining.is_some() {
             machining_body(document, request, prior.machining)?;
         }
+        if prior.request.nut != request.nut {
+            for (part, role) in prior.parts.iter().zip(request.kind.roles().iter().copied()) {
+                if !matches!(role, ProfilePartRole::Nut(_)) {
+                    continue;
+                }
+                let name = role.name(request);
+                let mut feature = document
+                    .get(part.feature)
+                    .cloned()
+                    .ok_or(DocumentError::Missing(part.feature))?;
+                let mut body = document
+                    .get(part.body)
+                    .cloned()
+                    .ok_or(DocumentError::Missing(part.body))?;
+                feature.name = format!("{name} feature");
+                body.name = name;
+                body.description = role.description(request);
+                edits.extend([Mutation::Replace(feature), Mutation::Replace(body)]);
+            }
+        }
         prior.request = request.clone();
         prior
     } else {
@@ -608,7 +701,7 @@ pub fn prepare_profile_connection(
     } else {
         edits.push(Mutation::Insert(record));
         for (index, (part, role)) in source.parts.iter().zip(request.kind.roles()).enumerate() {
-            let name = role.name(request.kind);
+            let name = role.name(request);
             let output = ProfileConnectionOutput {
                 connection: request.connection,
                 output: BodyOutput { body: part.body },
@@ -621,10 +714,7 @@ pub fn prepare_profile_connection(
             edits.push(Mutation::Insert(Entity {
                 id: part.body,
                 name,
-                description: format!(
-                    "item {} · retained connection recipe",
-                    request.kind.article()
-                ),
+                description: role.description(request),
                 data: EntityData::Part {
                     features: vec![part.feature],
                     material: None,

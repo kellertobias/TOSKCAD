@@ -8,9 +8,9 @@ use multicad_core::{
         ITEM_LINE_8_GROOVE_LIP_DEPTH_MM, MechanicalPartParameters, PROFILE_ACCESS_FROM_END_MM,
         PROFILE_ACCESS_RADIUS_MM, PROFILE_BARREL_DEPTH_MM, PROFILE_PILOT_DEPTH_MM,
         PROFILE_PILOT_RADIUS_MM, PathSegment, ProfileAttachment, ProfileConnectionFrames,
-        ProfileConnectionKind, ProfileOutputKind, ProfilePartRole, ResolvedMechanicalPart,
-        ResolvedThread, ScrewDrive, ScrewHead, ScrewLengthInput, ThreadMode, ThreadParameters,
-        length,
+        ProfileConnectionKind, ProfileConnectionNut, ProfileOutputKind, ProfilePartRole,
+        ResolvedMechanicalPart, ResolvedThread, ScrewDrive, ScrewHead, ScrewLengthInput,
+        ThreadMode, ThreadParameters, length,
     },
     parameters::EvaluatedParameters,
     references::{ReferenceFrame, TopologySnapshot},
@@ -22,7 +22,6 @@ use multicad_kernel::{
 use std::{collections::BTreeMap, f64::consts::TAU};
 
 const SHEET_MM: f64 = 5.0;
-const NUT_DEPTH_MM: f64 = 7.3;
 const NUT_THREAD_MM: f64 = 4.1;
 const BORE_RADIUS_MM: f64 = 4.9;
 // Assembly engineering clearance, independent of catalog and ISO fit classes.
@@ -359,29 +358,36 @@ impl Builder<'_> {
         Ok((placed, thread, shift(frame, neck + runout)))
     }
 
-    fn nut(&self, kind: ProfileConnectionKind, frame: ReferenceFrame) -> Result<Solid, ModelError> {
+    fn nut(
+        &self,
+        kind: ProfileConnectionKind,
+        variant: ProfileConnectionNut,
+        frame: ReferenceFrame,
+    ) -> Result<Solid, ModelError> {
+        let size = variant.dimensions();
+        let half_width = size.width_mm / 2.;
         let seat = shift(frame, ITEM_LINE_8_GROOVE_LIP_DEPTH_MM);
         let section = [
-            [-6.9, 0.0],
-            [6.9, 0.0],
+            [-half_width, 0.0],
+            [half_width, 0.0],
             [6.5, 3.0],
             [5.4, 5.0],
-            [3.3, NUT_DEPTH_MM],
-            [-3.3, NUT_DEPTH_MM],
+            [3.3, size.depth_mm],
+            [-3.3, size.depth_mm],
             [-5.4, 5.0],
             [-6.5, 3.0],
         ];
         let blank = self.checked(Solid::extrude_curved_profile(
             &CurvedProfile {
                 frame: PlaneFrame {
-                    origin: sub(seat.origin_mm, scale(seat.u, 7.5)),
+                    origin: sub(seat.origin_mm, scale(seat.u, size.bore_from_end_mm)),
                     u: seat.v,
                     v: seat.normal(),
                 },
                 outer: polygon(&section),
                 holes: vec![],
             },
-            23.0,
+            size.length_mm,
             self.inputs.policy,
         ))?;
         let (screw, external, external_start) = self.screw(kind, frame)?;
@@ -425,7 +431,7 @@ impl Builder<'_> {
         let relief = self.cylinder(
             shift(seat, NUT_THREAD_MM - 0.001),
             4.10,
-            NUT_DEPTH_MM - NUT_THREAD_MM + 0.02,
+            size.depth_mm - NUT_THREAD_MM + 0.02,
         )?;
         let nut = self.subtract(&tapped, &relief, "T-slot nut crown relief removed the part")?;
         self.check_clear(
@@ -481,7 +487,9 @@ pub(crate) fn build(inputs: Inputs<'_>, feature: EntityId) -> Result<Solid, Mode
             }
         }
         ProfilePartRole::Screw(index) => builder.screw(request.kind, frames.fasteners[index])?.0,
-        ProfilePartRole::Nut(index) => builder.nut(request.kind, frames.fasteners[index])?,
+        ProfilePartRole::Nut(index) => {
+            builder.nut(request.kind, request.nut, frames.fasteners[index])?
+        }
     };
     for (site, producer) in [
         (

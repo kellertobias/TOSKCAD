@@ -5,8 +5,8 @@ use multicad_core::{
     materials::{LibraryDefinition, ProfileShape, Stock, StockKind},
     model::{
         self, BodyInput, BodyOutput, MemberDefinition, MemberPath, MemberRequest, OccurrencePath,
-        ProfileAttachment, ProfileConnectionKind, ProfileConnectionRequest, ProfileConnectorAnchor,
-        ProfileGrooveSide, length,
+        ProfileAttachment, ProfileConnectionKind, ProfileConnectionNut, ProfileConnectionRequest,
+        ProfileConnectorAnchor, ProfileGrooveSide, length,
     },
 };
 use multicad_mcp::{
@@ -162,6 +162,7 @@ fn profile_connection_native_create_edit_and_remove_share_canonical_ids() {
             json!({"connection":request.connection}),
         );
         assert_eq!(inspected["article"], "0.0.692.16");
+        assert_eq!(inspected["nut_article"], request.nut.article());
         assert_eq!(inspected["request"], json!(request));
     };
     inspect(&request);
@@ -187,6 +188,7 @@ fn profile_connection_native_create_edit_and_remove_share_canonical_ids() {
     assert_eq!(host.document(), live);
 
     request.name = "Renamed joining plate".into();
+    request.nut = ProfileConnectionNut::Stainless;
     let edited = run(
         "set_profile_connection",
         json!({"expected_revision":1,"request":request}),

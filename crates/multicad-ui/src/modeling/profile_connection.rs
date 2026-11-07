@@ -9,7 +9,8 @@ use multicad_core::{
     document::{Document, EntityId},
     model::{
         self, BodyInput, MemberEnd, OccurrencePath, ProfileAttachment, ProfileConnectionKind,
-        ProfileConnectionRequest, ProfileConnectorAnchor, ProfileGrooveSide, ProfileSection,
+        ProfileConnectionNut, ProfileConnectionRequest, ProfileConnectorAnchor, ProfileGrooveSide,
+        ProfileSection,
     },
     parameters::Unit,
 };
@@ -61,6 +62,7 @@ pub(super) struct ProfileConnectionPanel {
     stamp: FormStamp,
     name: String,
     kind: ProfileConnectionKind,
+    nut: ProfileConnectionNut,
     targets: Vec<ProfileMemberTarget>,
     sites: [AttachmentDraft; 2],
     seed: Option<ProfileConnectionRequest>,
@@ -73,6 +75,13 @@ fn kind_label(kind: ProfileConnectionKind) -> &'static str {
         ProfileConnectionKind::AngleBracket => "Angle bracket",
         ProfileConnectionKind::JoiningPlate => "Joining plate",
         ProfileConnectionKind::UniversalEnd => "Universal end connector",
+    }
+}
+
+fn nut_label(nut: ProfileConnectionNut) -> &'static str {
+    match nut {
+        ProfileConnectionNut::ZincPlated => "Zinc-plated steel · 0.0.026.18",
+        ProfileConnectionNut::Stainless => "Stainless steel · 0.0.388.49",
     }
 }
 
@@ -145,6 +154,7 @@ impl ProfileConnectionPanel {
             stamp: FormStamp::new(),
             name: "Profile connection".into(),
             kind: ProfileConnectionKind::AngleBracket,
+            nut: ProfileConnectionNut::default(),
             targets,
             sites,
             seed: None,
@@ -160,6 +170,7 @@ impl ProfileConnectionPanel {
         let mut panel = Self::new(document, &BTreeSet::new())?;
         panel.name = request.name.clone();
         panel.kind = request.kind;
+        panel.nut = request.nut;
         for (site, attachment) in panel
             .sites
             .iter_mut()
@@ -254,6 +265,7 @@ impl ProfileConnectionPanel {
             .ok_or("Pick a site on each profile member")?;
         request.name = self.name.trim().into();
         request.kind = self.kind;
+        request.nut = self.nut;
         request.first = first;
         request.second = second;
         Ok(request)
@@ -302,9 +314,6 @@ impl ProfileConnectionPanel {
             self.kind.article(),
             self.kind.roles().len()
         ));
-        if self.kind != ProfileConnectionKind::UniversalEnd {
-            ui.small("Fasteners: item 0.0.680.96 countersunk screw and T-slot nut sets.");
-        }
         if self.editing {
             ui.small("A saved connection keeps its connector family.");
         }
@@ -314,10 +323,31 @@ impl ProfileConnectionPanel {
             if was_end != needs_end {
                 self.sites[0].attachment = None;
             }
+            if needs_end {
+                self.nut = ProfileConnectionNut::default();
+            }
             self.pick = None;
             changed = true;
         }
-        ui.small("The selected groove sides and member ends set the connector orientation. Fasteners follow the selected connector family.");
+        if self.kind == ProfileConnectionKind::UniversalEnd {
+            ui.small("Two M8 × 30 button-head screws and zinc-plated Line 8 T-slot nuts.");
+        } else {
+            ui.small("Two M8 × 14 countersunk screws for 5 mm stock.");
+            ui.label("Line 8 M8 T-slot nuts");
+            controls::inspector_combo(ui, "profile-connection-nut")
+                .selected_text(nut_label(self.nut))
+                .show_ui(ui, |ui| {
+                    for choice in [
+                        ProfileConnectionNut::ZincPlated,
+                        ProfileConnectionNut::Stainless,
+                    ] {
+                        changed |= ui
+                            .selectable_value(&mut self.nut, choice, nut_label(choice))
+                            .changed();
+                    }
+                });
+        }
+        ui.small("The selected groove sides and member ends set the connector orientation.");
         if self.targets.is_empty() {
             ui.label("Create two supported profile members before connecting them.");
         }
@@ -588,8 +618,10 @@ mod tests {
         let initial = panel.request(&document, true).unwrap();
         assert_eq!(panel.request(&document, true).unwrap(), initial);
         panel.sites[0].station.set_exact_literal(22.5, "mm");
+        panel.nut = ProfileConnectionNut::Stainless;
         let edited = panel.request(&document, true).unwrap();
         assert_eq!(edited.connection, initial.connection);
+        assert_eq!(edited.nut, ProfileConnectionNut::Stainless);
         assert_eq!(edited.first.occurrence, initial.first.occurrence);
         assert_eq!(edited.second, initial.second);
         assert_eq!(
@@ -599,6 +631,8 @@ mod tests {
                 station: model::length(22.5),
             }
         );
+        let reopened = ProfileConnectionPanel::existing(&document, edited.clone()).unwrap();
+        assert_eq!(reopened.request(&document, true).unwrap(), edited);
         assert_eq!(document.entities().count(), 0);
     }
 }

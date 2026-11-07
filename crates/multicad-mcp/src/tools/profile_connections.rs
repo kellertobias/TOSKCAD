@@ -14,7 +14,7 @@ use serde_json::{Map, Value, json};
 pub struct ProfileConnectionArgs {
     pub expected_revision: u64,
     /// Complete canonical ProfileConnectionRequest: connection UUID, name, kind,
-    /// first and second attachments. Each attachment includes member body and
+    /// optional nut choice, and first and second attachments. Each attachment includes member body and
     /// producer IDs, the exact occurrence path, and a groove or end anchor.
     /// Use inspect_profile_connection to retrieve an existing editable request.
     pub request: Map<String, Value>,
@@ -45,6 +45,7 @@ pub(super) fn inspect_profile_connection(
         "revision": revision,
         "connection": connection,
         "article": request.kind.article(),
+        "nut_article": request.nut.article(),
         "request": request,
     }))
 }

@@ -4,12 +4,12 @@ use multicad_core::{
     materials::{LibraryDefinition, ProfileShape, Stock, StockKind},
     model::{
         self, BodyInput, BodyOutput, MemberDefinition, MemberEnd, MemberPath, MemberRequest,
-        OccurrencePath, ProfileAttachment, ProfileConnectionKind, ProfileConnectionRequest,
-        ProfileConnectorAnchor, ProfileGrooveSide, length,
+        OccurrencePath, ProfileAttachment, ProfileConnectionKind, ProfileConnectionNut,
+        ProfileConnectionRequest, ProfileConnectorAnchor, ProfileGrooveSide, length,
     },
     project_file::{self, ProjectFile},
 };
-use multicad_model::{Compiler, Model};
+use multicad_model::{Compiler, Model, schedules::BomOptions};
 
 fn actor() -> Actor {
     Actor::local(Channel::Ui)
@@ -195,6 +195,13 @@ fn paired_end_connection_machines_only_the_host_and_survives_reopen_and_undo() {
         groove(&members[1], ProfileGrooveSide::MinX, 50.0),
     );
     let original = session.document().clone();
+    let mut unsupported = request.clone();
+    unsupported.nut = ProfileConnectionNut::Stainless;
+    let error =
+        model::prepare_profile_connection(&session, session.revision(), actor(), &unsupported)
+            .unwrap_err();
+    assert!(error.message.contains("original fastener set"));
+    assert_eq!(session.document(), &original);
     let draft =
         model::prepare_profile_connection(&session, session.revision(), actor(), &request).unwrap();
     assert_eq!(draft.outputs.len(), 6);
@@ -240,4 +247,101 @@ fn paired_end_connection_machines_only_the_host_and_survives_reopen_and_undo() {
     assert_eq!(session.document(), &original);
     session.redo(session.revision(), actor()).unwrap();
     assert_eq!(session.document(), &reopened.document);
+}
+
+#[test]
+fn stainless_line_8_nut_replaces_stock_without_reallocating_connection_children() {
+    use ProfileConnectionKind::JoiningPlate;
+    use ProfileConnectionNut::{Stainless, ZincPlated};
+    use ProfileGrooveSide::MaxY;
+    let (mut session, members) = prepare_members([
+        ([0., 0., 0.], [100., 0., 0.]),
+        ([0., 40., 0.], [100., 40., 0.]),
+    ]);
+    let mut request = ProfileConnectionRequest::new(
+        "Joining plate",
+        JoiningPlate,
+        groove(&members[0], MaxY, 40.),
+        groove(&members[1], MaxY, 40.),
+    );
+    assert_eq!(request.nut, ZincPlated);
+    let request_wire = serde_json::to_value(&request).unwrap();
+    assert!(request_wire.get("nut").is_none());
+    let restored: ProfileConnectionRequest = serde_json::from_value(request_wire).unwrap();
+    assert_eq!(restored, request);
+
+    let prepared =
+        model::prepare_profile_connection(&session, session.revision(), actor(), &request).unwrap();
+    let outputs = prepared.outputs.clone();
+    session.commit(prepared.prepared).unwrap();
+    let initial = session.document().clone();
+    let baseline = compile(&initial, session.revision()).unwrap();
+    assert!(
+        !ProjectFile::new(initial.clone())
+            .unwrap()
+            .capabilities()
+            .contains(model::PROFILE_CONNECTION_NUT_CAPABILITY)
+    );
+
+    request.nut = Stainless;
+    let prepared =
+        model::prepare_profile_connection(&session, session.revision(), actor(), &request).unwrap();
+    assert_eq!(session.document(), &initial);
+    assert_eq!(prepared.outputs, outputs);
+    let after = prepared.prepared.document();
+    let checked = compile(after, session.revision() + 1).unwrap();
+    assert_eq!(checked.snapshot().leaf_occurrences.len(), 7);
+    let bom = checked.bom(after, &BomOptions::default()).unwrap();
+    for (role, part) in JoiningPlate.roles().iter().zip(&outputs) {
+        if matches!(role, model::ProfilePartRole::Nut(_)) {
+            let before = baseline.solid(part.feature).unwrap();
+            let replacement = checked.solid(part.feature).unwrap();
+            assert_eq!(replacement.solid_count().unwrap(), 1);
+            assert_eq!(replacement.bounds().unwrap(), before.bounds().unwrap());
+            assert!(
+                (replacement.volume_mm3().unwrap() - before.volume_mm3().unwrap()).abs() < 1e-7
+            );
+            let row = bom.rows.iter().find(|row| row.part == part.body).unwrap();
+            assert_eq!(row.quantity, 1);
+            assert!(row.name.contains("stainless T-slot nut") && row.name.contains("0.0.388.49"));
+        } else {
+            assert_eq!(after.get(part.body), initial.get(part.body));
+            assert_eq!(after.get(part.feature), initial.get(part.feature));
+        }
+    }
+    session.commit(prepared.prepared).unwrap();
+
+    let project = ProjectFile::new(session.document().clone()).unwrap();
+    let capability = model::PROFILE_CONNECTION_NUT_CAPABILITY;
+    assert!(project.capabilities().contains(capability));
+    let mut bytes = Vec::new();
+    project_file::write(&project, &mut bytes, Default::default()).unwrap();
+    let mut supported = project_file::supported_capabilities();
+    assert!(supported.remove(capability));
+    let error =
+        project_file::read(&mut bytes.as_slice(), Default::default(), &supported).unwrap_err();
+    assert!(error.contains(capability), "{error}");
+    let reopened = project_file::read(
+        &mut bytes.as_slice(),
+        Default::default(),
+        &project_file::supported_capabilities(),
+    )
+    .unwrap()
+    .project;
+    assert_eq!(reopened.document, project.document);
+    assert_eq!(
+        model::read_profile_connection_request(&reopened.document, request.connection).unwrap(),
+        request
+    );
+    let revised = session.document().clone();
+    session.undo(session.revision(), actor()).unwrap();
+    assert_eq!(session.document(), &initial);
+    session.redo(session.revision(), actor()).unwrap();
+    assert_eq!(session.document(), &revised);
+
+    request.nut = ZincPlated;
+    let restored =
+        model::prepare_profile_connection(&session, session.revision(), actor(), &request).unwrap();
+    assert_eq!(restored.outputs, outputs);
+    assert_eq!(restored.prepared.document(), &initial);
 }
