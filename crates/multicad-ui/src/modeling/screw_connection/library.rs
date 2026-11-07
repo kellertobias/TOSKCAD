@@ -107,7 +107,7 @@ impl HardwareLibrary {
         );
         self.facets.show(ui, &self.entries);
         let query = SearchQuery::new(&self.query);
-        let loaded_query = SearchQuery::new("");
+        let loaded_query = query.structured_only();
         if let Some(error) = &self.error {
             ui.colored_label(egui::Color32::LIGHT_RED, error);
         }

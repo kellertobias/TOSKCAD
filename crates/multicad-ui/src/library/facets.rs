@@ -234,6 +234,20 @@ impl SearchQuery {
         }
         query
     }
+    pub fn has_structured_nominal(&self) -> bool {
+        self.nominal.is_some()
+    }
+
+    /// File names and descriptions can match the original listing. Only the
+    /// structured terms must also match its freshly read definition.
+    pub fn structured_only(&self) -> Self {
+        Self {
+            terms: vec![],
+            nominal: self.nominal,
+            conflicting_nominals: self.conflicting_nominals,
+        }
+    }
+
     fn contains(&self, text: &str) -> bool {
         self.terms.iter().all(|term| text.contains(term))
     }
@@ -564,6 +578,39 @@ mod tests {
             FacetValue::Pitch(MechanicalRecipePitch::WoodReference(2.6)),
         );
         assert!(definition_search(&wood).matches(&query, &filters));
+    }
+
+    #[test]
+    fn nominal_shorthand_rechecks_fresh_definition_after_file_text_match() {
+        let mut session = Session::new(Document::new("Listed original").unwrap()).unwrap();
+        let short = add(
+            &mut session,
+            "M3 screw",
+            model::default_machine_screw(),
+            Some((3., "Steel")),
+        );
+        let replacement = add(
+            &mut session,
+            "M4 washer",
+            Part::Washer {
+                bore_diameter: model::length(4.3),
+                outside_diameter: model::length(9.),
+                thickness: model::length(0.8),
+                frame: Default::default(),
+            },
+            Some((4., "Steel")),
+        );
+        let query = SearchQuery::new("M3 bronze");
+        let facets = CatalogFilters::default();
+        assert!(query.has_structured_nominal());
+        assert!(!SearchQuery::new("bronze").has_structured_nominal());
+        assert!(entry_search(&original_entry(&session)).matches(&query, &facets));
+        assert!(!definition_search(&short).matches(&query, &facets));
+        let structured = query.structured_only();
+        assert!(definition_search(&short).matches(&structured, &facets));
+        assert!(!definition_search(&replacement).matches(&structured, &facets));
+        let conflicting = SearchQuery::new("M3 M4 bronze").structured_only();
+        assert!(!definition_search(&replacement).matches(&conflicting, &facets));
     }
 
     #[test]

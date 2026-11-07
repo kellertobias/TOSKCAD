@@ -33,7 +33,7 @@ impl Installed {
         ui.strong("Installation Library");
         ui.small("Included definitions and files listed with Add to Library. Place a pinned definition directly, or load a file to inspect and choose its definitions.");
         self.facets.show(ui, &self.entries);
-        let exact = self.facets.active();
+        let exact = self.facets.active() || query.has_structured_nominal();
         let mut action = None;
         let mut shown = 0;
         for entry in self
