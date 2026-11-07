@@ -198,6 +198,7 @@ impl SketchEditor {
         self.connection_section = None;
         self.connection_axis_pose = None;
         let Some((section, explode)) = self.model.connection_view_options() else {
+            self.fit_requested |= self.connection_exploded_axis.take().is_some();
             return Ok(scene.clone());
         };
         if self.model.screw_connection_picker().is_some() {
@@ -227,6 +228,7 @@ impl SketchEditor {
             self.connection_section = Some(SectionPlane::new(normal, offset)?);
         }
         if !explode {
+            self.fit_requested |= self.connection_exploded_axis.take().is_some();
             return Ok(scene.clone());
         }
         let roles = self.model.connection_hardware_roles();
@@ -258,7 +260,12 @@ impl SketchEditor {
                 offsets.entry(leaf.path.clone()).or_insert([0.; 3]);
             }
         }
-        scene.presentation_leaf_offsets(&offsets, &BTreeMap::new())
+        let presented = scene.presentation_leaf_offsets(&offsets, &BTreeMap::new())?;
+        if self.connection_exploded_axis != Some(axis.id) {
+            self.connection_exploded_axis = Some(axis.id);
+            self.fit_requested = true;
+        }
+        Ok(presented)
     }
 }
 
