@@ -24,6 +24,7 @@ mod fences;
 mod gear_pairs;
 mod gears;
 mod mechanical_parts;
+pub mod native_intersection_proofs;
 mod worker_cache;
 pub use gear_pairs::{GearEngagementWitness, GearPairCheck};
 mod equipment_plans;

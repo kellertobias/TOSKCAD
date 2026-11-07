@@ -309,6 +309,7 @@ pub struct EvaluationCache {
     max_entries: usize,
     last: CompileStats,
     pub(crate) gear_pairs: crate::PairCycleProofStore,
+    pub(crate) native_intersections: crate::native_intersection_proofs::ProofStore,
     symbol_proofs: BTreeSet<ContentHash>,
     pending_symbol_proofs: BTreeSet<ContentHash>,
     symbol_proof_hits: usize,
@@ -330,6 +331,10 @@ impl EvaluationCache {
             max_entries,
             last: CompileStats::default(),
             gear_pairs: Default::default(),
+            native_intersections: crate::native_intersection_proofs::ProofStore::new(
+                retained_bytes,
+                max_entries,
+            ),
             symbol_proofs: BTreeSet::new(),
             pending_symbol_proofs: BTreeSet::new(),
             symbol_proof_hits: 0,
@@ -355,10 +360,18 @@ impl EvaluationCache {
     pub fn clear(&mut self) {
         self.entries.clear();
         self.gear_pairs.clear();
+        self.native_intersections.clear();
         self.symbol_proofs.clear();
         self.pending_symbol_proofs.clear();
         self.symbol_nodes.clear();
         self.pending_symbol_nodes.clear();
+    }
+    /// Same-owner, exact native Intersect(None) receipts. These never replace
+    /// current source, phase, engagement, leaf enumeration or budget checks.
+    pub fn native_intersection_proof_stats(
+        &self,
+    ) -> crate::native_intersection_proofs::NativeIntersectionProofStats {
+        self.native_intersections.stats()
     }
     /// Completed, bounded native template receipts retained by this owner.
     pub fn symbol_template_proofs(&self) -> usize {

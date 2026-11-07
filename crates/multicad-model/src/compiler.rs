@@ -387,6 +387,14 @@ impl Compiler {
         let started = std::time::Instant::now();
         let full_evaluation = roots.is_none();
         let publication = crate::pair_cycle_proofs::PublicationScope::begin();
+        let native_publication =
+            crate::native_intersection_proofs::PublicationScope::begin(if full_evaluation {
+                cache
+                    .as_deref()
+                    .map(|cache| cache.native_intersections.clone())
+            } else {
+                None
+            });
         // An injected application store takes precedence over worker-local
         // receipts, including after clear or a change of application owner.
         let store = crate::current_pair_cycle_proofs()
@@ -418,6 +426,7 @@ impl Compiler {
         if let Some(cache) = cache {
             cache.finish_symbol_proofs(result.is_ok());
         }
+        native_publication.finish(result.is_ok() && full_evaluation);
         publication.finish(result.is_ok() && full_evaluation);
         if let Ok(model) = &mut result {
             model.timings.total_ms = started.elapsed().as_secs_f64() * 1000.;
