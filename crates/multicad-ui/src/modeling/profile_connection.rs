@@ -94,7 +94,7 @@ fn end_label(end: MemberEnd) -> &'static str {
 
 impl ProfileConnectionPanel {
     pub fn new(document: &Document, selected: &BTreeSet<EntityId>) -> Result<Self, String> {
-        let targets = model::transfer_occurrence_catalog(document)
+        let mut targets = model::transfer_occurrence_catalog(document)
             .map_err(|error| error.to_string())?
             .into_iter()
             .filter_map(|choice| {
@@ -122,6 +122,11 @@ impl ProfileConnectionPanel {
                 })
             })
             .collect::<Vec<_>>();
+        // The catalog order is deterministic for the same occurrence paths.
+        // Put the index first so even a truncated path identifies its row.
+        for (index, target) in targets.iter_mut().enumerate() {
+            target.label = format!("{}. {}", index + 1, target.label);
+        }
         let mut sites = [AttachmentDraft::new(), AttachmentDraft::new()];
         let matching = targets
             .iter()
@@ -465,6 +470,84 @@ impl ProfileConnectionPanel {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use multicad_core::{
+        commands::{Actor, Channel, Request, Session},
+        document::{Entity, EntityData, Mutation},
+        materials::{LibraryDefinition, ProfileShape, Stock, StockKind},
+        model::{BodyOutput, MemberDefinition, MemberPath, MemberRequest},
+    };
+
+    #[test]
+    fn same_name_members_have_distinct_labels_and_retain_their_paths() {
+        let mut session =
+            Session::new(Document::new("Profile connector targets").unwrap()).unwrap();
+        let actor = Actor::local(Channel::Ui);
+        let material = Entity::new(
+            "Aluminum",
+            EntityData::Material {
+                density_kg_m3: None,
+                color_rgba: [160, 165, 170, 255],
+                section_hatch: None,
+            },
+        );
+        let stock = EntityId::new();
+        let profile = LibraryDefinition::Stock(Stock {
+            material: material.id,
+            specification: StockKind::Profile {
+                designation: "item 0.0.026.03".into(),
+                length_mm: 6000.,
+                width_mm: 40.,
+                height_mm: 40.,
+                wall_mm: None,
+                shape: ProfileShape::ItemLine8_40x40,
+            },
+        })
+        .entity(stock, "Line 8 section")
+        .unwrap();
+        session
+            .apply(Request {
+                expected_revision: 0,
+                actor: actor.clone(),
+                label: "Add profile stock".into(),
+                edits: vec![Mutation::Insert(material), Mutation::Insert(profile)],
+            })
+            .unwrap();
+        let members = [0., 50.].map(|x| {
+            MemberRequest::new(
+                "Profile member",
+                MemberDefinition {
+                    output: BodyOutput {
+                        body: EntityId::nil(),
+                    },
+                    stock,
+                    path: MemberPath::Points {
+                        start: [x, 0., 0.].map(model::length),
+                        end: [x, 0., 100.].map(model::length),
+                    },
+                    anchor: Default::default(),
+                    rotation: None,
+                    extend_start: None,
+                    extend_end: None,
+                },
+            )
+        });
+        let prepared = model::prepare_members(&session, 1, actor, &members, None).unwrap();
+        session.commit(prepared.prepared).unwrap();
+        let selected = BTreeSet::from([members[1].member.output.body]);
+        let panel = ProfileConnectionPanel::new(session.document(), &selected).unwrap();
+        let labels = panel
+            .targets
+            .iter()
+            .map(|target| target.label.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(labels, ["1. Profile member", "2. Profile member"]);
+        let first = panel.sites[0].target.unwrap();
+        let chosen = &panel.targets[first];
+        assert_eq!(chosen.occurrence.root, members[1].member.output.body);
+        assert_eq!(chosen.member.producer, members[1].feature);
+        let reopened = ProfileConnectionPanel::new(session.document(), &BTreeSet::new()).unwrap();
+        assert_eq!(reopened.targets, panel.targets);
+    }
 
     #[test]
     fn picks_and_inspector_station_edit_keep_one_connection_identity() {
