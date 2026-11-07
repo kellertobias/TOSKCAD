@@ -170,9 +170,21 @@ fn jobs(library: &Path) -> Result<(Vec<Job>, String, usize)> {
     // profile as a circular-root fit. Physical span and fit-group intent remain distinct.
     for (label, fit, length, mode) in [
         (
+            "fitted-M3-6g-physical3",
+            ThreadFit::Metric6gExternal,
+            3.,
+            ThreadMode::NewExternal,
+        ),
+        (
             "fitted-M3-6g-physical8",
             ThreadFit::Metric6gExternal,
             8.,
+            ThreadMode::NewExternal,
+        ),
+        (
+            "fitted-M3-6g-physical12",
+            ThreadFit::Metric6gExternal,
+            12.,
             ThreadMode::NewExternal,
         ),
         (

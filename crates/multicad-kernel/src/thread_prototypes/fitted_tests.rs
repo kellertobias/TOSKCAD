@@ -30,7 +30,10 @@ fn profile(r: &model::ResolvedThread) -> HelicalThread {
     }
 }
 fn root_spec() -> RootRoundedHelicalThread {
-    let r = fitted_source(ThreadFit::Metric6gExternal, 8., ThreadMode::NewExternal);
+    root_spec_for_length(8.)
+}
+fn root_spec_for_length(length: f64) -> RootRoundedHelicalThread {
+    let r = fitted_source(ThreadFit::Metric6gExternal, length, ThreadMode::NewExternal);
     RootRoundedHelicalThread {
         profile: profile(&r),
         root_radius_mm: r.metric_fit.unwrap().external_root_radius_mm.unwrap(),
@@ -423,4 +426,43 @@ fn fitted_registered_assets_preserve_native_mass_profiles_step_and_owner_lifetim
         .map(|w| w.join().unwrap())
         .collect::<Vec<_>>();
     assert_eq!(a[0], a[1]);
+}
+
+#[test]
+fn fitted_short_and_long_registered_roots_match_fresh_geometry_and_step() {
+    let policy = GeometryPolicy::default();
+    let directory = tempfile::tempdir().unwrap();
+    for length in [3., 12.] {
+        ffi::reset_thread_factory_cache().unwrap();
+        let owner = EntityId::new();
+        let spec = root_spec_for_length(length);
+        let restored = Solid::root_rounded_helical_thread_named(spec, owner, policy).unwrap();
+        assert_eq!(crate::thread_factory_stats().unwrap().constructions, 0);
+        let fresh = Solid::root_rounded_helical_thread_named_fresh(spec, owner, policy).unwrap();
+        assert_eq!(crate::thread_factory_stats().unwrap().constructions, 1);
+        same_topology(&restored, &fresh, owner);
+        let expected = analytic_volume(spec.profile, Some(spec.root_radius_mm));
+        let bounds = fresh.bounds().unwrap();
+        assert!(bounds.min[2].abs() <= 16. * policy.linear_tolerance_mm);
+        assert!((bounds.max[2] - length).abs() <= 16. * policy.linear_tolerance_mm);
+        for (name, shape) in [("fresh", fresh), ("restored", restored)] {
+            volume_matches(&shape, expected, policy);
+            root_probes(&shape, spec);
+            let path = directory.path().join(format!("{length}-{name}.step"));
+            shape.write_step(&path).unwrap();
+            let back = Solid::read_step(&path, policy).unwrap();
+            assert_eq!(back.solid_count().unwrap(), 1);
+            volume_matches(&back, expected, policy);
+            root_probes(&back, spec);
+            let other = back.bounds().unwrap();
+            for (a, b) in bounds
+                .min
+                .into_iter()
+                .chain(bounds.max)
+                .zip(other.min.into_iter().chain(other.max))
+            {
+                assert!((a - b).abs() <= 16. * policy.linear_tolerance_mm);
+            }
+        }
+    }
 }
