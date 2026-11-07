@@ -444,8 +444,12 @@ impl ScrewConnectionPanel {
                 egui::StrokeKind::Inside,
             );
             if self.scroll_focus {
+                ui.ctx().memory_mut(|memory| {
+                    if let Some(focused) = memory.focused() {
+                        memory.surrender_focus(focused);
+                    }
+                });
                 response.scroll_to_me(Some(egui::Align::TOP));
-                response.request_focus();
                 self.scroll_focus = false;
             }
         }

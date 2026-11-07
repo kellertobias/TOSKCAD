@@ -108,9 +108,15 @@ impl SketchEditor {
                     .filter(|hit| self.model.connection_leaf_selectable(&hit.path));
                 if response.clicked()
                     && let Some(hit) = &hit
+                    && self
+                        .model
+                        .focus_connection_leaf(session, resources, presented, &hit.path)
                 {
-                    self.model
-                        .focus_connection_leaf(session, resources, presented, &hit.path);
+                    response.ctx.memory_mut(|memory| {
+                        if let Some(focused) = memory.focused() {
+                            memory.surrender_focus(focused);
+                        }
+                    });
                 }
                 let selected = hit.map(|hit| hit.display_instance).or_else(|| {
                     presented
