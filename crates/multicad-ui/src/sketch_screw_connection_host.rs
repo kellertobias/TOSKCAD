@@ -276,23 +276,30 @@ fn exploded_role_stations(
         .filter(|(_, role)| *role == Role::NutWasher)
         .count();
     let insert_count = usize::from(roles.iter().any(|(_, role)| *role == Role::Insert));
+    let hanger = roles.iter().any(|(_, role)| *role == Role::HangerBolt);
     let mut head = 0;
     let mut nut = 0;
     roles
         .iter()
         .map(|(id, role)| {
             let station = match role {
-                Role::Screw | Role::HangerBolt => -15. * (head_count + insert_count + 1) as f64,
+                Role::HangerBolt => -15. * (nut_count + 2) as f64,
+                Role::Screw => -15. * (head_count + insert_count + 1) as f64,
                 Role::HeadWasher => {
                     let value = -15. * (head_count + insert_count - head) as f64;
                     head += 1;
                     value
                 }
                 Role::NutWasher => {
+                    let offset = if hanger {
+                        -15. * (nut_count - nut) as f64
+                    } else {
+                        15. * (nut + 1) as f64
+                    };
                     nut += 1;
-                    15. * nut as f64
+                    offset
                 }
-                Role::Nut => 15. * (nut_count + 1) as f64,
+                Role::Nut => (if hanger { -15. } else { 15. }) * (nut_count + 1) as f64,
                 Role::Insert => -15.,
             };
             (*id, station)
@@ -321,6 +328,18 @@ mod tests {
         assert!(moved[&roles[3].0] < 0. && moved[&roles[0].0] > 0.);
         assert!(moved[&roles[0].0] < moved[&roles[4].0] && moved[&roles[4].0] < moved[&roles[5].0]);
         assert_eq!(roles, before);
+        let hanger_roles = [
+            Role::HangerBolt,
+            Role::NutWasher,
+            Role::NutWasher,
+            Role::Nut,
+        ]
+        .map(|role| (EntityId::new(), role));
+        let hanger = exploded_role_stations(&hanger_roles);
+        assert!(hanger.values().all(|offset| *offset < 0.));
+        assert!(hanger[&hanger_roles[0].0] < hanger[&hanger_roles[3].0]);
+        assert!(hanger[&hanger_roles[3].0] < hanger[&hanger_roles[1].0]);
+        assert!(hanger[&hanger_roles[1].0] < hanger[&hanger_roles[2].0]);
         let insert_roles =
             [Role::HeadWasher, Role::Screw, Role::Insert].map(|role| (EntityId::new(), role));
         let installed = exploded_role_stations(&insert_roles);
