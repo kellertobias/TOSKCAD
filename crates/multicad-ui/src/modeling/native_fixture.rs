@@ -7,6 +7,9 @@ use multicad_core::{
 };
 use multicad_model::{Compiler, ModelError, ModelSnapshot, Runtime};
 use std::sync::Arc;
+
+#[path = "../../../multicad-mcp/tests/support/screw_connection.rs"]
+pub(crate) mod screw_connection;
 /// Native aid inspections as scene review data.
 fn aid_reviews(
     inspections: &Result<Vec<multicad_model::AidInspection>, String>,

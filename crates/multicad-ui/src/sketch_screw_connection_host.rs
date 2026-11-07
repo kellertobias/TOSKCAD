@@ -38,7 +38,11 @@ impl SketchEditor {
         session: &Session,
         feed: &SceneFeed,
     ) -> Result<Option<Arc<Scene>>, String> {
-        let Some(pick) = self.model.screw_connection_picker() else {
+        let Some(pick) = self
+            .model
+            .screw_connection_picker()
+            .filter(|_| !self.measurement.active())
+        else {
             if let Some(previous) = self.connection_pick_view.take() {
                 self.camera = previous.camera;
                 self.fit_requested = false;
@@ -71,6 +75,14 @@ impl SketchEditor {
         Ok(Some(view))
     }
 
+    fn connection_display_hit(
+        &self,
+        presented: &Scene,
+        ray: crate::viewport::Ray,
+    ) -> Option<crate::viewport::DisplayLeafHit> {
+        presented.pick_display_leaf(ray, self.modeling_section())
+    }
+
     pub(super) fn connection_viewport(
         &mut self,
         response: &egui::Response,
@@ -92,7 +104,7 @@ impl SketchEditor {
                 let hit = response
                     .hover_pos()
                     .and_then(|pointer| self.camera.ray(pointer, rect))
-                    .and_then(|ray| presented.pick_display_leaf(ray, self.connection_section))
+                    .and_then(|ray| self.connection_display_hit(presented, ray))
                     .filter(|hit| self.model.connection_leaf_selectable(&hit.path));
                 if response.clicked()
                     && let Some(hit) = &hit
@@ -231,6 +243,9 @@ impl SketchEditor {
     ) -> Result<Arc<Scene>, String> {
         self.connection_section = None;
         self.connection_axis_pose = None;
+        if self.measurement.active() {
+            return Ok(scene.clone());
+        }
         let Some((section, explode)) = self.model.connection_view_options() else {
             self.fit_requested |= self.connection_exploded_axis.take().is_some();
             return Ok(scene.clone());
@@ -357,6 +372,169 @@ fn exploded_role_stations(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::modeling::native_fixture::screw_connection as fixture;
+
+    fn enable_viewport_section(editor: &mut SketchEditor) {
+        let context = egui::Context::default();
+        let button = std::cell::Cell::new(egui::Pos2::ZERO);
+        let mut frame = |events| {
+            context.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(600., 420.),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    button.set(ui.cursor().min + egui::vec2(12., 12.));
+                    editor.solid.section.control(ui, None);
+                },
+            )
+        };
+        let event = |pos, pressed| {
+            vec![
+                egui::Event::PointerMoved(pos),
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: Default::default(),
+                },
+            ]
+        };
+        frame(vec![]).drop_without_applying_deltas();
+        let mut click = |pos| {
+            frame(event(pos, true)).drop_without_applying_deltas();
+            frame(event(pos, false))
+        };
+        click(button.get()).drop_without_applying_deltas();
+        let output = frame(vec![]);
+        let enable = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.job.text == "Enable section" => {
+                    Some(text.pos + text.galley.size() * 0.5)
+                }
+                _ => None,
+            })
+            .expect("ordinary viewport section control");
+        output.drop_without_applying_deltas();
+        for pressed in [true, false] {
+            frame(event(enable, pressed)).drop_without_applying_deltas();
+        }
+        assert_eq!(
+            editor.solid.section.plane(),
+            Some(SectionPlane::new([1., 0., 0.], 0.).unwrap())
+        );
+    }
+
+    #[test]
+    fn connection_display_picks_follow_viewport_clipping_and_measure_uses_committed_scene() {
+        use multicad_core::model::{
+            self, PrimitiveFrame, PrimitiveParameters, PrimitiveRequest, length,
+        };
+        let (document, request, _) = fixture::fixture();
+        let mut session = Session::new(document).unwrap();
+        let actor = Actor::local(Channel::Ui);
+        let foreground = PrimitiveRequest::new(
+            "Clipped foreground",
+            PrimitiveParameters::Box {
+                size: std::array::from_fn(|_| length(2.)),
+                frame: PrimitiveFrame {
+                    origin: [length(-5.), length(0.), length(0.)],
+                    ..Default::default()
+                },
+            },
+        );
+        let prepared =
+            model::prepare_primitive(&session, session.revision(), actor.clone(), &foreground)
+                .unwrap();
+        session.commit(prepared.prepared).unwrap();
+        let prepared =
+            model::prepare_screw_connection(&session, session.revision(), actor, &request).unwrap();
+        session.commit(prepared.prepared).unwrap();
+        let native = multicad_model::Compiler::default()
+            .compile(session.document(), session.revision())
+            .unwrap();
+        let committed =
+            crate::modeling::native_fixture::scene(session.document(), native.snapshot(), 1)
+                .unwrap();
+        let offsets = committed
+            .assembly_evaluation()
+            .unwrap()
+            .leaves
+            .iter()
+            .map(|leaf| (leaf.path.clone(), [0.; 3]))
+            .collect();
+        let presented = committed
+            .presentation_leaf_offsets(&offsets, &BTreeMap::new())
+            .unwrap();
+        let ray = crate::viewport::Ray::new([-10., 1., 1.], [1., 0., 0.]).unwrap();
+        let mut editor = SketchEditor::default();
+        editor.set_model_backend(Box::new(
+            crate::modeling::native_fixture::NativeBackend::new(),
+        ));
+        editor
+            .model
+            .begin_existing(
+                &session,
+                &Default::default(),
+                request.connection,
+                Channel::Ui,
+            )
+            .unwrap();
+        let stamp = editor.model.stamp();
+        assert_eq!(
+            editor
+                .connection_display_hit(&presented, ray)
+                .unwrap()
+                .path
+                .root,
+            foreground.body
+        );
+        enable_viewport_section(&mut editor);
+        let normal_section = editor.solid.section.plane();
+        let receiving = &request.receivers[0].source.occurrence;
+        assert_eq!(
+            &editor.connection_display_hit(&presented, ray).unwrap().path,
+            receiving
+        );
+
+        let view = editor
+            .connection_presentation(&session, &committed)
+            .unwrap();
+        assert_eq!(view.scope(), &crate::viewport::SceneScope::Presentation);
+        editor.connection_section = Some(SectionPlane::new([0., 0., 1.], 50.).unwrap());
+        editor.measurement.open();
+        assert_eq!(editor.modeling_section(), normal_section);
+        assert!(
+            editor
+                .connection_pick_scene(&session, &SceneFeed::default())
+                .unwrap()
+                .is_none()
+        );
+        let measured = editor
+            .connection_presentation(&session, &committed)
+            .unwrap();
+        assert!(Arc::ptr_eq(&measured, &committed));
+        assert!(
+            measured
+                .pick_face_section(ray, editor.modeling_section())
+                .is_some()
+        );
+        assert!(editor.connection_axis_pose.is_none());
+        assert_eq!(editor.model.stamp(), stamp);
+        editor.measurement.close();
+        let resumed = editor
+            .connection_presentation(&session, &committed)
+            .unwrap();
+        assert_eq!(resumed.scope(), &crate::viewport::SceneScope::Presentation);
+        assert_eq!(editor.model.stamp(), stamp);
+    }
+
     #[test]
     fn exploded_stack_separates_head_and_nut_sides_without_changing_authored_roles() {
         use multicad_core::model::ScrewConnectionHardwareRole as Role;

@@ -1,7 +1,6 @@
 use super::*;
+use crate::modeling::native_fixture::screw_connection as fixture;
 use crate::modeling::{native_fixture, screw_connection::ScrewConnectionPanel};
-#[path = "../../../../multicad-mcp/tests/support/screw_connection.rs"]
-mod fixture;
 use std::time::{Duration, Instant};
 
 fn controller() -> ModelToolController {

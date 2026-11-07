@@ -1,5 +1,6 @@
 //! Current native preview receipts authorize only source-neutral Inspector focus.
 use super::*;
+use crate::modeling::native_fixture::screw_connection as fixture;
 use crate::{
     modeling::{ScrewConnectionCommand, native_fixture, screw_connection::ScrewConnectionPanel},
     viewport::{Ray, SceneScope},
@@ -8,8 +9,6 @@ use multicad_core::{
     document::Placement,
     symbols::{self, SymbolAuthorRequest, SymbolKind, SymbolPlaceRequest},
 };
-#[path = "../../../../multicad-mcp/tests/support/screw_connection.rs"]
-mod fixture;
 use std::{
     collections::BTreeMap,
     time::{Duration, Instant},

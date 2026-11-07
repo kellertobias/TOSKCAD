@@ -1,7 +1,6 @@
 //! Painted display focus changes neither authored source nor preview identity.
 use super::*;
-#[path = "../../../../multicad-mcp/tests/support/screw_connection.rs"]
-mod fixture;
+use crate::modeling::native_fixture::screw_connection as fixture;
 fn paint(
     ctx: &egui::Context,
     panel: &mut ScrewConnectionPanel,
