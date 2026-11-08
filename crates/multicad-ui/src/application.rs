@@ -2023,13 +2023,20 @@ impl Application {
             self.execute(action, &[], Channel::Ui);
         }
     }
+    fn effective_ribbon_tab(&self) -> usize {
+        let tabs = &self.registry.workspace(self.mode).tabs;
+        let tab = self.tab.min(tabs.len() - 1);
+        if tabs[tab].requires_active_sketch && !self.current().sketch.editing {
+            0
+        } else {
+            tab
+        }
+    }
     fn ribbon(&mut self, ui: &mut egui::Ui) {
         ui.spacing_mut().item_spacing.y = 0.0;
         let workspace = self.registry.workspace(self.mode).clone();
-        self.tab = self.tab.min(workspace.tabs.len() - 1);
-        if workspace.tabs[self.tab].requires_active_sketch && !self.current().sketch.editing {
-            self.tab = 0;
-        }
+        self.tab = self.effective_ribbon_tab();
+        let mut selected_tab = None;
         let accent = self.mode.color();
         let mut action = None;
         egui::Frame::new()
@@ -2059,8 +2066,7 @@ impl Application {
                             response
                         };
                         if response.clicked() {
-                            self.tab = index;
-                            self.current_mut().view_restore_pending = false;
+                            selected_tab = Some(index);
                         }
                     }
                 });
@@ -2107,6 +2113,13 @@ impl Application {
                     action = chosen;
                 }
             });
+        if let Some(index) = selected_tab {
+            // Lay out the old band's tools until the next frame sizes the panel
+            // for the newly selected workbench.
+            self.tab = index;
+            self.current_mut().view_restore_pending = false;
+            ui.ctx().request_repaint();
+        }
         if let Some(action) = action {
             self.execute(action, &[], Channel::Ui);
         }
@@ -2567,10 +2580,21 @@ impl Application {
         // Tab strip plus the tool strip with its labels and captions, so tool
         // labels never extend under the content panels (CAD-154).
         if self.mode != Mode::Parameters {
+            let category = self.active_architecture_category();
+            let tab = &self.registry.workspace(self.mode).tabs[self.effective_ribbon_tab()];
+            let tool_height = crate::ribbon_ui::tools_height(
+                &self.registry,
+                self.mode,
+                tab,
+                self.current().sketch.editing,
+                category,
+            );
             egui::Panel::top("ribbon")
                 .exact_size(
-                    RIBBON_HEIGHT
-                        + if self.active_architecture_category().is_some() {
+                    RIBBON_TAB_STRIP
+                        + tool_height
+                        + RIBBON_BOTTOM_PAD
+                        + if category.is_some() {
                             crate::architecture_navigation::PARENT_CUE_HEIGHT
                         } else {
                             0.
@@ -4572,7 +4596,6 @@ mod workbench_tests;
 /// Workspace tab strip: 30 pt tabs with 3 pt frame margins.
 const RIBBON_TAB_STRIP: f32 = 36.0;
 const RIBBON_BOTTOM_PAD: f32 = 2.0;
-const RIBBON_HEIGHT: f32 = RIBBON_TAB_STRIP + crate::ribbon_ui::TOOLS_HEIGHT + RIBBON_BOTTOM_PAD;
 #[cfg(test)]
 #[path = "application/open_fit_tests.rs"]
 mod open_fit_tests;

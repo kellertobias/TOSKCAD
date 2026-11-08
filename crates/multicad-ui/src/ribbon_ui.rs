@@ -201,45 +201,115 @@ fn implemented(command: Command) -> bool {
 /// Session actions pinned at the right end of the ribbon while a sketch is
 /// open, on every Sketch tab and outside the horizontal scroll.
 pub const SKETCH_SESSION: [&str; 2] = ["finish-sketch", "abort-sketch"];
-const BUTTON: f32 = icons::TOOL_TILE.x;
+const COMPACT_TILE_WIDTH: f32 = 68.;
+const COMPACT_SEPARATOR: f32 = 9.;
 const SEPARATOR: f32 = 19.;
-/// Fixed row under the tiles that carries the group caption.
-const SECTION_LABEL: f32 = 16.;
-/// Space kept below the tiles for the horizontal overflow scroll bar, so the
-/// bar never covers a label and the height does not change on resize.
-const SCROLL_BAR: f32 = 10.;
-/// Height of the tool strip: tiles with their two-line labels, the group
-/// captions and the overflow scroll bar. Every row is top-aligned so the
-/// labels, hit targets and pinned session actions share one baseline.
-pub const TOOLS_HEIGHT: f32 = icons::TOOL_TILE.y + SECTION_LABEL + SCROLL_BAR;
+const SECTION_LABEL: f32 = 14.;
+const EMPTY_HEIGHT: f32 = 30.;
+const SCROLL_CONTROL_WIDTH: f32 = 28.;
+
+struct Contents {
+    sections: Vec<Group>,
+    pinned: Vec<&'static str>,
+}
+
+impl Contents {
+    fn new(
+        registry: &Registry,
+        mode: Mode,
+        tab: &RibbonTab,
+        editing: bool,
+        category: Option<crate::architecture_navigation::Category>,
+    ) -> Self {
+        let pinned = if mode == Mode::Sketch && editing {
+            SKETCH_SESSION
+                .into_iter()
+                .filter(|id| registry.tool(id).is_some())
+                .collect()
+        } else {
+            vec![]
+        };
+        let visible = |id: &&str| {
+            registry.tool(id).is_some_and(|tool| {
+                implemented(tool.action)
+                    && !SKETCH_SESSION.contains(id)
+                    && (mode != Mode::Sketch || editing)
+            })
+        };
+        let mut sections = if mode == Mode::Model && tab.title == "Architecture" {
+            crate::architecture_navigation::groups(category)
+        } else {
+            groups(mode, tab)
+        };
+        for group in &mut sections {
+            group.entries.retain_mut(|entry| match entry {
+                Entry::Tool(id) => visible(id),
+                Entry::Menu { tools, .. } => {
+                    tools.retain(|id| visible(id));
+                    !tools.is_empty()
+                }
+            });
+        }
+        sections.retain(|group| !group.entries.is_empty());
+        Self { sections, pinned }
+    }
+
+    fn height(&self) -> f32 {
+        if self.sections.is_empty() && self.pinned.is_empty() {
+            return EMPTY_HEIGHT;
+        }
+        let captions = !self.pinned.is_empty() || self.sections.iter().any(|g| !g.label.is_empty());
+        icons::TOOL_TILE.y + if captions { SECTION_LABEL } else { 0. }
+    }
+
+    fn sections_width(&self, tile: f32, separator: f32) -> f32 {
+        let tiles: usize = self.sections.iter().map(|group| group.entries.len()).sum();
+        tiles as f32 * tile + self.sections.len().saturating_sub(1) as f32 * separator
+    }
+
+    fn pinned_width(&self, tile: f32, separator: f32) -> f32 {
+        if self.pinned.is_empty() {
+            0.
+        } else {
+            self.pinned.len() as f32 * tile + separator
+        }
+    }
+}
+
+pub(crate) fn tools_height(
+    registry: &Registry,
+    mode: Mode,
+    tab: &RibbonTab,
+    editing: bool,
+    category: Option<crate::architecture_navigation::Category>,
+) -> f32 {
+    Contents::new(registry, mode, tab, editing, category).height()
+}
+
 fn top_row<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> egui::InnerResponse<R> {
     ui.with_layout(egui::Layout::left_to_right(egui::Align::Min), add)
 }
-fn separator(ui: &mut egui::Ui) {
-    ui.add_space(9.);
-    let (rect, _) = ui.allocate_exact_size(
-        egui::vec2(1., icons::TOOL_TILE.y + SECTION_LABEL),
-        egui::Sense::hover(),
-    );
+fn separator(ui: &mut egui::Ui, width: f32, height: f32) {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::hover());
     ui.painter().vline(
         rect.center().x,
         rect.shrink2(egui::vec2(0., 4.)).y_range(),
         egui::Stroke::new(1., egui::Color32::from_gray(65)),
     );
-    ui.add_space(9.);
 }
 fn section_label(ui: &mut egui::Ui, label: &str) {
+    if label.is_empty() {
+        return;
+    }
     let width = ui.available_width().max(1.);
     let (rect, _) = ui.allocate_exact_size(egui::vec2(width, SECTION_LABEL), egui::Sense::hover());
-    if !label.is_empty() {
-        ui.painter().text(
-            rect.center(),
-            egui::Align2::CENTER_CENTER,
-            label,
-            egui::TextStyle::Small.resolve(ui.style()),
-            egui::Color32::from_gray(160),
-        );
-    }
+    ui.painter().text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        label,
+        egui::TextStyle::Small.resolve(ui.style()),
+        egui::Color32::from_gray(160),
+    );
 }
 pub fn show(
     ui: &mut egui::Ui,
@@ -282,11 +352,13 @@ fn with_description(id: &str, text: String) -> String {
         None => text,
     }
 }
+#[allow(clippy::too_many_arguments)]
 fn tool_button(
     ui: &mut egui::Ui,
     registry: &Registry,
     mode: Mode,
     id: &str,
+    tile_width: f32,
     enabled: &impl Fn(Command) -> bool,
     hint: &impl Fn(Command, &str) -> String,
     selected: &impl Fn(Command) -> bool,
@@ -294,12 +366,13 @@ fn tool_button(
     let tool = registry.tool(id).expect("catalog entry");
     let response = ui
         .add_enabled_ui(enabled(tool.action), |ui| {
-            icons::tool_glyph(
+            icons::tool_glyph_at_width(
                 ui,
                 tool_glyph(mode, id, tool.icon),
                 tool.label,
                 &with_description(id, hint(tool.action, tool.label)),
                 selected(tool.action),
+                tile_width,
             )
         })
         .inner;
@@ -320,6 +393,7 @@ fn menu_button(
     icon: Icon,
     tools: &[&'static str],
     unavailable: Option<(&'static str, &'static str)>,
+    tile_width: f32,
     enabled: &impl Fn(Command) -> bool,
     hint: &impl Fn(Command, &str) -> String,
     selected: &impl Fn(Command) -> bool,
@@ -336,12 +410,13 @@ fn menu_button(
         .map(|tool| tool_glyph(mode, choice, tool.icon))
         .filter(|glyph| matches!(glyph, icons::Glyph::Art(..)))
         .unwrap_or(icons::Glyph::Vector(icon));
-    let response = icons::tool_glyph(
+    let response = icons::tool_glyph_at_width(
         ui,
         glyph,
         label,
         &format!("{label} · choose a tool"),
         tools.iter().any(is_selected),
+        tile_width,
     );
     let center = response.rect.right_top() + egui::vec2(-9., 12.);
     ui.painter().add(egui::Shape::convex_polygon(
@@ -415,48 +490,27 @@ pub fn show_selectable_with_category(
     selected: impl Fn(Command) -> bool,
     category: Option<crate::architecture_navigation::Category>,
 ) -> Option<Command> {
-    let pinned: Vec<&str> = if mode == Mode::Sketch && editing {
-        SKETCH_SESSION
-            .into_iter()
-            .filter(|id| registry.tool(id).is_some())
-            .collect()
+    let contents = Contents::new(registry, mode, tab, editing, category);
+    let height = contents.height();
+    let width = ui.available_width();
+    let normal_width = contents.sections_width(icons::TOOL_TILE.x, SEPARATOR)
+        + contents.pinned_width(icons::TOOL_TILE.x, SEPARATOR);
+    let (tile_width, separator_width) = if normal_width <= width {
+        (icons::TOOL_TILE.x, SEPARATOR)
     } else {
-        vec![]
+        (COMPACT_TILE_WIDTH, COMPACT_SEPARATOR)
     };
-    let visible = |id: &&str| {
-        registry.tool(id).is_some_and(|tool| {
-            implemented(tool.action)
-                && !SKETCH_SESSION.contains(id)
-                && (mode != Mode::Sketch || editing)
-        })
-    };
-    let mut sections = if mode == Mode::Model && tab.title == "Architecture" {
-        crate::architecture_navigation::groups(category)
-    } else {
-        groups(mode, tab)
-    };
-    for group in &mut sections {
-        group.entries.retain_mut(|entry| match entry {
-            Entry::Tool(id) => visible(id),
-            Entry::Menu { tools, .. } => {
-                tools.retain(|id| visible(id));
-                !tools.is_empty()
-            }
-        });
-    }
-    sections.retain(|group| !group.entries.is_empty());
+    let pinned_width = contents.pinned_width(tile_width, separator_width);
+    let section_width = (width - pinned_width).max(0.);
+    let overflows = contents.sections_width(tile_width, separator_width) > section_width;
+    let scroll_width = (section_width - if overflows { SCROLL_CONTROL_WIDTH } else { 0. }).max(0.);
     let mut action = None;
-    let pinned_width = if pinned.is_empty() {
-        0.
-    } else {
-        pinned.len() as f32 * BUTTON + SEPARATOR
-    };
+
     top_row(ui, |ui| {
         ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
-        let width = (ui.available_width() - pinned_width).max(0.);
-        ui.allocate_ui(egui::vec2(width, TOOLS_HEIGHT), |ui| {
-            ui.set_width(width);
-            if sections.is_empty() {
+        let scrolled = ui.allocate_ui(egui::vec2(scroll_width, height), |ui| {
+            ui.set_width(scroll_width);
+            if contents.sections.is_empty() {
                 let message = if mode == Mode::Sketch && !editing {
                     "Choose a plane in the viewer, or open an existing sketch, to see its tools."
                 } else if mode == Mode::Sketch && editing {
@@ -464,8 +518,10 @@ pub fn show_selectable_with_category(
                 } else {
                     "No tools available in this workspace yet."
                 };
-                let (rect, response) =
-                    ui.allocate_exact_size(egui::vec2(width, TOOLS_HEIGHT), egui::Sense::hover());
+                let (rect, response) = ui.allocate_exact_size(
+                    egui::vec2(scroll_width, height),
+                    egui::Sense::hover(),
+                );
                 ui.painter().text(
                     rect.center(),
                     egui::Align2::CENTER_CENTER,
@@ -476,32 +532,29 @@ pub fn show_selectable_with_category(
                 response.widget_info(|| {
                     egui::WidgetInfo::labeled(egui::WidgetType::Label, ui.is_enabled(), message)
                 });
-                return;
+                return None;
             }
-            // A solid bar reserves its own strip below the captions instead
-            // of floating over the labels when the ribbon overflows.
-            ui.spacing_mut().scroll = egui::style::ScrollStyle::solid();
-            ui.spacing_mut().scroll.bar_inner_margin = SCROLL_BAR - ui.spacing().scroll.bar_width;
-            egui::ScrollArea::horizontal()
-                .id_salt(("workspace-ribbon", mode.title(), tab.title))
-                .max_height(TOOLS_HEIGHT)
-                .min_scrolled_height(TOOLS_HEIGHT)
+            Some(egui::ScrollArea::horizontal()
+                .id_salt(("workspace-ribbon", mode.title(), tab.title, category.map(|c| c.id())))
+                .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+                .max_height(height)
+                .min_scrolled_height(height)
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
                     top_row(ui, |ui| {
-                        for (index, section) in sections.iter().enumerate() {
+                        for (index, section) in contents.sections.iter().enumerate() {
                             if index > 0 {
-                                separator(ui);
+                                separator(ui, separator_width, height);
                             }
                             ui.vertical(|ui| {
-                                ui.set_width(section.entries.len() as f32 * BUTTON);
+                                ui.set_width(section.entries.len() as f32 * tile_width);
                                 ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
                                 top_row(ui, |ui| {
                                     ui.spacing_mut().item_spacing.x = 0.;
                                     for entry in &section.entries {
                                         let chosen = match entry {
                                             Entry::Tool(id) => tool_button(
-                                                ui, registry, mode, id, &enabled, &hint, &selected,
+                                                ui, registry, mode, id, tile_width, &enabled, &hint, &selected,
                                             ),
                                             Entry::Menu {
                                                 label,
@@ -509,16 +562,8 @@ pub fn show_selectable_with_category(
                                                 tools,
                                                 unavailable,
                                             } => menu_button(
-                                                ui,
-                                                registry,
-                                                mode,
-                                                label,
-                                                *icon,
-                                                tools,
-                                                *unavailable,
-                                                &enabled,
-                                                &hint,
-                                                &selected,
+                                                ui, registry, mode, label, *icon, tools, *unavailable,
+                                                tile_width, &enabled, &hint, &selected,
                                             ),
                                         };
                                         if chosen.is_some() {
@@ -530,18 +575,21 @@ pub fn show_selectable_with_category(
                             });
                         }
                     });
-                });
-        });
-        if !pinned.is_empty() {
-            separator(ui);
+                }))
+        }).inner;
+        if let Some(output) = scrolled.filter(|_| overflows) {
+            show_scroll_controls(ui, output, height, tile_width);
+        }
+        if !contents.pinned.is_empty() {
+            separator(ui, separator_width, height);
             ui.vertical(|ui| {
-                ui.set_width(pinned.len() as f32 * BUTTON);
+                ui.set_width(contents.pinned.len() as f32 * tile_width);
                 top_row(ui, |ui| {
                     ui.spacing_mut().item_spacing.x = 0.;
-                    for id in &pinned {
-                        if let Some(command) =
-                            tool_button(ui, registry, mode, id, &enabled, &hint, &selected)
-                        {
+                    for id in &contents.pinned {
+                        if let Some(command) = tool_button(
+                            ui, registry, mode, id, tile_width, &enabled, &hint, &selected,
+                        ) {
                             action = Some(command);
                         }
                     }
@@ -553,6 +601,46 @@ pub fn show_selectable_with_category(
     action
 }
 
+fn show_scroll_controls(
+    ui: &mut egui::Ui,
+    output: egui::scroll_area::ScrollAreaOutput<()>,
+    height: f32,
+    tile_width: f32,
+) {
+    let mut state = output.state;
+    let max = (output.content_size.x - output.inner_rect.width()).max(0.);
+    let step = (output.inner_rect.width() - tile_width).max(tile_width);
+    let mut offset = state.offset.x;
+    ui.allocate_ui_with_layout(
+        egui::vec2(SCROLL_CONTROL_WIDTH, height),
+        egui::Layout::top_down(egui::Align::Center),
+        |ui| {
+            ui.spacing_mut().item_spacing.y = 4.;
+            ui.add_space((height - 56.) * 0.5);
+            for (glyph, label, available, delta) in [
+                ("‹", "Previous ribbon tools", offset > 0.5, -step),
+                ("›", "Next ribbon tools", offset < max - 0.5, step),
+            ] {
+                let response = ui.add_enabled(
+                    available,
+                    egui::Button::new(glyph).min_size(egui::vec2(24., 26.)),
+                );
+                response.widget_info(|| {
+                    egui::WidgetInfo::labeled(egui::WidgetType::Button, available, label)
+                });
+                if response.on_hover_text(label).clicked() {
+                    offset = (offset + delta).clamp(0., max);
+                }
+            }
+        },
+    );
+    if offset != state.offset.x {
+        state.offset.x = offset;
+        state.store(ui.ctx(), output.id);
+        ui.ctx().request_repaint();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -561,11 +649,20 @@ mod tests {
         events: Vec<egui::Event>,
         run: impl FnMut(&mut egui::Ui),
     ) -> egui::FullOutput {
+        frame_at(ctx, 1200., events, run)
+    }
+
+    fn frame_at(
+        ctx: &egui::Context,
+        width: f32,
+        events: Vec<egui::Event>,
+        run: impl FnMut(&mut egui::Ui),
+    ) -> egui::FullOutput {
         let mut output = ctx.run_ui(
             egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(
                     egui::Pos2::ZERO,
-                    egui::vec2(1200., 800.),
+                    egui::vec2(width, 600.),
                 )),
                 events,
                 ..Default::default()
@@ -598,6 +695,134 @@ mod tests {
             },
         ]
     }
+    fn fully_visible(output: &egui::FullOutput, label: &str) -> bool {
+        output.shapes.iter().any(|shape| match &shape.shape {
+            egui::Shape::Text(text) if text.galley.text().replace('\n', " ") == label => {
+                let rect = egui::Rect::from_min_size(text.pos, text.galley.size());
+                shape.clip_rect.expand(0.5).contains_rect(rect)
+            }
+            _ => false,
+        })
+    }
+
+    #[test]
+    fn model_workbenches_and_contextual_sketch_fit_at_1024_logical_points() {
+        let registry = Registry::default();
+        for mode in [Mode::Model, Mode::Sketch] {
+            for tab in &registry.workspace(mode).tabs {
+                let categories = if mode == Mode::Model && tab.title == "Architecture" {
+                    std::iter::once(None)
+                        .chain(
+                            crate::architecture_navigation::Category::ALL
+                                .into_iter()
+                                .map(Some),
+                        )
+                        .collect::<Vec<_>>()
+                } else {
+                    vec![None]
+                };
+                for category in categories {
+                    let editing = mode == Mode::Sketch;
+                    let contents = Contents::new(&registry, mode, tab, editing, category);
+                    let ctx = egui::Context::default();
+                    let run = |ui: &mut egui::Ui| {
+                        show_selectable_with_category(
+                            ui,
+                            &registry,
+                            mode,
+                            tab,
+                            editing,
+                            |_| true,
+                            |_, label| label.into(),
+                            |_| false,
+                            category,
+                        );
+                    };
+                    let width = 1024. - 2. * f32::from(crate::theme::GUTTER);
+                    frame_at(&ctx, width, vec![], run).drop_without_applying_deltas();
+                    let output = frame_at(&ctx, width, vec![], run);
+                    let labels = contents
+                        .sections
+                        .iter()
+                        .flat_map(|group| {
+                            group.entries.iter().map(|entry| match entry {
+                                Entry::Tool(id) => registry.tool(id).unwrap().label,
+                                Entry::Menu { label, .. } => label,
+                            })
+                        })
+                        .chain(
+                            contents
+                                .pinned
+                                .iter()
+                                .map(|id| registry.tool(id).unwrap().label),
+                        );
+                    for label in labels {
+                        assert!(
+                            fully_visible(&output, label),
+                            "{} / {} / {category:?}: {label} clipped",
+                            mode.title(),
+                            tab.title
+                        );
+                    }
+                    assert!(!fully_visible(&output, "›"));
+                    output.drop_without_applying_deltas();
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn overflow_buttons_reach_sketch_tools_while_session_actions_stay_pinned() {
+        let registry = Registry::default();
+        let tab = &registry.workspace(Mode::Sketch).tabs[0];
+        let ctx = egui::Context::default();
+        let mut chosen = None;
+        let mut draw = |events| {
+            frame_at(&ctx, 550., events, |ui| {
+                if let Some(command) = show(
+                    ui,
+                    &registry,
+                    Mode::Sketch,
+                    tab,
+                    true,
+                    |_| true,
+                    |_, label| label.into(),
+                ) {
+                    chosen = Some(command);
+                }
+            })
+        };
+        let finish = registry.tool("finish-sketch").unwrap();
+        let abort = registry.tool("abort-sketch").unwrap();
+        let last = registry.tool("delete").unwrap();
+        draw(vec![]).drop_without_applying_deltas();
+        let mut output = draw(vec![]);
+        assert!(fully_visible(&output, "Rectangle"));
+        assert!(!fully_visible(&output, last.label));
+        let pinned = text(&output, finish.label);
+        // The real Common catalog can span more than one overflow page.
+        for _ in 0..4 {
+            assert!(fully_visible(&output, finish.label));
+            assert!(fully_visible(&output, abort.label));
+            assert_eq!(text(&output, finish.label), pinned);
+            if fully_visible(&output, last.label) {
+                break;
+            }
+            let next = text(&output, "›");
+            output.drop_without_applying_deltas();
+            draw(events(next, true)).drop_without_applying_deltas();
+            draw(events(next, false)).drop_without_applying_deltas();
+            output = draw(vec![]);
+        }
+        assert!(fully_visible(&output, last.label));
+        assert!(!fully_visible(&output, "Rectangle"));
+        let position = text(&output, last.label);
+        output.drop_without_applying_deltas();
+        draw(events(position, true)).drop_without_applying_deltas();
+        draw(events(position, false)).drop_without_applying_deltas();
+        assert_eq!(chosen, Some(last.action));
+    }
+
     #[test]
     fn primitive_menu_routes_a_real_choice_and_modifiers_share_a_section() {
         let registry = Registry::default();
@@ -687,7 +912,7 @@ mod tests {
         });
         let center = text(&output, "No tools available in this workspace yet.");
         assert!((center.x - 600.).abs() < 16.);
-        assert!((center.y - 62.).abs() < 16.);
+        assert!((center.y - EMPTY_HEIGHT / 2.).abs() < 1.);
         output.drop_without_applying_deltas();
     }
     fn textured_meshes(output: &egui::FullOutput) -> usize {
@@ -850,7 +1075,7 @@ mod tests {
         }
     }
     /// CAD-154: every catalog label fits a tile in two lines without
-    /// elision, so labels and their padding stay inside `TOOLS_HEIGHT`.
+    /// elision, so labels and their padding stay inside the tile.
     #[test]
     fn every_catalog_label_fits_two_lines_inside_its_tile() {
         let registry = Registry::default();
@@ -865,25 +1090,30 @@ mod tests {
                         })
                     });
                     for label in tiles {
-                        let galley = ui.painter().layout(
-                            label.into(),
-                            egui::FontId::proportional(10.),
-                            egui::Color32::WHITE,
-                            icons::TOOL_TILE.x - 6.,
-                        );
-                        assert!(galley.rows.len() <= 2, "{label} needs elision");
-                        let shown = icons::tile_label(ui, label, egui::Color32::WHITE);
-                        assert!(shown.rows.len() <= 2, "{label}");
-                        assert!(
-                            icons::TOOL_LABEL_TOP + shown.size().y + 4. <= icons::TOOL_TILE.y,
-                            "{label} leaves no bottom padding"
-                        );
+                        for width in [icons::TOOL_TILE.x, COMPACT_TILE_WIDTH] {
+                            let galley = ui.painter().layout(
+                                label.into(),
+                                egui::FontId::proportional(10.),
+                                egui::Color32::WHITE,
+                                width - 6.,
+                            );
+                            assert!(
+                                galley.rows.len() <= 2,
+                                "{label} needs elision at {width} pt"
+                            );
+                            let shown =
+                                icons::tile_label_at_width(ui, label, egui::Color32::WHITE, width);
+                            assert!(shown.rows.len() <= 2, "{label}");
+                            assert!(
+                                icons::TOOL_LABEL_TOP + shown.size().y + 4. <= icons::TOOL_TILE.y,
+                                "{label} leaves no bottom padding"
+                            );
+                        }
                     }
                 }
             }
         })
         .drop_without_applying_deltas();
-        const { assert!(icons::TOOL_TILE.y + SECTION_LABEL <= TOOLS_HEIGHT) };
     }
     #[test]
     fn sketch_drawing_modes_fold_into_rectangle_and_circle_menus_in_place() {
@@ -1110,7 +1340,11 @@ mod tests {
                 let finish = labels.iter().find(|(l, _)| l == "Finish sketch").unwrap().1;
                 let abort = labels.iter().find(|(l, _)| l == "Abort").unwrap().1;
                 assert!(finish.x < abort.x);
-                assert!(abort.x < width && abort.x > width - BUTTON, "{}", tab.title);
+                assert!(
+                    abort.x < width && abort.x > width - icons::TOOL_TILE.x,
+                    "{}",
+                    tab.title
+                );
                 assert!((finish.y - abort.y).abs() < 1.);
                 let others = labels
                     .iter()

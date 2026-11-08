@@ -173,9 +173,9 @@ pub enum ToolState {
     Selected,
 }
 /// Ribbon tool tile: icon above a label of at most two 11 pt lines.
-pub const TOOL_TILE: Vec2 = Vec2::new(76.0, 92.0);
+pub const TOOL_TILE: Vec2 = Vec2::new(76.0, 74.0);
 /// Top of the label block inside a tile; two lines end 8 pt above the edge.
-pub const TOOL_LABEL_TOP: f32 = 58.0;
+pub const TOOL_LABEL_TOP: f32 = 43.0;
 pub const TOOL_COLOR: Color32 = Color32::from_rgb(201, 214, 232);
 pub const TOOL_DISABLED: Color32 = Color32::from_gray(91);
 pub const TOOL_HOVER: Color32 = Color32::from_rgb(238, 244, 252);
@@ -205,7 +205,18 @@ pub fn tool_glyph(
     hint: &str,
     selected: bool,
 ) -> egui::Response {
-    let (rect, response) = ui.allocate_exact_size(TOOL_TILE, egui::Sense::click());
+    tool_glyph_at_width(ui, glyph, label, hint, selected, TOOL_TILE.x)
+}
+pub(crate) fn tool_glyph_at_width(
+    ui: &mut egui::Ui,
+    glyph: Glyph,
+    label: &str,
+    hint: &str,
+    selected: bool,
+    width: f32,
+) -> egui::Response {
+    let (rect, response) =
+        ui.allocate_exact_size(Vec2::new(width, TOOL_TILE.y), egui::Sense::click());
     let state = if !ui.is_enabled() {
         ToolState::Disabled
     } else if selected {
@@ -240,7 +251,7 @@ pub fn tool_glyph(
     paint_glyph(
         ui,
         glyph,
-        Pos2::new(rect.center().x, rect.top() + rect.height() / 3.0 + 4.0),
+        Pos2::new(rect.center().x, rect.top() + 24.0),
         color,
         if matches!(glyph, Glyph::Art(..)) {
             30.0
@@ -253,7 +264,7 @@ pub fn tool_glyph(
     } else {
         TOOL_COLOR
     };
-    let galley = tile_label(ui, label, text);
+    let galley = tile_label_at_width(ui, label, text, width);
     ui.painter().galley(
         Pos2::new(
             rect.center().x - galley.size().x * 0.5,
@@ -271,17 +282,32 @@ pub fn tool_glyph(
 /// slightly smaller size when a long label would need a third line, and an
 /// ellipsis as the last resort (the hover text keeps the full name).
 pub fn tile_label(ui: &egui::Ui, label: &str, color: Color32) -> std::sync::Arc<egui::Galley> {
-    const WIDTH: f32 = TOOL_TILE.x - 6.0;
+    tile_label_at_width(ui, label, color, TOOL_TILE.x)
+}
+pub(crate) fn tile_label_at_width(
+    ui: &egui::Ui,
+    label: &str,
+    color: Color32,
+    width: f32,
+) -> std::sync::Arc<egui::Galley> {
+    let text_width = width - 6.0;
     for size in [11.0, 10.0] {
-        let galley =
-            ui.painter()
-                .layout(label.into(), egui::FontId::proportional(size), color, WIDTH);
+        let galley = ui.painter().layout(
+            label.into(),
+            egui::FontId::proportional(size),
+            color,
+            text_width,
+        );
         if galley.rows.len() <= 2 {
             return galley;
         }
     }
-    let mut job =
-        egui::text::LayoutJob::simple(label.into(), egui::FontId::proportional(10.0), color, WIDTH);
+    let mut job = egui::text::LayoutJob::simple(
+        label.into(),
+        egui::FontId::proportional(10.0),
+        color,
+        text_width,
+    );
     job.wrap.max_rows = 2;
     ui.painter().layout_job(job)
 }
@@ -1051,9 +1077,9 @@ mod ribbon_tests {
                     Color32::WHITE,
                     64.,
                 );
-                assert_eq!(response.rect.height(), 92.);
+                assert_eq!(response.rect.height(), TOOL_TILE.y);
                 assert!(
-                    response.rect.height() * 2. / 3. + text.size().y <= response.rect.height() - 4.,
+                    TOOL_LABEL_TOP + text.size().y <= response.rect.height() - 4.,
                     "{label}"
                 );
             }

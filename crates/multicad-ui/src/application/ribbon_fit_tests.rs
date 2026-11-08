@@ -179,7 +179,11 @@ fn ribbon_labels_fit_inside_the_ribbon_at_the_reviewed_window() {
 }
 #[test]
 fn ribbon_labels_fit_inside_the_ribbon_on_resize_and_retina_scaling() {
-    for size in [egui::vec2(900., 640.), egui::vec2(1920., 1080.)] {
+    for size in [
+        egui::vec2(900., 640.),
+        egui::vec2(1024., 600.),
+        egui::vec2(1920., 1080.),
+    ] {
         check(size, 1.);
     }
     check(egui::vec2(1360., 860.), 2.);
@@ -211,4 +215,43 @@ fn reviewed_model_ribbon_ends_below_two_line_labels_and_captions() {
         .find(|t| t.text == "Choose Add Sketch, or open a sketch from the document.")
         .expect("content guidance");
     assert!(content.clip.min.y >= painted.ribbon.max.y);
+}
+
+#[test]
+fn compact_ribbon_uses_only_its_tool_and_caption_rows() {
+    let mut app = Application::new(Box::new(Storage)).unwrap();
+    app.pending_files.clear();
+    let ctx = egui::Context::default();
+    let size = egui::vec2(1024., 600.);
+    app.mode = Mode::Model;
+    app.tab = app
+        .registry
+        .workspace(Mode::Model)
+        .tabs
+        .iter()
+        .position(|tab| tab.title == "Mechanical")
+        .unwrap();
+    frame(&mut app, &ctx, size);
+    let mechanical = frame(&mut app, &ctx, size);
+    assert!(
+        mechanical.ribbon.height() <= 115.,
+        "{:?}",
+        mechanical.ribbon
+    );
+    app.tab = 0;
+    frame(&mut app, &ctx, size);
+    let common = frame(&mut app, &ctx, size);
+    assert!(common.ribbon.height() <= 128., "{:?}", common.ribbon);
+    assert!(common.ribbon.height() > mechanical.ribbon.height());
+    assert!(common.texts.iter().any(|text| {
+        text.text == "Transfer features" && text.clip.expand(0.5).contains_rect(text.rect)
+    }));
+    app.mode = Mode::Sketch;
+    frame(&mut app, &ctx, size);
+    let inactive_sketch = frame(&mut app, &ctx, size);
+    assert!(
+        inactive_sketch.ribbon.height() <= 70.,
+        "{:?}",
+        inactive_sketch.ribbon
+    );
 }
