@@ -985,7 +985,30 @@ mod tests {
     #[test]
     fn cancellation_after_last_sample_and_after_current_pose_publish_nothing() {
         let (session, request, _) = candidate();
-        for after_pending_visits in [0, 1] {
+        let compiler = crate::Compiler {
+            omit_display: true,
+            ..Default::default()
+        };
+        // Record the first and last pending checkpoints of the actual
+        // successful path, including any checkpoints inside the current pose.
+        let successful_store = crate::PairCycleProofStore::default();
+        let successful_visits = Cell::new(0);
+        crate::with_pair_cycle_proofs(successful_store.clone(), || {
+            compiler.compile_interruptible(
+                session.document(),
+                session.revision(),
+                Some(&|| {
+                    if crate::pair_cycle_proofs::pending_entries() > 0 {
+                        successful_visits.set(successful_visits.get() + 1);
+                    }
+                    false
+                }),
+            )
+        })
+        .unwrap();
+        assert_eq!(successful_store.stats().entries, 1);
+        assert!(successful_visits.get() > 1);
+        for after_pending_visits in [0, successful_visits.get() - 1] {
             let store = crate::PairCycleProofStore::default();
             let visits = Cell::new(0);
             let interrupt = || {
@@ -997,11 +1020,11 @@ mod tests {
                 }
             };
             let result = crate::with_pair_cycle_proofs(store.clone(), || {
-                crate::Compiler {
-                    omit_display: true,
-                    ..Default::default()
-                }
-                .compile_interruptible(session.document(), 1, Some(&interrupt))
+                compiler.compile_interruptible(
+                    session.document(),
+                    session.revision(),
+                    Some(&interrupt),
+                )
             });
             assert!(result.is_err());
             assert_eq!(store.stats().entries, 0);
