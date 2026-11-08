@@ -181,17 +181,35 @@ impl LeafStore {
         }
         for leaf in source {
             checkpoint(interrupt)?;
-            let solid = self
-                .solids
-                .get(&leaf.path)
-                .ok_or_else(|| {
-                    error(
-                        Some(occurrence.instance),
-                        "Assembly leaf source geometry is unavailable",
-                    )
-                })?
-                .transformed(rigid(occurrence.pose))
-                .map_err(|e| error(Some(occurrence.instance), e))?;
+            let source = self.solids.get(&leaf.path).ok_or_else(|| {
+                error(
+                    Some(occurrence.instance),
+                    "Assembly leaf source geometry is unavailable",
+                )
+            })?;
+            let (solid, topology) = if occurrence.pose == RigidPose::default()
+                && leaf.topology.owner == occurrence.component
+                && leaf.topology.revision == revision
+            {
+                // A leaf's checked source remains in the same world frame.
+                // Keep its topology and ancestry while rebinding its root.
+                let mut topology = leaf.topology.clone();
+                topology.owner = occurrence.instance;
+                (
+                    source
+                        .share()
+                        .map_err(|e| error(Some(occurrence.instance), e))?,
+                    topology,
+                )
+            } else {
+                let solid = source
+                    .transformed(rigid(occurrence.pose))
+                    .map_err(|e| error(Some(occurrence.instance), e))?;
+                let topology = solid
+                    .topology_snapshot(occurrence.instance, revision)
+                    .map_err(|e| error(Some(occurrence.instance), e))?;
+                (solid, topology)
+            };
             let path = OccurrencePath {
                 root: occurrence.instance,
                 members: leaf.path.members.clone(),
@@ -207,9 +225,7 @@ impl LeafStore {
                 bounds: solid
                     .bounds()
                     .map_err(|e| error(Some(occurrence.instance), e))?,
-                topology: solid
-                    .topology_snapshot(occurrence.instance, revision)
-                    .map_err(|e| error(Some(occurrence.instance), e))?,
+                topology,
             };
             self.insert(snapshot, Some(solid))?;
         }

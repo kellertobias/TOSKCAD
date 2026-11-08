@@ -144,15 +144,6 @@ pub(crate) fn build(
     let pose =
         resolve_instance_pose_with_snapshots(document, instance, parameters, revision, topologies)
             .map_err(|e| error(Some(instance), e))?;
-    let solid = source
-        .transformed(RigidTransform {
-            rotation: pose.rotation,
-            translation_mm: pose.translation_mm,
-        })
-        .map_err(|e| error(Some(instance), e))?;
-    let actual = solid
-        .topology_snapshot(instance, revision)
-        .map_err(|e| error(Some(instance), e))?;
     let mut topology = topologies
         .get(&producer)
         .ok_or_else(|| {
@@ -162,42 +153,62 @@ pub(crate) fn build(
             )
         })?
         .clone();
-    // A rigid transform preserves topology. Refuse an unexpected native
-    // reordering rather than assigning component ordinals to different faces.
-    if topology.elements.len() != actual.elements.len()
-        || topology
+    let exact_identity = pose == RigidPose::default()
+        && source.geometry_policy() == policy
+        && topology.owner == producer
+        && topology.revision == revision;
+    topology.owner = instance;
+    topology.revision = revision;
+    let solid = if exact_identity {
+        // Sharing the checked producer keeps the exact native geometry and
+        // ordinal map. Only the occurrence owner of its topology changes.
+        source.share().map_err(|e| error(Some(instance), e))?
+    } else {
+        let solid = source
+            .transformed(RigidTransform {
+                rotation: pose.rotation,
+                translation_mm: pose.translation_mm,
+            })
+            .map_err(|e| error(Some(instance), e))?;
+        let actual = solid
+            .topology_snapshot(instance, revision)
+            .map_err(|e| error(Some(instance), e))?;
+        // A rigid transform preserves topology. Refuse an unexpected native
+        // reordering rather than assigning component ordinals to different faces.
+        if topology.elements.len() != actual.elements.len()
+            || topology
+                .elements
+                .iter()
+                .zip(&actual.elements)
+                .any(|(a, b)| a.key != b.key || a.origins != b.origins || a.boundary != b.boundary)
+        {
+            return Err(error(
+                Some(instance),
+                "Native occurrence transform changed topology identity unexpectedly",
+            ));
+        }
+        for element in &mut topology.elements {
+            element.geometry = element
+                .geometry
+                .map(|geometry| geometry.transformed(|p| pose.point(p), |v| pose.vector(v)));
+            for anchor in &mut element.frames {
+                anchor.frame = pose.frame(anchor.frame);
+            }
+        }
+        topology.validate().map_err(|e| error(Some(instance), e))?;
+        if topology
             .elements
             .iter()
             .zip(&actual.elements)
-            .any(|(a, b)| a.key != b.key || a.origins != b.origins || a.boundary != b.boundary)
-    {
-        return Err(error(
-            Some(instance),
-            "Native occurrence transform changed topology identity unexpectedly",
-        ));
-    }
-    topology.owner = instance;
-    topology.revision = revision;
-    for element in &mut topology.elements {
-        element.geometry = element
-            .geometry
-            .map(|geometry| geometry.transformed(|p| pose.point(p), |v| pose.vector(v)));
-        for anchor in &mut element.frames {
-            anchor.frame = pose.frame(anchor.frame);
+            .any(|(a, b)| !equivalent(a.geometry, b.geometry, policy.linear_tolerance_mm))
+        {
+            return Err(error(
+                Some(instance),
+                "Native world geometry disagrees with its rigid occurrence descriptors",
+            ));
         }
-    }
-    topology.validate().map_err(|e| error(Some(instance), e))?;
-    if topology
-        .elements
-        .iter()
-        .zip(&actual.elements)
-        .any(|(a, b)| !equivalent(a.geometry, b.geometry, policy.linear_tolerance_mm))
-    {
-        return Err(error(
-            Some(instance),
-            "Native world geometry disagrees with its rigid occurrence descriptors",
-        ));
-    }
+        solid
+    };
 
     let snapshot = OccurrenceSnapshot {
         instance,

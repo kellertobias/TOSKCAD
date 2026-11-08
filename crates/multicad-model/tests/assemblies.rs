@@ -284,6 +284,61 @@ fn native_named_drawer_and_hinge_poses_preserve_definitions_and_reopen() {
     }
 }
 #[test]
+fn identity_assembly_occurrence_preserves_exact_native_leaf_and_topology() {
+    let mut f = fixture();
+    let root = ComponentPlacementRequest::new(f.assembly.assembly, Default::default());
+    let p = prepare_place_component(&f.session, f.session.revision(), actor(), &root).unwrap();
+    commit(&mut f.session, p);
+    let native = compile(&f.session);
+    let occurrence = &native.snapshot().occurrences[&root.instance];
+    let source = &native.snapshot().shapes[&f.assembly.assembly];
+    assert_eq!(occurrence.pose, RigidPose::default());
+    assert_eq!(occurrence.producer, f.assembly.assembly);
+    assert_eq!(occurrence.topology.owner, root.instance);
+    assert_eq!(occurrence.topology.revision, f.session.revision());
+    assert_eq!(occurrence.topology.elements, source.topology.elements);
+    assert_eq!(occurrence.bounds, source.bounds);
+
+    let path = OccurrencePath {
+        root: root.instance,
+        members: vec![f.slider.owner],
+    };
+    let leaf = native.leaf_snapshot(&path).unwrap();
+    let solid = native.leaf_solid(&path).unwrap();
+    assert_eq!(leaf.component, f.drawer.body);
+    assert_eq!(leaf.producer, f.drawer.feature);
+    assert_eq!(leaf.bounds, solid.bounds().unwrap());
+    assert_eq!(
+        leaf.topology,
+        solid
+            .topology_snapshot(root.instance, f.session.revision())
+            .unwrap()
+    );
+    let cap = leaf
+        .topology
+        .elements
+        .iter()
+        .find(|e| {
+            e.key.kind == TopologyKind::Face
+                && e.origins.contains(&Origin {
+                    source: f.drawer.feature,
+                    role: "cap.end".into(),
+                })
+                && e.origins.contains(&Origin {
+                    source: f.assembly.assembly,
+                    role: format!("assembly/member/{}", f.slider.owner),
+                })
+        })
+        .unwrap();
+    let capture = GeometryIntent::capture(&leaf.topology, cap.key).unwrap();
+    assert!(matches!(
+        references::resolve(&capture, &leaf.topology, f.session.revision()),
+        Resolution::Resolved { .. }
+    ));
+    near(solid.volume_mm3().unwrap(), 12000.);
+}
+
+#[test]
 fn nested_reused_subassemblies_have_distinct_exact_leaf_paths_and_stable_reordered_references() {
     let mut f = fixture();
     let wrapper = AssemblyRequest::new(
