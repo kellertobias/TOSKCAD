@@ -36,6 +36,9 @@ pub(super) fn show(
     catalogue: Catalogue<'_>,
     enabled: bool,
 ) -> (Option<SymbolAction>, Option<String>) {
+    // Reserve the trailing gutter for the Inspector's overlay scrollbar.
+    let width = controls::inspector_width(ui);
+    ui.set_max_width((width - 8.).max(0.));
     controls::inspector_layout(ui);
     ui.strong(form.tool.label());
     let document = session.document();
@@ -48,52 +51,60 @@ pub(super) fn show(
     ui.add_enabled_ui(enabled, |ui| { match &mut form.operation {
         Operation::Library=>{
             changed|=fields::text(ui,"Filter symbols",&mut form.filter,"Search listed files, embedded and loaded definitions");
-            ui.small("M3 selects a sourced nominal fastener diameter of exactly 3 mm. Other terms search names and source dimensions.");
+            ui.small("M3 matches an exact 3 mm source nominal diameter. Other terms search names and source dimensions.");
             let filter=SearchQuery::new(&form.filter);
-            action=catalogue.installed.show(ui,&filter);
-            let facets = catalogue.installed.facets();
-            ui.separator();
             if ui.button("Open library file…").on_hover_text("Load definitions without changing this project. Embedded pins continue working when the file is unavailable").clicked(){action=Some(SymbolAction::ImportLibrary);}
-            ui.strong("Embedded in this project");
-            let mut shown=0;
-            for (id,definition) in definitions {
-                if !catalogue.embedded_search[id].matches(&filter, facets){continue;}
-                shown+=1;
-                ui.group(|ui|{
-                    summary(ui,definition);
-                    if let Some(role)=super::architecture::role(definition) {
-                        let label=match role { symbols::architecture::ArchitectureRole::Wall=>"Draw wall", symbols::architecture::ArchitectureRole::Fence=>"Draw fence" };
-                        if ui.button(label).clicked(){action=Some(SymbolAction::DrawConstruction{definition:*id,role});}
-                    } else if ui.button("Place").on_hover_text("Place this pinned definition; dynamic symbols ask only for exposed values").clicked(){next=Some(Next::Place(*id));}
-                    ui.horizontal_wrapped(|ui|{
-                        if ui.small_button("Save definition…").clicked(){action=Some(SymbolAction::SaveDefinition(*id));}
-                        if ui.small_button("Compare update").on_hover_text("Choose a revision explicitly; this never upgrades instances automatically").clicked(){next=Some(Next::Update(*id));}
+            catalogue.installed.show_filters(ui);
+            let facets = catalogue.installed.facets();
+            if !library.is_empty() {
+                ui.separator();ui.strong("Loaded library · choose a definition to place");
+                let mut shown=0;
+                for ((definition,pin),search) in library.iter().zip(catalogue.library_pins).zip(catalogue.library_search) {
+                    if !search.matches(&filter, facets){continue;}
+                    shown+=1;
+                    ui.group(|ui|{
+                        summary(ui,definition);
+                        let embedded=definitions.iter().any(|(id,def)|def.symbol==definition.symbol&&catalogue.embedded_pins.get(id)==Some(pin));
+                        if embedded {ui.small("This exact revision is embedded");}
+                        let unavailable = if super::architecture::role(definition).is_some() {
+                            Some("Architectural construction needs a path and level. Import explicitly, then Draw wall or Draw fence.".to_string())
+                        } else {
+                            symbols::library_placement_definition(document, definition).err().map(|e| e.to_string())
+                        };
+                        if let Some(reason) = &unavailable { ui.colored_label(egui::Color32::LIGHT_RED, reason); }
+                        if ui.add_enabled(unavailable.is_none(), egui::Button::new("Place")).on_hover_text("Preview and Apply embed this exact pin and place one occurrence in one transaction").clicked(){next=Some(Next::PlaceLibrary(Box::new(definition.clone())));}
+                        if !embedded && ui.button("Import definition").on_hover_text("Explicitly embed this immutable definition without placing an occurrence").clicked(){next=Some(Next::Import(Box::new(definition.clone())));}
+                        super::installed::show_cards(ui, search, &filter, facets);
                     });
-                    super::installed::show_cards(ui, &catalogue.embedded_search[id], &filter, facets);
-                });
+                }
+                if shown==0{ui.label("No matching library symbols loaded");}
             }
-            if shown==0{ui.label("No matching embedded symbols");}
-            ui.separator();ui.strong("Loaded library · choose a definition to place");
-            let mut shown=0;
-            for ((definition,pin),search) in library.iter().zip(catalogue.library_pins).zip(catalogue.library_search) {
-                if !search.matches(&filter, facets){continue;}
-                shown+=1;
-                ui.group(|ui|{
-                    summary(ui,definition);
-                    let embedded=definitions.iter().any(|(id,def)|def.symbol==definition.symbol&&catalogue.embedded_pins.get(id)==Some(pin));
-                    if embedded {ui.small("This exact revision is embedded");}
-                    let unavailable = if super::architecture::role(definition).is_some() {
-                        Some("Architectural construction needs a path and level. Import explicitly, then Draw wall or Draw fence.".to_string())
-                    } else {
-                        symbols::library_placement_definition(document, definition).err().map(|e| e.to_string())
-                    };
-                    if let Some(reason) = &unavailable { ui.colored_label(egui::Color32::LIGHT_RED, reason); }
-                    if ui.add_enabled(unavailable.is_none(), egui::Button::new("Place")).on_hover_text("Preview and Apply embed this exact pin and place one occurrence in one transaction").clicked(){next=Some(Next::PlaceLibrary(Box::new(definition.clone())));}
-                    if !embedded && ui.button("Import definition").on_hover_text("Explicitly embed this immutable definition without placing an occurrence").clicked(){next=Some(Next::Import(Box::new(definition.clone())));}
-                    super::installed::show_cards(ui, search, &filter, facets);
-                });
+            if !definitions.is_empty() {
+                ui.separator();
+                ui.strong("Embedded in this project");
+                let mut shown=0;
+                for (id,definition) in definitions {
+                    if !catalogue.embedded_search[id].matches(&filter, facets){continue;}
+                    shown+=1;
+                    ui.group(|ui|{
+                        summary(ui,definition);
+                        if let Some(role)=super::architecture::role(definition) {
+                            let label=match role { symbols::architecture::ArchitectureRole::Wall=>"Draw wall", symbols::architecture::ArchitectureRole::Fence=>"Draw fence" };
+                            if ui.button(label).clicked(){action=Some(SymbolAction::DrawConstruction{definition:*id,role});}
+                        } else if ui.button("Place").on_hover_text("Place this pinned definition; dynamic symbols ask only for exposed values").clicked(){next=Some(Next::Place(*id));}
+                        ui.horizontal_wrapped(|ui|{
+                            if ui.small_button("Save definition…").clicked(){action=Some(SymbolAction::SaveDefinition(*id));}
+                            if ui.small_button("Compare update").on_hover_text("Choose a revision explicitly; this never upgrades instances automatically").clicked(){next=Some(Next::Update(*id));}
+                        });
+                        super::installed::show_cards(ui, &catalogue.embedded_search[id], &filter, facets);
+                    });
+                }
+                if shown==0{ui.label("No matching embedded symbols");}
             }
-            if shown==0{ui.label("No matching library symbols loaded");}
+            ui.separator();
+            if let Some(installed_action) = catalogue.installed.show(ui,&filter) {
+                action = Some(installed_action);
+            }
         }
         Operation::ChooseEdit{selected}=>{
             let entries=definitions.iter().flat_map(|(id,_)|symbols::instances(document,*id).unwrap_or_default().into_iter().map(|(_,instance)|instance.instance).chain(symbols::architecture::architecture_instances(document,*id).unwrap_or_default().into_iter().map(|(_,instance)|instance.output.anchors()[1]))).map(|id|(id,entity_label(document,id))).collect::<Vec<_>>();

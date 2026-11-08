@@ -29,10 +29,12 @@ impl Installed {
     pub fn facets(&self) -> &CatalogFilters {
         &self.facets
     }
+    pub fn show_filters(&mut self, ui: &mut egui::Ui) {
+        self.facets.show(ui, &self.entries);
+    }
     pub fn show(&mut self, ui: &mut egui::Ui, query: &SearchQuery) -> Option<SymbolAction> {
         ui.strong("Installation Library");
         ui.small("Included definitions and files listed with Add to Library. Place a pinned definition directly, or load a file to inspect and choose its definitions.");
-        self.facets.show(ui, &self.entries);
         let exact = self.facets.active() || query.has_structured_nominal();
         let mut action = None;
         let mut shown = 0;
@@ -63,9 +65,12 @@ impl Installed {
                         action = Some(SymbolAction::OpenInstalled(entry.path.clone()));
                     }
                 });
-                self.previews.show(ui, entry.preview.as_ref(), egui::vec2(140., 80.), &entry.name);
+                let preview_width = crate::controls::inspector_width(ui).min(140.);
+                self.previews.show(ui, entry.preview.as_ref(), egui::vec2(preview_width, 80.), &entry.name);
                 if !entry.description.is_empty() { ui.add(egui::Label::new(egui::RichText::new(&entry.description).small()).truncate()).on_hover_text(&entry.description); }
-                ui.small(entry.path.display().to_string());
+                let path = entry.path.display().to_string();
+                ui.add(egui::Label::new(egui::RichText::new(&path).small()).truncate())
+                    .on_hover_text(path);
                 show_cards(ui, search, query, &self.facets);
             }));
         }

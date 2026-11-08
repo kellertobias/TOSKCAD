@@ -1657,3 +1657,54 @@ fn update_review_keeps_two_instance_representation_controls_distinct_and_indepen
         "Editing review inputs never commits the update"
     );
 }
+
+#[test]
+fn compact_library_keeps_file_open_and_cancel_reachable_above_long_catalog_results() {
+    use crate::library::{LibraryEntry, LibraryOrigin};
+    use std::sync::Arc;
+
+    let (mut session, _, _) = fixture();
+    let before = session.document().clone();
+    let mut c = controller();
+    c.set_installed_library(Arc::new(
+        (0..30)
+            .map(|index| LibraryEntry {
+                origin: LibraryOrigin::ListedOriginal,
+                id: EntityId::new(),
+                document: EntityId::new(),
+                path: format!(
+                    "/long/{}/{index}.tcd",
+                    "filename-without-spaces-".repeat(15)
+                )
+                .into(),
+                name: format!("Fixture {index}"),
+                description: "A long installation Library description ".repeat(20),
+                preview: None,
+                registered_unix_ms: 1,
+                symbol_definitions: 1,
+                mechanical_parts: vec![],
+                problem: None,
+            })
+            .collect(),
+    ));
+    begin(&mut c, &session, SymbolTool::Library, Default::default());
+    let ctx = egui::Context::default();
+    let height = 420.;
+    let (output, _) = frame(&ctx, &mut c, &mut session, vec![], height);
+    let open = point(&output, "Open library file…");
+    let cancel = point(&output, "Cancel");
+    let first = point(&output, "Fixture 0");
+    assert!(open.y < first.y && first.y < cancel.y && cancel.y < height);
+    assert!(
+        [open, cancel, first]
+            .into_iter()
+            .all(|p| p.x > 0. && p.x < 250.)
+    );
+    output.drop_without_applying_deltas();
+
+    click(&ctx, &mut c, &mut session, open, height);
+    assert_eq!(c.take_action(), Some(SymbolAction::ImportLibrary));
+    click(&ctx, &mut c, &mut session, cancel, height);
+    assert!(!c.active());
+    assert_eq!(session.document(), &before);
+}

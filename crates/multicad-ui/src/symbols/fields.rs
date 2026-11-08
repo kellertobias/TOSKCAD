@@ -258,7 +258,7 @@ fn show_value(
                 None
             };
             let mut selected = before;
-            egui::ComboBox::from_id_salt("thread-representation")
+            controls::inspector_combo(ui, "thread-representation")
                 .selected_text(selected.map_or("Choose representation", representation_label))
                 .show_ui(ui, |ui| {
                     for representation in [
@@ -300,7 +300,7 @@ fn show_value(
         }
         ui.small("Modeled helix is required for manufacturing.");
     } else if field.enabled {
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             changed |= ui
                 .add(
                     egui::TextEdit::singleline(&mut field.text)
@@ -359,8 +359,9 @@ pub(super) fn number(text: &str, label: &str) -> Result<f64, String> {
         .ok_or_else(|| format!("{label}: enter a finite number no greater than 1,000,000,000"))
 }
 pub(super) fn text(ui: &mut egui::Ui, label: &str, value: &mut String, help: &str) -> bool {
-    ui.label(label);
+    let label = ui.label(label);
     ui.add(egui::TextEdit::singleline(value).desired_width(controls::inspector_width(ui)))
+        .labelled_by(label.id)
         .on_hover_text(help)
         .changed()
 }
