@@ -360,7 +360,14 @@ impl LibraryEditor {
     fn show_definition_editor(&mut self, ui: &mut egui::Ui, s: &Session, editable: bool) {
         ui.add_enabled_ui(editable, |ui| {
             if let Some(draft) = &mut self.draft {
-                ui.push_id(draft.entity.id, |ui| edit_draft(ui, s, draft));
+                // The draft notice and compact/roomy layouts change the parent
+                // UI. Keep field focus with this definition across both.
+                let id = egui::Id::new((
+                    "project-material-editor",
+                    s.document().id(),
+                    draft.entity.id,
+                ));
+                ui.scope_builder(egui::UiBuilder::new().id(id), |ui| edit_draft(ui, s, draft));
             } else {
                 ui.label("Choose or create a reusable definition.");
             }

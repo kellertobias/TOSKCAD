@@ -241,6 +241,59 @@ fn compact_material_chooser_keeps_selected_definition_and_draft_through_resize()
 
     let value = painted(&mut app, material.name.as_str());
     assert!(value.left() > 184. && value.right() < size.x - 300.);
+    let out = frame(&ctx, &mut app, size, vec![]);
+    let name = out
+        .shapes
+        .iter()
+        .filter_map(|shape| {
+            let egui::Shape::Text(text) = &shape.shape else {
+                return None;
+            };
+            (text.galley.text() == material.name).then(|| {
+                egui::pos2(
+                    text.pos.x + text.galley.size().x + 6.,
+                    text.pos.y + text.galley.size().y * 0.5,
+                )
+            })
+        })
+        .max_by(|a, b| a.y.total_cmp(&b.y))
+        .expect("compact Material Name field");
+    out.drop_without_applying_deltas();
+    click_at(&mut app, name);
+    if !ctx.text_edit_focused() {
+        // Dismiss the chooser overlay before focusing the form below it.
+        click_at(&mut app, name);
+    }
+    assert!(ctx.text_edit_focused());
+    for (frame_size, key, text) in [
+        (size, egui::Key::Space, " "),
+        (size, egui::Key::Q, "q"),
+        (egui::vec2(1360., 860.), egui::Key::R, "r"),
+        (size, egui::Key::E, "e"),
+    ] {
+        let out = frame(
+            &ctx,
+            &mut app,
+            frame_size,
+            vec![
+                egui::Event::Key {
+                    key,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: Default::default(),
+                },
+                egui::Event::Text(text.into()),
+            ],
+        );
+        out.drop_without_applying_deltas();
+        assert!(
+            ctx.text_edit_focused(),
+            "the Name field lost focus while typing {text:?}"
+        );
+        assert!(!app.current().sketch.material_library().pending());
+    }
+    painted(&mut app, "Birch ply definition qre");
     let label = painted(&mut app, "Density (kg/m³)");
     click_at(&mut app, label.center());
     assert!(app.current().sketch.material_library().dirty());
