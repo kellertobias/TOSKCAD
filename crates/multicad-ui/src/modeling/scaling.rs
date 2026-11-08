@@ -168,6 +168,11 @@ impl ScalePanel {
         self.stamp.changed();
         true
     }
+    pub(super) fn finish_copy_gesture(&mut self) {
+        self.create_copy |= self.copy_modifier;
+        self.copy_modifier = false;
+    }
+
     pub fn retarget(
         &mut self,
         document: &Document,
@@ -258,6 +263,7 @@ impl ScalePanel {
     ) -> Option<ModelEvent> {
         controls::inspector_layout(ui);
         ui.strong("Scale");
+        ui.small("Release the handle to stage. Press Enter to apply or Escape to cancel.");
         ui.small(format!("{} selected object(s)", self.selected.len()));
         ui.small("Part edits affect linked Instances. An Instance selection scales only its own geometry.");
         let mut changed = false;

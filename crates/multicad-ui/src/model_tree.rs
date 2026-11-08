@@ -2571,7 +2571,6 @@ mod tests {
                                         assert!(events.change.is_none());
                                         if !tool_active {
                                             interaction.inspector(ui, session.document());
-                                            interaction.quick_actions(ui, &mut session, true);
                                         }
                                     });
                                 });

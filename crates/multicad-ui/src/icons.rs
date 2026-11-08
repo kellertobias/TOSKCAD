@@ -7,6 +7,7 @@ pub enum Icon {
     Hammer,
     Keyboard,
     Transform,
+    Duplicate,
     Scale,
     Rotate,
     Mirror,
@@ -1004,6 +1005,10 @@ pub(crate) fn paint_sized(ui: &egui::Ui, icon: Icon, center: Pos2, color: Color3
             ] {
                 path(points);
             }
+        }
+        Icon::Duplicate => {
+            path(&[[4., 16.], [4., 4.], [16., 4.]]);
+            path(&[[9., 9.], [20., 9.], [20., 20.], [9., 20.], [9., 9.]]);
         }
         Icon::ClearSelection => {
             path(&[[9., 3.], [3., 3.], [3., 9.]]);

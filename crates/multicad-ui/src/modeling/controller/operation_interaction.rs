@@ -446,7 +446,7 @@ impl ModelToolController {
         }
         // Typing takes over without focusing: digits reach the gizmo whenever
         // no text field owns the keyboard.
-        if !ui.ctx().text_edit_focused() {
+        if !ui.ctx().text_edit_focused() && !egui::Popup::is_any_open(ui.ctx()) {
             let typing = self
                 .operation
                 .entry

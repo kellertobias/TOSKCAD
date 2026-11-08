@@ -436,6 +436,13 @@ impl ShortcutMap {
         }
         add(
             Scope::Mode(Mode::Model),
+            Chord::primary(Key::D),
+            Command(crate::registry::Command::Extension("duplicate")),
+            "Duplicate selected Parts or Instances",
+            false,
+        );
+        add(
+            Scope::Mode(Mode::Model),
             Chord::plain(Key::E),
             Command(crate::registry::Command::Modeling(
                 crate::modeling::ModelingTool::Extrude,
@@ -640,6 +647,24 @@ mod tests {
             })
             .is_err()
         );
+    }
+    #[test]
+    fn duplicate_uses_primary_d_only_in_model_and_keeps_plain_d_for_pan() {
+        let map = ShortcutMap::standard();
+        let mut c = context(Mode::Model);
+        assert_eq!(
+            map.resolve(Key::D, Modifiers::COMMAND, &c).unwrap().action,
+            Action::Command(Command::Extension("duplicate"))
+        );
+        assert_eq!(
+            map.resolve(Key::D, Modifiers::NONE, &c).unwrap().action,
+            Action::Pan(Pan::Right)
+        );
+        c.text_input = true;
+        assert!(map.resolve(Key::D, Modifiers::COMMAND, &c).is_none());
+        c.text_input = false;
+        c.mode = Mode::Sketch;
+        assert!(map.resolve(Key::D, Modifiers::COMMAND, &c).is_none());
     }
     #[test]
     fn split_shortcut_is_model_scoped_and_preserves_typing_sketching_and_wasd() {

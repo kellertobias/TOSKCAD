@@ -287,6 +287,11 @@ impl PlacementPanel {
         self.stamp.changed();
         true
     }
+    pub(super) fn finish_copy_gesture(&mut self) {
+        self.create_copy |= self.copy_modifier;
+        self.copy_modifier = false;
+    }
+
     pub fn request(&self, document: &Document, enabled: bool) -> Result<PlacementCommand, String> {
         if !enabled {
             return Err("Native placement preview is unavailable".into());
@@ -361,6 +366,7 @@ impl PlacementPanel {
     ) -> Option<ModelEvent> {
         controls::inspector_layout(ui);
         ui.strong(self.label());
+        ui.small("Release the handle to stage. Press Enter to apply or Escape to cancel.");
         ui.small(format!("{} selected object(s)", self.targets.len()));
         egui::ScrollArea::vertical()
             .id_salt("placement-targets")

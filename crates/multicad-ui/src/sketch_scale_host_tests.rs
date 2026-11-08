@@ -163,9 +163,18 @@ impl Host {
         ]);
     }
     fn finish(&mut self, revision: u64) {
+        assert_eq!(self.session.revision(), revision);
+        assert!(
+            self.editor
+                .arm_model_confirmation(&self.session, &Default::default())
+        );
         let until = Instant::now() + Duration::from_secs(5);
         while self.session.revision() == revision && Instant::now() < until {
             self.frame(vec![]);
+            self.editor.poll_model(&self.session, &Default::default());
+            self.editor
+                .finish_model_confirmation(&mut self.session, &Default::default())
+                .unwrap();
             std::thread::sleep(Duration::from_millis(1));
         }
         assert_eq!(

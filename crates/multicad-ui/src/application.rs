@@ -8,6 +8,7 @@ mod closing;
 mod closing_backdrop;
 mod document_open;
 mod drawing_pdf;
+mod duplicate;
 mod examples_gallery;
 mod export_folder;
 pub mod external_control;
@@ -1122,6 +1123,7 @@ impl Application {
                 self.reload_examples();
             }
             Command::RecoverySnapshot => self.snapshot_now(self.active)?,
+            Command::Extension("duplicate") => self.duplicate_model_selection(channel)?,
             Command::Extension("materials") => {
                 let p = self.current_mut();
                 if p.editor.dirty() {
@@ -1391,6 +1393,15 @@ impl Application {
                         | crate::modeling::ModelingTool::Sphere
                 ) {
                     format!("{label} · drag a viewport handle or enter dimensions")
+                } else if matches!(
+                    tool,
+                    crate::modeling::ModelingTool::Move
+                        | crate::modeling::ModelingTool::Copy
+                        | crate::modeling::ModelingTool::Scale
+                ) {
+                    format!(
+                        "{label} · select targets and drag a handle. Enter applies, Escape cancels."
+                    )
                 } else {
                     format!("{label} · choose controls in the Inspector, then Preview")
                 };
@@ -1673,6 +1684,14 @@ impl Application {
             | Command::FinishSketch
             | Command::Delete => {
                 self.mode == Mode::Sketch && self.current().sketch.editing && !pending()
+            }
+            Command::Extension("duplicate") => {
+                let project = self.current();
+                self.mode == Mode::Model
+                    && !pending()
+                    && project
+                        .sketch
+                        .duplicate_ready(&project.session, &project.scene)
             }
             Command::Extension("materials") => !pending(),
             Command::Extension("drawing-pdf") => {
@@ -2351,6 +2370,51 @@ impl Application {
             });
         }
         let context = self.shortcut_context(ctx);
+        if self.mode == Mode::Model
+            && !context.blocked
+            && !context.text_input
+            && !self.text_input_was_focused
+            && self.current().sketch.model_active()
+            && !self.current().sketch.operation_handles_enter()
+            && ctx.input_mut(|input| {
+                if !input.focused
+                    || input.pointer.any_pressed()
+                    || input
+                        .events
+                        .iter()
+                        .any(|event| matches!(event, egui::Event::Text(_) | egui::Event::Paste(_)))
+                {
+                    return false;
+                }
+                let len = input.events.len();
+                input.events.retain(|event| {
+                    !matches!(
+                        event,
+                        egui::Event::Key {
+                            key: egui::Key::Enter,
+                            modifiers: egui::Modifiers::NONE,
+                            pressed: true,
+                            repeat: false,
+                            ..
+                        }
+                    )
+                });
+                len != input.events.len()
+            })
+        {
+            let project = self.current_mut();
+            if project
+                .sketch
+                .arm_model_confirmation(&project.session, &project.resources)
+            {
+                ctx.request_repaint();
+            } else if project
+                .sketch
+                .model_can_apply(&project.session, &project.resources)
+            {
+                self.execute(Command::Apply, &[], Channel::Ui);
+            }
+        }
         let frame = self
             .shortcut_runtime
             .collect(ctx, &self.shortcuts, &context);
@@ -2696,6 +2760,10 @@ impl Application {
                         &mut p.scene,
                         &p.resources,
                     );
+                    let confirmation_error = p
+                        .sketch
+                        .finish_model_confirmation(&mut p.session, &p.resources)
+                        .err();
                     if let Some(delay) = p.scene.quality_wakeup(ctx.input(|i| i.time)) {
                         ctx.request_repaint_after(delay);
                     }
@@ -2713,6 +2781,9 @@ impl Application {
                         self.message = label;
                         self.message_error = false;
                         ctx.request_repaint();
+                    } else if let Some(error) = confirmation_error {
+                        self.message = error;
+                        self.message_error = true;
                     } else if modeling_cancelled {
                         self.message = "Modeling cancelled · document unchanged".into();
                         self.message_error = false;

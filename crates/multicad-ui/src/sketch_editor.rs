@@ -27,6 +27,7 @@ mod assembly_host;
 mod assembly_host_tests;
 #[path = "sketch_draw_modes.rs"]
 mod draw_modes;
+mod duplicate;
 #[path = "sketch_edge_host.rs"]
 mod edge_host;
 #[cfg(test)]
@@ -989,6 +990,30 @@ impl SketchEditor {
         self.message = "Boolean · choose explicit targets and tools, then Preview".into();
         Ok(())
     }
+    pub(crate) fn operation_handles_enter(&self) -> bool {
+        self.model.operation_entry_active()
+    }
+
+    pub(crate) fn arm_model_confirmation(
+        &mut self,
+        session: &Session,
+        resources: &multicad_core::project_file::ProjectResources,
+    ) -> bool {
+        self.model.arm_confirmation(session, resources)
+    }
+
+    pub(crate) fn finish_model_confirmation(
+        &mut self,
+        session: &mut Session,
+        resources: &multicad_core::project_file::ProjectResources,
+    ) -> Result<bool, String> {
+        if !self.model.confirmation_ready(session, resources) {
+            return Ok(false);
+        }
+        self.apply_model(session, resources)?;
+        Ok(true)
+    }
+
     pub fn model_can_apply(
         &self,
         session: &Session,
@@ -3276,9 +3301,6 @@ impl SketchEditor {
                             let enabled=self.preview.is_none() && !self.constraints.dirty() && !self.repair.has_pending();
                             self.materials.inspector(ui,session,&selection,enabled);
                         }
-                        if !self.editing && !self.picking && !self.moving && !self.has_pending_edits() {
-                            self.solid.quick_actions(ui,session,feed.is_current(session.document().id(),session.revision()));
-                        }
                         if self.picking && sketch_mode {
                             let scene = self.display_scene.clone();
                             let context = PlaneContext { document: session.document(), revision: session.revision(), scene: scene.as_deref().filter(|s| s.stamp().revision == session.revision()), report: self.evaluated.as_ref(), occurrence: self.occurrence, section: self.modeling_section() };
@@ -4213,6 +4235,11 @@ impl SketchEditor {
                 self.solid.filter = crate::viewport::PickFilter::Parts;
             }
             self.solid.set_section_override(self.modeling_section());
+            if !self.measurement.active()
+                && let Some(highlight) = self.model.transform_highlight(scene)
+            {
+                self.solid.highlight_reference(Some(highlight));
+            }
             self.solid.show(
                 ui,
                 &response,
@@ -4331,14 +4358,6 @@ impl SketchEditor {
             let mut owned = false;
             if self.model.placement_active() || self.model.scaling_active() {
                 let scaling = self.model.scaling_active();
-                let label = if scaling { "Scale" } else { "Move / Copy" };
-                if scaling {
-                    self.model
-                        .set_scale_copy_modifier(ui.input(|i| i.modifiers.alt));
-                } else {
-                    self.model
-                        .set_placement_copy_modifier(ui.input(|i| i.modifiers.alt));
-                }
                 let canonical_scene = context
                     .feed
                     .visible()
@@ -4367,15 +4386,7 @@ impl SketchEditor {
                         session,
                         context.resources,
                         crate::modeling::PlacementViewport {
-                            scene: context
-                                .feed
-                                .visible()
-                                .filter(|_| {
-                                    context
-                                        .feed
-                                        .is_current(session.document().id(), session.revision())
-                                })
-                                .map(|s| s.as_ref()),
+                            scene: canonical_scene,
                             camera: self.camera,
                             rect,
                             basis,
@@ -4389,25 +4400,7 @@ impl SketchEditor {
                     }
                 };
                 match placement_result {
-                    Ok(result) => {
-                        owned = result.input_owned;
-                        match result.outcome {
-                            Some(crate::modeling::ModelToolOutcome::Applied(parts)) => {
-                                self.accept_model_outputs(parts, label, false)
-                            }
-                            Some(crate::modeling::ModelToolOutcome::Placed {
-                                parts,
-                                instances,
-                            }) => {
-                                self.accept_model_outputs(parts, label, false);
-                                self.tree_selection.extend(instances);
-                            }
-                            Some(crate::modeling::ModelToolOutcome::Cancelled) => {
-                                self.cancel_model()
-                            }
-                            None => {}
-                        }
-                    }
+                    Ok(result) => owned = result.input_owned,
                     Err(error) => {
                         owned = true;
                         self.message = error;

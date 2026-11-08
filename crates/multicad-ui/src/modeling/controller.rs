@@ -116,6 +116,7 @@ pub struct ModelToolController {
     scope: Option<Scope>,
     candidate: Option<Candidate>,
     primitive_preview_after: Option<f64>,
+    keyboard_confirm: Option<FormStamp>,
     preparation: preparation::Lane,
     discovery: Option<Discovery>,
     surface_inspection: Option<surface_structure::SurfaceInspection>,
@@ -128,9 +129,7 @@ pub struct ModelToolController {
     context_attempt: Option<SceneStamp>,
     context_notice: Option<String>,
     placement_interaction: super::gizmo::Interaction,
-    placement_confirm: Option<FormStamp>,
     scale_interaction: super::scale_gizmo::Interaction,
-    scale_confirm: Option<FormStamp>,
     scale_host_basis: Option<super::GizmoBasis>,
     operation: operation_interaction::OperationState,
     boolean_preset: Option<multicad_core::model::Operation>,
@@ -1652,8 +1651,7 @@ impl ModelToolController {
         self.placement_interaction = Default::default();
         self.scale_interaction = Default::default();
         self.scale_host_basis = None;
-        self.placement_confirm = None;
-        self.scale_confirm = None;
+        self.keyboard_confirm = None;
         self.operation = Default::default();
         self.form = None;
         self.scope = None;
@@ -1705,8 +1703,7 @@ impl ModelToolController {
         {
             self.surface_inspection = None;
         }
-        self.placement_confirm = None;
-        self.scale_confirm = None;
+        self.keyboard_confirm = None;
         self.candidate = None;
         self.primitive_preview_after = None;
         self.discovery = None;
@@ -2109,7 +2106,7 @@ impl ModelToolController {
         }
     }
     pub fn can_apply(&self, session: &Session, resources: &ProjectResources) -> bool {
-        !self.primitive_dragging()
+        !self.transform_dragging()
             && self.preview_visible(session, resources)
             && self
                 .candidate
@@ -2184,9 +2181,9 @@ impl ModelToolController {
         resources: &ProjectResources,
     ) -> Result<Vec<CreatedBody>, String> {
         let result: Result<Vec<CreatedBody>, String> = (|| {
-            if self.placement_interaction.active() || self.scale_interaction.active() {
+            if self.transform_dragging() {
                 return Err(
-                    "Release the placement handle before applying its native preview".into(),
+                    "Release the viewport handle before applying its native preview".into(),
                 );
             }
             self.current(session, resources, true)?;
@@ -2290,8 +2287,62 @@ impl ModelToolController {
             self.handoff = None;
         }
     }
-    fn primitive_dragging(&self) -> bool {
-        matches!(&self.form, Some(ModelForm::Primitive(panel)) if panel.dragging())
+    fn transform_dragging(&self) -> bool {
+        self.placement_interaction.active()
+            || self.scale_interaction.active()
+            || matches!(&self.form, Some(ModelForm::Primitive(panel)) if panel.dragging())
+    }
+
+    pub(crate) fn arm_confirmation(
+        &mut self,
+        session: &Session,
+        resources: &ProjectResources,
+    ) -> bool {
+        let Some(stamp) = self.stamp() else {
+            return false;
+        };
+        if self.transform_dragging()
+            || !(self.can_apply(session, resources)
+                || self.current(session, resources, false).is_ok()
+                    && self
+                        .candidate
+                        .as_ref()
+                        .is_some_and(|candidate| candidate.form == stamp && candidate.pending))
+        {
+            return false;
+        }
+        self.keyboard_confirm = Some(stamp);
+        true
+    }
+
+    pub(crate) fn confirmation_ready(
+        &self,
+        session: &Session,
+        resources: &ProjectResources,
+    ) -> bool {
+        self.keyboard_confirm.is_some()
+            && self.keyboard_confirm == self.stamp()
+            && self.can_apply(session, resources)
+    }
+
+    pub(crate) fn transform_highlight(&self, scene: &Scene) -> Option<crate::viewport::Selection> {
+        let targets = self.placement_targets().or_else(|| self.scale_targets())?;
+        let ids = if let Some(candidate) = &self.candidate
+            && candidate
+                .scene
+                .as_ref()
+                .is_some_and(|preview| std::ptr::eq(preview.as_ref(), scene))
+        {
+            candidate
+                .outputs
+                .iter()
+                .map(|output| output.body)
+                .chain(candidate.instances.iter().copied())
+                .collect::<std::collections::BTreeSet<_>>()
+        } else {
+            targets.clone()
+        };
+        (!ids.is_empty()).then(|| crate::viewport::Selection::Parts(Arc::new(ids)))
     }
 
     fn schedule_primitive_preview(&mut self, ui: &egui::Ui) {
@@ -2372,7 +2423,7 @@ impl ModelToolController {
         let stamp = self.stamp();
         let preview = match (&self.error, &self.candidate, stamp) {
             (_, _, Some(stamp))
-                if self.primitive_preview_after.is_some() || self.primitive_dragging() =>
+                if self.primitive_preview_after.is_some() || self.transform_dragging() =>
             {
                 PreviewState::Pending { stamp }
             }

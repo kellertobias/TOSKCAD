@@ -9,8 +9,7 @@ use crate::{
 };
 use eframe::egui::{self, Color32, Pos2, Rect, Stroke};
 use multicad_core::{
-    commands::{Actor, Channel, Request, Session},
-    document::{Document, Entity, EntityData, EntityId, Mutation, Placement},
+    document::{Document, EntityData, EntityId},
     references::TopologyKind,
 };
 use std::{collections::BTreeSet, sync::Arc};
@@ -24,7 +23,6 @@ pub struct Interaction {
     hovered: Option<Hit>,
     parts: Arc<BTreeSet<EntityId>>,
     range_anchor: Option<EntityId>,
-    action_error: Option<String>,
     pub filter: PickFilter,
     pub section: SectionView,
     section_override: Option<Option<SectionPlane>>,
@@ -68,7 +66,6 @@ impl Interaction {
         self.hovered = None;
         Arc::make_mut(&mut self.parts).clear();
         self.range_anchor = None;
-        self.action_error = None;
         self.last_query = None;
     }
     pub fn has_topology_selection(&self) -> bool {
@@ -113,7 +110,6 @@ impl Interaction {
         self.selected = self.faces.last().cloned();
         Arc::make_mut(&mut self.parts).clear();
         self.range_anchor = None;
-        self.action_error = None;
     }
     pub fn hovered_instance(&self) -> Option<EntityId> {
         self.hovered.as_ref().map(|hit| hit.instance)
@@ -190,7 +186,6 @@ impl Interaction {
             parts.insert(id);
         }
         self.range_anchor = Some(id);
-        self.action_error = None;
         self.hovered = None;
         self.last_query = None;
     }
@@ -319,152 +314,6 @@ impl Interaction {
                     tags.iter().cloned().collect::<Vec<_>>().join(", ")
                 ));
             }
-        }
-    }
-    fn duplicate_selected(&mut self, session: &mut Session) -> Result<(), String> {
-        let stamp = self.last_stamp.ok_or("The selected scene is not ready")?;
-        if stamp.document != session.document().id() || stamp.revision != session.revision() {
-            return Err(
-                "Selection belongs to an earlier source revision; wait for the model update".into(),
-            );
-        }
-        let ids = self.selected_ids();
-        if ids.is_empty() {
-            return Err("Select an instance to duplicate".into());
-        }
-        if ids.iter().any(|id| {
-            matches!(
-                session.document().get(*id).map(|e| &e.data),
-                Some(EntityData::Instance {
-                    placement_source: Some(_),
-                    ..
-                })
-            )
-        }) {
-            use multicad_core::model::{self, BodyInput, InstanceCopyRequest, InstanceCopySource};
-            let mut requests = Vec::new();
-            for id in &ids {
-                let source = session
-                    .document()
-                    .get(*id)
-                    .ok_or("Selected source no longer exists")?;
-                let target = match &source.data {
-                    EntityData::Instance { .. } => InstanceCopySource::Instance { instance: *id },
-                    EntityData::Part { features, .. } => {
-                        let producer = features
-                            .iter()
-                            .rev()
-                            .find(|id| {
-                                matches!(
-                                    session.document().get(**id).map(|e| &e.data),
-                                    Some(EntityData::Feature {
-                                        suppressed: false,
-                                        ..
-                                    })
-                                )
-                            })
-                            .copied()
-                            .ok_or("Selected Part has no current producer")?;
-                        InstanceCopySource::Part {
-                            source: BodyInput {
-                                body: *id,
-                                producer,
-                            },
-                        }
-                    }
-                    _ => {
-                        return Err(
-                            "Separate Part copies from unsupported subassembly duplication".into(),
-                        );
-                    }
-                };
-                let mut request = InstanceCopyRequest::new(target, Default::default());
-                request.name = format!("{} copy", source.name);
-                requests.push(request);
-            }
-            let prepared = model::prepare_instance_copies(
-                session,
-                stamp.revision,
-                Actor::local(Channel::Ui),
-                &requests,
-            )
-            .map_err(|e| e.to_string())?;
-            let created = prepared.instances.into_iter().collect();
-            session
-                .commit(prepared.prepared)
-                .map_err(|e| e.to_string())?;
-            self.clear();
-            self.parts = Arc::new(created);
-            return Ok(());
-        }
-        let mut created = BTreeSet::new();
-        let mut edits = Vec::new();
-        for id in ids {
-            let source = session
-                .document()
-                .get(id)
-                .ok_or("Selected source no longer exists")?;
-            let data = match &source.data {
-                EntityData::Instance { .. } => source.data.clone(),
-                EntityData::Part { .. } | EntityData::Assembly { .. } => EntityData::Instance {
-                    component: id,
-                    placement: Placement::default(),
-                    placement_source: None,
-                },
-                _ => {
-                    return Err(
-                        "Only parts, assemblies and their instances can be duplicated".into(),
-                    );
-                }
-            };
-            let mut copy = Entity::new(format!("{} copy", source.name), data);
-            copy.description = source.description.clone();
-            created.insert(copy.id);
-            edits.push(Mutation::Insert(copy));
-        }
-        session
-            .apply(Request {
-                expected_revision: stamp.revision,
-                actor: Actor::local(Channel::Ui),
-                label: "Duplicate selected instances".into(),
-                edits,
-            })
-            .map_err(|e| e.to_string())?;
-        self.clear();
-        self.parts = Arc::new(created);
-        Ok(())
-    }
-    /// Show the Inspector's source action through the canonical transaction API.
-    pub fn quick_actions(&mut self, ui: &mut egui::Ui, session: &mut Session, current: bool) {
-        crate::controls::inspector_layout(ui);
-        if self.selected_id().is_none() {
-            return;
-        }
-        ui.horizontal_wrapped(|ui| {
-            let duplicate = current
-                && self.selected_ids().iter().all(|id| {
-                    matches!(
-                        session.document().get(*id).map(|e| &e.data),
-                        Some(
-                            EntityData::Instance { .. }
-                                | EntityData::Part { .. }
-                                | EntityData::Assembly { .. }
-                        )
-                    )
-                });
-            if ui
-                .add_enabled(duplicate, egui::Button::new("Duplicate").wrap())
-                .on_hover_text(
-                    "Create linked instances at the same placement in one undoable transaction",
-                )
-                .on_disabled_hover_text("Wait for a current model and select parts or instances")
-                .clicked()
-            {
-                self.action_error = self.duplicate_selected(session).err();
-            }
-        });
-        if let Some(error) = &self.action_error {
-            ui.colored_label(Color32::LIGHT_RED, error);
         }
     }
     pub fn filter_control(&mut self, ui: &mut egui::Ui) {

@@ -153,6 +153,7 @@ fn command_home(command: Command) -> Option<(Mode, &'static str)> {
     match command {
         Command::Extension("materials") => Some((Mode::Parameters, "Materials")),
         Command::Extension("drawing-pdf") => Some((Mode::Drawings, "Common")),
+        Command::Extension("duplicate") => Some((Mode::Model, "Common")),
         Command::WoodPreset(_)
         | Command::Modeling(
             ModelingTool::Panel
@@ -500,6 +501,7 @@ impl Default for Registry {
             ],
         });
         for (id, label, icon) in [
+            ("duplicate", "Duplicate", Icon::Duplicate),
             ("symbol", "Create symbol", Icon::Library),
             ("library", "Symbol library", Icon::Library),
             ("cut-list", "Cut list", Icon::Page),
@@ -632,7 +634,7 @@ impl Default for Registry {
                             })
                             .map(ModelingTool::id)
                             .chain(BOOLEAN_OPERATIONS.map(|(id, ..)| id))
-                            .chain(["symbol"])
+                            .chain(["duplicate", "symbol"])
                             .collect(),
                         requires_active_sketch: false,
                     },

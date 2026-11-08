@@ -337,7 +337,7 @@ impl Interaction {
             input,
             source,
             parameters,
-            "drag to apply one exact placement; Option / Alt copies; Esc cancels",
+            "drag to stage, Enter to apply, Escape to cancel. Option / Alt copies.",
         )
     }
     pub fn show_with_help(

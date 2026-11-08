@@ -78,6 +78,113 @@ fn click(ctx: &egui::Context, app: &mut Application, size: egui::Vec2, label: &s
     }
 }
 #[test]
+fn model_enter_and_escape_respect_text_and_open_dropdowns() {
+    let size = egui::vec2(1360., 860.);
+    let mut app = Application::with_document(
+        Box::new(Storage),
+        Document::new("Staged Model keys").unwrap(),
+    )
+    .unwrap();
+    app.set_model_backends(Arc::new(|| Box::new(NativeBackend::new())));
+    app.mode = Mode::Model;
+    let ctx = egui::Context::default();
+    ctx.enable_accesskit();
+    crate::theme::configure(&ctx);
+    app.invoke(Command::Modeling(ModelingTool::Box), &[], Channel::Ui)
+        .unwrap();
+    let until = Instant::now() + Duration::from_secs(5);
+    loop {
+        frame(&ctx, &mut app, size, vec![]).drop_without_applying_deltas();
+        let p = app.current();
+        if p.sketch.model_can_apply(&p.session, &p.resources) {
+            break;
+        }
+        assert!(Instant::now() < until);
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    let key = |app: &mut Application, key| {
+        for pressed in [true, false] {
+            frame(
+                &ctx,
+                app,
+                size,
+                vec![egui::Event::Key {
+                    key,
+                    physical_key: None,
+                    pressed,
+                    repeat: false,
+                    modifiers: egui::Modifiers::NONE,
+                }],
+            )
+            .drop_without_applying_deltas();
+        }
+    };
+    click(&ctx, &mut app, size, "XY");
+    assert!(egui::Popup::is_any_open(&ctx));
+    key(&mut app, egui::Key::Escape);
+    assert!(!egui::Popup::is_any_open(&ctx));
+    assert!(app.current().sketch.model_active());
+    assert_eq!(app.current().session.revision(), 0);
+
+    let output = frame(&ctx, &mut app, size, vec![]);
+    let nodes = &output
+        .platform_output
+        .accesskit_update
+        .as_ref()
+        .unwrap()
+        .nodes;
+    let bounds = nodes
+        .iter()
+        .find(|(_, node)| node.value() == Some("Box 1"))
+        .and_then(|(_, node)| node.bounds())
+        .expect("Body name text field");
+    output.drop_without_applying_deltas();
+    let pos = egui::pos2(
+        (bounds.x0 + bounds.x1) as f32 * 0.5,
+        (bounds.y0 + bounds.y1) as f32 * 0.5,
+    );
+    let focus_name = |app: &mut Application| {
+        for pressed in [true, false] {
+            frame(
+                &ctx,
+                app,
+                size,
+                vec![
+                    egui::Event::PointerMoved(pos),
+                    egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ],
+            )
+            .drop_without_applying_deltas();
+        }
+    };
+    focus_name(&mut app);
+    assert!(ctx.text_edit_focused());
+    key(&mut app, egui::Key::Enter);
+    assert!(app.current().sketch.model_active());
+    assert_eq!(app.current().session.revision(), 0);
+    focus_name(&mut app);
+    key(&mut app, egui::Key::Escape);
+    assert!(app.current().sketch.model_active());
+
+    key(&mut app, egui::Key::Enter);
+    assert_eq!(app.current().session.revision(), 1);
+    assert!(!app.current().sketch.model_active());
+    key(&mut app, egui::Key::Enter);
+    assert_eq!(app.current().session.revision(), 1);
+    let applied = app.current().session.document().clone();
+    app.invoke(Command::Modeling(ModelingTool::Box), &[], Channel::Ui)
+        .unwrap();
+    key(&mut app, egui::Key::Escape);
+    assert!(!app.current().sketch.model_active());
+    assert_eq!(app.current().session.document(), &applied);
+}
+
+#[test]
 fn compact_model_navigation_and_project_switcher_preserve_context() {
     let size = egui::vec2(1024., 600.);
     let mut seed = Session::new(Document::new("Selection navigation").unwrap()).unwrap();

@@ -146,17 +146,22 @@ impl Harness {
         .unwrap()
     }
     fn finish(&self, c: &mut ModelToolController, s: &mut Session) -> ModelToolOutcome {
+        let revision = s.revision();
+        assert!(c.arm_confirmation(s, &Default::default()));
         let until = Instant::now() + Duration::from_secs(4);
         loop {
-            let result = self.frame(c, s, vec![], Modifiers::NONE).unwrap();
-            if let Some(outcome) = result.outcome {
-                return outcome;
+            c.poll(s, &Default::default());
+            assert_eq!(s.revision(), revision);
+            if c.confirmation_ready(s, &Default::default()) {
+                let instances = c.candidate_instances();
+                let parts = c.apply(s, &Default::default()).unwrap();
+                return if instances.is_empty() {
+                    ModelToolOutcome::Applied(parts)
+                } else {
+                    ModelToolOutcome::Placed { parts, instances }
+                };
             }
-            assert!(
-                Instant::now() < until,
-                "native gesture did not commit: {:?}",
-                c.error()
-            );
+            assert!(Instant::now() < until, "{:?}", c.error());
             std::thread::sleep(Duration::from_millis(1));
         }
     }
@@ -225,14 +230,20 @@ fn pointer_drag_waits_for_native_receipt_then_commits_one_mixed_move_with_one_un
     assert!(h.release(&mut c, &mut s, end, Modifiers::NONE).input_owned);
     for _ in 0..3 {
         let result = h.frame(&mut c, &mut s, vec![], Modifiers::NONE).unwrap();
-        assert!(result.input_owned && result.outcome.is_none());
+        assert!(!result.input_owned && result.outcome.is_none());
         assert_eq!(s.document(), &original);
     }
-    assert!(
-        c.retarget_placement(&s, &Default::default(), &scene, &BTreeSet::from([b.body]))
-            .is_err()
-    );
     gate.store(false, Ordering::SeqCst);
+    let until = Instant::now() + Duration::from_secs(4);
+    while !c.can_apply(&s, &Default::default()) {
+        c.poll(&s, &Default::default());
+        assert!(Instant::now() < until, "{:?}", c.error());
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    // A checked native result remains staged until confirmation.
+    assert_eq!(s.revision(), revision);
+    assert_eq!(s.document(), &original);
+    assert!(!c.confirmation_ready(&s, &Default::default()));
     let ModelToolOutcome::Placed { parts, instances } = h.finish(&mut c, &mut s) else {
         panic!()
     };
@@ -311,7 +322,11 @@ fn option_copy_is_latched_through_delayed_receipt_and_creates_one_shared_geometr
         modifiers,
     )
     .unwrap();
-    assert!(!c.set_placement_copy_modifier(false));
+    assert!(matches!(
+        c.form.as_ref().unwrap().request(s.document(), c.capabilities()).unwrap(),
+        ModelRequest::Placement(command)
+            if matches!(command.as_ref(), crate::modeling::PlacementCommand::Batch(batch) if !batch.copies.is_empty())
+    ));
     assert!(
         h.frame(&mut c, &mut s, vec![], Modifiers::NONE)
             .unwrap()
@@ -438,6 +453,7 @@ fn cancelling_a_released_gesture_discards_late_native_receipts_without_a_transac
     )
     .unwrap();
     h.release(&mut c, &mut s, end, Modifiers::NONE);
+    assert!(c.arm_confirmation(&s, &Default::default()));
     c.cancel();
     gate.store(false, Ordering::SeqCst);
     for _ in 0..10 {
@@ -483,7 +499,7 @@ fn source_change_after_release_invalidates_the_gesture_and_cannot_apply_a_late_r
     let after = s.document().clone();
     let revision = s.revision();
     assert!(h.frame(&mut c, &mut s, vec![], Modifiers::NONE).is_err());
-    assert!(c.placement_confirm.is_none());
+    assert!(c.keyboard_confirm.is_none());
     assert!(c.candidate.is_none());
     gate.store(false, Ordering::SeqCst);
     for _ in 0..5 {
@@ -535,7 +551,7 @@ fn source_neutral_queue_failure_aborts_the_drag_without_enabling_apply() {
         .unwrap();
     assert!(error.contains("Native placement queue unavailable"));
     assert!(!c.placement_interaction.active());
-    assert!(c.placement_confirm.is_none());
+    assert!(c.keyboard_confirm.is_none());
     assert!(!c.can_apply(&s, &Default::default()));
     assert_eq!(s.document(), &original);
     assert_eq!(s.revision(), revision);
@@ -592,7 +608,7 @@ fn a_measure_or_view_interruption_cancels_an_in_progress_gesture_without_a_trans
         }
         assert!(h.frame(&mut c, &mut s, vec![], Modifiers::NONE).is_err());
         assert!(!c.placement_interaction.active());
-        assert!(c.placement_confirm.is_none());
+        assert!(c.keyboard_confirm.is_none());
         assert!(c.candidate.is_none());
         gate.store(false, Ordering::SeqCst);
         c.poll(&s, &Default::default());
@@ -653,7 +669,7 @@ fn overlay_pointer_ownership_blocks_new_drags_but_does_not_drop_a_captured_nativ
     );
     assert!(h.release(&mut c, &mut s, end, Modifiers::NONE).input_owned);
     assert!(
-        h.frame(&mut c, &mut s, vec![], Modifiers::NONE)
+        !h.frame(&mut c, &mut s, vec![], Modifiers::NONE)
             .unwrap()
             .input_owned
     );
@@ -768,17 +784,14 @@ fn top_view_host_drag(basis: GizmoBasis, coalesced: bool) {
         assert!(frame(vec![Event::PointerMoved(end)]).0.unwrap().input_owned);
         assert!(frame(vec![release]).0.unwrap().input_owned);
     }
+    assert!(c.arm_confirmation(&s, &Default::default()));
     let until = Instant::now() + Duration::from_secs(4);
-    let output = loop {
-        if let Some(outcome) = frame(vec![]).0.unwrap().outcome {
-            break outcome;
-        }
+    while !c.confirmation_ready(&s, &Default::default()) {
+        c.poll(&s, &Default::default());
         assert!(Instant::now() < until);
         std::thread::sleep(Duration::from_millis(1));
-    };
-    let ModelToolOutcome::Applied(parts) = output else {
-        panic!()
-    };
+    }
+    let parts = c.apply(&mut s, &Default::default()).unwrap();
     let native = Compiler::default()
         .compile(s.document(), s.revision())
         .unwrap();

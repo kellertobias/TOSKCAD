@@ -1,6 +1,9 @@
 use super::*;
 use crate::viewport::{Geometry, Instance, Ray, Transform};
-use multicad_core::document::Definition;
+use multicad_core::{
+    commands::Session,
+    document::{Definition, Entity, Mutation, Placement},
+};
 use multicad_kernel::{MeshOptions, Solid};
 
 fn fixture() -> (Session, Arc<Scene>, Vec<EntityId>) {
@@ -448,49 +451,6 @@ fn command_click_toggles_faces_plain_click_replaces_and_stale_faces_are_dropped(
     assert_eq!(session.document(), &before);
 }
 #[test]
-fn linked_duplication_is_one_undoable_transaction_and_rejects_stale_selection() {
-    let (mut session, scene, ids) = fixture();
-    let before = session.document().clone();
-    let mut interaction = Interaction {
-        last_stamp: Some(scene.stamp()),
-        ..Default::default()
-    };
-    interaction.select_part(ids[0], false);
-    interaction.select_part(ids[2], true);
-    interaction.duplicate_selected(&mut session).unwrap();
-    let created = interaction.selected_ids();
-    assert_eq!(created.len(), 2);
-    assert!(created.is_disjoint(&ids.iter().copied().collect()));
-    assert_eq!(session.revision(), 1);
-    for id in &created {
-        let copy = session.document().get(*id).unwrap();
-        assert!(
-            ids.iter()
-                .any(|id| session.document().get(*id).unwrap().data == copy.data)
-        );
-    }
-    assert_eq!(
-        session.activity().last().unwrap().actor.channel,
-        Channel::Ui
-    );
-    let after = session.document().clone();
-    assert!(interaction.duplicate_selected(&mut session).is_err());
-    assert_eq!(session.document(), &after);
-    session.undo(1, Actor::local(Channel::Ui)).unwrap();
-    assert_eq!(session.document(), &before);
-    session.redo(2, Actor::local(Channel::Ui)).unwrap();
-    assert_eq!(session.document(), &after);
-    // Named topology and manufacturing source were never copied or altered.
-    assert!(
-        scene
-            .pick_face(Ray::new([10., 6., 100.], [0., 0., -1.]).unwrap())
-            .unwrap()
-            .intent
-            .is_some()
-    );
-}
-
-#[test]
 fn profile_connection_hardware_presentation_keeps_only_selected_world_poses() {
     let (_, scene, ids) = fixture();
     let visible = BTreeSet::from([ids[1], ids[3]]);
@@ -586,63 +546,6 @@ fn topology_and_hover_accessors_distinguish_face_hits_from_body_sets() {
     interaction.clear();
     assert!(!interaction.has_topology_selection());
     assert_eq!(interaction.hovered_instance(), None);
-}
-
-#[test]
-fn duplication_of_a_driven_instance_clones_pose_ownership_instead_of_sharing_a_driver() {
-    use multicad_core::model::{
-        self, InstanceCopyRequest, InstanceCopySource, NumericTransform, length,
-    };
-    let (mut session, scene, ids) = fixture();
-    let request = InstanceCopyRequest::new(
-        InstanceCopySource::Instance { instance: ids[0] },
-        NumericTransform {
-            translation: [length(10.), length(5.), length(0.)],
-            ..Default::default()
-        },
-    );
-    let prepared = model::prepare_instance_copies(
-        &session,
-        0,
-        Actor::local(Channel::Ui),
-        std::slice::from_ref(&request),
-    )
-    .unwrap();
-    session.commit(prepared.prepared).unwrap();
-    let before = session.document().clone();
-    let mut interaction = Interaction {
-        last_stamp: Some(SceneStamp {
-            revision: session.revision(),
-            ..scene.stamp()
-        }),
-        ..Default::default()
-    };
-    interaction.select_part(request.instance, false);
-    interaction.duplicate_selected(&mut session).unwrap();
-    let created = *interaction.selected_ids().first().unwrap();
-    let EntityData::Instance {
-        placement_source: Some(driver),
-        ..
-    } = session.document().get(created).unwrap().data
-    else {
-        panic!()
-    };
-    assert_ne!(driver, request.driver);
-    assert_eq!(
-        model::read_instance_placement(session.document(), driver)
-            .unwrap()
-            .owner,
-        created
-    );
-    assert_eq!(
-        model::resolve_instance_pose(session.document(), created, session.parameters()).unwrap(),
-        model::resolve_instance_pose(session.document(), request.instance, session.parameters())
-            .unwrap()
-    );
-    session
-        .undo(session.revision(), Actor::local(Channel::Ui))
-        .unwrap();
-    assert_eq!(session.document(), &before);
 }
 
 #[test]

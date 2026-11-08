@@ -44,20 +44,6 @@ impl ModelToolController {
         }
     }
 
-    pub fn set_scale_copy_modifier(&mut self, active: bool) -> bool {
-        if self.scale_interaction.active() || self.scale_confirm.is_some() {
-            return false;
-        }
-        let changed = match &mut self.form {
-            Some(ModelForm::Scale(panel)) => panel.set_copy_modifier(active),
-            _ => false,
-        };
-        if changed {
-            self.invalidate();
-        }
-        changed
-    }
-
     /// Retarget a new scale batch while retaining its numeric controls and
     /// copy choice. An empty set keeps those controls but cannot produce Apply.
     pub fn retarget_scale(
@@ -67,7 +53,7 @@ impl ModelToolController {
         scene: &Scene,
         selected: &BTreeSet<EntityId>,
     ) -> Result<(), String> {
-        if self.scale_interaction.active() || self.scale_confirm.is_some() {
+        if self.scale_interaction.active() {
             return Err(
                 "Finish or cancel the current scale gesture before changing targets".into(),
             );
@@ -88,8 +74,7 @@ impl ModelToolController {
     }
 
     /// Paint and operate the scale handles after the canonical scene
-    /// and before the host processes target acquisition. Each release waits for
-    /// its matching native receipt, then commits once through the ordinary API.
+    /// and before target acquisition. Releasing stages a preview for Apply.
     pub fn scale_viewport(
         &mut self,
         ui: &mut egui::Ui,
@@ -100,8 +85,8 @@ impl ModelToolController {
         let result = self.scale_viewport_inner(ui, session, resources, input);
         if let Err(error) = &result {
             self.scale_interaction = Default::default();
-            self.scale_confirm = None;
             self.candidate = None;
+            self.keyboard_confirm = None;
             if let Some(ModelForm::Scale(panel)) = &mut self.form {
                 panel.set_copy_modifier(false);
             }
@@ -121,36 +106,6 @@ impl ModelToolController {
             return Ok(PlacementViewportResult::default());
         }
         self.current(session, resources, true)?;
-        if let Some(expected) = self.scale_confirm {
-            if self.stamp() != Some(expected) {
-                self.scale_confirm = None;
-                return Err(
-                    "Scale controls changed; drag again or Preview the current controls".into(),
-                );
-            }
-            self.poll(session, resources);
-            if let Some(error) = &self.error {
-                return Err(error.clone());
-            }
-            if self.can_apply(session, resources) {
-                let instances = self.candidate_instances();
-                let parts = self.apply(session, resources)?;
-                return Ok(PlacementViewportResult {
-                    outcome: Some(if instances.is_empty() {
-                        ModelToolOutcome::Applied(parts)
-                    } else {
-                        ModelToolOutcome::Placed { parts, instances }
-                    }),
-                    input_owned: true,
-                });
-            }
-            ui.ctx()
-                .request_repaint_after(std::time::Duration::from_millis(16));
-            return Ok(PlacementViewportResult {
-                input_owned: true,
-                ..Default::default()
-            });
-        }
         let new_basis = self.scale_host_basis.is_none_or(|old| old != input.basis);
         let first_edit = self.scale_host_basis.is_none() && self.editing();
         if new_basis
@@ -190,31 +145,46 @@ impl ModelToolController {
             return Ok(PlacementViewportResult::default());
         }
         let parameters = panel.parameters(session.document())?;
-        let evaluated =
-            multicad_core::parameters::evaluate(session.document()).map_err(|e| e.to_string())?;
+        let evaluated = session.parameters();
         let gesture = self
             .scale_interaction
-            .show(ui, &input, &parameters, &evaluated)?;
+            .show(ui, &input, &parameters, evaluated)?;
         let Some(ModelForm::Scale(panel)) = &mut self.form else {
             unreachable!()
         };
-        let modifier_changed =
-            gesture.input_owned && panel.set_copy_modifier(gesture.copy_modifier);
+        let modifier_changed = gesture.moved && panel.set_copy_modifier(gesture.copy_modifier);
         let controls_changed = gesture.changed.is_some();
         if let Some(parameters) = gesture.changed {
             panel.set_drag_parameters(&parameters)?;
         }
+        if gesture.released {
+            panel.finish_copy_gesture();
+        }
         if controls_changed || modifier_changed {
             self.invalidate();
-        }
-        if gesture.moved && (controls_changed || modifier_changed) {
             self.preview(session, resources, Channel::Ui)?;
         }
-        if gesture.released && gesture.moved {
-            self.scale_confirm = self.stamp();
-            ui.ctx().request_repaint();
-        } else if gesture.released {
-            self.set_scale_copy_modifier(false);
+        if (gesture.moved || self.pending())
+            && !self.preview_visible(session, resources)
+            && let Some(ModelForm::Scale(panel)) = &self.form
+        {
+            let transform = panel
+                .parameters(session.document())?
+                .resolve(evaluated)
+                .and_then(model::ResolvedScale::affine)
+                .map_err(|error| error.to_string())?;
+            super::placement_interaction::paint_placement_guide(
+                ui,
+                scene,
+                input.camera,
+                input.rect,
+                panel.selected(),
+                |point| {
+                    std::array::from_fn(|axis| {
+                        super::super::gizmo::math::dot(transform.0[axis], point) + transform.1[axis]
+                    })
+                },
+            );
         }
         if gesture.started {
             ui.ctx().request_repaint();

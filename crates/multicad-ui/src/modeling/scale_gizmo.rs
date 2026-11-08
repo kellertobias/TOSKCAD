@@ -306,11 +306,17 @@ impl Interaction {
                 )
                 .on_hover_text(match handle {
                     Handle::Uniform => {
-                        "Uniform scale · drag right/up to grow; Option / Alt copies; Esc cancels"
+                        "Uniform scale · drag right or up to grow. Enter applies, Escape cancels."
                     }
-                    Handle::Axis(0) => "Scale X · positive ratios; Option / Alt copies",
-                    Handle::Axis(1) => "Scale Y · positive ratios; Option / Alt copies",
-                    Handle::Axis(_) => "Scale Z · positive ratios; Option / Alt copies",
+                    Handle::Axis(0) => {
+                        "Scale X · drag to stage, Enter to apply. Option / Alt copies."
+                    }
+                    Handle::Axis(1) => {
+                        "Scale Y · drag to stage, Enter to apply. Option / Alt copies."
+                    }
+                    Handle::Axis(_) => {
+                        "Scale Z · drag to stage, Enter to apply. Option / Alt copies."
+                    }
                 });
             }
         }

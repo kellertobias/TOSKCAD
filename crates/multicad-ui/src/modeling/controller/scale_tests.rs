@@ -124,11 +124,20 @@ impl Harness {
         result.unwrap()
     }
     fn finish(&self, c: &mut ModelToolController, s: &mut Session) -> ModelToolOutcome {
+        let revision = s.revision();
+        assert!(c.arm_confirmation(s, &Default::default()));
         let until = Instant::now() + Duration::from_secs(5);
         loop {
-            let r = self.frame(c, s, vec![]).unwrap();
-            if let Some(outcome) = r.outcome {
-                return outcome;
+            c.poll(s, &Default::default());
+            assert_eq!(s.revision(), revision);
+            if c.confirmation_ready(s, &Default::default()) {
+                let instances = c.candidate_instances();
+                let parts = c.apply(s, &Default::default()).unwrap();
+                return if instances.is_empty() {
+                    ModelToolOutcome::Applied(parts)
+                } else {
+                    ModelToolOutcome::Placed { parts, instances }
+                };
             }
             assert!(Instant::now() < until, "{:?}", c.error());
             std::thread::sleep(Duration::from_millis(1));
@@ -336,7 +345,7 @@ fn pending_receipt_cancel_stale_source_and_overlay_input_leave_source_unchanged(
     h.start_allowed = true;
     h.uniform(&mut c, &mut s, 2., true);
     assert!(c.pending());
-    assert!(h.frame(&mut c, &mut s, vec![]).unwrap().input_owned);
+    assert!(!h.frame(&mut c, &mut s, vec![]).unwrap().input_owned);
     assert_eq!(s.document(), &original);
     c.cancel();
     paused.store(false, Ordering::SeqCst);

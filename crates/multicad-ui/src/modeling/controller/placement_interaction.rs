@@ -22,20 +22,6 @@ impl ModelToolController {
         }
     }
 
-    pub fn set_placement_copy_modifier(&mut self, active: bool) -> bool {
-        if self.placement_interaction.active() || self.placement_confirm.is_some() {
-            return false;
-        }
-        let changed = match &mut self.form {
-            Some(ModelForm::Placement(panel)) => panel.set_copy_modifier(active),
-            _ => false,
-        };
-        if changed {
-            self.invalidate();
-        }
-        changed
-    }
-
     /// Retarget a new placement batch while retaining its numeric controls and
     /// copy choice. An empty set keeps those controls but cannot produce Apply.
     pub fn retarget_placement(
@@ -45,7 +31,7 @@ impl ModelToolController {
         scene: &Scene,
         selected: &BTreeSet<EntityId>,
     ) -> Result<(), String> {
-        if self.placement_interaction.active() || self.placement_confirm.is_some() {
+        if self.placement_interaction.active() {
             return Err(
                 "Finish or cancel the current placement gesture before changing targets".into(),
             );
@@ -66,8 +52,7 @@ impl ModelToolController {
     }
 
     /// Paint and operate the rigid-placement handles after the canonical scene
-    /// and before the host processes target acquisition. Each release waits for
-    /// its matching native receipt, then commits once through the ordinary API.
+    /// and before target acquisition. Releasing stages a preview for Apply.
     pub fn placement_viewport(
         &mut self,
         ui: &mut egui::Ui,
@@ -78,8 +63,8 @@ impl ModelToolController {
         let result = self.placement_viewport_inner(ui, session, resources, input);
         if let Err(error) = &result {
             self.placement_interaction = Default::default();
-            self.placement_confirm = None;
             self.candidate = None;
+            self.keyboard_confirm = None;
             if let Some(ModelForm::Placement(panel)) = &mut self.form {
                 panel.set_copy_modifier(false);
             }
@@ -99,36 +84,6 @@ impl ModelToolController {
             return Ok(PlacementViewportResult::default());
         }
         self.current(session, resources, true)?;
-        if let Some(expected) = self.placement_confirm {
-            if self.stamp() != Some(expected) {
-                self.placement_confirm = None;
-                return Err(
-                    "Placement controls changed; drag again or Preview the current controls".into(),
-                );
-            }
-            self.poll(session, resources);
-            if let Some(error) = &self.error {
-                return Err(error.clone());
-            }
-            if self.can_apply(session, resources) {
-                let instances = self.candidate_instances();
-                let parts = self.apply(session, resources)?;
-                return Ok(PlacementViewportResult {
-                    outcome: Some(if instances.is_empty() {
-                        ModelToolOutcome::Applied(parts)
-                    } else {
-                        ModelToolOutcome::Placed { parts, instances }
-                    }),
-                    input_owned: true,
-                });
-            }
-            ui.ctx()
-                .request_repaint_after(std::time::Duration::from_millis(16));
-            return Ok(PlacementViewportResult {
-                input_owned: true,
-                ..Default::default()
-            });
-        }
         let Some(scene) = input.scene else {
             if self.placement_interaction.active() {
                 return Err("The canonical source model is unavailable; the placement gesture was cancelled".into());
@@ -146,31 +101,41 @@ impl ModelToolController {
             return Ok(PlacementViewportResult::default());
         }
         let parameters = panel.parameters(session.document())?;
-        let evaluated =
-            multicad_core::parameters::evaluate(session.document()).map_err(|e| e.to_string())?;
+        let evaluated = session.parameters();
         let gesture = self
             .placement_interaction
-            .show(ui, &input, &parameters, &evaluated)?;
+            .show(ui, &input, &parameters, evaluated)?;
         let Some(ModelForm::Placement(panel)) = &mut self.form else {
             unreachable!()
         };
-        let modifier_changed =
-            gesture.input_owned && panel.set_copy_modifier(gesture.copy_modifier);
+        let modifier_changed = gesture.moved && panel.set_copy_modifier(gesture.copy_modifier);
         let controls_changed = gesture.changed.is_some();
         if let Some(parameters) = gesture.changed {
             panel.set_drag_parameters(&parameters)?;
         }
+        if gesture.released {
+            panel.finish_copy_gesture();
+        }
         if controls_changed || modifier_changed {
             self.invalidate();
-        }
-        if gesture.moved && (controls_changed || modifier_changed) {
             self.preview(session, resources, Channel::Ui)?;
         }
-        if gesture.released && gesture.moved {
-            self.placement_confirm = self.stamp();
-            ui.ctx().request_repaint();
-        } else if gesture.released {
-            self.set_placement_copy_modifier(false);
+        if (gesture.moved || self.pending())
+            && !self.preview_visible(session, resources)
+            && let Some(ModelForm::Placement(panel)) = &self.form
+        {
+            let pose = panel
+                .parameters(session.document())?
+                .resolve(evaluated)
+                .map_err(|error| error.to_string())?;
+            paint_placement_guide(
+                ui,
+                scene,
+                input.camera,
+                input.rect,
+                panel.selected(),
+                |point| pose.point(point),
+            );
         }
         if gesture.started {
             ui.ctx().request_repaint();
@@ -179,5 +144,67 @@ impl ModelToolController {
             input_owned: gesture.input_owned,
             ..Default::default()
         })
+    }
+}
+
+/// An immediate wire outline of the targeted geometry while the exact model
+/// builds. Display lines carry no candidate receipt and cannot enable Apply.
+pub(super) fn paint_placement_guide(
+    ui: &egui::Ui,
+    scene: &Scene,
+    camera: crate::camera::Camera,
+    rect: egui::Rect,
+    targets: &BTreeSet<EntityId>,
+    transform: impl Fn([f64; 3]) -> [f64; 3],
+) {
+    let painter = ui.painter_at(rect);
+    let stroke = egui::Stroke::new(1.5, egui::Color32::from_rgb(104, 200, 249));
+    let mut budget = 4096;
+    for instance in scene
+        .instances()
+        .iter()
+        .filter(|item| targets.contains(&item.id))
+    {
+        let Some(geometry) = scene.producer_geometry(instance.geometry) else {
+            continue;
+        };
+        let line = |a, b| {
+            if let Some(segment) = camera.segment(transform(a), transform(b), rect) {
+                painter.line_segment(segment, stroke);
+            }
+        };
+        let segments = geometry
+            .edges()
+            .iter()
+            .map(|edge| edge.points_mm.len().saturating_sub(1))
+            .sum::<usize>();
+        if segments > 0 && segments <= budget {
+            budget -= segments;
+            for edge in geometry.edges() {
+                for pair in edge.points_mm.windows(2) {
+                    line(
+                        instance.transform.point(pair[0]),
+                        instance.transform.point(pair[1]),
+                    );
+                }
+            }
+        } else if let Some([low, high]) = scene.instance_bounds(instance.id) {
+            let corner = |bits: usize| {
+                std::array::from_fn(|i| {
+                    if bits & (1 << i) == 0 {
+                        low[i]
+                    } else {
+                        high[i]
+                    }
+                })
+            };
+            for bits in 0..8 {
+                for axis in [1, 2, 4] {
+                    if bits & axis == 0 {
+                        line(corner(bits), corner(bits | axis));
+                    }
+                }
+            }
+        }
     }
 }

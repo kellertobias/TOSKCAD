@@ -152,7 +152,7 @@ pub fn groups(mode: Mode, tab: &RibbonTab) -> Vec<Group> {
                 Entry::Menu {
                     label: "Move / Copy",
                     icon: Icon::Transform,
-                    tools: vec!["move", "align"],
+                    tools: vec!["move", "duplicate", "align"],
                     unavailable: None,
                 },
                 Entry::Tool("scale"),
@@ -210,7 +210,7 @@ pub fn groups(mode: Mode, tab: &RibbonTab) -> Vec<Group> {
     sections
 }
 fn implemented(command: Command) -> bool {
-    !matches!(command,Command::Extension(id) if !matches!(id,"library"|"materials"|"drawing-pdf"|"appearance"|"render-view"|"import-step"|"import-kicad"|"import-update"))
+    !matches!(command,Command::Extension(id) if !matches!(id,"duplicate"|"library"|"materials"|"drawing-pdf"|"appearance"|"render-view"|"import-step"|"import-kicad"|"import-update"))
 }
 /// Session actions pinned at the right end of the ribbon while a sketch is
 /// open, on every Sketch tab and outside the horizontal scroll.
@@ -497,8 +497,9 @@ fn menu_button(
         }
         for id in tools {
             let tool = registry.tool(id).expect("menu catalog entry");
+            let available = enabled(tool.action);
             if ui
-                .add_enabled_ui(enabled(tool.action), |ui| {
+                .add_enabled_ui(available, |ui| {
                     icons::labeled_button_sized(
                         ui,
                         tool.icon,
@@ -511,6 +512,11 @@ fn menu_button(
                 })
                 .inner
                 .on_hover_text(with_description(id, hint(tool.action, tool.label)))
+                .on_disabled_hover_text(if *id == "duplicate" {
+                    "Select current Parts or Instances and finish any active tool before duplicating"
+                } else {
+                    "Unavailable in the current context"
+                })
                 .clicked()
             {
                 action = Some(tool.action);
@@ -926,7 +932,7 @@ mod tests {
             .iter()
             .find(|group| group.label == "Transform")
             .unwrap();
-        assert!(transform.entries.iter().any(|entry| matches!(entry, Entry::Menu { label: "Move / Copy", tools, .. } if tools == &["move", "align"])));
+        assert!(transform.entries.iter().any(|entry| matches!(entry, Entry::Menu { label: "Move / Copy", tools, .. } if tools == &["move", "duplicate", "align"])));
         assert!(
             !transform
                 .entries
@@ -967,6 +973,55 @@ mod tests {
             chosen,
             Some(Command::Modeling(crate::modeling::ModelingTool::Cylinder))
         );
+    }
+    #[test]
+    fn move_copy_options_dispatch_duplicate_only_for_compatible_selection() {
+        let registry = Registry::default();
+        let tab = &registry.workspace(Mode::Model).tabs[0];
+        let command = Command::Extension("duplicate");
+        for available in [false, true] {
+            let ctx = egui::Context::default();
+            ctx.enable_accesskit();
+            let mut chosen = None;
+            let mut draw = |ui: &mut egui::Ui| {
+                if let Some(action) = show(
+                    ui,
+                    &registry,
+                    Mode::Model,
+                    tab,
+                    false,
+                    |action| action != command || available,
+                    |_, label| label.into(),
+                ) {
+                    chosen = Some(action);
+                }
+            };
+            frame(&ctx, vec![], &mut draw).drop_without_applying_deltas();
+            let output = frame(&ctx, vec![], &mut draw);
+            let arrow = accessible_button(&output, "Move / Copy options");
+            output.drop_without_applying_deltas();
+            for pressed in [true, false] {
+                frame(&ctx, events(arrow, pressed), &mut draw).drop_without_applying_deltas();
+            }
+            frame(&ctx, vec![], &mut draw).drop_without_applying_deltas();
+            let output = frame(&ctx, vec![], &mut draw);
+            let (_, node) = output
+                .platform_output
+                .accesskit_update
+                .as_ref()
+                .unwrap()
+                .nodes
+                .iter()
+                .find(|(_, node)| node.label() == Some("Duplicate"))
+                .expect("Duplicate option");
+            assert_eq!(node.is_disabled(), !available);
+            let duplicate = text(&output, "Duplicate");
+            output.drop_without_applying_deltas();
+            for pressed in [true, false] {
+                frame(&ctx, events(duplicate, pressed), &mut draw).drop_without_applying_deltas();
+            }
+            assert_eq!(chosen, available.then_some(command));
+        }
     }
     #[test]
     fn model_split_buttons_run_each_default_directly_at_compact_width() {
