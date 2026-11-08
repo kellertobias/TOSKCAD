@@ -158,15 +158,20 @@ fn tool_first_scale_footer_is_painted_and_clickable_after_target_selection() {
         }
         if width == 1024. {
             let open_width = app.current().sketch.viewport_rect.unwrap().width();
-            click(&ctx, &mut app, size, "Model tree");
+            click(&ctx, &mut app, size, "Settings");
+            click(&ctx, &mut app, size, "Model Tree");
+            click(&ctx, &mut app, size, "Settings");
             click(&ctx, &mut app, size, "Inspector");
             frame(&ctx, &mut app, size, vec![]).drop_without_applying_deltas();
             assert!(app.current().sketch.viewport_rect.unwrap().width() > open_width + 300.);
             assert!(app.current().sketch.model_interaction_active());
             assert_eq!(app.current().session.document(), &original);
 
-            click(&ctx, &mut app, egui::vec2(1360., 860.), "Inspector");
-            click(&ctx, &mut app, size, "Model tree");
+            let roomy = egui::vec2(1360., 860.);
+            click(&ctx, &mut app, roomy, "Settings");
+            click(&ctx, &mut app, roomy, "Inspector");
+            click(&ctx, &mut app, size, "Settings");
+            click(&ctx, &mut app, size, "Model Tree");
             let out = frame(&ctx, &mut app, size, vec![]);
             assert!(
                 out.platform_output

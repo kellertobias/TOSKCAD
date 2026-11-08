@@ -510,11 +510,23 @@ mod tests {
         let ctx = egui::Context::default();
         ctx.enable_accesskit();
         app.mode = Mode::Model;
-        // The header Settings button opens the window.
+        // Preferences and workspace controls share the Settings menu.
         frame(&mut app, &ctx, vec![]);
         let nodes = frame(&mut app, &ctx, vec![]);
-        let (gear, _) = find(&nodes, "Settings · measurement units and workbenches");
+        let (gear, _) = find(&nodes, "Settings");
         click(&mut app, &ctx, gear);
+        frame(&mut app, &ctx, vec![]);
+        let menu = frame(&mut app, &ctx, vec![]);
+        for label in [
+            "Keyboard Shortcuts",
+            "MCP History",
+            "Model Tree",
+            "Inspector",
+        ] {
+            find(&menu, label);
+        }
+        let (preferences, _) = find(&menu, "Preferences…");
+        click(&mut app, &ctx, preferences);
         assert!(app.settings_open);
         frame(&mut app, &ctx, vec![]);
         let nodes = frame(&mut app, &ctx, vec![]);

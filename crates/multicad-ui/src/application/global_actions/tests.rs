@@ -117,7 +117,7 @@ fn project_omits_the_modeling_actions_shown_in_other_modes() {
             .unwrap()
             .outer_rect;
         let mut previous = row.left();
-        for label in ["Add Sketch", "Import", "Library", "Measure", "MCP history"] {
+        for label in ["Add Sketch", "Library", "Measure"] {
             let rect = button(&out, label);
             assert!(
                 row.contains_rect(rect),
@@ -152,10 +152,14 @@ fn import_format_selection_and_os_picker_cancellation_preserve_mode_document_and
         app.set_file_picker(Box::new(Picker(requests.clone())));
         let source = app.current().session.document().clone();
         let ctx = context();
-        app.invoke(Command::Import, &[], Channel::Ui).unwrap();
         for _ in 0..3 {
             frame(&ctx, &mut app, vec![]).drop_without_applying_deltas();
         }
+        click(&ctx, &mut app, "File");
+        frame(&ctx, &mut app, vec![]).drop_without_applying_deltas();
+        click(&ctx, &mut app, "Import…");
+        assert!(app.import_open);
+        frame(&ctx, &mut app, vec![]).drop_without_applying_deltas();
         click(&ctx, &mut app, label);
         assert!(!app.import_open);
         assert_eq!(

@@ -2896,9 +2896,9 @@ impl SketchEditor {
         self.review_scene.is_some()
     }
     pub(crate) fn panel_controls(&mut self, ui: &mut egui::Ui) {
-        ui.toggle_value(&mut self.show_source_tree, "Model tree")
+        ui.checkbox(&mut self.show_source_tree, "Model Tree")
             .on_hover_text("Show or hide the model tree and Architecture levels");
-        ui.toggle_value(&mut self.show_inspector, "Inspector")
+        ui.checkbox(&mut self.show_inspector, "Inspector")
             .on_hover_text(
                 "Show or hide the Inspector while keeping the current tool and selection",
             );

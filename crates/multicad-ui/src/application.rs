@@ -1749,6 +1749,7 @@ impl Application {
     fn header(&mut self, ui: &mut egui::Ui) {
         let mut action = None;
         let mut switch = None;
+        let mut recent = None;
         let title = self.current().title();
         ui.allocate_ui_with_layout(
             egui::vec2(ui.available_width(), 36.0),
@@ -1763,28 +1764,46 @@ impl Application {
                 }
                 ui.add_space(12.0);
                 ui.menu_button("File", |ui| {
-                    for (label, command) in [
-                        ("Keyboard shortcuts (F1)", Command::KeyboardShortcuts),
-                        ("New document", Command::New),
-                        ("New window", Command::NewWindow),
-                        ("Open project…", Command::Open),
-                        ("Save project", Command::Save),
-                        ("Save project as…", Command::SaveAs),
-                        ("Import source snapshot…", Command::ImportSource),
-                        ("Create recovery snapshot", Command::RecoverySnapshot),
-                        ("Recover projects…", Command::RecoverProjects),
-                        ("Examples…", Command::Examples),
-                    ] {
-                        if ui.add_enabled(self.enabled(command), egui::Button::new(label)).clicked() {
-                            action = Some(command);
+                    let groups: &[&[(&str, Command)]] = &[
+                        &[("New Document", Command::New), ("New Window", Command::NewWindow)],
+                        &[("Open Project…", Command::Open), ("Examples…", Command::Examples), ("Recover Projects…", Command::RecoverProjects)],
+                        &[("Save Project", Command::Save), ("Save Project As…", Command::SaveAs)],
+                        &[("Import…", Command::Import), ("Create recovery snapshot", Command::RecoverySnapshot)],
+                    ];
+                    for (index, group) in groups.iter().enumerate() {
+                        if index > 0 {
+                            ui.separator();
+                        }
+                        for &(label, command) in *group {
+                            if ui.add_enabled(self.enabled(command), egui::Button::new(label)).clicked() {
+                                action = Some(command);
+                                ui.close();
+                            }
+                            if command == Command::Open {
+                                ui.menu_button("Recent Projects", |ui| {
+                                    if self.recents.is_empty() {
+                                        ui.label("No recent projects");
+                                    }
+                                    egui::ScrollArea::vertical().max_height(250.).show(ui, |ui| {
+                                        for item in &self.recents {
+                                            if ui.add_enabled(self.enabled(Command::Open), egui::Button::new(&item.title))
+                                                .on_hover_text(item.path.display().to_string()).clicked()
+                                            {
+                                                recent = Some(item.path.clone());
+                                                egui::Popup::close_all(ui.ctx());
+                                            }
+                                        }
+                                    });
+                                });
+                            }
+                        }
+                        if index == 1 && ui.button("Cabinet parameter example").clicked() {
+                            if let Err(error) = self.example() {
+                                self.message = error;
+                                self.message_error = true;
+                            }
                             ui.close();
                         }
-                    }
-                    if ui.button("Cabinet parameter example").clicked() {
-                        if let Err(e) = self.example() {
-                            self.message = e;
-                        }
-                        ui.close();
                     }
                 });
                 let short: String = title.chars().take(20).collect();
@@ -1978,22 +1997,30 @@ impl Application {
                                 .send_viewport_cmd(egui::ViewportCommand::Minimized(true));
                         }
                     }
-                    if icons::compact_button(ui,Icon::Settings,"Settings · measurement units and workbenches").clicked() {
-                        action=Some(Command::Extension("settings"));
-                    }
+                    let settings = icons::compact_button(ui, Icon::Settings, "Settings");
+                    egui::Popup::menu(&settings).show(|ui| {
+                        if ui.button("Preferences…").clicked() {
+                            action = Some(Command::Extension("settings"));
+                            ui.close();
+                        }
+                        if ui.button("Keyboard Shortcuts").clicked() {
+                            action = Some(Command::KeyboardShortcuts);
+                            ui.close();
+                        }
+                        let pending = self.current().control.pending().len();
+                        let history = if pending == 0 { "MCP History".into() } else { format!("MCP History ({pending})") };
+                        if ui.button(history).clicked() {
+                            self.history_open = true;
+                            ui.close();
+                        }
+                        ui.separator();
+                        self.current_mut().sketch.panel_controls(ui);
+                    });
                     let user=icons::compact_button(ui,Icon::User,"Local user · session and controls");
                     egui::Popup::menu(&user).show(|ui| {
                         ui.strong("Local session");
                         ui.label("Actor: local-user");
                         ui.small("Document transactions record their actor and control channel.");
-                        if ui.button("Keyboard shortcuts").clicked() {
-                            action=Some(Command::KeyboardShortcuts);
-                            ui.close();
-                        }
-                        if ui.button("Command and MCP history").clicked() {
-                            self.history_open=true;
-                            ui.close();
-                        }
                     });
                     for mode in Mode::ALL.into_iter().rev() {
                         let color = mode.color().gamma_multiply(1.6);
@@ -2018,6 +2045,12 @@ impl Application {
         );
         if let Some(index) = switch {
             self.activate_project(index);
+        }
+        if let Some(path) = recent
+            && let Err(error) = self.load_path(path)
+        {
+            self.message = error;
+            self.message_error = true;
         }
         if let Some(action) = action {
             self.execute(action, &[], Channel::Ui);
