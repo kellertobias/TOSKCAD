@@ -135,6 +135,7 @@ enum FileAction {
     SymbolSave(EntityId),
     Artwork,
     PreviewImage,
+    SurfaceHeightMap(crate::modeling::FormStamp),
     Mechanical(crate::mechanical_import::SourceKind, Option<EntityId>),
     PrintPackage,
     ScheduleCsv,

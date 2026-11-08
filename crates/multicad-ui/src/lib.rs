@@ -34,6 +34,7 @@ pub mod ribbon_ui;
 pub mod schedules;
 mod selection_input;
 pub mod storage;
+mod surface_height_map;
 pub mod svg_icon;
 pub mod symbols;
 pub mod transfer;

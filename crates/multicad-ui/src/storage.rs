@@ -137,6 +137,7 @@ pub enum FileRequest {
     },
     Open(PathBuf),
     Import(PathBuf),
+    ReadHeightMap(PathBuf),
     Snapshot {
         project: ProjectFile,
         revision: u64,
@@ -147,6 +148,7 @@ pub enum FileRequest {
     Restore(EntityId),
 }
 pub enum FileResult {
+    HeightMap(Result<multicad_core::model::SurfaceStructurePattern, String>),
     Saved(Result<SavedProject, StorageError>),
     Loaded(Result<Box<LoadedProject>, StorageError>),
     Snapshot(Result<RecoveryEntry, StorageError>),
@@ -177,6 +179,9 @@ impl FileWorker {
                         } => FileResult::Saved(storage.save_project(&path, &project, mode)),
                         FileRequest::Open(path) => {
                             FileResult::Loaded(storage.open_project(&path).map(Box::new))
+                        }
+                        FileRequest::ReadHeightMap(path) => {
+                            FileResult::HeightMap(crate::surface_height_map::read(&path))
                         }
                         FileRequest::Import(path) => {
                             FileResult::Loaded(storage.import_source(&path).map(Box::new))

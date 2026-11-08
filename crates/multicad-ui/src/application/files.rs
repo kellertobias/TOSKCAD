@@ -8,6 +8,11 @@ use multicad_core::project_file::RecoveryInfo;
 mod symbol_tests;
 
 pub(super) enum PendingFile {
+    SurfaceHeightMap {
+        local: EntityId,
+        session: multicad_core::commands::SessionStamp,
+        form: crate::modeling::FormStamp,
+    },
     Save {
         local: EntityId,
         path: PathBuf,
@@ -208,6 +213,7 @@ impl Application {
                 self.begin_mechanical_import(kind, target, path)
             }
             FileAction::PreviewImage => self.read_preview_image(path),
+            FileAction::SurfaceHeightMap(stamp) => self.read_surface_height_map(path, stamp),
             FileAction::PrintPackage => self.submit_print_package(path),
             FileAction::ScheduleCsv => self.write_schedule_csv(path),
             FileAction::ExportFolder => self.use_export_folder(path),
@@ -245,6 +251,32 @@ impl Application {
     }
     fn accept_file_reply(&mut self, pending: PendingFile, reply: FileResult) -> Result<(), String> {
         match (pending, reply) {
+            (
+                PendingFile::SurfaceHeightMap {
+                    local,
+                    session,
+                    form,
+                },
+                FileResult::HeightMap(result),
+            ) => {
+                self.file_action = None;
+                self.file_document = None;
+                let project = self.current_mut();
+                if project.local_id != local || project.session.validate_stamp(&session).is_err() {
+                    return Err(
+                        "The project changed while the height map was read. Import it again."
+                            .into(),
+                    );
+                }
+                project.sketch.accept_surface_height_map(
+                    &project.session,
+                    &project.resources,
+                    form,
+                    result?,
+                )?;
+                self.message = "Height map staged · Preview before Apply".into();
+                self.message_error = false;
+            }
             (
                 PendingFile::ConnectionHardware {
                     local,
@@ -565,7 +597,52 @@ impl Application {
             ctx.request_repaint_after(std::time::Duration::from_millis(16));
         }
     }
+    fn request_surface_height_map_dialog(&mut self) {
+        let Some(stamp) = self.current_mut().sketch.take_surface_height_map_request() else {
+            return;
+        };
+        if self.file_busy() || self.file_action.is_some() {
+            self.message =
+                "Complete the current file operation before importing a height map".into();
+            self.message_error = true;
+            return;
+        }
+        self.file_action = Some(FileAction::SurfaceHeightMap(stamp));
+        self.file_document = Some(self.current().local_id);
+        self.file_path.clear();
+        self.picker_started = false;
+        self.message = "Choose an 8-bit grayscale PNG with up to 12 pixels on each axis".into();
+        self.message_error = false;
+    }
+
+    pub(super) fn read_surface_height_map(
+        &mut self,
+        path: PathBuf,
+        form: crate::modeling::FormStamp,
+    ) -> Result<(), String> {
+        let project = self.current();
+        if self.file_document != Some(project.local_id)
+            || !project.sketch.surface_structure_form_matches(form)
+        {
+            return Err(
+                "The Surface Structure form changed while the dialog was open. Import it again."
+                    .into(),
+            );
+        }
+        let pending = PendingFile::SurfaceHeightMap {
+            local: project.local_id,
+            session: project.session.stamp(),
+            form,
+        };
+        let job = self.storage.submit(FileRequest::ReadHeightMap(path))?;
+        self.pending_files.insert(job, pending);
+        self.message = "Reading grayscale PNG…".into();
+        self.message_error = false;
+        Ok(())
+    }
+
     pub(super) fn file_windows(&mut self, ctx: &egui::Context) {
+        self.request_surface_height_map_dialog();
         self.native_picker_window(ctx);
         self.examples_window(ctx);
         if let Some(replacement) = &self.replacement {

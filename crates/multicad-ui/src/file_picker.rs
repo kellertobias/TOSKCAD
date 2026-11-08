@@ -10,6 +10,7 @@ pub enum Kind {
     ImportStep,
     ImportKicad,
     PreviewImage,
+    ImportHeightMap,
     /// Save a 3MF print package from Export → Print.
     SavePrintPackage,
     /// A schedule CSV destination.

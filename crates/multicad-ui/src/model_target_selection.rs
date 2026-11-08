@@ -320,6 +320,9 @@ impl SketchEditor {
                 "Hardware · configure a washer, nut or mounting envelope, then Preview".into();
             return Ok(());
         }
+        if tool == ModelingTool::SurfaceStructure {
+            return self.begin_surface_structure(session, resources, feed, channel);
+        }
         if tool == ModelingTool::ProfileConnection {
             let selected = self
                 .tree_selection

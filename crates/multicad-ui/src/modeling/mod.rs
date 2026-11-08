@@ -50,6 +50,7 @@ mod scaling;
 mod screw_connection;
 mod sheet;
 mod split;
+mod surface_structure;
 mod termination;
 mod thread;
 pub(crate) mod value_entry;
@@ -94,6 +95,7 @@ pub enum ModelingTool {
     MechanicalPart,
     ScrewConnection,
     ProfileConnection,
+    SurfaceStructure,
     Revolve,
     Boolean,
     Split,
@@ -137,7 +139,7 @@ impl ModelingTool {
             _ => None,
         }
     }
-    pub const ALL: [Self; 46] = [
+    pub const ALL: [Self; 47] = [
         Self::Box,
         Self::Cylinder,
         Self::Thread,
@@ -145,6 +147,7 @@ impl ModelingTool {
         Self::MechanicalPart,
         Self::ScrewConnection,
         Self::ProfileConnection,
+        Self::SurfaceStructure,
         Self::Wall,
         Self::Fence,
         Self::Door,
@@ -199,6 +202,7 @@ impl ModelingTool {
             Self::Thread => "thread",
             Self::ScrewConnection => "screw-connection",
             Self::ProfileConnection => "profile-connection",
+            Self::SurfaceStructure => "surface-structure",
             Self::Gear => "gear",
             Self::MechanicalPart => "mechanical-part",
             Self::Revolve => "revolve",
@@ -251,6 +255,7 @@ impl ModelingTool {
             Self::Thread => "Thread",
             Self::ScrewConnection => "Attach screw connection",
             Self::ProfileConnection => "Connect profiles",
+            Self::SurfaceStructure => "Surface Structure",
             Self::Gear => "Gear",
             Self::MechanicalPart => "Hardware",
             Self::Revolve => "Revolve",
@@ -303,6 +308,7 @@ impl ModelingTool {
             Self::Thread => crate::icons::Icon::Revolve,
             Self::ScrewConnection => crate::icons::Icon::Revolve,
             Self::ProfileConnection => crate::icons::Icon::Revolve,
+            Self::SurfaceStructure => crate::icons::Icon::Thickness,
             Self::Gear => crate::icons::Icon::Revolve,
             Self::MechanicalPart => crate::icons::Icon::Revolve,
             Self::Revolve => crate::icons::Icon::Revolve,
@@ -349,6 +355,7 @@ impl ModelingTool {
             Self::Cylinder => &["cyl", "add-cylinder"],
             Self::Thread => &["screw-thread", "tap-thread", "helical-thread"],
             Self::ScrewConnection => &["attach-screw", "fastener-connection"],
+            Self::SurfaceStructure => &["surface-relief", "height-map"],
             Self::ProfileConnection => &[
                 "profile-connector",
                 "connect-profiles",
@@ -408,6 +415,9 @@ impl ModelingTool {
     }
     pub fn usage(self) -> &'static str {
         match self {
+            Self::SurfaceStructure => {
+                "Usage: surface-structure (pick planar faces, choose a pattern or import a grayscale PNG, then Preview and Apply)"
+            }
             Self::ScrewConnection => {
                 "Usage: screw-connection (choose mode, hardware stack and real receiving faces; Preview and Apply once)"
             }
@@ -524,6 +534,9 @@ impl ModelingTool {
     }
     pub fn requirements(self) -> &'static str {
         match self {
+            Self::SurfaceStructure => {
+                "Requires up to four named planar faces of one current Part and native modeling."
+            }
             Self::ScrewConnection => {
                 "Requires current native receiving geometry and complete source-specific hardware/installation inputs; no guessed usable thread or wood point."
             }

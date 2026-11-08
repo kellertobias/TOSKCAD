@@ -61,6 +61,7 @@ impl Application {
                     Kind::ImportKicad
                 }
                 FileAction::PreviewImage => Kind::PreviewImage,
+                FileAction::SurfaceHeightMap(_) => Kind::ImportHeightMap,
                 FileAction::PrintPackage => Kind::SavePrintPackage,
                 FileAction::ScheduleCsv => Kind::SaveCsv,
                 FileAction::ExportFolder => Kind::ChooseFolder,
@@ -150,6 +151,9 @@ impl Application {
                         self.begin_mechanical_import(kind, target, path)
                     }
                     FileAction::PreviewImage => self.read_preview_image(path),
+                    FileAction::SurfaceHeightMap(stamp) => {
+                        self.read_surface_height_map(path, stamp)
+                    }
                     FileAction::PrintPackage => self.submit_print_package(path),
                     FileAction::ScheduleCsv => self.write_schedule_csv(path),
                     FileAction::ExportFolder => self.use_export_folder(path),
@@ -196,6 +200,7 @@ impl Application {
         let title = match self.file_action {
             Some(FileAction::PrintPackage) => "Print package file",
             Some(FileAction::ExportFolder) => "Export output folder",
+            Some(FileAction::SurfaceHeightMap(_)) => "Import height map",
             _ => "Project file",
         };
         if self.picker_scope.is_some() {

@@ -54,6 +54,8 @@ mod snap_host;
 #[cfg(test)]
 #[path = "sketch_snap_host_tests.rs"]
 mod snap_host_tests;
+#[path = "sketch_surface_structure_host.rs"]
+mod surface_structure_host;
 #[path = "sketch_symbol_host.rs"]
 mod symbol_host;
 #[path = "sketch_text_tool.rs"]
@@ -3498,6 +3500,7 @@ impl SketchEditor {
             && !self.model.alignment_picking()
             && !self.model.edge_treatment_picking()
             && !self.model.advanced_picking()
+            && !self.model.surface_structure_picking()
             && self.model.screw_connection_picker().is_none()
             && self.model.profile_connection_picker().is_none()
             && !assembly_view
@@ -3536,6 +3539,18 @@ impl SketchEditor {
                 Ok(source) => {
                     scene = Some(source);
                     current = false;
+                }
+                Err(error) => self.message = error,
+            }
+        }
+        if !self.measurement.active() && self.model.surface_structure_picking() {
+            match self.surface_structure_pick_scene(session, resources, feed) {
+                Ok(Some(source)) => {
+                    scene = Some(source);
+                    current = false;
+                }
+                Ok(None) => {
+                    self.message = "Inspecting the retained upstream Part…".into();
                 }
                 Err(error) => self.message = error,
             }
@@ -4117,6 +4132,14 @@ impl SketchEditor {
                 context.resources,
                 scene.as_deref(),
                 rect,
+            );
+            self.surface_structure_viewport(
+                ui,
+                &response,
+                session,
+                context.resources,
+                context.feed,
+                scene.as_deref(),
             );
             self.advanced_viewport(
                 ui,

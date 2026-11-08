@@ -23,6 +23,7 @@ use super::{
     screw_connection::{ScrewConnectionCommand, ScrewConnectionPanel},
     sheet::{SheetCommand, SheetPanel},
     split::{SplitEvent, SplitPanel},
+    surface_structure::SurfaceStructurePanel,
     thread::ThreadPanel,
     wall::{WallCommand, WallPanel},
     weld_connection::ConnectionPanel,
@@ -50,6 +51,7 @@ pub enum ModelRequest {
     GearPair(Box<GearPairCommand>),
     ScrewConnection(Box<ScrewConnectionCommand>),
     ProfileConnection(Box<model::ProfileConnectionRequest>),
+    SurfaceStructure(Box<model::SurfaceStructureRequest>),
     Revolve(Box<RevolveRequest>),
     Booleans(Vec<BooleanRequest>),
     ExtrudeBoolean(Box<model::ExtrudeBooleanRequest>),
@@ -96,6 +98,12 @@ impl ModelRequest {
             }
             Self::Fence(_) => {
                 return Err("Reopen the complete fence run to edit generated members".into());
+            }
+            Self::SurfaceStructure(request) => {
+                if request.feature != feature {
+                    return Err("Surface structure edit changed its producer identity".into());
+                }
+                model::prepare_surface_structure(session, session.revision(), actor, request)
             }
             Self::ProfileConnection(_) => {
                 return Err(
@@ -346,6 +354,9 @@ impl ModelRequest {
             Self::Gear(request) => model::prepare_gear(session, session.revision(), actor, request),
             Self::GearPair(command) => return command.prepare(session, actor),
             Self::ScrewConnection(command) => return command.prepare(session, actor),
+            Self::SurfaceStructure(request) => {
+                model::prepare_surface_structure(session, session.revision(), actor, request)
+            }
             Self::ProfileConnection(request) => {
                 model::prepare_profile_connection(session, session.revision(), actor, request)
             }
@@ -459,6 +470,7 @@ pub(super) enum ModelForm {
     Gear(Box<GearPanel>),
     ScrewConnection(Box<ScrewConnectionPanel>),
     ProfileConnection(Box<ProfileConnectionPanel>),
+    SurfaceStructure(Box<SurfaceStructurePanel>),
     MechanicalPart(Box<MechanicalPartPanel>),
     Revolve(Box<RevolvePanel>),
     Boolean(Box<BooleanPanel>),
@@ -494,6 +506,7 @@ impl ModelForm {
             Self::Gear(panel) => panel.stamp(),
             Self::ScrewConnection(panel) => panel.stamp(),
             Self::ProfileConnection(panel) => panel.stamp(),
+            Self::SurfaceStructure(panel) => panel.stamp(),
             Self::MechanicalPart(panel) => panel.stamp(),
             Self::Revolve(panel) => panel.stamp(),
             Self::Boolean(panel) => panel.stamp(),
@@ -529,6 +542,7 @@ impl ModelForm {
             Self::Gear(panel) => panel.label(),
             Self::ScrewConnection(panel) => panel.label(),
             Self::ProfileConnection(panel) => panel.label(),
+            Self::SurfaceStructure(_) => "Surface Structure",
             Self::MechanicalPart(panel) => panel.label(),
             Self::Revolve(_) => "Revolve",
             Self::Boolean(_) => "Boolean",
@@ -631,6 +645,9 @@ impl ModelForm {
             Self::ScrewConnection(panel) => panel
                 .request(document, capabilities.new_body)
                 .map(|command| ModelRequest::ScrewConnection(Box::new(command))),
+            Self::SurfaceStructure(panel) => panel
+                .request(document, capabilities.new_body)
+                .map(|request| ModelRequest::SurfaceStructure(Box::new(request))),
             Self::ProfileConnection(panel) => panel
                 .request(document, capabilities.new_body)
                 .map(|request| ModelRequest::ProfileConnection(Box::new(request))),
@@ -675,6 +692,9 @@ impl ModelForm {
             Self::MechanicalPart(panel) => panel.show(ui, document, capabilities.new_body, preview),
             Self::Gear(panel) => panel.show(ui, document, capabilities.new_body, preview),
             Self::ScrewConnection(panel) => {
+                panel.show(ui, document, capabilities.new_body, preview)
+            }
+            Self::SurfaceStructure(panel) => {
                 panel.show(ui, document, capabilities.new_body, preview)
             }
             Self::ProfileConnection(panel) => {

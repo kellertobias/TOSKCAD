@@ -117,6 +117,7 @@ pub struct ModelToolController {
     candidate: Option<Candidate>,
     preparation: preparation::Lane,
     discovery: Option<Discovery>,
+    surface_inspection: Option<surface_structure::SurfaceInspection>,
     operations: Option<OperationControls>,
     identities: BooleanIdentities,
     handoff: Option<Handoff>,
@@ -240,6 +241,7 @@ impl ModelToolController {
             || super::EdgeTreatmentCommand::editable(document, feature)
             || super::ScaleCommand::editable(document, feature)
             || super::PlacementCommand::editable(document, feature)
+            || multicad_core::model::read_surface_structure(document, feature).is_ok()
             || multicad_core::model::read_alignment(document, feature).is_ok()
             || multicad_core::model::read_instance_alignment(document, feature).is_ok()
             || multicad_core::model::read_thread(document, feature).is_ok()
@@ -287,6 +289,17 @@ impl ModelToolController {
             return Err(
                 "Choose a supported, unsuppressed applied feature or owned placement driver".into(),
             );
+        }
+        if let Ok(request) = model::read_surface_structure(document, feature) {
+            let panel = super::surface_structure::SurfaceStructurePanel::existing(request)?;
+            self.begin_form(
+                session,
+                resources,
+                channel,
+                ModelForm::SurfaceStructure(Box::new(panel)),
+            )?;
+            self.scope.as_mut().expect("opened scope").execution = Execution::Edit { feature };
+            return Ok(());
         }
         if let Some(source) = model::wood_box_owner(document, feature) {
             let panel = super::wood_box::WoodBoxPanel::existing(document, source)?;
@@ -602,6 +615,10 @@ impl ModelToolController {
     }
     pub fn pending(&self) -> bool {
         self.preparation.pending()
+            || self
+                .surface_inspection
+                .as_ref()
+                .is_some_and(surface_structure::SurfaceInspection::pending)
             || self.discovery.is_some()
             || self
                 .candidate
@@ -1409,6 +1426,7 @@ impl ModelToolController {
         if let Some(panel) = self.form.as_mut().and_then(ModelForm::extrusion_mut) {
             panel.set_picking_available(false);
         }
+        self.surface_inspection = None;
         self.scope = Some(Scope {
             session: scope,
             source,
@@ -1629,6 +1647,7 @@ impl ModelToolController {
         self.operation = Default::default();
         self.form = None;
         self.scope = None;
+        self.surface_inspection = None;
         self.candidate = None;
         self.discovery = None;
         self.operations = None;
@@ -1668,6 +1687,13 @@ impl ModelToolController {
             backend.cancel();
         }
         self.preparation.cancel();
+        if self
+            .surface_inspection
+            .as_ref()
+            .is_some_and(surface_structure::SurfaceInspection::pending)
+        {
+            self.surface_inspection = None;
+        }
         self.placement_confirm = None;
         self.scale_confirm = None;
         self.candidate = None;
@@ -1685,6 +1711,7 @@ impl ModelToolController {
     ) -> Result<(), String> {
         self.stop_edge_treatment_picking();
         self.stop_advanced_picking();
+        self.stop_surface_structure_picking();
         self.invalidate();
         let result: Result<(), String> = (|| {
             self.current(session, resources, true)?;
@@ -1711,6 +1738,7 @@ impl ModelToolController {
     ) -> Result<(), String> {
         self.stop_edge_treatment_picking();
         self.stop_advanced_picking();
+        self.stop_surface_structure_picking();
         if matches!(
             self.scope.as_ref().map(|scope| scope.execution),
             Some(Execution::Create)
@@ -1776,7 +1804,9 @@ impl ModelToolController {
                             .collect();
                         SceneProof::edited(prepared.outputs.clone(), &[], removed)
                     }
-                    ModelRequest::CompoundCutout(_) | ModelRequest::ProfileConnection(_) => {
+                    ModelRequest::CompoundCutout(_)
+                    | ModelRequest::ProfileConnection(_)
+                    | ModelRequest::SurfaceStructure(_) => {
                         SceneProof::edited(prepared.outputs.clone(), &[], vec![])
                     }
                     ModelRequest::ScrewConnection(command) => SceneProof::ScrewConnection {
@@ -1901,6 +1931,7 @@ impl ModelToolController {
                     | ModelRequest::Scale(_)
                     | ModelRequest::EdgeTreatment(_)
                     | ModelRequest::Advanced(_)
+                    | ModelRequest::SurfaceStructure(_)
                     | ModelRequest::Alignment(_)
                     | ModelRequest::GearPair(_)
                     | ModelRequest::ScrewConnection(_)
@@ -1964,6 +1995,14 @@ impl ModelToolController {
             let Some(reply) = self.backend.as_mut().and_then(|backend| backend.poll()) else {
                 break;
             };
+            if self
+                .surface_inspection
+                .as_ref()
+                .is_some_and(|inspection| inspection.expects(reply.stamp))
+            {
+                self.accept_surface_inspection(session, resources, reply);
+                continue;
+            }
             if self
                 .discovery
                 .as_ref()
@@ -2448,6 +2487,7 @@ mod scale_interaction;
 mod screw_connection;
 #[cfg(test)]
 mod screw_connection_tests;
+mod surface_structure;
 pub use placement_interaction::PlacementViewportResult;
 #[cfg(test)]
 mod architecture_tests;

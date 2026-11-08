@@ -620,6 +620,7 @@ impl Default for Registry {
                                         | ModelingTool::FdmAid
                                         | ModelingTool::FdmBridge
                                         | ModelingTool::FdmSupport
+                                        | ModelingTool::SurfaceStructure
                                         | ModelingTool::Member
                                         | ModelingTool::Connection
                                         | ModelingTool::Weld
@@ -644,7 +645,10 @@ impl Default for Registry {
                     },
                     tab("Sheet metal", &["sheet", "fastener", "flat", "bend-list"]),
                     tab("Weld", &["tube", "cope", "weld-joint", "weld-list"]),
-                    tab("Other", &["fdm-aid", "fdm-bridge", "fdm-support"]),
+                    tab(
+                        "Other",
+                        &["fdm-aid", "fdm-bridge", "fdm-support", "surface-structure"],
+                    ),
                     tab("Relationships", &["align"]),
                     tab(
                         "Mechanical",
@@ -1274,6 +1278,7 @@ mod tests {
                         | ModelingTool::FdmAid
                         | ModelingTool::FdmBridge
                         | ModelingTool::FdmSupport
+                        | ModelingTool::SurfaceStructure
                         | ModelingTool::Member
                         | ModelingTool::Connection
                         | ModelingTool::Weld

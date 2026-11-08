@@ -30,6 +30,9 @@ impl ModelToolController {
         if let Some(ModelForm::Advanced(panel)) = &mut self.form {
             panel.set_picking_available(self.context_valid);
         }
+        if let Some(ModelForm::SurfaceStructure(panel)) = &mut self.form {
+            panel.set_picking_available(self.context_valid || panel.input().is_some());
+        }
         if let Some(ModelForm::EdgeTreatment(panel)) = &mut self.form {
             panel.set_picking_available(self.context_valid);
         }
@@ -44,6 +47,12 @@ impl ModelToolController {
         }
         if let Some(ModelForm::Advanced(panel)) = &mut self.form {
             panel.set_picking_available(false);
+        }
+        if let Some(ModelForm::SurfaceStructure(panel)) = &mut self.form {
+            panel.set_picking_available(panel.input().is_some());
+            self.context_notice = Some(format!(
+                "{reason}. Use Pick or repair faces to inspect the retained upstream Part."
+            ));
         }
         if let Some(ModelForm::EdgeTreatment(panel)) = &mut self.form {
             panel.set_picking_available(false);
