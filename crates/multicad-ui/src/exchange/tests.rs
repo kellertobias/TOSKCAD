@@ -500,3 +500,73 @@ fn new_sets_use_readable_names_and_the_naming_section_explains_suffixes() {
     assert!(help.starts_with("Readable names") && help.contains("6-character suffix"));
     assert!(form::naming_help("{part}_{id}").starts_with("Custom template"));
 }
+
+#[test]
+fn compact_common_export_keeps_draft_actions_above_long_recipe_fields() {
+    let (mut s, mut w, _, _) = fixture();
+    let before = s.document().clone();
+    w.draft.as_mut().unwrap().name = "Edited without saving".into();
+    let recipe = w.draft.as_ref().unwrap().source.recipes[0].clone();
+    w.draft.as_mut().unwrap().source.recipes = (0..12)
+        .map(|_| {
+            let mut copy = recipe.clone();
+            copy.id = EntityId::new();
+            copy
+        })
+        .collect();
+    let ctx = egui::Context::default();
+    crate::theme::configure(&ctx);
+    let mut frame = |events| {
+        ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1024., 600.),
+                )),
+                events,
+                ..Default::default()
+            },
+            |ui| {
+                egui::Panel::top("header").exact_size(170.).show(ui, |_| {});
+                egui::Panel::bottom("status")
+                    .exact_size(28.)
+                    .show(ui, |_| {});
+                w.show(ui, &mut s, false);
+            },
+        )
+    };
+    for _ in 0..3 {
+        frame(vec![]).drop_without_applying_deltas();
+    }
+    let out = frame(vec![]);
+    let text = |label: &str| {
+        out.shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(t) if t.galley.text() == label => {
+                    let rect = egui::Rect::from_min_size(t.pos, t.galley.size());
+                    shape.clip_rect.contains_rect(rect).then_some(rect.center())
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("Missing visible {label}"))
+    };
+    let discard = text("Discard edits");
+    assert!(text("Save set").x < discard.x);
+    assert!(text("Choose folder…").x < discard.x);
+    out.drop_without_applying_deltas();
+    for pressed in [true, false] {
+        frame(vec![
+            egui::Event::PointerMoved(discard),
+            egui::Event::PointerButton {
+                pos: discard,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: Default::default(),
+            },
+        ])
+        .drop_without_applying_deltas();
+    }
+    assert!(!w.dirty());
+    assert_eq!(s.document(), &before);
+}

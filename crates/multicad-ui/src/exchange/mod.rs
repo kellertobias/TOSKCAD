@@ -642,9 +642,16 @@ impl ExportWorkspace {
         }
         let mut action = None;
         let mut load_planar = false;
+        let saved_max = (ui.available_width() * 0.3).max(0.);
         egui::Panel::left("saved-export-sets")
             .default_size(205.)
+            .size_range(160_f32.min(saved_max)..=saved_max)
             .resizable(true)
+            .frame(
+                egui::Frame::new()
+                    .fill(crate::theme::PANEL)
+                    .inner_margin(12),
+            )
             .show(ui, |ui| {
                 crate::controls::inspector_layout(ui);
                 ui.heading("Export sets");
@@ -658,38 +665,78 @@ impl ExportWorkspace {
                 {
                     action = Some(ExportTool::NewSet);
                 }
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                    for id in sets(s.document()) {
-                        let name = &s.document().get(id).expect("known set").name;
+                egui::ScrollArea::vertical()
+                    .id_salt("export-sets-and-schedule")
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        self.schedule_section(ui, s, allow_io);
+                        ui.separator();
+                        for id in sets(s.document()) {
+                            let name = &s.document().get(id).expect("known set").name;
+                            if ui
+                                .add_enabled(
+                                    !self.dirty(),
+                                    egui::Button::selectable(self.selected == Some(id), name),
+                                )
+                                .clicked()
+                                && let Err(e) = self.load(s, id)
+                            {
+                                self.error = Some(e);
+                            }
+                        }
+                    });
+            });
+        crate::controls::inspector_panel(ui, "export-set-inspector")
+            .default_size(325.)
+            .frame(
+                egui::Frame::new()
+                    .fill(crate::theme::PANEL)
+                    .inner_margin(12),
+            )
+            .show(ui, |ui| {
+                crate::controls::inspector_layout(ui);
+                ui.heading("Export set");
+                ui.horizontal_wrapped(|ui| {
+                    for tool in [ExportTool::SaveSet, ExportTool::Discard] {
                         if ui
-                            .add_enabled(
-                                !self.dirty(),
-                                egui::Button::selectable(self.selected == Some(id), name),
+                            .add_enabled(self.enabled(tool, s), egui::Button::new(tool.label()))
+                            .on_hover_text(
+                                "Edit the canonical export-set definition through one Undo step",
                             )
                             .clicked()
-                            && let Err(e) = self.load(s, id)
                         {
-                            self.error = Some(e);
+                            action = Some(tool);
                         }
                     }
                 });
-                self.schedule_section(ui, s, allow_io);
+                ui.separator();
+                egui::ScrollArea::vertical()
+                    .id_salt("export-set-fields")
+                    .show(ui, |ui| {
+                        if let Some(draft) = &mut self.draft {
+                            load_planar = draft.show(
+                                ui,
+                                s,
+                                &self.captured,
+                                &self.catalog,
+                                self.planar_catalog.as_ref(),
+                            );
+                        } else {
+                            ui.label("Choose a saved set or create one.");
+                        }
+                    });
             });
-        egui::Panel::right("export-set-inspector").default_size(325.).resizable(true).show(ui,|ui|{
-   crate::controls::inspector_layout(ui);ui.heading("Export set");egui::ScrollArea::vertical().show(ui,|ui|{if let Some(draft)=&mut self.draft{load_planar=draft.show(ui,s,&self.captured,&self.catalog,self.planar_catalog.as_ref());}else{ui.label("Choose a saved set or create one.");}
-    ui.horizontal_wrapped(|ui|{for tool in[ExportTool::SaveSet,ExportTool::Discard]{if ui.add_enabled(self.enabled(tool,s),egui::Button::new(tool.label())).on_hover_text("Edit the canonical export-set definition through one Undo step").clicked(){action=Some(tool);}}});
-   });
-  });
         egui::Frame::NONE.inner_margin(egui::Margin::symmetric(22,16)).show(ui,|ui|{
+   crate::controls::inspector_layout(ui);
    ui.heading("Output preview");ui.label("Saved scopes resolve current source identities, independently of model selection and visibility.");
    ui.horizontal_wrapped(|ui|{for tool in[ExportTool::Preview,ExportTool::Run,ExportTool::Cancel]{if ui.add_enabled(self.enabled(tool,s)&&(allow_io||tool==ExportTool::Cancel),egui::Button::new(tool.label())).on_hover_text(match tool{ExportTool::Preview=>"Resolve the current saved scope against native geometry",ExportTool::Run=>"Export the exact previewed snapshot into a verified output bundle",_=>"Cancel accepted jobs at the next safe boundary"}).clicked(){action=Some(tool);}}});
    ui.label("Output folder");
    ui.horizontal(|ui|{if ui.button("Choose folder…").on_hover_text("Choose the output folder in the system folder dialog").clicked(){self.folder_requested=true;}ui.add(egui::TextEdit::singleline(&mut self.directory).desired_width(ui.available_width()).hint_text("or type an existing absolute folder path")).on_hover_text("The run creates a source- and provider-identified bundle in this folder. Unknown or modified bundles are never overwritten");});
+   egui::ScrollArea::vertical().id_salt("export-results").show(ui,|ui|{
    if !self.directory.trim().is_empty()&&let Some(problem)=self.directory_problem(){ui.colored_label(egui::Color32::LIGHT_YELLOW,problem);}
    if self.dirty(){ui.colored_label(egui::Color32::LIGHT_YELLOW,"Save or discard set edits before previewing or running.");}else if self.pending(){ui.label("Output job in progress…");}
    if let Some(error)=&self.error{ui.colored_label(egui::Color32::LIGHT_RED,error);}
    if self.backend.is_none(){ui.colored_label(egui::Color32::LIGHT_YELLOW,"Native output service is not installed.");}
-   egui::ScrollArea::vertical().id_salt("export-results").show(ui,|ui|{
     if let Some(preview)=&self.preview{
      let current=self.current(s);if !current{ui.colored_label(egui::Color32::LIGHT_YELLOW,"Previous preview · display only. Resolve the current source before Run.");}
      ui.label(format!("{} matched source occurrence(s) · {} selected page(s) · revision {}",preview.selection.parts.len(),preview.selection.pages.len(),preview.key.source.revision));

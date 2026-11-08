@@ -23,8 +23,13 @@ impl ExportWorkspace {
         let pending = state.pending();
         let previous_scope = state.scope;
         let modal = egui::Modal::new(egui::Id::new(("drawing-pdf", s.document().id()))).show(ctx, |ui| {
-            ui.set_width(560.);
+            ui.set_width((ctx.content_rect().width() - 44.).clamp(240., 560.));
+            crate::controls::inspector_layout(ui);
             ui.heading("Export as PDF");
+            let has_pages = egui::ScrollArea::vertical()
+                .id_salt("pdf-dialog-fields")
+                .max_height((ctx.content_rect().height() - 125.).max(0.))
+                .show(ui, |ui| {
             ui.label("Choose the sheets and output location before exporting.");
             ui.add_enabled_ui(!pending, |ui| {
                 for (scope, label) in [
@@ -35,12 +40,17 @@ impl ExportWorkspace {
             });
             let pages = state.pages();
             ui.strong(format!("{} {} in one PDF", pages.len(), if pages.len() == 1 { "sheet" } else { "sheets" }));
-            egui::ScrollArea::vertical().id_salt("pdf-scope-sheets").max_height(150.).show(ui, |ui| {
+            egui::CollapsingHeader::new("Selected sheets")
+                .id_salt("pdf-scope-sheets")
+                .default_open(true)
+                .show(ui, |ui| {
+                egui::ScrollArea::vertical().id_salt("pdf-sheet-list").max_height(130.).show(ui, |ui| {
                 for reference in &pages {
                     if let Some(page) = state.catalog.iter().find(|p| &p.reference == reference) {
                         ui.label(format!("{} / {} · {}", page.book_name, page.number, if page.title.trim().is_empty() { "Untitled sheet" } else { &page.title }));
                     }
                 }
+                });
             });
             if pages.is_empty() { ui.colored_label(egui::Color32::LIGHT_YELLOW, "This scope has no current sheets. Close and select a drawing sheet."); }
             ui.separator();
@@ -66,11 +76,13 @@ impl ExportWorkspace {
                 ui.label(path);
                 if ui.button("Copy PDF path").clicked() { ctx.copy_text(path.clone()); }
             }
+            !pages.is_empty()
+            }).inner;
             ui.separator();
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 if ui.add(egui::Button::new(if pending { "Cancel export" } else if state.output.is_some() { "Close" } else { "Cancel" })
                     .min_size(egui::vec2(100., 34.))).clicked() { action = Some(Action::Close); }
-                if ui.add_enabled(!pending && source_ready && allow_io && self.backend.is_some() && !pages.is_empty() && problem.is_none(),
+                if ui.add_enabled(!pending && source_ready && allow_io && self.backend.is_some() && has_pages && problem.is_none(),
                     egui::Button::new("Export PDF").min_size(egui::vec2(130., 34.))).clicked() { action = Some(Action::Export); }
             });
         });

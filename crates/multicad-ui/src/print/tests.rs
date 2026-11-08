@@ -400,3 +400,91 @@ fn parts_are_chosen_in_print_without_a_model_selection_and_changes_invalidate_th
     assert!(w.chosen().is_empty());
     assert_eq!(s.document(), &source, "picking never edits the document");
 }
+
+#[test]
+fn compact_print_wraps_long_receipts_and_scrolls_to_source_settings() {
+    let (mut s, mut w, state, _) = fixture();
+    for i in 0..28 {
+        let part = Entity::new(
+            format!("Frame component {i} with a retained descriptive name"),
+            EntityData::Part {
+                features: vec![],
+                material: None,
+                tags: Default::default(),
+            },
+        );
+        s.apply(Request {
+            expected_revision: s.revision(),
+            actor: Actor::local(Channel::Ui),
+            label: "Add fixture component".into(),
+            edits: vec![Mutation::Insert(part)],
+        })
+        .unwrap();
+    }
+    w.request_preview(&s, Channel::Ui).unwrap();
+    reply_preview(&s, &state, 0, 1);
+    w.poll(&s);
+    let name = "Left side bracket with recessed pockets for the lower guide ".repeat(3);
+    w.preview.as_mut().unwrap().objects[0].name = name.clone();
+    let source = s.document().clone();
+    let ctx = egui::Context::default();
+    crate::theme::configure(&ctx);
+    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1024., 600.));
+    let mut frame = |events| {
+        ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(screen),
+                events,
+                ..Default::default()
+            },
+            |ui| {
+                egui::Panel::top("header").exact_size(170.).show(ui, |_| {});
+                egui::Panel::bottom("status")
+                    .exact_size(28.)
+                    .show(ui, |_| {});
+                w.show(ui, &s, true);
+            },
+        )
+    };
+    let text = |out: &egui::FullOutput, label: &str| {
+        out.shapes.iter().find_map(|shape| match &shape.shape {
+            egui::Shape::Text(t) if t.galley.text() == label => Some((
+                egui::Rect::from_min_size(t.pos, t.galley.size()),
+                shape.clip_rect,
+            )),
+            _ => None,
+        })
+    };
+    for _ in 0..3 {
+        frame(vec![]).drop_without_applying_deltas();
+    }
+    let out = frame(vec![]);
+    let (bounds, clip) = text(&out, &name).expect("Full object name in the receipt");
+    assert!(clip.contains_rect(bounds), "{bounds:?} outside {clip:?}");
+    let (bounds, clip) = text(&out, "Triangles").expect("Triangles heading");
+    assert!(clip.contains_rect(bounds));
+    out.drop_without_applying_deltas();
+    for _ in 0..6 {
+        frame(vec![
+            egui::Event::PointerMoved(egui::pos2(110., 350.)),
+            egui::Event::MouseWheel {
+                phase: egui::TouchPhase::Move,
+                unit: egui::MouseWheelUnit::Point,
+                delta: egui::vec2(0., -520.),
+                modifiers: Default::default(),
+            },
+        ])
+        .drop_without_applying_deltas();
+    }
+    let out = frame(vec![]);
+    for label in ["Also write one STL per Part", "Write 3MF package"] {
+        let (bounds, clip) = text(&out, label).unwrap_or_else(|| panic!("Missing {label}"));
+        assert!(
+            clip.contains_rect(bounds),
+            "{label}: {bounds:?} outside {clip:?}"
+        );
+    }
+    out.drop_without_applying_deltas();
+    assert!(w.current(&s));
+    assert_eq!(s.document(), &source);
+}

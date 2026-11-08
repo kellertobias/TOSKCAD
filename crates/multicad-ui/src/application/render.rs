@@ -105,89 +105,99 @@ impl Application {
                     .inner_margin(egui::Margin::same(12)),
             )
             .show(ui, |ui| {
+                crate::controls::inspector_layout(ui);
                 ui.heading("Render scene");
-                match &status {
-                    None => {
-                        ui.label("No render scene yet.");
-                        ui.label(
+                egui::ScrollArea::vertical()
+                    .id_salt("render-scene-fields")
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        match &status {
+                            None => {
+                                ui.label("No render scene yet.");
+                                ui.label(
                             "Frame the model in this viewport, then Capture render view to store \
                              its camera and display style in the document.",
                         );
-                    }
-                    Some(s) => {
-                        ui.strong(&s.name);
-                        egui::Grid::new("render-scene-facts")
-                            .num_columns(2)
-                            .show(ui, |ui| {
-                                ui.label("Projection");
-                                ui.label(match s.camera.projection {
-                                    Projection::Perspective { fov_deg } => {
-                                        format!("Perspective · {fov_deg:.1}° vertical")
-                                    }
-                                    Projection::Orthographic { height_mm } => {
-                                        format!("Orthographic · {height_mm:.1} mm tall")
-                                    }
-                                });
-                                ui.end_row();
-                                let fmt = |v: [f64; 3]| {
-                                    format!("{:.1}, {:.1}, {:.1} mm", v[0], v[1], v[2])
-                                };
-                                ui.label("Eye");
-                                ui.label(fmt(s.camera.eye_mm));
-                                ui.end_row();
-                                ui.label("Target");
-                                ui.label(fmt(s.camera.target_mm));
-                                ui.end_row();
-                                ui.label("Display");
-                                ui.label(super::render_display_label(s.display));
-                                ui.end_row();
-                                ui.label("Lights");
-                                ui.label(s.lights.to_string());
-                                ui.end_row();
-                                ui.label("Scope");
-                                ui.label(if s.parts == 0 {
-                                    "Whole project".to_owned()
-                                } else {
-                                    format!("{} Part(s)", s.parts)
-                                });
-                                ui.end_row();
-                            });
-                        ui.add_space(6.);
-                        match s.viewport_matches {
-                            Some(true) => {
-                                ui.label("The viewport shows this stored camera.");
                             }
-                            Some(false) => {
-                                ui.colored_label(
+                            Some(s) => {
+                                ui.strong(&s.name);
+                                let column_width = (crate::controls::inspector_width(ui)
+                                    - ui.spacing().item_spacing.x)
+                                    / 2.;
+                                egui::Grid::new("render-scene-facts")
+                                    .num_columns(2)
+                                    .max_col_width(column_width.max(1.))
+                                    .show(ui, |ui| {
+                                        ui.label("Projection");
+                                        ui.label(match s.camera.projection {
+                                            Projection::Perspective { fov_deg } => {
+                                                format!("Perspective · {fov_deg:.1}° vertical")
+                                            }
+                                            Projection::Orthographic { height_mm } => {
+                                                format!("Orthographic · {height_mm:.1} mm tall")
+                                            }
+                                        });
+                                        ui.end_row();
+                                        let fmt = |v: [f64; 3]| {
+                                            format!("{:.1}, {:.1}, {:.1} mm", v[0], v[1], v[2])
+                                        };
+                                        ui.label("Eye");
+                                        ui.label(fmt(s.camera.eye_mm));
+                                        ui.end_row();
+                                        ui.label("Target");
+                                        ui.label(fmt(s.camera.target_mm));
+                                        ui.end_row();
+                                        ui.label("Display");
+                                        ui.label(super::render_display_label(s.display));
+                                        ui.end_row();
+                                        ui.label("Lights");
+                                        ui.label(s.lights.to_string());
+                                        ui.end_row();
+                                        ui.label("Scope");
+                                        ui.label(if s.parts == 0 {
+                                            "Whole project".to_owned()
+                                        } else {
+                                            format!("{} Part(s)", s.parts)
+                                        });
+                                        ui.end_row();
+                                    });
+                                ui.add_space(6.);
+                                match s.viewport_matches {
+                                    Some(true) => {
+                                        ui.label("The viewport shows this stored camera.");
+                                    }
+                                    Some(false) => {
+                                        ui.colored_label(
                                     Color32::from_rgb(232, 184, 92),
                                     "The viewport differs from the stored camera. Show render \
                                      view restores it; Capture render view replaces it.",
                                 );
-                            }
-                            None => {
-                                ui.label("The viewport is not laid out yet.");
+                                    }
+                                    None => {
+                                        ui.label("The viewport is not laid out yet.");
+                                    }
+                                }
                             }
                         }
-                    }
-                }
-                ui.add_space(8.);
-                ui.horizontal_wrapped(|ui| {
-                    for (label, id) in [
-                        ("Capture render view", "appearance"),
-                        ("Show render view", "render-view"),
-                    ] {
-                        let c = Command::Extension(id);
-                        if ui
-                            .add_enabled(self.enabled(c), egui::Button::new(label))
-                            .clicked()
-                        {
-                            command = Some(c);
-                        }
-                    }
-                });
-                ui.separator();
-                ui.strong("Blender handoff");
-                ui.label(BLENDER_AVAILABILITY);
+                        ui.add_space(8.);
+                        ui.horizontal_wrapped(|ui| {
+                            for (label, id) in [
+                                ("Capture render view", "appearance"),
+                                ("Show render view", "render-view"),
+                            ] {
+                                let c = Command::Extension(id);
+                                if ui
+                                    .add_enabled(self.enabled(c), egui::Button::new(label))
+                                    .clicked()
+                                {
+                                    command = Some(c);
+                                }
+                            }
+                        });
+                        ui.separator();
+                        ui.strong("Blender handoff");
+                        ui.label(BLENDER_AVAILABILITY);
+                    });
             });
         if let Some(command) = command
             && let Err(error) = self.invoke(command, &[], Channel::Ui)

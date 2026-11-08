@@ -253,3 +253,65 @@ fn foreign_session_and_wrong_publication_receipt_do_not_report_success() {
     assert!(w.drawing_pdf.output.is_none());
     assert!(w.take_notice().unwrap().1);
 }
+
+#[test]
+fn compact_pdf_dialog_keeps_cancel_reachable_with_a_long_diagnostic() {
+    let (s, mut w, service, page) = fixture();
+    let original = s.document().clone();
+    w.open_drawing_pdf(&s, page).unwrap();
+    w.set_drawing_pdf_scope(DrawingPdfScope::Project).unwrap();
+    w.drawing_pdf.error = Some(
+        "The destination could not verify output for the selected fabrication sheet. ".repeat(46),
+    );
+    let ctx = egui::Context::default();
+    crate::theme::configure(&ctx);
+    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1024., 600.));
+    let mut frame = |events| {
+        ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(screen),
+                events,
+                ..Default::default()
+            },
+            |_| w.show_drawing_pdf(&ctx, &s, true, true),
+        )
+    };
+    for _ in 0..3 {
+        frame(vec![]).drop_without_applying_deltas();
+    }
+    let out = frame(vec![]);
+    let mut cancel = None;
+    for label in ["Cancel", "Export PDF"] {
+        let bounds = out
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(t) if t.galley.text() == label => {
+                    Some(egui::Rect::from_min_size(t.pos, t.galley.size()))
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("Missing {label}"));
+        assert!(screen.contains_rect(bounds), "{label}: {bounds:?}");
+        if label == "Cancel" {
+            cancel = Some(bounds.center());
+        }
+    }
+    out.drop_without_applying_deltas();
+    let pos = cancel.unwrap();
+    for pressed in [true, false] {
+        frame(vec![
+            egui::Event::PointerMoved(pos),
+            egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: Default::default(),
+            },
+        ])
+        .drop_without_applying_deltas();
+    }
+    assert!(!w.drawing_pdf.open);
+    assert!(service.borrow().requests.is_empty());
+    assert_eq!(s.document(), &original);
+}

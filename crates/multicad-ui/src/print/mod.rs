@@ -491,58 +491,67 @@ impl PrintWorkspace {
                 .request_repaint_after(std::time::Duration::from_millis(16));
         }
         let mut action = None;
+        let source_max = (ui.available_width() * 0.4).max(0.);
         egui::Panel::left("print-source")
             .default_size(260.)
+            .size_range(180_f32.min(source_max)..=source_max)
             .resizable(true)
+            .frame(egui::Frame::new().fill(crate::theme::PANEL).inner_margin(12))
             .show(ui, |ui| {
                 crate::controls::inspector_layout(ui);
                 ui.heading("Printable Parts");
-                ui.radio_value(&mut self.by_tag, false, "Chosen Parts")
-                    .on_hover_text(
-                        "Choose world Parts, placed copies and placed Assemblies here; each copy is packaged at its placement. Entering Export starts from the model selection",
-                    );
-                if !self.by_tag {
-                    self.source_picker(ui, s);
-                }
-                ui.radio_value(&mut self.by_tag, true, "Tag")
-                    .on_hover_text(
-                        "Every world Part and every placed copy of a Part carrying this exact, case-sensitive tag",
-                    );
-                if self.by_tag {
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.tag)
-                            .desired_width(ui.available_width())
-                            .hint_text(DEFAULT_PRINT_TAG),
-                    );
-                }
-                ui.separator();
-                let mut include = self.aids == AidPolicy::IncludeAll;
-                if ui
-                    .checkbox(&mut include, "Include removable FDM aids")
-                    .on_hover_text(
-                        "Tabs, bridges and supports serving the chosen Parts, classified by their aid feature",
-                    )
-                    .changed()
-                {
-                    self.aids = if include {
-                        AidPolicy::IncludeAll
-                    } else {
-                        AidPolicy::ExcludeRemovable
-                    };
-                }
-                ui.checkbox(&mut self.stl_per_part, "Also write one STL per Part")
-                    .on_hover_text("Binary STL files beside the 3MF, named after the 3MF and the Part");
-                ui.add(
-                    egui::Slider::new(&mut self.chord_mm, 0.01..=1.0)
-                        .logarithmic(true)
-                        .text("chord mm"),
-                )
-                .on_hover_text("Tessellation chord deviation from the exact solid");
-                ui.small("Units: millimeter, declared in the 3MF. +Z is the build direction; model coordinates are kept.");
+                egui::ScrollArea::vertical()
+                    .id_salt("print-source-settings")
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        ui.radio_value(&mut self.by_tag, false, "Chosen Parts")
+                            .on_hover_text(
+                                "Choose world Parts, placed copies and placed Assemblies here; each copy is packaged at its placement. Entering Export starts from the model selection",
+                            );
+                        if !self.by_tag {
+                            self.source_picker(ui, s);
+                        }
+                        ui.radio_value(&mut self.by_tag, true, "Tag")
+                            .on_hover_text(
+                                "Every world Part and every placed copy of a Part carrying this exact, case-sensitive tag",
+                            );
+                        if self.by_tag {
+                            ui.add(
+                                egui::TextEdit::singleline(&mut self.tag)
+                                    .desired_width(ui.available_width())
+                                    .hint_text(DEFAULT_PRINT_TAG),
+                            );
+                        }
+                        ui.separator();
+                        let mut include = self.aids == AidPolicy::IncludeAll;
+                        if ui
+                            .checkbox(&mut include, "Include removable FDM aids")
+                            .on_hover_text(
+                                "Tabs, bridges and supports serving the chosen Parts, classified by their aid feature",
+                            )
+                            .changed()
+                        {
+                            self.aids = if include {
+                                AidPolicy::IncludeAll
+                            } else {
+                                AidPolicy::ExcludeRemovable
+                            };
+                        }
+                        ui.checkbox(&mut self.stl_per_part, "Also write one STL per Part")
+                            .on_hover_text("Binary STL files beside the 3MF, named after the 3MF and the Part");
+                        ui.add(
+                            egui::Slider::new(&mut self.chord_mm, 0.01..=1.0)
+                                .logarithmic(true)
+                                .text("chord mm"),
+                        )
+                        .on_hover_text("Tessellation chord deviation from the exact solid");
+                        ui.small("Units: millimeter, declared in the 3MF. +Z is the build direction; model coordinates are kept.");
+                    });
             });
         egui::Frame::NONE
             .inner_margin(egui::Margin::symmetric(22, 16))
             .show(ui, |ui| {
+                crate::controls::inspector_layout(ui);
                 ui.heading("Print package");
                 ui.label("Packages exact geometry only. MultiCAD does not slice, arrange plates, control printers or confirm printability.");
                 ui.horizontal_wrapped(|ui| {
@@ -558,19 +567,19 @@ impl PrintWorkspace {
                         }
                     }
                 });
-                if self.backend.is_none() {
-                    ui.colored_label(egui::Color32::LIGHT_YELLOW, "Native print service is not installed.");
-                }
-                if self.pending() {
-                    ui.horizontal(|ui| {
-                        ui.spinner();
-                        ui.label(if self.writing() { "Writing print package…" } else { "Resolving print package…" });
-                    });
-                }
-                if let Some(error) = &self.error {
-                    ui.colored_label(egui::Color32::LIGHT_RED, error);
-                }
                 egui::ScrollArea::vertical().id_salt("print-preview").show(ui, |ui| {
+                    if self.backend.is_none() {
+                        ui.colored_label(egui::Color32::LIGHT_YELLOW, "Native print service is not installed.");
+                    }
+                    if self.pending() {
+                        ui.horizontal(|ui| {
+                            ui.spinner();
+                            ui.label(if self.writing() { "Writing print package…" } else { "Resolving print package…" });
+                        });
+                    }
+                    if let Some(error) = &self.error {
+                        ui.colored_label(egui::Color32::LIGHT_RED, error);
+                    }
                     if let Some(preview) = &self.preview {
                         self.show_preview(ui, s, preview);
                     } else {
@@ -645,33 +654,28 @@ impl PrintWorkspace {
         if candidates.is_empty() {
             ui.small("This project has no Part, placed copy or placed Assembly yet.");
         }
-        egui::ScrollArea::vertical()
-            .id_salt("print-source-picker")
-            .max_height(220.)
-            .show(ui, |ui| {
-                for c in &candidates {
-                    let mut on = self.captured.contains(&c.entity);
-                    let kind = match (c.kind, &c.source) {
-                        (PrintCandidateKind::Part, _) => "Part".to_owned(),
-                        (PrintCandidateKind::PlacedCopy, Some(source)) => {
-                            format!("placed copy of {source}")
-                        }
-                        (PrintCandidateKind::PlacedCopy, None) => "placed copy".to_owned(),
-                        (PrintCandidateKind::Assembly, _) => "placed Assembly".to_owned(),
-                    };
-                    if ui
-                        .checkbox(&mut on, format!("{} · {kind}", c.name))
-                        .on_hover_text(format!("Identity {}", c.entity))
-                        .changed()
-                    {
-                        if on {
-                            self.captured.push(c.entity);
-                        } else {
-                            self.captured.retain(|id| *id != c.entity);
-                        }
-                    }
+        for c in &candidates {
+            let mut on = self.captured.contains(&c.entity);
+            let kind = match (c.kind, &c.source) {
+                (PrintCandidateKind::Part, _) => "Part".to_owned(),
+                (PrintCandidateKind::PlacedCopy, Some(source)) => {
+                    format!("placed copy of {source}")
                 }
-            });
+                (PrintCandidateKind::PlacedCopy, None) => "placed copy".to_owned(),
+                (PrintCandidateKind::Assembly, _) => "placed Assembly".to_owned(),
+            };
+            if ui
+                .checkbox(&mut on, format!("{} · {kind}", c.name))
+                .on_hover_text(format!("Identity {}", c.entity))
+                .changed()
+            {
+                if on {
+                    self.captured.push(c.entity);
+                } else {
+                    self.captured.retain(|id| *id != c.entity);
+                }
+            }
+        }
         // Chosen identities the picker does not offer (component definitions,
         // aids or deleted entities) stay explicit; Preview lists their reason.
         for id in self
@@ -710,9 +714,13 @@ impl PrintWorkspace {
             total,
             preview.key.source.revision
         ));
+        let column_width =
+            (crate::controls::inspector_width(ui) - 4. * ui.spacing().item_spacing.x) / 5.;
         egui::Grid::new("print-objects")
             .striped(true)
             .num_columns(5)
+            .min_col_width(0.)
+            .max_col_width(column_width.max(1.))
             .show(ui, |ui| {
                 for h in ["Object", "Role", "Z range mm", "Volume mm³", "Triangles"] {
                     ui.strong(h);
