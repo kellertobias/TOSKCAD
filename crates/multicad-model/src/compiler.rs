@@ -1079,6 +1079,18 @@ impl Compiler {
                     member_paths.insert(id, member.path);
                     solid
                 }
+                (model::SURFACE_STRUCTURE_TYPE, 1) => crate::surface_structure::build(
+                    crate::face_profile::FaceProfileInputs {
+                        document,
+                        revision,
+                        feature: id,
+                        solids: &solids,
+                        topologies: &topologies,
+                        policy: self.policy,
+                    },
+                    context.parameters(),
+                    interrupt,
+                )?,
                 (model::PROFILE_CONNECTION_OUTPUT_TYPE, 1) => crate::profile_connections::build(
                     crate::profile_connections::Inputs {
                         document,

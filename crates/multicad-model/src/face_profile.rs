@@ -46,6 +46,12 @@ fn curved(edge: &PlanarEdge) -> CurvedEdge2d {
     }
 }
 
+pub(crate) struct ResolvedFaceProfile {
+    pub profile: CurvedProfile,
+    pub origins: Vec<Origin>,
+    pub bounds_mm: [[f64; 2]; 2],
+}
+
 pub(crate) struct FaceProfileInputs<'a> {
     pub document: &'a Document,
     pub revision: u64,
@@ -62,6 +68,11 @@ impl FaceProfileInputs<'_> {
     /// Resolve the profile face reference `reference` of this feature to its
     /// exact current boundary and semantic side-edge provenance.
     pub fn resolve(&self, reference: EntityId) -> Result<(CurvedProfile, Vec<Origin>), ModelError> {
+        let resolved = self.resolve_planar(reference)?;
+        Ok((resolved.profile, resolved.origins))
+    }
+
+    pub fn resolve_planar(&self, reference: EntityId) -> Result<ResolvedFaceProfile, ModelError> {
         let Some(EntityData::Feature { inputs, .. }) =
             self.document.get(self.feature).map(|e| &e.data)
         else {
@@ -103,9 +114,9 @@ impl FaceProfileInputs<'_> {
             .into_iter()
             .find(|face| face.index == key.ordinal)
             .ok_or_else(|| self.failure("Profile face is missing from the current solid"))?;
-        let (origin, outward) = face.plane.ok_or_else(|| {
-            self.failure("This face is curved; Extrude and Revolve need a planar face")
-        })?;
+        let (origin, outward) = face
+            .plane
+            .ok_or_else(|| self.failure("This face is curved. Choose a planar face."))?;
         let normal = frame.normal();
         if dot(normal, outward).abs() < 1. - 1e-8
             || dot(
@@ -152,14 +163,19 @@ impl FaceProfileInputs<'_> {
         let outer = outer.ok_or_else(|| self.failure("Profile face has no outer boundary"))?;
         keys.extend(hole_keys);
         let origins = self.origins(link.target, &keys);
-        Ok((
-            CurvedProfile {
+        let bounds_mm = sourced
+            .contours
+            .bounds_mm()
+            .ok_or_else(|| self.failure("The native planar face has no finite boundary extent"))?;
+        Ok(ResolvedFaceProfile {
+            profile: CurvedProfile {
                 frame: plane,
                 outer,
                 holes,
             },
             origins,
-        ))
+            bounds_mm,
+        })
     }
     /// Side faces of the new body are named from the source edges' semantic
     /// provenance when that is unique, so they survive rebuild reordering.

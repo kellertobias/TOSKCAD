@@ -48,6 +48,7 @@ pub mod sheet_metal;
 mod sheet_unfold;
 mod sketch_support;
 mod split;
+mod surface_structure;
 mod symbols;
 mod targets;
 mod threads;
