@@ -157,14 +157,12 @@ impl Application {
         self.drive_close_save(ctx);
         let shortcut = crate::quit_shortcut::take(ctx) > 0;
         let was_confirming = self.close_confirm;
-        if shortcut && was_confirming {
-            if self.projects.iter().any(Project::pending_edits) {
-                self.message = "Apply or cancel pending tool edits before quitting".into();
-                self.message_error = true;
-            } else if let Err(error) = self.confirm_close_without_saving(ctx) {
-                self.message = error;
-                self.message_error = true;
-            }
+        if shortcut
+            && was_confirming
+            && let Err(error) = self.confirm_close_without_saving(ctx)
+        {
+            self.message = error;
+            self.message_error = true;
         }
         if self.close_after_recents && !self.recents_writing() {
             self.close_after_recents = false;
@@ -195,9 +193,6 @@ impl Application {
     ) -> Result<(), String> {
         if self.close_save.is_some() || self.close_busy() {
             return Err("Wait for file and export operations to finish before closing".into());
-        }
-        if self.projects.iter().any(Project::pending_edits) {
-            return Err("Apply or cancel pending tool edits before quitting".into());
         }
         self.close_allowed = true;
         self.close_confirm = false;
@@ -251,7 +246,7 @@ impl Application {
                 .max_height((ctx.content_rect().height() - 150.).max(0.))
                 .show(ui, |ui| {
                     ui.add_space(12.);
-                    ui.add_enabled_ui(!busy && !drafts,|ui| {
+                    ui.add_enabled_ui(!busy,|ui| {
                         ui.horizontal_wrapped(|ui| {
                             ui.strong(repeat_instruction());
                             ui.label("to quit without saving.");
@@ -268,7 +263,7 @@ impl Application {
                         ui.add_space(10.);
                         ui.horizontal(|ui| {ui.spinner();ui.label(if self.close_save.is_some() {"Saving all unsaved documents…"} else {"Wait for the active file or export operation to finish."});});
                     }
-                    if drafts {ui.add_space(10.);ui.label("Apply or cancel pending tool edits in every document before saving or quitting.");}
+                    if drafts {ui.add_space(10.);ui.label("Quit discards pending tool edits. To save first, cancel this dialog and apply or discard the edits.");}
                     if self.message_error {ui.add_space(10.);ui.colored_label(Color32::LIGHT_RED,&self.message);}
                 });
             ui.add_space(20.);
@@ -276,7 +271,7 @@ impl Application {
                 ui.spacing_mut().item_spacing.x=8.;
                 let save=crate::controls::dialog_action(ui,"Save and Quit","Enter",195.,!busy && !drafts,Some(ui.visuals().selection.bg_fill))
                     .on_hover_text("Save every unsaved document, then quit after all writes succeed").clicked();
-                let quit=crate::controls::dialog_action(ui,"Quit",quit_shortcut_label(),135.,!busy && !drafts,None)
+                let quit=crate::controls::dialog_action(ui,"Quit",quit_shortcut_label(),135.,!busy,None)
                     .on_hover_text("Quit without saving the unsaved documents").clicked();
                 let cancel=crate::controls::dialog_action(ui,"Cancel","Escape",150.,true,None).clicked();
                 (save,quit,cancel)
@@ -284,7 +279,7 @@ impl Application {
         });
         if response.inner.2 || response.should_close() {
             self.cancel_close();
-        } else if response.inner.1 && !busy && !drafts {
+        } else if response.inner.1 && !busy {
             if let Err(error) = self.confirm_close_without_saving(ctx) {
                 self.message = error;
                 self.message_error = true;
@@ -686,7 +681,7 @@ mod tests {
         assert_eq!(app.current().session.document(), &original);
     }
     #[test]
-    fn repeat_shortcut_keeps_file_jobs_and_unapplied_drafts_guarded() {
+    fn repeat_shortcut_guards_file_jobs_but_can_discard_a_tool_draft() {
         let mut app = Application::new(Box::new(Storage)).unwrap();
         app.pending_files.clear();
         app.close_confirm = true;
@@ -697,11 +692,12 @@ mod tests {
         assert!(app.close_confirm && !app.close_allowed);
         assert_eq!(app.pending_files.len(), 1);
         app.pending_files.clear();
+        let original = app.current().session.document().clone();
         app.current_mut().editor.rows[0].name = "Unapplied edit".into();
         native_press(&ctx);
-        close_frame(&mut app, &ctx, true);
-        assert!(app.close_confirm && !app.close_allowed);
-        assert!(app.message.contains("pending tool edits"));
+        assert_eq!(count_close(&close_frame(&mut app, &ctx, true)), 1);
+        assert!(!app.close_confirm && app.close_allowed);
+        assert_eq!(app.current().session.document(), &original);
     }
     fn click_dialog(app: &mut Application, ctx: &egui::Context, label: &str) {
         for _ in 0..3 {
@@ -802,7 +798,7 @@ mod tests {
         assert!(app.current().dirty());
     }
     #[test]
-    fn quit_button_discards_explicitly_but_is_blocked_for_jobs_and_unapplied_edits() {
+    fn quit_button_discards_a_tool_draft_but_is_blocked_for_file_jobs() {
         let mut app = Application::new(Box::new(Storage)).unwrap();
         app.pending_files.clear();
         app.close_confirm = true;
@@ -813,10 +809,11 @@ mod tests {
         assert!(!app.close_allowed && app.close_confirm);
         app.pending_files.clear();
         app.current_mut().editor.rows[0].name = "Pending draft".into();
-        click_dialog(&mut app, &ctx, "Quit");
-        assert!(!app.close_allowed && app.close_confirm);
-        assert!(app.confirm_close_without_saving(&ctx).is_err());
-        app.current_mut().editor = ParameterEditor::new(&app.current().session);
+        click_dialog(&mut app, &ctx, "Cancel");
+        assert!(!app.close_allowed && !app.close_confirm);
+        assert_eq!(app.current().editor.rows[0].name, "Pending draft");
+        close_frame(&mut app, &ctx, true);
+        assert!(app.close_confirm);
         click_dialog(&mut app, &ctx, "Quit");
         assert!(app.close_allowed && !app.close_confirm);
         assert_eq!(app.current().session.document(), &original);
