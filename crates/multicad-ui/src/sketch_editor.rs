@@ -141,6 +141,8 @@ struct SplinePointer {
 }
 pub struct SketchEditor {
     architecture: crate::architecture_view::Context,
+    show_source_tree: bool,
+    show_inspector: bool,
     pub selected: Option<EntityId>,
     pub editing: bool,
     pub picking: bool,
@@ -243,6 +245,8 @@ impl Default for SketchEditor {
     fn default() -> Self {
         Self {
             architecture: Default::default(),
+            show_source_tree: true,
+            show_inspector: true,
             selected: None,
             editing: false,
             picking: false,
@@ -2891,6 +2895,14 @@ impl SketchEditor {
     pub fn review_scene_shown(&self) -> bool {
         self.review_scene.is_some()
     }
+    pub(crate) fn panel_controls(&mut self, ui: &mut egui::Ui) {
+        ui.toggle_value(&mut self.show_source_tree, "Model tree")
+            .on_hover_text("Show or hide the model tree and Architecture levels");
+        ui.toggle_value(&mut self.show_inspector, "Inspector")
+            .on_hover_text(
+                "Show or hide the Inspector while keeping the current tool and selection",
+            );
+    }
     pub fn show_project(
         &mut self,
         ui: &mut egui::Ui,
@@ -3071,42 +3083,47 @@ impl SketchEditor {
             ui.ctx()
                 .request_repaint_after(std::time::Duration::from_millis(16));
         }
-        egui::Panel::left("source-tree")
-            .default_size(225.)
-            .resizable(true)
-            .show(ui, |ui| {
-                self.architecture_panel(ui, session, resources, feed, scene.as_deref());
-                let options = crate::model_tree::TreeOptions {
-                    enabled: (!self.has_pending_edits() || self.acquisition.is_some())
-                        && !self.measurement.active(),
-                    allow_open_sketch: self.acquisition.is_none(),
-                };
-                let events = if self.acquisition.is_some() {
-                    self.tree
-                        .show_targets(ui, session, &self.tree_selection, options)
-                } else {
-                    self.tree.show(ui, session, &self.tree_selection, options)
-                };
-                self.handle_tree_events(session, scene.as_deref(), events);
-                if !self.measurement.active() {
-                    self.advance_model_targets(session, resources, feed, false);
-                }
-                if self.selected.is_some()
-                    && !self.editing
-                    && ui
-                        .add_enabled(
-                            !self.has_pending_edits(),
-                            egui::Button::new("Open selected sketch"),
-                        )
-                        .clicked()
-                {
-                    let id = self.selected.expect("selected");
-                    if let Err(error) = self.open_at(session.document(), id, session.revision()) {
-                        self.message = error;
+        if self.show_source_tree {
+            egui::Panel::left("source-tree")
+                .default_size(225.)
+                .size_range(160. ..=(ui.available_width() * 0.35).max(160.))
+                .resizable(true)
+                .show(ui, |ui| {
+                    self.architecture_panel(ui, session, resources, feed, scene.as_deref());
+                    let options = crate::model_tree::TreeOptions {
+                        enabled: (!self.has_pending_edits() || self.acquisition.is_some())
+                            && !self.measurement.active(),
+                        allow_open_sketch: self.acquisition.is_none(),
+                    };
+                    let events = if self.acquisition.is_some() {
+                        self.tree
+                            .show_targets(ui, session, &self.tree_selection, options)
+                    } else {
+                        self.tree.show(ui, session, &self.tree_selection, options)
+                    };
+                    self.handle_tree_events(session, scene.as_deref(), events);
+                    if self.selected.is_some()
+                        && !self.editing
+                        && ui
+                            .add_enabled(
+                                !self.has_pending_edits(),
+                                egui::Button::new("Open selected sketch"),
+                            )
+                            .clicked()
+                    {
+                        let id = self.selected.expect("selected");
+                        if let Err(error) = self.open_at(session.document(), id, session.revision())
+                        {
+                            self.message = error;
+                        }
                     }
-                }
-            });
-        crate::controls::inspector_panel(ui,"source-inspector")
+                });
+        }
+        if !self.measurement.active() {
+            self.advance_model_targets(session, resources, feed, false);
+        }
+        if self.show_inspector {
+            crate::controls::inspector_panel(ui,"source-inspector")
             .show(ui, |ui| {
                 crate::controls::inspector_layout(ui);
                 ui.heading("Inspector");
@@ -3443,6 +3460,7 @@ impl SketchEditor {
                         }
                     });
             });
+        }
         self.refresh_overlay_visibility(session);
         let mut current = feed.is_current(session.document().id(), session.revision());
         let mut repair_view = false;

@@ -21,15 +21,12 @@ impl DocumentStorage for Storage {
 fn frame(
     ctx: &egui::Context,
     app: &mut Application,
-    height: f32,
+    size: egui::Vec2,
     events: Vec<egui::Event>,
 ) -> egui::FullOutput {
     ctx.run_ui(
         egui::RawInput {
-            screen_rect: Some(egui::Rect::from_min_size(
-                egui::Pos2::ZERO,
-                egui::vec2(1360., height),
-            )),
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
             events,
             focused: true,
             ..Default::default()
@@ -37,8 +34,8 @@ fn frame(
         |ui| app.show(ui),
     )
 }
-fn click(ctx: &egui::Context, app: &mut Application, height: f32, label: &str) {
-    let out = frame(ctx, app, height, vec![]);
+fn click(ctx: &egui::Context, app: &mut Application, size: egui::Vec2, label: &str) {
+    let out = frame(ctx, app, size, vec![]);
     let position = out
         .platform_output
         .accesskit_update
@@ -66,7 +63,7 @@ fn click(ctx: &egui::Context, app: &mut Application, height: f32, label: &str) {
         frame(
             ctx,
             app,
-            height,
+            size,
             vec![
                 egui::Event::PointerMoved(position),
                 egui::Event::PointerButton {
@@ -82,7 +79,14 @@ fn click(ctx: &egui::Context, app: &mut Application, height: f32, label: &str) {
 }
 #[test]
 fn tool_first_scale_footer_is_painted_and_clickable_after_target_selection() {
-    for (height, density) in [(420., 1.), (860., 1.), (860., 2.), (1000., 2.)] {
+    for (width, height, density) in [
+        (1360., 420., 1.),
+        (1024., 600., 2.),
+        (1360., 860., 1.),
+        (1360., 860., 2.),
+        (1360., 1000., 2.),
+    ] {
+        let size = egui::vec2(width, height);
         let mut seed = Session::new(Document::new("Scale footer transition").unwrap()).unwrap();
         let stock = PrimitiveRequest::new(
             "Source block",
@@ -111,7 +115,7 @@ fn tool_first_scale_footer_is_painted_and_clickable_after_target_selection() {
         crate::theme::configure(&ctx);
         let until = Instant::now() + Duration::from_secs(5);
         while !app.current().scene.is_current(original.id(), 0) {
-            frame(&ctx, &mut app, height, vec![]).drop_without_applying_deltas();
+            frame(&ctx, &mut app, size, vec![]).drop_without_applying_deltas();
             assert!(Instant::now() < until);
             std::thread::sleep(Duration::from_millis(1));
         }
@@ -119,10 +123,10 @@ fn tool_first_scale_footer_is_painted_and_clickable_after_target_selection() {
         // before acquiring Scale targets in this same Inspector/scroll context.
         app.invoke(Command::Modeling(ModelingTool::Cylinder), &[], Channel::Ui)
             .unwrap();
-        click(&ctx, &mut app, height, "Preview");
+        click(&ctx, &mut app, size, "Preview");
         let until = Instant::now() + Duration::from_secs(5);
         loop {
-            let out = frame(&ctx, &mut app, height, vec![]);
+            let out = frame(&ctx, &mut app, size, vec![]);
             let ready = out
                 .platform_output
                 .accesskit_update
@@ -152,13 +156,38 @@ fn tool_first_scale_footer_is_painted_and_clickable_after_target_selection() {
             );
             std::thread::sleep(Duration::from_millis(1));
         }
-        click(&ctx, &mut app, height, "Cancel");
+        if width == 1024. {
+            let open_width = app.current().sketch.viewport_rect.unwrap().width();
+            click(&ctx, &mut app, size, "Model tree");
+            click(&ctx, &mut app, size, "Inspector");
+            frame(&ctx, &mut app, size, vec![]).drop_without_applying_deltas();
+            assert!(app.current().sketch.viewport_rect.unwrap().width() > open_width + 300.);
+            assert!(app.current().sketch.model_interaction_active());
+            assert_eq!(app.current().session.document(), &original);
+
+            click(&ctx, &mut app, egui::vec2(1360., 860.), "Inspector");
+            click(&ctx, &mut app, size, "Model tree");
+            let out = frame(&ctx, &mut app, size, vec![]);
+            assert!(
+                out.platform_output
+                    .accesskit_update
+                    .as_ref()
+                    .unwrap()
+                    .nodes
+                    .iter()
+                    .any(|(_, n)| n.label() == Some("Apply") && !n.is_disabled()),
+                "the existing native preview must still be ready after reopening the Inspector"
+            );
+            assert!((app.current().sketch.viewport_rect.unwrap().width() - open_width).abs() < 1.);
+            out.drop_without_applying_deltas();
+        }
+        click(&ctx, &mut app, size, "Cancel");
         assert!(!app.current().sketch.model_interaction_active());
         assert_eq!(app.current().session.document(), &original);
         app.invoke(Command::Modeling(ModelingTool::Scale), &[], Channel::Ui)
             .unwrap();
         assert!(app.current().sketch.awaiting_model_targets());
-        let out = frame(&ctx, &mut app, height, vec![]);
+        let out = frame(&ctx, &mut app, size, vec![]);
         let row = out
             .shapes
             .iter()
@@ -174,7 +203,7 @@ fn tool_first_scale_footer_is_painted_and_clickable_after_target_selection() {
             frame(
                 &ctx,
                 &mut app,
-                height,
+                size,
                 vec![
                     egui::Event::PointerMoved(row),
                     egui::Event::PointerButton {
@@ -191,12 +220,12 @@ fn tool_first_scale_footer_is_painted_and_clickable_after_target_selection() {
         click(
             &ctx,
             &mut app,
-            height,
+            size,
             "Fit selection, or all parts when nothing is selected",
         );
         let mut cancel = None;
         for _ in 0..3 {
-            let out = frame(&ctx, &mut app, height, vec![]);
+            let out = frame(&ctx, &mut app, size, vec![]);
             let mut missing = vec![];
             for label in ["Preview", "Apply", "Cancel"] {
                 let painted = out
@@ -249,7 +278,7 @@ fn tool_first_scale_footer_is_painted_and_clickable_after_target_selection() {
             frame(
                 &ctx,
                 &mut app,
-                height,
+                size,
                 vec![
                     egui::Event::PointerMoved(pos),
                     egui::Event::PointerButton {
@@ -276,7 +305,7 @@ fn room_door_tool_previews_and_applies_one_wall_transaction() {
         BodyOutput, Justification, NewType, NewTypeKind, WallChange, WallDefinition, WallRequest,
         WallTypeDefinition,
     };
-    let height = 860.;
+    let size = egui::vec2(1360., 860.);
     let mut empty =
         Application::with_document(Box::new(Storage), Document::new("No walls").unwrap()).unwrap();
     empty.pending_files.clear();
@@ -345,7 +374,7 @@ fn room_door_tool_previews_and_applies_one_wall_transaction() {
     crate::theme::configure(&ctx);
     let until = Instant::now() + Duration::from_secs(5);
     while !app.current().scene.is_current(original.id(), 0) {
-        frame(&ctx, &mut app, height, vec![]).drop_without_applying_deltas();
+        frame(&ctx, &mut app, size, vec![]).drop_without_applying_deltas();
         assert!(Instant::now() < until);
         std::thread::sleep(Duration::from_millis(1));
     }
@@ -353,10 +382,10 @@ fn room_door_tool_previews_and_applies_one_wall_transaction() {
     app.invoke(Command::Modeling(ModelingTool::Door), &[], Channel::Ui)
         .unwrap();
     assert!(app.current().sketch.model_interaction_active());
-    click(&ctx, &mut app, height, "Preview");
+    click(&ctx, &mut app, size, "Preview");
     let until = Instant::now() + Duration::from_secs(5);
     loop {
-        let out = frame(&ctx, &mut app, height, vec![]);
+        let out = frame(&ctx, &mut app, size, vec![]);
         let ready = out
             .platform_output
             .accesskit_update
@@ -373,7 +402,7 @@ fn room_door_tool_previews_and_applies_one_wall_transaction() {
         std::thread::sleep(Duration::from_millis(1));
     }
     assert_eq!(app.current().session.document(), &original);
-    click(&ctx, &mut app, height, "Apply");
+    click(&ctx, &mut app, size, "Apply");
     let session = &app.current().session;
     assert_eq!(
         session.revision(),

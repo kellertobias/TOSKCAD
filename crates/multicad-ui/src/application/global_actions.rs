@@ -13,6 +13,9 @@ impl Application {
                     ui.strong(if self.mode == Mode::Sketch {
                         if self.current().sketch.editing { "Model · Sketch editing" } else { "Model · Choose a sketch plane" }
                     } else { self.mode.title() });
+                    if matches!(self.mode, Mode::Model | Mode::Sketch | Mode::Motion) || self.render_tab() {
+                        self.current_mut().sketch.panel_controls(ui);
+                    }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if icons::labeled_button(ui, Icon::Link, "MCP history").clicked() { self.history_open = true; }
                         for (icon, label, command, help) in [

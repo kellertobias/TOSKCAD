@@ -64,7 +64,7 @@ pub fn launch_with(application: AppCreator<'static>) -> Result<(), String> {
         viewport: egui::ViewportBuilder::default()
             .with_icon(icon)
             .with_inner_size([1360.0, 860.0])
-            .with_min_inner_size([1100.0, 700.0])
+            .with_min_inner_size([1024.0, 600.0])
             .with_decorations(cfg!(target_os = "macos"))
             .with_fullsize_content_view(true)
             .with_title_shown(false)
