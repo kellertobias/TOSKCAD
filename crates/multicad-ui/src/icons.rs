@@ -278,9 +278,8 @@ pub(crate) fn tool_glyph_at_width(
     });
     response.on_hover_text(hint)
 }
-/// Lay out a tile label in at most two lines: 11 pt across the tile, a
-/// slightly smaller size when a long label would need a third line, and an
-/// ellipsis as the last resort (the hover text keeps the full name).
+/// Lay out a tile label in at most two lines. Try the smaller size before
+/// splitting a single word (the hover text keeps the full name).
 pub fn tile_label(ui: &egui::Ui, label: &str, color: Color32) -> std::sync::Arc<egui::Galley> {
     tile_label_at_width(ui, label, color, TOOL_TILE.x)
 }
@@ -291,6 +290,11 @@ pub(crate) fn tile_label_at_width(
     width: f32,
 ) -> std::sync::Arc<egui::Galley> {
     let text_width = width - 6.0;
+    let preferred_rows = if label.contains(char::is_whitespace) {
+        2
+    } else {
+        1
+    };
     for size in [11.0, 10.0] {
         let galley = ui.painter().layout(
             label.into(),
@@ -298,7 +302,7 @@ pub(crate) fn tile_label_at_width(
             color,
             text_width,
         );
-        if galley.rows.len() <= 2 {
+        if galley.rows.len() <= preferred_rows {
             return galley;
         }
     }

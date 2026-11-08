@@ -2203,7 +2203,7 @@ impl Application {
             // Status is paint over one continuous input, never a second column.
             // Long focused commands can use the whole input without obstruction.
             if !response.has_focus() || typed_width < width - status_width - 20. {
-                let galley = ui.painter().layout_no_wrap(
+                let mut job = egui::text::LayoutJob::simple(
                     status.clone(),
                     egui::FontId::proportional(11.),
                     if self.message_error {
@@ -2211,15 +2211,20 @@ impl Application {
                     } else {
                         Color32::GRAY
                     },
+                    (status_width - 8.).max(0.),
                 );
+                job.wrap.max_rows = 1;
+                let galley = ui.painter().layout_job(job);
                 let clip = egui::Rect::from_min_max(
                     egui::pos2(response.rect.right() - status_width, response.rect.top()),
                     response.rect.right_bottom(),
                 );
-                ui.interact(clip, ui.id().with("command-status"), egui::Sense::hover())
-                    .widget_info(|| {
-                        egui::WidgetInfo::labeled(egui::WidgetType::Label, true, &status)
-                    });
+                let status_response =
+                    ui.interact(clip, ui.id().with("command-status"), egui::Sense::hover());
+                status_response.widget_info(|| {
+                    egui::WidgetInfo::labeled(egui::WidgetType::Label, true, &status)
+                });
+                status_response.on_hover_text(status);
                 ui.painter().with_clip_rect(clip).galley(
                     egui::pos2(
                         response.rect.right() - galley.size().x - 4.,

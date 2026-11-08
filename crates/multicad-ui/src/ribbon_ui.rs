@@ -1104,6 +1104,9 @@ mod tests {
                             let shown =
                                 icons::tile_label_at_width(ui, label, egui::Color32::WHITE, width);
                             assert!(shown.rows.len() <= 2, "{label}");
+                            if label == "Construction" {
+                                assert_eq!(shown.rows.len(), 1, "Construction at {width} pt");
+                            }
                             assert!(
                                 icons::TOOL_LABEL_TOP + shown.size().y + 4. <= icons::TOOL_TILE.y,
                                 "{label} leaves no bottom padding"

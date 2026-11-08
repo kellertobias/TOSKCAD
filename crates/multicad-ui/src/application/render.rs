@@ -23,7 +23,7 @@ pub(super) struct RenderStatus {
 pub(super) const BLENDER_AVAILABILITY: &str = "Blender handoff is not written from this window yet. \
 An automation client connected through ToskCAD's external control (MCP) can write the \
 handoff — a GLB scene and a JSON manifest — into its export folder. Open the GLB in \
-Blender with File → Import → glTF 2.0.";
+Blender by choosing File, then Import, then glTF 2.0.";
 
 fn close(a: &RenderCamera, b: &RenderCamera) -> bool {
     let scale = a
