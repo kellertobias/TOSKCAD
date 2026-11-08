@@ -172,6 +172,10 @@ fn tool_discovery_is_complete_and_schemas_are_objects() {
         "set_compound_cutout",
         "inspect_compound_cutout",
         "remove_compound_cutout",
+        "capture_surface_structure_faces",
+        "inspect_surface_structure",
+        "preview_surface_structure",
+        "set_surface_structure",
         "inspect_architectural_symbol",
         "author_architectural_symbol",
         "import_architectural_symbol",
@@ -188,11 +192,17 @@ fn tool_discovery_is_complete_and_schemas_are_objects() {
         let requires_revision = tool["inputSchema"]["required"]
             .as_array()
             .is_some_and(|r| r.contains(&json!("expected_revision")));
-        // Every mutation needs its base revision. A read-only native preview
-        // also guards its source revision without committing a transaction.
+        // Mutations need a base revision. Native capture and preview also
+        // guard their source revision without committing a transaction.
         if matches!(
             tool["name"].as_str(),
-            Some("preview_fence" | "preview_compound_cutout" | "preview_wood_box")
+            Some(
+                "preview_fence"
+                    | "preview_compound_cutout"
+                    | "preview_wood_box"
+                    | "capture_surface_structure_faces"
+                    | "preview_surface_structure"
+            )
         ) {
             assert!(read_only);
             assert!(requires_revision);
