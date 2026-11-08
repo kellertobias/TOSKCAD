@@ -1,7 +1,6 @@
 //! Sheet-metal inspector: place a rectangular base sheet from sheet stock,
 //! or edit an applied sheet part. Thickness comes from the stock; the inside
-//! radius and K-factor come from the stock unless overridden here. Sheet
-//! stock is defined in Project → Materials.
+//! radius and K-factor come from the stock unless overridden here.
 mod edges;
 
 use super::{
@@ -9,7 +8,7 @@ use super::{
     dimension::DimensionField,
     form::{self, FormAction, ModelEvent, ModelRequest},
 };
-use crate::{controls, egui};
+use crate::{controls, egui, materials::ToolStock};
 use multicad_core::{
     commands::{Actor, Session},
     constraint_sketch::Dimension,
@@ -386,7 +385,7 @@ impl SheetPanel {
     fn definition(&self, document: &Document) -> Result<SheetDefinition, String> {
         let stock = self
             .stock
-            .ok_or("Choose sheet stock; define it in Project → Materials")?;
+            .ok_or("Choose or create sheet stock from the stock dropdown")?;
         let base = match &self.kept_base {
             Some(base) => base.clone(),
             None => SheetBase::Rectangle {
@@ -442,6 +441,10 @@ impl SheetPanel {
         self.stamp.changed();
         self.error = None;
     }
+    pub(super) fn select_stock(&mut self, id: EntityId) {
+        self.stock = Some(id);
+        self.edited();
+    }
     pub fn show(
         &mut self,
         ui: &mut egui::Ui,
@@ -465,12 +468,6 @@ impl SheetPanel {
             )
             .changed();
         let stocks = sheet_stocks(document);
-        if stocks.is_empty() {
-            ui.colored_label(
-                egui::Color32::LIGHT_RED,
-                "No sheet stock yet. Define sheet stock in Project → Materials.",
-            );
-        }
         ui.label("Sheet stock");
         let describe = |s: &(EntityId, String, f64, f64, f64)| {
             format!("{} · {} mm · r {} · K {}", s.1, s.2, s.3, s.4)
@@ -479,7 +476,7 @@ impl SheetPanel {
             .stock
             .and_then(|v| stocks.iter().find(|s| s.0 == v))
             .map_or("Choose sheet stock".into(), describe);
-        controls::inspector_combo(ui, "sheet-stock")
+        let create = controls::inspector_combo(ui, "sheet-stock")
             .selected_text(selected)
             .show_ui(ui, |ui| {
                 for s in &stocks {
@@ -487,7 +484,13 @@ impl SheetPanel {
                         .selectable_value(&mut self.stock, Some(s.0), describe(s))
                         .changed();
                 }
-            });
+                ui.button(ToolStock::Sheet.label()).clicked()
+            })
+            .inner
+            .unwrap_or(false);
+        if create {
+            return Some(ModelEvent::CreateStock(ToolStock::Sheet));
+        }
         ui.separator();
         if self.kept_base.is_some() {
             ui.small("The base comes from a sketch region or a converted solid and is kept.");

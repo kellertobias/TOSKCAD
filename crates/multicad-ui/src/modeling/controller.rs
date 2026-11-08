@@ -111,6 +111,10 @@ struct Handoff {
 pub struct ModelToolController {
     architecture_level: Option<Option<EntityId>>,
     form: Option<ModelForm>,
+    stock_editor: Option<(
+        crate::materials::ToolStock,
+        Box<crate::materials::LibraryEditor>,
+    )>,
     advanced_context: Option<advanced::AdvancedContext>,
     backend: Option<Box<dyn SceneBackend>>,
     scope: Option<Scope>,
@@ -1654,6 +1658,7 @@ impl ModelToolController {
         self.keyboard_confirm = None;
         self.operation = Default::default();
         self.form = None;
+        self.stock_editor = None;
         self.scope = None;
         self.surface_inspection = None;
         self.candidate = None;
@@ -1718,6 +1723,9 @@ impl ModelToolController {
         resources: &ProjectResources,
         channel: Channel,
     ) -> Result<(), String> {
+        if self.stock_editor.is_some() {
+            return Err("Save or cancel the stock definition first".into());
+        }
         self.stop_edge_treatment_picking();
         self.stop_advanced_picking();
         self.stop_surface_structure_picking();
@@ -2106,7 +2114,8 @@ impl ModelToolController {
         }
     }
     pub fn can_apply(&self, session: &Session, resources: &ProjectResources) -> bool {
-        !self.transform_dragging()
+        self.stock_editor.is_none()
+            && !self.transform_dragging()
             && !self.scale_origin_picking()
             && self.preview_visible(session, resources)
             && self
@@ -2403,6 +2412,10 @@ impl ModelToolController {
         session: &mut Session,
         resources: &ProjectResources,
     ) -> Result<Option<ModelToolOutcome>, String> {
+        if self.stock_editor.is_some() {
+            self.show_stock_editor(ui, session, resources);
+            return Ok(None);
+        }
         self.update_primitive_preview(ui, session, resources, false);
         if let Some(notice) = &self.context_notice {
             ui.small(notice);
@@ -2557,6 +2570,9 @@ impl ModelToolController {
             self.keyboard_confirm = None;
         }
         let result = match event {
+            Some(ModelEvent::CreateStock(kind)) => self
+                .begin_stock_editor(session, resources, kind)
+                .map(|()| None),
             Some(ModelEvent::CompoundCutout) => {
                 self.invalidate();
                 self.form = Some(ModelForm::CompoundCutout(Box::new(
@@ -2614,6 +2630,7 @@ mod operation_interaction;
 mod operations;
 mod placement_interaction;
 mod preparation;
+mod stock;
 pub use operation_interaction::OperationViewport;
 mod profile_connection;
 mod scale_interaction;

@@ -5,6 +5,21 @@ use multicad_core::{
     materials::*,
 };
 mod preview;
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ToolStock {
+    Sheet,
+    Profile,
+    Batten,
+}
+impl ToolStock {
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::Sheet => "Create sheet stock…",
+            Self::Profile => "Create tube or profile stock…",
+            Self::Batten => "Create solid rectangular stock…",
+        }
+    }
+}
 #[derive(Clone, PartialEq)]
 struct Draft {
     entity: Entity,
@@ -162,19 +177,90 @@ impl LibraryEditor {
             .map_err(|e| e.to_string())
     }
     fn create_stock(&mut self, s: &Session, kind: usize) {
+        self.create_stock_from(
+            s,
+            ["New panel stock", "New sheet stock", "New profile stock"][kind],
+            stock_default(kind),
+        );
+    }
+    fn create_stock_from(&mut self, s: &Session, name: &str, specification: StockKind) {
         self.create(s, 1);
         let draft = self.draft.as_mut().expect("created stock");
         let material = stock_material(&draft.entity).expect("stock material");
         if let EntityData::Extension { definition, inputs } = &mut draft.entity.data {
             let stock = LibraryDefinition::Stock(Stock {
                 material,
-                specification: stock_default(kind),
+                specification,
             });
             definition.data = serde_json::to_value(&stock).expect("stock draft");
             *inputs = stock.links();
         }
-        draft.entity.name =
-            ["New panel stock", "New sheet stock", "New profile stock"][kind].into();
+        draft.entity.name = name.into();
+    }
+    pub(crate) fn for_model_stock(s: &Session, kind: ToolStock) -> Self {
+        let mut editor = Self::default();
+        match kind {
+            ToolStock::Sheet => editor.create_stock(s, 1),
+            ToolStock::Profile => editor.create_stock(s, 2),
+            ToolStock::Batten => editor.create_stock_from(
+                s,
+                "New solid rectangular stock",
+                StockKind::Profile {
+                    designation: "Solid rectangular bar".into(),
+                    length_mm: 6000.,
+                    width_mm: 30.,
+                    height_mm: 30.,
+                    wall_mm: None,
+                    shape: ProfileShape::Rectangular,
+                },
+            ),
+        }
+        editor
+    }
+    pub(crate) fn show_model_stock(&mut self, ui: &mut egui::Ui, s: &Session, kind: ToolStock) {
+        ui.strong(kind.label().trim_end_matches('…'));
+        ui.small("Save a shared Project definition and select it in the current Model tool.");
+        if let Some(draft) = &mut self.draft {
+            ui.push_id(draft.entity.id, |ui| edit_draft(ui, s, draft, Some(kind)));
+        }
+        if let Some(error) = &self.error {
+            ui.colored_label(Color32::LIGHT_RED, error);
+        }
+    }
+    pub(crate) fn prepare_model_stock(&self, s: &Session) -> Result<(EntityId, Prepared), String> {
+        let draft = self
+            .draft
+            .as_ref()
+            .ok_or("Start a stock definition first")?;
+        let EntityData::Extension { definition, .. } = &draft.entity.data else {
+            return Err("Choose a stock definition".into());
+        };
+        let definition: LibraryDefinition = serde_json::from_value(definition.data.clone())
+            .map_err(|_| "Enter valid stock dimensions")?;
+        let LibraryDefinition::Stock(stock) = &definition else {
+            return Err("Choose a stock definition".into());
+        };
+        if draft.entity.name.trim().is_empty() {
+            return Err("Enter a stock name".into());
+        }
+        if draft.companion.as_ref().is_some_and(|material| {
+            material.id == stock.material && material.name.trim().is_empty()
+        }) {
+            return Err("Enter a manufacturing material name".into());
+        }
+        if definition.validate().is_err() {
+            return Err(match stock.specification {
+                StockKind::Sheet { .. } => "Enter positive sheet dimensions, a nonnegative bend radius, and a K factor from 0 to 1.",
+                StockKind::Profile { shape: ProfileShape::ItemLine8_40x40, .. } =>
+                    "Enter a designation and a stock length above 0 and at most 6000 mm.",
+                _ => "Enter a designation and positive section dimensions. Wall thickness must be positive and no more than half the smaller section dimension.",
+            }.into());
+        }
+        self.prepare(s, Channel::Ui)
+            .map(|prepared| (draft.entity.id, prepared))
+    }
+    pub(crate) fn model_stock_error(&mut self, error: String) {
+        self.error = Some(error);
     }
     pub(crate) fn show_ribbon(&mut self, ui: &mut egui::Ui, s: &Session, editable: bool) {
         use crate::icons::{Icon, tool_with_hint};
@@ -339,14 +425,16 @@ impl LibraryEditor {
                     s.document().id(),
                     draft.entity.id,
                 ));
-                ui.scope_builder(egui::UiBuilder::new().id(id), |ui| edit_draft(ui, s, draft));
+                ui.scope_builder(egui::UiBuilder::new().id(id), |ui| {
+                    edit_draft(ui, s, draft, None)
+                });
             } else {
                 ui.label("Choose or create a reusable definition.");
             }
         });
     }
 }
-fn edit_draft(ui: &mut egui::Ui, s: &Session, d: &mut Draft) {
+fn edit_draft(ui: &mut egui::Ui, s: &Session, d: &mut Draft, model_stock: Option<ToolStock>) {
     let name = ui.label("Name");
     ui.add(egui::TextEdit::singleline(&mut d.entity.name).desired_width(f32::INFINITY))
         .labelled_by(name.id)
@@ -451,23 +539,33 @@ fn edit_draft(ui: &mut egui::Ui, s: &Session, d: &mut Draft) {
                         stock.material = id;
                     }
                 }
-                let mut kind = stock_index(&stock.specification);
-                let old = kind;
-                egui::ComboBox::from_id_salt("stock-kind")
-                    .selected_text(["Panel", "Sheet metal", "Profile", "Printed material"][kind])
-                    .show_ui(ui, |ui| {
-                        for (i, n) in ["Panel", "Sheet metal", "Profile", "Printed material"]
-                            .into_iter()
-                            .enumerate()
-                        {
-                            ui.selectable_value(&mut kind, i, n);
-                        }
-                    });
-                if old != kind {
-                    stock.specification = stock_default(kind);
+                if model_stock.is_none() {
+                    let mut kind = stock_index(&stock.specification);
+                    let old = kind;
+                    egui::ComboBox::from_id_salt("stock-kind")
+                        .selected_text(
+                            ["Panel", "Sheet metal", "Profile", "Printed material"][kind],
+                        )
+                        .show_ui(ui, |ui| {
+                            for (i, n) in ["Panel", "Sheet metal", "Profile", "Printed material"]
+                                .into_iter()
+                                .enumerate()
+                            {
+                                ui.selectable_value(&mut kind, i, n);
+                            }
+                        });
+                    if old != kind {
+                        stock.specification = stock_default(kind);
+                    }
                 }
-                stock_controls(ui, &mut stock.specification);
-                ui.small("Tools that use this stock read its live thickness or section. Preview checks affected geometry; a metadata assignment alone does not resize a Part.");
+                stock_controls(
+                    ui,
+                    &mut stock.specification,
+                    model_stock == Some(ToolStock::Batten),
+                );
+                if model_stock.is_none() {
+                    ui.small("Tools that use this stock read its live thickness or section. Preview checks affected geometry; a metadata assignment alone does not resize a Part.");
+                }
             }
             _ => {}
         }
@@ -605,7 +703,7 @@ fn stock_default(i: usize) -> StockKind {
         },
     }
 }
-fn stock_controls(ui: &mut egui::Ui, s: &mut StockKind) {
+fn stock_controls(ui: &mut egui::Ui, s: &mut StockKind, solid_rectangular: bool) {
     match s {
         StockKind::Panel {
             thickness_mm,
@@ -655,18 +753,20 @@ fn stock_controls(ui: &mut egui::Ui, s: &mut StockKind) {
                 ProfileShape::Angle => "Angle",
                 ProfileShape::ItemLine8_40x40 => "item Line 8 40×40",
             };
-            egui::ComboBox::from_id_salt("profile-shape")
-                .selected_text(shape_label(*shape))
-                .show_ui(ui, |ui| {
-                    for s in [
-                        ProfileShape::Rectangular,
-                        ProfileShape::Round,
-                        ProfileShape::Angle,
-                        ProfileShape::ItemLine8_40x40,
-                    ] {
-                        ui.selectable_value(shape, s, shape_label(s));
-                    }
-                });
+            if !solid_rectangular {
+                egui::ComboBox::from_id_salt("profile-shape")
+                    .selected_text(shape_label(*shape))
+                    .show_ui(ui, |ui| {
+                        for s in [
+                            ProfileShape::Rectangular,
+                            ProfileShape::Round,
+                            ProfileShape::Angle,
+                            ProfileShape::ItemLine8_40x40,
+                        ] {
+                            ui.selectable_value(shape, s, shape_label(s));
+                        }
+                    });
+            }
             if previous_shape != *shape {
                 if *shape == ProfileShape::ItemLine8_40x40 {
                     *width_mm = 40.;
@@ -696,7 +796,7 @@ fn stock_controls(ui: &mut egui::Ui, s: &mut StockKind) {
                 number(ui, "Width", width_mm, " mm");
                 number(ui, "Height", height_mm, " mm");
             }
-            if *shape != ProfileShape::Angle {
+            if *shape != ProfileShape::Angle && !solid_rectangular {
                 let mut hollow = wall_mm.is_some();
                 if ui.checkbox(&mut hollow, "Hollow section").changed() {
                     *wall_mm = if hollow { Some(2.) } else { None };

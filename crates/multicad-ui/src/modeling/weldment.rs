@@ -1,6 +1,6 @@
 //! Weldment inspector: create tube and profile members from the solid lines
 //! of a sketch or from a point pair, or edit one member in place. Profile
-//! stock is defined in Project → Materials.
+//! stock is shared with Project → Materials.
 use super::{
     FormStamp, PreviewState,
     dimension::DimensionField,
@@ -289,6 +289,11 @@ impl WeldmentPanel {
     pub fn stamp(&self) -> FormStamp {
         self.stamp
     }
+    pub(super) fn select_stock(&mut self, id: EntityId) {
+        self.stock = Some(id);
+        self.stamp.changed();
+        self.error = None;
+    }
     pub fn batten(document: &Document, name: String) -> Self {
         let mut form = Self::new(document, name);
         form.batten = true;
@@ -316,13 +321,11 @@ impl WeldmentPanel {
         if self.name.trim().is_empty() || self.name.len() > 1000 {
             return Err("Enter a name with 1–1000 bytes".into());
         }
-        let stock = self
-            .stock
-            .ok_or(if self.batten {
-                "Define solid rectangular profile stock for your timber in Project → Materials, then choose it here"
-            } else {
-                "Choose profile stock; define it in Project → Materials"
-            })?;
+        let stock = self.stock.ok_or(if self.batten {
+            "Choose or create solid rectangular stock from the stock dropdown"
+        } else {
+            "Choose or create tube or profile stock from the stock dropdown"
+        })?;
         if self.batten
             && !profile_stocks(document, true)
                 .iter()
@@ -417,27 +420,34 @@ impl WeldmentPanel {
             )
             .changed();
         if self.batten {
-            ui.small("Choose solid rectangular profile stock linked to your timber material in Project → Materials.");
+            ui.small("Choose solid rectangular profile stock linked to your timber material.");
         }
         let stocks = profile_stocks(document, self.batten);
-        if stocks.is_empty() {
-            ui.colored_label(
-                egui::Color32::LIGHT_RED,
-                if self.batten {
-                    "No solid rectangular stock yet. Define profile stock without a wall thickness in Project → Materials."
-                } else {
-                    "No profile stock yet. Define tube, bar or angle stock in Project → Materials."
-                },
-            );
-        }
+        let kind = if self.batten {
+            crate::materials::ToolStock::Batten
+        } else {
+            crate::materials::ToolStock::Profile
+        };
         ui.label("Profile stock");
-        changed |= combo(
-            ui,
-            "weld-stock",
-            "Choose profile stock",
-            &stocks,
-            &mut self.stock,
-        );
+        let selected = self
+            .stock
+            .and_then(|id| stocks.iter().find(|(stock, _)| *stock == id))
+            .map_or("Choose profile stock", |(_, name)| name);
+        let create = controls::inspector_combo(ui, "weld-stock")
+            .selected_text(selected)
+            .show_ui(ui, |ui| {
+                for (id, name) in &stocks {
+                    changed |= ui
+                        .selectable_value(&mut self.stock, Some(*id), name)
+                        .changed();
+                }
+                ui.button(kind.label()).clicked()
+            })
+            .inner
+            .unwrap_or(false);
+        if create {
+            return Some(ModelEvent::CreateStock(kind));
+        }
         ui.separator();
         let sketch_path = self.existing.is_some() && self.path.is_some();
         if self.existing.is_none() {

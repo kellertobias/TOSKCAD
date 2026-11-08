@@ -1176,6 +1176,9 @@ impl SketchEditor {
         self.fit_requested |= fit && !self.model.active();
         self.message = format!("{label} applied · one undoable source edit");
     }
+    pub(crate) fn cancel_model_stock(&mut self) -> bool {
+        self.model.cancel_stock_editor()
+    }
     pub fn cancel_model(&mut self) {
         self.acquisition = None;
         self.profile_faces.clear();

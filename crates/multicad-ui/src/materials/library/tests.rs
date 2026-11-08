@@ -37,19 +37,44 @@ fn apply(editor: &mut LibraryEditor, s: &mut Session) -> Result<(), String> {
 }
 fn set_stock(editor: &mut LibraryEditor, f: impl FnOnce(&mut Stock)) {
     let d = editor.draft.as_mut().unwrap();
-    let Some(LibraryDefinition::Stock(mut stock)) = read(&d.entity).unwrap() else {
-        panic!("stock draft")
-    };
-    f(&mut stock);
-    let definition = LibraryDefinition::Stock(stock);
-    if let EntityData::Extension {
+    let EntityData::Extension {
         definition: wire,
         inputs,
     } = &mut d.entity.data
-    {
-        wire.data = serde_json::to_value(&definition).unwrap();
-        *inputs = definition.links();
-    }
+    else {
+        panic!("stock draft");
+    };
+    let LibraryDefinition::Stock(mut stock) = serde_json::from_value(wire.data.clone()).unwrap()
+    else {
+        panic!("stock draft");
+    };
+    f(&mut stock);
+    let definition = LibraryDefinition::Stock(stock);
+    wire.data = serde_json::to_value(&definition).unwrap();
+    *inputs = definition.links();
+}
+#[test]
+fn inline_stock_rejects_invalid_dimensions_and_keeps_the_draft_editable() {
+    let session = Session::new(Document::new("Stock corrections").unwrap()).unwrap();
+    let mut editor = LibraryEditor::for_model_stock(&session, ToolStock::Sheet);
+    set_stock(&mut editor, |stock| {
+        if let StockKind::Sheet { thickness_mm, .. } = &mut stock.specification {
+            *thickness_mm = 0.;
+        }
+    });
+    assert!(matches!(
+        editor.prepare_model_stock(&session),
+        Err(error) if error.contains("positive sheet dimensions")
+    ));
+    assert_eq!(session.document().entities().count(), 0);
+    // Keep the same draft and correct the field.
+    set_stock(&mut editor, |stock| {
+        if let StockKind::Sheet { thickness_mm, .. } = &mut stock.specification {
+            *thickness_mm = 1.5;
+        }
+    });
+    let (_, prepared) = editor.prepare_model_stock(&session).unwrap();
+    assert_eq!(prepared.document().entities().count(), 2);
 }
 #[test]
 fn native_material_preview_is_neutral_and_apply_and_history_keep_one_identity() {

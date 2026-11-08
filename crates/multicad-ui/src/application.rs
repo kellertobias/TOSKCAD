@@ -968,6 +968,10 @@ impl Application {
                     return Ok(());
                 }
                 let p = self.current_mut();
+                if p.sketch.cancel_model_stock() {
+                    self.message = "Stock draft cancelled · modeling inputs kept".into();
+                    return Ok(());
+                }
                 if p.sketch.model_interaction_active() {
                     p.sketch.cancel_model();
                     self.message = "Unapplied modeling controls discarded".into();

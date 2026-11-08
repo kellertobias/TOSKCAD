@@ -4,7 +4,8 @@ impl ModelToolController {
     /// Whether viewer clicks choose sheet edges: the Sheet part form is
     /// open on a rectangle base.
     pub fn sheet_edge_picking(&self) -> bool {
-        matches!(&self.form, Some(ModelForm::Sheet(panel)) if panel.edge_picking())
+        self.stock_editor.is_none()
+            && matches!(&self.form, Some(ModelForm::Sheet(panel)) if panel.edge_picking())
     }
     /// Hover, click and draw sheet edges and flange guides. A click that
     /// adds a flange or flips its direction edits the same rows as the
@@ -14,6 +15,9 @@ impl ModelToolController {
         session: &Session,
         view: super::super::TerminationViewport<'_>,
     ) -> bool {
+        if self.stock_editor.is_some() {
+            return false;
+        }
         let changed = match self.form.as_mut() {
             Some(ModelForm::Sheet(panel)) => panel.viewport(session.document(), view),
             _ => false,

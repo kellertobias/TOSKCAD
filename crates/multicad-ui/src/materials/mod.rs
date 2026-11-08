@@ -4,6 +4,7 @@ mod part;
 mod tag_input;
 use eframe::egui;
 pub use library::LibraryEditor;
+pub(crate) use library::ToolStock;
 use multicad_core::{commands::Session, document::EntityId};
 pub use part::PartEditor;
 #[derive(Default)]

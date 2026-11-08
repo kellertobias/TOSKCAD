@@ -455,6 +455,7 @@ impl ModelRequest {
 }
 pub(super) enum ModelEvent {
     CompoundCutout,
+    CreateStock(crate::materials::ToolStock),
     Changed,
     Preview {
         stamp: FormStamp,
