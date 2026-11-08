@@ -655,13 +655,16 @@ impl Compiler {
                 }
                 let assembly_started = std::time::Instant::now();
                 let solid = crate::assemblies::component(
-                    document,
+                    crate::assemblies::ComponentInputs {
+                        document,
+                        occurrences: &occurrences,
+                        solids: &solids,
+                        revision,
+                        policy: self.policy,
+                        interrupt,
+                    },
                     id,
-                    &occurrences,
-                    &solids,
                     &mut leaves,
-                    revision,
-                    self.policy,
                 )?;
                 let topology = solid
                     .topology_snapshot(id, revision)
@@ -769,7 +772,7 @@ impl Compiler {
                     revision,
                 )?;
                 topologies.insert(id, occurrence.topology.clone());
-                leaves.instance(document, &occurrence, revision)?;
+                leaves.instance(document, &occurrence, revision, interrupt)?;
                 timings.assembly_and_occurrence_ms +=
                     occurrence_started.elapsed().as_secs_f64() * 1000.;
                 let occurrence = Arc::new(occurrence);
@@ -1407,11 +1410,15 @@ impl Compiler {
         let pair_started = std::time::Instant::now();
         let gear_pair_checks = if roots.is_none() {
             crate::gear_pairs::validate(
-                document,
-                context.parameters(),
-                &solids,
-                self.policy,
-                interrupt,
+                crate::gear_pairs::ValidationInputs {
+                    document,
+                    evaluated: context.parameters(),
+                    solids: &solids,
+                    occurrences: &occurrences,
+                    revision,
+                    policy: self.policy,
+                    interrupt,
+                },
                 Some(pair_proofs),
             )?
         } else {

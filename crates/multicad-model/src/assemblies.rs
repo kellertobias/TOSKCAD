@@ -1,5 +1,5 @@
 //! Exact reusable component compounds and canonical leaf-path geometry.
-use crate::{ModelError, OccurrenceSnapshot, error};
+use crate::{ModelError, OccurrenceSnapshot, compiler::checkpoint, error};
 use multicad_core::{
     document::{Document, EntityData, EntityId},
     model::{OccurrencePath, RigidPose},
@@ -151,7 +151,9 @@ impl LeafStore {
         document: &Document,
         occurrence: &OccurrenceSnapshot,
         revision: u64,
+        interrupt: Option<&dyn Fn() -> bool>,
     ) -> Result<(), ModelError> {
+        checkpoint(interrupt)?;
         if matches!(
             document.get(occurrence.component).map(|e| &e.data),
             Some(EntityData::Part { .. })
@@ -178,6 +180,7 @@ impl LeafStore {
             ));
         }
         for leaf in source {
+            checkpoint(interrupt)?;
             let solid = self
                 .solids
                 .get(&leaf.path)
@@ -219,15 +222,27 @@ fn rigid(pose: RigidPose) -> RigidTransform {
         translation_mm: pose.translation_mm,
     }
 }
+pub(crate) struct ComponentInputs<'a> {
+    pub document: &'a Document,
+    pub occurrences: &'a BTreeMap<EntityId, Arc<OccurrenceSnapshot>>,
+    pub solids: &'a BTreeMap<EntityId, Solid>,
+    pub revision: u64,
+    pub policy: GeometryPolicy,
+    pub interrupt: Option<&'a dyn Fn() -> bool>,
+}
 pub(crate) fn component(
-    document: &Document,
+    inputs: ComponentInputs<'_>,
     id: EntityId,
-    occurrences: &BTreeMap<EntityId, Arc<OccurrenceSnapshot>>,
-    solids: &BTreeMap<EntityId, Solid>,
     store: &mut LeafStore,
-    revision: u64,
-    policy: GeometryPolicy,
 ) -> Result<Solid, ModelError> {
+    let ComponentInputs {
+        document,
+        occurrences,
+        solids,
+        revision,
+        policy,
+        interrupt,
+    } = inputs;
     let Some(EntityData::Assembly { instances }) = document.get(id).map(|e| &e.data) else {
         return Err(error(Some(id), "Assembly definition missing"));
     };
@@ -240,13 +255,14 @@ pub(crate) fn component(
     let mut members = vec![];
     let mut leaves = vec![];
     for member in instances {
+        checkpoint(interrupt)?;
         let occurrence = occurrences
             .get(member)
             .ok_or_else(|| error(Some(id), "Assembly member placement is unavailable"))?;
         let solid = solids
             .get(member)
             .ok_or_else(|| error(Some(id), "Assembly member native geometry is unavailable"))?
-            .transformed(Default::default())
+            .share()
             .and_then(|s| s.with_occurrence_origin(id, *member))
             .map_err(|e| error(Some(id), e))?;
         if matches!(
@@ -266,12 +282,7 @@ pub(crate) fn component(
                     .topology_snapshot(id, revision)
                     .map_err(|e| error(Some(id), e))?,
             };
-            leaves.push((
-                leaf,
-                solid
-                    .transformed(Default::default())
-                    .map_err(|e| error(Some(id), e))?,
-            ));
+            leaves.push((leaf, solid.share().map_err(|e| error(Some(id), e))?));
         } else {
             let source = store
                 .snapshots
@@ -286,6 +297,7 @@ pub(crate) fn component(
                 ));
             }
             for leaf in source {
+                checkpoint(interrupt)?;
                 let world = store
                     .solids
                     .get(&leaf.path)
@@ -319,8 +331,13 @@ pub(crate) fn component(
         }
         members.push(solid);
     }
-    let compound = Solid::compound_named(&members.iter().collect::<Vec<_>>(), id, policy)
-        .map_err(|e| error(Some(id), e))?;
+    let compound = Solid::compound_named_interruptible(
+        &members.iter().collect::<Vec<_>>(),
+        id,
+        policy,
+        interrupt,
+    )
+    .map_err(|e| error(Some(id), e))?;
     for (snapshot, solid) in leaves {
         store.insert(snapshot, Some(solid))?;
     }

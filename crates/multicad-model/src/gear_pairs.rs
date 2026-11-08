@@ -1,5 +1,5 @@
 //! Bounded interference evidence for periodic, unmodified generator pairs.
-use crate::{ModelError, compiler::checkpoint, error};
+use crate::{ModelError, OccurrenceSnapshot, compiler::checkpoint, error};
 use multicad_core::{
     constraint_sketch::Dimension,
     document::{Document, EntityData, EntityId, Mutation},
@@ -75,6 +75,7 @@ fn placed(solid: &Solid, pose: model::RigidPose, pair: EntityId) -> Result<Solid
         })
         .map_err(|e| error(Some(pair), e))
 }
+#[cfg(test)]
 fn overlap(
     pair: EntityId,
     a: &Solid,
@@ -163,6 +164,7 @@ fn rotary_engagement(
     solids: [&Solid; 2],
     policy: GeometryPolicy,
     bevel: bool,
+    interrupt: Option<&dyn Fn() -> bool>,
 ) -> Result<GearEngagementWitness, ModelError> {
     if bevel {
         return rotary_engagement_band(
@@ -172,6 +174,7 @@ fn rotary_engagement(
             solids,
             policy,
             ("bevel/tooth", "spherical_involute", true),
+            interrupt,
         );
     }
     let family = resolved.gears[0].rotary().expect("external pair").family;
@@ -188,6 +191,7 @@ fn rotary_engagement(
             solids,
             policy,
             ("gear/lower/tooth", "involute", false),
+            interrupt,
         )?;
         let upper = rotary_engagement_band(
             pair,
@@ -196,6 +200,7 @@ fn rotary_engagement(
             solids,
             policy,
             ("gear/upper/tooth", "involute", false),
+            interrupt,
         )?;
         let mut result = if lower.distance_mm >= upper.distance_mm {
             lower
@@ -212,6 +217,7 @@ fn rotary_engagement(
         solids,
         policy,
         ("gear/whole/tooth", "involute", true),
+        interrupt,
     )?;
     if family == model::GearFamily::Helical && result.kind != "whole_solid_fallback" {
         result.kind = "shifted_helical_flank_faces";
@@ -225,6 +231,7 @@ fn rotary_engagement_band(
     solids: [&Solid; 2],
     policy: GeometryPolicy,
     band: (&str, &str, bool),
+    interrupt: Option<&dyn Fn() -> bool>,
 ) -> Result<GearEngagementWitness, ModelError> {
     let bevel = band.0 == "bevel/tooth";
     let names = (band.0, band.1);
@@ -274,6 +281,7 @@ fn rotary_engagement_band(
     // this small search window and recording the different witness scope.
     for &a in &faces[0] {
         for &b in &faces[1] {
+            checkpoint(interrupt)?;
             let distance = solids[0]
                 .minimum_distance(BRepSelection::Face(a), solids[1], BRepSelection::Face(b))
                 .map_err(|e| error(Some(pair), e))?;
@@ -302,6 +310,7 @@ fn rotary_engagement_band(
             ),
         ));
     }
+    checkpoint(interrupt)?;
     let distance = solids[0]
         .minimum_distance(BRepSelection::Whole, solids[1], BRepSelection::Whole)
         .map_err(|e| error(Some(pair), e))?;
@@ -328,6 +337,7 @@ fn worm_engagement(
     resolved: &model::ResolvedGearPair,
     solids: [&Solid; 2],
     policy: GeometryPolicy,
+    interrupt: Option<&dyn Fn() -> bool>,
 ) -> Result<GearEngagementWitness, ModelError> {
     let context = resolved.worm.as_ref().expect("resolved worm pair");
     let wi = context.worm_member.index();
@@ -394,6 +404,7 @@ fn worm_engagement(
     if selected[wi].len() <= 256 && selected[gi].len() <= 32 {
         for &a in &selected[0] {
             for &b in &selected[1] {
+                checkpoint(interrupt)?;
                 let distance = solids[0]
                     .minimum_distance(BRepSelection::Face(a), solids[1], BRepSelection::Face(b))
                     .map_err(|e| error(Some(pair), e))?;
@@ -409,6 +420,7 @@ fn worm_engagement(
             }
         }
     }
+    checkpoint(interrupt)?;
     let distance = solids[0]
         .minimum_distance(BRepSelection::Whole, solids[1], BRepSelection::Whole)
         .map_err(|e| error(Some(pair), e))?;
@@ -429,6 +441,121 @@ fn worm_engagement(
         points_mm: [witness.a_mm, witness.b_mm],
     })
 }
+fn chevron_pair(resolved: &model::ResolvedGearPair) -> bool {
+    resolved.gears.iter().all(|gear| {
+        matches!(
+            gear.family(),
+            model::GearFamily::Herringbone | model::GearFamily::DoubleHelical
+        )
+    })
+}
+
+struct PoseCheck<'a> {
+    pair: EntityId,
+    features: [EntityId; 2],
+    policy: GeometryPolicy,
+    shifted: bool,
+    interrupt: Option<&'a dyn Fn() -> bool>,
+}
+impl PoseCheck<'_> {
+    fn with_placement(
+        &self,
+        document: &Document,
+        evaluated: &EvaluatedParameters,
+        source: &GearPairDefinition,
+        resolved: &model::ResolvedGearPair,
+        solids: [&Solid; 2],
+        drive: f64,
+    ) -> Result<Option<GearEngagementWitness>, ModelError> {
+        let mut placed_solids = Vec::with_capacity(2);
+        for (instance, solid) in source.outputs.instances.into_iter().zip(solids) {
+            checkpoint(self.interrupt)?;
+            let pose = model::resolve_instance_pose(document, instance, evaluated)
+                .map_err(|e| error(Some(self.pair), e))?;
+            placed_solids.push(placed(solid, pose, self.pair)?);
+        }
+        self.placed(resolved, [&placed_solids[0], &placed_solids[1]], drive)
+    }
+
+    fn placed(
+        &self,
+        resolved: &model::ResolvedGearPair,
+        solids: [&Solid; 2],
+        drive: f64,
+    ) -> Result<Option<GearEngagementWitness>, ModelError> {
+        let Self {
+            pair,
+            features,
+            policy,
+            shifted,
+            interrupt,
+        } = *self;
+        checkpoint(interrupt)?;
+        // One exact COMMON at a time on this owner. OCCT owns any workers
+        // within that query; Rust native handles stay on their owner thread.
+        overlap_checked(
+            pair,
+            solids[0],
+            solids[1],
+            drive,
+            policy,
+            resolved.worm.is_some() || chevron_pair(resolved),
+        )?;
+        checkpoint(interrupt)?;
+        let engagement = if resolved.worm.is_some() {
+            Some(worm_engagement(
+                pair, features, resolved, solids, policy, interrupt,
+            )?)
+        } else if resolved.bevel.is_some() || shifted {
+            Some(rotary_engagement(
+                pair,
+                features,
+                resolved,
+                solids,
+                policy,
+                resolved.bevel.is_some(),
+                interrupt,
+            )?)
+        } else {
+            if let Some(travel) = &resolved.rack_travel {
+                let rack = resolved.gears[travel.rack_member.index()]
+                    .rack()
+                    .expect("rack member");
+                let pinion = resolved.gears[travel.pinion_member.index()]
+                    .rotary()
+                    .expect("pinion member");
+                // A no-overlap result also accepts separated bodies. Require
+                // actual native proximity within the total authored thinning.
+                let clearance = rack.nominal_tooth_thickness_mm - rack.physical_tooth_thickness_mm
+                    + pinion.nominal_tooth_thickness_mm
+                    - pinion.physical_tooth_thickness_mm;
+                let distance = solids[0]
+                    .minimum_distance(BRepSelection::Whole, solids[1], BRepSelection::Whole)
+                    .map_err(|e| error(Some(pair), e))?;
+                if distance.distance_mm > clearance + policy.linear_tolerance_mm * 10. {
+                    return Err(error(
+                        Some(pair),
+                        format!(
+                            "Gear members have no native engagement proximity: gap {} mm exceeds authored total thinning {} mm",
+                            distance.distance_mm, clearance
+                        ),
+                    ));
+                }
+            }
+            None
+        };
+        checkpoint(interrupt)?;
+        Ok(engagement)
+    }
+}
+
+fn shifted_engagement(document: &Document, features: [EntityId; 2]) -> bool {
+    features.into_iter().any(|feature| {
+        model::read_gear(document, feature).is_ok_and(|g| g.parameters.shift_mate.is_some())
+    })
+}
+
+#[cfg(test)]
 fn check_pose(
     document: &Document,
     evaluated: &EvaluatedParameters,
@@ -438,105 +565,71 @@ fn check_pose(
     drive: f64,
     policy: GeometryPolicy,
 ) -> Result<Option<GearEngagementWitness>, ModelError> {
-    let mut placed_solids = Vec::with_capacity(2);
-    for (index, solid) in solids.into_iter().enumerate() {
-        let pose =
-            model::resolve_instance_pose(document, source.outputs.instances[index], evaluated)
-                .map_err(|e| error(Some(pair), e))?;
-        placed_solids.push(placed(solid, pose, pair)?);
-    }
-    // Sample documents carry the tested drive. The original source retained by
-    // the cycle loop still carries its initial drive and cannot select the
-    // current native tooth flanks at another sampled or wrapped angle.
     let current_source = model::read_gear_pair(document, pair).map_err(|e| error(Some(pair), e))?;
     let resolved =
         model::resolve_gear_pair_parameters(document, evaluated, &current_source.parameters)
             .map_err(|e| error(Some(pair), e))?;
-    if resolved.worm.is_some() {
-        overlap_checked(
-            pair,
-            &placed_solids[0],
-            &placed_solids[1],
-            drive,
-            policy,
-            true,
-        )?;
-    } else {
-        overlap(pair, &placed_solids[0], &placed_solids[1], drive, policy)?;
+    PoseCheck {
+        pair,
+        features: source.parameters.gears,
+        policy,
+        shifted: shifted_engagement(document, source.parameters.gears),
+        interrupt: None,
     }
-    if resolved.bevel.is_some() {
-        return rotary_engagement(
-            pair,
-            source.parameters.gears,
-            &resolved,
-            [&placed_solids[0], &placed_solids[1]],
-            policy,
-            true,
-        )
-        .map(Some);
-    }
-    if resolved.worm.is_some() {
-        return worm_engagement(
-            pair,
-            source.parameters.gears,
-            &resolved,
-            [&placed_solids[0], &placed_solids[1]],
-            policy,
-        )
-        .map(Some);
-    }
-    let shifted_external = source.parameters.gears.iter().any(|&feature| {
-        model::read_gear(document, feature).is_ok_and(|g| g.parameters.shift_mate.is_some())
-    });
-    if shifted_external {
-        return rotary_engagement(
-            pair,
-            source.parameters.gears,
-            &resolved,
-            [&placed_solids[0], &placed_solids[1]],
-            policy,
-            false,
-        )
-        .map(Some);
-    }
-    let engagement_clearance = if let Some(travel) = &resolved.rack_travel {
-        let rack = resolved.gears[travel.rack_member.index()]
-            .rack()
-            .expect("rack member");
-        let pinion = resolved.gears[travel.pinion_member.index()]
-            .rotary()
-            .expect("pinion member");
-        // A no-overlap result alone also accepts separated bodies. Require an
-        // actual native proximity witness bounded by the total authored thinning.
-        // This is sampled engagement evidence, never a contact/load certificate.
-        Some(
-            rack.nominal_tooth_thickness_mm - rack.physical_tooth_thickness_mm
-                + pinion.nominal_tooth_thickness_mm
-                - pinion.physical_tooth_thickness_mm,
-        )
-    } else {
-        None
-    };
-    if let Some(clearance) = engagement_clearance {
-        let distance = placed_solids[0]
-            .minimum_distance(
-                BRepSelection::Whole,
-                &placed_solids[1],
-                BRepSelection::Whole,
-            )
-            .map_err(|e| error(Some(pair), e))?;
-        if distance.distance_mm > clearance + policy.linear_tolerance_mm * 10. {
-            return Err(error(
-                Some(pair),
-                format!(
-                    "Gear members have no native engagement proximity: gap {} mm exceeds authored total thinning {} mm",
-                    distance.distance_mm, clearance
-                ),
-            ));
-        }
-    }
-    Ok(None)
+    .with_placement(document, evaluated, source, &resolved, solids, drive)
 }
+
+pub(crate) struct ValidationInputs<'a> {
+    pub document: &'a Document,
+    pub evaluated: &'a EvaluatedParameters,
+    pub solids: &'a BTreeMap<EntityId, Solid>,
+    pub occurrences: &'a BTreeMap<EntityId, std::sync::Arc<OccurrenceSnapshot>>,
+    pub revision: u64,
+    pub policy: GeometryPolicy,
+    pub interrupt: Option<&'a dyn Fn() -> bool>,
+}
+
+impl ValidationInputs<'_> {
+    fn current_member(
+        &self,
+        pair: EntityId,
+        source: &GearPairDefinition,
+        index: usize,
+    ) -> Result<&Solid, ModelError> {
+        // The Full compiler created this native operand and occurrence receipt
+        // together. Confirm the pair's fixed source still names precisely that
+        // instance, Part, producer and evaluated world pose.
+        let instance = source.outputs.instances[index];
+        let producer = source.parameters.gears[index];
+        let component = model::read_gear(self.document, producer)
+            .map_err(|e| error(Some(pair), e))?
+            .output
+            .body;
+        let expected_pose = model::resolve_instance_pose(self.document, instance, self.evaluated)
+            .map_err(|e| error(Some(pair), e))?;
+        let invalid = || {
+            error(
+                Some(pair),
+                "Current chevron occurrence does not match its checked Part, producer, pose or revision",
+            )
+        };
+        let occurrence = self.occurrences.get(&instance).ok_or_else(invalid)?;
+        let solid = self.solids.get(&instance).ok_or_else(invalid)?;
+        if occurrence.instance != instance
+            || occurrence.component != component
+            || occurrence.producer != producer
+            || occurrence.pose != expected_pose
+            || occurrence.topology.owner != instance
+            || occurrence.topology.revision != self.revision
+            || solid.geometry_policy() != self.policy
+            || solid.bounds().map_err(|e| error(Some(pair), e))? != occurrence.bounds
+        {
+            return Err(invalid());
+        }
+        Ok(solid)
+    }
+}
+
 fn sample_document(
     document: &Document,
     pair: EntityId,
@@ -564,13 +657,17 @@ fn sample_document(
         .map_err(|e| error(Some(pair), e))
 }
 pub(crate) fn validate(
-    document: &Document,
-    evaluated: &EvaluatedParameters,
-    solids: &BTreeMap<EntityId, Solid>,
-    policy: GeometryPolicy,
-    interrupt: Option<&dyn Fn() -> bool>,
+    inputs: ValidationInputs<'_>,
     mut cache: Option<&mut crate::pair_cycle_proofs::CycleTransaction>,
 ) -> Result<BTreeMap<EntityId, GearPairCheck>, ModelError> {
+    let ValidationInputs {
+        document,
+        evaluated,
+        solids,
+        policy,
+        interrupt,
+        ..
+    } = inputs;
     let pairs=document.entities().filter(|e|matches!(&e.data,EntityData::Extension{definition,..} if definition.type_id==model::GEAR_PAIR_TYPE)).collect::<Vec<_>>();
     if pairs.len() > MAX_PAIRS {
         return Err(error(
@@ -604,12 +701,16 @@ pub(crate) fn validate(
         // derived on these closed structs and never persisted as a file format.
         // Drive is excluded only from the periodic cycle proof; its actual
         // current pose is checked independently below on every compile.
-        let shifted_engagement = source.parameters.gears.iter().any(|&feature| {
-            model::read_gear(document, feature)
-                .is_ok_and(|gear| gear.parameters.shift_mate.is_some())
-        });
+        let shifted_engagement = shifted_engagement(document, source.parameters.gears);
+        let checker = PoseCheck {
+            pair,
+            features: source.parameters.gears,
+            policy,
+            shifted: shifted_engagement,
+            interrupt,
+        };
         let key = format!(
-            "gear-pair-cycle/5/{SAMPLES}|{:?}|{pair:?}|{:?}|{:?}|{specifications:?}|{:?}|{base:?}|{policy:?}|shifted-engagement:{shifted_engagement}",
+            "gear-pair-cycle/6/{SAMPLES}|{:?}|{pair:?}|{:?}|{:?}|{specifications:?}|{:?}|{base:?}|{policy:?}|shifted-engagement:{shifted_engagement}",
             document.id(),
             source.parameters.gears,
             source.outputs,
@@ -655,7 +756,21 @@ pub(crate) fn validate(
             for drive in &phases {
                 checkpoint(interrupt)?;
                 let sample = sample_document(document, pair, &source, *drive)?;
-                check_pose(&sample, evaluated, &source, pair, [a, b], *drive, policy)?;
+                // Use this sample's drive for both native placement and its
+                // named flank witnesses, including wrapped and rack endpoints.
+                let sampled =
+                    model::read_gear_pair(&sample, pair).map_err(|e| error(Some(pair), e))?;
+                let sampled_resolved =
+                    model::resolve_gear_pair_parameters(&sample, evaluated, &sampled.parameters)
+                        .map_err(|e| error(Some(pair), e))?;
+                checker.with_placement(
+                    &sample,
+                    evaluated,
+                    &sampled,
+                    &sampled_resolved,
+                    [a, b],
+                    *drive,
+                )?;
             }
             if let Some(cache) = cache.as_deref_mut() {
                 cache.stage(key, phases.clone());
@@ -674,8 +789,15 @@ pub(crate) fn validate(
             .value_in(multicad_core::parameters::Unit::Radian, Some(evaluated))
             .map_err(|e| error(Some(pair), e))?;
         let current_started = std::time::Instant::now();
-        let current_engagement =
-            check_pose(document, evaluated, &source, pair, [a, b], current, policy)?;
+        let current_engagement = if chevron_pair(&resolved) {
+            let placed = [
+                inputs.current_member(pair, &source, 0)?,
+                inputs.current_member(pair, &source, 1)?,
+            ];
+            checker.placed(&resolved, placed, current)?
+        } else {
+            checker.with_placement(document, evaluated, &source, &resolved, [a, b], current)?
+        };
         let current_pose_ms = current_started.elapsed().as_secs_f64() * 1000.;
         reports.insert(pair,GearPairCheck{pair,current_engagement,center_distance_mm:resolved.center_distance_mm,bevel:resolved.bevel.clone(),worm:resolved.worm.clone(),cycle_drive_angles_rad:phases,cycle_reused:reused,sampled_cycle_ms,current_pose_ms,current_drive_angle_rad:current,current_pose_checked:true,maximum_overlap_volume_mm3:0.,scope:if resolved.worm.is_some() { "Native current pose and nine sampled phases over one full ZA worm turn with native no-overlap and engagement proximity witnesses for its generated wheel. No continuous collision-free motion, strength or manufacturing-fit certification." } else if resolved.rack_travel.is_some() { "Native current pose, nine sampled phases over one pinion tooth period and both conservative finite travel endpoints. No continuous collision-free motion, strength or manufacturing-fit certification." } else if resolved.bevel.is_some() { "Native current pose and nine sampled phases over one spherical-involute bevel tooth cycle with native no-overlap and engagement proximity witnesses. No continuous collision-free motion, strength or manufacturing-fit certification." } else if shifted_engagement { "Native current pose and nine sampled phases over one matched shifted external tooth cycle, with whole-solid no-overlap and native named-flank proximity in each chevron band, or a whole-solid fallback for single-band gears. No continuous collision-free motion, strength or manufacturing-fit certification." } else { "Native current pose and nine sampled phases over one pinion tooth cycle, under the unmodified periodic generator assumption. No continuous collision-free motion, strength or manufacturing-fit certification." }});
     }
@@ -699,6 +821,12 @@ mod tests {
     };
     use std::cell::Cell;
     fn candidate() -> (Session, GearPairRequest, BTreeMap<EntityId, Solid>) {
+        candidate_with_family(GearFamily::Spur)
+    }
+
+    fn candidate_with_family(
+        family: GearFamily,
+    ) -> (Session, GearPairRequest, BTreeMap<EntityId, Solid>) {
         let mut session =
             Session::new(Document::new("Native pair failure controls").unwrap()).unwrap();
         let requests = std::array::from_fn(|i| {
@@ -709,7 +837,16 @@ mod tests {
                         value: if i == 0 { 20. } else { 30. },
                         unit: "count".into(),
                     },
+                    family,
                     face_width: length(4.),
+                    helix_angle: angle(if family == GearFamily::Spur { 0. } else { 15. }),
+                    hand: if family == GearFamily::Spur {
+                        GearHand::None
+                    } else if i == 0 {
+                        GearHand::Left
+                    } else {
+                        GearHand::Right
+                    },
                     ..Default::default()
                 },
             )
@@ -737,6 +874,114 @@ mod tests {
             .collect();
         (session, request, solids)
     }
+    #[test]
+    fn chevron_parallel_common_and_exact_occurrence_receipt() {
+        let (session, request, solids) = candidate_with_family(GearFamily::Herringbone);
+        let document = session.document();
+        let evaluated = session.parameters();
+        let revision = session.revision();
+        let policy = GeometryPolicy::default();
+        let source = read_gear_pair(document, request.pair).unwrap();
+        let body_heads = solids
+            .keys()
+            .map(|id| (read_gear(document, *id).unwrap().output.body, *id))
+            .collect();
+        let topologies = solids
+            .iter()
+            .map(|(id, solid)| (*id, solid.topology_snapshot(*id, revision).unwrap()))
+            .collect();
+        let mut occurrences = BTreeMap::new();
+        let mut world = BTreeMap::new();
+        for instance in source.outputs.instances {
+            let (occurrence, solid) = crate::occurrences::build(
+                crate::occurrences::Inputs {
+                    document,
+                    parameters: evaluated,
+                    body_heads: &body_heads,
+                    solids: &solids,
+                    topologies: &topologies,
+                    policy,
+                },
+                instance,
+                revision,
+            )
+            .unwrap();
+            occurrences.insert(instance, std::sync::Arc::new(occurrence));
+            world.insert(instance, solid);
+        }
+        let [a, b] = source.outputs.instances;
+        let inputs = |occurrences| ValidationInputs {
+            document,
+            evaluated,
+            solids: &world,
+            occurrences,
+            revision,
+            policy,
+            interrupt: None,
+        };
+        let current = inputs(&occurrences);
+        let a_solid = current.current_member(request.pair, &source, 0).unwrap();
+        assert!(std::ptr::eq(a_solid, &world[&a]));
+        let b_solid = &world[&b];
+        assert!(
+            a_solid
+                .boolean(b_solid, BooleanOperation::Intersect, policy)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            a_solid
+                .intersect_parallel(b_solid, policy)
+                .unwrap()
+                .is_none()
+        );
+
+        // At this center distance, removing the half-tooth phase offset
+        // brings opposing teeth into real interference.
+        let wrong = placed(
+            &solids[&source.parameters.gears[1]],
+            RigidPose {
+                translation_mm: occurrences[&b].pose.translation_mm,
+                rotation: [[-1., 0., 0.], [0., -1., 0.], [0., 0., 1.]],
+            },
+            request.pair,
+        )
+        .unwrap();
+        let serial = a_solid
+            .boolean(&wrong, BooleanOperation::Intersect, policy)
+            .unwrap()
+            .unwrap()
+            .volume_mm3()
+            .unwrap();
+        let parallel = a_solid
+            .intersect_parallel(&wrong, policy)
+            .unwrap()
+            .unwrap()
+            .volume_mm3()
+            .unwrap();
+        assert!(serial > 1e-6);
+        assert!((serial - parallel).abs() <= 1e-6);
+
+        let mut stale = occurrences.clone();
+        std::sync::Arc::make_mut(stale.get_mut(&a).unwrap())
+            .topology
+            .revision -= 1;
+        assert!(
+            inputs(&stale)
+                .current_member(request.pair, &source, 0)
+                .is_err()
+        );
+        let mut wrong_pose = occurrences.clone();
+        std::sync::Arc::make_mut(wrong_pose.get_mut(&a).unwrap())
+            .pose
+            .translation_mm[0] += 0.01;
+        assert!(
+            inputs(&wrong_pose)
+                .current_member(request.pair, &source, 0)
+                .is_err()
+        );
+    }
+
     #[test]
     fn cancellation_after_last_sample_and_after_current_pose_publish_nothing() {
         let (session, request, _) = candidate();
@@ -811,11 +1056,15 @@ mod tests {
             visits.get() > 2
         };
         let result = validate(
-            session.document(),
-            session.parameters(),
-            &solids,
-            GeometryPolicy::default(),
-            Some(&interrupt),
+            ValidationInputs {
+                document: session.document(),
+                evaluated: session.parameters(),
+                solids: &solids,
+                occurrences: &BTreeMap::new(),
+                revision: session.revision(),
+                policy: GeometryPolicy::default(),
+                interrupt: Some(&interrupt),
+            },
             Some(&mut cache),
         );
         assert!(result.is_err());
