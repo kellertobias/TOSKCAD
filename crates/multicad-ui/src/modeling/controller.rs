@@ -115,6 +115,7 @@ pub struct ModelToolController {
     backend: Option<Box<dyn SceneBackend>>,
     scope: Option<Scope>,
     candidate: Option<Candidate>,
+    primitive_preview_after: Option<f64>,
     preparation: preparation::Lane,
     discovery: Option<Discovery>,
     surface_inspection: Option<surface_structure::SurfaceInspection>,
@@ -614,7 +615,8 @@ impl ModelToolController {
         Ok(())
     }
     pub fn pending(&self) -> bool {
-        self.preparation.pending()
+        self.primitive_preview_after.is_some()
+            || self.preparation.pending()
             || self
                 .surface_inspection
                 .as_ref()
@@ -680,7 +682,11 @@ impl ModelToolController {
                 height: length(50.),
                 frame: PrimitiveFrame::default(),
             },
-            _ => return Err("Choose a box or cylinder primitive".into()),
+            ModelingTool::Sphere => PrimitiveParameters::Sphere {
+                radius: length(20.),
+                frame: PrimitiveFrame::default(),
+            },
+            _ => return Err("Choose a primitive shape".into()),
         };
         let name = GeneratedNames::new(session.document()).numbered(kind.label(), " feature");
         let request = PrimitiveRequest::new(name, parameters);
@@ -689,7 +695,10 @@ impl ModelToolController {
             resources,
             channel,
             ModelForm::Primitive(Box::new(PrimitivePanel::new(request)?)),
-        )
+        )?;
+        // The form remains open if the preview provider reports an error.
+        let _ = self.preview(session, resources, channel);
+        Ok(())
     }
     pub fn begin_thread(
         &mut self,
@@ -1435,6 +1444,7 @@ impl ModelToolController {
             adoption: None,
         });
         self.candidate = None;
+        self.primitive_preview_after = None;
         self.discovery = None;
         self.operations = None;
         self.identities = BooleanIdentities::default();
@@ -1649,6 +1659,7 @@ impl ModelToolController {
         self.scope = None;
         self.surface_inspection = None;
         self.candidate = None;
+        self.primitive_preview_after = None;
         self.discovery = None;
         self.operations = None;
         self.identities = BooleanIdentities::default();
@@ -1697,6 +1708,7 @@ impl ModelToolController {
         self.placement_confirm = None;
         self.scale_confirm = None;
         self.candidate = None;
+        self.primitive_preview_after = None;
         self.discovery = None;
         if let Some(operations) = &mut self.operations {
             operations.invalidate();
@@ -2097,7 +2109,8 @@ impl ModelToolController {
         }
     }
     pub fn can_apply(&self, session: &Session, resources: &ProjectResources) -> bool {
-        self.preview_visible(session, resources)
+        !self.primitive_dragging()
+            && self.preview_visible(session, resources)
             && self
                 .candidate
                 .as_ref()
@@ -2277,12 +2290,64 @@ impl ModelToolController {
             self.handoff = None;
         }
     }
+    fn primitive_dragging(&self) -> bool {
+        matches!(&self.form, Some(ModelForm::Primitive(panel)) if panel.dragging())
+    }
+
+    fn schedule_primitive_preview(&mut self, ui: &egui::Ui) {
+        self.invalidate();
+        self.primitive_preview_after = Some(ui.input(|input| input.time) + 0.075);
+        ui.ctx().request_repaint();
+    }
+
+    fn update_primitive_preview(
+        &mut self,
+        ui: &egui::Ui,
+        session: &Session,
+        resources: &ProjectResources,
+        released: bool,
+    ) {
+        if let Some(deadline) = self.primitive_preview_after {
+            let remaining = deadline - ui.input(|input| input.time);
+            if released || remaining <= 0. {
+                let _ = self.preview(session, resources, Channel::Ui);
+            } else {
+                ui.ctx()
+                    .request_repaint_after(std::time::Duration::from_secs_f64(remaining));
+            }
+        }
+    }
+
+    pub fn primitive_viewport(
+        &mut self,
+        ui: &mut egui::Ui,
+        session: &Session,
+        resources: &ProjectResources,
+        camera: crate::camera::Camera,
+        rect: egui::Rect,
+    ) -> bool {
+        if !matches!(self.form, Some(ModelForm::Primitive(_))) {
+            return false;
+        }
+        let guide = !self.preview_visible(session, resources);
+        let Some(ModelForm::Primitive(panel)) = &mut self.form else {
+            unreachable!()
+        };
+        let (owned, changed, released) = panel.viewport(ui, session, camera, rect, guide);
+        if changed {
+            self.schedule_primitive_preview(ui);
+        }
+        self.update_primitive_preview(ui, session, resources, released);
+        owned
+    }
+
     pub fn show(
         &mut self,
         ui: &mut egui::Ui,
         session: &mut Session,
         resources: &ProjectResources,
     ) -> Result<Option<ModelToolOutcome>, String> {
+        self.update_primitive_preview(ui, session, resources, false);
         if let Some(notice) = &self.context_notice {
             ui.small(notice);
             ui.separator();
@@ -2306,6 +2371,11 @@ impl ModelToolController {
         }
         let stamp = self.stamp();
         let preview = match (&self.error, &self.candidate, stamp) {
+            (_, _, Some(stamp))
+                if self.primitive_preview_after.is_some() || self.primitive_dragging() =>
+            {
+                PreviewState::Pending { stamp }
+            }
             (Some(error), _, Some(stamp)) => PreviewState::Failed {
                 stamp,
                 message: error,
@@ -2436,7 +2506,11 @@ impl ModelToolController {
                 Ok(None)
             }
             Some(ModelEvent::Changed) => {
-                self.invalidate();
+                if matches!(self.form, Some(ModelForm::Primitive(_))) {
+                    self.schedule_primitive_preview(ui);
+                } else {
+                    self.invalidate();
+                }
                 Ok(None)
             }
             Some(ModelEvent::Preview { stamp, request }) => {

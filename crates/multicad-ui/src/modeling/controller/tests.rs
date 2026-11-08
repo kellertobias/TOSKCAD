@@ -396,7 +396,11 @@ fn candidate_hash_and_form_stamp_are_checked_independently_of_reply_scope() {
 
 #[test]
 fn primitives_use_the_same_native_gate_without_any_sketch() {
-    for kind in [ModelingTool::Box, ModelingTool::Cylinder] {
+    for kind in [
+        ModelingTool::Box,
+        ModelingTool::Cylinder,
+        ModelingTool::Sphere,
+    ] {
         let mut session = Session::new(Document::new("No sketch required").unwrap()).unwrap();
         let before = session.document().clone();
         let state = Arc::new(Mutex::new(State::default()));
@@ -408,9 +412,8 @@ fn primitives_use_the_same_native_gate_without_any_sketch() {
         assert_eq!(controller.label(), kind.label());
         assert!(controller.active());
         assert_eq!(session.document(), &before);
-        controller
-            .preview(&session, &Default::default(), Channel::Ui)
-            .unwrap();
+        assert!(controller.pending(), "Opening requests the native preview");
+        assert!(!controller.can_apply(&session, &Default::default()));
         let first = state.lock().unwrap().requests[0].0.clone();
         controller
             .preview(&session, &Default::default(), Channel::Ui)
@@ -435,11 +438,119 @@ fn primitives_use_the_same_native_gate_without_any_sketch() {
             (kind, source.parameters),
             (ModelingTool::Box, PrimitiveParameters::Box { .. })
                 | (ModelingTool::Cylinder, PrimitiveParameters::Cylinder { .. })
+                | (ModelingTool::Sphere, PrimitiveParameters::Sphere { .. })
         ));
         session.undo(1, Actor::local(Channel::Ui)).unwrap();
         assert_eq!(session.document(), &before);
     }
 }
+#[test]
+fn primitive_drag_replaces_the_native_preview_with_current_dimensions() {
+    let session = Session::new(Document::new("Primitive drag").unwrap()).unwrap();
+    let resources = ProjectResources::default();
+    let state = Arc::new(Mutex::new(State::default()));
+    let mut controller = ModelToolController::default();
+    controller.set_backend(Box::new(ScriptedBackend(state.clone())));
+    controller
+        .begin_primitive(&session, &resources, ModelingTool::Box, Channel::Ui)
+        .unwrap();
+
+    let context = egui::Context::default();
+    let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800., 600.));
+    let camera = crate::camera::Camera::default();
+    let project = |point| {
+        let [x, y, _] = camera.project(point, rect);
+        egui::pos2(x, y)
+    };
+    let frame = |controller: &mut ModelToolController, events| {
+        let mut owned = false;
+        let output = context.run_ui(
+            egui::RawInput {
+                screen_rect: Some(rect),
+                events,
+                ..Default::default()
+            },
+            |ui| {
+                ui.interact(
+                    rect,
+                    ui.id().with("viewport"),
+                    egui::Sense::click_and_drag(),
+                );
+                owned = controller.primitive_viewport(ui, &session, &resources, camera, rect);
+            },
+        );
+        output.drop_without_applying_deltas();
+        owned
+    };
+    let button = |pos, pressed| egui::Event::PointerButton {
+        pos,
+        pressed,
+        button: egui::PointerButton::Primary,
+        modifiers: egui::Modifiers::NONE,
+    };
+
+    frame(&mut controller, vec![]);
+    let width_handle = project([100., 0., 0.]);
+    let new_width = project([135., 0., 0.]);
+    assert!(frame(
+        &mut controller,
+        vec![
+            egui::Event::PointerMoved(width_handle),
+            button(width_handle, true)
+        ],
+    ));
+    assert!(frame(
+        &mut controller,
+        vec![egui::Event::PointerMoved(new_width)]
+    ));
+    reply(&state, 0);
+    controller.poll(&session, &resources);
+    assert!(!controller.can_apply(&session, &resources));
+    assert!(frame(&mut controller, vec![button(new_width, false)]));
+    assert_eq!(state.lock().unwrap().requests.len(), 2);
+    reply(&state, 1);
+    controller.poll(&session, &resources);
+    assert!(controller.can_apply(&session, &resources));
+
+    let place_handle = project([0.; 3]);
+    let placed = place_handle + egui::vec2(25., -12.);
+    assert!(frame(
+        &mut controller,
+        vec![
+            egui::Event::PointerMoved(place_handle),
+            button(place_handle, true)
+        ],
+    ));
+    assert!(frame(
+        &mut controller,
+        vec![egui::Event::PointerMoved(placed)]
+    ));
+    assert!(!controller.can_apply(&session, &resources));
+    assert!(frame(&mut controller, vec![button(placed, false)]));
+    let current = state.lock().unwrap().requests[2].0.clone();
+    let feature = current
+        .entities()
+        .find(|entity| multicad_core::model::read_primitive(&current, entity.id).is_ok())
+        .unwrap();
+    let primitive = multicad_core::model::read_primitive(&current, feature.id).unwrap();
+    let model::ResolvedPrimitive::Box { size_mm, frame } =
+        primitive.parameters.resolve(session.parameters()).unwrap()
+    else {
+        panic!("dragged primitive must remain a box");
+    };
+    assert!((size_mm[0] - 135.).abs() < 0.001, "{size_mm:?}");
+    assert_eq!(size_mm[1..], [60., 20.]);
+    let [x, y, _] = camera.project(frame.origin.map(|v| v as f32), rect);
+    assert!(egui::pos2(x, y).distance(placed) < 0.001);
+
+    reply(&state, 2);
+    controller.poll(&session, &resources);
+    assert!(controller.can_apply(&session, &resources));
+    controller.cancel();
+    assert_eq!(session.revision(), 0);
+    assert!(session.document().entities().next().is_none());
+}
+
 #[test]
 fn generated_names_are_unique_against_committed_bodies_and_stable_during_preview() {
     let (mut session, sketch, profiles) = fixture();

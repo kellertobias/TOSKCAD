@@ -123,7 +123,6 @@ fn tool_first_scale_footer_is_painted_and_clickable_after_target_selection() {
         // before acquiring Scale targets in this same Inspector/scroll context.
         app.invoke(Command::Modeling(ModelingTool::Cylinder), &[], Channel::Ui)
             .unwrap();
-        click(&ctx, &mut app, size, "Preview");
         let until = Instant::now() + Duration::from_secs(5);
         loop {
             let out = frame(&ctx, &mut app, size, vec![]);

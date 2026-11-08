@@ -90,6 +90,7 @@ pub enum ModelingTool {
     Extrude,
     Box,
     Cylinder,
+    Sphere,
     Thread,
     Gear,
     MechanicalPart,
@@ -139,9 +140,10 @@ impl ModelingTool {
             _ => None,
         }
     }
-    pub const ALL: [Self; 47] = [
+    pub const ALL: [Self; 48] = [
         Self::Box,
         Self::Cylinder,
+        Self::Sphere,
         Self::Thread,
         Self::Gear,
         Self::MechanicalPart,
@@ -199,6 +201,7 @@ impl ModelingTool {
             Self::Extrude => "extrude",
             Self::Box => "box",
             Self::Cylinder => "cylinder",
+            Self::Sphere => "sphere",
             Self::Thread => "thread",
             Self::ScrewConnection => "screw-connection",
             Self::ProfileConnection => "profile-connection",
@@ -252,6 +255,7 @@ impl ModelingTool {
             Self::Extrude => "Extrude",
             Self::Box => "Box",
             Self::Cylinder => "Cylinder",
+            Self::Sphere => "Sphere",
             Self::Thread => "Thread",
             Self::ScrewConnection => "Attach screw connection",
             Self::ProfileConnection => "Connect profiles",
@@ -305,6 +309,7 @@ impl ModelingTool {
             Self::Extrude => crate::icons::Icon::Extrude,
             Self::Box => crate::icons::Icon::Box,
             Self::Cylinder => crate::icons::Icon::Cylinder,
+            Self::Sphere => crate::icons::Icon::Sphere,
             Self::Thread => crate::icons::Icon::Revolve,
             Self::ScrewConnection => crate::icons::Icon::Revolve,
             Self::ProfileConnection => crate::icons::Icon::Revolve,
@@ -353,6 +358,7 @@ impl ModelingTool {
             Self::Extrude => &["ext", "extrusion"],
             Self::Box => &["cube", "add-box"],
             Self::Cylinder => &["cyl", "add-cylinder"],
+            Self::Sphere => &["add-sphere"],
             Self::Thread => &["screw-thread", "tap-thread", "helical-thread"],
             Self::ScrewConnection => &["attach-screw", "fastener-connection"],
             Self::SurfaceStructure => &["surface-relief", "height-map"],
@@ -517,10 +523,11 @@ impl ModelingTool {
             Self::Extrude => {
                 "Usage: extrude (select closed sketch areas, open the controls, then Preview and Apply)"
             }
-            Self::Box => "Usage: box (enter dimensions in the Inspector, then Preview and Apply)",
+            Self::Box => "Usage: box (drag the handles or enter dimensions, then Apply)",
             Self::Cylinder => {
-                "Usage: cylinder (enter radius and height in the Inspector, then Preview and Apply)"
+                "Usage: cylinder (drag the handles or enter radius and height, then Apply)"
             }
+            Self::Sphere => "Usage: sphere (drag the handles or enter a radius, then Apply)",
             Self::Revolve => {
                 "Usage: revolve (select closed sketch areas, choose an axis in the Inspector, then Preview and Apply)"
             }
@@ -624,7 +631,7 @@ impl ModelingTool {
             Self::Extrude | Self::Revolve => {
                 "Select current closed areas in a sketch and finish pending edits. Native modeling must be available."
             }
-            Self::Box | Self::Cylinder => {
+            Self::Box | Self::Cylinder | Self::Sphere => {
                 "Requires native modeling and no pending edits. A sketch is not required."
             }
             Self::Boolean => {

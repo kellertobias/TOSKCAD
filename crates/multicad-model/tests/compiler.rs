@@ -10,7 +10,7 @@ use multicad_core::{
         angle, length,
     },
     parameters::BoundExpression,
-    project_file::ContentHash,
+    project_file::{self, ContentHash, ProjectFile},
     references::{Origin, TopologyKind},
     sketch::{self, CreationPlane, PlaneOptions},
     sketch_regions,
@@ -635,6 +635,95 @@ fn rotated_box_and_cylinder_primitives_compile_named_exact_solids_in_their_frame
     }
     assert_eq!(session.document(), &original);
 }
+#[test]
+fn sphere_primitive_compiles_edits_and_reopens_as_an_exact_named_solid() {
+    let mut session = Session::new(Document::new("Sphere primitive").unwrap()).unwrap();
+    let center = [100., -10., 5.];
+    let frame = PrimitiveFrame {
+        origin: center.map(length),
+        u: [0., 1., 0.],
+        v: [0., 0., 1.],
+    };
+    let sphere = |radius| PrimitiveParameters::Sphere {
+        radius: length(radius),
+        frame: frame.clone(),
+    };
+    let request = PrimitiveRequest::new("Sphere", sphere(10.));
+    let initial = session.document().clone();
+    let prepared = model::prepare_primitive(&session, 0, actor(), &request).unwrap();
+    assert_eq!(session.document(), &initial);
+    session.commit(prepared.prepared).unwrap();
+
+    let compiler = Compiler::default();
+    let check = |document: &Document, revision, radius: f64| {
+        let model = compiler.compile(document, revision).unwrap();
+        let sphere = shape(&model, request.body);
+        assert_eq!(sphere.producer, request.feature);
+        assert_eq!(sphere.solid_count, 1);
+        near(
+            sphere.volume_mm3,
+            4. / 3. * std::f64::consts::PI * radius.powi(3),
+        );
+        point_near(sphere.bounds.min, center.map(|value| value - radius));
+        point_near(sphere.bounds.max, center.map(|value| value + radius));
+        assert!(!sphere.mesh.indices.is_empty());
+        assert!(sphere.topology.elements.iter().any(|element| {
+            element.key.kind == TopologyKind::Face
+                && element.frames.is_empty()
+                && element
+                    .origins
+                    .iter()
+                    .any(|origin| origin.source == request.feature)
+        }));
+    };
+    check(session.document(), session.revision(), 10.);
+    assert!(
+        model::prepare_primitive_edit(
+            &session,
+            session.revision(),
+            actor(),
+            request.feature,
+            &sphere(0.),
+        )
+        .is_err()
+    );
+    assert_eq!(session.revision(), 1);
+    let edit = model::prepare_primitive_edit(
+        &session,
+        session.revision(),
+        actor(),
+        request.feature,
+        &sphere(4.),
+    )
+    .unwrap();
+    session.commit(edit.prepared).unwrap();
+    check(session.document(), session.revision(), 4.);
+    session.undo(session.revision(), actor()).unwrap();
+    check(session.document(), session.revision(), 10.);
+    session.redo(session.revision(), actor()).unwrap();
+    check(session.document(), session.revision(), 4.);
+
+    let project = ProjectFile::new(session.document().clone()).unwrap();
+    assert!(project.capabilities().contains(model::SPHERE_CAPABILITY));
+    let mut bytes = vec![];
+    project_file::write(&project, &mut bytes, Default::default()).unwrap();
+    let supported = project_file::supported_capabilities();
+    let opened = project_file::read(&mut bytes.as_slice(), Default::default(), &supported)
+        .unwrap()
+        .project;
+    assert_eq!(opened.document, project.document);
+    assert_eq!(
+        model::read_primitive(&opened.document, request.feature)
+            .unwrap()
+            .parameters,
+        sphere(4.)
+    );
+    check(&opened.document, 0, 4.);
+    let mut legacy = supported;
+    legacy.remove(model::SPHERE_CAPABILITY);
+    assert!(project_file::read(&mut bytes.as_slice(), Default::default(), &legacy).is_err());
+}
+
 fn revolved_fixture(degrees: f64) -> (SharedProfiles, RevolveRequest) {
     let mut fixture = SharedProfiles::new(Default::default());
     let regions = fixture

@@ -10,11 +10,16 @@ fn panel(kind: ModelingTool) -> PrimitivePanel {
             size: [model::length(100.), model::length(60.), model::length(20.)],
             frame: PrimitiveFrame::default(),
         },
-        _ => PrimitiveParameters::Cylinder {
+        ModelingTool::Cylinder => PrimitiveParameters::Cylinder {
             radius: model::length(20.),
             height: model::length(50.),
             frame: PrimitiveFrame::default(),
         },
+        ModelingTool::Sphere => PrimitiveParameters::Sphere {
+            radius: model::length(20.),
+            frame: PrimitiveFrame::default(),
+        },
+        _ => unreachable!(),
     };
     PrimitivePanel::new(PrimitiveRequest::new("Editable body", parameters)).unwrap()
 }
@@ -33,7 +38,11 @@ fn orientation_and_formula_origin_are_canonical_source_and_not_display_moves() {
         ))
         .unwrap();
     let before = document.clone();
-    for kind in [ModelingTool::Box, ModelingTool::Cylinder] {
+    for kind in [
+        ModelingTool::Box,
+        ModelingTool::Cylinder,
+        ModelingTool::Sphere,
+    ] {
         let mut panel = panel(kind);
         let original = panel.request(&document, true).unwrap();
         panel.origin[0].text = "=$offset + 5".into();
@@ -49,9 +58,9 @@ fn orientation_and_formula_origin_are_canonical_source_and_not_display_moves() {
             .resolve(&parameters::evaluate(&document).unwrap())
             .unwrap();
         let frame = match resolved {
-            ResolvedPrimitive::Box { frame, .. } | ResolvedPrimitive::Cylinder { frame, .. } => {
-                frame
-            }
+            ResolvedPrimitive::Box { frame, .. }
+            | ResolvedPrimitive::Cylinder { frame, .. }
+            | ResolvedPrimitive::Sphere { frame, .. } => frame,
         };
         assert_eq!(frame.origin, [30., -12., 0.]);
         assert_eq!(frame.u, [1., 0., 0.]);
@@ -134,7 +143,11 @@ fn primitive_controls_share_edit_preview_apply_stamps_and_allow_intentional_name
 fn primitive_forms_stay_narrow_and_source_neutral_across_frames() {
     let document = Document::new("Narrow primitive Inspector").unwrap();
     let before = document.clone();
-    for kind in [ModelingTool::Box, ModelingTool::Cylinder] {
+    for kind in [
+        ModelingTool::Box,
+        ModelingTool::Cylinder,
+        ModelingTool::Sphere,
+    ] {
         let context = egui::Context::default();
         let mut panel = panel(kind);
         let ids = panel.request(&document, true).unwrap();

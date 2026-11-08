@@ -150,7 +150,8 @@ impl Resolver<'_> {
                 let source = model::read_primitive(self.document, feature).map_err(error)?;
                 let frame = match source.parameters {
                     PrimitiveParameters::Box { frame, .. }
-                    | PrimitiveParameters::Cylinder { frame, .. } => frame,
+                    | PrimitiveParameters::Cylinder { frame, .. }
+                    | PrimitiveParameters::Sphere { frame, .. } => frame,
                 }
                 .resolve(self.parameters)
                 .map_err(error)?;

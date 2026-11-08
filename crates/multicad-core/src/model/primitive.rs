@@ -1,4 +1,4 @@
-//! Canonical box/cylinder intent. Source-only preparations do not certify a
+//! Canonical box, cylinder and sphere intent. Source-only preparations do not certify a
 //! native solid; the model compiler owns geometry-policy and kernel validation.
 use super::{
     BodyOutput, CreatedBody, ModelPrepared,
@@ -18,6 +18,7 @@ use serde::{Deserialize, Serialize};
 pub const PRIMITIVE_TYPE: &str = "model.primitive";
 pub const PRIMITIVE_SCHEMA: u32 = 1;
 pub const PRIMITIVE_CAPABILITY: &str = "model.primitive.1";
+pub const SPHERE_CAPABILITY: &str = "model.primitive.sphere.1";
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PrimitiveFrame {
@@ -83,6 +84,10 @@ pub enum PrimitiveParameters {
         height: Dimension,
         frame: PrimitiveFrame,
     },
+    Sphere {
+        radius: Dimension,
+        frame: PrimitiveFrame,
+    },
 }
 #[derive(Clone, Debug, PartialEq)]
 pub enum ResolvedPrimitive {
@@ -95,11 +100,17 @@ pub enum ResolvedPrimitive {
         height_mm: f64,
         frame: Frame,
     },
+    Sphere {
+        radius_mm: f64,
+        frame: Frame,
+    },
 }
 impl PrimitiveParameters {
     fn frame(&self) -> &PrimitiveFrame {
         match self {
-            Self::Box { frame, .. } | Self::Cylinder { frame, .. } => frame,
+            Self::Box { frame, .. } | Self::Cylinder { frame, .. } | Self::Sphere { frame, .. } => {
+                frame
+            }
         }
     }
     fn dimensions(&self) -> Vec<&Dimension> {
@@ -107,6 +118,7 @@ impl PrimitiveParameters {
         match self {
             Self::Box { size, .. } => d.extend(size),
             Self::Cylinder { radius, height, .. } => d.extend([radius, height]),
+            Self::Sphere { radius, .. } => d.push(radius),
         }
         d
     }
@@ -143,6 +155,10 @@ impl PrimitiveParameters {
             Self::Cylinder { radius, height, .. } => ResolvedPrimitive::Cylinder {
                 radius_mm: positive(radius)?,
                 height_mm: positive(height)?,
+                frame,
+            },
+            Self::Sphere { radius, .. } => ResolvedPrimitive::Sphere {
+                radius_mm: positive(radius)?,
                 frame,
             },
         })

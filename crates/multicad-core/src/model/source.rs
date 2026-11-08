@@ -962,6 +962,15 @@ pub fn required_capabilities(document: &Document) -> BTreeSet<String> {
         })
         .collect();
     if saved_feature_matches(document, |type_id, data| {
+        type_id == super::PRIMITIVE_TYPE
+            && data
+                .pointer("/parameters/kind")
+                .and_then(serde_json::Value::as_str)
+                == Some("sphere")
+    }) {
+        capabilities.insert(super::SPHERE_CAPABILITY.into());
+    }
+    if saved_feature_matches(document, |type_id, data| {
         type_id == super::CONNECTION_RECEIVER_TYPE
             && data.get("entry_reference").is_some_and(|v| !v.is_null())
     }) {

@@ -879,63 +879,11 @@ impl Compiler {
                 (model::PRIMITIVE_TYPE, model::PRIMITIVE_SCHEMA) => {
                     let source =
                         model::read_primitive(document, id).map_err(|e| error(Some(id), e))?;
-                    let (frame, outer, height) = match source
+                    let primitive = source
                         .parameters
                         .resolve(context.parameters())
-                        .map_err(|e| error(Some(id), e))?
-                    {
-                        model::ResolvedPrimitive::Box {
-                            size_mm: [width, depth, height],
-                            frame,
-                        } => {
-                            let points = [[0., 0.], [width, 0.], [width, depth], [0., depth]];
-                            (
-                                frame,
-                                (0..4)
-                                    .map(|i| CurvedEdge2d::Line {
-                                        a: points[i],
-                                        b: points[(i + 1) % 4],
-                                    })
-                                    .collect(),
-                                height,
-                            )
-                        }
-                        model::ResolvedPrimitive::Cylinder {
-                            radius_mm,
-                            height_mm,
-                            frame,
-                        } => (
-                            frame,
-                            vec![CurvedEdge2d::Circle {
-                                center: [0., 0.],
-                                radius_mm,
-                            }],
-                            height_mm,
-                        ),
-                    };
-                    let origins: Vec<_> = (0..outer.len())
-                        .map(|i| Origin {
-                            source: id,
-                            role: format!("primitive.edge.{i}"),
-                        })
-                        .collect();
-                    let profile = CurvedProfile {
-                        frame: PlaneFrame {
-                            origin: frame.origin,
-                            u: frame.u,
-                            v: frame.v,
-                        },
-                        outer,
-                        holes: vec![],
-                    };
-                    Solid::extrude_curved_profile_vector_named(
-                        &profile,
-                        frame.n.map(|n| n * height),
-                        id,
-                        &origins,
-                        self.policy,
-                    )
-                    .map_err(|e| error(Some(id), e))?
+                        .map_err(|e| error(Some(id), e))?;
+                    build_primitive(primitive, id, self.policy).map_err(|e| error(Some(id), e))?
                 }
                 (model::SLAB_TYPE, 1) => {
                     crate::levels::build_slab(document, context.parameters(), id, self.policy)?
@@ -1610,6 +1558,106 @@ pub fn validate_source_roots(
         }
     }
     Ok(unique.into_iter().collect())
+}
+
+fn build_primitive(
+    primitive: model::ResolvedPrimitive,
+    feature: EntityId,
+    policy: GeometryPolicy,
+) -> Result<Solid, multicad_kernel::GeometryError> {
+    let (frame, outer, height) = match primitive {
+        model::ResolvedPrimitive::Box {
+            size_mm: [width, depth, height],
+            frame,
+        } => {
+            let points = [[0., 0.], [width, 0.], [width, depth], [0., depth]];
+            (
+                frame,
+                (0..4)
+                    .map(|i| CurvedEdge2d::Line {
+                        a: points[i],
+                        b: points[(i + 1) % 4],
+                    })
+                    .collect(),
+                height,
+            )
+        }
+        model::ResolvedPrimitive::Cylinder {
+            radius_mm,
+            height_mm,
+            frame,
+        } => (
+            frame,
+            vec![CurvedEdge2d::Circle {
+                center: [0., 0.],
+                radius_mm,
+            }],
+            height_mm,
+        ),
+        model::ResolvedPrimitive::Sphere { radius_mm, frame } => {
+            let a = [0., -radius_mm];
+            let b = [0., radius_mm];
+            let profile = CurvedProfile {
+                frame: PlaneFrame {
+                    origin: frame.origin,
+                    u: frame.u,
+                    v: frame.n,
+                },
+                outer: vec![
+                    CurvedEdge2d::Arc {
+                        center: [0., 0.],
+                        a,
+                        b,
+                        clockwise: false,
+                    },
+                    CurvedEdge2d::Line { a: b, b: a },
+                ],
+                holes: vec![],
+            };
+            return Solid::revolve_curved_profile_named(
+                &profile,
+                RevolutionAxis {
+                    origin_mm: frame.origin,
+                    direction: frame.n,
+                },
+                std::f64::consts::TAU,
+                feature,
+                &[
+                    Origin {
+                        source: feature,
+                        role: "primitive.edge.0".into(),
+                    },
+                    Origin {
+                        source: feature,
+                        role: "primitive.edge.1".into(),
+                    },
+                ],
+                policy,
+            );
+        }
+    };
+    let origins: Vec<_> = (0..outer.len())
+        .map(|i| Origin {
+            source: feature,
+            role: format!("primitive.edge.{i}"),
+        })
+        .collect();
+    let profile = CurvedProfile {
+        frame: PlaneFrame {
+            origin: frame.origin,
+            u: frame.u,
+            v: frame.v,
+        },
+        outer,
+        holes: vec![],
+    };
+    Solid::extrude_curved_profile_vector_named(
+        &profile,
+        frame.n.map(|n| n * height),
+        feature,
+        &origins,
+        policy,
+    )
 }
 
 #[cfg(test)]

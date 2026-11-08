@@ -30,6 +30,7 @@ pub enum Icon {
     Construction,
     Box,
     Cylinder,
+    Sphere,
     Extrude,
     Revolve,
     Boolean,
@@ -799,6 +800,18 @@ pub(crate) fn paint_sized(ui: &egui::Ui, icon: Icon, center: Pos2, color: Color3
             ]);
             line([13.0, 7.0], [17.0, 11.0]);
             line([4.0, 23.0], [21.0, 23.0]);
+        }
+        Icon::Sphere => {
+            p.circle_stroke(v(12., 12.), v(12., 12.).distance(v(21., 12.)), stroke);
+            for [x, y] in [[9., 3.5], [3.5, 9.]] {
+                let points = (0..=32)
+                    .map(|step| {
+                        let angle = step as f32 * std::f32::consts::TAU / 32.;
+                        v(12. + x * angle.cos(), 12. + y * angle.sin())
+                    })
+                    .collect();
+                p.add(egui::Shape::line(points, stroke));
+            }
         }
         Icon::Cylinder => {
             let ellipse = |cy: f32, start: usize, end: usize| {

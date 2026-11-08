@@ -1383,10 +1383,17 @@ impl Application {
                 self.mode = Mode::Model;
                 self.route_architecture_tool(tool, equipment_preset);
                 self.active_tool = Some((self.active, origin));
-                self.message = format!(
-                    "{} · choose controls in the Inspector, then Preview",
-                    wood_preset.map_or(tool.label(), |preset| preset.label())
-                );
+                let label = wood_preset.map_or(tool.label(), |preset| preset.label());
+                self.message = if matches!(
+                    tool,
+                    crate::modeling::ModelingTool::Box
+                        | crate::modeling::ModelingTool::Cylinder
+                        | crate::modeling::ModelingTool::Sphere
+                ) {
+                    format!("{label} · drag a viewport handle or enter dimensions")
+                } else {
+                    format!("{label} · choose controls in the Inspector, then Preview")
+                };
             }
             Command::Assembly(crate::assembly::AssemblyTool::Place) => {
                 // Retained command ID shares the global Library home.

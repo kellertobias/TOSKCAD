@@ -1171,7 +1171,7 @@ impl SketchEditor {
         self.model
             .begin_primitive(session, resources, kind, channel)?;
         self.message = format!(
-            "{} · enter dimensions in the Inspector, then Preview",
+            "{} · drag the viewport handles or enter dimensions in the Inspector",
             kind.label()
         );
         Ok(())
@@ -4431,6 +4431,9 @@ impl SketchEditor {
                     }
                 }
             }
+            owned |=
+                self.model
+                    .primitive_viewport(ui, session, context.resources, self.camera, rect);
             if self.model.operation_gizmo_active() {
                 owned |= self.operation_viewport(ui, &response, session, context.resources, rect);
             }

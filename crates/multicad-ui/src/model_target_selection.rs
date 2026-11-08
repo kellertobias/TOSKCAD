@@ -306,7 +306,10 @@ impl SketchEditor {
         if !self.modeling_available() {
             return Err("Apply or cancel the current edits before starting another tool".into());
         }
-        if matches!(tool, ModelingTool::Box | ModelingTool::Cylinder) {
+        if matches!(
+            tool,
+            ModelingTool::Box | ModelingTool::Cylinder | ModelingTool::Sphere
+        ) {
             return self.begin_primitive(session, resources, tool, channel);
         }
         if tool == ModelingTool::Thread {

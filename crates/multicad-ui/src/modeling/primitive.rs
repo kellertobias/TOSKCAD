@@ -10,6 +10,8 @@ use multicad_core::{
     sketch::Datum,
 };
 
+mod gizmo;
+
 pub(super) struct PrimitivePanel {
     request: PrimitiveRequest,
     kind: ModelingTool,
@@ -22,6 +24,7 @@ pub(super) struct PrimitivePanel {
     plane: Datum,
     error: Option<String>,
     editing: bool,
+    drag: Option<gizmo::Drag>,
 }
 impl PrimitivePanel {
     pub fn new(request: PrimitiveRequest) -> Result<Self, String> {
@@ -43,6 +46,13 @@ impl PrimitivePanel {
                 [model::length(100.), model::length(60.), model::length(20.)],
                 radius.clone(),
                 height.clone(),
+            ),
+            PrimitiveParameters::Sphere { radius, frame } => (
+                ModelingTool::Sphere,
+                frame,
+                [model::length(100.), model::length(60.), model::length(20.)],
+                radius.clone(),
+                model::length(50.),
             ),
         };
         let plane = Datum::ALL
@@ -71,6 +81,7 @@ impl PrimitivePanel {
             plane,
             error: None,
             editing: false,
+            drag: None,
         })
     }
     pub fn existing(request: PrimitiveRequest) -> Result<Self, String> {
@@ -115,7 +126,11 @@ impl PrimitivePanel {
                 height: self.height.resolve(document)?,
                 frame,
             },
-            _ => return Err("Choose a box or cylinder primitive".into()),
+            ModelingTool::Sphere => PrimitiveParameters::Sphere {
+                radius: self.radius.resolve(document)?,
+                frame,
+            },
+            _ => return Err("Choose a primitive shape".into()),
         };
         Ok(PrimitiveRequest {
             feature: self.request.feature,
@@ -141,6 +156,10 @@ impl PrimitivePanel {
                 self.height.remember(height);
                 frame
             }
+            PrimitiveParameters::Sphere { radius, frame } => {
+                self.radius.remember(radius);
+                frame
+            }
         };
         for (field, value) in self.origin.iter_mut().zip(&frame.origin) {
             field.remember(value);
@@ -155,12 +174,14 @@ impl PrimitivePanel {
     ) -> Option<ModelEvent> {
         controls::inspector_layout(ui);
         ui.strong(self.label());
-        ui.small(if self.editing {"Edit this existing producer and rebuild its downstream features. Body and feature names are retained."}else{"Create an independent native body. Preview validates geometry before Apply changes the document."});
+        ui.small(if self.editing {"Edit this existing producer and rebuild its downstream features. Body and feature names are retained."}else{"Drag a viewport handle or enter a dimension. Apply is available after the native preview validates."});
         ui.label("Body name");
         let mut changed = ui
             .add_enabled(
                 !self.editing,
-                egui::TextEdit::singleline(&mut self.name).desired_width(ui.available_width()),
+                egui::TextEdit::singleline(&mut self.name)
+                    .id(ui.make_persistent_id("primitive-name"))
+                    .desired_width(ui.available_width()),
             )
             .on_hover_text("Editable body name; intentional duplicate names are allowed")
             .changed();
@@ -179,7 +200,12 @@ impl PrimitivePanel {
             .iter_mut()
             .zip(["Origin X", "Origin Y", "Origin Z"])
         {
-            changed|=field.show(ui,label,"World coordinates of the box corner or cylinder base center; formulas can reference $parameters");
+            changed |= field.show_named(
+                ui,
+                label,
+                label,
+                "World coordinates of the primitive origin. Formulas can reference $parameters.",
+            );
         }
         ui.separator();
         if self.kind == ModelingTool::Box {
@@ -188,19 +214,28 @@ impl PrimitivePanel {
                     .iter_mut()
                     .zip(["Width along U", "Depth along V", "Height along normal"])
             {
-                changed|=field.show(ui,label,"Positive size along the selected orientation frame; values or =expressions are retained as canonical source");
+                changed |= field.show_named(
+                    ui,
+                    label,
+                    label,
+                    "Positive size along the selected orientation axis.",
+                );
             }
         } else {
-            changed |= self.radius.show(
+            changed |= self.radius.show_named(
                 ui,
+                "primitive-radius",
                 "Radius",
-                "Positive radius about the selected plane's normal",
+                "Positive distance from the center to the curved surface",
             );
-            changed |= self.height.show(
-                ui,
-                "Height along normal",
-                "Positive height from the cylinder base center",
-            );
+            if self.kind == ModelingTool::Cylinder {
+                changed |= self.height.show_named(
+                    ui,
+                    "primitive-height",
+                    "Height along normal",
+                    "Positive height from the cylinder base center",
+                );
+            }
         }
         ui.separator();
         form::preview_status(ui, self.stamp, preview);

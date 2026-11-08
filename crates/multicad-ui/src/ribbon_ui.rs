@@ -119,7 +119,7 @@ pub fn groups(mode: Mode, tab: &RibbonTab) -> Vec<Group> {
                 Entry::Menu {
                     label: "Add Primitive",
                     icon: Icon::Box,
-                    tools: vec!["box", "cylinder"],
+                    tools: vec!["box", "cylinder", "sphere"],
                     unavailable: None,
                 },
                 Entry::Tool("extrude"),
