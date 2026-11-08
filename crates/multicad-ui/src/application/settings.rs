@@ -104,18 +104,23 @@ impl Application {
         let mut open = true;
         let mut draft = self.preferences.clone();
         let mut error = None;
+        let max_height = (ctx.content_rect().height() - 24.).max(0.);
         egui::Window::new("Settings")
             .open(&mut open)
             .resizable(true)
             .default_width(420.)
+            .default_height(660_f32.min(max_height))
+            .max_height(max_height)
+            .vscroll(true)
             .show(ctx, |ui| {
+                crate::controls::inspector_layout(ui);
                 ui.small("Application preferences for this user. They never change project data and apply to every open document.");
                 if let Some(problem) = &self.preference_error {
                     ui.colored_label(Color32::LIGHT_RED, format!("Preferences: {problem}"));
                 }
                 ui.separator();
                 ui.heading("Measurement units");
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     for unit in LengthUnit::ALL {
                         ui.radio_value(&mut draft.length_unit, unit, unit.label())
                             .on_hover_text(format!("Show lengths and read unqualified length input in {}", unit.symbol()));
@@ -370,6 +375,63 @@ mod tests {
             app.registry.search("inches")[0].action,
             Command::Extension("settings")
         );
+    }
+    #[test]
+    fn compact_settings_scrolls_to_restore_defaults_after_a_long_diagnostic() {
+        let store = Memory::default();
+        let mut app = app(&store);
+        app.mode = Mode::Model;
+        app.settings_open = true;
+        app.preference_error = Some(
+            "The preferences file could not be read from its configured location. ".repeat(35),
+        );
+        let original = app.current().session.document().clone();
+        let ctx = egui::Context::default();
+        crate::theme::configure(&ctx);
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1024., 600.));
+        let mut frame = |events| {
+            ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(screen),
+                    events,
+                    ..Default::default()
+                },
+                |_| app.settings_window(&ctx),
+            )
+        };
+        let text = |out: &egui::FullOutput, label: &str| {
+            out.shapes.iter().find_map(|shape| match &shape.shape {
+                egui::Shape::Text(t) if t.galley.text() == label => {
+                    let bounds = egui::Rect::from_min_size(t.pos, t.galley.size());
+                    (screen.contains_rect(bounds) && shape.clip_rect.contains_rect(bounds))
+                        .then_some(bounds.center())
+                }
+                _ => None,
+            })
+        };
+        for _ in 0..3 {
+            frame(vec![]).drop_without_applying_deltas();
+        }
+        let out = frame(vec![]);
+        let heading = text(&out, "Settings").expect("Settings title");
+        out.drop_without_applying_deltas();
+        for _ in 0..8 {
+            frame(vec![
+                egui::Event::PointerMoved(heading + egui::vec2(40., 100.)),
+                egui::Event::MouseWheel {
+                    phase: egui::TouchPhase::Move,
+                    unit: egui::MouseWheelUnit::Point,
+                    delta: egui::vec2(0., -460.),
+                    modifiers: Default::default(),
+                },
+            ])
+            .drop_without_applying_deltas();
+        }
+        let out = frame(vec![]);
+        assert!(text(&out, "Show app logo in title block on new pages").is_some());
+        assert!(text(&out, "Restore defaults").is_some());
+        out.drop_without_applying_deltas();
+        assert_eq!(app.current().session.document(), &original);
     }
     /// Labels and bounds of the rendered accessibility tree.
     fn frame(
