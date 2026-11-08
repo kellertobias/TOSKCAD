@@ -1,5 +1,7 @@
-//! Project actions, canonical parameter table and the one file-metadata sidebar.
+//! Project overview, parameter table and shared material definitions.
 use super::*;
+pub(super) const PARAMETERS_TAB: usize = 1;
+pub(super) const MATERIALS_TAB: usize = 2;
 const ACTION_WIDTH: f32 = 184.;
 const TABLE_MIN_WIDTH: f32 = 760.;
 #[cfg(test)]
@@ -49,8 +51,106 @@ impl Application {
             format!("{hint}\n{explanation}")
         }
     }
-    pub(super) fn project_workspace(&mut self, ui: &mut egui::Ui) {
-        egui::Panel::right("parameters-metadata")
+    pub(super) fn project_tab_blocked(&self, index: usize) -> bool {
+        index != self.tab
+            && if index == MATERIALS_TAB {
+                self.current().pending_edits()
+            } else {
+                self.current().sketch.material_library().dirty()
+            }
+    }
+
+    pub(super) fn project_tabs(&mut self, ui: &mut egui::Ui) {
+        let mut selected = self.tab;
+        egui::Panel::top("project-tabs")
+            .frame(
+                egui::Frame::new()
+                    .fill(crate::theme::PANEL)
+                    .inner_margin(egui::Margin::symmetric(8, 4)),
+            )
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    for (index, tab) in self
+                        .registry
+                        .workspace(Mode::Parameters)
+                        .tabs
+                        .iter()
+                        .enumerate()
+                    {
+                        if ui
+                            .add_enabled(
+                                !self.project_tab_blocked(index),
+                                egui::Button::selectable(index == self.tab, tab.title)
+                                    .min_size(egui::vec2(104., 32.)),
+                            )
+                            .on_disabled_hover_text("Apply or discard the current draft first")
+                            .clicked()
+                        {
+                            selected = index;
+                        }
+                    }
+                });
+            });
+        if selected != self.tab {
+            if selected == MATERIALS_TAB {
+                self.execute(Command::Extension("materials"), &[], Channel::Ui);
+            } else {
+                self.tab = selected;
+            }
+        }
+        if self.tab == MATERIALS_TAB {
+            let project = self.current_mut();
+            let editable = !project.editor.dirty();
+            egui::Panel::top("project-material-ribbon")
+                .frame(
+                    egui::Frame::new()
+                        .fill(Color32::BLACK)
+                        .inner_margin(egui::Margin::symmetric(8, 4)),
+                )
+                .show(ui, |ui| {
+                    project.sketch.material_library_mut().show_ribbon(
+                        ui,
+                        &project.session,
+                        editable,
+                    );
+                });
+        }
+    }
+
+    fn project_actions(&mut self, ui: &mut egui::Ui, vertical: bool) {
+        for id in crate::registry::PROJECT_ACTIONS {
+            let tool = *self.registry.tool(id).expect("registered Project action");
+            if !vertical && !matches!(tool.action, Command::Apply | Command::Discard) {
+                continue;
+            }
+            let help = self.project_action_help(tool.action, tool.label, ui.ctx());
+            let response = ui.add_enabled_ui(self.enabled(tool.action), |ui| {
+                if vertical {
+                    icons::labeled_button_sized(
+                        ui,
+                        tool.icon,
+                        tool.label,
+                        egui::vec2(ui.available_width(), 34.),
+                    )
+                } else {
+                    icons::labeled_button(ui, tool.icon, tool.label)
+                }
+            });
+            if response
+                .inner
+                .on_hover_text(&help)
+                .on_disabled_hover_text(&help)
+                .clicked()
+            {
+                self.execute(tool.action, &[], Channel::Ui);
+            }
+        }
+    }
+
+    fn project_overview(&mut self, ui: &mut egui::Ui) {
+        let project = self.current_mut();
+        project.editor.sync_preview(&project.session);
+        egui::Panel::left("parameters-metadata")
             .exact_size(crate::metadata_sidebar::WIDTH)
             .frame(
                 egui::Frame::new()
@@ -58,10 +158,96 @@ impl Application {
                     .inner_margin(12),
             )
             .show(ui, |ui| {
-                let enabled = !self.current().sketch.material_library().dirty();
-                ui.add_enabled_ui(enabled, |ui| self.parameters_sidebar(ui));
+                ui.horizontal_wrapped(|ui| self.project_actions(ui, false));
+                ui.separator();
+                self.parameters_sidebar(ui);
             });
         let mut action = None;
+        egui::Frame::new().inner_margin(16).show(ui, |ui| {
+            egui::ScrollArea::vertical()
+                .id_salt("project-contents")
+                .show(ui, |ui| {
+                    ui.heading("Project contents");
+                    let doc = self.current().session.document();
+                    let (mut parts, mut assemblies, mut instances, mut sketches) = (0, 0, 0, 0);
+                    for entity in doc.entities() {
+                        match entity.data {
+                            EntityData::Part { .. } => parts += 1,
+                            EntityData::Assembly { .. } => assemblies += 1,
+                            EntityData::Instance { .. } => instances += 1,
+                            EntityData::Sketch { .. } => sketches += 1,
+                            _ => {}
+                        }
+                    }
+                    for (mode, title) in [(Mode::Model, "Model"), (Mode::Motion, "Motion"), (Mode::Drawings, "Drawings")] {
+                        ui.add_space(10.);
+                        ui.separator();
+                        ui.horizontal(|ui| {
+                            ui.strong(title);
+                            let command = Command::Mode(mode);
+                            if ui.add_enabled(self.enabled(command), egui::Button::new(format!("Open {title}"))).clicked() {
+                                action = Some(command);
+                            }
+                        });
+                        match mode {
+                            Mode::Model if parts + assemblies + instances + sketches == 0 => {
+                                ui.label("No model geometry or sketches yet.");
+                            }
+                            Mode::Model => {
+                                ui.label(format!("Parts: {parts}   Assemblies: {assemblies}   Instances: {instances}   Sketches: {sketches}"));
+                            }
+                            Mode::Motion => {
+                                let poses = doc.entities().filter(|entity| {
+                                    matches!(&entity.data, EntityData::Extension { definition, .. }
+                                        if definition.type_id == multicad_core::model::NAMED_POSE_TYPE)
+                                });
+                                let mut poses = poses.peekable();
+                                if poses.peek().is_none() {
+                                    ui.label("No saved poses yet.");
+                                } else {
+                                    ui.label("Saved poses");
+                                    for pose in poses {
+                                        ui.label(&pose.name);
+                                    }
+                                }
+                            }
+                            Mode::Drawings => {
+                                let mut books = multicad_core::drawings::books(doc).filter_map(|id| doc.get(id)).peekable();
+                                if books.peek().is_none() {
+                                    ui.label("No drawings yet.");
+                                }
+                                for book in books {
+                                    egui::CollapsingHeader::new(&book.name)
+                                        .id_salt(book.id)
+                                        .show(ui, |ui| {
+                                            match multicad_core::drawings::read(doc, book.id) {
+                                                Ok(drawing) => {
+                                                    for page in &drawing.pages {
+                                                        ui.label(format!("{} · {}", page.number, page.info.title));
+                                                    }
+                                                }
+                                                Err(error) => {
+                                                    ui.colored_label(Color32::LIGHT_RED, error.to_string());
+                                                }
+                                            }
+                                        });
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                });
+        });
+        if let Some(action) = action {
+            self.execute(action, &[], Channel::Ui);
+        }
+    }
+
+    pub(super) fn project_workspace(&mut self, ui: &mut egui::Ui) {
+        if self.tab == 0 {
+            self.project_overview(ui);
+            return;
+        }
         egui::Panel::left("project-actions")
             .exact_size(ACTION_WIDTH)
             .frame(
@@ -77,56 +263,10 @@ impl Application {
                         ui.strong(Mode::Parameters.title());
                         ui.add_space(8.);
                         ui.spacing_mut().item_spacing.y = 6.;
-                        for id in crate::registry::PROJECT_ACTIONS {
-                            let tool = *self.registry.tool(id).expect("registered Project action");
-                            let help = self.project_action_help(tool.action, tool.label, ui.ctx());
-                            if ui
-                                .add_enabled_ui(self.enabled(tool.action), |ui| {
-                                    icons::labeled_button_sized(
-                                        ui,
-                                        tool.icon,
-                                        tool.label,
-                                        egui::vec2(ui.available_width(), 34.),
-                                    )
-                                })
-                                .inner
-                                .on_hover_text(&help)
-                                .on_disabled_hover_text(&help)
-                                .clicked()
-                            {
-                                action = Some(tool.action);
-                            }
-                        }
-                        ui.add_space(8.);
-                        for (index, label) in ["Parameters", "Materials"].into_iter().enumerate() {
-                            let can_switch = if index == 0 {
-                                !self.current().sketch.material_library().dirty()
-                            } else {
-                                !self.current().editor.dirty()
-                            };
-                            if ui
-                                .add_enabled(
-                                    can_switch,
-                                    egui::Button::selectable(self.tab == index, label)
-                                        .min_size(egui::vec2(ui.available_width(), 34.)),
-                                )
-                                .clicked()
-                                && self.tab != index
-                            {
-                                action = Some(if index == 0 {
-                                    Command::Parameter
-                                } else {
-                                    Command::Extension("materials")
-                                });
-                            }
-                        }
-                        ui.separator();
+                        self.project_actions(ui, true);
                     });
             });
-        if let Some(action) = action {
-            self.execute(action, &[], Channel::Ui);
-        }
-        let materials = self.tab == 1;
+        let materials = self.tab == MATERIALS_TAB;
         let project = self.current_mut();
         let was_pending = project.sketch.material_library().pending();
         egui::Frame::new()

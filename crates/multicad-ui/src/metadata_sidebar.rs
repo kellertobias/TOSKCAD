@@ -181,7 +181,7 @@ pub fn show(
                     message,
                 );
             }
-            ui.small("Use Library in the top bar to browse and place definitions.");
+            ui.small("Open Model, then Library, to browse and place definitions.");
             if let Some(error) = cx.library_error {
                 ui.colored_label(Color32::LIGHT_RED, error);
             }

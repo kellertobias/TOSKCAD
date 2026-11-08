@@ -243,7 +243,7 @@ impl Application {
             replacement: None,
             recoveries: Default::default(),
             recovery_open: false,
-            message: "New document. Add a parameter in the blank row.".into(),
+            message: "New project. Add project details or open Parameters.".into(),
             command: String::new(),
             command_log: VecDeque::new(),
             command_history_open: false,
@@ -831,7 +831,7 @@ impl Application {
                         self.current_mut().measure_return_view = None;
                     }
                     self.mode = Mode::Parameters;
-                    self.tab = 0;
+                    self.tab = project::PARAMETERS_TAB;
                     self.message = "Enter or edit a parameter in the table".into();
                     return Ok(());
                 }
@@ -1129,7 +1129,7 @@ impl Application {
                 }
                 p.sketch.open_materials(&p.session)?;
                 self.mode = Mode::Parameters;
-                self.tab = 1;
+                self.tab = project::MATERIALS_TAB;
                 self.message =
                     "Project Materials · shared definitions apply through one native-checked transaction"
                         .into();
@@ -2343,8 +2343,13 @@ impl Application {
                 ShortcutAction::FocusCommand => self.focus_command = true,
                 ShortcutAction::NextWorkspace | ShortcutAction::PreviousWorkspace => {
                     // Cycle the ribbon's visible workbenches in their chosen order.
-                    let order: Vec<usize> =
-                        self.ribbon_tabs().into_iter().map(|(i, _)| i).collect();
+                    let order: Vec<usize> = if self.mode == Mode::Parameters {
+                        (0..self.registry.workspace(self.mode).tabs.len())
+                            .filter(|&index| !self.project_tab_blocked(index))
+                            .collect()
+                    } else {
+                        self.ribbon_tabs().into_iter().map(|(i, _)| i).collect()
+                    };
                     let count = order.len();
                     let at = order.iter().position(|i| *i == self.tab).unwrap_or(0);
                     self.tab = order[if action == ShortcutAction::NextWorkspace {
@@ -2581,10 +2586,12 @@ impl Application {
                     .inner_margin(egui::Margin::symmetric(8, 2)),
             )
             .show(ui, |ui| self.header(ui));
-        self.global_actions(ui);
         // Tab strip plus the tool strip with its labels and captions, so tool
         // labels never extend under the content panels (CAD-154).
-        if self.mode != Mode::Parameters {
+        if self.mode == Mode::Parameters {
+            self.project_tabs(ui);
+        } else {
+            self.global_actions(ui);
             let category = self.active_architecture_category();
             let tab = &self.registry.workspace(self.mode).tabs[self.effective_ribbon_tab()];
             let tool_height = crate::ribbon_ui::tools_height(

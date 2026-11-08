@@ -18,6 +18,7 @@ fn app() -> (Application, EntityId) {
     let mut app =
         Application::with_document(Box::new(Storage), fixture.session.document().clone()).unwrap();
     app.pending_files.clear();
+    app.tab = PARAMETERS_TAB;
     (app, fixture.output.body)
 }
 fn frame(
@@ -80,7 +81,42 @@ fn click(ctx: &egui::Context, app: &mut Application, size: egui::Vec2, label: &s
     }
 }
 #[test]
-fn project_has_left_actions_readable_table_and_one_metadata_sidebar_without_a_ribbon() {
+fn general_keeps_metadata_on_the_left_and_preserves_the_draft_between_tabs() {
+    let (mut app, _) = app();
+    app.tab = 0;
+    let ctx = egui::Context::default();
+    ctx.enable_accesskit();
+    crate::theme::configure(&ctx);
+    let size = egui::vec2(1024., 600.);
+    let out = frame(&ctx, &mut app, size, vec![]);
+    let metadata = egui::PanelState::load(&ctx, egui::Id::new("parameters-metadata"))
+        .unwrap()
+        .outer_rect;
+    assert!(metadata.left().abs() < 1.);
+    assert!(egui::PanelState::load(&ctx, egui::Id::new("project-material-ribbon")).is_none());
+    for label in [
+        "Project contents",
+        "No saved poses yet.",
+        "No drawings yet.",
+    ] {
+        assert!(out.shapes.iter().any(|shape| {
+            matches!(&shape.shape, egui::Shape::Text(text) if text.galley.text() == label)
+        }));
+    }
+    out.drop_without_applying_deltas();
+
+    let source = app.current().session.document().clone();
+    app.current_mut().editor.info.name = "Pending Project title".into();
+    click(&ctx, &mut app, size, "Parameters");
+    assert_eq!(app.tab, PARAMETERS_TAB);
+    assert!(app.current().editor.info_dirty());
+    click(&ctx, &mut app, size, "General");
+    assert_eq!(app.tab, 0);
+    assert_eq!(app.current().editor.info.name, "Pending Project title");
+    assert_eq!(app.current().session.document(), &source);
+}
+#[test]
+fn parameters_keep_left_actions_and_a_readable_table_without_a_ribbon() {
     for (size, density) in [
         (egui::vec2(1024., 600.), 1.),
         (egui::vec2(1024., 600.), 2.),
@@ -98,18 +134,14 @@ fn project_has_left_actions_readable_table_and_one_metadata_sidebar_without_a_ri
         }
         let out = frame(&ctx, &mut app, size, vec![]);
         assert!(egui::PanelState::load(&ctx, egui::Id::new("ribbon")).is_none());
-        let header = egui::PanelState::load(&ctx, egui::Id::new("global-actions"))
+        let header = egui::PanelState::load(&ctx, egui::Id::new("project-tabs"))
             .unwrap()
             .outer_rect;
         let left = egui::PanelState::load(&ctx, egui::Id::new("project-actions"))
             .unwrap()
             .outer_rect;
-        let metadata = egui::PanelState::load(&ctx, egui::Id::new("parameters-metadata"))
-            .unwrap()
-            .outer_rect;
+        assert!(egui::PanelState::load(&ctx, egui::Id::new("parameters-metadata")).is_none());
         assert!(left.top() <= header.bottom() + 1.);
-        assert!(metadata.top() <= header.bottom() + 1.);
-        assert!(metadata.right() <= size.x + 1.);
         let mut previous = header.bottom();
         for label in [
             "Apply and Rebuild",
@@ -158,7 +190,7 @@ fn project_has_left_actions_readable_table_and_one_metadata_sidebar_without_a_ri
                 size,
                 vec![
                     egui::Event::PointerMoved(egui::pos2(
-                        (left.right() + metadata.left()) * 0.5,
+                        (left.right() + size.x) * 0.5,
                         header.bottom() + 100.,
                     )),
                     egui::Event::MouseWheel {
@@ -178,7 +210,7 @@ fn project_has_left_actions_readable_table_and_one_metadata_sidebar_without_a_ri
                 out.shapes.iter().any(|shape| match &shape.shape {
                     egui::Shape::Text(text) if text.galley.text() == "Row" => {
                         let rect = egui::Rect::from_min_size(text.pos, text.galley.size());
-                        shape.clip_rect.contains_rect(rect) && rect.right() < metadata.left()
+                        shape.clip_rect.contains_rect(rect) && rect.right() < size.x
                     }
                     _ => false,
                 }),

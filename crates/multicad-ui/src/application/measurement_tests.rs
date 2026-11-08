@@ -55,6 +55,7 @@ fn native_measure_button_is_available_beside_library_and_uses_the_shared_command
     let ctx = egui::Context::default();
     crate::theme::configure(&ctx);
     let mut app = Application::new(Box::new(MemoryStorage)).unwrap();
+    app.mode = Mode::Model;
     let draw = |app: &mut Application, events| {
         ctx.run_ui(
             egui::RawInput {

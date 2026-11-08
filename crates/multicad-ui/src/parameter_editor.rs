@@ -355,12 +355,7 @@ impl ParameterEditor {
     pub fn show(&mut self, ui: &mut egui::Ui, session: &Session) {
         self.show_with_min_table_width(ui, session, 0.);
     }
-    pub(crate) fn show_with_min_table_width(
-        &mut self,
-        ui: &mut egui::Ui,
-        session: &Session,
-        minimum: f32,
-    ) {
+    pub(crate) fn sync_preview(&mut self, session: &Session) {
         if let Err(error) = session.validate_stamp(&self.guard) {
             if self.dirty() {
                 self.preview = None;
@@ -372,6 +367,14 @@ impl ParameterEditor {
         if self.dirty() && self.preview.is_none() && self.error.is_none() {
             self.refresh_preview(session);
         }
+    }
+    pub(crate) fn show_with_min_table_width(
+        &mut self,
+        ui: &mut egui::Ui,
+        session: &Session,
+        minimum: f32,
+    ) {
+        self.sync_preview(session);
         ui.horizontal_wrapped(|ui| {
             ui.heading("Parameters");
             ui.add_space(12.0);

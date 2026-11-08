@@ -137,12 +137,12 @@ pub struct Registry {
     pub tools: Vec<Tool>,
     pub workspaces: Vec<Workspace>,
 }
-/// Canonical title for persisted Model navigation before sparse-tool consolidation.
+/// Canonical title for persisted workspaces with older names.
 pub fn canonical_workbench_title(mode: Mode, title: &str) -> &str {
     if mode == Mode::Model && matches!(title, "FDM" | "FDM aids") {
         "Other"
-    } else if mode == Mode::Parameters && title == "Parameters" {
-        "Common"
+    } else if mode == Mode::Parameters && title == "Common" {
+        "Parameters"
     } else {
         title
     }
@@ -540,7 +540,8 @@ impl Default for Registry {
             Workspace {
                 mode: Mode::Parameters,
                 tabs: vec![
-                    tab("Common", &PROJECT_ACTIONS),
+                    tab("General", &[]),
+                    tab("Parameters", &PROJECT_ACTIONS),
                     tab("Materials", &["materials"]),
                 ],
             },

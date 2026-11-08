@@ -176,32 +176,23 @@ impl LibraryEditor {
         draft.entity.name =
             ["New panel stock", "New sheet stock", "New profile stock"][kind].into();
     }
-    pub fn show_inline(
-        &mut self,
-        ui: &mut egui::Ui,
-        s: &Session,
-        resources: &multicad_core::project_file::ProjectResources,
-        editable: bool,
-    ) {
-        self.open(s);
-        self.poll(s, resources);
-        ui.strong("Materials and stock");
-        ui.small("Shared Project definitions · Model tools select and assign these same entries.");
+    pub(crate) fn show_ribbon(&mut self, ui: &mut egui::Ui, s: &Session, editable: bool) {
+        use crate::icons::{Icon, tool_with_hint};
+
         ui.horizontal_wrapped(|ui| {
-            for (label, kind) in [
-                ("New material", 0),
-                ("New panel stock", 1),
-                ("New sheet stock", 2),
-                ("New profile stock", 3),
-                ("New appearance", 4),
-                ("New hatch", 5),
+            for (label, icon, kind) in [
+                ("New material", Icon::Filled, 0),
+                ("New panel stock", Icon::Rectangle, 1),
+                ("New sheet stock", Icon::Page, 2),
+                ("New profile stock", Icon::Extrude, 3),
+                ("New appearance", Icon::VisibleEdges, 4),
+                ("New hatch", Icon::Grid, 5),
             ] {
                 if ui
-                    .add_enabled(
-                        editable && !self.dirty(),
-                        egui::Button::new(label).min_size(egui::vec2(0., 30.)),
-                    )
-                    .on_hover_text("Create one reusable definition in this project")
+                    .add_enabled_ui(editable && !self.dirty(), |ui| {
+                        tool_with_hint(ui, icon, label, "Create a shared Project definition")
+                    })
+                    .inner
                     .clicked()
                 {
                     match kind {
@@ -213,6 +204,19 @@ impl LibraryEditor {
                 }
             }
         });
+    }
+
+    pub fn show_inline(
+        &mut self,
+        ui: &mut egui::Ui,
+        s: &Session,
+        resources: &multicad_core::project_file::ProjectResources,
+        editable: bool,
+    ) {
+        self.open(s);
+        self.poll(s, resources);
+        ui.strong("Materials and stock");
+        ui.small("Shared Project definitions · Model tools select and assign these same entries.");
         if !editable {
             ui.colored_label(
                 Color32::LIGHT_YELLOW,
@@ -299,61 +303,29 @@ impl LibraryEditor {
                         .cloned()
                         .collect();
                     entries.sort_by(|a, b| a.name.cmp(&b.name).then(a.id.cmp(&b.id)));
-                    if ui.available_width() < 600. {
-                        let selected = self.draft.as_ref().map(|d| d.entity.id);
-                        let label = self
-                            .draft
-                            .as_ref()
-                            .map_or("Choose a definition", |draft| draft.entity.name.as_str());
-                        ui.label("Shared definitions");
-                        let mut choice = None;
-                        ui.add_enabled_ui(editable && !self.dirty() && !entries.is_empty(), |ui| {
-                            crate::controls::inspector_combo(ui, "project-definition")
-                                .selected_text(label)
-                                .show_ui(ui, |ui| {
-                                    for entry in &entries {
-                                        if ui
-                                            .selectable_label(
-                                                selected == Some(entry.id),
-                                                &entry.name,
-                                            )
-                                            .clicked()
-                                        {
-                                            choice = Some(entry.id);
-                                        }
-                                    }
-                                });
-                        });
-                        if let Some(id) = choice
-                            && let Some(entry) = entries.into_iter().find(|entry| entry.id == id)
-                        {
-                            self.select(s, entry);
+                    ui.columns(2, |columns| {
+                        columns[0].strong(format!("Shared definitions ({})", entries.len()));
+                        if entries.is_empty() {
+                            columns[0]
+                                .label("Use the ribbon to create a material or stock definition.");
                         }
-                        ui.separator();
-                        self.show_definition_editor(ui, s, editable);
-                    } else {
-                        ui.columns(2, |columns| {
-                            columns[0].small(format!("{} shared definitions", entries.len()));
-                            for entry in entries {
-                                let selected =
-                                    self.draft.as_ref().is_some_and(|d| d.entity.id == entry.id);
-                                if columns[0]
-                                    .add_enabled(
-                                        editable && !self.dirty(),
-                                        egui::Button::selectable(selected, &entry.name).wrap(),
-                                    )
-                                    .on_hover_text(format!(
-                                        "Edit {} · stable identity {}",
-                                        entry.name, entry.id
-                                    ))
-                                    .clicked()
-                                {
-                                    self.select(s, entry);
-                                }
+                        for entry in entries {
+                            let selected =
+                                self.draft.as_ref().is_some_and(|d| d.entity.id == entry.id);
+                            let list = &mut columns[0];
+                            let row = egui::Button::selectable(selected, &entry.name)
+                                .min_size(egui::vec2(list.available_width(), 30.))
+                                .wrap();
+                            if list
+                                .add_enabled(editable && !self.dirty(), row)
+                                .on_hover_text("Edit this shared definition")
+                                .clicked()
+                            {
+                                self.select(s, entry);
                             }
-                            self.show_definition_editor(&mut columns[1], s, editable);
-                        });
-                    }
+                        }
+                        self.show_definition_editor(&mut columns[1], s, editable);
+                    });
                 });
         }
     }

@@ -85,7 +85,7 @@ fn context() -> egui::Context {
     ctx
 }
 #[test]
-fn every_top_level_mode_has_one_global_sketch_import_and_utilities_row_at_minimum_size() {
+fn project_omits_the_modeling_actions_shown_in_other_modes() {
     assert_eq!(
         Mode::ALL.map(Mode::title),
         ["Project", "Model", "Motion", "Drawings", "Export"]
@@ -99,6 +99,20 @@ fn every_top_level_mode_has_one_global_sketch_import_and_utilities_row_at_minimu
             frame(&ctx, &mut app, vec![]).drop_without_applying_deltas();
         }
         let out = frame(&ctx, &mut app, vec![]);
+        if mode == Mode::Parameters {
+            let tree = out.platform_output.accesskit_update.as_ref().unwrap();
+            for label in ["Add Sketch", "Import", "Library", "Measure", "MCP history"] {
+                assert!(
+                    !tree
+                        .nodes
+                        .iter()
+                        .any(|(_, node)| node.label() == Some(label)
+                            && node.role() == egui::accesskit::Role::Button)
+                );
+            }
+            out.drop_without_applying_deltas();
+            continue;
+        }
         let row = egui::PanelState::load(&ctx, egui::Id::new("global-actions"))
             .unwrap()
             .outer_rect;

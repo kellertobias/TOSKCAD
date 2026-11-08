@@ -16,7 +16,7 @@ impl Default for RecentView {
     fn default() -> Self {
         Self {
             mode: crate::registry::Mode::Parameters,
-            workspace: "Common".into(),
+            workspace: "General".into(),
             architecture: None,
         }
     }

@@ -63,8 +63,8 @@ fn project_buttons_create_one_shared_material_sheet_and_profile_through_native_p
         app.registry.workspace(app.mode).tabs[app.tab].title,
         "Materials"
     );
-    assert!(egui::PanelState::load(&ctx, egui::Id::new("ribbon")).is_none());
-    assert!(egui::PanelState::load(&ctx, egui::Id::new("parameters-metadata")).is_some());
+    assert!(egui::PanelState::load(&ctx, egui::Id::new("project-material-ribbon")).is_some());
+    assert!(egui::PanelState::load(&ctx, egui::Id::new("parameters-metadata")).is_none());
     for label in ["New material", "New sheet stock", "New profile stock"] {
         click(&ctx, &mut app, size, label);
         assert!(app.current().pending_edits());
@@ -137,13 +137,13 @@ fn project_material_draft_discard_is_neutral_and_cannot_be_hidden_by_mode_or_par
             .is_err()
     );
     assert_eq!(app.mode, Mode::Parameters);
-    assert_eq!(app.tab, 1);
+    assert_eq!(app.tab, MATERIALS_TAB);
     assert_eq!(app.current().session.document(), &before);
     click(&ctx, &mut app, size, "Discard Edit");
     assert_eq!(app.current().session.document(), &before);
     assert!(!app.current().pending_edits());
     click(&ctx, &mut app, size, "Parameters");
-    assert_eq!(app.tab, 0);
+    assert_eq!(app.tab, PARAMETERS_TAB);
 }
 #[test]
 fn legacy_model_materials_recall_routes_to_the_project_catalog_without_source_changes() {
@@ -175,7 +175,7 @@ fn legacy_model_materials_recall_routes_to_the_project_catalog_without_source_ch
 }
 
 #[test]
-fn compact_material_chooser_keeps_selected_definition_and_draft_through_resize() {
+fn compact_material_rows_keep_the_selected_definition_and_draft_through_resize() {
     let (mut app, ctx, _) = native_app();
     let material = Entity::new(
         "Birch ply definition",
@@ -234,13 +234,11 @@ fn compact_material_chooser_keeps_selected_definition_and_draft_through_resize()
         out.drop_without_applying_deltas();
         rect
     };
-    let picker = painted(&mut app, "Choose a definition");
-    click_at(&mut app, picker.center());
     let entry = painted(&mut app, material.name.as_str());
     click_at(&mut app, entry.center());
 
     let value = painted(&mut app, material.name.as_str());
-    assert!(value.left() > 184. && value.right() < size.x - 300.);
+    assert!(value.left() > 184. && value.right() < size.x);
     let out = frame(&ctx, &mut app, size, vec![]);
     let name = out
         .shapes
@@ -256,14 +254,10 @@ fn compact_material_chooser_keeps_selected_definition_and_draft_through_resize()
                 )
             })
         })
-        .max_by(|a, b| a.y.total_cmp(&b.y))
+        .max_by(|a, b| a.x.total_cmp(&b.x))
         .expect("compact Material Name field");
     out.drop_without_applying_deltas();
     click_at(&mut app, name);
-    if !ctx.text_edit_focused() {
-        // Dismiss the chooser overlay before focusing the form below it.
-        click_at(&mut app, name);
-    }
     assert!(ctx.text_edit_focused());
     for (frame_size, key, text) in [
         (size, egui::Key::Space, " "),
