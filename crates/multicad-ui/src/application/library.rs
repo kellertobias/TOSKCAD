@@ -279,13 +279,6 @@ impl Application {
                 .as_mut()
                 .ok_or_else(|| "The installation library is unavailable in this host".into())
                 .and_then(|w| w.remove(id)),
-            Some(SidebarAction::UseLibraryEntry(path)) => {
-                self.load_symbol_library(path).map(|()| {
-                    self.message =
-                        "Reading library symbols · open Library to Place or review an update"
-                            .into();
-                })
-            }
         };
         if let Err(error) = result {
             self.message = error;

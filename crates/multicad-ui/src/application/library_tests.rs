@@ -501,3 +501,81 @@ fn choosing_an_image_turns_capture_on_save_off_in_the_draft() {
             .capture_on_save
     );
 }
+
+#[test]
+fn compact_file_metadata_keeps_registration_without_repeating_the_installation_catalog() {
+    let (mut app, _) = app();
+    let entry = |name: &str, origin, problem| LibraryEntry {
+        origin,
+        id: EntityId::new(),
+        document: EntityId::new(),
+        path: PathBuf::from(format!("/library/{name}.tcd")),
+        name: name.into(),
+        description: String::new(),
+        preview: None,
+        registered_unix_ms: 1,
+        symbol_definitions: 1,
+        mechanical_parts: vec![],
+        problem,
+    };
+    use crate::library::LibraryOrigin;
+    app.library.entries = vec![
+        entry("Bundled catalog entry", LibraryOrigin::Bundled, None),
+        entry(
+            "Missing listed original",
+            LibraryOrigin::ListedOriginal,
+            Some("File is missing".into()),
+        ),
+    ];
+    let ctx = egui::Context::default();
+    crate::theme::configure(&ctx);
+    ctx.all_styles_mut(|style| style.animation_time = 0.);
+    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(300., 600.));
+    let draw = |app: &mut Application, events| {
+        ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(screen),
+                focused: true,
+                events,
+                ..Default::default()
+            },
+            |ui| app.parameters_sidebar(ui),
+        )
+    };
+    let point = |out: &egui::FullOutput, label| {
+        out.shapes.iter().find_map(|shape| match &shape.shape {
+            egui::Shape::Text(text) if text.galley.text() == label => {
+                let rect = egui::Rect::from_min_size(text.pos, text.galley.size());
+                shape.clip_rect.contains_rect(rect).then_some(rect.center())
+            }
+            _ => None,
+        })
+    };
+    let output = draw(&mut app, vec![]);
+    assert!(point(&output, "Add to Library").is_some());
+    assert!(point(&output, "Bundled catalog entry").is_none());
+    assert!(point(&output, "Missing listed original").is_none());
+    let manage =
+        point(&output, "Manage listed files (1)").expect("visible original-file management");
+    output.drop_without_applying_deltas();
+    for pressed in [true, false] {
+        draw(
+            &mut app,
+            vec![
+                egui::Event::PointerMoved(manage),
+                egui::Event::PointerButton {
+                    pos: manage,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: Default::default(),
+                },
+            ],
+        )
+        .drop_without_applying_deltas();
+    }
+    let output = draw(&mut app, vec![]);
+    assert!(point(&output, "Missing listed original").is_some());
+    assert!(point(&output, "Remove from library").is_some());
+    assert!(point(&output, "Bundled catalog entry").is_none());
+    output.drop_without_applying_deltas();
+}

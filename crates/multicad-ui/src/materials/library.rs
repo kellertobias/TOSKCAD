@@ -282,61 +282,103 @@ impl LibraryEditor {
                 .id_salt("project-material-definitions")
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
-                    ui.columns(2, |columns| {
-                        let mut entries: Vec<_> = s
-                            .document()
-                            .entities()
-                            .filter(|e| {
-                                matches!(e.data, EntityData::Material { .. })
-                                    || matches!(
-                                        read(e),
-                                        Ok(Some(
-                                            LibraryDefinition::Stock(_)
-                                                | LibraryDefinition::Appearance(_)
-                                                | LibraryDefinition::Hatch(_)
-                                        ))
-                                    )
-                            })
-                            .cloned()
-                            .collect();
-                        entries.sort_by(|a, b| a.name.cmp(&b.name).then(a.id.cmp(&b.id)));
-                        columns[0].small(format!("{} shared definitions", entries.len()));
-                        for e in entries {
-                            let selected = self.draft.as_ref().is_some_and(|d| d.entity.id == e.id);
-                            if columns[0]
-                                .add_enabled(
-                                    editable && !self.dirty(),
-                                    egui::Button::selectable(selected, &e.name),
+                    let mut entries: Vec<_> = s
+                        .document()
+                        .entities()
+                        .filter(|entity| {
+                            matches!(entity.data, EntityData::Material { .. })
+                                || matches!(
+                                    read(entity),
+                                    Ok(Some(
+                                        LibraryDefinition::Stock(_)
+                                            | LibraryDefinition::Appearance(_)
+                                            | LibraryDefinition::Hatch(_)
+                                    ))
                                 )
-                                .on_hover_text(format!(
-                                    "Edit {} · stable identity {}",
-                                    e.name, e.id
-                                ))
-                                .clicked()
-                            {
-                                self.select(s, e);
-                            }
-                        }
-                        columns[1].add_enabled_ui(editable, |ui| {
-                            if let Some(draft) = &mut self.draft {
-                                edit_draft(ui, s, draft);
-                            } else {
-                                ui.label("Choose or create a reusable definition.");
-                            }
+                        })
+                        .cloned()
+                        .collect();
+                    entries.sort_by(|a, b| a.name.cmp(&b.name).then(a.id.cmp(&b.id)));
+                    if ui.available_width() < 600. {
+                        let selected = self.draft.as_ref().map(|d| d.entity.id);
+                        let label = self
+                            .draft
+                            .as_ref()
+                            .map_or("Choose a definition", |draft| draft.entity.name.as_str());
+                        ui.label("Shared definitions");
+                        let mut choice = None;
+                        ui.add_enabled_ui(editable && !self.dirty() && !entries.is_empty(), |ui| {
+                            crate::controls::inspector_combo(ui, "project-definition")
+                                .selected_text(label)
+                                .show_ui(ui, |ui| {
+                                    for entry in &entries {
+                                        if ui
+                                            .selectable_label(
+                                                selected == Some(entry.id),
+                                                &entry.name,
+                                            )
+                                            .clicked()
+                                        {
+                                            choice = Some(entry.id);
+                                        }
+                                    }
+                                });
                         });
-                    });
+                        if let Some(id) = choice
+                            && let Some(entry) = entries.into_iter().find(|entry| entry.id == id)
+                        {
+                            self.select(s, entry);
+                        }
+                        ui.separator();
+                        self.show_definition_editor(ui, s, editable);
+                    } else {
+                        ui.columns(2, |columns| {
+                            columns[0].small(format!("{} shared definitions", entries.len()));
+                            for entry in entries {
+                                let selected =
+                                    self.draft.as_ref().is_some_and(|d| d.entity.id == entry.id);
+                                if columns[0]
+                                    .add_enabled(
+                                        editable && !self.dirty(),
+                                        egui::Button::selectable(selected, &entry.name).wrap(),
+                                    )
+                                    .on_hover_text(format!(
+                                        "Edit {} · stable identity {}",
+                                        entry.name, entry.id
+                                    ))
+                                    .clicked()
+                                {
+                                    self.select(s, entry);
+                                }
+                            }
+                            self.show_definition_editor(&mut columns[1], s, editable);
+                        });
+                    }
                 });
         }
+    }
+    fn show_definition_editor(&mut self, ui: &mut egui::Ui, s: &Session, editable: bool) {
+        ui.add_enabled_ui(editable, |ui| {
+            if let Some(draft) = &mut self.draft {
+                ui.push_id(draft.entity.id, |ui| edit_draft(ui, s, draft));
+            } else {
+                ui.label("Choose or create a reusable definition.");
+            }
+        });
     }
 }
 fn edit_draft(ui: &mut egui::Ui, s: &Session, d: &mut Draft) {
     let name = ui.label("Name");
-    ui.text_edit_singleline(&mut d.entity.name)
+    ui.add(egui::TextEdit::singleline(&mut d.entity.name).desired_width(f32::INFINITY))
         .labelled_by(name.id)
         .on_hover_text("Library display name; assignments retain the stable ID");
     let description = ui.label("Description");
-    ui.text_edit_multiline(&mut d.entity.description)
-        .labelled_by(description.id);
+    ui.add(
+        egui::TextEdit::multiline(&mut d.entity.description)
+            .desired_rows(2)
+            .desired_width(f32::INFINITY),
+    )
+    .labelled_by(description.id);
     if let EntityData::Material {
         density_kg_m3,
         color_rgba,

@@ -3,12 +3,11 @@
 //! Parameters draft; Apply/Rebuild commits it with the table in one undoable
 //! transaction and Discard reverts both. No modeling inspector lives here.
 use crate::{
-    library::{LibraryEntry, PreviewTextures},
+    library::{LibraryEntry, LibraryOrigin, PreviewTextures},
     parameter_editor::ParameterEditor,
 };
 use eframe::egui::{self, Color32};
 use multicad_core::{commands::Session, document::EntityId, project_file::info};
-use std::path::PathBuf;
 
 pub const WIDTH: f32 = 300.;
 
@@ -17,9 +16,6 @@ pub enum SidebarAction {
     ChooseImage,
     AddToLibrary,
     ReloadLibrary,
-    /// Load a library entry's symbol definitions through the explicit,
-    /// pinned import/update workflow.
-    UseLibraryEntry(PathBuf),
     /// Remove a listing (the file itself is untouched).
     RemoveEntry(EntityId),
 }
@@ -94,13 +90,14 @@ pub fn show(
                         ).changed()).inner
                 }).inner;
                 ui.label("Preview image");
+                let preview_height = if editor.info.preview.is_some() { 128. } else { 48. };
                 textures.show(
                     ui,
                     editor.info.preview.as_ref(),
-                    egui::vec2(ui.available_width().min(WIDTH - 24.), 160.),
+                    egui::vec2(ui.available_width().min(WIDTH - 24.), preview_height),
                     "File preview image",
                 );
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     if enabled_button(
                         ui,
                         "Choose image…",
@@ -184,82 +181,40 @@ pub fn show(
                     message,
                 );
             }
-            ui.add_space(6.);
-            ui.horizontal(|ui| {
-                ui.strong(format!("Entries ({})", cx.library.len()));
-                if ui.small_button("Reload").clicked() {
-                    action = Some(SidebarAction::ReloadLibrary);
-                }
-            });
+            ui.small("Use Library in the top bar to browse and place definitions.");
             if let Some(error) = cx.library_error {
                 ui.colored_label(Color32::LIGHT_RED, error);
             }
-            if cx.library.is_empty() && cx.library_error.is_none() {
-                ui.label(
-                    egui::RichText::new("No files in the library yet.").color(Color32::GRAY),
-                );
-            }
-            for entry in cx.library {
-                ui.group(|ui| {
-                    ui.set_width(ui.available_width());
-                    if entry.origin == crate::library::LibraryOrigin::Bundled { ui.small("Included with ToskCAD"); }
-                    ui.horizontal(|ui| {
-                        textures.show(
-                            ui,
-                            entry.preview.as_ref(),
-                            egui::vec2(64., 48.),
-                            &entry.name,
-                        );
-                        ui.vertical(|ui| {
+            let listed = cx.library.iter().filter(|entry| entry.origin == LibraryOrigin::ListedOriginal);
+            let count = listed.clone().count();
+            egui::CollapsingHeader::new(format!("Manage listed files ({count})"))
+                .id_salt("project-manage-library-listings")
+                .show(ui, |ui| {
+                    if ui.small_button("Reload").clicked() {
+                        action = Some(SidebarAction::ReloadLibrary);
+                    }
+                    if count == 0 && cx.library_error.is_none() {
+                        ui.small("No original files listed.");
+                    }
+                    for entry in listed {
+                        ui.push_id(entry.id, |ui| {
                             ui.strong(&entry.name);
-                            if !entry.description.is_empty() {
-                                ui.add(
-                                    egui::Label::new(
-                                        egui::RichText::new(&entry.description).small(),
-                                    )
-                                    .truncate(),
-                                );
+                            let path = entry.path.display().to_string();
+                            ui.add(egui::Label::new(egui::RichText::new(&path).small()).truncate())
+                                .on_hover_text(path);
+                            if let Some(problem) = &entry.problem {
+                                ui.colored_label(Color32::LIGHT_RED, problem);
+                                if ui
+                                    .small_button("Remove from library")
+                                    .on_hover_text("Remove this listing; no file is deleted")
+                                    .clicked()
+                                {
+                                    action = Some(SidebarAction::RemoveEntry(entry.id));
+                                }
                             }
                         });
-                    });
-                    ui.add(
-                        egui::Label::new(
-                            egui::RichText::new(entry.path.display().to_string())
-                                .small()
-                                .color(Color32::GRAY),
-                        )
-                        .truncate(),
-                    )
-                    .on_hover_text(entry.path.display().to_string());
-                    if let Some(problem) = &entry.problem {
-                        ui.colored_label(Color32::LIGHT_RED, problem);
-                        if entry.origin == crate::library::LibraryOrigin::ListedOriginal && ui
-                            .small_button("Remove from library")
-                            .on_hover_text("Remove this listing; no file is deleted")
-                            .clicked()
-                        {
-                            action = Some(SidebarAction::RemoveEntry(entry.id));
-                        }
-                    } else if entry.symbol_definitions > 0 {
-                        if ui
-                            .small_button(format!(
-                                "Use symbols ({})",
-                                entry.symbol_definitions
-                            ))
-                            .on_hover_text("Load its symbol definitions; import and updates stay explicit in Sketch › Symbols")
-                            .clicked()
-                        {
-                            action = Some(SidebarAction::UseLibraryEntry(entry.path.clone()));
-                        }
-                    } else {
-                        ui.label(
-                            egui::RichText::new("No symbol definitions to place")
-                                .small()
-                                .color(Color32::GRAY),
-                        );
                     }
                 });
-            }
         });
     if changed {
         editor.refresh_preview(session);

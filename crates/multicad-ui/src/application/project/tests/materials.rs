@@ -173,3 +173,85 @@ fn legacy_model_materials_recall_routes_to_the_project_catalog_without_source_ch
         Command::Extension("materials")
     );
 }
+
+#[test]
+fn compact_material_chooser_keeps_selected_definition_and_draft_through_resize() {
+    let (mut app, ctx, _) = native_app();
+    let material = Entity::new(
+        "Birch ply definition",
+        EntityData::Material {
+            density_kg_m3: Some(700.),
+            color_rgba: [160, 170, 180, 255],
+            section_hatch: None,
+        },
+    );
+    let revision = app.current().session.revision();
+    app.current_mut()
+        .session
+        .apply(multicad_core::commands::Request {
+            expected_revision: revision,
+            actor: Actor::local(Channel::Ui),
+            label: "Add material fixture".into(),
+            edits: vec![multicad_core::document::Mutation::Insert(material.clone())],
+        })
+        .unwrap();
+    let before = app.current().session.document().clone();
+    let size = egui::vec2(1024., 600.);
+    click(&ctx, &mut app, size, "Materials");
+
+    let click_at = |app: &mut Application, point: egui::Pos2| {
+        for pressed in [true, false] {
+            frame(
+                &ctx,
+                app,
+                size,
+                vec![
+                    egui::Event::PointerMoved(point),
+                    egui::Event::PointerButton {
+                        pos: point,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: Default::default(),
+                    },
+                ],
+            )
+            .drop_without_applying_deltas();
+        }
+    };
+    let painted = |app: &mut Application, label| {
+        let out = frame(&ctx, app, size, vec![]);
+        let rect = out
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.text() == label => {
+                    let rect = egui::Rect::from_min_size(text.pos, text.galley.size());
+                    shape.clip_rect.contains_rect(rect).then_some(rect)
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("Missing unclipped compact Material control: {label}"));
+        out.drop_without_applying_deltas();
+        rect
+    };
+    let picker = painted(&mut app, "Choose a definition");
+    click_at(&mut app, picker.center());
+    let entry = painted(&mut app, material.name.as_str());
+    click_at(&mut app, entry.center());
+
+    let value = painted(&mut app, material.name.as_str());
+    assert!(value.left() > 184. && value.right() < size.x - 300.);
+    let label = painted(&mut app, "Density (kg/m³)");
+    click_at(&mut app, label.center());
+    assert!(app.current().sketch.material_library().dirty());
+    assert_eq!(app.current().session.document(), &before);
+
+    for size in [egui::vec2(1360., 860.), size] {
+        frame(&ctx, &mut app, size, vec![]).drop_without_applying_deltas();
+        assert!(app.current().sketch.material_library().dirty());
+        assert_eq!(app.current().session.document(), &before);
+    }
+    click(&ctx, &mut app, size, "Discard Edit");
+    assert!(!app.current().sketch.material_library().dirty());
+    assert_eq!(app.current().session.document(), &before);
+}

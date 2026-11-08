@@ -137,9 +137,7 @@ impl Application {
                 bottom: 8,
             })
             .show(ui, |ui| {
-                // At the native 1100px minimum: 184 actions + 300 metadata +
-                // remaining table viewport. Scroll the table locally at 760px;
-                // neither sidebar nor the application grows with its columns.
+                // Keep the table's horizontal overflow in the central viewport.
                 if materials {
                     let editable = !project.editor.dirty();
                     project.sketch.material_library_mut().show_inline(

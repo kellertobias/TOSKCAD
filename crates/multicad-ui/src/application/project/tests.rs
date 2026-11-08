@@ -82,6 +82,8 @@ fn click(ctx: &egui::Context, app: &mut Application, size: egui::Vec2, label: &s
 #[test]
 fn project_has_left_actions_readable_table_and_one_metadata_sidebar_without_a_ribbon() {
     for (size, density) in [
+        (egui::vec2(1024., 600.), 1.),
+        (egui::vec2(1024., 600.), 2.),
         (egui::vec2(1100., 700.), 1.),
         (egui::vec2(1360., 860.), 1.),
         (egui::vec2(1360., 860.), 2.),
@@ -149,7 +151,7 @@ fn project_has_left_actions_readable_table_and_one_metadata_sidebar_without_a_ri
         assert!(heading.x >= left.right() + 12.);
         assert!(heading.y < header.bottom() + 40.);
         out.drop_without_applying_deltas();
-        if size.x == 1100. {
+        if size.x <= 1100. {
             frame(
                 &ctx,
                 &mut app,
@@ -200,7 +202,7 @@ fn project_buttons_keep_preview_apply_discard_and_history_transactions_on_the_re
     let ctx = egui::Context::default();
     ctx.enable_accesskit();
     crate::theme::configure(&ctx);
-    let size = egui::vec2(1360., 860.);
+    let size = egui::vec2(1024., 600.);
     for _ in 0..3 {
         frame(&ctx, &mut app, size, vec![]).drop_without_applying_deltas();
     }
@@ -255,6 +257,22 @@ fn project_buttons_keep_preview_apply_discard_and_history_transactions_on_the_re
     let out = frame(&ctx, &mut app, size, vec![]);
     assert!(!button(&out, "Apply and Rebuild").1);
     assert!(button(&out, "Discard Edit").1);
+    let mut diagnostic_found = false;
+    for shape in &out.shapes {
+        if let egui::Shape::Text(text) = &shape.shape
+            && text.galley.text().contains("missing_driver")
+            && text.galley.text() != "=$missing_driver"
+        {
+            let rect = egui::Rect::from_min_size(text.pos, text.galley.size());
+            assert!(shape.clip_rect.contains_rect(rect));
+            assert!(rect.bottom() < 350.);
+            diagnostic_found = true;
+        }
+    }
+    assert!(
+        diagnostic_found,
+        "the compact table keeps invalid formula diagnostics visible"
+    );
     out.drop_without_applying_deltas();
     click(&ctx, &mut app, size, "Discard Edit");
     assert_eq!(app.current().session.document(), &changed);

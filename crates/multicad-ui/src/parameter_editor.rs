@@ -372,9 +372,9 @@ impl ParameterEditor {
         if self.dirty() && self.preview.is_none() && self.error.is_none() {
             self.refresh_preview(session);
         }
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.heading("Parameters");
-            ui.add_space(20.0);
+            ui.add_space(12.0);
             ui.label("Filter");
             ui.add(
                 egui::TextEdit::singleline(&mut self.search)
@@ -384,6 +384,10 @@ impl ParameterEditor {
             .on_hover_text("Filter rows by parameter name or description");
         });
         ui.label("Enter a value or a formula such as =600 - $height. Comparisons return 1 or 0 (ratio). Complete a row to add another.");
+        if let Some(error) = &self.error {
+            ui.colored_label(Color32::LIGHT_RED, self.error_text(error));
+        }
+        let table_id = ui.make_persistent_id(("parameter-table", session.document().id()));
         if ui.available_width() < minimum {
             ui.scope(|ui| {
                 ui.spacing_mut().scroll = egui::style::ScrollStyle::solid();
@@ -392,14 +396,14 @@ impl ParameterEditor {
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
                         ui.set_width(minimum);
-                        self.show_table(ui, session);
+                        self.show_table(ui, session, table_id);
                     });
             });
         } else {
-            self.show_table(ui, session);
+            self.show_table(ui, session, table_id);
         }
     }
-    fn show_table(&mut self, ui: &mut egui::Ui, session: &Session) {
+    fn show_table(&mut self, ui: &mut egui::Ui, session: &Session, table_id: egui::Id) {
         let width = ui.available_width();
         let columns = [0.14, 0.22, 0.23, 0.07, 0.13, 0.07, 0.14].map(|f| f * width);
         let headers = [
@@ -485,7 +489,7 @@ impl ParameterEditor {
                     );
                     ui.scope_builder(
                         egui::UiBuilder::new()
-                            .id_salt((row.id, column))
+                            .id(table_id.with((row.id, column)))
                             .max_rect(cell)
                             .layout(egui::Layout::left_to_right(egui::Align::Center)),
                         |ui| match column {
@@ -576,9 +580,7 @@ impl ParameterEditor {
         self.ensure_blank_row();
         if changed {
             self.refresh_preview(session);
-        }
-        if let Some(error) = &self.error {
-            ui.colored_label(Color32::LIGHT_RED, self.error_text(error));
+            ui.ctx().request_repaint();
         }
     }
 }
