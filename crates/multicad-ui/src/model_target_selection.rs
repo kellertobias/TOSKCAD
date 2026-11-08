@@ -420,9 +420,12 @@ impl SketchEditor {
         {
             return self.begin_advanced_model(session, resources, feed, kind, channel);
         }
-        // A sketch selected in the tree or viewer outside sketch editing means
-        // all of its closed areas; an open sketch still asks for its areas.
-        let sketches: Vec<EntityId> = self
+        if matches!(tool, ModelingTool::Extrude | ModelingTool::Revolve)
+            && (self.pending_profile_pick.is_some() || !self.queued_profile_clicks.is_empty())
+        {
+            return Err("Wait for the current profile selections, then start the operation".into());
+        }
+        let sketches: Vec<_> = self
             .tree_selection
             .iter()
             .copied()
@@ -433,7 +436,19 @@ impl SketchEditor {
                 )
             })
             .collect();
-        self.whole_sketch = (!self.editing && sketches.len() == 1).then(|| sketches[0]);
+        // Preserve whole-sketch selection for independent sketches. On a face,
+        // Finish Sketch leaves a region-picking context; only explicitly
+        // selecting the sketch in the tree requests every region.
+        self.whole_sketch = match sketches.as_slice() {
+            [id] if !self.editing
+                && (multicad_core::sketch_regions::supporting_face(session.document(), *id)
+                    .is_none()
+                    || self.whole_sketch == Some(*id)) =>
+            {
+                Some(*id)
+            }
+            _ => None,
+        };
         let face_notice = if matches!(tool, ModelingTool::Extrude | ModelingTool::Revolve)
             && sketches.is_empty()
         {
@@ -841,7 +856,9 @@ impl SketchEditor {
                 p.evaluated
                     .is_current(session.document(), session.revision())
             }) {
-                self.profiles.show(ui, id, &p.regions);
+                if self.profiles.show(ui, id, &p.regions) {
+                    self.whole_sketch = None;
+                }
             } else {
                 ui.small("Waiting for current solved profiles…");
             }

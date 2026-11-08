@@ -37,6 +37,9 @@ mod edge_host_tests;
 mod external_host;
 #[path = "sketch_face_profiles.rs"]
 mod face_profiles;
+mod face_region_preselection;
+#[cfg(test)]
+mod face_region_preselection_tests;
 #[path = "sketch_mechanical_import_host.rs"]
 mod mechanical_import_host;
 #[path = "model_target_selection.rs"]
@@ -2133,6 +2136,7 @@ impl SketchEditor {
                 self.cancel_move();
             }
             self.selected = sketch;
+            self.whole_sketch = sketch;
             if sketch.is_some() {
                 self.solid.clear();
             } else if let Some(scene) = scene {
@@ -2234,13 +2238,8 @@ impl SketchEditor {
         point_mm: [f64; 2],
         extend: bool,
     ) -> Result<(), String> {
-        if self.selected != Some(sketch)
-            || (!self.editing && !self.acquiring_profiles())
-            || self.tool.is_some()
-            || self.moving
-            || (self.has_pending_edits() && !self.acquiring_profiles())
-        {
-            return Err("Open an idle sketch before selecting profile areas".into());
+        if self.selected != Some(sketch) || !self.profile_pointer_allowed(document, sketch) {
+            return Err("Select an idle sketch before choosing profile areas".into());
         }
         let evaluation = self
             .sketch_evaluation
@@ -2266,6 +2265,7 @@ impl SketchEditor {
                 "Profile selection is busy ({MAX_PROFILE_CLICKS} clicks); wait, then click again"
             ));
         }
+        self.whole_sketch = None;
         self.queued_profile_clicks.push_back(ProfileClick {
             evaluation,
             sketch,
@@ -2311,10 +2311,9 @@ impl SketchEditor {
         let current = self
             .selected
             .and_then(|id| self.sketch_evaluation.current(id));
-        let invalid = (!self.editing && !self.acquiring_profiles())
-            || self.tool.is_some()
-            || self.moving
-            || (self.has_pending_edits() && !self.acquiring_profiles())
+        let invalid = self
+            .selected
+            .is_none_or(|id| !self.profile_pointer_allowed(document, id))
             || current.is_none_or(|p| {
                 p.stamp.document != document.id()
                     || p.stamp.revision != revision
@@ -2430,6 +2429,7 @@ impl SketchEditor {
         }
         self.cancel();
         self.selected = Some(id);
+        self.whole_sketch = None;
         self.tree_selection = std::collections::BTreeSet::from([id]);
         self.editing = true;
         self.element = None;
@@ -3389,6 +3389,7 @@ impl SketchEditor {
                                         }
                                     }
                                     if let Some(presentation)=self.sketch_evaluation.current(id) && self.profiles.show(ui,id,&presentation.regions) {
+                                            self.whole_sketch=None;
                                             self.element=None;self.constraints.clear_geometry_selection();
                                             self.cancel_profile_clicks();
                                     }
@@ -4209,6 +4210,41 @@ impl SketchEditor {
                 );
             }
         }
+        let face_preselection = current
+            && !sketch_mode
+            && !self.editing
+            && !self.acquiring_profiles()
+            && self
+                .selected
+                .is_some_and(|id| self.profile_pointer_allowed(session.document(), id));
+        let face_region = if face_preselection {
+            let pointer = response
+                .interact_pointer_pos()
+                .filter(|_| response.clicked())
+                .or_else(|| response.hover_pos());
+            scene
+                .as_deref()
+                .zip(pointer)
+                .and_then(|(scene, pointer)| self.face_region_point(session, scene, rect, pointer))
+        } else {
+            None
+        };
+        if let Some((id, point)) = face_region
+            && response.clicked()
+        {
+            let modifiers = crate::selection_input::click_modifiers(ui, &response);
+            self.solid.clear();
+            if let Err(error) = self.enqueue_profile_click(
+                session.document(),
+                session.revision(),
+                id,
+                point,
+                modifiers.shift || modifiers.command || modifiers.ctrl,
+            ) {
+                self.message = error;
+            }
+            ui.ctx().request_repaint();
+        }
         if let Some(scene) = &scene {
             let selectable = !self.measurement.active()
                 && !self.assembly.active()
@@ -4218,7 +4254,8 @@ impl SketchEditor {
                 && !self.picking
                 && !self.moving
                 && !self.model.sheet_edge_picking()
-                && !self.has_pending_edits();
+                && !self.has_pending_edits()
+                && face_region.is_none();
             let display = if self.architecture.planar() {
                 match self.architecture.render_scene(scene) {
                     Ok(display) => Some(display),
@@ -4263,6 +4300,12 @@ impl SketchEditor {
                 );
             }
             if response.clicked() && selectable {
+                if face_preselection {
+                    self.selected = None;
+                    self.whole_sketch = None;
+                    self.profiles.clear();
+                    self.reset_profile_clicks();
+                }
                 self.tree_selection = self.solid.selected_ids();
                 if let Some(instance) = self
                     .solid
@@ -4567,7 +4610,7 @@ impl SketchEditor {
         }) {
             if let Ok((source, frame, _)) = self.read_sketch(doc, e.id, session.revision()) {
                 if self.selected == Some(e.id)
-                    && (self.editing || self.acquiring_profiles())
+                    && (self.editing || self.acquiring_profiles() || face_preselection)
                     && self.tool.is_none()
                     && !self.moving
                     && !self.external.active()
@@ -4576,9 +4619,13 @@ impl SketchEditor {
                     && current.stamp.document == session.document().id()
                     && current.stamp.revision == session.revision()
                 {
-                    let hover = response
-                        .hover_pos()
-                        .and_then(|p| self.camera.on_plane(p, rect, frame));
+                    let hover = if face_preselection {
+                        face_region.map(|(_, point)| point)
+                    } else {
+                        response
+                            .hover_pos()
+                            .and_then(|p| self.camera.on_plane(p, rect, frame))
+                    };
                     for fill in current.fills.iter() {
                         let selected = self.profiles.selected().contains(&fill.intent);
                         if selected || hover.is_some_and(|p| fill.contains(p)) {
@@ -5169,6 +5216,7 @@ impl SketchEditor {
                     self.solid.clear();
                     self.tree_selection.clear();
                     self.selected = None;
+                    self.whole_sketch = None;
                     self.occurrence = None;
                     self.element = None;
                     self.constraints.clear_geometry_selection();
@@ -5908,7 +5956,7 @@ mod tests {
             }
         }
     }
-    fn settle(editor: &mut SketchEditor, session: &Session) {
+    pub(super) fn settle(editor: &mut SketchEditor, session: &Session) {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
         loop {
             if let Some(report) = editor
@@ -5934,7 +5982,7 @@ mod tests {
         }
         editor.poll_profile_pick(session.document(), session.revision());
     }
-    fn session() -> Session {
+    pub(super) fn session() -> Session {
         Session::new(Document::new("Sketch tests").unwrap()).unwrap()
     }
     #[test]
@@ -6088,7 +6136,7 @@ mod tests {
         );
         assert_eq!(session.document().get(id).unwrap(), &canonical);
     }
-    fn input(events: Vec<egui::Event>) -> egui::RawInput {
+    pub(super) fn input(events: Vec<egui::Event>) -> egui::RawInput {
         egui::RawInput {
             screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1000., 700.))),
             events,

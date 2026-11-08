@@ -194,12 +194,12 @@ impl Fixture {
             })
             .unwrap();
     }
-    fn extrude(
-        &mut self,
+    fn prepare_extrusion(
+        &self,
         regions: Vec<RegionIntent>,
         operation: Operation,
         distance: f64,
-    ) -> Vec<EntityId> {
+    ) -> (model::ModelPrepared, Vec<EntityId>) {
         let request = ExtrudeRequest::new(
             self.sketch,
             regions,
@@ -234,6 +234,15 @@ impl Fixture {
             )
             .unwrap()
         };
+        (prepared, ids)
+    }
+    fn extrude(
+        &mut self,
+        regions: Vec<RegionIntent>,
+        operation: Operation,
+        distance: f64,
+    ) -> Vec<EntityId> {
+        let (prepared, ids) = self.prepare_extrusion(regions, operation, distance);
         // Preview compiles a candidate without committing source or history.
         let before = self.session.document().clone();
         Compiler::default()
@@ -575,4 +584,131 @@ fn an_existing_authored_face_perimeter_keeps_its_closed_profile_identity() {
     let native = compile(&f.session);
     near(native.snapshot().shapes[&ids[0]].volume_mm3, 2000.);
     near(native.snapshot().shapes[&f.stock.feature].volume_mm3, 4000.);
+}
+
+#[test]
+fn nested_rectangle_and_surrounding_face_are_independent_exact_extrusion_inputs() {
+    let mut fixture = Fixture::new();
+    fixture.edit_strokes(|source, frame| {
+        source.sketch.curves.clear();
+        source.sketch.points.clear();
+        source
+            .add_rectangle(
+                frame.coordinates([5., 5., 10.]),
+                frame.coordinates([15., 15., 10.]),
+            )
+            .unwrap();
+    });
+    save_review(&fixture.session, "nested-rectangle.tcd");
+    let extraction = fixture.regions();
+    assert_eq!(extraction.regions.len(), 2);
+    let report = compile(&fixture.session).snapshot().references.clone();
+    let sketch = multicad_solver::evaluate_document_sketch(
+        fixture.session.document(),
+        fixture.session.revision(),
+        fixture.sketch,
+        Some(&report),
+    )
+    .unwrap();
+    let queries = NativeRegionQueries::default();
+    let pick = |world| {
+        let local = sketch.frame.coordinates(world);
+        let mut hits = extraction
+            .regions
+            .iter()
+            .filter(|region| region.contains_with_queries(local, &queries).unwrap());
+        let region = hits.next().expect("one exact region contains this point");
+        assert!(hits.next().is_none(), "region interiors must not overlap");
+        region
+    };
+    let inner = pick([10., 10., 10.]);
+    let surrounding = pick([2., 3., 10.]);
+    near(inner.area_mm2, 100.);
+    near(surrounding.area_mm2, 300.);
+    assert!(inner.holes.is_empty());
+    assert_eq!(surrounding.holes.len(), 1);
+    assert_eq!(surrounding.holes[0].intent, inner.outer.intent);
+    let intents = [inner.intent(), surrounding.intent()];
+
+    // A validated preview of both areas may still be discarded without
+    // changing the sketch, host solid, or transaction history.
+    let before = fixture.session.document().clone();
+    let revision = fixture.session.revision();
+    let (preview, outputs) = fixture.prepare_extrusion(intents.to_vec(), Operation::NewBody, 5.);
+    let candidate = Compiler::default()
+        .compile(preview.prepared.document(), revision + 1)
+        .unwrap();
+    for (output, expected) in outputs.into_iter().zip([500., 1500.]) {
+        near(candidate.snapshot().shapes[&output].volume_mm3, expected);
+    }
+    drop(preview);
+    assert_eq!(fixture.session.document(), &before);
+    assert_eq!(fixture.session.revision(), revision);
+
+    for (operation, distance) in [
+        (Operation::NewBody, 5.),
+        (Operation::Join, 5.),
+        (Operation::Cut, -5.),
+    ] {
+        for selection in [&[0][..], &[1], &[0, 1]] {
+            let mut sample = Fixture {
+                session: Session::new(before.clone()).unwrap(),
+                stock: fixture.stock.clone(),
+                sketch: fixture.sketch,
+            };
+            let selected: Vec<_> = selection.iter().map(|&i| intents[i].clone()).collect();
+            let output = sample.extrude(selected.clone(), operation, distance);
+            let compiled = compile(&sample.session);
+            if operation == Operation::NewBody {
+                near(
+                    compiled.snapshot().shapes[&sample.stock.feature].volume_mm3,
+                    4000.,
+                );
+                for ((output, index), intent) in output.iter().zip(selection).zip(&selected) {
+                    near(
+                        compiled.snapshot().shapes[output].volume_mm3,
+                        [500., 1500.][*index],
+                    );
+                    assert_eq!(compiled.solid(*output).unwrap().solid_count().unwrap(), 1);
+                    let source = model::read_extrude(sample.session.document(), *output).unwrap();
+                    assert_eq!(&source.profile.sketch().unwrap().region, intent);
+                }
+                if selection.len() == 2 {
+                    let mut bytes = vec![];
+                    project_file::write(
+                        &ProjectFile::new(sample.session.document().clone()).unwrap(),
+                        &mut bytes,
+                        FileLimits::default(),
+                    )
+                    .unwrap();
+                    let saved = project_file::read(
+                        &mut bytes.as_slice(),
+                        FileLimits::default(),
+                        &project_file::supported_capabilities(),
+                    )
+                    .unwrap();
+                    sample.session = Session::new(saved.project.document).unwrap();
+                    let reopened = sample.regions();
+                    let compiled = compile(&sample.session);
+                    for ((output, intent), expected) in
+                        output.iter().zip(&intents).zip([500., 1500.])
+                    {
+                        assert!(reopened.resolve(intent).is_some());
+                        let source =
+                            model::read_extrude(sample.session.document(), *output).unwrap();
+                        assert_eq!(&source.profile.sketch().unwrap().region, intent);
+                        near(compiled.snapshot().shapes[output].volume_mm3, expected);
+                    }
+                }
+            } else {
+                let current = compiled.snapshot().bodies[&sample.stock.body];
+                let area: f64 = selection.iter().map(|&i| [100., 300.][i]).sum();
+                near(
+                    compiled.snapshot().shapes[&current].volume_mm3,
+                    4000. + area * distance,
+                );
+                assert_eq!(compiled.solid(current).unwrap().solid_count().unwrap(), 1);
+            }
+        }
+    }
 }
