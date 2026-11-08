@@ -3276,8 +3276,8 @@ impl SketchEditor {
                             let enabled=self.preview.is_none() && !self.constraints.dirty() && !self.repair.has_pending();
                             self.materials.inspector(ui,session,&selection,enabled);
                         }
-                        if !self.editing && !self.picking && !self.moving && !self.has_pending_edits() && self.solid.quick_actions(ui,session,feed.is_current(session.document().id(),session.revision())) {
-                            self.fit_requested=true;
+                        if !self.editing && !self.picking && !self.moving && !self.has_pending_edits() {
+                            self.solid.quick_actions(ui,session,feed.is_current(session.document().id(),session.revision()));
                         }
                         if self.picking && sketch_mode {
                             let scene = self.display_scene.clone();
@@ -4512,41 +4512,38 @@ impl SketchEditor {
         let model_view = scene
             .as_ref()
             .is_some_and(|scene| self.model.owns_display_scene(scene));
+        let selected_bounds = scene.as_deref().and_then(|scene| {
+            self.solid.selected_bounds(scene).or_else(|| {
+                self.tree_selection
+                    .iter()
+                    .filter_map(|id| scene.instance_bounds(*id))
+                    .reduce(|[low, high], [next_low, next_high]| {
+                        [
+                            std::array::from_fn(|axis| low[axis].min(next_low[axis])),
+                            std::array::from_fn(|axis| high[axis].max(next_high[axis])),
+                        ]
+                    })
+            })
+        });
+        let bounds_points = |[low, high]: [[f64; 3]; 2]| {
+            std::array::from_fn::<_, 8, _>(|corner| {
+                std::array::from_fn(|axis| {
+                    if corner & (1 << axis) == 0 {
+                        low[axis] as f32
+                    } else {
+                        high[axis] as f32
+                    }
+                })
+            })
+        };
         if (self.measurement.active()
             || model_view
             || self.external.active()
             || self.selected.is_none())
             && let Some(scene) = &scene
-            && let Some([low, high]) = self
-                .solid
-                .selected_bounds(scene)
-                .or_else(|| {
-                    let mut bounds: Option<[[f64; 3]; 2]> = None;
-                    for id in &self.tree_selection {
-                        if let Some(selected) = scene.instance_bounds(*id) {
-                            if let Some(current) = &mut bounds {
-                                for axis in 0..3 {
-                                    current[0][axis] = current[0][axis].min(selected[0][axis]);
-                                    current[1][axis] = current[1][axis].max(selected[1][axis]);
-                                }
-                            } else {
-                                bounds = Some(selected);
-                            }
-                        }
-                    }
-                    bounds
-                })
-                .or_else(|| scene.world_bounds())
+            && let Some(bounds) = selected_bounds.or_else(|| scene.world_bounds())
         {
-            for corner in 0..8 {
-                points.push(std::array::from_fn(|i| {
-                    if corner & (1 << i) == 0 {
-                        low[i] as f32
-                    } else {
-                        high[i] as f32
-                    }
-                }));
-            }
+            points.extend(bounds_points(bounds));
         }
         let affected = self.constraints.affected();
         for e in doc.entities().filter(|e| {
@@ -5075,6 +5072,18 @@ impl SketchEditor {
         let mut spacing = self.spacing;
         let mut snap = self.snap;
         let mut geometry_snap = self.geometry_snap;
+        let selection_navigation = (!sketch_mode).then(|| navigation::SelectionNavigation {
+            fit_available: selected_bounds.is_some()
+                || self.selected.is_some() && !points.is_empty(),
+            clear_available: (self.solid.selected_id().is_some()
+                || !self.tree_selection.is_empty()
+                || self.selected.is_some())
+                && !self.editing
+                && !self.picking
+                && !self.moving
+                && !self.has_pending_edits()
+                && !self.measurement.active(),
+        });
         egui::Area::new(ui.id().with("camera-toolbar"))
             .movable(false)
             .pivot(Align2::RIGHT_BOTTOM)
@@ -5085,6 +5094,7 @@ impl SketchEditor {
                     &mut self.camera,
                     &mut self.style,
                     self.architecture.planar(),
+                    selection_navigation,
                     |ui| {
                         ui.checkbox(&mut grid, "XY grid");
                         ui.horizontal(|ui| {
@@ -5134,7 +5144,23 @@ impl SketchEditor {
                 }
                 if actions.fit || self.fit_requested {
                     self.fit_requested = false;
-                    self.camera.fit(&points, rect);
+                    if actions.fit && !sketch_mode && let Some(bounds) = selected_bounds {
+                        self.camera.fit(&bounds_points(bounds), rect);
+                    } else {
+                        self.camera.fit(&points, rect);
+                    }
+                    ui.ctx().request_repaint();
+                }
+                if actions.clear {
+                    self.solid.clear();
+                    self.tree_selection.clear();
+                    self.selected = None;
+                    self.occurrence = None;
+                    self.element = None;
+                    self.constraints.clear_geometry_selection();
+                    self.profiles.clear();
+                    self.reset_profile_clicks();
+                    self.message = "Selection cleared".into();
                     ui.ctx().request_repaint();
                 }
             });

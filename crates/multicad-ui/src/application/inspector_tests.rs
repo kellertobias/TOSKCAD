@@ -78,6 +78,106 @@ fn click(ctx: &egui::Context, app: &mut Application, size: egui::Vec2, label: &s
     }
 }
 #[test]
+fn compact_model_navigation_and_project_switcher_preserve_context() {
+    let size = egui::vec2(1024., 600.);
+    let mut seed = Session::new(Document::new("Selection navigation").unwrap()).unwrap();
+    let mut bodies = Vec::new();
+    for (name, x) in [("Near block", 0.), ("Far block", 250.)] {
+        let stock = PrimitiveRequest::new(
+            name,
+            PrimitiveParameters::Box {
+                size: [model::length(60.), model::length(40.), model::length(12.)],
+                frame: model::PrimitiveFrame {
+                    origin: [model::length(x), model::length(0.), model::length(0.)],
+                    ..Default::default()
+                },
+            },
+        );
+        seed.commit(
+            model::prepare_primitive(&seed, seed.revision(), Actor::local(Channel::Ui), &stock)
+                .unwrap()
+                .prepared,
+        )
+        .unwrap();
+        bodies.push(stock.body);
+    }
+    let original = seed.document().clone();
+    let mut app = Application::with_document(Box::new(Storage), original.clone()).unwrap();
+    app.pending_files.clear();
+    app.set_scene_backends(Arc::new(|| Box::new(NativeBackend::new())));
+    app.mode = Mode::Model;
+    let ctx = egui::Context::default();
+    ctx.enable_accesskit();
+    crate::theme::configure(&ctx);
+
+    let until = Instant::now() + Duration::from_secs(5);
+    while !app.current().scene.is_current(original.id(), 0) {
+        frame(&ctx, &mut app, size, vec![]).drop_without_applying_deltas();
+        assert!(Instant::now() < until);
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    let controls = |app: &mut Application, expected| {
+        let output = frame(&ctx, app, size, vec![]);
+        let nodes = &output
+            .platform_output
+            .accesskit_update
+            .as_ref()
+            .unwrap()
+            .nodes;
+        for name in ["Fit selection", "Clear selection"] {
+            let mut buttons = nodes.iter().filter(|(_, node)| node.label() == Some(name));
+            let (_, button) = buttons.next().unwrap_or_else(|| panic!("Missing {name}"));
+            assert!(buttons.next().is_none(), "only one {name} control");
+            assert_eq!(!button.is_disabled(), expected, "{name}");
+            let bounds = button.bounds().unwrap();
+            assert!(bounds.y0 > 500. && bounds.y1 < 600., "{bounds:?}");
+        }
+        output.drop_without_applying_deltas();
+    };
+    controls(&mut app, false);
+    click(&ctx, &mut app, size, "Near block");
+    controls(&mut app, true);
+    assert_eq!(app.current().sketch.selected_solid(), Some(bodies[0]));
+    click(&ctx, &mut app, size, "Fit selection");
+    let target = app.current().sketch.camera.target;
+    assert!(
+        target
+            .into_iter()
+            .zip([30., 20., 6.])
+            .all(|(x, y)| (x - y).abs() < 0.01)
+    );
+    click(&ctx, &mut app, size, "Clear selection");
+    assert!(app.current().sketch.selected_solid().is_none());
+    controls(&mut app, false);
+
+    click(&ctx, &mut app, size, "Near block");
+    app.current_mut().editor.rows[0].unit = "cm".into();
+    app.invoke(Command::New, &[], Channel::Ui).unwrap();
+    app.current_mut().editor.rows[0].unit = "in".into();
+    click(
+        &ctx,
+        &mut app,
+        size,
+        "Switch project. Active project Untitled 2. 2 open",
+    );
+    click(&ctx, &mut app, size, "Selection navigation  •");
+    assert_eq!(app.active, 0);
+    assert_eq!(app.current().editor.rows[0].unit, "cm");
+    assert_eq!(app.current().sketch.selected_solid(), Some(bodies[0]));
+    assert_eq!(app.current().session.document(), &original);
+    click(
+        &ctx,
+        &mut app,
+        size,
+        "Switch project. Active project Selection navigation. 2 open",
+    );
+    click(&ctx, &mut app, size, "Untitled 2  •");
+    assert_eq!(app.active, 1);
+    assert_eq!(app.current().editor.rows[0].unit, "in");
+    assert!(app.current().sketch.selected_solid().is_none());
+}
+
+#[test]
 fn tool_first_scale_footer_is_painted_and_clickable_after_target_selection() {
     for (width, height, density) in [
         (1360., 420., 1.),
@@ -221,12 +321,7 @@ fn tool_first_scale_footer_is_painted_and_clickable_after_target_selection() {
             .drop_without_applying_deltas();
         }
         assert!(!app.current().sketch.awaiting_model_targets());
-        click(
-            &ctx,
-            &mut app,
-            size,
-            "Fit selection, or all parts when nothing is selected",
-        );
+        click(&ctx, &mut app, size, "Fit selection");
         let mut cancel = None;
         for _ in 0..3 {
             let out = frame(&ctx, &mut app, size, vec![]);

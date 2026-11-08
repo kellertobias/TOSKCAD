@@ -1749,9 +1749,8 @@ impl Application {
     }
     fn header(&mut self, ui: &mut egui::Ui) {
         let mut action = None;
-        let mut switch = None;
         let mut recent = None;
-        let title = self.current().title();
+        let mut switch = None;
         ui.allocate_ui_with_layout(
             egui::vec2(ui.available_width(), 36.0),
             egui::Layout::left_to_right(egui::Align::Center),
@@ -1807,23 +1806,7 @@ impl Application {
                         }
                     }
                 });
-                let short: String = title.chars().take(20).collect();
-                ui.menu_button(format!("{short}  v"), |ui| {
-                    for (index, project) in self.projects.iter().enumerate() {
-                        if ui
-                            .selectable_label(index == self.active, project.title())
-                            .clicked()
-                        {
-                            switch = Some(index);
-                            ui.close();
-                        }
-                    }
-                })
-                .response
-                .on_hover_text(title);
-                if self.current().dirty() {
-                    ui.colored_label(Color32::from_rgb(230, 180, 90), "•");
-                }
+                switch = self.project_switcher(ui);
                 for (icon, label, command) in [
                     (Icon::Save, "Save", Command::Save),
                     (Icon::Undo, "Undo", Command::Undo),
@@ -2213,7 +2196,7 @@ impl Application {
             if controls::history_prompt(ui, self.command_history_open).clicked() {
                 self.command_history_open = !self.command_history_open;
             }
-            let width = ui.available_width();
+            let width = (ui.available_width() - 18.).max(0.);
             let status_width = (width * 0.43).min(560.);
             let response = ui.add_sized(
                 [width, 28.],
@@ -2446,6 +2429,7 @@ impl Application {
         }
     }
     pub fn show(&mut self, ui: &mut egui::Ui) {
+        crate::window_resize::show(ui);
         let ctx = ui.ctx().clone();
         if self.run_external_jobs() {
             ctx.request_repaint();

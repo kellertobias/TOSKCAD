@@ -7,6 +7,74 @@ const TABLE_MIN_WIDTH: f32 = 760.;
 #[cfg(test)]
 mod tests;
 impl Application {
+    pub(super) fn project_switcher(&self, ui: &mut egui::Ui) -> Option<usize> {
+        let title = self.current().title();
+        let count = self.projects.len();
+        let title_limit = if ui.ctx().content_rect().width() < 1150. {
+            13
+        } else {
+            22
+        };
+        let mut chars = title.chars();
+        let mut label: String = chars.by_ref().take(title_limit).collect();
+        if chars.next().is_some() {
+            label.push('…');
+        }
+        if count > 1 {
+            label.push_str(&format!("  ·  {count} open"));
+        }
+        if self.current().dirty() {
+            label.push_str("  •");
+        }
+        label.push_str("    ");
+        let mut button =
+            egui::Button::new(egui::RichText::new(label).strong()).min_size(egui::vec2(0., 26.));
+        if count > 1 {
+            button = button
+                .fill(Color32::from_rgb(37, 60, 89))
+                .stroke(egui::Stroke::new(1., Color32::from_rgb(86, 126, 173)));
+        }
+        let switcher = ui.add(button);
+        let accessible = format!("Switch project. Active project {title}. {count} open");
+        switcher
+            .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &accessible));
+        icons::paint_sized(
+            ui,
+            Icon::ArrowDown,
+            switcher.rect.right_center() - egui::vec2(9., 0.),
+            ui.visuals().text_color(),
+            13.,
+        );
+        let mut chosen = None;
+        egui::Popup::menu(&switcher).show(|ui| {
+            ui.strong("Open projects");
+            egui::ScrollArea::vertical()
+                .max_height(280.)
+                .show(ui, |ui| {
+                    for (index, project) in self.projects.iter().enumerate() {
+                        let name = project.title();
+                        let label = if project.dirty() {
+                            format!("{name}  •")
+                        } else {
+                            name
+                        };
+                        let option = ui.selectable_label(index == self.active, label);
+                        let option = if let Some(path) = &project.path {
+                            option.on_hover_text(path.display().to_string())
+                        } else {
+                            option
+                        };
+                        if option.clicked() {
+                            chosen = Some(index);
+                            ui.close();
+                        }
+                    }
+                });
+        });
+        switcher.on_hover_text(accessible);
+        chosen
+    }
+
     fn project_action_help(&self, command: Command, label: &str, ctx: &egui::Context) -> String {
         let hint = self.command_help(command, label, ctx);
         if self.current().sketch.material_library().dirty() {

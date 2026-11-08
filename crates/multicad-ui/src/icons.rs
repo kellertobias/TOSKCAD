@@ -61,6 +61,7 @@ pub enum Icon {
     Plant,
     Back,
     Fit,
+    ClearSelection,
     Settings,
     Page,
     Export,
@@ -1003,6 +1004,14 @@ pub(crate) fn paint_sized(ui: &egui::Ui, icon: Icon, center: Pos2, color: Color3
             ] {
                 path(points);
             }
+        }
+        Icon::ClearSelection => {
+            path(&[[9., 3.], [3., 3.], [3., 9.]]);
+            path(&[[15., 3.], [21., 3.], [21., 9.]]);
+            path(&[[21., 15.], [21., 21.], [15., 21.]]);
+            path(&[[9., 21.], [3., 21.], [3., 15.]]);
+            line([9., 9.], [15., 15.]);
+            line([15., 9.], [9., 15.]);
         }
         Icon::Settings => {
             circle(12.0, 12.0, 3.0);

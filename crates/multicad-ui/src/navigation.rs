@@ -198,6 +198,12 @@ pub fn orientation(ui: &mut egui::Ui, camera: &mut Camera) -> egui::Response {
 pub struct CameraActions {
     pub home: bool,
     pub fit: bool,
+    pub clear: bool,
+}
+
+pub struct SelectionNavigation {
+    pub fit_available: bool,
+    pub clear_available: bool,
 }
 /// All controls have icon-only faces and explicit accessible names/tooltips.
 pub fn toolbar(
@@ -216,13 +222,14 @@ pub fn toolbar_with_tools(
     grid_controls: impl FnOnce(&mut egui::Ui),
     extra: impl FnOnce(&mut egui::Ui),
 ) -> CameraActions {
-    toolbar_for_model(ui, camera, style, false, grid_controls, extra)
+    toolbar_for_model(ui, camera, style, false, None, grid_controls, extra)
 }
 pub fn toolbar_for_model(
     ui: &mut egui::Ui,
     camera: &mut Camera,
     style: &mut DisplayStyle,
     planar: bool,
+    selection: Option<SelectionNavigation>,
     grid_controls: impl FnOnce(&mut egui::Ui),
     extra: impl FnOnce(&mut egui::Ui),
 ) -> CameraActions {
@@ -242,12 +249,31 @@ pub fn toolbar_for_model(
                     "Home view: standard orientation framing the whole model",
                 )
                 .clicked();
-                actions.fit = icons::compact_button(
-                    ui,
-                    Icon::Fit,
-                    "Fit selection, or all parts when nothing is selected",
-                )
-                .clicked();
+                if let Some(selection) = selection {
+                    actions.fit = ui
+                        .add_enabled_ui(selection.fit_available, |ui| {
+                            icons::compact_button(ui, Icon::Fit, "Fit selection")
+                        })
+                        .inner
+                        .on_disabled_hover_text("Select visible model geometry to fit")
+                        .clicked();
+                    actions.clear = ui
+                        .add_enabled_ui(selection.clear_available, |ui| {
+                            icons::compact_button(ui, Icon::ClearSelection, "Clear selection")
+                        })
+                        .inner
+                        .on_disabled_hover_text(
+                            "Available with a selection while no tool is active",
+                        )
+                        .clicked();
+                } else {
+                    actions.fit = icons::compact_button(
+                        ui,
+                        Icon::Fit,
+                        "Fit selection, or all parts when nothing is selected",
+                    )
+                    .clicked();
+                }
                 ui.separator();
                 let icon = if camera.perspective {
                     Icon::Perspective

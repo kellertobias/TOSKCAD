@@ -64,7 +64,7 @@ pub fn launch_with(application: AppCreator<'static>) -> Result<(), String> {
         viewport: egui::ViewportBuilder::default()
             .with_icon(icon)
             .with_inner_size([1360.0, 860.0])
-            .with_min_inner_size([1024.0, 600.0])
+            .with_min_inner_size(window_resize::MIN_CLIENT_SIZE)
             .with_decorations(cfg!(target_os = "macos"))
             .with_fullsize_content_view(true)
             .with_title_shown(false)
@@ -111,6 +111,7 @@ mod native_window;
 
 pub mod shortcuts;
 pub mod viewport;
+mod window_resize;
 
 pub mod exchange;
 pub mod print;

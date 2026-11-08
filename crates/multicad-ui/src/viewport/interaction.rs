@@ -434,24 +434,13 @@ impl Interaction {
         self.parts = Arc::new(created);
         Ok(())
     }
-    /// Source actions use the canonical transaction API; view actions return a
-    /// fit request to the host so all camera fitting uses one implementation.
-    pub fn quick_actions(
-        &mut self,
-        ui: &mut egui::Ui,
-        session: &mut Session,
-        current: bool,
-    ) -> bool {
+    /// Show the Inspector's source action through the canonical transaction API.
+    pub fn quick_actions(&mut self, ui: &mut egui::Ui, session: &mut Session, current: bool) {
         crate::controls::inspector_layout(ui);
         if self.selected_id().is_none() {
-            return false;
+            return;
         }
-        let mut fit = false;
         ui.horizontal_wrapped(|ui| {
-            fit = ui
-                .add(egui::Button::new("Fit selection").wrap())
-                .on_hover_text("Frame all selected parts without changing source")
-                .clicked();
             let duplicate = current
                 && self.selected_ids().iter().all(|id| {
                     matches!(
@@ -473,18 +462,10 @@ impl Interaction {
             {
                 self.action_error = self.duplicate_selected(session).err();
             }
-            if ui
-                .add(egui::Button::new("Clear selection").wrap())
-                .on_hover_text("Clear selected parts and topology")
-                .clicked()
-            {
-                self.clear();
-            }
         });
         if let Some(error) = &self.action_error {
             ui.colored_label(Color32::LIGHT_RED, error);
         }
-        fit
     }
     pub fn filter_control(&mut self, ui: &mut egui::Ui) {
         let button = icons::compact_button(
