@@ -245,26 +245,32 @@ impl Application {
             ui.set_width((ctx.content_rect().width()-60.).clamp(240.,520.));
             let heading=if dirty.is_empty() {"Finish the active operation before quitting."} else {"File is not saved. Do you really want to quit?"};
             ui.label(egui::RichText::new(heading).size(20.).strong());
-            ui.add_space(12.);
-            ui.add_enabled_ui(!busy && !drafts,|ui| {
-                ui.horizontal_wrapped(|ui| {
-                    ui.strong(repeat_instruction());
-                    ui.label("to quit without saving.");
+            crate::controls::inspector_layout(ui);
+            egui::ScrollArea::vertical()
+                .id_salt("quit-dialog-details")
+                .max_height((ctx.content_rect().height() - 150.).max(0.))
+                .show(ui, |ui| {
+                    ui.add_space(12.);
+                    ui.add_enabled_ui(!busy && !drafts,|ui| {
+                        ui.horizontal_wrapped(|ui| {
+                            ui.strong(repeat_instruction());
+                            ui.label("to quit without saving.");
+                        });
+                    });
+                    if !dirty.is_empty() {
+                        ui.add_space(12.);
+                        ui.weak(format!("{} unsaved document{}",dirty.len(),if dirty.len()==1 {""} else {"s"}));
+                        egui::ScrollArea::vertical().id_salt("quit-document-list").max_height(140.).show(ui,|ui| {
+                            for (name,draft) in &dirty { ui.label(format!("{name}{}",if *draft {" · unapplied edits"} else {""})); }
+                        });
+                    }
+                    if busy {
+                        ui.add_space(10.);
+                        ui.horizontal(|ui| {ui.spinner();ui.label(if self.close_save.is_some() {"Saving all unsaved documents…"} else {"Wait for the active file or export operation to finish."});});
+                    }
+                    if drafts {ui.add_space(10.);ui.label("Apply or cancel pending tool edits in every document before saving or quitting.");}
+                    if self.message_error {ui.add_space(10.);ui.colored_label(Color32::LIGHT_RED,&self.message);}
                 });
-            });
-            if !dirty.is_empty() {
-                ui.add_space(12.);
-                ui.weak(format!("{} unsaved document{}",dirty.len(),if dirty.len()==1 {""} else {"s"}));
-                egui::ScrollArea::vertical().id_salt("quit-document-list").max_height(140.).show(ui,|ui| {
-                    for (name,draft) in &dirty { ui.label(format!("{name}{}",if *draft {" · unapplied edits"} else {""})); }
-                });
-            }
-            if busy {
-                ui.add_space(10.);
-                ui.horizontal(|ui| {ui.spinner();ui.label(if self.close_save.is_some() {"Saving all unsaved documents…"} else {"Wait for the active file or export operation to finish."});});
-            }
-            if drafts {ui.add_space(10.);ui.label("Apply or cancel pending tool edits in every document before saving or quitting.");}
-            if self.message_error {ui.add_space(10.);ui.colored_label(Color32::LIGHT_RED,&self.message);}
             ui.add_space(20.);
             ui.allocate_ui_with_layout(egui::vec2(ui.available_width(),36.),egui::Layout::right_to_left(egui::Align::Center).with_main_wrap(true),|ui| {
                 ui.spacing_mut().item_spacing.x=8.;
@@ -505,7 +511,7 @@ mod tests {
             egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(
                     egui::Pos2::ZERO,
-                    egui::vec2(1200., 800.),
+                    egui::vec2(1024., 600.),
                 )),
                 events,
                 ..Default::default()
@@ -514,6 +520,40 @@ mod tests {
         );
         output.textures_delta.clear();
         output
+    }
+    #[test]
+    fn compact_quit_error_leaves_cancel_quit_and_save_reachable() {
+        let mut app = Application::new(Box::new(Storage)).unwrap();
+        app.pending_files.clear();
+        app.close_confirm = true;
+        app.message_error = true;
+        app.message = "Save and Quit stopped: The chosen folder did not finish its project write. "
+            .repeat(42);
+        let original = app.current().session.document().clone();
+        let ctx = egui::Context::default();
+        crate::theme::configure(&ctx);
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1024., 600.));
+        for _ in 0..3 {
+            dialog_frame(&mut app, &ctx, vec![]).drop_without_applying_deltas();
+        }
+        let out = dialog_frame(&mut app, &ctx, vec![]);
+        for label in ["Cancel", "Quit", "Save and Quit"] {
+            let bounds = out
+                .shapes
+                .iter()
+                .find_map(|shape| match &shape.shape {
+                    egui::Shape::Text(t) if t.galley.text() == label => {
+                        Some(egui::Rect::from_min_size(t.pos, t.galley.size()))
+                    }
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("Missing {label}"));
+            assert!(screen.contains_rect(bounds), "{label}: {bounds:?}");
+        }
+        out.drop_without_applying_deltas();
+        click_dialog(&mut app, &ctx, "Cancel");
+        assert!(!app.close_confirm && !app.close_allowed);
+        assert_eq!(app.current().session.document(), &original);
     }
     fn native_press(ctx: &egui::Context) {
         ctx.data_mut(|data| data.insert_temp(egui::Id::new("native-quit-presses"), 1usize));
@@ -553,7 +593,18 @@ mod tests {
             );
         }
         assert!(!shown.iter().any(|s| s == "Close without saving"));
-        assert!(output.shapes.iter().any(|s| matches!(&s.shape,egui::Shape::Rect(r) if r.rect.width()>=1200. && r.rect.height()>=800. && r.fill==Color32::from_rgba_unmultiplied(115,12,25,115))));
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1024., 600.));
+        for shape in &output.shapes {
+            if let egui::Shape::Text(text) = &shape.shape {
+                let bounds = egui::Rect::from_min_size(text.pos, text.galley.size());
+                assert!(
+                    screen.contains_rect(bounds),
+                    "{} at {bounds:?}",
+                    text.galley.text()
+                );
+            }
+        }
+        assert!(output.shapes.iter().any(|s| matches!(&s.shape,egui::Shape::Rect(r) if r.rect.width()>=1024. && r.rect.height()>=600. && r.fill==Color32::from_rgba_unmultiplied(115,12,25,115))));
         output.drop_without_applying_deltas();
         let key = |key, pressed, repeat| egui::Event::Key {
             key,
