@@ -81,6 +81,38 @@ fn click(ctx: &egui::Context, app: &mut Application, size: egui::Vec2, label: &s
     }
 }
 #[test]
+fn project_and_model_share_full_width_workspace_tab_geometry() {
+    for size in [egui::vec2(1024., 600.), egui::vec2(1360., 860.)] {
+        let (mut app, _) = app();
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        crate::theme::configure(&ctx);
+        let mut bars = Vec::new();
+        for (mode, label) in [(Mode::Parameters, "Parameters"), (Mode::Model, "Common")] {
+            app.mode = mode;
+            let output = frame(&ctx, &mut app, size, vec![]);
+            let (tab, enabled) = button(&output, label);
+            assert!(enabled);
+            let bar = output
+                .shapes
+                .iter()
+                .find_map(|shape| {
+                    let egui::Shape::Rect(rect) = &shape.shape else {
+                        return None;
+                    };
+                    (rect.fill == mode.color() && rect.rect.width() >= size.x - 1.)
+                        .then_some(rect.rect)
+                })
+                .expect("full-width mode accent");
+            assert!(bar.contains_rect(tab));
+            assert_eq!(tab.height(), 30.);
+            bars.push(bar);
+            output.drop_without_applying_deltas();
+        }
+        assert_eq!(bars[0], bars[1]);
+    }
+}
+#[test]
 fn general_keeps_metadata_on_the_left_and_preserves_the_draft_between_tabs() {
     let (mut app, _) = app();
     app.tab = 0;

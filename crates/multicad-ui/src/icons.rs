@@ -51,6 +51,7 @@ pub enum Icon {
     Edge,
     Measure,
     Library,
+    Materials,
     Home,
     Stairs,
     Water,
@@ -912,6 +913,11 @@ pub(crate) fn paint_sized(ui: &egui::Ui, icon: Icon, center: Pos2, color: Color3
                 [19.0, 21.0],
                 [16.0, 5.0],
             ]);
+        }
+        Icon::Materials => {
+            path(&[[2., 8.], [12., 3.], [22., 8.], [12., 13.], [2., 8.]]);
+            path(&[[2., 12.], [12., 17.], [22., 12.]]);
+            path(&[[2., 16.], [12., 21.], [22., 16.]]);
         }
         Icon::Water => {
             path(&[

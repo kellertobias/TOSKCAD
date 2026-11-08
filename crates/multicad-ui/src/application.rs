@@ -2073,34 +2073,48 @@ impl Application {
             tab
         }
     }
-    fn ribbon(&mut self, ui: &mut egui::Ui) {
+    fn workspace_tab_bar(&self, ui: &mut egui::Ui) -> (Option<usize>, Option<Command>) {
         ui.spacing_mut().item_spacing.y = 0.0;
-        let workspace = self.registry.workspace(self.mode).clone();
-        self.tab = self.effective_ribbon_tab();
-        let mut selected_tab = None;
+        let workspace = self.registry.workspace(self.mode);
+        let project = self.mode == Mode::Parameters;
+        let tabs = if project {
+            (0..workspace.tabs.len())
+                .map(|index| (index, false))
+                .collect()
+        } else {
+            self.ribbon_tabs()
+        };
         let accent = self.mode.color();
-        let mut action = None;
         egui::Frame::new()
             .fill(accent)
             .inner_margin(egui::Margin::symmetric(8, 3))
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 ui.horizontal(|ui| {
-                    for (index, hidden) in self.ribbon_tabs() {
+                    let mut selected_tab = None;
+                    for (index, hidden) in tabs {
                         let tab = &workspace.tabs[index];
-                        let response = controls::tab_with_icon(
-                            ui,
-                            (self.mode == Mode::Model)
-                                .then(|| crate::ribbon_ui::model_tab_icon(tab.title)),
-                            tab.title,
-                            self.tab == index,
-                            TabColors {
-                                text: Color32::WHITE,
-                                background: accent,
-                                active_text: accent,
-                                active_background: Color32::WHITE,
-                            },
-                        );
+                        let button = |ui: &mut egui::Ui| {
+                            controls::tab_with_icon(
+                                ui,
+                                crate::ribbon_ui::workspace_tab_icon(self.mode, tab.title),
+                                tab.title,
+                                self.tab == index,
+                                TabColors {
+                                    text: Color32::WHITE,
+                                    background: accent,
+                                    active_text: accent,
+                                    active_background: Color32::WHITE,
+                                },
+                            )
+                        };
+                        let response = if project && self.project_tab_blocked(index) {
+                            ui.add_enabled_ui(false, button)
+                                .inner
+                                .on_disabled_hover_text("Apply or discard the current draft first")
+                        } else {
+                            button(ui)
+                        };
                         let response = if hidden {
                             response.on_hover_text(
                                 "Hidden in Settings · shown while this workbench is in use",
@@ -2112,11 +2126,21 @@ impl Application {
                             selected_tab = Some(index);
                         }
                     }
-                    if self.mode == Mode::Model {
-                        action = self.utility_actions(ui);
-                    }
-                });
-            });
+                    let action = if self.mode == Mode::Model {
+                        self.utility_actions(ui)
+                    } else {
+                        None
+                    };
+                    (selected_tab, action)
+                })
+                .inner
+            })
+            .inner
+    }
+    fn ribbon(&mut self, ui: &mut egui::Ui) {
+        let workspace = self.registry.workspace(self.mode).clone();
+        self.tab = self.effective_ribbon_tab();
+        let (selected_tab, mut action) = self.workspace_tab_bar(ui);
         ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
         egui::Frame::new()
             .fill(Color32::BLACK)

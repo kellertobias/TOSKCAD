@@ -129,37 +129,12 @@ impl Application {
     }
 
     pub(super) fn project_tabs(&mut self, ui: &mut egui::Ui) {
-        let mut selected = self.tab;
-        egui::Panel::top("project-tabs")
-            .frame(
-                egui::Frame::new()
-                    .fill(crate::theme::PANEL)
-                    .inner_margin(egui::Margin::symmetric(8, 4)),
-            )
-            .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    for (index, tab) in self
-                        .registry
-                        .workspace(Mode::Parameters)
-                        .tabs
-                        .iter()
-                        .enumerate()
-                    {
-                        if ui
-                            .add_enabled(
-                                !self.project_tab_blocked(index),
-                                egui::Button::selectable(index == self.tab, tab.title)
-                                    .min_size(egui::vec2(104., 32.)),
-                            )
-                            .on_disabled_hover_text("Apply or discard the current draft first")
-                            .clicked()
-                        {
-                            selected = index;
-                        }
-                    }
-                });
-            });
-        if selected != self.tab {
+        let (selected, _) = egui::Panel::top("project-tabs")
+            .exact_size(RIBBON_TAB_STRIP)
+            .frame(egui::Frame::new())
+            .show(ui, |ui| self.workspace_tab_bar(ui))
+            .inner;
+        if let Some(selected) = selected.filter(|&index| index != self.tab) {
             if selected == MATERIALS_TAB {
                 self.execute(Command::Extension("materials"), &[], Channel::Ui);
             } else {

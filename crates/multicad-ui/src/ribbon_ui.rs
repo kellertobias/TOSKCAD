@@ -5,17 +5,21 @@ use crate::{
 };
 use eframe::egui;
 
-pub(crate) fn model_tab_icon(title: &str) -> Icon {
-    match title {
-        "Architecture" => Icon::Home,
-        "Wood" => Icon::Furniture,
-        "Sheet metal" => Icon::Thickness,
-        "Weld" => Icon::Joint,
-        "Mechanical" => Icon::Cylinder,
-        "Other" => Icon::Grid,
-        "Relations" => Icon::Link,
-        _ => Icon::Box,
-    }
+pub(crate) fn workspace_tab_icon(mode: Mode, title: &str) -> Option<Icon> {
+    Some(match (mode, title) {
+        (Mode::Parameters, "General") => Icon::Page,
+        (Mode::Parameters, "Parameters") => Icon::Grid,
+        (Mode::Parameters, "Materials") => Icon::Materials,
+        (Mode::Model, "Architecture") => Icon::Home,
+        (Mode::Model, "Wood") => Icon::Furniture,
+        (Mode::Model, "Sheet metal") => Icon::Thickness,
+        (Mode::Model, "Weld") => Icon::Joint,
+        (Mode::Model, "Mechanical") => Icon::Cylinder,
+        (Mode::Model, "Other") => Icon::Grid,
+        (Mode::Model, "Relations") => Icon::Link,
+        (Mode::Model, _) => Icon::Box,
+        _ => return None,
+    })
 }
 
 #[derive(Clone)]
