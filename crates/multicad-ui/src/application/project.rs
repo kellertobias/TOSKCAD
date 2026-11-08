@@ -185,10 +185,23 @@ impl Application {
                         ui.horizontal(|ui| {
                             ui.strong(title);
                             let command = Command::Mode(mode);
-                            if ui.add_enabled(self.enabled(command), egui::Button::new(format!("Open {title}"))).clicked() {
+                            let starting_model = mode == Mode::Model;
+                            let enabled = self.enabled(command)
+                                && (!starting_model || !self.current().editor.dirty());
+                            let button = if starting_model {
+                                egui::Button::new("Start Modeling")
+                                    .fill(ui.visuals().selection.bg_fill)
+                                    .min_size(egui::vec2(158., 36.))
+                            } else {
+                                egui::Button::new(format!("Open {title}"))
+                            };
+                            if ui.add_enabled(enabled, button).clicked() {
                                 action = Some(command);
                             }
                         });
+                        if mode == Mode::Model && self.current().editor.dirty() {
+                            ui.label("Apply or discard Project edits before starting modeling.");
+                        }
                         match mode {
                             Mode::Model if parts + assemblies + instances + sketches == 0 => {
                                 ui.label("No model geometry or sketches yet.");

@@ -49,7 +49,9 @@ impl Application {
     fn accept_library_event(&mut self, event: LibraryEvent) {
         let refresh = matches!(
             &event,
-            LibraryEvent::Loaded(Ok(_)) | LibraryEvent::Registered { result: Ok(_), .. }
+            LibraryEvent::Loaded(Ok(_))
+                | LibraryEvent::Removed(Ok(_))
+                | LibraryEvent::Registered { result: Ok(_), .. }
         );
         match event {
             LibraryEvent::Loaded(Ok(entries)) => {
@@ -58,6 +60,25 @@ impl Application {
             }
             LibraryEvent::Loaded(Err(error)) => {
                 self.library.error = Some(format!("Library: {error}"));
+            }
+            LibraryEvent::Removed(result) => {
+                let (message, error) = match result {
+                    Ok(entries) => {
+                        self.library.entries = entries;
+                        self.library.error = None;
+                        (
+                            "Library listing removed. The project file is unchanged.".into(),
+                            false,
+                        )
+                    }
+                    Err(error) => (
+                        format!("Could not remove the Library listing: {error}"),
+                        true,
+                    ),
+                };
+                self.library.status = Some((message.clone(), error));
+                self.message = message;
+                self.message_error = error;
             }
             LibraryEvent::Registered { result, .. } => match result {
                 Ok((receipt, entries)) => {
@@ -69,7 +90,7 @@ impl Application {
                     self.message_error = false;
                 }
                 Err(error) => {
-                    let message = format!("Add to Library failed: {error}");
+                    let message = format!("Could not include the project in Library: {error}");
                     self.library.status = Some((message.clone(), true));
                     self.message = message;
                     self.message_error = true;
@@ -130,29 +151,27 @@ impl Application {
         }
     }
     /// How the current file is listed, for the sidebar status.
-    fn listing_status(&self) -> Option<(String, bool)> {
+    fn listing_status(&self) -> Option<(String, Option<EntityId>)> {
         let p = self.current();
         let document = p.session.document().id();
-        let entry = self
-            .library
-            .entries
-            .iter()
-            .find(|e| e.document == document)?;
+        let entry = self.library.entries.iter().find(|e| {
+            e.document == document && e.origin == crate::library::LibraryOrigin::ListedOriginal
+        })?;
         let here = p.path.as_ref().is_some_and(|path| {
             *path == entry.path || path.canonicalize().is_ok_and(|c| c == entry.path)
         });
         Some(if here {
             (
                 format!("Listed in the library · {}", entry.path.display()),
-                true,
+                Some(entry.id),
             )
         } else {
             (
                 format!(
-                    "Listed from another location: {} · Add to Library lists this file instead",
+                    "Listed from another location: {}. Including this file replaces that listing.",
                     entry.path.display()
                 ),
-                false,
+                None,
             )
         })
     }
@@ -168,7 +187,7 @@ impl Application {
             }
         }
     }
-    /// Why Add to Library is unavailable for the current tab, if it is.
+    /// Why including the current project in Library is unavailable, if it is.
     pub(super) fn registration_blocker(&self) -> Result<RegisterRequest, String> {
         if self.library.worker.is_none() {
             return Err("The installation library is unavailable in this host".into());
@@ -240,11 +259,7 @@ impl Application {
         } else {
             Ok(())
         };
-        let registering = self
-            .library
-            .worker
-            .as_ref()
-            .is_some_and(|w| w.registering());
+        let library_busy = self.library.worker.as_ref().is_some_and(|w| w.pending());
         let listing = self.listing_status();
         let state = &mut self.library;
         let p = &mut self.projects[self.active];
@@ -255,7 +270,7 @@ impl Application {
             &mut state.textures,
             SidebarContext {
                 register,
-                registering,
+                library_busy,
                 choose_image,
                 status: state.status.as_ref(),
                 listing: listing.as_ref(),
@@ -273,17 +288,24 @@ impl Application {
                 .as_mut()
                 .ok_or_else(|| "The installation library is unavailable in this host".into())
                 .and_then(|w| w.reload()),
-            Some(SidebarAction::RemoveEntry(id)) => self
-                .library
-                .worker
-                .as_mut()
-                .ok_or_else(|| "The installation library is unavailable in this host".into())
-                .and_then(|w| w.remove(id)),
+            Some(SidebarAction::RemoveEntry(id)) => self.remove_library_entry(id),
         };
         if let Err(error) = result {
             self.message = error;
             self.message_error = true;
         }
+    }
+
+    fn remove_library_entry(&mut self, id: EntityId) -> Result<(), String> {
+        self.library
+            .worker
+            .as_mut()
+            .ok_or("The installation library is unavailable in this host")?
+            .remove(id)?;
+        self.library.status = None;
+        self.message = "Removing the Library listing…".into();
+        self.message_error = false;
+        Ok(())
     }
     /// Home-screen card: the file's own name, description and preview.
     pub(super) fn recent_card(

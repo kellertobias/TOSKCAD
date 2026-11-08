@@ -118,6 +118,7 @@ enum Job {
 }
 pub enum LibraryEvent {
     Loaded(Result<Vec<LibraryEntry>, String>),
+    Removed(Result<Vec<LibraryEntry>, String>),
     Registered {
         document: EntityId,
         result: Result<(RegisterReceipt, Vec<LibraryEntry>), String>,
@@ -147,7 +148,7 @@ impl LibraryWorker {
                 while let Ok(job) = jobs.recv() {
                     let event = match job {
                         Job::Load => LibraryEvent::Loaded(store.load()),
-                        Job::Remove(id) => LibraryEvent::Loaded(store.remove(id)),
+                        Job::Remove(id) => LibraryEvent::Removed(store.remove(id)),
                         Job::Register(request) => LibraryEvent::Registered {
                             document: request.document,
                             result: store.register(&request),

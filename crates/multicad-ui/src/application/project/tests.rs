@@ -94,6 +94,7 @@ fn general_keeps_metadata_on_the_left_and_preserves_the_draft_between_tabs() {
         .outer_rect;
     assert!(metadata.left().abs() < 1.);
     assert!(egui::PanelState::load(&ctx, egui::Id::new("project-material-ribbon")).is_none());
+    assert!(button(&out, "Start Modeling").1);
     for label in [
         "Project contents",
         "No saved poses yet.",
@@ -113,6 +114,13 @@ fn general_keeps_metadata_on_the_left_and_preserves_the_draft_between_tabs() {
     click(&ctx, &mut app, size, "General");
     assert_eq!(app.tab, 0);
     assert_eq!(app.current().editor.info.name, "Pending Project title");
+    assert_eq!(app.current().session.document(), &source);
+    let out = frame(&ctx, &mut app, size, vec![]);
+    assert!(!button(&out, "Start Modeling").1);
+    out.drop_without_applying_deltas();
+    app.invoke(Command::Discard, &[], Channel::Ui).unwrap();
+    click(&ctx, &mut app, size, "Start Modeling");
+    assert_eq!(app.mode, Mode::Model);
     assert_eq!(app.current().session.document(), &source);
 }
 #[test]

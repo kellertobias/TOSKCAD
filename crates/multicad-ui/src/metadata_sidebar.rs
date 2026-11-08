@@ -1,7 +1,4 @@
-//! Parameters metadata sidebar: the file's name, description and preview
-//! image, plus the explicit Add to Library action. It edits only the
-//! Parameters draft; Apply/Rebuild commits it with the table in one undoable
-//! transaction and Discard reverts both. No modeling inspector lives here.
+//! Project metadata edits share the parameter draft. Library inclusion indexes the saved file.
 use crate::{
     library::{LibraryEntry, LibraryOrigin, PreviewTextures},
     parameter_editor::ParameterEditor,
@@ -20,14 +17,14 @@ pub enum SidebarAction {
     RemoveEntry(EntityId),
 }
 pub struct SidebarContext<'a> {
-    /// `Err` explains why Add to Library is unavailable right now.
+    /// `Err` explains why the saved project cannot be included in Library.
     pub register: Result<(), String>,
-    pub registering: bool,
+    pub library_busy: bool,
     pub choose_image: Result<(), String>,
     /// Latest registration result: message and whether it is an error.
     pub status: Option<&'a (String, bool)>,
-    /// How the current file is listed: message and whether it is listed here.
-    pub listing: Option<&'a (String, bool)>,
+    /// Listing description and the entry ID when the current path is listed.
+    pub listing: Option<&'a (String, Option<EntityId>)>,
     pub library: &'a [LibraryEntry],
     pub library_error: Option<&'a str>,
 }
@@ -53,21 +50,18 @@ pub fn show(
     egui::ScrollArea::vertical()
         .id_salt("parameters-metadata")
         .show(ui, |ui| {
-            ui.heading("File");
-            ui.label(
-                egui::RichText::new("Describes this project file. Applied with Apply/Rebuild.")
-                    .small()
-                    .color(Color32::GRAY),
-            );
+            ui.heading("Project details");
             ui.add_space(6.);
             let locked = editor.info_locked.clone();
             if let Some(reason) = &locked {
                 ui.colored_label(Color32::LIGHT_RED, reason);
             }
             ui.add_enabled_ui(locked.is_none(), |ui| {
-                ui.label("Name");
+                ui.label("Project name");
+                ui.label("Shown in Project and Library. Choose the filename when you save.");
                 changed |= ui
                     .add(egui::TextEdit::singleline(&mut editor.info.name)
+                        .hint_text("For example, Workshop cabinet")
                         .char_limit(info::MAX_NAME_CHARS)
                         .desired_width(f32::INFINITY))
                     .on_hover_text("Shown on the home screen and in the library")
@@ -75,7 +69,7 @@ pub fn show(
                 if let Err(error) = info::validate_name(&editor.info.name) {
                     ui.colored_label(Color32::LIGHT_RED, error);
                 }
-                ui.label("Description");
+                ui.label("Project description");
                 changed |= ui.scope(|ui| {
                     ui.spacing_mut().scroll = egui::style::ScrollStyle::solid();
                     egui::ScrollArea::vertical()
@@ -128,48 +122,32 @@ pub fn show(
             if editor.info_dirty() {
                 ui.colored_label(
                     Color32::from_rgb(232, 190, 92),
-                    "Unapplied file changes · use Apply/Rebuild or Discard",
+                    "Use Apply and Rebuild above to keep these edits, or Discard Edit to revert them.",
                 );
             }
             ui.separator();
             ui.heading("Library");
-            ui.label(
-                egui::RichText::new(
-                    "One library for this installation. Adding lists the saved file at its location; nothing is copied. Projects that already use it keep their pinned copy.",
+            let listed_id = cx.listing.and_then(|(_, id)| *id);
+            let mut included = listed_id.is_some();
+            if ui
+                .add_enabled(
+                    !cx.library_busy && (included || cx.register.is_ok()),
+                    egui::Checkbox::new(&mut included, "Include in Library"),
                 )
-                .small()
-                .color(Color32::GRAY),
-            );
-            let state = if cx.registering {
-                Err("Adding to the library…".to_string())
-            } else {
-                cx.register.clone()
-            };
-            if enabled_button(
-                ui,
-                "Add to Library",
-                &state,
-                "List the saved file at its location in this installation's library",
-            ) {
-                action = Some(SidebarAction::AddToLibrary);
+                .on_hover_text("Lists this saved project at its existing location")
+                .changed()
+            {
+                action = if included {
+                    Some(SidebarAction::AddToLibrary)
+                } else {
+                    listed_id.map(SidebarAction::RemoveEntry)
+                };
             }
-            match cx.listing {
-                Some((message, true)) => {
-                    ui.colored_label(Color32::from_rgb(132, 200, 140), message);
-                }
-                Some((message, false)) => {
-                    ui.colored_label(Color32::from_rgb(232, 190, 92), message);
-                }
-                None => {
-                    ui.label(
-                        egui::RichText::new("Not listed in the library")
-                            .small()
-                            .color(Color32::GRAY),
-                    );
-                }
+            if let Some((message, _)) = cx.listing {
+                ui.label(message);
             }
-            if let Err(reason) = &cx.register {
-                ui.label(egui::RichText::new(reason).small().color(Color32::GRAY));
+            if listed_id.is_none() && let Err(reason) = &cx.register {
+                ui.label(reason);
             }
             if let Some((message, error)) = cx.status {
                 ui.colored_label(
@@ -181,36 +159,37 @@ pub fn show(
                     message,
                 );
             }
-            ui.small("Open Model, then Library, to browse and place definitions.");
+            ui.label("Open Model, then Library, to browse and place definitions.");
             if let Some(error) = cx.library_error {
                 ui.colored_label(Color32::LIGHT_RED, error);
             }
             let listed = cx.library.iter().filter(|entry| entry.origin == LibraryOrigin::ListedOriginal);
             let count = listed.clone().count();
-            egui::CollapsingHeader::new(format!("Manage listed files ({count})"))
+            egui::CollapsingHeader::new(format!("Projects listed in Library ({count})"))
                 .id_salt("project-manage-library-listings")
                 .show(ui, |ui| {
-                    if ui.small_button("Reload").clicked() {
+                    ui.label("These projects are listed at their saved locations. Removing a listing leaves the project file and placed parts intact.");
+                    if ui.add_enabled(!cx.library_busy, egui::Button::new("Reload")).clicked() {
                         action = Some(SidebarAction::ReloadLibrary);
                     }
                     if count == 0 && cx.library_error.is_none() {
-                        ui.small("No original files listed.");
+                        ui.label("No original files listed.");
                     }
                     for entry in listed {
                         ui.push_id(entry.id, |ui| {
                             ui.strong(&entry.name);
                             let path = entry.path.display().to_string();
-                            ui.add(egui::Label::new(egui::RichText::new(&path).small()).truncate())
+                            ui.add(egui::Label::new(&path).truncate())
                                 .on_hover_text(path);
                             if let Some(problem) = &entry.problem {
                                 ui.colored_label(Color32::LIGHT_RED, problem);
-                                if ui
-                                    .small_button("Remove from library")
-                                    .on_hover_text("Remove this listing; no file is deleted")
-                                    .clicked()
-                                {
-                                    action = Some(SidebarAction::RemoveEntry(entry.id));
-                                }
+                            }
+                            if ui
+                                .add_enabled(!cx.library_busy, egui::Button::new("Remove listing"))
+                                .on_hover_text("Remove the Library listing and keep the project file")
+                                .clicked()
+                            {
+                                action = Some(SidebarAction::RemoveEntry(entry.id));
                             }
                         });
                     }

@@ -381,7 +381,7 @@ fn listing_status_and_removal_follow_the_installation_index() {
     drain(&mut app);
     let (message, here) = app.listing_status().unwrap();
     assert!(
-        here && message.contains("Listed in the library"),
+        here.is_some() && message.contains("Listed in the library"),
         "{message}"
     );
     assert!(message.contains("listed.multicad"));
@@ -390,9 +390,12 @@ fn listing_status_and_removal_follow_the_installation_index() {
     app.library.worker.as_mut().unwrap().reload().unwrap();
     drain(&mut app);
     let (message, here) = app.listing_status().unwrap();
-    assert!(!here && message.contains("another location"), "{message}");
+    assert!(
+        here.is_none() && message.contains("another location"),
+        "{message}"
+    );
     let id = app.library.entries[0].id;
-    app.library.worker.as_mut().unwrap().remove(id).unwrap();
+    app.remove_library_entry(id).unwrap();
     drain(&mut app);
     assert!(app.library.entries.is_empty());
     assert!(app.listing_status().is_none());
@@ -552,11 +555,11 @@ fn compact_file_metadata_keeps_registration_without_repeating_the_installation_c
         })
     };
     let output = draw(&mut app, vec![]);
-    assert!(point(&output, "Add to Library").is_some());
+    assert!(point(&output, "Include in Library").is_some());
     assert!(point(&output, "Bundled catalog entry").is_none());
     assert!(point(&output, "Missing listed original").is_none());
     let manage =
-        point(&output, "Manage listed files (1)").expect("visible original-file management");
+        point(&output, "Projects listed in Library (1)").expect("visible original-file management");
     output.drop_without_applying_deltas();
     for pressed in [true, false] {
         draw(
@@ -575,7 +578,7 @@ fn compact_file_metadata_keeps_registration_without_repeating_the_installation_c
     }
     let output = draw(&mut app, vec![]);
     assert!(point(&output, "Missing listed original").is_some());
-    assert!(point(&output, "Remove from library").is_some());
+    assert!(point(&output, "Remove listing").is_some());
     assert!(point(&output, "Bundled catalog entry").is_none());
     output.drop_without_applying_deltas();
 }
