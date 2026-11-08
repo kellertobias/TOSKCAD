@@ -162,10 +162,10 @@ Built sweep(const GearData&s,double height,double twist,double phase,double z,ui
   return result;
 }
 template<class Operation>
-Built boolean(Operation&operation,const Built&a,const Built&b) {
+Built boolean(Operation&operation,const Built&a,const Built&b,bool parallel=false) {
   TopTools_ListOfShape arguments,tools;arguments.Append(a.shape);tools.Append(b.shape);
   operation.SetArguments(arguments);operation.SetTools(tools);
-  operation.SetNonDestructive(true);operation.SetRunParallel(false);operation.Build();
+  operation.SetNonDestructive(true);operation.SetRunParallel(parallel);operation.Build();
   if(!operation.IsDone()||operation.HasErrors()||operation.Shape().IsNull())throw std::runtime_error("Native gear Boolean failed");
   Built result{operation.Shape(),{}};TopTools_IndexedMapOfShape faces;TopExp::MapShapes(result.shape,TopAbs_FACE,faces);
   for(const auto*input:{&a,&b})for(const auto &source:input->faces) {
@@ -282,16 +282,20 @@ std::unique_ptr<Shape> involute_gear(const GearData&s) {
         (s.hub_radius>=s.root_radius || s.hub_radius<=s.bore ||
          s.hub_end<=s.hub_start || std::min(s.hub_end,s.height)-std::max(s.hub_start,0.)<=s.tolerance)))
       throw std::runtime_error("Native gear hub has no connected overlap, root clearance or bore wall");
+    // Chevron fuses spend most of construction in the native edge/face
+    // and face/face intersection stages. Keep the same operation history,
+    // operands and tolerances, with OCCT parallelism scoped to these gears.
+    const bool chevron=s.style==2||s.style==3;
     Built built;
-    if(s.style<2)built=sweep(s,s.height,s.twist*s.height,0,0,6);
+    if(!chevron)built=sweep(s,s.height,s.twist*s.height,0,0,6);
     else {
       built.shape=BRepPrimAPI_MakeCylinder(s.root_radius,s.height).Shape();
       for(TopExp_Explorer it(built.shape,TopAbs_FACE);it.More();it.Next())
         if(BRepAdaptor_Surface(TopoDS::Face(it.Current())).GetType()==GeomAbs_Cylinder)
           built.faces.push_back({it.Current(),0,3});
       const double band=(s.height-s.gap)/2;
-      BRepAlgoAPI_Fuse lower;built=boolean(lower,built,sweep(s,band,s.twist*band,0,0,6));
-      BRepAlgoAPI_Fuse upper;built=boolean(upper,built,sweep(s,band,-s.twist*band,s.twist*band,s.height-band,7));
+      BRepAlgoAPI_Fuse lower;built=boolean(lower,built,sweep(s,band,s.twist*band,0,0,6),chevron);
+      BRepAlgoAPI_Fuse upper;built=boolean(upper,built,sweep(s,band,-s.twist*band,s.twist*band,s.height-band,7),chevron);
     }
     if(s.hub_radius>0) {
       Built hub{BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(0,0,s.hub_start),gp_Dir(0,0,1)),
@@ -302,13 +306,13 @@ std::unique_ptr<Shape> involute_gear(const GearData&s) {
             (std::abs(surface.Plane().Location().Z()-s.hub_start)<s.tolerance*16?10:11);
         hub.faces.push_back({it.Current(),0,role});
       }
-      BRepAlgoAPI_Fuse fuse;built=boolean(fuse,built,hub);
+      BRepAlgoAPI_Fuse fuse;built=boolean(fuse,built,hub,chevron);
     }
     if(s.bore>0) {
       const double low=s.hub_radius>0?std::min(0.,s.hub_start):0.;
       const double high=s.hub_radius>0?std::max(s.height,s.hub_end):s.height;
       Built tool{BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(0,0,low-1),gp_Dir(0,0,1)),s.bore,high-low+2).Shape(),{}};
-      BRepAlgoAPI_Cut cut;built=boolean(cut,built,tool);
+      BRepAlgoAPI_Cut cut;built=boolean(cut,built,tool,chevron);
     }
     if(!BRepCheck_Analyzer(built.shape).IsValid())throw std::runtime_error("Finished native gear is invalid");
     int count=0;for(TopExp_Explorer it(built.shape,TopAbs_SOLID);it.More();it.Next())++count;
@@ -325,6 +329,11 @@ std::unique_ptr<Shape> involute_gear(const GearData&s) {
     }
     auto result=std::make_unique<Shape>(Shape{built.shape,{},{}});
     TopTools_IndexedMapOfShape faces;TopExp::MapShapes(built.shape,TopAbs_FACE,faces);
+    std::vector<std::vector<const FaceSource*>> ancestry(faces.Extent());
+    for(const auto &source:built.faces) {
+      const int index=faces.FindIndex(source.face);
+      if(index>0)ancestry[index-1].push_back(&source);
+    }
     for(int i=1;i<=faces.Extent();++i) {
       const BRepAdaptor_Surface surface(TopoDS::Face(faces(i)));int cap=-1;
       if(surface.GetType()==GeomAbs_Plane&&std::abs(surface.Plane().Axis().Direction().Z())>1-1e-10) {
@@ -339,11 +348,13 @@ std::unique_ptr<Shape> involute_gear(const GearData&s) {
       if(s.bore>0&&surface.GetType()==GeomAbs_Cylinder&&std::abs(surface.Cylinder().Radius()-s.bore)<s.tolerance*16) {
         result->seeds.push_back({static_cast<uint32_t>(i-1),0,2});continue;
       }
-      for(const auto &source:built.faces)if(source.face.IsSame(faces(i))) {
-        result->seeds.push_back({static_cast<uint32_t>(i-1),source.source,source.role});found=true;
+      for(const auto *source:ancestry[i-1]) {
+        result->seeds.push_back({static_cast<uint32_t>(i-1),source->source,source->role});found=true;
       }
       if(!found)throw std::runtime_error("Gear face has no exact native ancestry");
     }
+    // Reuse the validity result for this exact, unchanged native shape at adoption.
+    record_validated_shape(*result);
     return result;
   } catch(const Standard_Failure&e) {
     throw std::runtime_error(e.GetMessageString()?e.GetMessageString():"Native gear operation failed");

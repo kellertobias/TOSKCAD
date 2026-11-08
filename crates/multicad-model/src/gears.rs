@@ -125,12 +125,17 @@ pub(crate) fn build(
         }
     };
     let frame = r.frame();
+    let placement = RigidTransform {
+        rotation: std::array::from_fn(|i| [frame.u[i], frame.v[i], frame.n[i]]),
+        translation_mm: frame.origin,
+    };
     solid
         .and_then(|solid| {
-            solid.transformed(RigidTransform {
-                rotation: std::array::from_fn(|i| [frame.u[i], frame.v[i], frame.n[i]]),
-                translation_mm: frame.origin,
-            })
+            if placement == RigidTransform::default() {
+                Ok(solid)
+            } else {
+                solid.transformed(placement)
+            }
         })
         .map_err(|e| error(Some(feature), e))
 }
