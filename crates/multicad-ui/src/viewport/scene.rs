@@ -1545,6 +1545,31 @@ impl Scene {
             stamp: self.stamp,
         })
     }
+    /// Exact evaluated geometry for a visible current hit, in world coordinates.
+    pub(crate) fn analytic_hit(
+        &self,
+        hit: &Hit,
+    ) -> Option<multicad_core::references::AnalyticGeometry> {
+        if hit.stamp != self.stamp || self.scope == SceneScope::Presentation {
+            return None;
+        }
+        let item = self
+            .instances
+            .iter()
+            .find(|item| item.id == hit.instance && item.geometry == hit.geometry)?;
+        let geometry = self
+            .geometries
+            .get(&item.geometry)?
+            .topology
+            .iter()
+            .find(|element| element.key == hit.key)?
+            .geometry?;
+        Some(geometry.transformed(
+            |point| item.transform.point(point),
+            |vector| item.transform.vector(vector),
+        ))
+    }
+
     /// Refresh selection only within the same canonical source revision. Local
     /// ordinals are resolved again through persistent intent after remeshing.
     pub fn refresh_hit(&self, hit: &Hit) -> Option<Hit> {

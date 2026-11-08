@@ -44,6 +44,74 @@ impl ModelToolController {
         }
     }
 
+    pub fn scale_origin_picking(&self) -> bool {
+        matches!(&self.form, Some(ModelForm::Scale(panel)) if panel.picking_origin())
+    }
+
+    pub fn scale_origin_viewport(
+        &mut self,
+        session: &Session,
+        resources: &ProjectResources,
+        view: super::super::TerminationViewport<'_>,
+    ) -> Result<Option<&'static str>, String> {
+        if !self.scale_origin_picking() {
+            return Ok(None);
+        }
+        let Some(scene) = view.scene else {
+            return if view.clicked {
+                Err("Wait for the current model before placing a scale origin".into())
+            } else {
+                Ok(None)
+            };
+        };
+        if scene.stamp().revision != session.revision() || !scene.is_full_model() {
+            return Ok(None);
+        }
+        let Some(pointer) = view.pointer else {
+            return Ok(None);
+        };
+        let Some((point, label, screen)) = origin_snap(scene, &view, pointer) else {
+            return if view.clicked {
+                Err("Choose a visible vertex, straight edge midpoint or the world origin".into())
+            } else {
+                Ok(None)
+            };
+        };
+        let color = egui::Color32::from_rgb(120, 211, 255);
+        view.painter
+            .circle_stroke(screen, 7., egui::Stroke::new(2., color));
+        view.painter.circle_filled(screen, 2., color);
+        view.painter.text(
+            screen + egui::vec2(11., -9.),
+            egui::Align2::LEFT_BOTTOM,
+            label,
+            egui::FontId::proportional(12.),
+            color,
+        );
+        if !view.clicked {
+            return Ok(None);
+        }
+        self.verify_context(session, resources, scene)?;
+        let refresh = self.candidate.is_some();
+        let Some(ModelForm::Scale(panel)) = &mut self.form else {
+            return Ok(None);
+        };
+        panel.pick_origin(point);
+        let nonunit_scale = panel
+            .parameters(session.document())
+            .and_then(|parameters| {
+                parameters
+                    .resolve(session.parameters())
+                    .map_err(|e| e.to_string())
+            })
+            .is_ok_and(|parameters| parameters.factors != [1.; 3]);
+        self.invalidate();
+        if refresh || nonunit_scale {
+            let _ = self.preview(session, resources, Channel::Ui);
+        }
+        Ok(Some(label))
+    }
+
     /// Retarget a new scale batch while retaining its numeric controls and
     /// copy choice. An empty set keeps those controls but cannot produce Apply.
     pub fn retarget_scale(
@@ -146,9 +214,13 @@ impl ModelToolController {
         }
         let parameters = panel.parameters(session.document())?;
         let evaluated = session.parameters();
-        let gesture = self
-            .scale_interaction
-            .show(ui, &input, &parameters, evaluated)?;
+        let gesture = self.scale_interaction.show(
+            ui,
+            &input,
+            &parameters,
+            evaluated,
+            crate::preferences::scale_step(),
+        )?;
         let Some(ModelForm::Scale(panel)) = &mut self.form else {
             unreachable!()
         };
@@ -194,4 +266,51 @@ impl ModelToolController {
             ..Default::default()
         })
     }
+}
+
+fn origin_snap(
+    scene: &Scene,
+    view: &super::super::TerminationViewport<'_>,
+    pointer: egui::Pos2,
+) -> Option<([f64; 3], &'static str, egui::Pos2)> {
+    use crate::viewport::{PickFilter, PickOptions};
+    use multicad_core::references::AnalyticGeometry;
+
+    let hit = |filter| {
+        scene
+            .pick_screen_with(
+                view.camera,
+                view.rect,
+                pointer,
+                PickOptions {
+                    filter,
+                    section: view.section,
+                    ..Default::default()
+                },
+            )
+            .and_then(|hit| scene.analytic_hit(&hit))
+    };
+    let marker = |point: [f64; 3], label| {
+        let [x, y, depth] = view.camera.project(point.map(|v| v as f32), view.rect);
+        let screen = egui::pos2(x, y);
+        (depth >= 0.1
+            && view.rect.contains(screen)
+            && screen.distance(pointer) <= 8.
+            && view.section.is_none_or(|section| section.contains(point)))
+        .then_some((point, label, screen))
+    };
+    if let Some(AnalyticGeometry::Point { position_mm }) = hit(PickFilter::Vertices)
+        && let Some(vertex) = marker(position_mm, "Model vertex")
+    {
+        return Some(vertex);
+    }
+    if let Some(AnalyticGeometry::Line { a_mm, b_mm }) = hit(PickFilter::Edges)
+        && let Some(midpoint) = marker(
+            std::array::from_fn(|axis| a_mm[axis] + (b_mm[axis] - a_mm[axis]) * 0.5),
+            "Edge midpoint",
+        )
+    {
+        return Some(midpoint);
+    }
+    marker([0.; 3], "World origin")
 }

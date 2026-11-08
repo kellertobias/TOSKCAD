@@ -294,6 +294,7 @@ impl Application {
             settings_open: false,
         };
         crate::preferences::set_length_unit(app.preferences.length_unit);
+        crate::preferences::set_scale_step_percent(app.preferences.scale_step_percent);
         app.discover_recoveries()?;
         Ok(app)
     }

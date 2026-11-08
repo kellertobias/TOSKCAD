@@ -3,6 +3,7 @@
 use super::*;
 use crate::preferences::{
     ALWAYS_VISIBLE, LengthUnit, PreferenceStore, PreferenceWorker, Preferences,
+    SCALE_STEP_PERCENT_RANGE,
 };
 
 impl Application {
@@ -49,6 +50,7 @@ impl Application {
                 .is_visible(&self.registry, self.mode, self.tab);
         self.preferences = preferences;
         crate::preferences::set_length_unit(self.preferences.length_unit);
+        crate::preferences::set_scale_step_percent(self.preferences.scale_step_percent);
         crate::preferences::set_title_logo_default(self.preferences.title_logo);
         for project in &mut self.projects {
             project
@@ -128,6 +130,17 @@ impl Application {
                 });
                 ui.small("Values typed with a unit, such as 25 mm or 1 in, keep that unit. Switching never changes model dimensions or stored formulas; parameters keep their own declared units, and drawing pages and export formats keep their explicit units.");
                 ui.separator();
+                ui.heading("Modeling");
+                ui.horizontal(|ui| {
+                    let label = ui.label("Scale step");
+                    ui.add(egui::DragValue::new(&mut draft.scale_step_percent)
+                        .range(SCALE_STEP_PERCENT_RANGE)
+                        .suffix("%"))
+                        .labelled_by(label.id)
+                        .on_hover_text("Choose a factor increment from 1% to 100%. The default is 10%.");
+                });
+                ui.small("Hold Shift while dragging a Scale handle to step the multiplier applied to its starting factors. With a 10% step, a starting factor of 1.0 can become 0.9, 1.0 or 1.1. Release Shift for continuous scaling.");
+                ui.separator();
                 ui.heading("Workbenches");
                 ui.small(format!("Show, hide and reorder each mode's workbenches. {ALWAYS_VISIBLE} always stays visible; tools of hidden workbenches stay available from Find tool and the command line."));
                 egui::ScrollArea::vertical().max_height(360.).show(ui, |ui| {
@@ -179,7 +192,7 @@ impl Application {
                 ui.separator();
                 if ui
                     .button("Restore defaults")
-                    .on_hover_text("Millimeters and every workbench visible in the standard order")
+                    .on_hover_text("Restore all application preferences, including millimeters and a 10% scale step")
                     .clicked()
                 {
                     draft = Preferences::defaults(&self.registry);
@@ -270,6 +283,7 @@ mod tests {
         let defaults = first.preferences().clone();
         let mut changed = defaults.clone();
         changed.length_unit = LengthUnit::Inch;
+        changed.scale_step_percent = 25;
         changed.title_logo = false;
         changed.set_visible(Mode::Model, "Weld", false).unwrap();
         changed
@@ -292,6 +306,7 @@ mod tests {
         let mut second = app(&store);
         assert_eq!(second.preferences(), &changed);
         assert_eq!(crate::preferences::length_unit(), LengthUnit::Inch);
+        assert_eq!(crate::preferences::scale_step(), 0.25);
         assert!(!crate::preferences::title_logo_default());
         second.mode = Mode::Model;
         let model = titles(&second);
@@ -303,6 +318,7 @@ mod tests {
         wait_saved(&mut second);
         assert_eq!(store.0.lock().unwrap().as_ref(), Some(&defaults));
         assert_eq!(crate::preferences::length_unit(), LengthUnit::Millimeter);
+        assert_eq!(crate::preferences::scale_step(), 0.1);
         assert!(crate::preferences::title_logo_default());
         // The preference file is independent of the project document.
         assert_eq!(second.current().session.revision(), 0);
@@ -460,10 +476,16 @@ mod tests {
                     .nodes
                     .iter()
                     .filter_map(|(_, node)| {
-                        let label = node.label()?.to_string();
+                        let label = node.label().or_else(|| {
+                            node.labelled_by().iter().find_map(|label_id| {
+                                update.nodes.iter().find_map(|(id, label)| {
+                                    (id == label_id).then(|| label.value()).flatten()
+                                })
+                            })
+                        })?;
                         let b = node.bounds()?;
                         Some((
-                            label,
+                            label.to_owned(),
                             egui::pos2(((b.x0 + b.x1) * 0.5) as f32, ((b.y0 + b.y1) * 0.5) as f32),
                             node.is_disabled(),
                             node.role(),
@@ -540,6 +562,9 @@ mod tests {
         ] {
             find(&nodes, label);
         }
+        assert!(nodes.iter().any(|(label, _, disabled, role)| {
+            label == "Scale step" && !disabled && *role == egui::accesskit::Role::SpinButton
+        }));
         // Common cannot be hidden and cannot move earlier than first.
         // (The ribbon also has an enabled Common tab; the Settings checkbox is disabled.)
         assert!(

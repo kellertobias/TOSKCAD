@@ -188,6 +188,98 @@ fn close(a: f64, b: f64) {
     assert!((a - b).abs() < 1e-4, "{a} != {b}")
 }
 #[test]
+fn snapped_offset_origin_anchors_native_scale_and_survives_reopen() {
+    let (mut session, part, _, _) = fixture();
+    let original = session.document().clone();
+    let revision = session.revision();
+    let h = Harness::new(canonical(&session));
+    let mut controller = ModelToolController::default();
+    controller.set_backend(Box::new(native_fixture::NativeBackend::new()));
+    begin(
+        &mut controller,
+        &session,
+        &h.scene,
+        BTreeSet::from([part.body]),
+    );
+    let Some(ModelForm::Scale(panel)) = &mut controller.form else {
+        panic!("Scale form");
+    };
+    panel.toggle_origin_pick();
+    let pivot = [40., 3., 4.];
+    h.ctx
+        .run_ui(
+            egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, egui::vec2(900., 700.))),
+                ..Default::default()
+            },
+            |ui| {
+                let result = controller.scale_origin_viewport(
+                    &session,
+                    &Default::default(),
+                    crate::modeling::TerminationViewport {
+                        scene: Some(&h.scene),
+                        report: None,
+                        camera: h.camera,
+                        rect: Harness::rect(),
+                        pointer: Some(h.point(pivot)),
+                        clicked: true,
+                        painter: ui.painter(),
+                        section: None,
+                    },
+                );
+                assert_eq!(result.unwrap(), Some("Model vertex"));
+            },
+        )
+        .drop_without_applying_deltas();
+    assert!(!controller.scale_origin_picking());
+    let resolved = parameters(&controller, &session)
+        .resolve(session.parameters())
+        .unwrap();
+    assert_eq!(resolved.pivot_mm, pivot);
+    assert_eq!(session.document(), &original);
+    assert!(!controller.can_apply(&session, &Default::default()));
+    h.uniform(&mut controller, &mut session, 2., false);
+    assert_eq!(session.revision(), revision);
+    assert_eq!(session.document(), &original);
+    let ModelToolOutcome::Applied(parts) = h.finish(&mut controller, &mut session) else {
+        panic!("Scaled one source part");
+    };
+    let feature = parts[0].feature;
+    let check = |document: &Document, revision| {
+        let saved = model::read_scale(document, feature).unwrap();
+        assert_eq!(saved.parameters.pivot, pivot.map(model::length));
+        let compiled = Compiler::default().compile(document, revision).unwrap();
+        let shape = &compiled.snapshot().shapes[&feature];
+        for (actual, expected) in shape.bounds.min.into_iter().zip([-40., -3., -4.]) {
+            close(actual, expected);
+        }
+        for (actual, expected) in shape.bounds.max.into_iter().zip([-36., 3., 4.]) {
+            close(actual, expected);
+        }
+    };
+    check(session.document(), session.revision());
+    let applied = session.document().clone();
+    session.undo(session.revision(), actor()).unwrap();
+    assert_eq!(session.document(), &original);
+    session.redo(session.revision(), actor()).unwrap();
+    assert_eq!(session.document(), &applied);
+    let mut bytes = vec![];
+    project_file::write(
+        &ProjectFile::new(applied).unwrap(),
+        &mut bytes,
+        Default::default(),
+    )
+    .unwrap();
+    let opened = project_file::read(
+        &mut bytes.as_slice(),
+        Default::default(),
+        &project_file::supported_capabilities(),
+    )
+    .unwrap();
+    check(&opened.project.document, 0);
+}
+
+#[test]
 fn mixed_part_instance_axis_drag_commits_exact_bounds_once_and_undo_restores_identities() {
     let (mut s, a, b, instance) = fixture();
     let original = s.document().clone();

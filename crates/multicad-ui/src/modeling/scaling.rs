@@ -24,6 +24,7 @@ pub(super) struct ScalePanel {
     stamp: FormStamp,
     factors: [DimensionField; 3],
     pivot: [DimensionField; 3],
+    picking_origin: bool,
     axes: [[f64; 3]; 3],
 }
 fn fields(
@@ -140,6 +141,7 @@ impl ScalePanel {
             stamp: FormStamp::new(),
             factors: fields(&parameters.factors, "ratio")?,
             pivot: fields(&parameters.pivot, "mm")?,
+            picking_origin: false,
             axes: parameters.axes,
         })
     }
@@ -149,6 +151,22 @@ impl ScalePanel {
     pub fn selected(&self) -> &BTreeSet<EntityId> {
         &self.selected
     }
+    pub(super) fn picking_origin(&self) -> bool {
+        self.picking_origin
+    }
+
+    pub(super) fn toggle_origin_pick(&mut self) {
+        self.picking_origin = !self.picking_origin;
+    }
+
+    pub(super) fn pick_origin(&mut self, point: [f64; 3]) {
+        for (field, value) in self.pivot.iter_mut().zip(point) {
+            field.set_exact_literal(value, "mm");
+        }
+        self.picking_origin = false;
+        self.stamp.changed();
+    }
+
     pub fn label(&self) -> &'static str {
         "Scale"
     }
@@ -279,6 +297,20 @@ impl ScalePanel {
             changed|=field.show(ui,label,"Positive ratio or =$parameter; zero, negative and nonfinite factors are unsupported");
         }
         ui.strong("Pivot · world coordinates");
+        let label = if self.picking_origin {
+            "Cancel Origin"
+        } else {
+            "Place Origin"
+        };
+        if ui.add_enabled(enabled && !self.selected.is_empty(), egui::Button::new(label))
+            .on_hover_text("Snap the scale origin to a visible vertex, a straight edge midpoint or the world origin.")
+            .clicked()
+        {
+            self.toggle_origin_pick();
+        }
+        if self.picking_origin {
+            ui.small("Click a highlighted snap point in the viewport.");
+        }
         for (field, label) in self.pivot.iter_mut().zip(["Pivot X", "Pivot Y", "Pivot Z"]) {
             changed |= field.show(
                 ui,
@@ -286,7 +318,7 @@ impl ScalePanel {
                 "Shared explicit world pivot; initial value is the selected native bounds center",
             );
         }
-        ui.small("Drag the white center square for uniform scaling; colored squares scale one axis. Choose World, Object or datum axes in the viewport coordinate control.");
+        ui.small("Drag the center for all axes, a square for one axis, or a planar handle for two axes. Hold Shift to step by the Scale setting.");
         for (i, axis) in self.axes.iter().enumerate() {
             ui.small(format!(
                 "{} direction: {:.3}, {:.3}, {:.3}",
@@ -300,8 +332,16 @@ impl ScalePanel {
         if let Err(error) = &validation {
             ui.colored_label(egui::Color32::LIGHT_RED, error);
         }
-        form::preview_status(ui, self.stamp, preview);
-        let action = form::actions(ui, validation.is_ok(), changed, self.stamp, preview);
+        if !self.picking_origin {
+            form::preview_status(ui, self.stamp, preview);
+        }
+        let action = form::actions(
+            ui,
+            validation.is_ok() && !self.picking_origin,
+            changed,
+            self.stamp,
+            preview,
+        );
         if action == Some(FormAction::Cancel) {
             return Some(ModelEvent::Cancel);
         }

@@ -1,5 +1,5 @@
 //! User-local application preferences (CAD-187): the default length unit and
-//! the visibility and order of each mode's ribbon workbenches. Preferences
+//! Scale drag step and each mode's ribbon workbenches. Preferences
 //! are never part of a project, Undo or MCP document state; they change
 //! presentation and input defaults only.
 use crate::registry::{Mode, Registry};
@@ -14,6 +14,8 @@ use std::{
 /// whole navigation, and it is the fallback when the active one is hidden.
 pub const ALWAYS_VISIBLE: &str = "Common";
 const MAX_TITLE: usize = 80;
+pub const DEFAULT_SCALE_STEP_PERCENT: u8 = 10;
+pub(crate) const SCALE_STEP_PERCENT_RANGE: std::ops::RangeInclusive<u8> = 1..=100;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WorkbenchPreference {
@@ -23,6 +25,8 @@ pub struct WorkbenchPreference {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Preferences {
     pub length_unit: LengthUnit,
+    /// Factor increment while holding Shift during a Scale drag.
+    pub scale_step_percent: u8,
     /// Per mode, workbench titles in display order. Missing modes or titles
     /// fall back to the established registry order, visible.
     pub workbenches: BTreeMap<Mode, Vec<WorkbenchPreference>>,
@@ -35,6 +39,7 @@ impl Preferences {
     pub fn defaults(registry: &Registry) -> Self {
         let mut preferences = Self {
             length_unit: LengthUnit::default(),
+            scale_step_percent: DEFAULT_SCALE_STEP_PERCENT,
             workbenches: BTreeMap::new(),
             title_logo: true,
         };
@@ -45,6 +50,10 @@ impl Preferences {
     /// duplicate titles are dropped, newly installed ones are appended visible
     /// and the Common workbench is forced visible.
     pub fn normalize(&mut self, registry: &Registry) {
+        self.scale_step_percent = self.scale_step_percent.clamp(
+            *SCALE_STEP_PERCENT_RANGE.start(),
+            *SCALE_STEP_PERCENT_RANGE.end(),
+        );
         let stored = std::mem::take(&mut self.workbenches);
         for mode in Mode::WORKSPACES {
             let installed: Vec<&str> = registry
@@ -116,6 +125,9 @@ impl Preferences {
     }
     /// Validate untrusted stored data before it is normalized.
     pub fn validate(&self) -> Result<(), String> {
+        if !SCALE_STEP_PERCENT_RANGE.contains(&self.scale_step_percent) {
+            return Err("Scale step must be between 1% and 100%".into());
+        }
         for entries in self.workbenches.values() {
             if entries.len() > 64 {
                 return Err("Too many workbench entries".into());
@@ -195,6 +207,7 @@ impl Preferences {
 }
 
 thread_local! {
+    static SCALE_STEP_PERCENT: Cell<u8> = const { Cell::new(DEFAULT_SCALE_STEP_PERCENT) };
     static LENGTH_UNIT: Cell<LengthUnit> = const { Cell::new(LengthUnit::Millimeter) };
     static TITLE_LOGO: Cell<bool> = const { Cell::new(true) };
 }
@@ -212,6 +225,13 @@ pub fn length_unit() -> LengthUnit {
 }
 pub fn set_length_unit(unit: LengthUnit) {
     LENGTH_UNIT.with(|cell| cell.set(unit));
+}
+/// Factor increment for Shift-dragging a Scale handle on the UI thread.
+pub fn scale_step() -> f64 {
+    f64::from(SCALE_STEP_PERCENT.with(Cell::get)) / 100.
+}
+pub(crate) fn set_scale_step_percent(percent: u8) {
+    SCALE_STEP_PERCENT.with(|cell| cell.set(percent));
 }
 /// Format a millimetre quantity in the preferred unit with its label.
 pub fn format_mm(millimeters: f64) -> String {
@@ -434,6 +454,7 @@ mod tests {
         let mut preferences = Preferences {
             title_logo: true,
             length_unit: LengthUnit::Inch,
+            scale_step_percent: DEFAULT_SCALE_STEP_PERCENT,
             workbenches: BTreeMap::from([(
                 Mode::Export,
                 vec![

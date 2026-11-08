@@ -822,7 +822,7 @@ impl SketchEditor {
             return false;
         }
         if a.started {
-            ui.small(if a.tool == ModelingTool::Scale { "Shift-click objects to add/remove targets. Drag the center for uniform scale or an axis handle for one factor. Option/Alt creates a copy." } else { "Shift-click objects to add/remove targets. Drag arrows, planes or rings. Option/Alt creates a copy." });
+            ui.small(if a.tool == ModelingTool::Scale { "Shift-click objects to add/remove targets. Drag the center for all axes, squares for one axis, or planar handles for two. Hold Shift during the drag to step. Option/Alt copies." } else { "Shift-click objects to add/remove targets. Drag arrows, planes or rings. Option/Alt creates a copy." });
             ui.separator();
             return false;
         }

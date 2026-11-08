@@ -2,7 +2,9 @@
 //! recent-project metadata, never inside a project, and is replaced
 //! atomically under a persistent lock shared by every instance.
 use multicad_ui::{
-    preferences::{LengthUnit, PreferenceStore, Preferences, WorkbenchPreference},
+    preferences::{
+        DEFAULT_SCALE_STEP_PERCENT, LengthUnit, PreferenceStore, Preferences, WorkbenchPreference,
+    },
     registry::Mode,
 };
 use serde_json::{Map, Value, json};
@@ -48,16 +50,17 @@ fn decode(bytes: &[u8]) -> Result<Preferences, String> {
         return Err(invalid("file exceeds 64 KiB"));
     }
     let value: Value = serde_json::from_slice(bytes).map_err(invalid)?;
-    fields(
-        &value,
-        &[
-            "application",
-            "version",
-            "length_unit",
-            "workbenches",
-            "title_logo",
-        ],
-    )?;
+    let mut expected = vec![
+        "application",
+        "version",
+        "length_unit",
+        "workbenches",
+        "title_logo",
+    ];
+    if value.get("scale_step_percent").is_some() {
+        expected.push("scale_step_percent");
+    }
+    fields(&value, &expected)?;
     if value["application"].as_str() != Some(APPLICATION)
         || value["version"].as_u64() != Some(VERSION)
     {
@@ -95,9 +98,17 @@ fn decode(bytes: &[u8]) -> Result<Preferences, String> {
     let title_logo = value["title_logo"]
         .as_bool()
         .ok_or_else(|| invalid("title_logo must be a boolean"))?;
+    let scale_step_percent = match value.get("scale_step_percent") {
+        Some(percent) => percent
+            .as_u64()
+            .and_then(|percent| u8::try_from(percent).ok())
+            .ok_or_else(|| invalid("scale_step_percent must be a whole percentage"))?,
+        None => DEFAULT_SCALE_STEP_PERCENT,
+    };
     let preferences = Preferences {
         title_logo,
         length_unit,
+        scale_step_percent,
         workbenches,
     };
     preferences.validate().map_err(invalid)?;
@@ -121,6 +132,7 @@ fn encode(preferences: &Preferences) -> Result<Vec<u8>, String> {
         "length_unit": preferences.length_unit.symbol(),
         "workbenches": modes,
         "title_logo": preferences.title_logo,
+        "scale_step_percent": preferences.scale_step_percent,
     }))
     .map_err(invalid)?;
     if bytes.len() > MAX_BYTES {
@@ -207,6 +219,7 @@ mod tests {
         let mut expected = Preferences::defaults(&registry);
         expected.set_visible(Mode::Sketch, "Edit", false).unwrap();
         let mut old: Value = serde_json::from_slice(&encode(&expected).unwrap()).unwrap();
+        old.as_object_mut().unwrap().remove("scale_step_percent");
         let modes = old["workbenches"].as_object_mut().unwrap();
         let project = modes.remove("Project").unwrap();
         modes.insert("Parameters".into(), project);
@@ -231,6 +244,7 @@ mod tests {
         assert_eq!(store.load().unwrap(), None);
         let mut preferences = Preferences::defaults(&registry);
         preferences.length_unit = LengthUnit::Inch;
+        preferences.scale_step_percent = 25;
         preferences.title_logo = false;
         preferences.set_visible(Mode::Model, "Wood", false).unwrap();
         preferences
@@ -266,6 +280,9 @@ mod tests {
             br#"{"application":"multicad.preferences","version":1,"length_unit":"mm","workbenches":{},"title_logo":true,"extra":1}"#,
             br#"{"application":"multicad.preferences","version":1,"length_unit":"mm","workbenches":{}}"#,
             br#"{"application":"multicad.preferences","version":1,"length_unit":"mm","workbenches":{},"title_logo":"no"}"#,
+            br#"{"application":"multicad.preferences","version":1,"length_unit":"mm","workbenches":{},"title_logo":true,"scale_step_percent":0}"#,
+            br#"{"application":"multicad.preferences","version":1,"length_unit":"mm","workbenches":{},"title_logo":true,"scale_step_percent":101}"#,
+            br#"{"application":"multicad.preferences","version":1,"length_unit":"mm","workbenches":{},"title_logo":true,"scale_step_percent":1.5}"#,
         ] {
             fs::write(&path, bytes).unwrap();
             assert!(

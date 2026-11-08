@@ -3544,6 +3544,7 @@ impl SketchEditor {
             assembly_view = true;
         }
         if !self.measurement.active()
+            && !self.model.scale_origin_picking()
             && !self.model.termination_picking()
             && !self.model.alignment_picking()
             && !self.model.edge_treatment_picking()
@@ -4356,7 +4357,27 @@ impl SketchEditor {
                 );
             }
             let mut owned = false;
-            if self.model.placement_active() || self.model.scaling_active() {
+            if self.model.scale_origin_picking() {
+                owned = true;
+                match self.model.scale_origin_viewport(
+                    session,
+                    context.resources,
+                    crate::modeling::TerminationViewport {
+                        scene: scene.as_deref().filter(|_| current),
+                        report: None,
+                        camera: self.camera,
+                        rect,
+                        pointer: response.hover_pos(),
+                        clicked: response.clicked(),
+                        painter: &painter,
+                        section: self.modeling_section(),
+                    },
+                ) {
+                    Ok(Some(snap)) => self.message = format!("Scale origin placed · {snap}"),
+                    Ok(None) => {}
+                    Err(error) => self.message = error,
+                }
+            } else if self.model.placement_active() || self.model.scaling_active() {
                 let scaling = self.model.scaling_active();
                 let canonical_scene = context
                     .feed

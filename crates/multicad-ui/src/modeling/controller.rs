@@ -2107,6 +2107,7 @@ impl ModelToolController {
     }
     pub fn can_apply(&self, session: &Session, resources: &ProjectResources) -> bool {
         !self.transform_dragging()
+            && !self.scale_origin_picking()
             && self.preview_visible(session, resources)
             && self
                 .candidate
@@ -2185,6 +2186,9 @@ impl ModelToolController {
                 return Err(
                     "Release the viewport handle before applying its native preview".into(),
                 );
+            }
+            if self.scale_origin_picking() {
+                return Err("Place the scale origin or cancel the pick before applying".into());
             }
             self.current(session, resources, true)?;
             if let Some(blocked) = self.candidate.as_ref().and_then(|c| c.blocked.clone()) {
@@ -2302,6 +2306,7 @@ impl ModelToolController {
             return false;
         };
         if self.transform_dragging()
+            || self.scale_origin_picking()
             || !(self.can_apply(session, resources)
                 || self.current(session, resources, false).is_ok()
                     && self
@@ -2548,6 +2553,9 @@ impl ModelToolController {
             .as_mut()
             .ok_or("Start a modeling tool first")?
             .show(ui, session.document(), capabilities, preview);
+        if self.scale_origin_picking() {
+            self.keyboard_confirm = None;
+        }
         let result = match event {
             Some(ModelEvent::CompoundCutout) => {
                 self.invalidate();
