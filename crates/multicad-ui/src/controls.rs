@@ -194,6 +194,15 @@ pub struct TabColors {
     pub active_background: Color32,
 }
 pub fn tab(ui: &mut egui::Ui, label: &str, selected: bool, colors: TabColors) -> egui::Response {
+    tab_with_icon(ui, None, label, selected, colors)
+}
+pub fn tab_with_icon(
+    ui: &mut egui::Ui,
+    icon: Option<crate::icons::Icon>,
+    label: &str,
+    selected: bool,
+    colors: TabColors,
+) -> egui::Response {
     let color = if selected {
         colors.active_text
     } else {
@@ -202,8 +211,9 @@ pub fn tab(ui: &mut egui::Ui, label: &str, selected: bool, colors: TabColors) ->
     let galley = ui
         .painter()
         .layout_no_wrap(label.into(), FontId::proportional(12.0), color);
+    let (padding, icon_width) = if icon.is_some() { (6., 19.) } else { (12., 0.) };
     let (rect, response) = ui.allocate_exact_size(
-        Vec2::new(galley.size().x.ceil() + 24.0, 30.0),
+        Vec2::new(galley.size().x.ceil() + 2. * padding + icon_width, 30.0),
         egui::Sense::click(),
     );
     ui.painter().rect_filled(
@@ -227,9 +237,18 @@ pub fn tab(ui: &mut egui::Ui, label: &str, selected: bool, colors: TabColors) ->
             egui::StrokeKind::Inside,
         );
     }
+    if let Some(icon) = icon {
+        crate::icons::paint_sized(
+            ui,
+            icon,
+            Pos2::new(rect.left() + padding + 7., rect.center().y),
+            color,
+            14.,
+        );
+    }
     ui.painter().galley(
         Pos2::new(
-            rect.center().x - galley.size().x * 0.5,
+            rect.left() + padding + icon_width,
             rect.center().y - galley.size().y * 0.5,
         ),
         galley,

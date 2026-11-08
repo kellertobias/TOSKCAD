@@ -54,6 +54,19 @@ impl Preferences {
                 .map(|tab| tab.title)
                 .collect();
             let mut entries: Vec<WorkbenchPreference> = Vec::new();
+            let old_model_order = mode == Mode::Model
+                && stored.get(&mode).is_some_and(|entries| {
+                    entries.iter().map(|entry| entry.title.as_str()).eq([
+                        "Common",
+                        "Architecture",
+                        "Wood",
+                        "Sheet metal",
+                        "Weld",
+                        "Other",
+                        "Relationships",
+                        "Mechanical",
+                    ])
+                });
             let legacy_fdm = mode == Mode::Model
                 && stored
                     .get(&mode)
@@ -71,7 +84,7 @@ impl Preferences {
                     }
                 }
             }
-            for title in installed {
+            for &title in &installed {
                 if !entries.iter().any(|e| e.title == title) {
                     entries.push(WorkbenchPreference {
                         title: title.into(),
@@ -79,13 +92,17 @@ impl Preferences {
                     });
                 }
             }
+            if old_model_order {
+                entries
+                    .sort_by_key(|entry| installed.iter().position(|title| *title == entry.title));
+            }
             if legacy_fdm
                 && let Some(index) = entries.iter().position(|entry| entry.title == "Other")
             {
                 let fdm = entries.remove(index);
                 let before = entries
                     .iter()
-                    .position(|entry| entry.title == "Relationships")
+                    .position(|entry| entry.title == "Relations")
                     .unwrap_or(entries.len());
                 entries.insert(before, fdm);
             }
@@ -269,7 +286,12 @@ mod tests {
         assert_eq!(preferences.length_unit, LengthUnit::Millimeter);
         for mode in Mode::WORKSPACES {
             let tabs = &registry.workspace(mode).tabs;
-            assert_eq!(tabs[0].title, ALWAYS_VISIBLE, "{mode:?}");
+            let first = if mode == Mode::Parameters {
+                "General"
+            } else {
+                ALWAYS_VISIBLE
+            };
+            assert_eq!(tabs[0].title, first, "{mode:?}");
             assert_eq!(
                 preferences.visible_tabs(&registry, mode),
                 (0..tabs.len()).collect::<Vec<_>>()
@@ -297,6 +319,24 @@ mod tests {
         assert_eq!(preferences, normalized);
     }
     #[test]
+    fn old_default_model_order_migrates_without_unhiding_tabs() {
+        let registry = Registry::default();
+        let mut preferences = Preferences::defaults(&registry);
+        let entries = preferences.workbenches.get_mut(&Mode::Model).unwrap();
+        let mut mechanical = entries.remove(5);
+        assert_eq!(mechanical.title, "Mechanical");
+        mechanical.visible = false;
+        entries.last_mut().unwrap().title = "Relationships".into();
+        entries.push(mechanical);
+
+        preferences.normalize(&registry);
+        let entries = &preferences.workbenches[&Mode::Model];
+        assert_eq!(entries[5].title, "Mechanical");
+        assert!(!entries[5].visible);
+        assert_eq!(entries[6].title, "Other");
+        assert_eq!(entries[7].title, "Relations");
+    }
+    #[test]
     fn legacy_fdm_preferences_keep_visibility_and_move_before_relationships() {
         let registry = Registry::default();
         let mut preferences = Preferences::defaults(&registry);
@@ -310,7 +350,7 @@ mod tests {
         fdm.visible = false;
         let after = entries
             .iter()
-            .position(|entry| entry.title == "Relationships")
+            .position(|entry| entry.title == "Relations")
             .unwrap()
             + 1;
         entries.insert(after, fdm);
@@ -321,7 +361,7 @@ mod tests {
             .position(|entry| entry.title == "Other")
             .unwrap();
         assert!(!entries[fdm].visible);
-        assert_eq!(entries[fdm + 1].title, "Relationships");
+        assert_eq!(entries[fdm + 1].title, "Relations");
         assert!(!entries.iter().any(|entry| entry.title == "FDM aids"));
         let normalized = preferences.clone();
         preferences.normalize(&registry);
@@ -342,7 +382,7 @@ mod tests {
         assert!(!model.contains(&"Wood"));
         assert_eq!(&model[..3], ["Sheet metal", "Common", "Architecture"]);
         let other = model.iter().position(|t| *t == "Other").unwrap();
-        assert_eq!(model[other + 1], "Weld");
+        assert_eq!(model[other + 1], "Mechanical");
         // Other modes are untouched; showing it again restores it in place.
         assert_eq!(
             titles(&preferences, &registry, Mode::Export),
@@ -364,7 +404,10 @@ mod tests {
     fn common_cannot_be_hidden_so_navigation_never_becomes_empty() {
         let registry = Registry::default();
         let mut preferences = Preferences::defaults(&registry);
-        for mode in Mode::WORKSPACES {
+        for mode in Mode::WORKSPACES
+            .into_iter()
+            .filter(|mode| *mode != Mode::Parameters)
+        {
             for (index, _) in preferences.order(&registry, mode) {
                 let title = registry.workspace(mode).tabs[index].title;
                 let result = preferences.set_visible(mode, title, false);

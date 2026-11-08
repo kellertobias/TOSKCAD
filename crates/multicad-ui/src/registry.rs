@@ -141,6 +141,8 @@ pub struct Registry {
 pub fn canonical_workbench_title(mode: Mode, title: &str) -> &str {
     if mode == Mode::Model && matches!(title, "FDM" | "FDM aids") {
         "Other"
+    } else if mode == Mode::Model && title == "Relationships" {
+        "Relations"
     } else if mode == Mode::Parameters && title == "Common" {
         "Parameters"
     } else {
@@ -302,7 +304,7 @@ impl Default for Registry {
             },
             Tool {
                 id: "new-sketch",
-                label: "Add Sketch",
+                label: "Sketch",
                 icon: Icon::Sketch,
                 action: Command::NewSketch,
                 aliases: &["start", "new-sketch", "add-sketch", "sketch"],
@@ -647,11 +649,6 @@ impl Default for Registry {
                     tab("Sheet metal", &["sheet", "fastener", "flat", "bend-list"]),
                     tab("Weld", &["tube", "cope", "weld-joint", "weld-list"]),
                     tab(
-                        "Other",
-                        &["fdm-aid", "fdm-bridge", "fdm-support", "surface-structure"],
-                    ),
-                    tab("Relationships", &["align"]),
-                    tab(
                         "Mechanical",
                         &[
                             "thread",
@@ -662,6 +659,11 @@ impl Default for Registry {
                             "profile-connection",
                         ],
                     ),
+                    tab(
+                        "Other",
+                        &["fdm-aid", "fdm-bridge", "fdm-support", "surface-structure"],
+                    ),
+                    tab("Relations", &["align"]),
                 ],
             },
             Workspace {
@@ -985,7 +987,7 @@ mod tests {
             !model
                 .tabs
                 .iter()
-                .find(|tab| tab.title == "Relationships")
+                .find(|tab| tab.title == "Relations")
                 .unwrap()
                 .tools
                 .contains(&"transfer")

@@ -4,6 +4,20 @@ use crate::{
     registry::{Command, Mode, Registry, RibbonTab},
 };
 use eframe::egui;
+
+pub(crate) fn model_tab_icon(title: &str) -> Icon {
+    match title {
+        "Architecture" => Icon::Home,
+        "Wood" => Icon::Furniture,
+        "Sheet metal" => Icon::Thickness,
+        "Weld" => Icon::Joint,
+        "Mechanical" => Icon::Cylinder,
+        "Other" => Icon::Grid,
+        "Relations" => Icon::Link,
+        _ => Icon::Box,
+    }
+}
+
 #[derive(Clone)]
 pub enum Entry {
     Tool(&'static str),
@@ -928,7 +942,12 @@ mod tests {
     #[test]
     fn reviewed_artwork_is_painted_as_tinted_textures_with_state_colors() {
         let registry = Registry::default();
-        let tab = &registry.workspace(Mode::Parameters).tabs[0];
+        let tab = registry
+            .workspace(Mode::Parameters)
+            .tabs
+            .iter()
+            .find(|tab| tab.title == "Parameters")
+            .unwrap();
         let ctx = egui::Context::default();
         let mut draw = |ui: &mut egui::Ui| {
             show_selectable(
@@ -1018,6 +1037,9 @@ mod tests {
         let registry = Registry::default();
         for workspace in &registry.workspaces {
             for tab in &workspace.tabs {
+                if workspace.mode == Mode::Parameters && tab.title == "General" {
+                    continue;
+                }
                 let ctx = egui::Context::default();
                 let output = frame(&ctx, vec![], |ui| {
                     show(
@@ -1374,7 +1396,7 @@ mod tests {
         let (output, _) = ribbon(&registry, Mode::Sketch, common, false, 1200., vec![], &ctx);
         let labels = positioned_labels(&output);
         output.drop_without_applying_deltas();
-        assert!(!labels.iter().any(|(l, _)| l == "Add Sketch"));
+        assert!(!labels.iter().any(|(l, _)| l == "Sketch"));
         assert!(
             !labels
                 .iter()

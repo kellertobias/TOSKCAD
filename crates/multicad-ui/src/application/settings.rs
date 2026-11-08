@@ -561,7 +561,7 @@ mod tests {
         let ribbon = titles(&app);
         assert!(!ribbon.contains(&"Wood"));
         let mechanical = ribbon.iter().position(|t| *t == "Mechanical").unwrap();
-        assert_eq!(ribbon[mechanical + 1], "Relationships");
+        assert_eq!(ribbon[mechanical + 1], "Weld");
         let nodes = frame(&mut app, &ctx, vec![]);
         let (restore, _) = find(&nodes, "Restore defaults");
         click(&mut app, &ctx, restore);

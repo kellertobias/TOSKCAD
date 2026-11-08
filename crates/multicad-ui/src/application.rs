@@ -2080,8 +2080,10 @@ impl Application {
                 ui.horizontal(|ui| {
                     for (index, hidden) in self.ribbon_tabs() {
                         let tab = &workspace.tabs[index];
-                        let response = controls::tab(
+                        let response = controls::tab_with_icon(
                             ui,
+                            (self.mode == Mode::Model)
+                                .then(|| crate::ribbon_ui::model_tab_icon(tab.title)),
                             tab.title,
                             self.tab == index,
                             TabColors {
@@ -2101,6 +2103,9 @@ impl Application {
                         if response.clicked() {
                             selected_tab = Some(index);
                         }
+                    }
+                    if self.mode == Mode::Model {
+                        action = self.utility_actions(ui);
                     }
                 });
             });
@@ -2624,7 +2629,9 @@ impl Application {
         if self.mode == Mode::Parameters {
             self.project_tabs(ui);
         } else {
-            self.global_actions(ui);
+            if self.mode != Mode::Model {
+                self.global_actions(ui);
+            }
             let category = self.active_architecture_category();
             let tab = &self.registry.workspace(self.mode).tabs[self.effective_ribbon_tab()];
             let tool_height = crate::ribbon_ui::tools_height(

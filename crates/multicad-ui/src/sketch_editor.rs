@@ -282,7 +282,7 @@ impl Default for SketchEditor {
             delta: [0.; 3],
             preview: None,
             drag: None,
-            message: "Choose Add Sketch, or open a sketch from the document.".into(),
+            message: "Choose Sketch, or open a sketch from the document.".into(),
             revision: 0,
             fit_requested: false,
             constraints: Default::default(),
@@ -1822,7 +1822,7 @@ impl SketchEditor {
         let preview = self.selected_face_preview(session)?;
         self.create_named(session, preview, prefix, channel)
     }
-    /// Global Add Sketch uses a current valid face or explicitly asks for a plane.
+    /// Global Sketch uses a current valid face or explicitly asks for a plane.
     /// Failed face inspection is read-only; creation still revalidates at commit.
     pub(crate) fn begin_model_sketch(
         &mut self,

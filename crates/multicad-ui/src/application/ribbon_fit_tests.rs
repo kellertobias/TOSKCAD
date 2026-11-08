@@ -212,7 +212,7 @@ fn reviewed_model_ribbon_ends_below_two_line_labels_and_captions() {
     let content = painted
         .texts
         .iter()
-        .find(|t| t.text == "Choose Add Sketch, or open a sketch from the document.")
+        .find(|t| t.text == "Choose Sketch, or open a sketch from the document.")
         .expect("content guidance");
     assert!(content.clip.min.y >= painted.ribbon.max.y);
 }

@@ -30,7 +30,7 @@ fn frame(ctx: &egui::Context, app: &mut Application, events: Vec<egui::Event>) -
         egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(
                 egui::Pos2::ZERO,
-                egui::vec2(1100., 700.),
+                egui::vec2(1024., 600.),
             )),
             focused: true,
             events,
@@ -101,7 +101,7 @@ fn project_omits_the_modeling_actions_shown_in_other_modes() {
         let out = frame(&ctx, &mut app, vec![]);
         if mode == Mode::Parameters {
             let tree = out.platform_output.accesskit_update.as_ref().unwrap();
-            for label in ["Add Sketch", "Import", "Library", "Measure", "MCP history"] {
+            for label in ["Sketch", "Import", "Library", "Measure", "MCP history"] {
                 assert!(
                     !tree
                         .nodes
@@ -113,11 +113,53 @@ fn project_omits_the_modeling_actions_shown_in_other_modes() {
             out.drop_without_applying_deltas();
             continue;
         }
-        let row = egui::PanelState::load(&ctx, egui::Id::new("global-actions"))
+        let panel = if mode == Mode::Model {
+            "ribbon"
+        } else {
+            "global-actions"
+        };
+        let mut row = egui::PanelState::load(&ctx, egui::Id::new(panel))
             .unwrap()
             .outer_rect;
         let mut previous = row.left();
-        for label in ["Add Sketch", "Library", "Measure"] {
+        let labels = if mode == Mode::Model {
+            assert!(egui::PanelState::load(&ctx, egui::Id::new("global-actions")).is_none());
+            row.max.y = row.min.y + RIBBON_TAB_STRIP;
+            let tree = out.platform_output.accesskit_update.as_ref().unwrap();
+            for label in [
+                "Common",
+                "Architecture",
+                "Wood",
+                "Sheet metal",
+                "Weld",
+                "Mechanical",
+                "Other",
+                "Relations",
+            ] {
+                let bounds = tree
+                    .nodes
+                    .iter()
+                    .find_map(|(_, node)| {
+                        (node.label() == Some(label))
+                            .then(|| node.bounds())
+                            .flatten()
+                    })
+                    .unwrap_or_else(|| panic!("Missing Model tab {label}"));
+                let rect = egui::Rect::from_min_max(
+                    egui::pos2(bounds.x0 as f32, bounds.y0 as f32),
+                    egui::pos2(bounds.x1 as f32, bounds.y1 as f32),
+                );
+                assert!(
+                    row.contains_rect(rect) && rect.left() >= previous,
+                    "{label}: {rect:?} outside {row:?} or overlaps the preceding tab"
+                );
+                previous = rect.right();
+            }
+            ["Sketch", "Measure", "Library"]
+        } else {
+            ["Sketch", "Library", "Measure"]
+        };
+        for label in labels {
             let rect = button(&out, label);
             assert!(
                 row.contains_rect(rect),
@@ -127,7 +169,7 @@ fn project_omits_the_modeling_actions_shown_in_other_modes() {
             previous = rect.right();
         }
         out.drop_without_applying_deltas();
-        click(&ctx, &mut app, "Add Sketch");
+        click(&ctx, &mut app, "Sketch");
         assert_eq!(app.mode.top_level(), Mode::Model);
         assert!(app.current().sketch.picking);
         assert!(!app.current().sketch.editing);

@@ -362,7 +362,7 @@ impl ShortcutMap {
             Scope::Global,
             Chord::plain(Key::Q),
             Command(crate::registry::Command::NewSketch),
-            "Add Sketch",
+            "Sketch",
             false,
         );
         for (key, command, label) in [
