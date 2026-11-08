@@ -745,6 +745,9 @@ pub(crate) fn validate(document: &Document) -> Result<(), DocumentError> {
                 super::ADVANCED_TYPE => {
                     super::read_advanced(document, entity.id)?;
                 }
+                super::SURFACE_STRUCTURE_TYPE => {
+                    super::read_surface_structure(document, entity.id)?;
+                }
                 super::TRANSFER_TYPE => {
                     super::read_transfer_feature(document, entity.id)?;
                 }
@@ -963,6 +966,11 @@ pub fn required_capabilities(document: &Document) -> BTreeSet<String> {
             && data.get("entry_reference").is_some_and(|v| !v.is_null())
     }) {
         capabilities.insert(super::CONNECTION_RECEIVER_ENTRY_CAPABILITY.into());
+    }
+    if saved_feature_matches(document, |type_id, _| {
+        type_id == super::SURFACE_STRUCTURE_TYPE
+    }) {
+        capabilities.insert(super::SURFACE_STRUCTURE_CAPABILITY.into());
     }
     fn has_face_grip(value: &serde_json::Value) -> bool {
         match value {
