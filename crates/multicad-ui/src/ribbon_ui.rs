@@ -69,13 +69,19 @@ pub fn groups(mode: Mode, tab: &RibbonTab) -> Vec<Group> {
         return crate::wood_navigation::groups();
     }
     if mode == Mode::Model && tab.title == "Other" {
-        return vec![Group {
-            label: "FDM design aids",
-            entries: ["fdm-aid", "fdm-bridge", "fdm-support"]
-                .into_iter()
-                .map(Entry::Tool)
-                .collect(),
-        }];
+        return vec![
+            Group {
+                label: "FDM design aids",
+                entries: ["fdm-aid", "fdm-bridge", "fdm-support"]
+                    .into_iter()
+                    .map(Entry::Tool)
+                    .collect(),
+            },
+            Group {
+                label: "Surface",
+                entries: vec![Entry::Tool("surface-structure")],
+            },
+        ];
     }
     if mode == Mode::Model && tab.title == "Architecture" {
         return crate::architecture_navigation::groups(None);
@@ -825,6 +831,7 @@ mod tests {
                         "Joint",
                     ],
                     (Mode::Model, "Sheet metal") => &["Sheet part / flanges"],
+                    (Mode::Model, "Other") => &["Surface Structure"],
                     (Mode::Export, "Print") => &["Preview package", "Write 3MF package"],
                     _ => &[],
                 };
