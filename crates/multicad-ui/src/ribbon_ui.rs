@@ -164,9 +164,9 @@ pub fn groups(mode: Mode, tab: &RibbonTab) -> Vec<Group> {
                 label: "Pattern",
                 icon: Icon::CircularPattern,
                 tools: vec![
-                    "model-mirror",
                     "model-linear-pattern",
                     "model-circular-pattern",
+                    "model-mirror",
                 ],
                 unavailable: None,
             }],
@@ -413,37 +413,88 @@ fn menu_button(
     selected: &impl Fn(Command) -> bool,
 ) -> Option<Command> {
     let is_selected = |id: &&str| registry.tool(id).is_some_and(|tool| selected(tool.action));
-    // The active mode, else the last choice.
-    let choice = tools
-        .iter()
-        .copied()
-        .find(is_selected)
-        .unwrap_or_else(|| menu_choice(ui.ctx(), mode, label, tools));
-    let glyph = registry
-        .tool(choice)
-        .map(|tool| tool_glyph(mode, choice, tool.icon))
-        .filter(|glyph| matches!(glyph, icons::Glyph::Art(..)))
-        .unwrap_or(icons::Glyph::Vector(icon));
-    let response = icons::tool_glyph_at_width(
-        ui,
-        glyph,
-        label,
-        &format!("{label} · choose a tool"),
-        tools.iter().any(is_selected),
-        tile_width,
-    );
-    let center = response.rect.right_top() + egui::vec2(-9., 12.);
-    ui.painter().add(egui::Shape::convex_polygon(
-        vec![
-            center + egui::vec2(-3., -2.),
-            center + egui::vec2(3., -2.),
-            center + egui::vec2(0., 2.),
-        ],
-        egui::Color32::LIGHT_GRAY,
-        egui::Stroke::NONE,
-    ));
     let mut action = None;
+    let response = if mode == Mode::Model {
+        const ARROW_WIDTH: f32 = 18.;
+        let default = registry.tool(tools[0]).expect("menu default");
+        top_row(ui, |ui| {
+            ui.spacing_mut().item_spacing.x = 0.;
+            let main = ui
+                .add_enabled_ui(enabled(default.action), |ui| {
+                    icons::tool_glyph_at_width(
+                        ui,
+                        tool_glyph(mode, default.id, default.icon),
+                        label,
+                        &with_description(default.id, hint(default.action, default.label)),
+                        tools.iter().any(is_selected),
+                        tile_width - ARROW_WIDTH,
+                    )
+                })
+                .inner;
+            if main
+                .on_disabled_hover_text(
+                    "The default is unavailable in this context. Open the options for other tools.",
+                )
+                .clicked()
+            {
+                action = Some(default.action);
+            }
+            let (rect, arrow) =
+                ui.allocate_exact_size(egui::vec2(ARROW_WIDTH, 24.), egui::Sense::click());
+            if arrow.hovered() || arrow.has_focus() {
+                ui.painter()
+                    .rect_filled(rect, 3, egui::Color32::from_rgb(42, 51, 65));
+            }
+            ui.painter().rect_stroke(
+                rect.shrink(1.),
+                3,
+                egui::Stroke::new(
+                    1.,
+                    if arrow.has_focus() {
+                        egui::Color32::LIGHT_BLUE
+                    } else {
+                        crate::theme::BORDER
+                    },
+                ),
+                egui::StrokeKind::Inside,
+            );
+            let center = rect.center();
+            paint_menu_arrow(ui, center);
+            let options = format!("{label} options");
+            arrow.widget_info(|| {
+                egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &options)
+            });
+            arrow.on_hover_text(options)
+        })
+        .inner
+    } else {
+        let choice = tools
+            .iter()
+            .copied()
+            .find(is_selected)
+            .unwrap_or_else(|| menu_choice(ui.ctx(), mode, label, tools));
+        let glyph = registry
+            .tool(choice)
+            .map(|tool| tool_glyph(mode, choice, tool.icon))
+            .filter(|glyph| matches!(glyph, icons::Glyph::Art(..)))
+            .unwrap_or(icons::Glyph::Vector(icon));
+        let response = icons::tool_glyph_at_width(
+            ui,
+            glyph,
+            label,
+            &format!("{label} · choose a tool"),
+            tools.iter().any(is_selected),
+            tile_width,
+        );
+        paint_menu_arrow(ui, response.rect.right_top() + egui::vec2(-9., 12.));
+        response
+    };
     egui::Popup::menu(&response).show(|ui| {
+        let compact = mode == Mode::Model;
+        if compact {
+            ui.set_width(178.);
+            ui.spacing_mut().item_spacing.y = 1.;
+        }
         for id in tools {
             let tool = registry.tool(id).expect("menu catalog entry");
             if ui
@@ -452,7 +503,10 @@ fn menu_button(
                         ui,
                         tool.icon,
                         tool.label,
-                        egui::vec2(ui.available_width().max(160.), 28.),
+                        egui::vec2(
+                            ui.available_width().max(160.),
+                            if compact { 24. } else { 28. },
+                        ),
                     )
                 })
                 .inner
@@ -474,6 +528,18 @@ fn menu_button(
         }
     });
     action
+}
+
+fn paint_menu_arrow(ui: &egui::Ui, center: egui::Pos2) {
+    ui.painter().add(egui::Shape::convex_polygon(
+        vec![
+            center + egui::vec2(-3., -2.),
+            center + egui::vec2(3., -2.),
+            center + egui::vec2(0., 2.),
+        ],
+        egui::Color32::LIGHT_GRAY,
+        egui::Stroke::NONE,
+    ));
 }
 /// Ribbon with per-command selected state (for example the active drawing
 /// tool or construction mode).
@@ -868,6 +934,7 @@ mod tests {
                 .any(|entry| matches!(entry, Entry::Tool("align")))
         );
         let ctx = egui::Context::default();
+        ctx.enable_accesskit();
         let mut chosen = None;
         let mut draw = |ui: &mut egui::Ui| {
             if let Some(command) = show(
@@ -884,7 +951,7 @@ mod tests {
         };
         frame(&ctx, vec![], &mut draw).drop_without_applying_deltas();
         let output = frame(&ctx, vec![], &mut draw);
-        let menu = text(&output, "Add Primitive");
+        let menu = accessible_button(&output, "Add Primitive options");
         output.drop_without_applying_deltas();
         for pressed in [true, false] {
             frame(&ctx, events(menu, pressed), &mut draw).drop_without_applying_deltas();
@@ -900,6 +967,76 @@ mod tests {
             chosen,
             Some(Command::Modeling(crate::modeling::ModelingTool::Cylinder))
         );
+    }
+    #[test]
+    fn model_split_buttons_run_each_default_directly_at_compact_width() {
+        let registry = Registry::default();
+        let model = registry.workspace(Mode::Model);
+        for (tab, label, id) in [
+            ("Common", "Add Primitive", "box"),
+            ("Common", "Boolean", "boolean-join"),
+            ("Common", "Move / Copy", "move"),
+            ("Common", "Pattern", "model-linear-pattern"),
+            ("Wood", "Screw / Hardware", "wood-hardware"),
+        ] {
+            let tab = model
+                .tabs
+                .iter()
+                .find(|candidate| candidate.title == tab)
+                .unwrap();
+            assert_eq!(
+                click(&registry, Mode::Model, tab, false, 1024., label),
+                Some(registry.tool(id).unwrap().action),
+                "{label} must dispatch its default without opening options"
+            );
+        }
+    }
+    #[test]
+    fn model_split_arrow_is_keyboard_focusable_and_escape_dismisses_its_options() {
+        let registry = Registry::default();
+        let tab = &registry.workspace(Mode::Model).tabs[0];
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        let draw = |events| ribbon(&registry, Mode::Model, tab, false, 1024., events, &ctx);
+        draw(vec![]).0.drop_without_applying_deltas();
+        let (out, _) = draw(vec![]);
+        let (id, _) = out
+            .platform_output
+            .accesskit_update
+            .as_ref()
+            .unwrap()
+            .nodes
+            .iter()
+            .find(|(_, node)| node.label() == Some("Add Primitive options"))
+            .unwrap();
+        let focus = egui::Event::AccessKitActionRequest(egui::accesskit::ActionRequest {
+            action: egui::accesskit::Action::Focus,
+            target_tree: egui::accesskit::TreeId::ROOT,
+            target_node: *id,
+            data: None,
+        });
+        out.drop_without_applying_deltas();
+        draw(vec![focus]).0.drop_without_applying_deltas();
+        let key = |key| egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        };
+        let (out, command) = draw(vec![key(egui::Key::Space)]);
+        assert!(command.is_none());
+        out.drop_without_applying_deltas();
+        let (out, _) = draw(vec![]);
+        assert!(labels(&out).contains(&"Cylinder".into()));
+        out.drop_without_applying_deltas();
+        draw(vec![key(egui::Key::Escape)])
+            .0
+            .drop_without_applying_deltas();
+        let (out, command) = draw(vec![]);
+        assert!(command.is_none());
+        assert!(!labels(&out).contains(&"Cylinder".into()));
+        out.drop_without_applying_deltas();
     }
     #[test]
     fn empty_workspace_has_centered_guidance_instead_of_an_empty_strip() {
@@ -1026,6 +1163,25 @@ mod tests {
                 _ => None,
             })
             .collect()
+    }
+    fn accessible_button(output: &egui::FullOutput, label: &str) -> egui::Pos2 {
+        output
+            .platform_output
+            .accesskit_update
+            .as_ref()
+            .unwrap()
+            .nodes
+            .iter()
+            .find_map(|(_, node)| {
+                let bounds = node.bounds()?;
+                (node.label() == Some(label)).then(|| {
+                    egui::pos2(
+                        ((bounds.x0 + bounds.x1) * 0.5) as f32,
+                        ((bounds.y0 + bounds.y1) * 0.5) as f32,
+                    )
+                })
+            })
+            .unwrap_or_else(|| panic!("Missing ribbon button {label}"))
     }
     /// Regression for the reported empty Wood / Sheet metal workspaces: in
     /// builds between eff1e2d and 5dffdb3 / f9988f9 every entry on those tabs
@@ -1287,7 +1443,7 @@ mod tests {
                 .0
                 .drop_without_applying_deltas();
             let output = ribbon(&registry, Mode::Model, tab, false, 1360., vec![], &ctx).0;
-            let pos = text(&output, "Screw / Hardware");
+            let pos = accessible_button(&output, "Screw / Hardware options");
             output.drop_without_applying_deltas();
             for pressed in [true, false] {
                 ribbon(
