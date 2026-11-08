@@ -82,6 +82,12 @@ mod reference_repair;
 mod render;
 mod schedules;
 mod sheet_metal;
+mod surface_structure;
+use surface_structure::{
+    SurfaceStructureArgs, SurfaceStructureCaptureArgs, SurfaceStructureInspectArgs,
+    capture_surface_structure_faces, inspect_surface_structure, preview_surface_structure,
+    set_surface_structure,
+};
 mod text;
 mod threads;
 mod wall_layers;
@@ -375,6 +381,14 @@ tools! {
         "Read the retained connector and nut articles and complete editable canonical request for a profile connection. This is source inspection.", inspect_profile_connection;
     "remove_profile_connection" => ProfileConnectionRemoveArgs, "Remove profile connection", false,
         "Atomically remove a profile connection, its owned hardware and its access bores where applicable. Downstream ownership conflicts and failed native validation preserve the current source.", remove_profile_connection;
+    "capture_surface_structure_faces" => SurfaceStructureCaptureArgs, "Capture Surface Structure faces", true,
+        "Capture one to four distinct current planar faces of a single Part using ordinals from reference_candidates. Returns canonical input and faces for preview_surface_structure or set_surface_structure.", capture_surface_structure_faces;
+    "inspect_surface_structure" => SurfaceStructureInspectArgs, "Inspect Surface Structure", true,
+        "Read the exact editable Surface Structure request, including embedded grayscale samples and retained planar face references.", inspect_surface_structure;
+    "preview_surface_structure" => SurfaceStructureArgs, "Preview Surface Structure", true,
+        "Check a complete Surface Structure request against native geometry without committing. Parameters select ribs, waves, stipple or height_map, raised or recessed relief, dimensions for amplitude, pitch, size, offset, rotation and border. Height Map embeds row-major grayscale samples with row zero at positive V.", preview_surface_structure;
+    "set_surface_structure" => SurfaceStructureArgs, "Apply Surface Structure", false,
+        "Create or edit a Surface Structure on its checked Part and planar face captures. Reuse the feature UUID from inspect_surface_structure to edit. Commits one transaction or stages it for owner review after a native geometry check.", set_surface_structure;
     "inspect_gear_pair" => InspectGearPairArgs, "Inspect gear pair", true,
         "Read canonical member recipes, tooth phase and mating frames, plus rotary center distance, finite rack travel, explicit bevel shared-apex/cone context or explicit worm/wheel crossed-axis roles without evaluating geometry. evaluate_model reports the actual native current-pose and sampled interference checks.",
         inspect_gear_pair;
