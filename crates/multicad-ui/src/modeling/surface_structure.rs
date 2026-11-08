@@ -154,6 +154,13 @@ impl SurfaceStructurePanel {
         if self.faces.is_empty() {
             return Err("Pick at least one named planar face before Preview".into());
         }
+        let pitch = match self.pitch.resolve(document) {
+            Ok(pitch) => pitch,
+            Err(_) if matches!(self.pattern, Pattern::HeightMap { .. }) => {
+                Parameters::default().pitch
+            }
+            Err(error) => return Err(error),
+        };
         Ok(SurfaceStructureRequest {
             feature: self.feature,
             input,
@@ -162,7 +169,7 @@ impl SurfaceStructurePanel {
                 pattern: self.pattern.clone(),
                 direction: self.direction,
                 amplitude: self.amplitude.resolve(document)?,
-                pitch: self.pitch.resolve(document)?,
+                pitch,
                 size: [
                     self.size[0].resolve(document)?,
                     self.size[1].resolve(document)?,
@@ -250,9 +257,10 @@ impl SurfaceStructurePanel {
                     .inner;
             }
         } else {
-            changed |= self.pitch.show(
+            changed |= self.pitch.show_named(
                 ui,
-                "Pattern pitch (mm)",
+                "surface-pitch",
+                "Pattern pitch",
                 "Physical spacing between repeats.",
             );
         }
@@ -264,31 +272,46 @@ impl SurfaceStructurePanel {
                 .selectable_value(&mut self.direction, Direction::Recessed, "Recessed")
                 .changed();
         });
-        changed |= self.amplitude.show(
+        changed |= self.amplitude.show_named(
             ui,
-            "Relief height or depth (mm)",
+            "surface-amplitude",
+            "Relief height or depth",
             "Maximum physical relief above or below each face.",
         );
-        changed |= self.size[0].show(ui, "Width U (mm)", "Width of the rotated relief window.");
-        changed |= self.size[1].show(ui, "Height V (mm)", "Height of the rotated relief window.");
-        changed |= self.offset[0].show(
+        changed |= self.size[0].show_named(
             ui,
-            "Offset U (mm)",
+            "surface-width",
+            "Width U",
+            "Width of the rotated relief window.",
+        );
+        changed |= self.size[1].show_named(
+            ui,
+            "surface-height",
+            "Height V",
+            "Height of the rotated relief window.",
+        );
+        changed |= self.offset[0].show_named(
+            ui,
+            "surface-offset-u",
+            "Offset U",
             "Shift the window from the face extent midpoint.",
         );
-        changed |= self.offset[1].show(
+        changed |= self.offset[1].show_named(
             ui,
-            "Offset V (mm)",
+            "surface-offset-v",
+            "Offset V",
             "Shift the window from the face extent midpoint.",
         );
-        changed |= self.rotation.show(
+        changed |= self.rotation.show_named(
             ui,
-            "Rotation (°)",
+            "surface-rotation",
+            "Rotation",
             "Rotate the window and pattern together about the outward normal.",
         );
-        changed |= self.border.show(
+        changed |= self.border.show_named(
             ui,
-            "Face border (mm)",
+            "surface-border",
+            "Face border",
             "Keep this much of each face flat at its boundary.",
         );
         ui.small(
