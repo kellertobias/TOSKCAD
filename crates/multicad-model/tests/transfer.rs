@@ -1,11 +1,12 @@
 use multicad_core::{
     commands::{Actor, Channel, Request, Session},
     constraint_sketch::Dimension,
-    document::{Document, Entity, EntityData, EntityId, Mutation},
+    document::{Document, Entity, EntityData, EntityId, Mutation, Placement},
     model::*,
     parameters::BoundExpression,
     project_file::{self, ProjectFile},
     references::{self, AnalyticGeometry, GeometryIntent, Resolution, TopologyKind},
+    symbols::{self, SymbolPlaceRequest},
 };
 use multicad_model::{Compiler, Model};
 use std::f64::consts::PI;
@@ -337,6 +338,178 @@ fn reopen(s: &Session) -> Session {
     .unwrap();
     Session::new(opened.project.document).unwrap()
 }
+#[test]
+fn pinned_library_washer_bore_transfers_and_follows_its_placement() {
+    let mut bytes = include_bytes!("../../../library/washer-normal-m6.tcd").as_slice();
+    let library = project_file::read(
+        &mut bytes,
+        Default::default(),
+        &project_file::supported_capabilities(),
+    )
+    .unwrap();
+    let [(_, definition)] = symbols::definitions(&library.project.document)
+        .unwrap()
+        .try_into()
+        .expect("one shipped washer definition");
+    let mut session = Session::new(Document::new("Library washer transfer").unwrap()).unwrap();
+    let placement = SymbolPlaceRequest::from_definition(
+        EntityId::new(),
+        &definition,
+        "M6 washer source",
+        Default::default(),
+        Placement {
+            translation_mm: [15., 12., 15.],
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let placed = symbols::prepare_library_place(
+        &session,
+        session.revision(),
+        actor(),
+        &definition,
+        &placement,
+        None,
+    )
+    .unwrap();
+    session.commit(placed.prepared).unwrap();
+    let pin = definition.pin().unwrap();
+    assert_eq!(
+        symbols::read_instance(session.document(), placement.instance)
+            .unwrap()
+            .pin,
+        pin
+    );
+
+    let receiver = PrimitiveRequest::new(
+        "Receiving plate",
+        PrimitiveParameters::Box {
+            size: [45., 30., 5.].map(length),
+            frame: Default::default(),
+        },
+    );
+    let plate = prepare_primitive(&session, session.revision(), actor(), &receiver).unwrap();
+    session.commit(plate.prepared).unwrap();
+    let receiver_placement = ComponentPlacementRequest::new(
+        receiver.body,
+        NumericTransform {
+            translation: [5., 2., 0.].map(length),
+            ..Default::default()
+        },
+    );
+    let placed =
+        prepare_place_component(&session, session.revision(), actor(), &receiver_placement)
+            .unwrap();
+    session.commit(placed.prepared).unwrap();
+
+    let path = OccurrencePath {
+        root: placement.instance,
+        members: vec![placement.member],
+    };
+    let source = transfer_occurrence_catalog(session.document())
+        .unwrap()
+        .into_iter()
+        .find(|source| source.path == path)
+        .expect("the placed Library leaf is listed as a transfer source");
+    assert_eq!(source.component, placement.ids[&definition.root]);
+    let washer = read_mechanical_part(session.document(), source.producer).unwrap();
+    let ResolvedMechanicalPart::Washer {
+        bore_radius_mm,
+        thickness_mm,
+        frame,
+        ..
+    } = washer.parameters.resolve(session.parameters()).unwrap()
+    else {
+        panic!("the shipped M6 source must resolve as a washer");
+    };
+    near(bore_radius_mm, 3.2);
+    assert_eq!(frame.n, [0., 0., 1.]);
+    let initial = compile(&session);
+    let source_face = top(
+        &initial,
+        source.producer,
+        source.component,
+        frame.origin[2] + thickness_mm,
+    );
+    let receiver_face = top(&initial, receiver.feature, receiver.feature, 5.);
+    let mut request = TransferRequest::new(
+        "Transfer the Library washer bore",
+        TransferSource {
+            component: source.component,
+            path,
+            selection: TransferSelection::FaceHoles {
+                face: source_face.intent.id,
+            },
+        },
+    );
+    let target = TransferTarget::new(
+        BodyInput {
+            body: receiver.body,
+            producer: receiver.feature,
+        },
+        OccurrencePath {
+            root: receiver_placement.instance,
+            members: vec![],
+        },
+        receiver_face.intent.id,
+        Default::default(),
+    );
+    request.references = vec![source_face, receiver_face];
+    request.targets.push(target.clone());
+    let transfer = prepare_transfer(&session, session.revision(), actor(), &request).unwrap();
+    session.commit(transfer.prepared).unwrap();
+
+    let verify = |session: &Session, x: f64, y: f64| {
+        let model = compile(session);
+        let snapshot = model.snapshot();
+        assert_eq!(snapshot.transfer_counts[&target.feature], 1);
+        near(
+            model.solid(receiver.body).unwrap().volume_mm3().unwrap(),
+            (45. * 30. - PI * bore_radius_mm.powi(2)) * 5.,
+        );
+        let center = snapshot.shapes[&target.feature]
+            .topology
+            .elements
+            .iter()
+            .find_map(|edge| match edge.geometry {
+                Some(AnalyticGeometry::CircularArc {
+                    frame,
+                    radius_mm,
+                    sweep_rad,
+                    ..
+                }) if edge.key.kind == TopologyKind::Edge
+                    && (radius_mm - bore_radius_mm).abs() < 1e-6
+                    && (sweep_rad.abs() - 2. * PI).abs() < 1e-6
+                    && (frame.origin_mm[2] - 5.).abs() < 1e-6 =>
+                {
+                    Some(frame.origin_mm)
+                }
+                _ => None,
+            })
+            .expect("the receiving plate contains the exact transferred circle");
+        near(center[0], frame.origin[0] + x);
+        near(center[1], frame.origin[1] + y);
+    };
+    verify(&session, 10., 10.);
+    let move_washer = InstanceMoveRequest::new(
+        placement.instance,
+        NumericTransform {
+            translation: [8., 2., 0.].map(length),
+            ..Default::default()
+        },
+    );
+    let moved =
+        prepare_instance_moves(&session, session.revision(), actor(), &[move_washer]).unwrap();
+    session.commit(moved.prepared).unwrap();
+    verify(&session, 18., 12.);
+    assert_eq!(
+        symbols::read_instance(session.document(), placement.instance)
+            .unwrap()
+            .pin,
+        pin
+    );
+}
+
 #[test]
 fn native_rail_pitch_pattern_and_member_pose_update_three_explicit_material_cuts() {
     let mut f = fixture();

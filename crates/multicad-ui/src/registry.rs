@@ -632,7 +632,7 @@ impl Default for Registry {
                             })
                             .map(ModelingTool::id)
                             .chain(BOOLEAN_OPERATIONS.map(|(id, ..)| id))
-                            .chain(["symbol", "transfer"])
+                            .chain(["symbol"])
                             .collect(),
                         requires_active_sketch: false,
                     },
@@ -663,7 +663,7 @@ impl Default for Registry {
                         "Other",
                         &["fdm-aid", "fdm-bridge", "fdm-support", "surface-structure"],
                     ),
-                    tab("Relations", &["align"]),
+                    tab("Relations", &["align", "transfer"]),
                 ],
             },
             Workspace {
@@ -970,7 +970,7 @@ mod tests {
         }
     }
     #[test]
-    fn associative_transfer_is_discoverable_in_model_common() {
+    fn associative_transfer_is_discoverable_in_model_relations() {
         let registry = Registry::default();
         let model = registry.workspace(Mode::Model);
         let common = model
@@ -978,19 +978,16 @@ mod tests {
             .iter()
             .position(|tab| tab.title == "Common")
             .unwrap();
-        assert!(model.tabs[common].tools.contains(&"transfer"));
+        assert!(!model.tabs[common].tools.contains(&"transfer"));
+        let relations = model
+            .tabs
+            .iter()
+            .position(|tab| tab.title == "Relations")
+            .unwrap();
+        assert!(model.tabs[relations].tools.contains(&"transfer"));
         assert_eq!(
             registry.workbench_tab(Mode::Model, registry.tool("transfer").unwrap().action, None),
-            Some(common)
-        );
-        assert!(
-            !model
-                .tabs
-                .iter()
-                .find(|tab| tab.title == "Relations")
-                .unwrap()
-                .tools
-                .contains(&"transfer")
+            Some(relations)
         );
     }
     #[test]

@@ -1450,13 +1450,7 @@ impl Application {
                     channel,
                 )?;
                 self.mode = Mode::Model;
-                self.tab = self
-                    .registry
-                    .workspace(Mode::Model)
-                    .tabs
-                    .iter()
-                    .position(|tab| tab.tools.contains(&"transfer"))
-                    .unwrap_or(0);
+                self.tab = self.workbench_tab(Mode::Model, command);
                 self.message = "Transfer features · choose source geometry and receiving faces in the Inspector".into();
             }
             Command::Delete => {
@@ -4177,6 +4171,10 @@ mod tests {
         );
         app.invoke(Command::Transfer, &[], Channel::CommandLine)
             .unwrap();
+        assert_eq!(
+            app.registry.workspace(Mode::Model).tabs[app.tab].title,
+            "Relations"
+        );
         assert!(app.current().sketch.model_active());
         assert!(app.current().sketch.has_pending_edits());
         assert!(!app.enabled(Command::Parameter));

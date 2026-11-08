@@ -243,10 +243,25 @@ fn compact_ribbon_uses_only_its_tool_and_caption_rows() {
     let common = frame(&mut app, &ctx, size);
     assert!(common.ribbon.height() <= 128., "{:?}", common.ribbon);
     assert!(common.ribbon.height() > mechanical.ribbon.height());
-    assert!(common.texts.iter().any(|text| {
+    assert!(
+        !common
+            .texts
+            .iter()
+            .any(|text| text.text == "Transfer features")
+    );
+    app.tab = app
+        .registry
+        .workspace(Mode::Model)
+        .tabs
+        .iter()
+        .position(|tab| tab.title == "Relations")
+        .unwrap();
+    let relations = frame(&mut app, &ctx, size);
+    assert!(relations.texts.iter().any(|text| {
         text.text == "Transfer features" && text.clip.expand(0.5).contains_rect(text.rect)
     }));
     app.mode = Mode::Sketch;
+    app.tab = 0;
     frame(&mut app, &ctx, size);
     let inactive_sketch = frame(&mut app, &ctx, size);
     assert!(
