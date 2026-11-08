@@ -520,10 +520,8 @@ impl DrawingEditor {
                 return;
             }
         };
-        egui::Panel::right("drawing-inspector")
+        crate::controls::inspector_panel(ui, "drawing-inspector")
             .default_size(270.)
-            .min_size(190.)
-            .resizable(true)
             .show(ui, |ui| {
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     self.inspector(ui, session);

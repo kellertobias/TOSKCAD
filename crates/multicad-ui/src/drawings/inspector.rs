@@ -11,9 +11,9 @@ impl DrawingEditor {
                 .map_or("No drawing", |entity| entity.name.as_str()),
         );
         // Async errors and progress must not move fields or change their IDs
-        // while the user types. Long diagnostics remain readable by scrolling.
+        // while the user types. Reserve two compact lines and scroll longer diagnostics.
         let (status_rect, _) =
-            ui.allocate_exact_size(egui::vec2(ui.available_width(), 64.), egui::Sense::hover());
+            ui.allocate_exact_size(egui::vec2(ui.available_width(), 34.), egui::Sense::hover());
         let mut status = ui.new_child(
             egui::UiBuilder::new()
                 .id_salt(("drawing-inspector-status", self.book, self.selected))

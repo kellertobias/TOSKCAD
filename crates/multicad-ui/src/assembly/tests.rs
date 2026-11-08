@@ -331,3 +331,97 @@ fn rejected_stale_selection_does_not_leave_a_half_open_relationship_tool() {
     assert_eq!(session.document(), &before);
     assert_eq!(session.revision(), 2);
 }
+
+#[test]
+fn compact_motion_keeps_pending_status_with_preview_and_cancel() {
+    use crate::egui;
+    let (mut session, part, _) = source();
+    let original = session.document().clone();
+    let mut c = controller();
+    c.begin(
+        AssemblyTool::Place,
+        &session,
+        &Default::default(),
+        None,
+        AssemblySelection {
+            component: Some(part.body),
+            ..Default::default()
+        },
+        Channel::Ui,
+    )
+    .unwrap();
+    c.preview(&session, &Default::default(), Channel::Ui)
+        .unwrap();
+    let ctx = egui::Context::default();
+    crate::theme::configure(&ctx);
+    let mut frame = |events| {
+        ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1024., 600.),
+                )),
+                events,
+                ..Default::default()
+            },
+            |ui| {
+                egui::Panel::top("header").exact_size(170.).show(ui, |_| {});
+                egui::Panel::bottom("status")
+                    .exact_size(28.)
+                    .show(ui, |_| {});
+                egui::Panel::right("source-inspector")
+                    .exact_size(220.)
+                    .show(ui, |ui| {
+                        inspector_actions::scope(
+                            ui,
+                            Some(inspector_actions::Owner::Assembly),
+                            Mode::Motion.color(),
+                            |ui| {
+                                // Model-tree anchor controls precede the form in the scrolling body.
+                                for n in 0..24 {
+                                    ui.label(format!("Available named anchor {n}"));
+                                }
+                                c.show(ui, &mut session, &ProjectResources::default())
+                                    .unwrap();
+                            },
+                        );
+                    });
+            },
+        )
+    };
+    for _ in 0..3 {
+        frame(vec![]).drop_without_applying_deltas();
+    }
+    let out = frame(vec![]);
+    let text = |label: &str| {
+        out.shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(t) if t.galley.text() == label => {
+                    let rect = egui::Rect::from_min_size(t.pos, t.galley.size());
+                    shape.clip_rect.contains_rect(rect).then_some(rect.center())
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("Missing visible {label}"))
+    };
+    let status = text("Checking native assembly…");
+    let preview = text("Preview");
+    let cancel = text("Cancel");
+    assert!(preview.y < status.y && status.y < cancel.y);
+    out.drop_without_applying_deltas();
+    for pressed in [true, false] {
+        frame(vec![
+            egui::Event::PointerMoved(cancel),
+            egui::Event::PointerButton {
+                pos: cancel,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: Default::default(),
+            },
+        ])
+        .drop_without_applying_deltas();
+    }
+    assert!(!c.active());
+    assert_eq!(session.document(), &original);
+}

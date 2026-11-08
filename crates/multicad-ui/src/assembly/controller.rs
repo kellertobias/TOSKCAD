@@ -693,14 +693,11 @@ impl AssemblyController {
         }
         if let Some(error) = &self.error {
             ui.colored_label(egui::Color32::LIGHT_RED, error);
-        } else if self.pending() {
-            ui.spinner();
-            ui.label("Checking native assembly…");
         } else if self.can_apply(session, resources) {
             ui.label("Native preview ready");
         }
         let authoring = self.dirty();
-        let actions = inspector_actions::row(
+        let actions = inspector_actions::row_with_progress(
             ui,
             Owner::Assembly,
             (authoring || self.inspection.is_some()).then(|| {
@@ -720,6 +717,7 @@ impl AssemblyController {
                 true,
                 "Close these controls and discard uncommitted edits",
             ),
+            self.pending().then_some("Checking native assembly…"),
         );
         if actions.cancel {
             self.cancel();

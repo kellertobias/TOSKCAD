@@ -415,21 +415,28 @@ impl DrawingEditor {
                         spec.label()
                     ));
                 } else {
-                    egui::Grid::new(("table-cells", id)).show(ui, |ui| {
-                        for (c, w) in columns.iter_mut().zip(widths_mm.iter_mut()) {
-                            ui.vertical(|ui| {
-                                ui.add(egui::TextEdit::singleline(c).desired_width(60.));
-                                ui.add(egui::DragValue::new(w).range(2.0..=500.).suffix(" mm"));
+                    ui.small("Scroll sideways to edit all table columns.");
+                    egui::ScrollArea::horizontal()
+                        .id_salt(("table-columns", id))
+                        .show(ui, |ui| {
+                            egui::Grid::new(("table-cells", id)).show(ui, |ui| {
+                                for (c, w) in columns.iter_mut().zip(widths_mm.iter_mut()) {
+                                    ui.vertical(|ui| {
+                                        ui.add(egui::TextEdit::singleline(c).desired_width(60.));
+                                        ui.add(
+                                            egui::DragValue::new(w).range(2.0..=500.).suffix(" mm"),
+                                        );
+                                    });
+                                }
+                                ui.end_row();
+                                for row in rows.iter_mut() {
+                                    for cell in row.iter_mut() {
+                                        ui.add(egui::TextEdit::singleline(cell).desired_width(60.));
+                                    }
+                                    ui.end_row();
+                                }
                             });
-                        }
-                        ui.end_row();
-                        for row in rows.iter_mut() {
-                            for cell in row.iter_mut() {
-                                ui.add(egui::TextEdit::singleline(cell).desired_width(60.));
-                            }
-                            ui.end_row();
-                        }
-                    });
+                        });
                     ui.horizontal_wrapped(|ui| {
                         if ui.button("Add row").clicked() && rows.len() < 256 {
                             rows.push(vec![String::new(); columns.len()]);

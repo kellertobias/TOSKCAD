@@ -1124,3 +1124,96 @@ fn native_sheet_paints_the_professional_title_block_and_decodes_the_logo() {
     let [w, h] = drawings::logo_size();
     assert_eq!(size, Some([w as usize, h as usize]), "bundled logo decodes");
 }
+
+#[test]
+fn compact_drawing_table_scrolls_to_later_columns_without_source_edits() {
+    let mut session = session();
+    let mut editor = DrawingEditor::default();
+    editor
+        .invoke(&mut session, DrawingTool::AddPage, Channel::Ui)
+        .unwrap();
+    let id = EntityId::new();
+    let columns = (1..=12).map(|n| format!("Col {n}")).collect();
+    let cells = (1..=12).map(|n| format!("Cell {n}")).collect();
+    editor
+        .draft
+        .as_mut()
+        .unwrap()
+        .annotations
+        .push(drawings::Annotation {
+            id,
+            kind: drawings::AnnotationKind::Table {
+                position_mm: [20., 20.],
+                title: "Assembly notes".into(),
+                columns,
+                rows: vec![cells],
+                widths_mm: vec![20.; 12],
+                row_height_mm: 5.,
+                schedule: None,
+            },
+        });
+    editor.selected_annotation = Some(id);
+    let source = session.document().clone();
+    let ctx = egui::Context::default();
+    crate::theme::configure(&ctx);
+    let mut frame = |events| {
+        ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1024., 600.),
+                )),
+                events,
+                ..Default::default()
+            },
+            |ui| {
+                egui::Panel::right("drawing-inspector")
+                    .exact_size(230.)
+                    .show(ui, |ui| {
+                        crate::controls::inspector_layout(ui);
+                        editor.annotations_inspector(ui, &session);
+                    });
+            },
+        )
+    };
+    let text = |out: &egui::FullOutput, label: &str| {
+        out.shapes.iter().find_map(|shape| match &shape.shape {
+            egui::Shape::Text(t) if t.galley.text() == label => {
+                let bounds = egui::Rect::from_min_size(t.pos, t.galley.size());
+                shape
+                    .clip_rect
+                    .contains_rect(bounds)
+                    .then_some(bounds.center())
+            }
+            _ => None,
+        })
+    };
+    for _ in 0..3 {
+        frame(vec![]).drop_without_applying_deltas();
+    }
+    let out = frame(vec![]);
+    let first = text(&out, "Cell 1").expect("first cell visible");
+    assert!(text(&out, "Cell 12").is_none());
+    assert!(text(&out, "Add row").is_some());
+    out.drop_without_applying_deltas();
+    for _ in 0..6 {
+        frame(vec![
+            egui::Event::PointerMoved(first),
+            egui::Event::MouseWheel {
+                phase: egui::TouchPhase::Move,
+                unit: egui::MouseWheelUnit::Point,
+                delta: egui::vec2(-200., 0.),
+                modifiers: Default::default(),
+            },
+        ])
+        .drop_without_applying_deltas();
+    }
+    let out = frame(vec![]);
+    assert!(
+        text(&out, "Cell 12").is_some(),
+        "last cell must become visible"
+    );
+    assert!(text(&out, "Add row").is_some());
+    out.drop_without_applying_deltas();
+    assert_eq!(session.document(), &source);
+}
