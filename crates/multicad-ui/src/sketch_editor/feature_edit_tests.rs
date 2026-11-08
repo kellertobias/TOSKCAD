@@ -150,13 +150,7 @@ fn inspector_opens_saved_feature_controls_and_preview_cancel_preserves_source() 
     );
     assert!(editor.feature_edit_ready(&session, &feed, request.feature));
     let context = egui::Context::default();
-    click(
-        &context,
-        &mut editor,
-        &mut session,
-        &mut feed,
-        "Edit latest feature",
-    );
+    click(&context, &mut editor, &mut session, &mut feed, "Edit Box");
     assert!(editor.model.editing());
     assert!(editor.has_pending_edits());
     click(&context, &mut editor, &mut session, &mut feed, "Preview");
@@ -172,13 +166,7 @@ fn inspector_opens_saved_feature_controls_and_preview_cancel_preserves_source() 
         editor.selected_applied_feature(session.document()),
         Some((request.feature, false))
     );
-    click(
-        &context,
-        &mut editor,
-        &mut session,
-        &mut feed,
-        "Edit feature",
-    );
+    click(&context, &mut editor, &mut session, &mut feed, "Edit Box");
     assert!(editor.model.editing());
     editor.cancel_model();
     // A changed source revision cannot reuse the former current scene.

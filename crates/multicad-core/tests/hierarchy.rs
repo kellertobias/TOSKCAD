@@ -861,3 +861,386 @@ fn explicit_legacy_normalization_preserves_order_and_instance_placement_without_
     session.undo(1, Actor::local(Channel::Ui)).unwrap();
     assert_eq!(session.document(), &before);
 }
+
+#[test]
+fn reorder_and_reparent_implicit_root_entries_without_changing_their_source() {
+    let group = group("Container");
+    let bodies = [body("A"), body("B"), body("C")];
+    let original = Document::new("Implicit root siblings")
+        .unwrap()
+        .edited(
+            &bodies
+                .iter()
+                .cloned()
+                .chain([group.clone()])
+                .map(Mutation::Insert)
+                .collect::<Vec<_>>(),
+        )
+        .unwrap();
+    let mut session = Session::new(original.clone()).unwrap();
+    let root = Index::new(&original).unwrap().children(None).unwrap();
+    let moved = *root
+        .iter()
+        .rev()
+        .find(|id| **id != group.id && **id != root[0])
+        .unwrap();
+    let apply = |session: &mut Session, parent, before| {
+        let pending = hierarchy::prepare(
+            session,
+            session.revision(),
+            Actor::local(Channel::Ui),
+            Action::Move {
+                entries: vec![moved],
+                parent,
+                before,
+            },
+        )?;
+        session.commit(pending.prepared)
+    };
+    assert!(
+        apply(&mut session, Some(group.id), Some(root[0]))
+            .unwrap_err()
+            .to_string()
+            .contains("belong to the destination")
+    );
+    assert_eq!(session.document(), &original);
+    assert_eq!(session.revision(), 0);
+
+    apply(&mut session, None, Some(root[0])).unwrap();
+    let mut reordered = root.clone();
+    reordered.retain(|id| *id != moved);
+    reordered.insert(0, moved);
+    assert_eq!(
+        Index::new(session.document())
+            .unwrap()
+            .children(None)
+            .unwrap(),
+        reordered
+    );
+    assert_eq!(session.document().get(moved), original.get(moved));
+
+    let revision = session.revision();
+    apply(&mut session, None, Some(root[0])).unwrap();
+    assert_eq!(session.revision(), revision, "same-order drops are a no-op");
+    apply(&mut session, Some(group.id), None).unwrap();
+    assert_eq!(
+        Index::new(session.document())
+            .unwrap()
+            .children(Some(group.id))
+            .unwrap(),
+        vec![moved]
+    );
+    assert_eq!(session.document().get(moved), original.get(moved));
+    session.undo(2, Actor::local(Channel::Ui)).unwrap();
+    assert_eq!(
+        Index::new(session.document())
+            .unwrap()
+            .children(None)
+            .unwrap(),
+        reordered
+    );
+    session.undo(3, Actor::local(Channel::Ui)).unwrap();
+    assert_eq!(session.document(), &original);
+    session.redo(4, Actor::local(Channel::Ui)).unwrap();
+    assert_eq!(
+        Index::new(session.document())
+            .unwrap()
+            .children(None)
+            .unwrap(),
+        reordered
+    );
+
+    apply(&mut session, None, None).unwrap();
+    reordered.remove(0);
+    reordered.push(moved);
+    let saved = serde_json::to_vec(session.document()).unwrap();
+    let reopened: Document = serde_json::from_slice(&saved).unwrap();
+    assert_eq!(
+        Index::new(&reopened).unwrap().children(None).unwrap(),
+        reordered
+    );
+    assert_eq!(reopened.get(moved), original.get(moved));
+}
+
+#[test]
+fn delete_primitive_and_owned_metadata_atomically_with_dependency_explanation_and_undo() {
+    use multicad_core::{
+        materials::{LibraryDefinition, PartProperties},
+        model::{
+            self, InstancePlacementDefinition, PlacementBase, PrimitiveParameters, PrimitiveRequest,
+        },
+    };
+    let actor = Actor::local(Channel::Ui);
+    let mut session = Session::new(Document::new("Delete a primitive").unwrap()).unwrap();
+    let group = hierarchy::prepare(
+        &session,
+        0,
+        actor.clone(),
+        Action::Create {
+            kind: ContainerKind::Group,
+            name: "Contents".into(),
+            parent: None,
+        },
+    )
+    .unwrap();
+    let container = group.created.unwrap();
+    session.commit(group.prepared).unwrap();
+    let box_request = PrimitiveRequest::new(
+        "Box",
+        PrimitiveParameters::Box {
+            size: [model::length(40.), model::length(20.), model::length(10.)],
+            frame: Default::default(),
+        },
+    );
+    let primitive = model::prepare_primitive(&session, 1, actor.clone(), &box_request).unwrap();
+    session.commit(primitive.prepared).unwrap();
+    let move_body = hierarchy::prepare(
+        &session,
+        2,
+        actor.clone(),
+        Action::Move {
+            entries: vec![box_request.body, box_request.feature],
+            parent: Some(container),
+            before: None,
+        },
+    )
+    .unwrap();
+    session.commit(move_body.prepared).unwrap();
+    let properties = LibraryDefinition::PartProperties(PartProperties {
+        part: box_request.body,
+        material: None,
+        stock: None,
+        appearance: None,
+        hatch: None,
+    })
+    .entity(EntityId::new(), "Manufacturing properties")
+    .unwrap();
+    let first_pose = EntityId::new();
+    let current_pose = EntityId::new();
+    let copy = Entity::new(
+        "Linked copy",
+        EntityData::Instance {
+            component: box_request.body,
+            placement: Placement::default(),
+            placement_source: Some(current_pose),
+        },
+    );
+    let pose = |id, base| {
+        let source = InstancePlacementDefinition {
+            owner: copy.id,
+            base,
+            parameters: Default::default(),
+        };
+        let mut entity = Entity::new(
+            "Instance placement",
+            EntityData::Extension {
+                definition: source.definition().unwrap(),
+                inputs: source.inputs().unwrap(),
+            },
+        );
+        entity.id = id;
+        Mutation::Insert(entity)
+    };
+    let mut state = session.document().hierarchy().clone();
+    state.hidden.insert(box_request.feature);
+    session
+        .apply(request(
+            3,
+            vec![
+                Mutation::Insert(properties.clone()),
+                Mutation::Insert(copy.clone()),
+                pose(
+                    first_pose,
+                    PlacementBase::Literal {
+                        pose: Default::default(),
+                    },
+                ),
+                pose(current_pose, PlacementBase::Previous { driver: first_pose }),
+                Mutation::SetHierarchy(state),
+            ],
+        ))
+        .unwrap();
+
+    let delete = |session: &mut Session, id| {
+        let pending = hierarchy::prepare(
+            session,
+            session.revision(),
+            actor.clone(),
+            Action::Delete { id },
+        )?;
+        session.commit(pending.prepared)
+    };
+    let original = session.document().clone();
+    let reason = hierarchy::deletion_available(&session, box_request.body).unwrap_err();
+    assert!(reason.contains("Linked copy") && reason.contains("depends"));
+    assert!(delete(&mut session, box_request.body).is_err());
+    assert!(delete(&mut session, box_request.feature).is_err());
+    assert!(delete(&mut session, container).is_err());
+    assert_eq!(session.revision(), 4);
+    assert_eq!(session.document(), &original);
+
+    delete(&mut session, copy.id).unwrap();
+    for id in [copy.id, first_pose, current_pose] {
+        assert!(session.document().get(id).is_none());
+    }
+    let before_delete = session.document().clone();
+    hierarchy::deletion_available(&session, box_request.body).unwrap();
+    delete(&mut session, box_request.body).unwrap();
+    let removed = [box_request.body, box_request.feature, properties.id];
+    assert!(
+        removed
+            .iter()
+            .all(|id| session.document().get(*id).is_none())
+    );
+    assert!(
+        Index::new(session.document())
+            .unwrap()
+            .children(Some(container))
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        !session
+            .document()
+            .hierarchy()
+            .hidden
+            .contains(&box_request.feature)
+    );
+    session.undo(6, actor.clone()).unwrap();
+    assert_eq!(session.document(), &before_delete);
+    session.redo(7, actor).unwrap();
+    assert!(
+        removed
+            .iter()
+            .all(|id| session.document().get(*id).is_none())
+    );
+    assert!(session.document().reference_diagnostics().is_empty());
+}
+
+#[test]
+fn reorder_before_legacy_assembly_members_refuses_to_change_physical_membership() {
+    let definition = body("Instance definition");
+    let instance = Entity::new(
+        "Assembly member",
+        EntityData::Instance {
+            component: definition.id,
+            placement: Placement {
+                translation_mm: [12., 5., 0.],
+                ..Default::default()
+            },
+            placement_source: None,
+        },
+    );
+    let assembly = Entity::new(
+        "Assembly",
+        EntityData::Assembly {
+            instances: vec![instance.id],
+        },
+    );
+    let target = body("Move me");
+    let original = Document::new("Legacy assembly anchors")
+        .unwrap()
+        .edited(&[
+            Mutation::Insert(definition),
+            Mutation::Insert(instance.clone()),
+            Mutation::Insert(assembly.clone()),
+            Mutation::Insert(target.clone()),
+        ])
+        .unwrap();
+    let mut session = Session::new(original.clone()).unwrap();
+    let actor = Actor::local(Channel::Ui);
+    let bad = hierarchy::prepare(
+        &session,
+        0,
+        actor.clone(),
+        Action::Move {
+            entries: vec![target.id],
+            parent: Some(assembly.id),
+            before: Some(instance.id),
+        },
+    )
+    .unwrap_err();
+    assert!(
+        bad.to_string()
+            .contains("after the assembly's existing instance members")
+    );
+    assert_eq!(session.document(), &original);
+    let place = hierarchy::prepare(
+        &session,
+        0,
+        actor,
+        Action::Move {
+            entries: vec![target.id],
+            parent: Some(assembly.id),
+            before: None,
+        },
+    )
+    .unwrap();
+    session.commit(place.prepared).unwrap();
+    assert_eq!(
+        Index::new(session.document())
+            .unwrap()
+            .children(Some(assembly.id))
+            .unwrap(),
+        vec![instance.id, target.id]
+    );
+    assert_eq!(session.document().get(assembly.id), Some(&assembly));
+    assert_eq!(session.document().get(instance.id), Some(&instance));
+    assert_eq!(session.document().get(target.id), Some(&target));
+}
+
+#[test]
+fn delete_standalone_sketch_sweeps_keeps_the_sketch_and_plane() {
+    use multicad_core::{
+        constraint_sketch::source::Source,
+        model::{self, ExtrudeGroupDraft, ExtrudeRequest, GroupedExtrudeRequest, RevolveRequest},
+        sketch::Datum,
+        sketch_regions,
+    };
+    let actor = Actor::local(Channel::Ui);
+    let (sketch, edits) = Source::create(Datum::Xz, "Common profile").unwrap();
+    let document = Document::new("Standalone sketch bodies")
+        .unwrap()
+        .edited(&edits)
+        .unwrap();
+    let (mut source, _, plane) = Source::read(&document, sketch).unwrap();
+    source.add_rectangle([4., 6.], [12., 20.]).unwrap();
+    let document = document
+        .edited(&source.replace(&document, sketch).unwrap())
+        .unwrap();
+    let regions: Vec<_> = sketch_regions::extract(&source)
+        .regions
+        .iter()
+        .map(|region| region.intent())
+        .collect();
+    let mut session = Session::new(document.clone()).unwrap();
+    let group = ExtrudeGroupDraft::new("New body extrusion", None);
+    let request = GroupedExtrudeRequest {
+        extrusion: ExtrudeRequest::new(sketch, regions.clone(), Default::default()),
+        group: group.clone(),
+    };
+    let extrusion = model::prepare_grouped_extrude(&session, 0, actor.clone(), &request).unwrap();
+    let extruded_body = extrusion.outputs[0].clone();
+    session.commit(extrusion.prepared).unwrap();
+    let request = RevolveRequest::new(sketch, regions, Default::default());
+    let revolution = model::prepare_revolve(&session, 1, actor.clone(), &request).unwrap();
+    let revolved_body = revolution.outputs[0].clone();
+    session.commit(revolution.prepared).unwrap();
+
+    for output in [extruded_body, revolved_body] {
+        let deletion = hierarchy::prepare(
+            &session,
+            session.revision(),
+            actor.clone(),
+            Action::Delete { id: output.body },
+        )
+        .unwrap();
+        session.commit(deletion.prepared).unwrap();
+        assert!(session.document().get(output.body).is_none());
+        assert!(session.document().get(output.feature).is_none());
+        assert_eq!(session.document().get(sketch), document.get(sketch));
+        assert_eq!(session.document().get(plane), document.get(plane));
+    }
+    assert!(session.document().get(group.id).is_none());
+    assert_eq!(session.document(), &document);
+}

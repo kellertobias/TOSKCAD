@@ -94,6 +94,9 @@ pub struct TreeRow {
     pub effective_visible: bool,
     pub active: bool,
     pub expandable: bool,
+    pub expanded: bool,
+    movable: bool,
+    destination: bool,
     /// UI reference row; this is not a containment edge or ownership claim.
     pub history_of: Option<EntityId>,
     pub available: bool,
@@ -135,7 +138,7 @@ pub(crate) fn container_path(
 impl TreeView {
     fn build(
         session: &Session,
-        collapsed: &BTreeSet<EntityId>,
+        expansion: &BTreeMap<EntityId, bool>,
         salt: egui::Id,
         show_sources: bool,
     ) -> Result<Self, String> {
@@ -230,6 +233,12 @@ impl TreeView {
                 _ => &[],
             };
             let expandable = !children.is_empty() || !history.is_empty();
+            let expanded = expandable
+                && expansion
+                    .get(&id)
+                    .copied()
+                    .unwrap_or(node_kind != NodeKind::Body);
+            let editable = !symbol_owned.contains(&id);
             rows.push(TreeRow {
                 id,
                 depth,
@@ -240,17 +249,27 @@ impl TreeView {
                 effective_visible,
                 active,
                 expandable,
+                expanded,
+                movable: !root && editable,
+                destination: node_kind.container() && editable,
                 history_of: None,
                 available: true,
                 key,
             });
-            if !collapsed.contains(&id) {
+            if expanded {
                 for (position, feature) in history.iter().copied().enumerate() {
                     let entity = document.get(feature);
                     let available = entity
                         .is_some_and(|entity| matches!(entity.data, EntityData::Feature { .. }));
                     let name = match entity {
-                        Some(entity) if available => entity.name.clone(),
+                        Some(_) if available => {
+                            let operation = feature_operation(document, feature);
+                            if position == 0 {
+                                format!("Created by {operation}")
+                            } else {
+                                format!("{position}. {operation}")
+                            }
+                        }
                         Some(entity) => format!("{} · invalid feature reference", entity.name),
                         None => "Missing feature".into(),
                     };
@@ -269,6 +288,9 @@ impl TreeView {
                         effective_visible,
                         active: false,
                         expandable: false,
+                        expanded: false,
+                        movable: false,
+                        destination: false,
                         history_of: Some(id),
                         available,
                         key: key.with(("feature-history", position, feature)),
@@ -306,33 +328,22 @@ enum Tool {
         id: EntityId,
         name: String,
     },
-    Move {
-        document: EntityId,
-        revision: u64,
-        entries: Vec<EntityId>,
-        parent: Option<EntityId>,
-        before: Option<EntityId>,
-    },
 }
 impl Tool {
     fn document(&self) -> EntityId {
         match self {
-            Self::Create { document, .. }
-            | Self::Rename { document, .. }
-            | Self::Move { document, .. } => *document,
+            Self::Create { document, .. } | Self::Rename { document, .. } => *document,
         }
     }
     fn revision(&self) -> u64 {
         match self {
-            Self::Create { revision, .. }
-            | Self::Rename { revision, .. }
-            | Self::Move { revision, .. } => *revision,
+            Self::Create { revision, .. } | Self::Rename { revision, .. } => *revision,
         }
     }
 }
 pub struct ModelTree {
     salt: egui::Id,
-    collapsed: BTreeSet<EntityId>,
+    expansion: BTreeMap<EntityId, bool>,
     view: Option<TreeView>,
     anchor: Option<egui::Id>,
     tool: Option<Tool>,
@@ -345,7 +356,7 @@ impl Default for ModelTree {
     fn default() -> Self {
         Self {
             salt: egui::Id::new(EntityId::new()),
-            collapsed: BTreeSet::new(),
+            expansion: BTreeMap::new(),
             view: None,
             anchor: None,
             tool: None,
@@ -397,40 +408,12 @@ impl ModelTree {
         });
         Ok(())
     }
-    pub fn begin_move(&mut self, session: &Session, entries: Vec<EntityId>) -> Result<(), String> {
-        if entries.is_empty() {
-            return Err("Select model entries to move".into());
-        }
-        if entries
-            .iter()
-            .any(|id| self.selected_references.contains(id))
-        {
-            return Err("History rows reference a feature. Select its source entry explicitly before changing membership".into());
-        }
-        for id in &entries {
-            if !session
-                .document()
-                .get(*id)
-                .is_some_and(|entity| hierarchy::is_model_entry(&entity.data))
-            {
-                return Err("The selection contains an unsupported model entry".into());
-            }
-        }
-        self.tool = Some(Tool::Move {
-            document: session.document().id(),
-            revision: session.revision(),
-            entries,
-            parent: session.document().hierarchy().active_component,
-            before: None,
-        });
-        Ok(())
-    }
     fn ensure_view(&mut self, session: &Session) -> Result<(), String> {
         let stamp = (session.document().id(), session.revision());
         if self.view.as_ref().is_none_or(|view| view.stamp != stamp) {
             self.view = Some(TreeView::build(
                 session,
-                &self.collapsed,
+                &self.expansion,
                 self.salt,
                 self.show_sources,
             )?);
@@ -452,26 +435,23 @@ impl ModelTree {
         self.history_selection = None;
         self.selected_references.remove(&id);
         self.scroll_to_source = Some(id);
-        self.collapsed.remove(&document.id());
+        self.expansion.insert(document.id(), true);
         if let Ok(index) = Index::new(document) {
             let mut next = index.parent(id).ok().flatten();
             while let Some(parent) = next {
-                self.collapsed.remove(&parent);
+                self.expansion.insert(parent, true);
                 next = index.parent(parent).ok().flatten();
             }
         }
         self.view = None;
     }
     pub fn set_expanded(&mut self, id: EntityId, expanded: bool) {
-        if expanded {
-            self.collapsed.remove(&id);
-        } else {
-            self.collapsed.insert(id);
-        }
+        self.expansion.insert(id, expanded);
         self.view = None;
     }
     fn execute(&mut self, session: &mut Session, revision: u64, action: Action) -> TreeEvents {
         let mut events = TreeEvents::default();
+        let deleting = matches!(&action, Action::Delete { .. });
         match hierarchy::prepare(session, revision, Actor::local(Channel::Ui), action) {
             Ok(pending) => {
                 let created = pending.created;
@@ -487,6 +467,10 @@ impl ModelTree {
                         events.change = Some(change);
                         if let Some(id) = created {
                             events.selection = Some(BTreeSet::from([id]));
+                        } else if deleting {
+                            events.selection = Some(BTreeSet::new());
+                            self.history_selection = None;
+                            self.selected_references.clear();
                         }
                         self.view = None;
                     }
@@ -537,7 +521,7 @@ impl ModelTree {
         let mut action = None;
         let mut create = None;
         let mut rename = None;
-        let mut moving = None;
+        let mut drop = None;
         let mut toggle = None;
         ui.horizontal(|ui| {
             ui.strong("Model");
@@ -598,17 +582,15 @@ impl ModelTree {
                     let row = &rows[row_index];
                     // A row consumes exactly its parent's width. Child widget
                     // minimums must never feed a wider size back into the panel.
-                    let (row_rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width().max(0.), 26.), egui::Sense::hover());
+                    let (row_rect, drop_zone) = ui.allocate_exact_size(egui::vec2(ui.available_width().max(0.), 26.), egui::Sense::hover());
                     let mut row_ui = ui.new_child(egui::UiBuilder::new().max_rect(row_rect).layout(egui::Layout::left_to_right(egui::Align::Center)));
                     row_ui.set_clip_rect(row_rect.intersect(ui.clip_rect()));
                     row_ui.push_id(row.key, |ui| {
                         ui.horizontal(|ui| {
                             ui.add_space((row.depth as f32 * 10.).min(80.).min((row_rect.width() - 100.).max(0.)));
                             if row.expandable {
-                                let collapsed = self.collapsed.contains(&row.id);
-                                if ui.add_sized([16., 24.], egui::Button::new(if collapsed { ">" } else { "v" }).frame(false))
-                                    .on_hover_text("Expand or collapse this container without editing the document").clicked() {
-                                    toggle = Some((row.id, collapsed));
+                                if disclosure(ui, row).clicked() {
+                                    toggle = Some((row.id, !row.expanded));
                                 }
                             } else {
                                 ui.add_space(16.);
@@ -620,10 +602,26 @@ impl ModelTree {
                             let width = (ui.available_width() - trailing - 2. * ui.spacing().item_spacing.x).max(0.);
                             let label = if row.active { format!("{} · active", row.name) } else { row.name.clone() };
                             let color = if row.effective_visible { ui.visuals().text_color() } else { Color32::GRAY };
-                            let response = flat_row_label(ui, width, &label, options.enabled && row.available, selected.contains(&row.id), color);
-                            let role = if row.history_of.is_some() { "Feature used by body (reference only)" } else { row.kind.label() };
+                            let draggable = mutations_enabled && row.movable;
+                            let response = flat_row_label(ui, width, &label, options.enabled && row.available, selected.contains(&row.id), color, draggable);
+                            if draggable && response.drag_started_by(egui::PointerButton::Primary) {
+                                let entries = if selected.contains(&row.id) {
+                                    rows.iter()
+                                        .filter(|entry| entry.movable && selected.contains(&entry.id) && !self.selected_references.contains(&entry.id))
+                                        .map(|entry| entry.id)
+                                        .collect()
+                                } else {
+                                    vec![row.id]
+                                };
+                                response.dnd_set_drag_payload(TreeDrag {
+                                    stamp: view.stamp,
+                                    entries,
+                                });
+                            }
+                            let role = if row.history_of.is_some() { "Feature history" } else { row.kind.label() };
                             let selection_hint = if targets_only { "Shift or Cmd/Ctrl-click toggles one target" } else { "Cmd/Ctrl-click toggles; Shift-click selects a range" };
-                            response.clone().on_hover_text(format!("{}\nOwning component: {}\n{}", role, row.owner, selection_hint));
+                            let drag_hint = if draggable { "\nDrag to move or reorder" } else { "" };
+                            response.clone().on_hover_text(format!("{role}\nOwning component: {}\n{selection_hint}{drag_hint}", row.owner));
                             if response.clicked() || icon.clicked() {
                                 let modifiers = crate::selection_input::click_modifiers(ui, if response.clicked() { &response } else { &icon });
                                 let toggle_one = modifiers.command || (targets_only && modifiers.shift);
@@ -672,10 +670,11 @@ impl ModelTree {
                                 action = Some(Action::SetVisible { id: row.id, visible });
                             }
                             }
-                            response.context_menu(|ui| {
+                            response.union(icon).context_menu(|ui| {
                                 if row.history_of.is_some() {
                                     ui.label("Feature used by body");
-                                    ui.small("History is a reference, not container ownership. Inspect its source to edit membership.");
+                                    ui.small("Feature history refers to the operation that produced this body.");
+                                    let _ = delete_menu(ui, session, row.id, false, Some("Select the body to delete it, or reopen the feature to edit its controls."));
                                     return;
                                 }
                                 ui.add_enabled_ui(mutations_enabled && row.available, |ui| {
@@ -696,10 +695,6 @@ impl ModelTree {
                                         rename = Some(row.id);
                                         ui.close();
                                     }
-                                    if row.kind != NodeKind::Root && ui.button("Move to container…").clicked() {
-                                        moving = Some(if selected.contains(&row.id) { selected.iter().copied().collect() } else { vec![row.id] });
-                                        ui.close();
-                                    }
                                     if row.kind == NodeKind::Sketch && options.allow_open_sketch && ui.button("Open sketch").clicked() {
                                         events.open_sketch = Some(row.id);
                                         ui.close();
@@ -711,10 +706,29 @@ impl ModelTree {
                                         action = Some(Action::NormalizeLegacy { component: row.id });
                                         ui.close();
                                     }
+                                    if let Some(delete) = delete_menu(ui, session, row.id, mutations_enabled, None) {
+                                        action = Some(delete);
+                                    }
                                 });
                             });
                         });
                     });
+                    if mutations_enabled
+                        && let Some(payload) = drop_zone.dnd_hover_payload::<TreeDrag>()
+                        && let Some(pointer) = ui.input(|input| input.pointer.interact_pos())
+                        && view.stamp == payload.stamp
+                        && !payload.entries.is_empty()
+                    {
+                        let target = DropPosition::at(row, row_rect, pointer.y);
+                        if let Some(target) = target.filter(|_| !payload.entries.contains(&row.id)) {
+                            target.paint(ui, row_rect);
+                        } else {
+                            ui.ctx().set_cursor_icon(egui::CursorIcon::NotAllowed);
+                        }
+                        if ui.input(|input| input.pointer.button_released(egui::PointerButton::Primary)) {
+                            drop = drop_zone.dnd_release_payload::<TreeDrag>().map(|payload| (row.id, target, payload));
+                        }
+                    }
                 }
             });
         if let Some((id, expanded)) = toggle {
@@ -728,10 +742,8 @@ impl ModelTree {
         {
             events.error = Some(error);
         }
-        if let Some(ids) = moving
-            && let Err(error) = self.begin_move(session, ids)
-        {
-            events.error = Some(error);
+        if let Some((row, target, payload)) = drop {
+            return self.drop_entries(session, &payload, row, target);
         }
         if let Some(action) = action {
             let mut result = self.execute(session, session.revision(), action);
@@ -742,6 +754,72 @@ impl ModelTree {
         }
         events
     }
+    fn drop_entries(
+        &mut self,
+        session: &mut Session,
+        payload: &TreeDrag,
+        target: EntityId,
+        position: Option<DropPosition>,
+    ) -> TreeEvents {
+        let document = session.document();
+        let result = (|| {
+            if payload.stamp != (document.id(), session.revision()) {
+                return Err("The model changed during the drag. Drag the entries again.".into());
+            }
+            let position = position.ok_or("Drop onto a container or between model entries.")?;
+            if payload.entries.contains(&target) {
+                return Err("Choose a different drop target.".into());
+            }
+            let (parent, before) = match position {
+                DropPosition::Into => ((target != document.id()).then_some(target), None),
+                DropPosition::Before | DropPosition::After => {
+                    let index = Index::new(document).map_err(|error| error.to_string())?;
+                    let parent = index.parent(target).map_err(|error| error.to_string())?;
+                    let before = if position == DropPosition::Before {
+                        Some(target)
+                    } else {
+                        index
+                            .children(parent)
+                            .map_err(|error| error.to_string())?
+                            .into_iter()
+                            .skip_while(|id| *id != target)
+                            .skip(1)
+                            .find(|id| !payload.entries.contains(id))
+                    };
+                    (parent, before)
+                }
+            };
+            Ok((parent, before, position))
+        })();
+        let (parent, before, position) = match result {
+            Ok(target) => target,
+            Err(error) => {
+                return TreeEvents {
+                    error: Some(error),
+                    ..Default::default()
+                };
+            }
+        };
+        let mut events = self.execute(
+            session,
+            payload.stamp.1,
+            Action::Move {
+                entries: payload.entries.clone(),
+                parent,
+                before,
+            },
+        );
+        if events.change.is_some() {
+            self.history_selection = None;
+            self.selected_references.clear();
+            if position == DropPosition::Into {
+                self.set_expanded(target, true);
+            }
+            events.selection = Some(payload.entries.iter().copied().collect());
+        }
+        events
+    }
+
     pub fn inspector(
         &mut self,
         ui: &mut egui::Ui,
@@ -776,26 +854,6 @@ impl ModelTree {
                         ui.strong("Rename container");
                         ui.add(egui::TextEdit::singleline(name).desired_width(f32::INFINITY)).on_hover_text("New component or group name; identity and references remain stable");
                     }
-                    Tool::Move { entries, parent, before, .. } => {
-                        ui.strong(format!("Move {} model entries", entries.len()));
-                        ui.label("Geometry and source identities are retained. A group preserves its enclosing component scope.");
-                        let prior = *parent;
-                        parent_choice(ui, "move-parent", parent, &view.destinations);
-                        if prior != *parent { *before = None; }
-                        let key = parent.unwrap_or(session.document().id());
-                        let siblings = session.document().hierarchy().members.get(&key).cloned().unwrap_or_default();
-                        let before_label = before.and_then(|id| session.document().get(id).map(|entity| entity.name.clone())).unwrap_or_else(|| "Append at end".into());
-                        crate::controls::inspector_combo(ui, "move-before")
-                            .selected_text(&before_label)
-                            .show_ui(ui, |ui| {
-                                ui.selectable_value(before, None, "Append at end");
-                                for id in siblings {
-                                    if !entries.contains(&id) && let Some(entity) = session.document().get(id) {
-                                        ui.selectable_value(before, Some(id), format!("Before {}", entity.name));
-                                    }
-                                }
-                            }).response.on_hover_text(format!("{before_label}\nOrder relative to an explicit member; normalize legacy membership before reordering its instances"));
-                    }
                 }
                 if !current {
                     ui.colored_label(Color32::LIGHT_RED, "The document changed. Cancel and reopen this tool to review the current state.");
@@ -826,88 +884,118 @@ impl ModelTree {
         let Some(node_kind) = node_kind else {
             return events;
         };
-        ui.strong(if root {
-            session.document().name()
-        } else {
-            &entity.unwrap().name
-        });
-        ui.label(node_kind.label());
-        if let Ok(index) = Index::new(session.document()) {
-            match index.owning_component(id) {
-                Ok(owner) => {
-                    ui.label(format!(
-                        "Owning component: {}",
-                        container_path(session.document(), &index, owner)
-                    ));
-                }
-                Err(error) => {
-                    ui.colored_label(Color32::LIGHT_YELLOW, error.to_string());
-                }
-            }
-            if let Some(EntityData::Instance { component, .. }) = entity.map(|entity| &entity.data)
-            {
-                ui.label(format!(
-                    "Definition: {}",
-                    session
-                        .document()
-                        .get(*component)
-                        .map(|entity| entity.name.as_str())
-                        .unwrap_or("Missing source")
-                ));
-            }
-        }
-        if let Some(EntityData::Part { material, tags, .. }) = entity.map(|entity| &entity.data) {
-            if let Some(material) = material.and_then(|id| session.document().get(id)) {
-                ui.label(format!("Material: {}", material.name));
-            }
-            if !tags.is_empty() {
-                ui.label(format!(
-                    "Tags: {}",
-                    tags.iter().cloned().collect::<Vec<_>>().join(", ")
-                ));
-            }
-        }
         let history_body = self
             .history_selection
             .filter(|(feature, _)| *feature == id)
             .and_then(|(_, body)| session.document().get(body))
             .map(|body| body.name.clone());
-        if let Some(body) = &history_body {
-            ui.label(format!("Feature used by body: {body}"));
-            ui.small(
-                "This history row references the source; it does not change its owning component.",
-            );
-            if ui
-                .button("Show source entry")
-                .on_hover_text("Reveal this feature under its actual owning container")
-                .clicked()
-            {
-                self.locate_source(session.document(), id);
-            }
-        }
         let mut action = None;
         let mut rename = false;
-        let mut moving = false;
-        ui.add_enabled_ui(enabled, |ui| {
-            if matches!(node_kind, NodeKind::Root | NodeKind::Component) && ui.button("Activate modeling scope")
-                .on_hover_text("New source geometry belongs to this component; nested components retain their own scope").clicked() {
-                action = Some(Action::SetActive { component: if root { None } else { Some(id) } });
-            }
-            if matches!(node_kind, NodeKind::Component | NodeKind::Group) {
-                rename = ui.button("Rename…").on_hover_text("Rename this container without changing its identity").clicked();
-            }
-            if !root && history_body.is_none() && selected.iter().all(|id| !self.selected_references.contains(id)) {
-                moving = ui.button("Move to container…").on_hover_text("Choose an explicit parent and ordering position; this does not transform geometry").clicked();
-            }
-            if node_kind == NodeKind::Sketch && options.allow_open_sketch
-                && ui.button("Open selected sketch").on_hover_text("Open this sketch in the Sketch workspace").clicked() {
-                events.open_sketch = Some(id);
-            }
-        });
+        let summary = ui
+            .scope(|ui| {
+                ui.strong(if root {
+                    session.document().name()
+                } else {
+                    &entity.unwrap().name
+                });
+                ui.label(node_kind.label());
+                if let Ok(index) = Index::new(session.document()) {
+                    match index.owning_component(id) {
+                        Ok(owner) => {
+                            ui.label(format!(
+                                "Owning component: {}",
+                                container_path(session.document(), &index, owner)
+                            ));
+                        }
+                        Err(error) => {
+                            ui.colored_label(Color32::LIGHT_YELLOW, error.to_string());
+                        }
+                    }
+                    if let Some(EntityData::Instance { component, .. }) =
+                        entity.map(|entity| &entity.data)
+                    {
+                        ui.label(format!(
+                            "Definition: {}",
+                            session
+                                .document()
+                                .get(*component)
+                                .map(|entity| entity.name.as_str())
+                                .unwrap_or("Missing source")
+                        ));
+                    }
+                }
+                if let Some(EntityData::Part { material, tags, .. }) =
+                    entity.map(|entity| &entity.data)
+                {
+                    if let Some(material) = material.and_then(|id| session.document().get(id)) {
+                        ui.label(format!("Material: {}", material.name));
+                    }
+                    if !tags.is_empty() {
+                        ui.label(format!(
+                            "Tags: {}",
+                            tags.iter().cloned().collect::<Vec<_>>().join(", ")
+                        ));
+                    }
+                }
+                if let Some(body) = &history_body {
+                    ui.label(format!("Feature used by body: {body}"));
+                    ui.small(
+                        "This entry opens the saved feature that produced or modified the body.",
+                    );
+                    if ui
+                        .button("Show source entry")
+                        .on_hover_text("Reveal this feature under its actual owning container")
+                        .clicked()
+                    {
+                        self.locate_source(session.document(), id);
+                    }
+                }
+                ui.add_enabled_ui(enabled, |ui| {
+                    if matches!(node_kind, NodeKind::Root | NodeKind::Component)
+                        && ui
+                            .button("Activate modeling scope")
+                            .on_hover_text("Use this component for new model geometry")
+                            .clicked()
+                    {
+                        action = Some(Action::SetActive {
+                            component: (!root).then_some(id),
+                        });
+                    }
+                    if matches!(node_kind, NodeKind::Component | NodeKind::Group) {
+                        rename = ui.button("Rename…").clicked();
+                    }
+                    if node_kind == NodeKind::Sketch
+                        && options.allow_open_sketch
+                        && ui
+                            .button("Open selected sketch")
+                            .on_hover_text("Open this sketch in the Sketch workspace")
+                            .clicked()
+                    {
+                        events.open_sketch = Some(id);
+                    }
+                });
+            })
+            .response;
+        let secondary_click = ui.rect_contains_pointer(summary.rect)
+            && ui.input(|input| input.pointer.button_clicked(egui::PointerButton::Secondary));
+        egui::Popup::context_menu(&summary)
+            .id(self.salt.with(("inspector-delete", id)))
+            .open_memory(secondary_click.then(|| true.into()))
+            .show(|ui| {
+                let reason = if history_body.is_some() {
+                    Some(
+                        "Select the body to delete it, or reopen the feature to edit its controls.",
+                    )
+                } else if selected.len() > 1 {
+                    Some("Select one entity to delete it.")
+                } else {
+                    None
+                };
+                if let Some(delete) = delete_menu(ui, session, id, enabled, reason) {
+                    action = Some(delete);
+                }
+            });
         if rename && let Err(error) = self.begin_rename(session, id) {
-            events.error = Some(error);
-        }
-        if moving && let Err(error) = self.begin_move(session, selected.iter().copied().collect()) {
             events.error = Some(error);
         }
         if let Some(action) = action {
@@ -933,16 +1021,6 @@ impl ModelTree {
                 kind, name, parent, ..
             } => Action::Create { kind, name, parent },
             Tool::Rename { id, name, .. } => Action::Rename { id, name },
-            Tool::Move {
-                entries,
-                parent,
-                before,
-                ..
-            } => Action::Move {
-                entries,
-                parent,
-                before,
-            },
         };
         let events = self.execute(session, revision, action);
         if events.error.is_none() {
@@ -951,6 +1029,131 @@ impl ModelTree {
         events
     }
 }
+#[derive(Clone)]
+struct TreeDrag {
+    stamp: (EntityId, u64),
+    entries: Vec<EntityId>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DropPosition {
+    Into,
+    Before,
+    After,
+}
+
+impl DropPosition {
+    fn at(row: &TreeRow, rect: egui::Rect, y: f32) -> Option<Self> {
+        if row.kind == NodeKind::Root
+            || (row.destination && y > rect.top() + 6. && y < rect.bottom() - 6.)
+        {
+            Some(Self::Into)
+        } else if row.movable {
+            Some(if y < rect.center().y {
+                Self::Before
+            } else {
+                Self::After
+            })
+        } else {
+            None
+        }
+    }
+
+    fn paint(self, ui: &egui::Ui, rect: egui::Rect) {
+        let color = ui.visuals().selection.stroke.color;
+        let stroke = egui::Stroke::new(2., color);
+        match self {
+            Self::Into => {
+                ui.painter()
+                    .rect_stroke(rect.shrink(1.), 3., stroke, egui::StrokeKind::Inside);
+            }
+            Self::Before | Self::After => {
+                let y = if self == Self::Before {
+                    rect.top() + 1.
+                } else {
+                    rect.bottom() - 1.
+                };
+                ui.painter().hline(rect.x_range(), y, stroke);
+            }
+        }
+    }
+}
+
+fn disclosure(ui: &mut egui::Ui, row: &TreeRow) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(16., 24.), egui::Sense::click());
+    let verb = if row.expanded { "Collapse" } else { "Expand" };
+    let label = if row.kind == NodeKind::Body {
+        format!("{verb} feature history for {}", row.name)
+    } else {
+        format!("{verb} {}", row.name)
+    };
+    let visuals = ui.style().interact(&response);
+    if response.hovered() || response.has_focus() {
+        ui.painter().rect_filled(rect, 3., visuals.weak_bg_fill);
+    }
+    let chevron = if row.expanded {
+        [[-4., -2.], [0., 2.], [4., -2.]]
+    } else {
+        [[-2., -4.], [2., 0.], [-2., 4.]]
+    };
+    ui.painter().add(egui::Shape::line(
+        chevron
+            .into_iter()
+            .map(|[x, y]| rect.center() + egui::vec2(x, y))
+            .collect(),
+        visuals.fg_stroke,
+    ));
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &label));
+    response.on_hover_text(label)
+}
+
+fn delete_menu(
+    ui: &mut egui::Ui,
+    session: &Session,
+    id: EntityId,
+    enabled: bool,
+    reason: Option<&str>,
+) -> Option<Action> {
+    let availability = match reason {
+        Some(reason) => Err(reason.to_owned()),
+        None if !enabled => Err("Finish the current tool before deleting an entity.".into()),
+        None => hierarchy::deletion_available(session, id),
+    };
+    if ui
+        .add_enabled(availability.is_ok(), egui::Button::new("Delete"))
+        .clicked()
+    {
+        ui.close();
+        return Some(Action::Delete { id });
+    }
+    if let Err(reason) = availability {
+        ui.small(reason);
+    }
+    None
+}
+
+pub(super) fn feature_operation(document: &Document, feature: EntityId) -> String {
+    use multicad_core::model::{self, PrimitiveParameters};
+    if let Ok(primitive) = model::read_primitive(document, feature) {
+        return match primitive.parameters {
+            PrimitiveParameters::Box { .. } => "Box",
+            PrimitiveParameters::Cylinder { .. } => "Cylinder",
+            PrimitiveParameters::Sphere { .. } => "Sphere",
+        }
+        .into();
+    }
+    document.get(feature).map_or_else(
+        || "feature".into(),
+        |entity| {
+            entity
+                .name
+                .strip_suffix(" feature")
+                .unwrap_or(&entity.name)
+                .to_owned()
+        },
+    )
+}
+
 fn flat_row_label(
     ui: &mut egui::Ui,
     width: f32,
@@ -958,11 +1161,14 @@ fn flat_row_label(
     enabled: bool,
     selected: bool,
     color: Color32,
+    draggable: bool,
 ) -> egui::Response {
     let enabled = enabled && ui.is_enabled();
     let (rect, response) = ui.allocate_exact_size(
         egui::vec2(width, 24.),
-        if enabled {
+        if draggable {
+            egui::Sense::click_and_drag()
+        } else if enabled {
             egui::Sense::click()
         } else {
             egui::Sense::hover()
@@ -1210,11 +1416,16 @@ mod tests {
             "Carcass panels"
         );
         assert!(!tree.tool_active());
-        tree.begin_move(&session, vec![body]).unwrap();
-        if let Some(Tool::Move { parent, .. }) = &mut tree.tool {
-            *parent = None;
-        }
-        let events = tree.apply_tool(&mut session);
+        let root = session.document().id();
+        let events = tree.drop_entries(
+            &mut session,
+            &TreeDrag {
+                stamp: (root, 1),
+                entries: vec![body],
+            },
+            root,
+            Some(DropPosition::Into),
+        );
         assert!(events.error.is_none());
         assert_eq!(
             Index::new(session.document())
@@ -1273,12 +1484,16 @@ mod tests {
             .map(|target| &target.path)
             .collect();
         assert_eq!(paths.iter().collect::<BTreeSet<_>>().len(), paths.len());
-        tree.begin_move(&session, vec![component]).unwrap();
-        if let Some(Tool::Move { parent, .. }) = &mut tree.tool {
-            *parent = Some(group);
-        }
         let before = session.document().clone();
-        assert!(tree.apply_tool(&mut session).error.is_some());
+        let payload = TreeDrag {
+            stamp: (before.id(), session.revision()),
+            entries: vec![component],
+        };
+        assert!(
+            tree.drop_entries(&mut session, &payload, group, Some(DropPosition::Into))
+                .error
+                .is_some()
+        );
         assert_eq!(session.document(), &before);
     }
     #[test]
@@ -1505,6 +1720,22 @@ mod tests {
                 .drop_without_applying_deltas();
             }
         }
+        fn drag(&mut self, start: egui::Pos2, end: egui::Pos2) {
+            self.frame(vec![egui::Event::PointerMoved(start)])
+                .drop_without_applying_deltas();
+            let button = |pos, pressed| egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            };
+            self.frame(vec![button(start, true)])
+                .drop_without_applying_deltas();
+            self.frame(vec![egui::Event::PointerMoved(end)])
+                .drop_without_applying_deltas();
+            self.frame(vec![button(end, false)])
+                .drop_without_applying_deltas();
+        }
         fn click(&mut self, label: &str, last: bool) {
             let pos = self.bounds(label, last).center();
             self.pointer(pos, egui::PointerButton::Primary);
@@ -1524,6 +1755,93 @@ mod tests {
             }
         }
     }
+    #[test]
+    fn painted_tree_drags_between_containers_and_reorders_with_undo() {
+        let (session, _, group, body) = fixture();
+        let sibling = Entity::new(
+            "Brace",
+            EntityData::Part {
+                features: vec![],
+                material: None,
+                tags: BTreeSet::new(),
+            },
+        );
+        let document = session
+            .document()
+            .edited(&[Mutation::Insert(sibling.clone())])
+            .unwrap();
+        let mut h = AssemblyTreeHarness::new(Session::new(document.clone()).unwrap());
+
+        let from = h.bounds("Side", false).center();
+        let root = h.bounds("Workshop", false).center();
+        h.drag(from, root);
+        assert_eq!(h.session.revision(), 1);
+        assert_eq!(
+            Index::new(h.session.document())
+                .unwrap()
+                .parent(body)
+                .unwrap(),
+            None
+        );
+        assert_eq!(h.session.document().get(body), document.get(body));
+
+        let from = h.bounds("Side", false).center();
+        let before = h.bounds("Brace", false).center() - egui::vec2(0., 8.);
+        h.drag(from, before);
+        assert_eq!(h.session.revision(), 2);
+        let children = Index::new(h.session.document())
+            .unwrap()
+            .children(None)
+            .unwrap();
+        assert!(children.windows(2).any(|ids| ids == [body, sibling.id]));
+        h.session.undo(2, Actor::local(Channel::Ui)).unwrap();
+        h.session.undo(3, Actor::local(Channel::Ui)).unwrap();
+        assert_eq!(
+            Index::new(h.session.document())
+                .unwrap()
+                .parent(body)
+                .unwrap(),
+            Some(group)
+        );
+        assert_eq!(h.session.document(), &document);
+    }
+
+    #[test]
+    fn painted_tree_and_inspector_context_menus_offer_transactional_delete() {
+        let (session, _, group, body) = fixture();
+        let mut h = AssemblyTreeHarness::new(session);
+        let group_row = h.bounds("Panels", false).center();
+        h.pointer(group_row, egui::PointerButton::Secondary);
+        h.click("Delete", false);
+        assert!(h.session.document().get(group).is_some());
+        assert_eq!(h.session.revision(), 0);
+        h.frame(vec![egui::Event::Key {
+            key: egui::Key::Escape,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        }])
+        .drop_without_applying_deltas();
+
+        h.click("Side", false);
+        let summary = h.bounds("Side", true).center();
+        assert!(
+            summary.x > 850.,
+            "expected the Inspector title, got {summary:?}"
+        );
+        h.pointer(summary, egui::PointerButton::Secondary);
+        h.click("Delete", false);
+        assert!(h.session.document().get(body).is_none());
+        assert!(h.selected.is_empty());
+        h.session.undo(1, Actor::local(Channel::Ui)).unwrap();
+        let row = h.bounds("Side", false).center();
+        h.pointer(row, egui::PointerButton::Secondary);
+        h.click("Delete", false);
+        assert!(h.session.document().get(body).is_none());
+        assert_eq!(h.session.revision(), 3);
+    }
+
     #[test]
     fn painted_create_assembly_preserves_active_scope_cancel_root_choice_history_and_reopen() {
         use multicad_core::project_file::{self, FileLimits, ProjectFile};
@@ -1891,6 +2209,10 @@ mod tests {
         let before = session.document().clone();
         let mut tree = ModelTree::default();
         let rows = tree.rows(&session).unwrap();
+        assert!(!rows.iter().any(|row| row.history_of.is_some()));
+        tree.set_expanded(body, true);
+        tree.set_expanded(other.id, true);
+        let rows = tree.rows(&session).unwrap();
         assert!(!rows.iter().any(|row| row.kind == NodeKind::Plane));
         assert!(
             !rows
@@ -1932,11 +2254,14 @@ mod tests {
                 .any(|row| row.id == first.id && row.history_of.is_none())
         );
         tree.selected_references.insert(first.id);
-        assert!(tree.begin_move(&session, vec![body, first.id]).is_err());
         tree.locate_source(session.document(), first.id);
         assert!(!tree.selected_references.contains(&first.id));
-        assert!(tree.begin_move(&session, vec![first.id]).is_ok());
-        tree.cancel_tool();
+        assert!(
+            tree.rows(&session)
+                .unwrap()
+                .iter()
+                .any(|row| row.id == first.id && row.movable)
+        );
         assert_eq!(session.document(), &before);
         assert_eq!(session.revision(), 0);
     }
@@ -1955,6 +2280,7 @@ mod tests {
             .unwrap();
         let session = Session::new(document).unwrap();
         let mut tree = ModelTree::default();
+        tree.set_expanded(body, true);
         let row = tree
             .rows(&session)
             .unwrap()
@@ -2153,17 +2479,18 @@ mod tests {
                 let mut tree = ModelTree::default();
                 let mut interaction = Interaction::default();
                 let selected = BTreeSet::from([body]);
-                tree.begin_move(&session, vec![body]).unwrap();
                 for frame in 0..240 {
-                    if frame == 80 {
-                        let Some(Tool::Move { parent, before, .. }) = &mut tree.tool else {
-                            panic!("move form")
-                        };
-                        *parent = Some(nested.id);
-                        *before = Some(occurrence.id);
-                    }
                     if frame == 160 {
-                        let result = tree.apply_tool(&mut session);
+                        let payload = TreeDrag {
+                            stamp: (document.id(), 0),
+                            entries: vec![body],
+                        };
+                        let result = tree.drop_entries(
+                            &mut session,
+                            &payload,
+                            occurrence.id,
+                            Some(DropPosition::Before),
+                        );
                         assert!(result.error.is_none(), "{:?}", result.error);
                         assert_eq!(session.revision(), 1);
                         assert_eq!(

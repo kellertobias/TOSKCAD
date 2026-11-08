@@ -838,7 +838,8 @@ impl SketchEditor {
                     .unwrap_or("The current native model is not ready"),
             );
         }
-        self.message = "Edit feature · change controls, then Preview the downstream model".into();
+        let operation = crate::model_tree::feature_operation(session.document(), feature);
+        self.message = format!("Edit {operation} · update the saved controls in the Inspector");
         Ok(())
     }
     pub fn placement_ready(&self, session: &Session, feed: &crate::viewport::SceneFeed) -> bool {
@@ -3254,10 +3255,17 @@ impl SketchEditor {
                                 && let Err(error)=self.begin_feature_edit(session,resources,feed,target.feature,Channel::Ui) {self.message=error;}
                             if self.model_active() {return;}
                         }
-                        if let Some((feature,latest))=self.selected_applied_feature(session.document()) {
-                            let ready=self.feature_edit_ready(session,feed,feature);
-                            if ui.add_enabled(ready,egui::Button::new(if latest {"Edit latest feature"}else{"Edit feature"})).on_hover_text("Reopen this producer's saved controls or its recorded operation group; Preview validates the complete downstream model before Apply").on_disabled_hover_text("Requires an installed native modeling provider, a supported readable source feature, and no pending tool").clicked()
-                                && let Err(error)=self.begin_feature_edit(session,resources,feed,feature,Channel::Ui) {self.message=error;}
+                        if let Some((feature, _)) = self.selected_applied_feature(session.document()) {
+                            let ready = self.feature_edit_ready(session, feed, feature);
+                            let operation = crate::model_tree::feature_operation(session.document(), feature);
+                            if ui.add_enabled(ready, egui::Button::new(format!("Edit {operation}")))
+                                .on_hover_text("Reopen this operation’s saved controls. Applying changes rebuilds the features that depend on it.")
+                                .on_disabled_hover_text("Requires an installed native modeling provider, a supported source feature, and no pending tool")
+                                .clicked()
+                                && let Err(error) = self.begin_feature_edit(session, resources, feed, feature, Channel::Ui)
+                            {
+                                self.message = error;
+                            }
                             if self.model_active() {return;}
                         }
                         self.solid.inspector(ui,session.document());
