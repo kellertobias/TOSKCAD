@@ -1,6 +1,6 @@
 use super::{
     Hit, PickFilter, PickOptions, Scene, SceneStamp, SectionPlane, SectionView, Selection,
-    paint_scene_section,
+    gpu::{View, paint_scene_view},
 };
 use crate::{
     camera::Camera,
@@ -25,6 +25,7 @@ pub struct Interaction {
     member_faces: Arc<Vec<(EntityId, u32)>>,
     range_anchor: Option<EntityId>,
     pub filter: PickFilter,
+    pub(crate) origin_axes: bool,
     pub section: SectionView,
     section_override: Option<Option<SectionPlane>>,
     reference_highlight: Option<Selection>,
@@ -491,14 +492,18 @@ impl Interaction {
             };
         let bounds = scene.world_bounds();
         let display = derived.clone().unwrap_or_else(|| scene.clone());
-        paint_scene_section(
+        paint_scene_view(
             ui.painter(),
             response.rect,
             display,
-            camera,
-            self.reference_highlight.clone().or(selection),
-            style,
-            section,
+            View {
+                camera,
+                size: response.rect.size(),
+                selection: self.reference_highlight.clone().or(selection),
+                style,
+                section,
+                origin_axes: self.origin_axes,
+            },
         );
         if derived.is_none() {
             self.section

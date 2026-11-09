@@ -242,6 +242,7 @@ fn render_native_gpu(material_palette: bool) {
                 selection: selection.clone(),
                 style,
                 section,
+                origin_axes: false,
             },
         );
         assert_eq!(renderer.meshes.len(), 1);
@@ -537,6 +538,7 @@ fn distant_visible_edges_hide_the_rear_plate_in_both_projections() {
                         selection: None,
                         style,
                         section: None,
+                        origin_axes: false,
                     },
                 );
                 capture(&device, &queue, &renderer, &color, &depth, &readback, style)
@@ -565,6 +567,108 @@ fn distant_visible_edges_hide_the_rear_plate_in_both_projections() {
             assert!(
                 difference(&all, &visible) > 20,
                 "rear plate must be detectable in AllEdges, {camera:?}"
+            );
+        }
+    }
+}
+
+#[test]
+#[ignore = "Requires an available GPU; run explicitly on physical hardware"]
+fn world_origin_axes_respect_solid_depth_in_both_projections() {
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+    let adapter =
+        wait(instance.request_adapter(&Default::default())).expect("GPU adapter required");
+    let (device, queue) = wait(adapter.request_device(&Default::default())).unwrap();
+    let mut renderer = Renderer::new(&device, wgpu::TextureFormat::Rgba8Unorm);
+    let (color, depth, readback) = targets(&device);
+    let id = EntityId::new();
+    let solid = Solid::box_named([30., 24., 4.], id, Default::default()).unwrap();
+    let mesh = solid.mesh(MeshOptions::default()).unwrap();
+    let geometry = Arc::new(
+        Geometry::new(
+            id,
+            mesh.vertices.as_chunks::<3>().0.to_vec(),
+            mesh.indices,
+            mesh.face_indices,
+            solid.topology_snapshot(id, 0).unwrap().elements,
+        )
+        .unwrap(),
+    );
+    let style = DisplayStyle::Filled;
+    let stamp = SceneStamp {
+        document: EntityId::new(),
+        revision: 0,
+        generation: 0,
+    };
+    let camera = Camera {
+        target: [35., 0., 10.],
+        yaw: 0.,
+        pitch: std::f32::consts::FRAC_PI_2,
+        scale: 2.,
+        perspective: false,
+    };
+    let axis_color = ORIGIN_AXES[0].1;
+    let contains_x_axis = |pixels: &[u8], first_x: usize, last_x: usize| {
+        (125..131).any(|y| {
+            (first_x..last_x)
+                .any(|x| pixels[(y * 256 + x) * 4..(y * 256 + x) * 4 + 3] == axis_color)
+        })
+    };
+    for perspective in [false, true] {
+        let camera = Camera {
+            perspective,
+            ..camera
+        };
+        for (plate_z, origin_axes) in [(-12., true), (8., true), (-12., false)] {
+            let scene = Arc::new(
+                Scene::new(
+                    stamp,
+                    vec![geometry.clone()],
+                    vec![Instance {
+                        id: EntityId::new(),
+                        geometry: id,
+                        transform: Transform::from_placement(Placement {
+                            translation_mm: [25., -12., plate_z],
+                            ..Default::default()
+                        })
+                        .unwrap(),
+                        color: [200, 200, 200, 255],
+                    }],
+                )
+                .unwrap(),
+            );
+            renderer.prepare(
+                &device,
+                &queue,
+                &scene,
+                View {
+                    camera,
+                    size: egui::vec2(256., 256.),
+                    selection: None,
+                    style,
+                    section: None,
+                    origin_axes,
+                },
+            );
+            let pixels = capture(&device, &queue, &renderer, &color, &depth, &readback, style);
+            let adjacent_to_axis = (122 * 256 + 128) * 4;
+            assert!(
+                pixels[adjacent_to_axis] > 70,
+                "Plate must cover the axis region"
+            );
+            assert_eq!(
+                contains_x_axis(&pixels, 124, 132),
+                plate_z < 0. && origin_axes,
+                "Axis at the plate must follow depth and visibility; perspective={perspective}, plate_z={plate_z}"
+            );
+            assert_eq!(
+                contains_x_axis(&pixels, 84, 94),
+                origin_axes,
+                "Uncovered axis remains visible beyond the scene bounds; perspective={perspective}, plate_z={plate_z}"
+            );
+            assert!(
+                !contains_x_axis(&pixels, 20, 40),
+                "Axis must start at world origin"
             );
         }
     }

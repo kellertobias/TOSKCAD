@@ -85,7 +85,7 @@ pub fn launch_with(application: AppCreator<'static>) -> Result<(), String> {
         Box::new(move |cc| {
             theme::configure(&cc.egui_ctx);
             if let Some(render_state) = &cc.wgpu_render_state {
-                viewport::install(render_state);
+                viewport::install(render_state, &cc.egui_ctx);
             }
             application(cc)
         }),

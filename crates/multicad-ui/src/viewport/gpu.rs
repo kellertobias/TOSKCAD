@@ -64,8 +64,17 @@ struct Draw {
     instances: wgpu::Buffer,
     count: u32,
 }
+pub(crate) const ORIGIN_AXES: [([f64; 3], [u8; 3]); 3] = [
+    ([100., 0., 0.], [233, 91, 102]),
+    ([0., 100., 0.], [92, 199, 132]),
+    ([0., 0., 100.], [96, 157, 245]),
+];
+
 struct Renderer {
     pipelines: [wgpu::RenderPipeline; 3],
+    axes_pipeline: wgpu::RenderPipeline,
+    axes_vertices: wgpu::Buffer,
+    origin_axes: bool,
     uniform: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
     meshes: BTreeMap<EntityId, Mesh>,
@@ -154,8 +163,61 @@ impl Renderer {
                 Default::default(),
             ),
         ];
+        let axes_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("CAD world origin axes"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("axis_vertex"),
+                compilation_options: Default::default(),
+                buffers: &[Some(wgpu::VertexBufferLayout {
+                    array_stride: 24,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3],
+                })],
+            },
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::LineList,
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: wgpu::TextureFormat::Depth32Float,
+                depth_write_enabled: Some(false),
+                depth_compare: Some(wgpu::CompareFunction::LessEqual),
+                stencil: Default::default(),
+                bias: Default::default(),
+            }),
+            multisample: Default::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("axis_fragment"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
+        let mut axes = Vec::with_capacity(ORIGIN_AXES.len() * 2 * 24);
+        for (end, color) in ORIGIN_AXES {
+            for point in [[0.; 3], end] {
+                floats(&mut axes, point.map(|v| v as f32));
+                floats(&mut axes, color.map(|v| f32::from(v) / 255.));
+            }
+        }
+        let axes_vertices = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("CAD world origin axes"),
+            contents: &axes,
+            usage: wgpu::BufferUsages::VERTEX,
+        });
         Self {
             pipelines,
+            axes_pipeline,
+            axes_vertices,
+            origin_axes: false,
             uniform,
             bind_group,
             meshes: BTreeMap::new(),
@@ -177,7 +239,9 @@ impl Renderer {
             selection,
             style,
             section,
+            origin_axes,
         } = view;
+        self.origin_axes = origin_axes;
         if !self.scene.as_ref().is_some_and(|s| Arc::ptr_eq(s, scene))
             || self.selection != selection
         {
@@ -335,9 +399,13 @@ impl Renderer {
         let distance = size.y.max(1.) / camera.scale * 2.;
         let mut near = 0.1;
         let mut far = distance + 1.;
+        let mut nearest = f32::INFINITY;
+        let mut farthest = f32::NEG_INFINITY;
+        let mut include_depth = |depth: f32| {
+            nearest = nearest.min(depth);
+            farthest = farthest.max(depth);
+        };
         if let Some([low, high]) = scene.world_bounds() {
-            let mut nearest = f32::INFINITY;
-            let mut farthest = f32::NEG_INFINITY;
             for corner in 0..8 {
                 let point: [f32; 3] = std::array::from_fn(|i| {
                     if corner & (1 << i) == 0 {
@@ -346,15 +414,32 @@ impl Renderer {
                         high[i] as f32
                     }
                 });
-                let depth = distance
-                    - (0..3)
-                        .map(|i| (point[i] - camera.target[i]) * forward[i])
-                        .sum::<f32>();
-                nearest = nearest.min(depth);
-                farthest = farthest.max(depth);
+                include_depth(
+                    distance
+                        - (0..3)
+                            .map(|i| (point[i] - camera.target[i]) * forward[i])
+                            .sum::<f32>(),
+                );
             }
-            // Fit the perspective depth range to the scene. A near plane at
-            // the eye otherwise gives distant surfaces almost the same depth.
+        }
+        if origin_axes {
+            let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
+            for (end, _) in ORIGIN_AXES {
+                if let Some(segment) = camera.clip_segment([0.; 3], end, rect) {
+                    let [a, b] = segment.map(|p| camera.project(p.map(|v| v as f32), rect));
+                    // An offscreen guide must not reduce solid depth precision.
+                    if egui::Rect::from_two_pos(egui::pos2(a[0], a[1]), egui::pos2(b[0], b[1]))
+                        .intersects(rect)
+                    {
+                        include_depth(a[2]);
+                        include_depth(b[2]);
+                    }
+                }
+            }
+        }
+        if nearest.is_finite() && farthest.is_finite() {
+            // Fit the perspective depth range to the visible geometry. A near
+            // plane at the eye gives distant surfaces almost the same depth.
             if camera.perspective {
                 near = (nearest - 1.).max(near);
                 far = (farthest + 1.).max(near + 1.);
@@ -411,6 +496,11 @@ impl Renderer {
                 }
             }
         }
+        if self.origin_axes {
+            pass.set_pipeline(&self.axes_pipeline);
+            pass.set_vertex_buffer(0, self.axes_vertices.slice(..));
+            pass.draw(0..(ORIGIN_AXES.len() as u32 * 2), 0..1);
+        }
     }
 }
 /// Install the shared native viewport pipelines for a depth-enabled egui renderer.
@@ -423,20 +513,38 @@ pub fn install_renderer(
 ) {
     resources.insert(Renderer::new(device, format));
 }
-pub(crate) fn install(state: &egui_wgpu::RenderState) {
+fn native_origin_axes_key() -> egui::Id {
+    egui::Id::new("depth-tested native origin axes")
+}
+
+pub(crate) fn native_origin_axes_available(
+    ctx: &egui::Context,
+    rect: egui::Rect,
+    camera: Camera,
+) -> bool {
+    valid_view(rect, camera)
+        && ctx.data(|data| {
+            data.get_temp::<bool>(native_origin_axes_key())
+                .unwrap_or(false)
+        })
+}
+
+pub(crate) fn install(state: &egui_wgpu::RenderState, ctx: &egui::Context) {
     install_renderer(
         &state.device,
         state.target_format,
         &mut state.renderer.write().callback_resources,
     );
+    ctx.data_mut(|data| data.insert_temp(native_origin_axes_key(), true));
 }
 #[derive(Clone)]
-struct View {
-    camera: Camera,
-    size: egui::Vec2,
-    selection: Option<Selection>,
-    style: DisplayStyle,
-    section: Option<SectionPlane>,
+pub(super) struct View {
+    pub(super) camera: Camera,
+    pub(super) size: egui::Vec2,
+    pub(super) selection: Option<Selection>,
+    pub(super) style: DisplayStyle,
+    pub(super) section: Option<SectionPlane>,
+    pub(super) origin_axes: bool,
 }
 struct Callback {
     scene: Arc<Scene>,
@@ -488,32 +596,47 @@ pub fn paint_scene_section(
     style: DisplayStyle,
     section: Option<SectionPlane>,
 ) {
-    if !rect.is_finite()
-        || rect.width() <= 0.
-        || rect.height() <= 0.
-        || !camera.scale.is_finite()
-        || camera.scale <= 0.
-        || camera
+    paint_scene_view(
+        painter,
+        rect,
+        scene,
+        View {
+            camera,
+            size: rect.size(),
+            selection,
+            style,
+            section,
+            origin_axes: false,
+        },
+    );
+}
+
+fn valid_view(rect: egui::Rect, camera: Camera) -> bool {
+    rect.is_finite()
+        && rect.width() > 0.
+        && rect.height() > 0.
+        && camera.scale.is_finite()
+        && camera.scale > 0.
+        && camera
             .target
             .iter()
             .chain([&camera.yaw, &camera.pitch])
-            .any(|v| !v.is_finite())
-    {
+            .all(|v| v.is_finite())
+}
+
+pub(super) fn paint_scene_view(
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    scene: Arc<Scene>,
+    view: View,
+) {
+    if !valid_view(rect, view.camera) {
         return;
     }
     crate::preview_capture::record_viewport(painter.ctx(), rect);
     painter.add(egui_wgpu::Callback::new_paint_callback(
         rect,
-        Callback {
-            scene,
-            view: View {
-                camera,
-                size: rect.size(),
-                selection,
-                style,
-                section,
-            },
-        },
+        Callback { scene, view },
     ));
 }
 

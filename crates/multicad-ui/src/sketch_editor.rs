@@ -4038,13 +4038,18 @@ impl SketchEditor {
                 }
             }
         }
-        for (axis, color) in [
-            ([100., 0., 0.], Color32::from_rgb(233, 91, 102)),
-            ([0., 100., 0.], Color32::from_rgb(92, 199, 132)),
-            ([0., 0., 100.], Color32::from_rgb(96, 157, 245)),
-        ] {
-            if let Some(segment) = self.camera.segment([0.; 3], axis, rect) {
-                painter.line_segment(segment, Stroke::new(1., color));
+        self.solid.origin_axes = self.model_workspace
+            && !sketch_mode
+            && !self.architecture.planar()
+            && scene
+                .as_ref()
+                .is_some_and(|scene| !scene.instances().is_empty())
+            && crate::viewport::native_origin_axes_available(ui.ctx(), rect, self.camera);
+        if !self.solid.origin_axes {
+            for (axis, [r, g, b]) in crate::viewport::ORIGIN_AXES {
+                if let Some(segment) = self.camera.segment([0.; 3], axis, rect) {
+                    painter.line_segment(segment, Stroke::new(1., Color32::from_rgb(r, g, b)));
+                }
             }
         }
         if self.measurement.active() {
