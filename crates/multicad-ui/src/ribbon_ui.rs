@@ -526,7 +526,6 @@ fn menu_button(
                 rect.right_top() + egui::vec2(-ARROW_WIDTH, 45.),
                 egui::vec2(ARROW_WIDTH - 2., 21.),
             );
-            let arrow = ui.interact(caret, slot.id.with("options"), egui::Sense::click());
             let main = ui
                 .add_enabled_ui(enabled(default.action), |ui| {
                     let hit =
@@ -547,6 +546,7 @@ fn menu_button(
                 .on_disabled_hover_text(
                     "The default is unavailable in this context. Open the options for other tools.",
                 );
+            let arrow = ui.interact(caret, slot.id.with("options"), egui::Sense::click());
             if arrow.hovered() || arrow.has_focus() {
                 ui.painter()
                     .rect_filled(caret, 3, egui::Color32::from_rgb(56, 67, 84));
