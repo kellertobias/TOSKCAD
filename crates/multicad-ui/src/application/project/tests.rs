@@ -465,10 +465,56 @@ fn export_and_quick_3mf_use_one_project_tab_at_both_window_sizes() {
                 .count(),
             1
         );
-        for label in ["Sketch", "Measure", "Library", "Print", "Render", "Common"] {
+        for label in [
+            "Sketch",
+            "Measure",
+            "Library",
+            "Print",
+            "Render",
+            "Common",
+            "Save set",
+            "Discard edits",
+        ] {
             assert!(!has(label), "Unexpected {label}");
         }
         output.drop_without_applying_deltas();
+
+        app.invoke(
+            Command::Export(crate::exchange::ExportTool::NewSet),
+            &[],
+            Channel::Ui,
+        )
+        .unwrap();
+        let output = frame(&ctx, &mut app, size, vec![]);
+        let ribbon = egui::PanelState::load(&ctx, egui::Id::new("project-export-ribbon"))
+            .unwrap()
+            .outer_rect;
+        for label in ["Save set", "Discard edits"] {
+            let (bounds, enabled) = button(&output, label);
+            assert!(
+                enabled && bounds.top() > ribbon.bottom(),
+                "{label} belongs to the inspector"
+            );
+            assert_eq!(
+                output
+                    .platform_output
+                    .accesskit_update
+                    .as_ref()
+                    .unwrap()
+                    .nodes
+                    .iter()
+                    .filter(|(_, node)| node.label() == Some(label))
+                    .count(),
+                1
+            );
+        }
+        output.drop_without_applying_deltas();
+        app.invoke(
+            Command::Export(crate::exchange::ExportTool::Discard),
+            &[],
+            Channel::Ui,
+        )
+        .unwrap();
 
         app.invoke(
             Command::Print(crate::print::PrintTool::Cancel),

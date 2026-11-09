@@ -783,8 +783,6 @@ impl Default for Registry {
                         &[
                             "export-set",
                             "print-plate",
-                            "export-set-save",
-                            "export-set-discard",
                             "export-run",
                             "export-cancel",
                             "export-schedule-csv",
