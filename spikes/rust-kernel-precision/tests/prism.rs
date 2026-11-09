@@ -323,3 +323,51 @@ fn unresolved_near_boundary_predicates_do_not_publish_a_cut() {
     );
     assert_eq!(solid, before);
 }
+
+#[test]
+fn a_valid_cut_with_unrepresentable_volume_does_not_publish() {
+    let height = q("1/1000000001 mm");
+    let solid = RoundedPrism::extrude(10, n(40), n(10), height).unwrap();
+    let cutter = Circle::new([n(12), n(10)], q("1/100000000 mm")).unwrap();
+    let ordinary_height = RoundedPrism::extrude(10, n(40), n(10), n(1)).unwrap();
+    assert!(
+        ordinary_height
+            .subtract_cylinder(20, cutter, n(-1), n(2))
+            .is_ok()
+    );
+    assert_eq!(
+        solid.subtract_cylinder(20, cutter, n(-1), n(2)),
+        Err(PrismError::Arithmetic(Error::OutOfRange))
+    );
+    assert_eq!(solid.inner_loops().len(), 0);
+    assert_eq!(solid.classify([n(12), n(10), n(0)]), Ok(Location::Boundary));
+}
+
+#[test]
+fn face_keys_use_the_full_feature_id_and_do_not_follow_loop_order() {
+    let base = RoundedPrism::extrude(10, n(40), n(10), n(8)).unwrap();
+    let bore_a = circle(12, 10, 3);
+    let bore_b = circle(28, 10, 4);
+    // IDs share their entire lower 64 bits, as can occur with document UUIDs.
+    let id_a = (1_u128 << 64) + 20;
+    let id_b = (2_u128 << 64) + 20;
+    let a_then_b = base
+        .with_inner_loop(id_a, bore_a)
+        .unwrap()
+        .with_inner_loop(id_b, bore_b)
+        .unwrap();
+    let b_then_a = base
+        .with_inner_loop(id_b, bore_b)
+        .unwrap()
+        .with_inner_loop(id_a, bore_a)
+        .unwrap();
+    for (feature, circle) in [(id_a, bore_a), (id_b, bore_b)] {
+        let key = FaceKey {
+            feature,
+            role: FaceRole::Bore,
+        };
+        assert_eq!(a_then_b.face(key), Some(Face::Bore { circle }));
+        assert_eq!(b_then_a.face(key), Some(Face::Bore { circle }));
+    }
+    assert_eq!(a_then_b.volume(), b_then_a.volume());
+}
