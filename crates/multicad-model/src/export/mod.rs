@@ -992,7 +992,7 @@ impl GeometryExporter<'_> {
                         })?;
                         if !subject_solid(model, part, solid)?.supports_step_export() {
                             status = RecipeStatus::Unsupported(
-                                "Rust STEP export supports axial cylinders and polygon prisms with straight or circular holes".into(),
+                                "Rust STEP export requires a supported solid with one closed exterior shell".into(),
                             );
                             break;
                         }

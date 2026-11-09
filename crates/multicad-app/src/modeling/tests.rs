@@ -1625,6 +1625,59 @@ fn wait_for_scene(backend: &mut dyn SceneBackend) -> SceneReply {
 }
 
 #[test]
+fn rust_model_worker_publishes_the_exact_boolean_pocket_without_mutating_source() {
+    let (mut session, stock) = box_session();
+    let actor = Actor::local(Channel::Ui);
+    let cutter = PrimitiveRequest::new(
+        "Through-pocket cutter",
+        PrimitiveParameters::Box {
+            size: [length(4.), length(4.), length(32.)],
+            frame: model::PrimitiveFrame {
+                origin: [length(3.), length(5.), length(-1.)],
+                ..Default::default()
+            },
+        },
+    );
+    let prepared =
+        model::prepare_primitive(&session, session.revision(), actor.clone(), &cutter).unwrap();
+    session.commit(prepared.prepared).unwrap();
+    let before = session.document().clone();
+    let cut = model::BooleanRequest::new(
+        model::Operation::Cut,
+        model::BodyInput {
+            body: stock.body,
+            producer: stock.feature,
+        },
+        vec![model::BodyInput {
+            body: cutter.body,
+            producer: cutter.feature,
+        }],
+    );
+    let prepared = model::prepare_boolean(&session, session.revision(), actor, &cut).unwrap();
+    let mut worker = Backend::factory(GeometryBackend::Rust).unwrap()();
+    let stamp = SceneStamp {
+        document: before.id(),
+        revision: session.revision() + 1,
+        generation: 1,
+    };
+    worker.request(prepared.prepared.document(), stamp).unwrap();
+    let scene = wait_for_scene(&mut *worker).result.unwrap();
+    assert_eq!(scene.instances().len(), 1);
+    assert_eq!(scene.instances()[0].id, stock.body);
+    assert!(
+        scene
+            .pick_face(viewport::Ray::new([5., 7., 100.], [0., 0., -1.]).unwrap())
+            .is_none()
+    );
+    let cap = scene
+        .pick_face(viewport::Ray::new([1., 1., 100.], [0., 0., -1.]).unwrap())
+        .unwrap();
+    assert_eq!(cap.point_mm, [1., 1., 30.]);
+    assert!(cap.intent.is_some());
+    assert_eq!(session.document(), &before);
+}
+
+#[test]
 fn rust_model_worker_reuses_unchanged_viewport_geometry_across_revisions() {
     use multicad_core::document::Mutation;
 

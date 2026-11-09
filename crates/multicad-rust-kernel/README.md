@@ -22,6 +22,8 @@ Launch `multicad --rust-model PROJECT.tcd` to test the Rust backend. Model suppo
 
 Reusable assemblies of supported Rust solids preserve each part through nested rigid placements. Model displays the assembly with pickable faces and keeps the occurrence paths through pose edits and project reopen. Export can write a separate STEP file for each supported leaf, including tilted cylinders, boxes with circular Boolean through-cuts, and polygon prisms with straight exterior edges and straight or circular holes. The Rust reader checks the staged file against that leaf’s world-space analytic edges, face count, volume, and bounds. Exchange tests also reopen Rust outputs with OpenCascade. The default launch uses OpenCascade while general STEP import, broader trimmed-surface exchange, and the production cutover remain open. [STEP advanced face schema](https://www.steptools.com/docs/stp_aim/html/t_advanced_face.html) · [STEP cylindrical surface schema](https://www.steptools.com/docs/stp_aim/html/t_cylindrical_surface.html)
 
+Join, Cut, and Intersect support world-axis-aligned boxes, rectilinear sketch extrusions, and earlier orthogonal Boolean results. The kernel reconstructs planar faces and straight edges, retains exact material volumes and cavities, and carries source references on surviving geometry. STEP supports orthogonal results with one boundary shell, including through-pockets and notches.
+
 ## Verification
 
 Run the isolated tests and coverage checks from the repository root. The coverage command requires `cargo-llvm-cov` and the pinned toolchain's `llvm-tools` component.

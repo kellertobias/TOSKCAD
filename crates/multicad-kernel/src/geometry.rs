@@ -7,7 +7,9 @@ use multicad_rust_kernel::{
 };
 use std::path::Path;
 use std::rc::Rc;
+mod orthogonal_body;
 mod rust_compound;
+use orthogonal_body::OrthogonalBody;
 use rust_compound::RustCompound;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -481,6 +483,7 @@ enum SolidBody {
     PolygonPrism(Rc<PlacedPolygon>),
     AxialCylinder(Rc<AxialCylinder>, PlaneFrame),
     RustCompound(Rc<RustCompound>),
+    Orthogonal(Rc<OrthogonalBody>, PlaneFrame),
 }
 
 impl Solid {
@@ -740,6 +743,12 @@ impl Solid {
             _ => None,
         }
     }
+    pub(crate) fn orthogonal_body(&self) -> Option<(&OrthogonalBody, PlaneFrame)> {
+        match &self.body {
+            SolidBody::Orthogonal(body, frame) => Some((body, *frame)),
+            _ => None,
+        }
+    }
     pub(crate) fn make_rust_compound(
         solids: &[&Solid],
         feature: EntityId,
@@ -760,6 +769,7 @@ impl Solid {
                 SolidBody::AxialCylinder(Rc::clone(cylinder), *frame)
             }
             SolidBody::RustCompound(compound) => SolidBody::RustCompound(Rc::clone(compound)),
+            SolidBody::Orthogonal(body, frame) => SolidBody::Orthogonal(Rc::clone(body), *frame),
             SolidBody::Occt(shape) => {
                 let handle = ffi::share_shape(&shape.0).map_err(|e| native("share", e))?;
                 if handle.is_null() {
@@ -888,6 +898,9 @@ impl Solid {
                     .map(Some);
             }
         }
+        if self.is_rust() && other.is_rust() {
+            return self.orthogonal_boolean(other, operation, policy);
+        }
         let op = match operation {
             BooleanOperation::Union => 0,
             BooleanOperation::Subtract => 1,
@@ -997,6 +1010,9 @@ impl Solid {
                 SolidBody::RustCompound(compound) => {
                     SolidBody::RustCompound(compound.transformed(transform, self.policy)?)
                 }
+                SolidBody::Orthogonal(body, frame) => {
+                    SolidBody::Orthogonal(Rc::clone(body), transform.frame(*frame))
+                }
                 SolidBody::Occt(_) => unreachable!("checked Rust body"),
             };
             let result = Self {
@@ -1021,6 +1037,9 @@ impl Solid {
         Ok(result)
     }
     pub fn volume_mm3(&self) -> Result<f64, GeometryError> {
+        if let Some((body, _)) = self.orthogonal_body() {
+            return Ok(body.geometry.volume_mm3());
+        }
         if let Some(compound) = self.rust_compound() {
             return Ok(compound.volume_mm3());
         }
@@ -1036,6 +1055,9 @@ impl Solid {
         ffi::volume(self.occt()?).map_err(|e| native("volume", e))
     }
     pub fn solid_count(&self) -> Result<u32, GeometryError> {
+        if let Some((body, _)) = self.orthogonal_body() {
+            return Ok(body.geometry.solid_count());
+        }
         if let Some(compound) = self.rust_compound() {
             return Ok(compound.solid_count());
         }
@@ -1045,6 +1067,9 @@ impl Solid {
         ffi::solid_count(self.occt()?).map_err(|e| native("solid count", e))
     }
     pub fn bounds(&self) -> Result<Bounds, GeometryError> {
+        if let Some((body, frame)) = self.orthogonal_body() {
+            return Ok(body.bounds(frame));
+        }
         if let Some(compound) = self.rust_compound() {
             return Ok(compound.bounds());
         }
@@ -1130,6 +1155,9 @@ impl Solid {
         crate::planar_contours::extract(self, face, frame, self.policy)
     }
     pub fn faces(&self) -> Result<Vec<Face>, GeometryError> {
+        if let Some((body, frame)) = self.orthogonal_body() {
+            return Ok(body.faces(frame));
+        }
         if let Some(compound) = self.rust_compound() {
             return compound.faces();
         }
@@ -1216,6 +1244,7 @@ impl Solid {
                 mesh
             }
             SolidBody::RustCompound(compound) => compound.mesh(options)?,
+            SolidBody::Orthogonal(body, frame) => body.mesh(*frame, options.maximum_triangles)?,
             SolidBody::Occt(shape) => ffi::tessellate(
                 &shape.0,
                 options.linear_deflection_mm,
@@ -1363,6 +1392,7 @@ impl Solid {
             SolidBody::Prism(prism, _) => EntityId::from_uuid_bits(prism.feature()),
             SolidBody::AxialCylinder(cylinder, _) => EntityId::from_uuid_bits(cylinder.feature()),
             SolidBody::RustCompound(compound) => compound.feature,
+            SolidBody::Orthogonal(body, _) => body.feature,
             SolidBody::Occt(_) => return None,
         };
         Some(self.topology_snapshot(feature, 0))
@@ -1375,6 +1405,7 @@ impl Solid {
             }
             SolidBody::Prism(prism, _) => prism.rounded_end().is_none(),
             SolidBody::RustCompound(_) => false,
+            SolidBody::Orthogonal(body, _) => body.boundary.supports_step(),
         }
     }
 
@@ -1390,7 +1421,7 @@ impl Solid {
             return Err(error(
                 operation,
                 GeometryErrorKind::Unsupported,
-                "Rust STEP export supports axial cylinders and polygon prisms with straight or circular holes",
+                "Rust STEP export requires a supported solid with one closed exterior shell",
             ));
         }
         let encoded = match &self.body {
@@ -1412,6 +1443,9 @@ impl Solid {
                 }
             }
             SolidBody::RustCompound(_) => unreachable!("STEP support checked above"),
+            SolidBody::Orthogonal(body, frame) => step::write_orthogonal(&body.boundary, |point| {
+                crate::rust_prism_topology::position(*frame, point)
+            }),
             SolidBody::Occt(_) => unreachable!("native STEP dispatched above"),
         }
         .map_err(|e| {
