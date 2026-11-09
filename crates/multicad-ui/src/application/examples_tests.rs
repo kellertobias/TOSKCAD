@@ -159,7 +159,7 @@ fn drain(app: &mut Application) {
 }
 struct Frame {
     texts: Vec<(String, egui::Pos2)>,
-    textured_meshes: usize,
+    texture_rects: Vec<egui::Rect>,
 }
 fn frame(ctx: &egui::Context, app: &mut Application, events: Vec<egui::Event>) -> Frame {
     let output = ctx.run_ui(
@@ -174,12 +174,14 @@ fn frame(ctx: &egui::Context, app: &mut Application, events: Vec<egui::Event>) -
         |ui| app.show(ui),
     );
     let mut texts = Vec::new();
-    let mut textured_meshes = 0;
+    let mut texture_rects = Vec::new();
     for clipped in &output.shapes {
         match &clipped.shape {
-            egui::Shape::Text(text) => texts.push((text.galley.text().to_string(), text.pos)),
+            egui::Shape::Text(text) if clipped.clip_rect.contains(text.pos) => {
+                texts.push((text.galley.text().to_string(), text.pos));
+            }
             egui::Shape::Mesh(mesh) if mesh.texture_id != egui::TextureId::default() => {
-                textured_meshes += 1
+                texture_rects.push(mesh.calc_bounds().intersect(clipped.clip_rect));
             }
             egui::Shape::Rect(rect)
                 if rect
@@ -187,7 +189,7 @@ fn frame(ctx: &egui::Context, app: &mut Application, events: Vec<egui::Event>) -
                     .as_ref()
                     .is_some_and(|b| b.fill_texture_id != egui::TextureId::default()) =>
             {
-                textured_meshes += 1
+                texture_rects.push(rect.rect.intersect(clipped.clip_rect));
             }
             _ => {}
         }
@@ -195,7 +197,7 @@ fn frame(ctx: &egui::Context, app: &mut Application, events: Vec<egui::Event>) -
     output.drop_without_applying_deltas();
     Frame {
         texts,
-        textured_meshes,
+        texture_rects,
     }
 }
 fn settle(ctx: &egui::Context, app: &mut Application) -> Frame {
@@ -226,6 +228,32 @@ fn position(frame: &Frame, text: &str) -> egui::Pos2 {
         .find(|(t, _)| t == text)
         .unwrap_or_else(|| panic!("{text} not shown in {:?}", frame.texts))
         .1
+}
+fn scroll_example_list(
+    ctx: &egui::Context,
+    app: &mut Application,
+    first: Frame,
+    cards: &[(String, String)],
+) -> Vec<Frame> {
+    let at = position(&first, &cards[0].0) + egui::vec2(4., 4.);
+    let mut screens = vec![first];
+    for _ in 0..cards.len() {
+        frame(
+            ctx,
+            app,
+            vec![
+                egui::Event::PointerMoved(at),
+                egui::Event::MouseWheel {
+                    phase: egui::TouchPhase::Move,
+                    unit: egui::MouseWheelUnit::Point,
+                    delta: egui::vec2(0., -115.),
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ],
+        );
+        screens.push(settle(ctx, app));
+    }
+    screens
 }
 fn cards(app: &Application) -> Vec<(String, String)> {
     let Some(Ok(catalog)) = &app.examples.catalog else {
@@ -260,19 +288,25 @@ fn first_launch_without_recents_shows_every_example_card_with_its_preview() {
     assert!(has(&shown, COPIES_FOLDER), "the copies folder is named");
     let cards = cards(&app);
     assert!(cards.len() >= 2);
-    for (name, description) in &cards {
-        assert!(has(&shown, name), "{name}: {:?}", shown.texts);
-        let first_words: String = description.chars().take(24).collect();
-        assert!(has(&shown, &first_words), "{description}");
-    }
     assert!(has(&shown, "Example · opens an editable copy"));
-    // The logo plus one decoded preview texture per card.
-    assert!(
-        shown.textured_meshes > cards.len(),
-        "previews drawn: {}",
-        shown.textured_meshes
-    );
     assert!(!has(&shown, "Recent projects"));
+    let screens = scroll_example_list(&ctx, &mut app, shown, &cards);
+    for (name, description) in &cards {
+        let first_words: String = description.chars().take(24).collect();
+        assert!(
+            screens.iter().any(|screen| {
+                has(screen, name) && has(screen, &first_words) && {
+                    let title = position(screen, name);
+                    screen.texture_rects.iter().any(|preview| {
+                        preview.is_positive()
+                            && (preview.right() - title.x).abs() < 24.
+                            && preview.y_range().contains(title.y)
+                    })
+                }
+            }),
+            "{name} and its preview should be visible while scrolling"
+        );
+    }
 }
 
 #[test]
@@ -295,8 +329,12 @@ fn recents_keep_their_list_and_examples_stay_reachable_from_welcome_and_the_file
     assert!(app.examples.open, "{}", app.message);
     let gallery = settle(&ctx, &mut app);
     assert!(has(&gallery, "Examples"));
+    let screens = scroll_example_list(&ctx, &mut app, gallery, &names);
     for (name, _) in &names {
-        assert!(has(&gallery, name), "{name} in the gallery");
+        assert!(
+            screens.iter().any(|screen| has(screen, name)),
+            "{name} reachable in the gallery"
+        );
     }
     // The same command is a persistent File menu item and a finder tool.
     assert!(app.enabled(Command::Examples));
