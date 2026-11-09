@@ -89,6 +89,99 @@ fn line_of(kind: &AnnotationKind) -> ([f64; 2], [f64; 2]) {
 }
 
 #[test]
+fn sheet_navigation_anchors_zoom_and_pans_without_placing_drafting_points() {
+    let (mut editor, mut session, source) = view_editor(false);
+    editor
+        .invoke(&mut session, DrawingTool::Projection, Channel::Ui)
+        .unwrap();
+    editor.draft.as_mut().unwrap().views[0].source = drawings::ViewSource::Model {
+        entities: vec![source],
+    };
+    publish_editor(&mut editor, &session);
+    editor
+        .invoke(&mut session, DrawingTool::Apply, Channel::Ui)
+        .unwrap();
+    editor
+        .invoke(&mut session, DrawingTool::DraftLine, Channel::Ui)
+        .unwrap();
+
+    let ctx = egui::Context::default();
+    for _ in 0..3 {
+        idle(&ctx, &mut editor, &mut session);
+    }
+    let fitted = editor.last_paper.unwrap();
+    let document = session.document().clone();
+    let draft = editor.draft.clone();
+    let anchor = screen(&editor, [110., 95.]);
+    let movement = egui::vec2(30., -20.);
+    let wheel = |unit, delta| egui::Event::MouseWheel {
+        unit,
+        delta,
+        phase: egui::TouchPhase::Move,
+        modifiers: Default::default(),
+    };
+    let middle = |pressed, pos| egui::Event::PointerButton {
+        pos,
+        button: egui::PointerButton::Middle,
+        pressed,
+        modifiers: Default::default(),
+    };
+    let mut send = |editor: &mut DrawingEditor, events| {
+        frame(&ctx, editor, &mut session, events, Default::default());
+        editor.last_paper.unwrap()
+    };
+    let zoomed = send(
+        &mut editor,
+        vec![
+            egui::Event::PointerMoved(anchor),
+            wheel(egui::MouseWheelUnit::Line, egui::vec2(0., 2.)),
+        ],
+    );
+    assert!(zoomed.1 > fitted.1);
+    assert!(screen(&editor, [110., 95.]).distance(anchor) < 0.001);
+    send(&mut editor, vec![middle(true, anchor)]);
+    let intermediate = send(
+        &mut editor,
+        vec![egui::Event::PointerMoved(anchor + movement * 0.5)],
+    );
+    assert!((intermediate.0.min - zoomed.0.min - movement * 0.5).length() < 0.001);
+    let panned = send(
+        &mut editor,
+        vec![egui::Event::PointerMoved(anchor + movement)],
+    );
+    assert_eq!(
+        send(&mut editor, vec![middle(false, anchor + movement)]),
+        panned
+    );
+    assert!((panned.0.min - zoomed.0.min - movement).length() < 0.001);
+    assert_eq!(panned.1, zoomed.1);
+    let precise = send(
+        &mut editor,
+        vec![wheel(egui::MouseWheelUnit::Point, movement)],
+    );
+    assert!((precise.0.min - panned.0.min - movement).length() < 0.001);
+    assert_eq!(precise.1, panned.1);
+    let pinched = send(&mut editor, vec![egui::Event::Zoom(1.1)]);
+    assert!(pinched.1 > precise.1);
+    let outside = send(
+        &mut editor,
+        vec![
+            egui::Event::PointerMoved(egui::pos2(45., 90.)),
+            wheel(egui::MouseWheelUnit::Line, egui::vec2(0., -3.)),
+        ],
+    );
+    assert_eq!(outside, pinched);
+    editor.sheet_view.fit();
+    assert_eq!(send(&mut editor, vec![]), fitted);
+    assert_eq!(editor.draft, draft);
+    assert!(matches!(
+        &editor.placement,
+        Some(Placement::Draft { points, .. }) if points.is_empty()
+    ));
+    assert_eq!(session.document(), &document);
+}
+
+#[test]
 fn text_note_opens_a_focused_pending_editor_even_with_a_view_selected() {
     let (mut editor, mut session, _) = view_editor(false);
     editor

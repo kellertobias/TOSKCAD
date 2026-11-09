@@ -782,6 +782,7 @@ fn section_range_and_window_edits_need_a_fresh_preview_apply_once_and_draw_a_gui
     let canvas = painted_text(|ui| {
         canvas::show(
             ui,
+            &mut canvas::SheetView::default(),
             &page,
             0,
             1,
@@ -806,6 +807,7 @@ fn section_range_and_window_edits_need_a_fresh_preview_apply_once_and_draw_a_gui
     let canvas = painted_text(|ui| {
         canvas::show(
             ui,
+            &mut canvas::SheetView::default(),
             &facing,
             0,
             1,
@@ -1003,6 +1005,7 @@ fn sheet_annotations_add_edit_move_copy_and_apply_as_one_page_edit() {
     let canvas = painted_text(|ui| {
         canvas::show(
             ui,
+            &mut canvas::SheetView::default(),
             &page,
             0,
             1,
@@ -1087,6 +1090,7 @@ fn native_sheet_paints_the_professional_title_block_and_decodes_the_logo() {
     let canvas = painted_text(|ui| {
         canvas::show(
             ui,
+            &mut canvas::SheetView::default(),
             &page,
             2,
             4,

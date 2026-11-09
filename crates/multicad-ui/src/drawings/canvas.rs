@@ -4,6 +4,128 @@ use multicad_core::{
     document::EntityId,
     drawings::{self, DrawingEvaluation, Page, VectorRole, ViewEvaluation},
 };
+
+/// Screen-space navigation for the current sheet. Drawing coordinates and the
+/// evaluated geometry stay the same when the camera moves.
+#[derive(Default)]
+pub(super) struct SheetView {
+    page: Option<EntityId>,
+    zoom: f32,
+    pan: egui::Vec2,
+    middle: Option<egui::Pos2>,
+}
+
+impl SheetView {
+    pub(super) fn fit(&mut self) {
+        self.zoom = 1.;
+        self.pan = egui::Vec2::ZERO;
+        self.middle = None;
+    }
+
+    fn paper(
+        &mut self,
+        ui: &egui::Ui,
+        page: EntityId,
+        viewport: egui::Rect,
+        mm: [f64; 2],
+    ) -> (egui::Rect, f32) {
+        if self.page != Some(page) {
+            self.page = Some(page);
+            self.fit();
+        }
+        let dimensions = egui::vec2(mm[0] as f32, mm[1] as f32);
+        let fit = ((viewport.width() - 48.) / dimensions.x)
+            .min((viewport.height() - 56.) / dimensions.y)
+            .max(0.05);
+        let hovered = ui.is_enabled() && ui.rect_contains_pointer(viewport);
+        ui.input(|input| {
+            let pinch = input
+                .events
+                .iter()
+                .any(|event| matches!(event, egui::Event::Zoom(_)));
+            for event in &input.events {
+                match *event {
+                    egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Middle,
+                        pressed,
+                        ..
+                    } => {
+                        // Own the drag from its initial press, including over
+                        // drawing widgets that respond to the primary button.
+                        self.middle = (pressed
+                            && hovered
+                            && viewport.contains(pos)
+                            && !input.pointer.primary_down())
+                        .then_some(pos);
+                    }
+                    egui::Event::PointerMoved(pos) if let Some(previous) = self.middle => {
+                        self.pan += pos - previous;
+                        self.middle = Some(pos);
+                    }
+                    egui::Event::WindowFocused(false) => self.middle = None,
+                    egui::Event::MouseWheel {
+                        unit,
+                        delta,
+                        modifiers,
+                        ..
+                    } if hovered && delta.is_finite() && !input.pointer.primary_down() => {
+                        let amount = match unit {
+                            egui::MouseWheelUnit::Point if pinch => continue,
+                            egui::MouseWheelUnit::Point
+                                if !(modifiers.ctrl || modifiers.command) =>
+                            {
+                                self.pan += delta;
+                                continue;
+                            }
+                            egui::MouseWheelUnit::Point => delta.y,
+                            egui::MouseWheelUnit::Line => delta.y * 40.,
+                            egui::MouseWheelUnit::Page => delta.y * 240.,
+                        };
+                        if let Some(pointer) = input.pointer.hover_pos() {
+                            self.zoom_at(viewport, pointer, (amount * 0.0035).clamp(-2., 2.).exp());
+                        }
+                    }
+                    egui::Event::Zoom(factor)
+                        if hovered
+                            && !input.pointer.primary_down()
+                            && factor.is_finite()
+                            && factor > 0. =>
+                    {
+                        if let Some(pointer) = input.pointer.hover_pos() {
+                            self.zoom_at(viewport, pointer, factor);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            if !input.pointer.button_down(egui::PointerButton::Middle) {
+                self.middle = None;
+            }
+        });
+        if self.middle.is_some() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+        }
+        let scale = fit * self.zoom;
+        let size = dimensions * scale;
+        // Keep enough paper visible to recover it by dragging.
+        let limit =
+            (viewport.size() + size) * 0.5 - viewport.size().min(size).min(egui::Vec2::splat(32.));
+        self.pan = self.pan.clamp(-limit, limit);
+        (
+            egui::Rect::from_center_size(viewport.center() + self.pan, size),
+            scale,
+        )
+    }
+
+    fn zoom_at(&mut self, viewport: egui::Rect, pointer: egui::Pos2, factor: f32) {
+        let zoom = (self.zoom * factor).clamp(0.25, 16.);
+        let anchor = pointer - viewport.center();
+        self.pan = anchor + (self.pan - anchor) * (zoom / self.zoom);
+        self.zoom = zoom;
+    }
+}
+
 /// What a click on the paper did.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(super) struct CanvasEvent {
@@ -18,6 +140,7 @@ pub(super) struct CanvasEvent {
 #[allow(clippy::too_many_arguments)]
 pub(super) fn show(
     ui: &mut egui::Ui,
+    camera: &mut SheetView,
     page: &Page,
     index: usize,
     total: usize,
@@ -35,11 +158,7 @@ pub(super) fn show(
         }
     };
     let available = ui.available_rect_before_wrap();
-    let scale = ((available.width() - 48.) / layout.paper_mm[0] as f32)
-        .min((available.height() - 56.) / layout.paper_mm[1] as f32)
-        .max(0.05);
-    let size = egui::vec2(layout.paper_mm[0] as f32, layout.paper_mm[1] as f32) * scale;
-    let paper = egui::Rect::from_center_size(available.center(), size);
+    let (paper, scale) = camera.paper(ui, page.id, available, layout.paper_mm);
     let painter = ui.painter().with_clip_rect(available);
     painter.rect_filled(paper, 0, egui::Color32::from_gray(250));
     painter.text(
@@ -283,8 +402,7 @@ pub(super) fn show(
             };
         }
     } else {
-        ui.allocate_rect(available, egui::Sense::hover())
-            .on_hover_text("Drawing paper with source-linked native vector views");
+        ui.allocate_rect(available, egui::Sense::hover());
     }
     event
 }

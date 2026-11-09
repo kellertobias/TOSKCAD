@@ -659,7 +659,7 @@ impl DrawingEditor {
                 egui::Stroke::new(1.2, accent),
                 egui::StrokeKind::Inside,
             );
-            if response.dragged()
+            if response.dragged_by(egui::PointerButton::Primary)
                 && let Some(pointer) = response.interact_pointer_pos()
                 && let Err(error) = self.drag_handle(index, to_paper(pointer), ortho)
             {

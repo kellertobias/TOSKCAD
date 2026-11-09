@@ -50,7 +50,18 @@ fn sheet_text(
                 ..Default::default()
             },
             |ui| {
-                canvas::show(ui, page, 1, 1, evaluation, None, None, None, state);
+                canvas::show(
+                    ui,
+                    &mut canvas::SheetView::default(),
+                    page,
+                    1,
+                    1,
+                    evaluation,
+                    None,
+                    None,
+                    None,
+                    state,
+                );
             },
         );
         text.clear();

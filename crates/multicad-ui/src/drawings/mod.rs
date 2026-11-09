@@ -217,6 +217,7 @@ pub struct DrawingEditor {
     focus_note: bool,
     /// The paper's screen rectangle and scale from the last frame.
     last_paper: Option<(egui::Rect, f32)>,
+    sheet_view: canvas::SheetView,
 }
 impl DrawingEditor {
     pub fn dirty(&self) -> bool {
@@ -532,8 +533,21 @@ impl DrawingEditor {
         let mut event = canvas::CanvasEvent::default();
         egui::CentralPanel::default().show(ui, |ui| {
             if let Some(page) = &self.draft {
+                if crate::icons::labeled_button(ui, Icon::Fit, "Fit sheet")
+                    .on_hover_text("Reset the sheet view. Scroll to zoom or drag with the wheel button to pan.")
+                    .clicked()
+                {
+                    self.sheet_view.fit();
+                }
+                ui.set_clip_rect(ui.clip_rect().intersect(ui.available_rect_before_wrap()));
+                let evaluation = if self.preview_matches(session) {
+                    self.feed.result.as_deref()
+                } else {
+                    None
+                };
                 event = canvas::show(
                     ui,
+                    &mut self.sheet_view,
                     page,
                     book.pages
                         .iter()
@@ -541,11 +555,7 @@ impl DrawingEditor {
                         .unwrap_or(0)
                         + 1,
                     book.pages.len(),
-                    if self.preview_matches(session) {
-                        self.feed.result.as_deref()
-                    } else {
-                        None
-                    },
+                    evaluation,
                     self.selected_view,
                     self.section_pick.map(|(_, first)| first),
                     self.selected_annotation,
