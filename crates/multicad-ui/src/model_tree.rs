@@ -295,7 +295,11 @@ impl TreeView {
                 _ => &[],
             };
             let expandable = !children.is_empty() || !history.is_empty();
-            let expanded = expandable && expansion.get(&id).copied().unwrap_or(history.is_empty());
+            let expanded = expandable
+                && expansion
+                    .get(&id)
+                    .copied()
+                    .unwrap_or(root || (history.is_empty() && children.len() <= 8));
             let editable = !symbol_owned.contains(&id);
             rows.push(TreeRow {
                 id,
@@ -2367,6 +2371,42 @@ mod tests {
         assert_eq!(session.document(), &before);
         assert_eq!(session.revision(), 0);
     }
+    #[test]
+    fn same_name_identity_component_placement_has_one_default_row_but_remains_inspectable() {
+        use multicad_core::document::{Entity, Mutation};
+        let (session, component, _, _) = fixture();
+        let name = session.document().get(component).unwrap().name.clone();
+        let placed = Entity::new(
+            name,
+            EntityData::Instance {
+                component,
+                placement: Placement::default(),
+                placement_source: None,
+            },
+        );
+        let session = Session::new(
+            session
+                .document()
+                .edited(&[Mutation::Insert(placed.clone())])
+                .unwrap(),
+        )
+        .unwrap();
+        let mut tree = ModelTree::default();
+        let rows = tree.rows(&session).unwrap();
+        assert!(
+            rows.iter()
+                .any(|row| row.id == component && row.kind == NodeKind::Component)
+        );
+        assert!(!rows.iter().any(|row| row.id == placed.id));
+        tree.set_show_sources(true);
+        assert!(
+            tree.rows(&session)
+                .unwrap()
+                .iter()
+                .any(|row| row.id == placed.id)
+        );
+    }
+
     #[test]
     fn missing_body_history_remains_a_disabled_diagnostic_reference() {
         let (session, _, _, body) = fixture();
