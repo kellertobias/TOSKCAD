@@ -7,6 +7,13 @@ use multicad_core::{
 };
 use std::collections::BTreeSet;
 const ORDER_TYPE: &str = "core.parameter_table";
+const EXPOSE_HELP: &str = "Make this parameter available to symbols and external clients. A supplied value overrides the formula.";
+
+#[derive(Clone, Copy)]
+struct ParameterDrag {
+    table: egui::Id,
+    row: EntityId,
+}
 #[derive(Clone, Debug)]
 pub struct Row {
     pub id: EntityId,
@@ -375,16 +382,34 @@ impl ParameterEditor {
         minimum: f32,
     ) {
         self.sync_preview(session);
-        ui.horizontal_wrapped(|ui| {
+        ui.horizontal(|ui| {
             ui.heading("Parameters");
-            ui.add_space(12.0);
-            ui.label("Filter");
-            ui.add(
-                egui::TextEdit::singleline(&mut self.search)
-                    .hint_text("Filter parameters…")
-                    .desired_width(240.),
-            )
-            .on_hover_text("Filter rows by parameter name or description");
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let width = ui.available_width().min(240.);
+                let response = ui
+                    .add_sized(
+                        [width, 28.],
+                        egui::TextEdit::singleline(&mut self.search)
+                            .min_size(Vec2::new(width, 28.))
+                            .vertical_align(egui::Align::Center)
+                            .frame(crate::theme::input_frame())
+                            .margin(egui::Margin {
+                                left: 26,
+                                right: 6,
+                                top: 3,
+                                bottom: 3,
+                            })
+                            .hint_text("Search parameters…"),
+                    )
+                    .on_hover_text("Search by parameter name or description");
+                let center = response.rect.left_center() + Vec2::new(13., -1.);
+                let stroke = egui::Stroke::new(1.4, ui.visuals().weak_text_color());
+                ui.painter().circle_stroke(center, 4., stroke);
+                ui.painter().line_segment(
+                    [center + Vec2::splat(2.8), center + Vec2::splat(6.)],
+                    stroke,
+                );
+            });
         });
         ui.label("Enter a value or a formula such as =600 - $height. Comparisons return 1 or 0 (ratio). Complete a row to add another.");
         if let Some(error) = &self.error {
@@ -408,21 +433,38 @@ impl ParameterEditor {
     }
     fn show_table(&mut self, ui: &mut egui::Ui, session: &Session, table_id: egui::Id) {
         let width = ui.available_width();
-        let columns = [0.14, 0.22, 0.23, 0.07, 0.13, 0.07, 0.14].map(|f| f * width);
+        let field_width = width - 70.;
+        let columns = [
+            30.,
+            0.15 * field_width,
+            0.23 * field_width,
+            0.25 * field_width,
+            0.09 * field_width,
+            0.20 * field_width,
+            0.08 * field_width,
+            40.,
+        ];
         let headers = [
+            "",
             "Name",
             "Description",
             "Value / expression",
             "Unit",
             "Evaluated value",
             "Expose",
-            "Row",
+            "",
         ];
         let (head, _) = ui.allocate_exact_size(Vec2::new(width, 30.0), egui::Sense::hover());
         ui.painter()
             .rect_filled(head, 0, Color32::from_rgb(40, 50, 66));
         let mut x = head.left();
-        for (title, w) in headers.iter().zip(columns) {
+        for (column, (title, w)) in headers.iter().zip(columns).enumerate() {
+            if column == 6 {
+                let cell =
+                    Rect::from_min_size(Pos2::new(x, head.top()), Vec2::new(w, head.height()));
+                ui.interact(cell, table_id.with("expose-help"), egui::Sense::hover())
+                    .on_hover_text(EXPOSE_HELP);
+            }
             ui.painter().text(
                 Pos2::new(x + 6.0, head.center().y),
                 egui::Align2::LEFT_CENTER,
@@ -463,9 +505,13 @@ impl ParameterEditor {
         egui::ScrollArea::vertical().show_rows(ui, 36.0, visible.len(), |ui, range| {
             for visible_index in range {
                 let index = visible[visible_index];
-                let can_move_down = self.rows.get(index + 1).is_some_and(|r| !r.empty() || session.document().get(r.id).is_some());
+                let can_move_down = self
+                    .rows
+                    .get(index + 1)
+                    .is_some_and(|r| !r.empty() || session.document().get(r.id).is_some());
                 let row = &mut self.rows[index];
-                let (rect, _) =
+                let authored = !row.empty() || session.document().get(row.id).is_some();
+                let (rect, drop_zone) =
                     ui.allocate_exact_size(Vec2::new(width, 36.0), egui::Sense::hover());
                 let color = if self.error.as_ref().is_some_and(|e| {
                     e.parameter
@@ -479,6 +525,27 @@ impl ParameterEditor {
                     Color32::from_rgb(33, 40, 51)
                 };
                 ui.painter().rect_filled(rect, 0, color);
+                if let Some(drag) = drop_zone.dnd_hover_payload::<ParameterDrag>()
+                    && drag.table == table_id
+                    && drag.row != row.id
+                {
+                    let insert_after = authored
+                        && ui.input(|i| {
+                            i.pointer
+                                .hover_pos()
+                                .is_some_and(|p| p.y >= rect.center().y)
+                        });
+                    let y = if insert_after {
+                        rect.bottom()
+                    } else {
+                        rect.top()
+                    };
+                    ui.painter()
+                        .hline(rect.x_range(), y, ui.visuals().selection.stroke);
+                    if drop_zone.dnd_release_payload::<ParameterDrag>().is_some() {
+                        movement = Some((drag.row, index + usize::from(insert_after)));
+                    }
+                }
                 let mut x = rect.left();
                 for (column, w) in columns.into_iter().enumerate() {
                     let cell = Rect::from_min_max(
@@ -496,72 +563,131 @@ impl ParameterEditor {
                             .max_rect(cell)
                             .layout(egui::Layout::left_to_right(egui::Align::Center)),
                         |ui| match column {
-                            0 => {
-                                changed |= ui
-                                    .add_sized(
-                                        cell.size(),
-                                        egui::TextEdit::singleline(&mut row.name)
-                                            .hint_text("name")
-                                            .frame(crate::theme::input_frame()),
+                            0 if authored => {
+                                let handle = ui.interact(
+                                    cell,
+                                    table_id.with(("reorder", row.id)),
+                                    egui::Sense::click_and_drag(),
+                                );
+                                let label = format!("Reorder {}", row.name);
+                                handle.widget_info(|| {
+                                    egui::WidgetInfo::labeled(
+                                        egui::WidgetType::Button,
+                                        true,
+                                        &label,
                                     )
-                                    .on_hover_text(cell_help(column))
-                                    .changed()
+                                });
+                                let color = if handle.hovered() || handle.dragged() {
+                                    ui.visuals().text_color()
+                                } else {
+                                    ui.visuals().weak_text_color()
+                                };
+                                for x in [-2.5, 2.5] {
+                                    for y in [-5., 0., 5.] {
+                                        ui.painter().circle_filled(
+                                            cell.center() + Vec2::new(x, y),
+                                            1.2,
+                                            color,
+                                        );
+                                    }
+                                }
+                                handle.dnd_set_drag_payload(ParameterDrag {
+                                    table: table_id,
+                                    row: row.id,
+                                });
+                                egui::Popup::menu(&handle).show(|ui| {
+                                    if ui
+                                        .add_enabled(index > 0, egui::Button::new("Move up"))
+                                        .clicked()
+                                    {
+                                        movement = Some((row.id, index - 1));
+                                    }
+                                    if ui
+                                        .add_enabled(can_move_down, egui::Button::new("Move down"))
+                                        .clicked()
+                                    {
+                                        movement = Some((row.id, index + 2));
+                                    }
+                                });
+                                handle
+                                    .on_hover_cursor(egui::CursorIcon::Grab)
+                                    .on_hover_text("Drag to reorder. Click for move options.");
                             }
                             1 => {
                                 changed |= ui
                                     .add_sized(
                                         cell.size(),
-                                        egui::TextEdit::singleline(&mut row.description)
-                                            .hint_text("Description")
+                                        egui::TextEdit::singleline(&mut row.name)
+                                            .min_size(cell.size())
+                                            .vertical_align(egui::Align::Center)
+                                            .hint_text("name")
                                             .frame(crate::theme::input_frame()),
                                     )
-                                    .on_hover_text(cell_help(column))
+                                    .on_hover_text(cell_help(column - 1))
                                     .changed()
                             }
                             2 => {
                                 changed |= ui
                                     .add_sized(
                                         cell.size(),
-                                        egui::TextEdit::singleline(&mut row.expression)
-                                            .hint_text("Value or expression")
+                                        egui::TextEdit::singleline(&mut row.description)
+                                            .min_size(cell.size())
+                                            .vertical_align(egui::Align::Center)
+                                            .hint_text("Description")
                                             .frame(crate::theme::input_frame()),
                                     )
-                                    .on_hover_text(cell_help(column))
+                                    .on_hover_text(cell_help(column - 1))
                                     .changed()
                             }
                             3 => {
                                 changed |= ui
                                     .add_sized(
                                         cell.size(),
-                                        egui::TextEdit::singleline(&mut row.unit)
+                                        egui::TextEdit::singleline(&mut row.expression)
+                                            .min_size(cell.size())
+                                            .vertical_align(egui::Align::Center)
+                                            .font(egui::TextStyle::Monospace)
+                                            .hint_text("Value or expression")
                                             .frame(crate::theme::input_frame()),
                                     )
-                                    .on_hover_text(cell_help(column))
+                                    .on_hover_text(cell_help(column - 1))
                                     .changed()
                             }
                             4 => {
+                                changed |= ui
+                                    .add_sized(
+                                        cell.size(),
+                                        egui::TextEdit::singleline(&mut row.unit)
+                                            .min_size(cell.size())
+                                            .vertical_align(egui::Align::Center)
+                                            .frame(crate::theme::input_frame()),
+                                    )
+                                    .on_hover_text(cell_help(column - 1))
+                                    .changed()
+                            }
+                            5 => {
                                 if let Some(value) = values.and_then(|v| v.values.get(&row.id)) {
-                                    ui.label(format!(
-                                        "{:.6} {}",
-                                        value.quantity.in_unit(value.unit).unwrap_or(0.0),
-                                        value.unit.symbol()
-                                    ))
-                                    .on_hover_text(value_help(value));
+                                    show_evaluated_value(ui, cell, value);
                                 } else {
-                                    ui.label("-");
+                                    ui.label(egui::RichText::new("—").monospace());
                                 }
                             }
-                            5 => changed |= ui.checkbox(&mut row.exposed, "").on_hover_text("Expose this default to symbols and external clients. A supplied value replaces its formula.").changed(),
-                            6 if !row.empty() || session.document().get(row.id).is_some() => {
-                                ui.horizontal(|ui| {
-                                    ui.spacing_mut().item_spacing=Vec2::new(4.,0.);
-                                    ui.vertical(|ui| {
-                                        ui.spacing_mut().item_spacing.y=0.;
-                                        if ui.add_enabled_ui(index>0,|ui|crate::icons::mini_button(ui,crate::icons::Icon::ArrowUp,&format!("Move {} up", row.name))).inner.clicked(){movement=Some((index,index-1));}
-                                        if ui.add_enabled_ui(can_move_down,|ui|crate::icons::mini_button(ui,crate::icons::Icon::ArrowDown,&format!("Move {} down", row.name))).inner.clicked(){movement=Some((index,index+1));}
-                                    });
-                                    if crate::icons::compact_button(ui,crate::icons::Icon::Trash,&format!("Delete parameter {}", row.name)).clicked(){delete=Some(index);}
-                                });
+                            6 => {
+                                changed |= ui
+                                    .checkbox(&mut row.exposed, "")
+                                    .on_hover_text(EXPOSE_HELP)
+                                    .changed()
+                            }
+                            7 if authored => {
+                                if crate::icons::compact_button(
+                                    ui,
+                                    crate::icons::Icon::Trash,
+                                    &format!("Delete parameter {}", row.name),
+                                )
+                                .clicked()
+                                {
+                                    delete = Some(index);
+                                }
                             }
                             _ => {}
                         },
@@ -573,11 +699,14 @@ impl ParameterEditor {
             self.rows.remove(index);
             changed = true;
         }
-        if let Some((a, b)) = movement
-            && b < self.rows.len()
-            && (!self.rows[b].empty() || session.document().get(self.rows[b].id).is_some())
+        if let Some((id, insertion)) = movement
+            && let Some(from) = self.rows.iter().position(|row| row.id == id)
+            && insertion != from
+            && insertion != from + 1
         {
-            self.rows.swap(a, b);
+            let row = self.rows.remove(from);
+            let to = insertion - usize::from(insertion > from);
+            self.rows.insert(to.min(self.rows.len()), row);
             changed = true;
         }
         self.ensure_blank_row();
@@ -586,6 +715,40 @@ impl ParameterEditor {
             ui.ctx().request_repaint();
         }
     }
+}
+
+fn show_evaluated_value(
+    ui: &mut egui::Ui,
+    cell: Rect,
+    value: &multicad_core::parameters::ParameterValue,
+) {
+    let text = format!(
+        "{:.6} {}",
+        value.quantity.in_unit(value.unit).unwrap_or(0.),
+        value.unit.symbol()
+    );
+    let font = FontId::monospace(11.);
+    let color = ui.visuals().text_color();
+    let painter = ui.painter().with_clip_rect(cell);
+    let integer_width = text.split_once('.').map_or(0., |(integer, _)| {
+        painter
+            .layout_no_wrap(integer.to_owned(), font.clone(), color)
+            .size()
+            .x
+    });
+    let galley = painter.layout_no_wrap(text.clone(), font, color);
+    let decimal_x = cell.left() + cell.width() * 0.34;
+    painter.galley(
+        Pos2::new(
+            decimal_x - integer_width,
+            cell.center().y - galley.size().y / 2.,
+        ),
+        galley,
+        color,
+    );
+    let response = ui.allocate_rect(cell, egui::Sense::hover());
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, &text));
+    response.on_hover_text(format!("{text} · {}", value_help(value)));
 }
 
 fn cell_help(column: usize) -> &'static str {

@@ -168,6 +168,10 @@ impl Application {
             self.project_export_ribbon(ui);
             return;
         }
+        if self.tab == PARAMETERS_TAB {
+            self.project_parameter_ribbon(ui);
+            return;
+        }
         if self.tab == MATERIALS_TAB {
             let project = self.current_mut();
             let editable = !project.editor.dirty();
@@ -184,6 +188,42 @@ impl Application {
                         editable,
                     );
                 });
+        }
+    }
+
+    fn project_parameter_ribbon(&mut self, ui: &mut egui::Ui) {
+        let tab = &self.registry.workspace(Mode::Parameters).tabs[PARAMETERS_TAB];
+        let height =
+            crate::ribbon_ui::tools_height(&self.registry, Mode::Parameters, tab, false, None);
+        let command = egui::Panel::top("project-parameter-ribbon")
+            .exact_size(height + RIBBON_BOTTOM_PAD)
+            .frame(
+                egui::Frame::new()
+                    .fill(Color32::BLACK)
+                    .inner_margin(egui::Margin {
+                        left: crate::theme::GUTTER,
+                        right: crate::theme::GUTTER,
+                        top: 0,
+                        bottom: RIBBON_BOTTOM_PAD as i8,
+                    }),
+            )
+            .show(ui, |ui| {
+                let ctx = ui.ctx().clone();
+                crate::ribbon_ui::show_selectable(
+                    ui,
+                    &self.registry,
+                    Mode::Parameters,
+                    tab,
+                    false,
+                    |command| self.enabled(command),
+                    |command, label| self.project_action_help(command, label, &ctx),
+                    |_| false,
+                )
+            })
+            .inner;
+        if let Some(command) = command {
+            self.execute(command, &[], Channel::Ui);
+            ui.ctx().request_repaint();
         }
     }
 
@@ -345,25 +385,27 @@ impl Application {
             self.project_overview(ui);
             return;
         }
-        egui::Panel::left("project-actions")
-            .exact_size(ACTION_WIDTH)
-            .frame(
-                egui::Frame::new()
-                    .fill(crate::theme::PANEL)
-                    .inner_margin(12),
-            )
-            .show(ui, |ui| {
-                egui::ScrollArea::vertical()
-                    .id_salt("project-action-scroll")
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| {
-                        ui.strong(Mode::Parameters.title());
-                        ui.add_space(8.);
-                        ui.spacing_mut().item_spacing.y = 6.;
-                        self.project_actions(ui, true);
-                    });
-            });
         let materials = self.tab == MATERIALS_TAB;
+        if materials {
+            egui::Panel::left("project-actions")
+                .exact_size(ACTION_WIDTH)
+                .frame(
+                    egui::Frame::new()
+                        .fill(crate::theme::PANEL)
+                        .inner_margin(12),
+                )
+                .show(ui, |ui| {
+                    egui::ScrollArea::vertical()
+                        .id_salt("project-action-scroll")
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            ui.strong(Mode::Parameters.title());
+                            ui.add_space(8.);
+                            ui.spacing_mut().item_spacing.y = 6.;
+                            self.project_actions(ui, true);
+                        });
+                });
+        }
         let project = self.current_mut();
         let was_pending = project.sketch.material_library().pending();
         egui::Frame::new()

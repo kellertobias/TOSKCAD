@@ -283,11 +283,10 @@ fn general_keeps_metadata_on_the_left_and_preserves_the_draft_between_tabs() {
     assert_eq!(app.current().session.document(), &source);
 }
 #[test]
-fn parameters_keep_left_actions_and_a_readable_table_without_a_ribbon() {
+fn parameters_put_actions_in_a_ribbon_and_keep_the_table_below_it() {
     for (size, density) in [
         (egui::vec2(1024., 600.), 1.),
         (egui::vec2(1024., 600.), 2.),
-        (egui::vec2(1100., 700.), 1.),
         (egui::vec2(1360., 860.), 1.),
         (egui::vec2(1360., 860.), 2.),
     ] {
@@ -300,16 +299,16 @@ fn parameters_keep_left_actions_and_a_readable_table_without_a_ribbon() {
             frame(&ctx, &mut app, size, vec![]).drop_without_applying_deltas();
         }
         let out = frame(&ctx, &mut app, size, vec![]);
-        assert!(egui::PanelState::load(&ctx, egui::Id::new("ribbon")).is_none());
         let header = egui::PanelState::load(&ctx, egui::Id::new("project-tabs"))
             .unwrap()
             .outer_rect;
-        let left = egui::PanelState::load(&ctx, egui::Id::new("project-actions"))
+        let ribbon = egui::PanelState::load(&ctx, egui::Id::new("project-parameter-ribbon"))
             .unwrap()
             .outer_rect;
+        assert!(egui::PanelState::load(&ctx, egui::Id::new("project-actions")).is_none());
         assert!(egui::PanelState::load(&ctx, egui::Id::new("parameters-metadata")).is_none());
-        assert!(left.top() <= header.bottom() + 1.);
-        let mut previous = header.bottom();
+        assert!((ribbon.top() - header.bottom()).abs() <= 1.);
+        let mut previous = 0.;
         for label in [
             "Apply and Rebuild",
             "Discard Edit",
@@ -320,78 +319,34 @@ fn parameters_keep_left_actions_and_a_readable_table_without_a_ribbon() {
             let (rect, enabled) = button(&out, label);
             assert!(!enabled, "clean baseline has no {label} action");
             assert!(
-                rect.left() >= left.left() + 6. && rect.right() <= left.right() - 6.,
-                "{label}: {rect:?} outside {left:?}"
+                ribbon.contains_rect(rect),
+                "{label}: {rect:?} outside {ribbon:?}"
             );
-            assert!(rect.top() > previous);
-            assert!(rect.bottom() < size.y - 36.);
-            assert!((rect.height() - 34.).abs() < 1.);
-            previous = rect.bottom();
-        }
-        let mut heading = None;
-        for shape in &out.shapes {
-            if let egui::Shape::Text(text) = &shape.shape {
-                if text.galley.text() == "Parameters" {
-                    heading = Some(text.pos);
-                }
-                assert_ne!(text.galley.text(), "Parts");
-            }
-            if let egui::Shape::Rect(rect) = &shape.shape {
-                assert!(
-                    !(rect.fill == Color32::BLACK
-                        && rect.rect.width() > size.x - 8.
-                        && rect.rect.height() > 60.
-                        && rect.rect.top() >= header.bottom() - 1.),
-                    "Project retained a black ribbon band"
-                );
-            }
-        }
-        let heading = heading.expect("parameter table heading");
-        assert!(heading.x >= left.right() + 12.);
-        assert!(heading.y < header.bottom() + 40.);
-        out.drop_without_applying_deltas();
-        if size.x <= 1100. {
-            frame(
-                &ctx,
-                &mut app,
-                size,
-                vec![
-                    egui::Event::PointerMoved(egui::pos2(
-                        (left.right() + size.x) * 0.5,
-                        header.bottom() + 100.,
-                    )),
-                    egui::Event::MouseWheel {
-                        phase: egui::TouchPhase::Move,
-                        unit: egui::MouseWheelUnit::Point,
-                        delta: egui::vec2(-1200., 0.),
-                        modifiers: Default::default(),
-                    },
-                ],
-            )
-            .drop_without_applying_deltas();
-            for _ in 0..16 {
-                frame(&ctx, &mut app, size, vec![]).drop_without_applying_deltas();
-            }
-            let out = frame(&ctx, &mut app, size, vec![]);
             assert!(
-                out.shapes.iter().any(|shape| match &shape.shape {
-                    egui::Shape::Text(text) if text.galley.text() == "Row" => {
-                        let rect = egui::Rect::from_min_size(text.pos, text.galley.size());
-                        shape.clip_rect.contains_rect(rect) && rect.right() < size.x
-                    }
-                    _ => false,
-                }),
-                "horizontal scrolling must make the final table column usable at the native minimum"
+                rect.left() >= previous,
+                "{label} follows the preceding tool"
             );
-            out.drop_without_applying_deltas();
+            previous = rect.right();
         }
-        // Returning from a ribbon workspace must also reclaim its vertical band.
-        app.mode = Mode::Model;
-        frame(&ctx, &mut app, size, vec![]).drop_without_applying_deltas();
-        app.mode = Mode::Parameters;
-        let out = frame(&ctx, &mut app, size, vec![]);
-        let (rect, _) = button(&out, "Apply and Rebuild");
-        assert!(rect.top() < header.bottom() + 60.);
+        assert!(out.shapes.iter().any(|shape| {
+            matches!(&shape.shape, egui::Shape::Text(text)
+                if text.galley.text() == "Parameters" && text.pos.y >= ribbon.bottom())
+        }));
+        fn search_x(shape: &egui::Shape) -> Option<f32> {
+            match shape {
+                egui::Shape::Text(text) if text.galley.text() == "Search parameters…" => {
+                    Some(text.pos.x)
+                }
+                egui::Shape::Vec(shapes) => shapes.iter().find_map(search_x),
+                _ => None,
+            }
+        }
+        let x = out
+            .shapes
+            .iter()
+            .find_map(|shape| search_x(&shape.shape))
+            .expect("search text is visible");
+        assert!(x >= size.x - 260., "search text at {x} in {size:?}");
         out.drop_without_applying_deltas();
     }
 }

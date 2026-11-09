@@ -148,7 +148,7 @@ fn a_filtered_offscreen_row_is_visible_immediately_and_actions_keep_its_identity
     frame(&ctx, &mut editor, &session, vec![]).drop_without_applying_deltas();
     let output = frame(&ctx, &mut editor, &session, vec![]);
     assert!(painted(&output, &target_name));
-    let label = format!("Move {target_name} up");
+    let label = format!("Reorder {target_name}");
     let bounds = output
         .platform_output
         .accesskit_update
@@ -180,6 +180,23 @@ fn a_filtered_offscreen_row_is_visible_immediately_and_actions_keep_its_identity
     )
     .drop_without_applying_deltas();
     frame(&ctx, &mut editor, &session, vec![click(false)]).drop_without_applying_deltas();
+    let output = frame(&ctx, &mut editor, &session, vec![]);
+    let move_up = text_center(&output, "Move up");
+    output.drop_without_applying_deltas();
+    let activate = |pressed| egui::Event::PointerButton {
+        pos: move_up,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: egui::Modifiers::NONE,
+    };
+    frame(
+        &ctx,
+        &mut editor,
+        &session,
+        vec![egui::Event::PointerMoved(move_up), activate(true)],
+    )
+    .drop_without_applying_deltas();
+    frame(&ctx, &mut editor, &session, vec![activate(false)]).drop_without_applying_deltas();
     assert_eq!(editor.rows[149].id, target);
     assert_eq!(editor.rows[150].id, previous);
     editor.apply(&mut session, Channel::Ui).unwrap();
@@ -225,6 +242,56 @@ fn a_filtered_offscreen_row_is_visible_immediately_and_actions_keep_its_identity
         .unwrap();
     editor.reload(&session);
     assert_eq!(editor.rows[149].id, target);
+}
+
+#[test]
+fn dragging_a_parameter_inserts_after_the_drop_target_and_keeps_the_blank_last() {
+    let session = session(3);
+    let mut editor = ParameterEditor::new(&session);
+    let ids: Vec<_> = editor.rows.iter().map(|row| row.id).collect();
+    let ctx = egui::Context::default();
+    ctx.enable_accesskit();
+    frame(&ctx, &mut editor, &session, vec![]).drop_without_applying_deltas();
+    let output = frame(&ctx, &mut editor, &session, vec![]);
+    let handle = |label: &str| {
+        let bounds = output
+            .platform_output
+            .accesskit_update
+            .as_ref()
+            .unwrap()
+            .nodes
+            .iter()
+            .find_map(|(_, node)| {
+                (node.label() == Some(label))
+                    .then(|| node.bounds())
+                    .flatten()
+            })
+            .unwrap();
+        egui::pos2(
+            ((bounds.x0 + bounds.x1) * 0.5) as f32,
+            ((bounds.y0 + bounds.y1) * 0.5) as f32,
+        )
+    };
+    let from = handle(&format!("Reorder {}", editor.rows[0].name));
+    let to = handle(&format!("Reorder {}", editor.rows[2].name)) + Vec2::new(6., 9.);
+    output.drop_without_applying_deltas();
+    let click = |pos, pressed| egui::Event::PointerButton {
+        pos,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: egui::Modifiers::NONE,
+    };
+    for events in [
+        vec![egui::Event::PointerMoved(from), click(from, true)],
+        vec![egui::Event::PointerMoved(to)],
+        vec![click(to, false)],
+    ] {
+        frame(&ctx, &mut editor, &session, events).drop_without_applying_deltas();
+    }
+    assert_eq!(
+        editor.rows.iter().map(|row| row.id).collect::<Vec<_>>(),
+        [ids[1], ids[2], ids[0], ids[3]]
+    );
 }
 
 #[test]
