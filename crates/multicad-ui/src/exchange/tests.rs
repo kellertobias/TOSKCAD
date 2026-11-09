@@ -5,6 +5,43 @@ use multicad_core::{
     project_file::ContentHash,
 };
 use std::{cell::RefCell, rc::Rc};
+
+#[test]
+fn export_rows_keep_their_bounds_on_hover_and_selection() {
+    let ctx = egui::Context::default();
+    let draw = |pointer: Option<egui::Pos2>, selected| {
+        let mut row = None;
+        ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(220., 160.),
+                )),
+                events: pointer.into_iter().map(egui::Event::PointerMoved).collect(),
+                ..Default::default()
+            },
+            |ui| {
+                row = Some(output_row(
+                    ui,
+                    "plate",
+                    "A print plate with a label longer than the sidebar can fit",
+                    Icon::PrintPlate,
+                    selected,
+                    true,
+                ));
+            },
+        )
+        .drop_without_applying_deltas();
+        row.unwrap()
+    };
+    draw(None, false);
+    let initial = draw(None, false);
+    let hovered = draw(Some(initial.rect.center()), false);
+    assert!(hovered.hovered());
+    assert_eq!(hovered.rect, initial.rect);
+    assert_eq!(draw(Some(initial.rect.center()), true).rect, initial.rect);
+}
+
 #[derive(Default)]
 pub(super) struct State {
     pub(super) requests: Vec<(EntityId, Document, u64, EntityId, Actor, bool)>,
