@@ -1,13 +1,9 @@
 //! Browse the same included/original-file Library used by Project.
-use super::{
-    SymbolAction,
-    inspector::{LibraryKey, PrimaryAction, PrimaryControls, focus_button},
-};
 pub(super) use crate::library::facets::{SearchIndex, definition_search};
 use crate::{
     egui,
     library::{
-        LibraryEntry, PreviewTextures,
+        LibraryEntry, LibraryThumbnails,
         facets::{CatalogFilters, SearchQuery, entry_search},
     },
 };
@@ -18,16 +14,17 @@ use std::sync::Arc;
 pub(super) struct Installed {
     entries: Arc<Vec<LibraryEntry>>,
     search: Vec<SearchIndex>,
-    previews: PreviewTextures,
+    previews: LibraryThumbnails,
     facets: CatalogFilters,
 }
 impl Installed {
-    pub fn set_entries(&mut self, entries: Arc<Vec<LibraryEntry>>) {
+    pub fn set_entries(&mut self, entries: Arc<Vec<LibraryEntry>>) -> bool {
         if Arc::ptr_eq(&self.entries, &entries) {
-            return;
+            return false;
         }
         self.search = entries.iter().map(entry_search).collect();
         self.entries = entries;
+        true
     }
     pub fn facets(&self) -> &CatalogFilters {
         &self.facets
@@ -35,67 +32,22 @@ impl Installed {
     pub fn show_filters(&mut self, ui: &mut egui::Ui) {
         self.facets.show(ui, &self.entries);
     }
-    pub fn show(
-        &mut self,
-        ui: &mut egui::Ui,
-        query: &SearchQuery,
-        primary: &mut PrimaryControls<'_>,
-    ) -> Option<SymbolAction> {
-        ui.strong("Installation Library");
-        ui.small("Included definitions and files listed with Add to Library. Place a pinned definition directly, or load a file to inspect and choose its definitions.");
-        let exact = self.facets.active() || query.has_structured_nominal();
-        let mut action = None;
-        let mut shown = 0;
-        for entry in self
-            .entries
+    pub fn entry(&self, index: usize) -> &LibraryEntry {
+        &self.entries[index]
+    }
+    pub fn matching<'a>(&'a self, query: &'a SearchQuery) -> impl Iterator<Item = usize> + 'a {
+        self.search
             .iter()
-            .zip(&self.search)
-            .filter(|(_, search)| search.matches(query, &self.facets))
-        {
-            let (entry, search) = entry;
-            shown += 1;
-            ui.push_id(entry.id, |ui| ui.group(|ui| {
-                let unavailable = entry.problem.as_deref().or_else(|| (entry.symbol_definitions == 0).then_some("No reusable definitions. Open this file and use Create symbol before placing it here."));
-                let place_action = || if exact {
-                    SymbolAction::OpenInstalled(entry.path.clone())
-                } else {
-                    SymbolAction::OpenInstalledForPlace(entry.path.clone())
-                };
-                primary.title(ui, LibraryKey::Installed(entry.id), &entry.name,
-                    unavailable.is_none(), || PrimaryAction::Request(place_action()));
-                if entry.origin == crate::library::LibraryOrigin::Bundled { ui.small("Included with ToskCAD"); }
-                if let Some(problem) = unavailable {
-                    ui.colored_label(egui::Color32::LIGHT_RED, problem);
-                }
-                ui.horizontal_wrapped(|ui| {
-                    let place = ui.add_enabled(unavailable.is_none(), egui::Button::new(if exact { "Choose matching definition" } else { "Place" }));
-                    let place = if let Some(reason) = unavailable { place.on_disabled_hover_text(reason) } else { place.on_hover_text("Choose this file's pinned definition and placement; Preview and Apply embed and place it together") };
-                    if focus_button(place) {
-                        // Re-read originals and let the exact filters inspect the
-                        // loaded definition before it can start a placement.
-                        action = Some(place_action());
-                    }
-                    if !exact && focus_button(ui.add_enabled(unavailable.is_none(), egui::Button::new("Load definitions"))) {
-                        action = Some(SymbolAction::OpenInstalled(entry.path.clone()));
-                    }
-                });
-                let preview_width = crate::controls::inspector_width(ui).min(140.);
-                self.previews.show(ui, entry.preview.as_ref(), egui::vec2(preview_width, 80.), &entry.name);
-                if !entry.description.is_empty() { ui.add(egui::Label::new(egui::RichText::new(&entry.description).small()).truncate()).on_hover_text(&entry.description); }
-                let path = entry.path.display().to_string();
-                ui.add(egui::Label::new(egui::RichText::new(&path).small()).truncate())
-                    .on_hover_text(path);
-                show_cards(ui, search, query, &self.facets);
-            }));
-        }
-        if shown == 0 {
-            if exact {
-                ui.small("No source recipe matches the hardware filters. Clear or change a filter to browse other files.");
-            } else {
-                ui.small("No matching listed files. Save a file with reusable symbols and choose Add to Library in Project.");
-            }
-        }
-        action
+            .enumerate()
+            .filter_map(move |(index, search)| search.matches(query, &self.facets).then_some(index))
+    }
+    pub fn show_preview(&mut self, ui: &mut egui::Ui, index: usize, size: egui::Vec2) {
+        let entry = &self.entries[index];
+        self.previews
+            .show(ui, entry.preview.as_ref(), size, &entry.name);
+    }
+    pub fn show_details(&self, ui: &mut egui::Ui, index: usize, query: &SearchQuery) {
+        show_cards(ui, &self.search[index], query, &self.facets);
     }
 }
 pub(super) fn show_cards(
@@ -172,89 +124,6 @@ mod tests {
             &SearchQuery::new(filter),
             &CatalogFilters::for_family(family),
         )
-    }
-    #[test]
-    fn installed_place_actions_precede_long_metadata_and_dimensions_without_scrolling() {
-        let card = MechanicalPartCard {
-            feature: EntityId::new(),
-            name: "Detailed hardware".into(),
-            family: "Fixture".into(),
-            symbol: Some((EntityId::new(), "1".into())),
-            recipe_facets: Default::default(),
-            profile_details: Vec::new(),
-            dimensions_mm: (0..48)
-                .map(|index| (format!("Dimension {index:02}"), index as f64))
-                .collect(),
-            representation: "Modeled fixture".into(),
-            designation: None,
-            source_url: None,
-            catalog_facts: None,
-            matches_reference_dimensions: true,
-            problem: None,
-        };
-        let entry = LibraryEntry {
-            origin: crate::library::LibraryOrigin::Bundled,
-            id: EntityId::new(),
-            document: EntityId::new(),
-            path: "/library/detailed-fixture.tcd".into(),
-            name: "Detailed fixture".into(),
-            description: "Long descriptive metadata ".repeat(40),
-            preview: None,
-            registered_unix_ms: 1,
-            symbol_definitions: 1,
-            mechanical_parts: vec![card],
-            problem: None,
-        };
-        let mut installed = Installed::default();
-        installed.set_entries(Arc::new(vec![entry]));
-        let ctx = egui::Context::default();
-        let frame = |installed: &mut Installed| {
-            ctx.run_ui(
-                egui::RawInput {
-                    screen_rect: Some(egui::Rect::from_min_size(
-                        egui::Pos2::ZERO,
-                        egui::vec2(250., 700.),
-                    )),
-                    ..Default::default()
-                },
-                |ui| {
-                    let mut selected = None;
-                    installed.show(
-                        ui,
-                        &SearchQuery::new(""),
-                        &mut PrimaryControls::new(&mut selected),
-                    );
-                },
-            )
-        };
-        frame(&mut installed).drop_without_applying_deltas();
-        let output = frame(&mut installed);
-        fn painted(shape: &egui::Shape, text: &str) -> Option<egui::Rect> {
-            match shape {
-                egui::Shape::Text(shape) if shape.galley.text() == text => {
-                    Some(egui::Rect::from_min_size(shape.pos, shape.galley.size()))
-                }
-                egui::Shape::Vec(shapes) => shapes.iter().find_map(|shape| painted(shape, text)),
-                _ => None,
-            }
-        }
-        let rect = |text| {
-            output
-                .shapes
-                .iter()
-                .find_map(|shape| painted(&shape.shape, text))
-                .unwrap_or_else(|| panic!("Missing painted {text}"))
-        };
-        let place = rect("Place");
-        let load = rect("Load definitions");
-        let title = rect("Detailed fixture");
-        assert!(place.top() > title.bottom());
-        assert!(
-            place.bottom() < 350. && load.bottom() < 350.,
-            "card actions must be immediately reachable before details"
-        );
-        assert!(place.left() >= 0. && load.right() <= 250.);
-        output.drop_without_applying_deltas();
     }
     #[test]
     fn hardware_search_keeps_family_and_dimensions_on_the_same_source_recipe() {

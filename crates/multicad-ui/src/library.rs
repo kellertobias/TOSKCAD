@@ -14,9 +14,9 @@ use multicad_core::{
     project_file::{ContentHash, ProjectCard, info::PreviewImage},
 };
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet, VecDeque},
     path::{Path, PathBuf},
-    sync::mpsc::{self, Receiver, Sender, TryRecvError},
+    sync::mpsc::{self, Receiver, Sender, SyncSender, TryRecvError},
 };
 
 #[derive(Clone, Debug, PartialEq)]
@@ -234,6 +234,186 @@ impl LibraryWorker {
         self.registering
     }
 }
+pub(crate) const PROJECT_CARD_GAP: f32 = 12.;
+pub(crate) const PROJECT_CARD_PADDING: f32 = 10.;
+
+pub(crate) fn project_card_columns(width: f32) -> (usize, f32) {
+    let gap = PROJECT_CARD_GAP;
+    let columns = (((width + gap) / (240. + gap)).floor() as usize).max(1);
+    (
+        columns,
+        (width - gap * (columns - 1) as f32) / columns as f32,
+    )
+}
+
+pub(crate) fn project_card_frame() -> egui::Frame {
+    egui::Frame::new()
+        .fill(egui::Color32::from_rgb(33, 44, 60))
+        .inner_margin(PROJECT_CARD_PADDING)
+        .corner_radius(5)
+}
+
+pub(crate) fn project_card_preview(width: f32) -> egui::Vec2 {
+    let width = (width - 2. * PROJECT_CARD_PADDING).max(1.);
+    egui::vec2(width, width * 9. / 16.)
+}
+
+pub(crate) fn paint_preview_placeholder(ui: &mut egui::Ui, size: egui::Vec2, label: &str) {
+    let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+    if ui.is_rect_visible(rect) {
+        preview_placeholder(ui, rect, label);
+    }
+}
+
+fn preview_placeholder(ui: &egui::Ui, rect: egui::Rect, label: &str) {
+    ui.painter()
+        .rect_filled(rect, 4, egui::Color32::from_rgb(36, 46, 60));
+    ui.painter().text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        label,
+        egui::FontId::proportional(11.),
+        egui::Color32::GRAY,
+    );
+}
+
+type ThumbnailResult = (ContentHash, Result<egui::ColorImage, String>);
+
+/// Small, bounded worker for thumbnails requested by visible Library tiles.
+struct ThumbnailWorker {
+    tx: SyncSender<(ContentHash, PreviewImage)>,
+    rx: Receiver<ThumbnailResult>,
+    pending: BTreeSet<ContentHash>,
+}
+
+impl ThumbnailWorker {
+    fn start(ctx: egui::Context) -> Result<Self, String> {
+        let (tx, jobs) = mpsc::sync_channel::<(ContentHash, PreviewImage)>(6);
+        let (results, rx) = mpsc::channel();
+        std::thread::Builder::new()
+            .name("multicad-library-thumbnails".into())
+            .spawn(move || {
+                while let Ok((key, image)) = jobs.recv() {
+                    if results
+                        .send((key, decode_preview(&image).map(thumbnail)))
+                        .is_err()
+                    {
+                        break;
+                    }
+                    ctx.request_repaint();
+                }
+            })
+            .map_err(|error| error.to_string())?;
+        Ok(Self {
+            tx,
+            rx,
+            pending: BTreeSet::new(),
+        })
+    }
+}
+
+fn thumbnail(image: egui::ColorImage) -> egui::ColorImage {
+    const MAX_EDGE: usize = 480;
+    let [width, height] = image.size;
+    let edge = width.max(height);
+    if edge <= MAX_EDGE {
+        return image;
+    }
+    let w = (width * MAX_EDGE / edge).max(1);
+    let h = (height * MAX_EDGE / edge).max(1);
+    let pixels = (0..h)
+        .flat_map(|y| {
+            let row = &image.pixels[(y * height / h) * width..][..width];
+            (0..w).map(move |x| row[x * width / w])
+        })
+        .collect();
+    egui::ColorImage::new([w, h], pixels)
+}
+
+#[derive(Default)]
+pub(crate) struct LibraryThumbnails {
+    worker: Option<Result<ThumbnailWorker, String>>,
+    textures: BTreeMap<ContentHash, Result<egui::TextureHandle, String>>,
+    order: VecDeque<ContentHash>,
+}
+
+impl LibraryThumbnails {
+    pub(crate) fn show(
+        &mut self,
+        ui: &mut egui::Ui,
+        image: Option<&PreviewImage>,
+        size: egui::Vec2,
+        name: &str,
+    ) {
+        let (rect, response) = ui.allocate_exact_size(size, egui::Sense::hover());
+        if !ui.is_rect_visible(rect) {
+            return;
+        }
+        let Some(image) = image else {
+            preview_placeholder(ui, rect, "No preview image");
+            return;
+        };
+        let worker = self
+            .worker
+            .get_or_insert_with(|| ThumbnailWorker::start(ui.ctx().clone()));
+        let worker = match worker {
+            Ok(worker) => worker,
+            Err(error) => {
+                preview_placeholder(ui, rect, "Preview unavailable");
+                response.on_hover_text(error.as_str());
+                return;
+            }
+        };
+        while let Ok((key, decoded)) = worker.rx.try_recv() {
+            worker.pending.remove(&key);
+            if self.order.len() >= 64
+                && let Some(old) = self.order.pop_front()
+            {
+                self.textures.remove(&old);
+            }
+            self.order.push_back(key);
+            let texture = decoded.map(|image| {
+                ui.ctx()
+                    .load_texture(format!("library-preview-{key}"), image, Default::default())
+            });
+            self.textures.insert(key, texture);
+        }
+        let key = image.content();
+        match self.textures.get(&key) {
+            Some(Ok(texture)) => {
+                let dimensions = egui::vec2(image.width() as f32, image.height() as f32);
+                let fitted = dimensions * (size.x / dimensions.x).min(size.y / dimensions.y);
+                let image_rect = egui::Rect::from_center_size(rect.center(), fitted);
+                ui.painter().rect_filled(rect, 0, crate::theme::PANEL);
+                ui.new_child(egui::UiBuilder::new().max_rect(image_rect))
+                    .put(
+                        image_rect,
+                        egui::Image::new((texture.id(), fitted)).alt_text(name),
+                    );
+            }
+            Some(Err(error)) => {
+                preview_placeholder(ui, rect, "Preview unavailable");
+                response.on_hover_text(error);
+            }
+            None => {
+                if !worker.pending.contains(&key) {
+                    match worker.tx.try_send((key, image.clone())) {
+                        Ok(()) => {
+                            worker.pending.insert(key);
+                        }
+                        Err(mpsc::TrySendError::Full(_)) => {}
+                        Err(mpsc::TrySendError::Disconnected(_)) => {
+                            preview_placeholder(ui, rect, "Preview unavailable");
+                            return;
+                        }
+                    }
+                }
+                preview_placeholder(ui, rect, "Loading preview…");
+            }
+        }
+    }
+}
+
 /// Decoded preview textures keyed by image content.
 #[derive(Default)]
 pub struct PreviewTextures {
@@ -315,15 +495,7 @@ impl PreviewTextures {
                     Some(Err(_)) => "Preview unavailable",
                     _ => "No preview image",
                 };
-                ui.painter()
-                    .rect_filled(rect, 4, egui::Color32::from_rgb(36, 46, 60));
-                ui.painter().text(
-                    rect.center(),
-                    egui::Align2::CENTER_CENTER,
-                    text,
-                    egui::FontId::proportional(11.),
-                    egui::Color32::GRAY,
-                );
+                preview_placeholder(ui, rect, text);
                 if let Some(Err(error)) = other {
                     response.on_hover_text(error);
                 }

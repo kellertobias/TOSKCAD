@@ -1,10 +1,10 @@
 use super::*;
-use crate::library::PreviewTextures;
+use crate::library::{
+    PROJECT_CARD_GAP, PreviewTextures, project_card_columns, project_card_frame,
+    project_card_preview,
+};
 use crate::recent_projects::{RecentProject, RecentStore, RecentView, RecentWorker};
 use multicad_core::project_file::info::FileInfo;
-const CARD_GAP: f32 = 12.;
-const CARD_PADDING: f32 = 10.;
-const MIN_CARD_WIDTH: f32 = 240.;
 
 fn recent_card(
     ui: &mut egui::Ui,
@@ -20,18 +20,15 @@ fn recent_card(
         .file_name()
         .unwrap_or(entry.path.as_os_str())
         .to_string_lossy();
-    let response = egui::Frame::new()
-        .fill(Color32::from_rgb(33, 44, 60))
-        .inner_margin(CARD_PADDING)
-        .corner_radius(5)
+    let response = project_card_frame()
         .show(ui, |ui| {
-            let thumbnail_width = width - 2. * CARD_PADDING;
-            ui.set_width(thumbnail_width);
+            let thumbnail = project_card_preview(width);
+            ui.set_width(thumbnail.x);
             ui.spacing_mut().item_spacing.y = 3.;
             textures.show_framed(
                 ui,
                 info.and_then(|info| info.preview.as_ref()),
-                egui::vec2(thumbnail_width, thumbnail_width * 9. / 16.),
+                thumbnail,
                 "Project preview",
             );
             ui.add_space(3.);
@@ -291,9 +288,8 @@ impl Application {
     fn recent_grid(&mut self, ui: &mut egui::Ui) -> Option<PathBuf> {
         let enabled = !self.file_busy();
         let width = ui.available_width();
-        let columns = (((width + CARD_GAP) / (MIN_CARD_WIDTH + CARD_GAP)).floor() as usize).max(1);
-        let card_width = (width - CARD_GAP * (columns - 1) as f32) / columns as f32;
-        ui.spacing_mut().item_spacing = egui::Vec2::splat(CARD_GAP);
+        let (columns, card_width) = project_card_columns(width);
+        ui.spacing_mut().item_spacing = egui::Vec2::splat(PROJECT_CARD_GAP);
         let mut selected = None;
         for row in self.recents.chunks(columns) {
             ui.horizontal(|ui| {

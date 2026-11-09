@@ -130,7 +130,7 @@ impl FacetValue<'_> {
     }
 }
 
-#[derive(Default)]
+#[derive(Clone, Default, PartialEq)]
 pub(crate) struct CatalogFilters {
     selected: [Option<FacetValue<'static>>; Facet::ALL.len()],
 }

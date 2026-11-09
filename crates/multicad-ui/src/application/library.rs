@@ -12,7 +12,7 @@ use std::{collections::BTreeSet, path::Path};
 #[derive(Default)]
 pub(super) struct LibraryState {
     worker: Option<LibraryWorker>,
-    pub(super) entries: Vec<LibraryEntry>,
+    pub(super) entries: std::sync::Arc<Vec<LibraryEntry>>,
     error: Option<String>,
     pub(super) status: Option<(String, bool)>,
     pub(super) cards: BTreeMap<PathBuf, Result<ProjectCard, String>>,
@@ -55,7 +55,7 @@ impl Application {
         );
         match event {
             LibraryEvent::Loaded(Ok(entries)) => {
-                self.library.entries = entries;
+                self.library.entries = entries.into();
                 self.library.error = None;
             }
             LibraryEvent::Loaded(Err(error)) => {
@@ -64,7 +64,7 @@ impl Application {
             LibraryEvent::Removed(result) => {
                 let (message, error) = match result {
                     Ok(entries) => {
-                        self.library.entries = entries;
+                        self.library.entries = entries.into();
                         self.library.error = None;
                         (
                             "Library listing removed. The project file is unchanged.".into(),
@@ -83,7 +83,7 @@ impl Application {
             LibraryEvent::Registered { result, .. } => match result {
                 Ok((receipt, entries)) => {
                     let message = receipt.message();
-                    self.library.entries = entries;
+                    self.library.entries = entries.into();
                     self.library.error = None;
                     self.library.status = Some((message.clone(), false));
                     self.message = message;
@@ -129,7 +129,7 @@ impl Application {
             }
         }
         if refresh {
-            let entries = std::sync::Arc::new(self.library.entries.clone());
+            let entries = self.library.entries.clone();
             for project in &mut self.projects {
                 project.sketch.set_installed_symbol_library(entries.clone());
             }

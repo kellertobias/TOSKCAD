@@ -1721,6 +1721,9 @@ fn compact_library_scrolls_catalogue_between_fixed_search_close_and_placement() 
     let close = point(&output, "Close");
     let place = point(&output, "Place selected");
     let first = point(&output, "Fixture 0");
+    let second = point(&output, "Fixture 1");
+    assert!(second.x > first.x && (second.y - first.y).abs() < 1.);
+    assert_eq!(painted_text_count(&output, "Fixture 29"), 0);
     assert!(close.y < open.y && open.y < first.y && first.y < place.y && place.y < height);
     assert!(
         [open, close, place, first]
@@ -1751,13 +1754,14 @@ fn compact_library_scrolls_catalogue_between_fixed_search_close_and_placement() 
         .drop_without_applying_deltas();
     }
     let (output, _) = frame(&ctx, &mut c, &mut session, vec![], height);
+    point(&output, "Fixture 29");
     assert_eq!(point(&output, "Close"), close);
     assert_eq!(point(&output, "Place selected"), place);
     output.drop_without_applying_deltas();
     click(&ctx, &mut c, &mut session, place, height);
     assert!(matches!(
         c.take_action(),
-        Some(SymbolAction::OpenInstalledForPlace(_))
+        Some(SymbolAction::OpenInstalledForPlace(path)) if path.ends_with("0.tcd")
     ));
     click(&ctx, &mut c, &mut session, close, height);
     assert!(!c.active());

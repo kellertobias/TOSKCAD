@@ -9,9 +9,7 @@ impl Application {
             if project.sketch.connection_needs_library() && !self.library.entries.is_empty() {
                 project
                     .sketch
-                    .set_installed_symbol_library(std::sync::Arc::new(
-                        self.library.entries.clone(),
-                    ));
+                    .set_installed_symbol_library(self.library.entries.clone());
             }
         }
         let requests = self

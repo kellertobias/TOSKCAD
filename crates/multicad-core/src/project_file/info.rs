@@ -27,6 +27,7 @@ pub struct PreviewImage {
     width: u32,
     height: u32,
     png: Arc<[u8]>,
+    content: ContentHash,
 }
 impl PreviewImage {
     pub fn from_png(bytes: impl Into<Arc<[u8]>>) -> Result<Self, String> {
@@ -48,7 +49,13 @@ impl PreviewImage {
                 "The preview image is {width}×{height} px; use at most {MAX_PREVIEW_SIDE}×{MAX_PREVIEW_SIDE} px."
             ));
         }
-        Ok(Self { width, height, png })
+        let content = ContentHash::of(&png);
+        Ok(Self {
+            width,
+            height,
+            png,
+            content,
+        })
     }
     pub fn width(&self) -> u32 {
         self.width
@@ -60,7 +67,7 @@ impl PreviewImage {
         &self.png
     }
     pub fn content(&self) -> ContentHash {
-        ContentHash::of(&self.png)
+        self.content
     }
 }
 

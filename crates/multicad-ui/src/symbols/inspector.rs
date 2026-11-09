@@ -3,7 +3,9 @@ use super::{
     fields::{self, entity_choice, entity_label},
     forms::{Form, Operation},
 };
-use crate::{controls, egui, library::facets::SearchQuery};
+use crate::{controls, egui};
+mod library_browser;
+pub(super) use library_browser::{LibraryBrowser, show_library};
 use multicad_core::{
     commands::Session,
     document::{Document, EntityData, EntityId},
@@ -243,285 +245,6 @@ fn transition(form: &mut Form, document: &Document, next: Next) -> Result<(), St
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(super) enum LibraryKey {
-    Loaded(ContentHash),
-    Embedded(EntityId),
-    Installed(EntityId),
-}
-
-pub(super) enum PrimaryAction {
-    Loaded(usize),
-    Embedded(EntityId),
-    Request(SymbolAction),
-}
-
-#[derive(Default)]
-pub(super) struct LibraryBrowser {
-    selected: Option<LibraryKey>,
-    focused_search: bool,
-    filter: String,
-    scroll_to_top: bool,
-}
-
-impl LibraryBrowser {
-    pub(super) fn reset_catalogue(&mut self) {
-        self.selected = None;
-        self.scroll_to_top = true;
-    }
-}
-
-pub(super) struct PrimaryControls<'a> {
-    selected: &'a mut Option<LibraryKey>,
-    choice: Option<(LibraryKey, String, PrimaryAction)>,
-}
-
-impl<'a> PrimaryControls<'a> {
-    pub(super) fn new(selected: &'a mut Option<LibraryKey>) -> Self {
-        Self {
-            selected,
-            choice: None,
-        }
-    }
-
-    pub(super) fn title(
-        &mut self,
-        ui: &mut egui::Ui,
-        key: LibraryKey,
-        name: &str,
-        enabled: bool,
-        action: impl FnOnce() -> PrimaryAction,
-    ) {
-        if !enabled {
-            ui.strong(name);
-            return;
-        }
-        let response = ui.selectable_label(
-            *self.selected == Some(key),
-            egui::RichText::new(name).strong(),
-        );
-        if response.gained_focus() {
-            response.scroll_to_me(Some(egui::Align::Center));
-        }
-        if response.clicked() || response.has_focus() {
-            *self.selected = Some(key);
-        }
-        if self.choice.is_none() || *self.selected == Some(key) {
-            self.choice = Some((key, name.to_owned(), action()));
-        }
-    }
-}
-
-pub(super) fn show_library(
-    form: &mut Form,
-    browser: &mut LibraryBrowser,
-    ui: &mut egui::Ui,
-    session: &Session,
-    catalogue: Catalogue<'_>,
-    enabled: bool,
-    failure: Option<&str>,
-) -> (Option<SymbolAction>, Option<String>, bool) {
-    controls::inspector_layout(ui);
-    let close = ui
-        .horizontal(|ui| {
-            ui.heading("Library");
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.button("Close")
-                    .on_hover_text("Close Library (Escape)")
-                    .clicked()
-            })
-            .inner
-        })
-        .inner;
-    let mut action = None;
-    let mut next = None;
-    let document = session.document();
-    ui.add_enabled_ui(enabled, |ui| {
-        let label = ui.label("Filter symbols");
-        let search = ui
-            .add(
-                egui::TextEdit::singleline(&mut form.filter)
-                    .id_salt("library-search")
-                    .hint_text("Search by name, size, or M3")
-                    .desired_width(controls::inspector_width(ui)),
-            )
-            .labelled_by(label.id);
-        if !browser.focused_search {
-            search.request_focus();
-            browser.focused_search = true;
-        }
-        if search.changed() {
-            form.changed();
-        }
-        if ui
-            .button("Open library file…")
-            .on_hover_text("Load definitions without changing this project")
-            .clicked()
-        {
-            action = Some(SymbolAction::ImportLibrary);
-        }
-    });
-
-    if browser.filter != form.filter {
-        browser.filter.clone_from(&form.filter);
-        browser.reset_catalogue();
-    }
-    let filter = SearchQuery::new(&form.filter);
-    let catalogue_height = (ui.available_height() - 61.).max(35.);
-    let mut scroll = egui::ScrollArea::vertical()
-        .id_salt("library-catalogue")
-        .max_height(catalogue_height)
-        .auto_shrink([false, false]);
-    if std::mem::take(&mut browser.scroll_to_top) {
-        scroll = scroll.vertical_scroll_offset(0.);
-    }
-    let mut primary = PrimaryControls::new(&mut browser.selected);
-    scroll.show(ui, |ui| {
-            if let Some(failure) = failure {
-                ui.colored_label(egui::Color32::LIGHT_RED, failure);
-            }
-            ui.add_enabled_ui(enabled, |ui| {
-                catalogue.installed.show_filters(ui);
-                ui.small("M3 matches a 3 mm nominal diameter. Other terms search names and source dimensions.");
-                let facets = catalogue.installed.facets();
-                if !catalogue.library.is_empty() {
-                    ui.separator();
-                    ui.strong("Loaded library · choose a definition to place");
-                    let mut shown = 0;
-                    for (index, ((definition, pin), search)) in catalogue.library.iter()
-                        .zip(catalogue.library_pins).zip(catalogue.library_search).enumerate()
-                    {
-                        if !search.matches(&filter, facets) {
-                            continue;
-                        }
-                        shown += 1;
-                        ui.push_id(pin.0, |ui| ui.group(|ui| {
-                            let embedded = catalogue.embedded.iter().any(|(id, existing)| {
-                                existing.symbol == definition.symbol && catalogue.embedded_pins.get(id) == Some(pin)
-                            });
-                            let unavailable = if super::architecture::role(definition).is_some() {
-                                Some("Architectural construction needs a path and level. Import explicitly, then Draw wall or Draw fence.".to_string())
-                            } else {
-                                symbols::library_placement_definition(document, definition).err().map(|error| error.to_string())
-                            };
-                            primary.title(ui, LibraryKey::Loaded(*pin), &definition.name,
-                                unavailable.is_none(), || PrimaryAction::Loaded(index));
-                            summary_details(ui, definition);
-                            if embedded {
-                                ui.small("This exact revision is embedded");
-                            }
-                            if let Some(reason) = &unavailable {
-                                ui.colored_label(egui::Color32::LIGHT_RED, reason);
-                            }
-                            if focus_button(ui.add_enabled(unavailable.is_none(), egui::Button::new("Place"))
-                                .on_hover_text("Preview and Apply embed this exact pin and place one occurrence in one transaction"))
-                            {
-                                next = Some(Next::PlaceLibrary(Box::new(definition.clone())));
-                            }
-                            if !embedded && focus_button(ui.button("Import definition")
-                                .on_hover_text("Embed this immutable definition without placing an occurrence"))
-                            {
-                                next = Some(Next::Import(Box::new(definition.clone())));
-                            }
-                            super::installed::show_cards(ui, search, &filter, facets);
-                        }));
-                    }
-                    if shown == 0 {
-                        ui.label("No matching library symbols loaded");
-                    }
-                }
-                if !catalogue.embedded.is_empty() {
-                    ui.separator();
-                    ui.strong("Embedded in this project");
-                    let mut shown = 0;
-                    for (id, definition) in catalogue.embedded {
-                        let search = &catalogue.embedded_search[id];
-                        if !search.matches(&filter, facets) {
-                            continue;
-                        }
-                        shown += 1;
-                        ui.push_id(*id, |ui| ui.group(|ui| {
-                            let construction = super::architecture::role(definition);
-                            let request = construction.map(|role| SymbolAction::DrawConstruction {
-                                definition: *id,
-                                role,
-                            });
-                            primary.title(ui, LibraryKey::Embedded(*id), &definition.name, true, || {
-                                request.clone().map_or(PrimaryAction::Embedded(*id), PrimaryAction::Request)
-                            });
-                            summary_details(ui, definition);
-                            if let Some(SymbolAction::DrawConstruction { role, .. }) = request.as_ref() {
-                                let label = match role {
-                                    symbols::architecture::ArchitectureRole::Wall => "Draw wall",
-                                    symbols::architecture::ArchitectureRole::Fence => "Draw fence",
-                                };
-                                if focus_button(ui.button(label)) {
-                                    action = request;
-                                }
-                            } else if focus_button(ui.button("Place")
-                                .on_hover_text("Place this pinned definition; dynamic symbols ask for exposed values"))
-                            {
-                                next = Some(Next::Place(*id));
-                            }
-                            ui.horizontal_wrapped(|ui| {
-                                if focus_button(ui.small_button("Save definition…")) {
-                                    action = Some(SymbolAction::SaveDefinition(*id));
-                                }
-                                if focus_button(ui.small_button("Compare update")
-                                    .on_hover_text("Choose a revision explicitly; this never upgrades instances automatically"))
-                                {
-                                    next = Some(Next::Update(*id));
-                                }
-                            });
-                            super::installed::show_cards(ui, search, &filter, facets);
-                        }));
-                    }
-                    if shown == 0 {
-                        ui.label("No matching embedded symbols");
-                    }
-                }
-                ui.separator();
-                if let Some(installed_action) = catalogue.installed.show(ui, &filter, &mut primary) {
-                    action = Some(installed_action);
-                }
-            });
-        });
-    let choice = primary.choice;
-    browser.selected = choice.as_ref().map(|(key, _, _)| *key);
-    ui.separator();
-    ui.horizontal(|ui| {
-        let label = match choice.as_ref().map(|(_, _, action)| action) {
-            Some(PrimaryAction::Request(SymbolAction::OpenInstalled(_))) => {
-                "Choose matching definition"
-            }
-            Some(PrimaryAction::Request(SymbolAction::DrawConstruction { .. })) => "Draw selected",
-            _ => "Place selected",
-        };
-        let place = ui.add_enabled(
-            enabled && choice.is_some(),
-            egui::Button::new(label)
-                .fill(ui.visuals().selection.bg_fill)
-                .min_size(egui::vec2(115., 30.)),
-        );
-        if let Some((_, name, command)) = choice {
-            ui.add(egui::Label::new(format!("Selected: {name}")).truncate());
-            if place.clicked() {
-                match command {
-                    PrimaryAction::Loaded(index) => {
-                        next = Some(Next::PlaceLibrary(Box::new(
-                            catalogue.library[index].clone(),
-                        )));
-                    }
-                    PrimaryAction::Embedded(id) => next = Some(Next::Place(id)),
-                    PrimaryAction::Request(request) => action = Some(request),
-                }
-            }
-        }
-    });
-    let error = next.and_then(|next| transition(form, document, next).err());
-    (action, error, close)
-}
-
 pub(super) fn focus_button(response: egui::Response) -> bool {
     if response.gained_focus() {
         response.scroll_to_me(Some(egui::Align::Center));
@@ -542,7 +265,11 @@ fn summary_details(ui: &mut egui::Ui, definition: &SymbolDefinition) {
             SymbolKind::Dynamic => "Dynamic",
         }
     ));
-    ui.small(format!(
+    ui.small(definition_input_summary(definition));
+}
+
+fn definition_input_summary(definition: &SymbolDefinition) -> String {
+    format!(
         "{} exposed inputs · {}",
         super::architecture::input_count(definition),
         match super::architecture::role(definition) {
@@ -551,7 +278,7 @@ fn summary_details(ui: &mut egui::Ui, definition: &SymbolDefinition) {
             None if definition.plan.is_some() => "Linked 2D/3D",
             None => "3D",
         }
-    ));
+    )
 }
 
 fn instance_label(document: &Document, id: EntityId) -> String {

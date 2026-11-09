@@ -6,7 +6,7 @@ use crate::{
     viewport::{Scene, SceneBackend, SceneStamp, VisibilityFilter},
 };
 use multicad_core::{
-    commands::{Actor, Channel, Prepared, Request, Session},
+    commands::{Actor, Channel, Prepared, Session, SessionStamp},
     document::EntityId,
     project_file::{ContentHash, ProjectResources},
     symbols::SymbolDefinition,
@@ -16,9 +16,11 @@ use std::{
     sync::Arc,
 };
 struct Scope {
-    guard: Prepared,
-    source: ContentHash,
+    stamp: SessionStamp,
     resources: ProjectResources,
+    catalogue: Arc<EmbeddedCatalogue>,
+}
+struct EmbeddedCatalogue {
     embedded: Vec<(EntityId, SymbolDefinition)>,
     embedded_pins: BTreeMap<EntityId, ContentHash>,
     embedded_search: BTreeMap<EntityId, super::installed::SearchIndex>,
@@ -42,6 +44,7 @@ struct Handoff {
 pub struct SymbolController {
     pub(super) form: Option<Form>,
     scope: Option<Scope>,
+    embedded_cache: Option<(SessionStamp, Arc<EmbeddedCatalogue>)>,
     auto_preview: Schedule,
     backend: Option<Box<dyn SceneBackend>>,
     candidate: Option<Candidate>,
@@ -61,7 +64,9 @@ pub struct SymbolController {
 }
 impl SymbolController {
     pub fn set_installed_library(&mut self, entries: Arc<Vec<crate::library::LibraryEntry>>) {
-        self.installed.set_entries(entries);
+        if self.installed.set_entries(entries) {
+            self.library_browser.reset_catalogue();
+        }
     }
     pub fn set_backend(&mut self, backend: Box<dyn SceneBackend>) {
         self.cancel();
@@ -141,10 +146,10 @@ impl SymbolController {
         resources: &ProjectResources,
         _scene: Option<&Arc<Scene>>,
         selection: SymbolSelection,
-        channel: Channel,
+        _channel: Channel,
     ) -> Result<(), String> {
         let form = Form::new(kind, session.document(), selection)?;
-        self.open(form, session, resources, channel)
+        self.open(form, session, resources)
     }
     pub fn begin_existing(
         &mut self,
@@ -152,13 +157,12 @@ impl SymbolController {
         resources: &ProjectResources,
         _scene: Option<&Arc<Scene>>,
         instance: EntityId,
-        channel: Channel,
+        _channel: Channel,
     ) -> Result<(), String> {
         self.open(
             Form::existing(session.document(), instance)?,
             session,
             resources,
-            channel,
         )
     }
     fn open(
@@ -166,7 +170,6 @@ impl SymbolController {
         form: Form,
         session: &Session,
         resources: &ProjectResources,
-        channel: Channel,
     ) -> Result<(), String> {
         if self.active() {
             return Err("Apply or cancel the active symbol controls first".into());
@@ -174,36 +177,41 @@ impl SymbolController {
         if form.authoring() && !self.has_backend() {
             return Err("Native symbol preview is unavailable".into());
         }
-        let guard = session
-            .prepare(Request {
-                expected_revision: session.revision(),
-                actor: Actor::local(channel),
-                label: "Open symbol controls".into(),
-                edits: vec![],
-            })
-            .map_err(|e| e.to_string())?;
-        let embedded =
-            multicad_core::symbols::definitions(session.document()).map_err(|e| e.to_string())?;
-        let embedded_search = embedded
-            .iter()
-            .map(|(id, definition)| (*id, super::installed::definition_search(definition)))
-            .collect();
-        let embedded_pins = embedded
-            .iter()
-            .map(|(id, definition)| {
-                definition
-                    .pin()
-                    .map(|pin| (*id, pin))
-                    .map_err(|e| e.to_string())
-            })
-            .collect::<Result<_, _>>()?;
+        let stamp = session.stamp();
+        let catalogue = if let Some((_, catalogue)) = self
+            .embedded_cache
+            .as_ref()
+            .filter(|(cached, _)| *cached == stamp)
+        {
+            Arc::clone(catalogue)
+        } else {
+            let embedded = multicad_core::symbols::definitions(session.document())
+                .map_err(|error| error.to_string())?;
+            let embedded_search = embedded
+                .iter()
+                .map(|(id, definition)| (*id, super::installed::definition_search(definition)))
+                .collect();
+            let embedded_pins = embedded
+                .iter()
+                .map(|(id, definition)| {
+                    definition
+                        .pin()
+                        .map(|pin| (*id, pin))
+                        .map_err(|error| error.to_string())
+                })
+                .collect::<Result<_, _>>()?;
+            let catalogue = Arc::new(EmbeddedCatalogue {
+                embedded,
+                embedded_search,
+                embedded_pins,
+            });
+            self.embedded_cache = Some((stamp, Arc::clone(&catalogue)));
+            catalogue
+        };
         self.scope = Some(Scope {
-            embedded_search,
-            embedded,
-            embedded_pins,
-            guard,
-            source: ContentHash::document(session.document())?,
+            stamp,
             resources: resources.clone(),
+            catalogue,
         });
         self.library_epoch = self
             .library_epoch
@@ -219,12 +227,10 @@ impl SymbolController {
     }
     fn current(&self, session: &Session, resources: &ProjectResources) -> Result<(), String> {
         let scope = self.scope.as_ref().ok_or("Open symbol controls first")?;
-        session.validate_preview(&scope.guard).map_err(|_| {
+        session.validate_stamp(&scope.stamp).map_err(|_| {
             "The source session changed; cancel and reopen these symbol controls".to_string()
         })?;
-        if &scope.resources != resources
-            || ContentHash::document(session.document())? != scope.source
-        {
+        if &scope.resources != resources {
             return Err(
                 "Source or project resources changed; cancel and reopen the symbol controls".into(),
             );
@@ -587,7 +593,7 @@ impl SymbolController {
             .map(String::as_str)
             .or(self.error.as_deref());
         let version = self.form.as_ref()?.version;
-        let scope = self.scope.as_ref()?;
+        let catalogue = &self.scope.as_ref()?.catalogue;
         let size = ctx.content_rect().size();
         let id = egui::Id::new(("symbol-library", session.document().id()));
         let modal = egui::Modal::new(id)
@@ -607,9 +613,9 @@ impl SymbolController {
                     ui,
                     session,
                     super::inspector::Catalogue {
-                        embedded: &scope.embedded,
-                        embedded_pins: &scope.embedded_pins,
-                        embedded_search: &scope.embedded_search,
+                        embedded: &catalogue.embedded,
+                        embedded_pins: &catalogue.embedded_pins,
+                        embedded_search: &catalogue.embedded_search,
                         library: &self.library,
                         library_pins: &self.library_pins,
                         library_search: &self.library_search,
@@ -667,9 +673,9 @@ impl SymbolController {
             ui,
             session,
             super::inspector::Catalogue {
-                embedded: &self.scope.as_ref()?.embedded,
-                embedded_pins: &self.scope.as_ref()?.embedded_pins,
-                embedded_search: &self.scope.as_ref()?.embedded_search,
+                embedded: &self.scope.as_ref()?.catalogue.embedded,
+                embedded_pins: &self.scope.as_ref()?.catalogue.embedded_pins,
+                embedded_search: &self.scope.as_ref()?.catalogue.embedded_search,
                 library: &self.library,
                 library_pins: &self.library_pins,
                 library_search: &self.library_search,

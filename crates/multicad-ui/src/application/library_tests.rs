@@ -529,7 +529,8 @@ fn compact_file_metadata_keeps_registration_without_repeating_the_installation_c
             LibraryOrigin::ListedOriginal,
             Some("File is missing".into()),
         ),
-    ];
+    ]
+    .into();
     let ctx = egui::Context::default();
     crate::theme::configure(&ctx);
     ctx.all_styles_mut(|style| style.animation_time = 0.);

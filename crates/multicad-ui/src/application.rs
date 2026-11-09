@@ -1211,7 +1211,7 @@ impl Application {
                 } else {
                     crate::symbols::SymbolTool::Library
                 };
-                let installed = std::sync::Arc::new(self.library.entries.clone());
+                let installed = self.library.entries.clone();
                 let p = self.current_mut();
                 p.sketch.set_installed_symbol_library(installed);
                 p.sketch
@@ -1368,7 +1368,7 @@ impl Application {
                 if !matches!(self.mode, Mode::Sketch | Mode::Model) {
                     return Err("Open Sketch or Model before starting a modeling tool".into());
                 }
-                let installed = std::sync::Arc::new(self.library.entries.clone());
+                let installed = self.library.entries.clone();
                 let project = self.current_mut();
                 if let Some(preset) = wood_preset {
                     project.sketch.begin_wood_preset(
