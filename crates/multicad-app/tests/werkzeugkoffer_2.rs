@@ -6,11 +6,12 @@ mod demo;
 use multicad_core::{
     commands::{Actor, Channel, Request, Session},
     document::{EntityData, EntityId, Mutation},
+    drawings,
     exchange::read_print_plate,
     model::{prepare_apply_pose, read_saved_motion_study},
     project_file,
 };
-use multicad_model::{Compiler, EvaluationCache, Model};
+use multicad_model::{Compiler, DrawingProviders, EvaluationCache, Model};
 use std::path::Path;
 
 fn compiler() -> Compiler {
@@ -68,6 +69,31 @@ fn shipped() -> Session {
     )
     .unwrap();
     Session::new(loaded.project.document).unwrap()
+}
+
+#[test]
+fn bundled_plywood_drawing_stays_inside_its_printable_area() {
+    let session = shipped();
+    let document = session.document();
+    let revision = session.revision();
+    let book = drawings::books(document).next().unwrap();
+    let source = drawings::read(document, book).unwrap();
+    let [page] = source.pages.as_slice() else {
+        panic!("Expected one fabrication page");
+    };
+    let model = compiler().compile(document, revision).unwrap();
+    let drawing = model
+        .drawing_page(document, revision, &DrawingProviders::default(), page.id)
+        .unwrap();
+    assert_eq!(
+        drawing
+            .checked_page(document, revision, book, page.id)
+            .unwrap()
+            .len(),
+        2
+    );
+    let conflicts = drawings::page_conflicts(page, 0, 1, &drawing).unwrap();
+    assert!(conflicts.is_empty(), "{conflicts:#?}");
 }
 
 #[test]

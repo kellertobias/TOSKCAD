@@ -58,12 +58,12 @@ fn drawing(case: &mut CaseBuilder, sides: [EntityId; 2]) -> Result<(), Error> {
                 entities: vec![part],
             },
             frame: ReferenceFrame {
-                origin_mm: [0.; 3],
+                origin_mm: [0., 117.5, 155.],
                 u,
                 v: [0., 0., 1.],
             },
             kind: ViewKind::Projection,
-            position_mm: [105. + 180. * i as f64, 155.],
+            position_mm: [110. + 200. * i as f64, 150.],
             scale: Scale {
                 numerator: 1,
                 denominator: 2,
@@ -76,11 +76,11 @@ fn drawing(case: &mut CaseBuilder, sides: [EntityId; 2]) -> Result<(), Error> {
         });
     }
     page.annotations.extend([
-        note([22., 45.], "Two 6 mm birch plywood sides. Through-cut the same profile twice."),
-        note([22., 38.], "Countersink the six slide holes and four rack holes on the outside face of each side. The outside faces mirror."),
-        note([22., 31.], "Panel DXFs give nominal cut geometry. Apply measured stock thickness and 0.1 to 0.2 mm slot allowance at fabrication."),
-        note([22., 24.], "Two 995 mm side angles. Notch stations from front end are 70, 380, 615 and 925 mm."),
-        note([22., 17.], "Confirm installed slide travel, countersink head sizes and optional trim fasteners before fabrication."),
+        note([22., 247.], "Two 6 mm birch plywood sides. Through-cut the same profile twice."),
+        note([22., 254.], "Countersink the six slide holes and four rack holes on the outside face of each side. The outside faces mirror."),
+        note([22., 261.], "Panel DXFs give nominal cut geometry. Apply measured stock thickness and 0.1 to 0.2 mm slot allowance at fabrication."),
+        note([22., 268.], "Two 995 mm side angles. Notch stations from front end are 70, 380, 615 and 925 mm."),
+        note([22., 275.], "Confirm installed slide travel, countersink head sizes and optional trim fasteners before fabrication."),
     ]);
     let (_, prepared) = prepare_create(
         &case.session,
