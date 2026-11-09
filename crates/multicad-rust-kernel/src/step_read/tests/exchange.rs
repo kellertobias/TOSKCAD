@@ -257,7 +257,7 @@ fn selected_planar_pcurve_must_match_the_trimmed_3d_line() {
         );
     }
     let unused_plane = entity(&source, "PLANE", 0)
-        .replacen(&plane, "#999009", 1)
+        .replacen(plane, "#999009", 1)
         .replace("PLANE('',", "PLANE('',*,");
     let invalid = before_end(
         &wrapped.replace(&format!("PCURVE('',{plane},"), "PCURVE('',#999009,"),

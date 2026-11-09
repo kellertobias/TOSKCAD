@@ -94,7 +94,11 @@ fn wall_match_requires_the_entire_analytic_side() {
 fn a_circular_rim_must_have_the_cap_winding() {
     let hole = Circle::new([n(4), n(4)], n(2)).unwrap();
     let stock = crate::polygon::PolygonPrism::with_circular_holes(
-        vec![[[0, 0], [12, 0], [12, 8], [0, 8]].map(|p| p.map(n)).to_vec()],
+        vec![
+            [[0, 0], [12, 0], [12, 8], [0, 8]]
+                .map(|p| p.map(n))
+                .to_vec(),
+        ],
         vec![hole],
         n(4),
     )
