@@ -88,7 +88,7 @@ fn context() -> egui::Context {
 fn project_omits_the_modeling_actions_shown_in_other_modes() {
     assert_eq!(
         Mode::ALL.map(Mode::title),
-        ["Project", "Model", "Motion", "Drawings", "Export"]
+        ["Project", "Model", "Motion", "Drawings"]
     );
     for mode in Mode::ALL {
         let mut app = app();

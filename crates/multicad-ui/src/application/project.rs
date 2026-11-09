@@ -2,6 +2,7 @@
 use super::*;
 pub(super) const PARAMETERS_TAB: usize = 1;
 pub(super) const MATERIALS_TAB: usize = 2;
+pub(super) const PROJECT_EXPORT_TAB: usize = 3;
 const ACTION_WIDTH: f32 = 184.;
 const TABLE_MIN_WIDTH: f32 = 760.;
 #[cfg(test)]
@@ -119,13 +120,39 @@ impl Application {
             format!("{hint}\n{explanation}")
         }
     }
+    pub(super) fn project_tab_index(&self) -> usize {
+        if self.mode == Mode::Export {
+            PROJECT_EXPORT_TAB
+        } else {
+            self.tab
+        }
+    }
+
     pub(super) fn project_tab_blocked(&self, index: usize) -> bool {
-        index != self.tab
-            && if index == MATERIALS_TAB {
+        index != self.project_tab_index()
+            && if self.mode == Mode::Export || matches!(index, MATERIALS_TAB | PROJECT_EXPORT_TAB) {
                 self.current().pending_edits()
             } else {
                 self.current().sketch.material_library().dirty()
             }
+    }
+
+    pub(super) fn select_project_tab(&mut self, index: usize) {
+        if index == self.project_tab_index() || self.project_tab_blocked(index) {
+            return;
+        }
+        match index {
+            PROJECT_EXPORT_TAB => self.execute(Command::Mode(Mode::Export), &[], Channel::Ui),
+            MATERIALS_TAB => self.execute(Command::Extension("materials"), &[], Channel::Ui),
+            _ => {
+                if self.mode == Mode::Export {
+                    self.execute(Command::Mode(Mode::Parameters), &[], Channel::Ui);
+                }
+                if self.mode == Mode::Parameters {
+                    self.tab = index;
+                }
+            }
+        }
     }
 
     pub(super) fn project_tabs(&mut self, ui: &mut egui::Ui) {
@@ -134,12 +161,12 @@ impl Application {
             .frame(egui::Frame::new())
             .show(ui, |ui| self.workspace_tab_bar(ui))
             .inner;
-        if let Some(selected) = selected.filter(|&index| index != self.tab) {
-            if selected == MATERIALS_TAB {
-                self.execute(Command::Extension("materials"), &[], Channel::Ui);
-            } else {
-                self.tab = selected;
-            }
+        if let Some(index) = selected {
+            self.select_project_tab(index);
+        }
+        if self.mode == Mode::Export {
+            self.project_export_ribbon(ui);
+            return;
         }
         if self.tab == MATERIALS_TAB {
             let project = self.current_mut();
@@ -302,6 +329,9 @@ impl Application {
                             _ => {}
                         }
                     }
+                    ui.add_space(12.);
+                    ui.separator();
+                    self.project_render_controls(ui);
                 });
         });
         if let Some(action) = action {

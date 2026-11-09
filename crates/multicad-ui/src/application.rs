@@ -182,6 +182,7 @@ pub struct Application {
     replacement: Option<Replacement>,
     recoveries: crate::storage::RecoveryListing,
     recovery_open: bool,
+    render_preview: Option<render::Preview>,
     message: String,
     command: String,
     command_log: VecDeque<CommandRecord>,
@@ -258,6 +259,7 @@ impl Application {
             replacement: None,
             recoveries: Default::default(),
             recovery_open: false,
+            render_preview: None,
             message: "New project. Add project details or open Parameters.".into(),
             command: String::new(),
             command_log: VecDeque::new(),
@@ -894,6 +896,12 @@ impl Application {
                 self.message = "Parameter committed through shared command API".into();
             }
             Command::Mode(mode) => {
+                if mode == Mode::Export
+                    && self.mode != Mode::Export
+                    && self.current().pending_edits()
+                {
+                    return Err("Finish the current edits before opening Project Export".into());
+                }
                 self.current_mut().sketch.close_symbol_browser();
                 if mode != Mode::Motion {
                     self.current_mut().sketch.close_saved_motion();
@@ -1212,58 +1220,8 @@ impl Application {
                 self.message =
                     "Symbols · embedded definitions and explicit library revisions".into();
             }
-            Command::Extension("appearance") => {
-                let p = self.current_mut();
-                let height = p.sketch.viewport_rect.map_or(0., |r| r.height());
-                let camera = crate::render_view::capture(&p.sketch.camera, height)?;
-                let display = crate::render_view::display_of(p.sketch.display_style());
-                let document = p.session.document();
-                let existing = multicad_core::model::render_scenes(document)
-                    .next()
-                    .map(|e| (e.id, e.name.clone()));
-                let mut scene = match &existing {
-                    Some((id, _)) => multicad_core::model::read_render_scene(document, *id)
-                        .map_err(|e| e.to_string())?,
-                    None => Default::default(),
-                };
-                scene.camera = camera;
-                scene.display = display;
-                let name = existing
-                    .as_ref()
-                    .map_or("Render scene".to_owned(), |(_, n)| n.clone());
-                let (_, prepared) = multicad_core::model::prepare_render_scene(
-                    &p.session,
-                    p.session.revision(),
-                    multicad_core::commands::Actor::local(channel),
-                    existing.map(|(id, _)| id),
-                    &name,
-                    &scene,
-                )
-                .map_err(|e| e.to_string())?;
-                p.session.commit(prepared).map_err(|e| e.to_string())?;
-                self.open_render_tab();
-                self.message = format!(
-                    "{name} · camera and {} style captured from the render viewport",
-                    render_display_label(display)
-                );
-            }
-            Command::Extension("render-view") => {
-                let p = self.current_mut();
-                let document = p.session.document();
-                let id = multicad_core::model::render_scenes(document)
-                    .next()
-                    .map(|e| e.id)
-                    .ok_or("No render scene yet; capture a render view first")?;
-                let scene = multicad_core::model::read_render_scene(document, id)
-                    .map_err(|e| e.to_string())?;
-                let height = p.sketch.viewport_rect.map_or(0., |r| r.height());
-                p.sketch.camera = crate::render_view::restore(&scene.camera, height)?;
-                p.sketch
-                    .set_display_style(crate::render_view::style_of(scene.display));
-                let label = render_display_label(scene.display);
-                self.open_render_tab();
-                self.message =
-                    format!("Stored render camera and {label} style shown in the render viewport");
+            Command::Extension(id @ ("appearance" | "render-view" | "blender")) => {
+                self.invoke_render_view(id, channel)?;
             }
             Command::Extension(
                 id @ (mechanical_imports::IMPORT_STEP
@@ -1617,6 +1575,7 @@ impl Application {
         }
         let pending = || self.current().pending_edits();
         match command {
+            Command::Mode(Mode::Export) => self.mode == Mode::Export || !pending(),
             Command::External(_) => {
                 self.mode == Mode::Sketch
                     && !self.current().editor.dirty()
@@ -1789,16 +1748,8 @@ impl Application {
                     && !self.current().editor.dirty()
                     && !self.current().sketch.has_pending_edits()
             }
-            Command::Extension("appearance") => {
-                self.mode == Mode::Export
-                    && !pending()
-                    && self.current().sketch.viewport_rect.is_some()
-            }
-            Command::Extension("render-view") => {
-                self.mode == Mode::Export
-                    && multicad_core::model::render_scenes(self.current().session.document())
-                        .next()
-                        .is_some()
+            Command::Extension(id @ ("appearance" | "render-view" | "blender")) => {
+                self.render_command_enabled(id)
             }
             Command::Extension("symbol" | "library") => {
                 !pending() && self.current().sketch.has_symbol_backend()
@@ -2165,8 +2116,14 @@ impl Application {
     }
     fn workspace_tab_bar(&self, ui: &mut egui::Ui) -> (Option<usize>, Option<Command>) {
         ui.spacing_mut().item_spacing.y = 0.0;
-        let workspace = self.registry.workspace(self.mode);
-        let project = self.mode == Mode::Parameters;
+        let project = self.mode.top_level() == Mode::Parameters;
+        let visible_mode = if project { Mode::Parameters } else { self.mode };
+        let workspace = self.registry.workspace(visible_mode);
+        let selected = if project {
+            self.project_tab_index()
+        } else {
+            self.tab
+        };
         let tabs = if project {
             (0..workspace.tabs.len())
                 .map(|index| (index, false))
@@ -2174,7 +2131,7 @@ impl Application {
         } else {
             self.ribbon_tabs()
         };
-        let accent = self.mode.color();
+        let accent = visible_mode.color();
         egui::Frame::new()
             .fill(accent)
             .inner_margin(egui::Margin::symmetric(8, 3))
@@ -2187,9 +2144,9 @@ impl Application {
                         let button = |ui: &mut egui::Ui| {
                             controls::tab_with_icon(
                                 ui,
-                                crate::ribbon_ui::workspace_tab_icon(self.mode, tab.title),
+                                crate::ribbon_ui::workspace_tab_icon(visible_mode, tab.title),
                                 tab.title,
-                                self.tab == index,
+                                selected == index,
                                 TabColors {
                                     text: Color32::WHITE,
                                     background: accent,
@@ -2216,7 +2173,7 @@ impl Application {
                             selected_tab = Some(index);
                         }
                     }
-                    let action = if self.mode == Mode::Model {
+                    let action = if visible_mode == Mode::Model {
                         self.utility_actions(ui)
                     } else {
                         None
@@ -2407,7 +2364,7 @@ impl Application {
             mode: self.mode,
             workspace: workspace.tabs[self.tab.min(workspace.tabs.len() - 1)].title,
             sketch_editing: self.current().sketch.editing,
-            viewport: !matches!(self.mode, Mode::Parameters | Mode::Export) || self.render_tab(),
+            viewport: self.mode.top_level() != Mode::Parameters,
             text_input: ctx.text_edit_focused(),
             blocked: self.file_action.is_some()
                 || self.recovery_open
@@ -2417,6 +2374,7 @@ impl Application {
                 || self.history_open
                 || self.import_open
                 || self.settings_open
+                || self.render_preview.is_some()
                 || self.shortcut_help
                 || self.current().exchange.drawing_pdf_open()
                 || egui::Popup::is_any_open(ctx),
@@ -2555,24 +2513,36 @@ impl Application {
                 ShortcutAction::FocusCommand => self.focus_command = true,
                 ShortcutAction::NextWorkspace | ShortcutAction::PreviousWorkspace => {
                     // Cycle the ribbon's visible workbenches in their chosen order.
-                    let order: Vec<usize> = if self.mode == Mode::Parameters {
-                        (0..self.registry.workspace(self.mode).tabs.len())
+                    let project = self.mode.top_level() == Mode::Parameters;
+                    let visible_mode = if project { Mode::Parameters } else { self.mode };
+                    let selected = if project {
+                        self.project_tab_index()
+                    } else {
+                        self.tab
+                    };
+                    let order: Vec<usize> = if project {
+                        (0..self.registry.workspace(visible_mode).tabs.len())
                             .filter(|&index| !self.project_tab_blocked(index))
                             .collect()
                     } else {
                         self.ribbon_tabs().into_iter().map(|(i, _)| i).collect()
                     };
                     let count = order.len();
-                    let at = order.iter().position(|i| *i == self.tab).unwrap_or(0);
-                    self.tab = order[if action == ShortcutAction::NextWorkspace {
+                    let at = order.iter().position(|i| *i == selected).unwrap_or(0);
+                    let next = order[if action == ShortcutAction::NextWorkspace {
                         (at + 1) % count
                     } else {
                         (at + count - 1) % count
                     }];
+                    if project {
+                        self.select_project_tab(next);
+                    } else {
+                        self.tab = next;
+                    }
                     ctx.memory_mut(|m| m.move_focus(egui::FocusDirection::None));
                     self.message = format!(
                         "{} workspace",
-                        self.registry.workspace(self.mode).tabs[self.tab].title
+                        self.registry.workspace(visible_mode).tabs[next].title
                     );
                     self.message_error = false;
                 }
@@ -2593,8 +2563,7 @@ impl Application {
                     } else if self.mode == Mode::Drawings && self.current().drawings.placing() {
                         self.current_mut().drawings.cancel_placement();
                     } else if self.mode == Mode::Export {
-                        let p = self.current_mut();
-                        p.exchange.discard(&p.session);
+                        self.execute(Command::Discard, &[], Channel::Ui);
                     } else {
                         self.current_mut().sketch.cancel();
                     }
@@ -2604,7 +2573,7 @@ impl Application {
                 ShortcutAction::Pan(_) => {}
             }
         }
-        if (!matches!(self.mode, Mode::Parameters | Mode::Export) || self.render_tab())
+        if self.mode.top_level() != Mode::Parameters
             && !self.shortcut_context(ctx).blocked
             && !self.focus_search
             && !self.focus_command
@@ -2801,7 +2770,7 @@ impl Application {
             .show(ui, |ui| self.header(ui));
         // Tab strip plus the tool strip with its labels and captions, so tool
         // labels never extend under the content panels (CAD-154).
-        if self.mode == Mode::Parameters {
+        if self.mode.top_level() == Mode::Parameters {
             self.project_tabs(ui);
         } else {
             if self.mode != Mode::Model {
@@ -2846,9 +2815,7 @@ impl Application {
                 }
                 if self.mode == Mode::Parameters {
                     self.project_workspace(ui);
-                } else if self.mode == Mode::Export && self.print_tab() {
-                    self.show_print(ui);
-                } else if self.mode == Mode::Export && !self.render_tab() {
+                } else if self.mode == Mode::Export {
                     self.show_export_workspace(ui);
                 } else if self.mode == Mode::Drawings {
                     let p = self.current_mut();
@@ -2861,9 +2828,6 @@ impl Application {
                     }
                     self.handle_drawing_pdf_request();
                 } else {
-                    if self.render_tab() {
-                        self.render_sidebar(ui);
-                    }
                     let sketch_mode = self.mode == Mode::Sketch;
                     let mode = self.mode;
                     let architecture = mode == Mode::Model
@@ -2927,6 +2891,7 @@ impl Application {
                     }
                 }
             });
+        self.render_window(&ctx);
         self.poll_symbol_actions();
         self.drawing_pdf_dialog(&ctx);
         self.file_windows(&ctx);
@@ -3050,69 +3015,6 @@ mod tests {
                 warnings: vec![],
             })
         }
-    }
-    #[test]
-    fn render_view_is_captured_into_the_document_and_shown_again() {
-        use crate::navigation::DisplayStyle;
-        let mut app = Application::new(Box::new(MemoryStorage)).unwrap();
-        app.mode = Mode::Export;
-        let capture = Command::Extension("appearance");
-        let show = Command::Extension("render-view");
-        // Without a laid-out viewport or a stored scene there is nothing to do.
-        assert!(!app.enabled(capture) && !app.enabled(show));
-        app.current_mut().sketch.viewport_rect = Some(egui::Rect::from_min_size(
-            egui::Pos2::ZERO,
-            egui::vec2(800., 600.),
-        ));
-        app.current_mut().sketch.camera.perspective = true;
-        app.current_mut()
-            .sketch
-            .set_display_style(DisplayStyle::AllEdges);
-        let revision = app.current().session.revision();
-        app.invoke(capture, &[], Channel::Ui).unwrap();
-        assert_eq!(app.current().session.revision(), revision + 1);
-        let document = app.current().session.document();
-        let id = multicad_core::model::render_scenes(document)
-            .next()
-            .unwrap()
-            .id;
-        let scene = multicad_core::model::read_render_scene(document, id).unwrap();
-        assert_eq!(scene.display, multicad_core::model::RenderDisplay::Xray);
-        assert_eq!(scene.lights.len(), 1, "a new scene gets the default sun");
-        // Move the viewport away, then show the stored view again.
-        let stored = app.current().sketch.camera;
-        app.current_mut().sketch.camera.yaw += 1.;
-        app.current_mut().sketch.camera.target = [0.; 3];
-        app.current_mut()
-            .sketch
-            .set_display_style(DisplayStyle::Filled);
-        assert!(app.enabled(show));
-        app.invoke(show, &[], Channel::Ui).unwrap();
-        let shown = app.current().sketch.camera;
-        assert!((shown.yaw - stored.yaw).abs() < 1e-4);
-        assert!((shown.scale - stored.scale).abs() < 1e-3);
-        assert_eq!(shown.target, stored.target);
-        assert_eq!(app.current().sketch.display_style(), DisplayStyle::AllEdges);
-        // A second capture of a changed view updates the same scene; Undo
-        // restores the first.
-        app.current_mut().sketch.camera.pitch = 0.2;
-        app.invoke(capture, &[], Channel::Ui).unwrap();
-        assert_ne!(
-            multicad_core::model::read_render_scene(app.current().session.document(), id).unwrap(),
-            scene
-        );
-        assert_eq!(
-            multicad_core::model::render_scenes(app.current().session.document()).count(),
-            1
-        );
-        app.invoke(Command::Undo, &[], Channel::Ui).unwrap();
-        assert_eq!(
-            multicad_core::model::read_render_scene(app.current().session.document(), id).unwrap(),
-            scene
-        );
-        // Outside Export mode the Render tools are not offered.
-        app.mode = Mode::Model;
-        assert!(!app.enabled(capture) && !app.enabled(show));
     }
     fn wait_files(app: &mut Application) {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
@@ -4843,6 +4745,3 @@ const RIBBON_BOTTOM_PAD: f32 = 2.0;
 #[cfg(test)]
 #[path = "application/open_fit_tests.rs"]
 mod open_fit_tests;
-fn render_display_label(display: multicad_core::model::RenderDisplay) -> &'static str {
-    crate::render_view::style_of(display).label()
-}

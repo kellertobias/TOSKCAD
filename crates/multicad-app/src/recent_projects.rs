@@ -4,6 +4,7 @@ use multicad_core::document::EntityId;
 use multicad_ui::{
     architecture_view::Recall,
     recent_projects::{RecentProject, RecentStore, RecentView, normalize},
+    registry::Mode,
 };
 use serde_json::{Value, json};
 use std::{
@@ -52,6 +53,13 @@ fn validate(entry: &RecentProject) -> Result<&str, String> {
     }
     Ok(path)
 }
+fn stored_mode(mode: Mode) -> Mode {
+    match mode {
+        Mode::Sketch => Mode::Model,
+        other => other,
+    }
+}
+
 fn decode(bytes: &[u8]) -> Result<Vec<RecentProject>, String> {
     if bytes.len() > MAX_BYTES {
         return Err(invalid("file exceeds 128 KiB"));
@@ -104,10 +112,8 @@ fn decode(bytes: &[u8]) -> Result<Vec<RecentProject>, String> {
                     };
                 let mode = project["view"]["mode"]
                     .as_str()
-                    .and_then(|name| {
-                        multicad_ui::registry::Mode::from_stored_name(name)
-                            .map(|mode| mode.top_level())
-                    })
+                    .and_then(Mode::from_stored_name)
+                    .map(stored_mode)
                     .ok_or_else(|| invalid("unknown workspace mode"))?;
                 let workspace = project["view"]["workspace"]
                     .as_str()
@@ -147,7 +153,7 @@ fn encode(entries: &[RecentProject]) -> Result<Vec<u8>, String> {
         let view = entry
             .view
             .as_ref()
-            .map(|v| json!({"mode":v.mode.top_level().title(),"workspace":v.workspace,
+            .map(|v| json!({"mode":stored_mode(v.mode).title(),"workspace":v.workspace,
                 "architecture":v.architecture.map(|context|json!({"plan":context.plan,"level":context.level.map(|id|id.to_string())}))}));
         projects.push(json!({"path":path,"title":entry.title,"last_opened_unix_ms":entry.last_opened_unix_ms,"view":view}));
     }
@@ -667,6 +673,29 @@ mod tests {
         let saved: Value = serde_json::from_slice(&encode(&[visit]).unwrap()).unwrap();
         assert_eq!(saved["projects"][0]["view"]["mode"], json!("Model"));
     }
+    #[test]
+    fn export_recents_preserve_legacy_mode_and_write_project_output_locations() {
+        let root = tempfile::tempdir().unwrap();
+        let mut visit = entry(root.path(), 0, 1);
+        for (mode, workspace, title) in [
+            (Mode::Export, "Common", "Export"),
+            (Mode::Export, "Print", "Export"),
+            (Mode::Export, "Render", "Export"),
+            (Mode::Parameters, "Export", "Project"),
+            (Mode::Parameters, "Export / Quick 3MF", "Project"),
+        ] {
+            visit.view = Some(RecentView {
+                mode,
+                workspace: workspace.into(),
+                ..Default::default()
+            });
+            let saved = encode(std::slice::from_ref(&visit)).unwrap();
+            let json: Value = serde_json::from_slice(&saved).unwrap();
+            assert_eq!(json["projects"][0]["view"]["mode"], title);
+            assert_eq!(decode(&saved).unwrap(), std::slice::from_ref(&visit));
+        }
+    }
+
     #[test]
     fn workspace_metadata_roundtrips_and_legacy_history_migrates_without_losing_visits() {
         let root = tempfile::tempdir().unwrap();

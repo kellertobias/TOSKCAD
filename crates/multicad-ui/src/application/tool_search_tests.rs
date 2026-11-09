@@ -96,7 +96,7 @@ fn search(ctx: &egui::Context, app: &mut Application, query: &str) -> Vec<String
     texts
 }
 #[test]
-fn stl_and_3mf_find_print_packaging_and_enter_opens_export_print() {
+fn stl_and_3mf_find_print_packaging_and_enter_opens_quick_3mf() {
     for query in ["STL", "3mf"] {
         let ctx = egui::Context::default();
         let mut app = app();
@@ -108,12 +108,12 @@ fn stl_and_3mf_find_print_packaging_and_enter_opens_export_print() {
             "{query}: {shown:?}"
         );
         assert!(
-            shown.iter().any(|t| t == "Export › Print"),
+            shown.iter().any(|t| t == "Project › Export"),
             "{query} context"
         );
         frame(&ctx, &mut app, enter()).drop_without_applying_deltas();
         assert_eq!(app.mode, Mode::Export, "{query}");
-        assert!(app.print_tab(), "{query} opens Export → Print");
+        assert!(app.print_tab(), "{query} opens Project Export → Quick 3MF");
         assert!(!app.message_error, "{}", app.message);
         assert!(!app.find_open);
     }
@@ -166,12 +166,12 @@ fn every_named_format_routes_to_an_implemented_export_workflow_with_context() {
     assert_eq!(
         app.registry
             .location(Command::Export(crate::exchange::ExportTool::NewSet)),
-        Some((Mode::Export, "Common"))
+        Some((Mode::Parameters, "Export"))
     );
     assert_eq!(
         app.registry
             .location(Command::Print(crate::print::PrintTool::Preview)),
-        Some((Mode::Export, "Print"))
+        Some((Mode::Parameters, "Export"))
     );
     assert!(
         app.registry
@@ -190,7 +190,7 @@ fn every_named_format_routes_to_an_implemented_export_workflow_with_context() {
     assert!(app.registry.tool("export-2d").is_none());
 }
 #[test]
-fn choosing_an_export_set_route_opens_export_common() {
+fn choosing_an_export_set_route_opens_project_export() {
     let mut app = app();
     app.mode = Mode::Model;
     let tool = *app

@@ -1,4 +1,4 @@
-//! Export → Print: choose finished Parts, include or leave out their
+//! Quick 3MF package: choose finished Parts, include or leave out their
 //! removable FDM aids, review the process records and findings, preview the
 //! package contents and write a 3MF print package (optionally one STL per
 //! Part) through the native save dialog. The native provider runs off the UI
@@ -543,19 +543,17 @@ impl PrintWorkspace {
                 .request_repaint_after(std::time::Duration::from_millis(16));
         }
         let mut action = None;
-        let source_max = (ui.available_width() * 0.4).max(0.);
-        egui::Panel::left("print-source")
-            .default_size(260.)
-            .size_range(180_f32.min(source_max)..=source_max)
-            .resizable(true)
+        crate::controls::inspector_panel(ui, "quick-3mf-inspector")
+            .default_size(325.)
             .frame(egui::Frame::new().fill(crate::theme::PANEL).inner_margin(12))
             .show(ui, |ui| {
                 crate::controls::inspector_layout(ui);
-                ui.heading("Printable Parts");
+                ui.heading("Output settings");
                 egui::ScrollArea::vertical()
-                    .id_salt("print-source-settings")
+                    .id_salt("quick-3mf-settings")
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
+                        ui.strong("Printable Parts");
                         ui.radio_value(&mut self.by_tag, false, "Chosen Parts")
                             .on_hover_text(
                                 "Choose world Parts, placed copies and placed Assemblies here; each copy is packaged at its placement. Entering Export starts from the model selection",
@@ -604,10 +602,10 @@ impl PrintWorkspace {
             .inner_margin(egui::Margin::symmetric(22, 16))
             .show(ui, |ui| {
                 crate::controls::inspector_layout(ui);
-                ui.heading("Print package");
-                ui.label("Packages exact geometry only. MultiCAD does not slice, arrange plates, control printers or confirm printability.");
+                ui.heading("Quick 3MF package");
+                ui.label("Package the chosen Parts in their model positions.");
                 ui.horizontal_wrapped(|ui| {
-                    for tool in PrintTool::ALL {
+                    for tool in [PrintTool::Write, PrintTool::Cancel] {
                         if ui
                             .add_enabled(
                                 self.enabled(tool, s) && (allow_io || tool == PrintTool::Cancel),
@@ -647,15 +645,10 @@ impl PrintWorkspace {
                     }
                 });
             });
-        if let Some(tool) = action {
-            match tool {
-                PrintTool::Preview => match self.request_preview(s, Channel::Ui) {
-                    Ok(message) => self.notice = Some((message, false)),
-                    Err(error) => self.error = Some(error),
-                },
-                PrintTool::Write => self.write_requested = true,
-                PrintTool::Cancel => self.notice = Some((self.cancel(), false)),
-            }
+        if action == Some(PrintTool::Write) {
+            self.write_requested = true;
+        } else if action == Some(PrintTool::Cancel) {
+            self.notice = Some((self.cancel(), false));
         }
     }
     /// The explicit source list: every Part, placed copy and placed
@@ -766,43 +759,63 @@ impl PrintWorkspace {
             total,
             preview.key.source.revision
         ));
-        let column_width =
-            (crate::controls::inspector_width(ui) - 4. * ui.spacing().item_spacing.x) / 5.;
-        egui::Grid::new("print-objects")
-            .striped(true)
-            .num_columns(5)
-            .min_col_width(0.)
-            .max_col_width(column_width.max(1.))
-            .show(ui, |ui| {
-                for h in ["Object", "Role", "Z range mm", "Volume mm³", "Triangles"] {
-                    ui.strong(h);
-                }
-                ui.end_row();
-                for o in &preview.objects {
-                    ui.label(&o.name)
-                        .on_hover_text(if o.occurrence_path.is_empty() {
-                            "World Part"
-                        } else {
-                            "Placed occurrence, packaged at its world placement"
-                        });
-                    ui.label(match &o.role {
-                        PrintRole::Finished => "Finished".to_string(),
-                        PrintRole::Aid { target, .. } => format!(
-                            "Aid for {}",
-                            s.document()
-                                .get(*target)
-                                .map_or("Part", |e| e.name.as_str())
-                        ),
-                    });
-                    ui.label(format!(
-                        "{:.3} – {:.3}",
-                        o.bounds_mm[0][2], o.bounds_mm[1][2]
-                    ));
-                    ui.label(format!("{:.3}", o.volume_mm3));
-                    ui.label(o.triangles.to_string());
+        let object_name = |ui: &mut egui::Ui, object: &PrintObject| {
+            ui.label(&object.name)
+                .on_hover_text(if object.occurrence_path.is_empty() {
+                    "World Part"
+                } else {
+                    "Placed occurrence, packaged at its world placement"
+                });
+        };
+        let role = |object: &PrintObject| match &object.role {
+            PrintRole::Finished => "Finished".to_string(),
+            PrintRole::Aid { target, .. } => format!(
+                "Aid for {}",
+                s.document()
+                    .get(*target)
+                    .map_or("Part", |entity| entity.name.as_str())
+            ),
+        };
+        let z_range = |object: &PrintObject| {
+            format!(
+                "{:.3} – {:.3}",
+                object.bounds_mm[0][2], object.bounds_mm[1][2]
+            )
+        };
+        let width = crate::controls::inspector_width(ui);
+        if width < 540. {
+            for object in &preview.objects {
+                ui.separator();
+                object_name(ui, object);
+                ui.horizontal_wrapped(|ui| {
+                    ui.small(role(object));
+                    ui.small(format!("Z {} mm", z_range(object)));
+                    ui.small(format!("{:.3} mm³", object.volume_mm3));
+                    ui.small(format!("{} triangles", object.triangles));
+                });
+            }
+        } else {
+            let column_width = (width - 4. * ui.spacing().item_spacing.x) / 5.;
+            egui::Grid::new("print-objects")
+                .striped(true)
+                .num_columns(5)
+                .min_col_width(0.)
+                .max_col_width(column_width.max(1.))
+                .show(ui, |ui| {
+                    for heading in ["Object", "Role", "Z range mm", "Volume mm³", "Triangles"] {
+                        ui.strong(heading);
+                    }
                     ui.end_row();
-                }
-            });
+                    for object in &preview.objects {
+                        object_name(ui, object);
+                        ui.label(role(object));
+                        ui.label(z_range(object));
+                        ui.label(format!("{:.3}", object.volume_mm3));
+                        ui.label(object.triangles.to_string());
+                        ui.end_row();
+                    }
+                });
+        }
         if !preview.files.is_empty() {
             ui.separator();
             ui.strong("Files");

@@ -93,12 +93,14 @@ struct SelectionKey {
 pub(crate) enum OutputPick {
     Model(EntityId),
     PrintPlate(EntityId),
+    QuickPrint,
 }
 
-pub(crate) struct PlateList<'a> {
+pub(crate) struct OutputListState<'a> {
     pub(crate) selected: Option<EntityId>,
     pub(crate) unsaved: Option<&'a str>,
     pub(crate) dirty: bool,
+    pub(crate) quick_print: bool,
 }
 
 struct Pending {
@@ -733,10 +735,11 @@ impl ExportWorkspace {
         ui: &mut egui::Ui,
         s: &Session,
         allow_io: bool,
-        plates: Option<PlateList<'_>>,
+        plates: Option<OutputListState<'_>>,
     ) -> Option<OutputPick> {
         self.tick_schedule(s, allow_io);
         let mut picked = None;
+        let quick_print = plates.as_ref().is_some_and(|state| state.quick_print);
         let selected_plate = plates.as_ref().and_then(|plate| plate.selected);
         let can_switch = !self.dirty() && plates.as_ref().is_none_or(|plate| !plate.dirty);
         let width_limit = (ui.available_width() * 0.3).max(0.);
@@ -759,7 +762,8 @@ impl ExportWorkspace {
                         if let Some(name) = plates.as_ref().and_then(|plate| plate.unsaved) {
                             ui.small(format!("{name} · Unsaved print plate"));
                         }
-                        if selected_plate.is_none()
+                        if !quick_print
+                            && selected_plate.is_none()
                             && self.selected.is_none()
                             && let Some(draft) = &self.draft
                         {
@@ -778,7 +782,7 @@ impl ExportWorkspace {
                             let active = if plate {
                                 selected_plate == Some(id)
                             } else {
-                                selected_plate.is_none() && self.selected == Some(id)
+                                !quick_print && selected_plate.is_none() && self.selected == Some(id)
                             };
                             if ui
                                 .add_enabled(can_switch, egui::Button::selectable(active, name))
@@ -791,6 +795,15 @@ impl ExportWorkspace {
                                 } else {
                                     OutputPick::Model(id)
                                 });
+                            }
+                        }
+                        if plates.is_some() {
+                            ui.separator();
+                            if ui.add_enabled(can_switch, egui::Button::selectable(quick_print, "Quick 3MF package"))
+                                .on_hover_text("Package the current Model selection or a saved tag at its Model positions")
+                                .clicked() && !quick_print
+                            {
+                                picked = Some(OutputPick::QuickPrint);
                             }
                         }
                         self.schedule_section(ui, s, allow_io);

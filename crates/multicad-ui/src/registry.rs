@@ -14,14 +14,8 @@ pub enum Mode {
     Export,
 }
 impl Mode {
-    pub const ALL: [Self; 5] = [
-        Self::Parameters,
-        Self::Model,
-        Self::Motion,
-        Self::Drawings,
-        Self::Export,
-    ];
-    /// Internal Sketch is the contextual Model editor, never a top-level tab.
+    pub const ALL: [Self; 4] = [Self::Parameters, Self::Model, Self::Motion, Self::Drawings];
+    /// Internal Sketch and Export keep their command and saved-view identities.
     pub const WORKSPACES: [Self; 6] = [
         Self::Parameters,
         Self::Sketch,
@@ -31,10 +25,10 @@ impl Mode {
         Self::Export,
     ];
     pub fn top_level(self) -> Self {
-        if self == Self::Sketch {
-            Self::Model
-        } else {
-            self
+        match self {
+            Self::Sketch => Self::Model,
+            Self::Export => Self::Parameters,
+            mode => mode,
         }
     }
     pub fn from_stored_name(name: &str) -> Option<Self> {
@@ -454,7 +448,7 @@ impl Default for Registry {
             action: Command::Transfer,
             aliases: &["derive-holes", "transfer-holes", "project-cutouts"],
         });
-        for mode in Mode::ALL {
+        for mode in Mode::ALL.into_iter().chain([Mode::Export]) {
             registry.tools.push(Tool {
                 // Keep saved command identifiers and old command-line aliases.
                 id: if mode == Mode::Parameters {
@@ -597,6 +591,7 @@ impl Default for Registry {
                     tab("General", &[]),
                     tab("Parameters", &PROJECT_ACTIONS),
                     tab("Materials", &["materials"]),
+                    tab("Export", &[]),
                 ],
             },
             Workspace {
@@ -795,8 +790,10 @@ impl Default for Registry {
                             "export-schedule-csv",
                         ],
                     ),
-                    tab("Print", &["print-preview", "print-write", "print-cancel"]),
-                    tab("Render", &["appearance", "render-view", "blender"]),
+                    tab(
+                        "Print",
+                        &["export-set", "print-plate", "print-write", "print-cancel"],
+                    ),
                 ],
             },
         ];
@@ -916,6 +913,16 @@ impl Registry {
     }
     /// Workspace and ribbon tab that offer `command`, for finder context.
     pub fn location(&self, command: Command) -> Option<(Mode, &'static str)> {
+        match command {
+            Command::Mode(Mode::Export)
+            | Command::Export(_)
+            | Command::Print(_)
+            | Command::Extension("print-plate") => return Some((Mode::Parameters, "Export")),
+            Command::Extension("appearance" | "render-view" | "blender") => {
+                return Some((Mode::Parameters, "General"));
+            }
+            _ => {}
+        }
         if let Some((mode, title)) = command_home(command)
             && self.workspace(mode).tabs.iter().any(|tab| {
                 tab.title == title
@@ -1080,7 +1087,7 @@ mod tests {
         let registry = Registry::default();
         assert_eq!(
             Mode::ALL.map(Mode::title),
-            ["Project", "Model", "Motion", "Drawings", "Export"]
+            ["Project", "Model", "Motion", "Drawings"]
         );
         let model = registry.workspace(Mode::Model);
         let mechanical = model
@@ -1189,11 +1196,13 @@ mod tests {
             )
         );
         assert!(r.parse_line("rm -rf /").is_err());
-        assert!(
-            r.workspace(Mode::Export)
-                .tabs
-                .iter()
-                .any(|t| t.title == "Render")
+        assert_eq!(
+            r.location(Command::Extension("render-view")),
+            Some((Mode::Parameters, "General"))
+        );
+        assert_eq!(
+            r.location(Command::Mode(Mode::Export)),
+            Some((Mode::Parameters, "Export"))
         );
     }
     #[test]

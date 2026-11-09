@@ -30,7 +30,12 @@ fn frame(app: &mut Application, ctx: &egui::Context, size: egui::Vec2) -> Frame 
         |ui| app.show(ui),
     );
     output.textures_delta.clear();
-    let ribbon = egui::PanelState::load(ctx, egui::Id::new("ribbon"))
+    let panel = if app.mode == Mode::Export {
+        "project-export-ribbon"
+    } else {
+        "ribbon"
+    };
+    let ribbon = egui::PanelState::load(ctx, egui::Id::new(panel))
         .expect("ribbon panel")
         .outer_rect;
     let texts = output
@@ -102,7 +107,7 @@ fn check(size: egui::Vec2, pixels_per_point: f32) {
             .filter(|t| {
                 t.clip.max.y <= ribbon.max.y + 0.5
                     && t.clip.min.y >= ribbon.min.y - 0.5
-                    && t.rect.min.y > ribbon.min.y + 40.
+                    && t.rect.min.y > ribbon.min.y + if mode == Mode::Export { 0. } else { 40. }
                     && catalog.contains(&t.text)
             })
             .collect();

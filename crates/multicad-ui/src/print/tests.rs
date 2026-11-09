@@ -291,9 +291,10 @@ fn print_workspace_renders_its_controls_and_requests_the_save_dialog() {
         }
     }
     for expected in [
+        "Quick 3MF package",
+        "Output settings",
         "Printable Parts",
         "Include removable FDM aids",
-        "Preview package",
         "Write 3MF package",
         "FDM process records",
         "Findings",
@@ -304,6 +305,7 @@ fn print_workspace_renders_its_controls_and_requests_the_save_dialog() {
             "{expected} missing: {labels:?}"
         );
     }
+    assert!(!labels.iter().any(|label| label == "Preview package"));
     assert!(
         labels
             .iter()
@@ -427,6 +429,10 @@ fn compact_print_wraps_long_receipts_and_scrolls_to_source_settings() {
     w.poll(&s);
     let name = "Left side bracket with recessed pockets for the lower guide ".repeat(3);
     w.preview.as_mut().unwrap().objects[0].name = name.clone();
+    let triangles = format!(
+        "{} triangles",
+        w.preview.as_ref().unwrap().objects[0].triangles
+    );
     let source = s.document().clone();
     let ctx = egui::Context::default();
     crate::theme::configure(&ctx);
@@ -443,6 +449,11 @@ fn compact_print_wraps_long_receipts_and_scrolls_to_source_settings() {
                 egui::Panel::bottom("status")
                     .exact_size(28.)
                     .show(ui, |_| {});
+                egui::Panel::left("shared-output-list")
+                    .exact_size(230.)
+                    .show(ui, |ui| {
+                        ui.heading("Outputs");
+                    });
                 w.show(ui, &s, true);
             },
         )
@@ -460,14 +471,18 @@ fn compact_print_wraps_long_receipts_and_scrolls_to_source_settings() {
         frame(vec![]).drop_without_applying_deltas();
     }
     let out = frame(vec![]);
+    let (outputs, _) = text(&out, "Outputs").expect("Shared output list");
+    let (settings, settings_clip) = text(&out, "Printable Parts").expect("Right settings");
     let (bounds, clip) = text(&out, &name).expect("Full object name in the receipt");
     assert!(clip.contains_rect(bounds), "{bounds:?} outside {clip:?}");
-    let (bounds, clip) = text(&out, "Triangles").expect("Triangles heading");
+    assert!(outputs.right() < bounds.left() && bounds.right() < settings.left());
+    let settings_pointer = settings_clip.center();
+    let (bounds, clip) = text(&out, &triangles).expect("Compact triangle count");
     assert!(clip.contains_rect(bounds));
     out.drop_without_applying_deltas();
     for _ in 0..6 {
         frame(vec![
-            egui::Event::PointerMoved(egui::pos2(110., 350.)),
+            egui::Event::PointerMoved(settings_pointer),
             egui::Event::MouseWheel {
                 phase: egui::TouchPhase::Move,
                 unit: egui::MouseWheelUnit::Point,

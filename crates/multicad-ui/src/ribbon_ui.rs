@@ -10,6 +10,7 @@ pub(crate) fn workspace_tab_icon(mode: Mode, title: &str) -> Option<Icon> {
         (Mode::Parameters, "General") => Icon::Page,
         (Mode::Parameters, "Parameters") => Icon::Grid,
         (Mode::Parameters, "Materials") => Icon::Materials,
+        (Mode::Parameters, "Export") => Icon::Export,
         (Mode::Model, "Architecture") => Icon::ArchitectureTower,
         (Mode::Model, "Wood") => Icon::Timber,
         (Mode::Model, METAL_TITLE) => Icon::Thickness,
@@ -1321,7 +1322,7 @@ mod tests {
         let registry = Registry::default();
         for workspace in &registry.workspaces {
             for tab in &workspace.tabs {
-                if workspace.mode == Mode::Parameters && tab.title == "General" {
+                if workspace.mode == Mode::Parameters && matches!(tab.title, "General" | "Export") {
                     continue;
                 }
                 let ctx = egui::Context::default();
@@ -1371,7 +1372,7 @@ mod tests {
                     ],
                     (Mode::Model, "Other") => &["Surface Structure"],
                     (Mode::Export, "Common") => &["Model export", "Generate print plate"],
-                    (Mode::Export, "Print") => &["Preview package", "Write 3MF package"],
+                    (Mode::Export, "Print") => &["Write 3MF package"],
                     _ => &[],
                 };
                 for label in expected {

@@ -13,6 +13,7 @@ impl Application {
             .is_some_and(|tab| tab.title == "Print")
     }
     fn open_print_tab(&mut self) {
+        self.current_mut().plate_active = false;
         self.mode = Mode::Export;
         if let Some(index) = self
             .registry

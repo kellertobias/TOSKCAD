@@ -477,3 +477,57 @@ fn project_buttons_keep_preview_apply_discard_and_history_transactions_on_the_re
     assert_eq!(app.current().session.document(), &changed);
     assert!(!app.current().editor.dirty());
 }
+
+#[test]
+fn export_and_quick_3mf_use_one_project_tab_at_both_window_sizes() {
+    for size in [egui::vec2(1024., 600.), egui::vec2(1360., 860.)] {
+        let (mut app, _) = app();
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        crate::theme::configure(&ctx);
+        click(&ctx, &mut app, size, "Export");
+        assert_eq!(app.mode.top_level(), Mode::Parameters);
+        assert_eq!(app.project_tab_index(), PROJECT_EXPORT_TAB);
+        let output = frame(&ctx, &mut app, size, vec![]);
+        let nodes = &output
+            .platform_output
+            .accesskit_update
+            .as_ref()
+            .unwrap()
+            .nodes;
+        let has = |label| nodes.iter().any(|(_, node)| node.label() == Some(label));
+        for label in [
+            "General",
+            "Parameters",
+            "Materials",
+            "Model export",
+            "Generate print plate",
+            "Quick 3MF package",
+        ] {
+            assert!(has(label), "Missing {label}");
+        }
+        assert_eq!(
+            nodes
+                .iter()
+                .filter(|(_, node)| node.label() == Some("Export"))
+                .count(),
+            1
+        );
+        for label in ["Sketch", "Measure", "Library", "Print", "Render", "Common"] {
+            assert!(!has(label), "Unexpected {label}");
+        }
+        output.drop_without_applying_deltas();
+
+        app.invoke(
+            Command::Print(crate::print::PrintTool::Cancel),
+            &[],
+            Channel::Ui,
+        )
+        .unwrap();
+        assert!(app.print_tab());
+        assert_eq!(app.project_tab_index(), PROJECT_EXPORT_TAB);
+        click(&ctx, &mut app, size, "General");
+        assert_eq!(app.mode, Mode::Parameters);
+        assert_eq!(app.project_tab_index(), 0);
+    }
+}

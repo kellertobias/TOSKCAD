@@ -248,7 +248,7 @@ mod tests {
         preferences.title_logo = false;
         preferences.set_visible(Mode::Model, "Wood", false).unwrap();
         preferences
-            .move_workbench(Mode::Export, "Render", -2)
+            .move_workbench(Mode::Model, "Mechanical", -2)
             .unwrap();
         store.save(&preferences).unwrap();
         // A new process reads exactly the saved preferences back.

@@ -80,6 +80,20 @@ fn recent_card(
 fn list_height(ui: &egui::Ui) -> f32 {
     (ui.ctx().content_rect().bottom() - ui.cursor().top() - 80.).max(100.)
 }
+const PROJECT_EXPORT: &str = "Export";
+const PROJECT_QUICK_PRINT: &str = "Export / Quick 3MF";
+
+fn saved_output_location(view: &RecentView) -> Option<(Mode, usize)> {
+    match (view.mode, view.workspace.as_str()) {
+        (Mode::Export, "Render") => Some((Mode::Parameters, 0)),
+        (Mode::Export, "Print" | "Quick 3MF") | (Mode::Parameters, PROJECT_QUICK_PRINT) => {
+            Some((Mode::Export, 1))
+        }
+        (Mode::Export, _) | (Mode::Parameters, PROJECT_EXPORT) => Some((Mode::Export, 0)),
+        _ => None,
+    }
+}
+
 impl Application {
     /// Production startup has no acquired document or unsaved-close prompt.
     /// The internal empty slot is replaced before the first New/Open completes.
@@ -152,6 +166,11 @@ impl Application {
                 .sketch
                 .restore_architecture_view(architecture);
         }
+        if let Some((mode, tab)) = saved_output_location(&view) {
+            self.mode = mode;
+            self.tab = tab;
+            return;
+        }
         self.mode = if view.mode == Mode::Sketch && self.current().sketch.editing {
             Mode::Sketch
         } else {
@@ -196,22 +215,30 @@ impl Application {
         if self.welcome {
             return;
         }
-        let workspace = self.registry.workspace(self.mode);
-        let tab = self.tab.min(workspace.tabs.len().saturating_sub(1));
-        let view = RecentView {
-            mode: self.mode,
-            architecture: self.current().sketch.saved_architecture_view(),
-            workspace: if self.mode == Mode::Model && workspace.tabs[tab].title == "Architecture" {
+        let (mode, workspace) = if self.mode == Mode::Export {
+            let workspace = if self.tab == 1 {
+                PROJECT_QUICK_PRINT
+            } else {
+                PROJECT_EXPORT
+            };
+            (Mode::Parameters, workspace)
+        } else {
+            let workspace = self.registry.workspace(self.mode);
+            let tab = self.tab.min(workspace.tabs.len().saturating_sub(1));
+            let title = workspace.tabs[tab].title;
+            let title = if self.mode == Mode::Model && title == "Architecture" {
                 self.current()
                     .architecture_category
-                    .map_or(
-                        "Architecture",
-                        crate::architecture_navigation::Category::workspace,
-                    )
-                    .into()
+                    .map_or(title, crate::architecture_navigation::Category::workspace)
             } else {
-                workspace.tabs[tab].title.into()
-            },
+                title
+            };
+            (self.mode, title)
+        };
+        let view = RecentView {
+            mode,
+            architecture: self.current().sketch.saved_architecture_view(),
+            workspace: workspace.into(),
         };
         if self.current().view == view && !self.current().view_needs_record {
             return;
@@ -774,10 +801,10 @@ mod tests {
         app.load_path(PathBuf::from("/private/tmp/recall-b.multicad"))
             .unwrap();
         drain(&mut app);
-        assert_eq!(app.mode, Mode::Export);
+        assert_eq!((app.mode, app.tab), (Mode::Parameters, 0));
         assert_eq!(
             app.registry.workspace(app.mode).tabs[app.tab].title,
-            "Render"
+            "General"
         );
         app.activate_project(0);
         assert_eq!(app.mode, Mode::Drawings);
@@ -801,6 +828,49 @@ mod tests {
         assert_eq!(reopened.mode, Mode::Drawings);
         assert_eq!(reopened.projects.len(), 1);
     }
+    #[test]
+    fn project_export_round_trips_the_selected_output_and_old_recent_modes() {
+        let mut app = Application::new(Box::new(Storage {
+            document: Document::new("Export recall").unwrap(),
+            fail: false,
+        }))
+        .unwrap();
+        let source = app.current().session.document().clone();
+        for (mode, workspace, expected) in [
+            (Mode::Export, "Common", (Mode::Export, 0)),
+            (Mode::Export, "Print", (Mode::Export, 1)),
+            (Mode::Export, "Render", (Mode::Parameters, 0)),
+            (Mode::Parameters, "Export", (Mode::Export, 0)),
+            (Mode::Parameters, "Export / Quick 3MF", (Mode::Export, 1)),
+        ] {
+            app.current_mut().view = RecentView {
+                mode,
+                workspace: workspace.into(),
+                ..Default::default()
+            };
+            app.restore_current_view();
+            assert_eq!((app.mode, app.tab), expected, "{workspace}");
+        }
+
+        for (tab, expected_workspace) in [(0, PROJECT_EXPORT), (1, PROJECT_QUICK_PRINT)] {
+            app.mode = Mode::Export;
+            app.tab = tab;
+            app.remember_current_view();
+            let saved = app.current().view.clone();
+            assert_eq!(
+                (saved.mode, saved.workspace.as_str()),
+                (Mode::Parameters, expected_workspace)
+            );
+            app.mode = Mode::Drawings;
+            app.tab = 0;
+            app.restore_current_view();
+            assert_eq!((app.mode, app.tab), (Mode::Export, tab));
+        }
+        assert_eq!(app.current().session.document(), &source);
+        assert_eq!(app.current().session.revision(), 0);
+        assert!(!app.current().session.can_undo());
+    }
+
     #[test]
     fn a_removed_workspace_falls_back_within_the_saved_mode() {
         let mut app = Application::welcome(Box::new(Storage {
