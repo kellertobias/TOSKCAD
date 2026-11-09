@@ -4,6 +4,7 @@ pub mod cylinder;
 pub mod display;
 pub mod polygon;
 pub mod prism;
+pub mod step;
 
 use std::cmp::Ordering;
 
