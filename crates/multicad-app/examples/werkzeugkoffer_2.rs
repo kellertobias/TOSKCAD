@@ -526,6 +526,36 @@ pub struct Scenario {
     pub studies: Vec<EntityId>,
 }
 
+fn organize_drawer_sources(session: &mut Session, assemblies: &[EntityId]) -> Result<(), Error> {
+    for &assembly in assemblies {
+        let request = AssemblyRequest::existing(session.document(), assembly)?;
+        let sources = request
+            .members
+            .iter()
+            .map(
+                |id| match session.document().get(*id).map(|entity| &entity.data) {
+                    Some(EntityData::Instance { component, .. }) => Ok(*component),
+                    _ => Err("Drawer component member is missing its placement"),
+                },
+            )
+            .collect::<Result<Vec<_>, _>>()?;
+        // Keep a source beside its sole same-name placement. The normal tree
+        // can then show one row with the component's children or part history.
+        let prepared = hierarchy::prepare(
+            session,
+            session.revision(),
+            actor(),
+            hierarchy::Action::Move {
+                entries: sources,
+                parent: Some(assembly),
+                before: None,
+            },
+        )?;
+        session.commit(prepared.prepared)?;
+    }
+    Ok(())
+}
+
 pub fn build() -> Result<Scenario, Error> {
     let mut case = CaseBuilder::new()?;
     let panels = panels::build(&mut case).map_err(|error| format!("Plywood panels: {error}"))?;
@@ -593,6 +623,19 @@ pub fn build() -> Result<Scenario, Error> {
         case.checked(prepared.prepared)?;
         case.place(request.assembly)?
     };
+    let definitions = large_assemblies
+        .iter()
+        .map(|(id, _)| *id)
+        .chain(small_assemblies.iter().map(|(id, _)| *id))
+        .chain([upper])
+        .map(
+            |placement| match case.session.document().get(placement).unwrap().data {
+                EntityData::Instance { component, .. } => component,
+                _ => unreachable!("drawer assembly placement"),
+            },
+        )
+        .collect::<Vec<_>>();
+    organize_drawer_sources(&mut case.session, &definitions)?;
     let mut poses = vec![case.pose("All drawers closed", &joints, |_| 0.)?];
     for (index, label) in ["Lower drawer extended", "Upper drawer extended"]
         .into_iter()

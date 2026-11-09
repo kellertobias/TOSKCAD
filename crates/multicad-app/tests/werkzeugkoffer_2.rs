@@ -94,13 +94,17 @@ fn bundled_toolcase_keeps_drawers_in_their_named_components() {
             .all(|id| matches!(document.get(*id).unwrap().data, EntityData::Part { .. }))
     );
     let members = |name: &str| {
-        let EntityData::Assembly { instances } = &assembly(name).data else {
+        let definition = assembly(name);
+        let EntityData::Assembly { instances } = &definition.data else {
             unreachable!();
         };
         instances
             .iter()
             .map(|id| match document.get(*id).unwrap().data {
-                EntityData::Instance { component, .. } => component,
+                EntityData::Instance { component, .. } => {
+                    assert_eq!(index.parent(component).unwrap(), Some(definition.id));
+                    component
+                }
                 _ => panic!("Assembly member {id} is not an instance"),
             })
             .collect::<Vec<_>>()
