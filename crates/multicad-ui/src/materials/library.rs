@@ -60,6 +60,7 @@ impl Category {
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ToolStock {
+    Panel,
     Sheet,
     Profile,
     Batten,
@@ -67,6 +68,7 @@ pub(crate) enum ToolStock {
 impl ToolStock {
     pub(crate) fn label(self) -> &'static str {
         match self {
+            Self::Panel => "Create panel stock…",
             Self::Sheet => "Create sheet stock…",
             Self::Profile => "Create tube or profile stock…",
             Self::Batten => "Create solid rectangular stock…",
@@ -267,6 +269,7 @@ impl LibraryEditor {
     pub(crate) fn for_model_stock(s: &Session, kind: ToolStock) -> Self {
         let mut editor = Self::default();
         match kind {
+            ToolStock::Panel => editor.create_stock(s, 0),
             ToolStock::Sheet => editor.create_stock(s, 1),
             ToolStock::Profile => editor.create_stock(s, 2),
             ToolStock::Batten => editor.create_stock_from(
@@ -317,6 +320,7 @@ impl LibraryEditor {
         }
         if definition.validate().is_err() {
             return Err(match stock.specification {
+                StockKind::Panel { .. } => "Enter positive panel thickness, length, and width.",
                 StockKind::Sheet { .. } => "Enter positive sheet dimensions, a nonnegative bend radius, and a K factor from 0 to 1.",
                 StockKind::Profile { shape: ProfileShape::ItemLine8_40x40, .. } =>
                     "Enter a designation and a stock length above 0 and at most 6000 mm.",
@@ -328,6 +332,24 @@ impl LibraryEditor {
     }
     pub(crate) fn model_stock_error(&mut self, error: String) {
         self.error = Some(error);
+    }
+    pub(crate) fn valid_panel_draft(&self) -> bool {
+        let Some(draft) = &self.draft else {
+            return true;
+        };
+        let EntityData::Extension { definition, .. } = &draft.entity.data else {
+            return true;
+        };
+        let Ok(value) = serde_json::from_value::<LibraryDefinition>(definition.data.clone()) else {
+            return true;
+        };
+        !matches!(
+            &value,
+            LibraryDefinition::Stock(Stock {
+                specification: StockKind::Panel { .. },
+                ..
+            })
+        ) || (!draft.entity.name.trim().is_empty() && value.validate().is_ok())
     }
     pub(crate) fn show_ribbon(&mut self, ui: &mut egui::Ui, s: &Session, editable: bool) {
         use crate::icons::{Icon, tool_with_hint};
@@ -885,14 +907,27 @@ fn stock_controls(ui: &mut egui::Ui, s: &mut StockKind, solid_rectangular: bool)
             width_mm,
             grain,
         } => {
-            number(ui, "Thickness", thickness_mm, " mm");
-            number(ui, "Length", length_mm, " mm");
-            number(ui, "Width", width_mm, " mm");
+            for (label, value) in [
+                ("Thickness", thickness_mm),
+                ("Length", length_mm),
+                ("Width", width_mm),
+            ] {
+                number(ui, label, value, " mm");
+                if !value.is_finite() || *value <= 0. {
+                    ui.colored_label(Color32::LIGHT_RED, format!("{label} must be above zero."));
+                }
+            }
+            ui.label("Grain direction");
+            let label = |grain| match grain {
+                Grain::None => "No grain direction",
+                Grain::AlongLength => "Along length",
+                Grain::AcrossLength => "Across length",
+            };
             egui::ComboBox::from_id_salt("grain")
-                .selected_text(format!("{grain:?}"))
+                .selected_text(label(*grain))
                 .show_ui(ui, |ui| {
                     for g in [Grain::None, Grain::AlongLength, Grain::AcrossLength] {
-                        ui.selectable_value(grain, g, format!("{g:?}"));
+                        ui.selectable_value(grain, g, label(g));
                     }
                 });
         }

@@ -57,6 +57,7 @@ impl LibraryEditor {
     }
     pub(crate) fn can_confirm(&self, s: &Session) -> bool {
         self.dirty()
+            && self.valid_panel_draft()
             && self.confirm_on_ready.is_none()
             && self
                 .guard

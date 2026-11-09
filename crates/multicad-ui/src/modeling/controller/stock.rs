@@ -36,6 +36,7 @@ impl ModelToolController {
             .ok_or("Open the stock editor first")?;
         let form = self.form.as_mut().ok_or("Start a modeling tool first")?;
         let compatible = match (&*form, kind) {
+            (ModelForm::Cabinet(_), ToolStock::Panel) => true,
             (ModelForm::Sheet(_), ToolStock::Sheet) => true,
             (ModelForm::Weldment(panel), ToolStock::Profile | ToolStock::Batten) => {
                 panel.is_batten() == (*kind == ToolStock::Batten)
@@ -51,6 +52,7 @@ impl ModelToolController {
             .commit(prepared)
             .map_err(|error| error.to_string())?;
         match form {
+            ModelForm::Cabinet(panel) => panel.select_stock(stock),
             ModelForm::Sheet(panel) => panel.select_stock(stock),
             ModelForm::Weldment(panel) => panel.select_stock(stock),
             _ => unreachable!("checked stock consumer"),
@@ -70,8 +72,10 @@ impl ModelToolController {
         session: &mut Session,
         resources: &ProjectResources,
     ) {
+        let mut valid = false;
         if let Some((kind, editor)) = &mut self.stock_editor {
             editor.show_model_stock(ui, session, *kind);
+            valid = editor.valid_panel_draft();
         }
         let action = inspector_actions::row(
             ui,
@@ -79,7 +83,7 @@ impl ModelToolController {
             None,
             Button::new(
                 "Apply",
-                true,
+                valid,
                 "Save the Project definition and select it in this tool",
             ),
             Button::new(
@@ -110,7 +114,7 @@ mod tests {
     use std::time::{Duration, Instant};
 
     #[test]
-    fn inline_stock_keeps_the_form_and_persists_native_sheet_and_member_assignments() {
+    fn inline_stock_keeps_the_form_and_persists_native_assignments() {
         let mut session = Session::new(Document::new("In-context stock").unwrap()).unwrap();
         let resources = ProjectResources::default();
         let mut model = ModelToolController::default();
@@ -119,8 +123,14 @@ mod tests {
         ));
         let mut outputs = Vec::new();
         let mut shared_material = None;
-        for kind in [ToolStock::Sheet, ToolStock::Profile, ToolStock::Batten] {
+        for kind in [
+            ToolStock::Panel,
+            ToolStock::Sheet,
+            ToolStock::Profile,
+            ToolStock::Batten,
+        ] {
             match kind {
+                ToolStock::Panel => model.begin_panel(&session, &resources, Channel::Ui),
                 ToolStock::Sheet => model.begin_sheet(&session, &resources, Channel::Ui),
                 ToolStock::Profile => model.begin_weldment(&session, &resources, Channel::Ui),
                 ToolStock::Batten => model.begin_wood_preset(
@@ -188,10 +198,15 @@ mod tests {
         .project
         .document;
         for (kind, stock, feature) in outputs {
-            let assigned = if kind == ToolStock::Sheet {
-                model::read_sheet(&restored, feature).unwrap().stock
-            } else {
-                model::read_member(&restored, feature).unwrap().stock
+            let assigned = match kind {
+                ToolStock::Panel => match model::read_panel(&restored, feature).unwrap().source {
+                    model::PanelSource::Rectangle { stock, .. } => stock,
+                    _ => panic!("Expected a rectangular panel"),
+                },
+                ToolStock::Sheet => model::read_sheet(&restored, feature).unwrap().stock,
+                ToolStock::Profile | ToolStock::Batten => {
+                    model::read_member(&restored, feature).unwrap().stock
+                }
             };
             assert_eq!(assigned, stock);
             assert!(restored.get(stock).is_some());

@@ -232,7 +232,7 @@ impl CabinetFields {
         let mut changed = false;
         ui.strong("Individual shelves");
         ui.label("Default shelf material / stock");
-        changed |= stock_combo(ui, "default-shelf-stock", stocks, &mut self.stock);
+        changed |= stock_combo(ui, "default-shelf-stock", stocks, &mut self.stock, false).0;
         ui.small(
             "New shelves inherit this stock. Explicit overrides keep their material and thickness.",
         );

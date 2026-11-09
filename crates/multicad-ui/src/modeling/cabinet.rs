@@ -129,14 +129,15 @@ fn stock_combo(
     id: &str,
     stocks: &[(EntityId, String, f64)],
     value: &mut Option<EntityId>,
-) -> bool {
+    allow_create: bool,
+) -> (bool, bool) {
     let selected = value
         .and_then(|v| stocks.iter().find(|(s, ..)| *s == v))
         .map_or("Choose panel stock".into(), |(_, n, t)| {
             format!("{n} · {t} mm")
         });
     let mut changed = false;
-    controls::inspector_combo(ui, id)
+    let create = controls::inspector_combo(ui, id)
         .selected_text(selected)
         .show_ui(ui, |ui| {
             for (s, n, t) in stocks {
@@ -144,8 +145,14 @@ fn stock_combo(
                     .selectable_value(value, Some(*s), format!("{n} · {t} mm"))
                     .changed();
             }
-        });
-    changed
+            allow_create
+                && ui
+                    .button(crate::materials::ToolStock::Panel.label())
+                    .clicked()
+        })
+        .inner
+        .unwrap_or(false);
+    (changed, create)
 }
 
 pub(super) struct CabinetPanel {
@@ -254,6 +261,12 @@ impl CabinetPanel {
         let mut form = Self::new(document, name);
         form.kind = Kind::Panel;
         form
+    }
+    pub(super) fn select_stock(&mut self, id: EntityId) {
+        self.stock = Some(id);
+        self.stamp.changed();
+        self.error = None;
+        self.guide = None;
     }
     /// Viewport dimensions of the carcass being drafted, planned exactly as
     /// Apply would plan it; `None` for panels or an invalid draft.
@@ -395,9 +408,7 @@ impl CabinetPanel {
         if self.name.trim().is_empty() || self.name.len() > 1000 {
             return Err("Enter a name with 1–1000 bytes".into());
         }
-        let stock = self
-            .stock
-            .ok_or("Choose panel stock; define it in Project → Materials")?;
+        let stock = self.stock.ok_or("Choose or create panel stock")?;
         let origin = [
             self.origin[0].resolve(document)?,
             self.origin[1].resolve(document)?,
@@ -507,24 +518,6 @@ impl CabinetPanel {
     ) -> Option<ModelEvent> {
         controls::inspector_layout(ui);
         let mut changed = false;
-        if self.existing.is_none() {
-            ui.horizontal(|ui| {
-                changed |= ui
-                    .radio_value(
-                        &mut self.kind,
-                        Kind::Carcass,
-                        if self.options.is_some() {
-                            "Cabinet"
-                        } else {
-                            "Carcass (legacy)"
-                        },
-                    )
-                    .changed();
-                changed |= ui
-                    .radio_value(&mut self.kind, Kind::Panel, "Panel")
-                    .changed();
-            });
-        }
         ui.strong(self.label());
         ui.small(match (self.kind, self.existing.is_some()) {
             (Kind::Carcass, false) => "Sides, top, bottom, back and shelves from an outside envelope. Each panel is a named Part you can select.",
@@ -542,7 +535,7 @@ impl CabinetPanel {
         if stocks.is_empty() {
             ui.colored_label(
                 egui::Color32::LIGHT_RED,
-                "No panel stock yet. Define panel stock in Project → Materials.",
+                "No panel stock yet. Create it from the stock selector below.",
             );
         }
         ui.label(match self.kind {
@@ -550,7 +543,11 @@ impl CabinetPanel {
             Kind::Carcass => "Carcass stock",
             Kind::Panel => "Panel stock",
         });
-        changed |= stock_combo(ui, "cabinet-stock", &stocks, &mut self.stock);
+        let (selected, create) = stock_combo(ui, "cabinet-stock", &stocks, &mut self.stock, true);
+        if create {
+            return Some(ModelEvent::CreateStock(crate::materials::ToolStock::Panel));
+        }
+        changed |= selected;
         ui.separator();
         match self.kind {
             Kind::Carcass => changed |= self.show_carcass(ui, document, &stocks),
@@ -713,7 +710,14 @@ impl CabinetPanel {
         });
         if self.back != BackKind::None {
             ui.label("Back material / stock");
-            changed |= stock_combo(ui, "cabinet-back-stock", stocks, &mut self.back_stock);
+            changed |= stock_combo(
+                ui,
+                "cabinet-back-stock",
+                stocks,
+                &mut self.back_stock,
+                false,
+            )
+            .0;
         }
         if self.back == BackKind::Inset {
             changed |= self
