@@ -25,6 +25,7 @@ mod gear_pairs;
 mod gears;
 mod mechanical_parts;
 pub mod native_intersection_proofs;
+mod rust_backend;
 mod worker_cache;
 pub use gear_pairs::{GearEngagementWitness, GearPairCheck};
 mod equipment_plans;

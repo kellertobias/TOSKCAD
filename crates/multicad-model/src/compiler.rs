@@ -4,7 +4,7 @@ use multicad_core::{
     model::{self, CutTargetProbeResult, Operation},
     project_file::ContentHash,
     references::{self, Origin, ReferenceReport, TopologySnapshot},
-    sketch_regions::{Extraction, RegionIntent},
+    sketch_regions::{AnalyticQueries, Extraction, RegionIntent, RegionQueries},
 };
 use multicad_kernel::{
     Bounds, CurvedEdge2d, CurvedProfile, DisplayEdge, DisplayVertex, GeometryPolicy, Mesh,
@@ -136,7 +136,8 @@ pub(crate) fn checkpoint(interrupt: Option<&dyn Fn() -> bool>) -> Result<(), Mod
 struct Profiles<'a> {
     context: &'a SketchEvaluationContext<'a>,
     references: Option<references::ReferenceInspector>,
-    queries: NativeRegionQueries,
+    queries: &'a dyn RegionQueries,
+    backend: GeometryBackend,
     body_heads: &'a BTreeMap<EntityId, EntityId>,
     policy: GeometryPolicy,
     cache: BTreeMap<EntityId, (multicad_core::sketch::Frame, Extraction)>,
@@ -161,22 +162,24 @@ impl Profiles<'_> {
                     )
                 })
                 .inspect(topologies);
-            crate::external::Sources {
-                document: self.context.document(),
-                revision: self.context.stamp().revision,
-                parameters: self.context.parameters(),
-                body_heads: self.body_heads,
-                solids,
-                topologies,
-                policy: self.policy,
+            if self.backend == GeometryBackend::OpenCascade {
+                crate::external::Sources {
+                    document: self.context.document(),
+                    revision: self.context.stamp().revision,
+                    parameters: self.context.parameters(),
+                    body_heads: self.body_heads,
+                    solids,
+                    topologies,
+                    policy: self.policy,
+                }
+                .populate(&mut report, Some(sketch), interrupt)?;
             }
-            .populate(&mut report, Some(sketch), interrupt)?;
             let evaluated = self
                 .context
                 .evaluate(sketch, Some(&report), interrupt)
                 .map_err(|e| error(e.source, e))?;
             let regions = evaluated
-                .regions_with_queries_and_interrupt(&self.queries, interrupt)
+                .regions_with_queries_and_interrupt(self.queries, interrupt)
                 .map_err(|e| error(e.source, e))?;
             entry.insert((evaluated.frame, regions));
         }
@@ -230,6 +233,10 @@ impl Profiles<'_> {
                 topologies,
                 interrupt,
             ),
+            model::ModelProfile::Face(_) if self.backend == GeometryBackend::Rust => Err(error(
+                Some(feature),
+                "The Rust backend currently requires a sketch extrusion profile",
+            )),
             model::ModelProfile::Face(face) => crate::face_profile::FaceProfileInputs {
                 document: self.context.document(),
                 revision: self.context.stamp().revision,
@@ -325,6 +332,26 @@ pub struct Compiler {
     /// geometry. Native solids, topology and dimensional references remain complete.
     pub omit_display: bool,
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GeometryBackend {
+    OpenCascade,
+    Rust,
+}
+
+struct EvaluationMode {
+    roots: Option<Vec<EntityId>>,
+    backend: GeometryBackend,
+}
+
+impl EvaluationMode {
+    fn native(roots: Option<Vec<EntityId>>) -> Self {
+        Self {
+            roots,
+            backend: GeometryBackend::OpenCascade,
+        }
+    }
+}
 pub const MAX_MODEL_FEATURES: usize = 4096;
 pub const MAX_MODEL_TRIANGLES: usize = 4_000_000;
 impl Compiler {
@@ -337,8 +364,26 @@ impl Compiler {
         revision: u64,
         interrupt: Option<&dyn Fn() -> bool>,
     ) -> Result<Model, ModelError> {
+        self.compile_with_backend(document, revision, GeometryBackend::OpenCascade, interrupt)
+    }
+
+    /// Evaluate the whole canonical document with one explicitly selected solid backend.
+    pub fn compile_with_backend(
+        &self,
+        document: &Document,
+        revision: u64,
+        backend: GeometryBackend,
+        interrupt: Option<&dyn Fn() -> bool>,
+    ) -> Result<Model, ModelError> {
+        let mode = EvaluationMode {
+            roots: None,
+            backend,
+        };
+        if backend == GeometryBackend::Rust {
+            return self.compile_scoped(document, revision, mode, interrupt, None);
+        }
         crate::worker_cache::with_current_cache(|cache| {
-            self.compile_scoped(document, revision, None, interrupt, cache)
+            self.compile_scoped(document, revision, mode, interrupt, cache)
         })
     }
     /// A full compile that reuses unchanged feature results from earlier
@@ -351,7 +396,13 @@ impl Compiler {
         revision: u64,
         interrupt: Option<&dyn Fn() -> bool>,
     ) -> Result<Model, ModelError> {
-        self.compile_scoped(document, revision, None, interrupt, Some(cache))
+        self.compile_scoped(
+            document,
+            revision,
+            EvaluationMode::native(None),
+            interrupt,
+            Some(cache),
+        )
     }
     /// [`Self::compile_sources_interruptible`] through an evaluation cache.
     pub fn compile_sources_cached(
@@ -363,7 +414,13 @@ impl Compiler {
         interrupt: Option<&dyn Fn() -> bool>,
     ) -> Result<Model, ModelError> {
         let roots = validate_source_roots(document, roots)?;
-        self.compile_scoped(document, revision, Some(roots), interrupt, Some(cache))
+        self.compile_scoped(
+            document,
+            revision,
+            EvaluationMode::native(Some(roots)),
+            interrupt,
+            Some(cache),
+        )
     }
     /// Evaluate only explicitly selected current source roots and their dependencies.
     /// The stamp still covers the complete canonical document. The result is an
@@ -385,7 +442,13 @@ impl Compiler {
     ) -> Result<Model, ModelError> {
         let roots = validate_source_roots(document, roots)?;
         crate::worker_cache::with_current_cache(|cache| {
-            self.compile_scoped(document, revision, Some(roots), interrupt, cache)
+            self.compile_scoped(
+                document,
+                revision,
+                EvaluationMode::native(Some(roots)),
+                interrupt,
+                cache,
+            )
         })
     }
     /// Nested evaluators report their own cancellation wording (for example
@@ -396,12 +459,12 @@ impl Compiler {
         &self,
         document: &Document,
         revision: u64,
-        roots: Option<Vec<EntityId>>,
+        mode: EvaluationMode,
         interrupt: Option<&dyn Fn() -> bool>,
         mut cache: Option<&mut crate::EvaluationCache>,
     ) -> Result<Model, ModelError> {
         let started = std::time::Instant::now();
-        let full_evaluation = roots.is_none();
+        let full_evaluation = mode.roots.is_none() && mode.backend == GeometryBackend::OpenCascade;
         let publication = crate::pair_cycle_proofs::PublicationScope::begin();
         let native_publication =
             crate::native_intersection_proofs::PublicationScope::begin(if full_evaluation {
@@ -413,8 +476,12 @@ impl Compiler {
             });
         // An injected application store takes precedence over worker-local
         // receipts, including after clear or a change of application owner.
-        let store = crate::current_pair_cycle_proofs()
-            .or_else(|| cache.as_deref().map(|cache| cache.gear_pairs.clone()));
+        let store = (mode.backend == GeometryBackend::OpenCascade)
+            .then(|| {
+                crate::current_pair_cycle_proofs()
+                    .or_else(|| cache.as_deref().map(|cache| cache.gear_pairs.clone()))
+            })
+            .flatten();
         let mut pair_proofs = crate::pair_cycle_proofs::CycleTransaction::new(store);
         if let Some(cache) = cache.as_deref_mut() {
             cache.begin_symbol_proofs();
@@ -423,7 +490,7 @@ impl Compiler {
             .compile_scoped_unchecked(
                 document,
                 revision,
-                roots,
+                mode,
                 interrupt,
                 cache.as_deref_mut(),
                 &mut pair_proofs,
@@ -473,16 +540,19 @@ impl Compiler {
         &self,
         document: &Document,
         revision: u64,
-        roots: Option<Vec<EntityId>>,
+        mode: EvaluationMode,
         interrupt: Option<&dyn Fn() -> bool>,
         mut cache: Option<&mut crate::EvaluationCache>,
         pair_proofs: &mut crate::pair_cycle_proofs::CycleTransaction,
     ) -> Result<Model, ModelError> {
+        let EvaluationMode { roots, backend } = mode;
         let mut timings = ModelTimings::default();
         checkpoint(interrupt)?;
         document.validate().map_err(|e| error(None, e))?;
         self.policy.validate().map_err(|e| error(None, e))?;
-        if roots.is_none() {
+        if backend == GeometryBackend::Rust {
+            crate::rust_backend::validate_document(document, self.omit_display)?;
+        } else if roots.is_none() {
             crate::symbols::validate_definitions(
                 self,
                 document,
@@ -589,10 +659,16 @@ impl Compiler {
         let mut cached = cache.map(|cache| {
             crate::eval_cache::Session::new(cache, self, document, context.parameters())
         });
+        let native_queries = NativeRegionQueries::new(self.policy).map_err(|e| error(None, e))?;
         let mut profiles = Profiles {
             references: None,
             context: &context,
-            queries: NativeRegionQueries::new(self.policy).map_err(|e| error(None, e))?,
+            queries: if backend == GeometryBackend::Rust {
+                &AnalyticQueries
+            } else {
+                &native_queries
+            },
+            backend,
             body_heads: &bodies,
             policy: self.policy,
             cache: BTreeMap::new(),
@@ -882,25 +958,47 @@ impl Compiler {
                         .map_err(|e| error(Some(id), e))?;
                     let (profile, origins) =
                         profiles.model(&source.profile, id, &solids, &topologies, interrupt)?;
-                    crate::extrude::Extrusion {
-                        document,
-                        revision,
-                        feature: id,
-                        solids: &solids,
-                        topologies: &topologies,
-                        policy: self.policy,
-                        interrupt,
+                    if backend == GeometryBackend::Rust {
+                        crate::rust_backend::extrude(
+                            id,
+                            &source.parameters,
+                            &extent,
+                            &profile,
+                            &origins,
+                            context.parameters(),
+                            self.policy,
+                        )?
+                    } else {
+                        crate::extrude::Extrusion {
+                            document,
+                            revision,
+                            feature: id,
+                            solids: &solids,
+                            topologies: &topologies,
+                            policy: self.policy,
+                            interrupt,
+                        }
+                        .build(profile, &origins, &extent)?
                     }
-                    .build(profile, &origins, &extent)?
                 }
                 (model::PRIMITIVE_TYPE, model::PRIMITIVE_SCHEMA) => {
                     let source =
                         model::read_primitive(document, id).map_err(|e| error(Some(id), e))?;
-                    let primitive = source
-                        .parameters
-                        .resolve(context.parameters())
-                        .map_err(|e| error(Some(id), e))?;
-                    build_primitive(primitive, id, self.policy).map_err(|e| error(Some(id), e))?
+                    if backend == GeometryBackend::Rust {
+                        crate::rust_backend::primitive(
+                            id,
+                            &source.parameters,
+                            context.parameters(),
+                            self.policy,
+                        )?
+                    } else {
+                        let primitive = source
+                            .parameters
+                            .resolve(context.parameters())
+                            .map_err(|e| error(Some(id), e))?;
+                        build_primitive(primitive, id, self.policy)
+                            .map_err(|e| error(Some(id), e))?
+                    }
                 }
                 (model::SLAB_TYPE, 1) => {
                     crate::levels::build_slab(document, context.parameters(), id, self.policy)?
@@ -1420,7 +1518,7 @@ impl Compiler {
         }
         drop(cached);
         let pair_started = std::time::Instant::now();
-        let gear_pair_checks = if roots.is_none() {
+        let gear_pair_checks = if roots.is_none() && backend == GeometryBackend::OpenCascade {
             crate::gear_pairs::validate(
                 crate::gear_pairs::ValidationInputs {
                     document,
@@ -1443,21 +1541,23 @@ impl Compiler {
             .take()
             .unwrap_or_else(|| references::ReferenceInspector::new(document, revision))
             .inspect(&topologies);
-        crate::external::complete_report(
-            self,
-            &crate::external::Sources {
-                document,
-                revision,
-                parameters: context.parameters(),
-                body_heads: &bodies,
-                solids: &solids,
-                topologies: &topologies,
-                policy: self.policy,
-            },
-            &mut references,
-            roots.is_none(),
-            interrupt,
-        )?;
+        if backend == GeometryBackend::OpenCascade {
+            crate::external::complete_report(
+                self,
+                &crate::external::Sources {
+                    document,
+                    revision,
+                    parameters: context.parameters(),
+                    body_heads: &bodies,
+                    solids: &solids,
+                    topologies: &topologies,
+                    policy: self.policy,
+                },
+                &mut references,
+                roots.is_none(),
+                interrupt,
+            )?;
+        }
         if roots.is_some() {
             bodies.retain(|_, producer| shapes.contains_key(producer));
         }
@@ -1570,7 +1670,7 @@ impl Compiler {
                 fdm_aids: Ok(vec![]),
             },
         };
-        if full {
+        if full && backend == GeometryBackend::OpenCascade {
             let connection_started = std::time::Instant::now();
             model.snapshot.screw_connection_checks = crate::screw_connections::validate(
                 document,

@@ -1,7 +1,7 @@
 //! Safe solid operations in millimeters. Display meshes are detached copies;
 //! callers rebuild exact solids from source rather than editing triangles.
 use crate::{Shape, ffi};
-use multicad_rust_kernel::{Circle, Rational, prism::RoundedPrism};
+use multicad_rust_kernel::{Circle, Rational, cylinder::AxialCylinder, prism::RoundedPrism};
 use std::path::Path;
 use std::rc::Rc;
 
@@ -461,6 +461,7 @@ pub struct Solid {
 enum SolidBody {
     Occt(Shape),
     RoundedPrism(Rc<RoundedPrism>),
+    AxialCylinder(Rc<AxialCylinder>, PlaneFrame),
 }
 
 impl Solid {
@@ -492,7 +493,52 @@ impl Solid {
     pub fn rounded_prism(&self) -> Option<&RoundedPrism> {
         match &self.body {
             SolidBody::RoundedPrism(prism) => Some(prism),
-            SolidBody::Occt(_) => None,
+            _ => None,
+        }
+    }
+
+    pub fn from_axial_cylinder(
+        cylinder: AxialCylinder,
+        frame: PlaneFrame,
+        policy: GeometryPolicy,
+    ) -> Result<Self, GeometryError> {
+        policy.validate()?;
+        if cylinder.feature() == 0 {
+            return Err(input(
+                "Cylinder topology requires a non-nil source identity",
+            ));
+        }
+        policy.length(cylinder.circle().radius().as_f64())?;
+        policy.length(cylinder.height().as_f64())?;
+        for corner in cylinder.bounds() {
+            policy.point(corner.map(Rational::as_f64))?;
+        }
+        let [x, y] = cylinder.circle().center().map(Rational::as_f64);
+        frame.checked(policy)?;
+        if frame.origin != [x, y, cylinder.bottom().as_f64()]
+            || frame.u[2] != 0.
+            || frame.v[2] != 0.
+            || frame.normal()[2] <= 0.
+        {
+            return Err(input(
+                "Rust cylinder requires a matching frame with positive Z normal",
+            ));
+        }
+        Ok(Self {
+            body: SolidBody::AxialCylinder(Rc::new(cylinder), frame),
+            policy,
+            provenance: vec![],
+        })
+    }
+
+    pub fn axial_cylinder(&self) -> Option<&AxialCylinder> {
+        self.axial_cylinder_frame().map(|(cylinder, _)| cylinder)
+    }
+
+    pub(crate) fn axial_cylinder_frame(&self) -> Option<(&AxialCylinder, PlaneFrame)> {
+        match &self.body {
+            SolidBody::AxialCylinder(cylinder, frame) => Some((cylinder, *frame)),
+            _ => None,
         }
     }
 
@@ -528,10 +574,10 @@ impl Solid {
     pub(crate) fn occt(&self) -> Result<&ffi::Shape, GeometryError> {
         match &self.body {
             SolidBody::Occt(shape) => Ok(&shape.0),
-            SolidBody::RoundedPrism(_) => Err(error(
+            _ => Err(error(
                 "solid backend",
                 GeometryErrorKind::Unsupported,
-                "This operation is unavailable for the Rust rounded prism",
+                "This operation is unavailable for the Rust solid",
             )),
         }
     }
@@ -539,7 +585,7 @@ impl Solid {
     pub(crate) fn into_occt(self) -> Option<cxx::UniquePtr<ffi::Shape>> {
         match self.body {
             SolidBody::Occt(shape) => Some(shape.0),
-            SolidBody::RoundedPrism(_) => None,
+            _ => None,
         }
     }
 
@@ -551,23 +597,25 @@ impl Solid {
     /// shapes, so both owners observe identical geometry. Like every Solid
     /// the share stays on the thread that created it (`!Send`/`!Sync`).
     pub fn share(&self) -> Result<Self, GeometryError> {
-        if let SolidBody::RoundedPrism(prism) = &self.body {
-            return Ok(Self {
-                body: SolidBody::RoundedPrism(Rc::clone(prism)),
-                policy: self.policy,
-                provenance: self.provenance.clone(),
-            });
-        }
-        let handle = ffi::share_shape(self.occt()?).map_err(|e| native("share", e))?;
-        if handle.is_null() {
-            return Err(error(
-                "share",
-                GeometryErrorKind::InvalidResult,
-                "Kernel returned an empty shape",
-            ));
-        }
+        let body = match &self.body {
+            SolidBody::RoundedPrism(prism) => SolidBody::RoundedPrism(Rc::clone(prism)),
+            SolidBody::AxialCylinder(cylinder, frame) => {
+                SolidBody::AxialCylinder(Rc::clone(cylinder), *frame)
+            }
+            SolidBody::Occt(shape) => {
+                let handle = ffi::share_shape(&shape.0).map_err(|e| native("share", e))?;
+                if handle.is_null() {
+                    return Err(error(
+                        "share",
+                        GeometryErrorKind::InvalidResult,
+                        "Kernel returned an empty shape",
+                    ));
+                }
+                SolidBody::Occt(Shape(handle))
+            }
+        };
         Ok(Self {
-            body: SolidBody::Occt(Shape(handle)),
+            body,
             policy: self.policy,
             provenance: self.provenance.clone(),
         })
@@ -660,6 +708,22 @@ impl Solid {
         policy: GeometryPolicy,
     ) -> Result<Option<Self>, GeometryError> {
         policy.validate()?;
+        if self.rounded_prism().is_some()
+            && let Some(tool) = other.axial_cylinder()
+            && operation == BooleanOperation::Subtract
+            && policy.boolean_fuzzy_mm == 0.
+            && policy == self.policy
+            && policy == other.policy
+        {
+            return self
+                .subtract_rounded_prism_cylinder(
+                    tool.feature(),
+                    tool.circle(),
+                    tool.bottom(),
+                    tool.top(),
+                )
+                .map(Some);
+        }
         let op = match operation {
             BooleanOperation::Union => 0,
             BooleanOperation::Subtract => 1,
@@ -705,6 +769,9 @@ impl Solid {
         Ok(result)
     }
     pub fn volume_mm3(&self) -> Result<f64, GeometryError> {
+        if let Some(cylinder) = self.axial_cylinder() {
+            return Ok(std::f64::consts::PI * cylinder.volume_factor().as_f64());
+        }
         if let Some(prism) = self.rounded_prism() {
             let volume = prism.volume();
             return Ok(volume
@@ -715,12 +782,16 @@ impl Solid {
         ffi::volume(self.occt()?).map_err(|e| native("volume", e))
     }
     pub fn solid_count(&self) -> Result<u32, GeometryError> {
-        if self.rounded_prism().is_some() {
+        if !matches!(self.body, SolidBody::Occt(_)) {
             return Ok(1);
         }
         ffi::solid_count(self.occt()?).map_err(|e| native("solid count", e))
     }
     pub fn bounds(&self) -> Result<Bounds, GeometryError> {
+        if let Some(cylinder) = self.axial_cylinder() {
+            let [min, max] = cylinder.bounds().map(|corner| corner.map(Rational::as_f64));
+            return Ok(Bounds { min, max });
+        }
         if let Some(prism) = self.rounded_prism() {
             return Ok(Bounds {
                 min: [0.; 3],
@@ -761,6 +832,9 @@ impl Solid {
         crate::planar_contours::extract(self, face, frame, self.policy)
     }
     pub fn faces(&self) -> Result<Vec<Face>, GeometryError> {
+        if let Some(cylinder) = self.axial_cylinder() {
+            return Ok(crate::rust_prism_topology::cylinder_faces(cylinder));
+        }
         if let Some(prism) = self.rounded_prism() {
             return Ok(crate::rust_prism_topology::faces(prism));
         }

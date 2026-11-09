@@ -14,7 +14,7 @@ The profile uses three axis-aligned segments and one semicircle. The solid extru
 
 Top area and volume remain exact as rational coefficients of `constant + π × factor`. A point probe distinguishes material, boundary, and empty space. A face key uses an authored 128-bit ID and a surface role; the tests rebuild the panel with a fractional thickness and a different bore diameter, then resolve the same keys. The [panel tests](tests/prism.rs) compare the exact measures against the recorded OCCT results for both panel sizes and cutter seam orientations.
 
-The kernel façade can own a rounded prism directly and publish its analytic faces, edges, vertices, and source roles. A panel rebuilt with different dimensions keeps its cap reference and identifies its bores by source even when their order changes. The cylinder representation uses its axis and radius. Compiler selection, general trimmed surfaces, helical seam tests, independent STEP readback, and matched workload timings still need verification.
+The kernel façade owns Rust rounded prisms and axial cylinders and publishes their analytic topology. The headless compiler can select the Rust backend for a whole evaluation. It accepts a rounded XY sketch extrusion, a finite axial cylinder, and a through-cut. A saved panel can rebuild after a fractional height edit and carry its attached sketch plane to the edited cap. The [compiler tests](../multicad-model/tests/rust_backend.rs) compare both cutter seam orientations with OpenCascade and check that a tangent bore fails explicitly. Display tessellation, general trimmed surfaces, helical seam tests, independent STEP readback, and matched workload timings still need verification.
 
 ## Verification
 

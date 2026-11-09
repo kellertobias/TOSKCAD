@@ -28,6 +28,9 @@ fn panel(height: Rational, cutter: Circle) -> RoundedPrism {
 fn baseline_panel_has_analytic_trims_and_exact_mass_properties() {
     let cutter = circle(28, 10, 4);
     let solid = panel(n(8), cutter);
+    assert_eq!(solid.feature(), 10);
+    assert_eq!(solid.dimensions(), [n(40), n(10), n(8)]);
+    assert_eq!(solid.maximum(), [n(50), n(20), n(8)]);
     assert_eq!(
         solid.outer_loop(),
         [

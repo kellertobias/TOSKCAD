@@ -1,5 +1,5 @@
 //! Publish topology and finite face descriptors from the analytic Rust body.
-use crate::Face;
+use crate::{Face, PlaneFrame};
 use multicad_core::{
     document::EntityId,
     references::{
@@ -7,7 +7,7 @@ use multicad_core::{
         TopologyKind, TopologySnapshot,
     },
 };
-use multicad_rust_kernel::{Rational, prism::RoundedPrism};
+use multicad_rust_kernel::{Rational, cylinder::AxialCylinder, prism::RoundedPrism};
 use std::f64::consts::{FRAC_PI_2, PI, TAU};
 
 const X: [f64; 3] = [1., 0., 0.];
@@ -230,6 +230,85 @@ pub(crate) fn snapshot(
             &[index + 2, 2 + (index + 3) % 4],
         );
     }
+    let snapshot = TopologySnapshot {
+        owner,
+        revision,
+        elements: build.elements,
+    };
+    snapshot.validate()?;
+    Ok(snapshot)
+}
+
+pub(crate) fn cylinder_faces(cylinder: &AxialCylinder) -> Vec<Face> {
+    let [x, y] = cylinder.circle().center().map(Rational::as_f64);
+    let radius = cylinder.circle().radius().as_f64();
+    let bottom = cylinder.bottom().as_f64();
+    let top = cylinder.top().as_f64();
+    let cap_area = PI * radius * radius;
+    vec![
+        Face {
+            index: 0,
+            plane: Some(([x, y, bottom], [0., 0., -1.])),
+            center_mm: [x, y, bottom],
+            area_mm2: cap_area,
+        },
+        Face {
+            index: 1,
+            plane: Some(([x, y, top], Z)),
+            center_mm: [x, y, top],
+            area_mm2: cap_area,
+        },
+        Face {
+            index: 2,
+            plane: None,
+            center_mm: [x, y, (bottom + top) * 0.5],
+            area_mm2: TAU * radius * cylinder.height().as_f64(),
+        },
+    ]
+}
+
+pub(crate) fn cylinder_snapshot(
+    cylinder: &AxialCylinder,
+    authored: PlaneFrame,
+    owner: EntityId,
+    revision: u64,
+) -> Result<TopologySnapshot, String> {
+    let source = EntityId::from_uuid_bits(cylinder.feature());
+    let face_origins = CAP_ROLES
+        .into_iter()
+        .chain(["side.cylinder"])
+        .map(|role| Origin {
+            source,
+            role: role.into(),
+        })
+        .collect();
+    let mut build = Builder {
+        face_origins,
+        elements: vec![],
+        next_edge: 0,
+        next_vertex: 0,
+    };
+    let [x, y] = cylinder.circle().center().map(Rational::as_f64);
+    let radius_mm = cylinder.circle().radius().as_f64();
+    for (cap, z) in [cylinder.bottom().as_f64(), cylinder.top().as_f64()]
+        .into_iter()
+        .enumerate()
+    {
+        let origin = [x, y, z];
+        let support = frame(origin, X, if cap == 0 { NEG_Y } else { Y });
+        let anchor = frame(origin, authored.u, authored.v);
+        build.face(cap, Some(support), Some(anchor), [2]);
+        build.non_face(
+            AnalyticGeometry::CircularArc {
+                frame: anchor,
+                radius_mm,
+                start_rad: 0.,
+                sweep_rad: TAU,
+            },
+            &[cap, 2],
+        );
+    }
+    build.face(2, None, None, [0, 1]);
     let snapshot = TopologySnapshot {
         owner,
         revision,

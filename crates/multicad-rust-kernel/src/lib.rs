@@ -1,5 +1,6 @@
 //! Bounded exact lengths and one analytic curve probe for the kernel study.
 
+pub mod cylinder;
 pub mod prism;
 
 use std::cmp::Ordering;
