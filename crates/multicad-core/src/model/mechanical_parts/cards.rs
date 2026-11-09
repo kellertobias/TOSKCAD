@@ -169,7 +169,7 @@ fn cards(document: &Document, symbol: Option<(EntityId, String)>) -> Vec<Mechani
                         };
                         card.profile_details.extend([
                             format!("Authored length convention: {}",match p.length_convention {ScrewLengthConvention::Underhead=>"underhead",ScrewLengthConvention::Overall=>"overall"}),
-                            format!("Reference V included angle: {} degrees",p.reference_profile.included_angle_deg),
+                            format!("Reference V included angle: {} degrees",crate::parameters::format_degrees(p.reference_profile.included_angle_deg)),
                             "Minimum tip-inclusive extent is a source lower bound, not the actual thread length or start".into(),
                             "Manufacturer point detail unspecified; nominal stock ends at a flat envelope plane".into(),
                             super::super::ManufacturingLimitationKind::SimplifiedWoodScrew.message().into(),
@@ -216,8 +216,9 @@ fn cards(document: &Document, symbol: Option<(EntityId, String)>) -> Vec<Mechani
                         {
                             if label.contains("(degrees)") {
                                 card.profile_details.push(format!(
-                                    "{}: {value} degrees",
-                                    label.replace(" (degrees)", "")
+                                    "{}: {} degrees",
+                                    label.replace(" (degrees)", ""),
+                                    crate::parameters::format_degrees(value)
                                 ));
                             } else if label == "Phillips H size" {
                                 card.profile_details.push(format!("Phillips H{value:.0}"));

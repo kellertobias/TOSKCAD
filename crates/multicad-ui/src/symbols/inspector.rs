@@ -138,7 +138,7 @@ pub(super) fn show(
                 for entity in document.entities().filter(|e|matches!(e.data,EntityData::Parameter{..})) {
                     let mut checked=exposed.contains(&entity.id);
                     if ui.checkbox(&mut checked,&entity.name).on_hover_text(format!("{}\nID: {}",entity.description,entity.id)).changed(){if checked{exposed.insert(entity.id);}else{exposed.remove(&entity.id);}changed=true;}
-                    if let Some(value)=evaluated.as_ref().and_then(|values|values.values.get(&entity.id).and_then(|v|values.value(entity.id,v.unit).ok().map(|n|format!("{n} {}",v.unit.symbol())))){ui.small(value);}
+                    if let Some(value)=evaluated.as_ref().and_then(|values|values.values.get(&entity.id).and_then(|v|values.value(entity.id,v.unit).ok().map(|n|fields::display_value(n,v.unit.symbol())))){ui.small(value);}
                     if let EntityData::Parameter{expression,..}=&entity.data{ui.small(format!("Default: {expression}"));}
                 }
                 request.exposed=exposed.into_iter().collect();

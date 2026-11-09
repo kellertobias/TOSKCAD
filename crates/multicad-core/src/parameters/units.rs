@@ -106,6 +106,20 @@ impl Unit {
         }
     }
 }
+
+/// Present degrees without the last-place noise of conversion from radians.
+/// Keep the full value when trimming would lose more than floating-point noise.
+pub fn format_degrees(value: f64) -> String {
+    let decimal = format!("{value:.12}");
+    if decimal
+        .parse::<f64>()
+        .is_ok_and(|rounded| (rounded - value).abs() <= value.abs() * f64::EPSILON)
+    {
+        decimal.trim_end_matches('0').trim_end_matches('.').into()
+    } else {
+        value.to_string()
+    }
+}
 /// A query result, never an accumulated transform or stored mesh coordinate.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize)]
 pub struct Quantity {

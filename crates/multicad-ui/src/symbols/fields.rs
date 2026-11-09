@@ -14,6 +14,65 @@ pub(super) struct ValueInput {
     pub text: String,
     pub unit: String,
     pub enabled: bool,
+    exact: Option<(String, String)>,
+}
+impl ValueInput {
+    fn new(value: &SymbolValue, enabled: bool) -> Self {
+        let exact = value.value.to_string();
+        let text = if value.unit == Unit::Degree.symbol() {
+            parameters::format_degrees(value.value)
+        } else {
+            exact.clone()
+        };
+        Self {
+            exact: (text != exact).then(|| (text.clone(), exact)),
+            text,
+            unit: value.unit.clone(),
+            enabled,
+        }
+    }
+
+    fn numeric(&self, name: &str) -> Result<f64, String> {
+        let original = self.exact.as_ref().filter(|(shown, _)| *shown == self.text);
+        number(original.map_or(&self.text, |(_, exact)| exact), name)
+    }
+}
+
+pub(super) fn display_value(value: f64, unit: &str) -> String {
+    if unit == Unit::Degree.symbol() {
+        format!("{}°", parameters::format_degrees(value))
+    } else {
+        format!("{value} {unit}")
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn degree_fields_keep_exact_seeds_and_show_readable_angles() {
+    let value = SymbolValue {
+        value: 59.99999999999999,
+        unit: "deg".into(),
+    };
+    assert_eq!(display_value(value.value, &value.unit), "60°");
+    assert_eq!(display_value(-12.125, "deg"), "-12.125°");
+    let precise = 15.123456789012345;
+    assert_eq!(display_value(precise, "deg"), format!("{precise}°"));
+    assert_eq!(display_value(1e-16, "deg"), "0.0000000000000001°");
+    let mut field = ValueInput::new(&value, true);
+    assert_eq!(field.text, "60");
+    assert_eq!(
+        field.numeric("Angle").unwrap().to_bits(),
+        value.value.to_bits()
+    );
+    field.text = "60.125".into();
+    assert_eq!(field.numeric("Angle").unwrap(), 60.125);
+    reset(&mut field, Some(&value));
+    assert!(!field.enabled);
+    assert_eq!(field.text, "60");
+    assert_eq!(
+        field.numeric("Angle").unwrap().to_bits(),
+        value.value.to_bits()
+    );
 }
 #[derive(Clone, Default)]
 pub(crate) struct Overrides(
@@ -47,32 +106,16 @@ impl Overrides {
                 let value = evaluated
                     .value(*id, parameter.unit)
                     .map_err(|e| e.to_string())?;
-                defaults.insert(
-                    *id,
-                    SymbolValue {
-                        value,
-                        unit: parameter.unit.symbol().into(),
-                    },
-                );
-                inputs.insert(
-                    *id,
-                    ValueInput {
-                        text: value.to_string(),
-                        unit: parameter.unit.symbol().into(),
-                        enabled: false,
-                    },
-                );
+                let default = SymbolValue {
+                    value,
+                    unit: parameter.unit.symbol().into(),
+                };
+                inputs.insert(*id, ValueInput::new(&default, false));
+                defaults.insert(*id, default);
             }
         }
         for (id, value) in values {
-            inputs.insert(
-                *id,
-                ValueInput {
-                    text: value.value.to_string(),
-                    unit: value.unit.clone(),
-                    enabled: true,
-                },
-            );
+            inputs.insert(*id, ValueInput::new(value, true));
         }
         Ok(Self(inputs, defaults, None))
     }
@@ -96,7 +139,7 @@ impl Overrides {
                     "Remove the override for {name}; it is no longer exposed"
                 ));
             }
-            let value = number(&field.text, name)?;
+            let value = field.numeric(name)?;
             let unit =
                 Unit::parse(&field.unit).ok_or_else(|| format!("{name}: unknown override unit"))?;
             let expected = definition
@@ -213,8 +256,7 @@ impl Overrides {
 fn reset(field: &mut ValueInput, default: Option<&SymbolValue>) {
     field.enabled = false;
     if let Some(default) = default {
-        field.text = default.value.to_string();
-        field.unit = default.unit.clone();
+        *field = ValueInput::new(default, false);
     }
 }
 fn show_value(
@@ -301,18 +343,29 @@ fn show_value(
         ui.small("Modeled helix is required for manufacturing.");
     } else if field.enabled {
         ui.horizontal_wrapped(|ui| {
-            changed |= ui
+            let edited = ui
                 .add(
                     egui::TextEdit::singleline(&mut field.text)
                         .desired_width((controls::inspector_width(ui) - 65.).max(40.)),
                 )
                 .on_hover_text("Finite numeric value for this instance only")
                 .changed();
-            ui.label(&field.unit);
+            if edited {
+                field.exact = None;
+                changed = true;
+            }
+            ui.label(if field.unit == Unit::Degree.symbol() {
+                "°"
+            } else {
+                &field.unit
+            });
         });
     }
     if !representation_input && let Some(default) = default {
-        ui.small(format!("Default: {} {}", default.value, default.unit));
+        ui.small(format!(
+            "Default: {}",
+            display_value(default.value, &default.unit)
+        ));
     }
     if !representation_input
         && let Some(entity) = entity

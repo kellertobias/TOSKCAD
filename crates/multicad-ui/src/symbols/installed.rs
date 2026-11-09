@@ -105,7 +105,11 @@ fn show_card(ui: &mut egui::Ui, part: &MechanicalPartCard) {
         ui.small(format!("{name}: {value} mm"));
     }
     for detail in &part.profile_details {
-        ui.small(detail);
+        if let Some(angle) = detail.strip_suffix(" degrees") {
+            ui.small(format!("{angle}°"));
+        } else {
+            ui.small(detail);
+        }
     }
     let facts = part.catalog_facts.as_ref();
     if let Some(nominal) = facts.and_then(|f| f.nominal_fastener_diameter_mm) {
@@ -396,7 +400,7 @@ mod tests {
             .collect::<Vec<_>>()
             .join(" ");
         assert!(text.contains("Head diameter: 5.6 mm"));
-        assert!(text.contains("92 degrees"));
+        assert!(text.contains("92°"));
         assert!(!text.contains("92 mm"));
         out.drop_without_applying_deltas();
     }
