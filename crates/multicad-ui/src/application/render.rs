@@ -58,6 +58,7 @@ impl Application {
     /// Capture and Show always land on the Render tab, where the viewport
     /// they act on is visible.
     pub(super) fn open_render_tab(&mut self) {
+        self.capture_export_selection();
         self.mode = Mode::Export;
         if let Some(index) = self
             .registry

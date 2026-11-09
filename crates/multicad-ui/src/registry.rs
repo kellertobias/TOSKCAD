@@ -782,7 +782,6 @@ impl Default for Registry {
                             "export-set",
                             "export-set-save",
                             "export-set-discard",
-                            "export-preview",
                             "export-run",
                             "export-cancel",
                             "export-schedule-csv",

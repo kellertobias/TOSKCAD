@@ -38,12 +38,7 @@ impl Application {
         if self.mode == Mode::Sketch {
             self.current_mut().sketch.finish()?;
         }
-        if self.mode != Mode::Export {
-            let p = self.current_mut();
-            let selection = p.sketch.export_selection(p.session.document());
-            p.print.capture(selection.clone());
-            p.exchange.capture(selection);
-        }
+        self.capture_export_selection();
         self.open_print_tab();
         self.message = match tool {
             PrintTool::Preview => {

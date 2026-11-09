@@ -4,12 +4,13 @@ mod destination;
 mod drawing_pdf;
 pub use drawing_pdf::DrawingPdfScope;
 mod form;
+mod preview_geometry;
 mod schedule_csv;
 use crate::{egui, icons::Icon};
 pub use backend::*;
 use form::{Catalog, Draft};
 use multicad_core::{
-    commands::{Actor, Channel, Session},
+    commands::{Actor, Channel, Session, SessionStamp},
     document::EntityId,
     exchange::*,
 };
@@ -52,7 +53,7 @@ impl ExportTool {
     }
     pub fn label(self) -> &'static str {
         match self {
-            Self::NewSet => "New export set",
+            Self::NewSet => "Model export",
             Self::SaveSet => "Save set",
             Self::Discard => "Discard edits",
             Self::Preview => "Preview outputs",
@@ -73,7 +74,7 @@ impl ExportTool {
     }
     pub fn aliases(self) -> &'static [&'static str] {
         match self {
-            Self::NewSet => &["exportset"],
+            Self::NewSet => &["exportset", "new export set"],
             Self::SaveSet => &["saveset"],
             Self::Discard => &["discardset"],
             Self::Preview => &["previewexport"],
@@ -83,7 +84,14 @@ impl ExportTool {
         }
     }
 }
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct SelectionKey {
+    document: EntityId,
+    session: SessionStamp,
+    set: Option<EntityId>,
+}
 struct Pending {
+    session: SessionStamp,
     document: EntityId,
     revision: u64,
     set: EntityId,
@@ -107,16 +115,18 @@ pub struct ExportWorkspace {
     draft: Option<Draft>,
     original: Option<Draft>,
     preview: Option<ExportPreview>,
+    preview_key: Option<SelectionKey>,
+    preview_job: Option<EntityId>,
     pending: BTreeMap<EntityId, Pending>,
     history: VecDeque<JobSummary>,
     directory: String,
     error: Option<String>,
     notice: Option<(String, bool)>,
-    observed: Option<(EntityId, u64, Option<EntityId>)>,
+    observed: Option<(SelectionKey, bool)>,
     scheduled: Option<f64>,
     captured: Vec<EntityId>,
     catalog: Catalog,
-    catalog_key: Option<(EntityId, u64)>,
+    catalog_key: Option<(EntityId, SessionStamp)>,
     planar_catalog: Option<PlanarCatalog>,
     schedule: schedule_csv::ScheduleCsv,
     /// The output folder text and why it cannot be used, refreshed when the
@@ -159,7 +169,7 @@ impl ExportWorkspace {
             return Err("Wait for accepted export jobs before replacing the output service".into());
         }
         self.backend = Some(backend);
-        self.preview = None;
+        self.clear_preview();
         self.observed = None;
         Ok(())
     }
@@ -184,13 +194,31 @@ impl ExportWorkspace {
     pub fn capture(&mut self, selected: Vec<EntityId>) {
         self.captured = selected;
     }
+    fn selection_key(&self, s: &Session) -> SelectionKey {
+        SelectionKey {
+            document: s.document().id(),
+            session: s.stamp(),
+            set: self.selected,
+        }
+    }
+    fn clear_preview(&mut self) {
+        if let Some(id) = self.preview_job.take()
+            && let Some(backend) = self.backend.as_mut()
+        {
+            backend.cancel(id);
+        }
+        self.preview = None;
+        self.preview_key = None;
+        self.error = None;
+        self.scheduled = None;
+    }
     fn load(&mut self, s: &Session, id: EntityId) -> Result<(), String> {
         let draft = Draft::load(s, id)?;
+        self.clear_preview();
         self.selected = Some(id);
         self.draft = Some(draft.clone());
         self.original = Some(draft);
-        self.error = None;
-        self.preview = None;
+        self.planar_catalog = None;
         self.observed = None;
         Ok(())
     }
@@ -198,18 +226,21 @@ impl ExportWorkspace {
         if self.dirty() {
             return Err("Save or discard the current export-set edits first".into());
         }
+        self.clear_preview();
         self.selected = None;
         self.draft = Some(Draft::new(s));
         self.original = None;
-        self.preview = None;
-        self.error = None;
-        self.scheduled = None;
+        self.planar_catalog = None;
+        self.observed = None;
         Ok(())
     }
     pub fn discard(&mut self, s: &Session) {
+        self.clear_preview();
+        self.observed = None;
         if let Some(id) = self.selected {
             if let Err(e) = self.load(s, id) {
                 self.error = Some(e);
+                self.selected = None;
                 self.draft = None;
                 self.original = None;
             }
@@ -217,7 +248,36 @@ impl ExportWorkspace {
             self.draft = None;
             self.original = None;
         }
-        self.scheduled = None;
+    }
+    fn observe_selection(&mut self, s: &Session, time: f64) {
+        let observed = (self.selection_key(s), self.dirty());
+        if self.observed == Some(observed) {
+            return;
+        }
+        let source_changed = self.observed.is_some_and(|(key, _)| {
+            key.document != observed.0.document || key.session != observed.0.session
+        });
+        self.clear_preview();
+        if source_changed {
+            self.planar_catalog = None;
+        }
+        if !self.dirty()
+            && let Some(id) = self.selected
+            && (source_changed
+                || self.draft.as_ref().is_none_or(|draft| {
+                    draft.document != s.document().id() || draft.session != s.stamp()
+                }))
+            && let Err(error) = self.load(s, id)
+        {
+            self.error = Some(error);
+            self.selected = None;
+            self.draft = None;
+            self.original = None;
+        }
+        self.observed = Some((self.selection_key(s), self.dirty()));
+        if !self.dirty() && self.selected.is_some() && self.backend.is_some() {
+            self.scheduled = Some(time + 0.15);
+        }
     }
     pub fn save(&mut self, s: &mut Session, channel: Channel) -> Result<String, String> {
         let d = self
@@ -226,6 +286,11 @@ impl ExportWorkspace {
             .ok_or("Create or select an export set")?;
         if d.document != s.document().id() {
             return Err("Export-set draft belongs to another document".into());
+        }
+        if d.session != s.stamp() {
+            return Err(
+                "The source changed. Discard and reopen the export definition to edit it.".into(),
+            );
         }
         d.sync_query();
         let id = d.id;
@@ -254,6 +319,15 @@ impl ExportWorkspace {
             return Err("Save or discard export-set edits before resolving outputs".into());
         }
         let set = self.selected.ok_or("Select a saved export set")?;
+        if self
+            .draft
+            .as_ref()
+            .is_none_or(|draft| draft.document != s.document().id() || draft.session != s.stamp())
+        {
+            self.load(s, set)?;
+        }
+        self.clear_preview();
+        self.observed = Some((self.selection_key(s), false));
         let actor = Actor::local(channel);
         let b = self
             .backend
@@ -265,6 +339,7 @@ impl ExportWorkspace {
         self.pending.insert(
             id,
             Pending {
+                session: s.stamp(),
                 document: s.document().id(),
                 revision: s.revision(),
                 set,
@@ -275,7 +350,7 @@ impl ExportWorkspace {
                 formats: BTreeMap::new(),
             },
         );
-        self.scheduled = None;
+        self.preview_job = Some(id);
         Ok("Resolving current output scope…".into())
     }
     pub fn request_planar_catalog(
@@ -302,6 +377,7 @@ impl ExportWorkspace {
         self.pending.insert(
             id,
             Pending {
+                session: s.stamp(),
                 document: s.document().id(),
                 revision: s.revision(),
                 set,
@@ -316,6 +392,7 @@ impl ExportWorkspace {
     }
     fn current(&self, s: &Session) -> bool {
         !self.dirty()
+            && self.preview_key == Some(self.selection_key(s))
             && self.preview.as_ref().is_some_and(|p| {
                 p.key.source.document == s.document().id()
                     && p.key.source.revision == s.revision()
@@ -400,6 +477,7 @@ impl ExportWorkspace {
                 self.pending.insert(
                     id,
                     Pending {
+                        session: s.stamp(),
                         document: s.document().id(),
                         revision: s.revision(),
                         set: preview.key.set,
@@ -460,14 +538,38 @@ impl ExportWorkspace {
                 continue;
             }
             let Some(p) = self.pending.remove(&reply.id) else {
-                self.error = Some("Output service returned an unknown job identity".into());
+                self.notice = Some((
+                    "Output service returned an unknown job identity".into(),
+                    true,
+                ));
                 continue;
             };
+            let current_scope = p.document == s.document().id() && p.session == s.stamp();
+            let current_selection = current_scope && self.selected == Some(p.set) && !self.dirty();
+            let preview_request = !p.run && p.catalog_scope.is_none();
+            if preview_request {
+                if self.preview_job != Some(reply.id) {
+                    continue;
+                }
+                self.preview_job = None;
+                if !current_selection {
+                    continue;
+                }
+            }
+            let current_catalog = current_scope
+                && self.draft.as_ref().is_some_and(|draft| {
+                    draft.id == p.set && p.catalog_scope.as_ref() == Some(&draft.source.scope)
+                });
+            if p.catalog_scope.is_some() && !current_catalog {
+                continue;
+            }
             if reply.document != p.document
                 || reply.revision != p.revision
                 || reply.actor != p.actor
             {
-                self.error=Some("Output result scope differs from the accepted request; inspect the output service".into());
+                if current_selection || current_catalog {
+                    self.error = Some("Output result scope differs from the accepted request; inspect the output service".into());
+                }
                 self.remember(
                     reply.id,
                     "Output result could not be attributed to its accepted request".into(),
@@ -526,9 +628,10 @@ impl ExportWorkspace {
                             {
                                 match preview.key.source.check(s.document(), s.revision()) {
                                     Ok(()) => {
-                                        self.observed =
-                                            Some((s.document().id(), s.revision(), self.selected));
+                                        let key = self.selection_key(s);
+                                        self.observed = Some((key, false));
                                         self.scheduled = None;
+                                        self.preview_key = Some(key);
                                         self.preview = Some(*preview);
                                         self.error = None;
                                     }
@@ -537,7 +640,9 @@ impl ExportWorkspace {
                             }
                         }
                         Err(e) => {
-                            if e.kind != ErrorKind::Cancelled {
+                            if e.kind == ErrorKind::Cancelled {
+                                self.error = Some("Native preview was canceled.".into());
+                            } else {
                                 self.error = Some(e.to_string());
                                 self.notice = Some((e.to_string(), true));
                             }
@@ -552,7 +657,9 @@ impl ExportWorkspace {
                             || receipt.key.source.revision != p.revision
                             || receipt.actor != p.actor
                         {
-                            self.error=Some("Published output receipt differs from the accepted job; inspect its manifest".into());
+                            if current_selection {
+                                self.error = Some("Published output receipt differs from the accepted job; inspect its manifest".into());
+                            }
                             continue;
                         }
                         let text = format!(
@@ -577,52 +684,38 @@ impl ExportWorkspace {
                             p.actor.channel,
                         );
                         self.notice = Some((text.clone(), true));
-                        self.error = Some(e.to_string());
+                        if current_selection {
+                            self.error = Some(e.to_string());
+                        }
                         self.remember(reply.id, text, None);
                     }
                 },
                 _ => {
-                    self.error = Some("Output reply has the wrong operation kind".into());
+                    if current_selection || current_catalog {
+                        self.error = Some("Output reply has the wrong operation kind".into());
+                    }
                 }
             }
         }
     }
     pub fn show(&mut self, ui: &mut egui::Ui, s: &mut Session, allow_io: bool) {
+        self.show_with_scene(ui, s, allow_io, None);
+    }
+
+    pub fn show_with_scene(
+        &mut self,
+        ui: &mut egui::Ui,
+        s: &mut Session,
+        allow_io: bool,
+        scene: Option<&crate::viewport::Scene>,
+    ) {
+        let time = ui.ctx().input(|i| i.time);
+        self.observe_selection(s, time);
         self.poll(s);
-        let catalog_key = (s.document().id(), s.revision());
+        let catalog_key = (s.document().id(), s.stamp());
         if self.catalog_key != Some(catalog_key) {
             self.catalog = Catalog::new(s);
             self.catalog_key = Some(catalog_key);
-        }
-        let time = ui.ctx().input(|i| i.time);
-        let key = (s.document().id(), s.revision(), self.selected);
-        if self.observed != Some(key) {
-            self.observed = Some(key);
-            if !self.dirty()
-                && let Some(id) = self.selected
-            {
-                let previous = self.preview.take();
-                if let Err(error) = self.load(s, id) {
-                    self.error = Some(error);
-                    self.selected = None;
-                    self.draft = None;
-                    self.original = None;
-                }
-                if self.selected == Some(id) {
-                    self.preview = previous;
-                }
-                self.observed = Some((s.document().id(), s.revision(), self.selected));
-                if self.selected.is_some() {
-                    self.scheduled = Some(time + 0.15);
-                }
-            }
-            if let Some(b) = self.backend.as_mut() {
-                for (id, p) in &self.pending {
-                    if !p.run {
-                        b.cancel(*id);
-                    }
-                }
-            }
         }
         if allow_io
             && !self.pending()
@@ -654,36 +747,34 @@ impl ExportWorkspace {
             )
             .show(ui, |ui| {
                 crate::controls::inspector_layout(ui);
-                ui.heading("Export sets");
-                if ui
-                    .add_enabled(
-                        self.enabled(ExportTool::NewSet, s),
-                        egui::Button::new("New export set"),
-                    )
-                    .on_hover_text("Create a saved source scope and reusable recipes")
-                    .clicked()
-                {
-                    action = Some(ExportTool::NewSet);
-                }
+                ui.heading("Exports");
                 egui::ScrollArea::vertical()
                     .id_salt("export-sets-and-schedule")
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
-                        self.schedule_section(ui, s, allow_io);
-                        ui.separator();
-                        for id in sets(s.document()) {
-                            let name = &s.document().get(id).expect("known set").name;
+                        if self.selected.is_none()
+                            && let Some(draft) = &self.draft
+                        {
+                            ui.small(format!("{} · Unsaved", draft.name));
+                        }
+                        let mut exports = sets(s.document())
+                            .filter_map(|id| s.document().get(id).map(|entity| (id, &entity.name)))
+                            .collect::<Vec<_>>();
+                        exports.sort_by(|a, b| a.1.cmp(b.1).then(a.0.cmp(&b.0)));
+                        for (id, name) in exports {
                             if ui
                                 .add_enabled(
                                     !self.dirty(),
                                     egui::Button::selectable(self.selected == Some(id), name),
                                 )
                                 .clicked()
+                                && self.selected != Some(id)
                                 && let Err(e) = self.load(s, id)
                             {
                                 self.error = Some(e);
                             }
                         }
+                        self.schedule_section(ui, s, allow_io);
                     });
             });
         crate::controls::inspector_panel(ui, "export-set-inspector")
@@ -695,14 +786,20 @@ impl ExportWorkspace {
             )
             .show(ui, |ui| {
                 crate::controls::inspector_layout(ui);
-                ui.heading("Export set");
+                ui.heading("Output settings");
                 ui.horizontal_wrapped(|ui| {
-                    for tool in [ExportTool::SaveSet, ExportTool::Discard] {
+                    for tool in [ExportTool::SaveSet, ExportTool::Discard, ExportTool::Run] {
                         if ui
-                            .add_enabled(self.enabled(tool, s), egui::Button::new(tool.label()))
-                            .on_hover_text(
-                                "Edit the canonical export-set definition through one Undo step",
+                            .add_enabled(
+                                self.enabled(tool, s) && (allow_io || tool != ExportTool::Run),
+                                egui::Button::new(tool.label()),
                             )
+                            .on_hover_text(match tool {
+                                ExportTool::Run => {
+                                    "Export the exact previewed snapshot to the selected folder"
+                                }
+                                _ => "Edit the canonical export definition through one Undo step",
+                            })
                             .clicked()
                         {
                             action = Some(tool);
@@ -713,6 +810,10 @@ impl ExportWorkspace {
                 egui::ScrollArea::vertical()
                     .id_salt("export-set-fields")
                     .show(ui, |ui| {
+                        if self.draft.is_some() {
+                            self.destination_settings(ui);
+                            ui.separator();
+                        }
                         if let Some(draft) = &mut self.draft {
                             load_planar = draft.show(
                                 ui,
@@ -726,31 +827,8 @@ impl ExportWorkspace {
                         }
                     });
             });
-        egui::Frame::NONE.inner_margin(egui::Margin::symmetric(22,16)).show(ui,|ui|{
-   crate::controls::inspector_layout(ui);
-   ui.heading("Output preview");ui.label("Saved scopes resolve current source identities, independently of model selection and visibility.");
-   ui.horizontal_wrapped(|ui|{for tool in[ExportTool::Preview,ExportTool::Run,ExportTool::Cancel]{if ui.add_enabled(self.enabled(tool,s)&&(allow_io||tool==ExportTool::Cancel),egui::Button::new(tool.label())).on_hover_text(match tool{ExportTool::Preview=>"Resolve the current saved scope against native geometry",ExportTool::Run=>"Export the exact previewed snapshot into a verified output bundle",_=>"Cancel accepted jobs at the next safe boundary"}).clicked(){action=Some(tool);}}});
-   ui.label("Output folder");
-   ui.horizontal(|ui|{if ui.button("Choose folder…").on_hover_text("Choose the output folder in the system folder dialog").clicked(){self.folder_requested=true;}ui.add(egui::TextEdit::singleline(&mut self.directory).desired_width(ui.available_width()).hint_text("or type an existing absolute folder path")).on_hover_text("The run creates a source- and provider-identified bundle in this folder. Unknown or modified bundles are never overwritten");});
-   egui::ScrollArea::vertical().id_salt("export-results").show(ui,|ui|{
-   if !self.directory.trim().is_empty()&&let Some(problem)=self.directory_problem(){ui.colored_label(egui::Color32::LIGHT_YELLOW,problem);}
-   if self.dirty(){ui.colored_label(egui::Color32::LIGHT_YELLOW,"Save or discard set edits before previewing or running.");}else if self.pending(){ui.label("Output job in progress…");}
-   if let Some(error)=&self.error{ui.colored_label(egui::Color32::LIGHT_RED,error);}
-   if self.backend.is_none(){ui.colored_label(egui::Color32::LIGHT_YELLOW,"Native output service is not installed.");}
-    if let Some(preview)=&self.preview{
-     let current=self.current(s);if !current{ui.colored_label(egui::Color32::LIGHT_YELLOW,"Previous preview · display only. Resolve the current source before Run.");}
-     ui.label(format!("{} matched source occurrence(s) · {} selected page(s) · revision {}",preview.selection.parts.len(),preview.selection.pages.len(),preview.key.source.revision));
-     ui.small(format!("Provider · {}",preview.provider));
-     for report in &preview.recipes{let name=preview.selection.recipes.iter().find(|r|r.id==report.recipe).map_or_else(||"Recipe".to_owned(),recipe_title);match &report.status{RecipeStatus::Ready=>{ui.label(format!("{name} · Ready · {} file(s)",report.files));},RecipeStatus::Empty=>{ui.colored_label(egui::Color32::LIGHT_YELLOW,format!("{name} · Empty"));},RecipeStatus::Unsupported(reason)=>{ui.colored_label(egui::Color32::LIGHT_YELLOW,format!("{name} · Unsupported · {reason}"));}}}
-     ui.collapsing("Matched parts and occurrences",|ui|{for part in &preview.selection.parts {let path=if part.occurrence_names.is_empty(){part.name.clone()}else{format!("{} / {}",part.occurrence_names.join(" / "),part.name)};ui.label(path).on_hover_text(format!("Part {} · occurrence path {:?}",part.reference.part,part.reference.occurrence_path));}});
-     ui.separator();for artifact in &preview.artifacts{let label=match &artifact.output.subject{OutputSubject::Part(reference)=>preview.selection.parts.iter().find(|p|p.reference==*reference).map(|p|if p.occurrence_names.is_empty(){p.name.clone()}else{format!("{} · {}",p.name,p.occurrence_names.join(" / "))}).unwrap_or_else(||"Part".into()),OutputSubject::Parts(parts)=>format!("Assembly · {} part(s)",parts.len()),_=>"Drawing".into()};ui.strong(label);if let Some(drawing)=&artifact.drawing{ui.label(format!("{} page(s) · {} vector item(s) · {} text line(s)",drawing.pages.len(),drawing.vectors,drawing.texts));}else if let Some(mesh)=&artifact.mesh{ui.label(format!("{} object(s) · {} placement(s) · {} triangles · chord {} mm",mesh.objects,mesh.build_items,mesh.triangles,mesh.chord_deviation_mm));}else if let Some(planar)=&artifact.planar{ui.label(format!("1:1 · {:.3} mm² · {} outer / {} inner loop(s)",planar.area_mm2,planar.outer_loops,planar.inner_loops));}else{ui.label(format!("{:.3} mm³ · {} solid(s)",artifact.volume_mm3,artifact.solid_count));}let format=preview.selection.recipes.iter().find(|r|r.id==artifact.output.recipe).map_or("Unknown format",|r|r.output.format_label());ui.add(egui::Label::new(format!("{format} · {}",artifact.output.filename)).truncate()).on_hover_text(&artifact.output.filename);}
-     for excluded in &preview.excluded{let name=s.document().get(excluded.reference.part).map_or("Part",|e|e.name.as_str());ui.colored_label(egui::Color32::LIGHT_YELLOW,format!("Not exported: {name} · {}",match excluded.reason{ExclusionReason::ConsumedProducer=>"consumed by a later operation",ExclusionReason::NoCurrentSolid=>"no current unsuppressed solid"}));}
-     if !preview.selection.pages.is_empty(){ui.separator();for(index,page)in preview.selection.pages.iter().enumerate(){ui.label(format!("Page {} · {} · {} · {} × {} mm",index+1,page.number,page.title,page.paper_mm[0],page.paper_mm[1]));}}
-     ui.collapsing("Source identities",|ui|{ui.monospace(format!("Source {}",preview.key.source.source_hash));for part in &preview.selection.parts{ui.monospace(format!("Part {} · occurrences {:?}",part.reference.part,part.reference.occurrence_path));}});
-    }else{ui.label("A current native preview lists every output, exclusion and unsupported recipe before Run.");}
-    if !self.history.is_empty(){ui.separator();ui.collapsing("Output history",|ui|{for job in &self.history{ui.label(&job.text);if let Some(directory)=&job.directory{ui.monospace(directory);if ui.small_button("Copy output directory").clicked(){ui.ctx().copy_text(directory.clone());}}ui.small(format!("Job {}",job.id));}});}
-   });
-  });
+        self.observe_selection(s, time);
+        self.show_preview(ui, s, allow_io, scene, &mut action);
         if load_planar && allow_io {
             match self.request_planar_catalog(s, Channel::Ui) {
                 Ok(message) => {
@@ -773,6 +851,253 @@ impl ExportWorkspace {
             }
         }
     }
+    fn destination_settings(&mut self, ui: &mut egui::Ui) {
+        ui.strong("Output folder");
+        ui.horizontal_wrapped(|ui| {
+            if ui.button("Choose folder…").clicked() {
+                self.folder_requested = true;
+            }
+            ui.add(
+                egui::TextEdit::singleline(&mut self.directory)
+                    .desired_width(crate::controls::inspector_width(ui))
+                    .hint_text("Existing absolute folder path"),
+            );
+        });
+        if !self.directory.trim().is_empty()
+            && let Some(problem) = self.directory_problem()
+        {
+            ui.colored_label(egui::Color32::LIGHT_YELLOW, problem);
+        }
+    }
+
+    fn show_preview(
+        &self,
+        ui: &mut egui::Ui,
+        s: &Session,
+        allow_io: bool,
+        scene: Option<&crate::viewport::Scene>,
+        action: &mut Option<ExportTool>,
+    ) {
+        egui::Frame::NONE
+            .inner_margin(egui::Margin::symmetric(18, 16))
+            .show(ui, |ui| {
+                crate::controls::inspector_layout(ui);
+                ui.heading("Output preview");
+                if let Some(draft) = &self.draft {
+                    ui.strong(&draft.name);
+                }
+                egui::ScrollArea::vertical()
+                    .id_salt("export-results")
+                    .show(ui, |ui| {
+                        if self.draft.is_none() {
+                            ui.label("Choose a saved export or use Model export in the ribbon.");
+                        } else if self.dirty() {
+                            ui.label("Edited · Save this definition to generate its preview.");
+                        } else if self.backend.is_none() {
+                            ui.colored_label(
+                                egui::Color32::LIGHT_YELLOW,
+                                "Blocked · Native output service is unavailable.",
+                            );
+                        } else if self.current(s)
+                            && let Some(preview) = &self.preview
+                        {
+                            ui.label(if preview.can_run() {
+                                "Ready to export"
+                            } else {
+                                "Blocked · Review the output checks below."
+                            });
+                            if let Some(scene) = scene
+                                && scene.stamp().document == s.document().id()
+                                && scene.stamp().revision == s.revision()
+                                && scene.model_evaluation().is_some_and(|info| {
+                                    info.source_hash == preview.key.source.source_hash
+                                })
+                            {
+                                preview_geometry::show(ui, scene, preview);
+                            }
+                            if let Some(error) = &self.error {
+                                ui.colored_label(egui::Color32::LIGHT_RED, error);
+                            }
+                            show_preview_details(ui, s, preview);
+                        } else if let Some(error) = &self.error {
+                            ui.colored_label(
+                                egui::Color32::LIGHT_RED,
+                                format!("Blocked · {error}"),
+                            );
+                            if ui
+                                .add_enabled(
+                                    allow_io && self.enabled(ExportTool::Preview, s),
+                                    egui::Button::new("Retry preview"),
+                                )
+                                .clicked()
+                            {
+                                *action = Some(ExportTool::Preview);
+                            }
+                        } else if self.preview_job.is_some() || self.scheduled.is_some() {
+                            ui.horizontal(|ui| {
+                                ui.spinner();
+                                ui.label("Resolving native output scope…");
+                            });
+                        } else {
+                            ui.label("Waiting to resolve this export.");
+                        }
+                        if let Some(error) = &self.error
+                            && self.dirty()
+                        {
+                            ui.colored_label(egui::Color32::LIGHT_RED, error);
+                        }
+                        if self.pending() && ui.button("Cancel jobs").clicked() {
+                            *action = Some(ExportTool::Cancel);
+                        }
+                        if !self.history.is_empty() {
+                            ui.separator();
+                            ui.collapsing("Output history", |ui| {
+                                for job in &self.history {
+                                    ui.label(&job.text);
+                                    if let Some(directory) = &job.directory {
+                                        ui.monospace(directory);
+                                        if ui.small_button("Copy output directory").clicked() {
+                                            ui.ctx().copy_text(directory.clone());
+                                        }
+                                    }
+                                    ui.small(format!("Job {}", job.id));
+                                }
+                            });
+                        }
+                    });
+            });
+    }
+}
+
+fn show_preview_details(ui: &mut egui::Ui, s: &Session, preview: &ExportPreview) {
+    ui.label(format!(
+        "{} matched source occurrence(s) · {} selected page(s) · revision {}",
+        preview.selection.parts.len(),
+        preview.selection.pages.len(),
+        preview.key.source.revision,
+    ));
+    for report in &preview.recipes {
+        let name = preview
+            .selection
+            .recipes
+            .iter()
+            .find(|recipe| recipe.id == report.recipe)
+            .map_or_else(|| "Recipe".to_owned(), recipe_title);
+        match &report.status {
+            RecipeStatus::Ready => {
+                ui.label(format!("{name} · Ready · {} file(s)", report.files));
+            }
+            RecipeStatus::Empty => {
+                ui.colored_label(
+                    egui::Color32::LIGHT_YELLOW,
+                    format!("{name} · Empty · Choose a scope containing this output."),
+                );
+            }
+            RecipeStatus::Unsupported(reason) => {
+                ui.colored_label(
+                    egui::Color32::LIGHT_YELLOW,
+                    format!("{name} · Unsupported · {reason}"),
+                );
+            }
+        }
+    }
+    ui.collapsing("Matched parts and occurrences", |ui| {
+        for part in &preview.selection.parts {
+            let path = if part.occurrence_names.is_empty() {
+                part.name.clone()
+            } else {
+                format!("{} / {}", part.occurrence_names.join(" / "), part.name)
+            };
+            ui.label(path).on_hover_text(format!(
+                "Part {} · occurrence path {:?}",
+                part.reference.part, part.reference.occurrence_path,
+            ));
+        }
+    });
+    if !preview.artifacts.is_empty() {
+        ui.separator();
+    }
+    for artifact in &preview.artifacts {
+        let label = match &artifact.output.subject {
+            OutputSubject::Part(reference) => preview
+                .selection
+                .parts
+                .iter()
+                .find(|part| part.reference == *reference)
+                .map(|part| {
+                    if part.occurrence_names.is_empty() {
+                        part.name.clone()
+                    } else {
+                        format!("{} · {}", part.name, part.occurrence_names.join(" / "))
+                    }
+                })
+                .unwrap_or_else(|| "Part".into()),
+            OutputSubject::Parts(parts) => format!("Assembly · {} part(s)", parts.len()),
+            _ => "Drawing".into(),
+        };
+        ui.strong(label);
+        if let Some(drawing) = &artifact.drawing {
+            ui.label(format!(
+                "{} page(s) · {} vector item(s) · {} text line(s)",
+                drawing.pages.len(),
+                drawing.vectors,
+                drawing.texts
+            ));
+        } else if let Some(mesh) = &artifact.mesh {
+            ui.label(format!(
+                "{} object(s) · {} placement(s) · {} triangles · chord {} mm",
+                mesh.objects, mesh.build_items, mesh.triangles, mesh.chord_deviation_mm
+            ));
+        } else if let Some(planar) = &artifact.planar {
+            ui.label(format!(
+                "1:1 · {:.3} mm² · {} outer / {} inner loop(s)",
+                planar.area_mm2, planar.outer_loops, planar.inner_loops
+            ));
+        } else {
+            ui.label(format!(
+                "{:.3} mm³ · {} solid(s)",
+                artifact.volume_mm3, artifact.solid_count
+            ));
+        }
+        let format = preview
+            .selection
+            .recipes
+            .iter()
+            .find(|recipe| recipe.id == artifact.output.recipe)
+            .map_or("Unknown format", |recipe| recipe.output.format_label());
+        ui.add(egui::Label::new(format!("{format} · {}", artifact.output.filename)).truncate())
+            .on_hover_text(&artifact.output.filename);
+    }
+    for excluded in &preview.excluded {
+        let name = s
+            .document()
+            .get(excluded.reference.part)
+            .map_or("Part", |entity| entity.name.as_str());
+        let reason = match excluded.reason {
+            ExclusionReason::ConsumedProducer => "consumed by a later operation",
+            ExclusionReason::NoCurrentSolid => "no current unsuppressed solid",
+        };
+        ui.colored_label(
+            egui::Color32::LIGHT_YELLOW,
+            format!("Excluded · {name} · {reason}"),
+        );
+    }
+    for page in &preview.selection.pages {
+        ui.label(format!(
+            "Page {} · {} · {} × {} mm",
+            page.number, page.title, page.paper_mm[0], page.paper_mm[1]
+        ));
+    }
+    ui.collapsing("Source identities", |ui| {
+        ui.label(format!("Native provider {}", preview.provider));
+        ui.monospace(format!("Source {}", preview.key.source.source_hash));
+        for part in &preview.selection.parts {
+            ui.monospace(format!(
+                "Part {} · occurrences {:?}",
+                part.reference.part, part.reference.occurrence_path
+            ));
+        }
+    });
 }
 
 #[cfg(test)]

@@ -11,6 +11,7 @@ mod drawing_pdf;
 mod duplicate;
 mod examples_gallery;
 mod export_folder;
+mod export_workspace;
 pub mod external_control;
 #[cfg(test)]
 #[path = "external_reference_app_tests.rs"]
@@ -796,6 +797,7 @@ impl Application {
                 if self.mode == Mode::Sketch {
                     self.current_mut().sketch.finish()?;
                 }
+                self.capture_export_selection();
                 let p = self.current_mut();
                 let message =
                     p.exchange
@@ -883,10 +885,7 @@ impl Application {
                     self.current_mut().sketch.finish()?;
                 }
                 if mode == Mode::Export {
-                    let p = self.current_mut();
-                    let selection = p.sketch.export_selection(p.session.document());
-                    p.print.capture(selection.clone());
-                    p.exchange.capture(selection);
+                    self.capture_export_selection();
                 }
                 self.mode = mode;
                 self.tab = 0;
@@ -2805,15 +2804,7 @@ impl Application {
                 } else if self.mode == Mode::Export && self.print_tab() {
                     self.show_print(ui);
                 } else if self.mode == Mode::Export && !self.render_tab() {
-                    let allow_io = self.export_io_allowed();
-                    let p = self.current_mut();
-                    p.exchange.show(ui, &mut p.session, allow_io);
-                    if let Some((message, error)) = p.exchange.take_notice() {
-                        self.message = message;
-                        self.message_error = error;
-                    }
-                    self.start_schedule_save();
-                    self.start_export_folder();
+                    self.show_export_workspace(ui);
                 } else if self.mode == Mode::Drawings {
                     let p = self.current_mut();
                     let before = p.session.revision();

@@ -73,6 +73,7 @@ pub(super) struct Draft {
     pub name: String,
     pub source: SetDefinition,
     pub document: EntityId,
+    pub session: multicad_core::commands::SessionStamp,
     pub revision: u64,
     pub all: String,
     pub any: String,
@@ -81,11 +82,25 @@ pub(super) struct Draft {
 }
 impl Draft {
     pub fn new(s: &Session) -> Self {
+        let names: BTreeSet<_> = sets(s.document())
+            .filter_map(|id| s.document().get(id).map(|entity| entity.name.as_str()))
+            .collect();
+        let name = (1..=names.len() + 1)
+            .map(|index| {
+                if index == 1 {
+                    "Model export".to_owned()
+                } else {
+                    format!("Model export {index}")
+                }
+            })
+            .find(|name| !names.contains(name.as_str()))
+            .expect("one candidate name per existing name plus one");
         Self {
             id: EntityId::new(),
-            name: "New export set".into(),
+            name,
             source: Default::default(),
             document: s.document().id(),
+            session: s.stamp(),
             revision: s.revision(),
             all: String::new(),
             any: String::new(),
@@ -112,6 +127,7 @@ impl Draft {
                 .clone(),
             source,
             document: s.document().id(),
+            session: s.stamp(),
             revision: s.revision(),
             all,
             any,
@@ -155,7 +171,7 @@ impl Draft {
         planar: Option<&PlanarCatalog>,
     ) -> bool {
         let mut request_planar = false;
-        ui.label("Set name");
+        ui.label("Export name");
         ui.add(egui::TextEdit::singleline(&mut self.name).desired_width(ui.available_width()))
             .on_hover_text(
                 "Saved name; the set's stable identity is independent of its display name",

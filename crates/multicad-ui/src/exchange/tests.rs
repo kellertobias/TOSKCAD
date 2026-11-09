@@ -241,7 +241,10 @@ fn current_preview_run_cancel_and_late_receipt_preserve_accepted_snapshot_attrib
     assert!(!w.enabled(ExportTool::Run, &s));
     let ctx = egui::Context::default();
     frame(&mut w, &mut s, &ctx, vec![]).drop_without_applying_deltas();
-    assert_eq!(w.preview.as_ref().unwrap().key, key);
+    assert!(
+        w.preview.is_none(),
+        "a newer revision discards the old preview"
+    );
     assert!(!w.enabled(ExportTool::Run, &s));
     let (id, doc, revision, _, a, _) = state.borrow().requests[1].clone();
     state.borrow_mut().replies.push_back(ExportReply {
@@ -399,7 +402,8 @@ fn native_set_editor_clicks_create_save_reopen_and_lists_exact_unsupported_recip
     let (mut s, mut w, state, _) = fixture();
     let ctx = egui::Context::default();
     let before = s.document().clone();
-    click(&mut w, &mut s, &ctx, "New export set");
+    w.execute(&mut s, ExportTool::NewSet, None, Channel::Ui)
+        .unwrap();
     assert!(w.dirty());
     assert_eq!(s.document(), &before);
     click(&mut w, &mut s, &ctx, "Save set");
@@ -569,4 +573,59 @@ fn compact_common_export_keeps_draft_actions_above_long_recipe_fields() {
     }
     assert!(!w.dirty());
     assert_eq!(s.document(), &before);
+}
+
+#[test]
+fn independent_definitions_rebind_settings_and_ignore_old_preview_successes_and_errors() {
+    let (mut s, mut w, state, part) = fixture();
+    let first = w.selected.unwrap();
+    let second = EntityId::new();
+    let mut settings = SetDefinition::default();
+    settings.scope.root = ScopeRoot::Explicit {
+        entities: vec![part],
+    };
+    settings.recipes[0].name = "Independent recipe".into();
+    let prepared =
+        prepare_set(&s, s.revision(), actor(), second, "Other output", &settings).unwrap();
+    s.commit(prepared).unwrap();
+    w.load(&s, first).unwrap();
+    w.request_preview(&s, Channel::Ui).unwrap();
+    let old_job = state.borrow().requests[0].0;
+    w.load(&s, second).unwrap();
+    assert_eq!(state.borrow().cancelled, [old_job]);
+    assert_eq!(w.draft.as_ref().unwrap().source, settings);
+    assert!(w.preview.is_none());
+
+    let mut rejected = preview(&state, 0);
+    rejected.result = ExportResult::Preview(Err(ExportError::new(
+        ErrorKind::Unsupported,
+        None,
+        "Refusal for the previous definition",
+    )));
+    state.borrow_mut().replies.push_back(rejected);
+    w.poll(&s);
+    assert!(w.error.is_none());
+    assert!(w.preview.is_none());
+    ready(&mut w, &mut s, &state);
+    assert_eq!(w.preview.as_ref().unwrap().key.set, second);
+
+    w.draft.as_mut().unwrap().name = "Unsaved settings".into();
+    w.observe_selection(&s, 1.);
+    assert!(w.preview.is_none());
+    assert!(!w.enabled(ExportTool::Run, &s));
+    w.discard(&s);
+    w.observe_selection(&s, 2.);
+    assert!(
+        w.scheduled.is_some(),
+        "the clean selection is previewed automatically"
+    );
+    w.request_preview(&s, Channel::Ui).unwrap();
+    let reply = preview(&state, 2);
+    w.load(&s, first).unwrap();
+    state.borrow_mut().replies.push_back(reply);
+    w.poll(&s);
+    assert!(w.preview.is_none());
+    assert!(w.error.is_none());
+    assert_eq!(w.draft.as_ref().unwrap().name, "Shop");
+    assert_ne!(w.draft.as_ref().unwrap().source, settings);
 }
