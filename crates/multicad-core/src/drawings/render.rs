@@ -249,6 +249,13 @@ pub fn render_page(
             );
         }
         for vector in vectors {
+            if let super::VectorCurve::HatchTriangle { points } = vector.curve {
+                out.fills.push(Fill {
+                    layer: Layer::Hatch,
+                    points: points.map(|p| view.paper_point(p)).to_vec(),
+                });
+                continue;
+            }
             out.polylines.push(Polyline {
                 layer: match vector.role {
                     VectorRole::Visible => Layer::Visible,

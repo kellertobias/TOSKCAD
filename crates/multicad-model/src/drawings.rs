@@ -526,12 +526,14 @@ impl Model {
                         Some(h) => (h.pattern != HatchPattern::None).then(|| DrawingHatch {
                             angle_rad: h.angle_deg.to_radians(),
                             spacing_mm: h.spacing_mm / scale,
-                            cross: h.pattern == HatchPattern::Cross,
+                            line_width_mm: h.line_width_mm / scale,
+                            pattern: h.pattern,
                         }),
                         None => plan_wall(i).then(|| DrawingHatch {
                             angle_rad: crate::walls::WALL_HATCH_ANGLE_DEG.to_radians(),
                             spacing_mm: crate::walls::WALL_HATCH_SPACING_MM / scale,
-                            cross: false,
+                            line_width_mm: crate::walls::WALL_HATCH_LINE_MM / scale,
+                            pattern: HatchPattern::Lines,
                         }),
                     }
                 },

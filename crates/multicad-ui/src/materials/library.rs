@@ -4,6 +4,7 @@ use multicad_core::{
     document::{Entity, EntityData, EntityId},
     materials::*,
 };
+use std::collections::BTreeMap;
 mod preview;
 mod sample;
 
@@ -93,6 +94,7 @@ pub struct LibraryEditor {
     confirm_on_ready: Option<Channel>,
     reveal_category: Option<Category>,
     catalog: Option<(SessionStamp, [Vec<EntityId>; Category::ALL.len()])>,
+    swatches: BTreeMap<EntityId, [u8; 4]>,
 }
 impl LibraryEditor {
     pub fn cancel(&mut self) {
@@ -393,31 +395,29 @@ impl LibraryEditor {
             )
             .show(ui, |ui| sample::show(ui, s.document(), self.draft.as_ref()));
 
-        let mut apply = false;
-        let mut discard = false;
-        if self.dirty() {
-            egui::Panel::bottom("project-material-confirmation")
-                .frame(egui::Frame::new().inner_margin(egui::Margin::symmetric(16, 10)))
-                .show(ui, |ui| {
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        apply = ui
-                            .add_enabled(
-                                editable && self.can_confirm(s),
-                                egui::Button::new("Apply").min_size(egui::vec2(80., 30.)),
-                            )
-                            .clicked();
-                        discard = ui
-                            .add(egui::Button::new("Discard").min_size(egui::vec2(80., 30.)))
-                            .clicked();
-                    });
-                });
-        }
-
-        egui::Frame::new().inner_margin(16).show(ui, |ui| {
-            egui::ScrollArea::vertical()
-                .id_salt("project-material-configuration")
-                .auto_shrink([false, false])
-                .show(ui, |ui| {
+        use crate::inspector_actions::{self, Button, Owner};
+        let dirty = self.dirty();
+        let can_apply = editable && self.can_confirm(s);
+        let pending = self.pending().then_some("Checking affected geometry…");
+        let mut clicks = inspector_actions::Clicks::default();
+        let accent = ui.visuals().selection.bg_fill;
+        inspector_actions::scope_with_preview(
+            ui,
+            dirty.then_some(Owner::Materials),
+            accent,
+            true,
+            |ui| {
+                if dirty {
+                    clicks = inspector_actions::row_with_progress(
+                        ui,
+                        Owner::Materials,
+                        None,
+                        Button::new("Apply", can_apply, "Apply the current definition"),
+                        Button::new("Discard", true, "Discard edits to this definition"),
+                        pending,
+                    );
+                }
+                egui::Frame::new().inner_margin(16).show(ui, |ui| {
                     ui.strong("Configuration");
                     ui.add_space(8.);
                     if !editable {
@@ -450,13 +450,16 @@ impl LibraryEditor {
                     self.show_definition_editor(ui, s, editable && self.confirm_on_ready.is_none());
                     self.show_diagnostics(ui, s);
                 });
-        });
-        if discard {
+            },
+        );
+        if clicks.cancel {
             self.discard(s);
-        } else if apply && let Err(error) = self.confirm(s, resources, Channel::Ui) {
+        } else if clicks.apply
+            && let Err(error) = self.confirm(s, resources, Channel::Ui)
+        {
             self.error = Some(error);
         }
-        if discard || apply {
+        if clicks.cancel || clicks.apply {
             ui.ctx().request_repaint();
         }
     }
@@ -477,6 +480,22 @@ impl LibraryEditor {
                 entries.sort_unstable_by(|a, b| a.name.cmp(&b.name).then(a.id.cmp(&b.id)));
                 entries.into_iter().map(|entry| entry.id).collect()
             });
+            self.swatches = s
+                .document()
+                .entities()
+                .filter_map(|entry| {
+                    let Some(LibraryDefinition::MaterialStyle(style)) = read(entry).ok().flatten()
+                    else {
+                        return None;
+                    };
+                    let Some(LibraryDefinition::Appearance(appearance)) =
+                        read(s.document().get(style.appearance?.id)?).ok().flatten()
+                    else {
+                        return None;
+                    };
+                    Some((style.material, appearance.color_rgba))
+                })
+                .collect();
             self.catalog = Some((s.stamp(), catalog));
         }
         let (_, catalog) = self.catalog.as_ref().expect("current definition catalog");
@@ -503,13 +522,13 @@ impl LibraryEditor {
                                 ui.weak("No definitions yet");
                             }
                             for entry in entries.iter().filter_map(|&id| s.document().get(id)) {
-                                let row = egui::Button::selectable(
+                                let response = definition_row(
+                                    ui,
+                                    self.swatches.get(&entry.id).copied(),
+                                    entry,
                                     selected == Some(entry.id),
-                                    &entry.name,
-                                )
-                                .min_size(egui::vec2(ui.available_width(), 26.))
-                                .wrap();
-                                let response = ui.add_enabled(can_select, row);
+                                    can_select,
+                                );
                                 if reveal == Some(category) && selected == Some(entry.id) {
                                     response.scroll_to_me(Some(egui::Align::Center));
                                 }
@@ -518,12 +537,7 @@ impl LibraryEditor {
                                 }
                             }
                             if let Some(draft) = new_draft {
-                                ui.add(
-                                    egui::Button::selectable(true, &draft.entity.name)
-                                        .min_size(egui::vec2(ui.available_width(), 26.))
-                                        .wrap()
-                                        .sense(egui::Sense::hover()),
-                                );
+                                definition_row(ui, None, &draft.entity, true, false);
                             }
                         });
                 }
@@ -574,6 +588,32 @@ impl LibraryEditor {
         });
     }
 }
+fn definition_row(
+    ui: &mut egui::Ui,
+    material_override: Option<[u8; 4]>,
+    entry: &Entity,
+    selected: bool,
+    enabled: bool,
+) -> egui::Response {
+    ui.horizontal(|ui| {
+        let category = Category::for_entity(entry);
+        if matches!(
+            category,
+            Some(Category::Materials | Category::Hatches | Category::Appearances)
+        ) {
+            let (rect, _) = ui.allocate_exact_size(egui::vec2(18., 18.), egui::Sense::hover());
+            sample::paint_swatch(ui.painter(), rect, material_override, entry);
+        }
+        ui.add_enabled(
+            enabled,
+            egui::Button::selectable(selected, &entry.name)
+                .min_size(egui::vec2(ui.available_width(), 26.))
+                .wrap(),
+        )
+    })
+    .inner
+}
+
 fn edit_draft(ui: &mut egui::Ui, s: &Session, d: &mut Draft, model_stock: Option<ToolStock>) {
     let name = ui.label("Name");
     ui.add(egui::TextEdit::singleline(&mut d.entity.name).desired_width(f32::INFINITY))
@@ -642,13 +682,7 @@ fn edit_draft(ui: &mut egui::Ui, s: &Session, d: &mut Draft, model_stock: Option
                 number(ui, "Metallic", &mut a.metallic, "");
             }
             LibraryDefinition::Hatch(h) => {
-                egui::ComboBox::from_id_salt("pattern")
-                    .selected_text(format!("{:?}", h.pattern))
-                    .show_ui(ui, |ui| {
-                        for p in [HatchPattern::None, HatchPattern::Lines, HatchPattern::Cross] {
-                            ui.selectable_value(&mut h.pattern, p, format!("{p:?}"));
-                        }
-                    });
+                sample::hatch_picker(ui, h);
                 number(ui, "Angle", &mut h.angle_deg, "°");
                 number(ui, "Spacing (paper)", &mut h.spacing_mm, " mm");
                 number(ui, "Line width (paper)", &mut h.line_width_mm, " mm");

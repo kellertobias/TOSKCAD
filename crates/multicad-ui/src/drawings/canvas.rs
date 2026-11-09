@@ -289,7 +289,16 @@ pub(super) fn show(
                     };
                     let stroke =
                         egui::Stroke::new((vector.line_width_mm as f32 * scale).max(0.6), color);
-                    if vector.role == VectorRole::Hidden {
+                    if matches!(
+                        vector.curve,
+                        multicad_core::drawings::VectorCurve::HatchTriangle { .. }
+                    ) {
+                        view_painter.add(egui::Shape::convex_polygon(
+                            points,
+                            color,
+                            egui::Stroke::NONE,
+                        ));
+                    } else if vector.role == VectorRole::Hidden {
                         view_painter.extend(egui::Shape::dashed_line(
                             &points,
                             stroke,

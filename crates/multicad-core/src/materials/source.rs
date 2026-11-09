@@ -25,6 +25,33 @@ pub enum HatchPattern {
     None,
     Lines,
     Cross,
+    Alternating,
+    Solid,
+    Dots,
+    SmallCrosses,
+}
+impl HatchPattern {
+    pub const ALL: [Self; 7] = [
+        Self::None,
+        Self::Lines,
+        Self::Alternating,
+        Self::Cross,
+        Self::Solid,
+        Self::Dots,
+        Self::SmallCrosses,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::None => "No hatch",
+            Self::Lines => "Parallel lines",
+            Self::Alternating => "Alternating solid and dotted lines",
+            Self::Cross => "Crosshatch",
+            Self::Solid => "Solid fill",
+            Self::Dots => "Dots",
+            Self::SmallCrosses => "Small crosses",
+        }
+    }
 }
 /// Paper-space distances in millimeters; angle measured counterclockwise.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

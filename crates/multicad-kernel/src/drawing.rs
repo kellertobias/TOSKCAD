@@ -43,7 +43,8 @@ impl Default for DrawingProjection {
 pub struct DrawingHatch {
     pub angle_rad: f64,
     pub spacing_mm: f64,
-    pub cross: bool,
+    pub line_width_mm: f64,
+    pub pattern: multicad_core::materials::HatchPattern,
 }
 pub struct DrawingSolid<'a> {
     pub solid: &'a Solid,
@@ -141,6 +142,11 @@ pub fn project_drawing(
         if input.hatch.is_some_and(|h| {
             !h.angle_rad.is_finite()
                 || !h.spacing_mm.is_finite()
+                || (matches!(
+                    h.pattern,
+                    multicad_core::materials::HatchPattern::Alternating
+                        | multicad_core::materials::HatchPattern::Dots
+                ) && (!h.line_width_mm.is_finite() || h.line_width_mm <= 0.))
                 || !(1e-5..=1e7).contains(&h.spacing_mm)
         }) {
             return Err(err(
@@ -151,15 +157,24 @@ pub fn project_drawing(
         let hatch = input.hatch.unwrap_or(DrawingHatch {
             angle_rad: 0.,
             spacing_mm: 1.,
-            cross: false,
+            line_width_mm: 0.18,
+            pattern: multicad_core::materials::HatchPattern::None,
         });
         ffi::drawing_add(
             job.pin_mut(),
             &input.solid.native.0,
-            input.hatch.is_some(),
-            hatch.cross,
+            match hatch.pattern {
+                multicad_core::materials::HatchPattern::None => 0,
+                multicad_core::materials::HatchPattern::Lines => 1,
+                multicad_core::materials::HatchPattern::Cross => 2,
+                multicad_core::materials::HatchPattern::Alternating => 3,
+                multicad_core::materials::HatchPattern::Solid => 4,
+                multicad_core::materials::HatchPattern::Dots => 5,
+                multicad_core::materials::HatchPattern::SmallCrosses => 6,
+            },
             hatch.angle_rad,
             hatch.spacing_mm,
+            hatch.line_width_mm,
         )
         .map_err(|e| err(GeometryErrorKind::Native, e))?;
     }
@@ -183,6 +198,11 @@ pub fn project_drawing(
             }
             let data = &c.data;
             let curve = match c.kind {
+                3 if c.role == 3 && data.len() == 6 && c.preview.as_slice() == data => {
+                    VectorCurve::HatchTriangle {
+                        points: std::array::from_fn(|i| [data[i * 2], data[i * 2 + 1]]),
+                    }
+                }
                 0 if data.len() == 4 => VectorCurve::Line {
                     a: [data[0], data[1]],
                     b: [data[2], data[3]],

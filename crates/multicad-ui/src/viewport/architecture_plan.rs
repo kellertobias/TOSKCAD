@@ -93,7 +93,16 @@ impl ArchitecturePlan {
             };
             let stroke =
                 egui::Stroke::new((vector.line_width_mm as f32 * 4.).clamp(0.5, 2.), color);
-            if vector.role == VectorRole::Hidden {
+            if matches!(
+                vector.curve,
+                multicad_core::drawings::VectorCurve::HatchTriangle { .. }
+            ) {
+                painter.add(egui::Shape::convex_polygon(
+                    points,
+                    color,
+                    egui::Stroke::NONE,
+                ));
+            } else if vector.role == VectorRole::Hidden {
                 painter.extend(egui::Shape::dashed_line(&points, stroke, 5., 3.));
             } else {
                 painter.add(egui::Shape::line(points, stroke));

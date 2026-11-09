@@ -67,9 +67,14 @@ pub fn render_svg(page: &PageRender) -> String {
         } else {
             ""
         };
+        let cap = if line.layer == super::render::Layer::Hatch {
+            r#" stroke-linecap="round""#
+        } else {
+            ""
+        };
         let _ = writeln!(
             out,
-            r#"<{tag} class="{}" fill="none" stroke="black" stroke-width="{}"{dash} points="{}"/>"#,
+            r#"<{tag} class="{}" fill="none" stroke="black" stroke-width="{}"{dash}{cap} points="{}"/>"#,
             line.layer.name(),
             line.width_mm,
             points.join(" ")

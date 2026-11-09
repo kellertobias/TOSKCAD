@@ -8,8 +8,9 @@ struct DrawingOptionsData;
 struct DrawingCurveData;
 struct DrawingInput {
   TopoDS_Shape shape;
-  bool hatch, cross;
-  double angle, spacing;
+  enum class Hatch : uint8_t { None, Lines, Cross, Alternating, Solid, Dots, SmallCrosses };
+  Hatch hatch;
+  double angle, spacing, line_width;
 };
 struct DrawingJob {
   gp_Ax2 frame;
@@ -23,6 +24,6 @@ struct DrawingJob {
   std::vector<DrawingInput> inputs;
 };
 std::unique_ptr<DrawingJob> drawing_job(const DrawingOptionsData &);
-void drawing_add(DrawingJob &, const Shape &, bool hatch, bool cross, double angle, double spacing);
+void drawing_add(DrawingJob &, const Shape &, uint8_t hatch, double angle, double spacing, double line_width);
 rust::Vec<DrawingCurveData> drawing_run(DrawingJob &);
 }

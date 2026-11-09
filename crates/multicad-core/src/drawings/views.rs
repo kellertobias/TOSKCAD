@@ -249,6 +249,10 @@ pub fn has_section_limits(book: &super::DrawingBook) -> bool {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum VectorCurve {
+    /// Filled section area triangulated to the projection tolerance.
+    HatchTriangle {
+        points: [[f64; 2]; 3],
+    },
     Line {
         a: [f64; 2],
         b: [f64; 2],

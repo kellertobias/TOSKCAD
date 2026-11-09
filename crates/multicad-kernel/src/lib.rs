@@ -377,10 +377,10 @@ mod ffi {
         fn drawing_add(
             job: Pin<&mut DrawingJob>,
             shape: &Shape,
-            hatch: bool,
-            cross: bool,
+            pattern: u8,
             angle: f64,
             spacing: f64,
+            line_width: f64,
         ) -> Result<()>;
         fn planar_face_contours(
             shape: &Shape,

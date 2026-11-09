@@ -59,8 +59,10 @@ pub(super) fn show(ui: &mut egui::Ui, document: &Document, draft: Option<&Draft>
         Ok(Some(LibraryDefinition::Hatch(hatch))) => {
             hatch_sample(&painter, bounds, &hatch);
             ui.weak(format!(
-                "{:?}  ·  {}°  ·  {} mm spacing",
-                hatch.pattern, hatch.angle_deg, hatch.spacing_mm
+                "{}  ·  {}°  ·  {} mm spacing",
+                hatch.pattern.label(),
+                hatch.angle_deg,
+                hatch.spacing_mm
             ));
         }
         Ok(Some(LibraryDefinition::Stock(stock))) => {
@@ -110,35 +112,120 @@ fn swatch(painter: &egui::Painter, rect: Rect, color: [u8; 4]) {
     painter.rect_filled(face, 2., color);
 }
 
+pub(super) fn paint_swatch(
+    painter: &egui::Painter,
+    rect: Rect,
+    material_override: Option<[u8; 4]>,
+    entry: &Entity,
+) {
+    if let Some(base) = material_color(entry) {
+        let color = material_override.unwrap_or(base);
+        painter.rect_filled(rect, 2., to_color(color));
+        painter.rect_stroke(rect, 2., Stroke::new(1., Color32::GRAY), StrokeKind::Inside);
+    } else if let Ok(Some(LibraryDefinition::Hatch(hatch))) = read(entry) {
+        hatch_sample(
+            painter,
+            rect,
+            &HatchStyle {
+                spacing_mm: 1.6,
+                ..hatch
+            },
+        );
+    } else if let Ok(Some(LibraryDefinition::Appearance(appearance))) = read(entry) {
+        painter.rect_filled(rect, 2., to_color(appearance.color_rgba));
+        painter.rect_stroke(rect, 2., Stroke::new(1., Color32::GRAY), StrokeKind::Inside);
+    }
+}
+
+pub(super) fn hatch_picker(ui: &mut egui::Ui, hatch: &mut HatchStyle) {
+    ui.horizontal_wrapped(|ui| {
+        for pattern in HatchPattern::ALL {
+            let selected = hatch.pattern == pattern;
+            let response = ui.add(
+                egui::Button::new("")
+                    .selected(selected)
+                    .min_size(Vec2::splat(38.)),
+            );
+            response.widget_info(|| {
+                egui::WidgetInfo::selected(
+                    egui::WidgetType::Button,
+                    ui.is_enabled(),
+                    selected,
+                    pattern.label(),
+                )
+            });
+            hatch_sample(
+                ui.painter(),
+                response.rect.shrink(5.),
+                &HatchStyle {
+                    pattern,
+                    angle_deg: 45.,
+                    spacing_mm: 2.1,
+                    line_width_mm: 0.28,
+                },
+            );
+            if response.on_hover_text(pattern.label()).clicked() {
+                hatch.pattern = pattern;
+            }
+        }
+    });
+    ui.weak(hatch.pattern.label());
+}
+
 fn hatch_sample(painter: &egui::Painter, rect: Rect, hatch: &HatchStyle) {
-    let boundary = [
-        [0., 0.],
-        [f64::from(rect.width()), 0.],
-        [f64::from(rect.width()), f64::from(rect.height())],
-        [0., f64::from(rect.height())],
-    ];
-    painter.rect_stroke(rect, 1., Stroke::new(1., Color32::GRAY), StrokeKind::Inside);
-    let angle = hatch.angle_deg.rem_euclid(360.);
-    let angles = [angle, angle + 90.];
-    let count = match hatch.pattern {
-        HatchPattern::None => 0,
-        HatchPattern::Lines => 1,
-        HatchPattern::Cross => 2,
-    };
+    painter.rect_filled(rect, 2., SAMPLE_BG);
     let stroke = Stroke::new(
         (hatch.line_width_mm as f32 * 3.).clamp(0.75, 8.),
         Color32::LIGHT_GRAY,
     );
-    for angle in angles.into_iter().take(count) {
-        for line in
-            multicad_core::drawings::hatch_lines(&boundary, angle, (hatch.spacing_mm * 3.).max(3.))
-        {
-            painter.line_segment(
-                line.map(|[x, y]| Pos2::new(rect.left() + x as f32, rect.bottom() - y as f32)),
-                stroke,
-            );
+    let painter = painter.with_clip_rect(rect.intersect(painter.clip_rect()));
+    if hatch.pattern == HatchPattern::Solid {
+        painter.rect_filled(rect, 2., stroke.color);
+    } else if hatch.pattern != HatchPattern::None {
+        let (sin, cos) = hatch.angle_deg.to_radians().sin_cos();
+        let direction = egui::vec2(cos as f32, -sin as f32);
+        let normal = egui::vec2(-direction.y, direction.x);
+        let spacing = (hatch.spacing_mm as f32 * 3.).max(3.);
+        let extent = rect.size().length();
+        let count = ((extent * 0.5 / spacing).ceil() as i32 + 1).min(128);
+        for i in -count..=count {
+            let row = rect.center() + normal * (i as f32 * spacing);
+            match hatch.pattern {
+                HatchPattern::Dots | HatchPattern::SmallCrosses | HatchPattern::Alternating
+                    if hatch.pattern != HatchPattern::Alternating || i % 2 != 0 =>
+                {
+                    for j in -count..=count {
+                        let point = row + direction * (j as f32 * spacing);
+                        if hatch.pattern == HatchPattern::SmallCrosses {
+                            let arm = spacing * 0.17;
+                            for axis in [direction, normal] {
+                                painter
+                                    .line_segment([point - axis * arm, point + axis * arm], stroke);
+                            }
+                        } else {
+                            painter.circle_filled(
+                                point,
+                                (stroke.width * 0.5).max(spacing * 0.045),
+                                stroke.color,
+                            );
+                        }
+                    }
+                }
+                _ => {
+                    painter
+                        .line_segment([row - direction * extent, row + direction * extent], stroke);
+                    if hatch.pattern == HatchPattern::Cross {
+                        let column = rect.center() + direction * (i as f32 * spacing);
+                        painter.line_segment(
+                            [column - normal * extent, column + normal * extent],
+                            stroke,
+                        );
+                    }
+                }
+            }
         }
     }
+    painter.rect_stroke(rect, 2., Stroke::new(1., Color32::GRAY), StrokeKind::Inside);
 }
 
 fn stock_sample(

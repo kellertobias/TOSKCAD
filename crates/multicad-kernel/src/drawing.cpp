@@ -3,6 +3,7 @@
 #include <BRepAdaptor_Curve.hxx>
 #include <BRepAdaptor_Surface.hxx>
 #include <BRepAlgoAPI_Common.hxx>
+#include <BRepBuilderAPI_Copy.hxx>
 #include <BRepBuilderAPI_MakeEdge.hxx>
 #include <BRepBuilderAPI_MakeFace.hxx>
 #include <BRepBuilderAPI_MakeWire.hxx>
@@ -14,6 +15,8 @@
 #include <BRepBndLib.hxx>
 #include <BRepGProp.hxx>
 #include <BRepLib.hxx>
+#include <BRepMesh_IncrementalMesh.hxx>
+#include <Poly_Triangulation.hxx>
 #include <BRep_Tool.hxx>
 #include <GProp_GProps.hxx>
 #include <GCPnts_QuasiUniformDeflection.hxx>
@@ -27,6 +30,7 @@
 #include <gp_Elips.hxx>
 #include <gp_Circ.hxx>
 #include <gp_Pln.hxx>
+#include <algorithm>
 #include <cmath>
 #include <mutex>
 #include <stdexcept>
@@ -47,9 +51,11 @@ std::unique_ptr<DrawingJob> drawing_job(const DrawingOptionsData &o) {
   job->window_v=o.window_v; job->v_min=o.v_min; job->v_max=o.v_max;
   return job;
 }
-void drawing_add(DrawingJob &job,const Shape &shape,bool hatch,bool cross,double angle,double spacing) {
+void drawing_add(DrawingJob &job,const Shape &shape,uint8_t hatch,double angle,double spacing,double line_width) {
   if(job.inputs.size()>=4096) throw std::runtime_error("Drawing source budget exceeded");
-  job.inputs.push_back({shape.value,hatch,cross,angle,spacing});
+  if(hatch>static_cast<uint8_t>(DrawingInput::Hatch::SmallCrosses))
+    throw std::runtime_error("Unknown drawing hatch pattern");
+  job.inputs.push_back({shape.value,static_cast<DrawingInput::Hatch>(hatch),angle,spacing,line_width});
 }
 static TopoDS_Shape common(const TopoDS_Shape &a,const TopoDS_Shape &b) {
   // The two-shape constructor performs Build immediately. Configure first and
@@ -159,15 +165,61 @@ struct Collector {
   }
 };
 static TopoDS_Edge projected_line(const gp_Pnt &a,const gp_Pnt &b,const gp_Ax2 &f) {return BRepBuilderAPI_MakeEdge(local(a,f),local(b,f)).Edge();}
+static gp_Trsf to_frame(const gp_Ax2 &);
+static void fill_hatch(Collector &out,const TopoDS_Face &face,uint32_t source) {
+  TopoDS_Shape region=face;
+  if(out.job.detail) {
+    const auto &frame=out.job.frame;
+    const auto plane=BRepAdaptor_Surface(face).Plane();
+    const gp_Vec normal(frame.Direction());
+    const auto clip=BRepBuilderAPI_Transform(out.detail,to_frame(frame).Inverted(),true).Shape();
+    gp_Trsf shift;
+    shift.SetTranslation(normal*gp_Vec(frame.Location(),plane.Location()).Dot(normal));
+    region=common(face,BRepBuilderAPI_Transform(clip,shift).Shape());
+  }
+  // Mesh a private copy of the exact section region. Its trimmed outer and
+  // inner wires constrain triangulation, including holes and curved edges.
+  if(region.IsNull() || !TopExp_Explorer(region,TopAbs_FACE).More()) return;
+  const auto copy=BRepBuilderAPI_Copy(region,true,false).Shape();
+  BRepMesh_IncrementalMesh mesh(copy,out.job.tolerance,false,0.15,false);
+  if(!mesh.IsDone()) throw std::runtime_error("Solid hatch triangulation failed");
+  for(TopExp_Explorer faces(copy,TopAbs_FACE);faces.More();faces.Next()) {
+    TopLoc_Location location;
+    const auto triangles=BRep_Tool::Triangulation(TopoDS::Face(faces.Current()),location);
+    if(triangles.IsNull()) throw std::runtime_error("Solid hatch has no face triangulation");
+    for(int i=1;i<=triangles->NbTriangles();++i) {
+      if(out.result.size()>=out.job.max_curves || static_cast<uint64_t>(out.points)+3>out.job.max_points)
+        throw std::runtime_error("Drawing solid hatch budget exceeded");
+      int a,b,c;
+      triangles->Triangle(i).Get(a,b,c);
+      DrawingCurveData record{};
+      record.source_index=source;
+      record.role=3;
+      record.kind=3;
+      for(const int node : {a,b,c}) {
+        const auto point=local(triangles->Node(node).Transformed(location.Transformation()),out.job.frame);
+        append_point(record.data,point);
+        append_point(record.preview,point);
+      }
+      out.points+=3;
+      out.result.push_back(std::move(record));
+    }
+  }
+}
 static void hatch_face(Collector &out,const TopoDS_Face &face,const DrawingInput &input,uint32_t source) {
   const auto &job=out.job;
+  using Hatch=DrawingInput::Hatch;
+  if(input.hatch==Hatch::Solid) {
+    fill_hatch(out,face,source);
+    return;
+  }
   Bnd_Box bounds;BRepBndLib::Add(face,bounds,false);
   if(bounds.IsVoid())return;
   double xmin,ymin,zmin,xmax,ymax,zmax;bounds.Get(xmin,ymin,zmin,xmax,ymax,zmax);
   const double diagonal=gp_Pnt(xmin,ymin,zmin).Distance(gp_Pnt(xmax,ymax,zmax));
   // Exact line/face common operations clip each hatch to the cut region,
   // including holes. The hatch spacing is supplied in model units.
-  for(int pass=0;pass<(input.cross?2:1);++pass) {
+  for(int pass=0;pass<(input.hatch==Hatch::Cross?2:1);++pass) {
     const double angle=input.angle+pass*1.57079632679489661923;
     const gp_Vec direction=gp_Vec(job.frame.XDirection())*std::cos(angle)+gp_Vec(job.frame.YDirection())*std::sin(angle);
     const gp_Vec perpendicular=gp_Vec(job.frame.XDirection())*(-std::sin(angle))+gp_Vec(job.frame.YDirection())*std::cos(angle);
@@ -184,10 +236,25 @@ static void hatch_face(Collector &out,const TopoDS_Face &face,const DrawingInput
     // Intersect one compound of parallel hatch lines with the face. A separate
     // Boolean per line repeatedly rebuilds the same face's intersection data.
     TopoDS_Compound lines;BRep_Builder builder;builder.MakeCompound(lines);
+    size_t strokes=0;
+    const auto add=[&](const gp_Pnt &p,const gp_Vec &axis,double half) {
+      if(++strokes>60000) throw std::runtime_error("Section hatch stroke budget exceeded");
+      builder.Add(lines,BRepBuilderAPI_MakeEdge(p.Translated(axis*(-half)),p.Translated(axis*half)).Edge());
+    };
     for(int i=-count;i<=count;++i) {
-      const auto p=center.Translated(perpendicular*(i*input.spacing));
-      auto line=BRepBuilderAPI_MakeEdge(p.Translated(direction*(-diagonal-1.)),p.Translated(direction*(diagonal+1.))).Edge();
-      builder.Add(lines,line);
+      const auto row=center.Translated(perpendicular*(i*input.spacing));
+      const bool alternating_dots=input.hatch==Hatch::Alternating && i%2!=0;
+      const bool crosses=input.hatch==Hatch::SmallCrosses;
+      if(alternating_dots || input.hatch==Hatch::Dots || crosses) {
+        const double half=crosses ? input.spacing*0.17 : std::max(1e-6,std::min(input.spacing*0.045,input.line_width*0.25));
+        for(int j=-count;j<=count;++j) {
+          const auto mark=row.Translated(direction*(j*input.spacing));
+          add(mark,direction,half);
+          if(crosses) add(mark,perpendicular,half);
+        }
+      } else {
+        add(row,direction,diagonal+1.);
+      }
     }
     auto clipped=common(face,lines);
     for(TopExp_Explorer it(clipped,TopAbs_EDGE);it.More();it.Next()) {
@@ -226,7 +293,7 @@ static rust::Vec<DrawingCurveData> section_only(DrawingJob &job) {
     for(TopExp_Explorer it(section,TopAbs_FACE);it.More();it.Next()) {
       const auto face=TopoDS::Face(it.Current());
       out.add(BRepBuilderAPI_Transform(face,transform,true).Shape(),i,2);
-      if(input.hatch)hatch_face(out,face,input,i);
+      if(input.hatch!=DrawingInput::Hatch::None)hatch_face(out,face,input,i);
     }
   }
   return std::move(out.result);
@@ -263,7 +330,7 @@ rust::Vec<DrawingCurveData> drawing_run(DrawingJob &job) {
         const auto plane=surface.Plane();
         if(!plane.Axis().Direction().IsParallel(job.frame.Direction(),1e-10)||plane.Distance(plane_origin)>1e-7)continue;
         out.add(BRepBuilderAPI_Transform(face,to_frame(job.frame),true).Shape(),i,2);
-        if(input.hatch)hatch_face(out,face,input,i);
+        if(input.hatch!=DrawingInput::Hatch::None)hatch_face(out,face,input,i);
       }
     }
     return std::move(out.result);

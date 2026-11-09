@@ -106,6 +106,7 @@ fn actual_cylinder_projection_retains_exact_circle_and_elliptic_silhouette() {
 }
 #[test]
 fn section_hatches_only_cut_material_and_respects_a_real_hole() {
+    use multicad_core::materials::HatchPattern;
     let outer = Solid::box_solid([40., 30., 20.], Default::default()).unwrap();
     let tool = Solid::cylinder(
         PlaneFrame {
@@ -125,7 +126,8 @@ fn section_hatches_only_cut_material_and_respects_a_real_hole() {
     let hatch = DrawingHatch {
         angle_rad: 0.,
         spacing_mm: 2.,
-        cross: false,
+        line_width_mm: 0.18,
+        pattern: multicad_core::materials::HatchPattern::Lines,
     };
     let v = project_drawing(
         &[
@@ -155,6 +157,52 @@ fn section_hatches_only_cut_material_and_respects_a_real_hole() {
         for t in [0.25, 0.5, 0.75] {
             let p = [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
             assert!((p[0] - 20.).hypot(p[1] - 15.) >= 5. - 1e-6);
+        }
+    }
+    for pattern in [
+        HatchPattern::Alternating,
+        HatchPattern::Dots,
+        HatchPattern::SmallCrosses,
+        HatchPattern::Solid,
+    ] {
+        let result = project_drawing(
+            &[DrawingSolid {
+                solid: &hollow,
+                hatch: Some(DrawingHatch { pattern, ..hatch }),
+            }],
+            DrawingProjection {
+                section_offset_mm: Some(10.),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let hatches: Vec<_> = result
+            .iter()
+            .filter(|v| v.role == VectorRole::Hatch)
+            .collect();
+        assert!(!hatches.is_empty(), "{pattern:?}");
+        if pattern == HatchPattern::Solid {
+            let area: f64 = hatches
+                .iter()
+                .map(|v| {
+                    let VectorCurve::HatchTriangle { points: [a, b, c] } = v.curve else {
+                        panic!("solid hatch should emit filled faces");
+                    };
+                    ((b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])).abs() * 0.5
+                })
+                .sum();
+            assert!(
+                (area - (40. * 30. - 25. * std::f64::consts::PI)).abs() < 2.,
+                "{area}"
+            );
+        } else {
+            for vector in hatches {
+                let VectorCurve::Line { a, b } = vector.curve else {
+                    panic!("expected a clipped stroke")
+                };
+                let midpoint = [(a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5];
+                assert!((midpoint[0] - 20.).hypot(midpoint[1] - 15.) >= 5. - 1e-6);
+            }
         }
     }
 }
@@ -210,7 +258,8 @@ fn section_can_remove_all_sources_and_uncut_sections_do_not_generate_hatches() {
         hatch: Some(DrawingHatch {
             angle_rad: 0.3,
             spacing_mm: 2.,
-            cross: true,
+            line_width_mm: 0.18,
+            pattern: multicad_core::materials::HatchPattern::Cross,
         }),
     }];
     assert!(
@@ -273,7 +322,8 @@ fn oblique_triangular_section_hatches_in_its_actual_plane_and_clips_a_real_hole(
                 hatch: Some(DrawingHatch {
                     angle_rad: 0.37,
                     spacing_mm: 0.05,
-                    cross: true,
+                    line_width_mm: 0.18,
+                    pattern: multicad_core::materials::HatchPattern::Cross,
                 }),
             }],
             DrawingProjection {
@@ -371,7 +421,8 @@ fn run(solids: &[Solid], options: DrawingProjection) -> Vec<ProjectedVector> {
     let hatch = DrawingHatch {
         angle_rad: std::f64::consts::FRAC_PI_4,
         spacing_mm: 2.,
-        cross: false,
+        line_width_mm: 0.18,
+        pattern: multicad_core::materials::HatchPattern::Lines,
     };
     let inputs: Vec<_> = solids
         .iter()
