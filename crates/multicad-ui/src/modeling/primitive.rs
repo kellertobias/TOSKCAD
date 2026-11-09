@@ -6,11 +6,12 @@ use super::{
 use crate::{controls, egui};
 use multicad_core::{
     document::Document,
-    model::{self, PrimitiveFrame, PrimitiveParameters, PrimitiveRequest},
-    sketch::Datum,
+    model::{self, PrimitiveFrame, PrimitiveParameters, PrimitiveRequest, ResolvedPrimitive},
+    sketch::{Datum, Frame},
 };
 
 mod gizmo;
+mod pose;
 
 pub(super) struct PrimitivePanel {
     request: PrimitiveRequest,
@@ -21,10 +22,11 @@ pub(super) struct PrimitivePanel {
     size: [DimensionField; 3],
     radius: DimensionField,
     height: DimensionField,
-    plane: Datum,
+    basis: [[f64; 3]; 2],
     error: Option<String>,
     editing: bool,
-    drag: Option<gizmo::Drag>,
+    resize: gizmo::ResizeGizmo,
+    pose: pose::PoseGizmo,
 }
 impl PrimitivePanel {
     pub fn new(request: PrimitiveRequest) -> Result<Self, String> {
@@ -55,12 +57,8 @@ impl PrimitivePanel {
                 model::length(50.),
             ),
         };
-        let plane = Datum::ALL
-            .into_iter()
-            .find(|datum| datum.frame().u == frame.u && datum.frame().v == frame.v)
-            .ok_or(
-                "This form supports XY, XZ and YZ primitive frames; the stored frame was preserved",
-            )?;
+        frame.validate().map_err(|error| error.to_string())?;
+        let basis = [frame.u, frame.v];
         Ok(Self {
             stamp: FormStamp::new(),
             name: request.name.clone(),
@@ -78,10 +76,11 @@ impl PrimitivePanel {
             height: DimensionField::from_dimension(&height, "mm")?,
             kind,
             request,
-            plane,
+            basis,
             error: None,
             editing: false,
-            drag: None,
+            resize: Default::default(),
+            pose: Default::default(),
         })
     }
     pub fn existing(request: PrimitiveRequest) -> Result<Self, String> {
@@ -95,6 +94,27 @@ impl PrimitivePanel {
     pub fn label(&self) -> &'static str {
         self.kind.label()
     }
+    fn plane(&self) -> Option<Datum> {
+        Datum::ALL.into_iter().find(|datum| {
+            let frame = datum.frame();
+            self.basis == [frame.u, frame.v]
+        })
+    }
+    fn set_plane(&mut self, plane: Datum) {
+        let frame = plane.frame();
+        self.basis = [frame.u, frame.v];
+    }
+    fn frame(&self, document: &Document) -> Result<PrimitiveFrame, String> {
+        Ok(PrimitiveFrame {
+            origin: [
+                self.origin[0].resolve(document)?,
+                self.origin[1].resolve(document)?,
+                self.origin[2].resolve(document)?,
+            ],
+            u: self.basis[0],
+            v: self.basis[1],
+        })
+    }
     pub fn request(&self, document: &Document, enabled: bool) -> Result<PrimitiveRequest, String> {
         if !enabled {
             return Err("The native modeling preview provider is unavailable".into());
@@ -102,16 +122,7 @@ impl PrimitivePanel {
         if self.name.trim().is_empty() || self.name.len() > 1000 {
             return Err("Enter a body name with 1–1000 bytes".into());
         }
-        let basis = self.plane.frame();
-        let frame = PrimitiveFrame {
-            origin: [
-                self.origin[0].resolve(document)?,
-                self.origin[1].resolve(document)?,
-                self.origin[2].resolve(document)?,
-            ],
-            u: basis.u,
-            v: basis.v,
-        };
+        let frame = self.frame(document)?;
         let parameters = match self.kind {
             ModelingTool::Box => PrimitiveParameters::Box {
                 size: [
@@ -165,6 +176,138 @@ impl PrimitivePanel {
             field.remember(value);
         }
     }
+    pub(super) fn dragging(&self) -> bool {
+        self.resize.active() || self.pose.active()
+    }
+    fn resolved(&self, session: &multicad_core::commands::Session) -> Option<ResolvedPrimitive> {
+        self.request(session.document(), true)
+            .ok()?
+            .parameters
+            .resolve(session.parameters())
+            .ok()
+    }
+    pub(super) fn envelope(
+        &self,
+        session: &multicad_core::commands::Session,
+    ) -> Option<[[f64; 3]; 8]> {
+        Some(gizmo::corners(&self.resolved(session)?))
+    }
+
+    pub(super) fn viewport(
+        &mut self,
+        ui: &mut egui::Ui,
+        session: &multicad_core::commands::Session,
+        camera: crate::camera::Camera,
+        rect: egui::Rect,
+        start_allowed: bool,
+        guide: bool,
+    ) -> (bool, bool, bool) {
+        let document = session.document();
+        let parameters = session.parameters();
+        let Some(shape) = self.resolved(session) else {
+            self.resize = Default::default();
+            self.pose = Default::default();
+            return (false, false, false);
+        };
+        let resize = self.resize.show(
+            ui,
+            &shape,
+            camera,
+            rect,
+            start_allowed && !self.pose.active(),
+            guide,
+        );
+        let mut changed = resize
+            .changed
+            .is_some_and(|next| self.resize_draft(&shape, &next));
+        let view = super::PlacementViewport {
+            scene: None,
+            camera,
+            rect,
+            basis: Default::default(),
+            start_allowed: start_allowed && !resize.input_owned,
+        };
+        let mut owned = resize.input_owned;
+        let mut released = resize.released;
+        match self.frame(document).and_then(|frame| {
+            self.pose
+                .show(ui, &view, &frame, parameters)
+                .map(|gesture| (frame, gesture))
+        }) {
+            Ok((before, gesture)) => {
+                owned |= gesture.input_owned;
+                released |= gesture.released;
+                if let Some(frame) = gesture.changed {
+                    changed |= self.pose_draft(&before, &frame);
+                }
+            }
+            Err(error) => {
+                self.pose = Default::default();
+                self.error = Some(error);
+            }
+        }
+        if changed {
+            self.stamp.changed();
+            self.error = None;
+        }
+        (owned, changed, released)
+    }
+
+    fn pose_draft(&mut self, before: &PrimitiveFrame, frame: &PrimitiveFrame) -> bool {
+        let basis = [frame.u, frame.v];
+        let mut changed = self.basis != basis;
+        self.basis = basis;
+        for (index, field) in self.origin.iter_mut().enumerate() {
+            if before.origin[index] != frame.origin[index]
+                && let Ok(replacement) = DimensionField::from_dimension(&frame.origin[index], "mm")
+            {
+                *field = replacement;
+                changed = true;
+            }
+        }
+        changed
+    }
+
+    fn resize_draft(&mut self, before: &ResolvedPrimitive, after: &ResolvedPrimitive) -> bool {
+        let mut changed = set_lengths(
+            &mut self.origin,
+            resolved_frame(before).origin,
+            resolved_frame(after).origin,
+        );
+        changed |= match (before, after) {
+            (
+                ResolvedPrimitive::Box {
+                    size_mm: before, ..
+                },
+                ResolvedPrimitive::Box { size_mm: after, .. },
+            ) => set_lengths(&mut self.size, *before, *after),
+            (
+                ResolvedPrimitive::Cylinder {
+                    radius_mm: old_radius,
+                    height_mm: old_height,
+                    ..
+                },
+                ResolvedPrimitive::Cylinder {
+                    radius_mm: new_radius,
+                    height_mm: new_height,
+                    ..
+                },
+            ) => {
+                set_length(&mut self.radius, *old_radius, *new_radius)
+                    | set_length(&mut self.height, *old_height, *new_height)
+            }
+            (
+                ResolvedPrimitive::Sphere {
+                    radius_mm: before, ..
+                },
+                ResolvedPrimitive::Sphere {
+                    radius_mm: after, ..
+                },
+            ) => set_length(&mut self.radius, *before, *after),
+            _ => unreachable!("resize must retain the primitive kind"),
+        };
+        changed
+    }
     pub fn show(
         &mut self,
         ui: &mut egui::Ui,
@@ -174,7 +317,7 @@ impl PrimitivePanel {
     ) -> Option<ModelEvent> {
         controls::inspector_layout(ui);
         ui.strong(self.label());
-        ui.small(if self.editing {"Edit this existing producer and rebuild its downstream features. Body and feature names are retained."}else{"Drag a viewport handle or enter a dimension. Apply is available after the native preview validates."});
+        ui.small(if self.editing {"Edit this existing producer and rebuild its downstream features. Body and feature names are retained."}else{"Drag a corner to resize. Use the origin arrows or rings to move or rotate. Enter applies and Escape cancels."});
         ui.label("Body name");
         let mut changed = ui
             .add_enabled(
@@ -187,13 +330,23 @@ impl PrimitivePanel {
             .changed();
         ui.separator();
         ui.label("Orientation plane");
-        controls::inspector_combo(ui,"primitive-plane").selected_text(self.plane.label()).show_ui(ui,|ui| {
-            for plane in Datum::ALL {changed|=ui.selectable_value(&mut self.plane,plane,plane.label()).changed();}
-        }).response.on_hover_text("Size follows the chosen plane's U, V and normal axes; origin coordinates stay in world XYZ");
-        ui.small(match self.plane {
-            Datum::Xy => "U = +X · V = +Y · height = +Z",
-            Datum::Xz => "U = +X · V = +Z · height = −Y",
-            Datum::Yz => "U = +Y · V = +Z · height = +X",
+        let current = self.plane();
+        controls::inspector_combo(ui,"primitive-plane").selected_text(current.map_or("Custom orientation", Datum::label)).show_ui(ui,|ui| {
+            for plane in Datum::ALL {
+                if ui.selectable_label(current == Some(plane), plane.label()).clicked() {
+                    if current != Some(plane) {
+                        self.set_plane(plane);
+                        changed = true;
+                    }
+                    ui.close();
+                }
+            }
+        }).response.on_hover_text("Choose a datum orientation or rotate freely in the viewport. The origin stays in world XYZ.");
+        ui.small(match self.plane() {
+            Some(Datum::Xy) => "U = +X · V = +Y · height = +Z",
+            Some(Datum::Xz) => "U = +X · V = +Z · height = −Y",
+            Some(Datum::Yz) => "U = +Y · V = +Z · height = +X",
+            None => "Width, depth and height follow the rotated primitive axes.",
         });
         for (field, label) in self
             .origin
@@ -290,6 +443,30 @@ impl PrimitivePanel {
             _ => None,
         }
     }
+}
+
+fn resolved_frame(primitive: &ResolvedPrimitive) -> &Frame {
+    match primitive {
+        ResolvedPrimitive::Box { frame, .. }
+        | ResolvedPrimitive::Cylinder { frame, .. }
+        | ResolvedPrimitive::Sphere { frame, .. } => frame,
+    }
+}
+
+fn set_length(field: &mut DimensionField, before: f64, after: f64) -> bool {
+    if (after - before).abs() <= 1e-8 {
+        return false;
+    }
+    field.set_exact_literal(after, "mm");
+    true
+}
+
+fn set_lengths(fields: &mut [DimensionField; 3], before: [f64; 3], after: [f64; 3]) -> bool {
+    let mut changed = false;
+    for (index, field) in fields.iter_mut().enumerate() {
+        changed |= set_length(field, before[index], after[index]);
+    }
+    changed
 }
 
 #[cfg(test)]

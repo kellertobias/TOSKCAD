@@ -47,7 +47,7 @@ fn orientation_and_formula_origin_are_canonical_source_and_not_display_moves() {
         let original = panel.request(&document, true).unwrap();
         panel.origin[0].text = "=$offset + 5".into();
         panel.origin[1].text = "-12".into();
-        panel.plane = Datum::Xz;
+        panel.set_plane(Datum::Xz);
         let request = panel.request(&document, true).unwrap();
         assert_eq!(
             (request.feature, request.body),
@@ -223,8 +223,13 @@ fn primitive_forms_stay_narrow_and_source_neutral_across_frames() {
 }
 
 #[test]
-fn existing_primitive_controls_preserve_bound_dimensions_and_source_identities() {
-    use multicad_core::{constraint_sketch::Dimension, parameters::BoundExpression};
+fn saved_arbitrary_primitive_frame_and_formulas_survive_reopen_and_native_edit() {
+    use multicad_core::{
+        commands::{Actor, Channel, Session},
+        constraint_sketch::Dimension,
+        parameters::BoundExpression,
+        project_file::{self, ProjectFile},
+    };
     let mut document = Document::new("Stored formula controls").unwrap();
     document
         .insert(Entity::new(
@@ -237,18 +242,56 @@ fn existing_primitive_controls_preserve_bound_dimensions_and_source_identities()
             },
         ))
         .unwrap();
-    let width = Dimension::Expression {
-        expression: BoundExpression::bind(&document, "=$width + 5", "mm", None).unwrap(),
+    let formula = |text| Dimension::Expression {
+        expression: BoundExpression::bind(&document, text, "mm", None).unwrap(),
+    };
+    let width = formula("=$width + 5");
+    let frame = PrimitiveFrame {
+        origin: [
+            formula("=$width - 50"),
+            model::length(3.),
+            model::length(4.),
+        ],
+        u: [0.6, 0.8, 0.],
+        v: [0., 0., 1.],
     };
     let request = PrimitiveRequest::new(
         "Saved body name",
         PrimitiveParameters::Box {
             size: [width.clone(), model::length(30.), model::length(20.)],
-            frame: Default::default(),
+            frame: frame.clone(),
         },
     );
-    let mut panel = PrimitivePanel::existing(request.clone()).unwrap();
+    let mut session = Session::new(document).unwrap();
+    let actor = Actor::local(Channel::Ui);
+    session
+        .commit(
+            model::prepare_primitive(&session, 0, actor.clone(), &request)
+                .unwrap()
+                .prepared,
+        )
+        .unwrap();
+    let file = ProjectFile::new(session.document().clone()).unwrap();
+    let mut bytes = Vec::new();
+    project_file::write(&file, &mut bytes, Default::default()).unwrap();
+    let reopened = project_file::read(
+        &mut bytes.as_slice(),
+        Default::default(),
+        &project_file::supported_capabilities(),
+    )
+    .unwrap()
+    .project
+    .document;
+    let mut session = Session::new(reopened).unwrap();
+    let stored = model::read_primitive(session.document(), request.feature).unwrap();
+    let mut panel = PrimitivePanel::existing(PrimitiveRequest {
+        body: stored.output.body,
+        parameters: stored.parameters,
+        ..request.clone()
+    })
+    .unwrap();
     assert!(panel.editing);
+    assert_eq!(panel.request(session.document(), true).unwrap(), request);
     panel.height.text = "60".into(); // Irrelevant cylinder control cannot change a box.
     panel.size[2].text = "24".into();
     let Some(ModelEvent::Preview {
@@ -257,21 +300,128 @@ fn existing_primitive_controls_preserve_bound_dimensions_and_source_identities()
     }) = panel.finish_frame(
         true,
         Some(FormAction::Preview),
-        &document,
+        session.document(),
         true,
         PreviewState::Idle,
     )
     else {
-        panic!()
+        panic!("Reopened arbitrary frame must produce a valid edit");
     };
     assert_eq!(
         (changed.feature, changed.body),
         (request.feature, request.body)
     );
     assert_eq!(changed.name, request.name);
-    let PrimitiveParameters::Box { size, .. } = &changed.parameters else {
-        panic!()
+    let PrimitiveParameters::Box {
+        size,
+        frame: edited_frame,
+    } = &changed.parameters
+    else {
+        panic!("The existing primitive must stay a box");
     };
+    assert_eq!(edited_frame, &frame);
     assert_eq!(size[0], width);
     assert_eq!(size[2], model::length(24.));
+
+    session
+        .commit(
+            model::prepare_primitive_edit(&session, 0, actor, changed.feature, &changed.parameters)
+                .unwrap()
+                .prepared,
+        )
+        .unwrap();
+    let compiled = multicad_model::Compiler::default()
+        .compile(session.document(), session.revision())
+        .unwrap();
+    let snapshot = compiled.snapshot();
+    assert_eq!(snapshot.bodies[&request.body], request.feature);
+    let shape = &snapshot.shapes[&request.feature];
+    assert_eq!(shape.solid_count, 1);
+    assert!((shape.volume_mm3 - 80. * 30. * 24.).abs() < 1e-6);
+    for (actual, expected) in shape
+        .bounds
+        .min
+        .into_iter()
+        .chain(shape.bounds.max)
+        .zip([25., -11.4, 4., 92.2, 67., 34.])
+    {
+        assert!((actual - expected).abs() < 1e-5, "{actual} != {expected}");
+    }
+}
+
+#[test]
+fn viewport_corner_drag_updates_two_draft_dimensions_only_when_input_is_allowed() {
+    let session =
+        multicad_core::commands::Session::new(Document::new("Primitive corner resize").unwrap())
+            .unwrap();
+    let before = session.document().clone();
+    let mut panel = panel(ModelingTool::Box);
+    let context = egui::Context::default();
+    let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800., 600.));
+    let camera = crate::camera::Camera {
+        yaw: 0.,
+        pitch: std::f32::consts::FRAC_PI_2,
+        scale: 4.,
+        target: [50., 30., 10.],
+        perspective: false,
+    };
+    let project = |point| {
+        let [x, y, _] = camera.project(point, rect);
+        egui::pos2(x, y)
+    };
+    let frame = |panel: &mut PrimitivePanel, events, start_allowed| {
+        let mut result = (false, false, false);
+        context
+            .run_ui(
+                egui::RawInput {
+                    screen_rect: Some(rect),
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    result = panel.viewport(ui, &session, camera, rect, start_allowed, true);
+                },
+            )
+            .drop_without_applying_deltas();
+        result
+    };
+    let button = |pos, pressed| egui::Event::PointerButton {
+        pos,
+        pressed,
+        button: egui::PointerButton::Primary,
+        modifiers: egui::Modifiers::NONE,
+    };
+    let corner = project([100., 60., 20.]);
+    let target = project([125., 72., 20.]);
+    let request = panel.request(session.document(), true).unwrap();
+    for allowed in [false, true] {
+        frame(&mut panel, vec![], allowed);
+        let (owned, _, _) = frame(
+            &mut panel,
+            vec![egui::Event::PointerMoved(corner), button(corner, true)],
+            allowed,
+        );
+        assert_eq!(owned, allowed);
+        let (_, changed, _) = frame(&mut panel, vec![egui::Event::PointerMoved(target)], allowed);
+        assert_eq!(changed, allowed);
+        let (_, _, released) = frame(&mut panel, vec![button(target, false)], allowed);
+        assert_eq!(released, allowed);
+        if !allowed {
+            assert_eq!(panel.request(session.document(), true).unwrap(), request);
+        }
+    }
+    let ResolvedPrimitive::Box { size_mm, frame } = panel
+        .request(session.document(), true)
+        .unwrap()
+        .parameters
+        .resolve(session.parameters())
+        .unwrap()
+    else {
+        panic!("Resize must preserve the shape type");
+    };
+    for (actual, expected) in size_mm.into_iter().zip([125., 72., 20.]) {
+        assert!((actual - expected).abs() < 1e-5, "{size_mm:?}");
+    }
+    assert_eq!(frame.origin, [0.; 3]);
+    assert_eq!(session.document(), &before);
 }

@@ -1283,8 +1283,29 @@ impl SketchEditor {
         self.finish()?;
         self.model
             .begin_primitive(session, resources, kind, channel)?;
+        if let Some(rect) = self
+            .viewport_rect
+            .filter(|rect| rect.is_finite() && rect.size().min_elem() >= 64.)
+            && let Some(corners) = self.model.primitive_envelope(session)
+        {
+            let points = corners.map(|p| p.map(|v| v as f32));
+            let mut projected = Rect::NOTHING;
+            let mut in_front = true;
+            for point in points {
+                let [x, y, depth] = self.camera.project(point, rect);
+                in_front &= !self.camera.perspective || depth >= 0.1;
+                projected.extend_with(Pos2::new(x, y));
+            }
+            if !in_front
+                || !rect.shrink(18.).contains_rect(projected)
+                || projected.size().max_elem() < 42.
+            {
+                self.camera.fit(&points, rect);
+                self.initial_fit.settle();
+            }
+        }
         self.message = format!(
-            "{} · drag the viewport handles or enter dimensions in the Inspector",
+            "{} · drag a corner to resize or use the origin gizmo to move and rotate",
             kind.label()
         );
         Ok(())
@@ -3860,12 +3881,29 @@ impl SketchEditor {
             };
             self.initial_fit.settle();
         }
+        let framing_bounds = model_bounds.or_else(|| {
+            let corners = self.model.primitive_envelope(session)?;
+            Some([
+                std::array::from_fn(|i| {
+                    corners
+                        .iter()
+                        .map(|point| point[i])
+                        .fold(f64::INFINITY, f64::min)
+                }),
+                std::array::from_fn(|i| {
+                    corners
+                        .iter()
+                        .map(|point| point[i])
+                        .fold(f64::NEG_INFINITY, f64::max)
+                }),
+            ])
+        });
         if !developed_view
             && !transfer_source_view
             && !anchor_view
             && let Some(camera) = self.initial_fit.update(
                 session.document().id(),
-                model_bounds,
+                framing_bounds,
                 self.camera,
                 self.viewport_rect,
             )
@@ -4727,9 +4765,14 @@ impl SketchEditor {
                     }
                 }
             }
-            owned |=
-                self.model
-                    .primitive_viewport(ui, session, context.resources, self.camera, rect);
+            owned |= self.model.primitive_viewport(
+                ui,
+                session,
+                context.resources,
+                self.camera,
+                rect,
+                response.hovered() || response.dragged_by(egui::PointerButton::Primary),
+            );
             if self.model.operation_gizmo_active() {
                 owned |= self.operation_viewport(ui, &response, session, context.resources, rect);
             }

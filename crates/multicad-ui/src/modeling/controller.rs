@@ -2493,6 +2493,13 @@ impl ModelToolController {
         }
     }
 
+    pub(crate) fn primitive_envelope(&self, session: &Session) -> Option<[[f64; 3]; 8]> {
+        match self.form.as_ref()? {
+            ModelForm::Primitive(panel) => panel.envelope(session),
+            _ => None,
+        }
+    }
+
     pub fn primitive_viewport(
         &mut self,
         ui: &mut egui::Ui,
@@ -2500,15 +2507,20 @@ impl ModelToolController {
         resources: &ProjectResources,
         camera: crate::camera::Camera,
         rect: egui::Rect,
+        start_allowed: bool,
     ) -> bool {
-        if !matches!(self.form, Some(ModelForm::Primitive(_))) {
+        if !matches!(self.form, Some(ModelForm::Primitive(_)))
+            || self.current(session, resources, false).is_err()
+        {
             return false;
         }
         let guide = !self.preview_visible(session, resources);
+        let start_allowed = start_allowed && ui.is_enabled();
         let Some(ModelForm::Primitive(panel)) = &mut self.form else {
             unreachable!()
         };
-        let (owned, changed, released) = panel.viewport(ui, session, camera, rect, guide);
+        let (owned, changed, released) =
+            panel.viewport(ui, session, camera, rect, start_allowed, guide);
         if changed {
             self.schedule_auto_preview(ui, self.stamp().expect("active primitive form"));
         }

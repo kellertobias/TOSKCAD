@@ -515,7 +515,13 @@ fn primitive_drag_replaces_the_native_preview_with_current_dimensions() {
 
     let context = egui::Context::default();
     let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800., 600.));
-    let camera = crate::camera::Camera::default();
+    let camera = crate::camera::Camera {
+        yaw: 0.,
+        pitch: std::f32::consts::FRAC_PI_2,
+        scale: 2.,
+        target: [50., 30., 0.],
+        perspective: false,
+    };
     let project = |point| {
         let [x, y, _] = camera.project(point, rect);
         egui::pos2(x, y)
@@ -534,7 +540,7 @@ fn primitive_drag_replaces_the_native_preview_with_current_dimensions() {
                     ui.id().with("viewport"),
                     egui::Sense::click_and_drag(),
                 );
-                owned = controller.primitive_viewport(ui, &session, &resources, camera, rect);
+                owned = controller.primitive_viewport(ui, &session, &resources, camera, rect, true);
             },
         );
         output.drop_without_applying_deltas();
@@ -548,8 +554,8 @@ fn primitive_drag_replaces_the_native_preview_with_current_dimensions() {
     };
 
     frame(&mut controller, vec![]);
-    let width_handle = project([100., 0., 0.]);
-    let new_width = project([135., 0., 0.]);
+    let width_handle = project([100., 60., 20.]);
+    let new_width = project([135., 60., 20.]);
     assert!(frame(
         &mut controller,
         vec![
@@ -570,8 +576,9 @@ fn primitive_drag_replaces_the_native_preview_with_current_dimensions() {
     controller.poll(&session, &resources);
     assert!(controller.can_apply(&session, &resources));
 
-    let place_handle = project([0.; 3]);
-    let placed = place_handle + egui::vec2(25., -12.);
+    let origin = project([0.; 3]);
+    let place_handle = origin + egui::vec2(75., 0.);
+    let placed = place_handle + egui::vec2(25., 0.);
     assert!(frame(
         &mut controller,
         vec![
@@ -599,7 +606,7 @@ fn primitive_drag_replaces_the_native_preview_with_current_dimensions() {
     assert!((size_mm[0] - 135.).abs() < 0.001, "{size_mm:?}");
     assert_eq!(size_mm[1..], [60., 20.]);
     let [x, y, _] = camera.project(frame.origin.map(|v| v as f32), rect);
-    assert!(egui::pos2(x, y).distance(placed) < 0.001);
+    assert!(egui::pos2(x, y).distance(origin + (placed - place_handle)) < 0.001);
 
     reply(&state, 2);
     controller.poll(&session, &resources);

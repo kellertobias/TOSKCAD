@@ -1,278 +1,478 @@
-use super::{
-    super::gizmo::math::{Point, add, axis_parameter, mul, plane_point, sub},
-    PrimitivePanel,
-};
-use crate::{camera::Camera, egui};
-use multicad_core::{commands::Session, model::ResolvedPrimitive, sketch::Frame};
+use super::super::gizmo::math::{Point, add, axis_parameter, cross, dot, mul, plane_point, sub};
+use crate::{camera::Camera, egui, viewport::Ray};
+use multicad_core::{model::ResolvedPrimitive, sketch::Frame};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-enum Field {
-    Origin,
-    Size(usize),
-    Radius,
-    Height,
+const GUIDE: egui::Color32 = egui::Color32::from_rgb(90, 190, 240);
+const MIN_SIZE_MM: f64 = 0.001;
+const HIT_RADIUS: f32 = 9.;
+
+#[derive(Default)]
+pub(super) struct ResizeGizmo {
+    drag: Option<Drag>,
 }
 
-#[derive(Clone, Copy)]
-enum Motion {
-    Place {
-        normal: Point,
-        start: Point,
-    },
-    Resize {
-        axis: Point,
-        start: f64,
-        length: f64,
-    },
+#[derive(Default)]
+pub(super) struct ResizeGesture {
+    pub input_owned: bool,
+    pub released: bool,
+    pub changed: Option<ResolvedPrimitive>,
 }
 
-pub(super) struct Drag {
-    field: Field,
-    origin: Point,
+struct Drag {
+    corner: usize,
+    camera: Camera,
+    rect: egui::Rect,
+    original: ResolvedPrimitive,
     motion: Motion,
 }
 
-const GUIDE: egui::Color32 = egui::Color32::from_rgb(90, 190, 240);
+enum Motion {
+    Box {
+        pointer: WorldDrag,
+        fixed: usize,
+    },
+    Cylinder {
+        pointer: WorldDrag,
+        radial: Point,
+    },
+    Sphere {
+        press: egui::Pos2,
+        radial: egui::Vec2,
+        pixels_per_mm: f64,
+    },
+}
 
-impl PrimitivePanel {
-    pub fn dragging(&self) -> bool {
-        self.drag.is_some()
+enum WorldDrag {
+    Plane {
+        point: Point,
+        normal: Point,
+        start: Point,
+    },
+    Axis {
+        point: Point,
+        axis: Point,
+        start: f64,
+    },
+}
+
+impl WorldDrag {
+    fn plane(ray: Ray, point: Point, normal: Point) -> Option<Self> {
+        Some(Self::Plane {
+            point,
+            normal,
+            start: plane_point(ray, point, normal)?,
+        })
     }
 
-    pub fn viewport(
-        &mut self,
-        ui: &mut egui::Ui,
-        session: &Session,
-        camera: Camera,
-        rect: egui::Rect,
-        guide: bool,
-    ) -> (bool, bool, bool) {
-        let Some(shape) = self
-            .request(session.document(), true)
-            .ok()
-            .and_then(|request| request.parameters.resolve(session.parameters()).ok())
-        else {
-            self.drag = None;
-            return (false, false, false);
-        };
-        let (frame, handles) = handles(&shape, camera, rect);
-        let painter = ui.painter().with_clip_rect(rect);
-        if guide {
-            paint_guide(&painter, camera, rect, frame, &shape);
-        }
-        let (pointer, pressed, down) = ui.input(|input| {
-            (
-                input.pointer.latest_pos(),
-                input.pointer.press_origin(),
-                input.pointer.primary_down(),
-            )
-        });
-        let mut owned = self.dragging();
-        for (field, axis, length) in handles {
-            let point = add(frame.origin, mul(axis, length));
-            let [x, y, depth] = camera.project(point.map(|n| n as f32), rect);
-            let position = egui::pos2(x, y);
-            if depth <= 0. || !rect.contains(position) {
-                continue;
-            }
-            let response = ui.interact(
-                egui::Rect::from_center_size(position, egui::Vec2::splat(16.)).intersect(rect),
-                ui.make_persistent_id(("primitive handle", self.request.body, field)),
-                egui::Sense::drag(),
-            );
-            let active = self.drag.as_ref().is_some_and(|drag| drag.field == field);
-            let color = if active || response.hovered() {
-                egui::Color32::WHITE
-            } else {
-                GUIDE
-            };
-            if field == Field::Origin {
-                painter.circle_filled(position, 5., color);
-            } else {
-                painter.rect_filled(
-                    egui::Rect::from_center_size(position, egui::Vec2::splat(9.)),
-                    1.,
-                    color,
-                );
-            }
-            let label = match field {
-                Field::Origin => "Drag to place the primitive",
-                Field::Size(0) => "Drag to change width",
-                Field::Size(1) => "Drag to change depth",
-                Field::Size(_) | Field::Height => "Drag to change height",
-                Field::Radius => "Drag to change radius",
-            };
-            owned |= response.is_pointer_button_down_on();
-            if response.drag_started_by(egui::PointerButton::Primary)
-                && self.drag.is_none()
-                && let Some(ray) = pressed
-                    .filter(|p| rect.contains(*p))
-                    .and_then(|p| camera.ray(p, rect))
-            {
-                let motion = if field == Field::Origin {
-                    camera.ray(rect.center(), rect).and_then(|center| {
-                        let normal = center.direction();
-                        plane_point(ray, frame.origin, normal)
-                            .map(|start| Motion::Place { normal, start })
-                    })
-                } else {
-                    axis_parameter(ray, frame.origin, axis).map(|start| Motion::Resize {
-                        axis,
-                        start,
-                        length,
-                    })
-                };
-                self.drag = motion.map(|motion| Drag {
-                    field,
-                    origin: frame.origin,
-                    motion,
-                });
-            }
-            response.on_hover_text(label);
-        }
-        let mut changed = false;
-        if let Some(drag) = &self.drag
-            && let Some(ray) = pointer.and_then(|p| camera.ray(p, rect))
-        {
-            owned = true;
-            match drag.motion {
-                Motion::Place { normal, start } => {
-                    if let Some(hit) = plane_point(ray, drag.origin, normal) {
-                        let origin = add(drag.origin, sub(hit, start));
-                        for (index, value) in origin.into_iter().enumerate() {
-                            if (value - frame.origin[index]).abs() > 1e-8 {
-                                self.origin[index].set_exact_literal(value, "mm");
-                                changed = true;
-                            }
-                        }
-                    }
-                }
-                Motion::Resize {
-                    axis,
-                    start,
-                    length,
-                } => {
-                    if let Some(hit) = axis_parameter(ray, drag.origin, axis) {
-                        let value = (length + hit - start).max(0.001);
-                        let (field, current) = match (drag.field, shape) {
-                            (Field::Size(i), ResolvedPrimitive::Box { size_mm, .. }) => {
-                                (&mut self.size[i], size_mm[i])
-                            }
-                            (
-                                Field::Radius,
-                                ResolvedPrimitive::Cylinder { radius_mm, .. }
-                                | ResolvedPrimitive::Sphere { radius_mm, .. },
-                            ) => (&mut self.radius, radius_mm),
-                            (Field::Height, ResolvedPrimitive::Cylinder { height_mm, .. }) => {
-                                (&mut self.height, height_mm)
-                            }
-                            _ => unreachable!("drag belongs to this primitive"),
-                        };
-                        if (value - current).abs() > 1e-8 {
-                            field.set_exact_literal(value, "mm");
-                            changed = true;
-                        }
-                    }
-                }
+    fn axis(ray: Ray, point: Point, axis: Point) -> Option<Self> {
+        Some(Self::Axis {
+            point,
+            axis,
+            start: axis_parameter(ray, point, axis)?,
+        })
+    }
+
+    fn delta(&self, ray: Ray) -> Option<Point> {
+        match *self {
+            Self::Plane {
+                point,
+                normal,
+                start,
+            } => Some(sub(plane_point(ray, point, normal)?, start)),
+            Self::Axis { point, axis, start } => {
+                Some(mul(axis, axis_parameter(ray, point, axis)? - start))
             }
         }
-        if changed {
-            self.stamp.changed();
-            self.error = None;
-        }
-        let released = !down && self.drag.take().is_some();
-        (owned, changed, released)
     }
 }
 
-fn handles(
-    shape: &ResolvedPrimitive,
-    camera: Camera,
-    rect: egui::Rect,
-) -> (Frame, Vec<(Field, Point, f64)>) {
-    let frame = match *shape {
+fn frame(shape: &ResolvedPrimitive) -> Frame {
+    match *shape {
         ResolvedPrimitive::Box { frame, .. }
         | ResolvedPrimitive::Cylinder { frame, .. }
         | ResolvedPrimitive::Sphere { frame, .. } => frame,
-    };
-    let span = |axis| {
-        camera
-            .segment(frame.origin, add(frame.origin, mul(axis, 10.)), rect)
-            .map_or(0., |[a, b]| a.distance(b))
-    };
-    let radial = |axes: &[Point]| {
-        axes.iter()
-            .copied()
-            .max_by(|a, b| span(*a).total_cmp(&span(*b)))
-            .unwrap_or(frame.u)
-    };
-    let mut sizes: Vec<_> = match *shape {
-        ResolvedPrimitive::Box { size_mm, .. } => [frame.u, frame.v, frame.n]
-            .into_iter()
-            .zip(size_mm)
-            .enumerate()
-            .map(|(i, (axis, length))| (Field::Size(i), axis, length))
-            .collect(),
+    }
+}
+
+fn high(corner: usize, axis: usize) -> bool {
+    corner & (1 << axis) != 0
+}
+
+/// The low and high sides of the primitive's oriented, local envelope.
+/// Bits 0, 1 and 2 select the high U, V and N sides, respectively.
+pub(super) fn corners(shape: &ResolvedPrimitive) -> [Point; 8] {
+    let [min, max] = match *shape {
+        ResolvedPrimitive::Box { size_mm, .. } => [[0.; 3], size_mm],
         ResolvedPrimitive::Cylinder {
             radius_mm,
             height_mm,
             ..
-        } => vec![
-            (Field::Radius, radial(&[frame.u, frame.v]), radius_mm),
-            (Field::Height, frame.n, height_mm),
+        } => [
+            [-radius_mm, -radius_mm, 0.],
+            [radius_mm, radius_mm, height_mm],
         ],
-        ResolvedPrimitive::Sphere { radius_mm, .. } => {
-            vec![(
-                Field::Radius,
-                radial(&[frame.u, frame.v, frame.n]),
-                radius_mm,
-            )]
-        }
+        ResolvedPrimitive::Sphere { radius_mm, .. } => [[-radius_mm; 3], [radius_mm; 3]],
     };
-    sizes.retain(|&(_, axis, length)| span(axis) * (length / 10.) as f32 >= 12.);
-    sizes.push((Field::Origin, [0.; 3], 0.));
-    (frame, sizes)
+    let frame = frame(shape);
+    std::array::from_fn(|corner| {
+        let local = std::array::from_fn(|axis| {
+            if high(corner, axis) {
+                max[axis]
+            } else {
+                min[axis]
+            }
+        });
+        add(frame.origin, frame.vector(local))
+    })
 }
 
-fn paint_guide(
+impl Drag {
+    fn new(
+        corner: usize,
+        shape: &ResolvedPrimitive,
+        camera: Camera,
+        rect: egui::Rect,
+        press: egui::Pos2,
+        point: Point,
+    ) -> Option<Self> {
+        let frame = frame(shape);
+        let axes = [frame.u, frame.v, frame.n];
+        let ray = camera.ray(press, rect)?;
+        let alignment = |axis| dot(ray.direction(), axis).abs();
+        let motion = match *shape {
+            ResolvedPrimitive::Box { .. } => {
+                // The plane with the largest ray-normal dot is the least
+                // sensitive to pointer motion and keeps the third size fixed.
+                let fixed =
+                    (0..3).max_by(|a, b| alignment(axes[*a]).total_cmp(&alignment(axes[*b])))?;
+                Motion::Box {
+                    pointer: WorldDrag::plane(ray, point, axes[fixed])?,
+                    fixed,
+                }
+            }
+            ResolvedPrimitive::Cylinder { .. } => {
+                let signed = |i: usize| mul(axes[i], if high(corner, i) { 1. } else { -1. });
+                let radial = mul(add(signed(0), signed(1)), std::f64::consts::FRAC_1_SQRT_2);
+                let normal = cross(radial, frame.n);
+                let pointer = if alignment(normal) >= 0.25 {
+                    WorldDrag::plane(ray, point, normal)?
+                } else {
+                    let axis = if alignment(radial) < alignment(frame.n) {
+                        radial
+                    } else {
+                        frame.n
+                    };
+                    WorldDrag::axis(ray, point, axis)?
+                };
+                Motion::Cylinder { pointer, radial }
+            }
+            ResolvedPrimitive::Sphere { radius_mm, .. } => {
+                let center = camera.project(frame.origin.map(|coordinate| coordinate as f32), rect);
+                let end = camera.project(point.map(|coordinate| coordinate as f32), rect);
+                let direction = egui::vec2(end[0] - center[0], end[1] - center[1]);
+                let length = direction.length();
+                let (radial, pixels_per_mm) = if length >= 4. {
+                    (direction / length, f64::from(length) / radius_mm)
+                } else {
+                    // A corner along the sightline still supports uniform
+                    // scaling by a horizontal gesture.
+                    let scale = f64::from(camera.scale);
+                    let pixels = if camera.perspective {
+                        f64::from(rect.height().max(1.)) * 2. / f64::from(center[2].max(0.1))
+                    } else {
+                        scale
+                    };
+                    (egui::vec2(1., 0.), pixels)
+                };
+                Motion::Sphere {
+                    press,
+                    radial,
+                    pixels_per_mm,
+                }
+            }
+        };
+        Some(Self {
+            corner,
+            camera,
+            rect,
+            original: shape.clone(),
+            motion,
+        })
+    }
+
+    fn update(&self, position: egui::Pos2) -> Option<ResolvedPrimitive> {
+        if !position.is_finite() {
+            return None;
+        }
+        let ray = || self.camera.ray(position, self.rect);
+        let result = match (&self.motion, &self.original) {
+            (Motion::Box { pointer, fixed }, ResolvedPrimitive::Box { size_mm, frame }) => {
+                let mut frame = *frame;
+                let mut next = *size_mm;
+                let delta = pointer.delta(ray()?)?;
+                for (axis, direction) in [frame.u, frame.v, frame.n].into_iter().enumerate() {
+                    if axis == *fixed {
+                        continue;
+                    }
+                    let (size, shift) = move_side(
+                        size_mm[axis],
+                        dot(delta, direction),
+                        high(self.corner, axis),
+                    );
+                    next[axis] = size;
+                    frame.origin = add(frame.origin, mul(direction, shift));
+                }
+                ResolvedPrimitive::Box {
+                    size_mm: next,
+                    frame,
+                }
+            }
+            (
+                Motion::Cylinder { pointer, radial },
+                ResolvedPrimitive::Cylinder {
+                    radius_mm,
+                    height_mm,
+                    frame,
+                },
+            ) => {
+                let mut frame = *frame;
+                let delta = pointer.delta(ray()?)?;
+                let radius_mm = (radius_mm + dot(delta, *radial) * std::f64::consts::FRAC_1_SQRT_2)
+                    .max(radius_mm.min(MIN_SIZE_MM));
+                let (height_mm, shift) =
+                    move_side(*height_mm, dot(delta, frame.n), high(self.corner, 2));
+                frame.origin = add(frame.origin, mul(frame.n, shift));
+                ResolvedPrimitive::Cylinder {
+                    radius_mm,
+                    height_mm,
+                    frame,
+                }
+            }
+            (
+                Motion::Sphere {
+                    press,
+                    radial,
+                    pixels_per_mm,
+                },
+                ResolvedPrimitive::Sphere { radius_mm, frame },
+            ) => {
+                let delta = f64::from((position - *press).dot(*radial)) / pixels_per_mm;
+                ResolvedPrimitive::Sphere {
+                    radius_mm: (radius_mm + delta).max(radius_mm.min(MIN_SIZE_MM)),
+                    frame: *frame,
+                }
+            }
+            _ => return None,
+        };
+        Some(result)
+    }
+}
+
+fn move_side(size: f64, delta: f64, high: bool) -> (f64, f64) {
+    let minimum = size.min(MIN_SIZE_MM);
+    if high {
+        ((size + delta).max(minimum), 0.)
+    } else {
+        let next = (size - delta).max(minimum);
+        (next, size - next)
+    }
+}
+
+#[derive(Clone, Copy)]
+struct Handle {
+    corner: usize,
+    position: egui::Pos2,
+    depth: f32,
+}
+
+fn visible_handles(points: [Point; 8], camera: Camera, rect: egui::Rect) -> Vec<Handle> {
+    let mut handles: Vec<_> = points
+        .into_iter()
+        .enumerate()
+        .filter_map(|(corner, point)| {
+            let [x, y, depth] = camera.project(point.map(|coordinate| coordinate as f32), rect);
+            let position = egui::pos2(x, y);
+            (depth.is_finite() && (!camera.perspective || depth > 0.1) && rect.contains(position))
+                .then_some(Handle {
+                    corner,
+                    position,
+                    depth,
+                })
+        })
+        .collect();
+    handles.sort_by(|a, b| b.depth.total_cmp(&a.depth));
+    handles
+}
+
+impl ResizeGizmo {
+    pub(super) fn active(&self) -> bool {
+        self.drag.is_some()
+    }
+
+    pub(super) fn show(
+        &mut self,
+        ui: &mut egui::Ui,
+        shape: &ResolvedPrimitive,
+        camera: Camera,
+        rect: egui::Rect,
+        start_allowed: bool,
+        guide: bool,
+    ) -> ResizeGesture {
+        if self.drag.as_ref().is_some_and(|drag| {
+            std::mem::discriminant(shape) != std::mem::discriminant(&drag.original)
+        }) {
+            self.drag = None;
+        }
+        let (pointer, press, release, down) = ui.input(|input| {
+            let event = |pressed| {
+                input.events.iter().find_map(|event| match *event {
+                    egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: state,
+                        ..
+                    } if state == pressed => Some(pos),
+                    _ => None,
+                })
+            };
+            let pointer = input.pointer.interact_pos();
+            let press = input
+                .pointer
+                .primary_pressed()
+                .then(|| event(true).or(input.pointer.press_origin()).or(pointer))
+                .flatten();
+            let release = input
+                .pointer
+                .primary_released()
+                .then(|| event(false).or(pointer))
+                .flatten();
+            (pointer, press, release, input.pointer.primary_down())
+        });
+        let points = corners(shape);
+        let hit_pointer = press.or(pointer);
+        let hovered = hit_pointer
+            .filter(|p| start_allowed && rect.contains(*p))
+            .and_then(|p| {
+                visible_handles(points, camera, rect)
+                    .into_iter()
+                    .map(|handle| (handle.position.distance(p), handle))
+                    .filter(|(distance, _)| *distance <= HIT_RADIUS)
+                    .min_by(|(a, ha), (b, hb)| {
+                        a.total_cmp(b).then_with(|| ha.depth.total_cmp(&hb.depth))
+                    })
+                    .map(|(_, handle)| handle)
+            });
+        if self.drag.is_none()
+            && let (Some(handle), Some(press)) = (hovered, press)
+        {
+            self.drag = Drag::new(
+                handle.corner,
+                shape,
+                camera,
+                rect,
+                press,
+                points[handle.corner],
+            );
+        }
+
+        let changed = self
+            .drag
+            .as_ref()
+            .filter(|_| down || release.is_some())
+            .and_then(|drag| drag.update(release.or(pointer).or(press)?))
+            .filter(|next| next != shape);
+        let preview = changed.as_ref().unwrap_or(shape);
+        let points = corners(preview);
+        let painter = ui.painter_at(rect);
+        paint_envelope(&painter, points, camera, rect);
+        if guide {
+            paint_curves(&painter, preview, camera, rect);
+        }
+        let active = self.drag.as_ref().map(|drag| drag.corner);
+        for handle in visible_handles(points, camera, rect) {
+            let selected = active == Some(handle.corner)
+                || active.is_none() && hovered.is_some_and(|hit| hit.corner == handle.corner);
+            let bounds = egui::Rect::from_center_size(handle.position, egui::Vec2::splat(8.));
+            painter.rect_filled(
+                bounds,
+                1.,
+                if selected {
+                    egui::Color32::WHITE
+                } else {
+                    GUIDE
+                },
+            );
+        }
+        if self.drag.is_some() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+        } else if let Some(handle) = hovered {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+            ui.interact(
+                egui::Rect::from_center_size(handle.position, egui::Vec2::splat(2. * HIT_RADIUS))
+                    .intersect(rect),
+                ui.id().with("primitive-resize-tooltip"),
+                egui::Sense::hover(),
+            )
+            .on_hover_text("Drag to resize · Enter applies, Escape cancels");
+        }
+
+        let input_owned = self.drag.is_some();
+        let released = input_owned && !down;
+        if released {
+            self.drag = None;
+        }
+        ResizeGesture {
+            input_owned,
+            released,
+            changed,
+        }
+    }
+}
+
+fn line(painter: &egui::Painter, camera: Camera, rect: egui::Rect, a: Point, b: Point) {
+    if let Some(segment) = camera.segment(a, b, rect) {
+        painter.line_segment(segment, egui::Stroke::new(1.25, GUIDE));
+    }
+}
+
+fn paint_envelope(painter: &egui::Painter, points: [Point; 8], camera: Camera, rect: egui::Rect) {
+    for (corner, point) in points.into_iter().enumerate() {
+        for bit in [1, 2, 4] {
+            if corner & bit == 0 {
+                line(painter, camera, rect, point, points[corner | bit]);
+            }
+        }
+    }
+}
+
+fn paint_curves(
     painter: &egui::Painter,
+    shape: &ResolvedPrimitive,
     camera: Camera,
     rect: egui::Rect,
-    frame: Frame,
-    shape: &ResolvedPrimitive,
 ) {
-    let line = |a, b| {
-        if let Some(segment) = camera.segment(a, b, rect) {
-            painter.line_segment(segment, egui::Stroke::new(1.5, GUIDE));
-        }
-    };
+    let frame = frame(shape);
     let circle = |center, u, v, radius| {
         let point = |step| {
             let (sin, cos) = (f64::from(step) * std::f64::consts::TAU / 32.).sin_cos();
             add(center, add(mul(u, radius * cos), mul(v, radius * sin)))
         };
         for step in 0..32 {
-            line(point(step), point(step + 1));
+            line(painter, camera, rect, point(step), point(step + 1));
         }
     };
+    let view = |point: Point| {
+        let [x, y, _] = camera.project(point.map(|coordinate| coordinate as f32), rect);
+        camera
+            .ray(egui::pos2(x, y), rect)
+            .map(|ray| ray.direction())
+    };
+    let unit = |vector: Point| {
+        let length = dot(vector, vector).sqrt();
+        (length > 1e-8).then(|| mul(vector, 1. / length))
+    };
     match *shape {
-        ResolvedPrimitive::Box { size_mm, .. } => {
-            let corner = |bits: usize| {
-                add(
-                    frame.origin,
-                    frame.vector(std::array::from_fn(|i| {
-                        if bits & (1 << i) == 0 { 0. } else { size_mm[i] }
-                    })),
-                )
-            };
-            for bits in 0..8 {
-                for axis in [1, 2, 4] {
-                    if bits & axis == 0 {
-                        line(corner(bits), corner(bits | axis));
-                    }
-                }
-            }
-        }
+        ResolvedPrimitive::Box { .. } => {}
         ResolvedPrimitive::Cylinder {
             radius_mm,
             height_mm,
@@ -281,15 +481,200 @@ fn paint_guide(
             let top = add(frame.origin, mul(frame.n, height_mm));
             circle(frame.origin, frame.u, frame.v, radius_mm);
             circle(top, frame.u, frame.v, radius_mm);
-            for axis in [frame.u, frame.v, mul(frame.u, -1.), mul(frame.v, -1.)] {
-                let offset = mul(axis, radius_mm);
-                line(add(frame.origin, offset), add(top, offset));
+            if let Some(tangent) = view(add(frame.origin, mul(frame.n, height_mm * 0.5)))
+                .and_then(|direction| unit(cross(direction, frame.n)))
+            {
+                for sign in [-1., 1.] {
+                    let offset = mul(tangent, sign * radius_mm);
+                    line(
+                        painter,
+                        camera,
+                        rect,
+                        add(frame.origin, offset),
+                        add(top, offset),
+                    );
+                }
             }
         }
         ResolvedPrimitive::Sphere { radius_mm, .. } => {
-            circle(frame.origin, frame.u, frame.v, radius_mm);
-            circle(frame.origin, frame.u, frame.n, radius_mm);
-            circle(frame.origin, frame.v, frame.n, radius_mm);
+            if let Some(direction) = view(frame.origin)
+                && let Some(u) =
+                    unit(cross(direction, frame.n)).or_else(|| unit(cross(direction, frame.u)))
+            {
+                circle(frame.origin, u, cross(direction, u), radius_mm);
+            }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const FRAME: Frame = Frame {
+        origin: [0.; 3],
+        u: [1., 0., 0.],
+        v: [0., 1., 0.],
+        n: [0., 0., 1.],
+    };
+
+    fn rect() -> egui::Rect {
+        egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800., 600.))
+    }
+
+    fn project(camera: Camera, point: Point) -> egui::Pos2 {
+        let [x, y, _] = camera.project(point.map(|coordinate| coordinate as f32), rect());
+        egui::pos2(x, y)
+    }
+
+    fn camera() -> Camera {
+        Camera {
+            yaw: 0.,
+            pitch: std::f32::consts::FRAC_PI_2,
+            scale: 3.,
+            target: [0.; 3],
+            perspective: false,
+        }
+    }
+
+    fn near(value: f64, expected: f64) {
+        assert!((value - expected).abs() < 1e-5, "{value} != {expected}");
+    }
+
+    #[test]
+    fn low_box_corner_moves_the_frame_but_keeps_the_oriented_opposite_corner() {
+        let frame = Frame {
+            origin: [5., 7., 11.],
+            u: [0., 1., 0.],
+            v: [-1., 0., 0.],
+            ..FRAME
+        };
+        let shape = ResolvedPrimitive::Box {
+            size_mm: [20., 30., 40.],
+            frame,
+        };
+        let points = corners(&shape);
+        let start = points[0];
+        let delta = frame.vector([2., 3., 0.]);
+        let camera = camera();
+        let drag = Drag::new(0, &shape, camera, rect(), project(camera, start), start).unwrap();
+        let result = drag.update(project(camera, add(start, delta))).unwrap();
+        let ResolvedPrimitive::Box {
+            size_mm,
+            frame: moved,
+        } = &result
+        else {
+            panic!("box remains a box");
+        };
+        for (value, expected) in size_mm.iter().zip([18., 27., 40.]) {
+            near(*value, expected);
+        }
+        for (value, expected) in moved.origin.into_iter().zip(add(frame.origin, delta)) {
+            near(value, expected);
+        }
+        assert_eq!((moved.u, moved.v, moved.n), (frame.u, frame.v, frame.n));
+        for (value, expected) in corners(&result)[7].into_iter().zip(points[7]) {
+            near(value, expected);
+        }
+    }
+
+    #[test]
+    fn cylinder_corner_changes_radial_size_and_anchors_the_other_height_end() {
+        let shape = ResolvedPrimitive::Cylinder {
+            radius_mm: 10.,
+            height_mm: 20.,
+            frame: FRAME,
+        };
+        let points = corners(&shape);
+        let camera = Camera {
+            yaw: 3. * std::f32::consts::FRAC_PI_4,
+            pitch: 0.,
+            ..camera()
+        };
+        let start = points[3];
+        let drag = Drag::new(3, &shape, camera, rect(), project(camera, start), start).unwrap();
+        let resized = drag
+            .update(project(camera, add(start, [3., 3., 4.])))
+            .unwrap();
+        let ResolvedPrimitive::Cylinder {
+            radius_mm,
+            height_mm,
+            frame,
+        } = resized
+        else {
+            panic!("cylinder remains a cylinder");
+        };
+        near(radius_mm, 13.);
+        near(height_mm, 16.);
+        near(frame.origin[2], 4.);
+        near(frame.origin[2] + height_mm, 20.);
+        assert_eq!(frame.origin[..2], [0., 0.]);
+    }
+
+    #[test]
+    fn sphere_corner_preserves_center_and_uniform_radius_in_both_projections() {
+        let shape = ResolvedPrimitive::Sphere {
+            radius_mm: 10.,
+            frame: FRAME,
+        };
+        let point = corners(&shape)[7];
+        for perspective in [false, true] {
+            let camera = Camera {
+                perspective,
+                ..camera()
+            };
+            let start = project(camera, point);
+            let projected_radius = start - project(camera, FRAME.origin);
+            let drag = Drag::new(7, &shape, camera, rect(), start, point).unwrap();
+            let result = drag.update(start + projected_radius * 0.5).unwrap();
+            let ResolvedPrimitive::Sphere { radius_mm, frame } = result else {
+                panic!("sphere remains a sphere");
+            };
+            near(radius_mm, 15.);
+            assert_eq!(frame, FRAME);
+        }
+    }
+
+    #[test]
+    fn corner_owns_primary_press_and_release_but_not_hover() {
+        let shape = ResolvedPrimitive::Box {
+            size_mm: [20., 30., 40.],
+            frame: FRAME,
+        };
+        let camera = camera();
+        let start = project(camera, corners(&shape)[7]);
+        let end = start + egui::vec2(12., -6.);
+        let mut gizmo = ResizeGizmo::default();
+        let ctx = egui::Context::default();
+        let mut frame = |events, start_allowed| {
+            let mut result = ResizeGesture::default();
+            ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(rect()),
+                    events,
+                    focused: true,
+                    ..Default::default()
+                },
+                |ui| {
+                    result = gizmo.show(ui, &shape, camera, rect(), start_allowed, false);
+                },
+            )
+            .drop_without_applying_deltas();
+            result
+        };
+        assert!(!frame(vec![egui::Event::PointerMoved(start)], true).input_owned);
+        let button = |pos, pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        };
+        let press = frame(vec![button(start, true)], true);
+        assert!(press.input_owned && !press.released && press.changed.is_none());
+        let drag = frame(vec![egui::Event::PointerMoved(end)], false);
+        assert!(drag.input_owned && drag.changed.is_some());
+        let release = frame(vec![button(end, false)], false);
+        assert!(release.input_owned && release.released);
+        assert!(!gizmo.active());
     }
 }
