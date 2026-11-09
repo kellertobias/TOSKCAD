@@ -214,7 +214,7 @@ mod tests {
                 .find(|path| path.extension().is_some_and(|e| e == "step"))
                 .unwrap();
             let text = std::fs::read_to_string(&step).unwrap();
-            if provider.starts_with("step-files.rust-planar.2;") {
+            if provider.starts_with("step-files.rust-analytic.1;") {
                 rust_outputs += 1;
                 assert!(!provider.contains("occt:"));
                 assert!(text.contains("MANIFOLD_SOLID_BREP"));
@@ -246,8 +246,8 @@ mod tests {
         assert_eq!(session.revision(), revision);
     }
     #[test]
-    fn rust_workspace_reports_cylindrical_step_unsupported_and_publishes_nothing() {
-        let mut session = Session::new(Document::new("Unsupported Rust STEP").unwrap()).unwrap();
+    fn rust_workspace_exports_a_cylinder_with_analytic_faces() {
+        let mut session = Session::new(Document::new("Cylindrical Rust STEP").unwrap()).unwrap();
         let actor = Actor::local(Channel::Ui);
         let cylinder = PrimitiveRequest::new(
             "Cylinder",
@@ -269,16 +269,35 @@ mod tests {
         let before = session.document().clone();
         preview_step_set(&mut workspace, &mut session);
         let dir = tempfile::tempdir().unwrap();
-        let error = workspace
+        workspace
             .execute(
                 &mut session,
                 ExportTool::Run,
                 Some(dir.path().to_str().unwrap()),
                 Channel::Ui,
             )
-            .unwrap_err();
-        assert!(error.contains("unsupported recipes block Run"), "{error}");
-        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+            .unwrap();
+        settle(&mut workspace, &session);
+        let (notice, error) = workspace.take_notice().unwrap();
+        assert!(!error, "{notice}");
+        assert!(notice.contains("Exported 1 file"), "{notice}");
+        let bundle = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .find(|p| p.is_dir())
+            .unwrap();
+        let path = std::fs::read_dir(&bundle)
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .find(|p| p.extension().is_some_and(|s| s == "step"))
+            .unwrap();
+        let step = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(step.matches("=CYLINDRICAL_SURFACE(").count(), 1);
+        assert_eq!(step.matches("=CIRCLE(").count(), 2);
+        let solid =
+            multicad_kernel::Solid::read_step(&path, multicad_kernel::GeometryPolicy::default())
+                .unwrap();
+        assert!((solid.volume_mm3().unwrap() - 150. * std::f64::consts::PI).abs() < 1e-6);
         assert_eq!(session.document(), &before);
     }
     #[test]

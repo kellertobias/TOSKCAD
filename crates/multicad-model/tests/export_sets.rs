@@ -487,14 +487,76 @@ fn rust_worker_requires_its_own_current_preview_and_attributes_each_run() {
 }
 #[test]
 fn rust_worker_publishes_a_concave_extrusion_with_an_open_hole() {
-    let (mut session, _, feature, _) = rust_polygon::fixture();
+    let (session, _, feature, _) = rust_polygon::fixture();
+    verify_rust_prism_export(session, feature, 552., None);
+}
+
+#[test]
+fn rust_worker_publishes_a_concave_extrusion_with_straight_and_round_holes() {
+    let (session, _, feature, _) =
+        rust_polygon::build_fixture("-6", true, multicad_core::sketch::Datum::Xz, 2.);
+    let expected_volume = 552. - std::f64::consts::PI * 1.25_f64.powi(2) * 6.;
+    verify_rust_prism_export(
+        session,
+        feature,
+        expected_volume,
+        Some([[9., -2., 3.], [9., 4., 3.]]),
+    );
+}
+
+#[test]
+fn rust_worker_publishes_the_exact_circular_boolean_cut_in_a_box() {
+    let Fixture {
+        mut session, part, ..
+    } = Fixture::new();
+    let tool = PrimitiveRequest::new(
+        "Boring tool",
+        PrimitiveParameters::Cylinder {
+            radius: length(1.25),
+            height: length(32.),
+            frame: model::PrimitiveFrame {
+                origin: [length(5.), length(6.), length(-1.)],
+                ..Default::default()
+            },
+        },
+    );
+    let prepared = model::prepare_primitive(&session, session.revision(), actor(), &tool).unwrap();
+    session.commit(prepared.prepared).unwrap();
+    let cut = BooleanRequest::new(
+        Operation::Cut,
+        BodyInput {
+            body: part.body,
+            producer: part.feature,
+        },
+        vec![BodyInput {
+            body: tool.body,
+            producer: tool.feature,
+        }],
+    );
+    let prepared = model::prepare_boolean(&session, session.revision(), actor(), &cut).unwrap();
+    session.commit(prepared.prepared).unwrap();
+    let expected_volume = 6000. - std::f64::consts::PI * 1.25_f64.powi(2) * 30.;
+    verify_rust_prism_export(
+        session,
+        cut.feature,
+        expected_volume,
+        Some([[5., 6., 0.], [5., 6., 30.]]),
+    );
+}
+
+fn verify_rust_prism_export(
+    mut session: Session,
+    feature: EntityId,
+    expected_volume: f64,
+    expected_centers: Option<[[f64; 3]; 2]>,
+) {
     let set = EntityId::new();
     let prepared = prepare_set(
         &session,
         session.revision(),
         actor(),
         set,
-        "Planar solid",
+        "Exact prism",
         &SetDefinition::default(),
     )
     .unwrap();
@@ -514,16 +576,50 @@ fn rust_worker_publishes_a_concave_extrusion_with_an_open_hole() {
     worker
         .run(document, revision, &preview.key, root.path(), actor())
         .unwrap();
-    let ExportResult::Run(Ok(run)) = reply(&worker).result else {
-        panic!("Rust run failed");
+    let ExportResult::Run(result) = reply(&worker).result else {
+        panic!("expected Rust run reply");
     };
+    let run = result.unwrap();
     let [file] = run.files.as_slice() else {
         panic!("expected one STEP artifact");
     };
     let path = Path::new(&run.directory).join(&file.artifact.output.filename);
     let imported = Solid::read_step(&path, GeometryPolicy::default()).unwrap();
     assert_eq!(imported.solid_count().unwrap(), 1);
-    assert!((imported.volume_mm3().unwrap() - 552.).abs() < 1e-6);
+    assert!((imported.volume_mm3().unwrap() - expected_volume).abs() < 1e-6);
+    let topology = imported.topology_snapshot(feature, revision).unwrap();
+    let circles: Vec<_> = topology
+        .elements
+        .iter()
+        .filter_map(|element| match element.geometry {
+            Some(multicad_core::references::AnalyticGeometry::CircularArc {
+                frame,
+                radius_mm,
+                sweep_rad,
+                ..
+            }) => Some((frame.origin_mm, radius_mm, sweep_rad)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        circles.len(),
+        if expected_centers.is_some() { 2 } else { 0 }
+    );
+    for (center, radius, sweep) in &circles {
+        assert!((radius - 1.25).abs() < 1e-7);
+        assert!((sweep.abs() - std::f64::consts::TAU).abs() < 1e-7);
+        assert!(center.iter().all(|value| value.is_finite()));
+    }
+    if let Some(expected_centers) = expected_centers {
+        for expected in expected_centers {
+            assert!(circles.iter().any(|(center, _, _)| {
+                center
+                    .iter()
+                    .zip(expected)
+                    .all(|(a, b)| (a - b).abs() < 1e-7)
+            }));
+        }
+    }
 }
 
 #[test]

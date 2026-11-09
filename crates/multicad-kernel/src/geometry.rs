@@ -1253,12 +1253,10 @@ impl Solid {
     /// Whether the active backend can encode this exact solid in STEP.
     pub fn supports_step_export(&self) -> bool {
         match &self.body {
-            SolidBody::Occt(_) => true,
-            SolidBody::PolygonPrism(placed) => placed.prism.circular_holes().is_empty(),
-            SolidBody::Prism(prism, _) => {
-                prism.rounded_end().is_none() && prism.inner_loops().len() == 0
+            SolidBody::Occt(_) | SolidBody::PolygonPrism(_) | SolidBody::AxialCylinder(_, _) => {
+                true
             }
-            SolidBody::AxialCylinder(_, _) => false,
+            SolidBody::Prism(prism, _) => prism.rounded_end().is_none(),
         }
     }
 
@@ -1274,7 +1272,7 @@ impl Solid {
             return Err(error(
                 operation,
                 GeometryErrorKind::Unsupported,
-                "Rust STEP export currently supports straight-edged planar solids",
+                "Rust STEP export supports axial cylinders and polygon prisms with straight or circular holes",
             ));
         }
         let encoded = match &self.body {
@@ -1286,9 +1284,12 @@ impl Solid {
                 placed.reverse_sweep,
             ),
             SolidBody::Prism(prism, frame) => {
-                step::write_box(prism.dimensions(), frame.origin, frame.u, frame.v)
+                step::write_rectangular_prism(prism, frame.origin, frame.u, frame.v)
             }
-            _ => unreachable!("STEP support checked for this solid"),
+            SolidBody::AxialCylinder(cylinder, frame) => {
+                step::write_axial_cylinder(cylinder, frame.u)
+            }
+            SolidBody::Occt(_) => unreachable!("native STEP dispatched above"),
         }
         .map_err(|e| {
             error(

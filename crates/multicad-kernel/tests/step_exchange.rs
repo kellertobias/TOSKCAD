@@ -119,7 +119,7 @@ fn rust_step_writes_placed_boxes_and_preserves_destinations_for_unsupported_soli
     use multicad_core::document::EntityId;
     use multicad_kernel::{
         GeometryErrorKind, PlaneFrame,
-        rust_kernel::{Circle, Rational, cylinder::AxialCylinder},
+        rust_kernel::{Rational, prism::Prism},
     };
     let exact = |n| Rational::new(n, 1).unwrap();
     let policy = GeometryPolicy::default();
@@ -143,20 +143,104 @@ fn rust_step_writes_placed_boxes_and_preserves_destinations_for_unsupported_soli
     assert_eq!(box_read.bounds().unwrap().min, [-6., 10., 20.]);
     assert_eq!(box_read.bounds().unwrap().max, [-1., 13., 24.]);
     let bytes = std::fs::read(&path).unwrap();
-    let cylinder = AxialCylinder::new(
-        EntityId::new().uuid_bits(),
-        Circle::new([exact(0), exact(0)], exact(2)).unwrap(),
-        exact(0),
-        exact(3),
-    )
-    .unwrap();
-    let curved = Solid::from_axial_cylinder(cylinder, PlaneFrame::default(), policy).unwrap();
+    let rounded =
+        Prism::extrude(EntityId::new().uuid_bits(), exact(4), exact(2), exact(3)).unwrap();
+    let curved = Solid::from_rust_prism(rounded, policy).unwrap();
     assert!(!curved.supports_step_export());
     assert_eq!(
         curved.write_step(&path).unwrap_err().kind,
         GeometryErrorKind::Unsupported
     );
     assert_eq!(std::fs::read(path).unwrap(), bytes);
+}
+
+#[test]
+fn rust_step_preserves_a_fractional_cylinder_and_its_analytic_cap_circles() {
+    use multicad_core::{document::EntityId, references::AnalyticGeometry};
+    use multicad_kernel::{
+        PlaneFrame,
+        rust_kernel::{Circle, Rational, cylinder::AxialCylinder, step_read::read_analytic_solid},
+    };
+    let exact = |n, d| Rational::new(n, d).unwrap();
+    let owner = EntityId::new();
+    let radius = exact(5, 2);
+    let cylinder = AxialCylinder::new(
+        owner.uuid_bits(),
+        Circle::new([exact(9, 2), exact(-13, 2)], radius).unwrap(),
+        exact(7, 3),
+        exact(11, 3),
+    )
+    .unwrap();
+    let (sin, cos) = 0.83_f64.sin_cos();
+    let policy = GeometryPolicy::default();
+    let source = Solid::from_axial_cylinder(
+        cylinder,
+        PlaneFrame {
+            origin: [4.5, -6.5, exact(7, 3).as_f64()],
+            u: [cos, sin, 0.],
+            v: [-sin, cos, 0.],
+        },
+        policy,
+    )
+    .unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("cylinder.step");
+    assert!(source.supports_step_export());
+    source.write_step(&path).unwrap();
+    let text = std::fs::read_to_string(&path).unwrap();
+    let rust = read_analytic_solid(&text, policy.linear_tolerance_mm).unwrap();
+    let imported = Solid::read_step(&path, policy).unwrap();
+    let near = |a: f64, b: f64| assert!((a - b).abs() < 2e-6, "{a} != {b}");
+    assert_eq!(imported.solid_count().unwrap(), 1);
+    assert_eq!(rust.face_count, 3);
+    assert_eq!(imported.faces().unwrap().len(), 3);
+    assert_eq!(rust.circles.len(), 2);
+    assert!(rust.edges_mm.is_empty());
+    near(imported.volume_mm3().unwrap(), source.volume_mm3().unwrap());
+    near(rust.volume_mm3, source.volume_mm3().unwrap());
+    let expected = source.bounds().unwrap();
+    let native = imported.bounds().unwrap();
+    for (actual, expected) in native
+        .min
+        .into_iter()
+        .chain(native.max)
+        .zip(expected.min.into_iter().chain(expected.max))
+    {
+        near(actual, expected);
+    }
+    for (actual, expected) in rust
+        .bounds_mm
+        .into_iter()
+        .flatten()
+        .zip(expected.min.into_iter().chain(expected.max))
+    {
+        near(actual, expected);
+    }
+    let topology = imported.topology_snapshot(owner, 0).unwrap();
+    let circles: Vec<_> = topology
+        .elements
+        .iter()
+        .filter_map(|element| {
+            let Some(AnalyticGeometry::CircularArc {
+                frame,
+                radius_mm,
+                sweep_rad,
+                ..
+            }) = element.geometry
+            else {
+                return None;
+            };
+            near(radius_mm, radius.as_f64());
+            near(sweep_rad.abs(), std::f64::consts::TAU);
+            Some(frame.origin_mm)
+        })
+        .collect();
+    assert_eq!(circles.len(), 2);
+    for end in [cylinder.bottom(), cylinder.top()] {
+        assert!(circles.iter().any(|center| (center[0] - 4.5).abs() < 1e-7
+            && (center[1] + 6.5).abs() < 1e-7
+            && (center[2] - end.as_f64()).abs() < 1e-7));
+    }
 }
 
 #[test]

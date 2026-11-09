@@ -655,7 +655,7 @@ impl GeometryExporter<'_> {
                 multicad_kernel::source_identity(),
             ),
             GeometryBackend::Rust => {
-                format!("step-files.rust-planar.2;build:{build};policy:{policy:?}")
+                format!("step-files.rust-analytic.1;build:{build};policy:{policy:?}")
             }
         }
     }
@@ -992,7 +992,7 @@ impl GeometryExporter<'_> {
                         })?;
                         if !subject_solid(model, part, solid)?.supports_step_export() {
                             status = RecipeStatus::Unsupported(
-                                "Rust STEP export requires a straight-edged planar solid".into(),
+                                "Rust STEP export supports axial cylinders and polygon prisms with straight or circular holes".into(),
                             );
                             break;
                         }
