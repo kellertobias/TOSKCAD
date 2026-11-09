@@ -285,7 +285,7 @@ mod tests {
         changed.length_unit = LengthUnit::Inch;
         changed.scale_step_percent = 25;
         changed.title_logo = false;
-        changed.set_visible(Mode::Model, "Weld", false).unwrap();
+        changed.set_visible(Mode::Model, "Metal", false).unwrap();
         changed
             .set_visible(Mode::Model, "Mechanical", false)
             .unwrap();
@@ -311,7 +311,7 @@ mod tests {
         second.mode = Mode::Model;
         let model = titles(&second);
         assert_eq!(model[0], "Wood");
-        assert!(!model.contains(&"Weld"));
+        assert!(!model.contains(&"Metal"));
         assert!(!model.contains(&"Mechanical"));
         // Restore defaults is persisted the same way.
         second.apply_preferences(Preferences::defaults(&second.registry));
@@ -338,7 +338,7 @@ mod tests {
         hidden.set_visible(Mode::Model, "Wood", false).unwrap();
         app.apply_preferences(hidden);
         // The first visible workbench in the chosen order, not a hidden one.
-        assert_eq!(app.tab, tab(&app, Mode::Model, "Sheet metal"));
+        assert_eq!(app.tab, tab(&app, Mode::Model, "Metal"));
         assert!(app.message.contains("Wood hidden"), "{}", app.message);
         assert!(!titles(&app).contains(&"Wood"));
         // Routing a Wood tool through command entry still works and shows
@@ -586,7 +586,7 @@ mod tests {
         let ribbon = titles(&app);
         assert!(!ribbon.contains(&"Wood"));
         let mechanical = ribbon.iter().position(|t| *t == "Mechanical").unwrap();
-        assert_eq!(ribbon[mechanical + 1], "Weld");
+        assert_eq!(ribbon[mechanical + 1], "Metal");
         let nodes = frame(&mut app, &ctx, vec![]);
         let (restore, _) = find(&nodes, "Restore defaults");
         click(&mut app, &ctx, restore);

@@ -1,7 +1,7 @@
 //! Declarative sections and menus over the shared tool catalog.
 use crate::{
     icons::{self, Icon},
-    registry::{Command, Mode, Registry, RibbonTab},
+    registry::{Command, METAL_GROUPS, METAL_TITLE, Mode, Registry, RibbonTab},
 };
 use eframe::egui;
 
@@ -12,8 +12,7 @@ pub(crate) fn workspace_tab_icon(mode: Mode, title: &str) -> Option<Icon> {
         (Mode::Parameters, "Materials") => Icon::Materials,
         (Mode::Model, "Architecture") => Icon::Home,
         (Mode::Model, "Wood") => Icon::Furniture,
-        (Mode::Model, "Sheet metal") => Icon::Thickness,
-        (Mode::Model, "Weld") => Icon::Joint,
+        (Mode::Model, METAL_TITLE) => Icon::Thickness,
         (Mode::Model, "Mechanical") => Icon::Cylinder,
         (Mode::Model, "Other") => Icon::Grid,
         (Mode::Model, "Relations") => Icon::Link,
@@ -86,25 +85,14 @@ pub fn groups(mode: Mode, tab: &RibbonTab) -> Vec<Group> {
     if mode == Mode::Model && tab.title == "Wood" {
         return crate::wood_navigation::groups();
     }
-    if mode == Mode::Model && tab.title == "Sheet metal" {
-        return vec![
-            Group {
-                label: "Form sheet",
-                entries: vec![
-                    Entry::Tool("sheet"),
-                    Entry::Tool("sheet-flange"),
-                    Entry::Tool("fastener"),
-                ],
-            },
-            Group {
-                label: "Developed view",
-                entries: vec![
-                    Entry::Tool("flat"),
-                    Entry::Tool("fold"),
-                    Entry::Tool("bend-list"),
-                ],
-            },
-        ];
+    if mode == Mode::Model && tab.title == METAL_TITLE {
+        return METAL_GROUPS
+            .into_iter()
+            .map(|(label, tools)| Group {
+                label,
+                entries: tools.iter().copied().map(Entry::Tool).collect(),
+            })
+            .collect();
     }
     if mode == Mode::Model && tab.title == "Other" {
         return vec![
@@ -1315,13 +1303,16 @@ mod tests {
                         "System 32 shelf pins",
                         "Joint",
                     ],
-                    (Mode::Model, "Sheet metal") => &[
+                    (Mode::Model, METAL_TITLE) => &[
                         "Create sheet part",
                         "Add flange",
                         "Attached fasteners",
                         "Unfold",
                         "Fold",
                         "Bend schedule",
+                        "Tube / profile",
+                        "Miter / cope",
+                        "Weld joint",
                     ],
                     (Mode::Model, "Other") => &["Surface Structure"],
                     (Mode::Export, "Print") => &["Preview package", "Write 3MF package"],

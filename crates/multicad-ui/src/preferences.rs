@@ -22,6 +22,26 @@ pub struct WorkbenchPreference {
     pub title: String,
     pub visible: bool,
 }
+/// Select the single saved slot for the combined Model workshop.
+fn metal_workbench(entries: &[WorkbenchPreference]) -> Option<(usize, bool)> {
+    let named = |title| {
+        entries
+            .iter()
+            .enumerate()
+            .find(|(_, entry)| entry.title == title)
+    };
+    if let Some((index, metal)) = named(crate::registry::METAL_TITLE) {
+        return Some((index, metal.visible));
+    }
+    let sheet = named("Sheet metal");
+    let weld = named("Weld");
+    let (index, _) = sheet.or(weld)?;
+    // An omitted workbench would have been visible under the old defaults.
+    let visible =
+        sheet.is_none_or(|(_, entry)| entry.visible) || weld.is_none_or(|(_, entry)| entry.visible);
+    Some((index, visible))
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Preferences {
     pub length_unit: LengthUnit,
@@ -63,27 +83,43 @@ impl Preferences {
                 .map(|tab| tab.title)
                 .collect();
             let mut entries: Vec<WorkbenchPreference> = Vec::new();
+            let saved = stored.get(&mode).map_or(&[][..], Vec::as_slice);
+            let metal = if mode == Mode::Model {
+                metal_workbench(saved)
+            } else {
+                None
+            };
             let old_model_order = mode == Mode::Model
-                && stored.get(&mode).is_some_and(|entries| {
-                    entries.iter().map(|entry| entry.title.as_str()).eq([
-                        "Common",
-                        "Architecture",
-                        "Wood",
-                        "Sheet metal",
-                        "Weld",
-                        "Other",
-                        "Relationships",
-                        "Mechanical",
-                    ])
-                });
-            let legacy_fdm = mode == Mode::Model
-                && stored
-                    .get(&mode)
-                    .is_some_and(|entries| entries.iter().any(|entry| entry.title == "FDM aids"));
-            for stored_entry in stored.get(&mode).into_iter().flatten() {
-                let mut entry = stored_entry.clone();
-                entry.title = crate::registry::canonical_workbench_title(mode, &entry.title).into();
-                if installed.contains(&entry.title.as_str()) {
+                && saved.iter().map(|entry| entry.title.as_str()).eq([
+                    "Common",
+                    "Architecture",
+                    "Wood",
+                    "Sheet metal",
+                    "Weld",
+                    "Other",
+                    "Relationships",
+                    "Mechanical",
+                ]);
+            let legacy_fdm =
+                mode == Mode::Model && saved.iter().any(|entry| entry.title == "FDM aids");
+            for (index, stored_entry) in saved.iter().enumerate() {
+                let title = crate::registry::canonical_workbench_title(mode, &stored_entry.title);
+                let visible = if mode == Mode::Model && title == crate::registry::METAL_TITLE {
+                    let Some((slot, visible)) = metal else {
+                        continue;
+                    };
+                    if slot != index {
+                        continue;
+                    }
+                    visible
+                } else {
+                    stored_entry.visible
+                };
+                if installed.contains(&title) {
+                    let entry = WorkbenchPreference {
+                        title: title.into(),
+                        visible,
+                    };
                     if let Some(previous) = entries.iter_mut().find(|e| e.title == entry.title) {
                         if entry.title == "Other" {
                             previous.visible |= entry.visible;
@@ -322,7 +358,9 @@ mod tests {
     fn existing_preferences_gain_mechanical_without_changing_other_workbenches() {
         let registry = Registry::default();
         let mut preferences = Preferences::defaults(&registry);
-        preferences.set_visible(Mode::Model, "Weld", false).unwrap();
+        preferences
+            .set_visible(Mode::Model, "Metal", false)
+            .unwrap();
         preferences
             .workbenches
             .get_mut(&Mode::Model)
@@ -338,23 +376,134 @@ mod tests {
         preferences.normalize(&registry);
         assert_eq!(preferences, normalized);
     }
+    fn model_preferences(registry: &Registry, saved: &[(&str, bool)]) -> Preferences {
+        let mut preferences = Preferences::defaults(registry);
+        preferences.workbenches.insert(
+            Mode::Model,
+            saved
+                .iter()
+                .map(|&(title, visible)| WorkbenchPreference {
+                    title: title.into(),
+                    visible,
+                })
+                .collect(),
+        );
+        preferences
+    }
+
     #[test]
     fn old_default_model_order_migrates_without_unhiding_tabs() {
         let registry = Registry::default();
-        let mut preferences = Preferences::defaults(&registry);
-        let entries = preferences.workbenches.get_mut(&Mode::Model).unwrap();
-        let mut mechanical = entries.remove(5);
-        assert_eq!(mechanical.title, "Mechanical");
-        mechanical.visible = false;
-        entries.last_mut().unwrap().title = "Relationships".into();
-        entries.push(mechanical);
-
+        let mut preferences = model_preferences(
+            &registry,
+            &[
+                ("Common", true),
+                ("Architecture", true),
+                ("Wood", true),
+                ("Sheet metal", false),
+                ("Weld", false),
+                ("Other", true),
+                ("Relationships", true),
+                ("Mechanical", false),
+            ],
+        );
         preferences.normalize(&registry);
         let entries = &preferences.workbenches[&Mode::Model];
-        assert_eq!(entries[5].title, "Mechanical");
-        assert!(!entries[5].visible);
-        assert_eq!(entries[6].title, "Other");
-        assert_eq!(entries[7].title, "Relations");
+        assert_eq!(
+            entries
+                .iter()
+                .map(|entry| (entry.title.as_str(), entry.visible))
+                .collect::<Vec<_>>(),
+            [
+                ("Common", true),
+                ("Architecture", true),
+                ("Wood", true),
+                ("Metal", false),
+                ("Mechanical", false),
+                ("Other", true),
+                ("Relations", true),
+            ]
+        );
+    }
+
+    #[test]
+    fn metal_preserves_saved_sheet_position_and_either_legacy_visibility() {
+        let registry = Registry::default();
+        for (sheet, weld, expected) in [
+            (true, true, true),
+            (false, true, true),
+            (true, false, true),
+            (false, false, false),
+        ] {
+            let mut preferences = model_preferences(
+                &registry,
+                &[
+                    ("Weld", weld),
+                    ("Mechanical", false),
+                    ("Common", true),
+                    ("Sheet metal", sheet),
+                    ("Wood", true),
+                ],
+            );
+            preferences.normalize(&registry);
+            let entries = &preferences.workbenches[&Mode::Model];
+            assert_eq!(
+                entries[..4]
+                    .iter()
+                    .map(|entry| (entry.title.as_str(), entry.visible))
+                    .collect::<Vec<_>>(),
+                [
+                    ("Mechanical", false),
+                    ("Common", true),
+                    ("Metal", expected),
+                    ("Wood", true)
+                ]
+            );
+            assert!(
+                entries
+                    .iter()
+                    .all(|entry| !matches!(entry.title.as_str(), "Sheet metal" | "Weld"))
+            );
+            let normalized = preferences.clone();
+            preferences.normalize(&registry);
+            assert_eq!(preferences, normalized);
+        }
+    }
+
+    #[test]
+    fn metal_defaults_to_visible_for_missing_legacy_entry_and_respects_modern_preference() {
+        let registry = Registry::default();
+        for legacy in ["Weld", "Sheet metal"] {
+            let mut preferences = model_preferences(
+                &registry,
+                &[("Common", true), (legacy, false), ("Mechanical", true)],
+            );
+            preferences.normalize(&registry);
+            assert_eq!(
+                &titles(&preferences, &registry, Mode::Model)[..3],
+                ["Common", "Metal", "Mechanical"]
+            );
+        }
+
+        let mut preferences = model_preferences(
+            &registry,
+            &[
+                ("Sheet metal", true),
+                ("Mechanical", true),
+                ("Weld", true),
+                ("Common", true),
+                ("Metal", false),
+            ],
+        );
+        preferences.normalize(&registry);
+        let entries = &preferences.workbenches[&Mode::Model];
+        assert_eq!(
+            entries[..3]
+                .iter()
+                .map(|entry| (entry.title.as_str(), entry.visible))
+                .collect::<Vec<_>>(),
+            [("Mechanical", true), ("Common", true), ("Metal", false)]
+        );
     }
     #[test]
     fn legacy_fdm_preferences_keep_visibility_and_move_before_relationships() {
@@ -396,11 +545,11 @@ mod tests {
             .move_workbench(Mode::Model, "Other", -1)
             .unwrap();
         preferences
-            .move_workbench(Mode::Model, "Sheet metal", -3)
+            .move_workbench(Mode::Model, "Metal", -3)
             .unwrap();
         let model = titles(&preferences, &registry, Mode::Model);
         assert!(!model.contains(&"Wood"));
-        assert_eq!(&model[..3], ["Sheet metal", "Common", "Architecture"]);
+        assert_eq!(&model[..3], ["Metal", "Common", "Architecture"]);
         let other = model.iter().position(|t| *t == "Other").unwrap();
         assert_eq!(model[other + 1], "Mechanical");
         // Other modes are untouched; showing it again restores it in place.
@@ -414,7 +563,7 @@ mod tests {
         let before = preferences.clone();
         assert!(
             preferences
-                .move_workbench(Mode::Model, "Sheet metal", -1)
+                .move_workbench(Mode::Model, "Metal", -1)
                 .is_err()
         );
         assert!(preferences.set_visible(Mode::Model, "Nope", false).is_err());

@@ -14,7 +14,7 @@ impl Application {
                 .workspace(Mode::Model)
                 .tabs
                 .get(self.tab)
-                .is_some_and(|tab| tab.title == "Sheet metal")
+                .is_some_and(|tab| tab.title == crate::registry::METAL_TITLE)
     }
 
     pub(super) fn sheet_action_ready(&self, command: Command) -> Result<(), String> {

@@ -140,12 +140,31 @@ pub struct Registry {
     pub tools: Vec<Tool>,
     pub workspaces: Vec<Workspace>,
 }
+pub(crate) const METAL_TITLE: &str = "Metal";
+pub(crate) const METAL_GROUPS: [(&str, &[&str]); 3] = [
+    (
+        "Sheet metal",
+        &[
+            "sheet",
+            "sheet-flange",
+            "fastener",
+            "flat",
+            "fold",
+            "bend-list",
+        ],
+    ),
+    ("Profiles", &["tube", "cope"]),
+    ("Weld", &["weld-joint", "weld-list"]),
+];
+
 /// Canonical title for persisted workspaces with older names.
 pub fn canonical_workbench_title(mode: Mode, title: &str) -> &str {
     if mode == Mode::Model && matches!(title, "FDM" | "FDM aids") {
         "Other"
     } else if mode == Mode::Model && title == "Relationships" {
         "Relations"
+    } else if mode == Mode::Model && matches!(title, "Sheet metal" | "Weld") {
+        METAL_TITLE
     } else if mode == Mode::Parameters && title == "Common" {
         "Parameters"
     } else {
@@ -510,7 +529,7 @@ impl Default for Registry {
                 "Add flange",
                 Icon::SheetFlange,
                 Command::SheetFlange,
-                &["flange"][..],
+                &["add-flange"][..],
             ),
             (
                 "fastener",
@@ -694,18 +713,14 @@ impl Default for Registry {
                         tools: crate::wood_navigation::tab_tools(),
                         requires_active_sketch: false,
                     },
-                    tab(
-                        "Sheet metal",
-                        &[
-                            "sheet",
-                            "sheet-flange",
-                            "fastener",
-                            "flat",
-                            "fold",
-                            "bend-list",
-                        ],
-                    ),
-                    tab("Weld", &["tube", "cope", "weld-joint", "weld-list"]),
+                    RibbonTab {
+                        title: METAL_TITLE,
+                        tools: METAL_GROUPS
+                            .into_iter()
+                            .flat_map(|(_, tools)| tools.iter().copied())
+                            .collect(),
+                        requires_active_sketch: false,
+                    },
                     tab(
                         "Mechanical",
                         &[
@@ -1092,10 +1107,21 @@ mod tests {
             model
                 .tabs
                 .iter()
-                .find(|tab| tab.title == "Weld")
+                .find(|tab| tab.title == METAL_TITLE)
                 .unwrap()
                 .tools,
-            ["tube", "cope", "weld-joint", "weld-list"]
+            [
+                "sheet",
+                "sheet-flange",
+                "fastener",
+                "flat",
+                "fold",
+                "bend-list",
+                "tube",
+                "cope",
+                "weld-joint",
+                "weld-list"
+            ]
         );
         let found = registry.search("  MECHANICAL ");
         for id in &model.tabs[mechanical].tools {
@@ -1342,18 +1368,18 @@ mod tests {
                         | ModelingTool::Weld
                         | ModelingTool::Sheet
                 ),
-                "Copy shares the Move / Copy ribbon entry; Boolean is offered as Join / Subtract / Intersect; workbench tools live on their Architecture, Wood, Sheet metal, Weld and FDM tabs"
+                "Copy shares the Move / Copy ribbon entry; Boolean is offered as Join / Subtract / Intersect; workbench tools live on their Architecture, Wood, Metal and Other tabs"
             );
             if matches!(
                 tool,
                 ModelingTool::Member | ModelingTool::Connection | ModelingTool::Weld
             ) {
-                let weld = registry
+                let metal = registry
                     .workspace(Mode::Model)
                     .tabs
                     .iter()
-                    .find(|t| t.title == "Weld");
-                assert!(weld.unwrap().tools.contains(&tool.id()));
+                    .find(|t| t.title == METAL_TITLE);
+                assert!(metal.unwrap().tools.contains(&tool.id()));
             }
             if matches!(
                 tool,
@@ -1379,7 +1405,7 @@ mod tests {
                     .workspace(Mode::Model)
                     .tabs
                     .iter()
-                    .find(|t| t.title == "Sheet metal");
+                    .find(|t| t.title == METAL_TITLE);
                 assert!(tab.unwrap().tools.contains(&tool.id()));
             }
             if tool.fdm_kind().is_some() {
