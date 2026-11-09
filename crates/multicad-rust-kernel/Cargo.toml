@@ -8,3 +8,6 @@ license.workspace = true
 
 [lints]
 workspace = true
+
+[dependencies]
+spade = "=2.15.1"

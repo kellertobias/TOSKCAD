@@ -43,6 +43,9 @@ fn extract_sourced(
     policy: GeometryPolicy,
 ) -> Result<SourcedPlanarContours, GeometryError> {
     let native = frame.checked(policy)?;
+    if let Some(topology) = solid.rust_topology() {
+        return crate::rust_display::planar_contours(solid, topology?, face, frame, policy);
+    }
     let wires = ffi::planar_face_contours(solid.occt()?, face, &native, policy.linear_tolerance_mm)
         .map_err(|e| error(GeometryErrorKind::Native, e))?;
     let mut loops = Vec::with_capacity(wires.len());

@@ -551,7 +551,7 @@ impl Compiler {
         document.validate().map_err(|e| error(None, e))?;
         self.policy.validate().map_err(|e| error(None, e))?;
         if backend == GeometryBackend::Rust {
-            crate::rust_backend::validate_document(document, self.omit_display)?;
+            crate::rust_backend::validate_document(document)?;
         } else if roots.is_none() {
             crate::symbols::validate_definitions(
                 self,

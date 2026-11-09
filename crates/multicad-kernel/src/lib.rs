@@ -658,6 +658,7 @@ mod worker;
 pub use worker::*;
 mod curves;
 mod elementary_curves;
+mod rust_display;
 mod rust_prism_topology;
 mod sketch_queries;
 pub use sketch_queries::NativeRegionQueries;

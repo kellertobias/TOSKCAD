@@ -238,3 +238,135 @@ fn unsupported_and_invalid_operations_leave_the_rust_body_intact() {
         .is_err()
     );
 }
+
+#[test]
+fn exact_contours_preserve_both_bores_and_match_picking_edge_keys() {
+    use multicad_core::manufacturing::PlanarEdge;
+    use std::f64::consts::{PI, TAU};
+
+    let owner = EntityId::new();
+    let stock = adopt(
+        prism(owner, integer(8))
+            .with_inner_loop(EntityId::new().uuid_bits(), circle(12, 10, integer(3)))
+            .unwrap()
+            .with_inner_loop(EntityId::new().uuid_bits(), circle(28, 10, integer(4)))
+            .unwrap(),
+    );
+    let topology = stock.topology_snapshot(owner, 0).unwrap();
+    let frame = PlaneFrame {
+        origin: [50., 0., 8.],
+        u: [-1., 0., 0.],
+        v: [0., 1., 0.],
+    };
+    let cap = stock.planar_face_contours_with_sources(1, frame).unwrap();
+    near(cap.contours.area_mm2(), 800. + PI * 25.);
+    assert_eq!(cap.contours.loops.len(), 3);
+    assert!(cap.contours.loops[0].outer);
+    assert!(
+        cap.contours.loops[0]
+            .edges
+            .iter()
+            .any(|edge| { matches!(edge, PlanarEdge::Arc { sweep_rad, .. } if *sweep_rad == PI) })
+    );
+    for wire in &cap.contours.loops[1..] {
+        assert!(!wire.outer);
+        assert!(
+            matches!(wire.edges.as_slice(), [PlanarEdge::Arc { sweep_rad, .. }] if *sweep_rad == -TAU)
+        );
+    }
+    for key in cap.edge_keys.into_iter().flatten() {
+        assert!(topology.elements.iter().any(|e| e.key == key));
+    }
+    let side = stock
+        .planar_face_contours(
+            5,
+            PlaneFrame {
+                u: [0., 1., 0.],
+                v: [0., 0., 1.],
+                ..PlaneFrame::default()
+            },
+        )
+        .unwrap();
+    near(side.area_mm2(), 160.);
+    assert_eq!(side.edge_count(), 4);
+    assert!(stock.planar_face_contours(3, frame).is_err());
+    assert!(
+        stock
+            .planar_face_contours(1, PlaneFrame::default())
+            .is_err()
+    );
+    let (sin, cos) = 1e-6_f64.sin_cos();
+    let tilted = PlaneFrame {
+        origin: [0., 0., 8.],
+        u: [cos, 0., sin],
+        ..PlaneFrame::default()
+    };
+    assert!(
+        stock
+            .planar_face_contours(1, tilted)
+            .unwrap_err()
+            .message
+            .contains("outside the contour plane")
+    );
+}
+
+#[test]
+fn cylinder_contours_are_analytic_at_both_caps_regardless_of_display_density() {
+    use multicad_core::manufacturing::PlanarEdge;
+    use multicad_kernel::rust_kernel::cylinder::AxialCylinder;
+    use std::f64::consts::{PI, TAU};
+    let id = EntityId::new();
+    let profile = circle(5, 6, integer(2));
+    let cylinder = Solid::from_axial_cylinder(
+        AxialCylinder::new(id.uuid_bits(), profile, integer(-1), integer(4)).unwrap(),
+        PlaneFrame {
+            origin: [5., 6., -1.],
+            u: [0., 1., 0.],
+            v: [-1., 0., 0.],
+        },
+        GeometryPolicy::default(),
+    )
+    .unwrap();
+    for (face, z) in [(0, -1.), (1, 3.)] {
+        let contours = cylinder
+            .planar_face_contours_with_sources(
+                face,
+                PlaneFrame {
+                    origin: [5., 6., z],
+                    ..PlaneFrame::default()
+                },
+            )
+            .unwrap();
+        near(contours.contours.area_mm2(), 4. * PI);
+        assert_eq!(
+            contours.edge_keys,
+            [vec![TopologyKey {
+                kind: TopologyKind::Edge,
+                ordinal: face
+            }]]
+        );
+        assert!(matches!(contours.contours.loops[0].edges.as_slice(),
+            [PlanarEdge::Arc { sweep_rad, .. }] if *sweep_rad == TAU));
+    }
+    assert!(
+        cylinder
+            .mesh(multicad_kernel::MeshOptions {
+                maximum_triangles: 1,
+                ..Default::default()
+            })
+            .is_err()
+    );
+    let (sin, cos) = 1e-6_f64.sin_cos();
+    let tilted = PlaneFrame {
+        origin: [5., 6., 3.],
+        u: [cos, 0., sin],
+        ..PlaneFrame::default()
+    };
+    assert!(
+        cylinder
+            .planar_face_contours(1, tilted)
+            .unwrap_err()
+            .message
+            .contains("outside the contour plane")
+    );
+}

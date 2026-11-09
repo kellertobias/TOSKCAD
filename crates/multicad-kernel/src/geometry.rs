@@ -881,13 +881,26 @@ impl Solid {
         {
             return Err(input("Invalid display tessellation settings/budget"));
         }
-        let mesh = ffi::tessellate(
-            self.occt()?,
-            options.linear_deflection_mm,
-            options.angular_deflection_rad,
-            options.maximum_triangles,
-        )
-        .map_err(|e| native("mesh", e))?;
+        let rust_options = multicad_rust_kernel::display::Tessellation {
+            deflection: options.linear_deflection_mm,
+            angle: options.angular_deflection_rad,
+            triangle_limit: options.maximum_triangles as usize,
+        };
+        let mesh = match &self.body {
+            SolidBody::RoundedPrism(prism) => crate::rust_display::mesh(
+                multicad_rust_kernel::display::rounded_prism(prism, rust_options),
+            )?,
+            SolidBody::AxialCylinder(cylinder, _) => crate::rust_display::mesh(
+                multicad_rust_kernel::display::axial_cylinder(cylinder, rust_options),
+            )?,
+            SolidBody::Occt(shape) => ffi::tessellate(
+                &shape.0,
+                options.linear_deflection_mm,
+                options.angular_deflection_rad,
+                options.maximum_triangles,
+            )
+            .map_err(|e| native("mesh", e))?,
+        };
         if mesh.vertices.is_empty()
             || !mesh.vertices.len().is_multiple_of(3)
             || !mesh.indices.len().is_multiple_of(3)
@@ -906,13 +919,15 @@ impl Solid {
         }
         // Retain only after every ordinary detached TriangleMesh validation.
         // Optional receipt allocation failure does not invalidate display data.
-        let _ = ffi::remember_validated_mesh(
-            self.occt()?,
-            options.linear_deflection_mm,
-            options.angular_deflection_rad,
-            options.maximum_triangles,
-            &mesh,
-        );
+        if let SolidBody::Occt(shape) = &self.body {
+            let _ = ffi::remember_validated_mesh(
+                &shape.0,
+                options.linear_deflection_mm,
+                options.angular_deflection_rad,
+                options.maximum_triangles,
+                &mesh,
+            );
+        }
         Ok(mesh)
     }
     /// Manufacturing-only triangulation with native-topology seam identity.
@@ -975,6 +990,9 @@ impl Solid {
         {
             return Err(input("Invalid edge display deflection"));
         }
+        if let Some(topology) = self.rust_topology() {
+            return crate::rust_display::edges(topology?, deflection_mm);
+        }
         let edges = ffi::display_edges(self.occt()?, deflection_mm)
             .map_err(|e| native("display edges", e))?;
         edges
@@ -998,6 +1016,9 @@ impl Solid {
             .collect()
     }
     pub fn display_vertices(&self) -> Result<Vec<DisplayVertex>, GeometryError> {
+        if let Some(topology) = self.rust_topology() {
+            return Ok(crate::rust_display::vertices(topology?));
+        }
         ffi::vertices(self.occt()?)
             .map_err(|e| native("display vertices", e))?
             .into_iter()
@@ -1010,6 +1031,19 @@ impl Solid {
                 })
             })
             .collect()
+    }
+    pub(crate) fn rust_topology(
+        &self,
+    ) -> Option<Result<multicad_core::references::TopologySnapshot, GeometryError>> {
+        let feature = match &self.body {
+            SolidBody::RoundedPrism(prism) => prism.feature(),
+            SolidBody::AxialCylinder(cylinder, _) => cylinder.feature(),
+            SolidBody::Occt(_) => return None,
+        };
+        Some(self.topology_snapshot(
+            multicad_core::document::EntityId::from_uuid_bits(feature),
+            0,
+        ))
     }
     pub fn write_step(&self, path: &Path) -> Result<(), GeometryError> {
         let path = crate::step_path(path).map_err(|e| input(e.to_string()))?;

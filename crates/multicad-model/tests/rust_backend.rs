@@ -25,10 +25,7 @@ fn near(actual: f64, expected: f64) {
 }
 
 fn compiler() -> Compiler {
-    Compiler {
-        omit_display: true,
-        ..Compiler::default()
-    }
+    Compiler::default()
 }
 
 fn compile(session: &Session, backend: GeometryBackend) -> Model {
@@ -312,18 +309,7 @@ fn a_tangent_bore_is_rejected_without_native_fallback() {
 }
 
 #[test]
-fn unsupported_documents_and_display_requests_return_explicit_errors() {
-    let (session, _, _, _, _, _) = fixture(false, 28.);
-    let display = Compiler::default()
-        .compile_with_backend(
-            session.document(),
-            session.revision(),
-            GeometryBackend::Rust,
-            None,
-        )
-        .err()
-        .unwrap();
-    assert!(display.message.contains("display tessellation"));
+fn unsupported_documents_return_explicit_errors() {
     let mut session = Session::new(Document::new("Unsupported Rust primitive").unwrap()).unwrap();
     let stock = PrimitiveRequest::new(
         "Box",
@@ -350,4 +336,52 @@ fn unsupported_documents_and_display_requests_return_explicit_errors() {
         .unwrap();
     assert_eq!(rust.entity, Some(stock.feature));
     assert!(rust.message.contains("only axial cylinder"));
+}
+
+#[test]
+fn rust_document_publishes_mesh_and_picking_keys_in_the_normal_snapshot() {
+    let (session, _, _, body, cutter, cut) = fixture(false, 28.);
+    let model = compile(&session, GeometryBackend::Rust);
+    assert_eq!(model.snapshot().bodies.get(&body), Some(&cut));
+    for id in [cutter, cut] {
+        let shape = &model.snapshot().shapes[&id];
+        assert!(!shape.mesh.indices.is_empty());
+        assert!(!shape.edges.is_empty());
+        let expected = |kind| {
+            shape
+                .topology
+                .elements
+                .iter()
+                .filter(|e| e.key.kind == kind)
+                .map(|e| e.key.ordinal)
+                .collect::<std::collections::BTreeSet<_>>()
+        };
+        let actual = shape.mesh.face_indices.iter().copied().collect();
+        assert_eq!(expected(TopologyKind::Face), actual);
+        assert_eq!(
+            expected(TopologyKind::Edge),
+            shape.edges.iter().map(|e| e.index).collect()
+        );
+        assert_eq!(
+            expected(TopologyKind::Vertex),
+            shape.vertices.iter().map(|v| v.index).collect()
+        );
+    }
+    let hidden = Compiler {
+        omit_display: true,
+        ..Compiler::default()
+    }
+    .compile_with_backend(
+        session.document(),
+        session.revision(),
+        GeometryBackend::Rust,
+        None,
+    )
+    .unwrap();
+    let hidden_shape = &hidden.snapshot().shapes[&cut];
+    assert!(hidden_shape.mesh.indices.is_empty());
+    assert_eq!(
+        hidden_shape.topology,
+        model.snapshot().shapes[&cut].topology
+    );
 }

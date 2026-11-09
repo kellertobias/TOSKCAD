@@ -16,13 +16,7 @@ use multicad_kernel::{
     },
 };
 
-pub(crate) fn validate_document(document: &Document, omit_display: bool) -> Result<(), ModelError> {
-    if !omit_display {
-        return Err(error(
-            None,
-            "Rust solid display tessellation is unavailable",
-        ));
-    }
+pub(crate) fn validate_document(document: &Document) -> Result<(), ModelError> {
     for entity in document.entities() {
         match &entity.data {
             EntityData::Instance { .. } => {
