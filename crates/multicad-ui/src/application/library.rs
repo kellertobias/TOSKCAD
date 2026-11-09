@@ -112,10 +112,16 @@ impl Application {
                         project.editor.info.preview = Some(image);
                         // Keep the chosen image instead of capturing on save.
                         project.editor.info.capture_on_save = false;
-                        project.editor.refresh_preview(&project.session);
-                        self.message =
-                            "Preview image chosen · Apply/Rebuild stores it; capture on save is now off".into();
-                        self.message_error = false;
+                        match project.editor.commit_file_info(&mut project.session) {
+                            Ok(()) => {
+                                self.message = "Preview image updated".into();
+                                self.message_error = false;
+                            }
+                            Err(error) => {
+                                self.message = error;
+                                self.message_error = true;
+                            }
+                        }
                     }
                     Ok(_) => {
                         self.message = "This file's information is read-only here".into();
@@ -266,7 +272,7 @@ impl Application {
         let action = metadata_sidebar::show(
             ui,
             &mut p.editor,
-            &p.session,
+            &mut p.session,
             &mut state.textures,
             SidebarContext {
                 register,
@@ -274,21 +280,101 @@ impl Application {
                 choose_image,
                 status: state.status.as_ref(),
                 listing: listing.as_ref(),
-                library: &state.entries,
-                library_error: state.error.as_deref(),
             },
         );
         let result = match action {
             None => Ok(()),
             Some(SidebarAction::ChooseImage) => self.choose_preview_image(),
             Some(SidebarAction::AddToLibrary) => self.add_to_library(),
-            Some(SidebarAction::ReloadLibrary) => self
+            Some(SidebarAction::RemoveEntry(id)) => self.remove_library_entry(id),
+        };
+        if let Err(error) = result {
+            self.message = error;
+            self.message_error = true;
+        }
+    }
+
+    pub(super) fn library_management(&mut self, ctx: &egui::Context) {
+        if !self.library_management_open {
+            return;
+        }
+        let mut remove = None;
+        let mut reload = false;
+        let modal = egui::Modal::new(egui::Id::new("settings-library-listings")).show(ctx, |ui| {
+            ui.set_width(510_f32.min(ctx.content_rect().width() - 36.));
+            ui.heading("Projects listed in Library");
+            ui.label("Removing a listing keeps the project file and any parts already placed.");
+            ui.add_space(10.);
+            let busy = self
                 .library
                 .worker
+                .as_ref()
+                .is_some_and(|worker| worker.pending());
+            let mut listed = self
+                .library
+                .entries
+                .iter()
+                .filter(|entry| entry.origin == crate::library::LibraryOrigin::ListedOriginal)
+                .peekable();
+            if let Some(error) = &self.library.error {
+                ui.colored_label(Color32::LIGHT_RED, error);
+            } else if listed.peek().is_none() {
+                ui.label("No projects listed.");
+            }
+            egui::ScrollArea::vertical()
+                .max_height((ctx.content_rect().height() - 160.).clamp(70., 420.))
+                .show(ui, |ui| {
+                    for entry in listed {
+                        ui.push_id(entry.id, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.strong(&entry.name);
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| {
+                                        if ui
+                                            .add_enabled(!busy, egui::Button::new("Remove listing"))
+                                            .clicked()
+                                        {
+                                            remove = Some(entry.id);
+                                        }
+                                    },
+                                );
+                            });
+                            let path = entry.path.display().to_string();
+                            ui.add(egui::Label::new(&path).truncate())
+                                .on_hover_text(path);
+                            if let Some(problem) = &entry.problem {
+                                ui.colored_label(Color32::LIGHT_RED, problem);
+                            }
+                            ui.separator();
+                        });
+                    }
+                });
+            ui.add_space(10.);
+            ui.horizontal(|ui| {
+                reload = ui
+                    .add_enabled(
+                        !busy && self.library.worker.is_some(),
+                        egui::Button::new("Reload"),
+                    )
+                    .clicked();
+                if ui.button("Done").clicked() {
+                    ui.close();
+                }
+            });
+        });
+        if modal.should_close() {
+            self.library_management_open = false;
+        }
+        let result = if let Some(id) = remove {
+            self.remove_library_entry(id)
+        } else if reload {
+            self.library
+                .worker
                 .as_mut()
-                .ok_or_else(|| "The installation library is unavailable in this host".into())
-                .and_then(|w| w.reload()),
-            Some(SidebarAction::RemoveEntry(id)) => self.remove_library_entry(id),
+                .map_or(Ok(()), |worker| worker.reload())
+        } else {
+            Ok(())
         };
         if let Err(error) = result {
             self.message = error;

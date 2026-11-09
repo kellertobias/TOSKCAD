@@ -278,7 +278,8 @@ impl Application {
 
     pub(super) fn project_render_controls(&mut self, ui: &mut egui::Ui) {
         ui.separator();
-        ui.heading("Saved render view");
+        ui.add_space(6.);
+        ui.strong("Render");
         match saved_scene(self.current()) {
             Ok(Some((_, name, saved))) => {
                 ui.strong(name);

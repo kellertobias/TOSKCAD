@@ -140,6 +140,14 @@ impl Application {
         if index == self.project_tab_index() || self.project_tab_blocked(index) {
             return;
         }
+        if self.mode == Mode::Parameters && self.tab == 0 {
+            let project = self.current_mut();
+            if let Err(error) = project.editor.commit_file_info(&mut project.session) {
+                self.message = error;
+                self.message_error = true;
+                return;
+            }
+        }
         match index {
             PROJECT_EXPORT_TAB => self.execute(Command::Mode(Mode::Export), &[], Channel::Ui),
             MATERIALS_TAB => self.execute(Command::Extension("materials"), &[], Channel::Ui),
@@ -226,57 +234,44 @@ impl Application {
         }
     }
 
-    fn project_actions(&mut self, ui: &mut egui::Ui, vertical: bool) {
-        for id in crate::registry::PROJECT_ACTIONS {
-            let tool = *self.registry.tool(id).expect("registered Project action");
-            if !vertical && !matches!(tool.action, Command::Apply | Command::Discard) {
-                continue;
-            }
-            let help = self.project_action_help(tool.action, tool.label, ui.ctx());
-            let response = ui.add_enabled_ui(self.enabled(tool.action), |ui| {
-                if vertical {
-                    icons::labeled_button_sized(
-                        ui,
-                        tool.icon,
-                        tool.label,
-                        egui::vec2(ui.available_width(), 34.),
-                    )
-                } else {
-                    icons::labeled_button(ui, tool.icon, tool.label)
-                }
-            });
-            if response
-                .inner
-                .on_hover_text(&help)
-                .on_disabled_hover_text(&help)
-                .clicked()
-            {
-                self.execute(tool.action, &[], Channel::Ui);
-            }
-        }
-    }
-
     fn project_overview(&mut self, ui: &mut egui::Ui) {
-        let project = self.current_mut();
-        project.editor.sync_preview(&project.session);
-        egui::Panel::left("parameters-metadata")
-            .exact_size(crate::metadata_sidebar::WIDTH)
+        let mut action = None;
+        let sidebar_width = crate::metadata_sidebar::WIDTH.min(ui.available_width() * 0.48);
+        egui::Panel::left("project-details")
+            .exact_size(sidebar_width)
             .frame(
                 egui::Frame::new()
                     .fill(crate::theme::PANEL)
-                    .inner_margin(12),
+                    .inner_margin(16),
             )
             .show(ui, |ui| {
-                ui.horizontal_wrapped(|ui| self.project_actions(ui, false));
-                ui.separator();
-                self.parameters_sidebar(ui);
+                let details_height = (ui.available_height() - 48.).max(0.);
+                egui::ScrollArea::vertical()
+                    .id_salt("project-details-scroll")
+                    .max_height(details_height)
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| self.parameters_sidebar(ui));
+                ui.add_space(9.);
+                let command = Command::Mode(Mode::Model);
+                let can_start = self.enabled(command) && !self.current().editor.info_dirty();
+                if ui
+                    .add_enabled(
+                        can_start,
+                        egui::Button::new(egui::RichText::new("Start Modeling").strong())
+                            .fill(ui.visuals().selection.bg_fill)
+                            .min_size(egui::vec2(ui.available_width(), 36.)),
+                    )
+                    .on_disabled_hover_text("Finish editing the project details first")
+                    .clicked()
+                {
+                    action = Some(command);
+                }
             });
-        let mut action = None;
-        egui::Frame::new().inner_margin(16).show(ui, |ui| {
+        egui::Frame::new().inner_margin(18).show(ui, |ui| {
             egui::ScrollArea::vertical()
                 .id_salt("project-contents")
                 .show(ui, |ui| {
-                    ui.heading("Project contents");
+                    ui.label(egui::RichText::new("Project Contents").heading().strong());
                     let doc = self.current().session.document();
                     let (mut parts, mut assemblies, mut instances, mut sketches) = (0, 0, 0, 0);
                     for entity in doc.entities() {
@@ -289,64 +284,63 @@ impl Application {
                         }
                     }
                     for (mode, title) in [(Mode::Model, "Model"), (Mode::Motion, "Motion"), (Mode::Drawings, "Drawings")] {
-                        ui.add_space(10.);
+                        ui.add_space(14.);
                         ui.separator();
+                        ui.add_space(6.);
                         ui.horizontal(|ui| {
                             ui.strong(title);
                             let command = Command::Mode(mode);
-                            let starting_model = mode == Mode::Model;
-                            let enabled = self.enabled(command)
-                                && (!starting_model || !self.current().editor.dirty());
-                            let button = if starting_model {
-                                egui::Button::new("Start Modeling")
-                                    .fill(ui.visuals().selection.bg_fill)
-                                    .min_size(egui::vec2(158., 36.))
-                            } else {
-                                egui::Button::new(format!("Open {title}"))
-                            };
-                            if ui.add_enabled(enabled, button).clicked() {
-                                action = Some(command);
+                            if mode != Mode::Model {
+                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                    if ui.add_enabled(self.enabled(command), egui::Button::new(format!("Open {title}")).frame(false)).clicked() {
+                                        action = Some(command);
+                                    }
+                                });
                             }
                         });
-                        if mode == Mode::Model && self.current().editor.dirty() {
-                            ui.label("Apply or discard Project edits before starting modeling.");
-                        }
                         match mode {
                             Mode::Model if parts + assemblies + instances + sketches == 0 => {
                                 ui.label("No model geometry or sketches yet.");
                             }
                             Mode::Model => {
-                                ui.label(format!("Parts: {parts}   Assemblies: {assemblies}   Instances: {instances}   Sketches: {sketches}"));
+                                ui.horizontal_wrapped(|ui| {
+                                    for (label, count) in [("Parts", parts), ("Assemblies", assemblies), ("Instances", instances), ("Sketches", sketches)] {
+                                        egui::Frame::new().fill(ui.visuals().faint_bg_color).corner_radius(5)
+                                            .inner_margin(egui::Margin::symmetric(8, 5)).show(ui, |ui| {
+                                                ui.horizontal(|ui| {
+                                                    ui.monospace(count.to_string());
+                                                    ui.label(label);
+                                                });
+                                            });
+                                    }
+                                });
                             }
                             Mode::Motion => {
-                                let studies = doc.entities().filter(|entity| {
-                                    matches!(&entity.data, EntityData::Extension { definition, .. }
-                                        if definition.type_id == multicad_core::model::MOTION_STUDY_TYPE)
-                                }).collect::<Vec<_>>();
-                                if !studies.is_empty() {
-                                    ui.label("Saved motion studies");
-                                    for study in studies {
-                                        ui.label(&study.name);
+                                for (type_id, category, empty) in [
+                                    (multicad_core::model::MOTION_STUDY_TYPE, "Saved motion study", "No saved motion studies"),
+                                    (multicad_core::model::NAMED_POSE_TYPE, "Saved pose", "No saved poses"),
+                                ] {
+                                    let mut entries = doc.entities().filter(|entity| {
+                                        matches!(&entity.data, EntityData::Extension { definition, .. }
+                                            if definition.type_id == type_id)
+                                    }).peekable();
+                                    if entries.peek().is_none() {
+                                        ui.weak(empty);
                                     }
-                                }
-                                let poses = doc.entities().filter(|entity| {
-                                    matches!(&entity.data, EntityData::Extension { definition, .. }
-                                        if definition.type_id == multicad_core::model::NAMED_POSE_TYPE)
-                                });
-                                let mut poses = poses.peekable();
-                                if poses.peek().is_none() {
-                                    ui.label("No saved poses yet.");
-                                } else {
-                                    ui.label("Saved poses");
-                                    for pose in poses {
-                                        ui.label(&pose.name);
+                                    for entry in entries {
+                                        egui::Frame::new().fill(ui.visuals().faint_bg_color)
+                                            .corner_radius(5).inner_margin(8).show(ui, |ui| {
+                                                ui.set_min_width(ui.available_width());
+                                                ui.strong(&entry.name);
+                                                ui.small(category);
+                                            });
                                     }
                                 }
                             }
                             Mode::Drawings => {
                                 let mut books = multicad_core::drawings::books(doc).filter_map(|id| doc.get(id)).peekable();
                                 if books.peek().is_none() {
-                                    ui.label("No drawings yet.");
+                                    ui.weak("No drawings yet.");
                                 }
                                 for book in books {
                                     egui::CollapsingHeader::new(&book.name)
@@ -368,8 +362,7 @@ impl Application {
                             _ => {}
                         }
                     }
-                    ui.add_space(12.);
-                    ui.separator();
+                    ui.add_space(14.);
                     self.project_render_controls(ui);
                 });
         });

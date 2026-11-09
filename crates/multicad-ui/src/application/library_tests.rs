@@ -149,7 +149,7 @@ fn name(app: &mut Application, name: &str) {
 }
 
 #[test]
-fn metadata_draft_applies_with_the_table_in_one_undoable_transaction() {
+fn general_metadata_commits_independently_of_a_pending_parameter_edit() {
     let (mut app, _) = app();
     assert_eq!(app.mode, Mode::Parameters);
     frame(&mut app);
@@ -158,29 +158,26 @@ fn metadata_draft_applies_with_the_table_in_one_undoable_transaction() {
     p.editor.info.description = "Two screws".into();
     p.editor.rows[0].name = "width".into();
     p.editor.rows[0].expression = "40".into();
-    p.editor.refresh_preview(&p.session);
-    assert!(p.editor.dirty() && p.editor.info_dirty());
-    assert!(app.enabled(Command::Apply));
     frame(&mut app);
-    app.invoke(Command::Apply, &[], Channel::Ui).unwrap();
-    let document = app.current().session.document();
-    assert_eq!(document.name(), "Shelf bracket");
+    let p = app.current();
+    assert_eq!(p.session.document().name(), "Shelf bracket");
     assert_eq!(
-        multicad_core::project_file::info::read(document)
+        multicad_core::project_file::info::read(p.session.document())
             .unwrap()
             .description,
         "Two screws"
     );
-    assert_eq!(app.current().session.revision(), 1, "one transaction");
+    assert_eq!(p.session.revision(), 1);
+    assert!(!p.editor.info_dirty() && p.editor.dirty());
+    app.select_project_tab(project::PARAMETERS_TAB);
+    frame(&mut app);
+    app.invoke(Command::Apply, &[], Channel::Ui).unwrap();
+    assert_eq!(app.current().session.revision(), 2);
+    app.invoke(Command::Undo, &[], Channel::Ui).unwrap();
+    assert_eq!(app.current().session.document().name(), "Shelf bracket");
     app.invoke(Command::Undo, &[], Channel::Ui).unwrap();
     assert_eq!(app.current().session.document().name(), "Untitled");
-    assert_eq!(app.current().editor.info.name, "Untitled");
-    app.current_mut().editor.info.description = "draft".into();
-    app.invoke(Command::Discard, &[], Channel::Ui).unwrap();
-    assert!(app.current().editor.info.description.is_empty());
-    assert!(!app.current().editor.dirty());
 }
-
 #[test]
 fn invalid_names_block_apply_with_a_visible_error() {
     let (mut app, _) = app();
@@ -192,7 +189,7 @@ fn invalid_names_block_apply_with_a_visible_error() {
 }
 
 #[test]
-fn chosen_preview_image_becomes_a_draft_stored_on_apply_and_save() {
+fn chosen_preview_image_is_committed_and_persists_on_save() {
     let (mut app, shared) = app();
     app.choose_preview_image().unwrap();
     assert!(matches!(app.file_action, Some(FileAction::PreviewImage)));
@@ -204,13 +201,7 @@ fn chosen_preview_image_becomes_a_draft_stored_on_apply_and_save() {
         app.current().editor.info.preview.as_ref().unwrap().png(),
         ICON
     );
-    assert!(app.current().editor.info_dirty());
-    assert!(
-        app.save_to(PathBuf::from("/private/tmp/preview.multicad"))
-            .is_err(),
-        "unapplied drafts block saving"
-    );
-    app.invoke(Command::Apply, &[], Channel::Ui).unwrap();
+    assert!(!app.current().editor.info_dirty());
     app.save_to(PathBuf::from("/private/tmp/preview.multicad"))
         .unwrap();
     drain(&mut app);
@@ -559,25 +550,21 @@ fn compact_file_metadata_keeps_registration_without_repeating_the_installation_c
     assert!(point(&output, "Include in Library").is_some());
     assert!(point(&output, "Bundled catalog entry").is_none());
     assert!(point(&output, "Missing listed original").is_none());
-    let manage =
-        point(&output, "Projects listed in Library (1)").expect("visible original-file management");
+    assert!(point(&output, "Projects listed in Library").is_none());
     output.drop_without_applying_deltas();
-    for pressed in [true, false] {
-        draw(
-            &mut app,
-            vec![
-                egui::Event::PointerMoved(manage),
-                egui::Event::PointerButton {
-                    pos: manage,
-                    button: egui::PointerButton::Primary,
-                    pressed,
-                    modifiers: Default::default(),
-                },
-            ],
+    app.library_management_open = true;
+    let modal = |app: &mut Application| {
+        ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(screen),
+                focused: true,
+                ..Default::default()
+            },
+            |_ui| app.library_management(&ctx),
         )
-        .drop_without_applying_deltas();
-    }
-    let output = draw(&mut app, vec![]);
+    };
+    modal(&mut app).drop_without_applying_deltas();
+    let output = modal(&mut app);
     assert!(point(&output, "Missing listed original").is_some());
     assert!(point(&output, "Remove listing").is_some());
     assert!(point(&output, "Bundled catalog entry").is_none());

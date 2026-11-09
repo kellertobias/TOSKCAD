@@ -234,6 +234,7 @@ pub struct Application {
     preference_worker: Option<crate::preferences::PreferenceWorker>,
     preference_error: Option<String>,
     settings_open: bool,
+    library_management_open: bool,
 }
 impl Application {
     pub fn new(storage: Box<dyn DocumentStorage>) -> Result<Self, String> {
@@ -309,6 +310,7 @@ impl Application {
             preference_worker: None,
             preference_error: None,
             settings_open: false,
+            library_management_open: false,
         };
         crate::preferences::set_length_unit(app.preferences.length_unit);
         crate::preferences::set_scale_step_percent(app.preferences.scale_step_percent);
@@ -603,6 +605,19 @@ impl Application {
             )
     }
     fn invoke(&mut self, command: Command, args: &[&str], channel: Channel) -> Result<(), String> {
+        if self.mode == Mode::Parameters
+            && self.tab == 0
+            && matches!(
+                command,
+                Command::Mode(_)
+                    | Command::Save
+                    | Command::SaveAs
+                    | Command::Extension("materials")
+            )
+        {
+            let project = self.current_mut();
+            project.editor.commit_file_info(&mut project.session)?;
+        }
         if matches!(
             command,
             Command::ArchitectureCategory(_) | Command::ArchitectureParent
@@ -2057,6 +2072,10 @@ impl Application {
                             action = Some(Command::Extension("settings"));
                             ui.close();
                         }
+                        if ui.button("Projects listed in Library…").clicked() {
+                            self.library_management_open = true;
+                            ui.close();
+                        }
                         if ui.button("Keyboard Shortcuts").clicked() {
                             action = Some(Command::KeyboardShortcuts);
                             ui.close();
@@ -2406,6 +2425,7 @@ impl Application {
                 || self.history_open
                 || self.import_open
                 || self.settings_open
+                || self.library_management_open
                 || self.render_preview.is_some()
                 || self.current().sketch.symbol_library_active()
                 || self.shortcut_help
@@ -2441,6 +2461,7 @@ impl Application {
             || self.history_open
             || self.import_open
             || self.settings_open
+            || self.library_management_open
             || self.close_confirm;
         let shell_interaction = shell_interaction || self.current().exchange.drawing_pdf_open();
         // egui clears keyboard focus for Escape before this application pass.
@@ -2475,6 +2496,8 @@ impl Application {
                 self.import_open = false;
             } else if self.history_open {
                 self.history_open = false;
+            } else if self.library_management_open {
+                self.library_management_open = false;
             } else if self.settings_open {
                 self.settings_open = false;
             } else if self.close_confirm {
@@ -2955,6 +2978,7 @@ impl Application {
         }
         self.import_window(&ctx);
         self.settings_window(&ctx);
+        self.library_management(&ctx);
         if self.shortcut_help {
             egui::Window::new("Keyboard shortcuts").open(&mut self.shortcut_help).show(&ctx,|ui|{
                 ui.label("WASD pans the view. Tab / Shift+Tab cycles ribbon workspaces. Text inputs keep their typing and Tab behavior.");
@@ -3570,6 +3594,7 @@ mod tests {
     fn mode_shortcuts_use_existing_transactions_and_ignore_unavailable_tools() {
         let ctx = egui::Context::default();
         let mut app = Application::new(Box::new(MemoryStorage)).unwrap();
+        app.tab = project::PARAMETERS_TAB;
         app.current_mut().editor.rows[0].name = "width".into();
         app.current_mut().editor.rows[0].expression = "600".into();
         app.current_mut().editor.ensure_blank_row();

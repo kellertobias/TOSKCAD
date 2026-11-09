@@ -196,6 +196,36 @@ impl ParameterEditor {
     pub fn info_dirty(&self) -> bool {
         self.info != self.info_baseline
     }
+    pub(crate) fn commit_file_info(&mut self, session: &mut Session) -> Result<(), String> {
+        if !self.info_dirty() {
+            return Ok(());
+        }
+        if let Some(reason) = &self.info_locked {
+            return Err(reason.clone());
+        }
+        session
+            .validate_stamp(&self.guard)
+            .map_err(|error| error.to_string())?;
+        let edits =
+            info::edits(session.document(), &self.info).map_err(|error| error.to_string())?;
+        if !edits.is_empty() {
+            let edit = session
+                .prepare(Request {
+                    expected_revision: session.revision(),
+                    actor: Actor::local(Channel::Ui),
+                    label: "Edit project details".into(),
+                    edits,
+                })
+                .map_err(|error| error.to_string())?;
+            session.commit(edit).map_err(|error| error.to_string())?;
+        }
+        self.info_baseline = self.info.clone();
+        self.revision = session.revision();
+        self.guard = session.stamp();
+        self.preview = None;
+        self.error = None;
+        Ok(())
+    }
     fn rows_dirty(&self) -> bool {
         let mut rows = self.rows.iter().filter(|r| !r.empty());
         let mut before = self.baseline.iter().filter(|r| !r.empty());
@@ -679,13 +709,12 @@ impl ParameterEditor {
                                     .changed()
                             }
                             7 if authored => {
-                                if crate::icons::compact_button(
+                                let response = crate::icons::compact_button(
                                     ui,
                                     crate::icons::Icon::Trash,
                                     &format!("Delete parameter {}", row.name),
-                                )
-                                .clicked()
-                                {
+                                );
+                                if response.clicked() {
                                     delete = Some(index);
                                 }
                             }

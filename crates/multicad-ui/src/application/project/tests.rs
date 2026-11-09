@@ -240,47 +240,44 @@ fn model_loading_is_visible_without_inspector_and_reuses_the_current_receipt() {
     assert!(Arc::ptr_eq(app.current().scene.visible().unwrap(), &latest));
 }
 #[test]
-fn general_keeps_metadata_on_the_left_and_preserves_the_draft_between_tabs() {
+fn general_commits_details_without_an_apply_button_and_starts_modeling() {
     let (mut app, _) = app();
     app.tab = 0;
     let ctx = egui::Context::default();
     ctx.enable_accesskit();
     crate::theme::configure(&ctx);
-    let size = egui::vec2(1024., 600.);
+    let size = egui::vec2(1024., 670.);
     let out = frame(&ctx, &mut app, size, vec![]);
-    let metadata = egui::PanelState::load(&ctx, egui::Id::new("parameters-metadata"))
+    let metadata = egui::PanelState::load(&ctx, egui::Id::new("project-details"))
         .unwrap()
         .outer_rect;
     assert!(metadata.left().abs() < 1.);
-    assert!(egui::PanelState::load(&ctx, egui::Id::new("project-material-ribbon")).is_none());
-    assert!(button(&out, "Start Modeling").1);
-    for label in [
-        "Project contents",
-        "No saved poses yet.",
-        "No drawings yet.",
-    ] {
-        assert!(out.shapes.iter().any(|shape| {
-            matches!(&shape.shape, egui::Shape::Text(text) if text.galley.text() == label)
-        }));
+    let (start, enabled) = button(&out, "Start Modeling");
+    assert!(enabled && metadata.contains_rect(start));
+    for label in ["Project Contents", "No saved poses", "No drawings yet."] {
+        assert!(
+            out.shapes.iter().any(|shape| {
+                matches!(&shape.shape, egui::Shape::Text(text) if text.galley.text() == label)
+            }),
+            "{label}"
+        );
     }
+    let access = out.platform_output.accesskit_update.as_ref().unwrap();
+    assert!(
+        !access
+            .nodes
+            .iter()
+            .any(|(_, node)| matches!(node.label(), Some("Apply and Rebuild" | "Discard Edit")))
+    );
     out.drop_without_applying_deltas();
-
-    let source = app.current().session.document().clone();
-    app.current_mut().editor.info.name = "Pending Project title".into();
-    click(&ctx, &mut app, size, "Parameters");
-    assert_eq!(app.tab, PARAMETERS_TAB);
-    assert!(app.current().editor.info_dirty());
-    click(&ctx, &mut app, size, "General");
-    assert_eq!(app.tab, 0);
-    assert_eq!(app.current().editor.info.name, "Pending Project title");
-    assert_eq!(app.current().session.document(), &source);
-    let out = frame(&ctx, &mut app, size, vec![]);
-    assert!(!button(&out, "Start Modeling").1);
-    out.drop_without_applying_deltas();
-    app.invoke(Command::Discard, &[], Channel::Ui).unwrap();
+    app.current_mut().editor.info.name = "Workshop cabinet".into();
+    frame(&ctx, &mut app, size, vec![]).drop_without_applying_deltas();
+    assert!(!app.current().editor.info_dirty());
+    assert_eq!(app.current().session.document().name(), "Workshop cabinet");
+    assert!(app.current().session.can_undo());
     click(&ctx, &mut app, size, "Start Modeling");
     assert_eq!(app.mode, Mode::Model);
-    assert_eq!(app.current().session.document(), &source);
+    assert_eq!(app.current().session.document().name(), "Workshop cabinet");
 }
 #[test]
 fn parameters_put_actions_in_a_ribbon_and_keep_the_table_below_it() {
