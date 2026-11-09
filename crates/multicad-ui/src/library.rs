@@ -452,10 +452,41 @@ impl LibraryThumbnails {
     }
 }
 
+pub(crate) const PROJECT_PREVIEW_BACKGROUND: egui::Color32 = egui::Color32::from_rgb(12, 17, 24);
+
+/// Recognize the exact scanline palette of the older example rasterizer after
+/// its 2:1 preview resize. Arbitrary photos and viewport captures stay intact.
+fn darken_example_background(image: &mut egui::ColorImage) {
+    const SIZE: [usize; 2] = [640, 480];
+    if image.size != SIZE {
+        return;
+    }
+    let legacy_gray = |row: usize| (246. - 22. * row as f64 / 960.) as u8;
+    let legacy = |row: usize| {
+        let gray = (u16::from(legacy_gray(2 * row)) + u16::from(legacy_gray(2 * row + 1))) / 2;
+        egui::Color32::from_rgb(gray as u8, gray as u8, (gray + 4) as u8)
+    };
+    let rows = image.pixels.chunks_exact(SIZE[0]);
+    if !rows.enumerate().all(|(y, row)| {
+        let background = legacy(y);
+        row[0] == background && row[SIZE[0] - 1] == background
+    }) {
+        return;
+    }
+    for (y, row) in image.pixels.chunks_exact_mut(SIZE[0]).enumerate() {
+        let background = legacy(y);
+        for pixel in row {
+            if *pixel == background {
+                *pixel = PROJECT_PREVIEW_BACKGROUND;
+            }
+        }
+    }
+}
+
 /// Decoded preview textures keyed by image content.
 #[derive(Default)]
 pub struct PreviewTextures {
-    textures: BTreeMap<ContentHash, Result<egui::TextureHandle, String>>,
+    textures: BTreeMap<(ContentHash, bool), Result<egui::TextureHandle, String>>,
 }
 impl PreviewTextures {
     /// Show `image` fitted into `size`, or a labelled placeholder.
@@ -466,7 +497,7 @@ impl PreviewTextures {
         size: egui::Vec2,
         alt: &str,
     ) {
-        self.show_preview(ui, image, size, alt, false);
+        self.show_preview(ui, image, size, alt, false, false);
     }
 
     /// Reserve the full frame and center the image at its original aspect ratio.
@@ -477,7 +508,17 @@ impl PreviewTextures {
         size: egui::Vec2,
         alt: &str,
     ) {
-        self.show_preview(ui, image, size, alt, true);
+        self.show_preview(ui, image, size, alt, true, false);
+    }
+
+    pub(crate) fn show_project_preview(
+        &mut self,
+        ui: &mut egui::Ui,
+        image: Option<&PreviewImage>,
+        size: egui::Vec2,
+        automatic: bool,
+    ) {
+        self.show_preview(ui, image, size, "Project preview image", false, automatic);
     }
 
     fn show_preview(
@@ -487,6 +528,7 @@ impl PreviewTextures {
         size: egui::Vec2,
         alt: &str,
         framed: bool,
+        automatic: bool,
     ) {
         let fitted = image.map_or(size, |image| {
             let dimensions = egui::vec2(image.width() as f32, image.height() as f32);
@@ -502,11 +544,14 @@ impl PreviewTextures {
         let texture = image.map(|image| {
             let ctx = ui.ctx().clone();
             self.textures
-                .entry(image.content())
+                .entry((image.content(), automatic))
                 .or_insert_with(|| {
-                    decode_preview(image).map(|decoded| {
+                    decode_preview(image).map(|mut decoded| {
+                        if automatic {
+                            darken_example_background(&mut decoded);
+                        }
                         ctx.load_texture(
-                            format!("file-preview-{}", image.content()),
+                            format!("file-preview-{}-{automatic}", image.content()),
                             decoded,
                             Default::default(),
                         )
@@ -546,6 +591,40 @@ impl PreviewTextures {
 mod tests {
     use super::*;
     use std::time::{Duration, Instant};
+    #[test]
+    fn bundled_project_preview_gets_a_dark_matte_without_recoloring_ordinary_images() {
+        use multicad_core::project_file;
+        let path =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/werkzeugkoffer-2.tcd");
+        let mut file = std::fs::File::open(path).unwrap();
+        let card = project_file::card(
+            &mut file,
+            project_file::FileLimits::default(),
+            &project_file::supported_capabilities(),
+        )
+        .unwrap();
+        let preview = card.info.preview.unwrap();
+        let original = decode_preview(&preview).unwrap();
+        let mut display = original.clone();
+        darken_example_background(&mut display);
+        assert_eq!(display.pixels[0], PROJECT_PREVIEW_BACKGROUND);
+        assert_ne!(original.pixels[0], display.pixels[0]);
+        assert_eq!(
+            display.pixels[240 * 640 + 320],
+            original.pixels[240 * 640 + 320]
+        );
+        assert_eq!(decode_preview(&preview).unwrap(), original);
+
+        let mut custom = egui::ColorImage::filled([640, 480], egui::Color32::WHITE);
+        darken_example_background(&mut custom);
+        assert!(
+            custom
+                .pixels
+                .iter()
+                .all(|&pixel| pixel == egui::Color32::WHITE)
+        );
+    }
+
     #[test]
     fn offscreen_previews_keep_layout_without_decoding_and_load_when_visible() {
         let image = PreviewImage::from_png(

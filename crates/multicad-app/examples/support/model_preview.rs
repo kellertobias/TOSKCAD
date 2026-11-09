@@ -91,14 +91,8 @@ pub fn render_preview<'a>(
             q[2],
         ]
     };
-    // A light vertical gradient background.
-    let mut pixels: Vec<Color32> = (0..w * h)
-        .map(|i| {
-            let y = (i / w) as f64 / h as f64;
-            let c = (246. - 22. * y) as u8;
-            Color32::from_rgb(c, c, c.saturating_add(4))
-        })
-        .collect();
+    // Match the dark background of the in-app project preview.
+    let mut pixels = vec![Color32::from_rgb(12, 17, 24); w * h];
     let mut depth = vec![f64::MIN; w * h];
     for (t, color) in &triangles {
         let n = normalize(cross(sub(t[1], t[0]), sub(t[2], t[0])));

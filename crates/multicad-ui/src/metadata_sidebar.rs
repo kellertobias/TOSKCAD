@@ -153,17 +153,17 @@ pub fn show(
         let inset = 4.;
         let size = Vec2::new(width, (width - 2. * inset) * aspect + 2. * inset);
         let frame = Rect::from_min_size(ui.cursor().min, size);
-        let preview_background = Color32::from_rgb(12, 17, 24);
+        let preview_background = crate::library::PROJECT_PREVIEW_BACKGROUND;
         ui.painter().rect_filled(frame, 5, preview_background);
         ui.allocate_exact_size(size, Sense::hover());
         let image_rect = frame.shrink(inset);
         let mut image = ui.new_child(egui::UiBuilder::new().max_rect(image_rect));
         image.set_clip_rect(image_rect.intersect(ui.clip_rect()));
-        textures.show(
+        textures.show_project_preview(
             &mut image,
             editor.info.preview.as_ref(),
             image_rect.size(),
-            "Project preview image",
+            editor.info.capture_on_save,
         );
         let overlay_rect = Rect::from_min_max(
             egui::pos2(frame.left() + 8., frame.bottom() - 34.),
