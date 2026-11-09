@@ -486,6 +486,12 @@ enum SolidBody {
     Orthogonal(Rc<OrthogonalBody>, PlaneFrame),
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum MeshUse {
+    Display,
+    Manufacturing,
+}
+
 impl Solid {
     /// Publish a straight-sided sketch extrusion with the original authored
     /// edge anchors, even if winding normalization reversed some edges.
@@ -734,7 +740,7 @@ impl Solid {
     pub fn geometry_policy(&self) -> GeometryPolicy {
         self.policy
     }
-    pub(crate) fn is_rust(&self) -> bool {
+    pub fn uses_rust_geometry(&self) -> bool {
         !matches!(self.body, SolidBody::Occt(_))
     }
     pub(crate) fn rust_compound(&self) -> Option<&RustCompound> {
@@ -898,7 +904,7 @@ impl Solid {
                     .map(Some);
             }
         }
-        if self.is_rust() && other.is_rust() {
+        if self.uses_rust_geometry() && other.uses_rust_geometry() {
             return self.orthogonal_boolean(other, operation, policy);
         }
         let op = match operation {
@@ -991,7 +997,7 @@ impl Solid {
     }
     pub fn transformed(&self, transform: RigidTransform) -> Result<Self, GeometryError> {
         transform.validate(self.policy)?;
-        if self.is_rust() {
+        if self.uses_rust_geometry() {
             if transform == RigidTransform::default() {
                 return self.share();
             }
@@ -1061,7 +1067,7 @@ impl Solid {
         if let Some(compound) = self.rust_compound() {
             return Ok(compound.solid_count());
         }
-        if self.is_rust() {
+        if self.uses_rust_geometry() {
             return Ok(1);
         }
         ffi::solid_count(self.occt()?).map_err(|e| native("solid count", e))
@@ -1202,33 +1208,30 @@ impl Solid {
                     .collect()
             })
     }
-    pub fn mesh(&self, options: MeshOptions) -> Result<ffi::Mesh, GeometryError> {
-        if !options.linear_deflection_mm.is_finite()
-            || options.linear_deflection_mm < self.policy.linear_tolerance_mm.max(0.001)
-            || options.linear_deflection_mm > self.policy.maximum_coordinate_mm
-            || !options.angular_deflection_rad.is_finite()
-            || !(0.01..=1.).contains(&options.angular_deflection_rad)
-            || options.maximum_triangles == 0
-            || options.maximum_triangles > 5_000_000
-        {
-            return Err(input("Invalid display tessellation settings/budget"));
-        }
+    fn mesh_options_valid(&self, options: MeshOptions) -> bool {
+        (self.policy.linear_tolerance_mm.max(0.001)..=self.policy.maximum_coordinate_mm)
+            .contains(&options.linear_deflection_mm)
+            && (0.01..=1.).contains(&options.angular_deflection_rad)
+            && (1..=5_000_000).contains(&options.maximum_triangles)
+    }
+
+    fn rust_mesh(&self, options: MeshOptions, usage: MeshUse) -> Result<ffi::Mesh, GeometryError> {
         let rust_options = multicad_rust_kernel::display::Tessellation {
             deflection: options.linear_deflection_mm,
             angle: options.angular_deflection_rad,
             triangle_limit: options.maximum_triangles as usize,
         };
-        let mesh = match &self.body {
+        match &self.body {
             SolidBody::Prism(prism, frame) => crate::rust_display::placed_mesh(
                 multicad_rust_kernel::display::rust_prism(prism, rust_options),
                 *frame,
                 false,
-            )?,
+            ),
             SolidBody::PolygonPrism(placed) => crate::rust_display::placed_mesh(
                 multicad_rust_kernel::display::polygon_prism(&placed.prism, rust_options),
                 placed.frame,
                 placed.reverse_sweep,
-            )?,
+            ),
             SolidBody::AxialCylinder(cylinder, frame) => {
                 let mut mesh = crate::rust_display::mesh(
                     multicad_rust_kernel::display::axial_cylinder(cylinder, rust_options),
@@ -1241,10 +1244,21 @@ impl Solid {
                         *point = crate::rust_prism_topology::position(*frame, local);
                     }
                 }
-                mesh
+                Ok(mesh)
             }
-            SolidBody::RustCompound(compound) => compound.mesh(options)?,
-            SolidBody::Orthogonal(body, frame) => body.mesh(*frame, options.maximum_triangles)?,
+            SolidBody::RustCompound(compound) => compound.mesh(options, usage),
+            SolidBody::Orthogonal(body, frame) => {
+                body.mesh(*frame, options.maximum_triangles, usage)
+            }
+            SolidBody::Occt(_) => unreachable!("Rust-only tessellation"),
+        }
+    }
+
+    pub fn mesh(&self, options: MeshOptions) -> Result<ffi::Mesh, GeometryError> {
+        if !self.mesh_options_valid(options) {
+            return Err(input("Invalid display tessellation settings/budget"));
+        }
+        let mesh = match &self.body {
             SolidBody::Occt(shape) => ffi::tessellate(
                 &shape.0,
                 options.linear_deflection_mm,
@@ -1252,6 +1266,7 @@ impl Solid {
                 options.maximum_triangles,
             )
             .map_err(|e| native("mesh", e))?,
+            _ => self.rust_mesh(options, MeshUse::Display)?,
         };
         if mesh.vertices.is_empty()
             || !mesh.vertices.len().is_multiple_of(3)
@@ -1282,24 +1297,100 @@ impl Solid {
         }
         Ok(mesh)
     }
-    /// Manufacturing-only triangulation with native-topology seam identity.
-    /// Display meshes and their cache remain unchanged. No proximity welds.
+    /// Fresh manufacturing triangulation with exact boundary identity.
     pub fn manufacturing_mesh(&self, options: MeshOptions) -> Result<ffi::Mesh, GeometryError> {
         Ok(self.manufacturing_mesh_with_receipt(options)?.mesh)
     }
+
+    fn rust_manufacturing_mesh(
+        &self,
+        options: MeshOptions,
+    ) -> Result<crate::ManufacturingMesh, GeometryError> {
+        use multicad_rust_kernel::{
+            display::{DisplayMesh, MeshError},
+            manufacturing,
+        };
+        const OPERATION: &str = "manufacturing mesh";
+        let ffi::Mesh {
+            vertices,
+            indices,
+            face_indices,
+        } = self.rust_mesh(options, MeshUse::Manufacturing)?;
+        let tessellation = DisplayMesh {
+            vertices,
+            indices,
+            face_indices,
+        };
+        let proof = manufacturing::certify(&tessellation).map_err(|cause| {
+            let kind = match cause {
+                MeshError::InvalidOptions => GeometryErrorKind::Input,
+                MeshError::BudgetExceeded => GeometryErrorKind::Limit,
+                MeshError::UnresolvedBoundary => GeometryErrorKind::InvalidResult,
+            };
+            error(
+                OPERATION,
+                kind,
+                format!("Rust indexed mesh certification failed: {cause:?}"),
+            )
+        })?;
+        let exact_volume = self.volume_mm3()?;
+        let mut surface_area = 0.;
+        let mut curved_area = 0.;
+        for face in self.faces()? {
+            surface_area += face.area_mm2;
+            if face.plane.is_none() {
+                curved_area += face.area_mm2;
+            }
+        }
+        // For the supported extruded curves, arc/chord area loss is bounded
+        // by sagitta times arc length. Multiplying by the sweep height gives
+        // chord deviation times curved wall area. Planar faces add roundoff only.
+        let volume_tolerance = options.linear_deflection_mm * curved_area
+            + self.policy.linear_tolerance_mm * surface_area * 2.
+            + exact_volume * 1e-10;
+        if !volume_tolerance.is_finite()
+            || (proof.signed_volume_mm3 - exact_volume).abs() > volume_tolerance
+        {
+            return Err(error(
+                OPERATION,
+                GeometryErrorKind::InvalidResult,
+                "Rust manufacturing mesh volume differs from the exact solid beyond the chord error bound",
+            ));
+        }
+        let DisplayMesh {
+            vertices,
+            indices,
+            face_indices,
+        } = tessellation;
+        Ok(crate::ManufacturingMesh {
+            mesh: ffi::Mesh {
+                vertices,
+                indices,
+                face_indices,
+            },
+            maximum_displacement_mm: 0.,
+            edge_pairs: proof.edge_pairs,
+            vertex_links: proof.vertex_links,
+            removed_native_pole_triangles: 0,
+            removed_exact_zero_triangles: 0,
+            exact_vertex_pairs: 0,
+            internal_constraint_edges: 0,
+            removed_meshing_internal_edges: 0,
+            removed_meshing_constraint_wire_containers: 0,
+            removed_meshing_internal_vertices: 0,
+            remeshed_without_internal_constraints: false,
+        })
+    }
+
     pub fn manufacturing_mesh_with_receipt(
         &self,
         options: MeshOptions,
     ) -> Result<crate::ManufacturingMesh, GeometryError> {
-        if !options.linear_deflection_mm.is_finite()
-            || options.linear_deflection_mm < self.policy.linear_tolerance_mm.max(0.001)
-            || options.linear_deflection_mm > self.policy.maximum_coordinate_mm
-            || !options.angular_deflection_rad.is_finite()
-            || !(0.01..=1.).contains(&options.angular_deflection_rad)
-            || options.maximum_triangles == 0
-            || options.maximum_triangles > 5_000_000
-        {
+        if !self.mesh_options_valid(options) {
             return Err(input("Invalid manufacturing tessellation settings/budget"));
+        }
+        if self.uses_rust_geometry() {
+            return self.rust_manufacturing_mesh(options);
         }
         let tolerance = self
             .policy

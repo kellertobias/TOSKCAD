@@ -366,7 +366,7 @@ impl Solid {
                 "Member origin collides with existing source provenance",
             ));
         }
-        if self.is_rust() {
+        if self.uses_rust_geometry() {
             self.rust_origins.push(origin);
             return Ok(self);
         }
@@ -901,7 +901,7 @@ impl Solid {
         owner: EntityId,
         revision: u64,
     ) -> Result<TopologySnapshot, GeometryError> {
-        if self.is_rust() {
+        if self.uses_rust_geometry() {
             let mut snapshot = if let Some(placed) = self.polygon_prism() {
                 placed.snapshot(owner, revision).map_err(failure)?
             } else if let Some((cylinder, frame)) = self.axial_cylinder_frame() {

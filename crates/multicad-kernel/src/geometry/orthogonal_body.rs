@@ -738,11 +738,19 @@ impl OrthogonalBody {
         }
     }
 
-    pub(super) fn mesh(&self, frame: PlaneFrame, budget: u32) -> Result<ffi::Mesh, GeometryError> {
+    pub(super) fn mesh(
+        &self,
+        frame: PlaneFrame,
+        budget: u32,
+        usage: MeshUse,
+    ) -> Result<ffi::Mesh, GeometryError> {
         let quads = self.geometry.quads();
         if quads.len() * 2 > budget as usize {
-            return Err(limit("Orthogonal display exceeds the triangle budget"));
+            return Err(limit("Orthogonal tessellation exceeds the triangle budget"));
         }
+        // A conformal grid corner is shared only within its own exact solid.
+        // Coincident corners of distinct solids have separate index identities.
+        let mut indexed = (usage == MeshUse::Manufacturing).then(BTreeMap::new);
         let mut mesh = ffi::Mesh {
             vertices: Vec::with_capacity(quads.len() * 12),
             indices: Vec::with_capacity(quads.len() * 6),
@@ -750,15 +758,22 @@ impl OrthogonalBody {
         };
         for (face, boundary) in self.boundary.faces.iter().enumerate() {
             for &index in &boundary.quad_indices {
-                let base = (mesh.vertices.len() / 3) as u32;
-                mesh.vertices.extend(
-                    quads[index]
-                        .corners
-                        .into_iter()
-                        .flat_map(|p| transform_point(frame, p)),
-                );
-                mesh.indices
-                    .extend([base, base + 1, base + 2, base, base + 2, base + 3]);
+                let quad = quads[index];
+                let [a, b, c, d] = quad.corners.map(|point| {
+                    let mut insert = || {
+                        let index = (mesh.vertices.len() / 3) as u32;
+                        mesh.vertices.extend(transform_point(frame, point));
+                        index
+                    };
+                    if let Some(indexed) = &mut indexed {
+                        *indexed
+                            .entry((quad.component, key(point)))
+                            .or_insert_with(insert)
+                    } else {
+                        insert()
+                    }
+                });
+                mesh.indices.extend([a, b, c, a, c, d]);
                 mesh.face_indices.extend([face as u32; 2]);
             }
         }

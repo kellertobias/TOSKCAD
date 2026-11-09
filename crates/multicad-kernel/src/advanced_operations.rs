@@ -284,7 +284,7 @@ impl Solid {
                 "Compound solid budget exceeded",
             ));
         }
-        if solids.iter().any(|solid| solid.is_rust()) {
+        if solids.iter().any(|solid| solid.uses_rust_geometry()) {
             return Self::make_rust_compound(solids, feature, policy, interrupt);
         }
         let mut job =

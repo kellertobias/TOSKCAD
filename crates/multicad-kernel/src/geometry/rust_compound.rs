@@ -99,7 +99,7 @@ impl RustCompound {
         for solid in solids {
             checkpoint()?;
             let solid = solid?;
-            if !solid.is_rust() || solid.policy != policy {
+            if !solid.uses_rust_geometry() || solid.policy != policy {
                 return Err(compound_error(
                     GeometryErrorKind::Input,
                     "Rust compound members must share the Rust backend and geometry policy",
@@ -205,11 +205,15 @@ impl RustCompound {
         Ok(faces)
     }
 
-    pub(super) fn mesh(&self, options: MeshOptions) -> Result<ffi::Mesh, GeometryError> {
+    pub(super) fn mesh(
+        &self,
+        options: MeshOptions,
+        usage: MeshUse,
+    ) -> Result<ffi::Mesh, GeometryError> {
         let budget_error = || {
             compound_error(
                 GeometryErrorKind::Limit,
-                "Compound display triangle budget exceeded",
+                "Compound tessellation triangle budget exceeded",
             )
         };
         let mut result = ffi::Mesh {
@@ -222,10 +226,13 @@ impl RustCompound {
             if remaining == 0 {
                 return Err(budget_error());
             }
-            let mesh = member.solid.mesh(MeshOptions {
-                maximum_triangles: remaining,
-                ..options
-            })?;
+            let mesh = member.solid.rust_mesh(
+                MeshOptions {
+                    maximum_triangles: remaining,
+                    ..options
+                },
+                usage,
+            )?;
             let triangles = u32::try_from(mesh.face_indices.len()).map_err(|_| budget_error())?;
             remaining = remaining.checked_sub(triangles).ok_or_else(budget_error)?;
             let vertices = result.vertices.len() / 3;
