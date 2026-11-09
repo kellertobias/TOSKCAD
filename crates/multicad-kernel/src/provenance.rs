@@ -366,6 +366,10 @@ impl Solid {
                 "Member origin collides with existing source provenance",
             ));
         }
+        if self.is_rust() {
+            self.rust_origins.push(origin);
+            return Ok(self);
+        }
         let elements: BTreeMap<_, _> = snapshot
             .elements
             .into_iter()
@@ -897,16 +901,38 @@ impl Solid {
         owner: EntityId,
         revision: u64,
     ) -> Result<TopologySnapshot, GeometryError> {
-        if let Some(placed) = self.polygon_prism() {
-            return placed.snapshot(owner, revision).map_err(failure);
-        }
-        if let Some((cylinder, frame)) = self.axial_cylinder_frame() {
-            return crate::rust_prism_topology::cylinder_snapshot(cylinder, frame, owner, revision)
-                .map_err(failure);
-        }
-        if let Some((prism, frame)) = self.rust_prism_frame() {
-            return crate::rust_prism_topology::snapshot(prism, frame, owner, revision)
-                .map_err(failure);
+        if self.is_rust() {
+            let mut snapshot = if let Some(placed) = self.polygon_prism() {
+                placed.snapshot(owner, revision).map_err(failure)?
+            } else if let Some((cylinder, frame)) = self.axial_cylinder_frame() {
+                crate::rust_prism_topology::cylinder_snapshot(cylinder, frame, owner, revision)
+                    .map_err(failure)?
+            } else if let Some((prism, frame)) = self.rust_prism_frame() {
+                crate::rust_prism_topology::snapshot(prism, frame, owner, revision)
+                    .map_err(failure)?
+            } else {
+                self.rust_compound()
+                    .expect("checked Rust body")
+                    .topology(owner, revision)?
+            };
+            if !self.rust_origins.is_empty() {
+                for element in &mut snapshot.elements {
+                    for origin in &self.rust_origins {
+                        element.origins.insert(origin.clone());
+                        if !element.boundary.is_empty() {
+                            element.boundary.insert(origin.clone());
+                        }
+                        if let Some(AnalyticGeometry::Plane { frame }) = element.geometry {
+                            element.frames.push(AnchoredFrame {
+                                origin: origin.clone(),
+                                frame,
+                            });
+                        }
+                    }
+                }
+                snapshot.validate().map_err(failure)?;
+            }
+            return Ok(snapshot);
         }
         let mut elements: Vec<TopologyElement> = if self.provenance.is_empty() {
             ffi::topology(self.occt()?)

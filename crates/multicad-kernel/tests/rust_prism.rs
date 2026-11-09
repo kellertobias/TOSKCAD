@@ -31,6 +31,31 @@ fn near(actual: f64, expected: f64) {
 }
 
 #[test]
+fn rust_rigid_rounded_prism_bounds_follow_the_arc_extrema() {
+    let owner = EntityId::new();
+    let original =
+        adopt(Prism::extrude(owner.uuid_bits(), integer(4), integer(2), integer(3)).unwrap());
+    let c = std::f64::consts::FRAC_1_SQRT_2;
+    let transform = multicad_kernel::RigidTransform {
+        rotation: [[c, -c, 0.], [c, c, 0.], [0., 0., 1.]],
+        translation_mm: [10., 20., 30.],
+    };
+    let world = original.transformed(transform).unwrap();
+    let bounds = world.bounds().unwrap();
+    for (actual, expected) in bounds.min.into_iter().chain(bounds.max).zip([
+        10. - 4. * c,
+        20.,
+        30.,
+        12. + 2. * c,
+        22. + 6. * c,
+        33.,
+    ]) {
+        near(actual, expected);
+    }
+    near(world.volume_mm3().unwrap(), original.volume_mm3().unwrap());
+}
+
+#[test]
 fn rust_bore_matches_the_independent_native_volume_and_all_face_centroids() {
     let panel = EntityId::new();
     let authored = EntityId::new();

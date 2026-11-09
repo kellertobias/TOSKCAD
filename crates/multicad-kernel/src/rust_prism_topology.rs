@@ -11,6 +11,7 @@ use multicad_rust_kernel::{
     Circle, Rational, cylinder::AxialCylinder, polygon::PolygonPrism, prism::Prism,
 };
 use std::f64::consts::{FRAC_PI_2, PI, TAU};
+use std::rc::Rc;
 
 const X: [f64; 3] = [1., 0., 0.];
 const Y: [f64; 3] = [0., 1., 0.];
@@ -284,12 +285,13 @@ pub(crate) fn snapshot(
     Ok(snapshot)
 }
 
+#[derive(Clone)]
 pub(crate) struct PlacedPolygon {
-    pub(crate) prism: PolygonPrism,
+    pub(crate) prism: Rc<PolygonPrism>,
     pub(crate) frame: PlaneFrame,
     pub(crate) reverse_sweep: bool,
     pub(crate) feature: EntityId,
-    pub(crate) edges: Vec<(Origin, bool)>,
+    pub(crate) edges: Rc<[(Origin, bool)]>,
 }
 
 struct PolygonSide {
@@ -548,30 +550,31 @@ impl PlacedPolygon {
     }
 }
 
-pub(crate) fn cylinder_faces(cylinder: &AxialCylinder) -> Vec<Face> {
-    let [x, y] = cylinder.circle().center().map(Rational::as_f64);
+pub(crate) fn cylinder_faces(cylinder: &AxialCylinder, placed: PlaneFrame) -> Vec<Face> {
     let radius = cylinder.circle().radius().as_f64();
-    let bottom = cylinder.bottom().as_f64();
-    let top = cylinder.top().as_f64();
+    let height = cylinder.height().as_f64();
+    let normal = placed.normal();
+    let bottom = placed.origin;
+    let top = position(placed, [0., 0., height]);
     let cap_area = PI * radius * radius;
     vec![
         Face {
             index: 0,
-            plane: Some(([x, y, bottom], [0., 0., -1.])),
-            center_mm: [x, y, bottom],
+            plane: Some((bottom, normal.map(|x| -x))),
+            center_mm: bottom,
             area_mm2: cap_area,
         },
         Face {
             index: 1,
-            plane: Some(([x, y, top], Z)),
-            center_mm: [x, y, top],
+            plane: Some((top, normal)),
+            center_mm: top,
             area_mm2: cap_area,
         },
         Face {
             index: 2,
             plane: None,
-            center_mm: [x, y, (bottom + top) * 0.5],
-            area_mm2: TAU * radius * cylinder.height().as_f64(),
+            center_mm: position(placed, [0., 0., height * 0.5]),
+            area_mm2: TAU * radius * height,
         },
     ]
 }
@@ -599,14 +602,15 @@ pub(crate) fn cylinder_snapshot(
         next_edge: 0,
         next_vertex: 0,
     };
-    let [x, y] = cylinder.circle().center().map(Rational::as_f64);
     let radius_mm = cylinder.circle().radius().as_f64();
-    for (cap, z) in [cylinder.bottom().as_f64(), cylinder.top().as_f64()]
-        .into_iter()
-        .enumerate()
-    {
-        let origin = [x, y, z];
-        let support = frame(origin, X, if cap == 0 { NEG_Y } else { Y });
+    for (cap, z) in [0., cylinder.height().as_f64()].into_iter().enumerate() {
+        let origin = position(authored, [0., 0., z]);
+        let outward_v = if cap == 0 {
+            authored.v.map(|x| -x)
+        } else {
+            authored.v
+        };
+        let support = frame(origin, authored.u, outward_v);
         let anchor = frame(origin, authored.u, authored.v);
         build.face(cap, Some(support), Some(anchor), [2]);
         build.non_face(

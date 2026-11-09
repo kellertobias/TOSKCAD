@@ -161,6 +161,16 @@ fn subtract(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
 // Return analytic edge ordinals in loop order. These are the same ordinals
 // published by the prism topology and are distinct from mesh indices.
 fn planar_loops(solid: &Solid, face: u32) -> Vec<Vec<(u32, bool)>> {
+    if let Some(compound) = solid.rust_compound() {
+        let Some((child, local_face, offset)) = compound.face_source(face) else {
+            return vec![];
+        };
+        let mut loops = planar_loops(child, local_face);
+        for (edge, _) in loops.iter_mut().flatten() {
+            *edge += offset;
+        }
+        return loops;
+    }
     if let Some(placed) = solid.polygon_prism() {
         return placed.planar_loops(face);
     }

@@ -284,6 +284,9 @@ impl Solid {
                 "Compound solid budget exceeded",
             ));
         }
+        if solids.iter().any(|solid| solid.is_rust()) {
+            return Self::make_rust_compound(solids, feature, policy, interrupt);
+        }
         let mut job =
             ffi::compound_job().map_err(|e| failure(GeometryErrorKind::Native, e.to_string()))?;
         for solid in solids {

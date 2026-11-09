@@ -7,6 +7,8 @@ use multicad_rust_kernel::{
 };
 use std::path::Path;
 use std::rc::Rc;
+mod rust_compound;
+use rust_compound::RustCompound;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GeometryErrorKind {
@@ -180,6 +182,17 @@ impl Default for RigidTransform {
     }
 }
 impl RigidTransform {
+    fn vector(self, vector: [f64; 3]) -> [f64; 3] {
+        self.rotation.map(|row| dot(row, vector))
+    }
+    fn frame(self, frame: PlaneFrame) -> PlaneFrame {
+        let origin = self.vector(frame.origin);
+        PlaneFrame {
+            origin: std::array::from_fn(|i| origin[i] + self.translation_mm[i]),
+            u: self.vector(frame.u),
+            v: self.vector(frame.v),
+        }
+    }
     fn validate(self, policy: GeometryPolicy) -> Result<(), GeometryError> {
         policy.point(self.translation_mm)?;
         if self.rotation.iter().flatten().any(|v| !v.is_finite()) {
@@ -459,6 +472,7 @@ pub struct Solid {
     body: SolidBody,
     policy: GeometryPolicy,
     pub(crate) provenance: Vec<multicad_core::references::TopologyElement>,
+    pub(crate) rust_origins: Vec<Origin>,
 }
 
 enum SolidBody {
@@ -466,6 +480,7 @@ enum SolidBody {
     Prism(Rc<Prism>, PlaneFrame),
     PolygonPrism(Rc<PlacedPolygon>),
     AxialCylinder(Rc<AxialCylinder>, PlaneFrame),
+    RustCompound(Rc<RustCompound>),
 }
 
 impl Solid {
@@ -518,7 +533,7 @@ impl Solid {
             policy.length(circle.radius().as_f64())?;
         }
         let placed = PlacedPolygon {
-            prism,
+            prism: Rc::new(prism),
             frame,
             reverse_sweep,
             feature,
@@ -538,6 +553,7 @@ impl Solid {
             body: SolidBody::PolygonPrism(Rc::new(placed)),
             policy,
             provenance: vec![],
+            rust_origins: vec![],
         })
     }
 
@@ -587,6 +603,7 @@ impl Solid {
             body: SolidBody::Prism(Rc::new(prism), frame),
             policy,
             provenance: vec![],
+            rust_origins: vec![],
         };
         let bounds = solid.bounds()?;
         policy.point(bounds.min)?;
@@ -636,11 +653,18 @@ impl Solid {
             body: SolidBody::AxialCylinder(Rc::new(cylinder), frame),
             policy,
             provenance: vec![],
+            rust_origins: vec![],
         })
     }
 
     pub fn axial_cylinder(&self) -> Option<&AxialCylinder> {
-        self.axial_cylinder_frame().map(|(cylinder, _)| cylinder)
+        let (cylinder, frame) = self.axial_cylinder_frame()?;
+        let [x, y] = cylinder.circle().center().map(Rational::as_f64);
+        (frame.origin == [x, y, cylinder.bottom().as_f64()]
+            && frame.u[2] == 0.
+            && frame.v[2] == 0.
+            && frame.normal()[2] > 0.)
+            .then_some(cylinder)
     }
 
     pub(crate) fn axial_cylinder_frame(&self) -> Option<(&AxialCylinder, PlaneFrame)> {
@@ -707,6 +731,23 @@ impl Solid {
     pub fn geometry_policy(&self) -> GeometryPolicy {
         self.policy
     }
+    pub(crate) fn is_rust(&self) -> bool {
+        !matches!(self.body, SolidBody::Occt(_))
+    }
+    pub(crate) fn rust_compound(&self) -> Option<&RustCompound> {
+        match &self.body {
+            SolidBody::RustCompound(compound) => Some(compound),
+            _ => None,
+        }
+    }
+    pub(crate) fn make_rust_compound(
+        solids: &[&Solid],
+        feature: EntityId,
+        policy: GeometryPolicy,
+        interrupt: Option<&dyn Fn() -> bool>,
+    ) -> Result<Self, GeometryError> {
+        RustCompound::assemble(solids, feature, policy, interrupt)
+    }
     /// Another owner of the same immutable exact B-rep (and its provenance),
     /// without copying geometry. Kernel operations never modify their input
     /// shapes, so both owners observe identical geometry. Like every Solid
@@ -718,6 +759,7 @@ impl Solid {
             SolidBody::AxialCylinder(cylinder, frame) => {
                 SolidBody::AxialCylinder(Rc::clone(cylinder), *frame)
             }
+            SolidBody::RustCompound(compound) => SolidBody::RustCompound(Rc::clone(compound)),
             SolidBody::Occt(shape) => {
                 let handle = ffi::share_shape(&shape.0).map_err(|e| native("share", e))?;
                 if handle.is_null() {
@@ -734,6 +776,7 @@ impl Solid {
             body,
             policy: self.policy,
             provenance: self.provenance.clone(),
+            rust_origins: self.rust_origins.clone(),
         })
     }
     pub(crate) fn adopt(
@@ -752,6 +795,7 @@ impl Solid {
             body: SolidBody::Occt(Shape(handle)),
             policy,
             provenance: vec![],
+            rust_origins: vec![],
         };
         if !ffi::valid(solid.occt()?).map_err(|e| native(operation, e))?
             || solid.solid_count()? == 0
@@ -934,6 +978,38 @@ impl Solid {
     }
     pub fn transformed(&self, transform: RigidTransform) -> Result<Self, GeometryError> {
         transform.validate(self.policy)?;
+        if self.is_rust() {
+            if transform == RigidTransform::default() {
+                return self.share();
+            }
+            let body = match &self.body {
+                SolidBody::Prism(prism, frame) => {
+                    SolidBody::Prism(Rc::clone(prism), transform.frame(*frame))
+                }
+                SolidBody::PolygonPrism(placed) => {
+                    let mut placed = placed.as_ref().clone();
+                    placed.frame = transform.frame(placed.frame);
+                    SolidBody::PolygonPrism(Rc::new(placed))
+                }
+                SolidBody::AxialCylinder(cylinder, frame) => {
+                    SolidBody::AxialCylinder(Rc::clone(cylinder), transform.frame(*frame))
+                }
+                SolidBody::RustCompound(compound) => {
+                    SolidBody::RustCompound(compound.transformed(transform, self.policy)?)
+                }
+                SolidBody::Occt(_) => unreachable!("checked Rust body"),
+            };
+            let result = Self {
+                body,
+                policy: self.policy,
+                provenance: vec![],
+                rust_origins: self.rust_origins.clone(),
+            };
+            let bounds = result.bounds()?;
+            self.policy.point(bounds.min)?;
+            self.policy.point(bounds.max)?;
+            return Ok(result);
+        }
         let r: Vec<_> = transform.rotation.into_iter().flatten().collect();
         let mut result = Self::adopt(
             ffi::transform_shape(self.occt()?, &r, &point(transform.translation_mm))
@@ -945,10 +1021,13 @@ impl Solid {
         Ok(result)
     }
     pub fn volume_mm3(&self) -> Result<f64, GeometryError> {
+        if let Some(compound) = self.rust_compound() {
+            return Ok(compound.volume_mm3());
+        }
         if let Some(placed) = self.polygon_prism() {
             return Ok(placed.prism.volume().as_f64());
         }
-        if let Some(cylinder) = self.axial_cylinder() {
+        if let Some((cylinder, _)) = self.axial_cylinder_frame() {
             return Ok(std::f64::consts::PI * cylinder.volume_factor().as_f64());
         }
         if let Some(prism) = self.rust_prism() {
@@ -957,12 +1036,18 @@ impl Solid {
         ffi::volume(self.occt()?).map_err(|e| native("volume", e))
     }
     pub fn solid_count(&self) -> Result<u32, GeometryError> {
-        if !matches!(self.body, SolidBody::Occt(_)) {
+        if let Some(compound) = self.rust_compound() {
+            return Ok(compound.solid_count());
+        }
+        if self.is_rust() {
             return Ok(1);
         }
         ffi::solid_count(self.occt()?).map_err(|e| native("solid count", e))
     }
     pub fn bounds(&self) -> Result<Bounds, GeometryError> {
+        if let Some(compound) = self.rust_compound() {
+            return Ok(compound.bounds());
+        }
         if let Some(placed) = self.polygon_prism() {
             return Ok(placed.bounds());
         }
@@ -970,29 +1055,45 @@ impl Solid {
             let [min, max] = cylinder.bounds().map(|corner| corner.map(Rational::as_f64));
             return Ok(Bounds { min, max });
         }
-        if let Some((prism, frame)) = self.rust_prism_frame() {
-            let max = prism.maximum().map(Rational::as_f64);
-            if frame == PlaneFrame::default() {
-                return Ok(Bounds { min: [0.; 3], max });
-            }
-            // Only boxes are placed. Each projection reaches its extrema at
-            // one of the eight corners of the exact local box.
-            let mut min_world = frame.origin;
-            let mut max_world = frame.origin;
-            for x in [0., max[0]] {
-                for y in [0., max[1]] {
-                    for z in [0., max[2]] {
-                        let p = crate::rust_prism_topology::position(frame, [x, y, z]);
-                        for i in 0..3 {
-                            min_world[i] = min_world[i].min(p[i]);
-                            max_world[i] = max_world[i].max(p[i]);
-                        }
-                    }
-                }
-            }
+        if let Some((cylinder, frame)) = self.axial_cylinder_frame() {
+            let radius = cylinder.circle().radius().as_f64();
+            let height = cylinder.height().as_f64();
+            let axis = frame.normal();
+            let extent: [f64; 3] = std::array::from_fn(|i| radius * frame.u[i].hypot(frame.v[i]));
             return Ok(Bounds {
-                min: min_world,
-                max: max_world,
+                min: std::array::from_fn(|i| {
+                    frame.origin[i] + (height * axis[i]).min(0.) - extent[i]
+                }),
+                max: std::array::from_fn(|i| {
+                    frame.origin[i] + (height * axis[i]).max(0.) + extent[i]
+                }),
+            });
+        }
+        if let Some((prism, frame)) = self.rust_prism_frame() {
+            if frame == PlaneFrame::default() {
+                return Ok(Bounds {
+                    min: [0.; 3],
+                    max: prism.maximum().map(Rational::as_f64),
+                });
+            }
+            let [length, width, height] = prism.dimensions().map(Rational::as_f64);
+            let axis = frame.normal();
+            let support = |u: f64, v: f64, n: f64| {
+                let rectangle = (u * length).max(0.) + (v * width).max(0.);
+                let cap = prism.rounded_end().map_or(rectangle, |circle| {
+                    let radius = circle.radius().as_f64();
+                    let arc = u * length + v * radius + radius * u.max(0.).hypot(v);
+                    rectangle.max(arc)
+                });
+                cap + (n * height).max(0.)
+            };
+            return Ok(Bounds {
+                min: std::array::from_fn(|i| {
+                    frame.origin[i] - support(-frame.u[i], -frame.v[i], -axis[i])
+                }),
+                max: std::array::from_fn(|i| {
+                    frame.origin[i] + support(frame.u[i], frame.v[i], axis[i])
+                }),
             });
         }
         let b = ffi::bounds(self.occt()?).map_err(|e| native("bounds", e))?;
@@ -1029,11 +1130,14 @@ impl Solid {
         crate::planar_contours::extract(self, face, frame, self.policy)
     }
     pub fn faces(&self) -> Result<Vec<Face>, GeometryError> {
+        if let Some(compound) = self.rust_compound() {
+            return compound.faces();
+        }
         if let Some(placed) = self.polygon_prism() {
             return Ok(placed.faces());
         }
-        if let Some(cylinder) = self.axial_cylinder() {
-            return Ok(crate::rust_prism_topology::cylinder_faces(cylinder));
+        if let Some((cylinder, frame)) = self.axial_cylinder_frame() {
+            return Ok(crate::rust_prism_topology::cylinder_faces(cylinder, frame));
         }
         if let Some((prism, frame)) = self.rust_prism_frame() {
             return Ok(crate::rust_prism_topology::faces(prism, frame));
@@ -1097,9 +1201,21 @@ impl Solid {
                 placed.frame,
                 placed.reverse_sweep,
             )?,
-            SolidBody::AxialCylinder(cylinder, _) => crate::rust_display::mesh(
-                multicad_rust_kernel::display::axial_cylinder(cylinder, rust_options),
-            )?,
+            SolidBody::AxialCylinder(cylinder, frame) => {
+                let mut mesh = crate::rust_display::mesh(
+                    multicad_rust_kernel::display::axial_cylinder(cylinder, rust_options),
+                )?;
+                let [x, y] = cylinder.circle().center().map(Rational::as_f64);
+                let origin = [x, y, cylinder.bottom().as_f64()];
+                if self.axial_cylinder().is_none() {
+                    for point in mesh.vertices.as_chunks_mut::<3>().0 {
+                        let local = std::array::from_fn(|i| point[i] - origin[i]);
+                        *point = crate::rust_prism_topology::position(*frame, local);
+                    }
+                }
+                mesh
+            }
+            SolidBody::RustCompound(compound) => compound.mesh(options)?,
             SolidBody::Occt(shape) => ffi::tessellate(
                 &shape.0,
                 options.linear_deflection_mm,
@@ -1246,6 +1362,7 @@ impl Solid {
             SolidBody::PolygonPrism(placed) => placed.feature,
             SolidBody::Prism(prism, _) => EntityId::from_uuid_bits(prism.feature()),
             SolidBody::AxialCylinder(cylinder, _) => EntityId::from_uuid_bits(cylinder.feature()),
+            SolidBody::RustCompound(compound) => compound.feature,
             SolidBody::Occt(_) => return None,
         };
         Some(self.topology_snapshot(feature, 0))
@@ -1257,6 +1374,7 @@ impl Solid {
                 true
             }
             SolidBody::Prism(prism, _) => prism.rounded_end().is_none(),
+            SolidBody::RustCompound(_) => false,
         }
     }
 
@@ -1287,8 +1405,13 @@ impl Solid {
                 step::write_rectangular_prism(prism, frame.origin, frame.u, frame.v)
             }
             SolidBody::AxialCylinder(cylinder, frame) => {
-                step::write_axial_cylinder(cylinder, frame.u)
+                if self.axial_cylinder().is_some() {
+                    step::write_axial_cylinder(cylinder, frame.u)
+                } else {
+                    step::write_placed_cylinder(cylinder, frame.origin, frame.u, frame.v)
+                }
             }
+            SolidBody::RustCompound(_) => unreachable!("STEP support checked above"),
             SolidBody::Occt(_) => unreachable!("native STEP dispatched above"),
         }
         .map_err(|e| {
