@@ -18,10 +18,6 @@ pub(super) struct Lane {
     backend: Option<Box<dyn SceneBackend>>,
     candidate: Option<Candidate>,
     generation: u64,
-    pub(super) show_model: bool,
-    camera: crate::camera::Camera,
-    solid: crate::viewport::Interaction,
-    fit: bool,
 }
 impl Lane {
     pub(super) fn clear(&mut self) {
@@ -34,6 +30,7 @@ impl Lane {
 impl LibraryEditor {
     pub fn set_backend(&mut self, backend: Box<dyn SceneBackend>) {
         self.preview.clear();
+        self.confirm_on_ready = None;
         self.preview.backend = Some(backend);
     }
     pub fn has_backend(&self) -> bool {
@@ -56,8 +53,11 @@ impl LibraryEditor {
                 .is_some_and(|c| c.scene.is_some())
     }
     pub fn can_preview(&self, s: &Session) -> bool {
+        self.can_confirm(s) && self.preview.backend.is_some()
+    }
+    pub(crate) fn can_confirm(&self, s: &Session) -> bool {
         self.dirty()
-            && self.preview.backend.is_some()
+            && self.confirm_on_ready.is_none()
             && self
                 .guard
                 .as_ref()
@@ -81,63 +81,122 @@ impl LibraryEditor {
         channel: Channel,
     ) -> Result<(), String> {
         self.preview.clear();
+        self.confirm_on_ready = None;
         self.error = None;
-        let result: Result<(), String> = (|| {
-            let prepared = self.prepare(s, channel)?;
-            let previous = diagnostics(s.document()).map_err(|e| e.to_string())?;
-            let issues = diagnostics(prepared.document()).map_err(|e| e.to_string())?;
-            if let Some(issue) = issues.iter().find(|issue| {
-                matches!(
-                    issue.kind,
-                    DiagnosticKind::Missing
-                        | DiagnosticKind::WrongKind
-                        | DiagnosticKind::MaterialMismatch
-                ) && !previous.contains(issue)
-            }) {
-                let owner = prepared
-                    .document()
-                    .get(issue.owner)
-                    .map_or("Dependent definition", |e| e.name.as_str());
-                return Err(format!("{owner}: {}", issue.message));
-            }
-            let content = ContentHash::document(prepared.document())?;
-            self.preview.generation = self
-                .preview
-                .generation
-                .checked_add(1)
-                .ok_or("Material preview generation limit reached")?;
-            let stamp = SceneStamp {
-                document: s.document().id(),
-                revision: s.revision(),
-                generation: self.preview.generation,
-            };
-            self.preview
-                .backend
-                .as_mut()
-                .ok_or("The native material preview provider is unavailable")?
-                .request_evaluation(prepared.document(), resources, stamp, &Default::default())?;
-            self.preview.candidate = Some(Candidate {
-                prepared,
-                draft: self.draft.clone().ok_or("Choose a definition first")?,
-                resources: resources.clone(),
-                content,
-                stamp,
-                channel,
-                scene: None,
-            });
-            self.preview.show_model = true;
-            Ok(())
-        })();
+        let result = self
+            .prepare_checked(s, channel)
+            .and_then(|prepared| self.request_native(s, resources, prepared, channel));
         if let Err(error) = &result {
             self.error = Some(error.clone());
         }
         result
     }
+
+    fn prepare_checked(&self, s: &Session, channel: Channel) -> Result<Prepared, String> {
+        let prepared = self.prepare(s, channel)?;
+        let previous = diagnostics(s.document()).map_err(|e| e.to_string())?;
+        let issues = diagnostics(prepared.document()).map_err(|e| e.to_string())?;
+        if let Some(issue) = issues.iter().find(|issue| {
+            matches!(
+                issue.kind,
+                DiagnosticKind::Missing
+                    | DiagnosticKind::WrongKind
+                    | DiagnosticKind::MaterialMismatch
+            ) && !previous.contains(issue)
+        }) {
+            let owner = prepared
+                .document()
+                .get(issue.owner)
+                .map_or("Dependent definition", |e| e.name.as_str());
+            return Err(format!("{owner}: {}", issue.message));
+        }
+        Ok(prepared)
+    }
+
+    fn request_native(
+        &mut self,
+        s: &Session,
+        resources: &ProjectResources,
+        prepared: Prepared,
+        channel: Channel,
+    ) -> Result<(), String> {
+        let draft = self.draft.clone().ok_or("Choose a definition first")?;
+        let content = ContentHash::document(prepared.document())?;
+        self.preview.generation = self
+            .preview
+            .generation
+            .checked_add(1)
+            .ok_or("Material preview generation limit reached")?;
+        let stamp = SceneStamp {
+            document: s.document().id(),
+            revision: s.revision(),
+            generation: self.preview.generation,
+        };
+        self.preview
+            .backend
+            .as_mut()
+            .ok_or("Native validation is unavailable for a definition used by the model")?
+            .request_evaluation(prepared.document(), resources, stamp, &Default::default())?;
+        self.preview.candidate = Some(Candidate {
+            prepared,
+            draft,
+            resources: resources.clone(),
+            content,
+            stamp,
+            channel,
+            scene: None,
+        });
+        Ok(())
+    }
+
+    pub(crate) fn confirm(
+        &mut self,
+        s: &mut Session,
+        resources: &ProjectResources,
+        channel: Channel,
+    ) -> Result<(), String> {
+        if self.candidate_current(s, resources)
+            && self
+                .preview
+                .candidate
+                .as_ref()
+                .is_some_and(|c| c.channel == channel)
+        {
+            if self.pending() {
+                self.confirm_on_ready = Some(channel);
+                return Ok(());
+            }
+            return self.apply(s, resources, channel);
+        }
+        self.preview.clear();
+        self.error = None;
+        let prepared = self.prepare_checked(s, channel)?;
+        let draft = self.draft.as_ref().ok_or("Choose a definition first")?;
+        // Only stock dimensions and associations feed native geometry. New
+        // stock and renames do not change any existing dependent geometry.
+        let needs_native = self.original.as_ref().is_some_and(|original| {
+            original.entity.data != draft.entity.data
+                && matches!(read(&draft.entity), Ok(Some(LibraryDefinition::Stock(_))))
+                && s.document().entities().any(|entity| {
+                    entity
+                        .references()
+                        .iter()
+                        .any(|link| link.target == draft.entity.id)
+                })
+        });
+        if needs_native {
+            self.request_native(s, resources, prepared, channel)?;
+            self.confirm_on_ready = Some(channel);
+        } else {
+            self.commit(s, prepared, draft.entity.clone())?;
+        }
+        Ok(())
+    }
     pub fn poll(&mut self, s: &Session, resources: &ProjectResources) {
         if self.preview.candidate.is_some() && !self.candidate_current(s, resources) {
             self.preview.clear();
             self.error =
-                Some("Definition or source changed. Preview the current draft again.".into());
+                Some("Definition or project changed. Apply the current draft again.".into());
         }
         for _ in 0..16 {
             let Some(reply) = self.preview.backend.as_mut().and_then(|b| b.poll()) else {
@@ -173,7 +232,6 @@ impl LibraryEditor {
                         .as_mut()
                         .expect("matching candidate")
                         .scene = Some(scene);
-                    self.preview.fit = true;
                     self.error = None;
                 }
                 Err(error) => {
@@ -203,13 +261,21 @@ impl LibraryEditor {
             return Err("Preview and Apply must use the same control channel".into());
         }
         let candidate = self.preview.candidate.take().expect("checked candidate");
-        s.commit(candidate.prepared).map_err(|e| e.to_string())?;
-        self.select(s, candidate.draft.entity);
+        self.commit(s, candidate.prepared, candidate.draft.entity)
+    }
+    fn commit(
+        &mut self,
+        s: &mut Session,
+        prepared: Prepared,
+        entity: Entity,
+    ) -> Result<(), String> {
+        s.commit(prepared).map_err(|e| e.to_string())?;
+        self.select(s, entity);
         Ok(())
     }
     pub fn discard(&mut self, s: &Session) {
         self.preview.clear();
-        self.preview.show_model = false;
+        self.confirm_on_ready = None;
         let selected = self
             .original
             .as_ref()
@@ -223,80 +289,6 @@ impl LibraryEditor {
         self.guard = Some(s.stamp());
         if let Some(entity) = selected {
             self.select(s, entity);
-        }
-    }
-    pub(super) fn preview_status(&self, ui: &mut egui::Ui) {
-        if self.pending() {
-            ui.horizontal(|ui| {
-                ui.spinner();
-                ui.label("Checking affected geometry with the native kernel…");
-            });
-            ui.ctx()
-                .request_repaint_after(std::time::Duration::from_millis(16));
-        } else if self
-            .preview
-            .candidate
-            .as_ref()
-            .is_some_and(|c| c.scene.is_some())
-        {
-            ui.colored_label(
-                Color32::LIGHT_GREEN,
-                "Native preview valid · Apply commits one undoable edit",
-            );
-        } else if self.dirty() && self.error.is_none() {
-            ui.label("Preview this draft to check affected geometry before Apply.");
-        }
-        if self.preview.backend.is_none() {
-            ui.colored_label(
-                Color32::LIGHT_YELLOW,
-                "Native preview is unavailable; definition edits cannot be applied.",
-            );
-        }
-    }
-    pub(super) fn show_model(&mut self, ui: &mut egui::Ui) {
-        let Some(scene) = self
-            .preview
-            .candidate
-            .as_ref()
-            .and_then(|c| c.scene.clone())
-        else {
-            ui.label("Use Preview to inspect the affected model. The committed document stays unchanged.");
-            return;
-        };
-        ui.small("Read-only native preview · drag to orbit · scroll to zoom");
-        if let Some(bounds) = scene.world_bounds() {
-            let (rect, response) = ui.allocate_exact_size(
-                egui::vec2(ui.available_width(), ui.available_height().max(120.)),
-                egui::Sense::drag(),
-            );
-            if self.preview.fit {
-                let corners: Vec<_> = (0..8)
-                    .map(|bits| std::array::from_fn(|axis| bounds[(bits >> axis) & 1][axis] as f32))
-                    .collect();
-                self.preview.camera.fit(&corners, rect);
-                self.preview.fit = false;
-            }
-            if response.dragged() {
-                self.preview.camera.orbit(response.drag_delta());
-            }
-            if response.hovered() {
-                self.preview
-                    .camera
-                    .zoom(ui.input(|i| i.smooth_scroll_delta.y));
-            }
-            ui.painter().rect_filled(rect, 0., crate::theme::SURFACE);
-            self.preview.solid.show(
-                ui,
-                &response,
-                scene,
-                self.preview.camera,
-                crate::navigation::DisplayStyle::VisibleEdges,
-                false,
-            );
-        } else {
-            ui.label(
-                "No model Parts yet. The material and stock definitions passed native validation.",
-            );
         }
     }
 }

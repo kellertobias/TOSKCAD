@@ -1,10 +1,6 @@
 use super::*;
 use multicad_core::materials::{LibraryDefinition, StockKind, read};
-use std::{
-    collections::BTreeSet,
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use std::{collections::BTreeSet, sync::Arc};
 
 fn native_app() -> (Application, egui::Context, egui::Vec2) {
     let (mut app, _) = app();
@@ -20,34 +16,8 @@ fn native_app() -> (Application, egui::Context, egui::Vec2) {
     }
     (app, ctx, size)
 }
-fn preview_and_apply(ctx: &egui::Context, app: &mut Application, size: egui::Vec2) {
-    assert!(
-        !app.enabled(Command::Apply),
-        "native preview must gate Apply"
-    );
-    let before = app.current().session.document().clone();
-    click(ctx, app, size, "Preview");
-    let deadline = Instant::now() + Duration::from_secs(15);
-    while !app.enabled(Command::Apply) {
-        assert!(
-            Instant::now() < deadline,
-            "Project native preview timed out: {}",
-            app.message
-        );
-        frame(ctx, app, size, vec![]).drop_without_applying_deltas();
-        std::thread::sleep(Duration::from_millis(1));
-    }
-    assert_eq!(app.current().session.document(), &before);
-    assert!(
-        app.message.contains("preview ready"),
-        "Completion status stayed busy: {}",
-        app.message
-    );
-    click(ctx, app, size, "Apply and Rebuild");
-    assert!(!app.current().sketch.material_library().dirty());
-}
 #[test]
-fn project_buttons_create_one_shared_material_sheet_and_profile_through_native_preview() {
+fn project_buttons_create_shared_definitions_with_one_apply_each() {
     let (mut app, ctx, size) = native_app();
     let before_ids: BTreeSet<_> = app
         .current()
@@ -65,13 +35,20 @@ fn project_buttons_create_one_shared_material_sheet_and_profile_through_native_p
     );
     assert!(egui::PanelState::load(&ctx, egui::Id::new("project-material-ribbon")).is_some());
     assert!(egui::PanelState::load(&ctx, egui::Id::new("parameters-metadata")).is_none());
-    for label in ["New material", "New sheet stock", "New profile stock"] {
+    assert!(egui::PanelState::load(&ctx, egui::Id::new("project-material-tree")).is_some());
+    assert!(egui::PanelState::load(&ctx, egui::Id::new("project-material-preview")).is_some());
+    for (i, label) in ["New material", "New sheet stock", "New profile stock"]
+        .into_iter()
+        .enumerate()
+    {
         click(&ctx, &mut app, size, label);
         assert!(app.current().pending_edits());
         assert!(!app.enabled(Command::Save));
         assert!(!app.enabled(Command::Undo));
         assert!(!app.enabled(Command::Mode(Mode::Model)));
-        preview_and_apply(&ctx, &mut app, size);
+        click(&ctx, &mut app, size, "Apply");
+        assert_eq!(app.current().session.revision(), revision + i as u64 + 1);
+        assert!(!app.current().sketch.material_library().dirty());
     }
     assert_eq!(app.current().session.revision(), revision + 3);
     let created: Vec<_> = app
@@ -117,9 +94,9 @@ fn project_buttons_create_one_shared_material_sheet_and_profile_through_native_p
     }
     assert_eq!(kinds, BTreeSet::from(["sheet", "profile"]));
     let profile = profile.unwrap();
-    click(&ctx, &mut app, size, "Undo");
+    app.invoke(Command::Undo, &[], Channel::Ui).unwrap();
     assert!(app.current().session.document().get(profile).is_none());
-    click(&ctx, &mut app, size, "Redo");
+    app.invoke(Command::Redo, &[], Channel::Ui).unwrap();
     assert!(app.current().session.document().get(profile).is_some());
 }
 #[test]
@@ -139,7 +116,7 @@ fn project_material_draft_discard_is_neutral_and_cannot_be_hidden_by_mode_or_par
     assert_eq!(app.mode, Mode::Parameters);
     assert_eq!(app.tab, MATERIALS_TAB);
     assert_eq!(app.current().session.document(), &before);
-    click(&ctx, &mut app, size, "Discard Edit");
+    click(&ctx, &mut app, size, "Discard");
     assert_eq!(app.current().session.document(), &before);
     assert!(!app.current().pending_edits());
     click(&ctx, &mut app, size, "Parameters");
@@ -235,10 +212,12 @@ fn compact_material_rows_keep_the_selected_definition_and_draft_through_resize()
         rect
     };
     let entry = painted(&mut app, material.name.as_str());
+    assert!(
+        entry.left() < size.x * 0.24,
+        "definition belongs in the left tree"
+    );
     click_at(&mut app, entry.center());
 
-    let value = painted(&mut app, material.name.as_str());
-    assert!(value.left() > 184. && value.right() < size.x);
     let out = frame(&ctx, &mut app, size, vec![]);
     let name = out
         .shapes
@@ -247,12 +226,15 @@ fn compact_material_rows_keep_the_selected_definition_and_draft_through_resize()
             let egui::Shape::Text(text) = &shape.shape else {
                 return None;
             };
-            (text.galley.text() == material.name).then(|| {
-                egui::pos2(
-                    text.pos.x + text.galley.size().x + 6.,
-                    text.pos.y + text.galley.size().y * 0.5,
-                )
-            })
+            (text.galley.text() == material.name
+                && text.pos.x > size.x * 0.24
+                && text.pos.x < size.x * 0.72)
+                .then(|| {
+                    egui::pos2(
+                        text.pos.x + text.galley.size().x + 6.,
+                        text.pos.y + text.galley.size().y * 0.5,
+                    )
+                })
         })
         .max_by(|a, b| a.x.total_cmp(&b.x))
         .expect("compact Material Name field");
@@ -298,7 +280,7 @@ fn compact_material_rows_keep_the_selected_definition_and_draft_through_resize()
         assert!(app.current().sketch.material_library().dirty());
         assert_eq!(app.current().session.document(), &before);
     }
-    click(&ctx, &mut app, size, "Discard Edit");
+    click(&ctx, &mut app, size, "Discard");
     assert!(!app.current().sketch.material_library().dirty());
     assert_eq!(app.current().session.document(), &before);
 }

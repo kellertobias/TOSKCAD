@@ -3,7 +3,6 @@ use super::*;
 pub(super) const PARAMETERS_TAB: usize = 1;
 pub(super) const MATERIALS_TAB: usize = 2;
 pub(super) const PROJECT_EXPORT_TAB: usize = 3;
-const ACTION_WIDTH: f32 = 184.;
 const TABLE_MIN_WIDTH: f32 = 760.;
 #[cfg(test)]
 mod tests;
@@ -385,29 +384,27 @@ impl Application {
             self.project_overview(ui);
             return;
         }
-        let materials = self.tab == MATERIALS_TAB;
-        if materials {
-            egui::Panel::left("project-actions")
-                .exact_size(ACTION_WIDTH)
-                .frame(
-                    egui::Frame::new()
-                        .fill(crate::theme::PANEL)
-                        .inner_margin(12),
-                )
-                .show(ui, |ui| {
-                    egui::ScrollArea::vertical()
-                        .id_salt("project-action-scroll")
-                        .auto_shrink([false, false])
-                        .show(ui, |ui| {
-                            ui.strong(Mode::Parameters.title());
-                            ui.add_space(8.);
-                            ui.spacing_mut().item_spacing.y = 6.;
-                            self.project_actions(ui, true);
-                        });
-                });
+        if self.tab == MATERIALS_TAB {
+            let project = self.current_mut();
+            let editable = !project.editor.dirty();
+            let revision = project.session.revision();
+            let library = project.sketch.material_library_mut();
+            let was_pending = library.pending();
+            library.show_inline(ui, &mut project.session, &project.resources, editable);
+            if project.session.revision() != revision {
+                project.editor.reload(&project.session);
+                self.message = "Shared definition applied".into();
+                self.message_error = false;
+                ui.ctx().request_repaint();
+            } else if was_pending && !library.pending() {
+                let error = library.error().map(str::to_owned);
+                self.message_error = error.is_some();
+                self.message = error.unwrap_or_else(|| "Definition checked".into());
+                ui.ctx().request_repaint();
+            }
+            return;
         }
         let project = self.current_mut();
-        let was_pending = project.sketch.material_library().pending();
         egui::Frame::new()
             .inner_margin(egui::Margin {
                 left: 16,
@@ -417,39 +414,9 @@ impl Application {
             })
             .show(ui, |ui| {
                 // Keep the table's horizontal overflow in the central viewport.
-                if materials {
-                    let editable = !project.editor.dirty();
-                    project.sketch.material_library_mut().show_inline(
-                        ui,
-                        &project.session,
-                        &project.resources,
-                        editable,
-                    );
-                } else {
-                    project
-                        .editor
-                        .show_with_min_table_width(ui, &project.session, TABLE_MIN_WIDTH);
-                }
+                project
+                    .editor
+                    .show_with_min_table_width(ui, &project.session, TABLE_MIN_WIDTH);
             });
-        let library = project.sketch.material_library();
-        let completed = if materials && was_pending && !library.pending() {
-            if let Some(error) = library.error() {
-                Some((error.to_owned(), true))
-            } else if library.can_apply(&project.session, &project.resources) {
-                Some((
-                    "Material/stock preview ready · source unchanged".into(),
-                    false,
-                ))
-            } else {
-                None
-            }
-        } else {
-            None
-        };
-        if let Some((message, error)) = completed {
-            self.message = message;
-            self.message_error = error;
-            ui.ctx().request_repaint();
-        }
     }
 }

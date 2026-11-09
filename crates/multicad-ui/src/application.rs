@@ -924,11 +924,14 @@ impl Application {
             Command::Apply => {
                 if self.current().sketch.material_library().dirty() {
                     let p = self.current_mut();
-                    p.sketch
-                        .material_library_mut()
-                        .apply(&mut p.session, &p.resources, channel)?;
-                    p.editor.reload(&p.session);
-                    self.message = "Shared material/stock definition applied · one undoable native-checked edit".into();
+                    let library = p.sketch.material_library_mut();
+                    library.confirm(&mut p.session, &p.resources, channel)?;
+                    self.message = if library.pending() {
+                        "Checking affected geometry…".into()
+                    } else {
+                        p.editor.reload(&p.session);
+                        "Shared definition applied".into()
+                    };
                     return Ok(());
                 }
                 if self.current().sketch.external_pending() {
@@ -1659,7 +1662,7 @@ impl Application {
                 .current()
                 .sketch
                 .material_library()
-                .can_apply(&self.current().session, &self.current().resources),
+                .can_confirm(&self.current().session),
             Command::Discard
                 if self.current().sketch.hierarchy_tool_active()
                     || self.current().sketch.symbol_library_active() =>

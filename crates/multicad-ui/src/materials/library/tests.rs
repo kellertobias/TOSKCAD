@@ -224,7 +224,7 @@ fn checked_preview_cannot_authorize_changed_draft_resources_session_or_channel()
     assert_eq!(s.document(), &original);
 }
 #[test]
-fn shared_panel_thickness_preview_updates_real_geometry_and_undo_refreshes_clean_selection() {
+fn applying_used_panel_stock_validates_geometry_and_commits_without_a_second_click() {
     let (mut s, part) = crate::modeling::panel_fixture::flat_panel();
     let stock = s
         .document()
@@ -234,6 +234,7 @@ fn shared_panel_thickness_preview_updates_real_geometry_and_undo_refreshes_clean
         .clone();
     let stock_id = stock.id;
     let before = s.document().clone();
+    let revision = s.revision();
     let mut editor = editor(&s);
     editor.select(&s, stock);
     set_stock(&mut editor, |s| {
@@ -241,7 +242,19 @@ fn shared_panel_thickness_preview_updates_real_geometry_and_undo_refreshes_clean
             *thickness_mm = 24.;
         }
     });
-    preview(&mut editor, &s).unwrap();
+    let resources = ProjectResources::default();
+    editor.confirm(&mut s, &resources, Channel::Ui).unwrap();
+    assert_eq!(editor.confirm_on_ready, Some(Channel::Ui));
+    assert!(editor.pending());
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while editor.pending() {
+        assert!(
+            Instant::now() < deadline,
+            "native definition check timed out"
+        );
+        editor.poll(&s, &resources);
+        std::thread::sleep(Duration::from_millis(1));
+    }
     let bounds = editor
         .preview_scene(&s, &Default::default())
         .unwrap()
@@ -249,9 +262,17 @@ fn shared_panel_thickness_preview_updates_real_geometry_and_undo_refreshes_clean
         .unwrap();
     assert!((bounds[1][2] - bounds[0][2] - 24.).abs() < 1e-6);
     assert_eq!(s.document(), &before);
-    editor
-        .apply(&mut s, &Default::default(), Channel::Ui)
-        .unwrap();
+    egui::Context::default()
+        .run_ui(Default::default(), |ui| {
+            editor.show_inline(ui, &mut s, &resources, true);
+        })
+        .drop_without_applying_deltas();
+    assert_eq!(
+        s.revision(),
+        revision + 1,
+        "one source edit after confirmation"
+    );
+    assert!(!editor.dirty());
     assert!(s.document().get(part).is_some());
     assert!(s.document().get(stock_id).is_some());
     s.undo(s.revision(), Actor::local(Channel::Ui)).unwrap();
@@ -389,7 +410,7 @@ fn hollow_section_widget_can_author_a_real_solid_bar_without_replacing_stock_or_
     let ctx = egui::Context::default();
     ctx.enable_accesskit();
     crate::theme::configure(&ctx);
-    let frame = |editor: &mut LibraryEditor, events| {
+    let mut frame = |editor: &mut LibraryEditor, events| {
         ctx.run_ui(
             egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(
@@ -400,7 +421,7 @@ fn hollow_section_widget_can_author_a_real_solid_bar_without_replacing_stock_or_
                 focused: true,
                 ..Default::default()
             },
-            |ui| editor.show_inline(ui, &fixture.session, &Default::default(), true),
+            |ui| editor.show_inline(ui, &mut fixture.session, &Default::default(), true),
         )
     };
     for _ in 0..3 {

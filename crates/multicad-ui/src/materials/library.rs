@@ -5,6 +5,58 @@ use multicad_core::{
     materials::*,
 };
 mod preview;
+mod sample;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Category {
+    Materials,
+    PanelStock,
+    SheetStock,
+    ProfileStock,
+    PrintStock,
+    Appearances,
+    Hatches,
+}
+impl Category {
+    const ALL: [Self; 7] = [
+        Self::Materials,
+        Self::PanelStock,
+        Self::SheetStock,
+        Self::ProfileStock,
+        Self::PrintStock,
+        Self::Appearances,
+        Self::Hatches,
+    ];
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Materials => "Materials",
+            Self::PanelStock => "Panel stock",
+            Self::SheetStock => "Sheet stock",
+            Self::ProfileStock => "Profile stock",
+            Self::PrintStock => "Print stock",
+            Self::Appearances => "Appearances",
+            Self::Hatches => "Hatches",
+        }
+    }
+
+    fn for_entity(entity: &Entity) -> Option<Self> {
+        if matches!(entity.data, EntityData::Material { .. }) {
+            return Some(Self::Materials);
+        }
+        Some(match read(entity).ok().flatten()? {
+            LibraryDefinition::Stock(stock) => match stock.specification {
+                StockKind::Panel { .. } => Self::PanelStock,
+                StockKind::Sheet { .. } => Self::SheetStock,
+                StockKind::Profile { .. } => Self::ProfileStock,
+                StockKind::Print { .. } => Self::PrintStock,
+            },
+            LibraryDefinition::Appearance(_) => Self::Appearances,
+            LibraryDefinition::Hatch(_) => Self::Hatches,
+            _ => return None,
+        })
+    }
+}
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ToolStock {
     Sheet,
@@ -35,14 +87,19 @@ pub struct LibraryEditor {
     revision: u64,
     document: Option<EntityId>,
     error: Option<String>,
-    diagnostics: Option<(EntityId, u64, Vec<Diagnostic>)>,
+    diagnostics: Option<(SessionStamp, Vec<Diagnostic>)>,
     guard: Option<SessionStamp>,
     preview: preview::Lane,
+    confirm_on_ready: Option<Channel>,
+    reveal_category: Option<Category>,
+    catalog: Option<(SessionStamp, [Vec<EntityId>; Category::ALL.len()])>,
 }
 impl LibraryEditor {
     pub fn cancel(&mut self) {
         self.preview.clear();
-        self.preview.show_model = false;
+        self.confirm_on_ready = None;
+        self.reveal_category = None;
+        self.catalog = None;
         self.draft = None;
         self.original = None;
         self.error = None;
@@ -81,7 +138,8 @@ impl LibraryEditor {
     }
     fn select(&mut self, s: &Session, entity: Entity) {
         self.preview.clear();
-        self.preview.show_model = false;
+        self.confirm_on_ready = None;
+        self.reveal_category = Category::for_entity(&entity);
         let style = if matches!(entity.data, EntityData::Material { .. }) {
             material_style(s.document(), entity.id).ok().flatten()
         } else {
@@ -100,7 +158,7 @@ impl LibraryEditor {
     }
     fn create(&mut self, s: &Session, kind: usize) {
         self.preview.clear();
-        self.preview.show_model = false;
+        self.confirm_on_ready = None;
         let id = EntityId::new();
         let mut companion = None;
         let entity = match kind {
@@ -130,9 +188,10 @@ impl LibraryEditor {
                 .entity(id, "New appearance")
                 .expect("finite defaults"),
             _ => LibraryDefinition::Hatch(HatchStyle::default())
-                .entity(id, "New section style")
+                .entity(id, "New hatch")
                 .expect("finite defaults"),
         };
+        self.reveal_category = Category::for_entity(&entity);
         self.draft = Some(Draft {
             entity,
             style: None,
@@ -179,7 +238,12 @@ impl LibraryEditor {
     fn create_stock(&mut self, s: &Session, kind: usize) {
         self.create_stock_from(
             s,
-            ["New panel stock", "New sheet stock", "New profile stock"][kind],
+            [
+                "New panel stock",
+                "New sheet stock",
+                "New profile stock",
+                "New print stock",
+            ][kind],
             stock_default(kind),
         );
     }
@@ -196,6 +260,7 @@ impl LibraryEditor {
             *inputs = stock.links();
         }
         draft.entity.name = name.into();
+        self.reveal_category = Category::for_entity(&draft.entity);
     }
     pub(crate) fn for_model_stock(s: &Session, kind: ToolStock) -> Self {
         let mut editor = Self::default();
@@ -271,8 +336,9 @@ impl LibraryEditor {
                 ("New panel stock", Icon::Rectangle, 1),
                 ("New sheet stock", Icon::Page, 2),
                 ("New profile stock", Icon::Extrude, 3),
-                ("New appearance", Icon::VisibleEdges, 4),
-                ("New hatch", Icon::Grid, 5),
+                ("New print stock", Icon::PrintPlate, 4),
+                ("New appearance", Icon::VisibleEdges, 5),
+                ("New hatch", Icon::Grid, 6),
             ] {
                 if ui
                     .add_enabled_ui(editable && !self.dirty(), |ui| {
@@ -282,9 +348,9 @@ impl LibraryEditor {
                     .clicked()
                 {
                     match kind {
-                        1..=3 => self.create_stock(s, kind - 1),
-                        4 => self.create(s, 2),
-                        5 => self.create(s, 3),
+                        1..=4 => self.create_stock(s, kind - 1),
+                        5 => self.create(s, 2),
+                        6 => self.create(s, 3),
                         _ => self.create(s, 0),
                     }
                 }
@@ -295,52 +361,190 @@ impl LibraryEditor {
     pub fn show_inline(
         &mut self,
         ui: &mut egui::Ui,
-        s: &Session,
+        s: &mut Session,
         resources: &multicad_core::project_file::ProjectResources,
         editable: bool,
     ) {
         self.open(s);
         self.poll(s, resources);
-        ui.strong("Materials and stock");
-        ui.small("Shared Project definitions · Model tools select and assign these same entries.");
-        if !editable {
-            ui.colored_label(
-                Color32::LIGHT_YELLOW,
-                "Apply or discard file-information or parameter edits before editing definitions.",
-            );
-        }
-        ui.horizontal(|ui| {
-            ui.selectable_value(&mut self.preview.show_model, false, "Definitions");
-            ui.selectable_value(&mut self.preview.show_model, true, "Affected model");
-        });
-        self.preview_status(ui);
-        if let Some(error) = &self.error {
-            ui.colored_label(Color32::LIGHT_RED, error);
-        }
-        if self
-            .guard
-            .as_ref()
-            .is_none_or(|g| s.validate_stamp(g).is_err())
+        if !self.pending()
+            && let Some(channel) = self.confirm_on_ready.take()
+            && self.can_apply(s, resources)
+            && let Err(error) = self.apply(s, resources, channel)
         {
-            ui.colored_label(
-                Color32::LIGHT_YELLOW,
-                "Source changed. Discard and reopen the definition before applying.",
-            );
+            self.error = Some(error);
         }
+
+        let width = ui.available_width();
+        egui::Panel::left("project-material-tree")
+            .exact_size((width * 0.24).clamp(110., 238.))
+            .frame(
+                egui::Frame::new()
+                    .fill(crate::theme::PANEL)
+                    .inner_margin(12),
+            )
+            .show(ui, |ui| self.show_tree(ui, s, editable));
+        egui::Panel::right("project-material-preview")
+            .exact_size((width * 0.28).clamp(116., 296.))
+            .frame(
+                egui::Frame::new()
+                    .fill(crate::theme::PANEL)
+                    .inner_margin(12),
+            )
+            .show(ui, |ui| sample::show(ui, s.document(), self.draft.as_ref()));
+
+        let mut apply = false;
+        let mut discard = false;
+        if self.dirty() {
+            egui::Panel::bottom("project-material-confirmation")
+                .frame(egui::Frame::new().inner_margin(egui::Margin::symmetric(16, 10)))
+                .show(ui, |ui| {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        apply = ui
+                            .add_enabled(
+                                editable && self.can_confirm(s),
+                                egui::Button::new("Apply").min_size(egui::vec2(80., 30.)),
+                            )
+                            .clicked();
+                        discard = ui
+                            .add(egui::Button::new("Discard").min_size(egui::vec2(80., 30.)))
+                            .clicked();
+                    });
+                });
+        }
+
+        egui::Frame::new().inner_margin(16).show(ui, |ui| {
+            egui::ScrollArea::vertical()
+                .id_salt("project-material-configuration")
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    ui.strong("Configuration");
+                    ui.add_space(8.);
+                    if !editable {
+                        ui.colored_label(
+                            Color32::LIGHT_YELLOW,
+                            "Finish the pending parameter edits before editing definitions.",
+                        );
+                    }
+                    if let Some(error) = &self.error {
+                        ui.colored_label(Color32::LIGHT_RED, error);
+                    }
+                    if self.pending() {
+                        ui.horizontal_wrapped(|ui| {
+                            ui.spinner();
+                            ui.small("Checking affected geometry…");
+                        });
+                        ui.ctx()
+                            .request_repaint_after(std::time::Duration::from_millis(16));
+                    }
+                    if self
+                        .guard
+                        .as_ref()
+                        .is_none_or(|g| s.validate_stamp(g).is_err())
+                    {
+                        ui.colored_label(
+                            Color32::LIGHT_YELLOW,
+                            "The project changed. Discard this draft and reopen the definition.",
+                        );
+                    }
+                    self.show_definition_editor(ui, s, editable && self.confirm_on_ready.is_none());
+                    self.show_diagnostics(ui, s);
+                });
+        });
+        if discard {
+            self.discard(s);
+        } else if apply && let Err(error) = self.confirm(s, resources, Channel::Ui) {
+            self.error = Some(error);
+        }
+        if discard || apply {
+            ui.ctx().request_repaint();
+        }
+    }
+
+    fn show_tree(&mut self, ui: &mut egui::Ui, s: &Session, editable: bool) {
+        if self
+            .catalog
+            .as_ref()
+            .is_none_or(|(stamp, _)| *stamp != s.stamp())
+        {
+            let mut categories: [Vec<&Entity>; Category::ALL.len()] = Default::default();
+            for entity in s.document().entities() {
+                if let Some(category) = Category::for_entity(entity) {
+                    categories[category as usize].push(entity);
+                }
+            }
+            let catalog = categories.map(|mut entries| {
+                entries.sort_unstable_by(|a, b| a.name.cmp(&b.name).then(a.id.cmp(&b.id)));
+                entries.into_iter().map(|entry| entry.id).collect()
+            });
+            self.catalog = Some((s.stamp(), catalog));
+        }
+        let (_, catalog) = self.catalog.as_ref().expect("current definition catalog");
+        let selected = self.draft.as_ref().map(|draft| draft.entity.id);
+        let new_draft = self.draft.as_ref().filter(|_| self.original.is_none());
+        let draft_category = new_draft.and_then(|draft| Category::for_entity(&draft.entity));
+        let can_select = editable && !self.dirty();
+        let reveal = self.reveal_category.take();
+        let mut selection = None;
+        ui.strong("Shared definitions");
+        ui.add_space(8.);
+        egui::ScrollArea::vertical()
+            .id_salt("project-material-tree-scroll")
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                for (category, entries) in Category::ALL.into_iter().zip(catalog) {
+                    egui::CollapsingHeader::new(category.label())
+                        .id_salt(category as usize)
+                        .default_open(category == Category::Materials)
+                        .open((reveal == Some(category)).then_some(true))
+                        .show(ui, |ui| {
+                            let new_draft = new_draft.filter(|_| draft_category == Some(category));
+                            if entries.is_empty() && new_draft.is_none() {
+                                ui.weak("No definitions yet");
+                            }
+                            for entry in entries.iter().filter_map(|&id| s.document().get(id)) {
+                                let row = egui::Button::selectable(
+                                    selected == Some(entry.id),
+                                    &entry.name,
+                                )
+                                .min_size(egui::vec2(ui.available_width(), 26.))
+                                .wrap();
+                                let response = ui.add_enabled(can_select, row);
+                                if reveal == Some(category) && selected == Some(entry.id) {
+                                    response.scroll_to_me(Some(egui::Align::Center));
+                                }
+                                if response.clicked() {
+                                    selection = Some(entry);
+                                }
+                            }
+                            if let Some(draft) = new_draft {
+                                ui.add(
+                                    egui::Button::selectable(true, &draft.entity.name)
+                                        .min_size(egui::vec2(ui.available_width(), 26.))
+                                        .wrap()
+                                        .sense(egui::Sense::hover()),
+                                );
+                            }
+                        });
+                }
+            });
+        if let Some(entity) = selection {
+            self.select(s, entity.clone());
+        }
+    }
+
+    fn show_diagnostics(&mut self, ui: &mut egui::Ui, s: &Session) {
         if self
             .diagnostics
             .as_ref()
-            .is_none_or(|(id, rev, _)| *id != s.document().id() || *rev != s.revision())
+            .is_none_or(|(stamp, _)| *stamp != s.stamp())
         {
-            self.diagnostics = Some((
-                s.document().id(),
-                s.revision(),
-                diagnostics(s.document()).unwrap_or_default(),
-            ));
+            self.diagnostics = Some((s.stamp(), diagnostics(s.document()).unwrap_or_default()));
         }
-        if let Some((_, _, issues)) = &self.diagnostics
+        if let Some((_, issues)) = &self.diagnostics
             && !issues.is_empty()
         {
+            ui.add_space(8.);
             ui.collapsing(format!("Definition diagnostics ({})", issues.len()), |ui| {
                 for issue in issues {
                     ui.colored_label(
@@ -349,70 +553,6 @@ impl LibraryEditor {
                     );
                 }
             });
-        }
-        let blocked = self
-            .draft
-            .as_ref()
-            .and_then(|d| missing_prerequisite(d, s.document()));
-        if let Some(problem) = &blocked {
-            ui.colored_label(Color32::LIGHT_RED, problem);
-            if ui
-                .button("Create a material first")
-                .on_hover_text("Discard this stock draft and start a manufacturing material")
-                .clicked()
-            {
-                self.create(s, 0);
-            }
-        }
-        ui.separator();
-        if self.preview.show_model {
-            self.show_model(ui);
-        } else {
-            egui::ScrollArea::vertical()
-                .id_salt("project-material-definitions")
-                .auto_shrink([false, false])
-                .show(ui, |ui| {
-                    let mut entries: Vec<_> = s
-                        .document()
-                        .entities()
-                        .filter(|entity| {
-                            matches!(entity.data, EntityData::Material { .. })
-                                || matches!(
-                                    read(entity),
-                                    Ok(Some(
-                                        LibraryDefinition::Stock(_)
-                                            | LibraryDefinition::Appearance(_)
-                                            | LibraryDefinition::Hatch(_)
-                                    ))
-                                )
-                        })
-                        .cloned()
-                        .collect();
-                    entries.sort_by(|a, b| a.name.cmp(&b.name).then(a.id.cmp(&b.id)));
-                    ui.columns(2, |columns| {
-                        columns[0].strong(format!("Shared definitions ({})", entries.len()));
-                        if entries.is_empty() {
-                            columns[0]
-                                .label("Use the ribbon to create a material or stock definition.");
-                        }
-                        for entry in entries {
-                            let selected =
-                                self.draft.as_ref().is_some_and(|d| d.entity.id == entry.id);
-                            let list = &mut columns[0];
-                            let row = egui::Button::selectable(selected, &entry.name)
-                                .min_size(egui::vec2(list.available_width(), 30.))
-                                .wrap();
-                            if list
-                                .add_enabled(editable && !self.dirty(), row)
-                                .on_hover_text("Edit this shared definition")
-                                .clicked()
-                            {
-                                self.select(s, entry);
-                            }
-                        }
-                        self.show_definition_editor(&mut columns[1], s, editable);
-                    });
-                });
         }
     }
     fn show_definition_editor(&mut self, ui: &mut egui::Ui, s: &Session, editable: bool) {
@@ -564,7 +704,7 @@ fn edit_draft(ui: &mut egui::Ui, s: &Session, d: &mut Draft, model_stock: Option
                     model_stock == Some(ToolStock::Batten),
                 );
                 if model_stock.is_none() {
-                    ui.small("Tools that use this stock read its live thickness or section. Preview checks affected geometry; a metadata assignment alone does not resize a Part.");
+                    ui.small("Tools that use this stock read its live thickness or section. Applying checks any affected geometry.");
                 }
             }
             _ => {}
