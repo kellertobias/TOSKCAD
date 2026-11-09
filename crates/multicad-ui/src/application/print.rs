@@ -214,7 +214,7 @@ mod tests {
             .unwrap();
         (app, requests, jobs)
     }
-    fn answer_preview(app: &mut Application, jobs: &Arc<Mutex<Jobs>>) {
+    fn answer_preview(app: &mut Application, jobs: &Arc<Mutex<Jobs>>, blocked: Option<&str>) {
         let (id, revision, request, actor) = jobs.lock().unwrap().previews.last().unwrap().clone();
         let document = app.current().session.document();
         let stamp = ExportStamp::capture(document, revision).unwrap();
@@ -250,12 +250,11 @@ mod tests {
                 files: vec![],
                 processes: vec![],
                 findings: vec![],
-                blocked: None,
+                blocked: blocked.map(str::to_owned),
             }))),
         };
         jobs.lock().unwrap().replies.push_back(reply);
-        let p = app.current_mut();
-        p.print.poll(&p.session);
+        app.poll_print(&egui::Context::default());
     }
     #[test]
     fn print_commands_open_the_print_tab_and_write_through_the_native_save_dialog() {
@@ -266,7 +265,7 @@ mod tests {
             .unwrap();
         assert_eq!(app.mode, Mode::Export);
         assert!(app.print_tab());
-        answer_preview(&mut app, &jobs);
+        answer_preview(&mut app, &jobs, None);
         assert!(app.enabled(Command::Print(PrintTool::Write)));
         app.invoke(Command::Print(PrintTool::Write), &[], Channel::Ui)
             .unwrap();
@@ -294,7 +293,7 @@ mod tests {
         let (mut app, requests, jobs) = app();
         app.invoke(Command::Print(PrintTool::Preview), &[], Channel::Ui)
             .unwrap();
-        answer_preview(&mut app, &jobs);
+        answer_preview(&mut app, &jobs, None);
         app.invoke(Command::Print(PrintTool::Write), &[], Channel::Ui)
             .unwrap();
         app.start_native_picker().unwrap();
@@ -315,5 +314,35 @@ mod tests {
         assert!(app.message_error && app.message.contains("changed"));
         assert!(jobs.lock().unwrap().writes.is_empty());
         assert!(!app.enabled(Command::Print(PrintTool::Write)));
+    }
+
+    #[test]
+    fn refused_preview_replaces_the_status_and_recovery_reenables_writing() {
+        let (mut app, requests, jobs) = app();
+        let tool = Command::Print(PrintTool::Preview);
+        app.invoke(tool, &[], Channel::Ui).unwrap();
+        assert!(app.message.contains("Resolving"));
+        answer_preview(
+            &mut app,
+            &jobs,
+            Some("Wood screw envelope cannot be printed"),
+        );
+        assert!(app.message_error);
+        assert!(
+            app.message
+                .contains("Wood screw envelope cannot be printed")
+        );
+        assert!(!app.message.contains("Resolving"));
+        assert!(!app.enabled(Command::Print(PrintTool::Write)));
+        assert!(jobs.lock().unwrap().writes.is_empty());
+        assert!(requests.lock().unwrap().is_empty());
+        app.poll_print(&egui::Context::default());
+        assert!(app.message_error && app.message.contains("blocked"));
+
+        app.invoke(tool, &[], Channel::Ui).unwrap();
+        answer_preview(&mut app, &jobs, None);
+        assert_eq!(app.message, "Print preview ready");
+        assert!(!app.message_error);
+        assert!(app.enabled(Command::Print(PrintTool::Write)));
     }
 }

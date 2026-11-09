@@ -266,6 +266,7 @@ impl PrintWorkspace {
             .map_err(|e| e.to_string())?;
         self.requested = Some((s.document().id(), s.revision(), request.clone()));
         self.scheduled = None;
+        self.error = None;
         self.pending.insert(
             id,
             Pending {
@@ -406,18 +407,34 @@ impl PrintWorkspace {
                         continue;
                     }
                     // A reply for an older revision or setting stays unused.
-                    if s.document().id() == p.document && s.revision() == p.revision {
+                    if s.document().id() == p.document
+                        && s.revision() == p.revision
+                        && p.request == self.request()
+                    {
+                        self.notice = Some(match &preview.blocked {
+                            Some(reason) => (format!("Print preview blocked · {reason}"), true),
+                            None if !preview.can_write() => {
+                                ("No printable parts in the preview".into(), true)
+                            }
+                            None => ("Print preview ready".into(), false),
+                        });
                         self.preview = Some(*preview);
                         self.error = None;
                     }
                 }
                 (PrintResult::Preview(Err(e)), None) => {
-                    if e.kind != ErrorKind::Cancelled
-                        && s.document().id() == p.document
+                    if s.document().id() == p.document
                         && s.revision() == p.revision
+                        && p.request == self.request()
                     {
                         self.preview = None;
-                        self.error = Some(e.to_string());
+                        if e.kind == ErrorKind::Cancelled {
+                            self.notice = Some(("Print preview cancelled".into(), false));
+                        } else {
+                            let reason = e.to_string();
+                            self.notice = Some((format!("Print preview failed · {reason}"), true));
+                            self.error = Some(reason);
+                        }
                     }
                 }
                 (PrintResult::Write(Ok(receipt)), Some(path)) => {
