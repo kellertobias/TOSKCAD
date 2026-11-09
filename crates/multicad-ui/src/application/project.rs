@@ -8,7 +8,7 @@ const TABLE_MIN_WIDTH: f32 = 760.;
 mod tests;
 impl Application {
     pub(super) fn project_switcher(&self, ui: &mut egui::Ui) -> Option<usize> {
-        let title = self.current().title();
+        let title = self.current().session.document().name();
         let count = self.projects.len();
         let title_limit = if ui.ctx().content_rect().width() < 1150. {
             13
@@ -27,14 +27,11 @@ impl Application {
             label.push_str("  •");
         }
         label.push_str("    ");
-        let mut button =
-            egui::Button::new(egui::RichText::new(label).strong()).min_size(egui::vec2(0., 26.));
-        if count > 1 {
-            button = button
-                .fill(Color32::from_rgb(37, 60, 89))
-                .stroke(egui::Stroke::new(1., Color32::from_rgb(86, 126, 173)));
-        }
-        let switcher = ui.add(button);
+        let switcher = ui.add(
+            egui::Button::new(egui::RichText::new(label).strong())
+                .frame(false)
+                .min_size(egui::vec2(0., 26.)),
+        );
         let accessible = format!("Switch project. Active project {title}. {count} open");
         switcher
             .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &accessible));
@@ -52,11 +49,11 @@ impl Application {
                 .max_height(280.)
                 .show(ui, |ui| {
                     for (index, project) in self.projects.iter().enumerate() {
-                        let name = project.title();
+                        let name = project.session.document().name();
                         let label = if project.dirty() {
                             format!("{name}  •")
                         } else {
-                            name
+                            name.to_owned()
                         };
                         let option = ui.selectable_label(index == self.active, label);
                         let option = if let Some(path) = &project.path {

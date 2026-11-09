@@ -258,6 +258,20 @@ pub(crate) fn tool_glyph_at_width(
 ) -> egui::Response {
     let (rect, response) =
         ui.allocate_exact_size(Vec2::new(width, TOOL_TILE.y), egui::Sense::click());
+    paint_tool_glyph(ui, rect, response, glyph, label, hint, selected, 0.)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn paint_tool_glyph(
+    ui: &egui::Ui,
+    rect: egui::Rect,
+    response: egui::Response,
+    glyph: Glyph,
+    label: &str,
+    hint: &str,
+    selected: bool,
+    label_inset: f32,
+) -> egui::Response {
     let state = if !ui.is_enabled() {
         ToolState::Disabled
     } else if selected {
@@ -305,10 +319,10 @@ pub(crate) fn tool_glyph_at_width(
     } else {
         TOOL_COLOR
     };
-    let galley = tile_label_at_width(ui, label, text, width);
+    let galley = tile_label_at_width(ui, label, text, rect.width() - label_inset);
     ui.painter().galley(
         Pos2::new(
-            rect.center().x - galley.size().x * 0.5,
+            rect.center().x + (label_inset - galley.size().x) * 0.5,
             rect.top() + TOOL_LABEL_TOP,
         ),
         galley,

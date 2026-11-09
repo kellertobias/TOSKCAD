@@ -32,7 +32,6 @@ impl Application {
     }
     pub(super) fn utility_actions(&self, ui: &mut egui::Ui) -> Option<Command> {
         let mut action = None;
-        let model = self.mode == Mode::Model;
         let sketch = (
             Icon::Sketch,
             "Sketch",
@@ -52,12 +51,7 @@ impl Application {
             "Browse pinned symbols and original Library projects",
         );
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let buttons = if model {
-                [library, measure, sketch]
-            } else {
-                [measure, library, sketch]
-            };
-            for (icon, label, command, help) in buttons {
+            for (icon, label, command, help) in [library, measure, sketch] {
                 let hint = self.command_help(command, help, ui.ctx());
                 if ui
                     .add_enabled_ui(self.enabled(command), |ui| {

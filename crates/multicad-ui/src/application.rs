@@ -1234,7 +1234,9 @@ impl Application {
                 p.sketch.set_installed_symbol_library(installed);
                 p.sketch
                     .begin_symbol(tool, &p.session, &p.resources, &p.scene, channel)?;
-                self.mode = Mode::Model;
+                if tool == crate::symbols::SymbolTool::Create {
+                    self.mode = Mode::Model;
+                }
                 self.message = if tool == crate::symbols::SymbolTool::Library {
                     "Library · browse parts and symbols".into()
                 } else {
@@ -1785,6 +1787,7 @@ impl Application {
             _ => true,
         }
     }
+    #[cfg(test)]
     fn example(&mut self) -> Result<(), String> {
         let mut project =
             Project::new(Document::new("Cabinet parameters").map_err(|e| e.to_string())?)?;
@@ -1844,7 +1847,8 @@ impl Application {
                     ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
                 }
                 ui.add_space(12.0);
-                ui.menu_button("File", |ui| {
+                let file = ui.add(egui::Button::new("File").frame(false).min_size(egui::vec2(32., 26.)));
+                egui::Popup::menu(&file).show(|ui| {
                     let groups: &[&[(&str, Command)]] = &[
                         &[("New Document", Command::New), ("New Window", Command::NewWindow)],
                         &[("Open Project…", Command::Open), ("Examples…", Command::Examples), ("Recover Projects…", Command::RecoverProjects)],
@@ -1877,13 +1881,6 @@ impl Application {
                                     });
                                 });
                             }
-                        }
-                        if index == 1 && ui.button("Cabinet parameter example").clicked() {
-                            if let Err(error) = self.example() {
-                                self.message = error;
-                                self.message_error = true;
-                            }
-                            ui.close();
                         }
                     }
                 });
@@ -2228,11 +2225,12 @@ impl Application {
                         }
                     }
                     ui.set_opacity(opacity);
-                    let action = if visible_mode == Mode::Model {
-                        self.utility_actions(ui)
-                    } else {
-                        None
-                    };
+                    let action =
+                        if matches!(visible_mode, Mode::Model | Mode::Motion | Mode::Drawings) {
+                            self.utility_actions(ui)
+                        } else {
+                            None
+                        };
                     (selected_tab, category_action.or(action))
                 })
                 .inner
@@ -2850,7 +2848,7 @@ impl Application {
         if self.mode.top_level() == Mode::Parameters {
             self.project_tabs(ui);
         } else {
-            if self.mode != Mode::Model {
+            if self.mode == Mode::Sketch {
                 self.global_actions(ui);
             }
             let category = self.active_architecture_category();

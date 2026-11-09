@@ -325,7 +325,12 @@ pub(crate) fn tools_height(
     editing: bool,
     category: Option<crate::architecture_navigation::Category>,
 ) -> f32 {
-    Contents::new(registry, mode, tab, editing, category).height()
+    let height = Contents::new(registry, mode, tab, editing, category).height();
+    if mode == Mode::Model {
+        height.max(icons::TOOL_TILE.y + SECTION_LABEL)
+    } else {
+        height
+    }
 }
 
 fn top_row<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> egui::InnerResponse<R> {
@@ -450,47 +455,52 @@ fn menu_button(
         const ARROW_WIDTH: f32 = 18.;
         let default = registry.tool(tools[0]).expect("menu default");
         top_row(ui, |ui| {
-            ui.spacing_mut().item_spacing.x = 0.;
-            let (rect, arrow) =
-                ui.allocate_exact_size(egui::vec2(ARROW_WIDTH, 24.), egui::Sense::click());
-            if arrow.hovered() || arrow.has_focus() {
-                ui.painter()
-                    .rect_filled(rect, 3, egui::Color32::from_rgb(42, 51, 65));
-            }
-            ui.painter().rect_stroke(
-                rect.shrink(1.),
-                3,
-                egui::Stroke::new(
-                    1.,
-                    if arrow.has_focus() {
-                        egui::Color32::LIGHT_BLUE
-                    } else {
-                        crate::theme::BORDER
-                    },
-                ),
-                egui::StrokeKind::Inside,
+            let (rect, slot) = ui.allocate_exact_size(
+                egui::vec2(tile_width, icons::TOOL_TILE.y),
+                egui::Sense::hover(),
             );
-            let center = rect.center();
-            paint_menu_arrow(ui, center);
-            let options = format!("{label} options");
-            arrow.widget_info(|| {
-                egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &options)
-            });
+            let caret = egui::Rect::from_min_size(
+                rect.left_top() + egui::vec2(2., 45.),
+                egui::vec2(ARROW_WIDTH - 2., 21.),
+            );
+            let arrow = ui.interact(caret, slot.id.with("options"), egui::Sense::click());
             let main = ui
                 .add_enabled_ui(enabled(default.action), |ui| {
-                    icons::tool_glyph_at_width(
+                    let hit =
+                        egui::Rect::from_min_max(rect.min + egui::vec2(ARROW_WIDTH, 0.), rect.max);
+                    let main = ui.interact(hit, slot.id.with("default"), egui::Sense::click());
+                    icons::paint_tool_glyph(
                         ui,
+                        rect,
+                        main,
                         tool_glyph(mode, default.id, default.icon),
                         label,
                         &with_description(default.id, hint(default.action, default.label)),
                         tools.iter().any(is_selected),
-                        tile_width - ARROW_WIDTH,
+                        ARROW_WIDTH,
                     )
                 })
-                .inner;
-            let main = main.on_disabled_hover_text(
-                "The default is unavailable in this context. Open the options for other tools.",
-            );
+                .inner
+                .on_disabled_hover_text(
+                    "The default is unavailable in this context. Open the options for other tools.",
+                );
+            if arrow.hovered() || arrow.has_focus() {
+                ui.painter()
+                    .rect_filled(caret, 3, egui::Color32::from_rgb(56, 67, 84));
+            }
+            if arrow.has_focus() {
+                ui.painter().rect_stroke(
+                    caret,
+                    3,
+                    egui::Stroke::new(1., egui::Color32::LIGHT_BLUE),
+                    egui::StrokeKind::Inside,
+                );
+            }
+            paint_menu_arrow(ui, caret.center());
+            let options = format!("{label} options");
+            arrow.widget_info(|| {
+                egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &options)
+            });
             if main.clicked() {
                 if mode == Mode::Sketch {
                     main.request_focus();

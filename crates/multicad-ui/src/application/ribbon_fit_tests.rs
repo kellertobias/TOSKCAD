@@ -239,15 +239,15 @@ fn compact_ribbon_uses_only_its_tool_and_caption_rows() {
     frame(&mut app, &ctx, size);
     let mechanical = frame(&mut app, &ctx, size);
     assert!(
-        mechanical.ribbon.height() <= 115.,
+        mechanical.ribbon.height() <= 132.,
         "{:?}",
         mechanical.ribbon
     );
     app.tab = 0;
     frame(&mut app, &ctx, size);
     let common = frame(&mut app, &ctx, size);
-    assert!(common.ribbon.height() <= 128., "{:?}", common.ribbon);
-    assert!(common.ribbon.height() > mechanical.ribbon.height());
+    assert!(common.ribbon.height() <= 132., "{:?}", common.ribbon);
+    assert!((common.ribbon.height() - mechanical.ribbon.height()).abs() < 0.5);
     assert!(
         !common
             .texts

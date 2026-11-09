@@ -113,18 +113,14 @@ fn project_omits_the_modeling_actions_shown_in_other_modes() {
             out.drop_without_applying_deltas();
             continue;
         }
-        let panel = if mode == Mode::Model {
-            "ribbon"
-        } else {
-            "global-actions"
-        };
+        let panel = "ribbon";
         let mut row = egui::PanelState::load(&ctx, egui::Id::new(panel))
             .unwrap()
             .outer_rect;
         let mut previous = row.left();
-        let labels = if mode == Mode::Model {
-            assert!(egui::PanelState::load(&ctx, egui::Id::new("global-actions")).is_none());
-            row.max.y = row.min.y + RIBBON_TAB_STRIP;
+        assert!(egui::PanelState::load(&ctx, egui::Id::new("global-actions")).is_none());
+        row.max.y = row.min.y + RIBBON_TAB_STRIP;
+        if mode == Mode::Model {
             let tree = out.platform_output.accesskit_update.as_ref().unwrap();
             for label in [
                 "Common",
@@ -154,11 +150,8 @@ fn project_omits_the_modeling_actions_shown_in_other_modes() {
                 );
                 previous = rect.right();
             }
-            ["Sketch", "Measure", "Library"]
-        } else {
-            ["Sketch", "Library", "Measure"]
-        };
-        for label in labels {
+        }
+        for label in ["Sketch", "Measure", "Library"] {
             let rect = button(&out, label);
             assert!(
                 row.contains_rect(rect),
