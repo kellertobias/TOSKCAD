@@ -1,4 +1,4 @@
-//! Detached tessellation of analytic axial solids. Only display consumers use it.
+//! Detached tessellation of analytic axial solids using shared boundary indices.
 use crate::{Rational, cylinder::AxialCylinder, polygon::PolygonPrism, prism::Prism};
 use spade::{ConstrainedDelaunayTriangulation, Point2, Triangulation, handles::FixedVertexHandle};
 use std::f64::consts::{FRAC_PI_2, PI, TAU};

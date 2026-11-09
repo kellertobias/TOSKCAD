@@ -2,6 +2,7 @@
 
 pub mod cylinder;
 pub mod display;
+pub mod manufacturing;
 pub mod orthogonal;
 pub mod orthogonal_boundary;
 pub mod polygon;
