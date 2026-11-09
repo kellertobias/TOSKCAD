@@ -80,7 +80,9 @@ fn sided_chamfer_face_click_does_not_replace_the_edge_selection() {
     h.click(point, false);
     assert_eq!(h.editor.model.edge_treatment_edges().unwrap(), selected);
     assert_eq!(h.session.document(), &original);
-    h.click_label("Preview");
+    if h.editor.model.edge_treatment_picking() {
+        h.click_label("Finish picking edges");
+    }
     h.ready();
     h.click_label("Apply");
     let native = multicad_model::Compiler::default()
@@ -131,7 +133,7 @@ fn shell_tool_first_face_selection_shift_toggle_and_native_apply_are_source_boun
     h.click(point, true);
     assert!(h.editor.model.advanced_captures().unwrap().is_empty());
     h.click(point, false);
-    h.click_label("Preview");
+    h.click_label("Finish picking faces");
     h.ready();
     assert_eq!(h.session.document(), &original);
     h.click_label("Apply");
@@ -426,7 +428,7 @@ fn actual_inspector_native_fillet_then_saved_chamfer_apply_and_cancel_use_the_fr
     h.frame(vec![]);
     let point = h.edges()[0].0;
     h.click(point, false);
-    h.click_label("Preview");
+    h.click_label("Finish picking edges");
     assert!(!h.editor.model.edge_treatment_picking());
     h.ready();
     assert_eq!(h.session.document(), &original);
@@ -496,7 +498,6 @@ fn actual_inspector_native_fillet_then_saved_chamfer_apply_and_cancel_use_the_fr
         .unwrap();
     h.frame(vec![]);
     h.click_label("Chamfer");
-    h.click_label("Preview");
     h.ready();
     h.click_label("Apply");
     assert_eq!(h.session.revision(), revision + 2);

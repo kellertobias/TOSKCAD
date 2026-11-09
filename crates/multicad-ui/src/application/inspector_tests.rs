@@ -433,7 +433,7 @@ fn tool_first_scale_footer_is_painted_and_clickable_after_target_selection() {
         for _ in 0..3 {
             let out = frame(&ctx, &mut app, size, vec![]);
             let mut missing = vec![];
-            for label in ["Preview", "Apply", "Cancel"] {
+            for label in ["Apply", "Cancel"] {
                 let painted = out
                     .shapes
                     .iter()
@@ -588,23 +588,26 @@ fn room_door_tool_previews_and_applies_one_wall_transaction() {
     app.invoke(Command::Modeling(ModelingTool::Door), &[], Channel::Ui)
         .unwrap();
     assert!(app.current().sketch.model_interaction_active());
-    click(&ctx, &mut app, size, "Preview");
     let until = Instant::now() + Duration::from_secs(5);
     loop {
         let out = frame(&ctx, &mut app, size, vec![]);
-        let ready = out
-            .platform_output
-            .accesskit_update
-            .as_ref()
-            .unwrap()
-            .nodes
+        let nodes = &out.platform_output.accesskit_update.as_ref().unwrap().nodes;
+        let has_manual_preview = nodes.iter().any(|(_, n)| n.label() == Some("Preview"));
+        let ready = nodes
             .iter()
             .any(|(_, n)| n.label() == Some("Apply") && !n.is_disabled());
         out.drop_without_applying_deltas();
+        assert!(
+            !has_manual_preview,
+            "The Model footer has no manual Preview action"
+        );
         if ready {
             break;
         }
-        assert!(Instant::now() < until, "Door Preview never became ready");
+        assert!(
+            Instant::now() < until,
+            "Automatic Door preview never became ready"
+        );
         std::thread::sleep(Duration::from_millis(1));
     }
     assert_eq!(app.current().session.document(), &original);

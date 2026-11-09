@@ -152,7 +152,7 @@ impl SurfaceStructurePanel {
         }
         let input = self.input.clone().ok_or("Pick a planar face on a Part")?;
         if self.faces.is_empty() {
-            return Err("Pick at least one named planar face before Preview".into());
+            return Err("Pick at least one planar face to generate the preview".into());
         }
         let pitch = match self.pitch.resolve(document) {
             Ok(pitch) => pitch,

@@ -1400,6 +1400,13 @@ impl Application {
                     format!("{label} · drag a viewport handle or enter dimensions")
                 } else if matches!(
                     tool,
+                    crate::modeling::ModelingTool::Extrude | crate::modeling::ModelingTool::Revolve
+                ) {
+                    format!(
+                        "{label} · choose profiles and edit the values in the Inspector or viewport"
+                    )
+                } else if matches!(
+                    tool,
                     crate::modeling::ModelingTool::Move
                         | crate::modeling::ModelingTool::Copy
                         | crate::modeling::ModelingTool::Scale
@@ -1408,7 +1415,7 @@ impl Application {
                         "{label} · select targets and drag a handle. Enter applies, Escape cancels."
                     )
                 } else {
-                    format!("{label} · choose controls in the Inspector, then Preview")
+                    format!("{label} · choose controls in the Inspector")
                 };
             }
             Command::Assembly(crate::assembly::AssemblyTool::Place) => {
@@ -1913,7 +1920,11 @@ impl Application {
                     self.find_open = true;
                 }
                 if search.changed() {self.find_index = 0;}
-                let results: Vec<_> = if self.find_open {self.registry.search(&self.find).into_iter().copied().collect()}else{Vec::new()};
+                let results: Vec<_> = if self.find_open {
+                    self.registry.search(&self.find).into_iter()
+                        .filter(|tool| self.mode != Mode::Model || tool.action != Command::Preview)
+                        .copied().collect()
+                } else {Vec::new()};
                 let no_matches=results.is_empty();
                 let available: Vec<_> = results.iter().filter(|tool|self.enabled(tool.action)).collect();
                 self.find_index = self.find_index.min(available.len().saturating_sub(1));
@@ -2772,11 +2783,13 @@ impl Application {
                         self.render_sidebar(ui);
                     }
                     let sketch_mode = self.mode == Mode::Sketch;
-                    let architecture = self.mode == Mode::Model
+                    let model_workspace = self.mode == Mode::Model;
+                    let architecture = model_workspace
                         && self.registry.workspace(Mode::Model).tabs[self.tab].title
                             == "Architecture";
                     let p = self.current_mut();
                     p.sketch.set_architecture_active(architecture, &p.session);
+                    p.sketch.set_model_workspace(model_workspace);
                     let before = p.session.revision();
                     p.sketch.set_measure_pin_allowed(
                         !p.editor.dirty() && !p.drawings.dirty() && !p.exchange.dirty(),

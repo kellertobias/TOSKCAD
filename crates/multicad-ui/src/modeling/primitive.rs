@@ -139,7 +139,7 @@ impl PrimitivePanel {
             parameters,
         })
     }
-    fn remember(&mut self, request: &PrimitiveRequest) {
+    pub(super) fn remember(&mut self, request: &PrimitiveRequest) {
         let frame = match &request.parameters {
             PrimitiveParameters::Box { size, frame } => {
                 for (field, value) in self.size.iter_mut().zip(size) {

@@ -44,6 +44,7 @@ struct Scope {
     session: SessionStamp,
     source: ContentHash,
     resources: ProjectResources,
+    channel: Channel,
     execution: Execution,
     adoption: Option<multicad_core::model::ExtrudeGroupDraft>,
 }
@@ -119,7 +120,8 @@ pub struct ModelToolController {
     backend: Option<Box<dyn SceneBackend>>,
     scope: Option<Scope>,
     candidate: Option<Candidate>,
-    primitive_preview_after: Option<f64>,
+    auto_preview: Option<(FormStamp, f64)>,
+    observed_preview_form: Option<FormStamp>,
     keyboard_confirm: Option<FormStamp>,
     preparation: preparation::Lane,
     discovery: Option<Discovery>,
@@ -618,7 +620,7 @@ impl ModelToolController {
         Ok(())
     }
     pub fn pending(&self) -> bool {
-        self.primitive_preview_after.is_some()
+        self.auto_preview.is_some()
             || self.preparation.pending()
             || self
                 .surface_inspection
@@ -1413,7 +1415,7 @@ impl ModelToolController {
         &mut self,
         session: &Session,
         resources: &ProjectResources,
-        _channel: Channel,
+        channel: Channel,
         mut form: ModelForm,
         seed_level: bool,
     ) -> Result<(), String> {
@@ -1443,11 +1445,13 @@ impl ModelToolController {
             session: scope,
             source,
             resources: resources.clone(),
+            channel,
             execution: Execution::Create,
             adoption: None,
         });
         self.candidate = None;
-        self.primitive_preview_after = None;
+        self.auto_preview = None;
+        self.observed_preview_form = None;
         self.discovery = None;
         self.operations = None;
         self.identities = BooleanIdentities::default();
@@ -1662,7 +1666,8 @@ impl ModelToolController {
         self.scope = None;
         self.surface_inspection = None;
         self.candidate = None;
-        self.primitive_preview_after = None;
+        self.auto_preview = None;
+        self.observed_preview_form = None;
         self.discovery = None;
         self.operations = None;
         self.identities = BooleanIdentities::default();
@@ -1710,7 +1715,7 @@ impl ModelToolController {
         }
         self.keyboard_confirm = None;
         self.candidate = None;
-        self.primitive_preview_after = None;
+        self.auto_preview = None;
         self.discovery = None;
         if let Some(operations) = &mut self.operations {
             operations.invalidate();
@@ -1730,14 +1735,14 @@ impl ModelToolController {
         self.stop_advanced_picking();
         self.stop_surface_structure_picking();
         self.invalidate();
+        self.observed_preview_form = self.stamp();
         let result: Result<(), String> = (|| {
             self.current(session, resources, true)?;
             let stamp = self.stamp().ok_or("Start a modeling tool first")?;
-            let request = self
-                .form
-                .as_ref()
-                .ok_or("Start a modeling tool first")?
-                .request(session.document(), self.capabilities())?;
+            let capabilities = self.capabilities();
+            let form = self.form.as_mut().ok_or("Start a modeling tool first")?;
+            let request = form.request(session.document(), capabilities)?;
+            form.remember_preview(&request);
             self.submit(session, resources, channel, stamp, &request)
         })();
         if let Err(error) = &result {
@@ -1753,6 +1758,7 @@ impl ModelToolController {
         form: FormStamp,
         request: &ModelRequest,
     ) -> Result<(), String> {
+        self.observed_preview_form = Some(form);
         self.stop_edge_treatment_picking();
         self.stop_advanced_picking();
         self.stop_surface_structure_picking();
@@ -2114,9 +2120,8 @@ impl ModelToolController {
         }
     }
     pub fn can_apply(&self, session: &Session, resources: &ProjectResources) -> bool {
-        self.stock_editor.is_none()
+        !self.preview_waits_for_input()
             && !self.transform_dragging()
-            && !self.scale_origin_picking()
             && self.preview_visible(session, resources)
             && self
                 .candidate
@@ -2314,14 +2319,19 @@ impl ModelToolController {
         let Some(stamp) = self.stamp() else {
             return false;
         };
-        if self.transform_dragging()
-            || self.scale_origin_picking()
+        if self.preview_waits_for_input()
+            || self.transform_dragging()
             || !(self.can_apply(session, resources)
                 || self.current(session, resources, false).is_ok()
-                    && self
-                        .candidate
-                        .as_ref()
-                        .is_some_and(|candidate| candidate.form == stamp && candidate.pending))
+                    && (self
+                        .auto_preview
+                        .is_some_and(|(scheduled, _)| scheduled == stamp)
+                        || self.observed_preview_form == Some(stamp) && self.preparation.pending()
+                        || self.discovery.as_ref().is_some_and(|job| job.form == stamp)
+                        || self
+                            .candidate
+                            .as_ref()
+                            .is_some_and(|candidate| candidate.form == stamp && candidate.pending)))
         {
             return false;
         }
@@ -2359,27 +2369,96 @@ impl ModelToolController {
         (!ids.is_empty()).then(|| crate::viewport::Selection::Parts(Arc::new(ids)))
     }
 
-    fn schedule_primitive_preview(&mut self, ui: &egui::Ui) {
+    fn preview_waits_for_input(&self) -> bool {
+        self.stock_editor.is_some()
+            || self.scale_origin_picking()
+            || self.edge_treatment_picking()
+            || self.advanced_picking()
+            || self.surface_structure_picking()
+            || self.termination_picking()
+            || self.alignment_picking()
+            || self.fdm_aid_picking()
+    }
+
+    fn schedule_auto_preview(&mut self, ui: &egui::Ui, stamp: FormStamp) {
         self.invalidate();
-        self.primitive_preview_after = Some(ui.input(|input| input.time) + 0.075);
+        self.observed_preview_form = Some(stamp);
+        let delay = match self.form {
+            Some(
+                ModelForm::Primitive(_)
+                | ModelForm::Placement(_)
+                | ModelForm::Scale(_)
+                | ModelForm::Revolve(_),
+            ) => 0.075,
+            Some(ModelForm::Extrude(_))
+                if self
+                    .operations
+                    .as_ref()
+                    .is_none_or(|controls| controls.operation == model::Operation::NewBody) =>
+            {
+                0.075
+            }
+            _ => 0.30,
+        };
+        self.auto_preview = Some((stamp, ui.input(|input| input.time) + delay));
         ui.ctx().request_repaint();
     }
 
-    fn update_primitive_preview(
+    pub(crate) fn tick_auto_preview(
         &mut self,
         ui: &egui::Ui,
         session: &Session,
         resources: &ProjectResources,
-        released: bool,
+        flush: bool,
     ) {
-        if let Some(deadline) = self.primitive_preview_after {
-            let remaining = deadline - ui.input(|input| input.time);
-            if released || remaining <= 0. {
-                let _ = self.preview(session, resources, Channel::Ui);
-            } else {
-                ui.ctx()
-                    .request_repaint_after(std::time::Duration::from_secs_f64(remaining));
+        if !self.active()
+            || self.preview_waits_for_input()
+            || self.current(session, resources, false).is_err()
+        {
+            if self.auto_preview.take().is_some() {
+                self.observed_preview_form = None;
+                self.keyboard_confirm = None;
             }
+            return;
+        }
+        let Some(stamp) = self.stamp() else { return };
+        if self.observed_preview_form.is_none()
+            && matches!(
+                self.form,
+                Some(ModelForm::Placement(_) | ModelForm::Scale(_))
+            )
+            && self
+                .scope
+                .as_ref()
+                .is_some_and(|scope| matches!(scope.execution, Execution::Create))
+        {
+            // An untouched transform is a selection and its handles, not
+            // an operation the user has chosen to apply.
+            self.observed_preview_form = Some(stamp);
+            return;
+        }
+        if self.observed_preview_form != Some(stamp) {
+            self.schedule_auto_preview(ui, stamp);
+        }
+        let Some((scheduled, deadline)) = self.auto_preview else {
+            return;
+        };
+        if scheduled != stamp {
+            return;
+        }
+        let remaining = deadline - ui.input(|input| input.time);
+        if flush || remaining <= 0. {
+            let confirmation = self.keyboard_confirm;
+            let channel = self
+                .scope
+                .as_ref()
+                .map_or(Channel::Ui, |scope| scope.channel);
+            if self.preview(session, resources, channel).is_ok() {
+                self.keyboard_confirm = confirmation.filter(|&expected| expected == stamp);
+            }
+        } else {
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_secs_f64(remaining));
         }
     }
 
@@ -2400,9 +2479,9 @@ impl ModelToolController {
         };
         let (owned, changed, released) = panel.viewport(ui, session, camera, rect, guide);
         if changed {
-            self.schedule_primitive_preview(ui);
+            self.schedule_auto_preview(ui, self.stamp().expect("active primitive form"));
         }
-        self.update_primitive_preview(ui, session, resources, released);
+        self.tick_auto_preview(ui, session, resources, released);
         owned
     }
 
@@ -2416,7 +2495,6 @@ impl ModelToolController {
             self.show_stock_editor(ui, session, resources);
             return Ok(None);
         }
-        self.update_primitive_preview(ui, session, resources, false);
         if let Some(notice) = &self.context_notice {
             ui.small(notice);
             ui.separator();
@@ -2440,9 +2518,8 @@ impl ModelToolController {
         }
         let stamp = self.stamp();
         let preview = match (&self.error, &self.candidate, stamp) {
-            (_, _, Some(stamp))
-                if self.primitive_preview_after.is_some() || self.transform_dragging() =>
-            {
+            _ if self.preview_waits_for_input() => PreviewState::Idle,
+            (_, _, Some(stamp)) if self.auto_preview.is_some() || self.transform_dragging() => {
                 PreviewState::Pending { stamp }
             }
             (Some(error), _, Some(stamp)) => PreviewState::Failed {
@@ -2581,8 +2658,10 @@ impl ModelToolController {
                 Ok(None)
             }
             Some(ModelEvent::Changed) => {
-                if matches!(self.form, Some(ModelForm::Primitive(_))) {
-                    self.schedule_primitive_preview(ui);
+                if !self.preview_waits_for_input()
+                    && let Some(stamp) = self.stamp()
+                {
+                    self.schedule_auto_preview(ui, stamp);
                 } else {
                     self.invalidate();
                 }

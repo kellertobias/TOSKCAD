@@ -392,7 +392,7 @@ impl AlignmentPanel {
             },
         })
     }
-    fn remember(&mut self, command: &AlignmentCommand) {
+    pub(super) fn remember(&mut self, command: &AlignmentCommand) {
         let parameters = match command {
             AlignmentCommand::Part(request) => &request.parameters,
             AlignmentCommand::Instance(request) => &request.parameters,

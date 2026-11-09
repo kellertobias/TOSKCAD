@@ -147,6 +147,7 @@ pub struct SketchEditor {
     architecture: crate::architecture_view::Context,
     show_source_tree: bool,
     show_inspector: bool,
+    model_workspace: bool,
     pub selected: Option<EntityId>,
     pub editing: bool,
     pub picking: bool,
@@ -251,6 +252,7 @@ impl Default for SketchEditor {
             architecture: Default::default(),
             show_source_tree: true,
             show_inspector: true,
+            model_workspace: false,
             selected: None,
             editing: false,
             picking: false,
@@ -879,7 +881,7 @@ impl SketchEditor {
         self.model
             .begin_placement(session, resources, &scene, &selected, mode, channel)?;
         self.message =
-            "Placement · explicit pivot/axis and translation, then Preview and Apply".into();
+            "Placement · choose a pivot and enter a move or rotation, then press Enter".into();
         Ok(())
     }
     pub fn alignment_ready(&self, session: &Session, feed: &crate::viewport::SceneFeed) -> bool {
@@ -990,7 +992,7 @@ impl SketchEditor {
         self.finish()?;
         self.model
             .begin_boolean(session, resources, &scene, &selected, channel)?;
-        self.message = "Boolean · choose explicit targets and tools, then Preview".into();
+        self.message = "Boolean · choose explicit targets and tools".into();
         Ok(())
     }
     pub(crate) fn operation_handles_enter(&self) -> bool {
@@ -1110,7 +1112,7 @@ impl SketchEditor {
                 }
             }
             Err(error) => format!(
-                "{} · viewport handle unavailable ({error}); use the Inspector, then Preview",
+                "{} · viewport handle unavailable ({error}); enter the values in the Inspector",
                 tool.label()
             ),
         };
@@ -1226,8 +1228,7 @@ impl SketchEditor {
         self.finish()?;
         self.model
             .begin_thread(session, resources, scene.as_deref(), &selected, channel)?;
-        self.message =
-            "Thread · configure its profile, representation and axis, then Preview".into();
+        self.message = "Thread · configure its profile, representation and axis".into();
         Ok(())
     }
     pub fn begin_fence(
@@ -1242,8 +1243,7 @@ impl SketchEditor {
         self.finish()?;
         self.prepare_architecture_level(session)?;
         self.model.begin_fence(session, resources, channel)?;
-        self.message =
-            "Fence · choose a construction, draw its run in the viewport, then Preview".into();
+        self.message = "Fence · choose a construction, draw its run in the viewport".into();
         Ok(())
     }
     pub fn begin_wall(
@@ -1262,7 +1262,7 @@ impl SketchEditor {
         self.prepare_architecture_level(session)?;
         self.model.begin_wall(session, resources, channel)?;
         self.message =
-            "Wall · choose a type, draw the path in the viewport or enter corners and openings in the Inspector, then Preview"
+            "Wall · choose a type, draw the path in the viewport or enter corners and openings in the Inspector"
                 .into();
         Ok(())
     }
@@ -1288,7 +1288,7 @@ impl SketchEditor {
             session.document(),
             &targets,
             &refused,
-            "choose the inputs in the Inspector, then Preview and Apply",
+            "choose the inputs in the Inspector. Apply after the preview is ready",
         );
         Ok(())
     }
@@ -1448,7 +1448,7 @@ impl SketchEditor {
         self.finish()?;
         self.model.begin_cabinet(session, resources, channel)?;
         self.fit_requested = true;
-        self.message = "Cabinet · set the floor datum, panels, individual shelves and connections in the Inspector, then Preview".into();
+        self.message = "Cabinet · set the floor datum, panels, individual shelves and connections in the Inspector".into();
         Ok(())
     }
     pub fn begin_panel(
@@ -1465,8 +1465,7 @@ impl SketchEditor {
         }
         self.finish()?;
         self.model.begin_panel(session, resources, channel)?;
-        self.message =
-            "Panel · choose stock, size and placement in the Inspector, then Preview".into();
+        self.message = "Panel · choose stock, size and placement in the Inspector".into();
         Ok(())
     }
     pub fn begin_sheet(
@@ -1483,8 +1482,7 @@ impl SketchEditor {
         }
         self.finish()?;
         self.model.begin_sheet(session, resources, channel)?;
-        self.message =
-            "Base sheet · choose sheet stock and size in the Inspector, then Preview".into();
+        self.message = "Base sheet · choose sheet stock and size in the Inspector".into();
         Ok(())
     }
     pub fn begin_weldment(
@@ -1502,8 +1500,7 @@ impl SketchEditor {
         self.finish()?;
         self.model.begin_weldment(session, resources, channel)?;
         self.message =
-            "Tube / profile · choose stock and a sketch or two points in the Inspector, then Preview"
-                .into();
+            "Tube / profile · choose stock and a sketch or two points in the Inspector".into();
         Ok(())
     }
     pub fn begin_weld(
@@ -1521,8 +1518,7 @@ impl SketchEditor {
         self.finish()?;
         self.model.begin_weld(session, resources, channel)?;
         self.message =
-            "Weld joint · choose the connection and weld details in the Inspector, then Preview"
-                .into();
+            "Weld joint · choose the connection and weld details in the Inspector".into();
         Ok(())
     }
     pub fn begin_weld_connection(
@@ -1540,8 +1536,7 @@ impl SketchEditor {
         self.finish()?;
         self.model
             .begin_weld_connection(session, resources, channel)?;
-        self.message =
-            "Miter / cope · choose the joint and two members in the Inspector, then Preview".into();
+        self.message = "Miter / cope · choose the joint and two members in the Inspector".into();
         Ok(())
     }
     pub fn fdm_aid_kind(&self) -> Option<multicad_core::model::AidKind> {
@@ -1583,7 +1578,7 @@ impl SketchEditor {
         self.model.choose_fdm_aid_kind(kind)?;
         self.message = match (target, note) {
             (Some(part), _) => format!(
-                "{} · finished Part from the selection: {} · pick the contact in the viewer or enter coordinates, then Preview",
+                "{} · finished Part from the selection: {} · pick the contact in the viewer or enter coordinates",
                 tool.label(),
                 session
                     .document()
@@ -1592,7 +1587,7 @@ impl SketchEditor {
             ),
             (None, Some(note)) => format!("{} · {note}", tool.label()),
             (None, None) => format!(
-                "{} · choose the finished Part and sizes in the Inspector, then Preview",
+                "{} · choose the finished Part and sizes in the Inspector",
                 tool.label()
             ),
         };
@@ -1630,7 +1625,7 @@ impl SketchEditor {
             };
         }
         self.message =
-            "Planting · World plane · choose a tree or shrub and click in the garden view, then Preview".into();
+            "Planting · World plane · choose a tree or shrub and click in the garden view".into();
         Ok(())
     }
     pub fn begin_equipment(
@@ -1659,8 +1654,7 @@ impl SketchEditor {
         self.prepare_architecture_level(session)?;
         self.model.begin_stairs(session, resources, channel)?;
         self.message =
-            "Stairs · choose a level, click the first riser and walking direction, then Preview"
-                .into();
+            "Stairs · choose a level, click the first riser and walking direction".into();
         Ok(())
     }
     pub fn begin_equipment_preset(
@@ -1691,9 +1685,7 @@ impl SketchEditor {
                 perspective: false,
             };
         }
-        self.message =
-            "Equipment · choose a family and host, click in the apartment view, then Preview"
-                .into();
+        self.message = "Equipment · choose a family and host, click in the apartment view".into();
         Ok(())
     }
     pub fn begin_architecture(
@@ -1711,9 +1703,7 @@ impl SketchEditor {
         self.finish()?;
         self.prepare_architecture_level(session)?;
         self.model.begin_architecture(session, resources, channel)?;
-        self.message =
-            "Levels & stairs · define a level or place a slab, stair or envelope, then Preview"
-                .into();
+        self.message = "Levels & stairs · define a level or place a slab, stair or envelope".into();
         Ok(())
     }
     pub fn display_style(&self) -> DisplayStyle {
@@ -1752,6 +1742,9 @@ impl SketchEditor {
     }
     pub fn set_measure_pin_allowed(&mut self, allowed: bool) {
         self.measure_pin_allowed = allowed;
+    }
+    pub(crate) fn set_model_workspace(&mut self, model: bool) {
+        self.model_workspace = model;
     }
     pub fn has_pending_edits(&self) -> bool {
         if self.materials.pending() {
@@ -3151,6 +3144,10 @@ impl SketchEditor {
         if !self.measurement.active() {
             self.advance_model_targets(session, resources, feed, false);
         }
+        self.symbols
+            .tick_auto_preview(ui, session, resources, self.model_workspace);
+        self.transfer
+            .tick_auto_preview(ui, session, resources, self.model_workspace);
         if self.show_inspector {
             crate::controls::inspector_panel(ui,"source-inspector")
             .show(ui, |ui| {
@@ -3174,7 +3171,7 @@ impl SketchEditor {
                     else if self.operations.tool().is_some(){Some(Owner::Operation)}
                     else if self.tool.is_some_and(|tool|tool.guide(0,0).finish_action){Some(Owner::Drawing)}else{None};
                 let accent=if sketch_mode{crate::registry::Mode::Sketch.color()}else{crate::registry::Mode::Model.color()};
-                crate::inspector_actions::scope(ui,owner,accent,|ui| {
+                crate::inspector_actions::scope_with_preview(ui,owner,accent,owner == Some(Owner::Model),|ui| {
                         if self.measurement.active(){let allow=self.measure_pin_allowed && !self.has_pending_edits();self.measurement.show(ui,session,allow);if let Some((notice,_))=self.measurement.take_notice(){self.message=notice;}return;}
                         if self.symbols.active(){
                             if let Some(outcome)=self.symbols.show(ui,session,resources,true){self.accept_symbol_outcome(outcome);}
@@ -3738,6 +3735,9 @@ impl SketchEditor {
                     Some(ModelCanvas { resources, feed }),
                 )
             });
+        if !self.measurement.active() {
+            self.model.tick_auto_preview(ui, session, resources, false);
+        }
         if repair_view && let Some(rect) = self.viewport_rect {
             ui.painter().text(
                 rect.left_top() + Vec2::new(14., 12.),
@@ -4108,8 +4108,7 @@ impl SketchEditor {
                 },
             )
         {
-            self.message =
-                "Wall location picked · check the fit in the Inspector, then Preview".into();
+            self.message = "Wall location picked · check the fit in the Inspector".into();
         }
         let cabinet_guide = self.model.cabinet_guide(session);
         if !self.measurement.active()
@@ -4129,7 +4128,7 @@ impl SketchEditor {
             )
         {
             self.message =
-                "Panel face placed · check the axes and offsets in the viewport and Inspector, then Preview"
+                "Panel face placed · check the axes and offsets in the viewport and Inspector"
                     .into();
         }
         if !self.measurement.active()
@@ -4149,7 +4148,7 @@ impl SketchEditor {
             )
         {
             self.message =
-                "Joint panel picked · check the pair, mortises and tenons in the viewport and Inspector, then Preview"
+                "Joint panel picked · check the pair, mortises and tenons in the viewport and Inspector"
                     .into();
         }
         if !self.measurement.active() && self.external.active() {
@@ -4356,8 +4355,7 @@ impl SketchEditor {
                 },
             )
         {
-            self.message =
-                "Outline changed · check the dimensions in the Inspector, then Preview".into();
+            self.message = "Outline changed · check the dimensions in the Inspector".into();
         }
         if let Some(scene) = &scene {
             if self.envelopes {
@@ -4386,8 +4384,7 @@ impl SketchEditor {
                 },
             )
         {
-            self.message =
-                "Sheet flange edge chosen · adjust it in the Inspector, then Preview".into();
+            self.message = "Sheet flange edge chosen · adjust it in the Inspector".into();
         }
         if !self.measurement.active()
             && let Some(context) = model_context

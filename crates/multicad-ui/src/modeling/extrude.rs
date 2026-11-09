@@ -205,13 +205,12 @@ impl Draft {
         request.parameters = parameters;
         Ok(request)
     }
-    fn remember(&mut self, request: &ExtrudeRequest) {
-        self.elevation
-            .remember(&request.parameters.direction.elevation);
-        self.azimuth.remember(&request.parameters.direction.azimuth);
-        self.offset.remember(&request.parameters.start_offset);
-        self.taper.remember(&request.parameters.taper);
-        match &request.parameters.extent {
+    fn remember_fields(&mut self, parameters: &ExtrudeParameters) {
+        self.elevation.remember(&parameters.direction.elevation);
+        self.azimuth.remember(&parameters.direction.azimuth);
+        self.offset.remember(&parameters.start_offset);
+        self.taper.remember(&parameters.taper);
+        match &parameters.extent {
             Extent::OneSided { end } => self.forward.remember(end),
             Extent::TwoSided { forward, backward } => {
                 self.forward.remember(forward);
@@ -219,6 +218,9 @@ impl Draft {
             }
             Extent::Symmetric { total } => self.total.remember(total),
         }
+    }
+    fn remember(&mut self, request: &ExtrudeRequest) {
+        self.remember_fields(&request.parameters);
         self.request = request.clone();
     }
 }
@@ -230,6 +232,20 @@ pub struct ExtrudePanel {
     picking_available: bool,
 }
 impl ExtrudePanel {
+    pub(super) fn remember(&mut self, request: &ExtrudeRequest) {
+        if let Some(draft) = &mut self.draft {
+            draft.remember(request);
+        }
+    }
+    pub(super) fn remember_group(&mut self, request: &multicad_core::model::ExtrudeGroupEdit) {
+        if let Some(draft) = &mut self.draft {
+            draft.remember_fields(&request.parameters);
+            draft.request.parameters = request.parameters.clone();
+            if let Some(faces) = &request.faces {
+                draft.request.faces.clone_from(faces);
+            }
+        }
+    }
     /// Called once when entering the tool, never from painting. Each selected
     /// exact region receives independent persistent feature/body identities.
     pub fn begin(

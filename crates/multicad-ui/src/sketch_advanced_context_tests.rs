@@ -319,7 +319,6 @@ fn solved_choices_reach_sweep_and_loft_inspectors_and_source_changes_reject_old_
     );
     h.click("Path · Curve 1");
     h.dismiss_popup();
-    h.click("Preview");
     h.ready();
     assert_eq!(h.session.document(), &original);
     assert_eq!(h.session.revision(), 0);
@@ -402,7 +401,6 @@ fn solved_choices_reach_sweep_and_loft_inspectors_and_source_changes_reject_old_
         h.click(label);
         h.dismiss_popup();
     }
-    h.click("Preview");
     h.ready();
     assert!(
         h.editor

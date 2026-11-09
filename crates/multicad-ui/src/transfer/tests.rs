@@ -1063,3 +1063,73 @@ fn retained_consumed_boolean_definition_is_not_a_physical_leaf_but_its_placed_co
     f.session.undo(f.session.revision(), actor()).unwrap();
     assert_eq!(f.session.document(), &before);
 }
+
+#[test]
+fn model_transfer_waits_for_picker_exit_then_previews_automatically() {
+    let mut f = fixture();
+    let resources = ProjectResources::default();
+    let before = f.session.document().clone();
+    let mut c = TransferController::default();
+    c.set_backend(Box::new(Backend {
+        full_native: true,
+        ..Backend::new()
+    }));
+    c.begin(
+        &f.session,
+        &resources,
+        Some(&f.scene),
+        TransferSelection {
+            source: Some(path(f.source.body)),
+            targets: vec![path(f.target.body)],
+            feature: None,
+        },
+        Channel::Ui,
+    )
+    .unwrap();
+    finish_inputs(&mut c, &f);
+    c.form.as_mut().unwrap().pick = Some(TransferLane::Source);
+    let ctx = egui::Context::default();
+    let tick = |time, c: &mut TransferController, s: &Session| {
+        ctx.run_ui(
+            egui::RawInput {
+                time: Some(time),
+                ..Default::default()
+            },
+            |ui| {
+                c.tick_auto_preview(ui, s, &resources, true);
+            },
+        )
+        .drop_without_applying_deltas();
+    };
+    tick(0., &mut c, &f.session);
+    tick(0.3, &mut c, &f.session);
+    assert!(c.candidate.is_none());
+    // Finishing multi-pick changes no form version. The same captures must stage.
+    c.form.as_mut().unwrap().pick = None;
+    tick(0.4, &mut c, &f.session);
+    assert!(c.candidate.is_none());
+    tick(0.6, &mut c, &f.session);
+    assert!(c.pending());
+    let until = Instant::now() + Duration::from_secs(20);
+    while c.pending() {
+        c.poll(&f.session, &resources);
+        assert!(Instant::now() < until);
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert!(c.can_apply(&f.session, &resources), "{:?}", c.error);
+    let output = frame(&ctx, &mut c, &mut f.session, vec![], 900.);
+    assert!(
+        !output
+            .platform_output
+            .accesskit_update
+            .as_ref()
+            .unwrap()
+            .nodes
+            .iter()
+            .any(|(_, node)| node.label() == Some("Preview"))
+    );
+    output.drop_without_applying_deltas();
+    assert_eq!(f.session.document(), &before);
+    c.apply(&mut f.session, &resources).unwrap();
+    assert_ne!(f.session.document(), &before);
+}

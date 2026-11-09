@@ -138,7 +138,7 @@ impl SketchEditor {
             },
             channel,
         )?;
-        self.message = "Choose the explicit source geometry and controls in the Inspector, then Preview and Apply".into();
+        self.message = "Choose the explicit source geometry and controls in the Inspector. Apply after the preview is ready".into();
         Ok(())
     }
 

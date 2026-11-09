@@ -669,6 +669,24 @@ impl ModelForm {
                 .map(|request| ModelRequest::ExtrudeGroupEdit(Box::new(request))),
         }
     }
+    /// Capture the validated request's bindings just as the form's Preview action does.
+    pub(super) fn remember_preview(&mut self, request: &ModelRequest) {
+        match (self, request) {
+            (Self::Primitive(panel), ModelRequest::Primitive(request)) => panel.remember(request),
+            (Self::Extrude(panel), ModelRequest::Extrude(request)) => panel.remember(request),
+            (Self::ExtrudeGroup(panel), ModelRequest::ExtrudeGroupEdit(request)) => {
+                panel.extrusion.remember_group(request);
+            }
+            (Self::Revolve(panel), ModelRequest::Revolve(request)) => panel.remember(request),
+            (Self::Placement(panel), ModelRequest::Placement(request)) => panel.remember(request),
+            (Self::Scale(panel), ModelRequest::Scale(request)) => panel.remember(request),
+            (Self::Alignment(panel), ModelRequest::Alignment(request)) => panel.remember(request),
+            (Self::EdgeTreatment(panel), ModelRequest::EdgeTreatment(request)) => {
+                panel.remember(request);
+            }
+            _ => {}
+        }
+    }
     pub fn show(
         &mut self,
         ui: &mut egui::Ui,

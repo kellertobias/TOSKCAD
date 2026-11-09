@@ -70,6 +70,42 @@ fn orientation_and_formula_origin_are_canonical_source_and_not_display_moves() {
     }
 }
 #[test]
+fn automatic_preview_retains_the_validated_parameter_identity() {
+    use super::super::{ExtrudeCapabilities, form::ModelForm};
+
+    let mut document = Document::new("Primitive binding").unwrap();
+    let mut width = Entity::new(
+        "width",
+        EntityData::Parameter {
+            expression: "25".into(),
+            unit: "mm".into(),
+            exposed: true,
+            inputs: vec![],
+        },
+    );
+    document.insert(width.clone()).unwrap();
+    let mut primitive = panel(ModelingTool::Box);
+    primitive.size[0].text = "=$width".into();
+    let mut form = ModelForm::Primitive(Box::new(primitive));
+    let capabilities = ExtrudeCapabilities::distance_bodies();
+    let request = form.request(&document, capabilities).unwrap();
+    form.remember_preview(&request);
+
+    width.name = "renamed_width".into();
+    document.replace(width.clone()).unwrap();
+    let ModelRequest::Primitive(original) = request else {
+        panic!("Expected a primitive request");
+    };
+    let ModelRequest::Primitive(after_rename) = form.request(&document, capabilities).unwrap()
+    else {
+        panic!("Expected a primitive request");
+    };
+    assert_eq!(after_rename.parameters, original.parameters);
+
+    document.remove(width.id).unwrap();
+    assert!(form.request(&document, capabilities).is_err());
+}
+#[test]
 fn primitive_controls_share_edit_preview_apply_stamps_and_allow_intentional_names() {
     let mut document = Document::new("Primitive events").unwrap();
     document

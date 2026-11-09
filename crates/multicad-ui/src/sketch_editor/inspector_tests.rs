@@ -273,7 +273,6 @@ fn pinned_native_scale_footer_requires_receipt_applies_once_undoes_and_cancels_a
     }
     let out = short_frame(&ctx, &mut editor, &mut session, &mut feed, vec![], false);
     let apply = action_bounds(&out, "Apply");
-    let preview = action_bounds(&out, "Preview");
     assert!(apply.bottom() > 290. && apply.bottom() <= 320.);
     out.drop_without_applying_deltas();
     short_click(
@@ -286,14 +285,9 @@ fn pinned_native_scale_footer_requires_receipt_applies_once_undoes_and_cancels_a
     );
     assert_eq!(session.document(), &original);
     assert_eq!(session.revision(), revision);
-    short_click(
-        &ctx,
-        &mut editor,
-        &mut session,
-        &mut feed,
-        preview.center(),
-        false,
-    );
+    editor
+        .preview_model(&session, &Default::default(), Channel::Ui)
+        .unwrap();
     let until = Instant::now() + Duration::from_secs(4);
     while !editor.model_can_apply(&session, &Default::default()) && Instant::now() < until {
         short_frame(&ctx, &mut editor, &mut session, &mut feed, vec![], false)

@@ -36,7 +36,6 @@ pub(super) struct OperationState {
     pub drag: Option<OperationDrag>,
     pub confirm: Option<FormStamp>,
     pub touched: bool,
-    pub auto_previewed: Option<FormStamp>,
 }
 
 fn screen(camera: Camera, rect: Rect, p: Point) -> Option<Pos2> {
@@ -156,7 +155,6 @@ impl ModelToolController {
                 self.invalidate();
                 // A rejected request keeps the tool open with its message.
                 let _ = self.preview(session, resources, Channel::Ui);
-                self.operation.auto_previewed = self.stamp();
                 Ok(None)
             }
             EntryEffect::Invalid(message) => {
@@ -166,7 +164,7 @@ impl ModelToolController {
                     set(&mut self.form, entry.value());
                 }
                 self.invalidate();
-                self.operation.auto_previewed = self.stamp();
+                self.observed_preview_form = self.stamp();
                 self.error = Some(message);
                 Ok(None)
             }
@@ -284,15 +282,6 @@ impl ModelToolController {
         }
         if let (Some(entry), Some(value)) = (&mut self.operation.entry, value) {
             entry.sync_external(value);
-        }
-        // Show real geometry as soon as the operation has valid inputs.
-        if self.candidate.is_none()
-            && self.error.is_none()
-            && !self.pending()
-            && self.operation.auto_previewed != self.stamp()
-        {
-            self.operation.auto_previewed = self.stamp();
-            let _ = self.preview(session, resources, Channel::Ui);
         }
         let entry_value = self.operation.entry.as_ref().map_or(0., ValueEntry::value);
         let painted = self.operation.drag.as_ref().map_or(handle, |d| d.handle);

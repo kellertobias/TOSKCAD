@@ -272,6 +272,18 @@ impl ScalePanel {
             .active_command()
             .with_parameters(self.parameters(document)?))
     }
+    pub(super) fn remember(&mut self, request: &ScaleCommand) {
+        let parameters = match request {
+            ScaleCommand::Batch(batch) => &batch.parameters,
+            ScaleCommand::Edit { parameters, .. } => parameters,
+        };
+        for (field, value) in self.factors.iter_mut().zip(&parameters.factors) {
+            field.remember(value);
+        }
+        for (field, value) in self.pivot.iter_mut().zip(&parameters.pivot) {
+            field.remember(value);
+        }
+    }
     pub fn show(
         &mut self,
         ui: &mut egui::Ui,
@@ -351,13 +363,7 @@ impl ScalePanel {
         match action {
             Some(FormAction::Preview) => {
                 let request = self.request(document, enabled).ok()?;
-                let parameters = self.parameters(document).ok()?;
-                for (field, value) in self.factors.iter_mut().zip(&parameters.factors) {
-                    field.remember(value);
-                }
-                for (field, value) in self.pivot.iter_mut().zip(&parameters.pivot) {
-                    field.remember(value);
-                }
+                self.remember(&request);
                 Some(ModelEvent::Preview {
                     stamp: self.stamp,
                     request: ModelRequest::Scale(Box::new(request)),

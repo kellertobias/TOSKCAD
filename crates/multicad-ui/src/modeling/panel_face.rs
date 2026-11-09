@@ -118,13 +118,13 @@ pub(crate) fn seeded_message(
     let mut parts = vec![tool.to_owned()];
     if names.is_empty() {
         parts.extend(refused.iter().cloned());
-        parts.push(format!("{otherwise}, then Preview"));
+        parts.push(otherwise.into());
     } else {
         parts.push(format!("targets from the selection: {}", names.join(", ")));
         if !refused.is_empty() {
             parts.push(format!("not used: {}", refused.join("; ")));
         }
-        parts.push("check them in the viewport and Inspector, then Preview".into());
+        parts.push("check them in the viewport and Inspector".into());
     }
     parts.join(" · ")
 }

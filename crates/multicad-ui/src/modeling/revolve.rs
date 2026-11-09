@@ -112,6 +112,13 @@ impl RevolvePanel {
     pub fn stamp(&self) -> FormStamp {
         self.stamp
     }
+    pub(super) fn remember(&mut self, request: &RevolveRequest) {
+        for (field, value) in self.origin.iter_mut().zip(&request.parameters.axis_origin) {
+            field.remember(value);
+        }
+        self.bearing.remember(&request.parameters.axis_angle);
+        self.sweep.remember(&request.parameters.angle);
+    }
     pub fn request(&self, document: &Document, enabled: bool) -> Result<RevolveRequest, String> {
         if !enabled {
             return Err("The native modeling preview provider is unavailable".into());
@@ -258,10 +265,7 @@ impl RevolvePanel {
         match action {
             Some(FormAction::Preview) => match self.request(document, enabled) {
                 Ok(request) => {
-                    self.origin[0].remember(&request.parameters.axis_origin[0]);
-                    self.origin[1].remember(&request.parameters.axis_origin[1]);
-                    self.bearing.remember(&request.parameters.axis_angle);
-                    self.sweep.remember(&request.parameters.angle);
+                    self.remember(&request);
                     self.error = None;
                     Some(ModelEvent::Preview {
                         stamp: self.stamp,

@@ -280,7 +280,7 @@ impl AdvancedPanel {
                 .add_enabled(
                     self.picking_available,
                     egui::Button::new(if self.picking {
-                        "Selecting source faces…"
+                        "Finish picking faces"
                     } else {
                         "Select / reselect faces"
                     }),
@@ -292,7 +292,7 @@ impl AdvancedPanel {
             }
             if self.picking() {
                 ui.small(
-                    "Select the source faces in the viewer. Preview returns to the complete model.",
+                    "Select the source faces in the viewer, then finish picking to preview the complete model.",
                 );
             }
             let mut remove = None;

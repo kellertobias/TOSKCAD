@@ -1708,3 +1708,67 @@ fn compact_library_keeps_file_open_and_cancel_reachable_above_long_catalog_resul
     assert!(!c.active());
     assert_eq!(session.document(), &before);
 }
+
+#[test]
+fn model_symbol_preview_runs_after_latest_edit_without_a_manual_button() {
+    let (mut session, part, width) = fixture();
+    let definition = embed(&mut session, part.body, width);
+    let before = session.document().clone();
+    let resources = ProjectResources::default();
+    let mut controller = controller();
+    begin(
+        &mut controller,
+        &session,
+        SymbolTool::Library,
+        Default::default(),
+    );
+    controller
+        .form
+        .as_mut()
+        .unwrap()
+        .place(session.document(), definition)
+        .unwrap();
+    let ctx = egui::Context::default();
+    let tick = |time, controller: &mut SymbolController, session: &Session| {
+        ctx.run_ui(
+            egui::RawInput {
+                time: Some(time),
+                ..Default::default()
+            },
+            |ui| {
+                controller.tick_auto_preview(ui, session, &resources, true);
+            },
+        )
+        .drop_without_applying_deltas();
+    };
+    tick(0., &mut controller, &session);
+    let form = controller.form.as_mut().unwrap();
+    let Operation::Place { name, .. } = &mut form.operation else {
+        panic!("placement form")
+    };
+    *name = "Latest symbol name".into();
+    form.changed();
+    tick(0.10, &mut controller, &session);
+    tick(0.19, &mut controller, &session);
+    assert!(!controller.pending());
+    tick(0.26, &mut controller, &session);
+    assert!(controller.pending());
+    wait(&mut controller, &session, &resources);
+    assert!(
+        controller.can_apply(&session, &resources),
+        "{:?}",
+        controller.error
+    );
+    let (output, _) = frame(&ctx, &mut controller, &mut session, vec![], 900.);
+    assert_eq!(painted_text_count(&output, "Preview"), 0);
+    point(&output, "Apply");
+    output.drop_without_applying_deltas();
+    assert_eq!(session.document(), &before);
+    controller.apply(&mut session, &resources).unwrap();
+    assert!(
+        session
+            .document()
+            .entities()
+            .any(|entity| entity.name == "Latest symbol name")
+    );
+}

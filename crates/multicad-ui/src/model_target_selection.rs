@@ -290,7 +290,7 @@ impl SketchEditor {
         self.model
             .begin_opening(session, resources, tool, wall, channel)?;
         self.message = format!(
-            "{} · click a wall face in the viewport or enter the segment and offset, then Preview",
+            "{} · click a wall face in the viewport or enter the segment and offset",
             tool.label()
         );
         Ok(())
@@ -319,8 +319,7 @@ impl SketchEditor {
             self.finish()?;
             self.model
                 .begin_mechanical_part(session, resources, channel)?;
-            self.message =
-                "Hardware · configure a washer, nut or mounting envelope, then Preview".into();
+            self.message = "Hardware · configure a washer, nut or mounting envelope".into();
             return Ok(());
         }
         if tool == ModelingTool::SurfaceStructure {
@@ -343,15 +342,13 @@ impl SketchEditor {
             self.finish()?;
             self.model
                 .begin_screw_connection(session, resources, channel)?;
-            self.message =
-                "Screw connection · choose a mode, hardware and receiving face, then Preview"
-                    .into();
+            self.message = "Screw connection · choose a mode, hardware and receiving face".into();
             return Ok(());
         }
         if tool == ModelingTool::Gear {
             self.finish()?;
             self.model.begin_gear(session, resources, channel)?;
-            self.message = "Gear · configure its profile and axis, then Preview".into();
+            self.message = "Gear · configure its profile and axis".into();
             return Ok(());
         }
         if tool == ModelingTool::Fence {

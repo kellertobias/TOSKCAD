@@ -134,6 +134,64 @@ fn reply(state: &Arc<Mutex<State>>, index: usize) -> Arc<Scene> {
     scene
 }
 #[test]
+fn automatic_extrude_debounces_edits_and_accepts_only_the_confirmed_stamp() {
+    let (session, sketch, profiles) = fixture();
+    let before = session.document().clone();
+    let resources = ProjectResources::default();
+    let (mut controller, state) = controller(&session, sketch, profiles);
+    let ctx = egui::Context::default();
+    let tick = |controller: &mut ModelToolController, time| {
+        ctx.run_ui(
+            egui::RawInput {
+                time: Some(time),
+                ..Default::default()
+            },
+            |ui| {
+                controller.tick_auto_preview(ui, &session, &resources, false);
+            },
+        )
+        .drop_without_applying_deltas();
+    };
+    let distance = |controller: &mut ModelToolController, value| {
+        let Some(ModelForm::Extrude(panel)) = &mut controller.form else {
+            panic!("Expected an extrusion draft");
+        };
+        panel.set_gizmo_distance(value);
+    };
+    tick(&mut controller, 0.);
+    distance(&mut controller, 24.);
+    tick(&mut controller, 0.03);
+    tick(&mut controller, 0.08);
+    assert!(state.lock().unwrap().requests.is_empty());
+    assert!(controller.arm_confirmation(&session, &resources));
+    tick(&mut controller, 0.11);
+    assert_eq!(state.lock().unwrap().requests.len(), 1);
+    assert!(!controller.confirmation_ready(&session, &resources));
+
+    distance(&mut controller, 32.);
+    tick(&mut controller, 0.13);
+    tick(&mut controller, 0.21);
+    assert_eq!(state.lock().unwrap().requests.len(), 2);
+    reply(&state, 0);
+    controller.poll(&session, &resources);
+    assert!(!controller.can_apply(&session, &resources));
+    assert!(controller.arm_confirmation(&session, &resources));
+    reply(&state, 1);
+    controller.poll(&session, &resources);
+    assert!(controller.confirmation_ready(&session, &resources));
+
+    distance(&mut controller, 0.);
+    tick(&mut controller, 0.23);
+    assert!(!controller.can_apply(&session, &resources));
+    tick(&mut controller, 0.31);
+    assert_eq!(state.lock().unwrap().requests.len(), 2);
+    assert!(controller.error().is_some());
+    assert!(!controller.confirmation_ready(&session, &resources));
+    controller.cancel();
+    assert_eq!(session.document(), &before);
+    assert_eq!(session.revision(), 0);
+}
+#[test]
 fn abandoning_pending_native_preview_notifies_its_owner_and_rejects_late_replies() {
     let (session, sketch, profiles) = fixture();
     let before = session.document().clone();

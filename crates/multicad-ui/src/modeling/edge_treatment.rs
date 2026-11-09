@@ -215,6 +215,17 @@ impl EdgeTreatmentPanel {
             self.set_edges(scene, captures)
         }
     }
+    pub(super) fn remember(&mut self, command: &EdgeTreatmentCommand) {
+        let request = match command {
+            EdgeTreatmentCommand::Create(request) | EdgeTreatmentCommand::Edit(request) => request,
+        };
+        self.size.remember(&request.parameters.size);
+        match &request.chamfer {
+            Some(ChamferSettings::TwoDistances { second, .. }) => self.second.remember(second),
+            Some(ChamferSettings::DistanceAngle { angle, .. }) => self.angle.remember(angle),
+            None => {}
+        }
+    }
     fn parameters(&self, document: &Document) -> Result<EdgeTreatmentParameters, String> {
         let parameters = EdgeTreatmentParameters {
             profile: self.profile,
@@ -342,7 +353,7 @@ impl EdgeTreatmentPanel {
             .add_enabled(
                 self.picking_available,
                 egui::Button::new(if self.picking && self.face_for.is_none() {
-                    "Selecting edges…"
+                    "Finish picking edges"
                 } else {
                     "Select / reselect edges"
                 }),
@@ -359,7 +370,7 @@ impl EdgeTreatmentPanel {
             self.face_for = None;
         }
         if self.picking() {
-            ui.small(if self.face_for.is_some(){"Choose one adjacent face for the indicated edge. Native Preview checks adjacency and direction."}else{"Click an upstream edge. Shift toggles edges. Preview returns to the complete model."});
+            ui.small(if self.face_for.is_some(){"Choose one adjacent face for the indicated edge."}else{"Click an upstream edge. Shift toggles edges. Finish picking to preview the complete model."});
         }
         changed |= self.show_edge_sides(ui);
         let validation = self.request(document, enabled);
@@ -376,21 +387,8 @@ impl EdgeTreatmentPanel {
         }
         match action {
             Some(FormAction::Preview) => {
-                let request = self.request(document, enabled).ok()?;
-                let parameters = self.parameters(document).ok()?;
-                self.size.remember(&parameters.size);
-                if let Some(chamfer) = match &request {
-                    EdgeTreatmentCommand::Create(r) | EdgeTreatmentCommand::Edit(r) => {
-                        r.chamfer.as_ref()
-                    }
-                } {
-                    match chamfer {
-                        ChamferSettings::TwoDistances { second, .. } => {
-                            self.second.remember(second)
-                        }
-                        ChamferSettings::DistanceAngle { angle, .. } => self.angle.remember(angle),
-                    }
-                }
+                let request = validation.ok()?;
+                self.remember(&request);
                 self.stop_picking();
                 Some(ModelEvent::Preview {
                     stamp: self.stamp,

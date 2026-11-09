@@ -3,6 +3,7 @@ pub mod architecture_navigation;
 pub mod architecture_view;
 pub mod artwork_import;
 pub mod assembly;
+mod auxiliary_preview;
 pub mod camera;
 mod camera_gestures;
 pub mod controls;

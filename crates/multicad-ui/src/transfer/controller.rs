@@ -3,6 +3,7 @@ use super::{
     form::{self, Form, SourceMode},
 };
 use crate::{
+    auxiliary_preview::Schedule,
     egui,
     inspector_actions::{self, Button, Owner},
     viewport::{Scene, SceneBackend, SceneStamp, VisibilityFilter},
@@ -46,6 +47,7 @@ struct Handoff {
 pub struct TransferController {
     form: Option<Form>,
     scope: Option<Scope>,
+    auto_preview: Schedule,
     backend: Option<Box<dyn SceneBackend>>,
     candidate: Option<Candidate>,
     inspection: Option<Inspection>,
@@ -134,6 +136,7 @@ impl TransferController {
             channel,
         });
         self.form = Some(form);
+        self.auto_preview.reset();
         self.candidate = None;
         self.handoff = None;
         self.error = None;
@@ -306,18 +309,45 @@ impl TransferController {
             backend.cancel();
         }
         self.form = None;
+        self.auto_preview.reset();
         self.inspection = None;
         self.scope = None;
         self.candidate = None;
         self.handoff = None;
         self.error = None;
     }
+    pub(crate) fn tick_auto_preview(
+        &mut self,
+        ui: &egui::Ui,
+        session: &Session,
+        resources: &ProjectResources,
+        automatic: bool,
+    ) {
+        let version = self.form.as_ref().map(|form| form.version);
+        let blocked = self.form.as_ref().is_some_and(|form| form.pick.is_some());
+        if self.auto_preview.ready(ui, automatic, version, blocked)
+            && !self
+                .candidate
+                .as_ref()
+                .is_some_and(|candidate| Some(candidate.version) == version)
+        {
+            let channel = self
+                .scope
+                .as_ref()
+                .map_or(Channel::Ui, |scope| scope.channel);
+            let _ = self.preview(session, resources, channel);
+        }
+    }
+
     pub fn preview(
         &mut self,
         session: &Session,
         resources: &ProjectResources,
         channel: Channel,
     ) -> Result<(), String> {
+        if let Some(form) = &self.form {
+            self.auto_preview.attempted(form.version);
+        }
         let result = self.request_preview(session, resources, channel);
         if let Err(error) = &result {
             self.candidate = None;
@@ -618,7 +648,14 @@ impl TransferController {
             ui.small("Waiting for current native Part occurrences. Source and receiving references stay editable in this form.");
         }
         if form.show(ui, session.document()) {
-            self.candidate = None;
+            if self
+                .candidate
+                .take()
+                .is_some_and(|candidate| candidate.pending)
+                && let Some(backend) = &mut self.backend
+            {
+                backend.cancel();
+            }
             self.error = None;
         }
         if self
@@ -668,11 +705,13 @@ impl TransferController {
         let actions = inspector_actions::row(
             ui,
             Owner::Transfer,
-            Some(Button::new(
-                "Preview",
-                !self.pending(),
-                "Evaluate every receiving cut using the current native source geometry",
-            )),
+            (!self.auto_preview.automatic()).then(|| {
+                Button::new(
+                    "Preview",
+                    !self.pending(),
+                    "Evaluate every receiving cut using the current native source geometry",
+                )
+            }),
             Button::new(
                 "Apply",
                 self.can_apply(session, resources),

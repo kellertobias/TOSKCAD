@@ -153,8 +153,12 @@ fn inspector_opens_saved_feature_controls_and_preview_cancel_preserves_source() 
     click(&context, &mut editor, &mut session, &mut feed, "Edit Box");
     assert!(editor.model.editing());
     assert!(editor.has_pending_edits());
-    click(&context, &mut editor, &mut session, &mut feed, "Preview");
-    frame(&context, &mut editor, &mut session, &mut feed, vec![]);
+    for _ in 0..20 {
+        if editor.model_can_apply(&session, &Default::default()) {
+            break;
+        }
+        frame(&context, &mut editor, &mut session, &mut feed, vec![]);
+    }
     assert!(editor.model_can_apply(&session, &Default::default()));
     click(&context, &mut editor, &mut session, &mut feed, "Cancel");
     assert!(!editor.model_active());

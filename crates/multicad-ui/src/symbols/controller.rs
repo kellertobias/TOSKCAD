@@ -1,5 +1,6 @@
 use super::{SymbolAction, SymbolOutcome, SymbolSelection, SymbolTool, forms::Form};
 use crate::{
+    auxiliary_preview::Schedule,
     egui,
     inspector_actions::{self, Button, Owner},
     viewport::{Scene, SceneBackend, SceneStamp, VisibilityFilter},
@@ -41,6 +42,7 @@ struct Handoff {
 pub struct SymbolController {
     pub(super) form: Option<Form>,
     scope: Option<Scope>,
+    auto_preview: Schedule,
     backend: Option<Box<dyn SceneBackend>>,
     candidate: Option<Candidate>,
     handoff: Option<Handoff>,
@@ -206,6 +208,7 @@ impl SymbolController {
             .checked_add(1)
             .ok_or("Library request limit reached")?;
         self.form = Some(form);
+        self.auto_preview.reset();
         self.candidate = None;
         self.handoff = None;
         self.error = None;
@@ -225,6 +228,29 @@ impl SymbolController {
         }
         Ok(())
     }
+    pub(crate) fn tick_auto_preview(
+        &mut self,
+        ui: &egui::Ui,
+        session: &Session,
+        resources: &ProjectResources,
+        automatic: bool,
+    ) {
+        let version = self
+            .form
+            .as_ref()
+            .filter(|form| form.authoring())
+            .map(|form| form.version);
+        let blocked = self.placement.active();
+        if self.auto_preview.ready(ui, automatic, version, blocked)
+            && !self
+                .candidate
+                .as_ref()
+                .is_some_and(|candidate| Some(candidate.version) == version)
+        {
+            let _ = self.preview(session, resources, Channel::Ui);
+        }
+    }
+
     pub fn preview(
         &mut self,
         session: &Session,
@@ -232,6 +258,9 @@ impl SymbolController {
         channel: Channel,
     ) -> Result<(), String> {
         self.invalidate();
+        if let Some(form) = &self.form {
+            self.auto_preview.attempted(form.version);
+        }
         let result = self.request_preview(session, resources, channel);
         if let Err(error) = &result {
             self.error = Some(error.clone());
@@ -437,6 +466,7 @@ impl SymbolController {
     pub fn cancel(&mut self) {
         self.invalidate();
         self.form = None;
+        self.auto_preview.reset();
         self.placement = Default::default();
         self.scope = None;
         self.handoff = None;
@@ -562,7 +592,7 @@ impl SymbolController {
                 library_search: &self.library_search,
                 installed: &mut self.installed,
             },
-            enabled && current && !pending,
+            enabled && current && (!pending || self.auto_preview.automatic()),
         );
         if self.form.as_ref().map(|f| f.version) != version {
             self.invalidate();
@@ -591,11 +621,13 @@ impl SymbolController {
         let clicks = inspector_actions::row(
             ui,
             Owner::Symbols,
-            Some(Button::new(
-                "Preview",
-                enabled && current && !pending && self.dirty(),
-                "Rebuild the complete candidate before Apply",
-            )),
+            (!self.auto_preview.automatic()).then(|| {
+                Button::new(
+                    "Preview",
+                    enabled && current && !pending && self.dirty(),
+                    "Rebuild the complete candidate before Apply",
+                )
+            }),
             Button::new(
                 "Apply",
                 enabled && self.can_apply(session, resources),

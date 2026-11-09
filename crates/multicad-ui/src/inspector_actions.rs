@@ -27,6 +27,7 @@ struct Footer {
     root_id: egui::Id,
     root: egui::UiBuilder,
     opacity: f32,
+    automatic_preview: bool,
 }
 fn key() -> egui::Id {
     egui::Id::new("active-inspector-footer")
@@ -54,10 +55,20 @@ pub(crate) struct Clicks {
 }
 /// The body scrolls independently of the reserved action area. No footer is
 /// reserved for empty or read-only Inspectors. Nested callers restore context.
+#[cfg(test)]
 pub(crate) fn scope<R>(
     ui: &mut egui::Ui,
     owner: Option<Owner>,
     accent: Color32,
+    body: impl FnOnce(&mut egui::Ui) -> R,
+) -> R {
+    scope_with_preview(ui, owner, accent, false, body)
+}
+pub(crate) fn scope_with_preview<R>(
+    ui: &mut egui::Ui,
+    owner: Option<Owner>,
+    accent: Color32,
+    automatic_preview: bool,
     body: impl FnOnce(&mut egui::Ui) -> R,
 ) -> R {
     let available = ui.available_rect_before_wrap();
@@ -91,6 +102,7 @@ pub(crate) fn scope<R>(
         root_id: ui.id().with("inspector-fixed-actions"),
         root,
         opacity: ui.opacity(),
+        automatic_preview,
     });
     if let Some(footer) = &fixed {
         ui.painter()
@@ -169,6 +181,7 @@ pub(crate) fn row_with_progress(
     }
     let mut clicks = Clicks::default();
     if let Some(footer) = footer {
+        let preview = preview.filter(|_| !footer.automatic_preview);
         let rect = footer.rect.shrink2(Vec2::new(8., 6.));
         let mut actions = egui::Ui::new(
             ui.ctx().clone(),
@@ -212,7 +225,10 @@ pub(crate) fn row_with_progress(
         );
         if let Some(message) = pending {
             let status_rect = Rect::from_min_size(
-                egui::pos2(rect.left(), rect.top() + 28.),
+                egui::pos2(
+                    rect.left(),
+                    rect.top() + if preview.is_some() { 28. } else { 10. },
+                ),
                 egui::vec2(rect.width(), 14.),
             );
             let mut status = actions.new_child(

@@ -338,15 +338,18 @@ impl PlacementPanel {
         self.stamp.changed();
         Ok(())
     }
-    fn preview_request(
-        &mut self,
-        document: &Document,
-        enabled: bool,
-    ) -> Result<PlacementCommand, String> {
-        if !enabled {
-            return Err("Native placement preview is unavailable".into());
-        }
-        let parameters = self.parameters(document)?;
+    pub(super) fn remember(&mut self, request: &PlacementCommand) {
+        let parameters = match request {
+            PlacementCommand::Batch(batch) => batch
+                .transforms
+                .first()
+                .map(|target| &target.parameters)
+                .or_else(|| batch.instances.first().map(|target| &target.parameters))
+                .or_else(|| batch.copies.first().map(|target| &target.parameters)),
+            PlacementCommand::EditPart { parameters, .. }
+            | PlacementCommand::EditInstance { parameters, .. } => Some(parameters),
+        };
+        let Some(parameters) = parameters else { return };
         for (field, value) in self.translation.iter_mut().zip(&parameters.translation) {
             field.remember(value);
         }
@@ -354,8 +357,15 @@ impl PlacementPanel {
             field.remember(value);
         }
         self.angle.remember(&parameters.angle);
-        self.request(document, enabled)?;
-        Ok(self.active_command().with_parameters(parameters))
+    }
+    fn preview_request(
+        &mut self,
+        document: &Document,
+        enabled: bool,
+    ) -> Result<PlacementCommand, String> {
+        let request = self.request(document, enabled)?;
+        self.remember(&request);
+        Ok(request)
     }
     pub fn show(
         &mut self,
