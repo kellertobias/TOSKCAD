@@ -64,13 +64,12 @@ fn page_for_tag(document: &Document, tag: u64) -> Result<EntityId, ModelError> {
 }
 impl Backend {
     pub fn new() -> Self {
-        Self::with_geometry_backend(GeometryBackend::OpenCascade)
+        Self::with_cache(cache::Cache::installed())
     }
     pub fn with_geometry_backend(geometry_backend: GeometryBackend) -> Self {
         Self::with_cache_and_backend(cache::Cache::installed(), geometry_backend)
     }
-    #[cfg(test)]
-    fn with_cache(cache: Option<cache::Cache>) -> Self {
+    pub(crate) fn with_cache(cache: Option<cache::Cache>) -> Self {
         Self::with_cache_and_backend(cache, GeometryBackend::OpenCascade)
     }
     fn with_cache_and_backend(
