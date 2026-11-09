@@ -106,3 +106,42 @@ fn invalid_arithmetic_and_geometry_fail_explicitly() {
         Err(Error::OutOfRange)
     );
 }
+
+#[test]
+fn normalized_components_are_available_for_lossless_storage() {
+    for (input, expected) in [
+        (" +.125 mm ", (1, 8)),
+        ("10 in / 3", (254, 3)),
+        ("-3 / -2 mm", (3, 2)),
+        ("0.000 mm", (0, 1)),
+        ("0.000000000000000001 mm", (1, 1_000_000_000_000_000_000)),
+    ] {
+        let length = parse_length_mm(input).unwrap();
+        assert_eq!(length.ratio(), expected, "{input}");
+        assert_eq!(Rational::new(expected.0, expected.1), Ok(length));
+    }
+    assert_eq!(Rational::new(3, -6).unwrap().ratio(), (-1, 2));
+    assert_eq!(Rational::new(0, 0), Err(Error::DivisionByZero));
+    for out_of_range in [
+        "0.0000000000000000001 mm",
+        "0.0000000000000000000000000000000000000001 mm",
+        "1000000000000000000000000000000000000000 mm",
+    ] {
+        assert_eq!(parse_length_mm(out_of_range), Err(Error::OutOfRange));
+    }
+    assert_eq!(parse_length_mm("3 / 2"), Err(Error::InvalidLength));
+    assert_eq!(parse_length_mm("3 in / 0"), Err(Error::DivisionByZero));
+}
+
+#[test]
+fn circle_query_refuses_unrepresentable_squared_distances() {
+    let circle = Circle::new([r(0, 1); 2], r(1, 1)).unwrap();
+    assert_eq!(
+        circle.intersect_vertical(r(1_000_000_001, 1)),
+        Err(Error::OutOfRange)
+    );
+    assert_eq!(
+        circle.intersect_vertical(r(1, 1_000_000_001)),
+        Err(Error::OutOfRange)
+    );
+}

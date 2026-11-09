@@ -1,5 +1,9 @@
 //! Bounded exact lengths and one analytic curve probe for the kernel study.
 
+pub mod prism;
+
+use std::cmp::Ordering;
+
 const MAX_COMPONENT: i128 = 1_000_000_000_000_000_000;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -71,6 +75,19 @@ impl Rational {
     pub fn checked_div(self, other: Self) -> Result<Self, Error> {
         let ((a, b), (c, d)) = (self.wide(), other.wide());
         Self::normalize(a * d, b * c)
+    }
+}
+
+impl Ord for Rational {
+    fn cmp(&self, other: &Self) -> Ordering {
+        let ((a, b), (c, d)) = (self.wide(), other.wide());
+        (a * d).cmp(&(b * c))
+    }
+}
+
+impl PartialOrd for Rational {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
     }
 }
 
@@ -193,6 +210,14 @@ impl Circle {
             return Err(Error::NonPositiveRadius);
         }
         Ok(Self { center, radius })
+    }
+
+    pub fn center(self) -> [Rational; 2] {
+        self.center
+    }
+
+    pub fn radius(self) -> Rational {
+        self.radius
     }
 
     pub fn intersect_vertical(self, x: Rational) -> Result<VerticalIntersection, Error> {
