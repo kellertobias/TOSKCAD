@@ -9,7 +9,7 @@ fn rust_step_reopens_a_placed_reversed_concave_prism_with_a_straight_hole() {
     };
     use multicad_kernel::{
         PlaneFrame,
-        rust_kernel::{Rational, polygon::PolygonPrism},
+        rust_kernel::{Rational, polygon::PolygonPrism, step_read::read_planar_solid},
     };
 
     let exact = |n| Rational::new(n, 1).unwrap();
@@ -54,6 +54,10 @@ fn rust_step_reopens_a_placed_reversed_concave_prism_with_a_straight_hole() {
     assert_eq!(imported.solid_count().unwrap(), 1);
     let near = |a: f64, b: f64| assert!((a - b).abs() < 2e-6, "{a} != {b}");
     near(imported.volume_mm3().unwrap(), 252.);
+    let rust_read = read_planar_solid(&bytes, policy.linear_tolerance_mm).unwrap();
+    near(rust_read.volume_mm3, imported.volume_mm3().unwrap());
+    assert_eq!(rust_read.face_count, 12);
+    assert_eq!(rust_read.edges_mm.len(), 30);
     let expected = source.bounds().unwrap();
     let bounds = imported.bounds().unwrap();
     for (a, b) in bounds
@@ -61,6 +65,14 @@ fn rust_step_reopens_a_placed_reversed_concave_prism_with_a_straight_hole() {
         .into_iter()
         .chain(bounds.max)
         .zip(expected.min.into_iter().chain(expected.max))
+    {
+        near(a, b);
+    }
+    for (a, b) in rust_read
+        .bounds_mm
+        .into_iter()
+        .flatten()
+        .zip(bounds.min.into_iter().chain(bounds.max))
     {
         near(a, b);
     }

@@ -17,6 +17,10 @@ use std::{
     path::Path,
     time::{Duration, Instant},
 };
+#[allow(dead_code)]
+#[path = "support/rust_polygon.rs"]
+mod rust_polygon;
+
 fn actor() -> Actor {
     Actor::local(Channel::Mcp)
 }
@@ -481,6 +485,47 @@ fn rust_worker_requires_its_own_current_preview_and_attributes_each_run() {
         assert_eq!(manifest["actor"], serde_json::to_value(actor()).unwrap());
     }
 }
+#[test]
+fn rust_worker_publishes_a_concave_extrusion_with_an_open_hole() {
+    let (mut session, _, feature, _) = rust_polygon::fixture();
+    let set = EntityId::new();
+    let prepared = prepare_set(
+        &session,
+        session.revision(),
+        actor(),
+        set,
+        "Planar solid",
+        &SetDefinition::default(),
+    )
+    .unwrap();
+    session.commit(prepared).unwrap();
+    let document = session.document();
+    let revision = session.revision();
+    let worker =
+        ExportWorker::with_geometry_backend(Exporter::default(), GeometryBackend::Rust).unwrap();
+    worker.preview(document, revision, set, actor()).unwrap();
+    let ExportResult::Preview(Ok(preview)) = reply(&worker).result else {
+        panic!("Rust preview failed");
+    };
+    assert!(preview.can_run());
+    assert_eq!(preview.artifacts[0].solid, feature);
+
+    let root = tempfile::tempdir().unwrap();
+    worker
+        .run(document, revision, &preview.key, root.path(), actor())
+        .unwrap();
+    let ExportResult::Run(Ok(run)) = reply(&worker).result else {
+        panic!("Rust run failed");
+    };
+    let [file] = run.files.as_slice() else {
+        panic!("expected one STEP artifact");
+    };
+    let path = Path::new(&run.directory).join(&file.artifact.output.filename);
+    let imported = Solid::read_step(&path, GeometryPolicy::default()).unwrap();
+    assert_eq!(imported.solid_count().unwrap(), 1);
+    assert!((imported.volume_mm3().unwrap() - 552.).abs() < 1e-6);
+}
+
 #[test]
 fn duplicate_part_names_get_short_suffixes_on_disk_with_identities_in_the_manifest() {
     let mut f = Fixture::new();

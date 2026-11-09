@@ -214,8 +214,9 @@ mod tests {
                 .find(|path| path.extension().is_some_and(|e| e == "step"))
                 .unwrap();
             let text = std::fs::read_to_string(&step).unwrap();
-            if provider.starts_with("step-files.rust-planar.1;") {
+            if provider.starts_with("step-files.rust-planar.2;") {
                 rust_outputs += 1;
+                assert!(!provider.contains("occt:"));
                 assert!(text.contains("MANIFOLD_SOLID_BREP"));
                 assert!(text.contains("MultiCAD analytic solid"));
                 assert!(!text.contains("Open CASCADE STEP processor"));

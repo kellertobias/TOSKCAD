@@ -3,13 +3,14 @@ use multicad_core::{
     commands::Actor,
     exchange::{WrittenFile, filename_token},
     project_file::ContentHash,
+    references::{AnalyticGeometry, TopologyKind},
 };
-use multicad_kernel::Solid;
+use multicad_kernel::{Solid, rust_kernel::step_read};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeSet,
     fs::{self, OpenOptions},
-    io::Write,
+    io::{Read, Write},
     path::Path,
 };
 const MANIFEST: &str = "multicad-export.json";
@@ -90,11 +91,23 @@ fn verify(
         let (_, _) = hash_file(path)?;
         return dxf::verify(&fs::read(path).map_err(io)?, expected).map_err(io);
     }
-    let read = Solid::read_step(path, exporter.compiler.policy).map_err(io)?;
-    let count = read.solid_count().map_err(io)?;
-    let volume = read.volume_mm3().map_err(io)?;
-    let bounds = read.bounds().map_err(io)?;
     let tolerance = exporter.compiler.policy.linear_tolerance_mm;
+    let (count, volume, bounds) = if built.backend == GeometryBackend::Rust {
+        let readback = verify_rust_step(built, artifact, path, tolerance)?;
+        (
+            readback.solid_count,
+            readback.volume_mm3,
+            readback.bounds_mm,
+        )
+    } else {
+        let read = Solid::read_step(path, exporter.compiler.policy).map_err(io)?;
+        let bounds = read.bounds().map_err(io)?;
+        (
+            read.solid_count().map_err(io)?,
+            read.volume_mm3().map_err(io)?,
+            [bounds.min, bounds.max],
+        )
+    };
     let [a, b] = artifact.bounds_mm;
     let [x, y, z] = std::array::from_fn::<_, 3, _>(|i| b[i] - a[i]);
     let volume_tolerance =
@@ -102,19 +115,134 @@ fn verify(
     if count != artifact.solid_count
         || (volume - artifact.volume_mm3).abs() > volume_tolerance
         || bounds
-            .min
             .into_iter()
-            .chain(bounds.max)
+            .flatten()
             .zip(a.into_iter().chain(b))
             .any(|(x, y)| (x - y).abs() > tolerance * 2.)
     {
         return Err(failure(
             ErrorKind::Invalid,
             Some(artifact.producer),
-            "STEP readback differs from the current native solid's count, volume or world bounds",
+            "STEP readback differs from the current solid's count, volume or world bounds",
         ));
     }
     Ok(())
+}
+
+type Segment = [[f64; 3]; 2];
+
+fn verify_rust_step(
+    built: &Built,
+    artifact: &ExportArtifact,
+    path: &Path,
+    tolerance: f64,
+) -> Result<step_read::Readback, ExportError> {
+    let invalid = |message: String| failure(ErrorKind::Invalid, Some(artifact.producer), message);
+    let mut bytes = Vec::new();
+    fs::File::open(path)
+        .map_err(io)?
+        .take(step_read::MAX_PLANAR_STEP_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(io)?;
+    if bytes.len() > step_read::MAX_PLANAR_STEP_BYTES {
+        return Err(failure(
+            ErrorKind::Budget,
+            Some(artifact.producer),
+            "STEP readback exceeds the file budget",
+        ));
+    }
+    let source = std::str::from_utf8(&bytes).map_err(|e| invalid(e.to_string()))?;
+    let readback = step_read::read_planar_solid(source, tolerance).map_err(|e| {
+        let kind = match e {
+            step_read::ReadError::Limit => ErrorKind::Budget,
+            _ => ErrorKind::Invalid,
+        };
+        failure(
+            kind,
+            Some(artifact.producer),
+            format!("Rust STEP readback rejected the solid: {e:?}"),
+        )
+    })?;
+    let shape = built
+        .model
+        .as_ref()
+        .and_then(|model| model.snapshot().shapes.get(&artifact.solid))
+        .ok_or_else(|| {
+            invalid("Rust STEP verification requires the exact source topology".into())
+        })?;
+    let mut faces = 0;
+    let mut edges = Vec::new();
+    for element in &shape.topology.elements {
+        match element.key.kind {
+            TopologyKind::Face => faces += 1,
+            TopologyKind::Edge => match element.geometry {
+                Some(AnalyticGeometry::Line { a_mm, b_mm }) => edges.push([a_mm, b_mm]),
+                _ => return Err(invalid("Rust STEP source contains a nonline edge".into())),
+            },
+            TopologyKind::Vertex => {}
+        }
+    }
+    if readback.face_count != faces
+        || !same_segments(
+            &readback.edges_mm,
+            &edges,
+            readback.bounds_mm,
+            tolerance * 2.,
+        )
+    {
+        return Err(invalid(
+            "STEP readback differs from the source face count or analytic edges".into(),
+        ));
+    }
+    Ok(readback)
+}
+
+fn same_segments(
+    actual: &[Segment],
+    expected: &[Segment],
+    bounds: [[f64; 3]; 2],
+    tolerance: f64,
+) -> bool {
+    if actual.len() != expected.len() {
+        return false;
+    }
+    // Index both directions by the largest spatial extent. This avoids an
+    // all-pairs comparison without relying on input order or edge winding.
+    let axis = (0..3)
+        .max_by(|&a, &b| (bounds[1][a] - bounds[0][a]).total_cmp(&(bounds[1][b] - bounds[0][b])))
+        .expect("three axes");
+    let mut ordered: Vec<_> = actual
+        .iter()
+        .copied()
+        .enumerate()
+        .flat_map(|(i, [a, b])| [(i, [a, b]), (i, [b, a])])
+        .collect();
+    ordered.sort_unstable_by(|a, b| a.1[0][axis].total_cmp(&b.1[0][axis]));
+    let mut used = vec![false; actual.len()];
+    expected.iter().all(|edge| {
+        let x = edge[0][axis];
+        let first = ordered.partition_point(|(_, p)| p[0][axis] < x - tolerance);
+        let hit = ordered[first..]
+            .iter()
+            .take_while(|(_, p)| p[0][axis] <= x + tolerance)
+            .filter(|(i, _)| !used[*i])
+            .filter_map(|(i, p)| {
+                let error = p
+                    .iter()
+                    .flatten()
+                    .zip(edge.iter().flatten())
+                    .map(|(a, b)| (a - b).abs())
+                    .fold(0., f64::max);
+                (error <= tolerance).then_some((*i, error))
+            })
+            .min_by(|(_, a), (_, b)| a.total_cmp(b));
+        if let Some((i, _)) = hit {
+            used[i] = true;
+            true
+        } else {
+            false
+        }
+    })
 }
 /// Read a written OBJ, 3MF, STL or GLB back and compare it with the generated bytes,
 /// the exact solid's world bounds and the tessellated volume.
@@ -410,4 +538,40 @@ fn verify_csv(written: &[u8], evidence: &ScheduleEvidence) -> Result<(), String>
         return Err("Schedule CSV readback differs from the planned kind, revision or size".into());
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::same_segments;
+
+    #[test]
+    fn step_edge_match_is_unordered_and_cannot_reuse_or_move_a_boundary() {
+        let bounds = [[0., 0., 0.], [8., 4., 2.]];
+        let a = [[0., 0., 0.], [8., 0., 0.]];
+        let b = [[8., 0., 0.], [8., 4., 0.]];
+        let reversed_with_noise = [[8. + 1e-8, 0., 0.], [0., 0., 0.]];
+        assert!(same_segments(
+            &[b, reversed_with_noise],
+            &[a, b],
+            bounds,
+            1e-7
+        ));
+        assert!(!same_segments(
+            &[b, reversed_with_noise],
+            &[a, a],
+            bounds,
+            1e-7
+        ));
+        assert!(!same_segments(&[b], &[a, b], bounds, 1e-7));
+        let moved = [[8., 0., 0.], [8., 3., 0.]];
+        assert!(!same_segments(&[a, moved], &[a, b], bounds, 1e-7));
+    }
+
+    #[test]
+    fn step_edge_match_prefers_the_closest_of_nearby_boundaries() {
+        let bounds = [[0., 0., 0.], [8., 4., 2.]];
+        let edge = |x| [[x, 0., 0.], [x, 4., 0.]];
+        let [a, b, c] = [edge(1.), edge(1.0075), edge(1.015)];
+        assert!(same_segments(&[a, b, c], &[b, c, a], bounds, 0.01));
+    }
 }

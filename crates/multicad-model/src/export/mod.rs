@@ -35,6 +35,7 @@ struct GeometryExporter<'a> {
     retained: Option<&'a mut Option<Built>>,
 }
 struct Built {
+    backend: GeometryBackend,
     model: Option<Model>,
     preview: ExportPreview,
     /// Bytes generated during the build (planar DXF, OBJ, 3MF), by filename.
@@ -642,26 +643,21 @@ impl GeometryExporter<'_> {
                 format!("unversioned-process:{}", PROCESS.get_or_init(EntityId::new))
             });
         let p = self.exporter.compiler.policy;
-        let profile = match self.backend {
-            GeometryBackend::OpenCascade => {
-                "step-files.1;planar-dxf.1;mesh-obj-3mf.1;drawing-pdf-dxf.1;schedule-csv.1"
+        let policy = [
+            p.linear_tolerance_mm,
+            p.boolean_fuzzy_mm,
+            p.minimum_feature_mm,
+            p.maximum_coordinate_mm,
+        ];
+        match self.backend {
+            GeometryBackend::OpenCascade => format!(
+                "step-files.1;planar-dxf.1;mesh-obj-3mf.1;drawing-pdf-dxf.1;schedule-csv.1;build:{build};occt:{};policy:{policy:?}",
+                multicad_kernel::source_identity(),
+            ),
+            GeometryBackend::Rust => {
+                format!("step-files.rust-planar.2;build:{build};policy:{policy:?}")
             }
-            GeometryBackend::Rust => "step-files.rust-planar.1",
-        };
-        let occt_role = match self.backend {
-            GeometryBackend::OpenCascade => "occt",
-            GeometryBackend::Rust => "verify-occt",
-        };
-        format!(
-            "{profile};build:{build};{occt_role}:{};policy:{:?}",
-            multicad_kernel::source_identity(),
-            [
-                p.linear_tolerance_mm,
-                p.boolean_fuzzy_mm,
-                p.minimum_feature_mm,
-                p.maximum_coordinate_mm
-            ]
-        )
+        }
     }
     fn unsupported(&self, output: &RecipeOutput) -> Option<String> {
         if self.backend == GeometryBackend::Rust && !matches!(output, RecipeOutput::Step { .. }) {
@@ -1101,6 +1097,7 @@ impl GeometryExporter<'_> {
             plan_hash: ContentHash::of(&bytes),
         };
         Ok(Built {
+            backend: self.backend,
             model,
             generated,
             preview: ExportPreview {
