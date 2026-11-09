@@ -41,6 +41,15 @@ pub struct Measure {
     pub pi_factor: Rational,
 }
 
+impl Measure {
+    /// Approximate this measure for consumers of floating-point coordinates.
+    pub fn as_f64(self) -> f64 {
+        self.pi_factor
+            .as_f64()
+            .mul_add(std::f64::consts::PI, self.constant.as_f64())
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FaceRole {
     Bottom,

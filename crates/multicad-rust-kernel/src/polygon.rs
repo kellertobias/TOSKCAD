@@ -1,6 +1,6 @@
-//! Exact normal extrusions of simple straight-edged planar rings.
+//! Exact normal extrusions of simple polygonal profiles with optional round holes.
 
-use crate::{Error, Rational};
+use crate::{Circle, Error, Rational, prism::Measure};
 use std::cmp::Ordering;
 
 type Point = [Rational; 2];
@@ -14,8 +14,8 @@ const TWO: Rational = Rational {
     numerator: 2,
     denominator: 1,
 };
-const THREE: Rational = Rational {
-    numerator: 3,
+const SIX: Rational = Rational {
+    numerator: 6,
     denominator: 1,
 };
 // The exact topology check compares edge pairs. Bound that work before any
@@ -33,6 +33,8 @@ pub enum PolygonError {
     InvalidWinding,
     HoleOutside,
     NestedHoles,
+    CircleContact,
+    CircleOverlap,
     Arithmetic(Error),
 }
 
@@ -48,21 +50,32 @@ impl From<Error> for PolygonError {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PolygonPrism {
     rings: Vec<Vec<Point>>,
+    circular_holes: Vec<Circle>,
     height: Rational,
-    area: Rational,
-    volume: Rational,
-    centroid: Point,
+    area: Measure,
+    volume: Measure,
+    moment_origin: Point,
+    first_moments: [Measure; 2],
 }
 
 impl PolygonPrism {
     pub fn new(rings: Vec<Vec<Point>>, height: Rational) -> Result<Self, PolygonError> {
+        Self::with_circular_holes(rings, Vec::new(), height)
+    }
+
+    /// Circular holes follow the straight rings in analytic face order.
+    pub fn with_circular_holes(
+        rings: Vec<Vec<Point>>,
+        circular_holes: Vec<Circle>,
+        height: Rational,
+    ) -> Result<Self, PolygonError> {
         if height <= ZERO {
             return Err(PolygonError::NonPositiveHeight);
         }
         if rings.is_empty() || rings.iter().any(|ring| ring.len() < 3) {
             return Err(PolygonError::TooFewVertices);
         }
-        if rings.iter().map(Vec::len).sum::<usize>() > MAX_VERTICES {
+        if rings.iter().map(Vec::len).sum::<usize>() + circular_holes.len() > MAX_VERTICES {
             return Err(PolygonError::VertexLimit);
         }
 
@@ -88,18 +101,42 @@ impl PolygonPrism {
             moment[0] = moment[0].checked_add(ring_moment[0])?;
             moment[1] = moment[1].checked_add(ring_moment[1])?;
         }
-        let area = area_twice.checked_div(TWO)?;
-        let divisor = area_twice.checked_mul(THREE)?;
-        let centroid = [
-            origin[0].checked_add(moment[0].checked_div(divisor)?)?,
-            origin[1].checked_add(moment[1].checked_div(divisor)?)?,
+        let mut area = Measure {
+            constant: area_twice.checked_div(TWO)?,
+            pi_factor: ZERO,
+        };
+        let mut first_moments = [
+            Measure {
+                constant: moment[0].checked_div(SIX)?,
+                pi_factor: ZERO,
+            },
+            Measure {
+                constant: moment[1].checked_div(SIX)?,
+                pi_factor: ZERO,
+            },
         ];
+        for (i, &circle) in circular_holes.iter().enumerate() {
+            let radius_squared = circle.radius().checked_mul(circle.radius())?;
+            validate_circle(&rings, &circular_holes[..i], circle, radius_squared)?;
+            area.pi_factor = area.pi_factor.checked_sub(radius_squared)?;
+            let center = relative(circle.center(), origin)?;
+            for (moment, offset) in first_moments.iter_mut().zip(center) {
+                moment.pi_factor = moment
+                    .pi_factor
+                    .checked_sub(radius_squared.checked_mul(offset)?)?;
+            }
+        }
         Ok(Self {
             rings,
+            circular_holes,
             height,
             area,
-            volume: area.checked_mul(height)?,
-            centroid,
+            volume: Measure {
+                constant: area.constant.checked_mul(height)?,
+                pi_factor: area.pi_factor.checked_mul(height)?,
+            },
+            moment_origin: origin,
+            first_moments,
         })
     }
 
@@ -107,20 +144,27 @@ impl PolygonPrism {
         &self.rings
     }
 
+    pub fn circular_holes(&self) -> &[Circle] {
+        &self.circular_holes
+    }
+
     pub fn height(&self) -> Rational {
         self.height
     }
 
-    pub fn area(&self) -> Rational {
+    pub fn area(&self) -> Measure {
         self.area
     }
 
-    pub fn volume(&self) -> Rational {
+    pub fn volume(&self) -> Measure {
         self.volume
     }
 
-    pub fn centroid(&self) -> Point {
-        self.centroid
+    pub fn centroid(&self) -> [f64; 2] {
+        let area = self.area.as_f64();
+        std::array::from_fn(|axis| {
+            self.moment_origin[axis].as_f64() + self.first_moments[axis].as_f64() / area
+        })
     }
 }
 
@@ -137,6 +181,10 @@ fn relative(point: Point, origin: Point) -> Result<Point, Error> {
 
 fn cross([x, y]: Point, [u, v]: Point) -> Result<Rational, Error> {
     x.checked_mul(v)?.checked_sub(y.checked_mul(u)?)
+}
+
+fn dot([x, y]: Point, [u, v]: Point) -> Result<Rational, Error> {
+    x.checked_mul(u)?.checked_add(y.checked_mul(v)?)
 }
 
 fn orientation([a, b]: Segment, point: Point) -> Result<Ordering, Error> {
@@ -218,6 +266,72 @@ fn validate_separation(
         }
     } else if contains(previous, hole[0])? || contains(hole, previous[0])? {
         return Err(PolygonError::NestedHoles);
+    }
+    Ok(())
+}
+
+fn clear_circle(clearance: Ordering) -> Result<(), PolygonError> {
+    match clearance {
+        Ordering::Less => Err(PolygonError::CircleOverlap),
+        Ordering::Equal => Err(PolygonError::CircleContact),
+        Ordering::Greater => Ok(()),
+    }
+}
+
+fn segment_clearance(
+    [a, b]: Segment,
+    center: Point,
+    radius_squared: Rational,
+) -> Result<Ordering, Error> {
+    let direction = relative(b, a)?;
+    let delta = relative(center, a)?;
+    let along = dot(delta, direction)?;
+    let length_squared = dot(direction, direction)?;
+    if along <= ZERO {
+        return Ok(dot(delta, delta)?.cmp(&radius_squared));
+    }
+    if along >= length_squared {
+        let delta = relative(center, b)?;
+        return Ok(dot(delta, delta)?.cmp(&radius_squared));
+    }
+    // Compare the squared perpendicular distance without a square root.
+    let perpendicular = cross(direction, delta)?;
+    Ok(perpendicular
+        .checked_mul(perpendicular)?
+        .cmp(&radius_squared.checked_mul(length_squared)?))
+}
+
+fn validate_circle(
+    rings: &[Vec<Point>],
+    previous_circles: &[Circle],
+    circle: Circle,
+    radius_squared: Rational,
+) -> Result<(), PolygonError> {
+    let center @ [x, y] = circle.center();
+    let radius = circle.radius();
+    let bounds = [
+        [x.checked_sub(radius)?, y.checked_sub(radius)?],
+        [x.checked_add(radius)?, y.checked_add(radius)?],
+    ];
+    let mut clearance = Ordering::Greater;
+    for ring in rings {
+        for edge in edges(ring).filter(|edge| bounding_boxes_overlap(*edge, bounds)) {
+            clearance = clearance.min(segment_clearance(edge, center, radius_squared)?);
+        }
+    }
+    clear_circle(clearance)?;
+    if !contains(&rings[0], center)? {
+        return Err(PolygonError::HoleOutside);
+    }
+    for ring in &rings[1..] {
+        if contains(ring, center)? {
+            return Err(PolygonError::NestedHoles);
+        }
+    }
+    for previous in previous_circles {
+        let delta = relative(center, previous.center())?;
+        let combined = radius.checked_add(previous.radius())?;
+        clear_circle(dot(delta, delta)?.cmp(&combined.checked_mul(combined)?))?;
     }
     Ok(())
 }

@@ -117,6 +117,56 @@ fn concave_polygon_mesh_winds_caps_and_preserves_authored_side_ordinals() {
 }
 
 #[test]
+fn concave_polygon_with_round_and_straight_holes_meshes_in_analytic_face_order() {
+    let outer = [[0, 0], [10, 0], [10, 4], [4, 4], [4, 10], [0, 10]];
+    let square = [[1, 1], [1, 2], [2, 2], [2, 1]];
+    let prism = PolygonPrism::with_circular_holes(
+        vec![
+            outer.map(|p| p.map(n)).to_vec(),
+            square.map(|p| p.map(n)).to_vec(),
+        ],
+        vec![
+            Circle::new([n(7), n(2)], n(1)).unwrap(),
+            Circle::new([n(2), n(7)], n(1)).unwrap(),
+        ],
+        n(3),
+    )
+    .unwrap();
+    let mesh = display::polygon_prism(&prism, options()).unwrap();
+    assert!((check_closed(&mesh) - prism.volume().as_f64()).abs() < 0.04);
+    assert_eq!(
+        display::polygon_prism(
+            &prism,
+            Tessellation {
+                triangle_limit: 50,
+                ..options()
+            }
+        ),
+        Err(MeshError::BudgetExceeded)
+    );
+    let vertices = mesh.vertices.as_chunks::<3>().0;
+    for (face, [cx, cy]) in [(12, [7., 2.]), (13, [2., 7.])] {
+        let mut wall_triangles = 0;
+        for (triangle, &index) in mesh
+            .indices
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .zip(&mesh.face_indices)
+        {
+            if index == face {
+                wall_triangles += 1;
+                for &vertex in triangle {
+                    let [x, y, _] = vertices[vertex as usize];
+                    assert!(((x - cx).hypot(y - cy) - 1.).abs() < 1e-14);
+                }
+            }
+        }
+        assert!(wall_triangles > 2);
+    }
+}
+
+#[test]
 fn rust_prism_mesh_is_closed_and_keeps_the_cap_holes_open() {
     let panel = Prism::extrude(1, n(40), n(10), n(8))
         .unwrap()

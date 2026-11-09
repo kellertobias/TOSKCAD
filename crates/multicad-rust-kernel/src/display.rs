@@ -224,8 +224,8 @@ pub fn axial_cylinder(
     footprint.tessellate(cylinder.bottom().as_f64(), cylinder.top().as_f64())
 }
 
-/// Tessellate the caps and straight walls in analytic face order. Side faces
-/// follow the exterior ring first and each interior ring in turn.
+/// Tessellate the caps and walls in analytic face order. The exterior ring
+/// comes first, then straight holes and circular holes.
 pub fn polygon_prism(
     prism: &PolygonPrism,
     options: Tessellation,
@@ -242,6 +242,15 @@ pub fn polygon_prism(
             options,
         )?;
         first_side += ring.len() as u32;
+    }
+    for (i, hole) in prism.circular_holes().iter().enumerate() {
+        footprint.circle(
+            hole.center().map(Rational::as_f64),
+            hole.radius().as_f64(),
+            first_side + i as u32,
+            true,
+            options,
+        )?;
     }
     footprint.tessellate(0., prism.height().as_f64())
 }
