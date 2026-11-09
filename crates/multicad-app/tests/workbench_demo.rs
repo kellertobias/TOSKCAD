@@ -175,11 +175,16 @@ fn check_bench(session: &Session) {
     assert_eq!(leg_top.kind, ConnectionKind::Butt);
     near(leg_top.position[0], overhang + 70., 1e-6);
     near(leg_top.position[2], frame, 1e-6);
+    near(leg_top.joint_plane.0[2], frame - 60., 1e-6);
+    near(leg_top.joint_plane.1[2].abs(), 1., 1e-9);
     let stretcher_weld = welds
         .iter()
         .find(|w| w.connection_name == "Side stretcher L front")
         .unwrap();
     near(stretcher_weld.position[2], stretcher, 1e-6);
+    near(stretcher_weld.joint_plane.0[2], stretcher, 1e-6);
+    assert!(stretcher_weld.joint_plane.0[1] > stretcher_weld.position[1]);
+    near(stretcher_weld.joint_plane.1[1].abs(), 1., 1e-9);
 
     // The worktop: one beech panel resting on the frame top.
     let cuts = m.cut_list(doc).unwrap();

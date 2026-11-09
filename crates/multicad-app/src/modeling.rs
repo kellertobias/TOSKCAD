@@ -30,13 +30,29 @@ impl Backend {
                 let mut published = scene(document, snapshot, generation)?;
                 if published.is_full_model() {
                     let plan = architecture_plan::build(document, model);
-                    Arc::get_mut(&mut published)
-                        .expect("publication is not shared before return")
+                    let published = Arc::get_mut(&mut published)
+                        .expect("publication is not shared before return");
+                    published
                         .set_architecture_plan(plan)
                         .map_err(|message| ModelError {
                             entity: None,
                             message,
                         })?;
+                    if multicad_core::model::welds(document).next().is_some()
+                        && let Ok(welds) = model.weld_schedule(document)
+                    {
+                        published.set_weld_markers(
+                            welds
+                                .into_iter()
+                                .map(|weld| viewport::WeldMarker {
+                                    mark: weld.mark,
+                                    members: weld.members,
+                                    position: weld.joint_plane.0,
+                                    normal: weld.joint_plane.1,
+                                })
+                                .collect(),
+                        );
+                    }
                 }
                 Ok(published)
             },

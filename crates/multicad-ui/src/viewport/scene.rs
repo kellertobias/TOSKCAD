@@ -549,9 +549,17 @@ pub struct Scene {
     native_bounds: Option<Arc<NativeBounds>>,
     envelope_boxes: Arc<BTreeMap<EntityId, [Point; 8]>>,
     guide_outlines: Arc<BTreeMap<EntityId, Vec<[Point; 4]>>>,
+    weld_markers: Arc<[WeldMarker]>,
     fdm_reviews: Option<Arc<fdm_review::AidReviews>>,
     display_leaf_paths: BTreeMap<EntityId, multicad_core::model::OccurrencePath>,
     display_origin: Option<(SceneStamp, multicad_core::project_file::ContentHash)>,
+}
+/// An authored weld symbol at the solved joint. It carries no solid geometry.
+pub struct WeldMarker {
+    pub mark: String,
+    pub members: [EntityId; 2],
+    pub position: Point,
+    pub normal: Point,
 }
 struct NativeBounds {
     source: multicad_core::project_file::ContentHash,
@@ -664,6 +672,7 @@ impl Scene {
             native_bounds: None,
             envelope_boxes: Arc::new(BTreeMap::new()),
             guide_outlines: Arc::new(BTreeMap::new()),
+            weld_markers: Arc::default(),
             fdm_reviews: None,
             display_leaf_paths: BTreeMap::new(),
             display_origin: None,
@@ -922,6 +931,12 @@ impl Scene {
     }
     pub fn guide_outlines(&self) -> &BTreeMap<EntityId, Vec<[Point; 4]>> {
         &self.guide_outlines
+    }
+    pub fn set_weld_markers(&mut self, markers: Vec<WeldMarker>) {
+        self.weld_markers = markers.into();
+    }
+    pub(crate) fn weld_markers(&self) -> &[WeldMarker] {
+        &self.weld_markers
     }
     /// Callers still verify this Scene's source hash and document/revision.
     /// Source-inspection views never authorize placement defaults.
@@ -1331,6 +1346,7 @@ impl Scene {
         view.architecture_plan = self.architecture_plan.clone();
         view.transfer_evaluation = self.transfer_evaluation.clone();
         view.native_bounds = self.native_bounds.clone();
+        view.weld_markers = self.weld_markers.clone();
         view.scope = self.scope.clone();
         Ok(Arc::new(view))
     }

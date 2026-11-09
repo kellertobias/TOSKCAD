@@ -4379,6 +4379,9 @@ impl SketchEditor {
             if self.guides {
                 self.paint_guides(&painter, scene, rect);
             }
+            if !sketch_mode && !self.architecture.planar() {
+                self.paint_weld_markers(&painter, scene, rect);
+            }
         }
         if let Some(guide) = &cabinet_guide {
             guide.paint(&painter, self.camera, rect);
@@ -5284,6 +5287,62 @@ impl SketchEditor {
             for k in 0..4 {
                 if let Some(segment) = self.camera.segment(corners[k], corners[(k + 1) % 4], rect) {
                     painter.extend(egui::Shape::dashed_line(&segment, stroke, 10., 5.));
+                }
+            }
+        }
+    }
+    /// Viewport-only callouts at solved weld interfaces.
+    fn paint_weld_markers(
+        &self,
+        painter: &egui::Painter,
+        scene: &crate::viewport::Scene,
+        rect: Rect,
+    ) {
+        let tint = Color32::from_rgb(102, 225, 231);
+        let backdrop = Color32::from_rgb(16, 39, 47);
+        let section = self.modeling_section();
+        let mut labels = Vec::<Rect>::new();
+        for weld in scene.weld_markers() {
+            if !weld
+                .members
+                .iter()
+                .all(|part| scene.displays_instance(*part))
+                || section.is_some_and(|plane| !plane.contains(weld.position))
+            {
+                continue;
+            }
+            let [x, y, depth] = self.camera.project(weld.position.map(|v| v as f32), rect);
+            let at = Pos2::new(x, y);
+            if depth < 0.1 || !rect.contains(at) {
+                continue;
+            }
+            let [nx, ny, nz] = weld.normal;
+            let tangent = if nz.abs() < 0.85 {
+                [ny, -nx, 0.]
+            } else {
+                [-nz, 0., nx]
+            };
+            let along = std::array::from_fn(|i| weld.position[i] + tangent[i] * 10.);
+            let [x2, y2, _] = self.camera.project(along.map(|v| v as f32), rect);
+            let direction = (Pos2::new(x2, y2) - at).normalized();
+            let stroke = Stroke::new(1.5, tint);
+            painter.line_segment([at - direction * 6., at + direction * 6.], stroke);
+            painter.circle(at, 2.6, backdrop, stroke);
+            let text =
+                painter.layout_no_wrap(weld.mark.clone(), egui::FontId::proportional(11.), tint);
+            let size = text.size() + egui::vec2(8., 4.);
+            for offset in [
+                egui::vec2(8., -size.y - 6.),
+                egui::vec2(8., 6.),
+                egui::vec2(-size.x - 8., -size.y - 6.),
+            ] {
+                let label = Rect::from_min_size(at + offset, size);
+                if rect.contains_rect(label) && labels.iter().all(|used| !used.intersects(label)) {
+                    painter.line_segment([at, label.clamp(at)], Stroke::new(0.8, tint));
+                    painter.rect_filled(label, 3., backdrop);
+                    painter.galley(label.min + egui::vec2(4., 2.), text, tint);
+                    labels.push(label.expand(1.));
+                    break;
                 }
             }
         }

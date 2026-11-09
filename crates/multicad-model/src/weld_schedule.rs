@@ -28,6 +28,8 @@ pub struct WeldRecord {
     pub member_names: [String; 2],
     /// Where the member paths meet, in world millimeters.
     pub position: [f64; 3],
+    /// A point and normal on the first member's resolved joint interface.
+    pub joint_plane: ([f64; 3], [f64; 3]),
     /// Outside perimeter of the first member's plane-cut end, measured on
     /// the cut plane; none for copes.
     pub joint_perimeter_mm: Option<f64>,
@@ -232,6 +234,14 @@ impl Model {
                 },
                 None => None,
             };
+            let joint_plane =
+                resolved.treatments[0].map_or((resolved.point, a.frame.axis), |treatment| {
+                    match treatment.cut {
+                        EndCut::Plane { point, normal } | EndCut::Cope { point, normal, .. } => {
+                            (point, normal)
+                        }
+                    }
+                });
             let (sequence, step, step_note) = match step {
                 Some((s, i, note)) => (Some(s), Some(i), note),
                 None => (None, None, String::new()),
@@ -248,6 +258,7 @@ impl Model {
                 members: connection.members,
                 member_names: connection.members.map(name),
                 position: resolved.point,
+                joint_plane,
                 joint_perimeter_mm,
                 symbol: weld.symbol,
                 side: weld.side,
