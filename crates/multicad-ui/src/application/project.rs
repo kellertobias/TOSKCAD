@@ -296,6 +296,7 @@ impl Application {
         });
         if let Some(action) = action {
             self.execute(action, &[], Channel::Ui);
+            ui.ctx().request_repaint();
         }
     }
 

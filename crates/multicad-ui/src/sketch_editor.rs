@@ -3251,9 +3251,11 @@ impl SketchEditor {
                             self.symbol_edit_controls(ui,session,resources,feed);
                             if self.symbols.active(){return;}
                         } else {ui.small("This hardware belongs to a connection; edit its complete stack and receiving cuts together.");}
-                        if let Some(error)=feed.error() {ui.colored_label(Color32::LIGHT_RED,error);if ui.button("Retry model update").on_hover_text("Rebuild the current source while retaining the previous visible model").clicked(){feed.retry();}}
-                        else if feed.refining() {ui.small("Refining display…");}
-                        else if feed.pending() {ui.small("Rebuilding model…");}
+                        if feed.refining() {ui.small("Refining display…");}
+                        if !self.model_workspace {
+                            if let Some(error)=feed.error() {ui.colored_label(Color32::LIGHT_RED,error);if ui.button("Retry model update").on_hover_text("Rebuild the current source while retaining the previous visible model").clicked(){feed.retry();}}
+                            else if feed.pending() && !feed.refining() {ui.small("Rebuilding model…");}
+                        }
                         if self.sketch_evaluation.pending() && !self.sketch_evaluation.hash_pending() {ui.small("Solving sketches…");}
                         if let Some(error)=self.sketch_evaluation.error() {ui.colored_label(Color32::LIGHT_RED,error);}
                         if let Some(failure)=self.selected.and_then(|id|self.sketch_evaluation.errors().get(&id)) {ui.colored_label(Color32::LIGHT_RED,&failure.message);}
@@ -3733,7 +3735,14 @@ impl SketchEditor {
                     scene.clone(),
                     current,
                     Some(ModelCanvas { resources, feed }),
-                )
+                );
+                if self.model_workspace
+                    && !sketch_mode
+                    && !feed.is_current(session.document().id(), session.revision())
+                    && let Some(rect) = self.viewport_rect
+                {
+                    model_loading_status(ui, feed, rect, scene.is_some());
+                }
             });
         if !self.measurement.active() {
             self.model.tick_auto_preview(ui, session, resources, false);
@@ -5359,6 +5368,61 @@ impl SketchEditor {
         }
     }
 }
+fn model_loading_status(
+    ui: &mut egui::Ui,
+    feed: &mut crate::viewport::SceneFeed,
+    viewport: Rect,
+    retained: bool,
+) {
+    let error = feed.error().map(str::to_owned);
+    if error.is_none() && (!feed.pending() || feed.refining()) {
+        return;
+    }
+    let width = (viewport.width() - 40.).clamp(1., 300.);
+    let height = if error.is_some() { 128. } else { 72. };
+    let area = Rect::from_center_size(viewport.center(), Vec2::new(width + 28., height));
+    let mut status = ui.new_child(
+        egui::UiBuilder::new()
+            .id_salt("model-loading-status")
+            .max_rect(area)
+            .layout(egui::Layout::top_down(egui::Align::Min)),
+    );
+    status.set_clip_rect(viewport.intersect(ui.clip_rect()));
+    egui::Frame::new()
+        .fill(crate::theme::PANEL)
+        .stroke(egui::Stroke::new(1., crate::theme::BORDER))
+        .inner_margin(14)
+        .corner_radius(6)
+        .show(&mut status, |ui| {
+            ui.set_width(width);
+            if let Some(error) = &error {
+                ui.strong("Model could not load");
+                ui.colored_label(Color32::LIGHT_RED, error);
+                if ui
+                    .add(egui::Button::new("Retry model load").min_size(Vec2::new(0., 30.)))
+                    .clicked()
+                {
+                    feed.retry();
+                    ui.ctx().request_repaint();
+                }
+            } else {
+                ui.horizontal(|ui| {
+                    ui.add(egui::Spinner::new().size(18.));
+                    ui.strong(if retained {
+                        "Updating model…"
+                    } else {
+                        "Loading model…"
+                    });
+                });
+                ui.label(if retained {
+                    "Showing the last completed model while geometry updates."
+                } else {
+                    "Building the project’s native geometry."
+                });
+            }
+        });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

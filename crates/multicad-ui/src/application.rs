@@ -2073,6 +2073,7 @@ impl Application {
         }
         if let Some(action) = action {
             self.execute(action, &[], Channel::Ui);
+            ui.ctx().request_repaint();
         }
     }
     fn effective_ribbon_tab(&self) -> usize {

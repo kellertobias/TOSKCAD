@@ -62,15 +62,18 @@ fn click(ctx: &egui::Context, app: &mut Application, size: egui::Vec2, label: &s
     let (rect, enabled) = button(&out, label);
     assert!(enabled, "{label} disabled");
     out.drop_without_applying_deltas();
+    click_center(ctx, app, size, rect.center());
+}
+fn click_center(ctx: &egui::Context, app: &mut Application, size: egui::Vec2, pos: egui::Pos2) {
     for pressed in [true, false] {
         frame(
             ctx,
             app,
             size,
             vec![
-                egui::Event::PointerMoved(rect.center()),
+                egui::Event::PointerMoved(pos),
                 egui::Event::PointerButton {
-                    pos: rect.center(),
+                    pos,
                     button: egui::PointerButton::Primary,
                     pressed,
                     modifiers: Default::default(),
@@ -111,6 +114,130 @@ fn project_and_model_share_full_width_workspace_tab_geometry() {
         }
         assert_eq!(bars[0], bars[1]);
     }
+}
+#[test]
+fn model_loading_is_visible_without_inspector_and_reuses_the_current_receipt() {
+    use crate::viewport::{Scene, SceneBackend, SceneReply, SceneStamp};
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Default)]
+    struct State {
+        requests: Vec<SceneStamp>,
+        reply: Option<SceneReply>,
+    }
+    struct Backend(Arc<Mutex<State>>);
+    impl SceneBackend for Backend {
+        fn request(&mut self, _: &Document, stamp: SceneStamp) -> Result<(), String> {
+            self.0.lock().unwrap().requests.push(stamp);
+            Ok(())
+        }
+        fn poll(&mut self) -> Option<SceneReply> {
+            self.0.lock().unwrap().reply.take()
+        }
+    }
+    let mut app =
+        Application::with_document(Box::new(Storage), Document::new("Delayed model").unwrap())
+            .unwrap();
+    let state = Arc::new(Mutex::new(State::default()));
+    app.current_mut()
+        .scene
+        .set_backend(Box::new(Backend(state.clone())));
+    let ctx = egui::Context::default();
+    ctx.enable_accesskit();
+    crate::theme::configure(&ctx);
+    let size = egui::vec2(1024., 600.);
+    for label in ["Settings", "Inspector"] {
+        let out = frame(&ctx, &mut app, size, vec![]);
+        let bounds = out
+            .platform_output
+            .accesskit_update
+            .as_ref()
+            .unwrap()
+            .nodes
+            .iter()
+            .find_map(|(_, node)| {
+                (node.label() == Some(label))
+                    .then(|| node.bounds())
+                    .flatten()
+            })
+            .unwrap();
+        let pos = egui::pos2(
+            ((bounds.x0 + bounds.x1) * 0.5) as f32,
+            ((bounds.y0 + bounds.y1) * 0.5) as f32,
+        );
+        out.drop_without_applying_deltas();
+        click_center(&ctx, &mut app, size, pos);
+    }
+    let visible = |app: &mut Application, expected: &str| {
+        let out = frame(&ctx, app, size, vec![]);
+        let found = out.shapes.iter().any(|shape| {
+            matches!(&shape.shape, egui::Shape::Text(text) if text.galley.text() == expected)
+        });
+        out.drop_without_applying_deltas();
+        found
+    };
+    click(&ctx, &mut app, size, "Start Modeling");
+    assert_eq!(app.mode, Mode::Model);
+    assert!(app.current().scene.pending());
+    assert!(visible(&mut app, "Loading model…"));
+    let first = state.lock().unwrap().requests[0];
+    state.lock().unwrap().reply = Some(SceneReply {
+        stamp: first,
+        result: Err("Restore the referenced project before rebuilding.".into()),
+    });
+    assert!(visible(&mut app, "Model could not load"));
+    assert!(!visible(&mut app, "Loading model…"));
+    click(&ctx, &mut app, size, "Retry model load");
+    assert!(visible(&mut app, "Loading model…"));
+
+    let second = state.lock().unwrap().requests[1];
+    let current = Arc::new(Scene::new(second, vec![], vec![]).unwrap());
+    state.lock().unwrap().reply = Some(SceneReply {
+        stamp: second,
+        result: Ok(current.clone()),
+    });
+    assert!(!visible(&mut app, "Loading model…"));
+    click(&ctx, &mut app, size, "Project");
+    assert_eq!(app.mode, Mode::Parameters);
+    click(&ctx, &mut app, size, "Start Modeling");
+    assert!(!visible(&mut app, "Loading model…"));
+    assert!(Arc::ptr_eq(
+        app.current().scene.visible().unwrap(),
+        &current
+    ));
+    assert_eq!(state.lock().unwrap().requests.len(), 2);
+
+    let project = app.current_mut();
+    let primitive = multicad_core::model::PrimitiveRequest::new(
+        "New geometry",
+        multicad_core::model::PrimitiveParameters::Box {
+            size: [10.; 3].map(multicad_core::model::length),
+            frame: Default::default(),
+        },
+    );
+    let prepared = multicad_core::model::prepare_primitive(
+        &project.session,
+        project.session.revision(),
+        Actor::local(Channel::Ui),
+        &primitive,
+    )
+    .unwrap();
+    project.session.commit(prepared.prepared).unwrap();
+    assert!(visible(&mut app, "Updating model…"));
+    let changed = state.lock().unwrap().requests[2];
+    assert_ne!(changed.revision, second.revision);
+    state.lock().unwrap().reply = Some(SceneReply {
+        stamp: second,
+        result: Ok(current),
+    });
+    assert!(visible(&mut app, "Updating model…"));
+    let latest = Arc::new(Scene::new(changed, vec![], vec![]).unwrap());
+    state.lock().unwrap().reply = Some(SceneReply {
+        stamp: changed,
+        result: Ok(latest.clone()),
+    });
+    assert!(!visible(&mut app, "Updating model…"));
+    assert!(Arc::ptr_eq(app.current().scene.visible().unwrap(), &latest));
 }
 #[test]
 fn general_keeps_metadata_on_the_left_and_preserves_the_draft_between_tabs() {
