@@ -133,9 +133,26 @@ impl<T: Send + 'static> Runtime<T> {
         cached: impl Fn(&Document, u64, u64) -> Option<T> + Send + 'static,
         publish: impl Fn(&Document, &Model, u64) -> Result<T, ModelError> + Send + 'static,
     ) -> Result<Self, String> {
-        Self::with_worker_cache(compiler, true, cached, move |document, model, _, tag| {
-            publish(document, model, tag)
-        })
+        Self::with_scoped_cached_model_publisher(compiler, cached, |_, _| None, publish)
+    }
+    /// Select the native sources needed for an exact derived publication after
+    /// a cache miss. The publisher must verify that the resulting scope covers
+    /// its request. Returning `None` keeps the complete evaluation path.
+    pub fn with_scoped_cached_model_publisher(
+        compiler: Compiler,
+        cached: impl Fn(&Document, u64, u64) -> Option<T> + Send + 'static,
+        sources: impl Fn(&Document, u64) -> Option<Vec<multicad_core::document::EntityId>>
+        + Send
+        + 'static,
+        publish: impl Fn(&Document, &Model, u64) -> Result<T, ModelError> + Send + 'static,
+    ) -> Result<Self, String> {
+        Self::with_worker_cache(
+            compiler,
+            true,
+            cached,
+            sources,
+            move |document, model, _, tag| publish(document, model, tag),
+        )
     }
     /// Publish native derived geometry together with the evaluated snapshot for
     /// this job. Per-request query/probe results belong to `snapshot`; they are
@@ -146,12 +163,15 @@ impl<T: Send + 'static> Runtime<T> {
         + Send
         + 'static,
     ) -> Result<Self, String> {
-        Self::with_worker_cache(compiler, false, |_, _, _| None, publish)
+        Self::with_worker_cache(compiler, false, |_, _, _| None, |_, _| None, publish)
     }
     fn with_worker_cache(
         compiler: Compiler,
         reuse_model: bool,
         cached: impl Fn(&Document, u64, u64) -> Option<T> + Send + 'static,
+        sources: impl Fn(&Document, u64) -> Option<Vec<multicad_core::document::EntityId>>
+        + Send
+        + 'static,
         publish: impl Fn(&Document, &Model, &ModelSnapshot, u64) -> Result<T, ModelError>
         + Send
         + 'static,
@@ -217,9 +237,10 @@ impl<T: Send + 'static> Runtime<T> {
                         }
                     };
                     let superseded = || lane.latest.load(Ordering::Acquire) != job.generation;
-                    if job.sources.is_none()
+                    let derived_only = job.sources.is_none()
                         && job.options.cut_targets.is_empty()
-                        && job.options.sheet_development.is_none()
+                        && job.options.sheet_development.is_none();
+                    if derived_only
                         && let Some(publication) = cached(&job.document, job.revision, job.tag)
                     {
                         let Ok(mut slots) = lane.slots.lock() else {
@@ -233,7 +254,13 @@ impl<T: Send + 'static> Runtime<T> {
                         }
                         continue;
                     }
-                    // Page tags select a derived publication, not new geometry.
+                    let roots = if derived_only {
+                        sources(&job.document, job.tag)
+                    } else {
+                        job.sources
+                    };
+                    // Page tags select a derived publication. Reuse the native
+                    // model when its immutable source and scope both match.
                     // Retain even uncacheable architecture providers when the
                     // entire immutable source, revision and scope are identical.
                     let unchanged = reuse_model
@@ -241,7 +268,7 @@ impl<T: Send + 'static> Runtime<T> {
                             let snapshot = model.snapshot();
                             snapshot.stamp.document == job.document.id()
                                 && snapshot.stamp.revision == job.revision
-                                && match (&snapshot.scope, &job.sources) {
+                                && match (&snapshot.scope, &roots) {
                                     (crate::EvaluationScope::Full, None) => true,
                                     (crate::EvaluationScope::Sources(a), Some(b)) => a == b,
                                     _ => false,
@@ -253,7 +280,7 @@ impl<T: Send + 'static> Runtime<T> {
                     let result = if unchanged {
                         Ok(retained.take().expect("matching retained drawing model"))
                     } else {
-                        match &job.sources {
+                        match &roots {
                             Some(roots) => compiler.compile_sources_cached(
                                 &mut cache,
                                 &job.document,

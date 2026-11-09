@@ -81,10 +81,30 @@ fn bundled_plywood_drawing_stays_inside_its_printable_area() {
     let [page] = source.pages.as_slice() else {
         panic!("Expected one fabrication page");
     };
+    let roots = multicad_model::drawing_preview_sources(document, page.id).unwrap();
+    assert_eq!(roots.len(), 2);
+    let scoped = compiler()
+        .compile_sources(document, revision, &roots)
+        .unwrap();
+    let preview = scoped
+        .drawing_page_preview(document, revision, &DrawingProviders::default(), page.id)
+        .unwrap();
+    assert!(
+        scoped
+            .drawing_page(document, revision, &DrawingProviders::default(), page.id)
+            .is_err()
+    );
+    let started = std::time::Instant::now();
     let model = compiler().compile(document, revision).unwrap();
     let drawing = model
         .drawing_page(document, revision, &DrawingProviders::default(), page.id)
         .unwrap();
+    eprintln!(
+        "Full native WK-101 compile and projection: {:.3?}, {} feature shapes",
+        started.elapsed(),
+        model.snapshot().shapes.len()
+    );
+    assert_eq!(preview, drawing);
     assert_eq!(
         drawing
             .checked_page(document, revision, book, page.id)

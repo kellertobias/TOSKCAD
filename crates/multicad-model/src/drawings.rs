@@ -55,6 +55,61 @@ pub trait DrawingSourceProvider {
         source: &ViewSource,
     ) -> Result<Vec<DrawingBody<'a>>, ModelError>;
 }
+
+/// A page of direct Part projections can evaluate those Parts and their input
+/// closures. Other view types and model dimensions require the complete model.
+pub fn drawing_preview_sources(document: &Document, page: EntityId) -> Option<Vec<EntityId>> {
+    let page = books(document).find_map(|book| {
+        read(document, book)
+            .ok()?
+            .pages
+            .into_iter()
+            .find(|p| p.id == page)
+    })?;
+    if page
+        .annotations
+        .iter()
+        .any(|a| matches!(a.kind, AnnotationKind::Dimension { .. }))
+    {
+        return None;
+    }
+    let mut parts = BTreeSet::new();
+    let mut heads = BTreeSet::new();
+    for view in &page.views {
+        let ViewSource::Model { entities } = &view.source else {
+            return None;
+        };
+        if view.guide.is_some() || view.kind != ViewKind::Projection || entities.is_empty() {
+            return None;
+        }
+        for &id in entities {
+            let EntityData::Part { features, .. } = &document.get(id)?.data else {
+                return None;
+            };
+            let head = features.iter().rev().find(|feature| {
+                matches!(
+                    document.get(**feature).map(|e| &e.data),
+                    Some(EntityData::Feature {
+                        suppressed: false,
+                        ..
+                    })
+                )
+            })?;
+            parts.insert(id);
+            heads.insert(*head);
+        }
+    }
+    // Boolean and Split can consume the selected version from outside its
+    // input closure. A downstream producer requires the full membership check.
+    if document.entities().any(|entity| {
+        matches!(&entity.data,
+        EntityData::Feature { inputs, suppressed: false, .. }
+            if inputs.iter().any(|input| heads.contains(&input.target)))
+    }) {
+        return None;
+    }
+    crate::validate_source_roots(document, &parts.into_iter().collect::<Vec<_>>()).ok()
+}
 pub struct DrawingProviders {
     providers: BTreeMap<DrawingSourceKind, Box<dyn DrawingSourceProvider>>,
 }
@@ -300,6 +355,15 @@ impl Model {
                 "A source-only inspection model cannot generate drawings",
             ));
         }
+        self.project_drawing_view(document, revision, view, providers)
+    }
+    fn project_drawing_view(
+        &self,
+        document: &Document,
+        revision: u64,
+        view: &DrawingView,
+        providers: &DrawingProviders,
+    ) -> Result<ViewEvaluation, ModelError> {
         // A guided view takes its frame, cut and sources from the current
         // guide and levels; a deleted guide or level is reported here.
         let guided;
@@ -609,7 +673,7 @@ impl Model {
         providers: &DrawingProviders,
         budget: DrawingBudget,
     ) -> Result<DrawingEvaluation, ModelError> {
-        self.drawings_selected(document, revision, providers, budget, None)
+        self.drawings_selected(document, revision, providers, budget, None, false)
     }
     /// Publish only the page currently being inspected. Other pages do not
     /// delay its dimensions or consume its preview budget.
@@ -626,6 +690,25 @@ impl Model {
             providers,
             DrawingBudget::default(),
             Some(page),
+            false,
+        )
+    }
+    /// Preview one page using exact native solids. A scoped model must cover
+    /// the page's complete eligible source selection.
+    pub fn drawing_page_preview(
+        &self,
+        document: &Document,
+        revision: u64,
+        providers: &DrawingProviders,
+        page: EntityId,
+    ) -> Result<DrawingEvaluation, ModelError> {
+        self.drawings_selected(
+            document,
+            revision,
+            providers,
+            DrawingBudget::default(),
+            Some(page),
+            true,
         )
     }
     fn drawings_selected(
@@ -635,8 +718,15 @@ impl Model {
         providers: &DrawingProviders,
         budget: DrawingBudget,
         selected_page: Option<EntityId>,
+        preview: bool,
     ) -> Result<DrawingEvaluation, ModelError> {
-        if self.snapshot().scope != crate::EvaluationScope::Full {
+        if let crate::EvaluationScope::Sources(roots) = &self.snapshot().scope
+            && !(preview
+                && selected_page
+                    .and_then(|page| drawing_preview_sources(document, page))
+                    .as_ref()
+                    == Some(roots))
+        {
             return Err(error(
                 None,
                 "A source-only inspection model cannot generate drawings",
@@ -682,7 +772,7 @@ impl Model {
                 let mut evaluation = if exhausted || views.len() >= budget.views {
                     ViewEvaluation::Unresolved{message:"Drawing publication budget exceeded; reduce the number or complexity of views".into()}
                 } else {
-                    self.drawing_view(document, revision, view, providers)
+                    self.project_drawing_view(document, revision, view, providers)
                         .unwrap_or_else(|e| ViewEvaluation::Unresolved {
                             message: e.to_string(),
                         })

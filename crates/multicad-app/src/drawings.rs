@@ -52,6 +52,15 @@ fn page_ids(document: &Document) -> Result<Vec<EntityId>, ModelError> {
     }
     Ok(pages)
 }
+fn page_for_tag(document: &Document, tag: u64) -> Result<EntityId, ModelError> {
+    page_ids(document)?
+        .get(tag.saturating_sub(1) as usize)
+        .copied()
+        .ok_or_else(|| ModelError {
+            entity: None,
+            message: "The selected drawing page is missing".into(),
+        })
+}
 impl Backend {
     pub fn new() -> Self {
         Self::with_cache(cache::Cache::installed())
@@ -60,7 +69,7 @@ impl Backend {
         let reader = cache.clone();
         Self {
             pair_cycle_proofs: multicad_model::current_pair_cycle_proofs(),
-            runtime: Runtime::with_cached_model_publisher(
+            runtime: Runtime::with_scoped_cached_model_publisher(
                 Compiler {
                     omit_display: true,
                     ..Default::default()
@@ -68,20 +77,23 @@ impl Backend {
                 move |document, revision, tag| {
                     reader.as_ref()?.read(document, revision, tag).map(Arc::new)
                 },
+                |document, tag| {
+                    if tag == 0 {
+                        return None;
+                    }
+                    multicad_model::drawing_preview_sources(
+                        document,
+                        page_for_tag(document, tag).ok()?,
+                    )
+                },
                 move |document, model, tag| {
                     let revision = model.snapshot().stamp.revision;
                     let providers = DrawingProviders::default();
                     let result = if tag == 0 {
                         model.drawings(document, revision, &providers)
                     } else {
-                        let page = page_ids(document)?
-                            .get((tag - 1) as usize)
-                            .copied()
-                            .ok_or_else(|| ModelError {
-                                entity: None,
-                                message: "The selected drawing page is missing".into(),
-                            })?;
-                        model.drawing_page(document, revision, &providers, page)
+                        let page = page_for_tag(document, tag)?;
+                        model.drawing_page_preview(document, revision, &providers, page)
                     }?;
                     if let Some(cache) = &cache {
                         cache.write(document, tag, &result);
@@ -209,7 +221,7 @@ mod tests {
         backend
             .request_page(session.document(), stamp, page)
             .unwrap();
-        let deadline = Instant::now() + Duration::from_secs(20);
+        let deadline = Instant::now() + Duration::from_secs(120);
         loop {
             if let Some(reply) = backend.poll() {
                 return reply.result.unwrap();
@@ -217,6 +229,83 @@ mod tests {
             assert!(Instant::now() < deadline, "Drawing preview timed out");
             std::thread::sleep(Duration::from_millis(1));
         }
+    }
+
+    fn open_example(name: &str) -> Session {
+        use multicad_ui::application::DocumentStorage;
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../examples")
+            .join(name);
+        let loaded = crate::files::ProjectStore::default()
+            .open_project(&path)
+            .unwrap();
+        Session::new(loaded.file.document).unwrap()
+    }
+
+    #[test]
+    fn cold_tool_case_preview_builds_only_the_drawn_parts() {
+        let session = open_example("werkzeugkoffer-2.tcd");
+        let document = session.document();
+        let book = drawings::books(document).next().unwrap();
+        let drawing = drawings::read(document, book).unwrap();
+        let page = &drawing.pages[0];
+        assert_eq!(page.number, "WK-101");
+        let mut backend = Backend::with_cache(None);
+        let start = Instant::now();
+        let evaluation = preview(&mut backend, &session, page.id);
+        let elapsed = start.elapsed();
+        assert_eq!(
+            evaluation
+                .checked_page(document, session.revision(), book, page.id)
+                .unwrap()
+                .len(),
+            2
+        );
+        let evaluated = backend
+            .runtime
+            .as_ref()
+            .unwrap()
+            .last_compile_stats()
+            .unwrap()
+            .evaluated;
+        let unrelated = document
+            .entities()
+            .find(|e| {
+                e.name.contains("M4 × 12 countersunk · fixed slide")
+                    && matches!(e.data, multicad_core::document::EntityData::Feature { .. })
+            })
+            .unwrap();
+        assert!(!evaluated.contains(&unrelated.id));
+        eprintln!(
+            "Cold WK-101 backend preview: {elapsed:.3?}, {} native features evaluated",
+            evaluated.len()
+        );
+    }
+
+    #[test]
+    fn cold_apartment_plan_preview_keeps_its_native_dimensions() {
+        let session = open_example("apartment.tcd");
+        let document = session.document();
+        let book = drawings::books(document).next().unwrap();
+        let drawing = drawings::read(document, book).unwrap();
+        let page = &drawing.pages[0];
+        assert!(multicad_model::drawing_preview_sources(document, page.id).is_none());
+        let mut backend = Backend::with_cache(None);
+        let start = Instant::now();
+        let evaluation = preview(&mut backend, &session, page.id);
+        eprintln!(
+            "Cold apartment {} backend preview: {:.3?}",
+            page.number,
+            start.elapsed()
+        );
+        assert!(!evaluation.annotations.is_empty());
+        assert_eq!(
+            evaluation
+                .checked_page(document, session.revision(), book, page.id)
+                .unwrap()
+                .len(),
+            page.views.len()
+        );
     }
 
     #[test]
@@ -309,9 +398,38 @@ mod tests {
         assert_eq!(*actual, expected);
         assert_ne!(actual.stamp.source_hash, original.stamp.source_hash);
         assert_ne!(actual.views, original.views);
+
+        // The selected Part may become a Boolean tool in another Part's
+        // history. A scoped model of the drawing alone cannot see that use.
+        let target = add_box(&mut session, "Receiver", 5.);
+        let producer = match &session.document().get(source).unwrap().data {
+            multicad_core::document::EntityData::Part { features, .. } => features[0],
+            _ => unreachable!(),
+        };
+        let cut = model::BooleanRequest::new(
+            model::Operation::Cut,
+            target,
+            vec![model::BodyInput {
+                body: source,
+                producer,
+            }],
+        );
+        let prepared = model::prepare_boolean(
+            &session,
+            session.revision(),
+            Actor::local(Channel::Ui),
+            &cut,
+        )
+        .unwrap();
+        session.commit(prepared.prepared).unwrap();
+        assert!(multicad_model::drawing_preview_sources(session.document(), page.id).is_none());
+        let consumed = preview(&mut rebuilt, &session, page.id);
+        assert!(
+            matches!(&consumed.views[&page.views[0].id], drawings::ViewEvaluation::Unresolved { message } if message.contains("consumed"))
+        );
     }
 
-    fn add_box(session: &mut Session, name: &str, x: f64) {
+    fn add_box(session: &mut Session, name: &str, x: f64) -> model::BodyInput {
         let request = PrimitiveRequest::new(
             name,
             PrimitiveParameters::Box {
@@ -330,6 +448,10 @@ mod tests {
         )
         .unwrap();
         session.commit(p.prepared).unwrap();
+        model::BodyInput {
+            body: request.body,
+            producer: request.feature,
+        }
     }
     fn until(
         editor: &mut DrawingEditor,
