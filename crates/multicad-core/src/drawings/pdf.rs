@@ -16,6 +16,13 @@ fn n(v: f64) -> String {
     let r = (v * 1000.).round() / 1000.;
     if r == 0. { "0".into() } else { format!("{r}") }
 }
+fn paint_color(path: String, rgb: Option<[u8; 3]>, operator: &str) -> String {
+    let Some(rgb) = rgb else {
+        return path;
+    };
+    let [r, g, b] = rgb.map(|value| n(f64::from(value) / 255.));
+    format!("q {r} {g} {b} {operator} {path} Q")
+}
 /// WinAnsi bytes for a PDF literal string, escaping delimiters. Characters
 /// outside WinAnsi become '?'.
 fn literal(text: &str) -> Vec<u8> {
@@ -74,7 +81,7 @@ fn content(page: &PageRender) -> Vec<u8> {
             let _ = write!(path, " {} l", p(*q));
         }
         path.push_str(if poly.closed { " s" } else { " S" });
-        line(path);
+        line(paint_color(path, poly.color_rgb, "RG"));
     }
     for arc in &page.arcs {
         let sweep = arc.end_rad - arc.start_rad;
@@ -101,7 +108,7 @@ fn content(page: &PageRender) -> Vec<u8> {
             let _ = write!(path, " {} l", p(*q));
         }
         path.push_str(" h f");
-        line(path);
+        line(paint_color(path, fill.color_rgb, "rg"));
     }
     for r in &page.logos {
         line(format!(

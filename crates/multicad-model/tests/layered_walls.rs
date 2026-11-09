@@ -627,6 +627,7 @@ fn layer_plan_hatches_and_export_boundaries_follow_real_materials_at_three_scale
             type_id: "materials.hatch.inline".into(),
             schema_version: 1,
             data: serde_json::to_value(HatchStyle {
+                color_rgb: None,
                 pattern: HatchPattern::Lines,
                 angle_deg: (30 + index * 30) as f64,
                 spacing_mm: 0.8,

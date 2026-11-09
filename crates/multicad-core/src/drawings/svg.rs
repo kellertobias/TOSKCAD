@@ -6,6 +6,13 @@ use super::render::{PageRender, render_page};
 use crate::document::{Document, EntityId};
 use std::fmt::Write;
 
+fn color(rgb: Option<[u8; 3]>) -> String {
+    rgb.map_or_else(
+        || "black".into(),
+        |[r, g, b]| format!("#{r:02X}{g:02X}{b:02X}"),
+    )
+}
+
 fn escape(text: &str) -> String {
     text.replace('&', "&amp;")
         .replace('<', "&lt;")
@@ -74,8 +81,9 @@ pub fn render_svg(page: &PageRender) -> String {
         };
         let _ = writeln!(
             out,
-            r#"<{tag} class="{}" fill="none" stroke="black" stroke-width="{}"{dash}{cap} points="{}"/>"#,
+            r#"<{tag} class="{}" fill="none" stroke="{}" stroke-width="{}"{dash}{cap} points="{}"/>"#,
             line.layer.name(),
+            color(line.color_rgb),
             line.width_mm,
             points.join(" ")
         );
@@ -117,8 +125,9 @@ pub fn render_svg(page: &PageRender) -> String {
             .collect();
         let _ = writeln!(
             out,
-            r#"<polygon class="{}" fill="black" points="{}"/>"#,
+            r#"<polygon class="{}" fill="{}" points="{}"/>"#,
             fill.layer.name(),
+            color(fill.color_rgb),
             points.join(" ")
         );
     }

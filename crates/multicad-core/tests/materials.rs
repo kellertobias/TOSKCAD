@@ -458,6 +458,7 @@ fn explicit_part_overrides_do_not_depend_on_broken_unused_material_defaults() {
         .entity(EntityId::new(), "Override appearance")
         .unwrap();
     let hatch = LibraryDefinition::Hatch(HatchStyle {
+        color_rgb: None,
         pattern: HatchPattern::Cross,
         ..Default::default()
     })

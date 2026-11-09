@@ -46,6 +46,7 @@ impl Layer {
 }
 #[derive(Clone, Debug, PartialEq)]
 pub struct Polyline {
+    pub color_rgb: Option<[u8; 3]>,
     pub layer: Layer,
     pub points: Vec<[f64; 2]>,
     pub closed: bool,
@@ -64,6 +65,7 @@ pub struct Arc {
 }
 #[derive(Clone, Debug, PartialEq)]
 pub struct Fill {
+    pub color_rgb: Option<[u8; 3]>,
     pub layer: Layer,
     pub points: Vec<[f64; 2]>,
 }
@@ -108,6 +110,7 @@ impl PageRender {
     fn graphic(&mut self, layer: Layer, g: &AnnotationGraphic, width: f64) {
         for [a, b] in &g.lines {
             self.polylines.push(Polyline {
+                color_rgb: None,
                 layer,
                 points: vec![*a, *b],
                 closed: false,
@@ -132,6 +135,7 @@ impl PageRender {
             ];
             let n = [-dir[1] * 0.45, dir[0] * 0.45];
             self.fills.push(Fill {
+                color_rgb: None,
                 layer,
                 points: vec![
                     *tip,
@@ -215,6 +219,7 @@ pub fn render_page(
     };
     let [x0, y0, x1, y1] = layout.printable_mm;
     out.polylines.push(Polyline {
+        color_rgb: None,
         layer: Layer::Border,
         points: vec![[x0, y0], [x1, y0], [x1, y1], [x0, y1]],
         closed: true,
@@ -251,12 +256,14 @@ pub fn render_page(
         for vector in vectors {
             if let super::VectorCurve::HatchTriangle { points } = vector.curve {
                 out.fills.push(Fill {
+                    color_rgb: vector.color_rgb,
                     layer: Layer::Hatch,
                     points: points.map(|p| view.paper_point(p)).to_vec(),
                 });
                 continue;
             }
             out.polylines.push(Polyline {
+                color_rgb: vector.color_rgb,
                 layer: match vector.role {
                     VectorRole::Visible => Layer::Visible,
                     VectorRole::Hidden => Layer::Hidden,
@@ -320,6 +327,7 @@ pub fn render_page(
 fn title_block(out: &mut PageRender, layout: &super::PageLayout) {
     use super::{CELL_MM, FRAME_MM, LABEL_MM, PITCH};
     let rect = |r: [f64; 4], width: f64| Polyline {
+        color_rgb: None,
         layer: Layer::Title,
         points: vec![[r[0], r[1]], [r[2], r[1]], [r[2], r[3]], [r[0], r[3]]],
         closed: true,

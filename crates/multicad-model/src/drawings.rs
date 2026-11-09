@@ -613,6 +613,9 @@ impl Model {
             .map(|v| {
                 let body = &bodies[v.source_index];
                 DrawingVector {
+                    color_rgb: (v.role == VectorRole::Hatch)
+                        .then(|| properties[v.source_index].hatch.as_ref()?.color_rgb)
+                        .flatten(),
                     source: body.identity,
                     material_part: body.material_part,
                     role: v.role,

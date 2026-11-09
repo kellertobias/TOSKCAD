@@ -29,9 +29,12 @@ pub enum HatchPattern {
     Solid,
     Dots,
     SmallCrosses,
+    Brick,
+    Concrete,
+    Grass,
 }
 impl HatchPattern {
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 10] = [
         Self::None,
         Self::Lines,
         Self::Alternating,
@@ -39,6 +42,9 @@ impl HatchPattern {
         Self::Solid,
         Self::Dots,
         Self::SmallCrosses,
+        Self::Brick,
+        Self::Concrete,
+        Self::Grass,
     ];
 
     pub fn label(self) -> &'static str {
@@ -50,6 +56,9 @@ impl HatchPattern {
             Self::Solid => "Solid fill",
             Self::Dots => "Dots",
             Self::SmallCrosses => "Small crosses",
+            Self::Brick => "Brick",
+            Self::Concrete => "Concrete",
+            Self::Grass => "Grass",
         }
     }
 }
@@ -61,6 +70,8 @@ pub struct HatchStyle {
     pub angle_deg: f64,
     pub spacing_mm: f64,
     pub line_width_mm: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color_rgb: Option<[u8; 3]>,
 }
 impl Default for HatchStyle {
     fn default() -> Self {
@@ -69,6 +80,7 @@ impl Default for HatchStyle {
             angle_deg: 45.0,
             spacing_mm: 3.0,
             line_width_mm: 0.18,
+            color_rgb: None,
         }
     }
 }

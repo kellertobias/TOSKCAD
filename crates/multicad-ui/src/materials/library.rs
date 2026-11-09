@@ -699,12 +699,27 @@ fn edit_draft(ui: &mut egui::Ui, s: &Session, d: &mut Draft, model_stock: Option
         match &mut definition {
             LibraryDefinition::Appearance(a) => {
                 ui.label("Color");
-                ui.color_edit_button_srgba_unmultiplied(&mut a.color_rgba);
+                let [r, g, b, alpha] = a.color_rgba;
+                let mut rgb = [r, g, b];
+                rgb_fields(ui, &mut rgb);
+                a.color_rgba = [rgb[0], rgb[1], rgb[2], alpha];
+                ui.horizontal(|ui| {
+                    ui.label("Alpha");
+                    ui.add(egui::DragValue::new(&mut a.color_rgba[3]));
+                });
                 number(ui, "Roughness", &mut a.roughness, "");
                 number(ui, "Metallic", &mut a.metallic, "");
             }
             LibraryDefinition::Hatch(h) => {
                 sample::hatch_picker(ui, h);
+                ui.label("Hatch color");
+                let mut rgb = h.color_rgb.unwrap_or([0; 3]);
+                if rgb_fields(ui, &mut rgb) {
+                    h.color_rgb = Some(rgb);
+                }
+                if h.color_rgb.is_some() && ui.small_button("Use default color").clicked() {
+                    h.color_rgb = None;
+                }
                 number(ui, "Angle", &mut h.angle_deg, "°");
                 number(ui, "Spacing (paper)", &mut h.spacing_mm, " mm");
                 number(ui, "Line width (paper)", &mut h.line_width_mm, " mm");
@@ -853,6 +868,60 @@ pub(super) fn choice(
         .on_hover_text("Choose a reusable definition by its stable identity");
     old != *value
 }
+fn rgb_fields(ui: &mut egui::Ui, rgb: &mut [u8; 3]) -> bool {
+    let before = *rgb;
+    let id = ui.id().with("rgb-mode");
+    let mut hex = ui
+        .ctx()
+        .data(|data| data.get_temp::<bool>(id))
+        .unwrap_or(false);
+    ui.horizontal(|ui| {
+        ui.color_edit_button_srgb(rgb);
+        ui.selectable_value(&mut hex, false, "RGB");
+        ui.selectable_value(&mut hex, true, "Hex");
+    });
+    ui.ctx().data_mut(|data| data.insert_temp(id, hex));
+    if hex {
+        let field = id.with("hex-value");
+        let [r, g, b] = *rgb;
+        let mut value = ui
+            .ctx()
+            .data(|data| data.get_temp::<String>(field))
+            .unwrap_or_else(|| format!("#{r:02X}{g:02X}{b:02X}"));
+        let response = ui.add(
+            egui::TextEdit::singleline(&mut value)
+                .id(field)
+                .hint_text("#RRGGBB")
+                .desired_width(100.),
+        );
+        let digits = value.trim();
+        let digits = digits.strip_prefix('#').unwrap_or(digits);
+        if let Some(packed) = (digits.len() == 6)
+            .then(|| u32::from_str_radix(digits, 16).ok())
+            .flatten()
+        {
+            let [_, r, g, b] = packed.to_be_bytes();
+            *rgb = [r, g, b];
+        } else if response.has_focus() {
+            ui.small("Enter six hexadecimal digits.");
+        }
+        ui.ctx().data_mut(|data| {
+            if response.has_focus() {
+                data.insert_temp(field, value);
+            } else {
+                data.remove::<String>(field);
+            }
+        });
+    } else {
+        ui.horizontal(|ui| {
+            for (label, channel) in ["R", "G", "B"].into_iter().zip(rgb.iter_mut()) {
+                ui.add(egui::DragValue::new(channel).prefix(format!("{label} ")));
+            }
+        });
+    }
+    *rgb != before
+}
+
 fn number(ui: &mut egui::Ui, label: &str, value: &mut f64, suffix: &str) {
     ui.horizontal_wrapped(|ui| {
         let label_response = ui.label(label);

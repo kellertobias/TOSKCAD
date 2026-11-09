@@ -295,6 +295,7 @@ impl DrawingBackend for TestPublisher {
                     drawings::ViewEvaluation::Ready {
                         labels: vec![],
                         vectors: vec![drawings::DrawingVector {
+                            color_rgb: None,
                             source,
                             material_part: source,
                             role: drawings::VectorRole::Visible,

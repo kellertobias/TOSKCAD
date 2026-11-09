@@ -149,6 +149,7 @@ impl Fixture {
             },
         );
         let hatch = LibraryDefinition::Hatch(HatchStyle {
+            color_rgb: Some([34, 140, 75]),
             pattern: HatchPattern::Lines,
             angle_deg: 45.,
             spacing_mm: 1.5,
@@ -410,6 +411,7 @@ fn two_page_pdf_and_page_dxfs_keep_sizes_titles_scales_dimensions_and_section_se
     let bytes = std::fs::read(&pdf_path).unwrap();
     assert!(bytes.starts_with(b"%PDF-1.4"));
     let text = String::from_utf8_lossy(&bytes);
+    assert!(text.contains("0.133 0.549 0.294 RG"));
     let media: Vec<_> = text
         .match_indices("/MediaBox [0 0 ")
         .map(|(i, _)| &text[i + 15..i + 30])

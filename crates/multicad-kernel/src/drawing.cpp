@@ -53,7 +53,7 @@ std::unique_ptr<DrawingJob> drawing_job(const DrawingOptionsData &o) {
 }
 void drawing_add(DrawingJob &job,const Shape &shape,uint8_t hatch,double angle,double spacing,double line_width) {
   if(job.inputs.size()>=4096) throw std::runtime_error("Drawing source budget exceeded");
-  if(hatch>static_cast<uint8_t>(DrawingInput::Hatch::SmallCrosses))
+  if(hatch>static_cast<uint8_t>(DrawingInput::Hatch::Grass))
     throw std::runtime_error("Unknown drawing hatch pattern");
   job.inputs.push_back({shape.value,static_cast<DrawingInput::Hatch>(hatch),angle,spacing,line_width});
 }
@@ -230,22 +230,46 @@ static void hatch_face(Collector &out,const TopoDS_Face &face,const DrawingInput
     const auto plane=BRepAdaptor_Surface(face).Plane();
     const gp_Vec normal(plane.Axis().Direction());
     center.Translate(normal*(-gp_Vec(plane.Location(),center).Dot(normal)));
-    const double requested=std::ceil(diagonal/input.spacing)+2.;
+    // The lattice is centered on the bounds. Its radius is half the diagonal;
+    // the margin covers strokes that start just outside and cross the boundary.
+    const double requested=std::ceil(diagonal/(2.*input.spacing))+2.;
     if(!std::isfinite(requested)||requested>20000)throw std::runtime_error("Section hatch line budget exceeded");
     const int count=static_cast<int>(requested);
     // Intersect one compound of parallel hatch lines with the face. A separate
     // Boolean per line repeatedly rebuilds the same face's intersection data.
     TopoDS_Compound lines;BRep_Builder builder;builder.MakeCompound(lines);
     size_t strokes=0;
-    const auto add=[&](const gp_Pnt &p,const gp_Vec &axis,double half) {
+    const auto edge=[&](const gp_Pnt &a,const gp_Pnt &b) {
       if(++strokes>60000) throw std::runtime_error("Section hatch stroke budget exceeded");
-      builder.Add(lines,BRepBuilderAPI_MakeEdge(p.Translated(axis*(-half)),p.Translated(axis*half)).Edge());
+      builder.Add(lines,BRepBuilderAPI_MakeEdge(a,b).Edge());
+    };
+    const auto add=[&](const gp_Pnt &p,const gp_Vec &axis,double half) {
+      edge(p.Translated(axis*(-half)),p.Translated(axis*half));
     };
     for(int i=-count;i<=count;++i) {
       const auto row=center.Translated(perpendicular*(i*input.spacing));
       const bool alternating_dots=input.hatch==Hatch::Alternating && i%2!=0;
       const bool crosses=input.hatch==Hatch::SmallCrosses;
-      if(alternating_dots || input.hatch==Hatch::Dots || crosses) {
+      if(input.hatch==Hatch::Brick) {
+        add(row,direction,diagonal+1.);
+        for(int j=-count/2-1;j<=count/2+1;++j) {
+          const auto joint=row.Translated(direction*((2*j+(i%2!=0))*input.spacing));
+          edge(joint,joint.Translated(perpendicular*input.spacing));
+        }
+      } else if(input.hatch==Hatch::Concrete || input.hatch==Hatch::Grass) {
+        for(int j=-count;j<=count;++j) {
+          const auto point=row.Translated(direction*((j+(i%2!=0?0.5:0.))*input.spacing));
+          const auto offset=[&](double x,double y) { return point.Translated((direction*x+perpendicular*y)*input.spacing); };
+          if(input.hatch==Hatch::Grass) {
+            for(double tilt:{-0.20,0.0,0.20}) edge(point,offset(tilt,tilt==0.?0.31:0.23));
+          } else if((i+j)%3==0) {
+            const auto a=offset(-0.18,-0.1),b=offset(0.14,-0.06),c=offset(0.04,0.17);
+            edge(a,b);edge(b,c);edge(c,a);
+          } else {
+            edge(offset(-0.035,-0.04),offset(0.035,0.04));
+          }
+        }
+      } else if(alternating_dots || input.hatch==Hatch::Dots || crosses) {
         const double half=crosses ? input.spacing*0.17 : std::max(1e-6,std::min(input.spacing*0.045,input.line_width*0.25));
         for(int j=-count;j<=count;++j) {
           const auto mark=row.Translated(direction*(j*input.spacing));

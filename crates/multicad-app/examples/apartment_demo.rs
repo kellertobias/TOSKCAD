@@ -356,6 +356,7 @@ pub fn build(output: &Path) -> Result<Scenario, Error> {
     let oak = material("Oak", 700., [178, 138, 92, 255]);
     let laminate = material("White laminate", 800., [240, 240, 236, 255]);
     let hatch = LibraryDefinition::Hatch(HatchStyle {
+        color_rgb: None,
         pattern: HatchPattern::Lines,
         angle_deg: 45.,
         spacing_mm: 1.,

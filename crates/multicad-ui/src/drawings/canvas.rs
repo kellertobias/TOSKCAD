@@ -290,7 +290,9 @@ pub(super) fn show(
                     for point in &points {
                         bounds.extend_with(*point);
                     }
-                    let color = if vector.role == VectorRole::Hidden {
+                    let color = if let Some([r, g, b]) = vector.color_rgb {
+                        egui::Color32::from_rgb(r, g, b)
+                    } else if vector.role == VectorRole::Hidden {
                         egui::Color32::from_gray(115)
                     } else {
                         egui::Color32::BLACK

@@ -158,8 +158,16 @@ pub(super) fn hatch_picker(ui: &mut egui::Ui, hatch: &mut HatchStyle) {
                 ui.painter(),
                 response.rect.shrink(5.),
                 &HatchStyle {
+                    color_rgb: hatch.color_rgb,
                     pattern,
-                    angle_deg: 45.,
+                    angle_deg: if matches!(
+                        pattern,
+                        HatchPattern::Brick | HatchPattern::Concrete | HatchPattern::Grass
+                    ) {
+                        0.
+                    } else {
+                        45.
+                    },
                     spacing_mm: 2.1,
                     line_width_mm: 0.28,
                 },
@@ -173,10 +181,20 @@ pub(super) fn hatch_picker(ui: &mut egui::Ui, hatch: &mut HatchStyle) {
 }
 
 fn hatch_sample(painter: &egui::Painter, rect: Rect, hatch: &HatchStyle) {
-    painter.rect_filled(rect, 2., SAMPLE_BG);
+    painter.rect_filled(
+        rect,
+        2.,
+        if hatch.color_rgb.is_some() {
+            Color32::from_gray(245)
+        } else {
+            SAMPLE_BG
+        },
+    );
     let stroke = Stroke::new(
         (hatch.line_width_mm as f32 * 3.).clamp(0.75, 8.),
-        Color32::LIGHT_GRAY,
+        hatch
+            .color_rgb
+            .map_or(Color32::LIGHT_GRAY, |[r, g, b]| Color32::from_rgb(r, g, b)),
     );
     let painter = painter.with_clip_rect(rect.intersect(painter.clip_rect()));
     if hatch.pattern == HatchPattern::Solid {
@@ -191,6 +209,37 @@ fn hatch_sample(painter: &egui::Painter, rect: Rect, hatch: &HatchStyle) {
         for i in -count..=count {
             let row = rect.center() + normal * (i as f32 * spacing);
             match hatch.pattern {
+                HatchPattern::Brick => {
+                    painter
+                        .line_segment([row - direction * extent, row + direction * extent], stroke);
+                    for j in -count..=count {
+                        let joint = row + direction * ((2 * j + i.rem_euclid(2)) as f32 * spacing);
+                        painter.line_segment([joint, joint + normal * spacing], stroke);
+                    }
+                }
+                HatchPattern::Concrete | HatchPattern::Grass => {
+                    for j in -count..=count {
+                        let point =
+                            row + direction * ((j as f32 + i.rem_euclid(2) as f32 * 0.5) * spacing);
+                        let offset = |x, y| point + (direction * x - normal * y) * spacing;
+                        if hatch.pattern == HatchPattern::Grass {
+                            for tilt in [-0.20, 0., 0.20] {
+                                painter.line_segment(
+                                    [point, offset(tilt, if tilt == 0. { 0.31 } else { 0.23 })],
+                                    stroke,
+                                );
+                            }
+                        } else if (i + j) % 3 == 0 {
+                            let a = offset(-0.18, -0.10);
+                            let b = offset(0.14, -0.06);
+                            let c = offset(0.04, 0.17);
+                            painter.add(egui::Shape::closed_line(vec![a, b, c], stroke));
+                        } else {
+                            painter
+                                .line_segment([offset(-0.035, -0.04), offset(0.035, 0.04)], stroke);
+                        }
+                    }
+                }
                 HatchPattern::Dots | HatchPattern::SmallCrosses | HatchPattern::Alternating
                     if hatch.pattern != HatchPattern::Alternating || i % 2 != 0 =>
                 {

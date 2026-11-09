@@ -138,6 +138,7 @@ pub(crate) fn plans(
                 let a = project(label_origin);
                 let b = project(mark_pose.translation_mm);
                 plan.vectors.push(DrawingVector {
+                    color_rgb: None,
                     source: symbol.instance,
                     material_part: symbol.instance,
                     role: VectorRole::Visible,

@@ -129,6 +129,7 @@ pub(crate) fn project_sketch(
     };
     let mut line = |curve, preview_mm| {
         vectors.push(DrawingVector {
+            color_rgb: None,
             source: instance,
             material_part: instance,
             role: VectorRole::Visible,

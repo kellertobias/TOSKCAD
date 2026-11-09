@@ -563,6 +563,7 @@ pub(crate) fn plan_vectors(
                       width: f64,
                       curve: VectorCurve,
                       preview_mm: Vec<[f64; 2]>| DrawingVector {
+            color_rgb: None,
             source: part,
             material_part: part,
             role,

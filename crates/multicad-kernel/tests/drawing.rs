@@ -163,6 +163,9 @@ fn section_hatches_only_cut_material_and_respects_a_real_hole() {
         HatchPattern::Alternating,
         HatchPattern::Dots,
         HatchPattern::SmallCrosses,
+        HatchPattern::Brick,
+        HatchPattern::Concrete,
+        HatchPattern::Grass,
         HatchPattern::Solid,
     ] {
         let result = project_drawing(

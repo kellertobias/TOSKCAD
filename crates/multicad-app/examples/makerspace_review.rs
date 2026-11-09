@@ -329,6 +329,7 @@ pub fn build() -> Result<Scenario, Error> {
         },
     );
     let hatch = LibraryDefinition::Hatch(HatchStyle {
+        color_rgb: None,
         pattern: HatchPattern::Lines,
         angle_deg: 45.,
         spacing_mm: 2.,

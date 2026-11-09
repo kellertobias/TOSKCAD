@@ -8,7 +8,7 @@ struct DrawingOptionsData;
 struct DrawingCurveData;
 struct DrawingInput {
   TopoDS_Shape shape;
-  enum class Hatch : uint8_t { None, Lines, Cross, Alternating, Solid, Dots, SmallCrosses };
+  enum class Hatch : uint8_t { None, Lines, Cross, Alternating, Solid, Dots, SmallCrosses, Brick, Concrete, Grass };
   Hatch hatch;
   double angle, spacing, line_width;
 };

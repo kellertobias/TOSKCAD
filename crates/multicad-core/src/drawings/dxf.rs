@@ -5,6 +5,31 @@
 use super::render::{Layer, PageRender};
 use std::fmt::Write;
 
+// R12 uses indexed entity colors. Quantize authored RGB to its base palette.
+fn hatch_color_index(rgb: [u8; 3]) -> u8 {
+    const PALETTE: [[u8; 3]; 9] = [
+        [255, 0, 0],
+        [255, 255, 0],
+        [0, 255, 0],
+        [0, 255, 255],
+        [0, 0, 255],
+        [255, 0, 255],
+        [255, 255, 255],
+        [65, 65, 65],
+        [128, 128, 128],
+    ];
+    PALETTE
+        .iter()
+        .enumerate()
+        .min_by_key(|(_, color)| {
+            rgb.iter()
+                .zip(*color)
+                .map(|(&a, &b)| (i32::from(a) - i32::from(b)).pow(2))
+                .sum::<i32>()
+        })
+        .map_or(7, |(index, _)| index as u8 + 1)
+}
+
 /// DXF layer, linetype and AutoCAD color index for each role.
 pub fn layer(layer: Layer) -> (&'static str, &'static str, u8) {
     match layer {
@@ -134,6 +159,9 @@ pub fn render_dxf(page: &PageRender, scale: f64, insunits: u16) -> String {
         for w in points.windows(2) {
             pair(0, "LINE");
             pair(8, name);
+            if let Some(color) = poly.color_rgb {
+                pair(62, &hatch_color_index(color).to_string());
+            }
             pair(10, &n(w[0][0]));
             pair(20, &n(w[0][1]));
             pair(11, &n(w[1][0]));
@@ -172,6 +200,9 @@ pub fn render_dxf(page: &PageRender, scale: f64, insunits: u16) -> String {
         let q: Vec<_> = fill.points.iter().map(|x| p(*x)).collect();
         pair(0, "SOLID");
         pair(8, name);
+        if let Some(color) = fill.color_rgb {
+            pair(62, &hatch_color_index(color).to_string());
+        }
         for (i, point) in [q[0], q[1], q[2], q[2]].iter().enumerate() {
             pair(10 + i as i32, &n(point[0]));
             pair(20 + i as i32, &n(point[1]));

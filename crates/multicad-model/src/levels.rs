@@ -361,6 +361,7 @@ pub(crate) fn plan_vectors(
     let mut line = |source: EntityId, a: [f64; 2], b: [f64; 2], role: VectorRole| {
         let (a, b) = (project(a), project(b));
         vectors.push(DrawingVector {
+            color_rgb: None,
             source,
             material_part: source,
             role,

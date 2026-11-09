@@ -83,6 +83,8 @@ impl ArchitecturePlan {
             let highlighted = selected.contains(&vector.source) || hovered == Some(vector.source);
             let color = if highlighted {
                 egui::Color32::from_rgb(90, 170, 255)
+            } else if let Some([r, g, b]) = vector.color_rgb {
+                egui::Color32::from_rgb(r, g, b)
             } else {
                 match vector.role {
                     VectorRole::Section => egui::Color32::from_gray(235),

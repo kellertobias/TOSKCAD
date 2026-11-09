@@ -817,6 +817,7 @@ fn pinned_walls_keep_real_join_faces_material_hatches_and_attached_equipment() {
         type_id: "materials.hatch.inline".into(),
         schema_version: 1,
         data: serde_json::to_value(HatchStyle {
+            color_rgb: None,
             pattern: HatchPattern::Lines,
             angle_deg: 45.,
             spacing_mm: 0.8,

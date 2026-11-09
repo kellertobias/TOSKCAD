@@ -273,6 +273,7 @@ fn section_uses_material_hatch_in_paper_units_and_missing_links_cannot_use_old_r
         },
     );
     let hatch = LibraryDefinition::Hatch(HatchStyle {
+        color_rgb: None,
         pattern: HatchPattern::Lines,
         angle_deg: 0.,
         spacing_mm: 2.,
@@ -572,6 +573,7 @@ impl RangeFixture {
             },
         );
         let hatch = LibraryDefinition::Hatch(HatchStyle {
+            color_rgb: None,
             pattern: HatchPattern::Lines,
             angle_deg: 45.,
             spacing_mm: 1.,

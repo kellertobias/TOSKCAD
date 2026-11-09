@@ -288,6 +288,8 @@ pub enum VectorRole {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DrawingVector {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color_rgb: Option<[u8; 3]>,
     pub source: EntityId,
     pub material_part: EntityId,
     pub role: VectorRole,

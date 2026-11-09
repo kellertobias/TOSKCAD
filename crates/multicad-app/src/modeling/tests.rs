@@ -810,6 +810,7 @@ fn native_scene_uses_reusable_appearance_without_changing_exact_stock_geometry()
     .entity(EntityId::new(), "Painted steel")
     .unwrap();
     let hatch = LibraryDefinition::Hatch(HatchStyle {
+        color_rgb: None,
         pattern: HatchPattern::Cross,
         ..Default::default()
     })

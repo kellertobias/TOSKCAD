@@ -43,6 +43,7 @@ pub fn fixture() -> Result<Fixture, Error> {
     let birch = material("Birch", 650., [210, 173, 120, 255]);
     let steel = material("Shared steel", 7850., [120, 162, 200, 255]);
     let hatch = LibraryDefinition::Hatch(HatchStyle {
+        color_rgb: None,
         pattern: HatchPattern::Lines,
         angle_deg: 0.,
         spacing_mm: 2.,
