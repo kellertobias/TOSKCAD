@@ -355,6 +355,12 @@
     },
     {
       "group": "Wood",
+      "id": "wood-batten",
+      "label": "Batten",
+      "status": "Implemented"
+    },
+    {
+      "group": "Wood",
       "id": "wood-carcass",
       "label": "Carcass",
       "status": "Proposal"
