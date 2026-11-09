@@ -32,6 +32,8 @@ pub(crate) fn validate_document(document: &Document) -> Result<(), ModelError> {
                 (model::EXTRUDE_TYPE, model::EXTRUDE_SCHEMA)
                     | (model::PRIMITIVE_TYPE, model::PRIMITIVE_SCHEMA)
                     | (model::BOOLEAN_TYPE, model::BOOLEAN_SCHEMA)
+                    | (model::TRANSFORM_TYPE, model::TRANSFORM_SCHEMA)
+                    | (model::ALIGN_TYPE, model::ALIGN_SCHEMA)
             ) =>
             {
                 return Err(error(

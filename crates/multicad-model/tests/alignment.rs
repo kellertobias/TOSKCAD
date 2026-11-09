@@ -8,7 +8,7 @@ use multicad_core::{
     references::{Attachment, GeometryIntent, Origin, TopologyKind},
     sketch,
 };
-use multicad_model::{Compiler, Model};
+use multicad_model::{Compiler, GeometryBackend, Model};
 fn actor() -> Actor {
     Actor::local(Channel::Mcp)
 }
@@ -59,12 +59,21 @@ fn snapshots(
 }
 #[test]
 fn native_face_alignment_uses_outward_normals_named_uv_and_upstream_geometry() {
+    face_alignment(GeometryBackend::OpenCascade);
+}
+
+#[test]
+fn rust_face_alignment_uses_outward_normals_named_uv_and_upstream_geometry() {
+    face_alignment(GeometryBackend::Rust);
+}
+
+fn face_alignment(backend: GeometryBackend) {
     let mut session = Session::new(Document::new("Referenced face placement").unwrap()).unwrap();
     let moving = box_(&mut session, "Moving", [30., 0., 0.], [2., 3., 4.]);
     let target = box_(&mut session, "Target", [0.; 3], [10.; 3]);
     let compiler = Compiler::default();
     let original = compiler
-        .compile(session.document(), session.revision())
+        .compile_with_backend(session.document(), session.revision(), backend, None)
         .unwrap();
     let a = cap(&original, moving.feature, "cap.start");
     let b = cap(&original, target.feature, "cap.end");
@@ -90,7 +99,12 @@ fn native_face_alignment_uses_outward_normals_named_uv_and_upstream_geometry() {
     let prepared =
         model::prepare_alignment(&session, session.revision(), actor(), &request).unwrap();
     let native = compiler
-        .compile(prepared.prepared.document(), session.revision() + 1)
+        .compile_with_backend(
+            prepared.prepared.document(),
+            session.revision() + 1,
+            backend,
+            None,
+        )
         .unwrap();
     assert_eq!(session.document(), &before);
     let shape = &native.snapshot().shapes[&request.feature];
@@ -117,7 +131,7 @@ fn native_face_alignment_uses_outward_normals_named_uv_and_upstream_geometry() {
     .unwrap();
     session.commit(prepared.prepared).unwrap();
     let rebuilt = compiler
-        .compile(session.document(), session.revision())
+        .compile_with_backend(session.document(), session.revision(), backend, None)
         .unwrap();
     assert_eq!(
         rebuilt.snapshot().shapes[&request.feature].bounds.min,
@@ -134,7 +148,7 @@ fn native_face_alignment_uses_outward_normals_named_uv_and_upstream_geometry() {
     session.undo(session.revision(), actor()).unwrap();
     assert_eq!(
         compiler
-            .compile(session.document(), session.revision())
+            .compile_with_backend(session.document(), session.revision(), backend, None)
             .unwrap()
             .snapshot()
             .shapes[&request.feature]
