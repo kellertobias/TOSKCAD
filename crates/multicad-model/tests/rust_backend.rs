@@ -15,8 +15,8 @@ use multicad_kernel::{
     PlaneFrame,
     rust_kernel::{Rational, parse_length_mm, prism::Location},
 };
-use multicad_model::{Compiler, GeometryBackend, Model};
-use std::{f64::consts::PI, io::Cursor};
+use multicad_model::{Compiler, EvaluationCache, EvaluationScope, GeometryBackend, Model};
+use std::{f64::consts::PI, io::Cursor, sync::Arc};
 
 #[path = "support/rust_panel.rs"]
 mod rust_panel;
@@ -54,6 +54,286 @@ fn reopen(session: &Session) -> Session {
     .unwrap();
     assert_eq!(&result.project.document, session.document());
     Session::new(result.project.document).unwrap()
+}
+
+#[test]
+fn an_owner_cache_keeps_native_and_rust_solids_and_topology_separate() {
+    let (session, _, extrusion, _, cutter, cut) = fixture(false, 28.);
+    let revision = session.revision();
+    let compiler = compiler();
+    let mut cache = EvaluationCache::default();
+    let producers = [extrusion, cutter, cut].into_iter().collect();
+    let mut builds = Vec::new();
+    for (offset, backend) in [
+        GeometryBackend::OpenCascade,
+        GeometryBackend::Rust,
+        GeometryBackend::OpenCascade,
+        GeometryBackend::Rust,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let revision = revision + offset as u64;
+        let model = compiler
+            .compile_cached_with_backend(&mut cache, session.document(), revision, backend, None)
+            .unwrap();
+        let stats = cache.last_compile();
+        if offset < 2 {
+            assert_eq!(stats.evaluated, producers);
+            assert!(stats.reused.is_empty());
+        } else {
+            assert_eq!(stats.reused, producers);
+            assert!(stats.evaluated.is_empty());
+        }
+        let rust = backend == GeometryBackend::Rust;
+        assert_eq!(
+            model.solid(cutter).unwrap().axial_cylinder().is_some(),
+            rust
+        );
+        assert_eq!(model.solid(cut).unwrap().rust_prism().is_some(), rust);
+        assert_eq!(model.snapshot().stamp.revision, revision);
+        for shape in model.snapshot().shapes.values() {
+            assert_eq!(shape.topology.revision, revision);
+        }
+        builds.push(model);
+    }
+
+    let topology = |i: usize| &builds[i].snapshot().shapes[&cutter].topology.elements;
+    assert_ne!(topology(0), topology(1));
+    assert_eq!(topology(0), topology(2));
+    assert_eq!(topology(1), topology(3));
+    let cutter_shape = |i: usize| &builds[i].snapshot().shapes[&cutter];
+    assert!(!Arc::ptr_eq(&cutter_shape(0).mesh, &cutter_shape(1).mesh));
+    for (first, reused) in [
+        (cutter_shape(0), cutter_shape(2)),
+        (cutter_shape(1), cutter_shape(3)),
+    ] {
+        assert!(Arc::ptr_eq(&first.mesh, &reused.mesh));
+        assert!(Arc::ptr_eq(&first.edges, &reused.edges));
+        assert!(Arc::ptr_eq(&first.vertices, &reused.vertices));
+    }
+    assert_eq!(
+        builds[0].snapshot().shapes[&cutter].topology.revision,
+        revision
+    );
+    assert_eq!(
+        builds[1].snapshot().shapes[&cutter].topology.revision,
+        revision + 1
+    );
+}
+
+#[test]
+fn cached_batch_cuts_each_retain_their_shared_tool_consumption() {
+    let mut session = Session::new(Document::new("Two targets, one cutter").unwrap()).unwrap();
+    let boxes = std::array::from_fn::<_, 2, _>(|_| {
+        PrimitiveRequest::new(
+            "Box",
+            PrimitiveParameters::Box {
+                size: [length(12.), length(8.), length(4.)],
+                frame: PrimitiveFrame::default(),
+            },
+        )
+    });
+    let cutter = PrimitiveRequest::new(
+        "Shared through-cutter",
+        PrimitiveParameters::Cylinder {
+            radius: length(1.),
+            height: length(6.),
+            frame: PrimitiveFrame {
+                origin: [length(4.), length(4.), length(-1.)],
+                ..PrimitiveFrame::default()
+            },
+        },
+    );
+    for request in boxes.iter().chain([&cutter]) {
+        let edit =
+            model::prepare_primitive(&session, session.revision(), actor(), request).unwrap();
+        session.commit(edit.prepared).unwrap();
+    }
+    let cuts = boxes.map(|request| {
+        model::BooleanRequest::new(
+            model::Operation::Cut,
+            model::BodyInput {
+                body: request.body,
+                producer: request.feature,
+            },
+            vec![model::BodyInput {
+                body: cutter.body,
+                producer: cutter.feature,
+            }],
+        )
+    });
+    let batch = model::prepare_booleans(&session, session.revision(), actor(), &cuts).unwrap();
+    session.commit(batch.prepared).unwrap();
+
+    let compiler = compiler();
+    let revision = session.revision();
+    let document = session.document();
+    let mut cache = EvaluationCache::default();
+    let mut compile = |document: &Document, revision: u64| {
+        let result = compiler
+            .compile_cached_with_backend(
+                &mut cache,
+                document,
+                revision,
+                GeometryBackend::Rust,
+                None,
+            )
+            .unwrap();
+        (result, cache.last_compile().clone())
+    };
+    assert!(
+        compile(document, revision)
+            .0
+            .snapshot()
+            .consumed_bodies
+            .contains(&cutter.body)
+    );
+    for (removed, remaining) in [(&cuts[0], &cuts[1]), (&cuts[1], &cuts[0])] {
+        let mut entity = document.get(removed.feature).unwrap().clone();
+        let EntityData::Feature { suppressed, .. } = &mut entity.data else {
+            unreachable!()
+        };
+        *suppressed = true;
+        let edited = document.edited(&[Mutation::Replace(entity)]).unwrap();
+        let (cached, stats) = compile(&edited, revision + 1);
+        assert!(stats.reused.contains(&remaining.feature));
+        let fresh = compiler
+            .compile_with_backend(&edited, revision + 1, GeometryBackend::Rust, None)
+            .unwrap();
+        assert_eq!(cached.snapshot().bodies, fresh.snapshot().bodies);
+        assert!(cached.snapshot().consumed_bodies.contains(&cutter.body));
+    }
+}
+
+#[test]
+fn a_scoped_rust_result_reuses_unchanged_tools_and_a_failed_edit_cannot_reuse_the_old_cut() {
+    let (session, height, extrusion, body, cutter, cut) = fixture(false, 28.);
+    let revision = session.revision();
+    let document = session.document();
+    let compiler = compiler();
+    let mut cache = EvaluationCache::default();
+    let scoped = compiler
+        .compile_sources_cached_with_backend(
+            &mut cache,
+            document,
+            revision,
+            &[cutter],
+            GeometryBackend::Rust,
+            None,
+        )
+        .unwrap();
+    assert_eq!(
+        cache.last_compile().evaluated,
+        [cutter].into_iter().collect()
+    );
+    assert_eq!(
+        scoped.snapshot().scope,
+        EvaluationScope::Sources(vec![cutter])
+    );
+    assert_eq!(scoped.snapshot().shapes.len(), 1);
+    assert!(scoped.solid(cut).is_none());
+    let first = compiler
+        .compile_cached_with_backend(&mut cache, document, revision, GeometryBackend::Rust, None)
+        .unwrap();
+    assert_eq!(cache.last_compile().reused, [cutter].into_iter().collect());
+    assert_eq!(
+        cache.last_compile().evaluated,
+        [extrusion, cut].into_iter().collect()
+    );
+    assert_eq!(first.snapshot().scope, EvaluationScope::Full);
+    assert_eq!(first.snapshot().bodies.get(&body), Some(&cut));
+
+    let with_height = |value: &str| {
+        let mut parameter = document.get(height).unwrap().clone();
+        let EntityData::Parameter { expression, .. } = &mut parameter.data else {
+            unreachable!()
+        };
+        *expression = value.into();
+        document.edited(&[Mutation::Replace(parameter)]).unwrap()
+    };
+    let thinner = with_height("=10 mm / 3");
+    // Two candidates can share a revision but have different geometry.
+    let candidate_revision = revision + 1;
+    let rebuilt = compiler
+        .compile_cached_with_backend(
+            &mut cache,
+            &thinner,
+            candidate_revision,
+            GeometryBackend::Rust,
+            None,
+        )
+        .unwrap();
+    assert_eq!(cache.last_compile().reused, [cutter].into_iter().collect());
+    assert_eq!(
+        cache.last_compile().evaluated,
+        [extrusion, cut].into_iter().collect()
+    );
+    let solid = rebuilt.solid(cut).unwrap();
+    assert_eq!(solid.rust_prism().unwrap().dimensions()[2].ratio(), (10, 3));
+    near(solid.volume_mm3().unwrap(), (800. + 25. * PI) * 10. / 3.);
+    assert_eq!(
+        rebuilt.snapshot().shapes[&cutter].topology.revision,
+        candidate_revision
+    );
+    assert_eq!(first.snapshot().shapes[&cutter].topology.revision, revision);
+    assert!(Arc::ptr_eq(
+        &first.snapshot().shapes[&cutter].mesh,
+        &rebuilt.snapshot().shapes[&cutter].mesh
+    ));
+    assert!(!Arc::ptr_eq(
+        &first.snapshot().shapes[&cut].mesh,
+        &rebuilt.snapshot().shapes[&cut].mesh
+    ));
+    assert_ne!(
+        first.snapshot().stamp.source_hash,
+        rebuilt.snapshot().stamp.source_hash
+    );
+
+    let blocked = with_height("10");
+    let failure = compiler
+        .compile_cached_with_backend(
+            &mut cache,
+            &blocked,
+            candidate_revision,
+            GeometryBackend::Rust,
+            None,
+        )
+        .err()
+        .expect("the unchanged tool does not pass through the thicker panel");
+    assert_eq!(failure.entity, Some(cut));
+    assert!(
+        failure.message.contains("NotThrough"),
+        "{}",
+        failure.message
+    );
+
+    let retried = compiler
+        .compile_cached_with_backend(
+            &mut cache,
+            &thinner,
+            candidate_revision + 1,
+            GeometryBackend::Rust,
+            None,
+        )
+        .unwrap();
+    assert!(cache.last_compile().evaluated.is_empty());
+    assert_eq!(
+        cache.last_compile().reused,
+        [extrusion, cutter, cut].into_iter().collect()
+    );
+    assert_eq!(
+        retried.snapshot().stamp.source_hash,
+        rebuilt.snapshot().stamp.source_hash
+    );
+    assert_eq!(
+        retried.snapshot().shapes[&cut].topology.revision,
+        candidate_revision + 1
+    );
+    near(
+        retried.solid(cut).unwrap().volume_mm3().unwrap(),
+        solid.volume_mm3().unwrap(),
+    );
 }
 
 #[test]

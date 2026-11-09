@@ -300,30 +300,17 @@ impl<T: Send + 'static> Runtime<T> {
                     let result = if unchanged {
                         Ok(retained.take().expect("matching retained drawing model"))
                     } else {
-                        match (backend, &roots) {
-                            (GeometryBackend::OpenCascade, Some(roots)) => compiler
-                                .compile_sources_cached(
-                                    &mut cache,
-                                    &job.document,
-                                    job.revision,
-                                    roots,
-                                    Some(&superseded),
-                                ),
-                            (GeometryBackend::OpenCascade, None) => compiler.compile_cached(
+                        match &roots {
+                            Some(roots) => compiler.compile_sources_cached_with_backend(
                                 &mut cache,
                                 &job.document,
                                 job.revision,
+                                roots,
+                                backend,
                                 Some(&superseded),
                             ),
-                            (GeometryBackend::Rust, Some(roots)) => compiler
-                                .compile_sources_with_backend(
-                                    &job.document,
-                                    job.revision,
-                                    roots,
-                                    backend,
-                                    Some(&superseded),
-                                ),
-                            (GeometryBackend::Rust, None) => compiler.compile_with_backend(
+                            None => compiler.compile_cached_with_backend(
+                                &mut cache,
                                 &job.document,
                                 job.revision,
                                 backend,
@@ -334,8 +321,7 @@ impl<T: Send + 'static> Runtime<T> {
                     if superseded() {
                         continue;
                     }
-                    let stats = (!unchanged && backend == GeometryBackend::OpenCascade)
-                        .then(|| cache.last_compile().clone());
+                    let stats = (!unchanged).then(|| cache.last_compile().clone());
                     let result = result.and_then(|model| {
                         if let Some(part) = job.options.sheet_development {
                             model.unfold(&job.document, part).map_err(|error| {
@@ -517,7 +503,7 @@ impl<T: Send + 'static> Runtime<T> {
         self.shared.wake.notify_one();
         Ok(generation)
     }
-    /// Statistics of this lane's latest accepted native compile. A detached
+    /// Statistics of this lane's latest accepted compile. A detached
     /// publication-cache hit or retained whole-model reuse has no new compile.
     pub fn last_compile_stats(&self) -> Option<crate::CompileStats> {
         self.lane

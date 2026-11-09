@@ -31,10 +31,10 @@ pub struct ShapeSnapshot {
     pub bounds: Bounds,
     pub volume_mm3: f64,
     pub solid_count: u32,
-    pub mesh: Mesh,
+    pub mesh: Arc<Mesh>,
     pub topology: TopologySnapshot,
-    pub edges: Vec<DisplayEdge>,
-    pub vertices: Vec<DisplayVertex>,
+    pub edges: Arc<Vec<DisplayEdge>>,
+    pub vertices: Arc<Vec<DisplayVertex>>,
 }
 /// Source inspection is deliberately incomplete and cannot authorize a full-model operation.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -340,14 +340,6 @@ struct EvaluationMode {
     backend: GeometryBackend,
 }
 
-impl EvaluationMode {
-    fn native(roots: Option<Vec<EntityId>>) -> Self {
-        Self {
-            roots,
-            backend: GeometryBackend::OpenCascade,
-        }
-    }
-}
 pub const MAX_MODEL_FEATURES: usize = 4096;
 pub const MAX_MODEL_TRIANGLES: usize = 4_000_000;
 impl Compiler {
@@ -375,9 +367,6 @@ impl Compiler {
             roots: None,
             backend,
         };
-        if backend == GeometryBackend::Rust {
-            return self.compile_scoped(document, revision, mode, interrupt, None);
-        }
         crate::worker_cache::with_current_cache(|cache| {
             self.compile_scoped(document, revision, mode, interrupt, cache)
         })
@@ -392,10 +381,31 @@ impl Compiler {
         revision: u64,
         interrupt: Option<&dyn Fn() -> bool>,
     ) -> Result<Model, ModelError> {
+        self.compile_cached_with_backend(
+            cache,
+            document,
+            revision,
+            GeometryBackend::OpenCascade,
+            interrupt,
+        )
+    }
+
+    /// Use the caller's bounded owner cache with an explicit solid backend.
+    pub fn compile_cached_with_backend(
+        &self,
+        cache: &mut crate::EvaluationCache,
+        document: &Document,
+        revision: u64,
+        backend: GeometryBackend,
+        interrupt: Option<&dyn Fn() -> bool>,
+    ) -> Result<Model, ModelError> {
         self.compile_scoped(
             document,
             revision,
-            EvaluationMode::native(None),
+            EvaluationMode {
+                roots: None,
+                backend,
+            },
             interrupt,
             Some(cache),
         )
@@ -409,11 +419,35 @@ impl Compiler {
         roots: &[EntityId],
         interrupt: Option<&dyn Fn() -> bool>,
     ) -> Result<Model, ModelError> {
-        let roots = validate_source_roots(document, roots)?;
+        self.compile_sources_cached_with_backend(
+            cache,
+            document,
+            revision,
+            roots,
+            GeometryBackend::OpenCascade,
+            interrupt,
+        )
+    }
+
+    /// Reuse cached source dependencies without mixing solid backends.
+    pub fn compile_sources_cached_with_backend(
+        &self,
+        cache: &mut crate::EvaluationCache,
+        document: &Document,
+        revision: u64,
+        roots: &[EntityId],
+        backend: GeometryBackend,
+        interrupt: Option<&dyn Fn() -> bool>,
+    ) -> Result<Model, ModelError> {
+        let roots =
+            validate_source_roots(document, roots).inspect_err(|_| cache.reset_compile_stats())?;
         self.compile_scoped(
             document,
             revision,
-            EvaluationMode::native(Some(roots)),
+            EvaluationMode {
+                roots: Some(roots),
+                backend,
+            },
             interrupt,
             Some(cache),
         )
@@ -454,15 +488,16 @@ impl Compiler {
         backend: GeometryBackend,
         interrupt: Option<&dyn Fn() -> bool>,
     ) -> Result<Model, ModelError> {
-        let roots = validate_source_roots(document, roots)?;
-        let mode = EvaluationMode {
-            roots: Some(roots),
-            backend,
-        };
-        if backend == GeometryBackend::Rust {
-            return self.compile_scoped(document, revision, mode, interrupt, None);
-        }
-        crate::worker_cache::with_current_cache(|cache| {
+        crate::worker_cache::with_current_cache(|mut cache| {
+            let roots = validate_source_roots(document, roots).inspect_err(|_| {
+                if let Some(cache) = cache.as_deref_mut() {
+                    cache.reset_compile_stats();
+                }
+            })?;
+            let mode = EvaluationMode {
+                roots: Some(roots),
+                backend,
+            };
             self.compile_scoped(document, revision, mode, interrupt, cache)
         })
     }
@@ -479,7 +514,8 @@ impl Compiler {
         mut cache: Option<&mut crate::EvaluationCache>,
     ) -> Result<Model, ModelError> {
         let started = std::time::Instant::now();
-        let full_evaluation = mode.roots.is_none() && mode.backend == GeometryBackend::OpenCascade;
+        let native_backend = mode.backend == GeometryBackend::OpenCascade;
+        let full_evaluation = mode.roots.is_none() && native_backend;
         let publication = crate::pair_cycle_proofs::PublicationScope::begin();
         let native_publication =
             crate::native_intersection_proofs::PublicationScope::begin(if full_evaluation {
@@ -491,7 +527,7 @@ impl Compiler {
             });
         // An injected application store takes precedence over worker-local
         // receipts, including after clear or a change of application owner.
-        let store = (mode.backend == GeometryBackend::OpenCascade)
+        let store = native_backend
             .then(|| {
                 crate::current_pair_cycle_proofs()
                     .or_else(|| cache.as_deref().map(|cache| cache.gear_pairs.clone()))
@@ -499,7 +535,10 @@ impl Compiler {
             .flatten();
         let mut pair_proofs = crate::pair_cycle_proofs::CycleTransaction::new(store);
         if let Some(cache) = cache.as_deref_mut() {
-            cache.begin_symbol_proofs();
+            cache.reset_compile_stats();
+            if native_backend {
+                cache.begin_symbol_proofs();
+            }
         }
         let mut result = self
             .compile_scoped_unchecked(
@@ -521,7 +560,7 @@ impl Compiler {
                     e
                 }
             });
-        if let Some(cache) = cache {
+        if native_backend && let Some(cache) = cache {
             cache.finish_symbol_proofs(result.is_ok());
         }
         native_publication.finish(result.is_ok() && full_evaluation);
@@ -672,7 +711,7 @@ impl Compiler {
             }
         }
         let mut cached = cache.map(|cache| {
-            crate::eval_cache::Session::new(cache, self, document, context.parameters())
+            crate::eval_cache::Session::new(cache, self, backend, document, context.parameters())
         });
         let native_queries = NativeRegionQueries::new(self.policy).map_err(|e| error(None, e))?;
         let mut profiles = Profiles {
@@ -787,7 +826,7 @@ impl Compiler {
                     bounds: solid.bounds().map_err(|e| error(Some(id), e))?,
                     volume_mm3: solid.volume_mm3().map_err(|e| error(Some(id), e))?,
                     solid_count: solid.solid_count().map_err(|e| error(Some(id), e))?,
-                    mesh: if self.omit_display {
+                    mesh: Arc::new(if self.omit_display {
                         Mesh {
                             vertices: vec![],
                             indices: vec![],
@@ -795,19 +834,19 @@ impl Compiler {
                         }
                     } else {
                         solid.mesh(self.mesh).map_err(|e| error(Some(id), e))?
-                    },
-                    edges: if self.omit_display {
+                    }),
+                    edges: Arc::new(if self.omit_display {
                         vec![]
                     } else {
                         solid
                             .display_edges(self.mesh.linear_deflection_mm)
                             .map_err(|e| error(Some(id), e))?
-                    },
-                    vertices: if self.omit_display {
+                    }),
+                    vertices: Arc::new(if self.omit_display {
                         vec![]
                     } else {
                         solid.display_vertices().map_err(|e| error(Some(id), e))?
-                    },
+                    }),
                     topology: topology.clone(),
                 };
                 timings.shape_publication_ms += publication_started.elapsed().as_secs_f64() * 1000.;
@@ -951,7 +990,7 @@ impl Compiler {
             if let Some(cached) = cached.as_mut() {
                 cached.evaluated(id, key.is_some());
             }
-            let consumed_before = key.map(|_| consumed_versions.clone());
+            let mut consumed_by_feature = Vec::new();
             // Provider dispatch is confined to the native model layer. The UI,
             // document and storage layers do not implement geometry algorithms.
             let solid = match (definition.type_id.as_str(), definition.schema_version) {
@@ -1393,7 +1432,7 @@ impl Compiler {
                         interrupt,
                     }
                     .build(id, &source)?;
-                    consumed_versions.extend(
+                    consumed_by_feature.extend(
                         source
                             .consumed_inputs()
                             .iter()
@@ -1411,7 +1450,7 @@ impl Compiler {
                         self.policy,
                         interrupt,
                     )?;
-                    consumed_versions.extend(
+                    consumed_by_feature.extend(
                         source
                             .consumed_inputs()
                             .iter()
@@ -1459,7 +1498,7 @@ impl Compiler {
                         ));
                     }
                     if !source.keep_tools {
-                        consumed_versions
+                        consumed_by_feature
                             .extend(source.tools.iter().map(|tool| (tool.body, tool.producer)));
                     }
                     solid
@@ -1481,7 +1520,7 @@ impl Compiler {
                 bounds: solid.bounds().map_err(|e| error(Some(id), e))?,
                 volume_mm3: solid.volume_mm3().map_err(|e| error(Some(id), e))?,
                 solid_count: solid.solid_count().map_err(|e| error(Some(id), e))?,
-                mesh: if self.omit_display {
+                mesh: Arc::new(if self.omit_display {
                     Mesh {
                         vertices: vec![],
                         indices: vec![],
@@ -1489,19 +1528,19 @@ impl Compiler {
                     }
                 } else {
                     solid.mesh(self.mesh).map_err(|e| error(Some(id), e))?
-                },
-                edges: if self.omit_display {
+                }),
+                edges: Arc::new(if self.omit_display {
                     vec![]
                 } else {
                     solid
                         .display_edges(self.mesh.linear_deflection_mm)
                         .map_err(|e| error(Some(id), e))?
-                },
-                vertices: if self.omit_display {
+                }),
+                vertices: Arc::new(if self.omit_display {
                     vec![]
                 } else {
                     solid.display_vertices().map_err(|e| error(Some(id), e))?
-                },
+                }),
                 topology: topology.clone(),
             };
             timings.shape_publication_ms += publication_started.elapsed().as_secs_f64() * 1000.;
@@ -1513,18 +1552,14 @@ impl Compiler {
                 ));
             }
             let snapshot = Arc::new(snapshot);
-            if let (Some(cached), Some(key), Some(before)) = (cached.as_mut(), key, consumed_before)
-            {
-                let extras = crate::eval_cache::capture(
-                    id,
-                    crate::eval_cache::Sides {
-                        panel_frames: &mut panel_frames,
-                        sheet_layouts: &mut sheet_layouts,
-                        member_paths: &mut member_paths,
-                        consumed: &mut consumed_versions,
-                    },
-                    &before,
-                );
+            consumed_versions.extend(consumed_by_feature.iter().copied());
+            if let (Some(cached), Some(key)) = (cached.as_mut(), key) {
+                let extras = crate::eval_cache::Extras {
+                    panel_frame: panel_frames.get(&id).copied(),
+                    sheet_layout: sheet_layouts.get(&id).cloned(),
+                    member_path: member_paths.get(&id).copied(),
+                    consumed: consumed_by_feature,
+                };
                 cached.store(key, &solid, &snapshot, extras);
             }
             topologies.insert(id, topology);

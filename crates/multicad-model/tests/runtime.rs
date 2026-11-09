@@ -6,7 +6,9 @@ use multicad_core::{
         PrimitiveParameters, PrimitiveRequest, length,
     },
 };
-use multicad_model::{Compiler, ModelReply, Runtime, ShapeSnapshot};
+use multicad_model::{
+    Compiler, EvaluationScope, GeometryBackend, ModelReply, Runtime, ShapeSnapshot,
+};
 use std::{
     sync::{
         Arc, Mutex, Weak,
@@ -28,6 +30,121 @@ fn reply<T: Send + 'static>(runtime: &mut Runtime<T>) -> ModelReply<T> {
         );
         thread::sleep(Duration::from_millis(2));
     }
+}
+
+#[test]
+fn rust_scoped_preview_rebuilds_the_edited_feature_and_apply_reuses_both() {
+    let actor = Actor::local(Channel::Ui);
+    let mut session = Session::new(Document::new("Incremental Rust edit").unwrap()).unwrap();
+    let box_parameters = |x, width| PrimitiveParameters::Box {
+        size: [length(width), length(5.), length(6.)],
+        frame: PrimitiveFrame {
+            origin: [length(x), length(0.), length(0.)],
+            ..Default::default()
+        },
+    };
+    let edited = PrimitiveRequest::new("Edited box", box_parameters(0., 4.));
+    let unchanged = PrimitiveRequest::new("Unchanged box", box_parameters(40., 4.));
+    for request in [&edited, &unchanged] {
+        let prepared =
+            model::prepare_primitive(&session, session.revision(), actor.clone(), request).unwrap();
+        session.commit(prepared.prepared).unwrap();
+    }
+    let mut canonical = Runtime::with_model_and_snapshot_backend(
+        Compiler::default(),
+        GeometryBackend::Rust,
+        |_, model, snapshot, _| {
+            assert!(
+                snapshot
+                    .shapes
+                    .keys()
+                    .all(|id| model.solid(*id).unwrap().rust_prism().is_some())
+            );
+            Ok(Arc::new(snapshot.clone()))
+        },
+    )
+    .unwrap();
+    let mut preview = canonical.fork().unwrap();
+    let base_revision = session.revision();
+    canonical
+        .request(session.document(), base_revision)
+        .unwrap();
+    let original = reply(&mut canonical).result.unwrap();
+    let initial_stats = canonical.last_compile_stats().unwrap();
+    assert_eq!(
+        initial_stats.evaluated,
+        [edited.feature, unchanged.feature].into()
+    );
+    assert!(initial_stats.reused.is_empty());
+    let edit = model::prepare_primitive_edit(
+        &session,
+        base_revision,
+        actor,
+        edited.feature,
+        &box_parameters(0., 8.),
+    )
+    .unwrap();
+    preview
+        .request_sources(
+            edit.prepared.document(),
+            base_revision,
+            0,
+            &[edited.feature],
+        )
+        .unwrap();
+    let checked = reply(&mut preview).result.unwrap();
+    let preview_stats = preview.last_compile_stats().unwrap();
+    assert_eq!(preview_stats.evaluated, [edited.feature].into());
+    assert!(preview_stats.reused.is_empty());
+    assert_eq!(
+        checked.scope,
+        EvaluationScope::Sources(vec![edited.feature])
+    );
+    assert_eq!(checked.shapes[&edited.feature].volume_mm3, 240.);
+    assert_eq!(original.shapes[&edited.feature].volume_mm3, 120.);
+    assert_ne!(checked.stamp.source_hash, original.stamp.source_hash);
+    assert_eq!(checked.stamp.revision, base_revision);
+    assert!(canonical.poll().is_none());
+
+    session.commit(edit.prepared).unwrap();
+    canonical
+        .request(session.document(), session.revision())
+        .unwrap();
+    let applied = reply(&mut canonical).result.unwrap();
+    let stats = canonical.last_compile_stats().unwrap();
+    assert_eq!(stats.reused, [edited.feature, unchanged.feature].into());
+    assert!(stats.evaluated.is_empty());
+    assert_eq!(applied.scope, EvaluationScope::Full);
+    assert_eq!(applied.stamp.source_hash, checked.stamp.source_hash);
+    assert_eq!(applied.stamp.revision, session.revision());
+    assert_eq!(
+        applied.shapes[&edited.feature].topology.revision,
+        session.revision()
+    );
+    assert_eq!(
+        applied.shapes[&unchanged.feature].topology.revision,
+        session.revision()
+    );
+    assert_eq!(applied.shapes[&edited.feature].volume_mm3, 240.);
+    assert_eq!(applied.shapes[&unchanged.feature].volume_mm3, 120.);
+    for (before, after) in [
+        (
+            &checked.shapes[&edited.feature],
+            &applied.shapes[&edited.feature],
+        ),
+        (
+            &original.shapes[&unchanged.feature],
+            &applied.shapes[&unchanged.feature],
+        ),
+    ] {
+        assert!(Arc::ptr_eq(&before.mesh, &after.mesh));
+        assert!(Arc::ptr_eq(&before.edges, &after.edges));
+        assert!(Arc::ptr_eq(&before.vertices, &after.vertices));
+    }
+    assert_eq!(
+        original.shapes[&unchanged.feature].topology.revision,
+        base_revision
+    );
 }
 
 #[test]

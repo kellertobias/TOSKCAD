@@ -9,7 +9,7 @@
 //! # Result key
 //!
 //! The key of a feature is a SHA-256 over:
-//! - a cache format tag, the geometry policy and the display mesh options;
+//! - a cache format tag, solid backend, geometry policy and display options;
 //! - the feature's own identity;
 //! - the set of every entity in the feature's *input closure*, each as its
 //!   identity plus a hash of its complete canonical source (name, links and
@@ -64,7 +64,7 @@
 //! returned model, bounded by [`crate::MAX_MODEL_FEATURES`]); older entries
 //! are evicted least-recently-used first until their estimated size is at
 //! most `retained_bytes` and the entry count at most `max_entries`.
-use crate::{Compiler, ShapeSnapshot, SheetLayout};
+use crate::{Compiler, GeometryBackend, ShapeSnapshot, SheetLayout};
 use multicad_core::{
     document::{Document, EntityData, EntityId},
     model,
@@ -143,7 +143,7 @@ struct Entry {
 /// What one compile did with the cache.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct CompileStats {
-    /// Features whose native provider ran (cache misses and uncacheable).
+    /// Features whose geometry provider ran (cache misses and uncacheable).
     pub evaluated: BTreeSet<EntityId>,
     /// Features reused from an earlier compile.
     pub reused: BTreeSet<EntityId>,
@@ -349,6 +349,13 @@ impl EvaluationCache {
     pub fn last_compile(&self) -> &CompileStats {
         &self.last
     }
+    pub(crate) fn reset_compile_stats(&mut self) {
+        self.last = CompileStats {
+            entries: self.entries.len(),
+            estimated_bytes: self.last.estimated_bytes,
+            ..CompileStats::default()
+        };
+    }
     pub fn len(&self) -> usize {
         self.entries.len()
     }
@@ -366,6 +373,7 @@ impl EvaluationCache {
         self.pending_symbol_proofs.clear();
         self.symbol_nodes.clear();
         self.pending_symbol_nodes.clear();
+        self.last = CompileStats::default();
     }
     /// Same-owner, exact native Intersect(None) receipts. These never replace
     /// current source, phase, engagement, leaf enumeration or budget checks.
@@ -508,6 +516,7 @@ impl<'a> Session<'a> {
     pub(crate) fn new(
         cache: &'a mut EvaluationCache,
         compiler: &Compiler,
+        backend: GeometryBackend,
         document: &'a Document,
         parameters: &'a EvaluatedParameters,
     ) -> Self {
@@ -515,7 +524,7 @@ impl<'a> Session<'a> {
         let mut salt = FORMAT.to_vec();
         salt.extend(
             format!(
-                "|{:?}|{:?}|{}|",
+                "|{backend:?}|{:?}|{:?}|{}|",
                 compiler.policy, compiler.mesh, compiler.omit_display
             )
             .bytes(),
@@ -535,7 +544,11 @@ impl<'a> Session<'a> {
             edges: BTreeMap::new(),
             volatile_sketches,
             stats: CompileStats::default(),
-            literal_symbols: literal_symbols(document),
+            literal_symbols: if backend == GeometryBackend::OpenCascade {
+                literal_symbols(document)
+            } else {
+                BTreeMap::new()
+            },
         }
     }
     /// Evaluation-dependency and mention edges of an entity.
@@ -831,23 +844,6 @@ pub(crate) struct Sides<'a> {
     pub sheet_layouts: &'a mut BTreeMap<EntityId, SheetLayout>,
     pub member_paths: &'a mut BTreeMap<EntityId, model::PathSegment>,
     pub consumed: &'a mut BTreeSet<(EntityId, EntityId)>,
-}
-/// Side results recorded by the provider of `feature` in this compile.
-pub(crate) fn capture(
-    feature: EntityId,
-    sides: Sides,
-    consumed_before: &BTreeSet<(EntityId, EntityId)>,
-) -> Extras {
-    let consumed_after = &*sides.consumed;
-    Extras {
-        panel_frame: sides.panel_frames.get(&feature).copied(),
-        sheet_layout: sides.sheet_layouts.get(&feature).cloned(),
-        member_path: sides.member_paths.get(&feature).copied(),
-        consumed: consumed_after
-            .difference(consumed_before)
-            .copied()
-            .collect(),
-    }
 }
 impl Extras {
     pub(crate) fn apply(self, feature: EntityId, sides: Sides) {
