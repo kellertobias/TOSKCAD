@@ -5,6 +5,7 @@ use multicad_core::{model::ResolvedPrimitive, sketch::Frame};
 const GUIDE: egui::Color32 = egui::Color32::from_rgb(90, 190, 240);
 const MIN_SIZE_MM: f64 = 0.001;
 const HIT_RADIUS: f32 = 9.;
+const DRAG_THRESHOLD: f32 = 4.;
 
 #[derive(Default)]
 pub(super) struct ResizeGizmo {
@@ -16,6 +17,7 @@ pub(super) struct ResizeGesture {
     pub input_owned: bool,
     pub released: bool,
     pub changed: Option<ResolvedPrimitive>,
+    pub clicked_corner: Option<usize>,
 }
 
 struct Drag {
@@ -23,6 +25,8 @@ struct Drag {
     camera: Camera,
     rect: egui::Rect,
     original: ResolvedPrimitive,
+    press: egui::Pos2,
+    moved: bool,
     motion: Motion,
 }
 
@@ -36,7 +40,6 @@ enum Motion {
         radial: Point,
     },
     Sphere {
-        press: egui::Pos2,
         radial: egui::Vec2,
         pixels_per_mm: f64,
     },
@@ -185,7 +188,6 @@ impl Drag {
                     (egui::vec2(1., 0.), pixels)
                 };
                 Motion::Sphere {
-                    press,
                     radial,
                     pixels_per_mm,
                 }
@@ -196,6 +198,8 @@ impl Drag {
             camera,
             rect,
             original: shape.clone(),
+            press,
+            moved: false,
             motion,
         })
     }
@@ -250,13 +254,12 @@ impl Drag {
             }
             (
                 Motion::Sphere {
-                    press,
                     radial,
                     pixels_per_mm,
                 },
                 ResolvedPrimitive::Sphere { radius_mm, frame },
             ) => {
-                let delta = f64::from((position - *press).dot(*radial)) / pixels_per_mm;
+                let delta = f64::from((position - self.press).dot(*radial)) / pixels_per_mm;
                 ResolvedPrimitive::Sphere {
                     radius_mm: (radius_mm + delta).max(radius_mm.min(MIN_SIZE_MM)),
                     frame: *frame,
@@ -323,30 +326,56 @@ impl ResizeGizmo {
         }) {
             self.drag = None;
         }
-        let (pointer, press, release, down) = ui.input(|input| {
-            let event = |pressed| {
-                input.events.iter().find_map(|event| match *event {
+        let (pointer, press, release, down, crossed) = ui.input(|input| {
+            let pointer = input.pointer.interact_pos();
+            let mut origin = self.drag.as_ref().map(|drag| drag.press);
+            let mut press = None;
+            let mut release = None;
+            let mut crossed = false;
+            let beyond =
+                |a: egui::Pos2, b: egui::Pos2| a.distance_sq(b) > DRAG_THRESHOLD * DRAG_THRESHOLD;
+            // Use ordered absolute positions. The final pointer may be back
+            // where it started even though this frame contains a real drag.
+            for event in &input.events {
+                match *event {
                     egui::Event::PointerButton {
                         pos,
                         button: egui::PointerButton::Primary,
-                        pressed: state,
+                        pressed: true,
                         ..
-                    } if state == pressed => Some(pos),
-                    _ => None,
-                })
-            };
-            let pointer = input.pointer.interact_pos();
-            let press = input
-                .pointer
-                .primary_pressed()
-                .then(|| event(true).or(input.pointer.press_origin()).or(pointer))
-                .flatten();
-            let release = input
-                .pointer
-                .primary_released()
-                .then(|| event(false).or(pointer))
-                .flatten();
-            (pointer, press, release, input.pointer.primary_down())
+                    } if origin.is_none() => {
+                        origin = Some(pos);
+                        press = origin;
+                    }
+                    egui::Event::PointerMoved(pos) => {
+                        crossed |= origin.is_some_and(|start| beyond(start, pos));
+                    }
+                    egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: false,
+                        ..
+                    } if origin.is_some() => {
+                        release = Some(pos);
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+            if origin.is_none() && input.pointer.primary_pressed() {
+                press = input.pointer.press_origin().or(pointer);
+                origin = press;
+            }
+            crossed |= origin
+                .zip(release.or(pointer))
+                .is_some_and(|(start, end)| beyond(start, end));
+            (
+                pointer,
+                press,
+                release,
+                input.pointer.primary_down(),
+                crossed,
+            )
         });
         let points = corners(shape);
         let hit_pointer = press.or(pointer);
@@ -375,10 +404,13 @@ impl ResizeGizmo {
             );
         }
 
+        if let Some(drag) = &mut self.drag {
+            drag.moved |= crossed;
+        }
         let changed = self
             .drag
             .as_ref()
-            .filter(|_| down || release.is_some())
+            .filter(|drag| drag.moved && (down || release.is_some()))
             .and_then(|drag| drag.update(release.or(pointer).or(press)?))
             .filter(|next| next != shape);
         let preview = changed.as_ref().unwrap_or(shape);
@@ -413,18 +445,24 @@ impl ResizeGizmo {
                 ui.id().with("primitive-resize-tooltip"),
                 egui::Sense::hover(),
             )
-            .on_hover_text("Drag to resize · Enter applies, Escape cancels");
+            .on_hover_text("Click to edit this corner · drag to resize");
         }
 
         let input_owned = self.drag.is_some();
-        let released = input_owned && !down;
-        if released {
-            self.drag = None;
-        }
+        let released = input_owned && (release.is_some() || !down);
+        let clicked_corner = if released {
+            self.drag
+                .take()
+                .filter(|drag| !drag.moved && release.is_some())
+                .map(|drag| drag.corner)
+        } else {
+            None
+        };
         ResizeGesture {
             input_owned,
             released,
             changed,
+            clicked_corner,
         }
     }
 }
@@ -636,7 +674,7 @@ mod tests {
     }
 
     #[test]
-    fn corner_owns_primary_press_and_release_but_not_hover() {
+    fn corner_clicks_without_resizing_and_retains_drag_classification_through_release() {
         let shape = ResolvedPrimitive::Box {
             size_mm: [20., 30., 40.],
             frame: FRAME,
@@ -646,7 +684,7 @@ mod tests {
         let end = start + egui::vec2(12., -6.);
         let mut gizmo = ResizeGizmo::default();
         let ctx = egui::Context::default();
-        let mut frame = |events, start_allowed| {
+        let mut frame = |shape: &ResolvedPrimitive, events, start_allowed| {
             let mut result = ResizeGesture::default();
             ctx.run_ui(
                 egui::RawInput {
@@ -656,25 +694,64 @@ mod tests {
                     ..Default::default()
                 },
                 |ui| {
-                    result = gizmo.show(ui, &shape, camera, rect(), start_allowed, false);
+                    result = gizmo.show(ui, shape, camera, rect(), start_allowed, false);
                 },
             )
             .drop_without_applying_deltas();
             result
         };
-        assert!(!frame(vec![egui::Event::PointerMoved(start)], true).input_owned);
         let button = |pos, pressed| egui::Event::PointerButton {
             pos,
             button: egui::PointerButton::Primary,
             pressed,
             modifiers: Default::default(),
         };
-        let press = frame(vec![button(start, true)], true);
+        let near = start + egui::vec2(4., 0.);
+        assert!(!frame(&shape, vec![egui::Event::PointerMoved(start)], true).input_owned);
+        let press = frame(&shape, vec![button(start, true)], true);
         assert!(press.input_owned && !press.released && press.changed.is_none());
-        let drag = frame(vec![egui::Event::PointerMoved(end)], false);
-        assert!(drag.input_owned && drag.changed.is_some());
-        let release = frame(vec![button(end, false)], false);
-        assert!(release.input_owned && release.released);
+        assert!(press.clicked_corner.is_none());
+        let motion = frame(&shape, vec![egui::Event::PointerMoved(near)], false);
+        assert!(motion.input_owned && motion.changed.is_none());
+        let click = frame(&shape, vec![button(near, false)], false);
+        assert!(click.input_owned && click.released && click.changed.is_none());
+        assert_eq!(click.clicked_corner, Some(7));
+
+        frame(&shape, vec![button(start, true)], true);
+        let drag = frame(&shape, vec![egui::Event::PointerMoved(end)], false);
+        assert!(drag.input_owned && drag.clicked_corner.is_none());
+        let staged = drag.changed.expect("actual drag updates the draft");
+        let release = frame(&staged, vec![button(start, false)], false);
+        assert!(release.input_owned && release.released && release.clicked_corner.is_none());
+        assert_eq!(release.changed, Some(shape.clone()));
+
+        let batch = frame(
+            &shape,
+            vec![
+                button(start, true),
+                egui::Event::PointerMoved(end),
+                button(end, false),
+            ],
+            true,
+        );
+        assert!(batch.input_owned && batch.released && batch.changed.is_some());
+        assert!(batch.clicked_corner.is_none());
+        let returned = frame(
+            &shape,
+            vec![
+                button(start, true),
+                egui::Event::PointerMoved(end),
+                egui::Event::PointerMoved(start),
+                button(start, false),
+            ],
+            true,
+        );
+        assert!(returned.input_owned && returned.released && returned.changed.is_none());
+        assert!(returned.clicked_corner.is_none());
+
+        let batched_click = frame(&shape, vec![button(start, true), button(near, false)], true);
+        assert_eq!(batched_click.clicked_corner, Some(7));
+        assert!(batched_click.changed.is_none());
         assert!(!gizmo.active());
     }
 }

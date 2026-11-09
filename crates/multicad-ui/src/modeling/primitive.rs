@@ -10,8 +10,17 @@ use multicad_core::{
     sketch::{Datum, Frame},
 };
 
+mod corner_inputs;
 mod gizmo;
 mod pose;
+
+#[derive(Default)]
+pub(super) struct PrimitiveViewportResult {
+    pub input_owned: bool,
+    pub changed: bool,
+    pub released: bool,
+    pub confirm: bool,
+}
 
 pub(super) struct PrimitivePanel {
     request: PrimitiveRequest,
@@ -27,6 +36,8 @@ pub(super) struct PrimitivePanel {
     editing: bool,
     resize: gizmo::ResizeGizmo,
     pose: pose::PoseGizmo,
+    corner_inputs: corner_inputs::CornerInputs,
+    last_shape: Option<ResolvedPrimitive>,
 }
 impl PrimitivePanel {
     pub fn new(request: PrimitiveRequest) -> Result<Self, String> {
@@ -81,6 +92,8 @@ impl PrimitivePanel {
             editing: false,
             resize: Default::default(),
             pose: Default::default(),
+            corner_inputs: Default::default(),
+            last_shape: None,
         })
     }
     pub fn existing(request: PrimitiveRequest) -> Result<Self, String> {
@@ -179,6 +192,9 @@ impl PrimitivePanel {
     pub(super) fn dragging(&self) -> bool {
         self.resize.active() || self.pose.active()
     }
+    pub(super) fn corner_input_active(&self) -> bool {
+        self.corner_inputs.active()
+    }
     fn resolved(&self, session: &multicad_core::commands::Session) -> Option<ResolvedPrimitive> {
         self.request(session.document(), true)
             .ok()?
@@ -201,56 +217,126 @@ impl PrimitivePanel {
         rect: egui::Rect,
         start_allowed: bool,
         guide: bool,
-    ) -> (bool, bool, bool) {
+    ) -> PrimitiveViewportResult {
         let document = session.document();
         let parameters = session.parameters();
-        let Some(shape) = self.resolved(session) else {
+        let current = self.resolved(session);
+        let valid = current.is_some();
+        if valid {
+            self.last_shape = current.clone();
+        } else {
             self.resize = Default::default();
             self.pose = Default::default();
-            return (false, false, false);
+        }
+        let Some(shape) = current.or_else(|| self.last_shape.clone()) else {
+            return PrimitiveViewportResult::default();
         };
+        let over_inputs = ui.input(|input| {
+            input
+                .pointer
+                .interact_pos()
+                .is_some_and(|position| self.corner_inputs.contains_pointer(position))
+        });
+        let start_allowed = start_allowed && !over_inputs;
         let resize = self.resize.show(
             ui,
             &shape,
             camera,
             rect,
-            start_allowed && !self.pose.active(),
-            guide,
+            valid && start_allowed && !self.pose.active(),
+            guide || !valid,
         );
-        let mut changed = resize
-            .changed
-            .is_some_and(|next| self.resize_draft(&shape, &next));
-        let view = super::PlacementViewport {
-            scene: None,
-            camera,
-            rect,
-            basis: Default::default(),
-            start_allowed: start_allowed && !resize.input_owned,
+        if let Some(corner) = resize.clicked_corner {
+            self.corner_inputs.open(corner);
+        }
+        let mut result = PrimitiveViewportResult {
+            input_owned: resize.input_owned || over_inputs,
+            changed: resize
+                .changed
+                .is_some_and(|next| self.resize_draft(&shape, &next)),
+            released: resize.released,
+            confirm: false,
         };
-        let mut owned = resize.input_owned;
-        let mut released = resize.released;
-        match self.frame(document).and_then(|frame| {
-            self.pose
-                .show(ui, &view, &frame, parameters)
-                .map(|gesture| (frame, gesture))
-        }) {
-            Ok((before, gesture)) => {
-                owned |= gesture.input_owned;
-                released |= gesture.released;
-                if let Some(frame) = gesture.changed {
-                    changed |= self.pose_draft(&before, &frame);
+        if valid {
+            let view = super::PlacementViewport {
+                scene: None,
+                camera,
+                rect,
+                basis: Default::default(),
+                start_allowed: start_allowed && !resize.input_owned,
+            };
+            match self.frame(document).and_then(|frame| {
+                self.pose
+                    .show(ui, &view, &frame, parameters)
+                    .map(|gesture| (frame, gesture))
+            }) {
+                Ok((before, gesture)) => {
+                    result.input_owned |= gesture.input_owned;
+                    result.released |= gesture.released;
+                    if let Some(frame) = gesture.changed {
+                        result.changed |= self.pose_draft(&before, &frame);
+                    }
+                }
+                Err(error) => {
+                    self.pose = Default::default();
+                    self.error = Some(error);
                 }
             }
-            Err(error) => {
-                self.pose = Default::default();
-                self.error = Some(error);
-            }
         }
-        if changed {
+        if self.corner_inputs.active() {
+            let anchor_shape = if result.changed {
+                self.resolved(session).unwrap_or(shape)
+            } else {
+                shape
+            };
+            let edit = self.show_corner_inputs(ui, session, camera, rect, &anchor_shape);
+            result.changed |= edit.changed;
+            result.confirm = edit.confirm && self.resolved(session).is_some();
+        }
+        if result.changed {
             self.stamp.changed();
             self.error = None;
         }
-        (owned, changed, released)
+        result
+    }
+
+    fn show_corner_inputs(
+        &mut self,
+        ui: &mut egui::Ui,
+        session: &multicad_core::commands::Session,
+        camera: crate::camera::Camera,
+        rect: egui::Rect,
+        shape: &ResolvedPrimitive,
+    ) -> corner_inputs::CornerEdit {
+        use corner_inputs::CornerField;
+        let mut fields = if self.kind == ModelingTool::Box {
+            self.size
+                .iter_mut()
+                .zip(["Width", "Depth", "Height"])
+                .map(|(value, label)| CornerField { label, value })
+                .collect::<Vec<_>>()
+        } else {
+            let mut fields = vec![CornerField {
+                label: "Radius",
+                value: &mut self.radius,
+            }];
+            if self.kind == ModelingTool::Cylinder {
+                fields.push(CornerField {
+                    label: "Height",
+                    value: &mut self.height,
+                });
+            }
+            fields
+        };
+        self.corner_inputs.show(
+            ui,
+            self.request.body,
+            rect,
+            camera,
+            gizmo::corners(shape),
+            session,
+            &mut fields,
+        )
     }
 
     fn pose_draft(&mut self, before: &PrimitiveFrame, frame: &PrimitiveFrame) -> bool {
@@ -317,7 +403,7 @@ impl PrimitivePanel {
     ) -> Option<ModelEvent> {
         controls::inspector_layout(ui);
         ui.strong(self.label());
-        ui.small(if self.editing {"Edit this existing producer and rebuild its downstream features. Body and feature names are retained."}else{"Drag a corner to resize. Use the origin arrows or rings to move or rotate. Enter applies and Escape cancels."});
+        ui.small(if self.editing {"Edit this existing producer and rebuild its downstream features. Click a corner to enter dimensions."}else{"Click a corner to enter dimensions or drag it to resize. Use the origin gizmo to move and rotate."});
         ui.label("Body name");
         let mut changed = ui
             .add_enabled(

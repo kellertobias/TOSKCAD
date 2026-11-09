@@ -349,6 +349,48 @@ fn saved_arbitrary_primitive_frame_and_formulas_survive_reopen_and_native_edit()
     }
 }
 
+fn top_view_camera() -> crate::camera::Camera {
+    crate::camera::Camera {
+        yaw: 0.,
+        pitch: std::f32::consts::FRAC_PI_2,
+        scale: 4.,
+        target: [50., 30., 10.],
+        perspective: false,
+    }
+}
+
+fn viewport_button(pos: egui::Pos2, pressed: bool) -> egui::Event {
+    egui::Event::PointerButton {
+        pos,
+        pressed,
+        button: egui::PointerButton::Primary,
+        modifiers: egui::Modifiers::NONE,
+    }
+}
+
+fn viewport_frame(
+    panel: &mut PrimitivePanel,
+    session: &multicad_core::commands::Session,
+    context: &egui::Context,
+    camera: crate::camera::Camera,
+    rect: egui::Rect,
+    events: Vec<egui::Event>,
+    start_allowed: bool,
+) -> PrimitiveViewportResult {
+    let mut result = None;
+    context
+        .run_ui(
+            egui::RawInput {
+                screen_rect: Some(rect),
+                events,
+                ..Default::default()
+            },
+            |ui| result = Some(panel.viewport(ui, session, camera, rect, start_allowed, true)),
+        )
+        .drop_without_applying_deltas();
+    result.unwrap()
+}
+
 #[test]
 fn viewport_corner_drag_updates_two_draft_dimensions_only_when_input_is_allowed() {
     let session =
@@ -358,54 +400,41 @@ fn viewport_corner_drag_updates_two_draft_dimensions_only_when_input_is_allowed(
     let mut panel = panel(ModelingTool::Box);
     let context = egui::Context::default();
     let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800., 600.));
-    let camera = crate::camera::Camera {
-        yaw: 0.,
-        pitch: std::f32::consts::FRAC_PI_2,
-        scale: 4.,
-        target: [50., 30., 10.],
-        perspective: false,
-    };
+    let camera = top_view_camera();
     let project = |point| {
         let [x, y, _] = camera.project(point, rect);
         egui::pos2(x, y)
     };
     let frame = |panel: &mut PrimitivePanel, events, start_allowed| {
-        let mut result = (false, false, false);
-        context
-            .run_ui(
-                egui::RawInput {
-                    screen_rect: Some(rect),
-                    events,
-                    ..Default::default()
-                },
-                |ui| {
-                    result = panel.viewport(ui, &session, camera, rect, start_allowed, true);
-                },
-            )
-            .drop_without_applying_deltas();
-        result
-    };
-    let button = |pos, pressed| egui::Event::PointerButton {
-        pos,
-        pressed,
-        button: egui::PointerButton::Primary,
-        modifiers: egui::Modifiers::NONE,
+        viewport_frame(
+            panel,
+            &session,
+            &context,
+            camera,
+            rect,
+            events,
+            start_allowed,
+        )
     };
     let corner = project([100., 60., 20.]);
     let target = project([125., 72., 20.]);
     let request = panel.request(session.document(), true).unwrap();
     for allowed in [false, true] {
         frame(&mut panel, vec![], allowed);
-        let (owned, _, _) = frame(
+        let press = frame(
             &mut panel,
-            vec![egui::Event::PointerMoved(corner), button(corner, true)],
+            vec![
+                egui::Event::PointerMoved(corner),
+                viewport_button(corner, true),
+            ],
             allowed,
         );
-        assert_eq!(owned, allowed);
-        let (_, changed, _) = frame(&mut panel, vec![egui::Event::PointerMoved(target)], allowed);
-        assert_eq!(changed, allowed);
-        let (_, _, released) = frame(&mut panel, vec![button(target, false)], allowed);
-        assert_eq!(released, allowed);
+        assert_eq!(press.input_owned, allowed);
+        let motion = frame(&mut panel, vec![egui::Event::PointerMoved(target)], allowed);
+        assert_eq!(motion.changed, allowed);
+        let release = frame(&mut panel, vec![viewport_button(target, false)], allowed);
+        assert_eq!(release.released, allowed);
+        assert!(!release.confirm);
         if !allowed {
             assert_eq!(panel.request(session.document(), true).unwrap(), request);
         }
@@ -424,4 +453,140 @@ fn viewport_corner_drag_updates_two_draft_dimensions_only_when_input_is_allowed(
     }
     assert_eq!(frame.origin, [0.; 3]);
     assert_eq!(session.document(), &before);
+}
+
+#[test]
+fn viewport_corner_editor_routes_keyboard_edits_to_the_shared_dimensions() {
+    let mut document = Document::new("Primitive corner values").unwrap();
+    let stock = Entity::new(
+        "stock",
+        EntityData::Parameter {
+            expression: "66".into(),
+            unit: "mm".into(),
+            exposed: true,
+            inputs: vec![],
+        },
+    );
+    document.insert(stock).unwrap();
+    let session = multicad_core::commands::Session::new(document.clone()).unwrap();
+    let mut panel = panel(ModelingTool::Box);
+    let height = panel.size[2].text.clone();
+    let context = egui::Context::default();
+    let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1024., 600.));
+    let camera = top_view_camera();
+    let [x, y, _] = camera.project([100., 60., 20.], rect);
+    let corner = egui::pos2(x, y);
+    let frame = |panel: &mut PrimitivePanel, events| {
+        viewport_frame(panel, &session, &context, camera, rect, events, true)
+    };
+    let focus = || context.memory(|memory| memory.focused());
+    let key = |panel: &mut PrimitivePanel, key, modifiers| {
+        let mut result = None;
+        for pressed in [true, false] {
+            let event = egui::Event::Key {
+                key,
+                physical_key: None,
+                pressed,
+                repeat: false,
+                modifiers,
+            };
+            let current = frame(
+                panel,
+                vec![
+                    egui::Event::ModifiersChanged(if pressed {
+                        modifiers
+                    } else {
+                        egui::Modifiers::NONE
+                    }),
+                    event,
+                ],
+            );
+            if pressed {
+                result = Some(current);
+            }
+        }
+        result.unwrap()
+    };
+
+    frame(&mut panel, vec![]);
+    for pressed in [true, false] {
+        frame(
+            &mut panel,
+            vec![
+                egui::Event::PointerMoved(corner),
+                viewport_button(corner, pressed),
+            ],
+        );
+    }
+    frame(&mut panel, vec![]);
+    let width_focus = focus().expect("The corner editor should focus Width on open");
+    frame(&mut panel, vec![egui::Event::Text("125 mm".into())]);
+    assert_eq!(panel.size[0].text, "125 mm");
+    key(&mut panel, egui::Key::Tab, egui::Modifiers::NONE);
+    let depth_focus = focus().expect("Tab should focus Depth");
+    assert_ne!(width_focus, depth_focus);
+    frame(&mut panel, vec![egui::Event::Text("=$missing +".into())]);
+    assert_eq!(panel.size[1].text, "=$missing +");
+    assert!(panel.request(&document, true).is_err());
+    assert!(!key(&mut panel, egui::Key::Enter, egui::Modifiers::NONE).confirm);
+    assert_eq!(focus(), Some(depth_focus));
+    assert_eq!(panel.size[0].text, "125 mm");
+    assert_eq!(panel.size[2].text, height);
+
+    key(&mut panel, egui::Key::Tab, egui::Modifiers::SHIFT);
+    assert_eq!(focus(), Some(width_focus));
+    key(&mut panel, egui::Key::Tab, egui::Modifiers::NONE);
+    assert_eq!(focus(), Some(depth_focus));
+    let formula = "=$stock + 2";
+    frame(&mut panel, vec![egui::Event::Text(formula.into())]);
+    assert_eq!(panel.size[1].text, formula);
+    let request = panel.request(&document, true).unwrap();
+    let PrimitiveParameters::Box { size, .. } = &request.parameters else {
+        panic!("The corner editor must preserve the shape type");
+    };
+    assert_eq!(size[1].expression().unwrap().text, formula);
+    let ResolvedPrimitive::Box { size_mm, .. } =
+        request.parameters.resolve(session.parameters()).unwrap()
+    else {
+        panic!("The draft must resolve as a box");
+    };
+    assert_eq!(size_mm, [125., 68., 20.]);
+    assert!(key(&mut panel, egui::Key::Enter, egui::Modifiers::NONE).confirm);
+    assert_eq!(session.document(), &document);
+
+    let inspector = egui::Context::default();
+    inspector.enable_accesskit();
+    let output = inspector.run_ui(
+        egui::RawInput {
+            screen_rect: Some(rect),
+            ..Default::default()
+        },
+        |ui| {
+            assert!(
+                panel
+                    .show(ui, &document, true, PreviewState::Idle)
+                    .is_none()
+            )
+        },
+    );
+    let nodes = &output
+        .platform_output
+        .accesskit_update
+        .as_ref()
+        .unwrap()
+        .nodes;
+    for text in ["125 mm", formula] {
+        assert!(nodes.iter().any(|(_, node)| node.value() == Some(text)));
+    }
+    output.drop_without_applying_deltas();
+
+    let prepared = model::prepare_primitive(
+        &session,
+        session.revision(),
+        multicad_core::commands::Actor::local(multicad_core::commands::Channel::Ui),
+        &request,
+    )
+    .unwrap();
+    let stored = model::read_primitive(prepared.prepared.document(), request.feature).unwrap();
+    assert_eq!(stored.parameters, request.parameters);
 }

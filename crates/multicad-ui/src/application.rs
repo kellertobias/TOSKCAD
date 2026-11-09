@@ -2476,6 +2476,10 @@ impl Application {
                 self.settings_open = false;
             } else if self.close_confirm {
                 self.cancel_close();
+            } else if self.current().sketch.primitive_corner_input_active()
+                && !egui::Popup::is_any_open(ctx)
+            {
+                self.current_mut().sketch.cancel_model();
             }
             self.focus_search = false;
             self.focus_command = false;

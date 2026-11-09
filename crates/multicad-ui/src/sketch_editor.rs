@@ -1260,6 +1260,9 @@ impl SketchEditor {
     pub(crate) fn cancel_model_stock(&mut self) -> bool {
         self.model.cancel_stock_editor()
     }
+    pub(crate) fn primitive_corner_input_active(&self) -> bool {
+        self.model.primitive_corner_input_active()
+    }
     pub fn cancel_model(&mut self) {
         self.acquisition = None;
         self.profile_faces.clear();

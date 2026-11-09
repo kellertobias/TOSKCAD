@@ -2500,6 +2500,10 @@ impl ModelToolController {
         }
     }
 
+    pub(crate) fn primitive_corner_input_active(&self) -> bool {
+        matches!(&self.form, Some(ModelForm::Primitive(panel)) if panel.corner_input_active())
+    }
+
     pub fn primitive_viewport(
         &mut self,
         ui: &mut egui::Ui,
@@ -2519,13 +2523,15 @@ impl ModelToolController {
         let Some(ModelForm::Primitive(panel)) = &mut self.form else {
             unreachable!()
         };
-        let (owned, changed, released) =
-            panel.viewport(ui, session, camera, rect, start_allowed, guide);
-        if changed {
+        let result = panel.viewport(ui, session, camera, rect, start_allowed, guide);
+        if result.changed {
             self.schedule_auto_preview(ui, self.stamp().expect("active primitive form"));
         }
-        self.tick_auto_preview(ui, session, resources, released);
-        owned
+        if result.confirm {
+            self.arm_confirmation(session, resources);
+        }
+        self.tick_auto_preview(ui, session, resources, result.released || result.confirm);
+        result.input_owned
     }
 
     pub fn show(
