@@ -131,37 +131,7 @@ fn render_native_gpu(material_palette: bool) {
         revision: 0,
         generation: 0,
     };
-    let size = wgpu::Extent3d {
-        width: 256,
-        height: 256,
-        depth_or_array_layers: 1,
-    };
-    let texture = |format, usage| {
-        device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("CAD physical render check"),
-            size,
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format,
-            usage,
-            view_formats: &[],
-        })
-    };
-    let color = texture(
-        wgpu::TextureFormat::Rgba8Unorm,
-        wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-    );
-    let depth = texture(
-        wgpu::TextureFormat::Depth32Float,
-        wgpu::TextureUsages::RENDER_ATTACHMENT,
-    );
-    let readback = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("CAD pixel readback"),
-        size: 256 * 256 * 4,
-        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-        mapped_at_creation: false,
-    });
+    let (color, depth, readback) = targets(&device);
     let mut first_buffer = None;
     // CAD-152: a second face of the same instance comes from a highlight-only
     // overlay record; listing a side face first proves the overlay path.
@@ -289,65 +259,7 @@ fn render_native_gpu(material_palette: bool) {
             );
         }
         first_buffer = Some(renderer.meshes[&id].vertices.clone());
-        let mut encoder = device.create_command_encoder(&Default::default());
-        let view = color.create_view(&Default::default());
-        let depth_view = depth.create_view(&Default::default());
-        {
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("CAD depth and projection test"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: &depth_view,
-                    depth_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(1.),
-                        store: wgpu::StoreOp::Store,
-                    }),
-                    stencil_ops: None,
-                }),
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
-            renderer.paint(&mut pass, style);
-        }
-        encoder.copy_texture_to_buffer(
-            color.as_image_copy(),
-            wgpu::TexelCopyBufferInfo {
-                buffer: &readback,
-                layout: wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(256 * 4),
-                    rows_per_image: Some(256),
-                },
-            },
-            size,
-        );
-        queue.submit([encoder.finish()]);
-        let (send, receive) = std::sync::mpsc::channel();
-        readback
-            .slice(..)
-            .map_async(wgpu::MapMode::Read, move |result| {
-                let _ = send.send(result);
-            });
-        device
-            .poll(wgpu::PollType::Wait {
-                submission_index: None,
-                timeout: Some(Duration::from_secs(10)),
-            })
-            .unwrap();
-        receive
-            .recv_timeout(Duration::from_secs(5))
-            .unwrap()
-            .unwrap();
-        let pixels = readback.slice(..).get_mapped_range().unwrap();
+        let pixels = capture(&device, &queue, &renderer, &color, &depth, &readback, style);
         let center = &pixels[(128 * 256 + 128) * 4..(128 * 256 + 128) * 4 + 4];
         let coverage = pixels
             .as_chunks::<4>()
@@ -413,8 +325,6 @@ fn render_native_gpu(material_palette: bool) {
         println!(
             "projection perspective={perspective}, reverse={reverse}, selection={selection:?}, oblique={oblique}, style={style:?}, center RGBA={center:?}"
         );
-        drop(pixels);
-        readback.unmap();
     }
     let image = |style| &images.iter().find(|(s, _)| *s == style).unwrap().1;
     let differences = |a: DisplayStyle, b: DisplayStyle| {
@@ -434,4 +344,228 @@ fn render_native_gpu(material_palette: bool) {
         differences(DisplayStyle::Filled, DisplayStyle::VisibleEdges) > 20,
         "Visible edges did not render"
     );
+}
+
+const IMAGE_SIZE: wgpu::Extent3d = wgpu::Extent3d {
+    width: 256,
+    height: 256,
+    depth_or_array_layers: 1,
+};
+
+fn targets(device: &wgpu::Device) -> (wgpu::Texture, wgpu::Texture, wgpu::Buffer) {
+    let texture = |format, usage| {
+        device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("CAD physical render check"),
+            size: IMAGE_SIZE,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage,
+            view_formats: &[],
+        })
+    };
+    let color = texture(
+        wgpu::TextureFormat::Rgba8Unorm,
+        wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+    );
+    let depth = texture(
+        wgpu::TextureFormat::Depth32Float,
+        wgpu::TextureUsages::RENDER_ATTACHMENT,
+    );
+    let readback = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("CAD pixel readback"),
+        size: 256 * 256 * 4,
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+    (color, depth, readback)
+}
+
+fn capture(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    renderer: &Renderer,
+    color: &wgpu::Texture,
+    depth: &wgpu::Texture,
+    readback: &wgpu::Buffer,
+    style: DisplayStyle,
+) -> Vec<u8> {
+    let mut encoder = device.create_command_encoder(&Default::default());
+    let view = color.create_view(&Default::default());
+    let depth_view = depth.create_view(&Default::default());
+    {
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("CAD depth and projection test"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: &depth_view,
+                depth_ops: Some(wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(1.),
+                    store: wgpu::StoreOp::Store,
+                }),
+                stencil_ops: None,
+            }),
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        renderer.paint(&mut pass, style);
+    }
+    encoder.copy_texture_to_buffer(
+        color.as_image_copy(),
+        wgpu::TexelCopyBufferInfo {
+            buffer: readback,
+            layout: wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(256 * 4),
+                rows_per_image: Some(256),
+            },
+        },
+        IMAGE_SIZE,
+    );
+    queue.submit([encoder.finish()]);
+    let (send, receive) = std::sync::mpsc::channel();
+    readback
+        .slice(..)
+        .map_async(wgpu::MapMode::Read, move |result| {
+            let _ = send.send(result);
+        });
+    device
+        .poll(wgpu::PollType::Wait {
+            submission_index: None,
+            timeout: Some(Duration::from_secs(10)),
+        })
+        .unwrap();
+    receive
+        .recv_timeout(Duration::from_secs(5))
+        .unwrap()
+        .unwrap();
+    let pixels = readback.slice(..).get_mapped_range().unwrap().to_vec();
+    readback.unmap();
+    pixels
+}
+
+#[test]
+#[ignore = "Requires an available GPU; run explicitly on physical hardware"]
+fn distant_visible_edges_hide_the_rear_plate_in_both_projections() {
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+    let adapter =
+        wait(instance.request_adapter(&Default::default())).expect("GPU adapter required");
+    let (device, queue) = wait(adapter.request_device(&Default::default())).unwrap();
+    let mut renderer = Renderer::new(&device, wgpu::TextureFormat::Rgba8Unorm);
+    let front = EntityId::new();
+    let rear = EntityId::new();
+    let plates = [(front, [180., 140., 4.]), (rear, [100., 60., 4.])];
+    let geometry: Vec<_> = plates
+        .into_iter()
+        .map(|(id, dimensions)| {
+            let solid = Solid::box_named(dimensions, id, Default::default()).unwrap();
+            let mesh = solid.mesh(MeshOptions::default()).unwrap();
+            Arc::new(
+                Geometry::new(
+                    id,
+                    mesh.vertices.as_chunks::<3>().0.to_vec(),
+                    mesh.indices,
+                    mesh.face_indices,
+                    solid.topology_snapshot(id, 0).unwrap().elements,
+                )
+                .unwrap()
+                .with_topology_display(
+                    solid
+                        .display_edges(0.1)
+                        .unwrap()
+                        .into_iter()
+                        .map(|edge| crate::viewport::DisplayEdge {
+                            index: edge.index,
+                            points_mm: edge.points_mm,
+                        })
+                        .collect(),
+                    vec![],
+                    0.1,
+                )
+                .unwrap(),
+            )
+        })
+        .collect();
+    let plate = |geometry, translation_mm| Instance {
+        id: EntityId::new(),
+        geometry,
+        transform: Transform::from_placement(Placement {
+            translation_mm,
+            ..Default::default()
+        })
+        .unwrap(),
+        color: [240, 40, 40, 255],
+    };
+    let front = plate(front, [0., 0., 8.]);
+    let rear = plate(rear, [40., 40., 0.]);
+    let stamp = SceneStamp {
+        document: EntityId::new(),
+        revision: 0,
+        generation: 0,
+    };
+    let combined =
+        Arc::new(Scene::new(stamp, geometry.clone(), vec![front.clone(), rear]).unwrap());
+    let front_only = Arc::new(Scene::new(stamp, geometry, vec![front]).unwrap());
+    let (color, depth, readback) = targets(&device);
+    for perspective in [false, true] {
+        for scale in [0.2, 0.8] {
+            let camera = Camera {
+                target: [90., 70., 12.],
+                yaw: 0.,
+                pitch: std::f32::consts::FRAC_PI_2,
+                scale,
+                perspective,
+            };
+            let mut render = |scene: &Arc<Scene>, style| {
+                renderer.prepare(
+                    &device,
+                    &queue,
+                    scene,
+                    View {
+                        camera,
+                        size: egui::vec2(256., 256.),
+                        selection: None,
+                        style,
+                        section: None,
+                    },
+                );
+                capture(&device, &queue, &renderer, &color, &depth, &readback, style)
+            };
+            let visible = render(&combined, DisplayStyle::VisibleEdges);
+            let control = render(&front_only, DisplayStyle::VisibleEdges);
+            let filled = render(&combined, DisplayStyle::Filled);
+            let all = render(&combined, DisplayStyle::AllEdges);
+            let difference = |a: &[u8], b: &[u8]| {
+                a.as_chunks::<4>()
+                    .0
+                    .iter()
+                    .zip(b.as_chunks::<4>().0)
+                    .filter(|(a, b)| a != b)
+                    .count()
+            };
+            assert_eq!(
+                difference(&visible, &control),
+                0,
+                "rear edges appeared in VisibleEdges, {camera:?}"
+            );
+            assert!(
+                difference(&filled, &visible) > 20,
+                "front edges disappeared, {camera:?}"
+            );
+            assert!(
+                difference(&all, &visible) > 20,
+                "rear plate must be detectable in AllEdges, {camera:?}"
+            );
+        }
+    }
 }

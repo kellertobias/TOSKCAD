@@ -21,15 +21,20 @@ struct Fragment {
     let x = dot(relative, camera.right.xyz) * camera.viewport.z * 2.0 / camera.viewport.x;
     let y = dot(relative, camera.up.xyz) * camera.viewport.z * 2.0 / camera.viewport.y;
     let z = camera.viewport.w - dot(relative, camera.forward.xyz);
+    // Give a coincident edge a small camera-space allowance. A fixed offset
+    // after projection can pull edges through distant surfaces in perspective.
+    let edge = v.face >= 0x10000000u && z > camera.clip.x;
+    let test_z = select(z, max(camera.clip.x, z - 0.05), edge);
+    let span = camera.clip.y - camera.clip.x;
     var w = 1.0;
-    var depth = (z - camera.clip.x) / (camera.clip.y - camera.clip.x);
+    var depth = (test_z - camera.clip.x) / span;
     if camera.clip.z > 0.5 {
         w = z / camera.viewport.w;
-        depth = camera.clip.y / (camera.clip.y - camera.clip.x) * (z - camera.clip.x) / camera.viewport.w;
+        depth *= camera.clip.y / camera.viewport.w;
+        if edge { depth *= z / test_z; }
     }
     var out: Fragment;
     out.position = vec4(x, y, depth, w);
-    if v.face >= 0x10000000u {out.position.z -= 0.000002 * w;}
     out.world = world;
     out.color = select(v.color, v.material, v.material.a >= 0.0);
     out.emphasis = 0u;

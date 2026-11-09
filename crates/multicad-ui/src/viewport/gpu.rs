@@ -322,8 +322,11 @@ impl Renderer {
         let (sp, cp) = camera.pitch.sin_cos();
         let forward = [cp * s, cp * c, sp];
         let distance = size.y.max(1.) / camera.scale * 2.;
+        let mut near = 0.1;
         let mut far = distance + 1.;
         if let Some([low, high]) = scene.world_bounds() {
+            let mut nearest = f32::INFINITY;
+            let mut farthest = f32::NEG_INFINITY;
             for corner in 0..8 {
                 let point: [f32; 3] = std::array::from_fn(|i| {
                     if corner & (1 << i) == 0 {
@@ -332,13 +335,20 @@ impl Renderer {
                         high[i] as f32
                     }
                 });
-                far = far.max(
-                    distance
-                        - (0..3)
-                            .map(|i| (point[i] - camera.target[i]) * forward[i])
-                            .sum::<f32>()
-                        + 1.,
-                );
+                let depth = distance
+                    - (0..3)
+                        .map(|i| (point[i] - camera.target[i]) * forward[i])
+                        .sum::<f32>();
+                nearest = nearest.min(depth);
+                farthest = farthest.max(depth);
+            }
+            // Fit the perspective depth range to the scene. A near plane at
+            // the eye otherwise gives distant surfaces almost the same depth.
+            if camera.perspective {
+                near = (nearest - 1.).max(near);
+                far = (farthest + 1.).max(near + 1.);
+            } else {
+                far = far.max(farthest + 1.);
             }
         }
         let mut bytes = Vec::with_capacity(112);
@@ -353,7 +363,7 @@ impl Renderer {
         floats(
             &mut bytes,
             [
-                0.1,
+                near,
                 far,
                 f32::from(camera.perspective),
                 f32::from(style == DisplayStyle::Wire),
