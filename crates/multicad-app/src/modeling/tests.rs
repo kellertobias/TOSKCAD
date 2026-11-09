@@ -1600,6 +1600,99 @@ fn wait_for_scene(backend: &mut dyn SceneBackend) -> SceneReply {
 }
 
 #[test]
+fn rust_model_worker_reuses_unchanged_viewport_geometry_across_revisions() {
+    use multicad_core::document::Mutation;
+
+    let (session, height, _, body, cutter, cut) = rust_panel::fixture(false, 28.);
+    let factory = Backend::factory(GeometryBackend::Rust).unwrap();
+    let mut backend = factory();
+    let first_stamp = SceneStamp {
+        document: session.document().id(),
+        revision: session.revision(),
+        generation: 1,
+    };
+    backend.request(session.document(), first_stamp).unwrap();
+    let first = wait_for_scene(&mut *backend).result.unwrap();
+    let mut parameter = session.document().get(height).unwrap().clone();
+    let EntityData::Parameter { expression, .. } = &mut parameter.data else {
+        unreachable!()
+    };
+    *expression = "4".into();
+    let document = session
+        .document()
+        .edited(&[Mutation::Replace(parameter)])
+        .unwrap();
+    let edited_stamp = SceneStamp {
+        revision: first_stamp.revision + 1,
+        generation: 2,
+        ..first_stamp
+    };
+    backend.request(&document, edited_stamp).unwrap();
+    let edited = wait_for_scene(&mut *backend).result.unwrap();
+    assert!(Arc::ptr_eq(
+        &first.geometries()[&cutter],
+        &edited.geometries()[&cutter]
+    ));
+    assert!(!Arc::ptr_eq(
+        &first.geometries()[&cut],
+        &edited.geometries()[&cut]
+    ));
+    assert_eq!(
+        edited.geometry_snapshot(cutter).unwrap().revision,
+        edited_stamp.revision
+    );
+    assert_eq!(
+        first.geometry_snapshot(cutter).unwrap().revision,
+        first_stamp.revision
+    );
+    assert_eq!(
+        edited.native_instance_bounds(body),
+        Some([[0., 0., 0.], [50., 20., 4.]])
+    );
+    let cap = edited
+        .pick_face(viewport::Ray::new([5., 5., 20.], [0., 0., -1.]).unwrap())
+        .unwrap();
+    assert_eq!(cap.point_mm, [5., 5., 4.]);
+}
+
+#[test]
+fn cached_viewport_geometry_respects_face_colors_and_document() {
+    let (session, request) = box_session();
+    let model = Compiler::default()
+        .compile(session.document(), session.revision())
+        .unwrap();
+    let shape = &model.snapshot().shapes[&request.feature];
+    let face = shape.mesh.face_indices[0];
+    let red = [255, 0, 0, 255];
+    let blue = [0, 0, 255, 255];
+    let mut cache = DisplayCache::default();
+    cache.prepare(session.document().id());
+    let before = cache
+        .geometry(request.feature, shape, [(face, red)].into())
+        .unwrap();
+    let after = cache
+        .geometry(request.feature, shape, [(face, blue)].into())
+        .unwrap();
+    let same = cache
+        .geometry(request.feature, shape, [(face, blue)].into())
+        .unwrap();
+    assert!(!Arc::ptr_eq(&before, &after));
+    assert!(Arc::ptr_eq(&after, &same));
+    assert_eq!(before.face_color(face), Some(red));
+    assert_eq!(after.face_color(face), Some(blue));
+
+    let next_document = EntityId::new();
+    cache.prepare(next_document);
+    let next = cache
+        .geometry(request.feature, shape, [(face, blue)].into())
+        .unwrap();
+    assert!(!Arc::ptr_eq(&next, &after));
+    drop(next);
+    cache.prepare(next_document);
+    assert!(cache.entries.is_empty());
+}
+
+#[test]
 fn rust_model_worker_publishes_pickable_panel_and_isolates_preview_failures() {
     let (session, _, extrusion, body, cutter, _) = rust_panel::fixture(true, 28.);
     let factory = Backend::factory(GeometryBackend::Rust).unwrap();

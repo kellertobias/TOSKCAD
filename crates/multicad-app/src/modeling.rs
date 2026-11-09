@@ -6,9 +6,15 @@ use multicad_core::{
     project_file::ProjectResources,
     references::{TopologyElement, TopologyKind},
 };
-use multicad_model::{Compiler, GeometryBackend, ModelError, ModelSnapshot, Runtime};
+use multicad_model::{
+    Compiler, GeometryBackend, ModelError, ModelSnapshot, Runtime, ShapeSnapshot,
+};
 use multicad_ui::viewport::{self, SceneBackend, SceneReply, SceneStamp};
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+    cell::RefCell,
+    collections::BTreeMap,
+    sync::{Arc, Weak},
+};
 #[cfg(test)]
 #[path = "modeling/architecture_authoring_tests.rs"]
 mod architecture_authoring_tests;
@@ -24,11 +30,17 @@ pub struct Backend {
 }
 impl Backend {
     fn runtime(backend: GeometryBackend) -> Result<Runtime<Arc<viewport::Scene>>, String> {
+        let display = RefCell::new(DisplayCache::default());
         Runtime::with_model_and_snapshot_backend(
             Compiler::default(),
             backend,
-            |document, model, snapshot, generation| {
-                let mut published = scene(document, snapshot, generation)?;
+            move |document, model, snapshot, generation| {
+                let mut published = scene_with_display_cache(
+                    document,
+                    snapshot,
+                    generation,
+                    &mut display.borrow_mut(),
+                )?;
                 if published.is_full_model() {
                     let plan = architecture_plan::build(document, model);
                     let published = Arc::get_mut(&mut published)
@@ -238,11 +250,113 @@ fn assembly_face_part(
     None
 }
 
+#[derive(Default)]
+struct DisplayCache {
+    document: Option<EntityId>,
+    entries: BTreeMap<EntityId, CachedDisplay>,
+}
+
+struct CachedDisplay {
+    mesh: Weak<multicad_kernel::Mesh>,
+    edges: Weak<Vec<multicad_kernel::DisplayEdge>>,
+    points: Weak<Vec<multicad_kernel::DisplayVertex>>,
+    colors: BTreeMap<u32, [u8; 4]>,
+    geometry: Weak<viewport::Geometry>,
+}
+
+impl DisplayCache {
+    fn prepare(&mut self, document: EntityId) {
+        if self.document == Some(document) {
+            self.entries.retain(|_, entry| {
+                entry.mesh.strong_count() > 0 && entry.geometry.strong_count() > 0
+            });
+        } else {
+            self.document = Some(document);
+            self.entries.clear();
+        }
+    }
+
+    fn geometry(
+        &mut self,
+        id: EntityId,
+        shape: &ShapeSnapshot,
+        face_colors: BTreeMap<u32, [u8; 4]>,
+    ) -> Result<Arc<viewport::Geometry>, String> {
+        // The compiler shares these buffers only when re-stamping the same
+        // producer result. Its topology elements stay unchanged.
+        let mesh = Arc::downgrade(&shape.mesh);
+        let edges = Arc::downgrade(&shape.edges);
+        let points = Arc::downgrade(&shape.vertices);
+        if let Some(entry) = self.entries.get(&id)
+            && entry.mesh.ptr_eq(&mesh)
+            && entry.edges.ptr_eq(&edges)
+            && entry.points.ptr_eq(&points)
+            && entry.colors == face_colors
+            && let Some(geometry) = entry.geometry.upgrade()
+        {
+            return Ok(geometry);
+        }
+        let geometry = Arc::new(
+            viewport::Geometry::new(
+                id,
+                shape.mesh.vertices.as_chunks::<3>().0.to_vec(),
+                shape.mesh.indices.clone(),
+                shape.mesh.face_indices.clone(),
+                shape.topology.elements.clone(),
+            )?
+            .with_face_colors(face_colors.clone())?
+            .with_topology_display(
+                shape
+                    .edges
+                    .iter()
+                    .map(|edge| viewport::DisplayEdge {
+                        index: edge.index,
+                        points_mm: edge.points_mm.clone(),
+                    })
+                    .collect(),
+                shape
+                    .vertices
+                    .iter()
+                    .map(|point| viewport::DisplayPoint {
+                        index: point.index,
+                        position_mm: point.position_mm,
+                    })
+                    .collect(),
+                0.1,
+            )?,
+        );
+        if self.entries.len() < multicad_model::MAX_MODEL_FEATURES || self.entries.contains_key(&id)
+        {
+            self.entries.insert(
+                id,
+                CachedDisplay {
+                    mesh,
+                    edges,
+                    points,
+                    colors: face_colors,
+                    geometry: Arc::downgrade(&geometry),
+                },
+            );
+        }
+        Ok(geometry)
+    }
+}
+
 fn scene(
     document: &Document,
     model: &ModelSnapshot,
     generation: u64,
 ) -> Result<Arc<viewport::Scene>, ModelError> {
+    scene_with_display_cache(document, model, generation, &mut DisplayCache::default())
+}
+
+fn scene_with_display_cache(
+    document: &Document,
+    model: &ModelSnapshot,
+    generation: u64,
+    display: &mut DisplayCache,
+) -> Result<Arc<viewport::Scene>, ModelError> {
+    display.prepare(document.id());
     let invalid = |message: String| ModelError {
         entity: None,
         message,
@@ -301,35 +415,7 @@ fn scene(
                     }
                 }
             }
-            let mesh = &shape.mesh;
-            let geometry = viewport::Geometry::new(
-                *id,
-                mesh.vertices.as_chunks::<3>().0.to_vec(),
-                mesh.indices.clone(),
-                mesh.face_indices.clone(),
-                shape.topology.elements.clone(),
-            )?
-            .with_face_colors(face_colors)?
-            .with_topology_display(
-                shape
-                    .edges
-                    .iter()
-                    .map(|edge| viewport::DisplayEdge {
-                        index: edge.index,
-                        points_mm: edge.points_mm.clone(),
-                    })
-                    .collect(),
-                shape
-                    .vertices
-                    .iter()
-                    .map(|point| viewport::DisplayPoint {
-                        index: point.index,
-                        position_mm: point.position_mm,
-                    })
-                    .collect(),
-                0.1,
-            )?;
-            Ok(Arc::new(geometry))
+            display.geometry(*id, shape, face_colors)
         })
         .collect::<Result<Vec<_>, String>>()
         .map_err(invalid)?;
