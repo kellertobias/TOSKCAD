@@ -146,9 +146,19 @@ fn directional_delta_is_defined(
     }
 }
 pub fn measure_model(model: &Model, query: &MeasurementQuery) -> MeasurementEvaluation {
+    measure_geometry(model, query, false)
+}
+
+/// Drawing page publication proves its source closure before resolving both
+/// endpoints. Standalone inspection still requires a complete model.
+pub(crate) fn measure_geometry(
+    model: &Model,
+    query: &MeasurementQuery,
+    drawing_page: bool,
+) -> MeasurementEvaluation {
     let stamp = model.snapshot().stamp;
     let result = (|| {
-        if model.snapshot().scope != EvaluationScope::Full {
+        if !drawing_page && model.snapshot().scope != EvaluationScope::Full {
             return Err(fail(
                 MeasurementFailureKind::Unsupported,
                 None,

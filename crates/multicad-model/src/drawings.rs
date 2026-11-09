@@ -56,8 +56,8 @@ pub trait DrawingSourceProvider {
     ) -> Result<Vec<DrawingBody<'a>>, ModelError>;
 }
 
-/// A page of direct Part projections can evaluate those Parts and their input
-/// closures. Other view types and model dimensions require the complete model.
+/// Exact projections of direct Parts and placed Instances can evaluate their
+/// input closures, including the sources of their persistent dimensions.
 pub fn drawing_preview_sources(document: &Document, page: EntityId) -> Option<Vec<EntityId>> {
     let page = books(document).find_map(|book| {
         read(document, book)
@@ -66,15 +66,30 @@ pub fn drawing_preview_sources(document: &Document, page: EntityId) -> Option<Ve
             .into_iter()
             .find(|p| p.id == page)
     })?;
-    if page
-        .annotations
-        .iter()
-        .any(|a| matches!(a.kind, AnnotationKind::Dimension { .. }))
-    {
-        return None;
-    }
-    let mut parts = BTreeSet::new();
+    let mut roots = BTreeSet::new();
     let mut heads = BTreeSet::new();
+    let members = multicad_core::model::assembly_member_instances(document).ok()?;
+    let definitions = multicad_core::model::assembly_definition_parts(document).ok()?;
+    let mut add_source = |id| {
+        match &document.get(id)?.data {
+            EntityData::Part { features, .. } if !definitions.contains(&id) => {
+                let head = features.iter().rev().find(|feature| {
+                    matches!(
+                        document.get(**feature).map(|e| &e.data),
+                        Some(EntityData::Feature {
+                            suppressed: false,
+                            ..
+                        })
+                    )
+                })?;
+                heads.insert(*head);
+            }
+            EntityData::Instance { .. } if !members.contains(&id) => {}
+            _ => return None,
+        }
+        roots.insert(id);
+        Some(())
+    };
     for view in &page.views {
         let ViewSource::Model { entities } = &view.source else {
             return None;
@@ -83,20 +98,20 @@ pub fn drawing_preview_sources(document: &Document, page: EntityId) -> Option<Ve
             return None;
         }
         for &id in entities {
-            let EntityData::Part { features, .. } = &document.get(id)?.data else {
-                return None;
-            };
-            let head = features.iter().rev().find(|feature| {
-                matches!(
-                    document.get(**feature).map(|e| &e.data),
-                    Some(EntityData::Feature {
-                        suppressed: false,
-                        ..
-                    })
-                )
-            })?;
-            parts.insert(id);
-            heads.insert(*head);
+            add_source(id)?;
+        }
+    }
+    for annotation in &page.annotations {
+        if let AnnotationKind::Dimension { measure, .. } = &annotation.kind {
+            match measure.as_ref() {
+                DimensionMeasure::Linear { a, b, .. } | DimensionMeasure::Angle { a, b } => {
+                    add_source(a.source)?;
+                    add_source(b.source)?;
+                }
+                DimensionMeasure::Radius { edge } | DimensionMeasure::Diameter { edge } => {
+                    add_source(edge.source)?;
+                }
+            }
         }
     }
     // Boolean and Split can consume the selected version from outside its
@@ -108,7 +123,7 @@ pub fn drawing_preview_sources(document: &Document, page: EntityId) -> Option<Ve
     }) {
         return None;
     }
-    crate::validate_source_roots(document, &parts.into_iter().collect::<Vec<_>>()).ok()
+    crate::validate_source_roots(document, &roots.into_iter().collect::<Vec<_>>()).ok()
 }
 pub struct DrawingProviders {
     providers: BTreeMap<DrawingSourceKind, Box<dyn DrawingSourceProvider>>,
@@ -804,7 +819,10 @@ impl Model {
             {
                 for annotation in &page.annotations {
                     if matches!(annotation.kind, AnnotationKind::Dimension { .. }) {
-                        annotations.insert(annotation.id, self.dimension(page, annotation));
+                        annotations.insert(
+                            annotation.id,
+                            self.evaluate_dimension(page, annotation, preview),
+                        );
                     }
                 }
             }
@@ -823,6 +841,14 @@ impl Model {
     /// Evaluate a model dimension from its current persistent references.
     /// Unresolvable references detach it; the previous value is never kept.
     pub fn dimension(&self, page: &Page, annotation: &Annotation) -> AnnotationEvaluation {
+        self.evaluate_dimension(page, annotation, false)
+    }
+    fn evaluate_dimension(
+        &self,
+        page: &Page,
+        annotation: &Annotation,
+        preview: bool,
+    ) -> AnnotationEvaluation {
         let AnnotationKind::Dimension {
             view,
             measure,
@@ -850,7 +876,7 @@ impl Model {
                     a: a.clone(),
                     b: b.clone(),
                 };
-                match crate::inspection::measure_model(self, &query).result {
+                match crate::inspection::measure_geometry(self, &query, preview).result {
                     Ok(values) => {
                         let w = values.witnesses[0];
                         linear_dimension(

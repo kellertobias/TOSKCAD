@@ -284,12 +284,12 @@ mod tests {
 
     #[test]
     fn cold_apartment_plan_preview_keeps_its_native_dimensions() {
-        let session = open_example("apartment.tcd");
+        let mut session = open_example("apartment.tcd");
         let document = session.document();
         let book = drawings::books(document).next().unwrap();
         let drawing = drawings::read(document, book).unwrap();
-        let page = &drawing.pages[0];
-        assert!(multicad_model::drawing_preview_sources(document, page.id).is_none());
+        let mut page = drawing.pages[0].clone();
+        assert!(multicad_model::drawing_preview_sources(document, page.id).is_some());
         let mut backend = Backend::with_cache(None);
         let start = Instant::now();
         let evaluation = preview(&mut backend, &session, page.id);
@@ -298,13 +298,166 @@ mod tests {
             page.number,
             start.elapsed()
         );
-        assert!(!evaluation.annotations.is_empty());
+        assert_eq!(evaluation.annotations.len(), 8);
+        assert!(
+            evaluation.annotations.values().all(|annotation| matches!(
+                annotation,
+                drawings::AnnotationEvaluation::Ready { .. }
+            ))
+        );
         assert_eq!(
             evaluation
                 .checked_page(document, session.revision(), book, page.id)
                 .unwrap()
                 .len(),
             page.views.len()
+        );
+        let compiler = Compiler {
+            omit_display: true,
+            ..Default::default()
+        };
+        let providers = DrawingProviders::default();
+        let revision = session.revision();
+        let model = compiler.compile(document, revision).unwrap();
+        let started = Instant::now();
+        for view in &page.views {
+            assert_eq!(
+                model
+                    .drawing_view(document, revision, view, &providers)
+                    .unwrap(),
+                evaluation.views[&view.id]
+            );
+        }
+        let projection = started.elapsed();
+        let started = Instant::now();
+        for annotation in &page.annotations {
+            if let Some(actual) = evaluation.annotations.get(&annotation.id) {
+                assert_eq!(&model.dimension(&page, annotation), actual);
+            }
+        }
+        eprintln!(
+            "Full model compile: {:.0}ms, projection: {projection:.3?}, dimensions: {:.3?}",
+            model.timings().total_ms,
+            started.elapsed()
+        );
+
+        let (detached, reference) = page
+            .annotations
+            .iter_mut()
+            .find_map(|annotation| {
+                let AnnotationKind::Dimension { measure, .. } = &mut annotation.kind else {
+                    return None;
+                };
+                let drawings::DimensionMeasure::Linear { a, .. } = measure.as_mut() else {
+                    return None;
+                };
+                Some((annotation.id, a))
+            })
+            .unwrap();
+        reference.intent.origins = [multicad_core::references::Origin {
+            source: reference.source,
+            role: "removed drawing face".into(),
+        }]
+        .into();
+        reference.intent.attachment = None;
+        let prepared = drawings::prepare(
+            &session,
+            revision,
+            Actor::local(Channel::Ui),
+            book,
+            drawings::PageAction::Replace(page.clone()),
+        )
+        .unwrap();
+        session.commit(prepared).unwrap();
+        let document = session.document();
+        let revision = session.revision();
+        assert!(multicad_model::drawing_preview_sources(document, page.id).is_some());
+        let actual = preview(&mut backend, &session, page.id);
+        let full = compiler
+            .compile(document, revision)
+            .unwrap()
+            .drawing_page(document, revision, &providers, page.id)
+            .unwrap();
+        assert!(matches!(
+            full.annotations[&detached],
+            drawings::AnnotationEvaluation::Detached { .. }
+        ));
+        assert_eq!(actual.annotations, full.annotations);
+    }
+
+    #[test]
+    fn cold_expanded_apartment_plan_preview() {
+        use multicad_core::document::EntityData;
+        let mut session = open_example("apartment.tcd");
+        let book = drawings::books(session.document()).next().unwrap();
+        let mut page = drawings::read(session.document(), book).unwrap().pages[0].clone();
+        let drawings::ViewSource::Model { entities } = &mut page.views[0].source else {
+            unreachable!("the apartment plan uses model sources");
+        };
+        let original_count = entities.len();
+        let walls: Vec<_> = entities
+            .iter()
+            .filter_map(|&body| {
+                let EntityData::Part { features, .. } = &session.document().get(body)?.data else {
+                    return None;
+                };
+                let producer = *features.last()?;
+                matches!(&session.document().get(producer)?.data, EntityData::Feature { definition, .. }
+                    if definition.type_id == model::WALL_TYPE)
+                    .then_some(model::BodyInput { body, producer })
+            })
+            .collect();
+        assert!(walls.len() >= 4, "apartment exterior walls are missing");
+        // Duplicate a wing 12 m to the east. Both wings project on the same
+        // sheet. The original eight dimensions and its furniture stay intact.
+        let copies: Vec<_> = walls
+            .iter()
+            .cloned()
+            .map(|source| {
+                model::InstanceCopyRequest::new(
+                    model::InstanceCopySource::Part { source },
+                    model::NumericTransform {
+                        translation: [length(12_000.), length(0.), length(0.)],
+                        ..Default::default()
+                    },
+                )
+            })
+            .collect();
+        let actor = Actor::local(Channel::Ui);
+        let prepared =
+            model::prepare_instance_copies(&session, session.revision(), actor.clone(), &copies)
+                .unwrap();
+        entities.extend(&prepared.instances);
+        session.commit(prepared.prepared).unwrap();
+        page.views[0].scale.denominator = 100;
+        page.views[0].frame.origin_mm[0] += 6_000.;
+        let prepared = drawings::prepare(
+            &session,
+            session.revision(),
+            actor,
+            book,
+            drawings::PageAction::Replace(page.clone()),
+        )
+        .unwrap();
+        session.commit(prepared).unwrap();
+
+        let mut backend = Backend::with_cache(None);
+        let started = Instant::now();
+        let result = preview(&mut backend, &session, page.id);
+        let elapsed = started.elapsed();
+        assert!(
+            matches!(&result.views[&page.views[0].id], drawings::ViewEvaluation::Ready { vectors, .. } if !vectors.is_empty())
+        );
+        assert_eq!(result.annotations.len(), 8);
+        assert!(
+            result.annotations.values().all(|annotation| matches!(
+                annotation,
+                drawings::AnnotationEvaluation::Ready { .. }
+            ))
+        );
+        eprintln!(
+            "Expanded AP-101 cold backend preview: {elapsed:.3?}, {original_count} original sources plus {} placed walls",
+            walls.len()
         );
     }
 
