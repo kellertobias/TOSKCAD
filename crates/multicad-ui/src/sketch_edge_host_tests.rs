@@ -117,7 +117,7 @@ fn shell_tool_first_face_selection_shift_toggle_and_native_apply_are_source_boun
         )
         .unwrap();
     assert!(h.editor.awaiting_model_targets());
-    h.click_label("Select Body Stock");
+    h.click_label("Select Part Stock");
     assert!(h.editor.model.advanced_active());
     assert_eq!(h.editor.model.advanced_input().unwrap().body, h.body);
     assert!(h.editor.model.advanced_picking());

@@ -83,9 +83,15 @@ pub enum Icon {
     Section,
 }
 pub fn button(ui: &mut egui::Ui, icon: Icon, label: &str) -> egui::Response {
-    icon_button(ui, icon, label, 30.0)
+    icon_button(ui, icon, label, 30.0, false)
 }
-fn icon_button(ui: &mut egui::Ui, icon: Icon, label: &str, size: f32) -> egui::Response {
+fn icon_button(
+    ui: &mut egui::Ui,
+    icon: Icon,
+    label: &str,
+    size: f32,
+    library_link: bool,
+) -> egui::Response {
     let (rect, response) = ui.allocate_exact_size(Vec2::splat(size), egui::Sense::click());
     if response.hovered() {
         ui.painter()
@@ -103,13 +109,23 @@ fn icon_button(ui: &mut egui::Ui, icon: Icon, label: &str, size: f32) -> egui::R
         color,
         if size <= 24.0 { 16.0 } else { 24.0 },
     );
+    if library_link {
+        let badge = rect.right_bottom() - Vec2::splat(2.);
+        ui.painter().circle_filled(badge, 4.5, crate::theme::PANEL);
+        let badge_color = if ui.is_enabled() {
+            Color32::LIGHT_BLUE
+        } else {
+            color
+        };
+        paint_sized(ui, Icon::Link, badge, badge_color, 9.);
+    }
     response.widget_info(|| {
         egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), label)
     });
     response.on_hover_text(label)
 }
 pub fn compact_button(ui: &mut egui::Ui, icon: Icon, label: &str) -> egui::Response {
-    icon_button(ui, icon, label, 24.0)
+    icon_button(ui, icon, label, 24.0, false)
 }
 pub fn labeled_button(ui: &mut egui::Ui, icon: Icon, label: &str) -> egui::Response {
     labeled_button_sized(ui, icon, label, Vec2::ZERO)
@@ -1116,7 +1132,16 @@ pub(crate) fn paint_sized(ui: &egui::Ui, icon: Icon, center: Pos2, color: Color3
 }
 
 pub fn mini_button(ui: &mut egui::Ui, icon: Icon, label: &str) -> egui::Response {
-    icon_button(ui, icon, label, 14.)
+    icon_button(ui, icon, label, 14., false)
+}
+
+pub(crate) fn model_tree_icon(
+    ui: &mut egui::Ui,
+    icon: Icon,
+    label: &str,
+    library_link: bool,
+) -> egui::Response {
+    icon_button(ui, icon, label, 14., library_link)
 }
 #[cfg(test)]
 mod ribbon_tests {
