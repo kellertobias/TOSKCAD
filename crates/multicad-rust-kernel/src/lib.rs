@@ -2,6 +2,7 @@
 
 pub mod cylinder;
 pub mod display;
+pub mod polygon;
 pub mod prism;
 
 use std::cmp::Ordering;

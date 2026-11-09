@@ -3,6 +3,7 @@ use multicad_rust_kernel::{
     cylinder::AxialCylinder,
     display::{self, DisplayMesh, MeshError, Tessellation},
     parse_length_mm,
+    polygon::PolygonPrism,
     prism::Prism,
 };
 use std::{collections::BTreeMap, f64::consts::PI};
@@ -60,6 +61,59 @@ fn rectangular_prism_mesh_keeps_all_six_faces_and_closed_bore_wall() {
     let mesh = display::rust_prism(&cut, options()).unwrap();
     assert!(mesh.face_indices.contains(&6));
     assert!((check_closed(&mesh) - (480. - 8. * PI)).abs() < 0.05);
+}
+
+#[test]
+fn concave_polygon_mesh_winds_caps_and_preserves_authored_side_ordinals() {
+    let outer = [[0, 0], [10, 0], [10, 4], [4, 4], [4, 10], [0, 10]];
+    let hole = [[1, 1], [1, 2], [2, 2], [2, 1]];
+    let prism = PolygonPrism::new(
+        vec![
+            outer.map(|p| p.map(n)).to_vec(),
+            hole.map(|p| p.map(n)).to_vec(),
+        ],
+        n(3),
+    )
+    .unwrap();
+    let mesh = display::polygon_prism(&prism, options()).unwrap();
+    assert!((check_closed(&mesh) - 189.).abs() < 1e-10);
+    let points = mesh.vertices.as_chunks::<3>().0;
+    for (ordinal, [a, b]) in outer
+        .iter()
+        .zip(outer.iter().cycle().skip(1))
+        .chain(hole.iter().zip(hole.iter().cycle().skip(1)))
+        .map(|(a, b)| [a, b])
+        .enumerate()
+    {
+        let ends = [a.map(|n| n as f64), b.map(|n| n as f64)];
+        let mut wall_count = 0;
+        for (triangle, &face) in mesh
+            .indices
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .zip(&mesh.face_indices)
+        {
+            if face == 2 + ordinal as u32 {
+                wall_count += 1;
+                for &vertex in triangle {
+                    let [x, y, _] = points[vertex as usize];
+                    assert!(ends.contains(&[x, y]));
+                }
+            }
+        }
+        assert_eq!(wall_count, 2);
+    }
+    assert_eq!(
+        display::polygon_prism(
+            &prism,
+            Tessellation {
+                triangle_limit: 4,
+                ..options()
+            }
+        ),
+        Err(MeshError::BudgetExceeded)
+    );
 }
 
 #[test]

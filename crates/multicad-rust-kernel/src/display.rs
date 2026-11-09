@@ -1,5 +1,5 @@
 //! Detached tessellation of analytic axial solids. Only display consumers use it.
-use crate::{Rational, cylinder::AxialCylinder, prism::Prism};
+use crate::{Rational, cylinder::AxialCylinder, polygon::PolygonPrism, prism::Prism};
 use spade::{ConstrainedDelaunayTriangulation, Point2, Triangulation, handles::FixedVertexHandle};
 use std::f64::consts::{FRAC_PI_2, PI, TAU};
 
@@ -222,6 +222,28 @@ pub fn axial_cylinder(
         options,
     )?;
     footprint.tessellate(cylinder.bottom().as_f64(), cylinder.top().as_f64())
+}
+
+/// Tessellate the caps and straight walls in analytic face order. Side faces
+/// follow the exterior ring first and each interior ring in turn.
+pub fn polygon_prism(
+    prism: &PolygonPrism,
+    options: Tessellation,
+) -> Result<DisplayMesh, MeshError> {
+    options.check()?;
+    let mut footprint = Footprint::default();
+    let mut first_side = 2;
+    for (index, ring) in prism.rings().iter().enumerate() {
+        footprint.holes = index;
+        footprint.ring(
+            ring.iter()
+                .enumerate()
+                .map(|(i, &point)| (point.map(Rational::as_f64), first_side + i as u32)),
+            options,
+        )?;
+        first_side += ring.len() as u32;
+    }
+    footprint.tessellate(0., prism.height().as_f64())
 }
 
 pub fn rust_prism(prism: &Prism, mut options: Tessellation) -> Result<DisplayMesh, MeshError> {
