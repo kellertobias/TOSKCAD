@@ -1,6 +1,6 @@
-//! Exact predicates and analytic surfaces for the rounded panel study.
+//! Exact predicates and analytic surfaces for rectangular and rounded prisms.
 //!
-//! The supported profile is three axis-aligned segments and a right semicircle.
+//! The right boundary can be a segment or a semicircle.
 //! Extrusion is along +Z from zero; all inner loops are disjoint through-circles.
 
 use crate::{Circle, Error, Rational};
@@ -48,6 +48,7 @@ pub enum FaceRole {
     Left,
     Front,
     Back,
+    Right,
     RoundedEnd,
     Bore,
 }
@@ -87,11 +88,11 @@ pub enum BoundaryCurve {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct RoundedPrism {
+pub struct Prism {
     feature: u128,
     straight_length: Rational,
     maximum_x: Rational,
-    end: Circle,
+    end: Option<Circle>,
     width: Rational,
     height: Rational,
     area: Measure,
@@ -107,7 +108,29 @@ fn distance_squared([x, y]: Point, [cx, cy]: Point) -> Result<Rational, Error> {
     square(x.checked_sub(cx)?)?.checked_add(square(y.checked_sub(cy)?)?)
 }
 
-impl RoundedPrism {
+impl Prism {
+    pub fn rectangular(feature: u128, size: [Rational; 3]) -> Result<Self, PrismError> {
+        let [length, width, height] = size;
+        if size.into_iter().any(|extent| extent <= ZERO) {
+            return Err(PrismError::NonPositiveExtent);
+        }
+        let area = Measure {
+            constant: length.checked_mul(width)?,
+            pi_factor: ZERO,
+        };
+        Ok(Self {
+            feature,
+            straight_length: length,
+            maximum_x: length,
+            end: None,
+            width,
+            height,
+            area,
+            volume: Self::extruded_measure(area, height)?,
+            holes: Vec::new(),
+        })
+    }
+
     /// The semicircle center is `(straight_length, radius)`. The total
     /// profile width is twice the radius and the total length includes the end.
     pub fn extrude(
@@ -131,7 +154,7 @@ impl RoundedPrism {
             feature,
             straight_length,
             maximum_x,
-            end: Circle::new([straight_length, radius], radius)?,
+            end: Some(Circle::new([straight_length, radius], radius)?),
             width,
             height,
             area,
@@ -140,9 +163,13 @@ impl RoundedPrism {
         })
     }
 
-    /// Straight profile length, semicircle radius, and extrusion height.
+    /// Straight profile length, overall profile width, and extrusion height.
     pub fn dimensions(&self) -> [Rational; 3] {
-        [self.straight_length, self.end.radius, self.height]
+        [self.straight_length, self.width, self.height]
+    }
+
+    pub fn rounded_end(&self) -> Option<Circle> {
+        self.end
     }
 
     pub fn feature(&self) -> u128 {
@@ -161,7 +188,10 @@ impl RoundedPrism {
         let d = [ZERO, self.width];
         [
             BoundaryCurve::Segment { from: a, to: b },
-            BoundaryCurve::RightSemicircle(self.end),
+            match self.end {
+                Some(end) => BoundaryCurve::RightSemicircle(end),
+                None => BoundaryCurve::Segment { from: b, to: c },
+            },
             BoundaryCurve::Segment { from: c, to: d },
             BoundaryCurve::Segment { from: d, to: a },
         ]
@@ -182,7 +212,11 @@ impl RoundedPrism {
             Left => Some(Face::PlaneX { x: ZERO }),
             Front => Some(Face::PlaneY { y: ZERO }),
             Back => Some(Face::PlaneY { y: self.width }),
-            RoundedEnd => Some(Face::Semicylinder { circle: self.end }),
+            Right if self.end.is_none() => Some(Face::PlaneX {
+                x: self.straight_length,
+            }),
+            Right => None,
+            RoundedEnd => self.end.map(|circle| Face::Semicylinder { circle }),
             Bore => self.holes.iter().find_map(|&(feature, circle)| {
                 (feature == key.feature).then_some(Face::Bore { circle })
             }),
@@ -243,14 +277,19 @@ impl RoundedPrism {
         // The three axis-aligned supporting lines bound the whole profile.
         // For a center to the left of the join, the closest points on the
         // semicircle are its endpoints and cannot reduce the clearance.
-        let clearance = x.min(y).min(self.width.checked_sub(y)?);
+        let mut clearance = x.min(y).min(self.width.checked_sub(y)?);
+        if self.end.is_none() {
+            clearance = clearance.min(self.maximum_x.checked_sub(x)?);
+        }
         if clearance < radius {
             return Ok(Location::Exterior);
         }
         let mut boundary = clearance == radius;
-        if x >= self.straight_length {
-            let limit = self.end.radius.checked_sub(radius)?;
-            match distance_squared([x, y], self.end.center)?.cmp(&square(limit)?) {
+        if let Some(end) = self.end
+            && x >= self.straight_length
+        {
+            let limit = end.radius.checked_sub(radius)?;
+            match distance_squared([x, y], end.center)?.cmp(&square(limit)?) {
                 Ordering::Greater => return Ok(Location::Exterior),
                 Ordering::Equal => boundary = true,
                 Ordering::Less => {}

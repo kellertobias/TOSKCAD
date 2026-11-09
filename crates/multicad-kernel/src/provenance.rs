@@ -901,8 +901,9 @@ impl Solid {
             return crate::rust_prism_topology::cylinder_snapshot(cylinder, frame, owner, revision)
                 .map_err(failure);
         }
-        if let Some(prism) = self.rounded_prism() {
-            return crate::rust_prism_topology::snapshot(prism, owner, revision).map_err(failure);
+        if let Some((prism, frame)) = self.rust_prism_frame() {
+            return crate::rust_prism_topology::snapshot(prism, frame, owner, revision)
+                .map_err(failure);
         }
         let mut elements: Vec<TopologyElement> = if self.provenance.is_empty() {
             ffi::topology(self.occt()?)

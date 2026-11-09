@@ -6,7 +6,7 @@ use multicad_kernel::{
     BooleanOperation, GeometryErrorKind, GeometryPolicy, PlaneFrame, Profile, ProfileEdge, Solid,
     rust_kernel::{
         Circle, Rational, parse_length_mm,
-        prism::{Location, RoundedPrism},
+        prism::{Location, Prism},
     },
 };
 
@@ -18,12 +18,12 @@ fn circle(x: i64, y: i64, radius: Rational) -> Circle {
     Circle::new([integer(x), integer(y)], radius).unwrap()
 }
 
-fn prism(owner: EntityId, height: Rational) -> RoundedPrism {
-    RoundedPrism::extrude(owner.uuid_bits(), integer(40), integer(10), height).unwrap()
+fn prism(owner: EntityId, height: Rational) -> Prism {
+    Prism::extrude(owner.uuid_bits(), integer(40), integer(10), height).unwrap()
 }
 
-fn adopt(prism: RoundedPrism) -> Solid {
-    Solid::from_rounded_prism(prism, GeometryPolicy::default()).unwrap()
+fn adopt(prism: Prism) -> Solid {
+    Solid::from_rust_prism(prism, GeometryPolicy::default()).unwrap()
 }
 
 fn near(actual: f64, expected: f64) {
@@ -41,7 +41,7 @@ fn rust_bore_matches_the_independent_native_volume_and_all_face_centroids() {
             .unwrap(),
     );
     let rust = uncut
-        .subtract_rounded_prism_cylinder(
+        .subtract_rust_prism_cylinder(
             cutter.uuid_bits(),
             circle(28, 10, integer(4)),
             integer(-1),
@@ -124,16 +124,16 @@ fn rust_bore_matches_the_independent_native_volume_and_all_face_centroids() {
     }
     let shared = rust.share().unwrap();
     assert!(std::ptr::eq(
-        rust.rounded_prism().unwrap(),
-        shared.rounded_prism().unwrap()
+        rust.rust_prism().unwrap(),
+        shared.rust_prism().unwrap()
     ));
     let probe = [integer(28), integer(10), integer(4)];
     assert_eq!(
-        uncut.rounded_prism().unwrap().classify(probe),
+        uncut.rust_prism().unwrap().classify(probe),
         Ok(Location::Interior)
     );
     assert_eq!(
-        shared.rounded_prism().unwrap().classify(probe),
+        shared.rust_prism().unwrap().classify(probe),
         Ok(Location::Exterior)
     );
 }
@@ -196,7 +196,7 @@ fn unsupported_and_invalid_operations_leave_the_rust_body_intact() {
     let policy = GeometryPolicy::default();
     let body = adopt(prism(owner, integer(8)));
     let native = Solid::box_solid([1.; 3], policy).unwrap();
-    assert!(native.rounded_prism().is_none());
+    assert!(native.rust_prism().is_none());
     for (a, b) in [(&native, &body), (&body, &native)] {
         let error = a
             .boolean(b, BooleanOperation::Intersect, policy)
@@ -208,35 +208,113 @@ fn unsupported_and_invalid_operations_leave_the_rust_body_intact() {
     let id = EntityId::new().uuid_bits();
     assert_eq!(
         native
-            .subtract_rounded_prism_cylinder(id, cutter, integer(-1), integer(9))
+            .subtract_rust_prism_cylinder(id, cutter, integer(-1), integer(9))
             .err()
             .unwrap()
             .kind,
         GeometryErrorKind::Unsupported
     );
     assert_eq!(
-        body.subtract_rounded_prism_cylinder(id, cutter, integer(0), integer(9))
+        body.subtract_rust_prism_cylinder(id, cutter, integer(0), integer(9))
             .err()
             .unwrap()
             .kind,
         GeometryErrorKind::Input
     );
     assert_eq!(
-        body.subtract_rounded_prism_cylinder(id, cutter, integer(-1), integer(10_000_001))
+        body.subtract_rust_prism_cylinder(id, cutter, integer(-1), integer(10_000_001))
             .err()
             .unwrap()
             .kind,
         GeometryErrorKind::Input
     );
-    assert_eq!(body.rounded_prism().unwrap().inner_loops().len(), 0);
-    assert!(Solid::from_rounded_prism(prism(EntityId::nil(), integer(8)), policy).is_err());
+    assert_eq!(body.rust_prism().unwrap().inner_loops().len(), 0);
+    assert!(Solid::from_rust_prism(prism(EntityId::nil(), integer(8)), policy).is_err());
     assert!(
-        Solid::from_rounded_prism(
+        Solid::from_rust_prism(
             prism(owner, parse_length_mm("0.000001 mm").unwrap()),
             policy
         )
         .is_err()
     );
+}
+
+#[test]
+fn placed_box_side_has_exact_contours_and_refuses_a_misaligned_bore() {
+    let policy = GeometryPolicy::default();
+    let owner = EntityId::new();
+    let placement = PlaneFrame {
+        origin: [7., -3., 2.],
+        u: [0., 1., 0.],
+        v: [0., 0., 1.],
+    };
+    let stock = Solid::rust_box(
+        owner.uuid_bits(),
+        [integer(12), integer(5), integer(8)],
+        placement,
+        policy,
+    )
+    .unwrap();
+    let right = PlaneFrame {
+        origin: [7., 9., 2.],
+        u: placement.v,
+        v: placement.normal(),
+    };
+    let contour = stock.planar_face_contours(3, right).unwrap();
+    near(contour.area_mm2(), 40.);
+    assert_eq!(contour.edge_count(), 4);
+    let error = stock
+        .subtract_rust_prism_cylinder(
+            EntityId::new().uuid_bits(),
+            circle(10, 2, integer(1)),
+            integer(-1),
+            integer(9),
+        )
+        .err()
+        .unwrap();
+    assert_eq!(error.kind, GeometryErrorKind::Unsupported);
+    near(stock.volume_mm3().unwrap(), 480.);
+}
+
+#[test]
+fn rotated_box_bounds_and_mesh_follow_the_same_rigid_placement() {
+    let (sin, cos) = 0.7_f64.sin_cos();
+    let placement = PlaneFrame {
+        origin: [-5., 3., -2.],
+        u: [cos, sin, 0.],
+        v: [-sin, cos, 0.],
+    };
+    let stock = Solid::rust_box(
+        EntityId::new().uuid_bits(),
+        [integer(12), integer(5), integer(8)],
+        placement,
+        GeometryPolicy::default(),
+    )
+    .unwrap();
+    let bounds = stock.bounds().unwrap();
+    for (actual, expected) in bounds.min.into_iter().zip([-5. - 5. * sin, 3., -2.]) {
+        near(actual, expected);
+    }
+    for (actual, expected) in
+        bounds
+            .max
+            .into_iter()
+            .zip([-5. + 12. * cos, 3. + 12. * sin + 5. * cos, 6.])
+    {
+        near(actual, expected);
+    }
+    let mesh = stock.mesh(Default::default()).unwrap();
+    let points = mesh.vertices.as_chunks::<3>().0;
+    assert_eq!(points.len(), 8);
+    for axis in 0..3 {
+        let min = points.iter().map(|p| p[axis]).fold(f64::INFINITY, f64::min);
+        let max = points
+            .iter()
+            .map(|p| p[axis])
+            .fold(f64::NEG_INFINITY, f64::max);
+        near(min, bounds.min[axis]);
+        near(max, bounds.max[axis]);
+    }
 }
 
 #[test]

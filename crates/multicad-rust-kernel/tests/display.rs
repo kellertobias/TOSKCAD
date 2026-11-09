@@ -3,7 +3,7 @@ use multicad_rust_kernel::{
     cylinder::AxialCylinder,
     display::{self, DisplayMesh, MeshError, Tessellation},
     parse_length_mm,
-    prism::RoundedPrism,
+    prism::Prism,
 };
 use std::{collections::BTreeMap, f64::consts::PI};
 
@@ -46,14 +46,31 @@ fn check_closed(mesh: &DisplayMesh) -> f64 {
 }
 
 #[test]
-fn rounded_prism_mesh_is_closed_and_keeps_the_cap_holes_open() {
-    let panel = RoundedPrism::extrude(1, n(40), n(10), n(8))
+fn rectangular_prism_mesh_keeps_all_six_faces_and_closed_bore_wall() {
+    let prism = Prism::rectangular(1, [n(12), n(5), n(8)]).unwrap();
+    let mesh = display::rust_prism(&prism, options()).unwrap();
+    assert_eq!(mesh.vertices.len(), 8 * 3);
+    assert_eq!(mesh.indices.len(), 12 * 3);
+    assert!((check_closed(&mesh) - 480.).abs() < 1e-10);
+    for face in 0..6 {
+        assert_eq!(mesh.face_indices.iter().filter(|&&f| f == face).count(), 2);
+    }
+    let bore = Circle::new([n(10), n(2)], n(1)).unwrap();
+    let cut = prism.subtract_cylinder(2, bore, n(-1), n(9)).unwrap();
+    let mesh = display::rust_prism(&cut, options()).unwrap();
+    assert!(mesh.face_indices.contains(&6));
+    assert!((check_closed(&mesh) - (480. - 8. * PI)).abs() < 0.05);
+}
+
+#[test]
+fn rust_prism_mesh_is_closed_and_keeps_the_cap_holes_open() {
+    let panel = Prism::extrude(1, n(40), n(10), n(8))
         .unwrap()
         .with_inner_loop(2, Circle::new([n(12), n(10)], n(3)).unwrap())
         .unwrap()
         .with_inner_loop(3, Circle::new([n(28), n(10)], n(4)).unwrap())
         .unwrap();
-    let mesh = display::rounded_prism(&panel, options()).unwrap();
+    let mesh = display::rust_prism(&panel, options()).unwrap();
     assert!((check_closed(&mesh) - 8. * (800. + 25. * PI)).abs() < 1.);
     let points = mesh.vertices.as_chunks::<3>().0;
     for (triangle, face) in mesh
@@ -114,7 +131,7 @@ fn axial_cylinder_winds_outwards_and_checks_mesh_options_and_budget() {
 
 #[test]
 fn a_near_boundary_bore_refines_coarse_chords_within_the_mesh_budget() {
-    let prism = RoundedPrism::extrude(1, n(40), n(10), n(8))
+    let prism = Prism::extrude(1, n(40), n(10), n(8))
         .unwrap()
         .with_inner_loop(
             2,
@@ -128,7 +145,7 @@ fn a_near_boundary_bore_refines_coarse_chords_within_the_mesh_budget() {
     };
     for triangle_limit in [1, 8] {
         assert_eq!(
-            display::rounded_prism(
+            display::rust_prism(
                 &prism,
                 Tessellation {
                     triangle_limit,
@@ -138,11 +155,11 @@ fn a_near_boundary_bore_refines_coarse_chords_within_the_mesh_budget() {
             Err(MeshError::BudgetExceeded)
         );
     }
-    let mesh = display::rounded_prism(&prism, coarse).unwrap();
+    let mesh = display::rust_prism(&prism, coarse).unwrap();
     assert!(check_closed(&mesh) > 0.);
     assert!(mesh.face_indices.len() > 4 * (4 + 3 + 7 + 1) - 4);
     assert_eq!(
-        display::rounded_prism(
+        display::rust_prism(
             &prism,
             Tessellation {
                 triangle_limit: 60,
@@ -156,7 +173,7 @@ fn a_near_boundary_bore_refines_coarse_chords_within_the_mesh_budget() {
         angle: 0.02,
         ..options()
     };
-    assert!(check_closed(&display::rounded_prism(&prism, fine).unwrap()) > 0.);
+    assert!(check_closed(&display::rust_prism(&prism, fine).unwrap()) > 0.);
 }
 
 #[test]
@@ -164,12 +181,12 @@ fn unrepresentable_display_hole_fails_without_changing_the_exact_solid() {
     use multicad_rust_kernel::prism::Location;
     let center = [n(999_999_999), n(1)];
     let tiny = Circle::new(center, q("0.000000001 mm")).unwrap();
-    let solid = RoundedPrism::extrude(1, n(1_000_000_000), n(1), n(1))
+    let solid = Prism::extrude(1, n(1_000_000_000), n(1), n(1))
         .unwrap()
         .with_inner_loop(2, tiny)
         .unwrap();
     assert_eq!(
-        display::rounded_prism(
+        display::rust_prism(
             &solid,
             Tessellation {
                 angle: 0.,
@@ -179,7 +196,7 @@ fn unrepresentable_display_hole_fails_without_changing_the_exact_solid() {
         Err(MeshError::InvalidOptions)
     );
     assert_eq!(
-        display::rounded_prism(&solid, options()),
+        display::rust_prism(&solid, options()),
         Err(MeshError::UnresolvedBoundary)
     );
     assert_eq!(
@@ -191,11 +208,11 @@ fn unrepresentable_display_hole_fails_without_changing_the_exact_solid() {
 #[test]
 fn a_small_bore_outside_the_coarse_cap_chord_is_retained_after_refinement() {
     let hole = Circle::new([q("47.92 mm"), q("15.94 mm")], q("0.01 mm")).unwrap();
-    let panel = RoundedPrism::extrude(1, n(40), n(10), n(8))
+    let panel = Prism::extrude(1, n(40), n(10), n(8))
         .unwrap()
         .with_inner_loop(2, hole)
         .unwrap();
-    let mesh = display::rounded_prism(
+    let mesh = display::rust_prism(
         &panel,
         Tessellation {
             deflection: 1.,

@@ -1,5 +1,5 @@
 use multicad_rust_kernel::prism::{
-    BoundaryCurve, Face, FaceKey, FaceRole, Location, Measure, PrismError, RoundedPrism,
+    BoundaryCurve, Face, FaceKey, FaceRole, Location, Measure, Prism, PrismError,
 };
 use multicad_rust_kernel::{Circle, Error, Rational, parse_length_mm};
 
@@ -15,8 +15,8 @@ fn circle(x: i64, y: i64, radius: i64) -> Circle {
     Circle::new([n(x), n(y)], n(radius)).unwrap()
 }
 
-fn panel(height: Rational, cutter: Circle) -> RoundedPrism {
-    RoundedPrism::extrude(10, n(40), n(10), height)
+fn panel(height: Rational, cutter: Circle) -> Prism {
+    Prism::extrude(10, n(40), n(10), height)
         .unwrap()
         .with_inner_loop(20, circle(12, 10, 3))
         .unwrap()
@@ -25,11 +25,66 @@ fn panel(height: Rational, cutter: Circle) -> RoundedPrism {
 }
 
 #[test]
+fn rectangular_prism_has_an_exact_right_face_and_clears_a_through_bore() {
+    let size = [n(12), n(5), n(8)];
+    let box_solid = Prism::rectangular(10, size).unwrap();
+    assert_eq!(box_solid.maximum(), size);
+    assert_eq!(box_solid.rounded_end(), None);
+    assert_eq!(box_solid.volume().constant, n(480));
+    assert_eq!(
+        box_solid.outer_loop()[1],
+        BoundaryCurve::Segment {
+            from: [n(12), n(0)],
+            to: [n(12), n(5)],
+        }
+    );
+    let face = |role| FaceKey { feature: 10, role };
+    assert_eq!(
+        box_solid.face(face(FaceRole::Right)),
+        Some(Face::PlaneX { x: n(12) })
+    );
+    assert_eq!(box_solid.face(face(FaceRole::RoundedEnd)), None);
+    let rounded = Prism::extrude(10, n(12), n(2), n(8)).unwrap();
+    assert_eq!(rounded.face(face(FaceRole::Right)), None);
+    assert_eq!(
+        box_solid.classify([n(12), n(2), n(4)]).unwrap(),
+        Location::Boundary
+    );
+    assert_eq!(
+        box_solid.classify([n(13), n(2), n(4)]).unwrap(),
+        Location::Exterior
+    );
+    let hole = |x| Circle::new([n(x), n(2)], n(1)).unwrap();
+    let cut = box_solid
+        .subtract_cylinder(11, hole(10), n(-1), n(9))
+        .unwrap();
+    assert_eq!(
+        cut.volume(),
+        Measure {
+            constant: n(480),
+            pi_factor: n(-8)
+        }
+    );
+    assert_eq!(
+        cut.classify([n(10), n(2), n(4)]).unwrap(),
+        Location::Exterior
+    );
+    assert_eq!(
+        box_solid.subtract_cylinder(11, hole(11), n(-1), n(9)),
+        Err(PrismError::OuterContact)
+    );
+    assert_eq!(
+        Prism::rectangular(10, [n(1), n(0), n(1)]),
+        Err(PrismError::NonPositiveExtent)
+    );
+}
+
+#[test]
 fn baseline_panel_has_analytic_trims_and_exact_mass_properties() {
     let cutter = circle(28, 10, 4);
     let solid = panel(n(8), cutter);
     assert_eq!(solid.feature(), 10);
-    assert_eq!(solid.dimensions(), [n(40), n(10), n(8)]);
+    assert_eq!(solid.dimensions(), [n(40), n(20), n(8)]);
     assert_eq!(solid.maximum(), [n(50), n(20), n(8)]);
     assert_eq!(
         solid.outer_loop(),
@@ -183,7 +238,7 @@ fn material_probes_distinguish_holes_caps_seam_and_exterior() {
 #[test]
 fn rejects_tangent_and_overlapping_cuts_without_changing_the_source() {
     use PrismError::*;
-    let solid = RoundedPrism::extrude(10, n(40), n(10), n(8))
+    let solid = Prism::extrude(10, n(40), n(10), n(8))
         .unwrap()
         .with_inner_loop(20, circle(12, 10, 3))
         .unwrap();
@@ -229,15 +284,15 @@ fn zero_dimensions_and_out_of_range_arithmetic_fail_closed() {
     use PrismError::*;
     for (length, radius, height) in [(0, 10, 8), (40, -1, 8), (40, 10, 0)] {
         assert_eq!(
-            RoundedPrism::extrude(10, n(length), n(radius), n(height)),
+            Prism::extrude(10, n(length), n(radius), n(height)),
             Err(NonPositiveExtent)
         );
     }
     assert_eq!(
-        RoundedPrism::extrude(10, n(40), n(10), n(1_000_000_000_000_000_000)),
+        Prism::extrude(10, n(40), n(10), n(1_000_000_000_000_000_000)),
         Err(Arithmetic(Error::OutOfRange))
     );
-    let solid = RoundedPrism::extrude(10, n(40), n(10), n(8)).unwrap();
+    let solid = Prism::extrude(10, n(40), n(10), n(8)).unwrap();
     assert_eq!(
         solid.classify([n(1_000_000_000_000_000_000), n(10), n(1)]),
         Err(Arithmetic(Error::OutOfRange))
@@ -283,7 +338,7 @@ fn mass_properties_match_both_independently_measured_occt_panels() {
 
 #[test]
 fn a_circle_can_cross_the_join_without_creating_an_artificial_wall() {
-    let solid = RoundedPrism::extrude(10, n(40), n(10), n(8)).unwrap();
+    let solid = Prism::extrude(10, n(40), n(10), n(8)).unwrap();
     for x in [39, 40, 41] {
         let edited = solid.with_inner_loop(20, circle(x, 10, 3)).unwrap();
         assert_eq!(
@@ -309,7 +364,7 @@ fn a_circle_can_cross_the_join_without_creating_an_artificial_wall() {
 
 #[test]
 fn unresolved_near_boundary_predicates_do_not_publish_a_cut() {
-    let solid = RoundedPrism::extrude(10, n(40), n(10), n(8))
+    let solid = Prism::extrude(10, n(40), n(10), n(8))
         .unwrap()
         .with_inner_loop(20, circle(12, 10, 3))
         .unwrap();
@@ -330,9 +385,9 @@ fn unresolved_near_boundary_predicates_do_not_publish_a_cut() {
 #[test]
 fn a_valid_cut_with_unrepresentable_volume_does_not_publish() {
     let height = q("1/1000000001 mm");
-    let solid = RoundedPrism::extrude(10, n(40), n(10), height).unwrap();
+    let solid = Prism::extrude(10, n(40), n(10), height).unwrap();
     let cutter = Circle::new([n(12), n(10)], q("1/100000000 mm")).unwrap();
-    let ordinary_height = RoundedPrism::extrude(10, n(40), n(10), n(1)).unwrap();
+    let ordinary_height = Prism::extrude(10, n(40), n(10), n(1)).unwrap();
     assert!(
         ordinary_height
             .subtract_cylinder(20, cutter, n(-1), n(2))
@@ -348,7 +403,7 @@ fn a_valid_cut_with_unrepresentable_volume_does_not_publish() {
 
 #[test]
 fn face_keys_use_the_full_feature_id_and_do_not_follow_loop_order() {
-    let base = RoundedPrism::extrude(10, n(40), n(10), n(8)).unwrap();
+    let base = Prism::extrude(10, n(40), n(10), n(8)).unwrap();
     let bore_a = circle(12, 10, 3);
     let bore_b = circle(28, 10, 4);
     // IDs share their entire lower 64 bits, as can occur with document UUIDs.

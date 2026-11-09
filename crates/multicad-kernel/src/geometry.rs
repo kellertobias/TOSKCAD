@@ -1,7 +1,7 @@
 //! Safe solid operations in millimeters. Display meshes are detached copies;
 //! callers rebuild exact solids from source rather than editing triangles.
 use crate::{Shape, ffi};
-use multicad_rust_kernel::{Circle, Rational, cylinder::AxialCylinder, prism::RoundedPrism};
+use multicad_rust_kernel::{Circle, Rational, cylinder::AxialCylinder, prism::Prism};
 use std::path::Path;
 use std::rc::Rc;
 
@@ -460,39 +460,64 @@ pub struct Solid {
 
 enum SolidBody {
     Occt(Shape),
-    RoundedPrism(Rc<RoundedPrism>),
+    Prism(Rc<Prism>, PlaneFrame),
     AxialCylinder(Rc<AxialCylinder>, PlaneFrame),
 }
 
 impl Solid {
     /// Own a validated analytic prism in the Rust backend.
-    pub fn from_rounded_prism(
-        prism: RoundedPrism,
+    pub fn from_rust_prism(prism: Prism, policy: GeometryPolicy) -> Result<Self, GeometryError> {
+        Self::from_placed_prism(prism, PlaneFrame::default(), policy)
+    }
+
+    pub fn rust_box(
+        feature: u128,
+        size: [Rational; 3],
+        frame: PlaneFrame,
+        policy: GeometryPolicy,
+    ) -> Result<Self, GeometryError> {
+        let prism = Prism::rectangular(feature, size)
+            .map_err(|cause| input(format!("Rust box failed: {cause:?}")))?;
+        Self::from_placed_prism(prism, frame, policy)
+    }
+
+    fn from_placed_prism(
+        prism: Prism,
+        frame: PlaneFrame,
         policy: GeometryPolicy,
     ) -> Result<Self, GeometryError> {
         policy.validate()?;
+        frame.checked(policy)?;
         if prism.feature() == 0 || prism.inner_loops().any(|(id, _)| id == 0) {
-            return Err(input(
-                "Rounded prism topology requires non-nil source identities",
-            ));
+            return Err(input("Prism topology requires non-nil source identities"));
         }
         for size in prism.dimensions() {
             policy.length(size.as_f64())?;
         }
-        policy.point(prism.maximum().map(Rational::as_f64))?;
+        if let Some(end) = prism.rounded_end() {
+            policy.length(end.radius().as_f64())?;
+        }
         for (_, circle) in prism.inner_loops() {
             policy.length(circle.radius().as_f64())?;
         }
-        Ok(Self {
-            body: SolidBody::RoundedPrism(Rc::new(prism)),
+        let solid = Self {
+            body: SolidBody::Prism(Rc::new(prism), frame),
             policy,
             provenance: vec![],
-        })
+        };
+        let bounds = solid.bounds()?;
+        policy.point(bounds.min)?;
+        policy.point(bounds.max)?;
+        Ok(solid)
     }
 
-    pub fn rounded_prism(&self) -> Option<&RoundedPrism> {
+    pub fn rust_prism(&self) -> Option<&Prism> {
+        self.rust_prism_frame().map(|(prism, _)| prism)
+    }
+
+    pub(crate) fn rust_prism_frame(&self) -> Option<(&Prism, PlaneFrame)> {
         match &self.body {
-            SolidBody::RoundedPrism(prism) => Some(prism),
+            SolidBody::Prism(prism, frame) => Some((prism, *frame)),
             _ => None,
         }
     }
@@ -543,20 +568,27 @@ impl Solid {
     }
 
     /// Subtract an exact axial through-cylinder in the Rust backend.
-    pub fn subtract_rounded_prism_cylinder(
+    pub fn subtract_rust_prism_cylinder(
         &self,
         feature: u128,
         circle: Circle,
         bottom: Rational,
         top: Rational,
     ) -> Result<Self, GeometryError> {
-        let prism = self.rounded_prism().ok_or_else(|| {
-            error(
+        let Some((prism, frame)) = self.rust_prism_frame() else {
+            return Err(error(
                 "cylindrical cut",
                 GeometryErrorKind::Unsupported,
-                "Expected a Rust rounded prism",
-            )
-        })?;
+                "Expected a Rust prism",
+            ));
+        };
+        if frame != PlaneFrame::default() {
+            return Err(error(
+                "cylindrical cut",
+                GeometryErrorKind::Unsupported,
+                "Rust through-bores currently require an unplaced prism",
+            ));
+        }
         self.policy.point([0., 0., bottom.as_f64()])?;
         self.policy.point([0., 0., top.as_f64()])?;
         let next = prism
@@ -568,7 +600,7 @@ impl Solid {
                     format!("{reason:?}"),
                 )
             })?;
-        Self::from_rounded_prism(next, self.policy)
+        Self::from_rust_prism(next, self.policy)
     }
 
     pub(crate) fn occt(&self) -> Result<&ffi::Shape, GeometryError> {
@@ -598,7 +630,7 @@ impl Solid {
     /// the share stays on the thread that created it (`!Send`/`!Sync`).
     pub fn share(&self) -> Result<Self, GeometryError> {
         let body = match &self.body {
-            SolidBody::RoundedPrism(prism) => SolidBody::RoundedPrism(Rc::clone(prism)),
+            SolidBody::Prism(prism, frame) => SolidBody::Prism(Rc::clone(prism), *frame),
             SolidBody::AxialCylinder(cylinder, frame) => {
                 SolidBody::AxialCylinder(Rc::clone(cylinder), *frame)
             }
@@ -708,7 +740,7 @@ impl Solid {
         policy: GeometryPolicy,
     ) -> Result<Option<Self>, GeometryError> {
         policy.validate()?;
-        if self.rounded_prism().is_some()
+        if self.rust_prism().is_some()
             && let Some(tool) = other.axial_cylinder()
             && operation == BooleanOperation::Subtract
             && policy.boolean_fuzzy_mm == 0.
@@ -716,7 +748,7 @@ impl Solid {
             && policy == other.policy
         {
             return self
-                .subtract_rounded_prism_cylinder(
+                .subtract_rust_prism_cylinder(
                     tool.feature(),
                     tool.circle(),
                     tool.bottom(),
@@ -772,7 +804,7 @@ impl Solid {
         if let Some(cylinder) = self.axial_cylinder() {
             return Ok(std::f64::consts::PI * cylinder.volume_factor().as_f64());
         }
-        if let Some(prism) = self.rounded_prism() {
+        if let Some(prism) = self.rust_prism() {
             let volume = prism.volume();
             return Ok(volume
                 .pi_factor
@@ -792,10 +824,29 @@ impl Solid {
             let [min, max] = cylinder.bounds().map(|corner| corner.map(Rational::as_f64));
             return Ok(Bounds { min, max });
         }
-        if let Some(prism) = self.rounded_prism() {
+        if let Some((prism, frame)) = self.rust_prism_frame() {
+            let max = prism.maximum().map(Rational::as_f64);
+            if frame == PlaneFrame::default() {
+                return Ok(Bounds { min: [0.; 3], max });
+            }
+            // Only boxes are placed. Each projection reaches its extrema at
+            // one of the eight corners of the exact local box.
+            let mut min_world = frame.origin;
+            let mut max_world = frame.origin;
+            for x in [0., max[0]] {
+                for y in [0., max[1]] {
+                    for z in [0., max[2]] {
+                        let p = crate::rust_prism_topology::position(frame, [x, y, z]);
+                        for i in 0..3 {
+                            min_world[i] = min_world[i].min(p[i]);
+                            max_world[i] = max_world[i].max(p[i]);
+                        }
+                    }
+                }
+            }
             return Ok(Bounds {
-                min: [0.; 3],
-                max: prism.maximum().map(Rational::as_f64),
+                min: min_world,
+                max: max_world,
             });
         }
         let b = ffi::bounds(self.occt()?).map_err(|e| native("bounds", e))?;
@@ -835,8 +886,8 @@ impl Solid {
         if let Some(cylinder) = self.axial_cylinder() {
             return Ok(crate::rust_prism_topology::cylinder_faces(cylinder));
         }
-        if let Some(prism) = self.rounded_prism() {
-            return Ok(crate::rust_prism_topology::faces(prism));
+        if let Some((prism, frame)) = self.rust_prism_frame() {
+            return Ok(crate::rust_prism_topology::faces(prism, frame));
         }
         // An exact affine image of a proven plane stays planar even when OCCT
         // stores it as a NURBS surface. Preserve that typed proof for picking;
@@ -887,9 +938,17 @@ impl Solid {
             triangle_limit: options.maximum_triangles as usize,
         };
         let mesh = match &self.body {
-            SolidBody::RoundedPrism(prism) => crate::rust_display::mesh(
-                multicad_rust_kernel::display::rounded_prism(prism, rust_options),
-            )?,
+            SolidBody::Prism(prism, frame) => {
+                let mut mesh = crate::rust_display::mesh(
+                    multicad_rust_kernel::display::rust_prism(prism, rust_options),
+                )?;
+                if *frame != PlaneFrame::default() {
+                    for vertex in mesh.vertices.as_chunks_mut::<3>().0 {
+                        *vertex = crate::rust_prism_topology::position(*frame, *vertex);
+                    }
+                }
+                mesh
+            }
             SolidBody::AxialCylinder(cylinder, _) => crate::rust_display::mesh(
                 multicad_rust_kernel::display::axial_cylinder(cylinder, rust_options),
             )?,
@@ -1036,7 +1095,7 @@ impl Solid {
         &self,
     ) -> Option<Result<multicad_core::references::TopologySnapshot, GeometryError>> {
         let feature = match &self.body {
-            SolidBody::RoundedPrism(prism) => prism.feature(),
+            SolidBody::Prism(prism, _) => prism.feature(),
             SolidBody::AxialCylinder(cylinder, _) => cylinder.feature(),
             SolidBody::Occt(_) => return None,
         };

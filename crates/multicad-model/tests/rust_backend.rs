@@ -52,7 +52,7 @@ fn saved_rounded_panel_rebuilds_and_moves_a_downstream_face_attachment() {
         let (mut session, height, extrusion, body, cutter, cut) = fixture(quarter_turn, 28.);
         let first = compile(&session, GeometryBackend::Rust);
         let native = compile(&session, GeometryBackend::OpenCascade);
-        let exact = first.solid(cut).unwrap().rounded_prism().unwrap();
+        let exact = first.solid(cut).unwrap().rust_prism().unwrap();
         assert_eq!(exact.dimensions()[2].ratio(), (8, 1));
         let rust_cutter = first.solid(cutter).unwrap();
         let native_cutter = native.solid(cutter).unwrap();
@@ -139,7 +139,7 @@ fn saved_rounded_panel_rebuilds_and_moves_a_downstream_face_attachment() {
         let second = compile(&session, GeometryBackend::Rust);
         let native = compile(&session, GeometryBackend::OpenCascade);
         let solid = second.solid(cut).unwrap();
-        let exact = solid.rounded_prism().unwrap();
+        let exact = solid.rust_prism().unwrap();
         assert_eq!(exact.dimensions()[2], parse_length_mm("10/3 mm").unwrap());
         near(solid.volume_mm3().unwrap(), (800. + 25. * PI) * 10. / 3.);
         near(
@@ -190,9 +190,9 @@ fn a_tangent_bore_is_rejected_without_native_fallback() {
 fn unsupported_documents_return_explicit_errors() {
     let mut session = Session::new(Document::new("Unsupported Rust primitive").unwrap()).unwrap();
     let stock = PrimitiveRequest::new(
-        "Box",
-        PrimitiveParameters::Box {
-            size: [length(1.), length(2.), length(3.)],
+        "Sphere",
+        PrimitiveParameters::Sphere {
+            radius: length(1.),
             frame: PrimitiveFrame::default(),
         },
     );
@@ -201,7 +201,7 @@ fn unsupported_documents_return_explicit_errors() {
     let native = compile(&session, GeometryBackend::OpenCascade);
     near(
         native.solid(stock.feature).unwrap().volume_mm3().unwrap(),
-        6.,
+        4. * PI / 3.,
     );
     let rust = compiler()
         .compile_with_backend(
@@ -213,7 +213,74 @@ fn unsupported_documents_return_explicit_errors() {
         .err()
         .unwrap();
     assert_eq!(rust.entity, Some(stock.feature));
-    assert!(rust.message.contains("only axial cylinder"));
+    assert!(rust.message.contains("box and axial cylinder"));
+}
+
+#[test]
+fn saved_placed_box_keeps_native_face_ancestry_and_rebuilds_after_edit() {
+    let mut session = Session::new(Document::new("Placed box").unwrap()).unwrap();
+    let frame = PrimitiveFrame {
+        origin: [length(7.), length(-3.), length(2.)],
+        u: [0., 1., 0.],
+        v: [0., 0., 1.],
+    };
+    let box_parameters = |height| PrimitiveParameters::Box {
+        size: [length(12.), length(5.), length(height)],
+        frame: frame.clone(),
+    };
+    let stock = PrimitiveRequest::new("Box", box_parameters(8.));
+    let prepared = model::prepare_primitive(&session, session.revision(), actor(), &stock).unwrap();
+    session.commit(prepared.prepared).unwrap();
+    let original = reopen(&session);
+    let edit = model::prepare_primitive_edit(
+        &session,
+        session.revision(),
+        actor(),
+        stock.feature,
+        &box_parameters(9.),
+    )
+    .unwrap();
+    session.commit(edit.prepared).unwrap();
+    for (document, height) in [(original, 8.), (reopen(&session), 9.)] {
+        let rust = compile(&document, GeometryBackend::Rust);
+        let native = compile(&document, GeometryBackend::OpenCascade);
+        let solid = rust.solid(stock.feature).unwrap();
+        let exact = solid.rust_prism().unwrap();
+        assert_eq!(
+            exact.dimensions()[2],
+            Rational::new(height as i64, 1).unwrap()
+        );
+        assert_eq!(solid.bounds().unwrap().min, [7., -3., 2.]);
+        assert_eq!(solid.bounds().unwrap().max, [7. + height, 9., 7.]);
+        near(solid.volume_mm3().unwrap(), 60. * height);
+        let rust_shape = &rust.snapshot().shapes[&stock.feature];
+        let native_shape = &native.snapshot().shapes[&stock.feature];
+        assert_eq!(rust_shape.mesh.indices.len(), 36);
+        assert_eq!(rust_shape.edges.len(), 12);
+        assert_eq!(rust_shape.vertices.len(), 8);
+        let rust_faces = solid.faces().unwrap();
+        let native_faces = native.solid(stock.feature).unwrap().faces().unwrap();
+        for actual in rust_shape
+            .topology
+            .elements
+            .iter()
+            .filter(|e| e.key.kind == TopologyKind::Face)
+        {
+            let expected = native_shape
+                .topology
+                .elements
+                .iter()
+                .find(|e| e.key.kind == TopologyKind::Face && e.origins == actual.origins)
+                .unwrap();
+            assert_eq!(actual.frames, expected.frames);
+            let a = &rust_faces[actual.key.ordinal as usize];
+            let b = &native_faces[expected.key.ordinal as usize];
+            near(a.area_mm2, b.area_mm2);
+            for (a, b) in a.center_mm.into_iter().zip(b.center_mm) {
+                near(a, b);
+            }
+        }
+    }
 }
 
 #[test]

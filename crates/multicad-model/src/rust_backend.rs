@@ -11,9 +11,7 @@ use multicad_core::{
 };
 use multicad_kernel::{
     CurvedEdge2d, CurvedProfile, GeometryPolicy, PlaneFrame, Solid,
-    rust_kernel::{
-        Circle, Rational, cylinder::AxialCylinder, parse_length_mm, prism::RoundedPrism,
-    },
+    rust_kernel::{Circle, Rational, cylinder::AxialCylinder, parse_length_mm, prism::Prism},
 };
 
 pub(crate) fn validate_document(document: &Document) -> Result<(), ModelError> {
@@ -187,7 +185,7 @@ pub(crate) fn extrude(
     }
     let height = exact_length(distance, parameters).map_err(fail)?;
     let (length, radius) = rounded_dimensions(profile).map_err(fail)?;
-    let mut prism = RoundedPrism::extrude(id.uuid_bits(), length, radius, height)
+    let mut prism = Prism::extrude(id.uuid_bits(), length, radius, height)
         .map_err(|e| fail(format!("Rust extrusion failed: {e:?}")))?;
     for (index, hole) in profile.holes.iter().enumerate() {
         let [
@@ -213,7 +211,7 @@ pub(crate) fn extrude(
             .with_inner_loop(origin.source.uuid_bits(), circle)
             .map_err(|e| fail(format!("Rust inner loop failed: {e:?}")))?;
     }
-    Solid::from_rounded_prism(prism, policy).map_err(|e| error(Some(id), e))
+    Solid::from_rust_prism(prism, policy).map_err(|e| error(Some(id), e))
 }
 
 pub(crate) fn primitive(
@@ -223,6 +221,27 @@ pub(crate) fn primitive(
     policy: GeometryPolicy,
 ) -> Result<Solid, ModelError> {
     let fail = |message: String| error(Some(id), message);
+    if let PrimitiveParameters::Box { size, frame } = source {
+        frame.validate().map_err(|e| error(Some(id), e))?;
+        let [x, y, z] = frame.origin.each_ref().map(|d| exact_length(d, parameters));
+        let [length, width, height] = size.each_ref().map(|d| exact_length(d, parameters));
+        let placement = PlaneFrame {
+            origin: [x.map_err(fail)?, y.map_err(fail)?, z.map_err(fail)?].map(Rational::as_f64),
+            u: frame.u,
+            v: frame.v,
+        };
+        return Solid::rust_box(
+            id.uuid_bits(),
+            [
+                length.map_err(fail)?,
+                width.map_err(fail)?,
+                height.map_err(fail)?,
+            ],
+            placement,
+            policy,
+        )
+        .map_err(|e| error(Some(id), e));
+    }
     let PrimitiveParameters::Cylinder {
         radius,
         height,
@@ -230,7 +249,7 @@ pub(crate) fn primitive(
     } = source
     else {
         return Err(fail(
-            "Rust backend supports only axial cylinder primitives".into(),
+            "Rust backend supports only box and axial cylinder primitives".into(),
         ));
     };
     frame.validate().map_err(|e| error(Some(id), e))?;

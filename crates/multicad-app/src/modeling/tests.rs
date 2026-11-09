@@ -1658,11 +1658,40 @@ fn rust_model_worker_publishes_pickable_panel_and_isolates_preview_failures() {
             })
     );
 
-    let (box_doc, _) = box_session();
-    let bad_stamp = SceneStamp {
+    let (mut box_doc, box_source) = box_session();
+    let box_stamp = SceneStamp {
         document: box_doc.document().id(),
         revision: box_doc.revision(),
         generation: 3,
+    };
+    preview.request(box_doc.document(), box_stamp).unwrap();
+    let box_scene = wait_for_scene(&mut *preview).result.unwrap();
+    assert_eq!(box_scene.stamp(), box_stamp);
+    let box_cap = box_scene
+        .pick_face(viewport::Ray::new([5., 5., 40.], [0., 0., -1.]).unwrap())
+        .unwrap();
+    assert_eq!(box_cap.geometry, box_source.feature);
+    assert_eq!(box_cap.point_mm, [5., 5., 30.]);
+
+    let sphere = PrimitiveRequest::new(
+        "Unsupported sphere",
+        PrimitiveParameters::Sphere {
+            radius: length(4.),
+            frame: Default::default(),
+        },
+    );
+    let create = model::prepare_primitive(
+        &box_doc,
+        box_doc.revision(),
+        Actor::local(Channel::Ui),
+        &sphere,
+    )
+    .unwrap();
+    box_doc.commit(create.prepared).unwrap();
+    let bad_stamp = SceneStamp {
+        revision: box_doc.revision(),
+        generation: 4,
+        ..box_stamp
     };
     preview.request(box_doc.document(), bad_stamp).unwrap();
     let rejected = wait_for_scene(&mut *preview);
@@ -1672,7 +1701,7 @@ fn rust_model_worker_publishes_pickable_panel_and_isolates_preview_failures() {
             .result
             .err()
             .unwrap()
-            .contains("only axial cylinder")
+            .contains("box and axial cylinder")
     );
     assert!(canonical.poll().is_none());
     assert_eq!(scene.stamp(), stamp);

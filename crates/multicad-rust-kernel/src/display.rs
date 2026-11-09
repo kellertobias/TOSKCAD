@@ -1,5 +1,5 @@
 //! Detached tessellation of analytic axial solids. Only display consumers use it.
-use crate::{Rational, cylinder::AxialCylinder, prism::RoundedPrism};
+use crate::{Rational, cylinder::AxialCylinder, prism::Prism};
 use spade::{ConstrainedDelaunayTriangulation, Point2, Triangulation, handles::FixedVertexHandle};
 use std::f64::consts::{FRAC_PI_2, PI, TAU};
 
@@ -180,22 +180,21 @@ impl Footprint {
     }
 }
 
-fn rounded_once(prism: &RoundedPrism, options: Tessellation) -> Result<DisplayMesh, MeshError> {
-    let [length, radius, height] = prism.dimensions().map(Rational::as_f64);
-    let segments = options.arc_segments(radius, PI)?;
+fn prism_once(prism: &Prism, options: Tessellation) -> Result<DisplayMesh, MeshError> {
+    let [length, width, height] = prism.dimensions().map(Rational::as_f64);
     let mut footprint = Footprint::default();
-    let exterior = (0..segments + 3).map(|index| match index {
-        0 => ([0., 0.], 2),
-        1 => ([length, 0.], 3),
-        i if i <= segments => {
-            let angle = -FRAC_PI_2 + PI * (i - 1) as f64 / segments as f64;
+    let mut exterior = vec![([0., 0.], 2), ([length, 0.], 3)];
+    if let Some(end) = prism.rounded_end() {
+        let radius = end.radius().as_f64();
+        let segments = options.arc_segments(radius, PI)?;
+        exterior.extend((1..segments).map(|i| {
+            let angle = -FRAC_PI_2 + PI * i as f64 / segments as f64;
             let (sin, cos) = angle.sin_cos();
             ([length + radius * cos, radius + radius * sin], 3)
-        }
-        i if i == segments + 1 => ([length, 2. * radius], 4),
-        _ => ([0., 2. * radius], 5),
-    });
-    footprint.ring(exterior, options)?;
+        }));
+    }
+    exterior.extend([([length, width], 4), ([0., width], 5)]);
+    footprint.ring(exterior.into_iter(), options)?;
     for (index, (_, hole)) in prism.inner_loops().enumerate() {
         footprint.circle(
             hole.center().map(Rational::as_f64),
@@ -225,15 +224,12 @@ pub fn axial_cylinder(
     footprint.tessellate(cylinder.bottom().as_f64(), cylinder.top().as_f64())
 }
 
-pub fn rounded_prism(
-    prism: &RoundedPrism,
-    mut options: Tessellation,
-) -> Result<DisplayMesh, MeshError> {
+pub fn rust_prism(prism: &Prism, mut options: Tessellation) -> Result<DisplayMesh, MeshError> {
     options.check()?;
     // An inscribed cap chord can cross a bore that fits the analytic solid.
     // Retry with finer chords and keep the caller's triangle budget in force.
     for _ in 0..6 {
-        match rounded_once(prism, options) {
+        match prism_once(prism, options) {
             Err(MeshError::UnresolvedBoundary) => options.deflection *= 0.25,
             result => return result,
         }
