@@ -5,6 +5,37 @@ use std::time::{Duration, Instant};
 #[path = "../../../../multicad-app/examples/shared_materials_review.rs"]
 mod shared_fixture;
 
+#[test]
+fn hex_color_editor_keeps_valid_rgb_when_switching_modes_or_typing_a_partial_value() {
+    let ctx = egui::Context::default();
+    let mut rgb = [12, 34, 56];
+    for (hex, input, expected) in [
+        (true, Some("#336699"), [51, 102, 153]),
+        (true, Some("#33"), [51, 102, 153]),
+        (false, None, [51, 102, 153]),
+        (true, None, [51, 102, 153]),
+    ] {
+        ctx.run_ui(egui::RawInput::default(), |ui| {
+            let mode = ui.id().with("rgb-mode");
+            let field = mode.with("hex-value");
+            ctx.data_mut(|data| {
+                data.insert_temp(mode, hex);
+                if let Some(value) = input {
+                    data.insert_temp(field, value.to_owned());
+                } else {
+                    data.remove::<String>(field);
+                }
+            });
+            if input.is_some() {
+                ctx.memory_mut(|memory| memory.request_focus(field));
+            }
+            rgb_fields(ui, &mut rgb);
+        })
+        .drop_without_applying_deltas();
+        assert_eq!(rgb, expected);
+    }
+}
+
 fn editor(s: &Session) -> LibraryEditor {
     let mut editor = LibraryEditor::default();
     editor.set_backend(Box::new(

@@ -894,6 +894,7 @@ fn rgb_fields(ui: &mut egui::Ui, rgb: &mut [u8; 3]) -> bool {
                 .hint_text("#RRGGBB")
                 .desired_width(100.),
         );
+        let focused = response.has_focus();
         let digits = value.trim();
         let digits = digits.strip_prefix('#').unwrap_or(digits);
         if let Some(packed) = (digits.len() == 6)
@@ -902,11 +903,11 @@ fn rgb_fields(ui: &mut egui::Ui, rgb: &mut [u8; 3]) -> bool {
         {
             let [_, r, g, b] = packed.to_be_bytes();
             *rgb = [r, g, b];
-        } else if response.has_focus() {
+        } else if focused {
             ui.small("Enter six hexadecimal digits.");
         }
         ui.ctx().data_mut(|data| {
-            if response.has_focus() {
+            if focused {
                 data.insert_temp(field, value);
             } else {
                 data.remove::<String>(field);
