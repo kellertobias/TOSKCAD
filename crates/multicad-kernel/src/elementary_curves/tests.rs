@@ -151,3 +151,87 @@ fn splines_keep_their_authored_parameter_domain() {
     assert_eq!(hits.len(), 1);
     near(hits[0].parameter, 3.5);
 }
+
+#[test]
+fn rational_spline_points_and_derivatives_match_occt_across_nonuniform_knots() {
+    let policy = GeometryPolicy::default();
+    let spline = BSpline2d {
+        degree: 3,
+        poles: vec![
+            [0., 0.],
+            [2., 2.],
+            [3., -1.],
+            [5., 2.],
+            [6., 0.],
+            [8., -1.],
+            [10., 3.],
+            [11., 1.],
+        ],
+        knots: vec![-2., 0.5, 3., 11.],
+        multiplicities: vec![4, 3, 1, 4],
+        weights: Some(vec![1., 0.75, 2., 1., 0.5, 0.8, 1.1, 1.]),
+    };
+    let edge = CurvedEdge2d::BSpline(spline.clone());
+    let data = edge.data(policy, 0).unwrap();
+    let basis = multicad_core::constraint_sketch::SplineBasis {
+        degree: spline.degree,
+        knots: spline.knots.clone(),
+        multiplicities: spline.multiplicities.clone(),
+        weights: spline.weights.clone(),
+    };
+    let drawn = basis.display_segments(&spline.poles).unwrap();
+    near_point(drawn[0][0], spline.poles[0]);
+    near_point(drawn.last().unwrap()[1], *spline.poles.last().unwrap());
+    for u in [
+        -2.,
+        -1.9,
+        0.,
+        0.5 - 1e-6,
+        0.5,
+        0.5 + 1e-6,
+        2.,
+        3.,
+        5.,
+        10.9,
+        11.,
+    ] {
+        let rust = edge.evaluate(u, policy).unwrap();
+        let occt = ffi::curve_evaluate(&data, u).unwrap();
+        near_point(rust.point, [occt.point.x, occt.point.y]);
+        near_point(rust.derivative, [occt.derivative.x, occt.derivative.y]);
+    }
+    for u in [f64::NAN, -2.1, 11.1] {
+        assert_eq!(
+            edge.evaluate(u, policy).unwrap_err().kind,
+            GeometryErrorKind::Input
+        );
+    }
+    let mut nonfinite = spline.poles.clone();
+    nonfinite[0][0] = f64::INFINITY;
+    assert!(basis.evaluate(&nonfinite, 0.).is_err());
+    assert!(basis.display_segments(&nonfinite).is_err());
+}
+
+#[test]
+fn rational_quarter_circle_evaluation_matches_its_analytic_tangent() {
+    let policy = GeometryPolicy::default();
+    let w = std::f64::consts::FRAC_1_SQRT_2;
+    let spline = BSpline2d {
+        degree: 2,
+        poles: vec![[1., 0.], [1., 1.], [0., 1.]],
+        knots: vec![0., 1.],
+        multiplicities: vec![3, 3],
+        weights: Some(vec![1., w, 1.]),
+    };
+    let middle = spline.evaluate(0.5, policy).unwrap();
+    near_point(middle.point, [w, w]);
+    near_point(middle.derivative, [-2. / (1. + w), 2. / (1. + w)]);
+    near_point(
+        spline.evaluate(0., policy).unwrap().derivative,
+        [0., 2. * w],
+    );
+    near_point(
+        spline.evaluate(1., policy).unwrap().derivative,
+        [-2. * w, 0.],
+    );
+}

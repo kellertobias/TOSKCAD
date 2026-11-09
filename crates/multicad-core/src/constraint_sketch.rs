@@ -7,7 +7,7 @@ pub mod binding;
 pub mod source;
 mod spline;
 pub mod text;
-pub use spline::{MAX_SPLINE_POLES, SplineBasis};
+pub use spline::{MAX_SPLINE_POLES, SplineBasis, SplineSample};
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

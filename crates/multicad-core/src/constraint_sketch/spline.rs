@@ -100,62 +100,121 @@ impl SplineBasis {
         }
         b
     }
-    /// Rational de Boor evaluation for display only. Exact region predicates and
-    /// manufacturing are supplied by the native query adapter, never samples.
-    pub fn display_segments(
-        &self,
-        poles: &[[f64; 2]],
-    ) -> Result<Vec<[[f64; 2]; 2]>, DocumentError> {
+    fn expanded_knots(&self) -> Vec<f64> {
+        self.knots
+            .iter()
+            .zip(&self.multiplicities)
+            .flat_map(|(knot, multiplicity)| std::iter::repeat_n(*knot, *multiplicity as usize))
+            .collect()
+    }
+
+    fn validate_poles(&self, poles: &[[f64; 2]]) -> Result<(), DocumentError> {
         self.validate(poles.len())?;
         if poles
             .iter()
             .flatten()
             .any(|v| !v.is_finite() || v.abs() > 1e9)
         {
-            return Err(invalid("Invalid spline display poles"));
+            return Err(invalid("Invalid spline poles"));
         }
-        let knots: Vec<_> = self
-            .knots
-            .iter()
-            .zip(&self.multiplicities)
-            .flat_map(|(k, m)| std::iter::repeat_n(*k, *m as usize))
-            .collect();
+        Ok(())
+    }
+
+    /// Evaluate the authored rational curve and its first derivative on the
+    /// original knot interval. At an interior knot the derivative is from the
+    /// span to its right. At the last knot it is from the span to its left.
+    pub fn evaluate(
+        &self,
+        poles: &[[f64; 2]],
+        parameter: f64,
+    ) -> Result<SplineSample, DocumentError> {
+        self.validate_poles(poles)?;
+        let knots = self.expanded_knots();
+        let last = self.knots[self.knots.len() - 1];
+        if !(self.knots[0]..=last).contains(&parameter) {
+            return Err(invalid("Spline parameter is outside its knot interval"));
+        }
+        let sample = self.homogeneous_sample(poles, &knots, parameter);
+        let point = sample.point();
+        let derivative = std::array::from_fn(|axis| {
+            (sample.derivative[axis] - point[axis] * sample.derivative[2]) / sample.value[2]
+        });
+        Ok(SplineSample { point, derivative })
+    }
+
+    fn homogeneous_sample(
+        &self,
+        poles: &[[f64; 2]],
+        knots: &[f64],
+        parameter: f64,
+    ) -> HomogeneousSample {
         let degree = self.degree as usize;
+        let span = (knots.partition_point(|knot| *knot <= parameter) - 1).min(poles.len() - 1);
+        let mut work = [[0.; 3]; 26];
+        for (j, value) in work[..=degree].iter_mut().enumerate() {
+            let index = span - degree + j;
+            let weight = self.weights.as_ref().map_or(1., |weights| weights[index]);
+            *value = [poles[index][0] * weight, poles[index][1] * weight, weight];
+        }
+        for level in 1..degree {
+            for j in (level..=degree).rev() {
+                let lo = knots[span - degree + j];
+                let hi = knots[span + 1 + j - level];
+                work[j] = blend(work[j - 1], work[j], (parameter - lo) / (hi - lo));
+            }
+        }
+        // The last de Boor interpolation uses the active nonempty knot span.
+        // Its two homogeneous points also give the first derivative.
+        let width = knots[span + 1] - knots[span];
+        let [left, right] = [work[degree - 1], work[degree]];
+        HomogeneousSample {
+            value: blend(left, right, (parameter - knots[span]) / width),
+            derivative: std::array::from_fn(|axis| {
+                (right[axis] - left[axis]) * degree as f64 / width
+            }),
+        }
+    }
+
+    pub fn display_segments(
+        &self,
+        poles: &[[f64; 2]],
+    ) -> Result<Vec<[[f64; 2]; 2]>, DocumentError> {
+        self.validate_poles(poles)?;
+        let knots = self.expanded_knots();
         let count = ((self.knots.len() - 1) * 24).clamp(24, 512);
         let first = self.knots[0];
         let last = self.knots[self.knots.len() - 1];
-        let mut points = Vec::with_capacity(count + 1);
-        for i in 0..=count {
-            let u = first + (last - first) * i as f64 / count as f64;
-            let span = if i == count {
-                poles.len() - 1
-            } else {
-                (degree..poles.len())
-                    .find(|k| u >= knots[*k] && u < knots[*k + 1])
-                    .ok_or_else(|| invalid("Spline display parameter has no knot span"))?
-            };
-            let mut d: Vec<[f64; 3]> = (0..=degree)
-                .map(|j| {
-                    let at = span - degree + j;
-                    let w = self.weights.as_ref().map_or(1., |w| w[at]);
-                    [poles[at][0] * w, poles[at][1] * w, w]
-                })
-                .collect();
-            for r in 1..=degree {
-                for j in (r..=degree).rev() {
-                    let lo = knots[span - degree + j];
-                    let hi = knots[span + 1 + j - r];
-                    let a = (u - lo) / (hi - lo);
-                    d[j] = std::array::from_fn(|axis| (1. - a) * d[j - 1][axis] + a * d[j][axis]);
-                }
-            }
-            let q = d[degree];
-            let point = [q[0] / q[2], q[1] / q[2]];
-            if point.iter().any(|v| !v.is_finite()) {
-                return Err(invalid("Spline display evaluation was nonfinite"));
-            }
-            points.push(point);
-        }
+        let points: Vec<_> = (0..=count)
+            .map(|i| {
+                let parameter = if i == count {
+                    last
+                } else {
+                    first + (last - first) * i as f64 / count as f64
+                };
+                self.homogeneous_sample(poles, &knots, parameter).point()
+            })
+            .collect();
         Ok(points.windows(2).map(|p| [p[0], p[1]]).collect())
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SplineSample {
+    pub point: [f64; 2],
+    pub derivative: [f64; 2],
+}
+
+struct HomogeneousSample {
+    value: [f64; 3],
+    derivative: [f64; 3],
+}
+
+impl HomogeneousSample {
+    fn point(&self) -> [f64; 2] {
+        [self.value[0] / self.value[2], self.value[1] / self.value[2]]
+    }
+}
+
+fn blend(a: [f64; 3], b: [f64; 3], t: f64) -> [f64; 3] {
+    std::array::from_fn(|axis| (1. - t) * a[axis] + t * b[axis])
 }

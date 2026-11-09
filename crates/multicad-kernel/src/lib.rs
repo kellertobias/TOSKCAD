@@ -503,6 +503,8 @@ mod ffi {
         fn vertices(shape: &Shape) -> Result<Vec<VertexInfo>>;
         fn analytic_edges(shape: &Shape) -> Result<Vec<AnalyticEdgeData>>;
         fn solid_count(shape: &Shape) -> Result<u32>;
+        // Retained as an independent comparison for Rust curve evaluation tests.
+        #[allow(dead_code)]
         fn curve_evaluate(curve: &CurvedEdgeData, parameter: f64) -> Result<CurveSampleData>;
         fn curve_project(
             curve: &CurvedEdgeData,

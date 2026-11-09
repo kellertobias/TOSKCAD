@@ -75,16 +75,22 @@ pub struct BSpline2d {
     pub weights: Option<Vec<f64>>,
 }
 impl BSpline2d {
-    pub fn validate(&self, policy: GeometryPolicy) -> Result<(), GeometryError> {
-        policy.validate()?;
+    fn basis(&self) -> multicad_core::constraint_sketch::SplineBasis {
         multicad_core::constraint_sketch::SplineBasis {
             degree: self.degree,
             knots: self.knots.clone(),
             multiplicities: self.multiplicities.clone(),
             weights: self.weights.clone(),
         }
-        .validate(self.poles.len())
-        .map_err(|e| input(e.to_string()))?;
+    }
+    pub fn validate(&self, policy: GeometryPolicy) -> Result<(), GeometryError> {
+        policy.validate()?;
+        self.basis()
+            .validate(self.poles.len())
+            .map_err(|e| input(e.to_string()))?;
+        self.validate_pole_geometry(policy)
+    }
+    fn validate_pole_geometry(&self, policy: GeometryPolicy) -> Result<(), GeometryError> {
         for point in &self.poles {
             policy.point([point[0], point[1], 0.])?;
         }
@@ -109,7 +115,16 @@ impl BSpline2d {
         parameter: f64,
         policy: GeometryPolicy,
     ) -> Result<CurveSample2d, GeometryError> {
-        CurvedEdge2d::BSpline(self.clone()).evaluate(parameter, policy)
+        policy.validate()?;
+        self.validate_pole_geometry(policy)?;
+        let sample = self
+            .basis()
+            .evaluate(&self.poles, parameter)
+            .map_err(|e| input(e.to_string()))?;
+        Ok(CurveSample2d {
+            point: sample.point,
+            derivative: sample.derivative,
+        })
     }
 }
 #[derive(Clone, Debug, PartialEq)]
@@ -256,20 +271,13 @@ impl CurvedEdge2d {
         parameter: f64,
         policy: GeometryPolicy,
     ) -> Result<CurveSample2d, GeometryError> {
+        if let Self::BSpline(spline) = self {
+            return spline.evaluate(parameter, policy);
+        }
         let curve = self.data(policy, 0)?;
-        if let Some(elementary) = ElementaryCurve::new(self, &curve) {
-            return elementary.evaluate(parameter);
-        }
-        let out = ffi::curve_evaluate(&curve, parameter).map_err(native)?;
-        let point = [out.point.x, out.point.y];
-        let derivative = [out.derivative.x, out.derivative.y];
-        if point.iter().chain(&derivative).any(|v| !v.is_finite()) {
-            return Err(error(
-                GeometryErrorKind::InvalidResult,
-                "Native curve evaluation was nonfinite",
-            ));
-        }
-        Ok(CurveSample2d { point, derivative })
+        ElementaryCurve::new(self, &curve)
+            .expect("elementary curve")
+            .evaluate(parameter)
     }
     pub fn intersections(
         &self,
