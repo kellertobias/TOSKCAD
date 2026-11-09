@@ -6,7 +6,6 @@ use crate::{
 };
 use multicad_core::equipment::{Category as EquipmentCategory, Kind};
 
-pub const PARENT_CUE_HEIGHT: f32 = 24.;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Category {
     Water,
@@ -61,6 +60,15 @@ impl Category {
     }
     pub fn from_workspace(workspace: &str) -> Option<Self> {
         Self::ALL.into_iter().find(|c| c.workspace() == workspace)
+    }
+    pub(crate) fn adjacent(self, forward: bool) -> Option<Self> {
+        let index = Self::ALL.iter().position(|category| *category == self)?;
+        let next = if forward {
+            index.checked_add(1)
+        } else {
+            index.checked_sub(1)
+        }?;
+        Self::ALL.get(next).copied()
     }
     pub fn contains(self, kind: Kind) -> bool {
         match self {
@@ -252,8 +260,7 @@ pub fn groups(category: Option<Category>) -> Vec<Group> {
             ),
         ];
     };
-    let mut groups = vec![group("", &["architecture-back"])];
-    groups.extend(match category {
+    match category {
         Category::Water => vec![
             group(
                 "Fixtures",
@@ -316,8 +323,7 @@ pub fn groups(category: Option<Category>) -> Vec<Group> {
             group("Create", &["plant", "fence"]),
             group("Library", &["library"]),
         ],
-    });
-    groups
+    }
 }
 /// The shared registry retains every real command for search and workbench routing.
 pub fn tab_tools() -> Vec<&'static str> {
@@ -333,33 +339,8 @@ pub fn tab_tools() -> Vec<&'static str> {
             }
         }
     }
-    ids.push("equipment");
+    ids.extend(["architecture-back", "equipment"]);
     ids
-}
-
-/// The real parent controls move into this narrow row while child tools use
-/// the full strip. Back/Close return context without invoking a modeling tool.
-pub fn parent_cue(
-    ui: &mut crate::egui::Ui,
-    registry: &crate::registry::Registry,
-    category: Category,
-    enabled: impl Fn(Command) -> bool,
-) -> Option<Command> {
-    use crate::egui;
-    let mut action = None;
-    ui.push_id("architecture-parent-cue",|ui| {
-        ui.allocate_ui_with_layout(egui::vec2(ui.available_width(),PARENT_CUE_HEIGHT),egui::Layout::left_to_right(egui::Align::Center),|ui| {
-            ui.spacing_mut().item_spacing=egui::vec2(4.,0.);
-            ui.strong(egui::RichText::new("Architecture").small());
-            for group in groups(None) { for entry in group.entries { let Entry::Tool(id)=entry else {continue}; let tool=registry.tool(id).expect("Architecture parent tool");
-                if ui.add_enabled(enabled(tool.action),egui::Button::new(tool.label).small().selected(tool.action==Command::ArchitectureCategory(category))).clicked() {action=Some(tool.action);}
-            }}
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center),|ui| {
-                if ui.small_button("Close").on_hover_text("Close this category and return to Architecture; keep the current operation open").clicked() {action=Some(Command::ArchitectureParent);}
-            });
-        });
-    });
-    action
 }
 
 #[cfg(test)]
@@ -389,6 +370,17 @@ mod tests {
                 "stairs"
             ]
         );
+        assert_eq!(
+            root[1]
+                .entries
+                .iter()
+                .map(|entry| match entry {
+                    Entry::Tool(id) => *id,
+                    _ => panic!("explicit category launcher"),
+                })
+                .collect::<Vec<_>>(),
+            Category::ALL.map(Category::id)
+        );
         let mut offered = std::collections::BTreeSet::new();
         for category in Category::ALL {
             for group in groups(Some(category)) {
@@ -396,6 +388,10 @@ mod tests {
                     let Entry::Tool(id) = entry else {
                         panic!("explicit category tool")
                     };
+                    assert_ne!(
+                        id, "architecture-back",
+                        "category navigation uses the tab row"
+                    );
                     let tool = registry.tool(id).expect("live catalog command");
                     if let Command::EquipmentPreset(kind) = tool.action {
                         assert!(category.contains(kind));
@@ -406,8 +402,8 @@ mod tests {
         }
         assert_eq!(offered, Kind::ALL.into_iter().collect());
         let electrical = groups(Some(Category::Electrical));
-        assert_eq!(electrical[1].label, "Connections");
-        let required: Vec<_> = electrical[1]
+        assert_eq!(electrical[0].label, "Connections");
+        let required: Vec<_> = electrical[0]
             .entries
             .iter()
             .take(3)
@@ -429,6 +425,16 @@ mod tests {
             );
         }
     }
+    #[test]
+    fn category_keyboard_order_reaches_the_parent_at_both_ends() {
+        assert_eq!(Category::Water.adjacent(false), None);
+        for pair in Category::ALL.windows(2) {
+            assert_eq!(pair[0].adjacent(true), Some(pair[1]));
+            assert_eq!(pair[1].adjacent(false), Some(pair[0]));
+        }
+        assert_eq!(Category::Landscaping.adjacent(true), None);
+    }
+
     #[test]
     fn finder_aliases_choose_specific_families_and_keep_generic_and_legacy_level_commands() {
         let registry = Registry::default();
@@ -465,5 +471,16 @@ mod tests {
             registry.parse_line("electrical").unwrap().0,
             Command::ArchitectureCategory(Category::Electrical)
         );
+        assert!(tab_tools().contains(&"architecture-back"));
+        for alias in [
+            "architecture-back",
+            "back-to-architecture",
+            "close-category",
+        ] {
+            assert_eq!(
+                registry.parse_line(alias).unwrap().0,
+                Command::ArchitectureParent
+            );
+        }
     }
 }

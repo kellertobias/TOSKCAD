@@ -307,7 +307,7 @@ fn paint(
     output.textures_delta.clear();
     output
 }
-fn bounds(out: &egui::FullOutput, label: &str) -> egui::Rect {
+fn control_bounds(out: &egui::FullOutput, label: &str) -> Option<egui::Rect> {
     let tree = out
         .platform_output
         .accesskit_update
@@ -327,7 +327,9 @@ fn bounds(out: &egui::FullOutput, label: &str) -> egui::Rect {
             )
         })
         .max_by(|a, b| a.height().total_cmp(&b.height()))
-        .unwrap_or_else(|| panic!("Missing accessible control {label}"))
+}
+fn bounds(out: &egui::FullOutput, label: &str) -> egui::Rect {
+    control_bounds(out, label).unwrap_or_else(|| panic!("Missing accessible control {label}"))
 }
 fn click(
     app: &mut Application,
@@ -355,9 +357,9 @@ fn click(
     paint(app, ctx, size, vec![])
 }
 #[test]
-fn actual_category_clicks_lift_parent_controls_and_back_close_restore_one_row_without_placement() {
+fn category_tabs_replace_the_peer_row_and_keep_the_model_viewport_in_place() {
     for (size, density) in [
-        (egui::vec2(1100., 700.), 1.),
+        (egui::vec2(1024., 600.), 1.),
         (egui::vec2(1360., 860.), 1.),
         (egui::vec2(1360., 860.), 2.),
     ] {
@@ -365,60 +367,119 @@ fn actual_category_clicks_lift_parent_controls_and_back_close_restore_one_row_wi
         let mut app = app();
         let source = app.current().session.document().clone();
         paint(&mut app, &ctx, size, vec![]).drop_without_applying_deltas();
-        let out = paint(&mut app, &ctx, size, vec![]);
-        let architecture = bounds(&out, "Architecture").center();
-        let root = click(&mut app, &ctx, size, architecture);
-        let wall = bounds(&root, "Wall");
-        let electrical = bounds(&root, "Electrical");
-        assert!(wall.height() > 70.);
-        bounds(&root, "Door");
-        bounds(&root, "Window");
-        bounds(&root, "Cutout");
-        bounds(&root, "Levels");
-        bounds(&root, "Stairs");
-        let mut nested = click(&mut app, &ctx, size, electrical.center());
-        assert_eq!(
-            app.active_architecture_category(),
-            Some(Category::Electrical)
-        );
-        let compact_wall = bounds(&nested, "Wall");
-        assert!(compact_wall.height() <= crate::architecture_navigation::PARENT_CUE_HEIGHT);
-        assert!(compact_wall.center().y < wall.center().y);
-        for label in ["Switch", "Socket", "Junction box", "Back"] {
-            let r = bounds(&nested, label);
-            assert!(r.min.x >= 0. && r.max.x <= size.x);
-            assert!(r.min.y >= compact_wall.max.y);
+        let common = paint(&mut app, &ctx, size, vec![]);
+        let architecture = bounds(&common, "Architecture");
+        let row_y = architecture.center().y;
+        let root = click(&mut app, &ctx, size, architecture.center());
+        let viewport_y = app.current().sketch.viewport_rect.unwrap().min.y;
+        let root_tools = ["Wall", "Door", "Window", "Cutout", "Levels", "Stairs"];
+        for label in root_tools {
+            let tool = bounds(&root, label);
+            assert!(tool.min.y >= architecture.max.y && tool.max.y <= viewport_y);
         }
-        for category in [
-            Category::Water,
-            Category::Heating,
-            Category::Furniture,
-            Category::Landscaping,
-            Category::Electrical,
+        let water = bounds(&root, "Water");
+        assert!(water.min.y >= architecture.max.y);
+        let mut nested = click(&mut app, &ctx, size, water.center());
+        for (category, tool) in [
+            (Category::Water, "Kitchen sink"),
+            (Category::Electrical, "Switch"),
+            (Category::Heating, "Radiator"),
+            (Category::Furniture, "Add Cabinet"),
+            (Category::Landscaping, "Planting"),
         ] {
-            let target = bounds(&nested, category.label()).center();
-            nested = click(&mut app, &ctx, size, target);
+            if category != Category::Water {
+                let target = bounds(&nested, category.label()).center();
+                nested = click(&mut app, &ctx, size, target);
+            }
             assert_eq!(app.active_architecture_category(), Some(category));
+            let parent = bounds(&nested, "Architecture");
+            let mut right = parent.max.x;
+            assert!((parent.center().y - row_y).abs() < 1.);
+            for option in Category::ALL {
+                let tab = bounds(&nested, option.label());
+                assert!((tab.center().y - row_y).abs() < 1., "{option:?}");
+                assert!(tab.min.x >= right && tab.max.x <= size.x, "{option:?}");
+                right = tab.max.x;
+            }
+            for label in [
+                "Common",
+                "Wood",
+                "Metal",
+                "Mechanical",
+                "Other",
+                "Relations",
+            ]
+            .into_iter()
+            .chain(root_tools)
+            {
+                assert!(control_bounds(&nested, label).is_none(), "{label}");
+            }
+            let tool = bounds(&nested, tool);
+            assert!(tool.min.x >= 0. && tool.max.x <= size.x);
+            assert!(tool.min.y >= parent.max.y && tool.max.y <= viewport_y);
+            assert!((app.current().sketch.viewport_rect.unwrap().min.y - viewport_y).abs() < 1.);
             assert_eq!(app.current().session.document(), &source);
-            assert_eq!(app.current().session.revision(), 0);
             assert!(!app.current().sketch.model_interaction_active());
-            let r = bounds(&nested, "Close");
-            assert!(r.max.x <= size.x && r.height() <= 24.);
         }
-        let back = bounds(&nested, "Back").center();
-        let restored = click(&mut app, &ctx, size, back);
+        let parent = bounds(&nested, "Architecture").center();
+        let restored = click(&mut app, &ctx, size, parent);
         assert_eq!(app.active_architecture_category(), None);
-        assert!((bounds(&restored, "Wall").center().y - wall.center().y).abs() < 1.);
-        let again = bounds(&restored, "Electrical").center();
-        let nested = click(&mut app, &ctx, size, again);
-        let close = bounds(&nested, "Close").center();
-        let root = click(&mut app, &ctx, size, close);
-        assert_eq!(app.active_architecture_category(), None);
-        assert!((bounds(&root, "Wall").center().y - wall.center().y).abs() < 1.);
+        assert!((bounds(&restored, "Common").center().y - row_y).abs() < 1.);
+        assert!((app.current().sketch.viewport_rect.unwrap().min.y - viewport_y).abs() < 1.);
+        for label in root_tools {
+            assert!(
+                (bounds(&restored, label).center().y - bounds(&root, label).center().y).abs() < 1.
+            );
+        }
         assert_eq!(app.current().session.document(), &source);
         assert_eq!(app.current().session.revision(), 0);
     }
 }
+
+#[test]
+fn tab_cycles_architecture_categories_and_shift_tab_from_water_returns_to_root() {
+    let mut app = app();
+    let source = app.current().session.document().clone();
+    let ctx = context(1.);
+    let size = egui::vec2(1024., 600.);
+    app.invoke(
+        Command::ArchitectureCategory(Category::Water),
+        &[],
+        Channel::Ui,
+    )
+    .unwrap();
+    paint(&mut app, &ctx, size, vec![]).drop_without_applying_deltas();
+    for (modifiers, expected) in [
+        (egui::Modifiers::NONE, Some(Category::Electrical)),
+        (egui::Modifiers::SHIFT, Some(Category::Water)),
+        (egui::Modifiers::SHIFT, None),
+    ] {
+        for pressed in [true, false] {
+            paint(
+                &mut app,
+                &ctx,
+                size,
+                vec![egui::Event::Key {
+                    key: egui::Key::Tab,
+                    physical_key: None,
+                    pressed,
+                    repeat: false,
+                    modifiers,
+                }],
+            )
+            .drop_without_applying_deltas();
+        }
+        assert_eq!(app.active_architecture_category(), expected);
+    }
+    let out = paint(&mut app, &ctx, size, vec![]);
+    let architecture = bounds(&out, "Architecture");
+    assert!((bounds(&out, "Common").center().y - architecture.center().y).abs() < 1.);
+    assert!(bounds(&out, "Water").min.y >= architecture.max.y);
+    assert!(!app.current().sketch.model_interaction_active());
+    assert_eq!(app.current().session.document(), &source);
+    assert_eq!(app.current().session.revision(), 0);
+}
+
 #[test]
 fn category_context_is_per_project_and_saved_subpaths_restore_without_running_tools() {
     let mut app = app();
@@ -509,8 +570,8 @@ fn preset_commands_open_the_chosen_native_form_and_navigation_preserves_it_until
             .any(|(_, node)| node.value() == Some(Kind::JunctionBox.preset().name)),
         "The actual inspector name must use the chosen family"
     );
-    let back = bounds(&out, "Back").center();
-    let root = click(&mut app, &ctx, size, back);
+    let parent = bounds(&out, "Architecture").center();
+    let root = click(&mut app, &ctx, size, parent);
     assert!(app.current().sketch.model_active());
     assert!(app.tool_active(preset));
     assert_eq!(app.current().session.document(), &before);

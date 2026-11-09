@@ -12,6 +12,36 @@ impl Application {
         .then_some(self.current().architecture_category)
         .flatten()
     }
+    pub(super) fn architecture_category_tabs(
+        &self,
+        ui: &mut egui::Ui,
+        category: Category,
+        colors: TabColors,
+    ) -> Option<Command> {
+        let mut action =
+            controls::tab_with_icon(ui, Some(Icon::Back), "Architecture", false, colors)
+                .on_hover_text("Return to Architecture tools and the full Model tab row")
+                .clicked()
+                .then_some(Command::ArchitectureParent);
+        for entry in Category::ALL {
+            let selected = entry == category;
+            if controls::tab_with_icon(ui, Some(entry.icon()), entry.label(), selected, colors)
+                .clicked()
+                && !selected
+            {
+                action = Some(Command::ArchitectureCategory(entry));
+            }
+        }
+        action
+    }
+
+    pub(super) fn cycle_architecture_category(&mut self, category: Category, forward: bool) {
+        let command = category
+            .adjacent(forward)
+            .map_or(Command::ArchitectureParent, Command::ArchitectureCategory);
+        self.execute(command, &[], Channel::Ui);
+    }
+
     pub(super) fn navigate_architecture(
         &mut self,
         category: Option<Category>,

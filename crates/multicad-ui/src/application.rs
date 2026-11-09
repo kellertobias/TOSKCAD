@@ -2127,7 +2127,10 @@ impl Application {
         } else {
             self.tab
         };
-        let tabs = if project {
+        let category = self.active_architecture_category();
+        let tabs = if category.is_some() {
+            Vec::new()
+        } else if project {
             (0..workspace.tabs.len())
                 .map(|index| (index, false))
                 .collect()
@@ -2135,12 +2138,43 @@ impl Application {
             self.ribbon_tabs()
         };
         let accent = visible_mode.color();
+        let colors = TabColors {
+            text: Color32::WHITE,
+            background: accent,
+            active_text: accent,
+            active_background: Color32::WHITE,
+        };
+        let architecture = self.mode == Mode::Model
+            && workspace
+                .tabs
+                .get(self.tab)
+                .is_some_and(|tab| tab.title == "Architecture");
         egui::Frame::new()
             .fill(accent)
             .inner_margin(egui::Margin::symmetric(8, 3))
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 ui.horizontal(|ui| {
+                    let opacity = ui.opacity();
+                    if architecture {
+                        let id = ui.make_persistent_id((
+                            "architecture-tab-transition",
+                            self.current().local_id,
+                        ));
+                        let nested = ui.ctx().animate_bool_with_time(
+                            id,
+                            category.is_some(),
+                            ui.style().animation_time.min(0.16),
+                        );
+                        let incoming = if category.is_some() {
+                            nested
+                        } else {
+                            1. - nested
+                        };
+                        ui.multiply_opacity(0.82 + 0.18 * incoming);
+                    }
+                    let category_action = category
+                        .and_then(|category| self.architecture_category_tabs(ui, category, colors));
                     let mut selected_tab = None;
                     for (index, hidden) in tabs {
                         let tab = &workspace.tabs[index];
@@ -2150,12 +2184,7 @@ impl Application {
                                 crate::ribbon_ui::workspace_tab_icon(visible_mode, tab.title),
                                 tab.title,
                                 selected == index,
-                                TabColors {
-                                    text: Color32::WHITE,
-                                    background: accent,
-                                    active_text: accent,
-                                    active_background: Color32::WHITE,
-                                },
+                                colors,
                             )
                         };
                         let response = if project && self.project_tab_blocked(index) {
@@ -2176,12 +2205,13 @@ impl Application {
                             selected_tab = Some(index);
                         }
                     }
+                    ui.set_opacity(opacity);
                     let action = if visible_mode == Mode::Model {
                         self.utility_actions(ui)
                     } else {
                         None
                     };
-                    (selected_tab, action)
+                    (selected_tab, category_action.or(action))
                 })
                 .inner
             })
@@ -2203,14 +2233,6 @@ impl Application {
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 let category = self.active_architecture_category();
-                if let Some(category) = category {
-                    action = crate::architecture_navigation::parent_cue(
-                        ui,
-                        &self.registry,
-                        category,
-                        |command| self.enabled(command),
-                    );
-                }
                 let context = ui.ctx().clone();
                 let sketch = &self.current().sketch;
                 let tool_active = |command| self.tool_active(command);
@@ -2242,6 +2264,7 @@ impl Application {
         }
         if let Some(action) = action {
             self.execute(action, &[], Channel::Ui);
+            ui.ctx().request_repaint();
         }
     }
     fn submit_line(&mut self, line: String) {
@@ -2522,6 +2545,14 @@ impl Application {
                 ShortcutAction::FocusCommand => self.focus_command = true,
                 ShortcutAction::NextWorkspace | ShortcutAction::PreviousWorkspace => {
                     // Cycle the ribbon's visible workbenches in their chosen order.
+                    if let Some(category) = self.active_architecture_category() {
+                        self.cycle_architecture_category(
+                            category,
+                            action == ShortcutAction::NextWorkspace,
+                        );
+                        ctx.memory_mut(|m| m.move_focus(egui::FocusDirection::None));
+                        continue;
+                    }
                     let project = self.mode.top_level() == Mode::Parameters;
                     let visible_mode = if project { Mode::Parameters } else { self.mode };
                     let selected = if project {
@@ -2798,16 +2829,7 @@ impl Application {
                 category,
             );
             egui::Panel::top("ribbon")
-                .exact_size(
-                    RIBBON_TAB_STRIP
-                        + tool_height
-                        + RIBBON_BOTTOM_PAD
-                        + if category.is_some() {
-                            crate::architecture_navigation::PARENT_CUE_HEIGHT
-                        } else {
-                            0.
-                        },
-                )
+                .exact_size(RIBBON_TAB_STRIP + tool_height + RIBBON_BOTTOM_PAD)
                 .frame(egui::Frame::new())
                 .show(ui, |ui| self.ribbon(ui));
         }
