@@ -1,5 +1,80 @@
 use super::*;
+use crate::library::PreviewTextures;
 use crate::recent_projects::{RecentProject, RecentStore, RecentView, RecentWorker};
+use multicad_core::project_file::info::FileInfo;
+const CARD_GAP: f32 = 12.;
+const CARD_PADDING: f32 = 10.;
+const MIN_CARD_WIDTH: f32 = 240.;
+
+fn recent_card(
+    ui: &mut egui::Ui,
+    textures: &mut PreviewTextures,
+    entry: &RecentProject,
+    info: Option<&FileInfo>,
+    width: f32,
+    enabled: bool,
+) -> bool {
+    let title = info.map_or(entry.title.as_str(), |info| info.name.as_str());
+    let file = entry
+        .path
+        .file_name()
+        .unwrap_or(entry.path.as_os_str())
+        .to_string_lossy();
+    let response = egui::Frame::new()
+        .fill(Color32::from_rgb(33, 44, 60))
+        .inner_margin(CARD_PADDING)
+        .corner_radius(5)
+        .show(ui, |ui| {
+            let thumbnail_width = width - 2. * CARD_PADDING;
+            ui.set_width(thumbnail_width);
+            ui.spacing_mut().item_spacing.y = 3.;
+            textures.show_framed(
+                ui,
+                info.and_then(|info| info.preview.as_ref()),
+                egui::vec2(thumbnail_width, thumbnail_width * 9. / 16.),
+                "Project preview",
+            );
+            ui.add_space(3.);
+            ui.add(
+                egui::Label::new(egui::RichText::new(title).strong())
+                    .truncate()
+                    .show_tooltip_when_elided(false),
+            );
+            ui.add(
+                egui::Label::new(
+                    egui::RichText::new(file)
+                        .size(11.)
+                        .color(Color32::LIGHT_GRAY),
+                )
+                .truncate()
+                .show_tooltip_when_elided(false),
+            );
+        })
+        .response
+        .interact(egui::Sense::click())
+        .on_hover_ui(|ui| {
+            ui.set_max_width(360.);
+            ui.strong(title);
+            if let Some(info) = info.filter(|info| !info.description.is_empty()) {
+                ui.add(
+                    egui::Label::new(&info.description)
+                        .truncate()
+                        .show_tooltip_when_elided(false),
+                );
+            }
+            ui.weak(entry.path.to_string_lossy());
+        });
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, title));
+    if enabled && (response.hovered() || response.has_focus()) {
+        ui.painter().rect_stroke(
+            response.rect,
+            5,
+            egui::Stroke::new(1., Color32::from_rgb(103, 150, 207)),
+            egui::StrokeKind::Inside,
+        );
+    }
+    enabled && response.clicked()
+}
 /// Height left for the welcome list. The centered column sits in a horizontal
 /// row whose own available height is only one row tall.
 fn list_height(ui: &egui::Ui) -> f32 {
@@ -186,6 +261,47 @@ impl Application {
         }
         self.welcome = false;
     }
+    fn recent_grid(&mut self, ui: &mut egui::Ui) -> Option<PathBuf> {
+        let enabled = !self.file_busy();
+        let width = ui.available_width();
+        let columns = (((width + CARD_GAP) / (MIN_CARD_WIDTH + CARD_GAP)).floor() as usize).max(1);
+        let card_width = (width - CARD_GAP * (columns - 1) as f32) / columns as f32;
+        ui.spacing_mut().item_spacing = egui::Vec2::splat(CARD_GAP);
+        let mut selected = None;
+        for row in self.recents.chunks(columns) {
+            ui.horizontal(|ui| {
+                for entry in row {
+                    let info = self
+                        .library
+                        .cards
+                        .get(&entry.path)
+                        .and_then(|card| card.as_ref().ok())
+                        .map(|card| &card.info);
+                    let clicked = ui
+                        .scope_builder(
+                            egui::UiBuilder::new()
+                                .id_salt(&entry.path)
+                                .layout(egui::Layout::top_down(egui::Align::Min)),
+                            |ui| {
+                                recent_card(
+                                    ui,
+                                    &mut self.library.textures,
+                                    entry,
+                                    info,
+                                    card_width,
+                                    enabled,
+                                )
+                            },
+                        )
+                        .inner;
+                    if clicked {
+                        selected = Some(entry.path.clone());
+                    }
+                }
+            });
+        }
+        selected
+    }
     pub(super) fn show_welcome(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
         // Recent-card loads have no open picker to drive repaint requests.
@@ -229,22 +345,24 @@ impl Application {
         let mut path = None;
         let mut example = None;
         egui::CentralPanel::default().frame(egui::Frame::new().fill(Color32::from_rgb(25,33,44))).show(ui,|ui| {
-            ui.add_space(54.);
-            let width=(ui.available_width()-64.).clamp(300.,760.);
+            let compact = ctx.content_rect().height() <= 680.;
+            ui.add_space(if compact { 24. } else { 54. });
+            let max_width = if self.recents.is_empty() { 760. } else { 1100. };
+            let width=(ui.available_width()-64.).clamp(300.,max_width);
             ui.horizontal(|ui| {
                 ui.add_space(((ui.available_width()-width)*0.5).max(0.));
                 ui.allocate_ui_with_layout(egui::vec2(width,ui.available_height()),egui::Layout::top_down(egui::Align::Min),|ui| {
                     ui.horizontal(|ui| {
-                        if let Some(logo)=&self.welcome_logo {ui.add(egui::Image::new((logo.id(),egui::vec2(80.,80.))).alt_text("ToskCAD application logo"));ui.add_space(16.);}
-                        ui.vertical(|ui| {ui.add_space(12.);ui.heading(egui::RichText::new("Welcome to ToskCAD").size(28.));ui.label("Continue a project or start something new.");});
+                        if let Some(logo)=&self.welcome_logo {ui.add(egui::Image::new((logo.id(),egui::Vec2::splat(if compact { 64. } else { 80. }))).alt_text("ToskCAD application logo"));ui.add_space(16.);}
+                        ui.vertical(|ui| {ui.add_space(if compact { 5. } else { 12. });ui.heading(egui::RichText::new("Welcome to ToskCAD").size(28.));ui.label("Continue a project or start something new.");});
                     });
-                    ui.add_space(20.);
+                    ui.add_space(if compact { 12. } else { 20. });
                     ui.horizontal(|ui| {
                         if ui.add_sized([156.,40.],egui::Button::new("Open project…")).on_hover_text("Choose a .tcd project (or a legacy .multicad project) with the operating system file picker").clicked(){command=Some(Command::Open);}
                         if ui.add_sized([156.,40.],egui::Button::new("New project")).on_hover_text("Create a new editable project").clicked(){command=Some(Command::New);}
                         if ui.add_sized([156.,40.],egui::Button::new("Examples…")).on_hover_text("Browse the bundled example projects; each opens as your own editable copy").clicked(){command=Some(Command::Examples);}
                     });
-                    ui.add_space(30.);
+                    ui.add_space(if compact { 20. } else { 30. });
                     let history_loading=self.recent_worker.as_ref().is_some_and(|w| w.pending());
                     if self.recents.is_empty() && !history_loading {
                         // First launch, or no history: the same cards as Examples.
@@ -259,20 +377,7 @@ impl Application {
                     ui.strong("Recent projects");
                     ui.add_space(10.);
                     if self.recents.is_empty() { ui.colored_label(Color32::GRAY,"Projects appear here after you open or save them."); }
-                    egui::ScrollArea::vertical().id_salt("welcome-recents").max_height(list_height(ui)).min_scrolled_height(list_height(ui)).show(ui,|ui| {
-                        for entry in self.recents.clone() {
-                            let entry = &entry;
-                            let response=egui::Frame::new().fill(Color32::from_rgb(33,44,60)).inner_margin(12.).corner_radius(5).show(ui,|ui| {
-                                ui.set_width((width-30.).max(260.));
-                                self.recent_card(ui, entry);
-                                ui.add(egui::Label::new(egui::RichText::new(entry.path.to_string_lossy()).color(Color32::GRAY)).truncate());
-                            }).response.interact(egui::Sense::click()).on_hover_text(entry.path.to_string_lossy());
-                            response.widget_info(||egui::WidgetInfo::labeled(egui::WidgetType::Button,!self.file_busy(),&entry.title));
-                            if response.hovered(){ui.painter().rect_stroke(response.rect,5,egui::Stroke::new(1.,Color32::from_rgb(81,118,168)),egui::StrokeKind::Inside);}
-                            if response.clicked() && !self.file_busy() {path=Some(entry.path.clone());}
-                            ui.add_space(8.);
-                        }
-                    });
+                    path=egui::ScrollArea::vertical().id_salt("welcome-recents").max_height(list_height(ui)).min_scrolled_height(list_height(ui)).show(ui,|ui| self.recent_grid(ui)).inner;
                     }
                     if self.message_error { ui.colored_label(Color32::LIGHT_RED,&self.message); }
                     if let Some(error)=&self.recent_error {ui.colored_label(Color32::GRAY,format!("Recent-project history: {error}"));}
@@ -364,6 +469,141 @@ mod tests {
             assert!(Instant::now() < until, "worker timeout");
             std::thread::yield_now();
         }
+    }
+    #[test]
+    fn recent_grid_aligns_mixed_previews_and_opens_the_clicked_card() {
+        use multicad_core::project_file::ProjectCard;
+        let mut app = Application::welcome(Box::new(Storage {
+            document: Document::new("Opened from grid").unwrap(),
+            fail: false,
+        }))
+        .unwrap();
+        for index in 0..5 {
+            let title = if index == 3 {
+                "Long project name that should truncate inside its card ".repeat(3)
+            } else {
+                format!("Recent project {index}")
+            };
+            let path = PathBuf::from(format!("/private/tmp/grid-{index}.tcd"));
+            app.recents.push(RecentProject {
+                path: path.clone(),
+                title: title.clone(),
+                last_opened_unix_ms: 1,
+                view: None,
+            });
+            let preview = [[80, 20], [20, 80]].get(index).map(|&size| {
+                crate::preview_capture::preview_from(&egui::ColorImage::filled(size, Color32::RED))
+                    .unwrap()
+            });
+            app.library.cards.insert(
+                path,
+                Ok(ProjectCard {
+                    document: app.current().session.document().id(),
+                    info: FileInfo {
+                        name: title,
+                        preview,
+                        ..Default::default()
+                    },
+                    info_error: None,
+                    symbol_definitions: 0,
+                    mechanical_parts: vec![],
+                    format_version: 1,
+                    source_hash: ContentHash::of(b"recent card"),
+                }),
+            );
+        }
+        let mut click_target = None;
+        for (size, columns) in [(egui::vec2(1360., 860.), 4), (egui::vec2(1024., 600.), 3)] {
+            let ctx = egui::Context::default();
+            ctx.enable_accesskit();
+            crate::theme::configure(&ctx);
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
+                    ..Default::default()
+                },
+                |ui| app.show(ui),
+            );
+            output.textures_delta.clear();
+            let nodes = &output
+                .platform_output
+                .accesskit_update
+                .as_ref()
+                .unwrap()
+                .nodes;
+            let cards: Vec<_> = app
+                .recents
+                .iter()
+                .map(|entry| {
+                    nodes
+                        .iter()
+                        .filter_map(|(_, node)| {
+                            (node.label() == Some(&entry.title))
+                                .then(|| node.bounds())
+                                .flatten()
+                        })
+                        .max_by(|a, b| (a.y1 - a.y0).total_cmp(&(b.y1 - b.y0)))
+                        .unwrap()
+                })
+                .collect();
+            assert!((cards[0].y0 - cards[columns - 1].y0).abs() < 1.);
+            assert!((cards[0].x0 - cards[columns].x0).abs() < 1.);
+            assert!(cards[columns].y0 >= cards[0].y1);
+            for card in &cards {
+                assert!(((card.x1 - card.x0) - (cards[0].x1 - cards[0].x0)).abs() < 1.);
+                assert!(
+                    ((card.y1 - card.y0) - (cards[0].y1 - cards[0].y0)).abs() < 1.,
+                    "Grid bounds at {size:?}: {cards:?}"
+                );
+            }
+            let mut ratios: Vec<_> = nodes
+                .iter()
+                .filter_map(|(_, node)| {
+                    (node.label() == Some("Project preview"))
+                        .then(|| node.bounds())
+                        .flatten()
+                        .map(|bounds| (bounds.x1 - bounds.x0) / (bounds.y1 - bounds.y0))
+                })
+                .collect();
+            ratios.sort_by(f64::total_cmp);
+            assert_eq!(ratios.len(), 2);
+            assert!((ratios[0] - 0.25).abs() < 0.02);
+            assert!((ratios[1] - 4.).abs() < 0.02);
+            let target = &cards[1];
+            click_target = Some((
+                ctx,
+                size,
+                egui::pos2(
+                    ((target.x0 + target.x1) / 2.) as f32,
+                    ((target.y0 + target.y1) / 2.) as f32,
+                ),
+            ));
+            output.drop_without_applying_deltas();
+        }
+        let (ctx, size, pos) = click_target.unwrap();
+        let path = app.recents[1].path.clone();
+        for pressed in [true, false] {
+            ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
+                    events: vec![
+                        egui::Event::PointerMoved(pos),
+                        egui::Event::PointerButton {
+                            pos,
+                            button: egui::PointerButton::Primary,
+                            pressed,
+                            modifiers: egui::Modifiers::NONE,
+                        },
+                    ],
+                    ..Default::default()
+                },
+                |ui| app.show(ui),
+            )
+            .drop_without_applying_deltas();
+        }
+        drain(&mut app);
+        assert!(!app.welcome);
+        assert_eq!(app.current().path.as_ref(), Some(&path));
     }
     #[test]
     fn launch_has_no_user_document_or_close_prompt_and_new_replaces_the_placeholder() {

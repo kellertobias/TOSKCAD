@@ -1,4 +1,4 @@
-//! Installation library, Parameters metadata sidebar and home-screen cards.
+//! Installation library, Parameters metadata sidebar and project preview cache.
 use super::*;
 use crate::{
     library::{
@@ -306,40 +306,6 @@ impl Application {
         self.message = "Removing the Library listing…".into();
         self.message_error = false;
         Ok(())
-    }
-    /// Home-screen card: the file's own name, description and preview.
-    pub(super) fn recent_card(
-        &mut self,
-        ui: &mut egui::Ui,
-        entry: &crate::recent_projects::RecentProject,
-    ) {
-        let card = self.library.cards.get(&entry.path).cloned();
-        ui.horizontal(|ui| {
-            let preview = card
-                .as_ref()
-                .and_then(|c| c.as_ref().ok())
-                .and_then(|c| c.info.preview.clone());
-            self.library.textures.show(
-                ui,
-                preview.as_ref(),
-                egui::vec2(96., 64.),
-                "Project preview",
-            );
-            ui.vertical(|ui| match &card {
-                Some(Ok(card)) => {
-                    ui.strong(&card.info.name);
-                    if !card.info.description.is_empty() {
-                        ui.add(
-                            egui::Label::new(egui::RichText::new(&card.info.description).small())
-                                .truncate(),
-                        );
-                    }
-                }
-                Some(Err(_)) | None => {
-                    ui.strong(&entry.title);
-                }
-            });
-        });
     }
 }
 

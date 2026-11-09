@@ -248,11 +248,34 @@ impl PreviewTextures {
         size: egui::Vec2,
         alt: &str,
     ) {
+        self.show_preview(ui, image, size, alt, false);
+    }
+
+    /// Reserve the full frame and center the image at its original aspect ratio.
+    pub(crate) fn show_framed(
+        &mut self,
+        ui: &mut egui::Ui,
+        image: Option<&PreviewImage>,
+        size: egui::Vec2,
+        alt: &str,
+    ) {
+        self.show_preview(ui, image, size, alt, true);
+    }
+
+    fn show_preview(
+        &mut self,
+        ui: &mut egui::Ui,
+        image: Option<&PreviewImage>,
+        size: egui::Vec2,
+        alt: &str,
+        framed: bool,
+    ) {
         let fitted = image.map_or(size, |image| {
             let dimensions = egui::vec2(image.width() as f32, image.height() as f32);
             dimensions * (size.x / dimensions.x).min(size.y / dimensions.y)
         });
-        let (rect, response) = ui.allocate_exact_size(fitted, egui::Sense::hover());
+        let (rect, response) =
+            ui.allocate_exact_size(if framed { size } else { fitted }, egui::Sense::hover());
         // Scroll layout still needs the image's extent, but offscreen entries
         // need neither a content hash, PNG decode nor GPU texture allocation.
         if !ui.is_rect_visible(rect) {
@@ -275,7 +298,17 @@ impl PreviewTextures {
         });
         match texture {
             Some(Ok(texture)) => {
-                ui.put(rect, egui::Image::new((texture.id(), fitted)).alt_text(alt));
+                let preview = egui::Image::new((texture.id(), fitted)).alt_text(alt);
+                if framed {
+                    ui.painter().rect_filled(rect, 0, crate::theme::PANEL);
+                    let image_rect = egui::Rect::from_center_size(rect.center(), fitted);
+                    // The frame already advanced the layout. A short image
+                    // must not pull the following title into that frame.
+                    ui.new_child(egui::UiBuilder::new().max_rect(image_rect))
+                        .put(image_rect, preview);
+                } else {
+                    ui.put(rect, preview);
+                }
             }
             other => {
                 let text = match other {
