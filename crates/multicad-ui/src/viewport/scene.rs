@@ -1559,6 +1559,61 @@ impl Scene {
         }
         Some([world.min, world.max])
     }
+    /// Exact analytic element for a key already resolved by a native receipt
+    /// on this source stamp. Check the captured provenance and use the current
+    /// occurrence pose without cloning the full topology.
+    pub(crate) fn resolved_geometry(
+        &self,
+        source: EntityId,
+        key: TopologyKey,
+        intent: &GeometryIntent,
+    ) -> Option<AnalyticGeometry> {
+        if !self.is_full_model()
+            || self
+                .model_evaluation
+                .as_ref()?
+                .consumed_bodies
+                .contains(&source)
+            || key.kind != intent.kind
+            || intent.validate().is_err()
+        {
+            return None;
+        }
+        let occurrence = self
+            .reference_instances
+            .iter()
+            .find(|item| item.id == source);
+        let producer = occurrence
+            .map(|item| item.geometry)
+            .or_else(|| self.source_producer(source))?;
+        let element = self
+            .geometries
+            .get(&producer)?
+            .topology
+            .iter()
+            .find(|item| item.key == key)?;
+        if !intent.origins.is_subset(&element.origins)
+            || intent
+                .boundary
+                .as_ref()
+                .is_some_and(|boundary| boundary != &element.boundary)
+            || intent.attachment.as_ref().is_some_and(|attachment| {
+                !element
+                    .frames
+                    .iter()
+                    .any(|frame| frame.origin == attachment.anchor)
+            })
+        {
+            return None;
+        }
+        let geometry = element.geometry?;
+        Some(occurrence.map_or(geometry, |item| {
+            geometry.transformed(
+                |point| item.transform.point(point),
+                |vector| item.transform.vector(vector),
+            )
+        }))
+    }
     pub fn topology_snapshot(&self, instance: EntityId) -> Option<TopologySnapshot> {
         let Some(instance) = self.reference_instances.iter().find(|i| i.id == instance) else {
             let producer = self.reference_aliases.get(&instance)?;

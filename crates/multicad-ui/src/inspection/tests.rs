@@ -418,6 +418,123 @@ fn actual_edge_and_point_picking_preserves_native_reference_kinds() {
         assert!((m.ready(&s).unwrap().minimum_mm - expected).abs() < 1e-6);
     }
 }
+fn viewport_metric_text(
+    m: &mut MeasurementInspector,
+    s: &Session,
+    scene: &Arc<Scene>,
+    camera: Camera,
+    distance_mm: f64,
+) -> String {
+    let ctx = egui::Context::default();
+    crate::theme::configure(&ctx);
+    let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800., 600.));
+    let output = ctx.run_ui(
+        egui::RawInput {
+            screen_rect: Some(rect),
+            ..Default::default()
+        },
+        |ui| m.paint(ui.painter(), rect, camera, s, Some(scene), None),
+    );
+    let distance = crate::preferences::format_mm(distance_mm);
+    let metric = output
+        .shapes
+        .iter()
+        .find_map(|shape| match &shape.shape {
+            egui::Shape::Text(text) if text.galley.text().contains(&distance) => {
+                Some(text.galley.text().to_owned())
+            }
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("Missing viewport distance {distance}"));
+    output.drop_without_applying_deltas();
+    metric
+}
+
+#[test]
+fn disjoint_nonparallel_faces_show_exact_angle_and_distance_together_in_both_projections() {
+    let (mut s, first) = fixture();
+    let second = PrimitiveRequest::new(
+        "Opposite bracket",
+        PrimitiveParameters::Box {
+            size: [length(10.), length(10.), length(10.)],
+            frame: model::PrimitiveFrame {
+                origin: [-30., 10., 0.].map(length),
+                ..Default::default()
+            },
+        },
+    );
+    s.commit(
+        model::prepare_primitive(&s, s.revision(), Actor::local(Channel::Ui), &second)
+            .unwrap()
+            .prepared,
+    )
+    .unwrap();
+    let scene = native_scene(&s);
+    let (mut m, _) = inspector();
+    m.tick(&s);
+    pick(&mut m, &s, &scene, camera(true), [5., 5., 10.]);
+    pick(
+        &mut m,
+        &s,
+        &scene,
+        Camera {
+            yaw: std::f32::consts::FRAC_PI_2,
+            pitch: 0.,
+            ..camera(true)
+        },
+        [-20., 15., 5.],
+    );
+    ready(&mut m, &s);
+    let query = m.query.as_ref().unwrap();
+    assert_eq!([query.a.source, query.b.source], [first.body, second.body]);
+    let values = m.ready(&s).unwrap();
+    assert!((values.minimum_mm - 20.).abs() < 1e-8);
+    assert!(matches!(values.angle, ScalarMetric::Radians { value }
+        if (value - std::f64::consts::FRAC_PI_2).abs() < 1e-8));
+
+    for perspective in [false, true] {
+        let label = viewport_metric_text(
+            &mut m,
+            &s,
+            &scene,
+            Camera {
+                target: [-10., 10., 5.],
+                scale: 9.,
+                perspective,
+                ..Camera::default()
+            },
+            20.,
+        );
+        assert!(
+            label.split_whitespace().any(|word| word
+                .strip_suffix('°')
+                .and_then(|degrees| degrees.parse::<f64>().ok())
+                .is_some_and(|degrees| (degrees - 90.).abs() < 1e-8)),
+            "{label}"
+        );
+    }
+}
+
+#[test]
+fn parallel_faces_and_unsupported_point_angles_show_distance_alone() {
+    let (s, _) = fixture();
+    let scene = native_scene(&s);
+    let (mut m, _) = inspector();
+    same_part_faces(&mut m, &s, &scene);
+    assert!(!viewport_metric_text(&mut m, &s, &scene, camera(true), 10.).contains('°'));
+
+    m.reset();
+    m.filter = PickFilter::Vertices;
+    pick(&mut m, &s, &scene, camera(true), [0., 0., 10.]);
+    pick(&mut m, &s, &scene, camera(true), [10., 10., 10.]);
+    ready(&mut m, &s);
+    assert!(matches!(
+        m.ready(&s).unwrap().angle,
+        ScalarMetric::Unsupported { .. }
+    ));
+    assert!(!viewport_metric_text(&mut m, &s, &scene, camera(true), 200_f64.sqrt()).contains('°'));
+}
+
 #[test]
 fn source_edits_update_pins_and_removed_sources_show_missing_without_stale_numbers() {
     let (mut s, r) = fixture();
