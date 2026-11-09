@@ -4255,6 +4255,9 @@ impl SketchEditor {
                     section: self.modeling_section(),
                 },
             );
+            if response.clicked() {
+                ui.ctx().request_repaint();
+            }
             self.solid.highlight_reference(
                 scene
                     .as_ref()

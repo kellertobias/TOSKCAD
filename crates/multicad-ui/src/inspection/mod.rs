@@ -276,8 +276,10 @@ impl MeasurementInspector {
             {
                 self.picking = None;
             }
+        } else if self.query.is_some() {
+            ui.small("Click geometry to start the next measurement.");
         }
-        if self.feed.pending() {
+        if self.query.is_some() && self.feed.pending() {
             ui.label("Measuring current B-rep…");
             ui.ctx()
                 .request_repaint_after(std::time::Duration::from_millis(16));
@@ -396,7 +398,11 @@ impl MeasurementInspector {
             clicked,
             section,
         } = view;
-        let Some(side) = self.picking.filter(|_| self.active) else {
+        if !self.active || !clicked {
+            return;
+        }
+        let next_pair = self.picking.is_none() && self.query.is_some();
+        let Some(side) = self.picking.or(next_pair.then_some(Side::A)) else {
             return;
         };
         let result = (|| -> Result<Option<GeometryReference>, String> {
@@ -452,17 +458,18 @@ impl MeasurementInspector {
             else {
                 return Ok(None);
             };
-            if !clicked {
-                return Ok(None);
-            }
             let mut intent = hit
                 .intent
                 .clone()
                 .ok_or("Selected geometry has no unique persistent provenance")?;
             let index = if side == Side::A { 0 } else { 1 };
-            intent.id = self.refs[index]
-                .as_ref()
-                .map_or_else(EntityId::new, |r| r.intent.id);
+            intent.id = if next_pair {
+                EntityId::new()
+            } else {
+                self.refs[index]
+                    .as_ref()
+                    .map_or_else(EntityId::new, |r| r.intent.id)
+            };
             Ok(Some(GeometryReference {
                 source: hit.instance,
                 intent,
@@ -470,6 +477,9 @@ impl MeasurementInspector {
         })();
         match result {
             Ok(Some(reference)) => {
+                if next_pair {
+                    self.reset();
+                }
                 let index = if side == Side::A { 0 } else { 1 };
                 self.refs[index] = Some(reference);
                 self.picking = if side == Side::A && self.refs[1].is_none() {

@@ -594,6 +594,109 @@ fn obsolete_request_is_ignored_and_missing_pin_publication_is_rejected() {
     assert!(m.feed.error.as_ref().unwrap().contains("omits"));
 }
 #[test]
+fn a_complete_pair_accepts_the_next_valid_hit_as_fresh_a_even_with_a_pending_result() {
+    let (s, r) = fixture();
+    let before = s.document().clone();
+    let scene = native_scene(&s);
+    let (mut m, state) = inspector();
+    same_part_faces(&mut m, &s, &scene);
+    let original = m.query.clone().unwrap();
+    let partial = Arc::new(
+        Arc::try_unwrap(native_scene(&s))
+            .ok()
+            .unwrap()
+            .with_source_scope(vec![r.feature])
+            .unwrap(),
+    );
+    pick(&mut m, &s, &scene, camera(true), [18., 5., 10.]);
+    pick(&mut m, &s, &partial, camera(true), [5., 5., 10.]);
+    assert_eq!(m.query.as_ref(), Some(&original));
+    assert_eq!(m.ready(&s).unwrap().minimum_mm, 10.);
+
+    m.feed.retry();
+    m.tick(&s);
+    assert!(m.pending());
+    let old = state.lock().unwrap().replies.pop_front().unwrap();
+    let side = Camera {
+        yaw: std::f32::consts::FRAC_PI_2,
+        pitch: 0.,
+        ..camera(true)
+    };
+    pick(&mut m, &s, &scene, side, [10., 5., 5.]);
+    assert_ne!(m.refs[0].as_ref().unwrap().intent.id, original.a.intent.id);
+    assert!(m.refs[1].is_none() && m.query.is_none() && m.ready(&s).is_none());
+    assert!(matches!(
+        m.highlights(&s, &scene),
+        Some(Selection::References([Some(_), None]))
+    ));
+
+    pick(&mut m, &s, &scene, camera(true), [5., 5., 10.]);
+    m.tick(&s);
+    let current = state.lock().unwrap().replies.pop_front().unwrap();
+    assert_ne!(old.request, current.request);
+    state.lock().unwrap().replies.push_back(old);
+    m.tick(&s);
+    assert!(m.pending() && m.ready(&s).is_none());
+    state.lock().unwrap().replies.push_back(current);
+    m.tick(&s);
+    assert!(m.ready(&s).unwrap().minimum_mm.abs() < 1e-8);
+    assert_eq!(s.document(), &before);
+}
+
+#[test]
+fn explicit_replacements_keep_the_pin_edit_and_a_fresh_pair_keeps_the_saved_overlay() {
+    let (mut s, _) = fixture();
+    let (mut m, _) = inspector();
+    same_part_faces(&mut m, &s, &native_scene(&s));
+    m.name = "Saved stock thickness".into();
+    m.pin(&mut s, true, Channel::Ui).unwrap();
+    let pin = m.selected_pin.unwrap();
+    let saved = multicad_core::inspection::read(s.document(), pin).unwrap();
+    let before = s.document().clone();
+    let scene = native_scene(&s);
+    let ctx = egui::Context::default();
+    crate::theme::configure(&ctx);
+    let side = Camera {
+        yaw: std::f32::consts::FRAC_PI_2,
+        pitch: 0.,
+        ..camera(true)
+    };
+
+    click(&mut m, &mut s, &ctx, "Replace A");
+    pick(&mut m, &s, &scene, side, [10., 5., 5.]);
+    assert_eq!(m.selected_pin, Some(pin));
+    assert_eq!(m.refs[1].as_ref(), Some(&saved.query.b));
+    let a = m.refs[0].clone();
+    assert_ne!(a.as_ref(), Some(&saved.query.a));
+    click(&mut m, &mut s, &ctx, "Replace B");
+    pick(&mut m, &s, &scene, camera(true), [5., 5., 10.]);
+    assert_eq!(m.selected_pin, Some(pin));
+    assert_eq!(m.refs[0], a);
+    assert_ne!(m.refs[1].as_ref(), Some(&saved.query.b));
+    ready(&mut m, &s);
+
+    pick(&mut m, &s, &scene, camera(true), [5., 5., 10.]);
+    assert!(m.selected_pin.is_none());
+    pick(&mut m, &s, &scene, side, [10., 5., 5.]);
+    m.tick(&s);
+    assert!(m.pending() && m.ready(&s).is_none());
+    let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800., 600.));
+    let output = ctx.run_ui(
+        egui::RawInput {
+            screen_rect: Some(rect),
+            ..Default::default()
+        },
+        |ui| m.paint(ui.painter(), rect, side, &s, Some(&scene), None),
+    );
+    assert!(output.shapes.iter().any(|shape| matches!(
+        &shape.shape,
+        egui::Shape::Text(text) if text.galley.text().starts_with(&saved.name)
+    )));
+    output.drop_without_applying_deltas();
+    assert_eq!(s.document(), &before);
+}
+
+#[test]
 fn inspector_width_stays_bounded_and_replacing_a_side_is_an_actual_ui_action() {
     let (mut s, _) = fixture();
     let scene = native_scene(&s);

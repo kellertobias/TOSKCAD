@@ -79,6 +79,7 @@ impl Feed {
             self.expected = None;
             self.requested = None;
             self.batch = None;
+            self.error = None;
             return;
         }
         if self.backend.is_none() {
@@ -97,7 +98,7 @@ impl Feed {
             }
             if reply.stamp != expected {
                 self.expected = None;
-                self.batch = None;
+                discard_transient(&mut self.batch);
                 self.error = Some("Measurement reply has a foreign source stamp".into());
                 continue;
             }
@@ -152,18 +153,18 @@ impl Feed {
                     self.error = None;
                 }
                 Err(error) => {
-                    self.batch = None;
+                    discard_transient(&mut self.batch);
                     self.error = Some(error);
                 }
             }
         }
         let request = (stamp, query.cloned());
         if self.requested.as_ref() != Some(&request) {
+            discard_transient(&mut self.batch);
             match backend.request(session.document(), stamp, query) {
                 Ok(id) => {
                     self.expected = Some((id, stamp, query.cloned()));
                     self.requested = Some(request);
-                    self.batch = None;
                     self.error = None;
                 }
                 Err(error) => {
@@ -203,6 +204,17 @@ impl Feed {
             .transient
             .as_ref()
             .filter(|m| m.stamp == stamp && m.query == *query)
+    }
+}
+// A new temporary pair can invalidate its own result while the pinned
+// references still belong to the same checked source stamp.
+fn discard_transient(batch: &mut Option<Arc<MeasurementBatch>>) {
+    if let Some(accepted) = batch.as_mut() {
+        if accepted.pinned.is_empty() {
+            *batch = None;
+        } else {
+            Arc::make_mut(accepted).transient = None;
+        }
     }
 }
 fn validate_values(v: &MeasurementValues, query: &MeasurementQuery) -> Result<(), String> {
