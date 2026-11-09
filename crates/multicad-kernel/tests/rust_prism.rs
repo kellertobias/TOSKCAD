@@ -318,6 +318,97 @@ fn rotated_box_bounds_and_mesh_follow_the_same_rigid_placement() {
 }
 
 #[test]
+fn placed_polygon_publishes_hole_contours_and_original_reversed_edge_anchors() {
+    use multicad_core::references::Origin;
+    use multicad_kernel::rust_kernel::polygon::PolygonPrism;
+
+    let profile = |corners: &[[i64; 2]]| corners.iter().map(|p| p.map(integer)).collect();
+    let prism = PolygonPrism::new(
+        vec![
+            profile(&[[0, 0], [12, 0], [12, 5], [7, 5], [7, 9], [0, 9]]),
+            profile(&[[2, 2], [2, 4], [4, 4], [4, 2]]),
+        ],
+        integer(3),
+    )
+    .unwrap();
+    let owner = EntityId::new();
+    let placement = PlaneFrame {
+        origin: [5., 2., 7.],
+        u: [0., 1., 0.],
+        v: [0., 0., 1.],
+    };
+    let origins: Vec<_> = (0..10)
+        .map(|_| Origin {
+            source: EntityId::new(),
+            role: "profile.edge".into(),
+        })
+        .collect();
+    let policy = GeometryPolicy::default();
+    assert!(
+        Solid::from_polygon_prism(
+            prism.clone(),
+            placement,
+            owner,
+            &origins,
+            &[false; 9],
+            policy
+        )
+        .is_err()
+    );
+    let mut reversed = [false; 10];
+    reversed[6..].fill(true);
+    let solid = Solid::from_polygon_prism(prism, placement, owner, &origins, &reversed, policy)
+        .unwrap()
+        .share()
+        .unwrap();
+    near(solid.volume_mm3().unwrap(), 252.);
+    assert_eq!(solid.bounds().unwrap().min, [5., 2., 7.]);
+    assert_eq!(solid.bounds().unwrap().max, [8., 14., 16.]);
+    let cap = solid
+        .planar_face_contours_with_sources(
+            1,
+            PlaneFrame {
+                origin: [8., 2., 7.],
+                ..placement
+            },
+        )
+        .unwrap();
+    assert_eq!(cap.contours.loops.len(), 2);
+    assert_eq!(cap.contours.edge_count(), 10);
+    near(cap.contours.area_mm2(), 84.);
+    let topology = solid.topology_snapshot(owner, 11).unwrap();
+    for key in cap.edge_keys.iter().flatten() {
+        assert!(topology.elements.iter().any(|element| element.key == *key));
+    }
+    let hole_side = topology
+        .elements
+        .iter()
+        .find(|element| {
+            element.key.kind == TopologyKind::Face && element.origins.contains(&origins[6])
+        })
+        .unwrap();
+    assert_eq!(hole_side.key.ordinal, 8);
+    let frame = hole_side.frames[0].frame;
+    assert_eq!(frame.origin_mm, [5., 4., 11.]);
+    assert_eq!(frame.u, [0., 0., -1.]);
+    let side = solid
+        .planar_face_contours(
+            8,
+            PlaneFrame {
+                origin: frame.origin_mm,
+                u: frame.u,
+                v: frame.v,
+            },
+        )
+        .unwrap();
+    near(side.area_mm2(), 6.);
+    assert_eq!(side.edge_count(), 4);
+    let mesh = solid.mesh(Default::default()).unwrap();
+    assert_eq!(mesh.face_indices.iter().copied().max(), Some(11));
+    assert_eq!(solid.solid_count().unwrap(), 1);
+}
+
+#[test]
 fn exact_contours_preserve_both_bores_and_match_picking_edge_keys() {
     use multicad_core::manufacturing::PlanarEdge;
     use std::f64::consts::{PI, TAU};

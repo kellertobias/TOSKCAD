@@ -1,7 +1,10 @@
 //! Safe solid operations in millimeters. Display meshes are detached copies;
 //! callers rebuild exact solids from source rather than editing triangles.
-use crate::{Shape, ffi};
-use multicad_rust_kernel::{Circle, Rational, cylinder::AxialCylinder, prism::Prism};
+use crate::{Shape, ffi, rust_prism_topology::PlacedPolygon};
+use multicad_core::{document::EntityId, references::Origin};
+use multicad_rust_kernel::{
+    Circle, Rational, cylinder::AxialCylinder, polygon::PolygonPrism, prism::Prism,
+};
 use std::path::Path;
 use std::rc::Rc;
 
@@ -461,10 +464,70 @@ pub struct Solid {
 enum SolidBody {
     Occt(Shape),
     Prism(Rc<Prism>, PlaneFrame),
+    PolygonPrism(Rc<PlacedPolygon>),
     AxialCylinder(Rc<AxialCylinder>, PlaneFrame),
 }
 
 impl Solid {
+    /// Publish a straight-sided sketch extrusion with the original authored
+    /// edge anchors, even if winding normalization reversed some edges.
+    pub fn from_polygon_prism(
+        prism: PolygonPrism,
+        frame: PlaneFrame,
+        feature: EntityId,
+        origins: &[Origin],
+        reversed: &[bool],
+        policy: GeometryPolicy,
+    ) -> Result<Self, GeometryError> {
+        policy.validate()?;
+        frame.checked(policy)?;
+        policy.length(prism.height().as_f64())?;
+        let edge_count: usize = prism.rings().iter().map(Vec::len).sum();
+        let unique: std::collections::BTreeSet<_> = origins.iter().collect();
+        if feature.is_nil()
+            || origins.len() != edge_count
+            || reversed.len() != edge_count
+            || unique.len() != edge_count
+            || origins.iter().any(|origin| {
+                origin.source.is_nil()
+                    || origin.role.trim().is_empty()
+                    || format!("side/{}/{}", origin.source, origin.role).len() > 256
+            })
+        {
+            return Err(input(
+                "Every polygon edge requires a distinct valid authored origin",
+            ));
+        }
+        let placed = PlacedPolygon {
+            prism,
+            frame,
+            feature,
+            edges: origins
+                .iter()
+                .cloned()
+                .zip(reversed.iter().copied())
+                .collect(),
+        };
+        for length in placed.side_lengths() {
+            policy.length(length)?;
+        }
+        let bounds = placed.bounds();
+        policy.point(bounds.min)?;
+        policy.point(bounds.max)?;
+        Ok(Self {
+            body: SolidBody::PolygonPrism(Rc::new(placed)),
+            policy,
+            provenance: vec![],
+        })
+    }
+
+    pub(crate) fn polygon_prism(&self) -> Option<&PlacedPolygon> {
+        match &self.body {
+            SolidBody::PolygonPrism(placed) => Some(placed),
+            _ => None,
+        }
+    }
+
     /// Own a validated analytic prism in the Rust backend.
     pub fn from_rust_prism(prism: Prism, policy: GeometryPolicy) -> Result<Self, GeometryError> {
         Self::from_placed_prism(prism, PlaneFrame::default(), policy)
@@ -631,6 +694,7 @@ impl Solid {
     pub fn share(&self) -> Result<Self, GeometryError> {
         let body = match &self.body {
             SolidBody::Prism(prism, frame) => SolidBody::Prism(Rc::clone(prism), *frame),
+            SolidBody::PolygonPrism(prism) => SolidBody::PolygonPrism(Rc::clone(prism)),
             SolidBody::AxialCylinder(cylinder, frame) => {
                 SolidBody::AxialCylinder(Rc::clone(cylinder), *frame)
             }
@@ -801,6 +865,9 @@ impl Solid {
         Ok(result)
     }
     pub fn volume_mm3(&self) -> Result<f64, GeometryError> {
+        if let Some(placed) = self.polygon_prism() {
+            return Ok(placed.prism.volume().as_f64());
+        }
         if let Some(cylinder) = self.axial_cylinder() {
             return Ok(std::f64::consts::PI * cylinder.volume_factor().as_f64());
         }
@@ -820,6 +887,9 @@ impl Solid {
         ffi::solid_count(self.occt()?).map_err(|e| native("solid count", e))
     }
     pub fn bounds(&self) -> Result<Bounds, GeometryError> {
+        if let Some(placed) = self.polygon_prism() {
+            return Ok(placed.bounds());
+        }
         if let Some(cylinder) = self.axial_cylinder() {
             let [min, max] = cylinder.bounds().map(|corner| corner.map(Rational::as_f64));
             return Ok(Bounds { min, max });
@@ -883,6 +953,9 @@ impl Solid {
         crate::planar_contours::extract(self, face, frame, self.policy)
     }
     pub fn faces(&self) -> Result<Vec<Face>, GeometryError> {
+        if let Some(placed) = self.polygon_prism() {
+            return Ok(placed.faces());
+        }
         if let Some(cylinder) = self.axial_cylinder() {
             return Ok(crate::rust_prism_topology::cylinder_faces(cylinder));
         }
@@ -938,17 +1011,14 @@ impl Solid {
             triangle_limit: options.maximum_triangles as usize,
         };
         let mesh = match &self.body {
-            SolidBody::Prism(prism, frame) => {
-                let mut mesh = crate::rust_display::mesh(
-                    multicad_rust_kernel::display::rust_prism(prism, rust_options),
-                )?;
-                if *frame != PlaneFrame::default() {
-                    for vertex in mesh.vertices.as_chunks_mut::<3>().0 {
-                        *vertex = crate::rust_prism_topology::position(*frame, *vertex);
-                    }
-                }
-                mesh
-            }
+            SolidBody::Prism(prism, frame) => crate::rust_display::placed_mesh(
+                multicad_rust_kernel::display::rust_prism(prism, rust_options),
+                *frame,
+            )?,
+            SolidBody::PolygonPrism(placed) => crate::rust_display::placed_mesh(
+                multicad_rust_kernel::display::polygon_prism(&placed.prism, rust_options),
+                placed.frame,
+            )?,
             SolidBody::AxialCylinder(cylinder, _) => crate::rust_display::mesh(
                 multicad_rust_kernel::display::axial_cylinder(cylinder, rust_options),
             )?,
@@ -1095,14 +1165,12 @@ impl Solid {
         &self,
     ) -> Option<Result<multicad_core::references::TopologySnapshot, GeometryError>> {
         let feature = match &self.body {
-            SolidBody::Prism(prism, _) => prism.feature(),
-            SolidBody::AxialCylinder(cylinder, _) => cylinder.feature(),
+            SolidBody::PolygonPrism(placed) => placed.feature,
+            SolidBody::Prism(prism, _) => EntityId::from_uuid_bits(prism.feature()),
+            SolidBody::AxialCylinder(cylinder, _) => EntityId::from_uuid_bits(cylinder.feature()),
             SolidBody::Occt(_) => return None,
         };
-        Some(self.topology_snapshot(
-            multicad_core::document::EntityId::from_uuid_bits(feature),
-            0,
-        ))
+        Some(self.topology_snapshot(feature, 0))
     }
     pub fn write_step(&self, path: &Path) -> Result<(), GeometryError> {
         let path = crate::step_path(path).map_err(|e| input(e.to_string()))?;

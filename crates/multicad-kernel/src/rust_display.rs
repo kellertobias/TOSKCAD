@@ -47,6 +47,19 @@ pub(crate) fn mesh(result: Result<DisplayMesh, MeshError>) -> Result<ffi::Mesh, 
     })
 }
 
+pub(crate) fn placed_mesh(
+    result: Result<DisplayMesh, MeshError>,
+    frame: PlaneFrame,
+) -> Result<ffi::Mesh, GeometryError> {
+    let mut mesh = mesh(result)?;
+    if frame != PlaneFrame::default() {
+        for vertex in mesh.vertices.as_chunks_mut::<3>().0 {
+            *vertex = crate::rust_prism_topology::position(frame, *vertex);
+        }
+    }
+    Ok(mesh)
+}
+
 fn point_on_arc(frame: ReferenceFrame, radius: f64, angle: f64) -> [f64; 3] {
     let (sin, cos) = angle.sin_cos();
     std::array::from_fn(|i| frame.origin_mm[i] + radius * (cos * frame.u[i] + sin * frame.v[i]))
@@ -137,6 +150,9 @@ fn subtract(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
 // Return analytic edge ordinals in loop order. These are the same ordinals
 // published by the prism topology and are distinct from mesh indices.
 fn planar_loops(solid: &Solid, face: u32) -> Vec<Vec<(u32, bool)>> {
+    if let Some(placed) = solid.polygon_prism() {
+        return placed.planar_loops(face);
+    }
     let Some(prism) = solid.rust_prism() else {
         return vec![vec![(face, false)]];
     };

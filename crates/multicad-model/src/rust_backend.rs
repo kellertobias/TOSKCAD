@@ -11,7 +11,13 @@ use multicad_core::{
 };
 use multicad_kernel::{
     CurvedEdge2d, CurvedProfile, GeometryPolicy, PlaneFrame, Solid,
-    rust_kernel::{Circle, Rational, cylinder::AxialCylinder, parse_length_mm, prism::Prism},
+    rust_kernel::{
+        Circle, Rational,
+        cylinder::AxialCylinder,
+        parse_length_mm,
+        polygon::{PolygonPrism, signed_area},
+        prism::Prism,
+    },
 };
 
 pub(crate) fn validate_document(document: &Document) -> Result<(), ModelError> {
@@ -112,6 +118,73 @@ fn coordinate(value: f64) -> Result<Rational, String> {
         .map_err(|e| format!("Sketch coordinate exceeds the Rust exact geometry range: {e:?}"))
 }
 
+fn straight_prism(
+    id: EntityId,
+    profile: &CurvedProfile,
+    origins: &[Origin],
+    height: Rational,
+    start_offset: f64,
+    policy: GeometryPolicy,
+) -> Result<Solid, ModelError> {
+    let fail = |message: String| error(Some(id), message);
+    let mut rings = Vec::with_capacity(1 + profile.holes.len());
+    let mut side_origins = Vec::with_capacity(origins.len());
+    let mut reversed = Vec::with_capacity(origins.len());
+    let mut offset = 0;
+    for (index, ring) in std::iter::once(&profile.outer)
+        .chain(&profile.holes)
+        .enumerate()
+    {
+        let mut points = Vec::with_capacity(ring.len());
+        for (edge, next) in ring.iter().zip(ring.iter().cycle().skip(1)) {
+            let (CurvedEdge2d::Line { a, b }, CurvedEdge2d::Line { a: next, .. }) = (edge, next)
+            else {
+                return Err(fail(
+                    "Rust polygon extrusion requires straight segments in every boundary".into(),
+                ));
+            };
+            if b != next {
+                return Err(fail(
+                    "Rust polygon extrusion requires closed boundary joins".into(),
+                ));
+            }
+            points.push([
+                coordinate(a[0]).map_err(fail)?,
+                coordinate(a[1]).map_err(fail)?,
+            ]);
+        }
+        let ring_origins = origins
+            .get(offset..offset + ring.len())
+            .ok_or_else(|| fail("Rust extrusion is missing authored boundary identities".into()))?;
+        offset += ring.len();
+        let area = signed_area(&points)
+            .map_err(|e| fail(format!("Rust polygon winding failed: {e:?}")))?;
+        let reverse = (area.ratio().0 < 0) != (index > 0);
+        if reverse {
+            // Keep the first vertex and reverse the edges that start there.
+            // Their authored directions are retained separately for attachment frames.
+            points[1..].reverse();
+            side_origins.extend(ring_origins.iter().rev().cloned());
+        } else {
+            side_origins.extend_from_slice(ring_origins);
+        }
+        reversed.extend(std::iter::repeat_n(reverse, ring.len()));
+        rings.push(points);
+    }
+    if offset != origins.len() {
+        return Err(fail(
+            "Rust extrusion has unmatched authored boundary identities".into(),
+        ));
+    }
+    let polygon = PolygonPrism::new(rings, height)
+        .map_err(|e| fail(format!("Rust polygon extrusion failed: {e:?}")))?;
+    let mut frame = profile.frame;
+    let normal = frame.normal();
+    frame.origin = std::array::from_fn(|i| frame.origin[i] + normal[i] * start_offset);
+    Solid::from_polygon_prism(polygon, frame, id, &side_origins, &reversed, policy)
+        .map_err(|e| error(Some(id), e))
+}
+
 fn rounded_dimensions(profile: &CurvedProfile) -> Result<(Rational, Rational), String> {
     let unsupported = || {
         "Rust extrusion requires three straight sides and a right semicircle at the XY origin"
@@ -175,15 +248,31 @@ pub(crate) fn extrude(
     else {
         return Err(fail("Rust extrusion requires a one-sided distance".into()));
     };
-    if controls.direction != [0., 0., 1.]
-        || controls.start_offset_mm != 0.
-        || controls.taper_rad != 0.
-    {
+    if controls.direction != [0., 0., 1.] || controls.taper_rad != 0. {
         return Err(fail(
-            "Rust extrusion requires a positive normal sweep without offset or taper".into(),
+            "Rust extrusion requires a positive normal sweep without taper".into(),
         ));
     }
     let height = exact_length(distance, parameters).map_err(fail)?;
+    if profile
+        .outer
+        .iter()
+        .all(|edge| matches!(edge, CurvedEdge2d::Line { .. }))
+    {
+        return straight_prism(
+            id,
+            profile,
+            origins,
+            height,
+            controls.start_offset_mm,
+            policy,
+        );
+    }
+    if controls.start_offset_mm != 0. {
+        return Err(fail(
+            "Rust rounded panel extrusion requires zero start offset".into(),
+        ));
+    }
     let (length, radius) = rounded_dimensions(profile).map_err(fail)?;
     let mut prism = Prism::extrude(id.uuid_bits(), length, radius, height)
         .map_err(|e| fail(format!("Rust extrusion failed: {e:?}")))?;
@@ -274,4 +363,47 @@ pub(crate) fn primitive(
         v: frame.v,
     };
     Solid::from_axial_cylinder(cylinder, placement, policy).map_err(|e| error(Some(id), e))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn straight_prism_refuses_open_joins_and_curved_holes() {
+        let line = |a, b| CurvedEdge2d::Line { a, b };
+        let id = EntityId::new();
+        let origins = std::array::from_fn::<_, 3, _>(|_| Origin {
+            source: EntityId::new(),
+            role: "profile.edge".into(),
+        });
+        let mut profile = CurvedProfile {
+            frame: PlaneFrame::default(),
+            outer: vec![
+                line([0., 0.], [5., 0.]),
+                line([5., 0.], [0., 5.]),
+                line([0., 5.], [0., 0.01]),
+            ],
+            holes: vec![],
+        };
+        let build = |profile: &CurvedProfile| {
+            straight_prism(
+                id,
+                profile,
+                &origins,
+                Rational::new(2, 1).unwrap(),
+                0.,
+                GeometryPolicy::default(),
+            )
+            .err()
+            .unwrap()
+        };
+        assert!(build(&profile).message.contains("closed boundary joins"));
+        profile.outer[2] = line([0., 5.], [0., 0.]);
+        profile.holes.push(vec![CurvedEdge2d::Circle {
+            center: [1., 1.],
+            radius_mm: 0.5,
+        }]);
+        assert!(build(&profile).message.contains("straight segments"));
+    }
 }

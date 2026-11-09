@@ -897,6 +897,9 @@ impl Solid {
         owner: EntityId,
         revision: u64,
     ) -> Result<TopologySnapshot, GeometryError> {
+        if let Some(placed) = self.polygon_prism() {
+            return placed.snapshot(owner, revision).map_err(failure);
+        }
         if let Some((cylinder, frame)) = self.axial_cylinder_frame() {
             return crate::rust_prism_topology::cylinder_snapshot(cylinder, frame, owner, revision)
                 .map_err(failure);

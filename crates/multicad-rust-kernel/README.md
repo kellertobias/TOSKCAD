@@ -18,7 +18,7 @@ The compiler can select the Rust backend for a whole evaluation of a rounded XY 
 
 The Rust backend publishes a display mesh and picking keys for the panel and cylinder. It uses Spade to triangulate sampled cap boundaries and checks the material side of every boundary edge. Planar contour queries read the analytic topology, so a bore remains a circle in the contour regardless of display mesh density.
 
-Launch `multicad --rust-model PROJECT.tcd` to test the Rust backend in the desktop Model workspace. It also supports box primitives with authored placement and face references. Model rebuilds and previews use this backend and report unsupported geometry. The default launch and other workspaces still use OpenCascade. General trimmed surfaces, helical seam tests, independent STEP readback, and matched workload timings remain open.
+Launch `multicad --rust-model PROJECT.tcd` to test the Rust backend in the desktop Model workspace. It supports placed boxes and one-sided normal extrusions of straight-edged sketches, including concave boundaries and straight-edged holes. The extrusion retains the authored cap and side attachment frames. Model rebuilds and previews report unsupported geometry. The default launch and other workspaces still use OpenCascade. General trimmed surfaces, helical seam tests, independent STEP readback, and matched workload timings remain open.
 
 ## Verification
 

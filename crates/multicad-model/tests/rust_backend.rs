@@ -12,6 +12,8 @@ use std::{f64::consts::PI, io::Cursor};
 
 #[path = "support/rust_panel.rs"]
 mod rust_panel;
+#[path = "support/rust_polygon.rs"]
+mod rust_polygon;
 use rust_panel::fixture;
 
 fn actor() -> Actor {
@@ -44,6 +46,150 @@ fn reopen(session: &Session) -> Session {
     .unwrap();
     assert_eq!(&result.project.document, session.document());
     Session::new(result.project.document).unwrap()
+}
+
+#[test]
+fn straight_sketch_reopens_and_matches_native_faces_with_a_polygonal_hole() {
+    let (mut session, height, feature, hole_edge) = rust_polygon::fixture();
+    let saved = reopen(&session);
+    let face_intents = [
+        Origin {
+            source: feature,
+            role: "cap.end".into(),
+        },
+        Origin {
+            source: feature,
+            role: format!("side/{hole_edge}/profile.edge"),
+        },
+    ];
+    let planes = face_intents.map(|anchor| {
+        let rust = compile(&session, GeometryBackend::Rust);
+        let topology = &rust.snapshot().shapes[&feature].topology;
+        let key = topology
+            .elements
+            .iter()
+            .find(|element| {
+                element.key.kind == TopologyKind::Face && element.origins.contains(&anchor)
+            })
+            .unwrap()
+            .key;
+        let attachment = sketch::prepare_new(
+            &session,
+            session.revision(),
+            actor(),
+            "Attached sketch",
+            CreationPlane::Face {
+                snapshot: topology,
+                key,
+                anchor: Some(&anchor),
+            },
+            PlaneOptions::default(),
+        )
+        .unwrap();
+        let plane = attachment.plane;
+        session.commit(attachment.prepared).unwrap();
+        plane
+    });
+    let mut edit = session.document().get(height).unwrap().clone();
+    let EntityData::Parameter { expression, .. } = &mut edit.data else {
+        unreachable!()
+    };
+    *expression = "=10 mm / 3".into();
+    session
+        .apply(Request {
+            expected_revision: session.revision(),
+            actor: actor(),
+            label: "Fractional height".into(),
+            edits: vec![Mutation::Replace(edit)],
+        })
+        .unwrap();
+    for (session, height) in [(saved, 6.), (reopen(&session), 10. / 3.)] {
+        let rust = compile(&session, GeometryBackend::Rust);
+        let native = compile(&session, GeometryBackend::OpenCascade);
+        let rust_solid = rust.solid(feature).unwrap();
+        let native_solid = native.solid(feature).unwrap();
+        near(rust_solid.volume_mm3().unwrap(), 92. * height);
+        near(
+            rust_solid.volume_mm3().unwrap(),
+            native_solid.volume_mm3().unwrap(),
+        );
+        let bounds = rust_solid.bounds().unwrap();
+        near(bounds.min[1], -2. - height);
+        assert_eq!(bounds.max, [12., -2., 10.]);
+        let actual = &rust.snapshot().shapes[&feature];
+        let expected = &native.snapshot().shapes[&feature];
+        assert_eq!(actual.edges.len(), 30);
+        assert_eq!(actual.vertices.len(), 20);
+        assert_eq!(
+            actual
+                .mesh
+                .face_indices
+                .iter()
+                .copied()
+                .collect::<std::collections::BTreeSet<_>>()
+                .len(),
+            12
+        );
+        let rust_faces = rust_solid.faces().unwrap();
+        let native_faces = native_solid.faces().unwrap();
+        for element in actual
+            .topology
+            .elements
+            .iter()
+            .filter(|element| element.key.kind == TopologyKind::Face)
+        {
+            let corresponding = expected
+                .topology
+                .elements
+                .iter()
+                .find(|candidate| {
+                    candidate.key.kind == TopologyKind::Face && candidate.origins == element.origins
+                })
+                .unwrap();
+            assert_eq!(
+                element.frames, corresponding.frames,
+                "{:?}",
+                element.origins
+            );
+            let a = &rust_faces[element.key.ordinal as usize];
+            let b = &native_faces[corresponding.key.ordinal as usize];
+            near(a.area_mm2, b.area_mm2);
+            for (a, b) in a.center_mm.into_iter().zip(b.center_mm) {
+                near(a, b);
+            }
+        }
+        if session.document().get(planes[0]).is_some() {
+            let inspect = |plane| {
+                sketch::inspect_plane(
+                    session.document(),
+                    plane,
+                    session.revision(),
+                    Some(&rust.snapshot().references),
+                )
+                .unwrap()
+            };
+            near(inspect(planes[0]).origin[1], -2. - height);
+            near(inspect(planes[1]).origin[1], -2.);
+        }
+    }
+}
+
+#[test]
+fn reverse_straight_sketch_sweep_remains_explicitly_unsupported() {
+    let (session, _, feature, _) = rust_polygon::fixture_with_height("-6");
+    let native = compile(&session, GeometryBackend::OpenCascade);
+    near(native.solid(feature).unwrap().volume_mm3().unwrap(), 552.);
+    let rust = compiler()
+        .compile_with_backend(
+            session.document(),
+            session.revision(),
+            GeometryBackend::Rust,
+            None,
+        )
+        .err()
+        .unwrap();
+    assert_eq!(rust.entity, Some(feature));
+    assert!(rust.message.contains("positive normal sweep"));
 }
 
 #[test]

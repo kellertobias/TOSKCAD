@@ -1,5 +1,5 @@
 //! Publish topology and finite face descriptors from the analytic Rust body.
-use crate::{Face, PlaneFrame};
+use crate::{Bounds, Face, PlaneFrame};
 use multicad_core::{
     document::EntityId,
     references::{
@@ -7,7 +7,9 @@ use multicad_core::{
         TopologyKind, TopologySnapshot,
     },
 };
-use multicad_rust_kernel::{Rational, cylinder::AxialCylinder, prism::Prism};
+use multicad_rust_kernel::{
+    Rational, cylinder::AxialCylinder, polygon::PolygonPrism, prism::Prism,
+};
 use std::f64::consts::{FRAC_PI_2, PI, TAU};
 
 const X: [f64; 3] = [1., 0., 0.];
@@ -284,6 +286,227 @@ pub(crate) fn snapshot(
     };
     snapshot.validate()?;
     Ok(snapshot)
+}
+
+pub(crate) struct PlacedPolygon {
+    pub(crate) prism: PolygonPrism,
+    pub(crate) frame: PlaneFrame,
+    pub(crate) feature: EntityId,
+    pub(crate) edges: Vec<(Origin, bool)>,
+}
+
+struct PolygonSide {
+    index: usize,
+    previous: usize,
+    next: usize,
+    a: [Rational; 2],
+    b: [Rational; 2],
+}
+
+impl PlacedPolygon {
+    fn point(&self, [x, y]: [Rational; 2], z: f64) -> [f64; 3] {
+        position(self.frame, [x.as_f64(), y.as_f64(), z])
+    }
+
+    fn sides(&self) -> impl Iterator<Item = PolygonSide> + '_ {
+        let mut base = 0;
+        self.prism.rings().iter().flat_map(move |ring| {
+            let start = base;
+            let count = ring.len();
+            base += count;
+            (0..count).map(move |i| {
+                let prev = (i + count - 1) % count;
+                let next = (i + 1) % count;
+                PolygonSide {
+                    index: start + i,
+                    previous: start + prev,
+                    next: start + next,
+                    a: ring[i],
+                    b: ring[next],
+                }
+            })
+        })
+    }
+
+    pub(crate) fn bounds(&self) -> Bounds {
+        let mut bounds = Bounds {
+            min: [f64::INFINITY; 3],
+            max: [f64::NEG_INFINITY; 3],
+        };
+        for &corner in &self.prism.rings()[0] {
+            for z in [0., self.prism.height().as_f64()] {
+                let point = self.point(corner, z);
+                for (i, coordinate) in point.into_iter().enumerate() {
+                    bounds.min[i] = bounds.min[i].min(coordinate);
+                    bounds.max[i] = bounds.max[i].max(coordinate);
+                }
+            }
+        }
+        bounds
+    }
+
+    fn side_support(&self, a: [Rational; 2], b: [Rational; 2]) -> (ReferenceFrame, f64) {
+        let a = self.point(a, 0.);
+        let b = self.point(b, 0.);
+        let edge: [f64; 3] = std::array::from_fn(|i| b[i] - a[i]);
+        let length = edge[0].hypot(edge[1]).hypot(edge[2]);
+        (
+            frame(a, edge.map(|x| x / length), self.frame.normal()),
+            length,
+        )
+    }
+
+    pub(crate) fn side_lengths(&self) -> impl Iterator<Item = f64> + '_ {
+        self.sides().map(|side| self.side_support(side.a, side.b).1)
+    }
+
+    fn cap_support(&self, z: f64, outward: bool) -> ReferenceFrame {
+        let origin = position(self.frame, [0., 0., z]);
+        let v = if outward && z == 0. {
+            self.frame.v.map(|x| -x)
+        } else {
+            self.frame.v
+        };
+        frame(origin, self.frame.u, v)
+    }
+
+    pub(crate) fn faces(&self) -> Vec<Face> {
+        let h = self.prism.height().as_f64();
+        let area = self.prism.area().as_f64();
+        let center = self.prism.centroid();
+        let caps = [0., h].into_iter().enumerate().map(|(i, z)| {
+            let support = self.cap_support(z, true);
+            Face {
+                index: i as u32,
+                plane: Some((support.origin_mm, support.normal())),
+                center_mm: self.point(center, z),
+                area_mm2: area,
+            }
+        });
+        caps.chain(self.sides().map(|side| {
+            let (support, length) = self.side_support(side.a, side.b);
+            let a = self.point(side.a, 0.);
+            let b = self.point(side.b, h);
+            Face {
+                index: side.index as u32 + 2,
+                plane: Some((support.origin_mm, support.normal())),
+                center_mm: std::array::from_fn(|j| (a[j] + b[j]) * 0.5),
+                area_mm2: length * h,
+            }
+        }))
+        .collect()
+    }
+
+    pub(crate) fn snapshot(
+        &self,
+        owner: EntityId,
+        revision: u64,
+    ) -> Result<TopologySnapshot, String> {
+        let count = self.edges.len();
+        let face_origins = CAP_ROLES
+            .into_iter()
+            .map(|role| {
+                vec![Origin {
+                    source: self.feature,
+                    role: role.into(),
+                }]
+            })
+            .chain(self.edges.iter().map(|(curve, _)| {
+                vec![
+                    Origin {
+                        source: self.feature,
+                        role: format!("side/{}/{}", curve.source, curve.role),
+                    },
+                    curve.clone(),
+                ]
+            }))
+            .collect();
+        let mut build = Builder {
+            face_origins,
+            elements: vec![],
+            next_edge: 0,
+            next_vertex: 0,
+        };
+        let h = self.prism.height().as_f64();
+        for (cap, z) in [0., h].into_iter().enumerate() {
+            build.face(
+                cap,
+                Some(self.cap_support(z, true)),
+                Some(self.cap_support(z, false)),
+                2..count + 2,
+            );
+            for side in self.sides() {
+                let a = self.point(side.a, z);
+                let b = self.point(side.b, z);
+                build.non_face(
+                    AnalyticGeometry::Line { a_mm: a, b_mm: b },
+                    &[cap, side.index + 2],
+                );
+                build.non_face(
+                    AnalyticGeometry::Point { position_mm: a },
+                    &[cap, side.previous + 2, side.index + 2],
+                );
+            }
+        }
+        for side in self.sides() {
+            let support = self.side_support(side.a, side.b).0;
+            let anchor = if self.edges[side.index].1 {
+                self.side_support(side.b, side.a).0
+            } else {
+                support
+            };
+            build.face(
+                side.index + 2,
+                Some(support),
+                Some(anchor),
+                [0, 1, side.previous + 2, side.next + 2],
+            );
+            build.non_face(
+                AnalyticGeometry::Line {
+                    a_mm: self.point(side.a, 0.),
+                    b_mm: self.point(side.a, h),
+                },
+                &[side.previous + 2, side.index + 2],
+            );
+        }
+        let snapshot = TopologySnapshot {
+            owner,
+            revision,
+            elements: build.elements,
+        };
+        snapshot.validate()?;
+        Ok(snapshot)
+    }
+
+    pub(crate) fn planar_loops(&self, face: u32) -> Vec<Vec<(u32, bool)>> {
+        let stride = self.edges.len() as u32;
+        let mut first = 0;
+        let mut ranges = self.prism.rings().iter().map(|ring| {
+            let start = first;
+            first += ring.len() as u32;
+            start..first
+        });
+        if face < 2 {
+            return ranges
+                .map(|range| range.map(|i| (face * stride + i, false)).collect())
+                .collect();
+        }
+        let side = face - 2;
+        let ring = ranges
+            .find(|range| range.contains(&side))
+            .expect("planar query validated the face index");
+        let next = if side + 1 == ring.end {
+            ring.start
+        } else {
+            side + 1
+        };
+        vec![vec![
+            (side, false),
+            (2 * stride + next, false),
+            (stride + side, true),
+            (2 * stride + side, true),
+        ]]
+    }
 }
 
 pub(crate) fn cylinder_faces(cylinder: &AxialCylinder) -> Vec<Face> {
