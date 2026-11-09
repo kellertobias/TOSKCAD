@@ -403,6 +403,18 @@ fn placed_polygon_publishes_hole_contours_and_original_reversed_edge_anchors() {
         .unwrap();
     near(side.area_mm2(), 6.);
     assert_eq!(side.edge_count(), 4);
+    let closing_side = solid
+        .planar_face_contours(
+            11,
+            PlaneFrame {
+                origin: [5., 4., 9.],
+                u: [0., 1., 0.],
+                v: [1., 0., 0.],
+            },
+        )
+        .unwrap();
+    near(closing_side.area_mm2(), 6.);
+    assert_eq!(closing_side.edge_count(), 4);
     let mesh = solid.mesh(Default::default()).unwrap();
     assert_eq!(mesh.face_indices.iter().copied().max(), Some(11));
     assert_eq!(solid.solid_count().unwrap(), 1);
