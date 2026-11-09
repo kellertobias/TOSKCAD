@@ -737,7 +737,7 @@ mod tests {
             empty
                 .request(s.document(), true)
                 .unwrap_err()
-                .contains("Materials")
+                .contains("stock dropdown")
         );
     }
 }
