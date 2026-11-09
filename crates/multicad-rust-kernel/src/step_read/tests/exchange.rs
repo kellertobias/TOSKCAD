@@ -1,9 +1,14 @@
 use crate::{
     Circle, Rational,
     cylinder::AxialCylinder,
+    orthogonal::{Box3, Operation, boolean},
+    orthogonal_boundary,
     polygon::PolygonPrism,
-    step::{write_axial_cylinder, write_box, write_polygon_prism},
-    step_read::{ReadError, read_analytic_solid, read_planar_solid},
+    step::{write_axial_cylinder, write_box, write_orthogonal, write_polygon_prism},
+    step_read::{
+        ImportProfile, ImportSolid, ReadError, read_analytic_solid, read_import_solid,
+        read_planar_solid,
+    },
 };
 
 const TOLERANCE: f64 = 1e-7;
@@ -80,6 +85,191 @@ fn readback_measures_actual_geometry() {
 }
 
 #[test]
+fn import_box_frame_ignores_record_and_shell_order() {
+    let source = box_step();
+    let (readback, recognized) = read_import_solid(&source, TOLERANCE).unwrap();
+    assert_eq!(readback, read_planar_solid(&source, TOLERANCE).unwrap());
+    assert_eq!(
+        recognized,
+        ImportSolid {
+            origin_mm: [10., 20., 30.],
+            u: X,
+            v: Y,
+            height_mm: 4.,
+            profile: ImportProfile::Polygon {
+                rings: vec![vec![[0., 0.], [12., 0.], [12., 8.], [0., 8.]]],
+                circular_holes: Vec::new(),
+            },
+        }
+    );
+    let source = replace(&source, "CLOSED_SHELL", 0, |line| {
+        let face_ids = (0..6)
+            .rev()
+            .map(|i| id(entity(&source, "ADVANCED_FACE", i)))
+            .collect::<Vec<_>>();
+        format!("{}=CLOSED_SHELL('',({}));", id(line), face_ids.join(","))
+    });
+    let (header, data) = source.split_once("\nDATA;\n").unwrap();
+    let (records, trailer) = data.split_once("\nENDSEC;").unwrap();
+    let records = records
+        .split_inclusive('\n')
+        .rev()
+        .map(str::trim_end)
+        .collect::<Vec<_>>();
+    let reversed = format!("{header}\nDATA;\n{}\nENDSEC;{trailer}", records.join("\n"));
+    assert_eq!(
+        read_import_solid(&reversed, TOLERANCE).unwrap().1,
+        recognized
+    );
+}
+
+#[test]
+fn import_rejects_valid_shell_without_a_right_extrusion() {
+    let cube = Box3 {
+        min: [0.; 3],
+        max: [3.; 3],
+    };
+    let solid = boolean(&[cube], &[], Operation::Union, TOLERANCE)
+        .unwrap()
+        .unwrap();
+    let boundary = orthogonal_boundary::build(solid.quads()).unwrap();
+    let oblique = write_orthogonal(&boundary, |[x, y, z]| [x + z, y + z, z]).unwrap();
+    close(
+        read_analytic_solid(&oblique, TOLERANCE).unwrap().volume_mm3,
+        27.,
+    );
+    assert_eq!(
+        read_import_solid(&oblique, TOLERANCE),
+        Err(ReadError::Unsupported)
+    );
+
+    let tool = Box3 {
+        min: [1.; 3],
+        max: [2., 2., 4.],
+    };
+    let solid = boolean(&[cube], &[tool], Operation::Subtract, TOLERANCE)
+        .unwrap()
+        .unwrap();
+    let boundary = orthogonal_boundary::build(solid.quads()).unwrap();
+    let blind_pocket = write_orthogonal(&boundary, |p| p).unwrap();
+    close(
+        read_analytic_solid(&blind_pocket, TOLERANCE)
+            .unwrap()
+            .volume_mm3,
+        25.,
+    );
+    assert_eq!(
+        read_import_solid(&blind_pocket, TOLERANCE),
+        Err(ReadError::Unsupported)
+    );
+}
+
+#[test]
+fn surface_curve_keeps_validated_3d_geometry_as_master() {
+    let source = box_step();
+    let line = id(entity(&source, "LINE", 0));
+    let plane = id(entity(&source, "PLANE", 0));
+    let point = id(entity(&source, "CARTESIAN_POINT", 0));
+    let wrapped = replace(&source, "EDGE_CURVE", 0, |edge| {
+        edge.replace(&format!(",{line},"), ",#999001,")
+    });
+    let record = |args| before_end(&wrapped, &format!("#999001=SURFACE_CURVE({args});"));
+    let correct = record(format!("'',{line},({plane}),.CURVE_3D."));
+    assert_eq!(
+        read_import_solid(&correct, TOLERANCE),
+        read_import_solid(&source, TOLERANCE)
+    );
+    for (args, error) in [
+        (format!("'',{line},({plane})"), ReadError::Invalid),
+        (format!("'',{line},(),.CURVE_3D."), ReadError::Invalid),
+        (
+            format!("'',{line},({plane}),.PCURVE_S1."),
+            ReadError::Unsupported,
+        ),
+        (
+            format!("'',{line},({point}),.CURVE_3D."),
+            ReadError::Unsupported,
+        ),
+    ] {
+        assert_eq!(read_import_solid(&record(args), TOLERANCE), Err(error));
+    }
+}
+
+#[test]
+fn selected_planar_pcurve_must_match_the_trimmed_3d_line() {
+    let source = write_box([n(100_000), n(8), n(4)], [10., 20., 30.], X, Y).unwrap();
+    let line = id(entity(&source, "LINE", 0));
+    let plane = id(entity(&source, "PLANE", 0));
+    let wrapped = replace(&source, "EDGE_CURVE", 0, |edge| {
+        edge.replace(&format!(",{line},"), ",#999001,")
+    });
+    let wrapped = before_end(
+        &wrapped,
+        &format!(
+            "#999001=SURFACE_CURVE('',{line},(#999002,#999002),.PCURVE_S2.);\n\
+         #999002=PCURVE('',{plane},#999003);\n\
+         #999003=DEFINITIONAL_REPRESENTATION('',(#999004),#999008);\n\
+         #999004=LINE('',#999005,#999006);\n\
+         #999005=CARTESIAN_POINT('',(100000.,-8.));\n\
+         #999006=VECTOR('',#999007,1.);\n\
+         #999007=DIRECTION('',(-1.,0.));\n\
+         #999008=(GEOMETRIC_REPRESENTATION_CONTEXT(2) PARAMETRIC_REPRESENTATION_CONTEXT() REPRESENTATION_CONTEXT('2D SPACE',''));"
+        ),
+    );
+    let expected = read_import_solid(&source, TOLERANCE).unwrap();
+    assert_eq!(read_import_solid(&wrapped, TOLERANCE).unwrap(), expected);
+    let first = wrapped.replace(".PCURVE_S2.", ".PCURVE_S1.");
+    assert_eq!(read_import_solid(&first, TOLERANCE).unwrap(), expected);
+
+    for (from, to, error) in [
+        (".PCURVE_S2.", ".UNKNOWN.", ReadError::Unsupported),
+        ("#999002,#999002", "#999002", ReadError::Invalid),
+        ("#999003);", "#999003,$);", ReadError::Invalid),
+        (
+            "#999004),#999008);",
+            "#999004),#999008,$);",
+            ReadError::Invalid,
+        ),
+        (
+            "(#999004),#999008);",
+            "(#999004,#999004),#999008);",
+            ReadError::Unsupported,
+        ),
+        ("CONTEXT(2)", "CONTEXT(3)", ReadError::Unsupported),
+        (
+            "#999005=CARTESIAN_POINT('',(100000.,-8.));",
+            "#999005=CARTESIAN_POINT((100000.,-8.));",
+            ReadError::Invalid,
+        ),
+        ("(100000.,-8.)", "(100000.,-8.,0.)", ReadError::Invalid),
+        ("(100000.,-8.)", "(100000.,-7.)", ReadError::Invalid),
+        ("(100000.,-8.)", "(1.E13,-8.)", ReadError::Limit),
+        ("(-1.,0.)", "(1.,0.)", ReadError::Invalid),
+        ("(-1.,0.)", "(-1.,1.E-11)", ReadError::Invalid),
+        ("#999007,1.)", "#999007,2.)", ReadError::Invalid),
+    ] {
+        assert!(wrapped.contains(from));
+        let invalid = wrapped.replace(from, to);
+        assert_eq!(
+            read_import_solid(&invalid, TOLERANCE),
+            Err(error),
+            "{from} → {to}"
+        );
+    }
+    let unused_plane = entity(&source, "PLANE", 0)
+        .replacen(&plane, "#999009", 1)
+        .replace("PLANE('',", "PLANE('',*,");
+    let invalid = before_end(
+        &wrapped.replace(&format!("PCURVE('',{plane},"), "PCURVE('',#999009,"),
+        &unused_plane,
+    );
+    assert_eq!(
+        read_import_solid(&invalid, TOLERANCE),
+        Err(ReadError::Invalid)
+    );
+}
+
+#[test]
 fn read_cylinder_extrema_away_from_the_seam_and_measure_volume() {
     let source = cylinder_step();
     assert!(read_planar_solid(&source, TOLERANCE).is_err());
@@ -94,16 +284,23 @@ fn read_cylinder_extrema_away_from_the_seam_and_measure_volume() {
         assert_eq!(circle.normal, [0., 0., 1.]);
         assert_eq!(circle.radius_mm, 1.);
     }
+    let (imported, solid) = read_import_solid(&source, TOLERANCE).unwrap();
+    assert_eq!(imported, read);
+    assert_eq!(solid.origin_mm, [3., 3., -5.]);
+    assert_eq!(solid.height_mm, 2.);
+    assert_eq!(solid.profile, ImportProfile::Cylinder { radius_mm: 1. });
 }
 
 #[test]
 fn read_tilted_prism_with_straight_and_round_open_holes_in_both_sweeps() {
     let outer = [[0, 0], [12, 0], [12, 8], [0, 8]];
     let square_hole = [[2, 2], [2, 4], [4, 4], [4, 2]];
+    let slot_hole = [[5, 5], [5, 7], [6, 7], [6, 5]];
     let round_holes = [[7, 3], [9, 6]];
     let prism = PolygonPrism::with_circular_holes(
         vec![
             outer.map(|point| point.map(n)).to_vec(),
+            slot_hole.map(|point| point.map(n)).to_vec(),
             square_hole.map(|point| point.map(n)).to_vec(),
         ],
         round_holes
@@ -125,9 +322,44 @@ fn read_tilted_prism_with_straight_and_round_open_holes_in_both_sweeps() {
         )
         .unwrap();
         let read = read_analytic_solid(&source, TOLERANCE).unwrap();
-        close(read.volume_mm3, 3. * (92. - 2. * std::f64::consts::PI));
-        assert_eq!(read.face_count, 12);
-        assert_eq!(read.edges_mm.len(), 24);
+        let (imported, solid) = read_import_solid(&source, TOLERANCE).unwrap();
+        assert_eq!(imported, read);
+        close(solid.height_mm, 3.);
+        let ImportProfile::Polygon {
+            rings,
+            circular_holes,
+        } = solid.profile
+        else {
+            panic!("expected polygon")
+        };
+        close(super::super::signed_area(&rings[0]), 96.);
+        let mut hole_areas: Vec<_> = rings[1..]
+            .iter()
+            .map(|ring| super::super::signed_area(ring))
+            .collect();
+        hole_areas.sort_unstable_by(f64::total_cmp);
+        assert_eq!(hole_areas.len(), 2);
+        for (area, expected) in hole_areas.into_iter().zip([-4., -2.]) {
+            close(area, expected);
+        }
+        assert_eq!(circular_holes.len(), 2);
+        for (center, radius) in circular_holes {
+            close(radius, 1.);
+            let world: [f64; 3] = std::array::from_fn(|i| {
+                solid.origin_mm[i] + center[0] * solid.u[i] + center[1] * solid.v[i]
+            });
+            assert!(
+                read.circles
+                    .iter()
+                    .any(
+                        |circle| super::super::length(super::super::sub(circle.center_mm, world))
+                            < TOLERANCE
+                    )
+            );
+        }
+        close(read.volume_mm3, 3. * (90. - 2. * std::f64::consts::PI));
+        assert_eq!(read.face_count, 16);
+        assert_eq!(read.edges_mm.len(), 36);
         assert_eq!(read.circles.len(), 4);
         let sign = if reverse { -1. } else { 1. };
         let shift = 3. * sign * diagonal;

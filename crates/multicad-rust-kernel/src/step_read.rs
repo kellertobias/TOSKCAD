@@ -2,10 +2,13 @@
 //! full cylindrical walls. The reader follows the shared topology in the
 //! file and integrates the analytic boundary without tessellating it.
 
+mod curve;
+mod import;
 mod part21;
 mod round;
 
 use crate::polygon::MAX_VERTICES;
+pub use import::{ImportProfile, ImportSolid, read_import_solid};
 use part21::{Entity, Value};
 use round::Trim;
 use std::collections::{BTreeMap, BTreeSet};
@@ -57,18 +60,17 @@ pub fn read_analytic_solid(input: &str, tolerance_mm: f64) -> Result<Readback> {
 }
 
 fn read(input: &str, tolerance_mm: f64, allow_circles: bool) -> Result<Readback> {
+    let entities = parse_entities(input, tolerance_mm)?;
+    let mut shell = Shell::new(&entities, tolerance_mm, allow_circles);
+    let faces = shell.validated_faces()?;
+    shell.readback(&faces)
+}
+
+fn parse_entities(input: &str, tolerance_mm: f64) -> Result<BTreeMap<u32, Vec<Entity<'_>>>> {
     if !tolerance_mm.is_finite() || tolerance_mm <= 0. {
         return Err(ReadError::Invalid);
     }
-    let entities = part21::parse(input)?;
-    let mut shell = Shell {
-        entities: &entities,
-        tolerance: tolerance_mm,
-        allow_circles,
-        points: BTreeMap::new(),
-        edges: BTreeMap::new(),
-    };
-    shell.read()
+    part21::parse(input)
 }
 
 fn dot(a: Point, b: Point) -> f64 {
@@ -203,7 +205,21 @@ struct Shell<'a, 'input> {
     edges: BTreeMap<u32, Edge>,
 }
 
-impl<'input> Shell<'_, 'input> {
+impl<'a, 'input> Shell<'a, 'input> {
+    fn new(
+        entities: &'a BTreeMap<u32, Vec<Entity<'input>>>,
+        tolerance: f64,
+        allow_circles: bool,
+    ) -> Self {
+        Self {
+            entities,
+            tolerance,
+            allow_circles,
+            points: BTreeMap::new(),
+            edges: BTreeMap::new(),
+        }
+    }
+
     fn components(&self, id: u32) -> Result<&[Entity<'input>]> {
         self.entities
             .get(&id)
@@ -226,7 +242,7 @@ impl<'input> Shell<'_, 'input> {
         Ok(&entity.args)
     }
 
-    fn read(&mut self) -> Result<Readback> {
+    fn validated_faces(&mut self) -> Result<Vec<Face>> {
         let face_ids = self.shell_faces()?;
         let distinct: BTreeSet<_> = face_ids.iter().collect();
         let minimum_faces = if self.allow_circles { 3 } else { 4 };
@@ -239,7 +255,10 @@ impl<'input> Shell<'_, 'input> {
             .map(|(i, id)| self.face(id, i))
             .collect::<Result<Vec<_>>>()?;
         self.check_incidence(&faces)?;
+        Ok(faces)
+    }
 
+    fn readback(&self, faces: &[Face]) -> Result<Readback> {
         let anchor = *self.points.values().next().ok_or(ReadError::Invalid)?;
         let mut bounds_mm = [anchor; 2];
         for &point in self.points.values() {
@@ -427,7 +446,7 @@ impl<'input> Shell<'_, 'input> {
         };
         let vertices = [reference(start)?, reference(end)?];
         let forward = sense(forward)?;
-        let geometry = reference(geometry)?;
+        let geometry = self.edge_geometry(reference(geometry)?, vertices)?;
         let curve = if self.allow_circles && self.simple(geometry)?.name == "CIRCLE" {
             self.circle_curve(geometry, vertices, forward)?
         } else {
@@ -445,19 +464,7 @@ impl<'input> Shell<'_, 'input> {
     }
 
     fn line_curve(&mut self, id: u32, vertices: [u32; 2], forward: bool) -> Result<Curve> {
-        let [Value::String(_), origin, vector] = self.args(id, "LINE")? else {
-            return Err(ReadError::Invalid);
-        };
-        let origin = self.point(reference(origin)?)?;
-        let [Value::String(_), direction, Value::Number(scale)] =
-            self.args(reference(vector)?, "VECTOR")?
-        else {
-            return Err(ReadError::Invalid);
-        };
-        if !scale.is_finite() || *scale <= 0. {
-            return Err(ReadError::Invalid);
-        }
-        let direction = self.direction(reference(direction)?)?;
+        let (origin, direction, _) = self.line(id, false)?;
         let [a, b] = [self.vertex(vertices[0])?, self.vertex(vertices[1])?];
         let delta = sub(b, a);
         if length(delta) <= self.tolerance
