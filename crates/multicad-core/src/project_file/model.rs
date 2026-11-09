@@ -353,6 +353,12 @@ impl ProjectFile {
         if crate::exchange::required_capability(&self.document) {
             required.insert(crate::exchange::CAPABILITY.into());
         }
+        if crate::exchange::print_plates(&self.document)
+            .next()
+            .is_some()
+        {
+            required.insert(crate::exchange::PRINT_PLATE_CAPABILITY.into());
+        }
         if crate::exchange::sets(&self.document).any(|id| {
             crate::exchange::read(&self.document, id).is_ok_and(|s| !s.planar_faces.is_empty())
         }) {
@@ -510,6 +516,7 @@ pub fn supported_capabilities() -> BTreeSet<String> {
         crate::sketch_external::CAPABILITY.into(),
         crate::sketch_external::OCCURRENCE_CAPABILITY.into(),
         crate::exchange::CAPABILITY.into(),
+        crate::exchange::PRINT_PLATE_CAPABILITY.into(),
         crate::exchange::PLANAR_CAPABILITY.into(),
         crate::sketch_import::CAPABILITY.into(),
         crate::model::CAPABILITY.into(),

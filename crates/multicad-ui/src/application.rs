@@ -22,6 +22,7 @@ mod library;
 mod mechanical_imports;
 mod native_picker;
 mod print;
+mod print_plate;
 mod project;
 mod render;
 mod save_preview;
@@ -71,6 +72,9 @@ pub struct Project {
     pub drawings: crate::drawings::DrawingEditor,
     pub exchange: crate::exchange::ExportWorkspace,
     pub print: crate::print::PrintWorkspace,
+    plate: crate::print::PlateEditor,
+    plate_jobs: crate::print::PlateJobs,
+    plate_active: bool,
     sheet_pattern: crate::sheet_pattern::Workspace,
     measure_return_view: Option<(Mode, usize)>,
     pub path: Option<PathBuf>,
@@ -103,6 +107,9 @@ impl Project {
             drawings: Default::default(),
             exchange: Default::default(),
             print: Default::default(),
+            plate: Default::default(),
+            plate_jobs: Default::default(),
+            plate_active: false,
             sheet_pattern: Default::default(),
             measure_return_view: None,
             path: None,
@@ -122,6 +129,7 @@ impl Project {
             || self.sketch.has_pending_edits()
             || self.drawings.dirty()
             || self.exchange.dirty()
+            || self.plate.dirty()
     }
     fn title(&self) -> String {
         self.path
@@ -143,6 +151,7 @@ enum FileAction {
     SurfaceHeightMap(crate::modeling::FormStamp),
     Mechanical(crate::mechanical_import::SourceKind, Option<EntityId>),
     PrintPackage,
+    PrintPlate(EntityId),
     ScheduleCsv,
     ExportFolder,
 }
@@ -311,7 +320,9 @@ impl Application {
                 .projects
                 .iter()
                 .filter(|p| Some(p.local_id) != self.welcome_placeholder)
-                .any(|p| p.dirty() || p.exchange.writing() || p.print.writing())
+                .any(|p| {
+                    p.dirty() || p.exchange.writing() || p.print.writing() || p.plate_jobs.writing()
+                })
             || self
                 .pending_files
                 .values()
@@ -366,11 +377,16 @@ impl Application {
         &mut self,
         factory: crate::print::PrintBackendFactory,
     ) -> Result<(), String> {
-        if self.projects.iter().any(|p| p.print.pending()) {
+        if self
+            .projects
+            .iter()
+            .any(|p| p.print.pending() || p.plate_jobs.busy())
+        {
             return Err("Wait for accepted print jobs before replacing the print service".into());
         }
         for project in &mut self.projects {
             project.print.set_backend(factory())?;
+            project.plate_jobs.set_backend(None);
         }
         self.print_backends = Some(factory);
         Ok(())
@@ -382,14 +398,11 @@ impl Application {
             && !self.recovery_open
     }
     fn export_blocks(&self, command: Command) -> bool {
-        self.current().exchange.dirty()
+        let p = self.current();
+        (p.exchange.dirty() || p.plate.dirty())
             && !matches!(
                 command,
-                Command::Export(
-                    crate::exchange::ExportTool::SaveSet
-                        | crate::exchange::ExportTool::Discard
-                        | crate::exchange::ExportTool::Cancel
-                ) | Command::Apply
+                Command::Apply
                     | Command::Discard
                     | Command::Mode(Mode::Export)
                     | Command::KeyboardShortcuts
@@ -397,6 +410,15 @@ impl Application {
                     | Command::New
                     | Command::NewWindow
             )
+            && (p.plate.dirty()
+                || !matches!(
+                    command,
+                    Command::Export(
+                        crate::exchange::ExportTool::SaveSet
+                            | crate::exchange::ExportTool::Discard
+                            | crate::exchange::ExportTool::Cancel
+                    )
+                ))
     }
     pub fn set_repair_set_checker(
         &mut self,
@@ -802,6 +824,7 @@ impl Application {
                 let message =
                     p.exchange
                         .execute(&mut p.session, tool, args.first().copied(), channel)?;
+                p.plate_active = false;
                 self.mode = Mode::Export;
                 self.tab = 0;
                 self.message = message;
@@ -908,7 +931,11 @@ impl Application {
                 }
                 if self.mode == Mode::Export {
                     let p = self.current_mut();
-                    self.message = p.exchange.save(&mut p.session, channel)?;
+                    self.message = if p.plate_active {
+                        p.plate.save(&mut p.session, channel)?
+                    } else {
+                        p.exchange.save(&mut p.session, channel)?
+                    };
                     return Ok(());
                 }
                 if self.mode == Mode::Drawings {
@@ -964,8 +991,14 @@ impl Application {
                 }
                 if self.mode == Mode::Export {
                     let p = self.current_mut();
-                    p.exchange.discard(&p.session);
-                    self.message = "Export-set draft discarded".into();
+                    if p.plate_active {
+                        p.plate.discard(&p.session);
+                        p.plate_active = p.plate.selected().is_some();
+                        self.message = "Print plate edits discarded".into();
+                    } else {
+                        p.exchange.discard(&p.session);
+                        self.message = "Export-set draft discarded".into();
+                    }
                     return Ok(());
                 }
                 if self.mode == Mode::Drawings {
@@ -1237,6 +1270,7 @@ impl Application {
                 | mechanical_imports::IMPORT_KICAD
                 | mechanical_imports::IMPORT_UPDATE),
             ) => self.request_mechanical_import(id)?,
+            Command::Extension("print-plate") => self.begin_print_plate()?,
             Command::Extension("settings") => {
                 self.settings_open = true;
                 self.message = "Settings opened".into();
@@ -1605,8 +1639,18 @@ impl Application {
                 .current()
                 .sketch
                 .external_can_preview(&self.current().session),
+            Command::Extension("print-plate") => {
+                !self.current().pending_edits() && !self.file_busy()
+            }
             Command::Export(tool) => {
-                !self.current().editor.dirty()
+                (!self.current().plate_active
+                    || matches!(
+                        tool,
+                        crate::exchange::ExportTool::NewSet
+                            | crate::exchange::ExportTool::ScheduleCsv
+                    ))
+                    && !self.current().plate.dirty()
+                    && !self.current().editor.dirty()
                     && !self.current().sketch.has_pending_edits()
                     && !self.current().drawings.dirty()
                     && self
@@ -1624,12 +1668,13 @@ impl Application {
                     && !self.current().sketch.has_pending_edits()
                     && !self.current().drawings.dirty()
                     && !self.current().exchange.dirty()
+                    && !self.current().plate.dirty()
                     && self.current().print.enabled(tool, &self.current().session)
                     && (tool == crate::print::PrintTool::Cancel
                         || (self.export_io_allowed() && self.file_action.is_none()))
             }
             Command::Apply | Command::Discard if self.mode == Mode::Export => {
-                self.current().exchange.dirty()
+                self.current().exchange.dirty() || self.current().plate.dirty()
             }
             Command::Apply if self.current().sketch.model_active() => self
                 .current()

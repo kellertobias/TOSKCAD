@@ -77,6 +77,7 @@ pub enum Icon {
     Link,
     New,
     Grid,
+    PrintPlate,
     Orthographic,
     Perspective,
     Wire,
@@ -1159,6 +1160,11 @@ pub(crate) fn paint_sized(ui: &egui::Ui, icon: Icon, center: Pos2, color: Color3
                 line([n, 3.0], [n, 21.0]);
                 line([3.0, n], [21.0, n]);
             }
+        }
+        Icon::PrintPlate => {
+            rect(2.0, 4.0, 20.0, 16.0);
+            rect(5.0, 7.0, 6.0, 9.0);
+            p.circle_stroke(v(16.5, 13.0), 3.0 * scale, stroke);
         }
         Icon::Orthographic => {
             rect(4.0, 4.0, 13.0, 13.0);

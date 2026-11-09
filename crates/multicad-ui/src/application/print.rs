@@ -90,7 +90,11 @@ impl Application {
         let active = self.active;
         for (index, p) in self.projects.iter_mut().enumerate() {
             p.print.poll(&p.session);
-            if let Some((message, error)) = p.print.take_notice() {
+            p.plate_jobs.poll(&p.session);
+            for (message, error) in [p.print.take_notice(), p.plate_jobs.take_notice()]
+                .into_iter()
+                .flatten()
+            {
                 if index == active {
                     self.message = message;
                     self.message_error = error;
@@ -99,7 +103,7 @@ impl Application {
                     p.status = Some((message, error));
                 }
             }
-            if p.print.pending() {
+            if p.print.pending() || p.plate_jobs.busy() {
                 ctx.request_repaint_after(std::time::Duration::from_millis(16));
             }
         }
@@ -234,6 +238,7 @@ mod tests {
                 },
                 objects: vec![PrintObject {
                     part: EntityId::new(),
+                    plate_pose: None,
                     occurrence_path: vec![],
                     name: "Body".into(),
                     role: PrintRole::Finished,

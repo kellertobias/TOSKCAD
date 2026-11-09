@@ -4,8 +4,8 @@
 //! packaged object. The 3MF holds one mesh resource per producing solid and
 //! one build item per world Part or placed occurrence at its world
 //! placement, in millimeters, so copies of one Part share their mesh. The
-//! package keeps model coordinates with +Z as the build direction. Nothing here slices,
-//! arranges a plate, drives a printer or asserts printability.
+//! A saved print plate instead uses independent, native-checked bed placements.
+//! Neither path slices, drives a printer or establishes printability.
 use super::{Exporter, checkpoint, failure, mesh};
 use crate::Model;
 use multicad_core::{
@@ -15,7 +15,7 @@ use multicad_core::{
     model::{self, RigidPose},
     project_file::ContentHash,
 };
-use multicad_kernel::{RigidTransform, Solid};
+use multicad_kernel::{GeometryPolicy, RigidTransform, Solid};
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
     fs,
@@ -35,6 +35,7 @@ const PLANE_MM: f64 = 1e-6;
 struct Built {
     preview: PrintPreview,
     generated: Vec<Vec<u8>>,
+    plate_meshes: Option<(Vec<mesh::MeshObject>, Vec<mesh::BuildItem>)>,
 }
 fn io(e: impl ToString) -> ExportError {
     failure(ErrorKind::Io, None, e)
@@ -172,6 +173,118 @@ fn findings(
     }
     out
 }
+fn transformed(local: &Solid, pose: RigidPose) -> Result<Solid, multicad_kernel::GeometryError> {
+    local.transformed(RigidTransform {
+        rotation: pose.rotation,
+        translation_mm: pose.translation_mm,
+    })
+}
+
+fn plate_pose(
+    local: &Solid,
+    rotation: [[f64; 3]; 3],
+    [x, y]: [f64; 2],
+) -> Result<(RigidPose, [[f64; 3]; 2]), multicad_kernel::GeometryError> {
+    let orientation = RigidPose {
+        rotation,
+        translation_mm: [0.; 3],
+    };
+    let bounds = if orientation == RigidPose::default() {
+        local.bounds()?
+    } else {
+        transformed(local, orientation)?.bounds()?
+    };
+    let anchor = [x, y, 0.];
+    let translation_mm = std::array::from_fn(|axis| anchor[axis] - bounds.min[axis]);
+    let top = std::array::from_fn(|axis| anchor[axis] + (bounds.max[axis] - bounds.min[axis]));
+    Ok((
+        RigidPose {
+            rotation,
+            translation_mm,
+        },
+        [anchor, top],
+    ))
+}
+
+fn check_plate(
+    [width, depth]: [f64; 2],
+    objects: &[PrintObject],
+    solids: &[(&Solid, RigidPose)],
+    policy: GeometryPolicy,
+    interrupt: Option<&dyn Fn() -> bool>,
+) -> Result<Option<String>, ExportError> {
+    for object in objects {
+        let [min, max] = object.bounds_mm;
+        if min[0] < -PLANE_MM
+            || min[1] < -PLANE_MM
+            || max[0] > width + PLANE_MM
+            || max[1] > depth + PLANE_MM
+        {
+            return Ok(Some(format!(
+                "{} is outside the {:.1} × {:.1} mm print bed. Move or rotate it, or resize the bed.",
+                object.name, width, depth
+            )));
+        }
+    }
+
+    // Build exact transformed solids only for pairs that can intersect. Face
+    // contact has zero common volume and is valid for independent build items.
+    let policy = GeometryPolicy {
+        boolean_fuzzy_mm: 0.,
+        ..policy
+    };
+    let mut posed: Vec<Option<Solid>> = (0..solids.len()).map(|_| None).collect();
+    let mut queries = 0;
+    for (a, object) in objects.iter().enumerate() {
+        for (b, other) in objects.iter().enumerate().skip(a + 1) {
+            let intersects = (0..3).all(|axis| {
+                object.bounds_mm[0][axis].max(other.bounds_mm[0][axis])
+                    < object.bounds_mm[1][axis].min(other.bounds_mm[1][axis])
+            });
+            if !intersects {
+                continue;
+            }
+            checkpoint(interrupt)?;
+            queries += 1;
+            if queries > 256 {
+                return Ok(Some(
+                    "Too many overlapping part envelopes to finish the collision check. Spread the parts apart and preview again.".into(),
+                ));
+            }
+            let inspect_error = |e: multicad_kernel::GeometryError| {
+                failure(
+                    ErrorKind::Invalid,
+                    Some(object.part),
+                    format!(
+                        "Cannot check {} against {} on the print bed: {e}",
+                        object.name, other.name
+                    ),
+                )
+            };
+            for index in [a, b] {
+                if posed[index].is_none() {
+                    let (solid, pose) = solids[index];
+                    posed[index] = Some(transformed(solid, pose).map_err(inspect_error)?);
+                }
+            }
+            let common = posed[a]
+                .as_ref()
+                .expect("plate pose")
+                .intersect_parallel(posed[b].as_ref().expect("plate pose"), policy)
+                .map_err(inspect_error)?;
+            if let Some(common) = common
+                && common.volume_mm3().map_err(inspect_error)? > 0.
+            {
+                return Ok(Some(format!(
+                    "{} overlaps {} on the print bed. Move or rotate one of them.",
+                    object.name, other.name
+                )));
+            }
+        }
+    }
+    Ok(None)
+}
+
 /// Read a generated file back and compare it with what was tessellated and
 /// with the exact solids' volume, up to the chord deviation.
 fn verify(
@@ -179,6 +292,7 @@ fn verify(
     bytes: &[u8],
     objects: &[&PrintObject],
     quality: &MeshQuality,
+    plate_meshes: Option<&[(&mesh::MeshObject, &mesh::BuildItem)]>,
 ) -> Result<f64, ExportError> {
     let (read, single) = match file.kind {
         PrintFileKind::ThreeMf => (mesh::read_three_mf(bytes), false),
@@ -199,13 +313,46 @@ fn verify(
     // object, so each placed object's volume is compared on its own.
     let mut facets = read.world.as_slice();
     let mut placed_ok = read.triangles == file.triangles;
-    for object in objects {
+    for (index, object) in objects.iter().enumerate() {
         if !placed_ok || facets.len() < object.triangles {
             placed_ok = false;
             break;
         }
         let (own, rest) = facets.split_at(object.triangles);
         facets = rest;
+        if let Some(plate_meshes) = plate_meshes {
+            let (resource, pose) = plate_meshes[index];
+            let matches = own
+                .iter()
+                .zip(&resource.triangles)
+                .all(|((a, b, c), triangle)| {
+                    [a, b, c]
+                        .into_iter()
+                        .zip(triangle)
+                        .all(|(actual, &vertex)| {
+                            let expected = pose.apply(resource.vertices[vertex as usize]);
+                            actual.iter().zip(expected).all(|(actual, expected)| {
+                                let tolerance = if single {
+                                    1e-6 + expected.abs() * 1e-7
+                                } else {
+                                    1e-8
+                                };
+                                (actual - expected).abs() <= tolerance
+                            })
+                        })
+                });
+            if own.len() != resource.triangles.len() || !matches {
+                return Err(failure(
+                    ErrorKind::Invalid,
+                    Some(object.part),
+                    format!(
+                        "Readback placement of {} differs from the verified print plate",
+                        object.name
+                    ),
+                ));
+            }
+        }
+
         let volume = mesh::ReadMesh {
             unit_scale: 1.,
             objects: 1,
@@ -242,6 +389,7 @@ impl Exporter {
         document: &Document,
         revision: u64,
         request: &PrintRequest,
+        plate: Option<&PrintPlateDefinition>,
         actor: &Actor,
         interrupt: Option<&dyn Fn() -> bool>,
     ) -> Result<Built, ExportError> {
@@ -253,7 +401,10 @@ impl Exporter {
             ));
         }
         checkpoint(interrupt)?;
-        let mut selection = resolve_print(document, revision, request)?;
+        let mut selection = match plate {
+            Some(plate) => resolve_print_plate(document, revision, plate)?,
+            None => resolve_print(document, revision, request)?,
+        };
         let manufacturing_limitations = model::has_manufacturing_limitations(document)
             .map_err(|e| failure(ErrorKind::Invalid, None, e))?;
         let parameters = multicad_core::parameters::evaluate(document)
@@ -275,9 +426,17 @@ impl Exporter {
         let mut objects = vec![];
         let mut meshes = vec![];
         let mut items = vec![];
+        let mut plate_blocked = None;
         if !selection.parts.is_empty() {
-            let model = self
-                .compiler
+            let compiler = if plate.is_some() {
+                crate::Compiler {
+                    omit_display: true,
+                    ..self.compiler
+                }
+            } else {
+                self.compiler
+            };
+            let model = compiler
                 .compile_interruptible(document, revision, interrupt)
                 .map_err(|e| failure(ErrorKind::Invalid, e.entity, e.message))?;
             if model.snapshot().stamp.source_hash != selection.stamp.source_hash {
@@ -291,7 +450,8 @@ impl Exporter {
             // One mesh resource per producing solid: a world Part and its
             // placed occurrences share it, placed by their build items.
             let mut shared: BTreeMap<EntityId, usize> = BTreeMap::new();
-            for part in &selection.parts {
+            let mut plate_solids = vec![];
+            for (part_index, part) in selection.parts.iter().enumerate() {
                 checkpoint(interrupt)?;
                 let skip = |reason: &str| PrintSkip {
                     entity: part.part,
@@ -319,6 +479,7 @@ impl Exporter {
                             Some(leaf) if leaf.component == part.part => model
                                 .solid(leaf.producer)
                                 .map(|local| (leaf.producer, local, leaf.pose, None)),
+                            Some(_) if plate.is_some() => None,
                             // An aid riding on its placed target: the aid's
                             // solid shares the target's frame and pose.
                             Some(leaf) => match own {
@@ -365,23 +526,46 @@ impl Exporter {
                         ),
                     ));
                 }
-                let world = match (&transformed, part.occurrence_path.split_first()) {
-                    (Some(world), _) => world,
-                    (None, None) => local,
-                    (None, Some((root, members))) => model
-                        .leaf_solid(&model::OccurrencePath {
-                            root: *root,
-                            members: members.to_vec(),
+                let (pose, bounds_mm, volume) = if let Some(plate) = plate {
+                    let placement = plate
+                        .placements
+                        .get(part_index)
+                        .filter(|placement| {
+                            placement.source.part == part.part
+                                && placement.source.occurrence_path == part.occurrence_path
                         })
                         .ok_or_else(|| {
-                            invalid(
-                                "Exact world geometry of the placed occurrence is unavailable"
-                                    .into(),
-                            )
-                        })?,
+                            invalid("Print plate placement and resolved Part disagree".into())
+                        })?;
+                    let (pose, bounds) =
+                        plate_pose(local, placement.rotation(), placement.position_mm)
+                            .map_err(|e| invalid(e.to_string()))?;
+                    plate_solids.push((local, pose));
+                    (
+                        pose,
+                        bounds,
+                        local.volume_mm3().map_err(|e| invalid(e.to_string()))?,
+                    )
+                } else {
+                    let world = match (&transformed, part.occurrence_path.split_first()) {
+                        (Some(world), _) => world,
+                        (None, None) => local,
+                        (None, Some((root, members))) => model
+                            .leaf_solid(&model::OccurrencePath {
+                                root: *root,
+                                members: members.to_vec(),
+                            })
+                            .ok_or_else(|| {
+                                invalid(
+                                    "Exact world geometry of the placed occurrence is unavailable"
+                                        .into(),
+                                )
+                            })?,
+                    };
+                    let bounds = world.bounds().map_err(|e| invalid(e.to_string()))?;
+                    let volume = world.volume_mm3().map_err(|e| invalid(e.to_string()))?;
+                    (pose, [bounds.min, bounds.max], volume)
                 };
-                let bounds = world.bounds().map_err(|e| invalid(e.to_string()))?;
-                let volume = world.volume_mm3().map_err(|e| invalid(e.to_string()))?;
                 let index = match shared.get(&producer) {
                     Some(index) => *index,
                     None => {
@@ -409,12 +593,29 @@ impl Exporter {
                     occurrence_path: part.occurrence_path.clone(),
                     name: part.name.clone(),
                     role: part.role.clone(),
-                    bounds_mm: [bounds.min, bounds.max],
+                    bounds_mm,
+                    plate_pose: plate.map(|_| pose),
                     volume_mm3: volume,
                     triangles: resource.triangles.len(),
                     mesh_volume_mm3: mesh::volume(&placed_vertices, &resource.triangles).abs(),
                 });
                 items.push(item);
+            }
+            if let Some(plate) = plate {
+                plate_blocked = if let Some(missing) = unavailable.first() {
+                    Some(format!(
+                        "{} cannot be placed on the print bed: {}",
+                        missing.name, missing.reason
+                    ))
+                } else {
+                    check_plate(
+                        plate.bed_mm,
+                        &objects,
+                        &plate_solids,
+                        self.compiler.policy,
+                        interrupt,
+                    )?
+                };
             }
             selection.parts.retain(|p| {
                 !unavailable
@@ -422,9 +623,15 @@ impl Exporter {
                     .any(|u| u.entity == p.part && u.name == p.name)
             });
             selection.skipped.extend(unavailable);
-            found.extend(findings(document, &model, &selection, &objects));
+            if plate.is_none() {
+                found.extend(findings(document, &model, &selection, &objects));
+            }
         }
-        let blocked = if objects.is_empty() {
+        let blocked = if plate_blocked.is_some() {
+            plate_blocked
+        } else if plate.is_some() && objects.is_empty() {
+            Some("Add at least one finished Part to the print plate.".into())
+        } else if objects.is_empty() {
             Some(match &request.source {
                 PrintSource::Parts { parts } if parts.is_empty() => {
                     "Choose finished Parts or placed copies in the Printable Parts list, or choose Parts by tag".into()
@@ -507,12 +714,20 @@ impl Exporter {
                 .collect::<Vec<_>>(),
         ))
         .map_err(|e| failure(ErrorKind::Invalid, None, e))?;
+        let plan_hash = ContentHash::of(&plan);
+        let plan_hash = match plate {
+            Some(plate) => ContentHash::of(
+                &serde_json::to_vec(&(plan_hash, plate))
+                    .map_err(|e| failure(ErrorKind::Invalid, None, e))?,
+            ),
+            None => plan_hash,
+        };
         Ok(Built {
             preview: PrintPreview {
                 requested_by: actor.clone(),
                 key: PrintKey {
                     source: selection.stamp.clone(),
-                    plan_hash: ContentHash::of(&plan),
+                    plan_hash,
                 },
                 provider,
                 request: request.clone(),
@@ -524,6 +739,7 @@ impl Exporter {
                 blocked,
             },
             generated,
+            plate_meshes: plate.map(|_| (meshes, items)),
         })
     }
     /// Resolve and tessellate the package without writing anything.
@@ -536,9 +752,30 @@ impl Exporter {
         interrupt: Option<&dyn Fn() -> bool>,
     ) -> Result<PrintPreview, ExportError> {
         Ok(self
-            .build_print(document, revision, request, actor, interrupt)?
+            .build_print(document, revision, request, None, actor, interrupt)?
             .preview)
     }
+    /// Verify and tessellate a saved plate without changing its source model.
+    pub fn print_plate_preview(
+        &self,
+        document: &Document,
+        revision: u64,
+        plate: &PrintPlateDefinition,
+        actor: &Actor,
+        interrupt: Option<&dyn Fn() -> bool>,
+    ) -> Result<PrintPreview, ExportError> {
+        Ok(self
+            .build_print(
+                document,
+                revision,
+                &plate.summary_request(document),
+                Some(plate),
+                actor,
+                interrupt,
+            )?
+            .preview)
+    }
+
     /// Rebuild the package from the snapshot, require the previewed plan,
     /// verify every generated file by reading it back, and only then replace
     /// the chosen 3MF (and its STL siblings) atomically. A stale source, a
@@ -554,9 +791,50 @@ impl Exporter {
         actor: &Actor,
         interrupt: Option<&dyn Fn() -> bool>,
     ) -> Result<PrintReceipt, ExportError> {
+        self.write_print_plan(
+            document, revision, request, None, expected, path, actor, interrupt,
+        )
+    }
+
+    /// Write the exact arrangement from the preview, verifying each placement.
+    #[allow(clippy::too_many_arguments)]
+    pub fn write_print_plate(
+        &self,
+        document: &Document,
+        revision: u64,
+        plate: &PrintPlateDefinition,
+        expected: &PrintKey,
+        path: &Path,
+        actor: &Actor,
+        interrupt: Option<&dyn Fn() -> bool>,
+    ) -> Result<PrintReceipt, ExportError> {
+        self.write_print_plan(
+            document,
+            revision,
+            &plate.summary_request(document),
+            Some(plate),
+            expected,
+            path,
+            actor,
+            interrupt,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn write_print_plan(
+        &self,
+        document: &Document,
+        revision: u64,
+        request: &PrintRequest,
+        plate: Option<&PrintPlateDefinition>,
+        expected: &PrintKey,
+        path: &Path,
+        actor: &Actor,
+        interrupt: Option<&dyn Fn() -> bool>,
+    ) -> Result<PrintReceipt, ExportError> {
         expected.source.check(document, revision)?;
         let (directory, stem) = package_target(path)?;
-        let built = self.build_print(document, revision, request, actor, interrupt)?;
+        let built = self.build_print(document, revision, request, plate, actor, interrupt)?;
         if built.preview.key != *expected {
             return Err(failure(
                 ErrorKind::Stale,
@@ -570,15 +848,38 @@ impl Exporter {
         let preview = &built.preview;
         let mut volumes = vec![];
         for (file, bytes) in preview.files.iter().zip(&built.generated) {
-            let objects: Vec<&PrintObject> = match file.part {
-                Some(part) => preview
-                    .objects
-                    .iter()
-                    .filter(|o| o.part == part && o.occurrence_path == file.occurrence_path)
-                    .collect(),
-                None => preview.objects.iter().collect(),
-            };
-            volumes.push(verify(file, bytes, &objects, &request.quality)?);
+            let object_indices: Vec<_> = preview
+                .objects
+                .iter()
+                .enumerate()
+                .filter(|(_, object)| {
+                    file.part.is_none_or(|part| {
+                        object.part == part && object.occurrence_path == file.occurrence_path
+                    })
+                })
+                .map(|(index, _)| index)
+                .collect();
+            let objects: Vec<_> = object_indices
+                .iter()
+                .map(|&index| &preview.objects[index])
+                .collect();
+            let plate_placements: Option<Vec<_>> =
+                built.plate_meshes.as_ref().map(|(meshes, items)| {
+                    object_indices
+                        .iter()
+                        .map(|&index| {
+                            let item = &items[index];
+                            (&meshes[item.object], item)
+                        })
+                        .collect()
+                });
+            volumes.push(verify(
+                file,
+                bytes,
+                &objects,
+                &request.quality,
+                plate_placements.as_deref(),
+            )?);
         }
         checkpoint(interrupt)?;
         let targets: Vec<PathBuf> = preview
@@ -697,17 +998,22 @@ fn package_target(path: &Path) -> Result<(PathBuf, String), ExportError> {
     Ok((directory.to_owned(), stem))
 }
 
+enum JobRequest {
+    Package(PrintRequest),
+    Plate(PrintPlateDefinition),
+}
+
 enum Job {
     Preview {
         document: Document,
         revision: u64,
-        request: PrintRequest,
+        request: JobRequest,
         actor: Actor,
     },
     Write {
         document: Document,
         revision: u64,
-        request: PrintRequest,
+        request: JobRequest,
         expected: PrintKey,
         path: PathBuf,
         actor: Actor,
@@ -790,11 +1096,25 @@ impl PrintWorker {
                 revision,
                 request,
                 actor,
-            } => PrintResult::Preview(
-                exporter
-                    .print_preview(&document, revision, &request, &actor, Some(interrupt))
-                    .map(Box::new),
-            ),
+            } => {
+                let preview = match request {
+                    JobRequest::Package(request) => exporter.print_preview(
+                        &document,
+                        revision,
+                        &request,
+                        &actor,
+                        Some(interrupt),
+                    ),
+                    JobRequest::Plate(plate) => exporter.print_plate_preview(
+                        &document,
+                        revision,
+                        &plate,
+                        &actor,
+                        Some(interrupt),
+                    ),
+                };
+                PrintResult::Preview(preview.map(Box::new))
+            }
             Job::Write {
                 document,
                 revision,
@@ -802,15 +1122,29 @@ impl PrintWorker {
                 expected,
                 path,
                 actor,
-            } => PrintResult::Write(exporter.write_print(
-                &document,
-                revision,
-                &request,
-                &expected,
-                &path,
-                &actor,
-                Some(interrupt),
-            )),
+            } => {
+                let write = match request {
+                    JobRequest::Package(request) => exporter.write_print(
+                        &document,
+                        revision,
+                        &request,
+                        &expected,
+                        &path,
+                        &actor,
+                        Some(interrupt),
+                    ),
+                    JobRequest::Plate(plate) => exporter.write_print_plate(
+                        &document,
+                        revision,
+                        &plate,
+                        &expected,
+                        &path,
+                        &actor,
+                        Some(interrupt),
+                    ),
+                };
+                PrintResult::Write(write)
+            }
         })
     }
     fn spawn(
@@ -893,6 +1227,31 @@ impl PrintWorker {
         request: &PrintRequest,
         actor: Actor,
     ) -> Result<EntityId, ExportError> {
+        self.preview_request(
+            document,
+            revision,
+            JobRequest::Package(request.clone()),
+            actor,
+        )
+    }
+
+    pub fn preview_plate(
+        &self,
+        document: &Document,
+        revision: u64,
+        plate: &PrintPlateDefinition,
+        actor: Actor,
+    ) -> Result<EntityId, ExportError> {
+        self.preview_request(document, revision, JobRequest::Plate(plate.clone()), actor)
+    }
+
+    fn preview_request(
+        &self,
+        document: &Document,
+        revision: u64,
+        request: JobRequest,
+        actor: Actor,
+    ) -> Result<EntityId, ExportError> {
         let info = |id| Info {
             id,
             document: document.id(),
@@ -904,17 +1263,56 @@ impl PrintWorker {
             Job::Preview {
                 document: document.clone(),
                 revision,
-                request: request.clone(),
+                request,
                 actor: actor.clone(),
             },
             info,
         )
     }
+
     pub fn write(
         &self,
         document: &Document,
         revision: u64,
         request: &PrintRequest,
+        expected: &PrintKey,
+        path: &Path,
+        actor: Actor,
+    ) -> Result<EntityId, ExportError> {
+        self.write_request(
+            document,
+            revision,
+            JobRequest::Package(request.clone()),
+            expected,
+            path,
+            actor,
+        )
+    }
+
+    pub fn write_plate(
+        &self,
+        document: &Document,
+        revision: u64,
+        plate: &PrintPlateDefinition,
+        expected: &PrintKey,
+        path: &Path,
+        actor: Actor,
+    ) -> Result<EntityId, ExportError> {
+        self.write_request(
+            document,
+            revision,
+            JobRequest::Plate(plate.clone()),
+            expected,
+            path,
+            actor,
+        )
+    }
+
+    fn write_request(
+        &self,
+        document: &Document,
+        revision: u64,
+        request: JobRequest,
         expected: &PrintKey,
         path: &Path,
         actor: Actor,
@@ -930,7 +1328,7 @@ impl PrintWorker {
             Job::Write {
                 document: document.clone(),
                 revision,
-                request: request.clone(),
+                request,
                 expected: expected.clone(),
                 path: path.to_owned(),
                 actor: actor.clone(),
@@ -1044,6 +1442,7 @@ mod tests {
             name: "Cube".into(),
             role: PrintRole::Finished,
             bounds_mm: [[x, 0., 0.], [x + 1., 1., 1.]],
+            plate_pose: None,
             volume_mm3: volume,
             triangles: 12,
             mesh_volume_mm3: volume,
@@ -1059,14 +1458,38 @@ mod tests {
         };
         let quality = MeshQuality::default();
         let (a, b) = (object(0., 1.), object(10., 1.));
-        near(verify(&file, &bytes, &[&a, &b], &quality).unwrap(), 2.);
+        near(
+            verify(&file, &bytes, &[&a, &b], &quality, None).unwrap(),
+            2.,
+        );
+        let positions = [(&cube, &items[0]), (&cube, &items[1])];
+        near(
+            verify(&file, &bytes, &[&a, &b], &quality, Some(&positions)).unwrap(),
+            2.,
+        );
+        // Rigid movement preserves every volume and count. The arranged
+        // receipt must still refuse the altered reopened build item.
+        let mut moved_items = items.clone();
+        moved_items[1].translation_mm[0] += 0.25;
+        let moved_bytes = mesh::three_mf(
+            std::slice::from_ref(&cube),
+            &moved_items,
+            LengthUnit::Millimeter,
+        )
+        .unwrap();
+        assert!(
+            verify(&file, &moved_bytes, &[&a, &b], &quality, Some(&positions))
+                .unwrap_err()
+                .message
+                .contains("Readback placement")
+        );
         // A placed object whose own volume differs is refused even when the
         // package total would still match.
         let (big, small) = (object(0., 1.5), object(10., 0.5));
-        assert!(verify(&file, &bytes, &[&big, &small], &quality).is_err());
+        assert!(verify(&file, &bytes, &[&big, &small], &quality, None).is_err());
         // Item and object counts must match the plan.
         let wrong = PrintFile { items: 1, ..file };
-        assert!(verify(&wrong, &bytes, &[&a, &b], &quality).is_err());
+        assert!(verify(&wrong, &bytes, &[&a, &b], &quality, None).is_err());
     }
     fn near(a: f64, b: f64) {
         assert!((a - b).abs() < 1e-9, "{a} != {b}");

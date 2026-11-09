@@ -215,6 +215,7 @@ impl Application {
             FileAction::PreviewImage => self.read_preview_image(path),
             FileAction::SurfaceHeightMap(stamp) => self.read_surface_height_map(path, stamp),
             FileAction::PrintPackage => self.submit_print_package(path),
+            FileAction::PrintPlate(id) => self.submit_print_plate(id, path),
             FileAction::ScheduleCsv => self.write_schedule_csv(path),
             FileAction::ExportFolder => self.use_export_folder(path),
         };

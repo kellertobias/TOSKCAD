@@ -493,6 +493,13 @@ impl Default for Registry {
                 aliases: tool.aliases(),
             });
         }
+        registry.tools.push(Tool {
+            id: "print-plate",
+            label: "Generate print plate",
+            icon: Icon::PrintPlate,
+            action: Command::Extension("print-plate"),
+            aliases: &["newprintplate"],
+        });
         for tool in crate::print::PrintTool::ALL {
             registry.tools.push(Tool {
                 id: tool.id(),
@@ -780,6 +787,7 @@ impl Default for Registry {
                         "Common",
                         &[
                             "export-set",
+                            "print-plate",
                             "export-set-save",
                             "export-set-discard",
                             "export-run",

@@ -4,6 +4,9 @@
 //! Part) through the native save dialog. The native provider runs off the UI
 //! thread; this workspace owns no CAD handles. It never slices, controls a
 //! printer or asserts that a package prints.
+mod plate;
+pub use plate::{PlateEditor, PlateEditorAction};
+
 use crate::{egui, icons::Icon};
 use multicad_core::{
     commands::{Actor, Channel, Session},
@@ -15,6 +18,9 @@ use std::{
     path::{Path, PathBuf},
     sync::Arc,
 };
+
+mod plate_jobs;
+pub(crate) use plate_jobs::PlateJobs;
 
 /// Installed by the native composition root.
 pub trait PrintBackend {
@@ -34,10 +40,62 @@ pub trait PrintBackend {
         path: &Path,
         actor: Actor,
     ) -> Result<EntityId, ExportError>;
+    fn preview_plate(
+        &mut self,
+        _document: &Document,
+        _revision: u64,
+        _plate: &PrintPlateDefinition,
+        _actor: Actor,
+    ) -> Result<EntityId, ExportError> {
+        Err(ExportError::new(
+            ErrorKind::Unsupported,
+            None,
+            "Native print plate service is unavailable",
+        ))
+    }
+    fn write_plate(
+        &mut self,
+        _document: &Document,
+        _revision: u64,
+        _plate: &PrintPlateDefinition,
+        _expected: &PrintKey,
+        _path: &Path,
+        _actor: Actor,
+    ) -> Result<EntityId, ExportError> {
+        Err(ExportError::new(
+            ErrorKind::Unsupported,
+            None,
+            "Native print plate service is unavailable",
+        ))
+    }
     fn cancel(&mut self, id: EntityId) -> bool;
     fn poll(&mut self) -> Option<PrintReply>;
     fn pending(&self) -> bool;
 }
+pub(crate) fn print_filename(name: &str, fallback: &str) -> String {
+    let name: String = name
+        .chars()
+        .filter(|c| !c.is_control() && !r#"<>:"/\|?*"#.contains(*c))
+        .take(120)
+        .collect();
+    let name = name.trim();
+    format!("{}.3mf", if name.is_empty() { fallback } else { name })
+}
+
+fn three_mf_path(path: &Path) -> Result<PathBuf, String> {
+    let mut path = path.to_owned();
+    if path.extension().is_none() {
+        path.set_extension("3mf");
+    }
+    if !path
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("3mf"))
+    {
+        return Err("A print package file must end in .3mf".into());
+    }
+    Ok(path)
+}
+
 /// The document and revision a cached listing answers.
 type SourceKey = (EntityId, u64);
 pub type PrintBackendFactory = Arc<dyn Fn() -> Box<dyn PrintBackend> + Send + Sync>;
@@ -299,36 +357,13 @@ impl PrintWorkspace {
             .source
             .check(s.document(), s.revision())
             .map_err(|e| e.to_string())?;
-        let name: String = s
-            .document()
-            .name()
-            .chars()
-            .filter(|c| !c.is_control() && !"<>:\"/\\|?*".contains(*c))
-            .take(120)
-            .collect();
-        Ok(format!(
-            "{}.3mf",
-            if name.trim().is_empty() {
-                "Print package"
-            } else {
-                name.trim()
-            }
-        ))
+        Ok(print_filename(s.document().name(), "Print package"))
     }
     /// Queue the write of the current preview to the file chosen in the
     /// native save dialog. The provider rebuilds and rechecks the source.
     pub fn write(&mut self, s: &Session, path: &Path, channel: Channel) -> Result<String, String> {
         self.begin_write(s)?;
-        let mut path = path.to_owned();
-        if path.extension().is_none() {
-            path.set_extension("3mf");
-        }
-        if !path
-            .extension()
-            .is_some_and(|e| e.eq_ignore_ascii_case("3mf"))
-        {
-            return Err("A print package file must end in .3mf".into());
-        }
+        let path = three_mf_path(path)?;
         let preview = self.preview.as_ref().expect("checked current preview");
         let request = preview.request.clone();
         let expected = preview.key.clone();

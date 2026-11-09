@@ -19,7 +19,7 @@ impl Application {
             || self
                 .projects
                 .iter()
-                .any(|p| p.exchange.writing() || p.print.writing())
+                .any(|p| p.exchange.writing() || p.print.writing() || p.plate_jobs.writing())
     }
     pub(super) fn cancel_close(&mut self) {
         if let Some(save) = self.close_save.take()

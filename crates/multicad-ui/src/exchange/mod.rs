@@ -90,6 +90,17 @@ struct SelectionKey {
     session: SessionStamp,
     set: Option<EntityId>,
 }
+pub(crate) enum OutputPick {
+    Model(EntityId),
+    PrintPlate(EntityId),
+}
+
+pub(crate) struct PlateList<'a> {
+    pub(crate) selected: Option<EntityId>,
+    pub(crate) unsaved: Option<&'a str>,
+    pub(crate) dirty: bool,
+}
+
 struct Pending {
     session: SessionStamp,
     document: EntityId,
@@ -212,7 +223,7 @@ impl ExportWorkspace {
         self.error = None;
         self.scheduled = None;
     }
-    fn load(&mut self, s: &Session, id: EntityId) -> Result<(), String> {
+    pub(crate) fn load(&mut self, s: &Session, id: EntityId) -> Result<(), String> {
         let draft = Draft::load(s, id)?;
         self.clear_preview();
         self.selected = Some(id);
@@ -709,6 +720,92 @@ impl ExportWorkspace {
         allow_io: bool,
         scene: Option<&crate::viewport::Scene>,
     ) {
+        if let Some(OutputPick::Model(id)) = self.show_output_list(ui, s, allow_io, None)
+            && let Err(error) = self.load(s, id)
+        {
+            self.error = Some(error);
+        }
+        self.show_details(ui, s, allow_io, scene);
+    }
+
+    pub(crate) fn show_output_list(
+        &mut self,
+        ui: &mut egui::Ui,
+        s: &Session,
+        allow_io: bool,
+        plates: Option<PlateList<'_>>,
+    ) -> Option<OutputPick> {
+        self.tick_schedule(s, allow_io);
+        let mut picked = None;
+        let selected_plate = plates.as_ref().and_then(|plate| plate.selected);
+        let can_switch = !self.dirty() && plates.as_ref().is_none_or(|plate| !plate.dirty);
+        let width_limit = (ui.available_width() * 0.3).max(0.);
+        egui::Panel::left("saved-export-sets")
+            .default_size(205.)
+            .size_range(160_f32.min(width_limit)..=width_limit)
+            .resizable(true)
+            .frame(
+                egui::Frame::new()
+                    .fill(crate::theme::PANEL)
+                    .inner_margin(12),
+            )
+            .show(ui, |ui| {
+                crate::controls::inspector_layout(ui);
+                ui.heading("Exports");
+                egui::ScrollArea::vertical()
+                    .id_salt("export-sets-and-schedule")
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        if let Some(name) = plates.as_ref().and_then(|plate| plate.unsaved) {
+                            ui.small(format!("{name} · Unsaved print plate"));
+                        }
+                        if selected_plate.is_none()
+                            && self.selected.is_none()
+                            && let Some(draft) = &self.draft
+                        {
+                            ui.small(format!("{} · Unsaved", draft.name));
+                        }
+                        let model = sets(s.document()).map(|id| (id, false));
+                        let plate = print_plates(s.document()).map(|id| (id, true));
+                        let mut rows = model
+                            .chain(plate.filter(|_| plates.is_some()))
+                            .filter_map(|(id, plate)| {
+                                s.document().get(id).map(|entity| (id, &entity.name, plate))
+                            })
+                            .collect::<Vec<_>>();
+                        rows.sort_by(|a, b| a.1.cmp(b.1).then(a.0.cmp(&b.0)));
+                        for (id, name, plate) in rows {
+                            let active = if plate {
+                                selected_plate == Some(id)
+                            } else {
+                                selected_plate.is_none() && self.selected == Some(id)
+                            };
+                            if ui
+                                .add_enabled(can_switch, egui::Button::selectable(active, name))
+                                .on_hover_text(if plate { "Print plate" } else { "Model export" })
+                                .clicked()
+                                && !active
+                            {
+                                picked = Some(if plate {
+                                    OutputPick::PrintPlate(id)
+                                } else {
+                                    OutputPick::Model(id)
+                                });
+                            }
+                        }
+                        self.schedule_section(ui, s, allow_io);
+                    });
+            });
+        picked
+    }
+
+    pub(crate) fn show_details(
+        &mut self,
+        ui: &mut egui::Ui,
+        s: &mut Session,
+        allow_io: bool,
+        scene: Option<&crate::viewport::Scene>,
+    ) {
         let time = ui.ctx().input(|i| i.time);
         self.observe_selection(s, time);
         self.poll(s);
@@ -728,55 +825,12 @@ impl ExportWorkspace {
             self.error = Some(error);
             self.scheduled = None;
         }
-        self.tick_schedule(s, allow_io);
         if self.pending() || self.scheduled.is_some() {
             ui.ctx()
                 .request_repaint_after(std::time::Duration::from_millis(16));
         }
         let mut action = None;
         let mut load_planar = false;
-        let saved_max = (ui.available_width() * 0.3).max(0.);
-        egui::Panel::left("saved-export-sets")
-            .default_size(205.)
-            .size_range(160_f32.min(saved_max)..=saved_max)
-            .resizable(true)
-            .frame(
-                egui::Frame::new()
-                    .fill(crate::theme::PANEL)
-                    .inner_margin(12),
-            )
-            .show(ui, |ui| {
-                crate::controls::inspector_layout(ui);
-                ui.heading("Exports");
-                egui::ScrollArea::vertical()
-                    .id_salt("export-sets-and-schedule")
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| {
-                        if self.selected.is_none()
-                            && let Some(draft) = &self.draft
-                        {
-                            ui.small(format!("{} · Unsaved", draft.name));
-                        }
-                        let mut exports = sets(s.document())
-                            .filter_map(|id| s.document().get(id).map(|entity| (id, &entity.name)))
-                            .collect::<Vec<_>>();
-                        exports.sort_by(|a, b| a.1.cmp(b.1).then(a.0.cmp(&b.0)));
-                        for (id, name) in exports {
-                            if ui
-                                .add_enabled(
-                                    !self.dirty(),
-                                    egui::Button::selectable(self.selected == Some(id), name),
-                                )
-                                .clicked()
-                                && self.selected != Some(id)
-                                && let Err(e) = self.load(s, id)
-                            {
-                                self.error = Some(e);
-                            }
-                        }
-                        self.schedule_section(ui, s, allow_io);
-                    });
-            });
         crate::controls::inspector_panel(ui, "export-set-inspector")
             .default_size(325.)
             .frame(

@@ -682,3 +682,181 @@ fn placed_assembly_occurrences_are_packaged_at_their_nested_world_placements() {
     near(bounds[1][0], 270., 1e-6);
     near(read.volume_mm3(), 2000., 1e-3);
 }
+
+#[test]
+fn arranged_plate_reopens_as_shared_3mf_items_and_stl_in_bed_coordinates() {
+    let mut f = fixture();
+    let placed = copy(&mut f.s, f.block, f.block_feature, "World copy", 123.);
+    let selection = |root: EntityId| {
+        resolve_occurrences(f.s.document(), root).unwrap()[0]
+            .reference
+            .clone()
+    };
+    let plate = PrintPlateDefinition {
+        bed_mm: [90., 75.],
+        placements: vec![
+            PrintPlatePlacement {
+                source: selection(f.block),
+                position_mm: [8., 10.],
+                rotation_deg: [90., 0., 90.],
+            },
+            PrintPlatePlacement {
+                source: selection(placed),
+                position_mm: [42., 12.],
+                rotation_deg: [0., 0., 90.],
+            },
+        ],
+        stl_per_part: true,
+        ..Default::default()
+    };
+    let plate_id = EntityId::new();
+    let saved = prepare_print_plate(
+        &f.s,
+        f.s.revision(),
+        actor(),
+        plate_id,
+        "Assembly parts",
+        &plate,
+    )
+    .unwrap();
+    f.s.commit(saved).unwrap();
+    let document = f.s.document();
+    let revision = f.s.revision();
+    let plate = read_print_plate(document, plate_id).unwrap();
+    let exporter = Exporter::default();
+    let preview_plate = |plate: &PrintPlateDefinition| {
+        exporter
+            .print_plate_preview(document, revision, plate, &actor(), None)
+            .unwrap()
+    };
+    let before = ExportStamp::capture(document, revision).unwrap();
+    let ready = preview_plate(&plate);
+    assert!(ready.can_write(), "{:?}", ready.blocked);
+    assert_eq!(ready.request, plate.summary_request(document));
+    assert_eq!((ready.files[0].objects, ready.files[0].items), (1, 2));
+    assert_eq!(ready.objects[1].occurrence_path, [placed]);
+    let expected = [
+        [[8., 10., 0.], [18., 50., 20.]],
+        [[42., 12., 0.], [62., 52., 10.]],
+    ];
+    let verify_bounds = |actual: [[f64; 3]; 2], expected: [[f64; 3]; 2]| {
+        for (actual, expected) in actual
+            .into_iter()
+            .flatten()
+            .zip(expected.into_iter().flatten())
+        {
+            near(actual, expected, 1e-6);
+        }
+    };
+    for (index, object) in ready.objects.iter().enumerate() {
+        verify_bounds(object.bounds_mm, expected[index]);
+        assert_eq!(
+            object.plate_pose.unwrap().rotation,
+            plate.placements[index].rotation()
+        );
+        near(object.volume_mm3, 8000., 1e-6);
+    }
+
+    let directory = tempfile::tempdir().unwrap();
+    let target = directory.path().join("plate.3mf");
+    let mut resized = plate.clone();
+    resized.bed_mm[0] += 10.;
+    let larger_bed = preview_plate(&resized);
+    assert!(larger_bed.can_write());
+    assert_ne!(ready.key, larger_bed.key, "bed dimensions bind the plan");
+    let write = |plate: &PrintPlateDefinition, key: &PrintKey| {
+        exporter.write_print_plate(document, revision, plate, key, &target, &actor(), None)
+    };
+    assert_eq!(
+        write(&resized, &ready.key).unwrap_err().kind,
+        ErrorKind::Stale
+    );
+    assert!(listing(directory.path()).is_empty());
+
+    let mut outside = plate.clone();
+    outside.placements[1].position_mm[0] = 80.;
+    let blocked = preview_plate(&outside);
+    let message = blocked.blocked.as_ref().unwrap();
+    assert!(
+        message.contains("World copy") && message.contains("outside"),
+        "{message}"
+    );
+    assert!(blocked.files.is_empty());
+    assert!(write(&outside, &blocked.key).is_err());
+    assert!(listing(directory.path()).is_empty());
+
+    let mut overlapping = plate.clone();
+    overlapping.placements[1].position_mm = [9., 15.];
+    let blocked = preview_plate(&overlapping);
+    assert!(blocked.blocked.as_ref().unwrap().contains("overlaps"));
+    assert!(blocked.files.is_empty());
+
+    let receipt = write(&plate, &ready.key).unwrap();
+    assert_eq!(receipt.files.len(), 3);
+    let reopened = mesh::read_three_mf(&std::fs::read(&target).unwrap()).unwrap();
+    assert_eq!((reopened.objects, reopened.items), (1, 2));
+    assert_eq!(reopened.unit_scale, 1.);
+    let mut faces = reopened.world.as_slice();
+    for (index, object) in ready.objects.iter().enumerate() {
+        let (world, tail) = faces.split_at(object.triangles);
+        faces = tail;
+        let actual = mesh::ReadMesh {
+            world: world.to_vec(),
+            unit_scale: 1.,
+            objects: 1,
+            items: 1,
+            triangles: world.len(),
+        };
+        verify_bounds(actual.bounds_mm().unwrap(), expected[index]);
+        near(actual.volume_mm3(), 8000., 1e-6);
+        let stl = &receipt.files[index + 1];
+        assert_eq!(stl.kind, PrintFileKind::Stl);
+        let read = mesh::read_stl(&std::fs::read(&stl.path).unwrap()).unwrap();
+        verify_bounds(read.bounds_mm().unwrap(), expected[index]);
+        near(read.volume_mm3(), 8000., 1e-6);
+    }
+    assert!(faces.is_empty());
+    assert_eq!(ExportStamp::capture(document, revision).unwrap(), before);
+}
+
+#[test]
+fn rotated_cylinders_use_exact_bounds_and_overlap_instead_of_bounding_boxes() {
+    let mut s = Session::new(Document::new("Cylinder plate").unwrap()).unwrap();
+    let cylinder = PrimitiveRequest::new(
+        "Cylinder",
+        PrimitiveParameters::Cylinder {
+            radius: length(5.),
+            height: length(10.),
+            frame: Default::default(),
+        },
+    );
+    primitive(&mut s, &cylinder);
+    let placed = copy(&mut s, cylinder.body, cylinder.feature, "World copy", 50.);
+    let placement = |root, position_mm| PrintPlatePlacement {
+        source: resolve_occurrences(s.document(), root).unwrap()[0]
+            .reference
+            .clone(),
+        position_mm,
+        rotation_deg: [0., 0., 45.],
+    };
+    let mut plate = PrintPlateDefinition {
+        bed_mm: [18., 18.],
+        placements: vec![
+            placement(cylinder.body, [0., 0.]),
+            placement(placed, [8., 8.]),
+        ],
+        ..Default::default()
+    };
+    let preview = |plate: &PrintPlateDefinition| {
+        Exporter::default()
+            .print_plate_preview(s.document(), s.revision(), plate, &actor(), None)
+            .unwrap()
+    };
+    let separated = preview(&plate);
+    assert!(separated.can_write(), "{:?}", separated.blocked);
+    near(separated.objects[0].bounds_mm[1][0], 10., 1e-6);
+    near(separated.objects[0].bounds_mm[1][1], 10., 1e-6);
+    near(separated.objects[1].bounds_mm[1][0], 18., 1e-6);
+    plate.placements[1].position_mm = [7., 7.];
+    assert!(preview(&plate).blocked.unwrap().contains("overlaps"));
+}

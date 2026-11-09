@@ -458,8 +458,11 @@ pub struct PrintObject {
     pub occurrence_path: Vec<EntityId>,
     pub name: String,
     pub role: PrintRole,
-    /// World bounds of the exact solid, in millimeters.
+    /// Bounds of the exact solid in output coordinates, in millimeters.
     pub bounds_mm: [[f64; 3]; 2],
+    /// Exact transform from the native source geometry to its plate placement.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plate_pose: Option<model::RigidPose>,
     pub volume_mm3: f64,
     pub triangles: usize,
     pub mesh_volume_mm3: f64,

@@ -62,7 +62,7 @@ impl Application {
                 }
                 FileAction::PreviewImage => Kind::PreviewImage,
                 FileAction::SurfaceHeightMap(_) => Kind::ImportHeightMap,
-                FileAction::PrintPackage => Kind::SavePrintPackage,
+                FileAction::PrintPackage | FileAction::PrintPlate(_) => Kind::SavePrintPackage,
                 FileAction::ScheduleCsv => Kind::SaveCsv,
                 FileAction::ExportFolder => Kind::ChooseFolder,
             },
@@ -81,6 +81,7 @@ impl Application {
                 FileAction::SymbolSave(id) => Some(self.symbol_filename(id)?),
                 FileAction::Save => Some(suggested),
                 FileAction::PrintPackage => Some(self.print_package_name()?),
+                FileAction::PrintPlate(id) => Some(self.print_plate_filename(id)?),
                 FileAction::ScheduleCsv => Some(
                     self.current()
                         .exchange
@@ -155,6 +156,7 @@ impl Application {
                         self.read_surface_height_map(path, stamp)
                     }
                     FileAction::PrintPackage => self.submit_print_package(path),
+                    FileAction::PrintPlate(id) => self.submit_print_plate(id, path),
                     FileAction::ScheduleCsv => self.write_schedule_csv(path),
                     FileAction::ExportFolder => self.use_export_folder(path),
                 }
@@ -199,6 +201,7 @@ impl Application {
         }
         let title = match self.file_action {
             Some(FileAction::PrintPackage) => "Print package file",
+            Some(FileAction::PrintPlate(_)) => "Print plate file",
             Some(FileAction::ExportFolder) => "Export output folder",
             Some(FileAction::SurfaceHeightMap(_)) => "Import height map",
             _ => "Project file",

@@ -43,6 +43,28 @@ impl multicad_ui::print::PrintBackend for Backend {
         self.worker()?
             .write(document, revision, request, expected, path, actor)
     }
+    fn preview_plate(
+        &mut self,
+        document: &Document,
+        revision: u64,
+        plate: &PrintPlateDefinition,
+        actor: Actor,
+    ) -> Result<EntityId, ExportError> {
+        self.worker()?
+            .preview_plate(document, revision, plate, actor)
+    }
+    fn write_plate(
+        &mut self,
+        document: &Document,
+        revision: u64,
+        plate: &PrintPlateDefinition,
+        expected: &PrintKey,
+        path: &Path,
+        actor: Actor,
+    ) -> Result<EntityId, ExportError> {
+        self.worker()?
+            .write_plate(document, revision, plate, expected, path, actor)
+    }
     fn cancel(&mut self, id: EntityId) -> bool {
         self.worker.as_mut().is_ok_and(|w| w.cancel(id))
     }

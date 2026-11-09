@@ -100,6 +100,7 @@ fn reply_preview(s: &Session, state: &Rc<RefCell<State>>, index: usize, objects:
         // Every object after the first is a placed copy of the bracket.
         objects: (0..objects)
             .map(|n| PrintObject {
+                plate_pose: None,
                 part: EntityId::new(),
                 occurrence_path: if n == 0 {
                     vec![]

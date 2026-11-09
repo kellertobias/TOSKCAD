@@ -4,6 +4,7 @@ mod evaluation;
 mod names;
 mod planar;
 mod print;
+mod print_plate;
 mod resolve;
 mod source;
 use crate::{
@@ -14,6 +15,7 @@ pub use evaluation::*;
 pub use names::*;
 pub use planar::*;
 pub use print::*;
+pub use print_plate::*;
 pub use resolve::*;
 pub use source::*;
 
@@ -109,6 +111,9 @@ pub fn required_capability(document: &Document) -> bool {
 pub fn validate(document: &Document) -> Result<(), DocumentError> {
     for id in sets(document) {
         read(document, id).map_err(|e| DocumentError::Invalid(e.to_string()))?;
+    }
+    for id in print_plates(document) {
+        read_print_plate(document, id).map_err(|e| DocumentError::Invalid(e.to_string()))?;
     }
     Ok(())
 }
