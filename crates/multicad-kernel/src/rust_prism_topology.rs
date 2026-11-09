@@ -287,6 +287,7 @@ pub(crate) fn snapshot(
 pub(crate) struct PlacedPolygon {
     pub(crate) prism: PolygonPrism,
     pub(crate) frame: PlaneFrame,
+    pub(crate) reverse_sweep: bool,
     pub(crate) feature: EntityId,
     pub(crate) edges: Vec<(Origin, bool)>,
 }
@@ -300,8 +301,13 @@ struct PolygonSide {
 }
 
 impl PlacedPolygon {
+    fn position(&self, [x, y, z]: [f64; 3]) -> [f64; 3] {
+        let signed_z = if self.reverse_sweep { -z } else { z };
+        position(self.frame, [x, y, signed_z])
+    }
+
     fn point(&self, [x, y]: [Rational; 2], z: f64) -> [f64; 3] {
-        position(self.frame, [x.as_f64(), y.as_f64(), z])
+        self.position([x.as_f64(), y.as_f64(), z])
     }
 
     fn circular_sides(&self) -> impl Iterator<Item = (usize, Circle)> + '_ {
@@ -367,8 +373,8 @@ impl PlacedPolygon {
     }
 
     fn cap_support(&self, z: f64, outward: bool) -> ReferenceFrame {
-        let origin = position(self.frame, [0., 0., z]);
-        let v = if outward && z == 0. {
+        let origin = self.position([0., 0., z]);
+        let v = if outward && ((z == 0.) != self.reverse_sweep) {
             self.frame.v.map(|x| -x)
         } else {
             self.frame.v
@@ -385,7 +391,7 @@ impl PlacedPolygon {
             Face {
                 index: i as u32,
                 plane: Some((support.origin_mm, support.normal())),
-                center_mm: position(self.frame, [center[0], center[1], z]),
+                center_mm: self.position([center[0], center[1], z]),
                 area_mm2: area,
             }
         });
@@ -473,11 +479,14 @@ impl PlacedPolygon {
         }
         for side in self.sides() {
             let support = self.side_support(side.a, side.b).0;
-            let anchor = if self.edges[side.index].1 {
+            let mut anchor = if self.edges[side.index].1 {
                 self.side_support(side.b, side.a).0
             } else {
                 support
             };
+            if self.reverse_sweep {
+                anchor.v = anchor.v.map(|coordinate| -coordinate);
+            }
             build.face(
                 side.index + 2,
                 Some(support),

@@ -50,8 +50,19 @@ pub(crate) fn mesh(result: Result<DisplayMesh, MeshError>) -> Result<ffi::Mesh, 
 pub(crate) fn placed_mesh(
     result: Result<DisplayMesh, MeshError>,
     frame: PlaneFrame,
+    reverse_sweep: bool,
 ) -> Result<ffi::Mesh, GeometryError> {
     let mut mesh = mesh(result)?;
+    if reverse_sweep {
+        for point in mesh.vertices.as_chunks_mut::<3>().0 {
+            point[2] = -point[2];
+        }
+        // Reflecting the extrusion axis reverses the orientation of the
+        // detached mesh. Preserve its outward winding and face labels.
+        for triangle in mesh.indices.as_chunks_mut::<3>().0 {
+            triangle.swap(1, 2);
+        }
+    }
     if frame != PlaneFrame::default() {
         for vertex in mesh.vertices.as_chunks_mut::<3>().0 {
             *vertex = crate::rust_prism_topology::position(frame, *vertex);

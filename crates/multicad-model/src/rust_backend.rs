@@ -124,12 +124,79 @@ fn profile_circle(center: [f64; 2], radius: f64) -> Result<Circle, String> {
         .map_err(|e| format!("Rust profile circle failed: {e:?}"))
 }
 
+struct StraightSweep {
+    height: Rational,
+    start_offset: f64,
+    reverse: bool,
+}
+
+fn straight_sweep(
+    source: &ExtrudeParameters,
+    controls: &ResolvedExtrudeControls,
+    parameters: &EvaluatedParameters,
+) -> Result<StraightSweep, String> {
+    let [u, v, normal] = controls.direction;
+    if u != 0. || v != 0. || normal.abs() != 1. || controls.taper_rad != 0. {
+        return Err("Rust polygon extrusion requires a normal sweep without taper".into());
+    }
+    let range_error = |e| format!("Rust extrusion extent exceeds the exact length range: {e:?}");
+    let length = |dimension| exact_length(dimension, parameters);
+    let zero = Rational::new(0, 1).expect("zero is representable");
+    let (height, backward) = match &source.extent {
+        Extent::OneSided {
+            end: Termination::Distance { distance },
+        } => {
+            let signed = length(distance)?;
+            let height = if signed < zero {
+                zero.checked_sub(signed).map_err(range_error)?
+            } else {
+                signed
+            };
+            (height, zero)
+        }
+        Extent::Symmetric { total } => {
+            let total = length(total)?;
+            let two = Rational::new(2, 1).expect("two is representable");
+            (total, total.checked_div(two).map_err(range_error)?)
+        }
+        Extent::TwoSided {
+            forward: Termination::Distance { distance: forward },
+            backward: Termination::Distance { distance: backward },
+        } => {
+            let forward = length(forward)?;
+            let backward = length(backward)?;
+            (
+                forward.checked_add(backward).map_err(range_error)?,
+                backward,
+            )
+        }
+        _ => return Err("Rust polygon extrusion requires distance terminations".into()),
+    };
+    let reverse = normal < 0.;
+    let start_offset = match length(&source.start_offset) {
+        Ok(offset) => {
+            let shifted = if reverse {
+                offset.checked_add(backward)
+            } else {
+                offset.checked_sub(backward)
+            };
+            shifted.map_err(range_error)?.as_f64()
+        }
+        // Preserve start offsets that use the full parameter evaluator.
+        Err(_) => controls.start_offset_mm - normal * backward.as_f64(),
+    };
+    Ok(StraightSweep {
+        height,
+        start_offset,
+        reverse,
+    })
+}
+
 fn straight_prism(
     id: EntityId,
     profile: &CurvedProfile,
     origins: &[Origin],
-    height: Rational,
-    start_offset: f64,
+    sweep: StraightSweep,
     policy: GeometryPolicy,
 ) -> Result<Solid, ModelError> {
     let fail = |message: String| error(Some(id), message);
@@ -194,13 +261,21 @@ fn straight_prism(
     }
     reversed.resize(origins.len(), false);
     side_origins.extend(circle_origins);
-    let polygon = PolygonPrism::with_circular_holes(rings, circles, height)
+    let polygon = PolygonPrism::with_circular_holes(rings, circles, sweep.height)
         .map_err(|e| fail(format!("Rust polygon extrusion failed: {e:?}")))?;
     let mut frame = profile.frame;
     let normal = frame.normal();
-    frame.origin = std::array::from_fn(|i| frame.origin[i] + normal[i] * start_offset);
-    Solid::from_polygon_prism(polygon, frame, id, &side_origins, &reversed, policy)
-        .map_err(|e| error(Some(id), e))
+    frame.origin = std::array::from_fn(|i| frame.origin[i] + normal[i] * sweep.start_offset);
+    Solid::from_polygon_prism_sweep(
+        polygon,
+        frame,
+        sweep.reverse,
+        id,
+        &side_origins,
+        &reversed,
+        policy,
+    )
+    .map_err(|e| error(Some(id), e))
 }
 
 fn rounded_dimensions(profile: &CurvedProfile) -> Result<(Rational, Rational), String> {
@@ -260,32 +335,28 @@ pub(crate) fn extrude(
     policy: GeometryPolicy,
 ) -> Result<Solid, ModelError> {
     let fail = |message: String| error(Some(id), message);
-    let Extent::OneSided {
-        end: Termination::Distance { distance },
-    } = &source.extent
-    else {
-        return Err(fail("Rust extrusion requires a one-sided distance".into()));
-    };
-    if controls.direction != [0., 0., 1.] || controls.taper_rad != 0. {
-        return Err(fail(
-            "Rust extrusion requires a positive normal sweep without taper".into(),
-        ));
-    }
-    let height = exact_length(distance, parameters).map_err(fail)?;
     if profile
         .outer
         .iter()
         .all(|edge| matches!(edge, CurvedEdge2d::Line { .. }))
     {
-        return straight_prism(
-            id,
-            profile,
-            origins,
-            height,
-            controls.start_offset_mm,
-            policy,
-        );
+        let sweep = straight_sweep(source, controls, parameters).map_err(fail)?;
+        return straight_prism(id, profile, origins, sweep, policy);
     }
+    let Extent::OneSided {
+        end: Termination::Distance { distance },
+    } = &source.extent
+    else {
+        return Err(fail(
+            "Rust rounded panel extrusion requires a one-sided distance".into(),
+        ));
+    };
+    if controls.direction != [0., 0., 1.] || controls.taper_rad != 0. {
+        return Err(fail(
+            "Rust rounded panel extrusion requires a positive normal sweep without taper".into(),
+        ));
+    }
+    let height = exact_length(distance, parameters).map_err(fail)?;
     if controls.start_offset_mm != 0. {
         return Err(fail(
             "Rust rounded panel extrusion requires zero start offset".into(),
@@ -378,6 +449,44 @@ mod tests {
     use super::*;
 
     #[test]
+    fn straight_sweep_keeps_parameter_offsets_and_rejects_unsupported_controls() {
+        use multicad_core::parameters::{BoundExpression, evaluate};
+
+        let document = Document::new("Straight extrusion controls").unwrap();
+        let values = evaluate(&document).unwrap();
+        let mut source = ExtrudeParameters {
+            start_offset: Dimension::Expression {
+                expression: BoundExpression::bind(&document, "=1 mm + 2 mm", "mm", None).unwrap(),
+            },
+            extent: Extent::Symmetric {
+                total: model::length(4.),
+            },
+            ..Default::default()
+        };
+        let controls = source.resolve_controls(&values).unwrap();
+        let sweep = straight_sweep(&source, &controls, &values).unwrap();
+        assert_eq!(sweep.height.ratio(), (4, 1));
+        assert_eq!(sweep.start_offset, 1.);
+        assert!(!sweep.reverse);
+
+        source.direction.elevation = model::angle(45.);
+        let controls = source.resolve_controls(&values).unwrap();
+        let unsupported = straight_sweep(&source, &controls, &values).err().unwrap();
+        assert!(unsupported.contains("normal sweep"));
+
+        source.direction = Default::default();
+        source.extent = Extent::OneSided {
+            end: Termination::ToPlane {
+                plane: EntityId::new(),
+                offset: model::length(0.),
+            },
+        };
+        let controls = source.resolve_controls(&values).unwrap();
+        let unsupported = straight_sweep(&source, &controls, &values).err().unwrap();
+        assert!(unsupported.contains("distance terminations"));
+    }
+
+    #[test]
     fn straight_prism_refuses_open_joins_and_partial_curves() {
         let line = |a, b| CurvedEdge2d::Line { a, b };
         let id = EntityId::new();
@@ -399,8 +508,11 @@ mod tests {
                 id,
                 profile,
                 origins,
-                Rational::new(2, 1).unwrap(),
-                0.,
+                StraightSweep {
+                    height: Rational::new(2, 1).unwrap(),
+                    start_offset: 0.,
+                    reverse: false,
+                },
                 GeometryPolicy::default(),
             )
             .err()

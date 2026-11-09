@@ -507,6 +507,83 @@ fn polygon_cap_retains_its_exact_circle_and_its_cylindrical_wall() {
 }
 
 #[test]
+fn reversed_polygon_sweep_retains_authored_caps_and_outward_mesh_winding() {
+    use multicad_core::references::Origin;
+    use multicad_kernel::rust_kernel::polygon::PolygonPrism;
+
+    let ring = [[0, 0], [6, 0], [6, 5], [0, 5]]
+        .map(|p| p.map(integer))
+        .to_vec();
+    let prism =
+        PolygonPrism::with_circular_holes(vec![ring], vec![circle(3, 2, integer(1))], integer(4))
+            .unwrap();
+    let owner = EntityId::new();
+    let origins: Vec<_> = (0..5)
+        .map(|_| Origin {
+            source: EntityId::new(),
+            role: "profile.edge".into(),
+        })
+        .collect();
+    let solid = Solid::from_polygon_prism_sweep(
+        prism,
+        PlaneFrame::default(),
+        true,
+        owner,
+        &origins,
+        &[false; 5],
+        GeometryPolicy::default(),
+    )
+    .unwrap();
+    assert_eq!(solid.bounds().unwrap().min, [0., 0., -4.]);
+    assert_eq!(solid.bounds().unwrap().max, [6., 5., 0.]);
+    let faces = solid.faces().unwrap();
+    assert_eq!(faces[0].plane, Some(([0., 0., 0.], [0., 0., 1.])));
+    assert_eq!(faces[1].plane, Some(([0., 0., -4.], [0., 0., -1.])));
+    let topo = solid.topology_snapshot(owner, 2).unwrap();
+    let face = |ordinal| {
+        topo.elements
+            .iter()
+            .find(|element| {
+                element.key.kind == TopologyKind::Face && element.key.ordinal == ordinal
+            })
+            .unwrap()
+    };
+    let end = &face(1).frames[0];
+    assert_eq!(end.origin.role, "cap.end");
+    assert_eq!(end.frame.origin_mm, [0., 0., -4.]);
+    assert_eq!(end.frame.normal(), [0., 0., 1.]);
+    assert_eq!(face(2).frames[0].frame.v, [0., 0., -1.]);
+    let cap = solid
+        .planar_face_contours(
+            1,
+            PlaneFrame {
+                origin: end.frame.origin_mm,
+                u: end.frame.u,
+                v: end.frame.v,
+            },
+        )
+        .unwrap();
+    near(cap.area_mm2(), 30. - std::f64::consts::PI);
+    assert_eq!(cap.loops.len(), 2);
+    let mesh = solid.mesh(Default::default()).unwrap();
+    let points = mesh.vertices.as_chunks::<3>().0;
+    let volume: f64 = mesh
+        .indices
+        .as_chunks::<3>()
+        .0
+        .iter()
+        .map(|triangle| {
+            let [[x, y, z], [a, b, c], [d, e, f]] = triangle.map(|i| points[i as usize]);
+            (x * (b * f - c * e) + y * (c * d - a * f) + z * (a * e - b * d)) / 6.
+        })
+        .sum();
+    assert!(
+        (volume - solid.volume_mm3().unwrap()).abs() < 0.25,
+        "{volume}"
+    );
+}
+
+#[test]
 fn exact_polygon_boolean_subtracts_only_strictly_through_cylinders() {
     use multicad_core::references::Origin;
     use multicad_kernel::rust_kernel::{cylinder::AxialCylinder, polygon::PolygonPrism};
@@ -528,6 +605,16 @@ fn exact_polygon_boolean_subtracts_only_strictly_through_cylinders() {
             .unwrap()
     };
     let target = stock(PlaneFrame::default());
+    let negative = Solid::from_polygon_prism_sweep(
+        prism.clone(),
+        PlaneFrame::default(),
+        true,
+        owner,
+        &origins,
+        &[false; 4],
+        policy,
+    )
+    .unwrap();
     let cutter = |id: EntityId, x, bottom, height| {
         let axial = AxialCylinder::new(
             id.uuid_bits(),
@@ -587,6 +674,18 @@ fn exact_polygon_boolean_subtracts_only_strictly_through_cylinders() {
     near(
         second.volume_mm3().unwrap(),
         240. - 8. * std::f64::consts::PI,
+    );
+    let negative_cut = subtract(&negative, &cutter(EntityId::new(), 8, -5, 6))
+        .unwrap()
+        .unwrap();
+    near(
+        negative_cut.volume_mm3().unwrap(),
+        cut.volume_mm3().unwrap(),
+    );
+    assert_eq!(negative_cut.bounds().unwrap().min, [0., 0., -4.]);
+    assert_eq!(
+        subtract(&negative, &tool).err().unwrap().kind,
+        GeometryErrorKind::Input,
     );
     assert_eq!(
         subtract(&target, &cutter(EntityId::new(), 8, 0, 6))

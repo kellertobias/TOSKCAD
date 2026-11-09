@@ -479,6 +479,20 @@ impl Solid {
         reversed: &[bool],
         policy: GeometryPolicy,
     ) -> Result<Self, GeometryError> {
+        Self::from_polygon_prism_sweep(prism, frame, false, feature, origins, reversed, policy)
+    }
+
+    /// Keep the authored start and end cap identities when sweeping against
+    /// the frame normal. The local prism always has positive height.
+    pub fn from_polygon_prism_sweep(
+        prism: PolygonPrism,
+        frame: PlaneFrame,
+        reverse_sweep: bool,
+        feature: EntityId,
+        origins: &[Origin],
+        reversed: &[bool],
+        policy: GeometryPolicy,
+    ) -> Result<Self, GeometryError> {
         policy.validate()?;
         frame.checked(policy)?;
         policy.length(prism.height().as_f64())?;
@@ -506,6 +520,7 @@ impl Solid {
         let placed = PlacedPolygon {
             prism,
             frame,
+            reverse_sweep,
             feature,
             edges: origins
                 .iter()
@@ -858,7 +873,17 @@ impl Solid {
             ));
         }
         let zero = Rational::new(0, 1).expect("zero is an exact length");
-        if tool.bottom() >= zero || tool.top() <= target.prism.height() {
+        let height = target.prism.height();
+        let (bottom, top) = if target.reverse_sweep {
+            (
+                zero.checked_sub(height)
+                    .expect("negation fits the rational domain"),
+                zero,
+            )
+        } else {
+            (zero, height)
+        };
+        if tool.bottom() >= bottom || tool.top() <= top {
             return Err(error(
                 operation,
                 GeometryErrorKind::Input,
@@ -879,9 +904,10 @@ impl Solid {
             role: "side.cylinder".into(),
         });
         reversed.push(false);
-        Self::from_polygon_prism(
+        Self::from_polygon_prism_sweep(
             prism,
             target.frame,
+            target.reverse_sweep,
             target.feature,
             &origins,
             &reversed,
@@ -1064,10 +1090,12 @@ impl Solid {
             SolidBody::Prism(prism, frame) => crate::rust_display::placed_mesh(
                 multicad_rust_kernel::display::rust_prism(prism, rust_options),
                 *frame,
+                false,
             )?,
             SolidBody::PolygonPrism(placed) => crate::rust_display::placed_mesh(
                 multicad_rust_kernel::display::polygon_prism(&placed.prism, rust_options),
                 placed.frame,
+                placed.reverse_sweep,
             )?,
             SolidBody::AxialCylinder(cylinder, _) => crate::rust_display::mesh(
                 multicad_rust_kernel::display::axial_cylinder(cylinder, rust_options),

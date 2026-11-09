@@ -3,7 +3,10 @@ use multicad_core::{
     constraint_sketch::{CurveKind, source::Source},
     document::{Document, EntityData, Mutation},
     manufacturing::PlanarEdge,
-    model::{self, PrimitiveFrame, PrimitiveParameters, PrimitiveRequest, length},
+    model::{
+        self, Direction, Extent, ExtrudeParameters, PrimitiveFrame, PrimitiveParameters,
+        PrimitiveRequest, Termination, length,
+    },
     project_file::{self, FileLimits, ProjectFile},
     references::{self, GeometryIntent, Origin, Resolution, TopologyKind, TopologySnapshot},
     sketch::{self, CreationPlane, PlaneOptions},
@@ -467,21 +470,172 @@ fn straight_xy_sketch_through_cut_keeps_body_head_and_cutter_provenance() {
 }
 
 #[test]
-fn reverse_straight_sketch_sweep_remains_explicitly_unsupported() {
-    let (session, _, feature, _) = rust_polygon::fixture_with_height("-6");
-    let native = compile(&session, GeometryBackend::OpenCascade);
-    near(native.solid(feature).unwrap().volume_mm3().unwrap(), 552.);
-    let rust = compiler()
-        .compile_with_backend(
-            session.document(),
+fn signed_symmetric_and_two_sided_extrusions_preserve_saved_cap_and_side_frames() {
+    use multicad_core::{constraint_sketch::Dimension, parameters::BoundExpression};
+
+    let (mut session, height, feature, _) = rust_polygon::fixture_with_circle();
+    let planes = ["cap.start", "cap.end"].map(|role| {
+        let native = compile(&session, GeometryBackend::OpenCascade);
+        let topology = &native.snapshot().shapes[&feature].topology;
+        let anchor = Origin {
+            source: feature,
+            role: role.into(),
+        };
+        let key = topology
+            .elements
+            .iter()
+            .find(|element| {
+                element.key.kind == TopologyKind::Face && element.origins.contains(&anchor)
+            })
+            .unwrap()
+            .key;
+        let attachment = sketch::prepare_new(
+            &session,
             session.revision(),
-            GeometryBackend::Rust,
-            None,
+            actor(),
+            role,
+            CreationPlane::Face {
+                snapshot: topology,
+                key,
+                anchor: Some(&anchor),
+            },
+            PlaneOptions::default(),
         )
-        .err()
         .unwrap();
-    assert_eq!(rust.entity, Some(feature));
-    assert!(rust.message.contains("positive normal sweep"));
+        let plane = attachment.plane;
+        session.commit(attachment.prepared).unwrap();
+        plane
+    });
+    let mut dimension = session.document().get(height).unwrap().clone();
+    let EntityData::Parameter { expression, .. } = &mut dimension.data else {
+        unreachable!()
+    };
+    *expression = "=10 mm / 3".into();
+    session
+        .apply(Request {
+            expected_revision: session.revision(),
+            actor: actor(),
+            label: "Set fractional sweep span".into(),
+            edits: vec![Mutation::Replace(dimension)],
+        })
+        .unwrap();
+    let distance = |value| Termination::Distance {
+        distance: length(value),
+    };
+    let one = |value| Extent::OneSided {
+        end: distance(value),
+    };
+    let symmetric = Extent::Symmetric {
+        total: Dimension::Expression {
+            expression: BoundExpression::bind(session.document(), "=$height", "mm", None).unwrap(),
+        },
+    };
+    let two_sided = Extent::TwoSided {
+        forward: distance(7.),
+        backward: distance(3.),
+    };
+    let cases: [(Extent, bool, f64, f64); 7] = [
+        (one(-6.), false, -2., 4.),
+        (one(6.), true, -2., 4.),
+        (one(-6.), true, -2., -8.),
+        (symmetric.clone(), false, -1. / 3., -11. / 3.),
+        (symmetric, true, -11. / 3., -1. / 3.),
+        (two_sided.clone(), false, 1., -9.),
+        (two_sided, true, -5., 5.),
+    ];
+    for (extent, reverse, start, end) in cases {
+        let parameters = ExtrudeParameters {
+            direction: Direction {
+                reverse,
+                ..Default::default()
+            },
+            start_offset: length(2.),
+            extent,
+            ..Default::default()
+        };
+        let edit = model::prepare_extrude_edit(
+            &session,
+            session.revision(),
+            actor(),
+            feature,
+            &parameters,
+        )
+        .unwrap();
+        session.commit(edit.prepared).unwrap();
+        let reopened = reopen(&session);
+        let rust = compile(&reopened, GeometryBackend::Rust);
+        let native = compile(&reopened, GeometryBackend::OpenCascade);
+        let actual = &rust.snapshot().shapes[&feature];
+        let expected = &native.snapshot().shapes[&feature];
+        near(
+            actual.volume_mm3,
+            (92. - 1.25_f64.powi(2) * PI) * (end - start).abs(),
+        );
+        near(actual.volume_mm3, expected.volume_mm3);
+        near(actual.bounds.min[1], start.min(end));
+        near(actual.bounds.max[1], start.max(end));
+        let rust_faces = rust.solid(feature).unwrap().faces().unwrap();
+        let native_faces = native.solid(feature).unwrap().faces().unwrap();
+        assert_eq!(rust_faces.len(), native_faces.len());
+        for element in actual
+            .topology
+            .elements
+            .iter()
+            .filter(|e| e.key.kind == TopologyKind::Face)
+        {
+            let counterpart = expected
+                .topology
+                .elements
+                .iter()
+                .find(|e| e.key.kind == TopologyKind::Face && e.origins == element.origins)
+                .unwrap();
+            assert_eq!(element.frames.len(), counterpart.frames.len());
+            for (a, b) in element.frames.iter().zip(&counterpart.frames) {
+                assert_eq!(a.origin, b.origin);
+                for (x, y) in a
+                    .frame
+                    .origin_mm
+                    .into_iter()
+                    .chain(a.frame.u)
+                    .chain(a.frame.v)
+                    .zip(
+                        b.frame
+                            .origin_mm
+                            .into_iter()
+                            .chain(b.frame.u)
+                            .chain(b.frame.v),
+                    )
+                {
+                    near(x, y);
+                }
+            }
+            let a = &rust_faces[element.key.ordinal as usize];
+            let b = &native_faces[counterpart.key.ordinal as usize];
+            near(a.area_mm2, b.area_mm2);
+            for (x, y) in a.center_mm.into_iter().zip(b.center_mm) {
+                near(x, y);
+            }
+            match (a.plane, b.plane) {
+                (Some((_, a)), Some((_, b))) => {
+                    for (x, y) in a.into_iter().zip(b) {
+                        near(x, y);
+                    }
+                }
+                (None, None) => {}
+                _ => panic!("face planarity differs for {:?}", element.origins),
+            }
+        }
+        for (plane, y) in planes.into_iter().zip([start, end]) {
+            let attached = sketch::inspect_plane(
+                reopened.document(),
+                plane,
+                reopened.revision(),
+                Some(&rust.snapshot().references),
+            )
+            .unwrap();
+            near(attached.origin[1], y);
+        }
+    }
 }
 
 #[test]
