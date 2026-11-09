@@ -9,6 +9,101 @@ pub(super) struct CloseSave {
     original: EntityId,
 }
 impl Application {
+    pub(super) fn can_close_project(&self) -> bool {
+        !self.welcome
+            && !self.close_confirm
+            && !self.file_busy()
+            && self.file_action.is_none()
+            && self.replacement.is_none()
+            && !self.current().exchange.writing()
+            && !self.current().print.writing()
+            && !self.current().plate_jobs.writing()
+    }
+
+    pub(super) fn request_close_project(&mut self) -> Result<(), String> {
+        if !self.can_close_project() {
+            return Err(
+                "Finish the active file or export operation before closing the project".into(),
+            );
+        }
+        let project = self.current();
+        if project.dirty() {
+            self.close_project_confirm = Some(project.local_id);
+            Ok(())
+        } else {
+            self.close_active_project()
+        }
+    }
+
+    fn close_active_project(&mut self) -> Result<(), String> {
+        let welcome = (self.projects.len() == 1)
+            .then(|| {
+                Document::new("Untitled")
+                    .map_err(|error| error.to_string())
+                    .and_then(Project::new)
+            })
+            .transpose()?;
+        self.remember_current_view();
+        let closed = self.projects.remove(self.active);
+        self.control_bindings.retain(|_, id| *id != closed.local_id);
+        self.active_tool = None;
+        self.message_error = false;
+        if let Some(welcome) = welcome {
+            self.welcome_placeholder = Some(welcome.local_id);
+            self.projects.push(welcome);
+            self.active = 0;
+            self.mode = Mode::Parameters;
+            self.tab = 0;
+            self.welcome = true;
+            self.message = "Choose a recent project, open a file, or create a new project.".into();
+        } else {
+            self.active = self.active.min(self.projects.len() - 1);
+            self.restore_current_view();
+            self.enter_project_status();
+        }
+        Ok(())
+    }
+
+    pub(super) fn show_close_project_dialog(&mut self, ctx: &egui::Context) {
+        let Some(id) = self.close_project_confirm else {
+            return;
+        };
+        if self.close_confirm || self.current().local_id != id {
+            self.close_project_confirm = None;
+            return;
+        }
+        let response = egui::Modal::new(egui::Id::new("close-project-confirm")).show(ctx, |ui| {
+            ui.heading(format!(
+                "Close {}?",
+                self.current().session.document().name()
+            ));
+            ui.label("This project has unsaved changes.");
+            ui.add_space(12.);
+            ui.horizontal(|ui| {
+                let cancel =
+                    crate::controls::dialog_action(ui, "Cancel", "Escape", 135., true, None)
+                        .clicked();
+                let close = ui
+                    .add_enabled(
+                        self.can_close_project(),
+                        egui::Button::new("Close Without Saving"),
+                    )
+                    .clicked();
+                (cancel, close)
+            })
+            .inner
+        });
+        if response.should_close() || response.inner.0 {
+            self.close_project_confirm = None;
+        } else if response.inner.1 {
+            self.close_project_confirm = None;
+            if let Err(error) = self.close_active_project() {
+                self.message = error;
+                self.message_error = true;
+            }
+        }
+    }
+
     fn close_busy(&self) -> bool {
         self.recents_writing()
             || self.capture_pending()

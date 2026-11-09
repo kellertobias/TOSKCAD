@@ -125,7 +125,10 @@ impl Project {
         self.session.dirty() || self.pending_edits()
     }
     fn pending_edits(&self) -> bool {
-        self.editor.dirty()
+        self.editor.info_dirty() || self.pending_non_metadata_edits()
+    }
+    fn pending_non_metadata_edits(&self) -> bool {
+        self.editor.rows_dirty()
             || self.sketch.has_pending_edits()
             || self.drawings.dirty()
             || self.exchange.dirty()
@@ -202,6 +205,7 @@ pub struct Application {
     history_open: bool,
     import_open: bool,
     close_confirm: bool,
+    close_project_confirm: Option<EntityId>,
     close_allowed: bool,
     close_after_recents: bool,
     close_save: Option<closing::CloseSave>,
@@ -280,6 +284,7 @@ impl Application {
             history_open: false,
             import_open: false,
             close_confirm: false,
+            close_project_confirm: None,
             close_allowed: false,
             close_after_recents: false,
             close_save: None,
@@ -605,6 +610,9 @@ impl Application {
             )
     }
     fn invoke(&mut self, command: Command, args: &[&str], channel: Channel) -> Result<(), String> {
+        if command == Command::CloseProject {
+            return self.request_close_project();
+        }
         if self.mode == Mode::Parameters
             && self.tab == 0
             && matches!(
@@ -1123,6 +1131,7 @@ impl Application {
                 self.tab = 0;
                 self.message = format!("Created {}", self.current().title());
             }
+            Command::CloseProject => unreachable!("handled before project commands"),
             Command::NewWindow => {
                 std::process::Command::new(std::env::current_exe().map_err(|e| e.to_string())?)
                     .spawn()
@@ -1558,6 +1567,9 @@ impl Application {
         }
     }
     fn enabled(&self, command: Command) -> bool {
+        if command == Command::CloseProject {
+            return self.can_close_project();
+        }
         let command = match command {
             Command::WoodPreset(preset) => Command::Modeling(preset.tool()),
             Command::EquipmentPreset(_) => {
@@ -1597,8 +1609,17 @@ impl Application {
             return false;
         }
         let pending = || self.current().pending_edits();
+        let pending_before_metadata_commit = || {
+            if self.mode == Mode::Parameters && self.tab == 0 {
+                self.current().pending_non_metadata_edits()
+            } else {
+                pending()
+            }
+        };
         match command {
-            Command::Mode(Mode::Export) => self.mode == Mode::Export || !pending(),
+            Command::Mode(Mode::Export) => {
+                self.mode == Mode::Export || !pending_before_metadata_commit()
+            }
             Command::External(_) => {
                 self.mode == Mode::Sketch
                     && !self.current().editor.dirty()
@@ -1732,9 +1753,10 @@ impl Application {
             }
             Command::Undo => self.current().session.can_undo() && !pending(),
             Command::Redo => self.current().session.can_redo() && !pending(),
-            Command::Save | Command::SaveAs | Command::RecoverySnapshot => {
-                !pending() && !self.file_busy()
+            Command::Save | Command::SaveAs => {
+                !pending_before_metadata_commit() && !self.file_busy()
             }
+            Command::RecoverySnapshot => !pending() && !self.file_busy(),
             Command::Open | Command::ImportSource | Command::RecoverProjects => !self.file_busy(),
             Command::NewSketch => !pending() && !self.current().sketch.editing && !self.file_busy(),
             Command::Import => !pending() && !self.file_busy() && self.file_action.is_none(),
@@ -1852,7 +1874,7 @@ impl Application {
                     let groups: &[&[(&str, Command)]] = &[
                         &[("New Document", Command::New), ("New Window", Command::NewWindow)],
                         &[("Open Project…", Command::Open), ("Examples…", Command::Examples), ("Recover Projects…", Command::RecoverProjects)],
-                        &[("Save Project", Command::Save), ("Save Project As…", Command::SaveAs)],
+                        &[("Save Project", Command::Save), ("Save Project As…", Command::SaveAs), ("Close Project", Command::CloseProject)],
                         &[("Import…", Command::Import), ("Create recovery snapshot", Command::RecoverySnapshot)],
                     ];
                     for (index, group) in groups.iter().enumerate() {
@@ -1860,7 +1882,8 @@ impl Application {
                             ui.separator();
                         }
                         for &(label, command) in *group {
-                            if ui.add_enabled(self.enabled(command), egui::Button::new(label)).clicked() {
+                            if ui.add_enabled(self.enabled(command), egui::Button::new(label))
+                                .on_hover_text(self.command_help(command, label, ui.ctx())).clicked() {
                                 action = Some(command);
                                 ui.close();
                             }
@@ -2420,6 +2443,7 @@ impl Application {
                 || self.replacement.is_some()
                 || self.find_open
                 || self.close_confirm
+                || self.close_project_confirm.is_some()
                 || self.history_open
                 || self.import_open
                 || self.settings_open
@@ -2460,7 +2484,8 @@ impl Application {
             || self.import_open
             || self.settings_open
             || self.library_management_open
-            || self.close_confirm;
+            || self.close_confirm
+            || self.close_project_confirm.is_some();
         let shell_interaction = shell_interaction || self.current().exchange.drawing_pdf_open();
         // egui clears keyboard focus for Escape before this application pass.
         // Remember text ownership so that same key cannot also cancel a tool.
@@ -2500,6 +2525,8 @@ impl Application {
                 self.settings_open = false;
             } else if self.close_confirm {
                 self.cancel_close();
+            } else if self.close_project_confirm.is_some() {
+                self.close_project_confirm = None;
             } else if self.current().sketch.primitive_corner_input_active()
                 && !egui::Popup::is_any_open(ctx)
             {
@@ -2701,6 +2728,7 @@ impl Application {
         controls::block_modal_background(
             ui,
             self.close_confirm
+                || self.close_project_confirm.is_some()
                 || self.import_open
                 || self.file_action.is_some()
                 || self.replacement.is_some()
@@ -2990,6 +3018,7 @@ impl Application {
             self.tab = tab;
             ctx.request_repaint();
         }
+        self.show_close_project_dialog(&ctx);
         self.show_close_dialog(&ctx);
         self.remember_current_view();
         self.text_input_was_focused = ctx.text_edit_focused();
@@ -3468,6 +3497,33 @@ mod tests {
             repeat: false,
             modifiers,
         }
+    }
+    #[test]
+    fn close_project_shortcut_selects_another_project_and_returns_home() {
+        let ctx = egui::Context::default();
+        let mut app = Application::new(Box::new(MemoryStorage)).unwrap();
+        let first = app.current().local_id;
+        app.current_mut().session.mark_saved(0).unwrap();
+        app.invoke(Command::New, &[], Channel::Ui).unwrap();
+        let close = || vec![key_event(egui::Key::W, egui::Modifiers::COMMAND)];
+        shortcut_frame(&ctx, &mut app, vec![]);
+        shortcut_frame(&ctx, &mut app, close());
+        assert_eq!(app.close_project_confirm, Some(app.current().local_id));
+        assert_eq!(app.projects.len(), 2);
+        shortcut_frame(
+            &ctx,
+            &mut app,
+            vec![key_event(egui::Key::Escape, egui::Modifiers::NONE)],
+        );
+        assert!(app.close_project_confirm.is_none());
+        app.current_mut().session.mark_saved(0).unwrap();
+        shortcut_frame(&ctx, &mut app, close());
+        assert_eq!(app.current().local_id, first);
+        assert!(!app.welcome);
+        shortcut_frame(&ctx, &mut app, close());
+        assert!(app.welcome);
+        assert_eq!(app.welcome_placeholder, Some(app.current().local_id));
+        assert_ne!(app.current().local_id, first);
     }
     #[test]
     fn tab_cycles_ribbon_workspaces_and_preserves_text_input_navigation() {

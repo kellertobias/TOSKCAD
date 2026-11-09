@@ -72,6 +72,7 @@ pub enum Command {
     Redo,
     Save,
     SaveAs,
+    CloseProject,
     Import,
     ImportSource,
     ImportArtwork,
@@ -262,6 +263,13 @@ impl Default for Registry {
                 icon: Icon::Save,
                 action: Command::SaveAs,
                 aliases: &["saveas"],
+            },
+            Tool {
+                id: "close-project",
+                label: "Close Project",
+                icon: Icon::Page,
+                action: Command::CloseProject,
+                aliases: &["close-project"],
             },
             Tool {
                 id: "import-source",

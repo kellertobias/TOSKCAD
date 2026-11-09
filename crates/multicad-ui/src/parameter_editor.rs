@@ -226,7 +226,7 @@ impl ParameterEditor {
         self.error = None;
         Ok(())
     }
-    fn rows_dirty(&self) -> bool {
+    pub(crate) fn rows_dirty(&self) -> bool {
         let mut rows = self.rows.iter().filter(|r| !r.empty());
         let mut before = self.baseline.iter().filter(|r| !r.empty());
         loop {

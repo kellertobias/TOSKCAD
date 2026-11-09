@@ -130,7 +130,11 @@ impl Application {
     pub(super) fn project_tab_blocked(&self, index: usize) -> bool {
         index != self.project_tab_index()
             && if self.mode == Mode::Export || matches!(index, MATERIALS_TAB | PROJECT_EXPORT_TAB) {
-                self.current().pending_edits()
+                if self.mode == Mode::Parameters && self.tab == 0 {
+                    self.current().pending_non_metadata_edits()
+                } else {
+                    self.current().pending_edits()
+                }
             } else {
                 self.current().sketch.material_library().dirty()
             }
@@ -253,7 +257,7 @@ impl Application {
                     .show(ui, |ui| self.parameters_sidebar(ui));
                 ui.add_space(9.);
                 let command = Command::Mode(Mode::Model);
-                let can_start = self.enabled(command) && !self.current().editor.info_dirty();
+                let can_start = self.enabled(command);
                 if controls::centered_action(
                     ui,
                     "Start Modeling",

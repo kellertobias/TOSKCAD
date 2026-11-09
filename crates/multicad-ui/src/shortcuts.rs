@@ -236,6 +236,11 @@ impl ShortcutMap {
             (Key::S, crate::registry::Command::Save, "Save"),
             (Key::N, crate::registry::Command::New, "New document"),
             (Key::O, crate::registry::Command::Open, "Open document"),
+            (
+                Key::W,
+                crate::registry::Command::CloseProject,
+                "Close project",
+            ),
         ] {
             add(
                 Scope::Global,
