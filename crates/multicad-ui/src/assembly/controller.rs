@@ -188,7 +188,7 @@ impl AssemblyController {
             .map_err(|e| e.to_string())?;
         self.scope = Some(Scope {
             guard,
-            source: ContentHash::document(session.document())?,
+            source: session.source_hash()?,
             resources: resources.clone(),
             channel,
         });
@@ -217,9 +217,7 @@ impl AssemblyController {
         session.validate_preview(&scope.guard).map_err(|_| {
             "The source session changed; cancel and reopen this assembly tool".to_string()
         })?;
-        if &scope.resources != resources
-            || ContentHash::document(session.document())? != scope.source
-        {
+        if &scope.resources != resources || session.source_hash()? != scope.source {
             return Err(
                 "The source or native resources changed; cancel and reopen this assembly tool"
                     .into(),

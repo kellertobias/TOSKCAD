@@ -10,9 +10,10 @@ use multicad_core::{
     commands::{Actor, Channel, Prepared, Request, Session},
     constraint_sketch::source::Source,
     document::{Document, EntityData, EntityId, Mutation},
+    project_file::ContentHash,
     sketch::{self, Datum, Frame, Geometry, Sketch},
 };
-use std::collections::VecDeque;
+use std::{cell::OnceCell, collections::VecDeque};
 #[cfg(test)]
 #[path = "sketch_advanced_context_tests.rs"]
 mod advanced_context_tests;
@@ -4007,6 +4008,15 @@ impl SketchEditor {
         id: EntityId,
         revision: u64,
     ) -> Result<(Sketch, sketch::Frame, EntityId), multicad_core::document::DocumentError> {
+        self.read_sketch_with_hash(doc, id, revision, || ContentHash::document(doc).ok())
+    }
+    fn read_sketch_with_hash(
+        &self,
+        doc: &Document,
+        id: EntityId,
+        revision: u64,
+        source_hash: impl FnOnce() -> Option<ContentHash>,
+    ) -> Result<(Sketch, sketch::Frame, EntityId), multicad_core::document::DocumentError> {
         if self.waiting_for_sketch_pose(id) {
             return Err(multicad_core::document::DocumentError::Invalid(
                 "Waiting for the selected sketch occurrence's current native placement".into(),
@@ -4019,10 +4029,9 @@ impl SketchEditor {
             && self.display_scene.as_ref().is_some_and(|scene| {
                 scene.stamp().document != doc.id()
                     || scene.stamp().revision != revision
-                    || scene.model_evaluation().is_some_and(|info| {
-                        multicad_core::project_file::ContentHash::document(doc).ok()
-                            != Some(info.source_hash)
-                    })
+                    || scene
+                        .model_evaluation()
+                        .is_some_and(|info| source_hash() != Some(info.source_hash))
             })
             && !self
                 .creation_evaluation
@@ -4881,6 +4890,18 @@ impl SketchEditor {
             points.extend(bounds_points(bounds));
         }
         let affected = self.constraints.affected();
+        // All overlays below read one immutable source. The committed view can
+        // reuse its Session digest, while a draft must hash its own snapshot.
+        let overlay_hash = OnceCell::new();
+        let source_hash = || {
+            *overlay_hash.get_or_init(|| {
+                if std::ptr::eq(doc, session.document()) {
+                    session.source_hash().ok()
+                } else {
+                    ContentHash::document(doc).ok()
+                }
+            })
+        };
         for e in doc.entities().filter(|e| {
             !self.measurement.active()
                 && !self.repair.viewing_candidates()
@@ -4891,7 +4912,9 @@ impl SketchEditor {
                     developed_sheet::chart(doc, e.id).is_none()
                 }
         }) {
-            if let Ok((source, frame, _)) = self.read_sketch(doc, e.id, session.revision()) {
+            if let Ok((source, frame, _)) =
+                self.read_sketch_with_hash(doc, e.id, session.revision(), source_hash)
+            {
                 if self.selected == Some(e.id)
                     && (self.editing || self.acquiring_profiles() || face_preselection)
                     && self.tool.is_none()
