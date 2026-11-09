@@ -411,9 +411,10 @@ fn tool_button(
     response
         .on_disabled_hover_text(match tool.action {
             Command::Modeling(tool) => tool.requirements().to_string(),
-            Command::SheetFlange | Command::SheetFasteners | Command::SheetPattern(_) => {
-                hint(tool.action, tool.label)
-            }
+            Command::SheetFlange
+            | Command::SheetCutout
+            | Command::SheetFasteners
+            | Command::SheetPattern(_) => hint(tool.action, tool.label),
             _ => "Unavailable in the current context".into(),
         })
         .clicked()
@@ -1358,6 +1359,7 @@ mod tests {
                     (Mode::Model, METAL_TITLE) => &[
                         "Create sheet part",
                         "Add flange",
+                        "Add cutout",
                         "Attached fasteners",
                         "Unfold",
                         "Bend schedule",

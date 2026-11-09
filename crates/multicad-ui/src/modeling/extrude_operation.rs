@@ -383,6 +383,7 @@ impl CutDiscovery {
                     exclude,
                 },
             }],
+            ..Default::default()
         };
         options.validate().map_err(|error| error.to_string())?;
         Ok(Self {

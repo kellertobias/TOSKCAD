@@ -40,6 +40,11 @@ pub trait SceneBackend {
         options: &multicad_core::model::EvaluationOptions,
     ) -> Result<(), String> {
         options.validate().map_err(|error| error.to_string())?;
+        if options.sheet_development.is_some() {
+            return Err(
+                "This display provider does not support native sheet development checks".into(),
+            );
+        }
         if !options.cut_targets.is_empty() {
             return Err("This display provider does not support native cut-target queries".into());
         }

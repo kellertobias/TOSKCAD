@@ -32,6 +32,7 @@ impl Backend {
                     let plan = architecture_plan::build(document, model);
                     let published = Arc::get_mut(&mut published)
                         .expect("publication is not shared before return");
+                    published.set_sheet_faces(model.sheet_authoring_faces(document));
                     published
                         .set_architecture_plan(plan)
                         .map_err(|message| ModelError {

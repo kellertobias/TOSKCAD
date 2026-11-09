@@ -25,6 +25,7 @@ fn probe() -> CutTargetProbe {
 fn correlation_validation_bounds_work_and_rejects_identity_aliasing_before_dispatch() {
     let maximum = EvaluationOptions {
         cut_targets: (0..MAX_CUT_TARGET_PROBES).map(|_| probe()).collect(),
+        ..Default::default()
     };
     maximum.validate().unwrap();
     let wire = serde_json::to_vec(&maximum).unwrap();
@@ -62,6 +63,7 @@ fn empty_options_need_no_probe_and_query_semantics_remain_native_responsibility(
     // availability or geometric intersection, including exclusion precedence.
     EvaluationOptions {
         cut_targets: vec![p],
+        ..Default::default()
     }
     .validate()
     .unwrap();
@@ -139,6 +141,7 @@ fn mixed_probe_receipts_preserve_source_frozen_producers_and_explicit_failure() 
 fn unknown_wire_fields_are_rejected_at_request_and_receipt_boundaries() {
     let options = EvaluationOptions {
         cut_targets: vec![probe()],
+        ..Default::default()
     };
     let mut wire = serde_json::to_value(&options).unwrap();
     wire["cut_targets"][0]["query"]["nearest_body"] = true.into();

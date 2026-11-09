@@ -29,7 +29,7 @@ uint8_t curved_profile_classify(const Frame3 &,
 std::unique_ptr<Shape>
 curved_profile_extrude_vector(const Frame3 &, rust::Slice<const CurvedEdgeData>,
                               rust::Slice<const uint32_t>, double tolerance,
-                              const Point3 &displacement);
+                              const Point3 &displacement, bool developed_sheet);
 std::unique_ptr<Shape>
 curved_profile_revolve(const Frame3 &, rust::Slice<const CurvedEdgeData>,
                        rust::Slice<const uint32_t>, double tolerance,

@@ -1,6 +1,6 @@
 //! Plain evaluation requests and receipts. These values contain no native
 //! handles and do not change canonical model source or prove geometry valid.
-use super::{BodyInput, MAX_BOOLEAN_TARGETS};
+use super::{BodyInput, CutoutFace, MAX_BOOLEAN_TARGETS};
 use crate::{document::EntityId, project_file::ContentHash};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
@@ -41,6 +41,10 @@ pub struct CutTargetProbe {
 pub struct EvaluationOptions {
     #[serde(default)]
     pub cut_targets: Vec<CutTargetProbe>,
+    /// Require a successful flat development of this current sheet Part
+    /// before publishing the complete folded candidate.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sheet_development: Option<EntityId>,
 }
 impl EvaluationOptions {
     /// Validate receipt correlation and the job budget. The exact native query
@@ -50,8 +54,23 @@ impl EvaluationOptions {
             self.cut_targets.iter().map(|probe| probe.id),
             MAX_CUT_TARGET_PROBES,
             "cut-target probes",
-        )
+        )?;
+        identities(self.sheet_development, 1, "sheet development")
     }
+}
+
+/// Canonical cutter coordinates for one broad folded sheet surface.
+/// The frame is in Part definition coordinates, independent of placement.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SheetFaceFrame {
+    pub part: EntityId,
+    pub feature: EntityId,
+    pub face: CutoutFace,
+    pub origin_mm: [f64; 3],
+    pub u: [f64; 3],
+    pub v: [f64; 3],
+    /// Thickness vector from side A at the frame origin to side B.
+    pub through_mm: [f64; 3],
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

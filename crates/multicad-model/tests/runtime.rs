@@ -310,6 +310,7 @@ fn same_document_revision_tag_and_probe_id_still_publish_only_latest_owned_optio
     let id = EntityId::new();
     let mut first_options = EvaluationOptions {
         cut_targets: vec![CutTargetProbe { id, query }],
+        ..Default::default()
     };
     first_options.cut_targets[0].query.exclude = vec![bodies[0].body];
     let first = runtime
@@ -365,6 +366,7 @@ fn query_errors_are_correlated_receipts_and_do_not_replace_valid_base_geometry()
             },
             CutTargetProbe { id: valid, query },
         ],
+        ..Default::default()
     };
     let mut runtime = Runtime::new(Compiler::default()).unwrap();
     let generation = runtime
@@ -415,6 +417,7 @@ fn invalid_options_do_not_supersede_pending_jobs_or_advance_private_generation()
     };
     let options = EvaluationOptions {
         cut_targets: vec![probe.clone()],
+        ..Default::default()
     };
     let first = runtime
         .request_evaluation(session.document(), session.revision(), 1, &options)
@@ -424,12 +427,14 @@ fn invalid_options_do_not_supersede_pending_jobs_or_advance_private_generation()
     let invalid = [
         EvaluationOptions {
             cut_targets: vec![probe.clone(), probe.clone()],
+            ..Default::default()
         },
         EvaluationOptions {
             cut_targets: vec![CutTargetProbe {
                 id: nil,
                 query: probe.query.clone(),
             }],
+            ..Default::default()
         },
         EvaluationOptions {
             cut_targets: (0..9)
@@ -438,6 +443,7 @@ fn invalid_options_do_not_supersede_pending_jobs_or_advance_private_generation()
                     query: probe.query.clone(),
                 })
                 .collect(),
+            ..Default::default()
         },
     ];
     for options in invalid {

@@ -541,6 +541,7 @@ mod ffi {
             offsets: &[u32],
             tolerance: f64,
             displacement: &Point3,
+            developed_sheet: bool,
         ) -> Result<UniquePtr<Shape>>;
         fn curved_profile_revolve(
             frame: &Frame3,

@@ -165,8 +165,8 @@ impl ModelToolController {
         self.form.is_some()
     }
     pub fn label(&self) -> &'static str {
-        if let Some(ModelForm::Sheet(panel)) = &self.form {
-            return panel.label();
+        if let Some(form @ (ModelForm::Sheet(_) | ModelForm::SheetCutout(_))) = &self.form {
+            return form.label();
         }
         match self.scope.as_ref().map(|scope| scope.execution) {
             Some(Execution::EditGroup { .. }) => "Extrusion operation edit",
@@ -1925,15 +1925,17 @@ impl ModelToolController {
             revision: session.revision(),
             generation: self.generation,
         };
+        let options = model::EvaluationOptions {
+            sheet_development: match request {
+                ModelRequest::Sheet(command) if command.editing => Some(command.sheet.output.body),
+                _ => None,
+            },
+            ..Default::default()
+        };
         self.backend
             .as_mut()
             .ok_or("The native modeling preview provider is unavailable")?
-            .request_evaluation(
-                prepared.prepared.document(),
-                resources,
-                stamp,
-                &Default::default(),
-            )?;
+            .request_evaluation(prepared.prepared.document(), resources, stamp, &options)?;
         let instances = match request {
             ModelRequest::Placement(command) => command.instances(),
             ModelRequest::Scale(command) => command.instances(),
@@ -2395,6 +2397,7 @@ impl ModelToolController {
     fn preview_waits_for_input(&self) -> bool {
         self.stock_editor.is_some()
             || matches!(&self.form, Some(ModelForm::Sheet(panel)) if panel.waiting_for_edge())
+            || self.sheet_cutout_target().is_some()
             || self.scale_origin_picking()
             || self.edge_treatment_picking()
             || self.advanced_picking()

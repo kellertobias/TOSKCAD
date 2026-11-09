@@ -51,6 +51,7 @@ mod profile_connection_host;
 mod scale_host_tests;
 #[path = "sketch_screw_connection_host.rs"]
 mod screw_connection_host;
+mod sheet_cutout;
 #[path = "sketch_snap.rs"]
 mod snap;
 #[path = "sketch_snap_host.rs"]
@@ -4352,6 +4353,7 @@ impl SketchEditor {
                 && !self.picking
                 && !self.moving
                 && !self.model.sheet_edge_picking()
+                && self.model.sheet_cutout_target().is_none()
                 && !self.has_pending_edits()
                 && face_region.is_none();
             let display = if self.architecture.planar() {
@@ -4466,6 +4468,9 @@ impl SketchEditor {
         }
         if let Some(guide) = &cabinet_guide {
             guide.paint(&painter, self.camera, rect);
+        }
+        if !self.measurement.active() {
+            self.sheet_cutout_viewport(session, scene.as_deref(), &response);
         }
         if !self.measurement.active()
             && self.model.sheet_edge_picking()

@@ -39,14 +39,22 @@ impl Application {
             .selected_sheet_part(&project.session)
             .ok_or("Select one sheet-metal part in the model tree or viewport")?;
         match command {
-            Command::SheetFlange | Command::SheetFasteners => {
+            Command::SheetFlange | Command::SheetCutout | Command::SheetFasteners => {
                 if !project.sketch.modeling_available() {
                     return Err("Finish the active Model tool first".into());
                 }
-                if command == Command::SheetFlange {
-                    crate::modeling::ModelToolController::sheet_flange_availability(
-                        document, part,
-                    )?;
+                match command {
+                    Command::SheetFlange => {
+                        crate::modeling::ModelToolController::sheet_flange_availability(
+                            document, part,
+                        )?
+                    }
+                    Command::SheetCutout => {
+                        crate::modeling::ModelToolController::sheet_cutout_availability(
+                            document, part,
+                        )?
+                    }
+                    _ => {}
                 }
             }
             Command::SheetPattern(_) if self.sheet_pattern_backends.is_none() => {
@@ -83,6 +91,13 @@ impl Application {
                 p.sheet_pattern.close();
                 self.active_tool = Some((self.active, command));
                 self.message = "Add flange · select a sheet edge in the viewport".into();
+            }
+            Command::SheetCutout => {
+                p.sketch
+                    .begin_sheet_cutout(&p.session, &p.resources, part, channel)?;
+                p.sheet_pattern.close();
+                self.active_tool = Some((self.active, command));
+                self.message = "Add cutout · pick a planar face on the folded sheet".into();
             }
             Command::SheetFasteners => {
                 p.sketch

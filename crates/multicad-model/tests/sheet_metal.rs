@@ -595,3 +595,184 @@ fn revolved_shell(s: &mut Session) -> EntityId {
     checked(s, p.prepared);
     body
 }
+
+#[test]
+fn native_sheet_face_frames_match_folded_cutters_and_developed_positions() {
+    use model::{BendDirection, Cutout, CutoutFace, CutoutShape, Flange, FlangeKind};
+
+    let mut f = fixture();
+    let mut sheet = rectangle(&f, f.steel);
+    sheet.flanges.push(Flange {
+        edge: 0,
+        kind: FlangeKind::Bend { angle: angle(90.) },
+        direction: BendDirection::Down,
+        length: length(35.),
+        inside_radius: None,
+        start_inset: Some(length(5.)),
+        end_inset: None,
+        relief: None,
+    });
+    let flange = CutoutFace::Flange { index: 0 };
+    for (face, center) in [(CutoutFace::Base, [35., 30.]), (flange, [25., 12.])] {
+        sheet.cutouts.push(Cutout {
+            face,
+            shape: CutoutShape::Circle {
+                center: center.map(length),
+                diameter: length(4.),
+            },
+        });
+    }
+    let request = SheetRequest::new("Folded workpiece", sheet);
+    let prepared = model::prepare_sheet(&f.s, f.s.revision(), actor(), &request).unwrap();
+    checked(&mut f.s, prepared.prepared);
+    let model = compile(&f.s);
+    let frames = model.sheet_authoring_faces(f.s.document());
+    let [base, leg] = frames.as_slice() else {
+        panic!("expected the base and one final flange leg: {frames:?}");
+    };
+    for frame in [base, leg] {
+        assert_eq!(frame.part, request.body);
+        assert_eq!(frame.feature, request.feature);
+        near(
+            frame.through_mm.iter().map(|x| x * x).sum::<f64>().sqrt(),
+            1.5,
+        );
+    }
+    assert_eq!(base.face, CutoutFace::Base);
+    assert_eq!(base.origin_mm, [10., 20., 5.]);
+    assert_eq!(base.u, [1., 0., 0.]);
+    assert_eq!(base.v, [0., 1., 0.]);
+    assert_eq!(base.through_mm, [0., 0., 1.5]);
+    assert_eq!(leg.face, flange);
+    for (actual, expected) in leg.origin_mm.into_iter().zip([15., 18.5, 3.5]) {
+        near(actual, expected);
+    }
+    for (actual, expected) in leg
+        .u
+        .into_iter()
+        .chain(leg.v)
+        .chain(leg.through_mm)
+        .zip([1., 0., 0., 0., 0., -1., 0., -1.5, 0.])
+    {
+        near(actual, expected);
+    }
+
+    let flat = model.unfold(f.s.document(), request.body).unwrap();
+    assert_eq!(flat.drills.len(), 2);
+    assert_eq!(flat.bends.len(), 1);
+    assert_eq!(flat.drills[0].center, [35., 30.]);
+    near(flat.drills[1].center[0], 30.);
+    near(
+        flat.drills[1].center[1],
+        -(12. + flat.bends[0].record.allowance_mm),
+    );
+
+    let scoped = Compiler::default()
+        .compile_sources(f.s.document(), f.s.revision(), &[request.body])
+        .unwrap();
+    assert!(scoped.sheet_authoring_faces(f.s.document()).is_empty());
+}
+
+#[test]
+fn sheet_development_probe_bypasses_cached_publication_and_refuses_flat_only_conflicts() {
+    use model::{BendDirection, EvaluationOptions, Flange, FlangeKind, SheetFrame};
+    use multicad_core::manufacturing::{PlanarEdge, PlanarLoop};
+    use multicad_model::Runtime;
+    use std::time::{Duration, Instant};
+
+    let f = fixture();
+    let mut sheet = rectangle(&f, f.steel);
+    // Opposing flanges along the vertical sides of a 40 mm notch have
+    // clearance in the folded solid. They overlap when both are developed.
+    let outline = [
+        [0., 0.],
+        [120., 0.],
+        [120., 100.],
+        [80., 100.],
+        [80., 30.],
+        [40., 30.],
+        [40., 100.],
+        [0., 100.],
+    ];
+    sheet.base = SheetBase::Contour {
+        frame: SheetFrame {
+            origin: [0.; 3],
+            u: [1., 0., 0.],
+            v: [0., 1., 0.],
+        },
+        loops: vec![PlanarLoop {
+            outer: true,
+            edges: outline
+                .into_iter()
+                .zip(outline.into_iter().cycle().skip(1))
+                .map(|(a, b)| PlanarEdge::Line { a, b })
+                .collect(),
+        }],
+        converted_from: None,
+    };
+    sheet.flanges = [3, 5]
+        .map(|edge| Flange {
+            edge,
+            kind: FlangeKind::Bend { angle: angle(90.) },
+            direction: BendDirection::Down,
+            length: length(30.),
+            inside_radius: None,
+            start_inset: Some(length(5.)),
+            end_inset: Some(length(5.)),
+            relief: None,
+        })
+        .to_vec();
+    let mut request = SheetRequest::new("Developed overlap", sheet);
+    let prepared = model::prepare_sheet(&f.s, f.s.revision(), actor(), &request).unwrap();
+    let candidate = prepared.prepared.document();
+    let model = Compiler::default()
+        .compile(candidate, f.s.revision())
+        .unwrap();
+    let failure = model.unfold(candidate, request.body).unwrap_err();
+    assert!(
+        failure.message.contains("developed flanges overlap"),
+        "{failure}"
+    );
+
+    let mut runtime = Runtime::with_cached_model_publisher(
+        Compiler::default(),
+        |_, _, _| Some("cached"),
+        |_, _, _| Ok("native"),
+    )
+    .unwrap();
+    let poll = |runtime: &mut Runtime<&'static str>| {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            if let Some(reply) = runtime.poll() {
+                break reply;
+            }
+            assert!(Instant::now() < deadline, "sheet worker timed out");
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    };
+    runtime.request(candidate, f.s.revision()).unwrap();
+    assert_eq!(poll(&mut runtime).result.unwrap(), "cached");
+    let options = EvaluationOptions {
+        sheet_development: Some(request.body),
+        ..Default::default()
+    };
+    let generation = runtime
+        .request_evaluation(candidate, f.s.revision(), 0, &options)
+        .unwrap();
+    let reply = poll(&mut runtime);
+    assert_eq!(reply.generation, generation);
+    let error = reply.result.unwrap_err();
+    assert_eq!(error.entity, Some(request.feature));
+    assert!(error.message.starts_with("Flat development failed:"));
+    assert!(error.message.contains("developed flanges overlap"));
+    assert!(f.s.document().get(request.body).is_none());
+
+    request.sheet.flanges.pop();
+    let prepared = model::prepare_sheet(&f.s, f.s.revision(), actor(), &request).unwrap();
+    let generation = runtime
+        .request_evaluation(prepared.prepared.document(), f.s.revision(), 0, &options)
+        .unwrap();
+    let reply = poll(&mut runtime);
+    assert_eq!(reply.generation, generation);
+    assert_eq!(reply.result.unwrap(), "native");
+}

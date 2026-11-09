@@ -364,6 +364,7 @@ fn native_architecture_plan_exposes_real_opening_gaps_symbols_and_source_bound_p
                         exclude: vec![],
                     },
                 }],
+                ..Default::default()
             },
         )
         .unwrap();
@@ -592,6 +593,7 @@ fn native_backend_receipts_bind_exact_queries_to_source_and_latest_options() {
                 exclude: vec![],
             },
         }],
+        ..Default::default()
     };
     let mut backend = Backend::new();
     backend
@@ -679,6 +681,7 @@ fn failed_native_probe_keeps_valid_scene_and_diagnostic_identity() {
                 exclude: vec![],
             },
         }],
+        ..Default::default()
     };
     let mut backend = Backend::new();
     backend

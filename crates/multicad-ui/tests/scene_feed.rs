@@ -280,6 +280,7 @@ fn evaluation_default_preserves_legacy_and_resource_requests_but_rejects_probes(
                 exclude: vec![],
             },
         }],
+        ..Default::default()
     };
     assert!(
         legacy

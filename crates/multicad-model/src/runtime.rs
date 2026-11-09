@@ -219,6 +219,7 @@ impl<T: Send + 'static> Runtime<T> {
                     let superseded = || lane.latest.load(Ordering::Acquire) != job.generation;
                     if job.sources.is_none()
                         && job.options.cut_targets.is_empty()
+                        && job.options.sheet_development.is_none()
                         && let Some(publication) = cached(&job.document, job.revision, job.tag)
                     {
                         let Ok(mut slots) = lane.slots.lock() else {
@@ -273,6 +274,18 @@ impl<T: Send + 'static> Runtime<T> {
                     }
                     let stats = (!unchanged).then(|| cache.last_compile().clone());
                     let result = result.and_then(|model| {
+                        if let Some(part) = job.options.sheet_development {
+                            model.unfold(&job.document, part).map_err(|error| {
+                                let detail = error
+                                    .message
+                                    .strip_prefix("Development failed: ")
+                                    .unwrap_or(&error.message);
+                                ModelError {
+                                    entity: error.entity.or(Some(part)),
+                                    message: format!("Flat development failed: {detail}"),
+                                }
+                            })?;
+                        }
                         let queried = if job.options.cut_targets.is_empty() {
                             None
                         } else {

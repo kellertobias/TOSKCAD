@@ -12,8 +12,8 @@ use multicad_core::{
     manufacturing::{PlanarContours, PlanarEdge, PlanarLoop},
     materials,
     model::{
-        self, BodyOutput, ModelPrepared, ResolvedBase, ResolvedCutout, SheetBase, SheetDefinition,
-        SheetFrame, SheetRequest, StripSegment, ValueSource,
+        self, BodyOutput, CutoutFace, ModelPrepared, ResolvedBase, ResolvedCutout, SheetBase,
+        SheetDefinition, SheetFaceFrame, SheetFrame, SheetRequest, StripSegment, ValueSource,
     },
     parameters::EvaluatedParameters,
     references::Origin,
@@ -447,7 +447,7 @@ fn flat_solid(layout: &SheetLayout, policy: GeometryPolicy) -> Result<(Solid, f6
         holes.push(flat_cutout(c, &layout.flanges, t, k).ok_or("A cutout names a missing flange")?);
         area -= c.shape.area_mm2();
     }
-    let solid = Solid::extrude_curved_profile_vector(
+    let solid = Solid::extrude_developed_sheet_profile(
         &CurvedProfile {
             frame: layout.frame,
             outer,
@@ -613,6 +613,47 @@ impl Model {
         let head = self.sheet_head(document, part)?;
         Some((layout, self.solid(head)?))
     }
+    /// Exact base and final-leg cutter frames for current sheet Parts.
+    /// Source-only evaluations cannot establish final physical Part ownership.
+    pub fn sheet_authoring_faces(&self, document: &Document) -> Vec<SheetFaceFrame> {
+        let snapshot = self.snapshot();
+        if snapshot.scope != crate::EvaluationScope::Full
+            || snapshot.stamp.document != document.id()
+        {
+            return vec![];
+        }
+        let mut frames = Vec::new();
+        for (&part, &feature) in &snapshot.body_sources {
+            let Some(layout) = snapshot.sheet_layouts.get(&feature) else {
+                continue;
+            };
+            if self.sheet_head(document, part) != Some(feature) {
+                continue;
+            }
+            let space = layout.space();
+            let faces =
+                std::iter::once(CutoutFace::Base).chain(layout.flanges.iter().map(|flange| {
+                    CutoutFace::Flange {
+                        index: flange.flange.index as u32,
+                    }
+                }));
+            for face in faces {
+                if let Ok((frame, normal)) = space.face_frame(face, &layout.flanges) {
+                    frames.push(SheetFaceFrame {
+                        part,
+                        feature,
+                        face,
+                        origin_mm: frame.origin,
+                        u: frame.u,
+                        v: frame.v,
+                        through_mm: normal.map(|coordinate| coordinate * layout.thickness_mm),
+                    });
+                }
+            }
+        }
+        frames
+    }
+
     /// The developed flat pattern of one evaluated sheet feature.
     pub fn sheet_flat_pattern(&self, feature: EntityId) -> Result<PlanarContours, ModelError> {
         let layout = self

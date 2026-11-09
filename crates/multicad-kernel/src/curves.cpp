@@ -52,6 +52,9 @@
 namespace multicad::kernel {
 namespace {
 constexpr size_t maxEdges = 64, maxPoles = 256, maxHits = 1024;
+// Match the Rust developed sheet caps. Offsets count starts of the
+// exterior and each hole, plus one final sentinel.
+constexpr size_t maxDevelopedSheetEdges = 2048, maxDevelopedSheetOffsets = 257;
 template <class F> auto guarded(F fn) -> decltype(fn()) {
   try {
     return fn();
@@ -215,9 +218,12 @@ struct FaceBuild {
   double outerSign = 1.;
 };
 FaceBuild build(const Frame3 &f, rust::Slice<const CurvedEdgeData> edges,
-                rust::Slice<const uint32_t> offsets, double tolerance) {
-  if (edges.empty() || edges.size() > maxEdges || offsets.size() < 2 ||
-      offsets.size() > 18 || offsets[0] != 0 ||
+                rust::Slice<const uint32_t> offsets, double tolerance,
+                bool developedSheet = false) {
+  const size_t edgeLimit = developedSheet ? maxDevelopedSheetEdges : maxEdges;
+  const size_t offsetLimit = developedSheet ? maxDevelopedSheetOffsets : 18;
+  if (edges.empty() || edges.size() > edgeLimit || offsets.size() < 2 ||
+      offsets.size() > offsetLimit || offsets[0] != 0 ||
       offsets[offsets.size() - 1] != edges.size() ||
       !std::isfinite(tolerance) || tolerance < 1e-7 || tolerance > 1e-3)
     throw std::runtime_error("Invalid curved profile budgets or offsets");
@@ -499,9 +505,10 @@ std::unique_ptr<Shape>
 curved_profile_extrude_vector(const Frame3 &f,
                               rust::Slice<const CurvedEdgeData> edges,
                               rust::Slice<const uint32_t> offsets,
-                              double tolerance, const Point3 &displacement) {
+                              double tolerance, const Point3 &displacement,
+                              bool developed_sheet) {
   return guarded([&] {
-    auto face = build(f, edges, offsets, tolerance);
+    auto face = build(f, edges, offsets, tolerance, developed_sheet);
     BRepPrimAPI_MakePrism prism(
         face.face, gp_Vec(displacement.x, displacement.y, displacement.z));
     return sweepShape(prism, face, true);

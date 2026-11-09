@@ -21,7 +21,7 @@ use super::{
     revolve::RevolvePanel,
     scaling::ScalePanel,
     screw_connection::{ScrewConnectionCommand, ScrewConnectionPanel},
-    sheet::{SheetCommand, SheetPanel},
+    sheet::{CutoutPanel, SheetCommand, SheetPanel},
     sheet_fasteners::{FastenerCommand, FastenerPanel},
     split::{SplitEvent, SplitPanel},
     surface_structure::SurfaceStructurePanel,
@@ -500,6 +500,7 @@ pub(super) enum ModelForm {
     WeldConnection(Box<ConnectionPanel>),
     Weld(Box<WeldPanel>),
     Sheet(Box<SheetPanel>),
+    SheetCutout(Box<CutoutPanel>),
     SheetFasteners(Box<FastenerPanel>),
 }
 impl ModelForm {
@@ -537,6 +538,7 @@ impl ModelForm {
             Self::WeldConnection(panel) => panel.stamp(),
             Self::Weld(panel) => panel.stamp(),
             Self::Sheet(panel) => panel.stamp(),
+            Self::SheetCutout(panel) => panel.stamp(),
             Self::SheetFasteners(panel) => panel.stamp(),
         }
     }
@@ -574,6 +576,7 @@ impl ModelForm {
             Self::WeldConnection(panel) => panel.label(),
             Self::Weld(panel) => panel.label(),
             Self::Sheet(panel) => panel.label(),
+            Self::SheetCutout(_) => "Add cutout",
             Self::SheetFasteners(_) => "Attached fasteners",
         }
     }
@@ -630,6 +633,9 @@ impl ModelForm {
             Self::Sheet(panel) => panel
                 .request(document, capabilities.new_body)
                 .map(|command| ModelRequest::Sheet(Box::new(command))),
+            Self::SheetCutout(panel) => panel
+                .request(document, capabilities.new_body)
+                .map(|command| ModelRequest::Sheet(Box::new(command))),
             Self::SheetFasteners(panel) => panel
                 .request(document, capabilities.new_body)
                 .map(|command| ModelRequest::SheetFasteners(Box::new(command))),
@@ -682,6 +688,7 @@ impl ModelForm {
     pub(super) fn remember_preview(&mut self, request: &ModelRequest) {
         match (self, request) {
             (Self::Primitive(panel), ModelRequest::Primitive(request)) => panel.remember(request),
+            (Self::SheetCutout(panel), ModelRequest::Sheet(request)) => panel.remember(request),
             (Self::SheetFasteners(panel), ModelRequest::SheetFasteners(request)) => {
                 panel.remember(request)
             }
@@ -765,6 +772,7 @@ impl ModelForm {
             Self::WeldConnection(panel) => panel.show(ui, document, capabilities.new_body, preview),
             Self::Weld(panel) => panel.show(ui, document, capabilities.new_body, preview),
             Self::Sheet(panel) => panel.show(ui, document, capabilities.new_body, preview),
+            Self::SheetCutout(panel) => panel.show(ui, document, capabilities.new_body, preview),
             Self::SheetFasteners(panel) => panel.show(ui, document, capabilities.new_body, preview),
         }
     }

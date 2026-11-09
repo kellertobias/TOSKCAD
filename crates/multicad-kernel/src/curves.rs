@@ -8,6 +8,22 @@ use multicad_core::{
 
 pub const MAX_SPLINE_POLES: usize = 256;
 pub const MAX_CURVED_PROFILE_EDGES: usize = 64;
+
+// The native exact face builder checks pairs of curves. Keep a finite
+// manufacturing budget independent of the much smaller interactive budget.
+const MAX_DEVELOPED_SHEET_EDGES: usize = 2048;
+const MAX_DEVELOPED_SHEET_HOLES: usize = multicad_core::manufacturing::MAX_PLANAR_LOOPS - 1;
+#[derive(Clone, Copy)]
+enum ProfileBudget {
+    Interactive,
+    DevelopedSheet,
+}
+impl ProfileBudget {
+    fn developed_sheet(self) -> bool {
+        matches!(self, Self::DevelopedSheet)
+    }
+}
+
 fn error(kind: GeometryErrorKind, message: impl Into<String>) -> GeometryError {
     GeometryError {
         operation: "curved profile",
@@ -325,14 +341,31 @@ impl CurvedProfile {
         Ok(area)
     }
     pub(crate) fn checked(&self, policy: GeometryPolicy) -> Result<Checked, GeometryError> {
+        self.checked_for(policy, ProfileBudget::Interactive)
+    }
+
+    fn checked_for(
+        &self,
+        policy: GeometryPolicy,
+        budget: ProfileBudget,
+    ) -> Result<Checked, GeometryError> {
         policy.validate()?;
         let frame = self.frame.checked(policy)?;
         let count = self.outer.len() + self.holes.iter().map(Vec::len).sum::<usize>();
-        if count > MAX_CURVED_PROFILE_EDGES || self.holes.len() > 16 {
-            return Err(error(
-                GeometryErrorKind::Limit,
+        let (max_edges, max_holes, message) = match budget {
+            ProfileBudget::Interactive => (
+                MAX_CURVED_PROFILE_EDGES,
+                16,
                 "Curved profile exceeds the 64-edge/16-hole query budget",
-            ));
+            ),
+            ProfileBudget::DevelopedSheet => (
+                MAX_DEVELOPED_SHEET_EDGES,
+                MAX_DEVELOPED_SHEET_HOLES,
+                "Developed sheet exceeds the 2048-edge/255-hole manufacturing budget",
+            ),
+        };
+        if count > max_edges || self.holes.len() > max_holes {
+            return Err(error(GeometryErrorKind::Limit, message));
         }
         let mut edges = vec![];
         let mut offsets = vec![0];
@@ -450,8 +483,36 @@ impl Solid {
         displacement_mm: [f64; 3],
         policy: GeometryPolicy,
     ) -> Result<Self, GeometryError> {
-        policy.validate()?;
-        let c = profile.checked(policy)?;
+        Self::extrude_curved_profile_vector_for(
+            profile,
+            displacement_mm,
+            policy,
+            ProfileBudget::Interactive,
+        )
+    }
+
+    /// Build the exact prism used to validate a developed sheet blank.
+    /// This dedicated path has a larger bounded allowance for cut openings.
+    pub fn extrude_developed_sheet_profile(
+        profile: &CurvedProfile,
+        displacement_mm: [f64; 3],
+        policy: GeometryPolicy,
+    ) -> Result<Self, GeometryError> {
+        Self::extrude_curved_profile_vector_for(
+            profile,
+            displacement_mm,
+            policy,
+            ProfileBudget::DevelopedSheet,
+        )
+    }
+
+    fn extrude_curved_profile_vector_for(
+        profile: &CurvedProfile,
+        displacement_mm: [f64; 3],
+        policy: GeometryPolicy,
+        budget: ProfileBudget,
+    ) -> Result<Self, GeometryError> {
+        let c = profile.checked_for(policy, budget)?;
         policy.point(displacement_mm)?;
         let length = displacement_mm
             .into_iter()
@@ -482,6 +543,7 @@ impl Solid {
                     y: displacement_mm[1],
                     z: displacement_mm[2],
                 },
+                budget.developed_sheet(),
             )
             .map_err(native)?,
             policy,

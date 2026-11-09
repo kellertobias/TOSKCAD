@@ -550,6 +550,7 @@ pub struct Scene {
     envelope_boxes: Arc<BTreeMap<EntityId, [Point; 8]>>,
     guide_outlines: Arc<BTreeMap<EntityId, Vec<[Point; 4]>>>,
     weld_markers: Arc<[WeldMarker]>,
+    sheet_faces: Arc<[multicad_core::model::SheetFaceFrame]>,
     fdm_reviews: Option<Arc<fdm_review::AidReviews>>,
     display_leaf_paths: BTreeMap<EntityId, multicad_core::model::OccurrencePath>,
     display_origin: Option<(SceneStamp, multicad_core::project_file::ContentHash)>,
@@ -673,6 +674,7 @@ impl Scene {
             envelope_boxes: Arc::new(BTreeMap::new()),
             guide_outlines: Arc::new(BTreeMap::new()),
             weld_markers: Arc::default(),
+            sheet_faces: Arc::default(),
             fdm_reviews: None,
             display_leaf_paths: BTreeMap::new(),
             display_origin: None,
@@ -937,6 +939,12 @@ impl Scene {
     }
     pub(crate) fn weld_markers(&self) -> &[WeldMarker] {
         &self.weld_markers
+    }
+    pub fn set_sheet_faces(&mut self, faces: Vec<multicad_core::model::SheetFaceFrame>) {
+        self.sheet_faces = faces.into();
+    }
+    pub(crate) fn sheet_faces(&self) -> &[multicad_core::model::SheetFaceFrame] {
+        &self.sheet_faces
     }
     /// Callers still verify this Scene's source hash and document/revision.
     /// Source-inspection views never authorize placement defaults.
@@ -1347,6 +1355,7 @@ impl Scene {
         view.transfer_evaluation = self.transfer_evaluation.clone();
         view.native_bounds = self.native_bounds.clone();
         view.weld_markers = self.weld_markers.clone();
+        view.sheet_faces = self.sheet_faces.clone();
         view.scope = self.scope.clone();
         Ok(Arc::new(view))
     }
