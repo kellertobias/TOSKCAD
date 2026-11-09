@@ -76,7 +76,7 @@ pub fn tools() -> Vec<Tool> {
             Tool {
                 id: "wood-cabinet",
                 label: "Cabinet",
-                icon: Icon::Box,
+                icon: ModelingTool::Cabinet.icon(),
                 action: Command::Modeling(ModelingTool::Cabinet),
                 aliases: &[],
             },
@@ -104,32 +104,44 @@ pub fn tab_tools() -> Vec<&'static str> {
     ]
 }
 pub fn groups() -> Vec<Group> {
-    [
-        ("Create", vec!["panel", "batten", "wood-hardware"]),
-        ("Modify", vec!["drill", "pocket", "wood-joint"]),
-        ("Assistants", vec!["system32", "wood-cabinet", "wood-box"]),
-        ("Output", vec!["cut-list"]),
+    vec![
+        Group {
+            label: "Create",
+            entries: vec![
+                Entry::Tool("panel"),
+                Entry::Tool("batten"),
+                Entry::Menu {
+                    label: "Screw / Hardware",
+                    icon: Icon::Revolve,
+                    tools: vec!["wood-hardware", "wood-library", "screw-connection"],
+                    unavailable: None,
+                    split: true,
+                },
+            ],
+        },
+        Group {
+            label: "Modify",
+            entries: vec![
+                Entry::Tool("drill"),
+                Entry::Tool("pocket"),
+                Entry::Tool("wood-joint"),
+            ],
+        },
+        Group {
+            label: "",
+            entries: vec![Entry::Menu {
+                label: "Assistance",
+                icon: Icon::Assistance,
+                tools: vec!["system32", "wood-cabinet", "wood-box"],
+                unavailable: None,
+                split: false,
+            }],
+        },
+        Group {
+            label: "Output",
+            entries: vec![Entry::Tool("cut-list")],
+        },
     ]
-    .into_iter()
-    .map(|(label, tools)| Group {
-        label,
-        entries: tools
-            .into_iter()
-            .map(|id| {
-                if id == "wood-hardware" {
-                    Entry::Menu {
-                        label: "Screw / Hardware",
-                        icon: Icon::Revolve,
-                        tools: vec!["wood-hardware", "wood-library", "screw-connection"],
-                        unavailable: None,
-                    }
-                } else {
-                    Entry::Tool(id)
-                }
-            })
-            .collect(),
-    })
-    .collect()
 }
 
 #[cfg(test)]
@@ -143,7 +155,7 @@ mod tests {
         let groups = groups();
         assert_eq!(
             groups.iter().map(|group| group.label).collect::<Vec<_>>(),
-            ["Create", "Modify", "Assistants", "Output"]
+            ["Create", "Modify", "", "Output"]
         );
         let ids = groups
             .iter()

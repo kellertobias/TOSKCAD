@@ -30,6 +30,7 @@ pub enum Entry {
         icon: Icon,
         tools: Vec<&'static str>,
         unavailable: Option<(&'static str, &'static str)>,
+        split: bool,
     },
 }
 pub struct Group {
@@ -73,6 +74,7 @@ fn sketch_entries(tab: &RibbonTab) -> Vec<Entry> {
                             icon: *icon,
                             tools: present,
                             unavailable: None,
+                            split: false,
                         }
                     });
                 }
@@ -134,6 +136,7 @@ pub fn groups(mode: Mode, tab: &RibbonTab) -> Vec<Group> {
                     icon: Icon::Box,
                     tools: vec!["box", "cylinder", "sphere"],
                     unavailable: None,
+                    split: true,
                 },
                 Entry::Tool("extrude"),
                 Entry::Tool("revolve"),
@@ -153,6 +156,7 @@ pub fn groups(mode: Mode, tab: &RibbonTab) -> Vec<Group> {
                         .chain(["split"])
                         .collect(),
                     unavailable: None,
+                    split: true,
                 },
                 Entry::Tool("edge-treatment"),
                 Entry::Tool("shell"),
@@ -167,6 +171,7 @@ pub fn groups(mode: Mode, tab: &RibbonTab) -> Vec<Group> {
                     icon: Icon::Transform,
                     tools: vec!["move", "duplicate", "align"],
                     unavailable: None,
+                    split: true,
                 },
                 Entry::Tool("scale"),
             ],
@@ -182,6 +187,7 @@ pub fn groups(mode: Mode, tab: &RibbonTab) -> Vec<Group> {
                     "model-mirror",
                 ],
                 unavailable: None,
+                split: true,
             }],
         },
         Group {
@@ -423,6 +429,7 @@ fn menu_button(
     icon: Icon,
     tools: &[&'static str],
     unavailable: Option<(&'static str, &'static str)>,
+    split: bool,
     tile_width: f32,
     enabled: &impl Fn(Command) -> bool,
     hint: &impl Fn(Command, &str) -> String,
@@ -430,7 +437,7 @@ fn menu_button(
 ) -> Option<Command> {
     let is_selected = |id: &&str| registry.tool(id).is_some_and(|tool| selected(tool.action));
     let mut action = None;
-    let response = if mode == Mode::Model {
+    let response = if split {
         const ARROW_WIDTH: f32 = 18.;
         let default = registry.tool(tools[0]).expect("menu default");
         top_row(ui, |ui| {
@@ -484,16 +491,20 @@ fn menu_button(
         })
         .inner
     } else {
-        let choice = tools
-            .iter()
-            .copied()
-            .find(is_selected)
-            .unwrap_or_else(|| menu_choice(ui.ctx(), mode, label, tools));
-        let glyph = registry
-            .tool(choice)
-            .map(|tool| tool_glyph(mode, choice, tool.icon))
-            .filter(|glyph| matches!(glyph, icons::Glyph::Art(..)))
-            .unwrap_or(icons::Glyph::Vector(icon));
+        let glyph = if mode == Mode::Model {
+            icons::Glyph::Vector(icon)
+        } else {
+            let choice = tools
+                .iter()
+                .copied()
+                .find(is_selected)
+                .unwrap_or_else(|| menu_choice(ui.ctx(), mode, label, tools));
+            registry
+                .tool(choice)
+                .map(|tool| tool_glyph(mode, choice, tool.icon))
+                .filter(|glyph| matches!(glyph, icons::Glyph::Art(..)))
+                .unwrap_or(icons::Glyph::Vector(icon))
+        };
         let response = icons::tool_glyph_at_width(
             ui,
             glyph,
@@ -502,9 +513,15 @@ fn menu_button(
             tools.iter().any(is_selected),
             tile_width,
         );
-        paint_menu_arrow(ui, response.rect.right_top() + egui::vec2(-9., 12.));
+        let caret = if mode == Mode::Model {
+            response.rect.left_top() + egui::vec2(9., 12.)
+        } else {
+            response.rect.right_top() + egui::vec2(-9., 12.)
+        };
+        paint_menu_arrow(ui, caret);
         response
     };
+    let mut focus_first = !split && mode == Mode::Model && response.clicked();
     egui::Popup::menu(&response).show(|ui| {
         let compact = mode == Mode::Model;
         if compact {
@@ -514,7 +531,7 @@ fn menu_button(
         for id in tools {
             let tool = registry.tool(id).expect("menu catalog entry");
             let available = enabled(tool.action);
-            if ui
+            let option = ui
                 .add_enabled_ui(available, |ui| {
                     icons::labeled_button_sized(
                         ui,
@@ -532,9 +549,12 @@ fn menu_button(
                     "Select current Parts or Instances and finish any active tool before duplicating"
                 } else {
                     "Unavailable in the current context"
-                })
-                .clicked()
-            {
+                });
+            if focus_first && available {
+                option.request_focus();
+                focus_first = false;
+            }
+            if option.clicked() {
                 action = Some(tool.action);
                 let id: &'static str = id;
                 ui.ctx()
@@ -663,8 +683,9 @@ pub fn show_selectable_with_category(
                                                 icon,
                                                 tools,
                                                 unavailable,
+                                                split,
                                             } => menu_button(
-                                                ui, registry, mode, label, *icon, tools, *unavailable,
+                                                ui, registry, mode, label, *icon, tools, *unavailable, *split,
                                                 tile_width, &enabled, &hint, &selected,
                                             ),
                                         };
@@ -1351,15 +1372,12 @@ mod tests {
                     (Mode::Model, "Wood") => &[
                         "Create",
                         "Modify",
-                        "Assistants",
-                        "Cabinet",
+                        "Assistance",
                         "Panel",
                         "Batten",
                         "Screw / Hardware",
                         "Drill",
                         "Pocket",
-                        "Box",
-                        "System 32 shelf pins",
                         "Joint",
                     ],
                     (Mode::Model, METAL_TITLE) => &[
@@ -1624,6 +1642,82 @@ mod tests {
                 chosen = chosen.or(command);
             }
             assert_eq!(chosen, Some(expected));
+        }
+    }
+    #[test]
+    fn wood_assistance_opens_without_dispatch_and_routes_all_three_choices() {
+        let registry = Registry::default();
+        let tab = registry
+            .workspace(Mode::Model)
+            .tabs
+            .iter()
+            .find(|tab| tab.title == "Wood")
+            .unwrap();
+        let choices = [
+            ("System 32 shelf pins", "system32"),
+            ("Cabinet", "wood-cabinet"),
+            ("Box", "wood-box"),
+        ];
+        for (label, id) in choices {
+            let ctx = egui::Context::default();
+            ctx.enable_accesskit();
+            let draw = |events| ribbon(&registry, Mode::Model, tab, false, 1024., events, &ctx);
+            let press = |point| {
+                let mut chosen = None;
+                for pressed in [true, false] {
+                    let (out, command) = draw(events(point, pressed));
+                    chosen = chosen.or(command);
+                    out.drop_without_applying_deltas();
+                }
+                chosen
+            };
+            draw(vec![]).0.drop_without_applying_deltas();
+            let (closed, _) = draw(vec![]);
+            let closed_labels = labels(&closed);
+            assert_eq!(
+                closed_labels
+                    .iter()
+                    .filter(|label| *label == "Assistance")
+                    .count(),
+                1
+            );
+            assert!(
+                choices
+                    .iter()
+                    .all(|(label, _)| !closed_labels.iter().any(|text| text == label))
+            );
+            let tile = text(&closed, "Assistance");
+            closed.drop_without_applying_deltas();
+            assert_eq!(press(tile), None);
+
+            let (open, _) = draw(vec![]);
+            let tree = open.platform_output.accesskit_update.as_ref().unwrap();
+            assert!(tree.nodes.iter().any(|(id, node)| {
+                *id == tree.focus && node.label() == Some("System 32 shelf pins")
+            }));
+            let option = text(&open, label);
+            open.drop_without_applying_deltas();
+            let tool = registry.tool(id).unwrap();
+            assert_eq!(press(option), Some(tool.action));
+            assert!(registry.search(label).iter().any(|result| result.id == id));
+
+            let (closed, _) = draw(vec![]);
+            let tile = text(&closed, "Assistance");
+            closed.drop_without_applying_deltas();
+            assert_eq!(press(tile), None);
+            draw(vec![egui::Event::Key {
+                key: egui::Key::Escape,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }])
+            .0
+            .drop_without_applying_deltas();
+            let (closed, command) = draw(vec![]);
+            assert!(command.is_none());
+            assert!(!labels(&closed).contains(&label.to_owned()));
+            closed.drop_without_applying_deltas();
         }
     }
     #[test]

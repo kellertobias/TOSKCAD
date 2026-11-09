@@ -6,6 +6,10 @@ pub enum Icon {
     User,
     Hammer,
     Keyboard,
+    Assistance,
+    ShelfPins,
+    Cabinet,
+    OpenBox,
     Transform,
     Duplicate,
     Scale,
@@ -467,6 +471,48 @@ pub(crate) fn paint_sized(ui: &egui::Ui, icon: Icon, center: Pos2, color: Color3
                 }
             }
             line([7., 16.], [17., 16.]);
+        }
+        Icon::Assistance => {
+            path(&[
+                [12., 20.],
+                [8., 17.],
+                [3., 17.],
+                [3., 5.],
+                [8., 5.],
+                [12., 8.],
+                [16., 5.],
+                [21., 5.],
+                [21., 17.],
+                [16., 17.],
+                [12., 20.],
+            ]);
+            line([12., 8.], [12., 20.]);
+            line([5.5, 10.], [8.5, 10.]);
+            line([5.5, 13.], [8.5, 13.]);
+            path(&[[15.5, 11.5], [17., 13.], [19.5, 9.5]]);
+        }
+        Icon::ShelfPins => {
+            rect(4., 3., 16., 18.);
+            for x in [8., 16.] {
+                for y in [7., 12., 17.] {
+                    p.circle_filled(v(x, y), 1.25 * scale, color);
+                }
+            }
+        }
+        Icon::Cabinet => {
+            rect(4., 2., 16., 18.);
+            line([4., 7.], [20., 7.]);
+            line([12., 7.], [12., 20.]);
+            line([10., 11.], [10., 14.]);
+            line([14., 11.], [14., 14.]);
+            line([6., 20.], [6., 22.]);
+            line([18., 20.], [18., 22.]);
+        }
+        Icon::OpenBox => {
+            path(&[[2., 8.], [12., 3.], [22., 8.], [12., 13.], [2., 8.]]);
+            path(&[[2., 8.], [4., 17.], [12., 21.], [20., 17.], [22., 8.]]);
+            line([12., 13.], [12., 21.]);
+            path(&[[5., 9.5], [12., 6.], [19., 9.5]]);
         }
 
         Icon::Transform => {
