@@ -236,7 +236,7 @@ fn native_controller_joint_motion_named_poses_saved_edit_and_atomic_undo_reopen(
         .unwrap();
     let canonical =
         crate::modeling::native_fixture::scene(s.document(), canonical.snapshot(), 1).unwrap();
-    for (pose, expected_z) in [(poses[2], 85.), (poses[0], 5.)] {
+    for (pose, expected_z) in [(poses[0], 5.), (poses[2], 85.)] {
         c.begin_saved_view(&s, &Default::default(), &canonical, pose, false)
             .unwrap();
         let until = Instant::now() + Duration::from_secs(5);
@@ -250,11 +250,14 @@ fn native_controller_joint_motion_named_poses_saved_edit_and_atomic_undo_reopen(
             candidate.native_instance_bounds(placed.instance).unwrap()[0][2],
             expected_z
         );
-        assert!(!c.can_apply(&s, &Default::default()));
+        assert!(c.can_apply(&s, &Default::default()));
         assert_eq!(s.document(), &before_pose);
         assert_eq!(s.revision(), pose_revision);
     }
-    c.cancel();
+    c.apply(&mut s, &Default::default()).unwrap();
+    assert_eq!(s.revision(), pose_revision + 1);
+    s.undo(s.revision(), actor()).unwrap();
+    assert_eq!(s.document(), &before_pose);
     c.begin(
         AssemblyTool::NamedPose,
         &s,

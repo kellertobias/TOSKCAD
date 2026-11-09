@@ -233,6 +233,7 @@ pub struct SketchEditor {
     visibility: crate::viewport::VisibilityFilter,
     visibility_error: Option<String>,
     overlay_visibility: Option<((EntityId, u64), std::collections::BTreeSet<EntityId>)>,
+    solid_source_sketches: std::collections::BTreeSet<EntityId>,
     tree_scene_stamp: Option<crate::viewport::SceneStamp>,
     pending_profile_pick: Option<(crate::sketch_evaluation::ProfilePickStamp, bool)>,
     queued_profile_clicks: VecDeque<ProfileClick>,
@@ -341,6 +342,7 @@ impl Default for SketchEditor {
             visibility: Default::default(),
             visibility_error: None,
             overlay_visibility: None,
+            solid_source_sketches: Default::default(),
             tree_scene_stamp: None,
             pending_profile_pick: None,
             queued_profile_clicks: VecDeque::new(),
@@ -2344,7 +2346,7 @@ impl SketchEditor {
                 _ => vec![],
             })
             .collect::<std::collections::BTreeSet<_>>();
-        let visible = multicad_core::hierarchy::Index::new(document)
+        let visible: std::collections::BTreeSet<_> = multicad_core::hierarchy::Index::new(document)
             .map(|index| {
                 document
                     .entities()
@@ -2358,6 +2360,19 @@ impl SketchEditor {
                     .collect()
             })
             .unwrap_or_default();
+        self.solid_source_sketches = document
+            .entities()
+            .filter_map(|entity| match &entity.data {
+                EntityData::Feature {
+                    inputs,
+                    suppressed: false,
+                    ..
+                } => Some(inputs),
+                _ => None,
+            })
+            .flatten()
+            .filter_map(|input| visible.contains(&input.target).then_some(input.target))
+            .collect();
         self.overlay_visibility = Some((key, visible));
     }
     fn overlay_visible(&self, id: EntityId) -> bool {
@@ -4906,6 +4921,10 @@ impl SketchEditor {
             !self.measurement.active()
                 && !self.repair.viewing_candidates()
                 && self.overlay_visible(e.id)
+                && (sketch_mode
+                    || self.tree.show_sources()
+                    || self.selected == Some(e.id)
+                    || !self.solid_source_sketches.contains(&e.id))
                 && if developed_view {
                     self.selected == Some(e.id) && developed_sheet::chart(doc, e.id).is_some()
                 } else {

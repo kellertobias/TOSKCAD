@@ -499,6 +499,9 @@ impl ModelTree {
             self.view = None;
         }
     }
+    pub(crate) fn show_sources(&self) -> bool {
+        self.show_sources
+    }
     fn locate_source(&mut self, document: &Document, id: EntityId) {
         self.set_show_sources(true);
         self.raw_feature = Some(id);
@@ -676,7 +679,9 @@ impl ModelTree {
                             }).inner;
                             let trailing = ui.spacing().interact_size.y.max(24.);
                             let width = (ui.available_width() - trailing - 2. * ui.spacing().item_spacing.x).max(0.);
-                            let label = if row.active { format!("{} · active", row.name) } else { row.name.clone() };
+                            let label = if row.active { format!("{} · active", row.name) }
+                                else if let Some((name, role @ ("fixed channel" | "moving member"))) = row.name.rsplit_once(" · ") { format!("{role} · {name}") }
+                                else { row.name.clone() };
                             let color = if row.effective_visible { ui.visuals().text_color() } else { Color32::GRAY };
                             let draggable = mutations_enabled && row.movable;
                             let response = flat_row_label(ui, width, &label, options.enabled && row.available, selected.contains(&row.id) || represented.contains(&row.id), color, draggable);
@@ -698,7 +703,7 @@ impl ModelTree {
                             let link_hint = if row.presentation.linked { "\nLinked Library definition" } else { "" };
                             let selection_hint = if targets_only { "Shift or Cmd/Ctrl-click toggles one target" } else { "Cmd/Ctrl-click toggles; Shift-click selects a range" };
                             let drag_hint = if draggable { "\nDrag to move or reorder" } else { "" };
-                            response.clone().on_hover_text(format!("{role}{link_hint}\nOwning component: {}\n{selection_hint}{drag_hint}", row.owner));
+                            response.clone().on_hover_text(format!("{}\n{role}{link_hint}\nOwning component: {}\n{selection_hint}{drag_hint}", row.name, row.owner));
                             if response.clicked() || icon.clicked() {
                                 let modifiers = crate::selection_input::click_modifiers(ui, if response.clicked() { &response } else { &icon });
                                 let toggle_one = modifiers.command || (targets_only && modifiers.shift);

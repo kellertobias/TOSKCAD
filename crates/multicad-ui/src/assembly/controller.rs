@@ -398,7 +398,11 @@ impl AssemblyController {
         }
     }
     pub fn can_apply(&self, session: &Session, resources: &ProjectResources) -> bool {
-        self.dirty() && self.candidate_ready(session, resources)
+        let restoring_pose = self
+            .form
+            .as_ref()
+            .is_some_and(|f| matches!(f.operation, Operation::ApplyPose(_)));
+        (self.dirty() || restoring_pose) && self.candidate_ready(session, resources)
     }
     fn candidate_ready(&self, session: &Session, resources: &ProjectResources) -> bool {
         self.form.as_ref().is_some_and(|f| f.pick.is_none())

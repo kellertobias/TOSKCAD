@@ -120,6 +120,12 @@ impl Application {
                     .position(|p| p.file_stamp.is_some() && p.path.as_ref() == Some(&path));
                 if let Some(index) = opened {
                     self.activate_project(index);
+                    if name == "Werkzeugkoffer 2" {
+                        // The drawers open toward negative Y. Match the gallery view.
+                        let camera = &mut self.current_mut().sketch.camera;
+                        camera.yaw = -2.58;
+                        camera.pitch = 0.53;
+                    }
                     self.examples.origins.insert(path.clone(), name.clone());
                     self.examples.open = false;
                     self.message = format!(
@@ -195,6 +201,18 @@ impl Application {
     }
     /// Example cards; returns the selected example.
     pub(super) fn example_cards(&mut self, ui: &mut egui::Ui, width: f32) -> Option<usize> {
+        if let Some(status) = if self.examples.copying {
+            Some("Copying the example and its linked files…")
+        } else if self.examples.opening.is_some() {
+            Some("Reading and checking the copied project…")
+        } else {
+            None
+        } {
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.label(status);
+            });
+        }
         let mut chosen = None;
         let busy = self.file_busy() || self.examples.pending();
         match self.examples.catalog.clone() {
@@ -327,9 +345,6 @@ impl Application {
                     .show(ui, |ui| {
                         chosen = self.example_cards(ui, 600.);
                     });
-                if self.examples.pending() {
-                    ui.weak("Opening the example…");
-                }
             });
         self.examples.open = open;
         self.run_example_choice(chosen);

@@ -157,6 +157,15 @@ pub(super) fn show(
             return CanvasEvent::default();
         }
     };
+    let (status, _) =
+        ui.allocate_exact_size(egui::vec2(ui.available_width(), 50.), egui::Sense::hover());
+    loading::status(
+        ui,
+        &ui.painter().with_clip_rect(status),
+        status,
+        page,
+        state,
+    );
     let available = ui.available_rect_before_wrap();
     let (paper, scale) = camera.paper(ui, page.id, available, layout.paper_mm);
     let painter = ui.painter().with_clip_rect(available);
@@ -253,7 +262,6 @@ pub(super) fn show(
     if let Some(block) = drawings::title_block_rect(&layout) {
         view_area.set_bottom(rect(block).top() - 8.);
     }
-    let view_area = loading::status(ui, &view_painter, view_area, page, state);
     for view in &page.views {
         let to_screen = |point| {
             let p = view.paper_point(point);

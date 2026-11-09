@@ -40,16 +40,16 @@ pub(super) fn marquee_rect(track: egui::Rect, time: f64) -> egui::Rect {
     )
 }
 
-/// Paint a status inside the sheet, returning the space below it for view slots.
+/// Paint progress above the paper so it never covers authored annotations.
 pub(super) fn status(
     ui: &egui::Ui,
     painter: &egui::Painter,
     area: egui::Rect,
     page: &Page,
     state: PreviewState<'_>,
-) -> egui::Rect {
+) {
     let (title, detail, color) = match state {
-        PreviewState::Idle => return area,
+        PreviewState::Idle => return,
         PreviewState::Generating => (
             "Generating drawing…",
             format!(
@@ -57,30 +57,31 @@ pub(super) fn status(
                 page.views.len(),
                 if page.views.len() == 1 { "" } else { "s" }
             ),
-            egui::Color32::from_gray(45),
+            ui.visuals().text_color(),
         ),
         PreviewState::Failed(error) => (
             "Drawing generation failed",
             error.chars().take(160).collect(),
-            egui::Color32::DARK_RED,
+            egui::Color32::LIGHT_RED,
         ),
     };
+    ui.interact(
+        area,
+        ui.id().with("drawing-generation-status"),
+        egui::Sense::hover(),
+    )
+    .widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::Label, true, format!("{title} {detail}"))
+    });
     let width = (area.width() - 24.).max(1.);
     let title = painter.layout(title.into(), egui::FontId::proportional(17.), color, width);
-    let at = egui::pos2(area.center().x - title.size().x * 0.5, area.top() + 12.);
-    let mut bottom = at.y + title.size().y + 8.;
+    let at = egui::pos2(area.center().x - title.size().x * 0.5, area.top() + 4.);
+    let bottom = at.y + title.size().y + 3.;
     painter.galley(at, title, color);
-    if area.height() > 170. {
-        let detail = painter.layout(
-            detail,
-            egui::FontId::proportional(12.),
-            egui::Color32::from_gray(100),
-            width,
-        );
-        let at = egui::pos2(area.center().x - detail.size().x * 0.5, bottom);
-        bottom += detail.size().y + 10.;
-        painter.galley(at, detail, egui::Color32::from_gray(100));
-    }
+    let detail = painter.layout(detail, egui::FontId::proportional(12.), color, width);
+    let at = egui::pos2(area.center().x - detail.size().x * 0.5, bottom);
+    let bottom = bottom + detail.size().y + 4.;
+    painter.galley(at, detail, color);
     if state == PreviewState::Generating {
         let track = egui::Rect::from_center_size(
             egui::pos2(area.center().x, bottom + 3.),
@@ -94,9 +95,7 @@ pub(super) fn status(
         );
         ui.ctx()
             .request_repaint_after(std::time::Duration::from_millis(33));
-        bottom = track.bottom() + 16.;
     }
-    egui::Rect::from_min_max(egui::pos2(area.left(), bottom.min(area.bottom())), area.max)
 }
 
 pub(super) fn placeholder(
