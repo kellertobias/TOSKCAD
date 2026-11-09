@@ -482,11 +482,13 @@ impl Solid {
         policy.validate()?;
         frame.checked(policy)?;
         policy.length(prism.height().as_f64())?;
-        let edge_count: usize = prism.rings().iter().map(Vec::len).sum();
+        let line_count = prism.rings().iter().map(Vec::len).sum::<usize>();
+        let edge_count = line_count + prism.circular_holes().len();
         let unique: std::collections::BTreeSet<_> = origins.iter().collect();
         if feature.is_nil()
             || origins.len() != edge_count
             || reversed.len() != edge_count
+            || reversed[line_count..].iter().any(|reversed| *reversed)
             || unique.len() != edge_count
             || origins.iter().any(|origin| {
                 origin.source.is_nil()
@@ -497,6 +499,9 @@ impl Solid {
             return Err(input(
                 "Every polygon edge requires a distinct valid authored origin",
             ));
+        }
+        for circle in prism.circular_holes() {
+            policy.length(circle.radius().as_f64())?;
         }
         let placed = PlacedPolygon {
             prism,
@@ -804,21 +809,25 @@ impl Solid {
         policy: GeometryPolicy,
     ) -> Result<Option<Self>, GeometryError> {
         policy.validate()?;
-        if self.rust_prism().is_some()
-            && let Some(tool) = other.axial_cylinder()
+        if let Some(tool) = other.axial_cylinder()
             && operation == BooleanOperation::Subtract
             && policy.boolean_fuzzy_mm == 0.
             && policy == self.policy
             && policy == other.policy
         {
-            return self
-                .subtract_rust_prism_cylinder(
-                    tool.feature(),
-                    tool.circle(),
-                    tool.bottom(),
-                    tool.top(),
-                )
-                .map(Some);
+            if let Some(target) = self.polygon_prism() {
+                return Self::subtract_polygon_cylinder(target, tool, policy).map(Some);
+            }
+            if self.rust_prism().is_some() {
+                return self
+                    .subtract_rust_prism_cylinder(
+                        tool.feature(),
+                        tool.circle(),
+                        tool.bottom(),
+                        tool.top(),
+                    )
+                    .map(Some);
+            }
         }
         let op = match operation {
             BooleanOperation::Union => 0,
@@ -833,6 +842,51 @@ impl Solid {
         let mut result = Self::adopt(handle, policy, "boolean")?;
         result.inherit_provenance(&[self, other], None)?;
         Ok(Some(result))
+    }
+
+    fn subtract_polygon_cylinder(
+        target: &PlacedPolygon,
+        tool: &AxialCylinder,
+        policy: GeometryPolicy,
+    ) -> Result<Self, GeometryError> {
+        let operation = "cylindrical cut";
+        if target.frame != PlaneFrame::default() {
+            return Err(error(
+                operation,
+                GeometryErrorKind::Unsupported,
+                "Rust polygon through-cuts currently require an unplaced XY profile",
+            ));
+        }
+        let zero = Rational::new(0, 1).expect("zero is an exact length");
+        if tool.bottom() >= zero || tool.top() <= target.prism.height() {
+            return Err(error(
+                operation,
+                GeometryErrorKind::Input,
+                "The tool must extend strictly through both polygon caps",
+            ));
+        }
+        let mut holes = target.prism.circular_holes().to_vec();
+        holes.push(tool.circle());
+        let prism = PolygonPrism::with_circular_holes(
+            target.prism.rings().to_vec(),
+            holes,
+            target.prism.height(),
+        )
+        .map_err(|reason| error(operation, GeometryErrorKind::Input, format!("{reason:?}")))?;
+        let (mut origins, mut reversed): (Vec<_>, Vec<_>) = target.edges.iter().cloned().unzip();
+        origins.push(Origin {
+            source: EntityId::from_uuid_bits(tool.feature()),
+            role: "side.cylinder".into(),
+        });
+        reversed.push(false);
+        Self::from_polygon_prism(
+            prism,
+            target.frame,
+            target.feature,
+            &origins,
+            &reversed,
+            policy,
+        )
     }
     /// Native COMMON query using OCCT's internal worker pool. Rust handles stay
     /// on their owner thread; the non-destructive operation owns its workers.
@@ -872,11 +926,7 @@ impl Solid {
             return Ok(std::f64::consts::PI * cylinder.volume_factor().as_f64());
         }
         if let Some(prism) = self.rust_prism() {
-            let volume = prism.volume();
-            return Ok(volume
-                .pi_factor
-                .as_f64()
-                .mul_add(std::f64::consts::PI, volume.constant.as_f64()));
+            return Ok(prism.volume().as_f64());
         }
         ffi::volume(self.occt()?).map_err(|e| native("volume", e))
     }

@@ -8,7 +8,7 @@ use multicad_core::{
     },
 };
 use multicad_rust_kernel::{
-    Rational, cylinder::AxialCylinder, polygon::PolygonPrism, prism::Prism,
+    Circle, Rational, cylinder::AxialCylinder, polygon::PolygonPrism, prism::Prism,
 };
 use std::f64::consts::{FRAC_PI_2, PI, TAU};
 
@@ -78,11 +78,7 @@ pub(crate) fn faces(prism: &Prism, placement: PlaneFrame) -> Vec<Face> {
         y_moment -= area * y;
         cylinders.push(([x, y, h * 0.5], TAU * radius * h));
     }
-    let exact_area = prism.area();
-    let cap_area = exact_area
-        .pi_factor
-        .as_f64()
-        .mul_add(PI, exact_area.constant.as_f64());
+    let cap_area = prism.area().as_f64();
     let x = x_moment / cap_area;
     let y = y_moment / cap_area;
     let middle = h * 0.5;
@@ -308,6 +304,16 @@ impl PlacedPolygon {
         position(self.frame, [x.as_f64(), y.as_f64(), z])
     }
 
+    fn circular_sides(&self) -> impl Iterator<Item = (usize, Circle)> + '_ {
+        let first = self.edges.len() - self.prism.circular_holes().len();
+        self.prism
+            .circular_holes()
+            .iter()
+            .copied()
+            .enumerate()
+            .map(move |(i, circle)| (first + i, circle))
+    }
+
     fn sides(&self) -> impl Iterator<Item = PolygonSide> + '_ {
         let mut base = 0;
         self.prism.rings().iter().flat_map(move |ring| {
@@ -379,7 +385,7 @@ impl PlacedPolygon {
             Face {
                 index: i as u32,
                 plane: Some((support.origin_mm, support.normal())),
-                center_mm: self.point(center, z),
+                center_mm: position(self.frame, [center[0], center[1], z]),
                 area_mm2: area,
             }
         });
@@ -393,6 +399,12 @@ impl PlacedPolygon {
                 center_mm: std::array::from_fn(|j| (a[j] + b[j]) * 0.5),
                 area_mm2: length * h,
             }
+        }))
+        .chain(self.circular_sides().map(|(i, circle)| Face {
+            index: i as u32 + 2,
+            plane: None,
+            center_mm: self.point(circle.center(), h * 0.5),
+            area_mm2: TAU * circle.radius().as_f64() * h,
         }))
         .collect()
     }
@@ -447,6 +459,17 @@ impl PlacedPolygon {
                     &[cap, side.previous + 2, side.index + 2],
                 );
             }
+            for (index, circle) in self.circular_sides() {
+                build.non_face(
+                    AnalyticGeometry::CircularArc {
+                        frame: frame(self.point(circle.center(), z), self.frame.u, self.frame.v),
+                        radius_mm: circle.radius().as_f64(),
+                        start_rad: 0.,
+                        sweep_rad: TAU,
+                    },
+                    &[cap, index + 2],
+                );
+            }
         }
         for side in self.sides() {
             let support = self.side_support(side.a, side.b).0;
@@ -469,6 +492,9 @@ impl PlacedPolygon {
                 &[side.previous + 2, side.index + 2],
             );
         }
+        for (index, _) in self.circular_sides() {
+            build.face(index + 2, None, None, [0, 1]);
+        }
         let snapshot = TopologySnapshot {
             owner,
             revision,
@@ -489,6 +515,10 @@ impl PlacedPolygon {
         if face < 2 {
             return ranges
                 .map(|range| range.map(|i| (face * stride + i, false)).collect())
+                .chain(
+                    self.circular_sides()
+                        .map(|(i, _)| vec![(face * stride + i as u32, false)]),
+                )
                 .collect();
         }
         let side = face - 2;

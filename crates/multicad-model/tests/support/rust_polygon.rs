@@ -1,6 +1,6 @@
 use multicad_core::{
     commands::{Actor, Channel, Session},
-    constraint_sketch::{Dimension, source::Source},
+    constraint_sketch::{Curve, CurveKind, Dimension, source::Source},
     document::{Document, Entity, EntityData, EntityId, Mutation},
     model::{self, Extent, ExtrudeParameters, ExtrudeRequest, Termination, length},
     parameters::BoundExpression,
@@ -13,7 +13,20 @@ pub fn fixture() -> (Session, EntityId, EntityId, EntityId) {
 }
 
 pub fn fixture_with_height(expression: &str) -> (Session, EntityId, EntityId, EntityId) {
-    let (sketch, edits) = Source::create(Datum::Xz, "Concave profile").unwrap();
+    build_fixture(expression, false, Datum::Xz, 2.)
+}
+
+pub fn fixture_with_circle() -> (Session, EntityId, EntityId, EntityId) {
+    build_fixture("6", true, Datum::Xz, 2.)
+}
+
+pub fn build_fixture(
+    expression: &str,
+    round_hole: bool,
+    datum: Datum,
+    start_offset: f64,
+) -> (Session, EntityId, EntityId, EntityId) {
+    let (sketch, edits) = Source::create(datum, "Concave profile").unwrap();
     let document = Document::new("Straight sketch extrusion")
         .unwrap()
         .edited(&edits)
@@ -36,10 +49,22 @@ pub fn fixture_with_height(expression: &str) -> (Session, EntityId, EntityId, En
             side = source.add_line(a, b);
         }
     }
+    if round_hole {
+        let center = source.add_point([9., 3.]);
+        side = EntityId::new();
+        source.sketch.curves.push(Curve {
+            id: side,
+            construction: false,
+            kind: CurveKind::Circle {
+                center,
+                radius_mm: 1.25,
+            },
+        });
+    }
     let region = sketch_regions::extract(&source)
         .regions
         .into_iter()
-        .find(|region| region.holes.len() == 1)
+        .find(|region| region.holes.len() == 1 + usize::from(round_hole))
         .unwrap()
         .intent();
     let height = Entity::new(
@@ -64,7 +89,7 @@ pub fn fixture_with_height(expression: &str) -> (Session, EntityId, EntityId, En
         sketch,
         vec![region],
         ExtrudeParameters {
-            start_offset: length(2.),
+            start_offset: length(start_offset),
             extent: Extent::OneSided {
                 end: Termination::Distance { distance },
             },

@@ -1,12 +1,17 @@
 use multicad_core::{
     commands::{Actor, Channel, Request, Session},
+    constraint_sketch::{CurveKind, source::Source},
     document::{Document, EntityData, Mutation},
+    manufacturing::PlanarEdge,
     model::{self, PrimitiveFrame, PrimitiveParameters, PrimitiveRequest, length},
     project_file::{self, FileLimits, ProjectFile},
-    references::{Origin, TopologyKind, TopologySnapshot},
+    references::{self, GeometryIntent, Origin, Resolution, TopologyKind, TopologySnapshot},
     sketch::{self, CreationPlane, PlaneOptions},
 };
-use multicad_kernel::rust_kernel::{Rational, parse_length_mm, prism::Location};
+use multicad_kernel::{
+    PlaneFrame,
+    rust_kernel::{Rational, parse_length_mm, prism::Location},
+};
 use multicad_model::{Compiler, GeometryBackend, Model};
 use std::{f64::consts::PI, io::Cursor};
 
@@ -240,6 +245,225 @@ fn a_saved_straight_face_extrusion_resolves_across_both_backends() {
         assert_eq!(actual_faces.len(), 12);
         assert_eq!(actual_faces, faces(&expected.topology));
     }
+}
+
+#[test]
+fn mixed_holes_keep_circular_caps_and_wall_ancestry_through_saved_edits() {
+    let (mut session, height, parent, hole) = rust_polygon::fixture_with_circle();
+    let native = compile(&session, GeometryBackend::OpenCascade);
+    let source_topology = &native.snapshot().shapes[&parent].topology;
+    let cap = Origin {
+        source: parent,
+        role: "cap.end".into(),
+    };
+    let wall = Origin {
+        source: parent,
+        role: format!("side/{hole}/profile.edge"),
+    };
+    let find_face = |topology: &TopologySnapshot, origin: &Origin| {
+        topology
+            .elements
+            .iter()
+            .find(|e| e.key.kind == TopologyKind::Face && e.origins.contains(origin))
+            .unwrap()
+            .key
+    };
+    let wall_intent =
+        GeometryIntent::capture(source_topology, find_face(source_topology, &wall)).unwrap();
+    let face = model::capture_profile_face(source_topology, find_face(source_topology, &cap), None)
+        .unwrap();
+    let request = model::ExtrudeRequest::from_faces(
+        vec![face],
+        model::ExtrudeParameters {
+            extent: model::Extent::OneSided {
+                end: model::Termination::Distance {
+                    distance: length(4.),
+                },
+            },
+            ..Default::default()
+        },
+    );
+    let child = request.outputs[0].feature;
+    let prepared = model::prepare_extrude(&session, session.revision(), actor(), &request).unwrap();
+    session.commit(prepared.prepared).unwrap();
+    let original = reopen(&session);
+    let mut parameter = session.document().get(height).unwrap().clone();
+    let EntityData::Parameter { expression, .. } = &mut parameter.data else {
+        unreachable!()
+    };
+    *expression = "=10 mm / 3".into();
+    let sketch = model::read_extrude(session.document(), parent)
+        .unwrap()
+        .profile
+        .sketch_id()
+        .unwrap();
+    let mut sketch_source = Source::read(session.document(), sketch).unwrap().0;
+    let CurveKind::Circle { radius_mm, .. } = &mut sketch_source
+        .sketch
+        .curves
+        .iter_mut()
+        .find(|curve| curve.id == hole)
+        .unwrap()
+        .kind
+    else {
+        unreachable!()
+    };
+    *radius_mm = 0.75;
+    let mut edits = sketch_source.replace(session.document(), sketch).unwrap();
+    edits.push(Mutation::Replace(parameter));
+    session
+        .apply(Request {
+            expected_revision: session.revision(),
+            actor: actor(),
+            label: "Edit mixed-hole extrusion height and radius".into(),
+            edits,
+        })
+        .unwrap();
+
+    for (project, height, radius) in [(original, 6., 1.25_f64), (reopen(&session), 10. / 3., 0.75)]
+    {
+        let area = 92. - PI * radius.powi(2);
+        let native = compile(&project, GeometryBackend::OpenCascade);
+        let rust = compile(&project, GeometryBackend::Rust);
+        let top_y = -2. - height;
+        for (feature, height, end_y) in [(parent, height, top_y), (child, 4., top_y - 4.)] {
+            let rust_solid = rust.solid(feature).unwrap();
+            near(rust_solid.volume_mm3().unwrap(), area * height);
+            near(
+                rust_solid.volume_mm3().unwrap(),
+                native.solid(feature).unwrap().volume_mm3().unwrap(),
+            );
+            let topology = &rust.snapshot().shapes[&feature].topology;
+            let key = find_face(
+                topology,
+                &Origin {
+                    source: feature,
+                    role: "cap.end".into(),
+                },
+            );
+            let contours = rust_solid
+                .planar_face_contours(
+                    key.ordinal,
+                    PlaneFrame {
+                        origin: [0., end_y, 0.],
+                        u: [1., 0., 0.],
+                        v: [0., 0., 1.],
+                    },
+                )
+                .unwrap();
+            assert_eq!(contours.loops.len(), 3);
+            assert!(
+                contours
+                    .loops
+                    .iter()
+                    .any(|wire| !wire.outer && wire.edges.len() == 4)
+            );
+            let (start, end, center, sweep) = contours
+                .loops
+                .iter()
+                .filter(|wire| !wire.outer)
+                .find_map(|wire| match wire.edges.as_slice() {
+                    [
+                        PlanarEdge::Arc {
+                            a,
+                            b,
+                            center,
+                            sweep_rad,
+                        },
+                    ] => Some((*a, *b, *center, *sweep_rad)),
+                    _ => None,
+                })
+                .unwrap();
+            assert_eq!(start, end);
+            assert_eq!(center, [9., 3.]);
+            near((start[0] - center[0]).hypot(start[1] - center[1]), radius);
+            near(sweep, -2. * PI);
+        }
+
+        let rust_topology = &rust.snapshot().shapes[&parent].topology;
+        let rust_wall = find_face(rust_topology, &wall);
+        let resolved = references::resolve(&wall_intent, rust_topology, project.revision());
+        assert!(matches!(resolved, Resolution::Resolved { key, .. } if key == rust_wall));
+        let rust_faces = rust.solid(parent).unwrap().faces().unwrap();
+        let native_topology = &native.snapshot().shapes[&parent].topology;
+        let native_wall = find_face(native_topology, &wall);
+        let native_faces = native.solid(parent).unwrap().faces().unwrap();
+        let wall_face = &rust_faces[rust_wall.ordinal as usize];
+        let expected = &native_faces[native_wall.ordinal as usize];
+        assert_eq!(wall_face.plane, None);
+        near(wall_face.area_mm2, 2. * PI * radius * height);
+        near(wall_face.area_mm2, expected.area_mm2);
+        for (actual, expected) in wall_face.center_mm.into_iter().zip(expected.center_mm) {
+            near(actual, expected);
+        }
+    }
+}
+
+#[test]
+fn straight_xy_sketch_through_cut_keeps_body_head_and_cutter_provenance() {
+    let (mut session, _, stock, _) = rust_polygon::build_fixture("6", true, sketch::Datum::Xy, 0.);
+    let body = model::read_extrude(session.document(), stock)
+        .unwrap()
+        .output
+        .body;
+    let cutter = PrimitiveRequest::new(
+        "Through-bore tool",
+        PrimitiveParameters::Cylinder {
+            radius: length(0.5),
+            height: length(8.),
+            frame: PrimitiveFrame {
+                origin: [length(9.), length(1.), length(-1.)],
+                ..Default::default()
+            },
+        },
+    );
+    let prepared =
+        model::prepare_primitive(&session, session.revision(), actor(), &cutter).unwrap();
+    session.commit(prepared.prepared).unwrap();
+    let cut = model::BooleanRequest::new(
+        model::Operation::Cut,
+        model::BodyInput {
+            body,
+            producer: stock,
+        },
+        vec![model::BodyInput {
+            body: cutter.body,
+            producer: cutter.feature,
+        }],
+    );
+    let prepared = model::prepare_boolean(&session, session.revision(), actor(), &cut).unwrap();
+    session.commit(prepared.prepared).unwrap();
+
+    let reopened = reopen(&session);
+    let native = compile(&reopened, GeometryBackend::OpenCascade);
+    let rust = compile(&reopened, GeometryBackend::Rust);
+    assert_eq!(rust.snapshot().bodies, native.snapshot().bodies);
+    assert_eq!(rust.snapshot().bodies.get(&body), Some(&cut.feature));
+    assert_eq!(rust.snapshot().bodies.len(), 1);
+    let actual = rust.solid(cut.feature).unwrap();
+    let expected = native.solid(cut.feature).unwrap();
+    near(actual.volume_mm3().unwrap(), expected.volume_mm3().unwrap());
+    near(
+        actual.volume_mm3().unwrap(),
+        (92. - PI * (1.25_f64.powi(2) + 0.5_f64.powi(2))) * 6.,
+    );
+    let topology = &rust.snapshot().shapes[&cut.feature].topology;
+    let cutter_wall = topology
+        .elements
+        .iter()
+        .find(|element| {
+            element.key.kind == TopologyKind::Face
+                && element.origins.contains(&Origin {
+                    source: cutter.feature,
+                    role: "side.cylinder".into(),
+                })
+        })
+        .unwrap();
+    let faces = actual.faces().unwrap();
+    let wall = &faces[cutter_wall.key.ordinal as usize];
+    assert_eq!(wall.plane, None);
+    assert_eq!(wall.center_mm, [9., 1., 3.]);
+    near(wall.area_mm2, 6. * PI);
 }
 
 #[test]

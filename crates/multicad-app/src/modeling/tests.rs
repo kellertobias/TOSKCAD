@@ -1710,33 +1710,38 @@ fn rust_model_worker_publishes_pickable_panel_and_isolates_preview_failures() {
 }
 
 #[test]
-fn rust_model_worker_picks_a_sketch_extrusion_around_its_hole_and_notch() {
-    let (session, _, feature, _) = rust_polygon::fixture();
+fn rust_model_worker_picks_a_sketch_extrusion_around_its_holes_and_notch() {
     let factory = Backend::factory(GeometryBackend::Rust).unwrap();
     let mut backend = factory();
-    let stamp = SceneStamp {
-        document: session.document().id(),
-        revision: session.revision(),
-        generation: 1,
-    };
-    backend.request(session.document(), stamp).unwrap();
-    let scene = wait_for_scene(&mut *backend).result.unwrap();
-    assert_eq!(scene.stamp(), stamp);
-    assert_eq!(scene.instances().len(), 1);
-    assert_eq!(
-        scene.native_instance_bounds(scene.instances()[0].id),
-        Some([[0., -8., 0.], [12., -2., 10.]])
-    );
-    let pick = |x, z| scene.pick_face(viewport::Ray::new([x, -20., z], [0., 1., 0.]).unwrap());
-    assert!(pick(3., 3.).is_none(), "through-hole");
-    assert!(pick(9., 8.).is_none(), "concave notch");
-    let cap = pick(9., 3.).unwrap();
-    assert_eq!(cap.point_mm, [9., -8., 3.]);
-    assert!(
-        cap.intent
-            .unwrap()
-            .origins
-            .iter()
-            .any(|origin| { origin.source == feature && origin.role == "cap.end" })
-    );
+    for ((session, _, feature, _), has_circle) in [
+        (rust_polygon::fixture(), false),
+        (rust_polygon::fixture_with_circle(), true),
+    ] {
+        let stamp = SceneStamp {
+            document: session.document().id(),
+            revision: session.revision(),
+            generation: if has_circle { 2 } else { 1 },
+        };
+        backend.request(session.document(), stamp).unwrap();
+        let scene = wait_for_scene(&mut *backend).result.unwrap();
+        assert_eq!(scene.stamp(), stamp);
+        assert_eq!(scene.instances().len(), 1);
+        assert_eq!(
+            scene.native_instance_bounds(scene.instances()[0].id),
+            Some([[0., -8., 0.], [12., -2., 10.]])
+        );
+        let pick = |x, z| scene.pick_face(viewport::Ray::new([x, -20., z], [0., 1., 0.]).unwrap());
+        assert!(pick(3., 3.).is_none(), "straight-edged through-hole");
+        assert_eq!(pick(9., 3.).is_none(), has_circle, "circular through-hole");
+        assert!(pick(9., 8.).is_none(), "concave notch");
+        let cap = pick(11., 3.).unwrap();
+        assert_eq!(cap.point_mm, [11., -8., 3.]);
+        assert!(
+            cap.intent
+                .unwrap()
+                .origins
+                .iter()
+                .any(|origin| { origin.source == feature && origin.role == "cap.end" })
+        );
+    }
 }

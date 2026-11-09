@@ -118,6 +118,12 @@ fn coordinate(value: f64) -> Result<Rational, String> {
         .map_err(|e| format!("Sketch coordinate exceeds the Rust exact geometry range: {e:?}"))
 }
 
+fn profile_circle(center: [f64; 2], radius: f64) -> Result<Circle, String> {
+    let [x, y] = center;
+    Circle::new([coordinate(x)?, coordinate(y)?], coordinate(radius)?)
+        .map_err(|e| format!("Rust profile circle failed: {e:?}"))
+}
+
 fn straight_prism(
     id: EntityId,
     profile: &CurvedProfile,
@@ -128,6 +134,8 @@ fn straight_prism(
 ) -> Result<Solid, ModelError> {
     let fail = |message: String| error(Some(id), message);
     let mut rings = Vec::with_capacity(1 + profile.holes.len());
+    let mut circles = vec![];
+    let mut circle_origins = vec![];
     let mut side_origins = Vec::with_capacity(origins.len());
     let mut reversed = Vec::with_capacity(origins.len());
     let mut offset = 0;
@@ -135,12 +143,24 @@ fn straight_prism(
         .chain(&profile.holes)
         .enumerate()
     {
+        let ring_origins = origins
+            .get(offset..offset + ring.len())
+            .ok_or_else(|| fail("Rust extrusion is missing authored boundary identities".into()))?;
+        offset += ring.len();
+        if index > 0
+            && let [CurvedEdge2d::Circle { center, radius_mm }] = ring.as_slice()
+        {
+            circles.push(profile_circle(*center, *radius_mm).map_err(fail)?);
+            circle_origins.extend_from_slice(ring_origins);
+            continue;
+        }
         let mut points = Vec::with_capacity(ring.len());
         for (edge, next) in ring.iter().zip(ring.iter().cycle().skip(1)) {
             let (CurvedEdge2d::Line { a, b }, CurvedEdge2d::Line { a: next, .. }) = (edge, next)
             else {
                 return Err(fail(
-                    "Rust polygon extrusion requires straight segments in every boundary".into(),
+                    "Rust polygon extrusion requires straight segments or whole circular inner loops"
+                        .into(),
                 ));
             };
             if b != next {
@@ -153,10 +173,6 @@ fn straight_prism(
                 coordinate(a[1]).map_err(fail)?,
             ]);
         }
-        let ring_origins = origins
-            .get(offset..offset + ring.len())
-            .ok_or_else(|| fail("Rust extrusion is missing authored boundary identities".into()))?;
-        offset += ring.len();
         let area = signed_area(&points)
             .map_err(|e| fail(format!("Rust polygon winding failed: {e:?}")))?;
         let reverse = (area.ratio().0 < 0) != (index > 0);
@@ -176,7 +192,9 @@ fn straight_prism(
             "Rust extrusion has unmatched authored boundary identities".into(),
         ));
     }
-    let polygon = PolygonPrism::new(rings, height)
+    reversed.resize(origins.len(), false);
+    side_origins.extend(circle_origins);
+    let polygon = PolygonPrism::with_circular_holes(rings, circles, height)
         .map_err(|e| fail(format!("Rust polygon extrusion failed: {e:?}")))?;
     let mut frame = profile.frame;
     let normal = frame.normal();
@@ -277,13 +295,7 @@ pub(crate) fn extrude(
     let mut prism = Prism::extrude(id.uuid_bits(), length, radius, height)
         .map_err(|e| fail(format!("Rust extrusion failed: {e:?}")))?;
     for (index, hole) in profile.holes.iter().enumerate() {
-        let [
-            CurvedEdge2d::Circle {
-                center: [x, y],
-                radius_mm,
-            },
-        ] = hole.as_slice()
-        else {
+        let [CurvedEdge2d::Circle { center, radius_mm }] = hole.as_slice() else {
             return Err(fail(
                 "Rust extrusion supports only whole circular inner loops".into(),
             ));
@@ -291,11 +303,7 @@ pub(crate) fn extrude(
         let origin = origins.get(profile.outer.len() + index).ok_or_else(|| {
             fail("Rust extrusion is missing the authored inner-loop identity".into())
         })?;
-        let circle = Circle::new(
-            [coordinate(*x).map_err(fail)?, coordinate(*y).map_err(fail)?],
-            coordinate(*radius_mm).map_err(fail)?,
-        )
-        .map_err(|e| fail(format!("Rust profile circle failed: {e:?}")))?;
+        let circle = profile_circle(*center, *radius_mm).map_err(fail)?;
         prism = prism
             .with_inner_loop(origin.source.uuid_bits(), circle)
             .map_err(|e| fail(format!("Rust inner loop failed: {e:?}")))?;
@@ -370,10 +378,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn straight_prism_refuses_open_joins_and_curved_holes() {
+    fn straight_prism_refuses_open_joins_and_partial_curves() {
         let line = |a, b| CurvedEdge2d::Line { a, b };
         let id = EntityId::new();
-        let origins = std::array::from_fn::<_, 3, _>(|_| Origin {
+        let origins = std::array::from_fn::<_, 4, _>(|_| Origin {
             source: EntityId::new(),
             role: "profile.edge".into(),
         });
@@ -386,11 +394,11 @@ mod tests {
             ],
             holes: vec![],
         };
-        let build = |profile: &CurvedProfile| {
+        let build = |profile: &CurvedProfile, origins: &[Origin]| {
             straight_prism(
                 id,
                 profile,
-                &origins,
+                origins,
                 Rational::new(2, 1).unwrap(),
                 0.,
                 GeometryPolicy::default(),
@@ -398,12 +406,22 @@ mod tests {
             .err()
             .unwrap()
         };
-        assert!(build(&profile).message.contains("closed boundary joins"));
+        assert!(
+            build(&profile, &origins[..3])
+                .message
+                .contains("closed boundary joins")
+        );
         profile.outer[2] = line([0., 5.], [0., 0.]);
-        profile.holes.push(vec![CurvedEdge2d::Circle {
+        profile.holes.push(vec![CurvedEdge2d::Arc {
             center: [1., 1.],
-            radius_mm: 0.5,
+            a: [1.5, 1.],
+            b: [1., 1.5],
+            clockwise: false,
         }]);
-        assert!(build(&profile).message.contains("straight segments"));
+        assert!(
+            build(&profile, &origins)
+                .message
+                .contains("straight segments")
+        );
     }
 }

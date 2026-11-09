@@ -421,6 +421,199 @@ fn placed_polygon_publishes_hole_contours_and_original_reversed_edge_anchors() {
 }
 
 #[test]
+fn polygon_cap_retains_its_exact_circle_and_its_cylindrical_wall() {
+    use multicad_core::{manufacturing::PlanarEdge, references::Origin};
+    use multicad_kernel::rust_kernel::polygon::PolygonPrism;
+    use std::f64::consts::{PI, TAU};
+
+    let profile = [[0, 0], [12, 0], [12, 5], [0, 5]]
+        .map(|p| p.map(integer))
+        .to_vec();
+    let bore = circle(8, 2, integer(1));
+    let prism = PolygonPrism::with_circular_holes(vec![profile], vec![bore], integer(4)).unwrap();
+    let owner = EntityId::new();
+    let origins: Vec<_> = (0..5)
+        .map(|_| Origin {
+            source: EntityId::new(),
+            role: "profile.edge".into(),
+        })
+        .collect();
+    let policy = GeometryPolicy::default();
+    assert!(
+        Solid::from_polygon_prism(
+            prism.clone(),
+            PlaneFrame::default(),
+            owner,
+            &origins,
+            &[false, false, false, false, true],
+            policy,
+        )
+        .is_err()
+    );
+    let solid = Solid::from_polygon_prism(
+        prism,
+        PlaneFrame::default(),
+        owner,
+        &origins,
+        &[false; 5],
+        policy,
+    )
+    .unwrap();
+    near(solid.volume_mm3().unwrap(), 240. - 4. * PI);
+    let wall = solid.faces().unwrap().remove(6);
+    assert_eq!(wall.plane, None);
+    assert_eq!(wall.center_mm, [8., 2., 2.]);
+    near(wall.area_mm2, 4. * TAU);
+    let topology = solid.topology_snapshot(owner, 1).unwrap();
+    let face = topology
+        .elements
+        .iter()
+        .find(|element| element.key.kind == TopologyKind::Face && element.key.ordinal == 6)
+        .unwrap();
+    assert!(face.origins.contains(&origins[4]));
+    assert!(face.frames.is_empty());
+    let contours = solid
+        .planar_face_contours_with_sources(
+            1,
+            PlaneFrame {
+                origin: [0., 0., 4.],
+                ..PlaneFrame::default()
+            },
+        )
+        .unwrap();
+    near(contours.contours.area_mm2(), 60. - PI);
+    let opening = &contours.contours.loops[1];
+    assert!(!opening.outer);
+    assert!(matches!(
+        opening.edges.as_slice(),
+        [PlanarEdge::Arc { center, sweep_rad, .. }] if *center == [8., 2.] && *sweep_rad == -TAU
+    ));
+    assert!(contours.edge_keys[1].iter().all(|key| {
+        topology.elements.iter().any(|element| {
+            element.key == *key
+                && matches!(
+                    element.geometry,
+                    Some(AnalyticGeometry::CircularArc { radius_mm: 1., .. })
+                )
+        })
+    }));
+    assert!(
+        solid
+            .mesh(Default::default())
+            .unwrap()
+            .face_indices
+            .contains(&6)
+    );
+}
+
+#[test]
+fn exact_polygon_boolean_subtracts_only_strictly_through_cylinders() {
+    use multicad_core::references::Origin;
+    use multicad_kernel::rust_kernel::{cylinder::AxialCylinder, polygon::PolygonPrism};
+
+    let profile = [[0, 0], [12, 0], [12, 5], [0, 5]]
+        .map(|p| p.map(integer))
+        .to_vec();
+    let prism = PolygonPrism::new(vec![profile], integer(4)).unwrap();
+    let owner = EntityId::new();
+    let origins: Vec<_> = (0..4)
+        .map(|_| Origin {
+            source: EntityId::new(),
+            role: "profile.edge".into(),
+        })
+        .collect();
+    let policy = GeometryPolicy::default();
+    let stock = |frame| {
+        Solid::from_polygon_prism(prism.clone(), frame, owner, &origins, &[false; 4], policy)
+            .unwrap()
+    };
+    let target = stock(PlaneFrame::default());
+    let cutter = |id: EntityId, x, bottom, height| {
+        let axial = AxialCylinder::new(
+            id.uuid_bits(),
+            circle(x, 2, integer(1)),
+            integer(bottom),
+            integer(height),
+        )
+        .unwrap();
+        Solid::from_axial_cylinder(
+            axial,
+            PlaneFrame {
+                origin: [x as f64, 2., bottom as f64],
+                ..PlaneFrame::default()
+            },
+            policy,
+        )
+        .unwrap()
+    };
+    let subtract =
+        |target: &Solid, tool: &Solid| target.boolean(tool, BooleanOperation::Subtract, policy);
+    let tool_id = EntityId::new();
+    let tool = cutter(tool_id, 8, -1, 6);
+    let cut = subtract(&target, &tool).unwrap().unwrap();
+    let native = Solid::box_solid([12., 5., 4.], policy).unwrap();
+    let native_tool = Solid::cylinder(
+        PlaneFrame {
+            origin: [8., 2., -1.],
+            ..PlaneFrame::default()
+        },
+        1.,
+        6.,
+        policy,
+    )
+    .unwrap();
+    near(
+        cut.volume_mm3().unwrap(),
+        subtract(&native, &native_tool)
+            .unwrap()
+            .unwrap()
+            .volume_mm3()
+            .unwrap(),
+    );
+    let topology = cut.topology_snapshot(owner, 0).unwrap();
+    assert!(
+        topology
+            .elements
+            .iter()
+            .any(|element| element.key.kind == TopologyKind::Face
+                && element.origins.contains(&Origin {
+                    source: tool_id,
+                    role: "side.cylinder".into()
+                }))
+    );
+    let second = subtract(&cut, &cutter(EntityId::new(), 3, -1, 6))
+        .unwrap()
+        .unwrap();
+    near(
+        second.volume_mm3().unwrap(),
+        240. - 8. * std::f64::consts::PI,
+    );
+    assert_eq!(
+        subtract(&target, &cutter(EntityId::new(), 8, 0, 6))
+            .err()
+            .unwrap()
+            .kind,
+        GeometryErrorKind::Input,
+    );
+    assert_eq!(
+        subtract(&cut, &cutter(EntityId::new(), 10, -1, 6))
+            .err()
+            .unwrap()
+            .kind,
+        GeometryErrorKind::Input,
+    );
+    let placed = stock(PlaneFrame {
+        origin: [0., 0., 2.],
+        ..PlaneFrame::default()
+    });
+    assert_eq!(
+        subtract(&placed, &tool).err().unwrap().kind,
+        GeometryErrorKind::Unsupported,
+    );
+    near(target.volume_mm3().unwrap(), 240.);
+}
+
+#[test]
 fn exact_contours_preserve_both_bores_and_match_picking_edge_keys() {
     use multicad_core::manufacturing::PlanarEdge;
     use std::f64::consts::{PI, TAU};
