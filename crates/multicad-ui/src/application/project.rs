@@ -26,22 +26,15 @@ impl Application {
         if self.current().dirty() {
             label.push_str("  •");
         }
-        label.push_str("    ");
         let switcher = ui.add(
             egui::Button::new(egui::RichText::new(label).strong())
                 .frame(false)
+                .right_text("   ▾")
                 .min_size(egui::vec2(0., 26.)),
         );
         let accessible = format!("Switch project. Active project {title}. {count} open");
         switcher
             .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &accessible));
-        icons::paint_sized(
-            ui,
-            Icon::ArrowDown,
-            switcher.rect.right_center() - egui::vec2(9., 0.),
-            ui.visuals().text_color(),
-            13.,
-        );
         let mut chosen = None;
         egui::Popup::menu(&switcher).show(|ui| {
             ui.strong("Open projects");
@@ -251,15 +244,14 @@ impl Application {
                 ui.add_space(9.);
                 let command = Command::Mode(Mode::Model);
                 let can_start = self.enabled(command) && !self.current().editor.info_dirty();
-                if ui
-                    .add_enabled(
-                        can_start,
-                        egui::Button::new(egui::RichText::new("Start Modeling").strong())
-                            .fill(ui.visuals().selection.bg_fill)
-                            .min_size(egui::vec2(ui.available_width(), 36.)),
-                    )
-                    .on_disabled_hover_text("Finish editing the project details first")
-                    .clicked()
+                if controls::centered_action(
+                    ui,
+                    "Start Modeling",
+                    can_start,
+                    ui.visuals().selection.bg_fill,
+                )
+                .on_disabled_hover_text("Finish editing the project details first")
+                .clicked()
                 {
                     action = Some(command);
                 }
@@ -281,11 +273,7 @@ impl Application {
                         }
                     }
                     for (mode, title) in [(Mode::Model, "Model"), (Mode::Motion, "Motion"), (Mode::Drawings, "Drawings")] {
-                        ui.add_space(14.);
-                        ui.separator();
-                        ui.add_space(6.);
-                        ui.horizontal(|ui| {
-                            ui.strong(title);
+                        contents_section(ui, title, |ui| {
                             let command = Command::Mode(mode);
                             if mode != Mode::Model {
                                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -325,12 +313,7 @@ impl Application {
                                         ui.weak(empty);
                                     }
                                     for entry in entries {
-                                        egui::Frame::new().fill(ui.visuals().faint_bg_color)
-                                            .corner_radius(5).inner_margin(8).show(ui, |ui| {
-                                                ui.set_min_width(ui.available_width());
-                                                ui.strong(&entry.name);
-                                                ui.small(category);
-                                            });
+                                        contents_row(ui, &entry.name, |ui| { ui.small(category); });
                                     }
                                 }
                             }
@@ -340,26 +323,24 @@ impl Application {
                                     ui.weak("No drawings yet.");
                                 }
                                 for book in books {
-                                    egui::CollapsingHeader::new(&book.name)
-                                        .id_salt(book.id)
-                                        .show(ui, |ui| {
-                                            match multicad_core::drawings::read(doc, book.id) {
-                                                Ok(drawing) => {
-                                                    for page in &drawing.pages {
-                                                        ui.label(format!("{} · {}", page.number, page.info.title));
-                                                    }
-                                                }
-                                                Err(error) => {
-                                                    ui.colored_label(Color32::LIGHT_RED, error.to_string());
-                                                }
+                                    contents_row(ui, &book.name, |ui| {
+                                        match multicad_core::drawings::read(doc, book.id) {
+                                            Ok(drawing) => {
+                                                egui::CollapsingHeader::new(format!("{} sheets", drawing.pages.len()))
+                                                    .id_salt(book.id).show(ui, |ui| {
+                                                        for page in &drawing.pages {
+                                                            ui.small(format!("{} · {}", page.number, page.info.title));
+                                                        }
+                                                    });
                                             }
-                                        });
+                                            Err(error) => { ui.colored_label(Color32::LIGHT_RED, error.to_string()); }
+                                        }
+                                    });
                                 }
                             }
                             _ => {}
                         }
                     }
-                    ui.add_space(14.);
                     self.project_render_controls(ui);
                 });
         });
@@ -409,4 +390,30 @@ impl Application {
                     .show_with_min_table_width(ui, &project.session, TABLE_MIN_WIDTH);
             });
     }
+}
+
+pub(super) fn contents_section(
+    ui: &mut egui::Ui,
+    title: &str,
+    actions: impl FnOnce(&mut egui::Ui),
+) {
+    ui.add_space(14.);
+    ui.separator();
+    ui.add_space(6.);
+    ui.horizontal(|ui| {
+        ui.strong(title);
+        actions(ui);
+    });
+}
+
+pub(super) fn contents_row(ui: &mut egui::Ui, name: &str, details: impl FnOnce(&mut egui::Ui)) {
+    egui::Frame::new()
+        .fill(ui.visuals().faint_bg_color)
+        .corner_radius(5)
+        .inner_margin(8)
+        .show(ui, |ui| {
+            ui.set_min_width(ui.available_width());
+            ui.strong(name);
+            details(ui);
+        });
 }

@@ -150,12 +150,19 @@ pub fn show(
         let aspect = editor.info.preview.as_ref().map_or(9. / 16., |image| {
             image.height() as f32 / image.width() as f32
         });
-        let size = Vec2::new(width, width * aspect);
+        let inset = 4.;
+        let size = Vec2::new(width, (width - 2. * inset) * aspect + 2. * inset);
         let frame = Rect::from_min_size(ui.cursor().min, size);
-        textures.show_framed(
-            ui,
+        let preview_background = Color32::from_rgb(12, 17, 24);
+        ui.painter().rect_filled(frame, 5, preview_background);
+        ui.allocate_exact_size(size, Sense::hover());
+        let image_rect = frame.shrink(inset);
+        let mut image = ui.new_child(egui::UiBuilder::new().max_rect(image_rect));
+        image.set_clip_rect(image_rect.intersect(ui.clip_rect()));
+        textures.show(
+            &mut image,
             editor.info.preview.as_ref(),
-            size,
+            image_rect.size(),
             "Project preview image",
         );
         let overlay_rect = Rect::from_min_max(
@@ -168,7 +175,7 @@ pub fn show(
                 .layout(egui::Layout::right_to_left(egui::Align::Center)),
         )
         .horizontal(|ui| {
-            let fill = crate::theme::PANEL;
+            let fill = preview_background;
             if ui
                 .add_enabled(
                     editor.info.preview.is_some(),

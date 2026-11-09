@@ -145,6 +145,8 @@ impl DrawingEditor {
             .default_size(224.).min_size(190.).max_size(340.).resizable(true)
             .frame(egui::Frame::new().fill(crate::theme::PANEL).inner_margin(12))
             .show(ui, |ui| {
+                ui.spacing_mut().button_padding = egui::vec2(12., 6.);
+                ui.style_mut().override_text_valign = Some(egui::Align::Center);
                 ui.strong("Drawings");
                 ui.small(format!("{} drawings · {} sheets", books.len(), books.iter().map(|b| b.pages.len()).sum::<usize>()));
                 ui.add_space(6.);

@@ -277,48 +277,48 @@ impl Application {
     }
 
     pub(super) fn project_render_controls(&mut self, ui: &mut egui::Ui) {
-        ui.separator();
-        ui.add_space(6.);
-        ui.strong("Render");
+        let mut action = None;
+        super::project::contents_section(ui, "Render", |ui| {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui
+                    .add_enabled(
+                        self.render_command_enabled("appearance"),
+                        egui::Button::new("Open render preview").frame(false),
+                    )
+                    .on_hover_text(CAPTURE_HELP)
+                    .clicked()
+                {
+                    action = Some("preview");
+                }
+            });
+        });
         match saved_scene(self.current()) {
-            Ok(Some((_, name, saved))) => {
-                ui.strong(name);
-                ui.small(format!(
-                    "{} · {} · {} light(s)",
-                    projection_text(saved.camera.projection),
-                    render_view::style_of(saved.display).label(),
-                    saved.lights.len(),
-                ));
-            }
+            Ok(Some((_, name, saved))) => super::project::contents_row(ui, &name, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    ui.small(format!(
+                        "{} · {} · {} light(s)",
+                        projection_text(saved.camera.projection),
+                        render_view::style_of(saved.display).label(),
+                        saved.lights.len()
+                    ));
+                    if ui
+                        .add_enabled(
+                            self.render_command_enabled("render-view"),
+                            egui::Button::new("Show saved view").frame(false),
+                        )
+                        .clicked()
+                    {
+                        action = Some("render-view");
+                    }
+                });
+            }),
             Ok(None) => {
-                ui.label("No render view saved yet.");
+                ui.weak("No render view saved yet.");
             }
             Err(error) => {
                 ui.colored_label(Color32::LIGHT_RED, error);
             }
         }
-        ui.small(CAPTURE_HELP);
-        let mut action = None;
-        ui.horizontal_wrapped(|ui| {
-            if ui
-                .add_enabled(
-                    self.render_command_enabled("appearance"),
-                    egui::Button::new("Open render preview"),
-                )
-                .clicked()
-            {
-                action = Some("preview");
-            }
-            if ui
-                .add_enabled(
-                    self.render_command_enabled("render-view"),
-                    egui::Button::new("Show saved view"),
-                )
-                .clicked()
-            {
-                action = Some("render-view");
-            }
-        });
         ui.collapsing("Blender handoff", |ui| {
             ui.label(BLENDER_AVAILABILITY);
         });

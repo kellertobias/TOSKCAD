@@ -326,7 +326,7 @@ pub(crate) fn tools_height(
     category: Option<crate::architecture_navigation::Category>,
 ) -> f32 {
     let height = Contents::new(registry, mode, tab, editing, category).height();
-    if mode == Mode::Model {
+    if matches!(mode, Mode::Model | Mode::Motion | Mode::Drawings) {
         height.max(icons::TOOL_TILE.y + SECTION_LABEL)
     } else {
         height

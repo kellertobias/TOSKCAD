@@ -554,3 +554,30 @@ mod modal_first_frame_tests {
         );
     }
 }
+
+pub(crate) fn centered_action(
+    ui: &mut egui::Ui,
+    label: &str,
+    enabled: bool,
+    fill: Color32,
+) -> egui::Response {
+    let label = ui.painter().layout_no_wrap(
+        label.to_owned(),
+        egui::TextStyle::Button.resolve(ui.style()),
+        Color32::WHITE,
+    );
+    let size = Vec2::new(ui.available_width(), (label.size().y + 16.).max(36.));
+    let response = ui.add_enabled(enabled, egui::Button::new("").fill(fill).min_size(size));
+    response
+        .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, label.text()));
+    ui.painter().galley(
+        response.rect.center() - label.size() * 0.5,
+        label,
+        if enabled {
+            Color32::WHITE
+        } else {
+            Color32::GRAY
+        },
+    );
+    response
+}
