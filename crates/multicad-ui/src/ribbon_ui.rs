@@ -441,26 +441,6 @@ fn menu_button(
         let default = registry.tool(tools[0]).expect("menu default");
         top_row(ui, |ui| {
             ui.spacing_mut().item_spacing.x = 0.;
-            let main = ui
-                .add_enabled_ui(enabled(default.action), |ui| {
-                    icons::tool_glyph_at_width(
-                        ui,
-                        tool_glyph(mode, default.id, default.icon),
-                        label,
-                        &with_description(default.id, hint(default.action, default.label)),
-                        tools.iter().any(is_selected),
-                        tile_width - ARROW_WIDTH,
-                    )
-                })
-                .inner;
-            if main
-                .on_disabled_hover_text(
-                    "The default is unavailable in this context. Open the options for other tools.",
-                )
-                .clicked()
-            {
-                action = Some(default.action);
-            }
             let (rect, arrow) =
                 ui.allocate_exact_size(egui::vec2(ARROW_WIDTH, 24.), egui::Sense::click());
             if arrow.hovered() || arrow.has_focus() {
@@ -486,6 +466,26 @@ fn menu_button(
             arrow.widget_info(|| {
                 egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &options)
             });
+            let main = ui
+                .add_enabled_ui(enabled(default.action), |ui| {
+                    icons::tool_glyph_at_width(
+                        ui,
+                        tool_glyph(mode, default.id, default.icon),
+                        label,
+                        &with_description(default.id, hint(default.action, default.label)),
+                        tools.iter().any(is_selected),
+                        tile_width - ARROW_WIDTH,
+                    )
+                })
+                .inner;
+            if main
+                .on_disabled_hover_text(
+                    "The default is unavailable in this context. Open the options for other tools.",
+                )
+                .clicked()
+            {
+                action = Some(default.action);
+            }
             arrow.on_hover_text(options)
         })
         .inner
@@ -1114,6 +1114,24 @@ mod tests {
             );
         }
     }
+    #[test]
+    fn model_split_arrow_is_left_of_its_main_action_at_both_widths() {
+        let registry = Registry::default();
+        let tab = &registry.workspace(Mode::Model).tabs[0];
+        for width in [1024., 1360.] {
+            let ctx = egui::Context::default();
+            ctx.enable_accesskit();
+            let draw = || ribbon(&registry, Mode::Model, tab, false, width, vec![], &ctx).0;
+            draw().drop_without_applying_deltas();
+            let out = draw();
+            for label in ["Add Primitive", "Move / Copy"] {
+                let options = accessible_button(&out, &format!("{label} options"));
+                assert!(options.x < text(&out, label).x, "{label} at {width}");
+            }
+            out.drop_without_applying_deltas();
+        }
+    }
+
     #[test]
     fn model_split_arrow_is_keyboard_focusable_and_escape_dismisses_its_options() {
         let registry = Registry::default();
