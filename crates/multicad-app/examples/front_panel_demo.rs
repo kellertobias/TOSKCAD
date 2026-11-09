@@ -61,6 +61,10 @@ pub type Error = Box<dyn std::error::Error>;
 
 pub const PROJECT_NAME: &str = "C-channel front panel";
 pub const FILE_NAME: &str = "front-panel.tcd";
+pub const PLACED_ASSEMBLY: &str = "Assembled front panel";
+pub const PLACED_SHEET: &str = "Sheet-metal front panel";
+pub const PLACED_DISPLAY: &str = "16×2 display module";
+pub const PLACED_ENDS: [&str; 2] = ["Left printed end plate", "Right printed end plate"];
 pub const DESCRIPTION: &str = "Bent 1.5 mm aluminium front panel with a C section (top and \
 bottom flanges), six push-button openings, a 16×2 display window on four standoffs and \
 printed PETG left and right end parts screwed through both flanges. Edit panel_width, \
@@ -769,12 +773,23 @@ fn mounting(document: &Document) -> Result<Vec<MountingPattern>, Error> {
     ])
 }
 
+pub fn hardware_placement_name(pattern: usize, item: HardwareItem) -> Result<&'static str, Error> {
+    match (pattern, item) {
+        (DISPLAY_STANDOFFS, HardwareItem::Standoff) => Ok("Display standoffs (M3)"),
+        (BOTTOM_SCREWS, HardwareItem::Screw) => Ok("Bottom flange screws (M3)"),
+        (TOP_SCREWS, HardwareItem::Screw) => Ok("Top flange screws (M3)"),
+        _ => Err("Unexpected front panel fastener pattern or item".into()),
+    }
+}
+
 fn place(
     session: &mut Session,
     part: EntityId,
+    name: impl Into<String>,
     transform: NumericTransform,
 ) -> Result<EntityId, Error> {
-    let member = ComponentPlacementRequest::new(part, transform);
+    let mut member = ComponentPlacementRequest::new(part, transform);
+    member.name = name.into();
     let prepared = model::prepare_place_component(session, session.revision(), actor(), &member)?;
     session.commit(prepared.prepared)?;
     Ok(member.instance)
@@ -878,12 +893,22 @@ pub fn build() -> Result<Scenario, Error> {
     // buttons and the display at the openings, the end parts rotated from
     // print orientation onto the panel ends.
     let d = session.document().clone();
-    let sheet_member = place(&mut session, sheet.body, NumericTransform::default())?;
+    let sheet_member = place(
+        &mut session,
+        sheet.body,
+        PLACED_SHEET,
+        NumericTransform::default(),
+    )?;
     let mut members = vec![sheet_member];
     let mut parts = vec![sheet.body];
     let mut placed_hardware = vec![];
     for (p, i, part) in &hardware {
-        let member = place(&mut session, *part, NumericTransform::default())?;
+        let member = place(
+            &mut session,
+            *part,
+            hardware_placement_name(*p as usize, *i)?,
+            NumericTransform::default(),
+        )?;
         members.push(member);
         parts.push(*part);
         placed_hardware.push((*p, *i, *part, member));
@@ -891,7 +916,12 @@ pub fn build() -> Result<Scenario, Error> {
     let mut buttons = vec![];
     for i in 0..BUTTONS {
         let [u, v] = button_center(i);
-        let member = place(&mut session, button, translate(&d, [&u, "0", &v])?)?;
+        let member = place(
+            &mut session,
+            button,
+            format!("Push button {}", i + 1),
+            translate(&d, [&u, "0", &v])?,
+        )?;
         buttons.push(member);
         members.push(member);
     }
@@ -899,6 +929,7 @@ pub fn build() -> Result<Scenario, Error> {
     let display_member = place(
         &mut session,
         display,
+        PLACED_DISPLAY,
         translate(&d, ["=$display_x", "0", "=$panel_height / 2"])?,
     )?;
     members.push(display_member);
@@ -906,6 +937,7 @@ pub fn build() -> Result<Scenario, Error> {
     let left_member = place(
         &mut session,
         left,
+        PLACED_ENDS[0],
         NumericTransform {
             translation: mm3(
                 &d,
@@ -923,6 +955,7 @@ pub fn build() -> Result<Scenario, Error> {
     let right_member = place(
         &mut session,
         right,
+        PLACED_ENDS[1],
         NumericTransform {
             translation: mm3(
                 &d,
@@ -942,7 +975,12 @@ pub fn build() -> Result<Scenario, Error> {
     let assembly = AssemblyRequest::new("Front panel assembly", members, parts);
     let prepared = model::prepare_assembly(&session, session.revision(), actor(), &assembly)?;
     checked(&mut session, prepared.prepared)?;
-    let root = place(&mut session, assembly.assembly, NumericTransform::default())?;
+    let root = place(
+        &mut session,
+        assembly.assembly,
+        PLACED_ASSEMBLY,
+        NumericTransform::default(),
+    )?;
 
     let mut s = Scenario {
         session,

@@ -165,6 +165,59 @@ fn nested_placement_expands_whole_root_and_preserves_unselected_sibling_pose() {
     assert!(scene.presentation_placement(member, delta()).is_err());
 }
 #[test]
+fn member_selection_uses_only_its_native_faces_inside_the_visible_root() {
+    let (mut scene, root, other) = scene();
+    let owner = EntityId::new();
+    let member = EntityId::new();
+    let part = EntityId::new();
+    let hash = ContentHash::of(b"member selection fixture");
+    scene.model_evaluation = Some(Arc::new(multicad_core::model::ModelEvaluationInfo {
+        source_hash: hash,
+        screw_connection_checks: vec![],
+        consumed_bodies: Default::default(),
+        cut_targets: vec![],
+    }));
+    scene.assembly_evaluation = Some(Arc::new(AssemblyEvaluationInfo {
+        source_hash: hash,
+        leaves: vec![AssemblyLeafReceipt {
+            path: OccurrencePath {
+                root,
+                members: vec![member],
+            },
+            component: part,
+            producer: root,
+            pose: RigidPose::default(),
+        }],
+    }));
+    let geometry = Arc::get_mut(scene.geometries.get_mut(&root).unwrap()).unwrap();
+    let face = geometry
+        .topology
+        .iter_mut()
+        .find(|face| face.key.kind == TopologyKind::Face)
+        .unwrap();
+    face.origins.insert(multicad_core::references::Origin {
+        source: owner,
+        role: format!("assembly/member/{member}"),
+    });
+    let ordinal = face.key.ordinal;
+    let selected = BTreeSet::from([member]);
+    assert_eq!(
+        scene.member_faces(&selected, &BTreeSet::new()),
+        [(root, ordinal)]
+    );
+    assert_eq!(
+        scene.member_faces(&BTreeSet::from([part]), &BTreeSet::new()),
+        [(root, ordinal)]
+    );
+    assert!(
+        scene
+            .member_faces(&selected, &BTreeSet::from([root]))
+            .is_empty()
+    );
+    let visible = scene.visible_subset(&BTreeSet::from([other])).unwrap();
+    assert!(visible.member_faces(&selected, &BTreeSet::new()).is_empty());
+}
+#[test]
 fn placement_rejects_unknown_and_nonrigid_or_nonfinite_delta() {
     let (scene, id, _) = scene();
     assert!(

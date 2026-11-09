@@ -113,6 +113,68 @@ fn flat_area(width: f64, height: f64, leg: f64, r: f64, hole: f64) -> f64 {
         - 8. * circle(3.4)
 }
 
+/// Captions belong to the placed occurrences and preserve the Part identities
+/// used by the drawing and manufacturing checks.
+fn check_placement_names(document: &Document, model: &Model) {
+    let ids = Ids::of(document);
+    let instance = |name: &str| {
+        let mut named = document
+            .entities()
+            .filter(|e| e.name == name && matches!(e.data, EntityData::Instance { .. }));
+        let one = named
+            .next()
+            .unwrap_or_else(|| panic!("Missing placement named {name}"));
+        assert!(named.next().is_none(), "Duplicate placement name {name}");
+        one
+    };
+    let EntityData::Instance { component, .. } = instance(demo::PLACED_ASSEMBLY).data else {
+        unreachable!()
+    };
+    let EntityData::Assembly { instances } = &document.get(component).unwrap().data else {
+        panic!("The assembled front panel must place an Assembly")
+    };
+    let member = |name: &str, part: EntityId| {
+        let placed = instance(name);
+        assert!(
+            instances.contains(&placed.id),
+            "{name} is an assembly member"
+        );
+        let EntityData::Instance {
+            component,
+            placement_source,
+            ..
+        } = placed.data
+        else {
+            unreachable!()
+        };
+        assert_eq!(component, part, "{name} has the expected Part");
+        placement_source.unwrap()
+    };
+    member(demo::PLACED_SHEET, ids.part("Front panel sheet"));
+    member(demo::PLACED_DISPLAY, ids.part("Display module"));
+    member(demo::PLACED_ENDS[0], ids.part("Left end part"));
+    member(demo::PLACED_ENDS[1], ids.part("Right end part"));
+    let hardware = model.sheet_hardware(document).unwrap();
+    for record in &hardware {
+        member(
+            demo::hardware_placement_name(record.pattern, record.item).unwrap(),
+            record.part,
+        );
+    }
+    for index in 0..demo::BUTTONS {
+        let driver = member(
+            &format!("Push button {}", index + 1),
+            ids.part("Push button"),
+        );
+        let placement = multicad_core::model::read_instance_placement(document, driver).unwrap();
+        let [u, v] = demo::button_center(index);
+        let translation = &placement.parameters.translation;
+        assert_eq!(translation[0].expression().unwrap().text, u);
+        assert_eq!(translation[2].expression().unwrap().text, v);
+    }
+    assert_eq!(instances.len(), 4 + hardware.len() + demo::BUTTONS);
+}
+
 /// Geometry checks shared by the shipped and edited states: the C section,
 /// components in their openings, end parts fitted and fastened.
 fn check_assembly(document: &Document, model: &Model, width: f64, height: f64, leg: f64, r: f64) {
@@ -248,6 +310,7 @@ fn shipped_example_opens_with_metadata_bends_openings_and_fitted_end_parts() {
             .all_resolved()
     );
     check_assembly(session.document(), &model, 260., 80., 40., 1.5);
+    check_placement_names(session.document(), &model);
 
     // Folded and flat agree: two 90° bends with the part's R and K, and a
     // developed width of front + legs + allowances.

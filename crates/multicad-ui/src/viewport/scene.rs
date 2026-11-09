@@ -1256,6 +1256,53 @@ impl Scene {
     pub fn reference_instances(&self) -> &[Instance] {
         &self.reference_instances
     }
+    /// Face ordinals belonging to selected assembly members in the displayed
+    /// roots. Reference and picking identities stay on the aggregate.
+    pub(crate) fn member_faces(
+        &self,
+        sources: &BTreeSet<EntityId>,
+        whole_parts: &BTreeSet<EntityId>,
+    ) -> Vec<(EntityId, u32)> {
+        let mut members = BTreeMap::<EntityId, BTreeSet<String>>::new();
+        for leaf in self
+            .assembly_evaluation()
+            .into_iter()
+            .flat_map(|info| &info.leaves)
+        {
+            if whole_parts.contains(&leaf.path.root) {
+                continue;
+            }
+            for (index, member) in leaf.path.members.iter().enumerate() {
+                if sources.contains(member)
+                    || (index + 1 == leaf.path.members.len() && sources.contains(&leaf.component))
+                {
+                    members
+                        .entry(leaf.path.root)
+                        .or_default()
+                        .insert(format!("assembly/member/{member}"));
+                }
+            }
+        }
+        let mut faces = Vec::new();
+        for instance in self.instances.iter() {
+            if let Some(roles) = members.get(&instance.id) {
+                faces.extend(
+                    self.geometries[&instance.geometry]
+                        .topology
+                        .iter()
+                        .filter(|face| {
+                            face.key.kind == TopologyKind::Face
+                                && face
+                                    .origins
+                                    .iter()
+                                    .any(|origin| roles.contains(&origin.role))
+                        })
+                        .map(|face| (instance.id, face.key.ordinal)),
+                );
+            }
+        }
+        faces
+    }
     pub fn visible_subset(&self, visible: &BTreeSet<EntityId>) -> Result<Arc<Self>, String> {
         let existing: BTreeSet<_> = self
             .reference_instances

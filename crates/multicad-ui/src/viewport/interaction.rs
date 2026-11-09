@@ -22,6 +22,7 @@ pub struct Interaction {
     faces: Vec<Hit>,
     hovered: Option<Hit>,
     parts: Arc<BTreeSet<EntityId>>,
+    member_faces: Arc<Vec<(EntityId, u32)>>,
     range_anchor: Option<EntityId>,
     pub filter: PickFilter,
     pub section: SectionView,
@@ -65,6 +66,7 @@ impl Interaction {
         self.faces.clear();
         self.hovered = None;
         Arc::make_mut(&mut self.parts).clear();
+        self.member_faces = Arc::default();
         self.range_anchor = None;
         self.last_query = None;
     }
@@ -152,6 +154,7 @@ impl Interaction {
             })
         }).map(|instance| instance.id).collect();
         self.clear();
+        self.member_faces = Arc::new(scene.member_faces(source, &selected));
         self.parts = Arc::new(selected);
         self.last_stamp = Some(scene.stamp());
         Ok(())
@@ -210,6 +213,7 @@ impl Interaction {
                     let response = ui.selectable_label(self.parts.contains(&e.id)||self.selected.as_ref().is_some_and(|h|h.instance==e.id), &e.name)
                         .on_hover_text("Select this part · Cmd/Ctrl-click toggles · Shift-click selects a range");
                     if response.clicked() {
+                        self.member_faces = Arc::default();
                         let modifiers=crate::selection_input::click_modifiers(ui, &response);
                         if modifiers.shift && let Some(start)=self.range_anchor.and_then(|id|rows.iter().position(|row|row.id==id)) {
                             self.selected=None;
@@ -412,6 +416,7 @@ impl Interaction {
                 self.last_query = Some(query);
             }
             if response.clicked() {
+                self.member_faces = Arc::default();
                 let modifiers = crate::selection_input::click_modifiers(ui, response);
                 if let Some(hit) = self.hovered.clone()
                     && modifiers.command
@@ -461,7 +466,12 @@ impl Interaction {
             },
         });
         let selection =
-            if !self.faces.is_empty() {
+            if !self.member_faces.is_empty() {
+                Some(Selection::PartsAndFaces {
+                    parts: self.parts.clone(),
+                    faces: self.member_faces.clone(),
+                })
+            } else if !self.faces.is_empty() {
                 let mut faces: Vec<_> = self
                     .faces
                     .iter()

@@ -27,6 +27,10 @@ pub enum Selection {
     },
     /// Several faces (CAD-152 Command/Control-click set), any instances.
     Faces(Arc<Vec<(EntityId, u32)>>),
+    PartsAndFaces {
+        parts: Arc<BTreeSet<EntityId>>,
+        faces: Arc<Vec<(EntityId, u32)>>,
+    },
     Edge {
         instance: EntityId,
         ordinal: u32,
@@ -260,6 +264,11 @@ impl Renderer {
                     let (face, part) = match &selection {
                         Some(Selection::Part(id)) if *id == instance.id => (u32::MAX, 1),
                         Some(Selection::Parts(ids)) if ids.contains(&instance.id) => (u32::MAX, 1),
+                        Some(Selection::PartsAndFaces { parts, .. })
+                            if parts.contains(&instance.id) =>
+                        {
+                            (u32::MAX, 1)
+                        }
                         Some(Selection::Face {
                             instance: id,
                             ordinal,
@@ -284,7 +293,9 @@ impl Renderer {
                         ];
                     }
                     let mut extra = vec![];
-                    if let Some(Selection::Faces(faces)) = &selection {
+                    if let Some(Selection::Faces(faces) | Selection::PartsAndFaces { faces, .. }) =
+                        &selection
+                    {
                         let mut own = faces
                             .iter()
                             .filter(|(id, _)| *id == instance.id)
