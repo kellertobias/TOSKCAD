@@ -187,3 +187,23 @@ fn unrepresentable_display_hole_fails_without_changing_the_exact_solid() {
         Ok(Location::Exterior)
     );
 }
+
+#[test]
+fn a_small_bore_outside_the_coarse_cap_chord_is_retained_after_refinement() {
+    let hole = Circle::new([q("47.92 mm"), q("15.94 mm")], q("0.01 mm")).unwrap();
+    let panel = RoundedPrism::extrude(1, n(40), n(10), n(8))
+        .unwrap()
+        .with_inner_loop(2, hole)
+        .unwrap();
+    let mesh = display::rounded_prism(
+        &panel,
+        Tessellation {
+            deflection: 1.,
+            angle: 1.,
+            ..options()
+        },
+    )
+    .unwrap();
+    assert!(mesh.face_indices.contains(&6));
+    assert!(check_closed(&mesh) > 0.);
+}
