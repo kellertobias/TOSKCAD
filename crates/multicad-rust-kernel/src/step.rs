@@ -1,6 +1,12 @@
 //! STEP AP214 output for extruded solids with analytic lines and circles.
 
-use crate::{Circle, Rational, cylinder::AxialCylinder, polygon::PolygonPrism, prism::Prism};
+use crate::{
+    Circle, Rational,
+    cylinder::AxialCylinder,
+    orthogonal_boundary::{Boundary, BoundaryFace, point_key},
+    polygon::PolygonPrism,
+    prism::Prism,
+};
 use std::{collections::BTreeMap, fmt, fmt::Write, ops::Range};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -11,6 +17,102 @@ pub enum StepError {
 }
 
 type Point = [f64; 3];
+
+/// Write a consolidated orthogonal shell after applying a rigid world placement.
+pub fn write_orthogonal(
+    boundary: &Boundary,
+    transform: impl Fn(Point) -> Point,
+) -> Result<String, StepError> {
+    write_orthogonal_placed(boundary, &transform)
+}
+
+fn write_orthogonal_placed(
+    boundary: &Boundary,
+    transform: &dyn Fn(Point) -> Point,
+) -> Result<String, StepError> {
+    if !boundary.supports_step() {
+        return Err(StepError::Unsupported);
+    }
+    let mut points = Vec::new();
+    let mut indices = BTreeMap::new();
+    for point in boundary.faces.iter().flat_map(|face| &face.rings).flatten() {
+        if point.iter().any(|value| !value.is_finite()) {
+            return Err(StepError::InvalidGeometry);
+        }
+        if let std::collections::btree_map::Entry::Vacant(entry) = indices.entry(point_key(*point))
+        {
+            let placed = transform(*point);
+            if placed.iter().any(|value| !value.is_finite()) {
+                return Err(StepError::InvalidPlacement);
+            }
+            entry.insert(points.len());
+            points.push(placed);
+        }
+    }
+    let mut brep = BRep::new(points);
+    let mut faces = Vec::with_capacity(boundary.faces.len());
+    for face in &boundary.faces {
+        let [outer, ..] = face.rings.as_slice() else {
+            return Err(StepError::InvalidGeometry);
+        };
+        let placed = |point| brep.vertices[indices[&point_key(point)]].point;
+        let (normal, reference) = orthogonal_support(face, outer, placed)?;
+        let point = brep.vertices[indices[&point_key(outer[0])]].cartesian;
+        let bounds = face
+            .rings
+            .iter()
+            .enumerate()
+            .map(|(i, ring)| {
+                if ring.len() < 4 {
+                    return Err(StepError::InvalidGeometry);
+                }
+                let ids: Vec<_> = ring
+                    .iter()
+                    .map(|&point| indices[&point_key(point)])
+                    .collect();
+                brep.bound(&ids, i == 0)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        faces.push(brep.file.face(&bounds, point, normal, reference));
+    }
+    Ok(brep.file.finish_solid(&faces))
+}
+
+fn orthogonal_support(
+    face: &BoundaryFace,
+    outer: &[Point],
+    placed: impl Fn(Point) -> Point,
+) -> Result<(Point, Point), StepError> {
+    let axis = face
+        .normal
+        .iter()
+        .position(|x| x.abs() == 1.)
+        .ok_or(StepError::InvalidGeometry)?;
+    // Use the longest available trim segment along each local axis. This
+    // avoids magnifying coordinate rounding when a small edge lies far away.
+    let basis = |coordinate: usize| {
+        let (a, b) = outer
+            .iter()
+            .copied()
+            .zip(outer.iter().copied().cycle().skip(1))
+            .filter(|(a, b)| a[coordinate] != b[coordinate])
+            .max_by(|(a, b), (c, d)| {
+                (a[coordinate] - b[coordinate])
+                    .abs()
+                    .total_cmp(&(c[coordinate] - d[coordinate]).abs())
+            })
+            .ok_or(StepError::InvalidGeometry)?;
+        if a[coordinate] < b[coordinate] {
+            direction(placed(a), placed(b))
+        } else {
+            direction(placed(b), placed(a))
+        }
+    };
+    let reference = basis((axis + 1) % 3)?;
+    let side = basis((axis + 2) % 3)?;
+    let normal = cross(reference, side).map(|x| x * face.normal[axis]);
+    Ok((normal, reference))
+}
 
 pub fn write_polygon_prism(
     prism: &PolygonPrism,

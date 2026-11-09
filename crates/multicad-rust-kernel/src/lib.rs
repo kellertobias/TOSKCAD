@@ -2,6 +2,8 @@
 
 pub mod cylinder;
 pub mod display;
+pub mod orthogonal;
+pub mod orthogonal_boundary;
 pub mod polygon;
 pub mod prism;
 pub mod step;
