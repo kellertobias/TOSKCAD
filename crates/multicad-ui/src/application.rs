@@ -2548,9 +2548,8 @@ impl Application {
                 ShortcutAction::FindTool => self.focus_search = true,
                 ShortcutAction::FocusCommand => self.focus_command = true,
                 ShortcutAction::NextWorkspace | ShortcutAction::PreviousWorkspace => {
-                    // With a Sketch control focused, Tab traverses the controls.
-                    // A viewport without widget focus still cycles workspaces.
-                    if self.mode == Mode::Sketch && ctx.memory(|m| m.focused().is_some()) {
+                    // Let a focused split control reach its neighboring target.
+                    if self.mode == Mode::Sketch && crate::ribbon_ui::sketch_split_focused(ctx) {
                         continue;
                     }
                     // Cycle the ribbon's visible workbenches in their chosen order.
@@ -4209,6 +4208,51 @@ mod tests {
             app.registry.workspace(Mode::Sketch).tabs[app.tab].title,
             "Edit"
         );
+
+        app.tab = 0;
+        let output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1360., 860.),
+                )),
+                ..Default::default()
+            },
+            |ui| app.show(ui),
+        );
+        let tree = output.platform_output.accesskit_update.as_ref().unwrap();
+        let circle = tree
+            .nodes
+            .iter()
+            .find_map(|(id, node)| (node.label() == Some("Circle")).then_some(*id))
+            .unwrap();
+        output.drop_without_applying_deltas();
+        shortcut_frame(
+            &ctx,
+            &mut app,
+            vec![egui::Event::AccessKitActionRequest(
+                egui::accesskit::ActionRequest {
+                    action: egui::accesskit::Action::Focus,
+                    target_tree: egui::accesskit::TreeId::ROOT,
+                    target_node: circle,
+                    data: None,
+                },
+            )],
+        );
+        assert!(crate::ribbon_ui::sketch_split_focused(&ctx));
+        shortcut_frame(
+            &ctx,
+            &mut app,
+            vec![key_event(egui::Key::Tab, egui::Modifiers::SHIFT)],
+        );
+        assert_eq!(app.tab, 0);
+        assert!(crate::ribbon_ui::sketch_split_focused(&ctx));
+        shortcut_frame(
+            &ctx,
+            &mut app,
+            vec![key_event(egui::Key::Space, egui::Modifiers::NONE)],
+        );
+        assert!(egui::Popup::is_any_open(&ctx));
     }
     #[test]
     fn operation_commands_reject_unavailable_context_and_unsupported_cli_arguments() {

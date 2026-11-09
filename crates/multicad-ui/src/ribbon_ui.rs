@@ -37,6 +37,15 @@ pub struct Group {
     pub label: &'static str,
     pub entries: Vec<Entry>,
 }
+
+const SKETCH_SPLIT_FOCUS: &str = "sketch-split-focus";
+
+pub(crate) fn sketch_split_focused(ctx: &egui::Context) -> bool {
+    let focus = ctx.memory(|memory| memory.focused());
+    focus.is_some_and(|focus| {
+        ctx.data(|data| data.get_temp::<egui::Id>(egui::Id::new(SKETCH_SPLIT_FOCUS))) == Some(focus)
+    })
+}
 /// Sketch → Common replaces each drawing-mode family with a split action
 /// at the position of its first member.
 fn sketch_entries(tab: &RibbonTab) -> Vec<Entry> {
@@ -488,6 +497,15 @@ fn menu_button(
                 }
                 action = Some(default.action);
             }
+            if mode == Mode::Sketch
+                && let Some(focused) = [&arrow, &main]
+                    .into_iter()
+                    .find(|target| target.has_focus())
+            {
+                ui.ctx().data_mut(|data| {
+                    data.insert_temp(egui::Id::new(SKETCH_SPLIT_FOCUS), focused.id);
+                });
+            }
             arrow.on_hover_text(options)
         })
         .inner
@@ -619,6 +637,11 @@ pub fn show_selectable_with_category(
     selected: impl Fn(Command) -> bool,
     category: Option<crate::architecture_navigation::Category>,
 ) -> Option<Command> {
+    if mode == Mode::Sketch {
+        ui.ctx().data_mut(|data| {
+            data.remove::<egui::Id>(egui::Id::new(SKETCH_SPLIT_FOCUS));
+        });
+    }
     let contents = Contents::new(registry, mode, tab, editing, category);
     let height = contents.height();
     let width = ui.available_width();
