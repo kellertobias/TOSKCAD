@@ -3,7 +3,7 @@ use multicad_core::{
     document::{Document, EntityData, Mutation},
     model::{self, PrimitiveFrame, PrimitiveParameters, PrimitiveRequest, length},
     project_file::{self, FileLimits, ProjectFile},
-    references::{Origin, TopologyKind},
+    references::{Origin, TopologyKind, TopologySnapshot},
     sketch::{self, CreationPlane, PlaneOptions},
 };
 use multicad_kernel::rust_kernel::{Rational, parse_length_mm, prism::Location};
@@ -171,6 +171,74 @@ fn straight_sketch_reopens_and_matches_native_faces_with_a_polygonal_hole() {
             near(inspect(planes[0]).origin[1], -2. - height);
             near(inspect(planes[1]).origin[1], -2.);
         }
+    }
+}
+
+#[test]
+fn a_saved_straight_face_extrusion_resolves_across_both_backends() {
+    let (mut session, height, parent, _) = rust_polygon::fixture();
+    let native = compile(&session, GeometryBackend::OpenCascade);
+    let topology = &native.snapshot().shapes[&parent].topology;
+    let cap = Origin {
+        source: parent,
+        role: "cap.end".into(),
+    };
+    let key = topology
+        .elements
+        .iter()
+        .find(|element| element.key.kind == TopologyKind::Face && element.origins.contains(&cap))
+        .unwrap()
+        .key;
+    let face = model::capture_profile_face(topology, key, None).unwrap();
+    let request = model::ExtrudeRequest::from_faces(
+        vec![face],
+        model::ExtrudeParameters {
+            extent: model::Extent::OneSided {
+                end: model::Termination::Distance {
+                    distance: length(4.),
+                },
+            },
+            ..Default::default()
+        },
+    );
+    let feature = request.outputs[0].feature;
+    let prepared = model::prepare_extrude(&session, session.revision(), actor(), &request).unwrap();
+    session.commit(prepared.prepared).unwrap();
+    let original = reopen(&session);
+    let mut parameter = session.document().get(height).unwrap().clone();
+    let EntityData::Parameter { expression, .. } = &mut parameter.data else {
+        unreachable!()
+    };
+    *expression = "7".into();
+    session
+        .apply(Request {
+            expected_revision: session.revision(),
+            actor: actor(),
+            label: "Move source cap".into(),
+            edits: vec![Mutation::Replace(parameter)],
+        })
+        .unwrap();
+
+    for (project, source_y) in [(original, -8.), (reopen(&session), -9.)] {
+        let native = compile(&project, GeometryBackend::OpenCascade);
+        let rust = compile(&project, GeometryBackend::Rust);
+        let actual = &rust.snapshot().shapes[&feature];
+        let expected = &native.snapshot().shapes[&feature];
+        near(actual.volume_mm3, 92. * 4.);
+        near(actual.volume_mm3, expected.volume_mm3);
+        assert_eq!(actual.bounds.min, [0., source_y - 4., 0.]);
+        assert_eq!(actual.bounds.max, [12., source_y, 10.]);
+        let faces = |topology: &TopologySnapshot| {
+            topology
+                .elements
+                .iter()
+                .filter(|element| element.key.kind == TopologyKind::Face)
+                .map(|element| element.origins.clone())
+                .collect::<std::collections::BTreeSet<_>>()
+        };
+        let actual_faces = faces(&actual.topology);
+        assert_eq!(actual_faces.len(), 12);
+        assert_eq!(actual_faces, faces(&expected.topology));
     }
 }
 

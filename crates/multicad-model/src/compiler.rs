@@ -233,10 +233,6 @@ impl Profiles<'_> {
                 topologies,
                 interrupt,
             ),
-            model::ModelProfile::Face(_) if self.backend == GeometryBackend::Rust => Err(error(
-                Some(feature),
-                "The Rust backend currently requires a sketch extrusion profile",
-            )),
             model::ModelProfile::Face(face) => crate::face_profile::FaceProfileInputs {
                 document: self.context.document(),
                 revision: self.context.stamp().revision,
