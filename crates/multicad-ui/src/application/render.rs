@@ -283,7 +283,7 @@ impl Application {
                 if ui
                     .add_enabled(
                         self.render_command_enabled("appearance"),
-                        egui::Button::new("Open render preview").frame(false),
+                        egui::Button::new("Open render preview").small(),
                     )
                     .on_hover_text(CAPTURE_HELP)
                     .clicked()

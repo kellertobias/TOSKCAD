@@ -256,47 +256,60 @@ impl ExportWorkspace {
     /// The Schedule CSV panel.
     pub(super) fn schedule_section(&mut self, ui: &mut egui::Ui, s: &Session, allow_io: bool) {
         ui.separator();
-        let open = egui::CollapsingHeader::new("Schedule CSV")
-            .id_salt("schedule-csv")
-            .open(std::mem::take(&mut self.schedule.reveal).then_some(true))
-            .show(ui, |ui| {
-                let mut spec = self.schedule.spec;
-                crate::schedules::spec_controls(ui, "export-schedule-kind", &mut spec);
-                self.schedule.spec = spec;
-                match self.schedule_preview(s) {
-                    Some(preview) => {
-                        ui.small(format!(
-                            "{} rows × {} columns · revision {}",
-                            preview.rows.len(),
-                            preview.columns.len(),
-                            preview.source.revision
-                        ));
-                    }
-                    None if !self.schedule.jobs.is_empty() => {
-                        ui.small("Building the current schedule…");
-                    }
-                    None => {
-                        ui.small("No current preview");
-                    }
+        let id = ui.make_persistent_id("schedule-csv");
+        let mut state =
+            egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, false);
+        if std::mem::take(&mut self.schedule.reveal) {
+            state.set_open(true);
+        }
+        if super::output_row(
+            ui,
+            "schedule-row",
+            "Schedule CSV",
+            crate::icons::Icon::Grid,
+            state.is_open(),
+            true,
+        )
+        .clicked()
+        {
+            state.toggle(ui);
+        }
+        self.schedule.open = state.is_open();
+        state.show_body_unindented(ui, |ui| {
+            let mut spec = self.schedule.spec;
+            crate::schedules::spec_controls(ui, "export-schedule-kind", &mut spec);
+            self.schedule.spec = spec;
+            match self.schedule_preview(s) {
+                Some(preview) => {
+                    ui.small(format!(
+                        "{} rows × {} columns · revision {}",
+                        preview.rows.len(),
+                        preview.columns.len(),
+                        preview.source.revision
+                    ));
                 }
-                let ready =
-                    allow_io && self.schedule_preview(s).is_some() && self.schedule.jobs.is_empty();
-                if ui
-                    .add_enabled(ready, egui::Button::new("Export CSV…"))
-                    .on_hover_text(
-                        "Write exactly the previewed schedule as CSV to a file you choose",
-                    )
-                    .clicked()
-                {
-                    self.schedule.save = true;
+                None if !self.schedule.jobs.is_empty() => {
+                    ui.small("Building the current schedule…");
                 }
-                if let Some(error) = &self.schedule.error {
-                    ui.colored_label(egui::Color32::LIGHT_RED, error);
-                } else if let Some(written) = &self.schedule.written {
-                    ui.small(written);
+                None => {
+                    ui.small("No current preview");
                 }
-            });
-        self.schedule.open = open.body_returned.is_some();
+            }
+            let ready =
+                allow_io && self.schedule_preview(s).is_some() && self.schedule.jobs.is_empty();
+            if ui
+                .add_enabled(ready, egui::Button::new("Export CSV…"))
+                .on_hover_text("Write exactly the previewed schedule as CSV to a file you choose")
+                .clicked()
+            {
+                self.schedule.save = true;
+            }
+            if let Some(error) = &self.schedule.error {
+                ui.colored_label(egui::Color32::LIGHT_RED, error);
+            } else if let Some(written) = &self.schedule.written {
+                ui.small(written);
+            }
+        });
     }
 }
 

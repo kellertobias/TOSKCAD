@@ -14,10 +14,8 @@ impl Application {
 
     pub(super) fn project_export_ribbon(&mut self, ui: &mut egui::Ui) {
         let tab = self.registry.workspace(Mode::Export).tabs[self.effective_ribbon_tab()].clone();
-        let height =
-            crate::ribbon_ui::tools_height(&self.registry, Mode::Export, &tab, false, None);
         let action = egui::Panel::top("project-export-ribbon")
-            .exact_size(height + RIBBON_BOTTOM_PAD)
+            .exact_size(super::project::project_ribbon_height())
             .frame(
                 egui::Frame::new()
                     .fill(Color32::BLACK)

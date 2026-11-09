@@ -187,6 +187,7 @@ impl Application {
             let project = self.current_mut();
             let editable = !project.editor.dirty();
             egui::Panel::top("project-material-ribbon")
+                .exact_size(project_ribbon_height())
                 .frame(
                     egui::Frame::new()
                         .fill(Color32::BLACK)
@@ -204,10 +205,8 @@ impl Application {
 
     fn project_parameter_ribbon(&mut self, ui: &mut egui::Ui) {
         let tab = &self.registry.workspace(Mode::Parameters).tabs[PARAMETERS_TAB];
-        let height =
-            crate::ribbon_ui::tools_height(&self.registry, Mode::Parameters, tab, false, None);
         let command = egui::Panel::top("project-parameter-ribbon")
-            .exact_size(height + RIBBON_BOTTOM_PAD)
+            .exact_size(project_ribbon_height())
             .frame(
                 egui::Frame::new()
                     .fill(Color32::BLACK)
@@ -289,13 +288,11 @@ impl Application {
                     for (mode, title) in [(Mode::Model, "Model"), (Mode::Motion, "Motion"), (Mode::Drawings, "Drawings")] {
                         contents_section(ui, title, |ui| {
                             let command = Command::Mode(mode);
-                            if mode != Mode::Model {
-                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                    if ui.add_enabled(self.enabled(command), egui::Button::new(format!("Open {title}")).frame(false)).clicked() {
-                                        action = Some(command);
-                                    }
-                                });
-                            }
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                if ui.add_enabled(self.enabled(command), egui::Button::new(format!("Open {title}")).small()).clicked() {
+                                    action = Some(command);
+                                }
+                            });
                         });
                         match mode {
                             Mode::Model if parts + assemblies + instances + sketches == 0 => {
@@ -406,6 +403,10 @@ impl Application {
                     .show_with_min_table_width(ui, &project.session, TABLE_MIN_WIDTH);
             });
     }
+}
+
+pub(super) fn project_ribbon_height() -> f32 {
+    crate::ribbon_ui::workspace_tool_height() + RIBBON_BOTTOM_PAD
 }
 
 pub(super) fn contents_section(

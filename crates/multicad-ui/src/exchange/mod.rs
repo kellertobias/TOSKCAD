@@ -20,6 +20,30 @@ use std::{
     collections::{BTreeMap, VecDeque},
     path::Path,
 };
+
+fn output_row(
+    ui: &mut egui::Ui,
+    id: impl std::hash::Hash + std::fmt::Debug,
+    label: &str,
+    icon: Icon,
+    selected: bool,
+    enabled: bool,
+) -> egui::Response {
+    let mark = ui.id().with(id);
+    let width = ui.available_width();
+    ui.add_enabled_ui(enabled, |ui| {
+        let button = egui::Button::selectable(selected, label)
+            .left_text(egui::Atom::custom(mark, egui::vec2(18., 16.)))
+            .min_size(egui::vec2(width, 28.))
+            .truncate()
+            .atom_ui(ui);
+        if let Some(rect) = button.rect(mark) {
+            crate::icons::paint_sized(ui, icon, rect.center(), ui.visuals().text_color(), 15.);
+        }
+        button.response
+    })
+    .inner
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ExportTool {
     NewSet,
@@ -784,8 +808,8 @@ impl ExportWorkspace {
                             } else {
                                 !quick_print && selected_plate.is_none() && self.selected == Some(id)
                             };
-                            if ui
-                                .add_enabled(can_switch, egui::Button::selectable(active, name))
+                            let icon = if plate { crate::icons::Icon::PrintPlate } else { crate::icons::Icon::Export };
+                            if output_row(ui, id, name, icon, active, can_switch)
                                 .on_hover_text(if plate { "Print plate" } else { "Model export" })
                                 .clicked()
                                 && !active
@@ -799,7 +823,7 @@ impl ExportWorkspace {
                         }
                         if plates.is_some() {
                             ui.separator();
-                            if ui.add_enabled(can_switch, egui::Button::selectable(quick_print, "Quick 3MF package"))
+                            if output_row(ui, "quick-3mf", "Quick 3MF package", crate::icons::Icon::PrintPlate, quick_print, can_switch)
                                 .on_hover_text("Package the current Model selection or a saved tag at its Model positions")
                                 .clicked() && !quick_print
                             {
