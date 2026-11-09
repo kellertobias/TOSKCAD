@@ -5,6 +5,7 @@ pub mod display;
 pub mod manufacturing;
 pub mod orthogonal;
 pub mod orthogonal_boundary;
+pub mod planar_projection;
 pub mod polygon;
 pub mod prism;
 pub mod step;

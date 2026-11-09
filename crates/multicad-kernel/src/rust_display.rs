@@ -160,7 +160,7 @@ fn subtract(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
 
 // Return analytic edge ordinals in loop order. These are the same ordinals
 // published by the prism topology and are distinct from mesh indices.
-fn planar_loops(solid: &Solid, face: u32) -> Vec<Vec<(u32, bool)>> {
+pub(crate) fn planar_loops(solid: &Solid, face: u32) -> Vec<Vec<(u32, bool)>> {
     if let Some((body, _)) = solid.orthogonal_body() {
         return body.loops(face);
     }

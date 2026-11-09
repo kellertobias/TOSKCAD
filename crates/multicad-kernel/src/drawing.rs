@@ -2,6 +2,7 @@
 //! caller's geometry worker; only owned immutable curve records leave it.
 use crate::{GeometryError, GeometryErrorKind, GeometryPolicy, PlaneFrame, Solid, ffi};
 use multicad_core::drawings::{VectorCurve, VectorRole};
+mod planar;
 
 #[derive(Clone, Copy, Debug)]
 pub struct DrawingProjection {
@@ -114,6 +115,34 @@ pub fn project_drawing(
             "Invalid drawing source, tolerance, section/detail region or budget",
         ));
     }
+    for input in solids {
+        if input.hatch.is_some_and(|h| {
+            !h.angle_rad.is_finite()
+                || !h.spacing_mm.is_finite()
+                || (matches!(
+                    h.pattern,
+                    multicad_core::materials::HatchPattern::Alternating
+                        | multicad_core::materials::HatchPattern::Dots
+                ) && (!h.line_width_mm.is_finite() || h.line_width_mm <= 0.))
+                || !(1e-5..=1e7).contains(&h.spacing_mm)
+        }) {
+            return Err(err(
+                GeometryErrorKind::Input,
+                "Invalid section hatch specification",
+            ));
+        }
+    }
+    if solids.iter().any(|input| input.solid.uses_rust_geometry()) {
+        if options.section_offset_mm.is_some()
+            || solids.iter().any(|input| !input.solid.uses_rust_geometry())
+        {
+            return Err(err(
+                GeometryErrorKind::Unsupported,
+                "Rust drawing projection requires Rust solids and a view without a section cut",
+            ));
+        }
+        return planar::project(solids, options);
+    }
     let (center, radius) = options.detail.unwrap_or(([0.; 2], 1.));
     let data = ffi::DrawingOptionsData {
         frame,
@@ -139,21 +168,6 @@ pub fn project_drawing(
     };
     let mut job = ffi::drawing_job(&data).map_err(|e| err(GeometryErrorKind::Native, e))?;
     for input in solids {
-        if input.hatch.is_some_and(|h| {
-            !h.angle_rad.is_finite()
-                || !h.spacing_mm.is_finite()
-                || (matches!(
-                    h.pattern,
-                    multicad_core::materials::HatchPattern::Alternating
-                        | multicad_core::materials::HatchPattern::Dots
-                ) && (!h.line_width_mm.is_finite() || h.line_width_mm <= 0.))
-                || !(1e-5..=1e7).contains(&h.spacing_mm)
-        }) {
-            return Err(err(
-                GeometryErrorKind::Input,
-                "Invalid section hatch specification",
-            ));
-        }
         let hatch = input.hatch.unwrap_or(DrawingHatch {
             angle_rad: 0.,
             spacing_mm: 1.,
