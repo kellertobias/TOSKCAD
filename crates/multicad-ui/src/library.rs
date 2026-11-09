@@ -466,14 +466,17 @@ fn darken_example_background(image: &mut egui::ColorImage) {
         let gray = (u16::from(legacy_gray(2 * row)) + u16::from(legacy_gray(2 * row + 1))) / 2;
         egui::Color32::from_rgb(gray as u8, gray as u8, (gray + 4) as u8)
     };
-    let rows = image.pixels.chunks_exact(SIZE[0]);
-    if !rows.enumerate().all(|(y, row)| {
-        let background = legacy(y);
-        row[0] == background && row[SIZE[0] - 1] == background
-    }) {
+    let (rows, remainder) = image.pixels.as_chunks_mut::<{ SIZE[0] }>();
+    if !remainder.is_empty()
+        || rows.len() != SIZE[1]
+        || !rows.iter().enumerate().all(|(y, row)| {
+            let background = legacy(y);
+            row[0] == background && row[SIZE[0] - 1] == background
+        })
+    {
         return;
     }
-    for (y, row) in image.pixels.chunks_exact_mut(SIZE[0]).enumerate() {
+    for (y, row) in rows.iter_mut().enumerate() {
         let background = legacy(y);
         for pixel in row {
             if *pixel == background {
