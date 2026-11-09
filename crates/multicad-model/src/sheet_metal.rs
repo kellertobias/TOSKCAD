@@ -23,6 +23,9 @@ use multicad_kernel::{
     BooleanOperation, CurvedEdge2d, CurvedProfile, GeometryPolicy, PlaneFrame, Solid,
 };
 
+mod profile_cut;
+pub(crate) use profile_cut::build_profile_cut;
+
 const TOLERANCE_MM: f64 = 1e-3;
 
 fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
@@ -46,6 +49,7 @@ fn unit(a: [f64; 3]) -> [f64; 3] {
 /// the material runs `thickness_mm` along `thickness_direction`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SheetLayout {
+    forming_feature: EntityId,
     pub frame: PlaneFrame,
     pub thickness_direction: [f64; 3],
     pub thickness_mm: f64,
@@ -55,6 +59,8 @@ pub struct SheetLayout {
     pub flanges: Vec<PlacedFlange>,
     pub cutouts: Vec<ResolvedCutout>,
     pub patterns: Vec<model::ResolvedPattern>,
+    pub(crate) profile_cuts: Vec<profile_cut::ProfileCut>,
+    developed: Option<PlanarContours>,
 }
 impl SheetLayout {
     pub(crate) fn space(&self) -> SheetSpace {
@@ -186,6 +192,7 @@ pub(crate) fn build(
     let t = sheet.thickness_mm;
     let flanges = place_flanges(&base, &sheet.flanges).map_err(m)?;
     let layout = SheetLayout {
+        forming_feature: id,
         frame: base.frame,
         thickness_direction: direction,
         thickness_mm: t,
@@ -194,6 +201,8 @@ pub(crate) fn build(
         flanges,
         cutouts: sheet.cutouts.clone(),
         patterns: sheet.patterns.clone(),
+        profile_cuts: vec![],
+        developed: None,
     };
     let space = layout.space();
     let mut solid = Solid::extrude_curved_profile_vector_named(
@@ -240,7 +249,7 @@ pub(crate) fn build(
     }
     for cutout in &layout.cutouts {
         let tool = space
-            .cutout_solid(cutout, &layout.flanges, policy)
+            .cutout_solid(id, cutout, &layout.flanges, policy)
             .map_err(m)?;
         let before = solid.volume_mm3().map_err(g)?;
         let which = cutout.source.id();
@@ -447,6 +456,10 @@ fn flat_solid(layout: &SheetLayout, policy: GeometryPolicy) -> Result<(Solid, f6
         holes.push(flat_cutout(c, &layout.flanges, t, k).ok_or("A cutout names a missing flange")?);
         area -= c.shape.area_mm2();
     }
+    for cut in &layout.profile_cuts {
+        holes.push(cut.outline.clone());
+        area -= cut.area_mm2;
+    }
     let solid = Solid::extrude_developed_sheet_profile(
         &CurvedProfile {
             frame: layout.frame,
@@ -467,6 +480,9 @@ pub(crate) fn flat_contours(
     layout: &SheetLayout,
     policy: GeometryPolicy,
 ) -> Result<PlanarContours, String> {
+    if let Some(contours) = &layout.developed {
+        return Ok(contours.clone());
+    }
     let (solid, area) = flat_solid(layout, policy)?;
     let outward = scale(layout.thickness_direction, -1.);
     let faces = solid.faces().map_err(|e| e.to_string())?;
@@ -609,14 +625,15 @@ impl Model {
         feature: EntityId,
         part: EntityId,
     ) -> Option<(&SheetLayout, &Solid)> {
-        let layout = self.snapshot().sheet_layouts.get(&feature)?;
         let head = self.sheet_head(document, part)?;
+        let layouts = &self.snapshot().sheet_layouts;
+        let layout = layouts.get(&head).or_else(|| layouts.get(&feature))?;
         Some((layout, self.solid(head)?))
     }
     fn final_sheet_layouts<'a>(
         &'a self,
         document: &'a Document,
-    ) -> impl Iterator<Item = (EntityId, EntityId, &'a SheetLayout)> + 'a {
+    ) -> impl Iterator<Item = (EntityId, &'a SheetLayout)> + 'a {
         let snapshot = self.snapshot();
         let full = snapshot.scope == crate::EvaluationScope::Full
             && snapshot.stamp.document == document.id();
@@ -625,8 +642,7 @@ impl Model {
             .flatten()
             .filter_map(move |(&part, &feature)| {
                 let layout = snapshot.sheet_layouts.get(&feature)?;
-                (self.sheet_head(document, part) == Some(feature))
-                    .then_some((part, feature, layout))
+                (self.sheet_head(document, part) == Some(feature)).then_some((part, layout))
             })
     }
 
@@ -634,7 +650,7 @@ impl Model {
     /// An unbent sheet has an empty schedule. Scoped evaluations omit schedules.
     pub fn sheet_bend_schedules(&self, document: &Document) -> Vec<(EntityId, Vec<BendRecord>)> {
         self.final_sheet_layouts(document)
-            .map(|(part, _, layout)| (part, bend_records(layout)))
+            .map(|(part, layout)| (part, bend_records(layout)))
             .collect()
     }
 
@@ -642,7 +658,7 @@ impl Model {
     /// Source-only evaluations cannot establish final physical Part ownership.
     pub fn sheet_authoring_faces(&self, document: &Document) -> Vec<SheetFaceFrame> {
         let mut frames = Vec::new();
-        for (part, feature, layout) in self.final_sheet_layouts(document) {
+        for (part, layout) in self.final_sheet_layouts(document) {
             let space = layout.space();
             let faces =
                 std::iter::once(CutoutFace::Base).chain(layout.flanges.iter().map(|flange| {
@@ -654,7 +670,7 @@ impl Model {
                 if let Ok((frame, normal)) = space.face_frame(face, &layout.flanges) {
                     frames.push(SheetFaceFrame {
                         part,
-                        feature,
+                        feature: layout.forming_feature,
                         face,
                         origin_mm: frame.origin,
                         u: frame.u,

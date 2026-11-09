@@ -8,7 +8,7 @@ use crate::{
 };
 use multicad_core::{
     document::{Document, DocumentError, EntityId},
-    manufacturing::PlanarContours,
+    manufacturing::{PlanarContours, PlanarEdge},
     materials::StockKind,
     model::{self, CutoutFace, ResolvedShape, ValueSource},
     references::ReferenceFrame,
@@ -82,8 +82,8 @@ pub struct DevelopedPattern {
 
 impl Model {
     /// Unfold one sheet Part. The Part keeps its folded geometry; the
-    /// pattern is developed from the same feature. Refused for Parts that
-    /// are not sheet parts or that later features change.
+    /// pattern includes all compatible sketch cuts in the current producer.
+    /// Other downstream modifications and consumed Parts cannot be developed.
     pub fn unfold(
         &self,
         document: &Document,
@@ -95,20 +95,17 @@ impl Model {
             .ok_or_else(|| error(Some(part), "Choose a Part to unfold"))?;
         let feature = model::sheet_feature(document, part)
             .ok_or_else(|| error(Some(part), format!("{name} is not a sheet part")))?;
-        if self.sheet_head(document, part) != Some(feature) {
-            return Err(error(
-                Some(part),
-                format!(
-                    "{name} has features after its sheet feature, or is consumed; \
-                     they are not developed"
-                ),
-            ));
-        }
         let layout = self
-            .snapshot()
-            .sheet_layouts
-            .get(&feature)
-            .ok_or_else(|| error(Some(feature), "The sheet part has not been evaluated"))?;
+            .sheet_head(document, part)
+            .and_then(|head| self.snapshot().sheet_layouts.get(&head))
+            .ok_or_else(|| {
+                error(
+                    Some(part),
+                    format!(
+                        "{name} is unevaluated, consumed, or has a feature that cannot be developed"
+                    ),
+                )
+            })?;
         let e = |e: DocumentError| error(Some(feature), e);
         let parameters =
             multicad_core::parameters::evaluate(document).map_err(|e| error(None, e))?;
@@ -147,6 +144,17 @@ impl Model {
                 });
             }
             outlines.push((c.source.id(), c.face, outline));
+        }
+        for c in &layout.profile_cuts {
+            let id = format!("profile_cut.{}", c.feature);
+            if let [CurvedEdge2d::Circle { center, radius_mm }] = c.outline.as_slice() {
+                drills.push(DrillPoint {
+                    id: id.clone(),
+                    center: *center,
+                    diameter_mm: radius_mm * 2.,
+                });
+            }
+            outlines.push((id, c.face, c.outline.clone()));
         }
         let mut diagnostics = vec![];
         // Hole-to-bend proximity in flat coordinates.
@@ -298,18 +306,44 @@ fn local_bounds(
     };
     let mut a = (f64::INFINITY, f64::NEG_INFINITY);
     let mut o = (f64::INFINITY, f64::NEG_INFINITY);
-    let mut add = |p: [f64; 2], r: f64| {
-        let q = local(p);
+    let mut add = |q: [f64; 2], r: f64| {
         a = (a.0.min(q[0] - r), a.1.max(q[0] + r));
         o = (o.0.min(q[1] - r), o.1.max(q[1] + r));
     };
+    let reflected = along[0] * outward[1] - along[1] * outward[0] < 0.;
     for e in outline {
-        match e {
-            CurvedEdge2d::Line { a, b } | CurvedEdge2d::Arc { a, b, .. } => {
-                add(*a, 0.);
-                add(*b, 0.);
+        match *e {
+            CurvedEdge2d::Line { a, b } => {
+                add(local(a), 0.);
+                add(local(b), 0.);
             }
-            CurvedEdge2d::Circle { center, radius_mm } => add(*center, *radius_mm),
+            CurvedEdge2d::Arc {
+                a,
+                b,
+                center,
+                clockwise,
+            } => {
+                let [a, b, center] = [a, b, center].map(local);
+                let start = (a[1] - center[1]).atan2(a[0] - center[0]);
+                let end = (b[1] - center[1]).atan2(b[0] - center[0]);
+                let tau = std::f64::consts::TAU;
+                let sweep_rad = if clockwise ^ reflected {
+                    -(start - end).rem_euclid(tau)
+                } else {
+                    (end - start).rem_euclid(tau)
+                };
+                let bounds = PlanarEdge::Arc {
+                    a,
+                    b,
+                    center,
+                    sweep_rad,
+                }
+                .bounds();
+                for point in bounds {
+                    add(point, 0.);
+                }
+            }
+            CurvedEdge2d::Circle { center, radius_mm } => add(local(center), radius_mm),
             CurvedEdge2d::BSpline(_) => {}
         }
     }

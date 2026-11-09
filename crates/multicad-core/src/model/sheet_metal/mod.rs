@@ -11,10 +11,12 @@
 mod edges;
 mod hardware;
 mod prepare;
+mod profile_cut;
 mod resolve;
 pub use edges::*;
 pub use hardware::*;
 pub use prepare::*;
+pub use profile_cut::*;
 pub use resolve::*;
 
 use super::{
@@ -454,6 +456,12 @@ pub fn sheet_feature(document: &Document, part: EntityId) -> Option<EntityId> {
 pub(super) fn validate_document(document: &Document) -> Result<(), DocumentError> {
     for e in sheet_parts(document) {
         read_sheet(document, e.id)?;
+    }
+    for entity in document.entities() {
+        if matches!(&entity.data, EntityData::Feature { definition, .. } if definition.type_id == SHEET_PROFILE_CUT_TYPE)
+        {
+            read_sheet_profile_cut(document, entity.id)?;
+        }
     }
     validate_hardware(document)
 }

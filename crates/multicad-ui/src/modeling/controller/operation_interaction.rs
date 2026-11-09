@@ -85,6 +85,10 @@ impl ModelToolController {
     /// Extrude (new feature or feature edit) or Revolve owns a viewport gizmo.
     pub fn operation_gizmo_active(&self) -> bool {
         self.operation.guide.is_some()
+            && !self
+                .operations
+                .as_ref()
+                .is_some_and(OperationControls::through_sheet)
             && matches!(
                 self.form,
                 Some(ModelForm::Extrude(_) | ModelForm::Revolve(_))

@@ -473,7 +473,7 @@ impl Application {
                 Command::Modeling(_) | Command::EquipmentPreset(_) | Command::WoodPreset(_) => {
                     self.current().sketch.model_creation_form_active()
                 }
-                Command::SheetFlange | Command::SheetCutout | Command::SheetFasteners => {
+                Command::SheetFlange | Command::SheetFasteners => {
                     self.current().sketch.model_active()
                 }
                 Command::Drawing(_) => {
@@ -1495,10 +1495,7 @@ impl Application {
                 self.tab = self.workbench_tab(Mode::Model, command);
                 self.message = "Transfer features · choose source geometry and receiving faces in the Inspector".into();
             }
-            Command::SheetFlange
-            | Command::SheetCutout
-            | Command::SheetFasteners
-            | Command::SheetView => {
+            Command::SheetFlange | Command::SheetFasteners | Command::SheetView => {
                 if !args.is_empty() {
                     return Err("This Sheet Metal tool takes no command arguments".into());
                 }
@@ -1663,10 +1660,9 @@ impl Application {
             }
             Command::Apply => self.current().editor.can_apply(&self.current().session),
             Command::Discard | Command::Preview => self.current().editor.dirty(),
-            Command::SheetFlange
-            | Command::SheetCutout
-            | Command::SheetFasteners
-            | Command::SheetView => self.sheet_action_ready(command).is_ok(),
+            Command::SheetFlange | Command::SheetFasteners | Command::SheetView => {
+                self.sheet_action_ready(command).is_ok()
+            }
             Command::Modeling(_) => {
                 matches!(self.mode, Mode::Sketch | Mode::Model)
                     && !self.current().editor.dirty()
@@ -2372,10 +2368,7 @@ impl Application {
     fn command_help(&self, command: Command, label: &str, ctx: &egui::Context) -> String {
         if matches!(
             command,
-            Command::SheetFlange
-                | Command::SheetCutout
-                | Command::SheetFasteners
-                | Command::SheetView
+            Command::SheetFlange | Command::SheetFasteners | Command::SheetView
         ) && let Err(reason) = self.sheet_action_ready(command)
         {
             return reason;

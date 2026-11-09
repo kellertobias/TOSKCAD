@@ -51,7 +51,6 @@ mod profile_connection_host;
 mod scale_host_tests;
 #[path = "sketch_screw_connection_host.rs"]
 mod screw_connection_host;
-mod sheet_cutout;
 #[path = "sketch_snap.rs"]
 mod snap;
 #[path = "sketch_snap_host.rs"]
@@ -248,6 +247,7 @@ pub struct SketchEditor {
     review_scene: Option<std::sync::Arc<crate::viewport::Scene>>,
     context_key: Option<(crate::viewport::SceneStamp, u64, Option<EntityId>)>,
     contexts: std::collections::BTreeMap<EntityId, crate::viewport::Transform>,
+    sketch_occurrences: std::collections::BTreeMap<EntityId, multicad_core::model::OccurrencePath>,
 }
 impl Default for SketchEditor {
     fn default() -> Self {
@@ -352,6 +352,7 @@ impl Default for SketchEditor {
             review_scene: None,
             context_key: None,
             contexts: Default::default(),
+            sketch_occurrences: Default::default(),
         }
     }
 }
@@ -2126,6 +2127,11 @@ impl SketchEditor {
             self.evaluated = Some(report.clone());
         }
         self.occurrence = occurrence;
+        if let PlaneChoice::Face(face) = &preview.choice
+            && let Some(path) = &face.occurrence_path
+        {
+            self.sketch_occurrences.insert(id, path.clone());
+        }
         self.refresh_contexts(session.document(), session.revision());
         self.orient_to(preview.world_frame);
         self.message =
@@ -2152,8 +2158,18 @@ impl SketchEditor {
             .entities()
             .filter(|e| matches!(e.data, EntityData::Sketch { .. }))
             .filter_map(|e| {
-                crate::sketch_context::occurrence(doc, e.id, scene, self.occurrence)
-                    .map(|(_, pose)| (e.id, pose))
+                self.sketch_occurrences
+                    .get(&e.id)
+                    .filter(|path| {
+                        self.occurrence
+                            .is_none_or(|preferred| preferred == path.root)
+                    })
+                    .and_then(|path| crate::sketch_context::exact_occurrence(scene, path))
+                    .or_else(|| {
+                        crate::sketch_context::occurrence(doc, e.id, scene, self.occurrence)
+                            .map(|(_, pose)| pose)
+                    })
+                    .map(|pose| (e.id, pose))
             })
             .collect();
         self.context_key = Some(key);
@@ -3378,15 +3394,26 @@ impl SketchEditor {
                             if self.model_active() {return;}
                         }
                         if let Some((feature, _)) = self.selected_applied_feature(session.document()) {
-                            let ready = self.feature_edit_ready(session, feed, feature);
-                            let operation = crate::model_tree::feature_operation(session.document(), feature);
-                            if ui.add_enabled(ready, egui::Button::new(format!("Edit {operation}")))
-                                .on_hover_text("Reopen this operation’s saved controls. Applying changes rebuilds the features that depend on it.")
-                                .on_disabled_hover_text("Requires an installed native modeling provider, a supported source feature, and no pending tool")
-                                .clicked()
-                                && let Err(error) = self.begin_feature_edit(session, resources, feed, feature, Channel::Ui)
-                            {
-                                self.message = error;
+                            if let Ok(cut) = multicad_core::model::read_sheet_profile_cut(session.document(), feature) {
+                                let ready = self.primitive_ready() && !self.editing && !self.picking;
+                                if ui.add_enabled(ready, egui::Button::new("Edit cut sketch"))
+                                    .on_hover_text("Edit the profile that drives this through-sheet cut.")
+                                    .clicked()
+                                    && let Err(error) = self.open_at(session.document(), cut.profile.sketch, session.revision())
+                                {
+                                    self.message = error;
+                                }
+                            } else {
+                                let ready = self.feature_edit_ready(session, feed, feature);
+                                let operation = crate::model_tree::feature_operation(session.document(), feature);
+                                if ui.add_enabled(ready, egui::Button::new(format!("Edit {operation}")))
+                                    .on_hover_text("Reopen this operation’s saved controls. Applying changes rebuilds the features that depend on it.")
+                                    .on_disabled_hover_text("Requires an installed native modeling provider, a supported source feature, and no pending tool")
+                                    .clicked()
+                                    && let Err(error) = self.begin_feature_edit(session, resources, feed, feature, Channel::Ui)
+                                {
+                                    self.message = error;
+                                }
                             }
                             if self.model_active() {return;}
                         }
@@ -4365,7 +4392,6 @@ impl SketchEditor {
                 && !self.picking
                 && !self.moving
                 && !self.model.sheet_edge_picking()
-                && self.model.sheet_cutout_target().is_none()
                 && !self.has_pending_edits()
                 && face_region.is_none();
             let display = if self.architecture.planar() {
@@ -4480,9 +4506,6 @@ impl SketchEditor {
         }
         if let Some(guide) = &cabinet_guide {
             guide.paint(&painter, self.camera, rect);
-        }
-        if !self.measurement.active() {
-            self.sheet_cutout_viewport(session, scene.as_deref(), &response);
         }
         if !self.measurement.active()
             && self.model.sheet_edge_picking()

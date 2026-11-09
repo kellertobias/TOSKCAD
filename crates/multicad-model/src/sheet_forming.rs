@@ -331,13 +331,32 @@ impl SheetSpace {
     /// The cutting prism of a cutout in folded coordinates.
     pub fn cutout_solid(
         &self,
+        feature: EntityId,
         cutout: &ResolvedCutout,
         flanges: &[PlacedFlange],
         policy: GeometryPolicy,
     ) -> Result<Solid, String> {
         let (frame, normal) = self.face_frame(cutout.face, flanges)?;
-        let through = normal.map(|c| c * self.thickness_mm);
-        self.prism(frame, shape_edges(&cutout.shape), through, policy)
+        let outer = shape_edges(&cutout.shape);
+        let name = cutout.source.id();
+        let origins: Vec<_> = (0..outer.len())
+            .map(|index| Origin {
+                source: feature,
+                role: format!("sheet.{name}.edge.{index}"),
+            })
+            .collect();
+        Solid::extrude_curved_profile_vector_named(
+            &CurvedProfile {
+                frame,
+                outer,
+                holes: vec![],
+            },
+            normal.map(|c| c * self.thickness_mm),
+            feature,
+            &origins,
+            policy,
+        )
+        .map_err(|e| e.to_string())
     }
 }
 pub fn polygon_edges(points: &[[f64; 2]]) -> Vec<CurvedEdge2d> {

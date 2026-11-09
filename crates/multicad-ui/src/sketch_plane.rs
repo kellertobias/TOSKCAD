@@ -14,11 +14,16 @@ use multicad_core::{
 };
 use std::sync::Arc;
 
+mod folded_sheet;
+pub(crate) use folded_sheet::attached_sheet_face;
+
 #[derive(Clone, Debug)]
 pub struct FacePlane {
     /// Canonical producer Feature, distinct from the displayed occurrence.
     pub producer: EntityId,
     pub occurrence: EntityId,
+    pub(crate) occurrence_path: Option<multicad_core::model::OccurrencePath>,
+    display_key: TopologyKey,
     pub stamp: SceneStamp,
     pub snapshot: TopologySnapshot,
     pub key: TopologyKey,
@@ -173,12 +178,26 @@ fn preview(
             ) {
                 return Err("The selected geometry has no active modeling feature".into());
             }
-            let occurrence = scene
-                .instances()
-                .iter()
-                .find(|i| i.id == face.occurrence && i.geometry == face.producer)
-                .ok_or("The selected occurrence is no longer available")?;
-            if occurrence.transform != face.occurrence_transform {
+            let transform = if let Some(path) = &face.occurrence_path {
+                scene
+                    .assembly_evaluation()
+                    .into_iter()
+                    .flat_map(|info| &info.leaves)
+                    .find(|leaf| {
+                        &leaf.path == path
+                            && leaf.producer == face.producer
+                            && scene.displays_instance(path.root)
+                    })
+                    .and_then(|leaf| Transform::from_rigid_pose(leaf.pose).ok())
+            } else {
+                scene
+                    .instances()
+                    .iter()
+                    .find(|i| i.id == face.occurrence && i.geometry == face.producer)
+                    .map(|i| i.transform)
+            }
+            .ok_or("The selected occurrence is no longer available")?;
+            if transform != face.occurrence_transform {
                 return Err("The selected occurrence moved; select its face again".into());
             }
             GeometryIntent::capture(&face.snapshot, face.key)
@@ -196,7 +215,7 @@ fn preview(
                 .map_err(|_| "The selected planar frame is invalid")?;
             (
                 from_reference(frame),
-                from_reference(occurrence.transform.frame(frame)),
+                from_reference(transform.frame(frame)),
             )
         }
     };
@@ -257,32 +276,46 @@ fn face_from_hit(
     let scene = context
         .scene
         .ok_or("Wait for the current model before choosing a face")?;
-    if !matches!(
+    if let Some(face) = cached.filter(|face| {
+        face.stamp == scene.stamp()
+            && face.occurrence == hit.instance
+            && face.display_key == hit.key
+    }) {
+        return Ok(Some(PlaneChoice::Face(face.clone())));
+    }
+    let (snapshot, key, occurrence_path, transform) = if matches!(
         context.document.get(hit.geometry).map(|e| &e.data),
         Some(EntityData::Feature {
             suppressed: false,
             ..
         })
     ) {
+        let snapshot = scene
+            .geometry_snapshot(hit.geometry)
+            .ok_or("The face source is unavailable")?;
+        let transform = scene
+            .instances()
+            .iter()
+            .find(|i| i.id == hit.instance && i.geometry == hit.geometry)
+            .ok_or("The face occurrence is unavailable")?
+            .transform;
+        (snapshot, hit.key, None, transform)
+    } else if matches!(
+        context.document.get(hit.geometry).map(|e| &e.data),
+        Some(EntityData::Assembly { .. })
+    ) {
+        let (snapshot, key, path, transform) =
+            folded_sheet::aggregate_sheet_face(context.document, scene, hit)?;
+        (snapshot, key, Some(path), transform)
+    } else {
         return Err("Only geometry from an active modeling feature can host a sketch".into());
-    }
-    if let Some(face) = cached.filter(|face| {
-        face.stamp == scene.stamp()
-            && face.producer == hit.geometry
-            && face.occurrence == hit.instance
-            && face.key == hit.key
-    }) {
-        return Ok(Some(PlaneChoice::Face(face.clone())));
-    }
-    let snapshot = scene
-        .geometry_snapshot(hit.geometry)
-        .ok_or("The face source is unavailable")?;
-    GeometryIntent::capture(&snapshot, hit.key)
+    };
+    GeometryIntent::capture(&snapshot, key)
         .map_err(|_| "This face has no unique persistent source; choose another face")?;
     let element = snapshot
         .elements
         .iter()
-        .find(|e| e.key == hit.key)
+        .find(|e| e.key == key)
         .ok_or("The face source is unavailable")?;
     if element.frames.is_empty() {
         return Err(
@@ -299,21 +332,18 @@ fn face_from_hit(
         .frame
         .validate()
         .map_err(|_| "The face has an invalid planar reference frame")?;
-    let occurrence = scene
-        .instances()
-        .iter()
-        .find(|i| i.id == hit.instance)
-        .ok_or("The face occurrence is unavailable")?;
     Ok(Some(PlaneChoice::Face(Arc::new(FacePlane {
-        producer: hit.geometry,
+        producer: snapshot.owner,
         occurrence: hit.instance,
+        occurrence_path,
+        display_key: hit.key,
         stamp: scene.stamp(),
         snapshot,
-        key: hit.key,
+        key,
         anchor: anchored.origin.clone(),
         local_frame: from_reference(anchored.frame),
-        world_frame: from_reference(occurrence.transform.frame(anchored.frame)),
-        occurrence_transform: occurrence.transform,
+        world_frame: from_reference(transform.frame(anchored.frame)),
+        occurrence_transform: transform,
     }))))
 }
 fn planes(context: PlaneContext<'_>) -> Vec<(PlaneChoice, Frame)> {

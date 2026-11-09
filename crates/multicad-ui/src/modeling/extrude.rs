@@ -132,6 +132,7 @@ impl Draft {
         &self,
         document: &Document,
         capabilities: ExtrudeCapabilities,
+        through_sheet: bool,
     ) -> Result<ExtrudeRequest, String> {
         if !capabilities.new_body {
             return Err("The native extrusion provider is unavailable".into());
@@ -146,6 +147,9 @@ impl Draft {
         }
         if self.request.outputs.is_empty() {
             return Err("Select at least one exact closed profile".into());
+        }
+        if through_sheet {
+            return Ok(self.request.clone());
         }
         if self.picker.active.is_some() {
             return Err("Finish or cancel end-target selection before Preview".into());
@@ -230,8 +234,15 @@ pub struct ExtrudePanel {
     draft: Option<Draft>,
     error: Option<String>,
     picking_available: bool,
+    through_sheet: bool,
 }
 impl ExtrudePanel {
+    pub(super) fn set_through_sheet(&mut self, through_sheet: bool) {
+        self.through_sheet = through_sheet;
+        if through_sheet && let Some(draft) = &mut self.draft {
+            draft.picker.cancel();
+        }
+    }
     pub(super) fn remember(&mut self, request: &ExtrudeRequest) {
         if let Some(draft) = &mut self.draft {
             draft.remember(request);
@@ -428,10 +439,11 @@ impl ExtrudePanel {
         document: &Document,
         capabilities: ExtrudeCapabilities,
     ) -> Result<ExtrudeRequest, String> {
-        self.draft
-            .as_ref()
-            .ok_or("Start Extrude first")?
-            .request(document, capabilities)
+        self.draft.as_ref().ok_or("Start Extrude first")?.request(
+            document,
+            capabilities,
+            self.through_sheet,
+        )
     }
     pub fn show(
         &mut self,
@@ -447,100 +459,109 @@ impl ExtrudePanel {
         ui.small("Preview checks native solids. Apply changes the document only after that preview succeeds.");
         ui.separator();
         let mut changed = false;
-        ui.add_enabled_ui(capabilities.direction, |ui| {
-            changed |= draft.elevation.show(
+        if self.through_sheet {
+            ui.strong("Through sheet");
+            ui.small("Cuts through the full thickness and updates the flat pattern.");
+        } else {
+            ui.add_enabled_ui(capabilities.direction, |ui| {
+                changed |= draft.elevation.show(
                 ui,
                 "Angle from sketch plane",
                 "90° is perpendicular to the sketch plane. This changes direction, not wall taper.",
             );
-            changed |= draft.azimuth.show(
-                ui,
-                "Direction around plane",
-                "Azimuth rotates the tilted extrusion direction around the sketch normal",
-            );
-            changed |= ui
-                .checkbox(&mut draft.reverse, "Reverse direction")
-                .on_hover_text("Reverse the extrusion vector without changing draft/taper")
-                .changed();
-        });
-        if !capabilities.direction {
-            ui.small("Custom direction is unavailable in the native provider.");
-        }
-        ui.add_enabled_ui(capabilities.start_offset, |ui| {
+                changed |= draft.azimuth.show(
+                    ui,
+                    "Direction around plane",
+                    "Azimuth rotates the tilted extrusion direction around the sketch normal",
+                );
+                changed |= ui
+                    .checkbox(&mut draft.reverse, "Reverse direction")
+                    .on_hover_text("Reverse the extrusion vector without changing draft/taper")
+                    .changed();
+            });
+            if !capabilities.direction {
+                ui.small("Custom direction is unavailable in the native provider.");
+            }
+            ui.add_enabled_ui(capabilities.start_offset, |ui| {
             changed |= draft.offset.show(ui, "Start offset", "Move the start along the sketch normal. Distance is then measured along the sweep direction; for a perpendicular sweep, 10 mm offset plus 100 mm distance spans 10–110 mm.");
         });
-        ui.separator();
-        ui.label("Extent");
-        let previous_extent = draft.extent;
-        controls::inspector_combo(ui, "extrude-extent")
-            .selected_text(draft.extent.label())
-            .show_ui(ui, |ui| {
-                for (extent, enabled) in [
-                    (ExtentChoice::OneSided, true),
-                    (ExtentChoice::TwoSided, capabilities.two_sided),
-                    (ExtentChoice::Symmetric, capabilities.symmetric),
-                ] {
-                    ui.add_enabled_ui(enabled, |ui| {
-                        changed |= ui
-                            .selectable_value(&mut draft.extent, extent, extent.label())
-                            .changed();
-                    })
-                    .response
-                    .on_disabled_hover_text("This extent is unavailable in the native provider");
-                }
-            });
-        if previous_extent != draft.extent {
-            draft.picker.cancel();
-        }
-        match draft.extent {
-            ExtentChoice::OneSided => {
-                changed |= show_end(
-                    ui,
-                    document,
-                    ("End condition", EndSide::Forward),
-                    &mut draft.forward,
-                    &mut draft.picker,
-                    capabilities,
-                    self.picking_available,
-                )
-            }
-            ExtentChoice::TwoSided => {
-                changed |= show_end(
-                    ui,
-                    document,
-                    ("Forward end", EndSide::Forward),
-                    &mut draft.forward,
-                    &mut draft.picker,
-                    capabilities,
-                    self.picking_available,
-                );
-                ui.separator();
-                changed |= show_end(
-                    ui,
-                    document,
-                    ("Backward end", EndSide::Backward),
-                    &mut draft.backward,
-                    &mut draft.picker,
-                    capabilities,
-                    self.picking_available,
-                );
-            }
-            ExtentChoice::Symmetric => {
+            ui.separator();
+            ui.label("Extent");
+            let previous_extent = draft.extent;
+            controls::inspector_combo(ui, "extrude-extent")
+                .selected_text(draft.extent.label())
+                .show_ui(ui, |ui| {
+                    for (extent, enabled) in [
+                        (ExtentChoice::OneSided, true),
+                        (ExtentChoice::TwoSided, capabilities.two_sided),
+                        (ExtentChoice::Symmetric, capabilities.symmetric),
+                    ] {
+                        ui.add_enabled_ui(enabled, |ui| {
+                            changed |= ui
+                                .selectable_value(&mut draft.extent, extent, extent.label())
+                                .changed();
+                        })
+                        .response
+                        .on_disabled_hover_text(
+                            "This extent is unavailable in the native provider",
+                        );
+                    }
+                });
+            if previous_extent != draft.extent {
                 draft.picker.cancel();
-                changed|=draft.total.show(ui,"Total distance","Total span centered at the offset start; each side receives half this distance");
-                ui.small("Half of the total distance on each side of the offset start.");
             }
-        }
-        if let Some(message) = draft.picker.message() {
-            ui.colored_label(egui::Color32::LIGHT_YELLOW, message);
-        }
-        ui.add_enabled_ui(capabilities.taper, |ui| {
+            match draft.extent {
+                ExtentChoice::OneSided => {
+                    changed |= show_end(
+                        ui,
+                        document,
+                        ("End condition", EndSide::Forward),
+                        &mut draft.forward,
+                        &mut draft.picker,
+                        capabilities,
+                        self.picking_available,
+                    )
+                }
+                ExtentChoice::TwoSided => {
+                    changed |= show_end(
+                        ui,
+                        document,
+                        ("Forward end", EndSide::Forward),
+                        &mut draft.forward,
+                        &mut draft.picker,
+                        capabilities,
+                        self.picking_available,
+                    );
+                    ui.separator();
+                    changed |= show_end(
+                        ui,
+                        document,
+                        ("Backward end", EndSide::Backward),
+                        &mut draft.backward,
+                        &mut draft.picker,
+                        capabilities,
+                        self.picking_available,
+                    );
+                }
+                ExtentChoice::Symmetric => {
+                    draft.picker.cancel();
+                    changed|=draft.total.show(ui,"Total distance","Total span centered at the offset start; each side receives half this distance");
+                    ui.small("Half of the total distance on each side of the offset start.");
+                }
+            }
+            if let Some(message) = draft.picker.message() {
+                ui.colored_label(egui::Color32::LIGHT_YELLOW, message);
+            }
+            ui.add_enabled_ui(capabilities.taper, |ui| {
             changed |= draft.taper.show(ui, "Taper angle", "Positive taper expands material and shrinks holes by distance × tan(angle), independently along each side. Exact shared-vertex convex polygons and circles only; arcs, splines, topology changes and plane/face limits with nonzero taper are unsupported.");
         });
-        if !capabilities.taper {
-            ui.small("Taper is unavailable in the native provider; the section remains constant.");
-        } else {
-            ui.small("Positive widens material; negative narrows. Preview rejects unsupported profiles or collapsing holes.");
+            if !capabilities.taper {
+                ui.small(
+                    "Taper is unavailable in the native provider; the section remains constant.",
+                );
+            } else {
+                ui.small("Positive widens material; negative narrows. Preview rejects unsupported profiles or collapsing holes.");
+            }
         }
         ui.separator();
         if !capabilities.new_body {
@@ -550,7 +571,7 @@ impl ExtrudePanel {
             );
         }
         form::preview_status(ui, draft.stamp, preview);
-        let validation = draft.request(document, capabilities);
+        let validation = draft.request(document, capabilities, self.through_sheet);
         let valid = validation.is_ok();
         if let Err(error) = &validation {
             ui.colored_label(egui::Color32::LIGHT_RED, error);
@@ -582,22 +603,27 @@ impl ExtrudePanel {
             }
         }
         match requested {
-            Some(Action::Preview) => match draft.request(document, capabilities) {
-                Ok(request) => {
-                    draft.remember(&request);
-                    self.error = None;
-                    Some(ExtrudeEvent::Preview {
-                        stamp: draft.stamp,
-                        request: Box::new(request),
-                    })
+            Some(Action::Preview) => {
+                match draft.request(document, capabilities, self.through_sheet) {
+                    Ok(request) => {
+                        draft.remember(&request);
+                        self.error = None;
+                        Some(ExtrudeEvent::Preview {
+                            stamp: draft.stamp,
+                            request: Box::new(request),
+                        })
+                    }
+                    Err(error) => {
+                        self.error = Some(error);
+                        None
+                    }
                 }
-                Err(error) => {
-                    self.error = Some(error);
-                    None
-                }
-            },
+            }
             Some(Action::Apply)
-                if preview.ready(draft.stamp) && draft.request(document, capabilities).is_ok() =>
+                if preview.ready(draft.stamp)
+                    && draft
+                        .request(document, capabilities, self.through_sheet)
+                        .is_ok() =>
             {
                 Some(ExtrudeEvent::Apply(draft.stamp))
             }

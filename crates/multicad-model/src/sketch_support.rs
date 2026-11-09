@@ -1,7 +1,8 @@
 //! Native supporting-face boundaries, published as owned sketch receipts.
 use crate::{ModelError, error, external::Sources};
 use multicad_core::{
-    document::EntityId,
+    document::{EntityData, EntityId},
+    model,
     project_file::ContentHash,
     references::{GeometryIntent, ReferenceAddress, ReferenceReport, Resolution},
     sketch_regions::{SketchSupport, supporting_face},
@@ -102,6 +103,14 @@ impl Sources<'_> {
             .planar_face_contours_with_sources(key.ordinal, native_frame)
             .map_err(|e| failure(format!("Supporting face boundary unavailable: {e}")))?;
         sourced.contours.frame.origin_mm = frame.origin;
+        let sheet_support = matches!(
+            self.document.get(link.target).map(|e| &e.data),
+            Some(EntityData::Feature { definition, .. })
+                if matches!(
+                    definition.type_id.as_str(),
+                    model::SHEET_TYPE | model::SHEET_PROFILE_CUT_TYPE
+                )
+        );
         let mut seen = BTreeSet::new();
         let edges = sourced
             .edge_keys
@@ -109,8 +118,28 @@ impl Sources<'_> {
             .map(|keys| {
                 keys.iter()
                     .map(|key| {
-                        let mut intent =
-                            GeometryIntent::capture(topology, *key).map_err(failure)?;
+                        let mut intent = GeometryIntent::capture(topology, *key)
+                            .or_else(|message| {
+                                if !sheet_support {
+                                    return Err(message);
+                                }
+                                // Formed edges can share ancestor provenance
+                                // with fragments on another face. Region intent
+                                // needs a unique edge on this support face only.
+                                let edge = topology
+                                    .elements
+                                    .iter()
+                                    .find(|e| e.key == *key && !e.origins.is_empty())
+                                    .ok_or(message)?;
+                                Ok(GeometryIntent {
+                                    id: EntityId::new(),
+                                    kind: key.kind,
+                                    origins: edge.origins.clone(),
+                                    boundary: Some(edge.boundary.clone()),
+                                    attachment: None,
+                                })
+                            })
+                            .map_err(failure)?;
                         // GeometryIntent::capture allocates a reference UUID. Naming a
                         // derived edge instead hashes its plane and semantic selector.
                         intent.id = EntityId::nil();

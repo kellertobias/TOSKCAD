@@ -103,7 +103,6 @@ pub enum Command {
     Assembly(crate::assembly::AssemblyTool),
     Transfer,
     SheetFlange,
-    SheetCutout,
     SheetFasteners,
     SheetView,
     Construction,
@@ -143,10 +142,7 @@ pub struct Registry {
 }
 pub(crate) const METAL_TITLE: &str = "Metal";
 pub(crate) const METAL_GROUPS: [(&str, &[&str]); 3] = [
-    (
-        "Sheet metal",
-        &["sheet", "sheet-flange", "sheet-cutout", "fastener"],
-    ),
+    ("Sheet metal", &["sheet", "sheet-flange", "fastener"]),
     ("Profiles", &["tube", "cope"]),
     ("Weld", &["weld-joint", "weld-list"]),
 ];
@@ -170,10 +166,9 @@ fn command_home(command: Command) -> Option<(Mode, &'static str)> {
         Command::Extension("materials") => Some((Mode::Parameters, "Materials")),
         Command::Extension("drawing-pdf") => Some((Mode::Drawings, "Common")),
         Command::Extension("duplicate") => Some((Mode::Model, "Common")),
-        Command::SheetFlange
-        | Command::SheetCutout
-        | Command::SheetFasteners
-        | Command::SheetView => Some((Mode::Model, METAL_TITLE)),
+        Command::SheetFlange | Command::SheetFasteners | Command::SheetView => {
+            Some((Mode::Model, METAL_TITLE))
+        }
         Command::WoodPreset(_)
         | Command::Modeling(
             ModelingTool::Panel
@@ -527,13 +522,6 @@ impl Default for Registry {
                 Icon::SheetFlange,
                 Command::SheetFlange,
                 &["add-flange"][..],
-            ),
-            (
-                "sheet-cutout",
-                "Add cutout",
-                Icon::Cut,
-                Command::SheetCutout,
-                &["add-sheet-cutout"][..],
             ),
             (
                 "fastener",
@@ -1103,7 +1091,6 @@ mod tests {
             [
                 "sheet",
                 "sheet-flange",
-                "sheet-cutout",
                 "fastener",
                 "tube",
                 "cope",

@@ -898,6 +898,7 @@ pub fn required_capabilities(document: &Document) -> BTreeSet<String> {
                     super::AID_TYPE,
                     super::MEMBER_TYPE,
                     super::SHEET_TYPE,
+                    super::SHEET_PROFILE_CUT_TYPE,
                     super::HARDWARE_TYPE,
                 ]
                 .contains(&definition.type_id.as_str()) =>

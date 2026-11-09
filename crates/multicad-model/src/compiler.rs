@@ -1067,6 +1067,38 @@ impl Compiler {
                     sheet_layouts.insert(id, layout);
                     solid
                 }
+                (model::SHEET_PROFILE_CUT_TYPE, model::SHEET_PROFILE_CUT_SCHEMA) => {
+                    let source = model::read_sheet_profile_cut(document, id)
+                        .map_err(|e| error(Some(id), e))?;
+                    let producer = source.input.producer;
+                    let (Some(prior), Some(sheet)) =
+                        (sheet_layouts.get(&producer), solids.get(&producer))
+                    else {
+                        return Err(error(
+                            Some(id),
+                            "The previous feature no longer produces a developable sheet",
+                        ));
+                    };
+                    let (profile, origins) = profiles.get(
+                        source.profile.sketch,
+                        &source.profile.region,
+                        id,
+                        &solids,
+                        &topologies,
+                        interrupt,
+                    )?;
+                    let (solid, layout) = crate::sheet_metal::build_profile_cut(
+                        prior,
+                        sheet,
+                        id,
+                        source.face,
+                        profile,
+                        &origins,
+                        self.policy,
+                    )?;
+                    sheet_layouts.insert(id, layout);
+                    solid
+                }
                 (model::HARDWARE_TYPE, model::HARDWARE_SCHEMA) => {
                     crate::sheet_hardware::build(document, id, &sheet_layouts, self.policy)?
                 }

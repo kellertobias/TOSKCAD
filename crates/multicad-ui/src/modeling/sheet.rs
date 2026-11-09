@@ -1,9 +1,7 @@
 //! Sheet-metal inspector: place a rectangular base sheet from sheet stock,
 //! or edit an applied sheet part. Thickness comes from the stock; the inside
 //! radius and K-factor come from the stock unless overridden here.
-mod cutout;
 mod edges;
-pub(super) use cutout::CutoutPanel;
 
 use super::{
     FormStamp, PreviewState,

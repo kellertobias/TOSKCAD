@@ -6,12 +6,27 @@ use multicad_core::{
     commands::{Actor, Prepared, Session},
     document::{Document, EntityData, EntityId},
     model::{
-        self, BodyInput, CutTargetProbe, CutTargetQuery, CutTargetSelection, EvaluationOptions,
-        ExtrudeBooleanRequest, ExtrudeRequest, Operation,
+        self, BodyInput, CutTargetProbe, CutTargetQuery, CutTargetSelection, CutoutFace,
+        EvaluationOptions, ExtrudeBooleanRequest, ExtrudeRequest, Operation,
     },
     project_file::ContentHash,
 };
 use std::collections::{BTreeMap, BTreeSet};
+
+fn sheet_support(document: &Document, sketch: EntityId) -> bool {
+    let Some((_, link)) = multicad_core::sketch_regions::supporting_face(document, sketch) else {
+        return false;
+    };
+    document.entities().any(|entity| {
+        matches!(&entity.data, EntityData::Part { features, .. } if features.contains(&link.target))
+            && model::sheet_feature(document, entity.id).is_some()
+    })
+}
+
+pub(super) struct SheetCutTarget {
+    pub input: BodyInput,
+    pub face: CutoutFace,
+}
 
 pub(super) struct OperationControls {
     pub operation: Operation,
@@ -25,9 +40,11 @@ pub(super) struct OperationControls {
     fresh: bool,
     native: BTreeMap<EntityId, BodyInput>,
     context_error: Option<String>,
+    sheet_sketch: Option<EntityId>,
+    pub sheet_target: Result<SheetCutTarget, String>,
 }
 impl OperationControls {
-    pub fn new(document: &Document) -> Self {
+    pub fn new(document: &Document, sketch: Option<EntityId>) -> Self {
         let index = multicad_core::hierarchy::Index::new(document).ok();
         let mut choices: Vec<_> = document
             .entities()
@@ -89,6 +106,8 @@ impl OperationControls {
             context_error: Some(
                 "Wait for a source-current native model before choosing explicit targets".into(),
             ),
+            sheet_sketch: sketch.filter(|id| sheet_support(document, *id)),
+            sheet_target: Err("Wait for the current sheet to resolve its sketch support".into()),
         }
     }
     pub fn set_context(
@@ -98,12 +117,31 @@ impl OperationControls {
         scene: &Scene,
     ) -> Result<(), String> {
         self.native.clear();
+        self.sheet_target = Err("Wait for the current sheet to resolve its sketch support".into());
         let result: Result<(), String> = (|| {
             let info = scene
                 .model_evaluation()
                 .ok_or("Operation targets require a source-bound native evaluation")?;
             if info.source_hash != ContentHash::document(document)? {
                 return Err("Operation targets belong to different source content".into());
+            }
+            if let Some(sketch) = self.sheet_sketch {
+                self.sheet_target = (|| {
+                    let (body, face) = crate::sketch_plane::attached_sheet_face(
+                        document, sketch, scene,
+                    )?
+                    .ok_or("Sketch on a current sheet base or final flange leg before cutting")?;
+                    let producer = scene
+                        .source_producer(body)
+                        .filter(|producer| {
+                            model::sheet_profile_head(document, body) == Some(*producer)
+                        })
+                        .ok_or("The sheet has later features that cannot be developed")?;
+                    Ok(SheetCutTarget {
+                        input: BodyInput { body, producer },
+                        face,
+                    })
+                })();
             }
             for choice in super::body_choices::choices(document, revision, scene)? {
                 if info.consumed_bodies.contains(&choice.input.body) {
@@ -122,6 +160,9 @@ impl OperationControls {
         })();
         self.context_error = result.as_ref().err().cloned();
         result
+    }
+    pub fn through_sheet(&self) -> bool {
+        self.operation == Operation::Cut && self.sheet_sketch.is_some()
     }
     pub fn invalidate(&mut self) {
         self.fresh = false;
@@ -190,6 +231,12 @@ impl OperationControls {
                 }
             });
         if self.operation == Operation::NewBody {
+            if changed {
+                self.invalidate();
+            }
+            return changed;
+        }
+        if self.through_sheet() {
             if changed {
                 self.invalidate();
             }

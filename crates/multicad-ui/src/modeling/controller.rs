@@ -165,7 +165,7 @@ impl ModelToolController {
         self.form.is_some()
     }
     pub fn label(&self) -> &'static str {
-        if let Some(form @ (ModelForm::Sheet(_) | ModelForm::SheetCutout(_))) = &self.form {
+        if let Some(form @ ModelForm::Sheet(_)) = &self.form {
             return form.label();
         }
         match self.scope.as_ref().map(|scope| scope.execution) {
@@ -669,7 +669,7 @@ impl ModelToolController {
             channel,
             ModelForm::Extrude(Box::new(panel)),
         )?;
-        self.operations = Some(OperationControls::new(session.document()));
+        self.operations = Some(OperationControls::new(session.document(), Some(sketch)));
         self.identities = BooleanIdentities::new(session.document());
         Ok(())
     }
@@ -1848,7 +1848,8 @@ impl ModelToolController {
                     }
                     ModelRequest::CompoundCutout(_)
                     | ModelRequest::ProfileConnection(_)
-                    | ModelRequest::SurfaceStructure(_) => {
+                    | ModelRequest::SurfaceStructure(_)
+                    | ModelRequest::SheetProfileCut { .. } => {
                         SceneProof::edited(prepared.outputs.clone(), &[], vec![])
                     }
                     ModelRequest::ScrewConnection(command) => SceneProof::ScrewConnection {
@@ -1928,6 +1929,7 @@ impl ModelToolController {
         let options = model::EvaluationOptions {
             sheet_development: match request {
                 ModelRequest::Sheet(command) if command.editing => Some(command.sheet.output.body),
+                ModelRequest::SheetProfileCut { definition, .. } => Some(definition.output.body),
                 _ => None,
             },
             ..Default::default()
@@ -1984,6 +1986,7 @@ impl ModelToolController {
                     | ModelRequest::CompoundCutout(_)
                     | ModelRequest::WoodBox(_)
                     | ModelRequest::SheetFasteners(_)
+                    | ModelRequest::SheetProfileCut { .. }
             ) || !matches!(execution, Execution::Create),
             aid: match request {
                 ModelRequest::FdmAid(command) => Some(command.request.feature),
@@ -2397,7 +2400,6 @@ impl ModelToolController {
     fn preview_waits_for_input(&self) -> bool {
         self.stock_editor.is_some()
             || matches!(&self.form, Some(ModelForm::Sheet(panel)) if panel.waiting_for_edge())
-            || self.sheet_cutout_target().is_some()
             || self.scale_origin_picking()
             || self.edge_treatment_picking()
             || self.advanced_picking()

@@ -28,7 +28,7 @@ impl ModelToolController {
             channel,
             ModelForm::Extrude(Box::new(panel)),
         )?;
-        self.operations = Some(OperationControls::new(session.document()));
+        self.operations = Some(OperationControls::new(session.document(), None));
         self.identities = BooleanIdentities::new(session.document());
         Ok(())
     }

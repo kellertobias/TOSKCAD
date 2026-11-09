@@ -109,6 +109,7 @@ pub fn cacheable_type(type_id: &str) -> bool {
         model::PANEL_JOINT_CUT_TYPE,
         model::MACHINING_CUT_TYPE,
         model::SHEET_TYPE,
+        model::SHEET_PROFILE_CUT_TYPE,
         model::MEMBER_TYPE,
         model::HARDWARE_TYPE,
         model::AID_TYPE,

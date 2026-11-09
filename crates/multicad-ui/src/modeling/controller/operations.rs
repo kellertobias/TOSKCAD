@@ -5,7 +5,18 @@ use multicad_core::model::Operation;
 
 impl ModelToolController {
     pub(super) fn operation_changed(&mut self) {
+        let through_sheet = self
+            .operations
+            .as_ref()
+            .is_some_and(OperationControls::through_sheet);
+        if through_sheet {
+            self.operation.entry = None;
+            self.operation.drag = None;
+            self.operation.confirm = None;
+            self.operation.touched = false;
+        }
         if let Some(ModelForm::Extrude(panel)) = &mut self.form {
+            panel.set_through_sheet(through_sheet);
             panel.changed();
         }
         self.invalidate();
@@ -50,6 +61,29 @@ impl ModelToolController {
                         group: self.identities.group_draft(),
                     },
                 ));
+                self.submit_final(session, resources, channel, form, &request)
+            }
+            Operation::Cut if controls.through_sheet() => {
+                let target = controls.sheet_target.as_ref().map_err(Clone::clone)?;
+                let [output] = extrusion.outputs.as_slice() else {
+                    return Err(
+                        "Choose one simple closed sketch region for a through-sheet cut".into(),
+                    );
+                };
+                let request = ModelRequest::SheetProfileCut {
+                    feature: output.feature,
+                    definition: Box::new(model::SheetProfileCutDefinition {
+                        input: target.input.clone(),
+                        output: model::BodyOutput {
+                            body: target.input.body,
+                        },
+                        profile: model::ProfileSource {
+                            sketch: extrusion.sketch,
+                            region: output.region.clone(),
+                        },
+                        face: target.face,
+                    }),
+                };
                 self.submit_final(session, resources, channel, form, &request)
             }
             Operation::Cut => {
