@@ -22,11 +22,13 @@ mod self_test;
 mod sheet_pattern;
 
 use multicad_core::BuildInfo;
+use multicad_model::GeometryBackend;
 use std::{env, ffi::OsString, path::PathBuf, process::ExitCode};
 
 enum Action {
     /// Launch the window, optionally opening one native project file.
     Run(Option<PathBuf>),
+    RunRustModel(Option<PathBuf>),
     Help,
     Version,
     Diagnostics,
@@ -48,6 +50,7 @@ fn parse_action(arguments: impl Iterator<Item = OsString>) -> Result<Action, Str
             Some("--help" | "-h") => Ok(Action::Help),
             Some("--version" | "-V") => Ok(Action::Version),
             Some("--diagnostics") => Ok(Action::Diagnostics),
+            Some("--rust-model") => Ok(Action::RunRustModel(None)),
             // File associations on Windows and Linux pass the document path.
             Some(path)
                 if !path.starts_with('-')
@@ -61,6 +64,15 @@ fn parse_action(arguments: impl Iterator<Item = OsString>) -> Result<Action, Str
             )),
         },
         [option, path] if option == "--self-test" => Ok(Action::SelfTest(PathBuf::from(path))),
+        [option, path]
+            if option == "--rust-model"
+                && path.to_str().is_some_and(|path| {
+                    !path.starts_with('-')
+                        && multicad_core::project_path::is_project_path(std::path::Path::new(path))
+                }) =>
+        {
+            Ok(Action::RunRustModel(Some(PathBuf::from(path))))
+        }
         _ => Err("unsupported arguments; see --help".into()),
     }
 }
@@ -74,12 +86,13 @@ fn main() -> ExitCode {
     };
     let build = BuildInfo::current();
     let result = match action {
-        Action::Run(project) => {
-            run_application(project).inspect_err(|error| record_startup_error(error))
-        }
+        Action::Run(project) => run_application(project, GeometryBackend::OpenCascade)
+            .inspect_err(|error| record_startup_error(error)),
+        Action::RunRustModel(project) => run_application(project, GeometryBackend::Rust)
+            .inspect_err(|error| record_startup_error(error)),
         Action::Help => {
             println!(
-                "{} {}\n\nUsage: multicad [PROJECT.tcd | --help | --version | --diagnostics | --self-test OUTPUT_DIRECTORY]\n       multicad --mcp [--project FILE.tcd] [--export-dir DIRECTORY] [--read-only]\n       multicad --mcp --app [--socket PATH]\n       multicad --command REQUEST.json --project FILE.tcd [--read-only] [--save]\n\nLaunches the native application host with no arguments, or opens PROJECT.tcd in it.\nIncludes Project, constrained Sketch and initial New body extrusion. Native .tcd project containers include atomic saves, embedded payloads, explicit JSON import and recovery copies; existing .multicad projects still open and save in place. Advanced modeling and manufacturing exports remain under development.\n\n--mcp serves the Model Context Protocol on stdin/stdout for a local client that launches this process. It controls one headless document: the --project file (opened, or created on first save), else an unsaved document. Exports write only into --export-dir. --mcp --app instead bridges to the open window once \"Allow local MCP connections\" is on (macOS and Linux; same-user local socket). No network port is opened.\n\n--command dispatches one JSON {{tool,arguments}} through the same canonical MCP/native validation path. It prints one JSON receipt and exits. Changes remain memory-only unless --save is present; failed commands never save. --read-only refuses mutations.",
+                "{} {}\n\nUsage: multicad [PROJECT.tcd | --help | --version | --diagnostics | --self-test OUTPUT_DIRECTORY]\n       multicad --rust-model [PROJECT.tcd]\n       multicad --mcp [--project FILE.tcd] [--export-dir DIRECTORY] [--read-only]\n       multicad --mcp --app [--socket PATH]\n       multicad --command REQUEST.json --project FILE.tcd [--read-only] [--save]\n\nLaunches the native application host with no arguments, or opens PROJECT.tcd in it.\nIncludes Project, constrained Sketch and initial New body extrusion. Native .tcd project containers include atomic saves, embedded payloads, explicit JSON import and recovery copies; existing .multicad projects still open and save in place. Advanced modeling and manufacturing exports remain under development.\n\n--rust-model selects the experimental Rust backend for Model scenes and previews. It currently supports rounded panel extrusions, axial cylinders, and through-bores.\n\n--mcp serves the Model Context Protocol on stdin/stdout for a local client that launches this process. It controls one headless document: the --project file (opened, or created on first save), else an unsaved document. Exports write only into --export-dir. --mcp --app instead bridges to the open window once \"Allow local MCP connections\" is on (macOS and Linux; same-user local socket). No network port is opened.\n\n--command dispatches one JSON {{tool,arguments}} through the same canonical MCP/native validation path. It prints one JSON receipt and exits. Changes remain memory-only unless --save is present; failed commands never save. --read-only refuses mutations.",
                 build.product, build.version
             );
             Ok(())
@@ -125,7 +138,7 @@ fn record_startup_error(error: &str) {
         let _ = log.keep();
     }
 }
-fn run_application(project: Option<PathBuf>) -> Result<(), String> {
+fn run_application(project: Option<PathBuf>, model_backend: GeometryBackend) -> Result<(), String> {
     let mut app =
         multicad_ui::application::Application::welcome(Box::new(files::ProjectStore::default()))?;
     app.request_open_documents(project);
@@ -138,11 +151,12 @@ fn run_application(project: Option<PathBuf>) -> Result<(), String> {
     }));
     // One detached store survives project/editor/connection changes in this app.
     let pair_proofs = multicad_model::PairCycleProofStore::default();
-    let models =
-        multicad_model::with_pair_cycle_proofs(pair_proofs.clone(), modeling::Backend::factory)?;
+    let models = multicad_model::with_pair_cycle_proofs(pair_proofs.clone(), || {
+        modeling::Backend::factory(model_backend)
+    })?;
     app.set_scene_backends(std::sync::Arc::clone(&models));
-    // Preview and canonical lanes share native evaluation results while their
-    // request stamps, cancellation and authoritative publications stay separate.
+    // Preview and canonical lanes share a model worker while their request
+    // stamps, cancellation and authoritative publications stay separate.
     app.set_model_backends(models);
     app.set_external_query_backends(std::sync::Arc::new(|| {
         Ok(Box::new(external_queries::Backend::new()))
@@ -218,5 +232,18 @@ mod tests {
             assert!(parse(&[rejected]).is_err(), "{rejected}");
         }
         assert!(parse(&["a.tcd", "b.tcd"]).is_err());
+    }
+
+    #[test]
+    fn rust_model_launch_accepts_an_optional_native_project() {
+        assert!(matches!(
+            parse(&["--rust-model"]),
+            Ok(Action::RunRustModel(None))
+        ));
+        assert!(
+            matches!(parse(&["--rust-model", "Panel.tcd"]), Ok(Action::RunRustModel(Some(path))) if path == Path::new("Panel.tcd"))
+        );
+        assert!(parse(&["--rust-model", "part.step"]).is_err());
+        assert!(parse(&["--rust-model", "-x.tcd"]).is_err());
     }
 }

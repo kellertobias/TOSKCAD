@@ -440,15 +440,34 @@ impl Compiler {
         roots: &[EntityId],
         interrupt: Option<&dyn Fn() -> bool>,
     ) -> Result<Model, ModelError> {
+        self.compile_sources_with_backend(
+            document,
+            revision,
+            roots,
+            GeometryBackend::OpenCascade,
+            interrupt,
+        )
+    }
+
+    /// Evaluate only selected source roots using the requested solid backend.
+    pub fn compile_sources_with_backend(
+        &self,
+        document: &Document,
+        revision: u64,
+        roots: &[EntityId],
+        backend: GeometryBackend,
+        interrupt: Option<&dyn Fn() -> bool>,
+    ) -> Result<Model, ModelError> {
         let roots = validate_source_roots(document, roots)?;
+        let mode = EvaluationMode {
+            roots: Some(roots),
+            backend,
+        };
+        if backend == GeometryBackend::Rust {
+            return self.compile_scoped(document, revision, mode, interrupt, None);
+        }
         crate::worker_cache::with_current_cache(|cache| {
-            self.compile_scoped(
-                document,
-                revision,
-                EvaluationMode::native(Some(roots)),
-                interrupt,
-                cache,
-            )
+            self.compile_scoped(document, revision, mode, interrupt, cache)
         })
     }
     /// Nested evaluators report their own cancellation wording (for example

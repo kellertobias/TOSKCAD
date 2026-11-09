@@ -3,7 +3,7 @@
 //! the next Rust/native boundary. UI polling never waits.
 //! Unchanged feature results are reused from earlier requests through a
 //! worker-owned [`crate::EvaluationCache`].
-use crate::{Compiler, Model, ModelError, ModelSnapshot};
+use crate::{Compiler, GeometryBackend, Model, ModelError, ModelSnapshot};
 use multicad_core::{
     document::Document,
     model::{CutTargetProbeResult, EvaluationOptions, ModelQueryError},
@@ -148,6 +148,7 @@ impl<T: Send + 'static> Runtime<T> {
     ) -> Result<Self, String> {
         Self::with_worker_cache(
             compiler,
+            GeometryBackend::OpenCascade,
             true,
             cached,
             sources,
@@ -163,10 +164,29 @@ impl<T: Send + 'static> Runtime<T> {
         + Send
         + 'static,
     ) -> Result<Self, String> {
-        Self::with_worker_cache(compiler, false, |_, _, _| None, |_, _| None, publish)
+        Self::with_model_and_snapshot_backend(compiler, GeometryBackend::OpenCascade, publish)
+    }
+
+    /// Pin the backend for all evaluations on this worker and its forked lanes.
+    pub fn with_model_and_snapshot_backend(
+        compiler: Compiler,
+        backend: GeometryBackend,
+        publish: impl Fn(&Document, &Model, &ModelSnapshot, u64) -> Result<T, ModelError>
+        + Send
+        + 'static,
+    ) -> Result<Self, String> {
+        Self::with_worker_cache(
+            compiler,
+            backend,
+            false,
+            |_, _, _| None,
+            |_, _| None,
+            publish,
+        )
     }
     fn with_worker_cache(
         compiler: Compiler,
+        backend: GeometryBackend,
         reuse_model: bool,
         cached: impl Fn(&Document, u64, u64) -> Option<T> + Send + 'static,
         sources: impl Fn(&Document, u64) -> Option<Vec<multicad_core::document::EntityId>>
@@ -280,18 +300,33 @@ impl<T: Send + 'static> Runtime<T> {
                     let result = if unchanged {
                         Ok(retained.take().expect("matching retained drawing model"))
                     } else {
-                        match &roots {
-                            Some(roots) => compiler.compile_sources_cached(
+                        match (backend, &roots) {
+                            (GeometryBackend::OpenCascade, Some(roots)) => compiler
+                                .compile_sources_cached(
+                                    &mut cache,
+                                    &job.document,
+                                    job.revision,
+                                    roots,
+                                    Some(&superseded),
+                                ),
+                            (GeometryBackend::OpenCascade, None) => compiler.compile_cached(
                                 &mut cache,
                                 &job.document,
                                 job.revision,
-                                roots,
                                 Some(&superseded),
                             ),
-                            None => compiler.compile_cached(
-                                &mut cache,
+                            (GeometryBackend::Rust, Some(roots)) => compiler
+                                .compile_sources_with_backend(
+                                    &job.document,
+                                    job.revision,
+                                    roots,
+                                    backend,
+                                    Some(&superseded),
+                                ),
+                            (GeometryBackend::Rust, None) => compiler.compile_with_backend(
                                 &job.document,
                                 job.revision,
+                                backend,
                                 Some(&superseded),
                             ),
                         }
@@ -299,7 +334,8 @@ impl<T: Send + 'static> Runtime<T> {
                     if superseded() {
                         continue;
                     }
-                    let stats = (!unchanged).then(|| cache.last_compile().clone());
+                    let stats = (!unchanged && backend == GeometryBackend::OpenCascade)
+                        .then(|| cache.last_compile().clone());
                     let result = result.and_then(|model| {
                         if let Some(part) = job.options.sheet_development {
                             model.unfold(&job.document, part).map_err(|error| {

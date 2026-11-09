@@ -6,7 +6,7 @@ use multicad_core::{
     project_file::ProjectResources,
     references::{TopologyElement, TopologyKind},
 };
-use multicad_model::{Compiler, ModelError, ModelSnapshot, Runtime};
+use multicad_model::{Compiler, GeometryBackend, ModelError, ModelSnapshot, Runtime};
 use multicad_ui::viewport::{self, SceneBackend, SceneReply, SceneStamp};
 use std::{collections::BTreeMap, sync::Arc};
 #[cfg(test)]
@@ -23,9 +23,10 @@ pub struct Backend {
     expected: Option<(u64, SceneStamp)>,
 }
 impl Backend {
-    fn runtime() -> Result<Runtime<Arc<viewport::Scene>>, String> {
-        Runtime::with_model_and_snapshot(
+    fn runtime(backend: GeometryBackend) -> Result<Runtime<Arc<viewport::Scene>>, String> {
+        Runtime::with_model_and_snapshot_backend(
             Compiler::default(),
+            backend,
             |document, model, snapshot, generation| {
                 let mut published = scene(document, snapshot, generation)?;
                 if published.is_full_model() {
@@ -94,14 +95,17 @@ impl Backend {
     }
     pub fn new() -> Self {
         Self {
-            runtime: Self::runtime(),
+            runtime: Self::runtime(GeometryBackend::OpenCascade),
             expected: None,
         }
     }
     /// Each backend publishes independently while exact geometry remains on
     /// one app-owned native worker across preview and canonical requests.
-    pub fn factory() -> Result<viewport::BackendFactory, String> {
-        let owner = Self::new().runtime?;
+    pub fn factory(backend: GeometryBackend) -> Result<viewport::BackendFactory, String> {
+        let owner = match backend {
+            GeometryBackend::OpenCascade => Self::new().runtime?,
+            GeometryBackend::Rust => Self::runtime(backend)?,
+        };
         Ok(Arc::new(move || {
             Box::new(Self {
                 runtime: owner.fork(),

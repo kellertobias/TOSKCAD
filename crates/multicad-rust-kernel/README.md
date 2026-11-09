@@ -16,7 +16,9 @@ Top area and volume remain exact as rational coefficients of `constant + π × f
 
 The compiler can select the Rust backend for a whole evaluation of a rounded XY sketch extrusion, an axial cylinder, and a through-cut. A saved panel can rebuild after a fractional height edit and carry its attached sketch plane to the edited cap. The [compiler tests](../multicad-model/tests/rust_backend.rs) compare both cutter seam orientations with OpenCascade and check that a tangent bore fails explicitly.
 
-The Rust backend publishes a display mesh and picking keys for the panel and cylinder. It uses [Spade](https://docs.rs/spade/2.15.1/spade/struct.ConstrainedDelaunayTriangulation.html) to triangulate sampled cap boundaries and checks the material side of every boundary edge. Planar contour queries read the analytic topology, so a bore remains a circle in the contour regardless of display mesh density. App backend selection, general trimmed surfaces, helical seam tests, independent STEP readback, and matched workload timings still need verification.
+The Rust backend publishes a display mesh and picking keys for the panel and cylinder. It uses Spade to triangulate sampled cap boundaries and checks the material side of every boundary edge. Planar contour queries read the analytic topology, so a bore remains a circle in the contour regardless of display mesh density.
+
+Launch `multicad --rust-model PROJECT.tcd` to test the Rust backend in the desktop Model workspace. Model rebuilds and previews use this backend and report unsupported geometry. The default launch and other workspaces still use OpenCascade. General trimmed surfaces, helical seam tests, independent STEP readback, and matched workload timings remain open.
 
 ## Verification
 

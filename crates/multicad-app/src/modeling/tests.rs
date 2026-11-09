@@ -1151,7 +1151,7 @@ fn shared_native_owner_reuses_default_screw_preview_for_authoritative_apply() {
             std::thread::sleep(Duration::from_millis(1));
         }
     }
-    let owner = Backend::runtime().unwrap();
+    let owner = Backend::runtime(GeometryBackend::OpenCascade).unwrap();
     let mut preview = Backend {
         runtime: owner.fork(),
         expected: None,
@@ -1272,7 +1272,7 @@ fn shared_native_owner_reuses_default_screw_preview_for_authoritative_apply() {
 
 #[test]
 fn app_backend_factory_keeps_candidate_and_canonical_publications_separate() {
-    let factory = Backend::factory().unwrap();
+    let factory = Backend::factory(GeometryBackend::OpenCascade).unwrap();
     let mut candidate = factory();
     let mut canonical = factory();
     let (session, _) = box_session();
@@ -1481,7 +1481,7 @@ mod painted_default_screw {
 
     #[test]
     fn actual_default_m3_controls_measure_preview_unchanged_and_apply_to_canonical_ready() {
-        let owner = Backend::runtime().unwrap();
+        let owner = Backend::runtime(GeometryBackend::OpenCascade).unwrap();
         let preview_records: Records = Default::default();
         let canonical_records: Records = Default::default();
         let factory = |records| {
@@ -1581,4 +1581,99 @@ mod painted_default_screw {
             );
         }
     }
+}
+
+#[path = "../../../multicad-model/tests/support/rust_panel.rs"]
+mod rust_panel;
+
+fn wait_for_scene(backend: &mut dyn SceneBackend) -> SceneReply {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if let Some(reply) = backend.poll() {
+            return reply;
+        }
+        assert!(Instant::now() < deadline, "scene did not arrive");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
+#[test]
+fn rust_model_worker_publishes_pickable_panel_and_isolates_preview_failures() {
+    let (session, _, extrusion, body, cutter, _) = rust_panel::fixture(true, 28.);
+    let factory = Backend::factory(GeometryBackend::Rust).unwrap();
+    let mut canonical = factory();
+    let mut preview = factory();
+    let stamp = SceneStamp {
+        document: session.document().id(),
+        revision: session.revision(),
+        generation: 1,
+    };
+    canonical.request(session.document(), stamp).unwrap();
+    let inspection_stamp = SceneStamp {
+        generation: 2,
+        ..stamp
+    };
+    preview
+        .request_sources(
+            session.document(),
+            &ProjectResources::default(),
+            inspection_stamp,
+            &[cutter],
+        )
+        .unwrap();
+
+    let canonical_reply = wait_for_scene(&mut *canonical);
+    assert_eq!(canonical_reply.stamp, stamp);
+    let scene = canonical_reply.result.unwrap();
+    assert!(scene.is_full_model());
+    assert_eq!(
+        scene.native_instance_bounds(body),
+        Some([[0., 0., 0.], [50., 20., 8.]])
+    );
+    assert_eq!(scene.instances().len(), 1);
+    assert_eq!(scene.instances()[0].id, body);
+    let hit_from_above =
+        |x, y| scene.pick_face(viewport::Ray::new([x, y, 20.], [0., 0., -1.]).unwrap());
+    assert!(hit_from_above(12., 10.).is_none());
+    assert!(hit_from_above(28., 10.).is_none());
+    let cap = hit_from_above(5., 5.).unwrap().intent.unwrap();
+    assert!(
+        cap.origins
+            .iter()
+            .any(|origin| origin.source == extrusion && origin.role == "cap.end")
+    );
+
+    let inspection_reply = wait_for_scene(&mut *preview);
+    assert_eq!(inspection_reply.stamp, inspection_stamp);
+    let inspection = inspection_reply.result.unwrap();
+    assert!(!inspection.is_full_model());
+    assert!(
+        inspection.reference_snapshots()[&cutter]
+            .elements
+            .iter()
+            .any(|e| {
+                e.origins
+                    .iter()
+                    .any(|origin| origin.source == cutter && origin.role == "side.cylinder")
+            })
+    );
+
+    let (box_doc, _) = box_session();
+    let bad_stamp = SceneStamp {
+        document: box_doc.document().id(),
+        revision: box_doc.revision(),
+        generation: 3,
+    };
+    preview.request(box_doc.document(), bad_stamp).unwrap();
+    let rejected = wait_for_scene(&mut *preview);
+    assert_eq!(rejected.stamp, bad_stamp);
+    assert!(
+        rejected
+            .result
+            .err()
+            .unwrap()
+            .contains("only axial cylinder")
+    );
+    assert!(canonical.poll().is_none());
+    assert_eq!(scene.stamp(), stamp);
 }
