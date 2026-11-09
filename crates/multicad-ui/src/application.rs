@@ -461,9 +461,8 @@ impl Application {
             return self.current().sketch.wood_preset() == Some(preset);
         }
         match command {
-            Command::SheetPattern(crate::sheet_pattern::Tool::Unfold) => {
-                return self.current().sheet_pattern.active()
-                    && !self.current().sheet_pattern.schedule();
+            Command::SheetPattern(crate::sheet_pattern::Tool::Fold) => {
+                return self.current().sheet_pattern.active();
             }
             Command::SheetPattern(crate::sheet_pattern::Tool::BendSchedule) => {
                 return self.current().sheet_pattern.schedule();
@@ -2382,6 +2381,16 @@ impl Application {
         ) && let Err(reason) = self.sheet_action_ready(command)
         {
             return reason;
+        }
+        match command {
+            Command::SheetPattern(crate::sheet_pattern::Tool::Unfold) => {
+                return "Unfold · Show the selected sheet’s developed cut contours and bends"
+                    .into();
+            }
+            Command::SheetPattern(crate::sheet_pattern::Tool::Fold) => {
+                return "Fold · Return to the same selected sheet in the 3D model".into();
+            }
+            _ => {}
         }
         let hint = self
             .shortcuts

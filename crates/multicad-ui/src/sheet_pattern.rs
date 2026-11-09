@@ -113,13 +113,11 @@ impl Workspace {
         if view.result.is_none() {
             view.result = self.backend.as_mut().and_then(|backend| backend.poll());
         }
-        let mut fold = false;
         egui::Frame::new()
             .inner_margin(egui::Margin::same(crate::theme::GUTTER))
             .show(ui, |ui| {
                 ui.horizontal_wrapped(|ui| {
                     ui.heading("Flat pattern");
-                    fold = ui.button("Return to folded model").clicked();
                     if matches!(view.result, Some(Ok(_))) && ui.button("Fit pattern").clicked() {
                         view.pan = Vec2::ZERO;
                         view.scale = 1.;
@@ -151,7 +149,7 @@ impl Workspace {
                     }
                     Some(Err(error)) => {
                         ui.colored_label(Color32::LIGHT_RED, error);
-                        ui.label("Return to the folded model to select another sheet.");
+                        ui.label("Use Fold in the ribbon to return to the 3D model.");
                     }
                     None => {
                         ui.horizontal(|ui| {
@@ -162,10 +160,6 @@ impl Workspace {
                     }
                 }
             });
-        if fold {
-            self.close();
-            ui.ctx().request_repaint();
-        }
         true
     }
 }
@@ -329,6 +323,30 @@ mod tests {
         fn cancel(&mut self) {
             self.0.cancels.fetch_add(1, Ordering::Relaxed);
         }
+    }
+
+    #[test]
+    fn closing_a_pending_or_failed_flat_view_drops_it() {
+        let calls = Arc::new(Calls::default());
+        let fake = calls.clone();
+        let factory: BackendFactory = Arc::new(move || Box::new(Fake(fake.clone())));
+        let doc = Document::new("Sheet").unwrap();
+        let part = EntityId::new();
+        let mut workspace = Workspace::default();
+        for failed in [false, true] {
+            workspace.open(&factory, &doc, 0, part, false).unwrap();
+            if failed {
+                workspace.view.as_mut().unwrap().result = Some(Err("Invalid sheet".into()));
+            }
+            workspace.close();
+            assert!(!workspace.active());
+            egui::Context::default()
+                .run_ui(Default::default(), |ui| {
+                    assert!(!workspace.show(ui, doc.id(), 0));
+                })
+                .drop_without_applying_deltas();
+        }
+        assert_eq!(calls.cancels.load(Ordering::Relaxed), 2);
     }
 
     #[test]

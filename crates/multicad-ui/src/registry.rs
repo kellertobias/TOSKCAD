@@ -144,14 +144,7 @@ pub(crate) const METAL_TITLE: &str = "Metal";
 pub(crate) const METAL_GROUPS: [(&str, &[&str]); 3] = [
     (
         "Sheet metal",
-        &[
-            "sheet",
-            "sheet-flange",
-            "fastener",
-            "flat",
-            "fold",
-            "bend-list",
-        ],
+        &["sheet", "sheet-flange", "fastener", "flat", "bend-list"],
     ),
     ("Profiles", &["tube", "cope"]),
     ("Weld", &["weld-joint", "weld-list"]),
@@ -176,6 +169,9 @@ fn command_home(command: Command) -> Option<(Mode, &'static str)> {
         Command::Extension("materials") => Some((Mode::Parameters, "Materials")),
         Command::Extension("drawing-pdf") => Some((Mode::Drawings, "Common")),
         Command::Extension("duplicate") => Some((Mode::Model, "Common")),
+        Command::SheetFlange | Command::SheetFasteners | Command::SheetPattern(_) => {
+            Some((Mode::Model, METAL_TITLE))
+        }
         Command::WoodPreset(_)
         | Command::Modeling(
             ModelingTool::Panel
@@ -1115,7 +1111,6 @@ mod tests {
                 "sheet-flange",
                 "fastener",
                 "flat",
-                "fold",
                 "bend-list",
                 "tube",
                 "cope",
