@@ -2937,6 +2937,7 @@ impl Application {
                         !p.editor.dirty() && !p.drawings.dirty() && !p.exchange.dirty(),
                     );
                     let modeling_before = p.sketch.model_active();
+                    let sketch_before = p.sketch.editing || p.sketch.picking;
                     p.sketch.show_project(
                         ui,
                         &mut p.session,
@@ -2953,7 +2954,8 @@ impl Application {
                         ctx.request_repaint_after(delay);
                     }
                     let sketch_opened = !sketch_mode && p.sketch.editing;
-                    let sketch_closed = sketch_mode && !p.sketch.editing && !p.sketch.picking;
+                    let sketch_closed =
+                        sketch_mode && sketch_before && !p.sketch.editing && !p.sketch.picking;
                     let modeling_cancelled = modeling_before
                         && !p.sketch.model_active()
                         && p.session.revision() == before;
