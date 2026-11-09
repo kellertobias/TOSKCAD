@@ -6,7 +6,7 @@ use crate::{
 };
 use multicad_core::{
     commands::{Actor, Change, Channel, Session},
-    document::{Document, EntityData, EntityId},
+    document::{Document, EntityData, EntityId, Placement},
     hierarchy::{self, Action, ContainerKind, Index},
 };
 use std::collections::{BTreeMap, BTreeSet};
@@ -116,6 +116,7 @@ struct TreeView {
     destinations: Vec<Destination>,
     active: String,
     diagnostics: Vec<String>,
+    occurrence_aliases: BTreeMap<EntityId, EntityId>,
 }
 pub(crate) fn container_path(
     document: &Document,
@@ -160,6 +161,42 @@ impl TreeView {
             .collect();
         let symbol_owned = multicad_core::symbols::owned_entities_in_session(session)
             .map_err(|error| error.to_string())?;
+        // A single same-name placement at the definition's own location is
+        // the same item to the operator. Keep the canonical definition row
+        // (which owns the children and history) and expose the raw placement
+        // in Show sources. Repeated, relocated or renamed copies stay visible.
+        let mut occurrences = BTreeMap::<EntityId, Vec<EntityId>>::new();
+        for entity in document.entities() {
+            if let EntityData::Instance { component, .. } = entity.data {
+                occurrences.entry(component).or_default().push(entity.id);
+            }
+        }
+        let occurrence_aliases: BTreeMap<_, _> = if show_sources {
+            BTreeMap::new()
+        } else {
+            occurrences
+                .into_iter()
+                .filter_map(|(component, instances)| {
+                    let [instance] = instances.as_slice() else {
+                        return None;
+                    };
+                    let definition = document.get(component)?;
+                    let occurrence = document.get(*instance)?;
+                    let EntityData::Instance { placement, .. } = occurrence.data else {
+                        return None;
+                    };
+                    let same_owner =
+                        index.parent(*instance).ok()? == index.parent(component).ok()?;
+                    (same_owner
+                        && definition.name == occurrence.name
+                        && placement == Placement::default()
+                        && !symbol_owned.contains(instance)
+                        && !symbol_owned.contains(&component)
+                        && !document.hierarchy().hidden.contains(instance))
+                    .then_some((*instance, component))
+                })
+                .collect()
+        };
         let mut destinations = vec![Destination {
             id: None,
             path: format!("{} (root)", document.name()),
@@ -196,7 +233,8 @@ impl TreeView {
         let mut rows = vec![];
         let mut pending = vec![(document.id(), 0usize, salt.with(document.id()))];
         while let Some((id, depth, key)) = pending.pop() {
-            if !show_sources && symbol_owned.contains(&id) {
+            if (!show_sources && symbol_owned.contains(&id)) || occurrence_aliases.contains_key(&id)
+            {
                 continue;
             }
             let root = id == document.id();
@@ -248,10 +286,7 @@ impl TreeView {
             } else {
                 document.hierarchy().active_component == Some(id)
             };
-            let history_part = presentation.part.filter(|part| {
-                node_kind == NodeKind::Body
-                    || (!presentation.linked && !symbol_owned.contains(part))
-            });
+            let history_part = presentation.part.filter(|_| node_kind == NodeKind::Body);
             let history = match history_part
                 .and_then(|part| document.get(part))
                 .map(|entity| &entity.data)
@@ -335,6 +370,7 @@ impl TreeView {
             destinations,
             active,
             diagnostics,
+            occurrence_aliases,
         })
     }
 }
@@ -578,16 +614,13 @@ impl ModelTree {
             });
         });
         let mut show_sources = self.show_sources;
-        if ui.checkbox(&mut show_sources, "Show sources").on_hover_text("Show datum planes, ungrouped features and private Library content. A part’s features are in its history.").changed() {
+        if ui.checkbox(&mut show_sources, "Show sources").on_hover_text("Show underlying placements, datum planes, ungrouped features and private Library content. A part’s features are in its history.").changed() {
             self.set_show_sources(show_sources);
             if let Err(error) = self.ensure_view(session) {
                 return TreeEvents { error: Some(error), ..Default::default() };
             }
         }
         let view = self.view.as_ref().unwrap();
-        ui.label("Components group parts.").on_hover_text(
-            "Expand a component to see its parts. Expand a part to see the features that shape it.",
-        );
         ui.add(
             egui::Label::new(egui::RichText::new(format!("Active: {}", view.active)).small())
                 .wrap(),
@@ -601,6 +634,11 @@ impl ModelTree {
             });
         }
         let rows = &view.rows;
+        let represented: BTreeSet<_> = selected
+            .iter()
+            .filter_map(|id| view.occurrence_aliases.get(id))
+            .copied()
+            .collect();
         let mut scroll = egui::ScrollArea::vertical().id_salt(self.salt);
         if let Some(target) = self.scroll_to_source.take()
             && let Some(index) = rows
@@ -637,7 +675,7 @@ impl ModelTree {
                             let label = if row.active { format!("{} · active", row.name) } else { row.name.clone() };
                             let color = if row.effective_visible { ui.visuals().text_color() } else { Color32::GRAY };
                             let draggable = mutations_enabled && row.movable;
-                            let response = flat_row_label(ui, width, &label, options.enabled && row.available, selected.contains(&row.id), color, draggable);
+                            let response = flat_row_label(ui, width, &label, options.enabled && row.available, selected.contains(&row.id) || represented.contains(&row.id), color, draggable);
                             if draggable && response.drag_started_by(egui::PointerButton::Primary) {
                                 let entries = if selected.contains(&row.id) {
                                     rows.iter()
@@ -2294,31 +2332,13 @@ mod tests {
         assert_eq!(keys.len(), 2);
         assert_ne!(keys[0], keys[1]);
         assert!(rows.iter().find(|row| row.id == body).unwrap().expandable);
-        assert!(
-            rows.iter()
-                .find(|row| row.id == placed.id)
-                .unwrap()
-                .expandable
-        );
-        tree.set_expanded(placed.id, true);
-        let rows = tree.rows(&session).unwrap();
-        let placement_index = rows.iter().position(|row| row.id == placed.id).unwrap();
-        let placement = &rows[placement_index];
+        let placement = rows.iter().find(|row| row.id == placed.id).unwrap();
         assert_eq!(placement.kind, NodeKind::Instance);
         assert!(placement.movable && !placement.destination);
-        for (row, feature) in rows[placement_index + 1..]
-            .iter()
-            .zip([first.id, second.id])
-        {
-            assert_eq!(row.id, feature);
-            assert_eq!(row.depth, placement.depth + 1);
-            assert_eq!(row.history_of, Some(body));
-            assert!(!row.movable && !row.destination);
-            if row.id == first.id {
-                assert!(!keys.contains(&row.key));
-            }
-        }
-        tree.set_expanded(placed.id, false);
+        assert!(
+            !placement.expandable,
+            "placed copies do not duplicate Part feature history"
+        );
         tree.set_expanded(body, false);
         assert!(
             !tree
