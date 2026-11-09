@@ -385,10 +385,7 @@ pub(crate) fn tools_height(
     category: Option<crate::architecture_navigation::Category>,
 ) -> f32 {
     let height = Contents::new(registry, mode, tab, editing, category).height();
-    if matches!(
-        mode,
-        Mode::Model | Mode::Sketch | Mode::Motion | Mode::Drawings
-    ) {
+    if matches!(mode, Mode::Model | Mode::Motion | Mode::Drawings) {
         height.max(workspace_tool_height())
     } else {
         height

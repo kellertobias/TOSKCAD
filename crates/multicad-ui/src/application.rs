@@ -4340,7 +4340,7 @@ mod tests {
         shortcut_frame(
             &ctx,
             &mut app,
-            vec![key_event(egui::Key::Tab, egui::Modifiers::SHIFT)],
+            vec![key_event(egui::Key::Tab, egui::Modifiers::NONE)],
         );
         assert_eq!(app.tab, 0);
         assert!(crate::ribbon_ui::sketch_split_focused(&ctx));
