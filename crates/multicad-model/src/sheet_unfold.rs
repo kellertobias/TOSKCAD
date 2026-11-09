@@ -3,12 +3,12 @@
 //! the Part and feature), the bend schedule and scoped process diagnostics.
 use crate::{
     Model, ModelError, error,
-    sheet_forming::flat_cutout,
+    sheet_forming::{FlatFrame, flat_cutout},
     sheet_metal::{BendRecord, bend_records, flat_contours},
 };
 use multicad_core::{
     document::{Document, DocumentError, EntityId},
-    manufacturing::{PlanarContours, PlanarEdge},
+    manufacturing::{PlanarContours, PlanarEdge, PlanarLoop},
     materials::StockKind,
     model::{self, CutoutFace, ResolvedShape, ValueSource},
     references::ReferenceFrame,
@@ -59,6 +59,20 @@ pub struct Diagnostic {
     pub subject: Option<String>,
     pub message: String,
 }
+/// Supported planar regions and bend zones in developed millimeters.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DevelopedChart {
+    pub base: PlanarLoop,
+    pub legs: Vec<DevelopedLeg>,
+    pub bend_zones: Vec<[[f64; 2]; 4]>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct DevelopedLeg {
+    pub index: u32,
+    pub quad: [[f64; 2]; 4],
+}
+
 /// The developed blank of one sheet Part. Coordinates are base-frame
 /// millimeters; `frame` places them in the world. Cut loops are closed: the
 /// outer loop counterclockwise, openings clockwise.
@@ -73,6 +87,7 @@ pub struct DevelopedPattern {
     pub k_factor: f64,
     pub k_factor_source: ValueSource,
     pub cut: PlanarContours,
+    pub chart: DevelopedChart,
     pub bends: Vec<BendLine>,
     pub drills: Vec<DrillPoint>,
     pub size_mm: [f64; 2],
@@ -127,6 +142,54 @@ impl Model {
                 record,
             })
             .collect();
+        let mut base = PlanarLoop {
+            outer: true,
+            edges: layout.base.outer.iter().map(|edge| {
+                Ok(match *edge {
+                    CurvedEdge2d::Line { a, b } => PlanarEdge::Line { a, b },
+                    CurvedEdge2d::Arc { a, b, center, clockwise } =>
+                        planar_arc(a, b, center, clockwise),
+                    CurvedEdge2d::Circle { center, radius_mm } => {
+                        let a = [center[0] + radius_mm, center[1]];
+                        PlanarEdge::Arc {
+                            a,
+                            b: a,
+                            center,
+                            sweep_rad: std::f64::consts::TAU,
+                        }
+                    }
+                    CurvedEdge2d::BSpline(_) => return Err(error(
+                        Some(feature),
+                        "The developed sketch chart requires an exact line or circular-arc base outline",
+                    )),
+                })
+            }).collect::<Result<_, ModelError>>()?,
+        };
+        base.normalize_winding();
+        let chart = DevelopedChart {
+            base,
+            legs: layout
+                .flanges
+                .iter()
+                .map(|flange| DevelopedLeg {
+                    index: flange.flange.index as u32,
+                    quad: FlatFrame::flange(flange, flange.flange.leg_offset_mm(t, k))
+                        .quad(flange.width, flange.flange.leg_mm),
+                })
+                .collect(),
+            bend_zones: bends
+                .iter()
+                .map(|bend| {
+                    let flange = layout
+                        .flanges
+                        .iter()
+                        .find(|flange| flange.flange.index == bend.record.flange)
+                        .expect("bend flange");
+                    let [start, end] = bend.record.zone_mm;
+                    FlatFrame::flange(flange, start).quad(flange.width, end - start)
+                })
+                .collect(),
+        };
         let mut drills = vec![];
         let mut outlines = vec![];
         for c in &layout.cutouts {
@@ -283,6 +346,7 @@ impl Model {
             k_factor_source: sheet.k_factor_source,
             area_mm2: cut.area_mm2(),
             cut,
+            chart,
             bends,
             drills,
             size_mm,
@@ -290,6 +354,23 @@ impl Model {
         })
     }
 }
+fn planar_arc(a: [f64; 2], b: [f64; 2], center: [f64; 2], clockwise: bool) -> PlanarEdge {
+    let start = (a[1] - center[1]).atan2(a[0] - center[0]);
+    let end = (b[1] - center[1]).atan2(b[0] - center[0]);
+    let tau = std::f64::consts::TAU;
+    let sweep_rad = if clockwise {
+        -(start - end).rem_euclid(tau)
+    } else {
+        (end - start).rem_euclid(tau)
+    };
+    PlanarEdge::Arc {
+        a,
+        b,
+        center,
+        sweep_rad,
+    }
+}
+
 /// Exact bounds of a cutout outline in a flange's (along, outward) frame.
 fn local_bounds(
     outline: &[CurvedEdge2d],
@@ -324,21 +405,7 @@ fn local_bounds(
                 clockwise,
             } => {
                 let [a, b, center] = [a, b, center].map(local);
-                let start = (a[1] - center[1]).atan2(a[0] - center[0]);
-                let end = (b[1] - center[1]).atan2(b[0] - center[0]);
-                let tau = std::f64::consts::TAU;
-                let sweep_rad = if clockwise ^ reflected {
-                    -(start - end).rem_euclid(tau)
-                } else {
-                    (end - start).rem_euclid(tau)
-                };
-                let bounds = PlanarEdge::Arc {
-                    a,
-                    b,
-                    center,
-                    sweep_rad,
-                }
-                .bounds();
+                let bounds = planar_arc(a, b, center, clockwise ^ reflected).bounds();
                 for point in bounds {
                     add(point, 0.);
                 }

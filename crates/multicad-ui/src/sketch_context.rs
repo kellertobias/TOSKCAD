@@ -15,7 +15,10 @@ pub fn occurrence(
     scene: &Scene,
     preferred: Option<EntityId>,
 ) -> Option<(EntityId, Transform)> {
-    if scene.stamp().document != document.id() {
+    if scene.stamp().document != document.id()
+        || multicad_core::model::developed_sheet_sketch(document, seed)
+            .is_ok_and(|chart| chart.is_some())
+    {
         return None;
     }
     let mut seeds = BTreeSet::from([seed]);

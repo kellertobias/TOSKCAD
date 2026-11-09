@@ -3,8 +3,8 @@
 //! already host the sketch.
 use super::{
     BodyOutput, CutoutFace, Definition, Document, DocumentError, Entity, EntityData, EntityId,
-    Link, ProfileSource, SHEET_SCHEMA, SHEET_TYPE, invalid, read_sheet, sheet_feature,
-    validate_region,
+    Link, ProfileSource, SHEET_SCHEMA, SHEET_TYPE, developed_sheet_sketch, invalid, read_sheet,
+    sheet_feature, validate_region,
 };
 use crate::{
     commands::{Actor, CommandError, Request, Session},
@@ -89,6 +89,15 @@ impl SheetProfileCutDefinition {
         }
         let forming = sheet_feature(document, self.input.body)
             .ok_or_else(|| invalid("Choose an existing sheet-metal Part"))?;
+        if let Some(chart) = developed_sheet_sketch(document, self.profile.sketch)?
+            && (chart.part != self.input.body
+                || chart.forming != forming
+                || chart.face != self.face)
+        {
+            return Err(invalid(
+                "The developed sketch belongs to a different sheet Part or face",
+            ));
+        }
         let sheet = read_sheet(document, forming)?;
         if matches!(self.face, CutoutFace::Flange { index } if index as usize >= sheet.flanges.len())
         {

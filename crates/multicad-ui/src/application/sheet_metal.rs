@@ -12,14 +12,14 @@ impl Application {
         if self.mode != Mode::Model {
             return Err("Open Model to use Sheet Metal tools".into());
         }
-        if command == Command::SheetView && project.sheet_pattern.active() {
-            return Ok(());
-        }
         if project.pending_edits()
             || project.sketch.model_active()
             || project.sketch.measurement.active()
         {
             return Err("Finish the active tool before opening a Sheet Metal tool".into());
+        }
+        if command == Command::SheetView && project.sheet_pattern.active() {
+            return Ok(());
         }
         let document = project.session.document();
         let part = project
@@ -95,5 +95,118 @@ impl Application {
         }
         self.tab = tab;
         Ok(())
+    }
+
+    pub(super) fn sync_sheet_pattern(&mut self, ctx: &egui::Context) {
+        let model = self.mode == Mode::Model;
+        let editing = self.mode == Mode::Sketch && self.current().sketch.editing;
+        let factory = self.sheet_pattern_backends.clone();
+        let p = self.current_mut();
+        let edited_sheet = if editing {
+            p.sketch.developed_sketch_part(p.session.document())
+        } else {
+            None
+        };
+        if let Some(part) = edited_sheet {
+            if p.sheet_pattern.part() != Some(part)
+                && let Some(factory) = &factory
+                && let Err(error) =
+                    p.sheet_pattern
+                        .open(factory, p.session.document(), p.session.revision(), part)
+            {
+                self.message = error;
+                self.message_error = true;
+                return;
+            }
+            p.sheet_pattern.set_authoring(true);
+        } else if !model
+            || p.sketch.measurement.active()
+            || p.pending_edits() && !p.sheet_pattern.authoring()
+        {
+            p.sheet_pattern.close();
+        }
+        p.sheet_pattern.update(&p.session);
+        let pattern = p
+            .sheet_pattern
+            .authoring()
+            .then(|| p.sheet_pattern.backdrop())
+            .flatten();
+        p.sketch.set_developed_pattern(pattern);
+        if p.sheet_pattern.pending() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(32));
+        }
+    }
+
+    /// Own flat face acquisition while the normal Sketch and Extrude panels
+    /// continue to own their drawing, profile, confirmation and cancellation.
+    pub(super) fn show_sheet_pattern(&mut self, ui: &mut egui::Ui) -> bool {
+        let sketch_mode = self.mode == Mode::Sketch;
+        let p = self.current_mut();
+        let Some(part) = p.sheet_pattern.part() else {
+            return false;
+        };
+        if p.sheet_pattern.authoring() {
+            let mut return_to_pattern = false;
+            ui.horizontal(|ui| {
+                ui.strong("Flat pattern");
+                if !sketch_mode && !p.sketch.model_active() {
+                    return_to_pattern = ui.button("Back to flat pattern").clicked();
+                    ui.small("Select a closed sketch region, then choose Extrude.");
+                }
+            });
+            if return_to_pattern {
+                p.sheet_pattern.set_authoring(false);
+                p.sketch.set_developed_pattern(None);
+                ui.ctx().request_repaint();
+                return true;
+            }
+            if let Some(error) = p.sheet_pattern.error() {
+                ui.colored_label(egui::Color32::LIGHT_RED, error);
+            }
+            if p.sheet_pattern.backdrop().is_none() {
+                if p.sheet_pattern.pending() {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label("Generating the sheet for this sketch…");
+                    });
+                }
+                return true;
+            }
+            return false;
+        }
+        let result = p.sheet_pattern.show(ui, &p.session, &p.scene);
+        let folded = !p.sheet_pattern.active();
+        match result {
+            crate::sheet_pattern::Show::Sketch(face, channel) => {
+                p.sheet_pattern.set_authoring(true);
+                p.sketch.set_developed_pattern(p.sheet_pattern.backdrop());
+                match p
+                    .sketch
+                    .begin_developed_sketch(&mut p.session, part, face, channel)
+                {
+                    Ok(()) => {
+                        self.mode = Mode::Sketch;
+                        self.tab = 0;
+                        self.message = "Sketch on flat pattern".into();
+                        self.message_error = false;
+                    }
+                    Err(error) => {
+                        p.sheet_pattern.set_authoring(false);
+                        p.sketch.set_developed_pattern(None);
+                        self.message = error;
+                        self.message_error = true;
+                    }
+                }
+                ui.ctx().request_repaint();
+                true
+            }
+            crate::sheet_pattern::Show::Hidden | crate::sheet_pattern::Show::Visible => {
+                if folded {
+                    self.message = "Folded model".into();
+                    self.message_error = false;
+                }
+                result == crate::sheet_pattern::Show::Visible
+            }
+        }
     }
 }

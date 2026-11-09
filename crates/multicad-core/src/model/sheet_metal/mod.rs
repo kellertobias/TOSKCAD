@@ -8,11 +8,16 @@
 //! Thickness comes from the stock. The inside bend radius and K-factor come
 //! from the stock unless the part overrides them; both values stay separate
 //! editable inputs and are never universal constants.
+mod developed_sketch;
 mod edges;
 mod hardware;
 mod prepare;
 mod profile_cut;
 mod resolve;
+pub use developed_sketch::{
+    DEVELOPED_SHEET_SKETCH_CAPABILITY, DevelopedSheetSketch, developed_sheet_sketch,
+};
+pub(crate) use developed_sketch::{developed_sheet_link, is_developed_sheet_link};
 pub use edges::*;
 pub use hardware::*;
 pub use prepare::*;
@@ -458,9 +463,16 @@ pub(super) fn validate_document(document: &Document) -> Result<(), DocumentError
         read_sheet(document, e.id)?;
     }
     for entity in document.entities() {
-        if matches!(&entity.data, EntityData::Feature { definition, .. } if definition.type_id == SHEET_PROFILE_CUT_TYPE)
-        {
-            read_sheet_profile_cut(document, entity.id)?;
+        match &entity.data {
+            EntityData::Feature { definition, .. }
+                if definition.type_id == SHEET_PROFILE_CUT_TYPE =>
+            {
+                read_sheet_profile_cut(document, entity.id)?;
+            }
+            EntityData::Sketch { inputs, .. } if inputs.iter().any(is_developed_sheet_link) => {
+                developed_sheet_sketch(document, entity.id)?;
+            }
+            _ => {}
         }
     }
     validate_hardware(document)

@@ -33,6 +33,18 @@ impl Backend {
                     let published = Arc::get_mut(&mut published)
                         .expect("publication is not shared before return");
                     published.set_sheet_faces(model.sheet_authoring_faces(document));
+                    published.set_sheet_cut_previews(
+                        snapshot
+                            .body_sources
+                            .keys()
+                            .filter_map(|&part| {
+                                snapshot
+                                    .verified_developed_cut(part)
+                                    .cloned()
+                                    .map(|cut| (part, cut))
+                            })
+                            .collect(),
+                    );
                     published.set_sheet_bend_schedules(
                         model
                             .sheet_bend_schedules(document)

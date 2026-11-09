@@ -25,6 +25,7 @@ mod assembly_host;
 #[cfg(test)]
 #[path = "sketch_assembly_host_tests.rs"]
 mod assembly_host_tests;
+mod developed_sheet;
 #[path = "sketch_draw_modes.rs"]
 mod draw_modes;
 mod duplicate;
@@ -247,6 +248,7 @@ pub struct SketchEditor {
     review_scene: Option<std::sync::Arc<crate::viewport::Scene>>,
     context_key: Option<(crate::viewport::SceneStamp, u64, Option<EntityId>)>,
     contexts: std::collections::BTreeMap<EntityId, crate::viewport::Transform>,
+    developed_viewport: Option<developed_sheet::DevelopedViewport>,
     sketch_occurrences: std::collections::BTreeMap<EntityId, multicad_core::model::OccurrencePath>,
 }
 impl Default for SketchEditor {
@@ -352,6 +354,7 @@ impl Default for SketchEditor {
             review_scene: None,
             context_key: None,
             contexts: Default::default(),
+            developed_viewport: None,
             sketch_occurrences: Default::default(),
         }
     }
@@ -1152,6 +1155,10 @@ impl SketchEditor {
             return self.begin_face_profile_model(session, resources, tool, channel);
         }
         let (sketch, profiles) = self.profile_inputs(session.document(), session.revision())?;
+        let developed = developed_sheet::chart(session.document(), sketch).is_some();
+        if developed && tool != crate::modeling::ModelingTool::Extrude {
+            return Err("Developed sketches support Extrude Cut through sheet".into());
+        }
         let guide = self.profile_guide(session.document(), session.revision(), sketch, &profiles);
         self.finish()?;
         match tool {
@@ -1166,6 +1173,12 @@ impl SketchEditor {
                 .model
                 .begin_revolve(session, resources, sketch, profiles, channel)?,
             _ => return Err("Choose a profile modeling tool".into()),
+        }
+        if developed {
+            self.message =
+                "Extrude · through-sheet cut from the developed sketch; inspect its native preview"
+                    .into();
+            return Ok(());
         }
         self.message = match guide {
             Ok(guide) => {
@@ -1803,6 +1816,10 @@ impl SketchEditor {
         self.home_requested = true;
     }
     pub fn toggle_transform(&mut self) {
+        if self.developed_viewport.is_some() {
+            self.message = "Use the sketch tools to edit the developed profile".into();
+            return;
+        }
         if self.model_interaction_active() {
             self.message = "Apply or cancel the modeling tool before transforming".into();
             return;
@@ -2514,7 +2531,9 @@ impl SketchEditor {
             })
             .map_err(|e| e.to_string())?;
         self.activate_sketch(id)?;
-        self.orient_to(frame);
+        if developed_sheet::chart(doc, id).is_none() {
+            self.orient_to(frame);
+        }
         Ok(())
     }
     fn activate_sketch(&mut self, id: EntityId) -> Result<(), String> {
@@ -2537,7 +2556,11 @@ impl SketchEditor {
         self.cancel();
         self.editing = false;
         self.moving = false;
-        self.message = "Sketch saved in the document. Select it to inspect or reopen.".into();
+        self.message = if self.developed_viewport.is_some() {
+            "Developed sketch saved · select its closed area, then Extrude".into()
+        } else {
+            "Sketch saved in the document. Select it to inspect or reopen.".into()
+        };
         Ok(())
     }
     /// Leave sketch editing and drop only what is not yet in the document:
@@ -3806,8 +3829,10 @@ impl SketchEditor {
                 }
             };
         }
+        let developed_view = self.developed_viewport.is_some();
         let model_bounds = scene.as_ref().and_then(|scene| scene.world_bounds());
-        if self.architecture.planar()
+        if !developed_view
+            && self.architecture.planar()
             && model_bounds.is_some()
             && self
                 .viewport_rect
@@ -3819,7 +3844,7 @@ impl SketchEditor {
                 .home_plan(model_bounds, self.viewport_rect.unwrap_or(Rect::NOTHING));
             self.initial_fit.settle();
         }
-        if std::mem::take(&mut self.home_requested) {
+        if !developed_view && std::mem::take(&mut self.home_requested) {
             self.camera = if self.architecture.planar() {
                 self.architecture
                     .home_plan(model_bounds, self.viewport_rect.unwrap_or(Rect::NOTHING))
@@ -3832,7 +3857,8 @@ impl SketchEditor {
             };
             self.initial_fit.settle();
         }
-        if !transfer_source_view
+        if !developed_view
+            && !transfer_source_view
             && !anchor_view
             && let Some(camera) = self.initial_fit.update(
                 session.document().id(),
@@ -3844,7 +3870,7 @@ impl SketchEditor {
             self.camera = camera;
             ui.ctx().request_repaint();
         }
-        if self.architecture.planar() {
+        if !developed_view && self.architecture.planar() {
             self.architecture.constrain(&mut self.camera);
         }
         egui::CentralPanel::default()
@@ -3859,6 +3885,7 @@ impl SketchEditor {
                     Some(ModelCanvas { resources, feed }),
                 );
                 if self.model_workspace
+                    && !developed_view
                     && !sketch_mode
                     && !feed.is_current(session.document().id(), session.revision())
                     && let Some(rect) = self.viewport_rect
@@ -4118,19 +4145,49 @@ impl SketchEditor {
         current: bool,
         model_context: Option<ModelCanvas<'_>>,
     ) {
+        let pattern = self
+            .developed_viewport
+            .as_ref()
+            .map(|view| view.pattern.clone());
+        let developed_view = pattern.is_some();
+        let candidate = scene
+            .as_ref()
+            .filter(|scene| developed_view && self.model.owns_display_scene(scene))
+            .cloned();
+        let scene = scene.filter(|_| !developed_view);
         let sketch_mode = sketch_mode && !self.measurement.active();
         let edge_face_picking = self.model.edge_treatment_pick_kind()
             == Some(multicad_core::references::TopologyKind::Face);
         self.refresh_overlay_visibility(session);
         let (rect, response) = ui.allocate_exact_size(ui.available_size(), Sense::click_and_drag());
         self.viewport_rect = Some(rect);
+        if developed_view {
+            self.camera.yaw = 0.;
+            self.camera.pitch = -std::f32::consts::FRAC_PI_2;
+            self.camera.perspective = false;
+            let home = std::mem::take(&mut self.home_requested);
+            if (home || self.fit_requested)
+                && let Some([low, high]) = pattern.as_ref().and_then(|pattern| pattern.bounds())
+            {
+                self.camera.target = [
+                    ((low[0] + high[0]) * 0.5) as f32,
+                    ((low[1] + high[1]) * 0.5) as f32,
+                    0.,
+                ];
+                self.camera.scale = ((rect.width() - 64.).max(1.)
+                    / (high[0] - low[0]).max(0.001) as f32)
+                    .min((rect.height() - 64.).max(1.) / (high[1] - low[1]).max(0.001) as f32)
+                    .clamp(0.02, 100.);
+                self.fit_requested = false;
+            }
+        }
         crate::camera_gestures::navigate_with_plane(
             ui,
             &response,
             &mut self.camera,
-            self.architecture.planar(),
+            developed_view || self.architecture.planar(),
         );
-        if self.architecture.planar() {
+        if !developed_view && self.architecture.planar() {
             self.architecture.constrain(&mut self.camera);
         }
         let painter = ui.painter().with_clip_rect(rect);
@@ -4152,6 +4209,17 @@ impl SketchEditor {
                 if let Some(segment) = self.camera.segment(a, b, rect) {
                     painter.line_segment(segment, Stroke::new(0.5, Color32::from_gray(47)));
                 }
+            }
+        }
+        if let Some(pattern) = &pattern {
+            let to_screen = |[u, v]: [f64; 2]| project([u, v, 0.], &self.camera);
+            let cut = candidate.as_deref().and_then(|scene| {
+                scene.sheet_cut_preview(self.developed_sketch_part(session.document())?)
+            });
+            if let Some(cut) = cut {
+                pattern.paint_cut_overlay(&painter, self.camera.scale, to_screen, cut);
+            } else {
+                pattern.paint_overlay(&painter, self.camera.scale, to_screen);
             }
         }
         self.solid.origin_axes = self.model_workspace
@@ -4348,8 +4416,10 @@ impl SketchEditor {
                 );
             }
         }
-        let face_preselection = current
-            && !sketch_mode
+        let developed_preselection =
+            developed_view && self.developed_sketch_part(session.document()).is_some();
+        let face_preselection = (current && !sketch_mode && !developed_view
+            || developed_preselection)
             && !self.editing
             && !self.acquiring_profiles()
             && self
@@ -4360,10 +4430,14 @@ impl SketchEditor {
                 .interact_pointer_pos()
                 .filter(|_| response.clicked())
                 .or_else(|| response.hover_pos());
-            scene
-                .as_deref()
-                .zip(pointer)
-                .and_then(|(scene, pointer)| self.face_region_point(session, scene, rect, pointer))
+            pointer.and_then(|pointer| {
+                if developed_preselection {
+                    self.profile_fill_point(session, rect, pointer)
+                        .map(|(sketch, _, point)| (sketch, point))
+                } else {
+                    self.face_region_point(session, scene.as_deref()?, rect, pointer)
+                }
+            })
         } else {
             None
         };
@@ -4661,7 +4735,8 @@ impl SketchEditor {
             self.modeling_section(),
         );
         self.assembly_clearance_paint(&painter, rect, session, scene.as_ref());
-        if !self.measurement.active()
+        if !developed_view
+            && !self.measurement.active()
             && scene.is_none()
             && response.clicked()
             && !self.editing
@@ -4746,6 +4821,11 @@ impl SketchEditor {
             !self.measurement.active()
                 && !self.repair.viewing_candidates()
                 && self.overlay_visible(e.id)
+                && if developed_view {
+                    self.selected == Some(e.id) && developed_sheet::chart(doc, e.id).is_some()
+                } else {
+                    developed_sheet::chart(doc, e.id).is_none()
+                }
         }) {
             if let Ok((source, frame, _)) = self.read_sketch(doc, e.id, session.revision()) {
                 if self.selected == Some(e.id)
@@ -5255,7 +5335,7 @@ impl SketchEditor {
                 Color32::from_gray(175),
             );
         }
-        if !self.architecture.planar() {
+        if !developed_view && !self.architecture.planar() {
             egui::Area::new(ui.id().with("orientation"))
                 .movable(false)
                 .pivot(Align2::RIGHT_TOP)
@@ -5293,7 +5373,7 @@ impl SketchEditor {
                     ui,
                     &mut self.camera,
                     &mut self.style,
-                    self.architecture.planar(),
+                    developed_view || self.architecture.planar(),
                     selection_navigation,
                     |ui| {
                         ui.checkbox(&mut grid, "XY grid");
@@ -5307,6 +5387,7 @@ impl SketchEditor {
                         ui.checkbox(&mut guides, "Drawing guides");
                     },
                     |ui| {
+                        if developed_view {return;}
                         if self.architecture.planar() {ui.label("Plan object picking").on_hover_text("Switch to 3D model to pick physical faces, edges or vertices.");}
                         else {self.solid.filter_control(ui);}
                         ui.add_enabled_ui(!self.architecture.planar(),|ui| {
@@ -5342,7 +5423,10 @@ impl SketchEditor {
                     self.home_requested = true;
                     ui.ctx().request_repaint();
                 }
-                if actions.fit || self.fit_requested {
+                if developed_view && actions.fit {
+                    self.home_requested = true;
+                    ui.ctx().request_repaint();
+                } else if !developed_view && (actions.fit || self.fit_requested) {
                     self.fit_requested = false;
                     if actions.fit && !sketch_mode && let Some(bounds) = selected_bounds {
                         self.camera.fit(&bounds_points(bounds), rect);

@@ -24,7 +24,7 @@ use multicad_kernel::{
 };
 
 mod profile_cut;
-pub(crate) use profile_cut::build_profile_cut;
+pub(crate) use profile_cut::{CutProfile, build_profile_cut};
 
 const TOLERANCE_MM: f64 = 1e-3;
 
@@ -49,7 +49,7 @@ fn unit(a: [f64; 3]) -> [f64; 3] {
 /// the material runs `thickness_mm` along `thickness_direction`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SheetLayout {
-    forming_feature: EntityId,
+    pub(crate) forming_feature: EntityId,
     pub frame: PlaneFrame,
     pub thickness_direction: [f64; 3],
     pub thickness_mm: f64,
@@ -60,7 +60,7 @@ pub struct SheetLayout {
     pub cutouts: Vec<ResolvedCutout>,
     pub patterns: Vec<model::ResolvedPattern>,
     pub(crate) profile_cuts: Vec<profile_cut::ProfileCut>,
-    developed: Option<PlanarContours>,
+    pub(crate) developed: Option<PlanarContours>,
 }
 impl SheetLayout {
     pub(crate) fn space(&self) -> SheetSpace {

@@ -1,5 +1,5 @@
 use super::{SheetLayout, cross, dot, flat_contours, polygon_edges, scale};
-use crate::{ModelError, error};
+use crate::{ModelError, error, sheet_forming::FlatFrame};
 use multicad_core::{document::EntityId, model::CutoutFace, references::Origin};
 use multicad_kernel::{BooleanOperation, CurvedEdge2d, CurvedProfile, GeometryPolicy, Solid};
 
@@ -11,15 +11,24 @@ pub(crate) struct ProfileCut {
     pub area_mm2: f64,
 }
 
+pub(crate) struct CutProfile {
+    pub geometry: CurvedProfile,
+    pub developed: bool,
+}
+
 pub(crate) fn build_profile_cut(
     previous: &SheetLayout,
     sheet: &Solid,
     feature: EntityId,
     face: CutoutFace,
-    profile: CurvedProfile,
+    profile: CutProfile,
     origins: &[Origin],
     policy: GeometryPolicy,
 ) -> Result<(Solid, SheetLayout), ModelError> {
+    let CutProfile {
+        geometry: profile,
+        developed,
+    } = profile;
     let failure = |message: String| error(Some(feature), message);
     let native = |e: multicad_kernel::GeometryError| failure(e.to_string());
     if !profile.holes.is_empty() {
@@ -33,26 +42,6 @@ pub(crate) fn build_profile_cut(
         .face_frame(face, &previous.flanges)
         .map_err(failure)?;
     let thickness = previous.thickness_mm;
-    let delta: [f64; 3] = std::array::from_fn(|i| profile.frame.origin[i] - frame.origin[i]);
-    let offset = dot(delta, normal);
-    let sketch_normal = profile.frame.normal();
-    let tolerance = policy.linear_tolerance_mm;
-    if dot(sketch_normal, normal).abs() < 1. - 1e-9
-        || (offset.abs() > tolerance && (offset - thickness).abs() > tolerance)
-    {
-        return Err(failure(
-            "Place the sketch directly on the flat base or final flange leg being cut".into(),
-        ));
-    }
-
-    let map = |p: [f64; 2]| {
-        let point = std::array::from_fn(|i| {
-            delta[i] + p[0] * profile.frame.u[i] + p[1] * profile.frame.v[i]
-        });
-        [dot(point, frame.u), dot(point, frame.v)]
-    };
-    let reflected = dot(sketch_normal, cross(frame.u, frame.v)) < 0.;
-    let outer = transform(&profile.outer, map, reflected).map_err(failure)?;
     let flange = match face {
         CutoutFace::Base => None,
         CutoutFace::Flange { index } => Some(
@@ -62,6 +51,62 @@ pub(crate) fn build_profile_cut(
                 .find(|flange| flange.flange.index == index as usize)
                 .ok_or_else(|| failure(format!("Flange {} is missing", index + 1)))?,
         ),
+    };
+    let flat_frame = flange.map_or(FlatFrame::BASE, |flange| {
+        FlatFrame::flange(
+            flange,
+            flange.flange.leg_offset_mm(thickness, previous.k_factor),
+        )
+    });
+    let (outer, outline) = if developed {
+        let sketch = profile.frame;
+        let sketch_normal = sketch.normal();
+        if sketch_normal[2].abs() < 1. - 1e-9 || sketch.origin[2].abs() > policy.linear_tolerance_mm
+        {
+            return Err(failure(
+                "Keep the sketch on the developed sheet plane".into(),
+            ));
+        }
+        let outline = transform(
+            &profile.outer,
+            |p| {
+                let [x, y, _] = sketch.point(p);
+                [x, y]
+            },
+            sketch_normal[2] < 0.,
+        )
+        .map_err(failure)?;
+        let outer = transform(
+            &outline,
+            |p| flat_frame.coordinates(p),
+            flat_frame.reflected(),
+        )
+        .map_err(failure)?;
+        (outer, outline)
+    } else {
+        let delta: [f64; 3] = std::array::from_fn(|i| profile.frame.origin[i] - frame.origin[i]);
+        let offset = dot(delta, normal);
+        let sketch_normal = profile.frame.normal();
+        let tolerance = policy.linear_tolerance_mm;
+        if dot(sketch_normal, normal).abs() < 1. - 1e-9
+            || (offset.abs() > tolerance && (offset - thickness).abs() > tolerance)
+        {
+            return Err(failure(
+                "Place the sketch directly on the flat base or final flange leg being cut".into(),
+            ));
+        }
+
+        let map = |p: [f64; 2]| {
+            let point = std::array::from_fn(|i| {
+                delta[i] + p[0] * profile.frame.u[i] + p[1] * profile.frame.v[i]
+            });
+            [dot(point, frame.u), dot(point, frame.v)]
+        };
+        let reflected = dot(sketch_normal, cross(frame.u, frame.v)) < 0.;
+        let outer = transform(&profile.outer, map, reflected).map_err(failure)?;
+        let outline =
+            transform(&outer, |p| flat_frame.point(p), flat_frame.reflected()).map_err(failure)?;
+        (outer, outline)
     };
     let support = flange.map_or_else(
         || previous.base.outer.clone(),
@@ -113,18 +158,6 @@ pub(crate) fn build_profile_cut(
         ));
     }
 
-    let outline = if let Some(flange) = flange {
-        let offset = flange.flange.leg_offset_mm(thickness, previous.k_factor);
-        let [u, v] = [flange.along, flange.outward];
-        transform(
-            &outer,
-            |[x, y]| std::array::from_fn(|i| flange.start[i] + x * u[i] + (offset + y) * v[i]),
-            u[0] * v[1] - u[1] * v[0] < 0.,
-        )
-        .map_err(failure)?
-    } else {
-        outer
-    };
     let mut layout = previous.clone();
     layout.profile_cuts.push(ProfileCut {
         feature,
@@ -219,10 +252,13 @@ mod tests {
                 sheet,
                 feature,
                 face,
-                CurvedProfile {
-                    frame,
-                    outer: outline,
-                    holes: vec![],
+                CutProfile {
+                    geometry: CurvedProfile {
+                        frame,
+                        outer: outline,
+                        holes: vec![],
+                    },
+                    developed: false,
                 },
                 &origins,
                 compiler.policy,

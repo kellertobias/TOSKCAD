@@ -411,15 +411,44 @@ pub fn fuse(mut acc: Solid, others: &[Solid], policy: GeometryPolicy) -> Result<
     }
     Ok(acc)
 }
+/// A planar face's exact isometry into developed sheet coordinates.
+#[derive(Clone, Copy)]
+pub(crate) struct FlatFrame {
+    origin: [f64; 2],
+    u: [f64; 2],
+    v: [f64; 2],
+}
+impl FlatFrame {
+    pub const BASE: Self = Self {
+        origin: [0., 0.],
+        u: [1., 0.],
+        v: [0., 1.],
+    };
+    pub fn flange(flange: &PlacedFlange, offset: f64) -> Self {
+        Self {
+            origin: add(flange.start, mul(flange.outward, offset)),
+            u: flange.along,
+            v: flange.outward,
+        }
+    }
+    pub fn point(self, [x, y]: [f64; 2]) -> [f64; 2] {
+        add(add(self.origin, mul(self.u, x)), mul(self.v, y))
+    }
+    pub fn coordinates(self, point: [f64; 2]) -> [f64; 2] {
+        let delta = std::array::from_fn::<_, 2, _>(|i| point[i] - self.origin[i]);
+        [self.u, self.v].map(|axis| axis[0] * delta[0] + axis[1] * delta[1])
+    }
+    pub fn reflected(self) -> bool {
+        self.u[0] * self.v[1] - self.u[1] * self.v[0] < 0.
+    }
+    pub fn quad(self, width: f64, length: f64) -> [[f64; 2]; 4] {
+        [[0., 0.], [width, 0.], [width, length], [0., length]].map(|p| self.point(p))
+    }
+}
+
 /// The developed region of a flange in base-frame coordinates.
 pub fn developed_rect(f: &PlacedFlange, developed: f64) -> [[f64; 2]; 4] {
-    let p = |a: f64, o: f64| add(add(f.start, mul(f.along, a)), mul(f.outward, o));
-    [
-        p(0., 0.),
-        p(f.width, 0.),
-        p(f.width, developed),
-        p(0., developed),
-    ]
+    FlatFrame::flange(f, 0.).quad(f.width, developed)
 }
 /// A cutout shape moved into flat base-frame coordinates.
 pub fn flat_cutout(
@@ -433,14 +462,8 @@ pub fn flat_cutout(
         CutoutFace::Flange { index } => {
             let f = flanges.iter().find(|f| f.flange.index == index as usize)?;
             let offset = f.flange.leg_offset_mm(thickness, k);
-            // Flange coordinates (x along the edge, y along the leg) map to
-            // start + x·along + (offset + y)·outward.
-            let map = |p: [f64; 2]| {
-                add(
-                    add(f.start, mul(f.along, p[0])),
-                    mul(f.outward, offset + p[1]),
-                )
-            };
+            let frame = FlatFrame::flange(f, offset);
+            let map = |p| frame.point(p);
             Some(match cutout.shape {
                 ResolvedShape::Circle {
                     center,

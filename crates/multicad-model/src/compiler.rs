@@ -1,5 +1,6 @@
 use multicad_core::{
     document::{Document, EntityData, EntityId},
+    manufacturing::PlanarContours,
     model::{self, CutTargetProbeResult, Operation},
     project_file::ContentHash,
     references::{self, Origin, ReferenceReport, TopologySnapshot},
@@ -82,6 +83,16 @@ pub struct ModelSnapshot {
     pub fdm_aids: Result<Vec<crate::AidInspection>, String>,
 }
 impl ModelSnapshot {
+    /// A complete, exact developed-contour proof already built by the
+    /// current compatible cut feature, without a new kernel operation.
+    pub fn verified_developed_cut(&self, part: EntityId) -> Option<&PlanarContours> {
+        if self.scope != EvaluationScope::Full || self.consumed_bodies.contains(&part) {
+            return None;
+        }
+        let head = self.body_sources.get(&part)?;
+        self.sheet_layouts.get(head)?.developed.as_ref()
+    }
+
     pub fn transfer_evaluation(&self) -> model::TransferEvaluationInfo {
         model::TransferEvaluationInfo {
             source_hash: self.stamp.source_hash,
@@ -1079,6 +1090,18 @@ impl Compiler {
                             "The previous feature no longer produces a developable sheet",
                         ));
                     };
+                    let chart = model::developed_sheet_sketch(document, source.profile.sketch)
+                        .map_err(|e| error(Some(id), e))?;
+                    if chart.as_ref().is_some_and(|chart| {
+                        chart.part != source.input.body
+                            || chart.forming != prior.forming_feature
+                            || chart.face != source.face
+                    }) {
+                        return Err(error(
+                            Some(id),
+                            "The developed sketch belongs to another sheet face",
+                        ));
+                    }
                     let (profile, origins) = profiles.get(
                         source.profile.sketch,
                         &source.profile.region,
@@ -1092,7 +1115,10 @@ impl Compiler {
                         sheet,
                         id,
                         source.face,
-                        profile,
+                        crate::sheet_metal::CutProfile {
+                            geometry: profile,
+                            developed: chart.is_some(),
+                        },
                         &origins,
                         self.policy,
                     )?;

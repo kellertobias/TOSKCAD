@@ -4,7 +4,7 @@ use multicad_core::{
     model,
 };
 use multicad_model::{Compiler, PairCycleProofStore, Runtime, with_pair_cycle_proofs};
-use multicad_ui::sheet_pattern::{self, Bend, Pattern};
+use multicad_ui::sheet_pattern::{self, Bend, Chart, Pattern};
 
 type PatternResult = Result<Pattern, String>;
 
@@ -123,6 +123,16 @@ fn to_pattern(pattern: multicad_model::DevelopedPattern) -> Pattern {
                 allowance_mm: bend.record.allowance_mm,
             })
             .collect(),
+        chart: Chart {
+            base: pattern.chart.base,
+            legs: pattern
+                .chart
+                .legs
+                .into_iter()
+                .map(|leg| (leg.index, leg.quad))
+                .collect(),
+            bend_zones: pattern.chart.bend_zones,
+        },
         drills: pattern
             .drills
             .into_iter()

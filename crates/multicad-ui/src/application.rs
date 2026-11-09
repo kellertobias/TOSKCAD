@@ -926,6 +926,7 @@ impl Application {
                 if p.sketch.model_active() {
                     let label = p.sketch.model_label();
                     p.sketch.apply_model(&mut p.session, &p.resources)?;
+                    p.sheet_pattern.set_authoring(false);
                     p.editor.reload(&p.session);
                     self.message = format!("{label} applied · one undoable source edit");
                     return Ok(());
@@ -1250,6 +1251,11 @@ impl Application {
                 }
                 if args.is_empty() {
                     let p = self.current_mut();
+                    if p.sheet_pattern.active() {
+                        p.sheet_pattern.begin_pick(channel)?;
+                        self.message = "Sketch · choose a flat face on the sheet".into();
+                        return Ok(());
+                    }
                     p.sketch.begin_model_sketch(&mut p.session, channel)?;
                 } else {
                     if args.len() != 1 {
@@ -1259,6 +1265,7 @@ impl Application {
                         .ok_or("Choose xy, xz or yz")?;
                     let p = self.current_mut();
                     p.sketch.create(&mut p.session, datum, channel)?;
+                    p.sheet_pattern.close();
                 }
                 self.mode = Mode::Sketch;
                 self.tab = 0;
@@ -1326,7 +1333,9 @@ impl Application {
                 if self.mode != Mode::Sketch {
                     return Err("No sketch is being edited".into());
                 }
-                self.current_mut().sketch.abort()?;
+                let p = self.current_mut();
+                p.sketch.abort()?;
+                p.sheet_pattern.set_authoring(false);
                 self.mode = Mode::Model;
                 self.tab = 0;
             }
@@ -1390,7 +1399,11 @@ impl Application {
                         channel,
                     )?;
                 }
-                project.sheet_pattern.close();
+                if tool != crate::modeling::ModelingTool::Extrude
+                    || !project.sheet_pattern.authoring()
+                {
+                    project.sheet_pattern.close();
+                }
                 if tool == crate::modeling::ModelingTool::ScrewConnection {
                     project.sketch.set_installed_symbol_library(installed);
                 }
@@ -2780,26 +2793,12 @@ impl Application {
                     .inner_margin(egui::Margin::symmetric(8, 3)),
             )
             .show(ui, |ui| self.command_line(ui));
-        let show_sheet_pattern = self.mode == Mode::Model
-            && !self.current().sketch.model_active()
-            && !self.current().sketch.measurement.active()
-            && !self.current().pending_edits();
-        if !show_sheet_pattern {
-            self.current_mut().sheet_pattern.close();
-        }
+        self.sync_sheet_pattern(&ctx);
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(crate::theme::PANEL))
             .show(ui, |ui| {
-                let p = self.current_mut();
-                if show_sheet_pattern && p.sheet_pattern.active() {
-                    let drawn = p.sheet_pattern.show(ui, &p.session, &p.scene);
-                    if !p.sheet_pattern.active() {
-                        self.message = "Folded model".into();
-                        self.message_error = false;
-                    }
-                    if drawn {
-                        return;
-                    }
+                if self.show_sheet_pattern(ui) {
+                    return;
                 }
                 if self.mode == Mode::Parameters {
                     self.project_workspace(ui);
@@ -2862,6 +2861,9 @@ impl Application {
                         && !p.sketch.model_active()
                         && p.session.revision() == before;
                     if p.session.revision() != before {
+                        if modeling_before && !p.sketch.model_active() {
+                            p.sheet_pattern.set_authoring(false);
+                        }
                         let label = p
                             .session
                             .activity()

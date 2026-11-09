@@ -41,6 +41,7 @@ pub(super) struct OperationControls {
     native: BTreeMap<EntityId, BodyInput>,
     context_error: Option<String>,
     sheet_sketch: Option<EntityId>,
+    developed: bool,
     pub sheet_target: Result<SheetCutTarget, String>,
 }
 impl OperationControls {
@@ -92,8 +93,15 @@ impl OperationControls {
             })
             .collect();
         choices.sort_by(|a, b| a.1.cmp(&b.1).then(a.0.cmp(&b.0)));
+        let developed = sketch.is_some_and(|id| {
+            model::developed_sheet_sketch(document, id).is_ok_and(|chart| chart.is_some())
+        });
         Self {
-            operation: Operation::NewBody,
+            operation: if developed {
+                Operation::Cut
+            } else {
+                Operation::NewBody
+            },
             keep_tools: false,
             component: document.hierarchy().active_component,
             include: BTreeSet::new(),
@@ -106,7 +114,8 @@ impl OperationControls {
             context_error: Some(
                 "Wait for a source-current native model before choosing explicit targets".into(),
             ),
-            sheet_sketch: sketch.filter(|id| sheet_support(document, *id)),
+            sheet_sketch: sketch.filter(|id| developed || sheet_support(document, *id)),
+            developed,
             sheet_target: Err("Wait for the current sheet to resolve its sketch support".into()),
         }
     }
@@ -127,10 +136,16 @@ impl OperationControls {
             }
             if let Some(sketch) = self.sheet_sketch {
                 self.sheet_target = (|| {
-                    let (body, face) = crate::sketch_plane::attached_sheet_face(
-                        document, sketch, scene,
-                    )?
-                    .ok_or("Sketch on a current sheet base or final flange leg before cutting")?;
+                    let (body, face) = if let Some(chart) =
+                        model::developed_sheet_sketch(document, sketch)
+                            .map_err(|error| error.to_string())?
+                    {
+                        (chart.part, chart.face)
+                    } else {
+                        crate::sketch_plane::attached_sheet_face(document, sketch, scene)?.ok_or(
+                            "Sketch on a current sheet base or final flange leg before cutting",
+                        )?
+                    };
                     let producer = scene
                         .source_producer(body)
                         .filter(|producer| {
@@ -212,6 +227,11 @@ impl OperationControls {
         controls::inspector_layout(ui);
         let mut changed = false;
         ui.label("Operation");
+        if self.developed {
+            ui.strong("Cut");
+            ui.small("The selected developed profile cuts through its sheet.");
+            return false;
+        }
         controls::inspector_combo(ui, "extrude-body-operation")
             .selected_text(operation_label(self.operation))
             .show_ui(ui, |ui| {

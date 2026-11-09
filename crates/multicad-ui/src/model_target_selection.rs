@@ -306,6 +306,16 @@ impl SketchEditor {
         if !self.modeling_available() {
             return Err("Apply or cancel the current edits before starting another tool".into());
         }
+        if self.developed_viewport.is_some() {
+            if tool != ModelingTool::Extrude {
+                return Err("Fold the sheet to use other Model tools".into());
+            }
+            if self.developed_sketch_part(session.document()).is_none() {
+                return Err(
+                    "Select a developed sketch's closed area before starting Extrude".into(),
+                );
+            }
+        }
         if matches!(
             tool,
             ModelingTool::Box | ModelingTool::Cylinder | ModelingTool::Sphere
@@ -438,8 +448,9 @@ impl SketchEditor {
         // selecting the sketch in the tree requests every region.
         self.whole_sketch = match sketches.as_slice() {
             [id] if !self.editing
-                && (multicad_core::sketch_regions::supporting_face(session.document(), *id)
+                && ((multicad_core::sketch_regions::supporting_face(session.document(), *id)
                     .is_none()
+                    && super::developed_sheet::chart(session.document(), *id).is_none())
                     || self.whole_sketch == Some(*id)) =>
             {
                 Some(*id)

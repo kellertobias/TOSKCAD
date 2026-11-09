@@ -310,3 +310,185 @@ fn malformed_sheet_cut_links_and_unavailable_flange_are_refused() {
             .contains("captured sheet producer")
     );
 }
+
+#[test]
+fn developed_chart_remains_linked_to_the_forming_feature_through_cut_and_reopen() {
+    let (mut session, sheet, folded_profile) = fixture();
+    assert_eq!(
+        model::developed_sheet_sketch(session.document(), folded_profile.sketch).unwrap(),
+        None
+    );
+    let folded_cut = EntityId::new();
+    let before_chart = cut(&sheet, folded_profile);
+    session
+        .commit(
+            model::prepare_sheet_profile_cut(
+                &session,
+                session.revision(),
+                actor(),
+                folded_cut,
+                &before_chart,
+            )
+            .unwrap()
+            .prepared,
+        )
+        .unwrap();
+
+    let new = sketch::prepare_new(
+        &session,
+        session.revision(),
+        actor(),
+        "Developed cutting sketch",
+        CreationPlane::DevelopedSheet {
+            part: sheet.body,
+            face: CutoutFace::Base,
+        },
+        Default::default(),
+    )
+    .unwrap();
+    let sketch = new.sketch;
+    let plane = new.plane;
+    assert_eq!(new.frame, sketch::Datum::Xy.frame());
+    session.commit(new.prepared).unwrap();
+
+    let expected_chart = Some(model::DevelopedSheetSketch {
+        part: sheet.body,
+        forming: sheet.feature,
+        face: CutoutFace::Base,
+    });
+    assert_eq!(
+        model::developed_sheet_sketch(session.document(), sketch).unwrap(),
+        expected_chart
+    );
+    let EntityData::Sketch { inputs, .. } = &session.document().get(sketch).unwrap().data else {
+        panic!("expected a developed sketch");
+    };
+    assert_eq!(inputs, &[Link::new(sheet.feature, "sheet/developed/base")]);
+    let mut plane = session.document().get(plane).unwrap().clone();
+    let EntityData::Plane { origin_mm, .. } = &mut plane.data else {
+        panic!("expected a plane");
+    };
+    origin_mm[2] = 1.;
+    assert!(
+        session
+            .document()
+            .edited(&[Mutation::Replace(plane)])
+            .unwrap_err()
+            .to_string()
+            .contains("unrotated XY plane")
+    );
+
+    let mut source = Source::read(session.document(), sketch).unwrap().0;
+    source.add_rectangle([50., 15.], [65., 25.]).unwrap();
+    let region = sketch_regions::extract(&source).regions[0].intent();
+    session
+        .apply(Request {
+            expected_revision: session.revision(),
+            actor: actor(),
+            label: "Draw on the developed pattern".into(),
+            edits: source.replace(session.document(), sketch).unwrap(),
+        })
+        .unwrap();
+    assert_eq!(
+        model::developed_sheet_sketch(session.document(), sketch).unwrap(),
+        expected_chart
+    );
+
+    let continued_cut = EntityId::new();
+    let mut definition = cut(&sheet, ProfileSource { sketch, region });
+    definition.input.producer = folded_cut;
+    definition.face = CutoutFace::Flange { index: 0 };
+    assert!(
+        model::prepare_sheet_profile_cut(
+            &session,
+            session.revision(),
+            actor(),
+            continued_cut,
+            &definition,
+        )
+        .unwrap_err()
+        .message
+        .contains("different sheet Part or face")
+    );
+    definition.face = CutoutFace::Base;
+    session
+        .commit(
+            model::prepare_sheet_profile_cut(
+                &session,
+                session.revision(),
+                actor(),
+                continued_cut,
+                &definition,
+            )
+            .unwrap()
+            .prepared,
+        )
+        .unwrap();
+    assert!(
+        session
+            .document()
+            .affected([sketch])
+            .unwrap()
+            .contains(&continued_cut)
+    );
+    assert!(
+        !session
+            .document()
+            .affected([sketch])
+            .unwrap()
+            .contains(&sheet.feature)
+    );
+    let file = ProjectFile::new(session.document().clone()).unwrap();
+    assert!(
+        file.capabilities()
+            .contains(model::DEVELOPED_SHEET_SKETCH_CAPABILITY)
+    );
+    let mut bytes = vec![];
+    project_file::write(&file, &mut bytes, Default::default()).unwrap();
+    let opened = project_file::read(
+        &mut Cursor::new(bytes),
+        Default::default(),
+        &project_file::supported_capabilities(),
+    )
+    .unwrap();
+    assert_eq!(
+        model::developed_sheet_sketch(&opened.project.document, sketch).unwrap(),
+        expected_chart
+    );
+    assert_eq!(
+        model::read_sheet_profile_cut(&opened.project.document, continued_cut).unwrap(),
+        definition
+    );
+}
+
+#[test]
+fn developed_chart_rejects_unavailable_flange_and_transformed_plane() {
+    let (session, sheet, _) = fixture();
+    let creation = |face, options| {
+        sketch::prepare_new(
+            &session,
+            session.revision(),
+            actor(),
+            "Developed chart",
+            CreationPlane::DevelopedSheet {
+                part: sheet.body,
+                face,
+            },
+            options,
+        )
+    };
+    let Err(invalid_face) = creation(CutoutFace::Flange { index: 0 }, Default::default()) else {
+        panic!("a missing flange cannot own a developed chart");
+    };
+    assert!(invalid_face.message.contains("flange no longer exists"));
+    let Err(invalid_plane) = creation(
+        CutoutFace::Base,
+        sketch::PlaneOptions {
+            normal_offset_mm: 1.,
+            angle_rad: 0.,
+        },
+    ) else {
+        panic!("a developed sketch must remain in its fixed XY plane");
+    };
+    assert!(invalid_plane.message.contains("fixed XY plane"));
+}

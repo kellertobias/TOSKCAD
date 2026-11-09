@@ -948,6 +948,11 @@ pub fn required_capabilities(document: &Document) -> BTreeSet<String> {
                     definition.type_id, definition.schema_version
                 ))
             }
+            EntityData::Sketch { inputs, .. }
+                if inputs.iter().any(super::is_developed_sheet_link) =>
+            {
+                Some(super::DEVELOPED_SHEET_SKETCH_CAPABILITY.into())
+            }
             EntityData::Instance { component, .. }
                 if matches!(
                     document.get(*component).map(|e| &e.data),

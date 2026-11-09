@@ -663,13 +663,15 @@ impl ModelToolController {
         }
         let mut panel = ExtrudePanel::default();
         panel.begin_request(request)?;
+        let operations = OperationControls::new(session.document(), Some(sketch));
+        panel.set_through_sheet(operations.through_sheet());
         self.begin_form(
             session,
             resources,
             channel,
             ModelForm::Extrude(Box::new(panel)),
         )?;
-        self.operations = Some(OperationControls::new(session.document(), Some(sketch)));
+        self.operations = Some(operations);
         self.identities = BooleanIdentities::new(session.document());
         Ok(())
     }

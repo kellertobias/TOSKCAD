@@ -551,6 +551,7 @@ pub struct Scene {
     guide_outlines: Arc<BTreeMap<EntityId, Vec<[Point; 4]>>>,
     weld_markers: Arc<[WeldMarker]>,
     sheet_faces: Arc<[multicad_core::model::SheetFaceFrame]>,
+    sheet_cut_previews: Arc<BTreeMap<EntityId, multicad_core::manufacturing::PlanarContours>>,
     sheet_bend_schedules: Arc<BTreeMap<EntityId, Vec<crate::sheet_pattern::Bend>>>,
     fdm_reviews: Option<Arc<fdm_review::AidReviews>>,
     display_leaf_paths: BTreeMap<EntityId, multicad_core::model::OccurrencePath>,
@@ -676,6 +677,7 @@ impl Scene {
             guide_outlines: Arc::new(BTreeMap::new()),
             weld_markers: Arc::default(),
             sheet_faces: Arc::default(),
+            sheet_cut_previews: Arc::default(),
             sheet_bend_schedules: Arc::default(),
             fdm_reviews: None,
             display_leaf_paths: BTreeMap::new(),
@@ -947,6 +949,18 @@ impl Scene {
     }
     pub(crate) fn sheet_faces(&self) -> &[multicad_core::model::SheetFaceFrame] {
         &self.sheet_faces
+    }
+    pub fn set_sheet_cut_previews(
+        &mut self,
+        previews: BTreeMap<EntityId, multicad_core::manufacturing::PlanarContours>,
+    ) {
+        self.sheet_cut_previews = Arc::new(previews);
+    }
+    pub(crate) fn sheet_cut_preview(
+        &self,
+        part: EntityId,
+    ) -> Option<&multicad_core::manufacturing::PlanarContours> {
+        self.sheet_cut_previews.get(&part)
     }
     pub fn set_sheet_bend_schedules(
         &mut self,
@@ -1370,6 +1384,7 @@ impl Scene {
         view.native_bounds = self.native_bounds.clone();
         view.weld_markers = self.weld_markers.clone();
         view.sheet_faces = self.sheet_faces.clone();
+        view.sheet_cut_previews = self.sheet_cut_previews.clone();
         view.sheet_bend_schedules = self.sheet_bend_schedules.clone();
         view.scope = self.scope.clone();
         Ok(Arc::new(view))

@@ -140,6 +140,10 @@ impl PlaneOptions {
 #[derive(Clone, Copy)]
 pub enum CreationPlane<'a> {
     Datum(Datum),
+    DevelopedSheet {
+        part: EntityId,
+        face: crate::model::CutoutFace,
+    },
     Existing {
         id: EntityId,
         report: Option<&'a ReferenceReport>,
@@ -297,6 +301,7 @@ pub fn prepare_new(
         .validate()
         .map_err(|e| command_error(ErrorCode::InvalidRequest, e.to_string()))?;
     let mut edits = vec![];
+    let mut inputs = vec![];
     let (plane_id, fallback_u, frame) = match plane {
         CreationPlane::Datum(datum) => {
             let frame = options.apply(datum.frame())?;
@@ -326,6 +331,31 @@ pub fn prepare_new(
                 let (s, c) = options.angle_rad.sin_cos();
                 (id, [c, s, 0.], frame)
             }
+        }
+        CreationPlane::DevelopedSheet { part, face } => {
+            if options != PlaneOptions::default() {
+                return Err(command_error(
+                    ErrorCode::InvalidRequest,
+                    "A developed sheet sketch uses the flat pattern's fixed XY plane",
+                ));
+            }
+            inputs.push(crate::model::developed_sheet_link(
+                session.document(),
+                part,
+                face,
+            )?);
+            let frame = Datum::Xy.frame();
+            let plane = Entity::new(
+                format!("{name} developed plane"),
+                EntityData::Plane {
+                    origin_mm: frame.origin,
+                    normal: frame.n,
+                    anchor: None,
+                },
+            );
+            let id = plane.id;
+            edits.push(Mutation::Insert(plane));
+            (id, frame.u, frame)
         }
         CreationPlane::Existing { id, report } => {
             let base = inspect_plane(session.document(), id, expected_revision, report)?;
@@ -448,7 +478,7 @@ pub fn prepare_new(
         EntityData::Sketch {
             plane: plane_id,
             definition: source.definition()?,
-            inputs: vec![],
+            inputs,
         },
     );
     let sketch_id = sketch.id;

@@ -621,6 +621,7 @@ pub fn supported_capabilities() -> BTreeSet<String> {
         crate::model::SEQUENCE_CAPABILITY.into(),
         crate::model::SHEET_CAPABILITY.into(),
         crate::model::SHEET_PROFILE_CUT_CAPABILITY.into(),
+        crate::model::DEVELOPED_SHEET_SKETCH_CAPABILITY.into(),
         crate::model::HARDWARE_CAPABILITY.into(),
     ])
 }
