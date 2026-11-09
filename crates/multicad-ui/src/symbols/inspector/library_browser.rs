@@ -121,7 +121,7 @@ struct LibraryTile<'a> {
 impl Catalogue<'_> {
     fn tile_id(&self, item: LibraryItem) -> egui::Id {
         match item {
-            LibraryItem::Loaded(index) => egui::Id::new(("loaded", self.library_pins[index])),
+            LibraryItem::Loaded(index) => egui::Id::new(("loaded", self.library_pins[index].0)),
             LibraryItem::Embedded(index) => egui::Id::new(("embedded", self.embedded[index].0)),
             LibraryItem::Installed(index) => {
                 egui::Id::new(("installed", self.installed.entry(index).id))
@@ -415,7 +415,13 @@ pub(in crate::symbols) fn show_library(
             }
 
             let (columns, width) = project_card_columns(ui.available_width());
-            let row_height = project_card_preview(width).y + 2. * PROJECT_CARD_PADDING + 84.;
+            let text_height = ui.text_style_height(&egui::TextStyle::Body)
+                + 2. * ui.text_style_height(&egui::TextStyle::Small);
+            let row_height = project_card_preview(width).y
+                + 2. * PROJECT_CARD_PADDING
+                + text_height
+                + ui.spacing().interact_size.y
+                + 16.;
             let pitch = row_height + PROJECT_CARD_GAP;
             let rows = browser.results.len().div_ceil(columns);
             let grid_top = ui.cursor().top();
