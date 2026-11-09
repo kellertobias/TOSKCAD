@@ -27,6 +27,7 @@ mod save_preview;
 mod schedule_files;
 mod screw_connections;
 mod settings;
+mod sheet_metal;
 mod symbol_files;
 mod welcome;
 #[cfg(test)]
@@ -69,6 +70,7 @@ pub struct Project {
     pub drawings: crate::drawings::DrawingEditor,
     pub exchange: crate::exchange::ExportWorkspace,
     pub print: crate::print::PrintWorkspace,
+    sheet_pattern: crate::sheet_pattern::Workspace,
     measure_return_view: Option<(Mode, usize)>,
     pub path: Option<PathBuf>,
     pub scene: crate::viewport::SceneFeed,
@@ -100,6 +102,7 @@ impl Project {
             drawings: Default::default(),
             exchange: Default::default(),
             print: Default::default(),
+            sheet_pattern: Default::default(),
             measure_return_view: None,
             path: None,
             scene: Default::default(),
@@ -206,6 +209,7 @@ pub struct Application {
     assembly_queries: Option<crate::assembly::AssemblyInspectionBackendFactory>,
     export_backends: Option<crate::exchange::BackendFactory>,
     print_backends: Option<crate::print::PrintBackendFactory>,
+    sheet_pattern_backends: Option<crate::sheet_pattern::BackendFactory>,
     sketch_queries: Option<crate::sketch_evaluation::RegionQueryFactory>,
     repair_set_checker: Option<crate::reference_repair_set::RepairSetChecker>,
     external_control: Option<Box<dyn external_control::ExternalControl>>,
@@ -281,6 +285,7 @@ impl Application {
             assembly_queries: None,
             export_backends: None,
             print_backends: None,
+            sheet_pattern_backends: None,
             external_control: None,
             control_bindings: BTreeMap::new(),
             trusted_clients: Default::default(),
@@ -455,6 +460,16 @@ impl Application {
         if let Command::WoodPreset(preset) = command {
             return self.current().sketch.wood_preset() == Some(preset);
         }
+        match command {
+            Command::SheetPattern(crate::sheet_pattern::Tool::Unfold) => {
+                return self.current().sheet_pattern.active()
+                    && !self.current().sheet_pattern.schedule();
+            }
+            Command::SheetPattern(crate::sheet_pattern::Tool::BendSchedule) => {
+                return self.current().sheet_pattern.schedule();
+            }
+            _ => {}
+        }
         if command == Command::Extension("library") {
             return self.current().sketch.symbol_library_active();
         }
@@ -467,6 +482,9 @@ impl Application {
             && match command {
                 Command::Modeling(_) | Command::EquipmentPreset(_) | Command::WoodPreset(_) => {
                     self.current().sketch.model_creation_form_active()
+                }
+                Command::SheetFlange | Command::SheetFasteners => {
+                    self.current().sketch.model_active()
                 }
                 Command::Drawing(_) => {
                     let drawings = &self.current().drawings;
@@ -1382,6 +1400,7 @@ impl Application {
                         channel,
                     )?;
                 }
+                project.sheet_pattern.close();
                 if tool == crate::modeling::ModelingTool::ScrewConnection {
                     project.sketch.set_installed_symbol_library(installed);
                 }
@@ -1485,6 +1504,12 @@ impl Application {
                 self.mode = Mode::Model;
                 self.tab = self.workbench_tab(Mode::Model, command);
                 self.message = "Transfer features · choose source geometry and receiving faces in the Inspector".into();
+            }
+            Command::SheetFlange | Command::SheetFasteners | Command::SheetPattern(_) => {
+                if !args.is_empty() {
+                    return Err("This Sheet Metal tool takes no command arguments".into());
+                }
+                self.invoke_sheet_action(command, channel)?;
             }
             Command::Delete => {
                 let p = self.current_mut();
@@ -1645,6 +1670,9 @@ impl Application {
             }
             Command::Apply => self.current().editor.can_apply(&self.current().session),
             Command::Discard | Command::Preview => self.current().editor.dirty(),
+            Command::SheetFlange | Command::SheetFasteners | Command::SheetPattern(_) => {
+                self.sheet_action_ready(command).is_ok()
+            }
             Command::Modeling(_) => {
                 matches!(self.mode, Mode::Sketch | Mode::Model)
                     && !self.current().editor.dirty()
@@ -2348,6 +2376,13 @@ impl Application {
         }
     }
     fn command_help(&self, command: Command, label: &str, ctx: &egui::Context) -> String {
+        if matches!(
+            command,
+            Command::SheetFlange | Command::SheetFasteners | Command::SheetPattern(_)
+        ) && let Err(reason) = self.sheet_action_ready(command)
+        {
+            return reason;
+        }
         let hint = self
             .shortcuts
             .hint(command, &self.shortcut_context(ctx))
@@ -2755,9 +2790,23 @@ impl Application {
                     .inner_margin(egui::Margin::symmetric(8, 3)),
             )
             .show(ui, |ui| self.command_line(ui));
+        let show_sheet_pattern = self.sheet_metal_tab()
+            && !self.current().sketch.model_active()
+            && !self.current().sketch.measurement.active()
+            && !self.current().pending_edits();
+        if !show_sheet_pattern {
+            self.current_mut().sheet_pattern.close();
+        }
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(crate::theme::PANEL))
             .show(ui, |ui| {
+                let p = self.current_mut();
+                if show_sheet_pattern
+                    && p.sheet_pattern
+                        .show(ui, p.session.document().id(), p.session.revision())
+                {
+                    return;
+                }
                 if self.mode == Mode::Parameters {
                     self.project_workspace(ui);
                 } else if self.mode == Mode::Export && self.print_tab() {

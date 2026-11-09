@@ -704,6 +704,65 @@ impl SketchEditor {
         }
         crate::modeling::cabinet_edit::carcass_target(document, *self.tree_selection.first()?)
     }
+    pub(crate) fn selected_sheet_part(&self, session: &Session) -> Option<EntityId> {
+        let document = session.document();
+        if self.tree_selection.len() != 1 {
+            return None;
+        }
+        let selected = *self.tree_selection.first()?;
+        let candidate = match &document.get(selected)?.data {
+            EntityData::Part { .. } => selected,
+            EntityData::Instance { component, .. } => *component,
+            EntityData::Feature { .. } => {
+                return document.entities().find_map(|entity| {
+                    (multicad_core::model::sheet_feature(document, entity.id) == Some(selected))
+                        .then_some(entity.id)
+                });
+            }
+            _ => return None,
+        };
+        if multicad_core::model::sheet_feature(document, candidate).is_some() {
+            return Some(candidate);
+        }
+        let hit = self.solid.selected_hit().filter(|hit| {
+            hit.instance == selected
+                && hit.stamp.document == document.id()
+                && hit.stamp.revision == session.revision()
+        })?;
+        let intent = hit.intent.as_ref()?;
+        let mut owners = document.entities().filter_map(|entity| {
+            let feature = multicad_core::model::sheet_feature(document, entity.id)?;
+            intent
+                .origins
+                .iter()
+                .any(|origin| origin.source == feature)
+                .then_some(entity.id)
+        });
+        let first = owners.next()?;
+        owners.next().is_none().then_some(first)
+    }
+
+    pub(crate) fn begin_sheet_flange(
+        &mut self,
+        session: &Session,
+        resources: &multicad_core::project_file::ProjectResources,
+        part: EntityId,
+        channel: Channel,
+    ) -> Result<(), String> {
+        let document = session.document();
+        let target = self
+            .tree_selection
+            .first()
+            .copied()
+            .filter(|id| {
+                matches!(&document.get(*id).map(|entity| &entity.data),
+                Some(EntityData::Instance { component, .. }) if *component == part)
+            })
+            .unwrap_or(part);
+        self.model
+            .begin_sheet_flange(session, resources, target, channel)
+    }
+
     fn selected_screw_connection(&self, document: &Document) -> Option<EntityId> {
         let owners: std::collections::BTreeSet<_> = self
             .tree_selection
@@ -1485,6 +1544,23 @@ impl SketchEditor {
         self.finish()?;
         self.model.begin_sheet(session, resources, channel)?;
         self.message = "Base sheet · choose sheet stock and size in the Inspector".into();
+        Ok(())
+    }
+    pub(crate) fn begin_sheet_fasteners(
+        &mut self,
+        session: &Session,
+        resources: &multicad_core::project_file::ProjectResources,
+        target: EntityId,
+        channel: Channel,
+    ) -> Result<(), String> {
+        if !self.primitive_ready() {
+            return Err("Apply or cancel pending edits before adding sheet fasteners".into());
+        }
+        self.finish()?;
+        self.model
+            .begin_sheet_fasteners(session, resources, target, channel)?;
+        self.message =
+            "Attached fasteners · choose a face and add mounting points in the Inspector".into();
         Ok(())
     }
     pub fn begin_weldment(

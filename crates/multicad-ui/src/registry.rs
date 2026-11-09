@@ -102,6 +102,9 @@ pub enum Command {
     BooleanOperation(multicad_core::model::Operation),
     Assembly(crate::assembly::AssemblyTool),
     Transfer,
+    SheetFlange,
+    SheetFasteners,
+    SheetPattern(crate::sheet_pattern::Tool),
     Construction,
     Dimension,
     FinishSketch,
@@ -500,14 +503,57 @@ impl Default for Registry {
                 "workbenches",
             ],
         });
+        use crate::sheet_pattern::Tool as PatternTool;
+        for (id, label, icon, action, aliases) in [
+            (
+                "sheet-flange",
+                "Add flange",
+                Icon::SheetFlange,
+                Command::SheetFlange,
+                &["flange"][..],
+            ),
+            (
+                "fastener",
+                "Attached fasteners",
+                Icon::Link,
+                Command::SheetFasteners,
+                &["sheet-hardware"][..],
+            ),
+            (
+                "flat",
+                "Unfold",
+                Icon::SheetUnfold,
+                Command::SheetPattern(PatternTool::Unfold),
+                &["unfold", "flat-pattern"][..],
+            ),
+            (
+                "fold",
+                "Fold",
+                Icon::SheetFold,
+                Command::SheetPattern(PatternTool::Fold),
+                &["fold"][..],
+            ),
+            (
+                "bend-list",
+                "Bend schedule",
+                Icon::SheetSchedule,
+                Command::SheetPattern(PatternTool::BendSchedule),
+                &["bend-schedule"][..],
+            ),
+        ] {
+            registry.tools.push(Tool {
+                id,
+                label,
+                icon,
+                action,
+                aliases,
+            });
+        }
         for (id, label, icon) in [
             ("duplicate", "Duplicate", Icon::Duplicate),
             ("symbol", "Create symbol", Icon::Library),
             ("library", "Symbol library", Icon::Library),
             ("cut-list", "Cut list", Icon::Page),
-            ("fastener", "Attached fastener", Icon::Link),
-            ("flat", "Flat pattern", Icon::Page),
-            ("bend-list", "Bend schedule", Icon::Page),
             ("weld-list", "Weld sequence", Icon::Page),
             ("materials", "Materials", Icon::Library),
             ("drawing-pdf", "Export as PDF", Icon::Export),
@@ -648,7 +694,17 @@ impl Default for Registry {
                         tools: crate::wood_navigation::tab_tools(),
                         requires_active_sketch: false,
                     },
-                    tab("Sheet metal", &["sheet", "fastener", "flat", "bend-list"]),
+                    tab(
+                        "Sheet metal",
+                        &[
+                            "sheet",
+                            "sheet-flange",
+                            "fastener",
+                            "flat",
+                            "fold",
+                            "bend-list",
+                        ],
+                    ),
                     tab("Weld", &["tube", "cope", "weld-joint", "weld-list"]),
                     tab(
                         "Mechanical",

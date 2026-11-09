@@ -116,3 +116,4 @@ mod window_resize;
 
 pub mod exchange;
 pub mod print;
+pub mod sheet_pattern;

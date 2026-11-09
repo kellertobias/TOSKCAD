@@ -19,6 +19,7 @@ mod print;
 mod recent_projects;
 mod reference_repairs;
 mod self_test;
+mod sheet_pattern;
 
 use multicad_core::BuildInfo;
 use std::{env, ffi::OsString, path::PathBuf, process::ExitCode};
@@ -178,6 +179,10 @@ fn run_application(project: Option<PathBuf>) -> Result<(), String> {
     app.set_print_backends(std::sync::Arc::new(move || {
         multicad_model::with_pair_cycle_proofs(proofs.clone(), || Box::new(print::Backend::new()))
     }))?;
+    let proofs = pair_proofs.clone();
+    app.set_sheet_pattern_backends(std::sync::Arc::new(move || {
+        Box::new(sheet_pattern::Backend::new(proofs.clone()))
+    }));
     multicad_ui::launch_with(Box::new(move |context| {
         app.set_file_picker(Box::new(file_picker::NativePicker::new(context)));
         app.set_external_control(Box::new(multicad_model::with_pair_cycle_proofs(

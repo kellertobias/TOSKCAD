@@ -22,6 +22,7 @@ use super::{
     scaling::ScalePanel,
     screw_connection::{ScrewConnectionCommand, ScrewConnectionPanel},
     sheet::{SheetCommand, SheetPanel},
+    sheet_fasteners::{FastenerCommand, FastenerPanel},
     split::{SplitEvent, SplitPanel},
     surface_structure::SurfaceStructurePanel,
     thread::ThreadPanel,
@@ -77,6 +78,7 @@ pub enum ModelRequest {
     FdmAid(Box<FdmAidCommand>),
     Weldment(Box<WeldmentCommand>),
     Sheet(Box<SheetCommand>),
+    SheetFasteners(Box<FastenerCommand>),
 }
 pub(super) struct ToolProof {
     pub input: BodyInput,
@@ -333,6 +335,7 @@ impl ModelRequest {
                 }
                 return command.prepare(session, actor);
             }
+            Self::SheetFasteners(command) => return command.prepare(session, actor),
             Self::Sheet(command) => {
                 if command.edit_id().is_some() {
                     return Err("Reopen the saved sheet part before editing it".into());
@@ -497,6 +500,7 @@ pub(super) enum ModelForm {
     WeldConnection(Box<ConnectionPanel>),
     Weld(Box<WeldPanel>),
     Sheet(Box<SheetPanel>),
+    SheetFasteners(Box<FastenerPanel>),
 }
 impl ModelForm {
     pub fn stamp(&self) -> FormStamp {
@@ -533,6 +537,7 @@ impl ModelForm {
             Self::WeldConnection(panel) => panel.stamp(),
             Self::Weld(panel) => panel.stamp(),
             Self::Sheet(panel) => panel.stamp(),
+            Self::SheetFasteners(panel) => panel.stamp(),
         }
     }
     pub fn label(&self) -> &'static str {
@@ -569,6 +574,7 @@ impl ModelForm {
             Self::WeldConnection(panel) => panel.label(),
             Self::Weld(panel) => panel.label(),
             Self::Sheet(panel) => panel.label(),
+            Self::SheetFasteners(_) => "Attached fasteners",
         }
     }
     pub fn request(
@@ -624,6 +630,9 @@ impl ModelForm {
             Self::Sheet(panel) => panel
                 .request(document, capabilities.new_body)
                 .map(|command| ModelRequest::Sheet(Box::new(command))),
+            Self::SheetFasteners(panel) => panel
+                .request(document, capabilities.new_body)
+                .map(|command| ModelRequest::SheetFasteners(Box::new(command))),
             Self::Placement(panel) => panel
                 .request(document, capabilities.new_body)
                 .map(|command| ModelRequest::Placement(Box::new(command))),
@@ -673,6 +682,9 @@ impl ModelForm {
     pub(super) fn remember_preview(&mut self, request: &ModelRequest) {
         match (self, request) {
             (Self::Primitive(panel), ModelRequest::Primitive(request)) => panel.remember(request),
+            (Self::SheetFasteners(panel), ModelRequest::SheetFasteners(request)) => {
+                panel.remember(request)
+            }
             (Self::Extrude(panel), ModelRequest::Extrude(request)) => panel.remember(request),
             (Self::ExtrudeGroup(panel), ModelRequest::ExtrudeGroupEdit(request)) => {
                 panel.extrusion.remember_group(request);
@@ -753,6 +765,7 @@ impl ModelForm {
             Self::WeldConnection(panel) => panel.show(ui, document, capabilities.new_body, preview),
             Self::Weld(panel) => panel.show(ui, document, capabilities.new_body, preview),
             Self::Sheet(panel) => panel.show(ui, document, capabilities.new_body, preview),
+            Self::SheetFasteners(panel) => panel.show(ui, document, capabilities.new_body, preview),
         }
     }
     pub fn extrusion(&self) -> Option<&ExtrudePanel> {

@@ -5,6 +5,9 @@ use multicad_core::document::Document;
 use std::collections::BTreeSet;
 pub(super) enum SceneProof {
     Create,
+    SheetFasteners {
+        part: EntityId,
+    },
     ScrewConnection {
         connection: EntityId,
         removed: bool,
@@ -183,6 +186,10 @@ impl SceneProof {
                         );
                     }
                 }
+            }
+            Self::SheetFasteners { part } => {
+                super::super::sheet_fasteners::check_placement(document, *part, scene)?;
+                Self::edited(outputs.to_vec(), &[], vec![]).validate(document, scene, outputs)?;
             }
             Self::Create => {
                 for output in outputs {

@@ -1,6 +1,29 @@
 //! Viewer edge picking for the Sheet part / flanges form.
 use super::*;
 impl ModelToolController {
+    pub fn sheet_flange_availability(document: &Document, target: EntityId) -> Result<(), String> {
+        super::super::sheet::SheetPanel::flange_source(document, target).map(|_| ())
+    }
+
+    pub fn begin_sheet_flange(
+        &mut self,
+        session: &Session,
+        resources: &ProjectResources,
+        target: EntityId,
+        channel: Channel,
+    ) -> Result<(), String> {
+        let (feature, panel) =
+            super::super::sheet::SheetPanel::for_flange(session.document(), target)?;
+        self.begin_form(
+            session,
+            resources,
+            channel,
+            ModelForm::Sheet(Box::new(panel)),
+        )?;
+        self.scope.as_mut().expect("opened scope").execution = Execution::Edit { feature };
+        Ok(())
+    }
+
     /// Whether viewer clicks choose sheet edges: the Sheet part form is
     /// open on a rectangle base.
     pub fn sheet_edge_picking(&self) -> bool {
@@ -36,6 +59,7 @@ mod tests {
     use multicad_core::{
         document::{Document, Entity, EntityData},
         materials::{LibraryDefinition, Stock, StockKind, prepare_library},
+        model::{CutoutFace, HardwarePreset, HardwareSide, MountingPattern, Thread},
     };
     use multicad_model::Compiler;
     use std::time::{Duration, Instant};
@@ -165,5 +189,81 @@ mod tests {
         let error = controller.error().unwrap_or_default().to_owned();
         assert!(error.contains("Flanges 1 and 2"), "{error}");
         assert!(!controller.can_apply(&session, &resources));
+    }
+
+    #[test]
+    fn add_flange_previews_an_in_place_edit_and_preserves_attached_hardware() {
+        let mut session = session();
+        let resources = ProjectResources::default();
+        let mut controller = ModelToolController::default();
+        controller.set_backend(Box::new(native_fixture::NativeBackend::new()));
+        controller
+            .begin_sheet(&session, &resources, Channel::Ui)
+            .unwrap();
+        assert_eq!(controller.label(), "Create sheet part");
+        assert!(click(&mut controller, &session, [100., 100., 0.], true));
+        controller
+            .preview(&session, &resources, Channel::Ui)
+            .unwrap();
+        settle(&mut controller, &session, &resources);
+        let sheet = controller.apply(&mut session, &resources).unwrap()[0].clone();
+
+        let fastener = MountingPattern {
+            preset: HardwarePreset::Screw {
+                thread: Thread::M3,
+                length: length(10.),
+                washers: false,
+                nut: false,
+            },
+            face: CutoutFace::Flange { index: 0 },
+            side: HardwareSide::Material,
+            points: vec![[length(100.), length(10.)]],
+        };
+        let prepared = model::prepare_sheet_fasteners(
+            &session,
+            session.revision(),
+            Actor::local(Channel::Ui),
+            sheet.feature,
+            &[fastener],
+        )
+        .unwrap();
+        session.commit(prepared.model.prepared).unwrap();
+        let original = model::read_sheet(session.document(), sheet.feature).unwrap();
+        let hardware = model::sheet_hardware(session.document(), sheet.feature).unwrap();
+
+        controller
+            .begin_sheet_flange(&session, &resources, sheet.body, Channel::Ui)
+            .unwrap();
+        assert_eq!(controller.label(), "Add flange");
+        assert!(controller.preview_waits_for_input());
+        assert!(!controller.can_apply(&session, &resources));
+        assert!(!click(&mut controller, &session, [100., 100., 0.], true));
+        assert!(click(&mut controller, &session, [100., 0., 0.], true));
+        assert!(!controller.preview_waits_for_input());
+
+        let ctx = egui::Context::default();
+        let mut output = ctx.run_ui(Default::default(), |ui| {
+            controller.tick_auto_preview(ui, &session, &resources, true);
+        });
+        output.textures_delta.clear();
+        settle(&mut controller, &session, &resources);
+        assert_eq!(controller.error(), None);
+        assert!(controller.can_apply(&session, &resources));
+        assert_eq!(
+            controller.apply(&mut session, &resources).unwrap(),
+            vec![sheet.clone()]
+        );
+        let after = model::read_sheet(session.document(), sheet.feature).unwrap();
+        assert_eq!(
+            after.flanges.iter().map(|f| f.edge).collect::<Vec<_>>(),
+            [2, 0]
+        );
+        let mut expected = original;
+        expected.flanges.push(after.flanges[1].clone());
+        assert_eq!(after, expected);
+        assert_eq!(
+            model::sheet_hardware(session.document(), sheet.feature).unwrap(),
+            hardware
+        );
     }
 }

@@ -4,7 +4,11 @@
 //! the same Inspector rows, so the viewer and the Inspector produce the same
 //! checked sheet transaction.
 use super::SheetPanel;
-use crate::{egui, modeling::TerminationViewport};
+use crate::{
+    egui,
+    modeling::TerminationViewport,
+    viewport::{Scene, Transform},
+};
 use multicad_core::{
     document::Document,
     model::{BendDirection, FlangeGuide, FlangeReview, SheetOutline, ValueSource},
@@ -94,10 +98,11 @@ impl SheetPanel {
         review: &FlangeReview,
         hover: Option<Target>,
     ) -> egui::Color32 {
-        let on = self
-            .rows
-            .as_ref()
-            .is_some_and(|r| r.get(edge).is_some_and(|r| r.on));
+        let on = self.kept_flange_at(edge)
+            || self
+                .rows
+                .as_ref()
+                .is_some_and(|r| r.get(edge).is_some_and(|r| r.on));
         if review.issues.iter().any(|i| i.edges.contains(&edge)) && on {
             PROBLEM
         } else if self.selected == Some(edge) {
@@ -130,7 +135,7 @@ impl SheetPanel {
         outline
             .edges
             .iter()
-            .filter(|e| e.straight && e.index < 4)
+            .filter(|e| e.straight && e.index < 4 && !self.kept_flange_at(e.index))
             .filter_map(|e| {
                 let a = project(e.start_mm)?;
                 let b = project(e.end_mm)?;
@@ -144,6 +149,9 @@ impl SheetPanel {
     /// Choose an edge: select its row and turn its flange on. Returns
     /// whether the sheet definition changed.
     pub(super) fn pick_edge(&mut self, edge: usize) -> bool {
+        if self.kept_flange_at(edge) {
+            return false;
+        }
         let Some(row) = self.rows.as_mut().and_then(|r| r.get_mut(edge)) else {
             return false;
         };
@@ -182,7 +190,12 @@ impl SheetPanel {
             self.hover = None;
             return false;
         };
+        let Some(transform) = self.viewport_transform(view.scene) else {
+            self.hover = None;
+            return false;
+        };
         let project = |p: [f64; 3]| {
+            let p = transform.point(p);
             let s = view.camera.project(p.map(|v| v as f32), view.rect);
             (s[2] >= 0.1).then(|| egui::pos2(s[0], s[1]))
         };
@@ -204,6 +217,33 @@ impl SheetPanel {
         };
         self.paint(&review, &view, &project);
         changed
+    }
+
+    fn viewport_transform(&self, scene: Option<&Scene>) -> Option<Transform> {
+        let (Some(edit), Some(scene)) = (&self.flange_edit, scene) else {
+            return Some(Transform::default());
+        };
+        let target = edit.target;
+        if let Some(instance) = scene
+            .instances()
+            .iter()
+            .find(|instance| instance.id == self.body)
+        {
+            return Some(instance.transform);
+        }
+        let mut leaves = scene.assembly_evaluation()?.leaves.iter().filter(|leaf| {
+            leaf.component == self.body
+                && (target == self.body
+                    || Some(target) == self.existing
+                    || leaf.path.root == target
+                    || leaf.path.members.contains(&target))
+        });
+        let pose = leaves.next()?.pose;
+        if leaves.next().is_some() {
+            // Use the Inspector diagram when a source Part has multiple placements.
+            return None;
+        }
+        Transform::from_rigid_pose(pose).ok()
     }
 
     fn paint(
@@ -369,7 +409,9 @@ impl SheetPanel {
         let mut hovered = None;
         for e in 0..4 {
             let (a, b) = (corners[e], corners[(e + 1) % 4]);
-            if pointer.is_some_and(|p| distance_to_segment(p, a, b) <= PICK_PX) {
+            if !self.kept_flange_at(e)
+                && pointer.is_some_and(|p| distance_to_segment(p, a, b) <= PICK_PX)
+            {
                 hovered = Some(e);
             }
         }
@@ -387,7 +429,7 @@ impl SheetPanel {
         for e in 0..4 {
             let (a, b) = (corners[e], corners[(e + 1) % 4]);
             let color = self.edge_color(e, review, hovered.map(Target::Edge));
-            let on = self.rows.as_ref().is_some_and(|r| r[e].on);
+            let on = self.kept_flange_at(e) || self.rows.as_ref().is_some_and(|r| r[e].on);
             painter.line_segment(
                 [a, b],
                 egui::Stroke::new(

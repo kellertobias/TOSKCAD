@@ -37,6 +37,10 @@ pub enum Icon {
     Boolean,
     Shell,
     Thickness,
+    SheetFlange,
+    SheetUnfold,
+    SheetFold,
+    SheetSchedule,
     Sweep,
     Loft,
     Draft,
@@ -526,6 +530,26 @@ pub(crate) fn paint_sized(ui: &egui::Ui, icon: Icon, center: Pos2, color: Color3
             path(&[[6., 7.], [12., 5.], [18., 7.], [12., 9.], [6., 7.]]);
             path(&[[6., 7.], [6., 16.], [10., 18.]]);
             path(&[[18., 7.], [18., 16.], [14., 18.]]);
+        }
+        Icon::SheetFlange => {
+            path(&[[2., 16.], [12., 20.], [22., 15.], [12., 11.], [2., 16.]]);
+            path(&[[2., 16.], [2., 7.], [12., 3.], [12., 11.]]);
+        }
+        Icon::SheetUnfold => {
+            path(&[[3., 7.], [21., 7.], [21., 18.], [3., 18.], [3., 7.]]);
+            path(&[[12., 7.], [12., 9.]]);
+            path(&[[12., 11.], [12., 14.]]);
+            path(&[[12., 16.], [12., 18.]]);
+        }
+        Icon::SheetFold => {
+            path(&[[2., 17.], [12., 12.], [22., 17.], [12., 22.], [2., 17.]]);
+            path(&[[12., 12.], [12., 3.], [22., 8.], [22., 17.]]);
+        }
+        Icon::SheetSchedule => {
+            for y in [5., 12., 19.] {
+                path(&[[4., y], [6., y]]);
+                path(&[[10., y], [21., y]]);
+            }
         }
         Icon::Thickness => {
             path(&[[3., 15.], [13., 10.], [21., 14.], [11., 19.], [3., 15.]]);

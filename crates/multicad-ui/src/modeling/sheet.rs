@@ -12,7 +12,7 @@ use crate::{controls, egui, materials::ToolStock};
 use multicad_core::{
     commands::{Actor, Session},
     constraint_sketch::Dimension,
-    document::{Document, EntityId},
+    document::{Document, EntityData, EntityId},
     materials::{self, LibraryDefinition, StockKind},
     model::{
         self, BendDirection, BodyOutput, Cutout, Flange, FlangeKind, FlangeReview, ModelPrepared,
@@ -241,9 +241,15 @@ impl FlangeRow {
     }
 }
 
+struct FlangeEdit {
+    target: EntityId,
+    sheet: SheetDefinition,
+}
+
 pub(super) struct SheetPanel {
     stamp: FormStamp,
     existing: Option<EntityId>,
+    flange_edit: Option<FlangeEdit>,
     feature: EntityId,
     body: EntityId,
     name: String,
@@ -256,6 +262,8 @@ pub(super) struct SheetPanel {
     kept_fasteners: Vec<MountingPattern>,
     /// Flanges on the four rectangle edges, when the form can edit them.
     rows: Option<[FlangeRow; 4]>,
+    /// Saved flanges precede new rows, preserving existing face indices.
+    flange_order: [usize; 4],
     /// The edge whose flange is expanded in the Inspector and dimensioned
     /// in the viewer.
     selected: Option<usize>,
@@ -279,6 +287,7 @@ impl SheetPanel {
         Self {
             stamp: FormStamp::new(),
             existing: None,
+            flange_edit: None,
             feature: EntityId::new(),
             body: EntityId::new(),
             name,
@@ -287,6 +296,7 @@ impl SheetPanel {
             kept_forming: (vec![], vec![]),
             kept_fasteners: vec![],
             rows: Some(std::array::from_fn(|_| FlangeRow::new())),
+            flange_order: [0, 1, 2, 3],
             selected: None,
             hover: None,
             plane: PanelPlane::Xy,
@@ -345,6 +355,13 @@ impl SheetPanel {
                 }
             }
             if shown {
+                form.flange_order.sort_by_key(|edge| {
+                    sheet
+                        .flanges
+                        .iter()
+                        .position(|f| f.edge as usize == *edge)
+                        .unwrap_or(usize::MAX)
+                });
                 form.selected = rows.iter().position(|r| r.on);
                 form.rows = Some(rows);
                 form.kept_forming.0.clear();
@@ -360,11 +377,76 @@ impl SheetPanel {
         }
         Ok(form)
     }
+    pub(super) fn flange_source(
+        document: &Document,
+        target: EntityId,
+    ) -> Result<(EntityId, SheetDefinition), String> {
+        let part = match document.get(target).map(|entity| &entity.data) {
+            Some(EntityData::Instance { component, .. }) => *component,
+            _ => target,
+        };
+        let feature = model::sheet_feature(document, part).unwrap_or(part);
+        let sheet = model::read_sheet(document, feature)
+            .map_err(|_| "Select a sheet-metal part to add a flange".to_owned())?;
+        if matches!(
+            document.get(feature).map(|entity| &entity.data),
+            Some(EntityData::Feature {
+                suppressed: true,
+                ..
+            })
+        ) {
+            return Err("Unsuppress the sheet-metal part before adding a flange".into());
+        }
+        if !matches!(sheet.base, SheetBase::Rectangle { .. }) {
+            return Err("Add flange currently supports rectangular base sheets".into());
+        }
+        if (0..4).all(|edge| sheet.flanges.iter().any(|flange| flange.edge == edge)) {
+            return Err("All four base edges already have flanges".into());
+        }
+        Ok((feature, sheet))
+    }
+
+    pub(super) fn for_flange(
+        document: &Document,
+        target: EntityId,
+    ) -> Result<(EntityId, Self), String> {
+        let (feature, sheet) = Self::flange_source(document, target)?;
+        let name = document
+            .get(sheet.output.body)
+            .map(|e| e.name.clone())
+            .unwrap_or_default();
+        let mut form = Self::new(document, name);
+        form.existing = Some(feature);
+        form.feature = feature;
+        form.body = sheet.output.body;
+        form.flange_edit = Some(FlangeEdit { target, sheet });
+        Ok((feature, form))
+    }
+
+    fn kept_flange_at(&self, edge: usize) -> bool {
+        self.flange_edit.as_ref().is_some_and(|edit| {
+            edit.sheet
+                .flanges
+                .iter()
+                .any(|flange| flange.edge as usize == edge)
+        })
+    }
+
+    pub(super) fn waiting_for_edge(&self) -> bool {
+        self.flange_edit.is_some() && !self.rows.iter().flatten().any(|row| row.on)
+    }
+
     pub fn stamp(&self) -> FormStamp {
         self.stamp
     }
     pub fn label(&self) -> &'static str {
-        "Sheet part"
+        if self.flange_edit.is_some() {
+            "Add flange"
+        } else if self.existing.is_some() {
+            "Edit sheet part"
+        } else {
+            "Create sheet part"
+        }
     }
     pub fn request(&self, document: &Document, enabled: bool) -> Result<SheetCommand, String> {
         if !enabled {
@@ -372,6 +454,9 @@ impl SheetPanel {
         }
         if self.name.trim().is_empty() || self.name.len() > 1000 {
             return Err("Enter a name with 1–1000 bytes".into());
+        }
+        if self.waiting_for_edge() {
+            return Err("Choose a base edge without an existing flange".into());
         }
         Ok(SheetCommand {
             editing: self.existing.is_some(),
@@ -383,6 +468,11 @@ impl SheetPanel {
     /// The sheet definition the form describes, shared by the Inspector
     /// and the viewer.
     fn definition(&self, document: &Document) -> Result<SheetDefinition, String> {
+        if let Some(edit) = &self.flange_edit {
+            let mut sheet = edit.sheet.clone();
+            self.append_flange_rows(document, &mut sheet.flanges)?;
+            return Ok(sheet);
+        }
         let stock = self
             .stock
             .ok_or("Choose or create sheet stock from the stock dropdown")?;
@@ -399,6 +489,10 @@ impl SheetPanel {
                 width: self.width.resolve(document)?,
             },
         };
+        // Flange indices are used by sheet cutouts and mounted hardware.
+        // Adding a flange must leave the earlier authored indices intact.
+        let mut flanges = self.kept_forming.0.clone();
+        self.append_flange_rows(document, &mut flanges)?;
         Ok(SheetDefinition {
             output: BodyOutput { body: self.body },
             stock,
@@ -412,18 +506,24 @@ impl SheetPanel {
                 .k_override
                 .then(|| self.k_factor.resolve(document))
                 .transpose()?,
-            flanges: match &self.rows {
-                Some(rows) => rows
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, r)| r.on)
-                    .map(|(edge, r)| r.flange(edge as u32, document))
-                    .collect::<Result<_, _>>()?,
-                None => self.kept_forming.0.clone(),
-            },
+            flanges,
             cutouts: self.kept_forming.1.clone(),
             fasteners: self.kept_fasteners.clone(),
         })
+    }
+    fn append_flange_rows(
+        &self,
+        document: &Document,
+        flanges: &mut Vec<Flange>,
+    ) -> Result<(), String> {
+        if let Some(rows) = &self.rows {
+            for edge in self.flange_order {
+                if rows[edge].on {
+                    flanges.push(rows[edge].flange(edge as u32, document)?);
+                }
+            }
+        }
+        Ok(())
     }
     /// Outline, flange guides and pre-check findings of the current inputs;
     /// `None` while the stock or base does not resolve.
@@ -455,108 +555,120 @@ impl SheetPanel {
         controls::inspector_layout(ui);
         let mut changed = false;
         ui.strong(self.label());
-        ui.small(
-            "A flat sheet-metal Part from sheet stock. The base face is stationary; thickness \
-             comes from the stock, and the inside radius and K-factor come from the stock \
-             unless you override them.",
-        );
-        ui.label("Name");
-        changed |= ui
-            .add_enabled(
-                self.existing.is_none(),
-                egui::TextEdit::singleline(&mut self.name).desired_width(ui.available_width()),
-            )
-            .changed();
-        let stocks = sheet_stocks(document);
-        ui.label("Sheet stock");
-        let describe = |s: &(EntityId, String, f64, f64, f64)| {
-            format!("{} · {} mm · r {} · K {}", s.1, s.2, s.3, s.4)
-        };
-        let selected = self
-            .stock
-            .and_then(|v| stocks.iter().find(|s| s.0 == v))
-            .map_or("Choose sheet stock".into(), describe);
-        let create = controls::inspector_combo(ui, "sheet-stock")
-            .selected_text(selected)
-            .show_ui(ui, |ui| {
-                for s in &stocks {
-                    changed |= ui
-                        .selectable_value(&mut self.stock, Some(s.0), describe(s))
-                        .changed();
-                }
-                ui.button(ToolStock::Sheet.label()).clicked()
-            })
-            .inner
-            .unwrap_or(false);
-        if create {
-            return Some(ModelEvent::CreateStock(ToolStock::Sheet));
-        }
-        ui.separator();
-        if self.kept_base.is_some() {
-            ui.small("The base comes from a sketch region or a converted solid and is kept.");
+        if self.flange_edit.is_some() {
+            ui.small(&self.name);
+            ui.small("Choose an open base edge in the viewport or in the diagram below.");
         } else {
-            ui.label("Plane");
-            controls::inspector_combo(ui, "sheet-plane")
-                .selected_text(plane_label(self.plane))
+            ui.small(
+                "A flat sheet-metal Part from sheet stock. The base face is stationary; thickness \
+                 comes from the stock, and the inside radius and K-factor come from the stock \
+                 unless you override them.",
+            );
+            ui.label("Name");
+            changed |= ui
+                .add_enabled(
+                    self.existing.is_none(),
+                    egui::TextEdit::singleline(&mut self.name).desired_width(ui.available_width()),
+                )
+                .changed();
+            let stocks = sheet_stocks(document);
+            ui.label("Sheet stock");
+            let describe = |s: &(EntityId, String, f64, f64, f64)| {
+                format!("{} · {} mm · r {} · K {}", s.1, s.2, s.3, s.4)
+            };
+            let selected = self
+                .stock
+                .and_then(|v| stocks.iter().find(|s| s.0 == v))
+                .map_or("Choose sheet stock".into(), describe);
+            let create = controls::inspector_combo(ui, "sheet-stock")
+                .selected_text(selected)
                 .show_ui(ui, |ui| {
-                    for plane in [PanelPlane::Xy, PanelPlane::Xz, PanelPlane::Yz] {
+                    for s in &stocks {
                         changed |= ui
-                            .selectable_value(&mut self.plane, plane, plane_label(plane))
+                            .selectable_value(&mut self.stock, Some(s.0), describe(s))
                             .changed();
                     }
-                });
-            changed |= self
-                .length
-                .show(ui, "Length (u)", "Base size along the plane's first axis");
-            changed |= self
-                .width
-                .show(ui, "Width (v)", "Base size along the plane's second axis");
-            for (axis, f) in ["X", "Y", "Z"].iter().zip(&mut self.origin) {
-                changed |= f.show(
+                    ui.button(ToolStock::Sheet.label()).clicked()
+                })
+                .inner
+                .unwrap_or(false);
+            if create {
+                return Some(ModelEvent::CreateStock(ToolStock::Sheet));
+            }
+            ui.separator();
+            if self.kept_base.is_some() {
+                ui.small("The base comes from a sketch region or a converted solid and is kept.");
+            } else {
+                ui.label("Plane");
+                controls::inspector_combo(ui, "sheet-plane")
+                    .selected_text(plane_label(self.plane))
+                    .show_ui(ui, |ui| {
+                        for plane in [PanelPlane::Xy, PanelPlane::Xz, PanelPlane::Yz] {
+                            changed |= ui
+                                .selectable_value(&mut self.plane, plane, plane_label(plane))
+                                .changed();
+                        }
+                    });
+                changed |=
+                    self.length
+                        .show(ui, "Length (u)", "Base size along the plane's first axis");
+                changed |=
+                    self.width
+                        .show(ui, "Width (v)", "Base size along the plane's second axis");
+                for (axis, f) in ["X", "Y", "Z"].iter().zip(&mut self.origin) {
+                    changed |= f.show(
+                        ui,
+                        &format!("Origin {axis}"),
+                        "World position of the base sheet's minimum corner",
+                    );
+                }
+            }
+            changed |= ui
+                .checkbox(&mut self.reverse, "Material on the other side")
+                .changed();
+            changed |= ui
+                .checkbox(&mut self.radius_override, "Override inside radius")
+                .changed();
+            if self.radius_override {
+                changed |= self.radius.show(
                     ui,
-                    &format!("Origin {axis}"),
-                    "World position of the base sheet's minimum corner",
+                    "Inside radius",
+                    "Inside bend radius for this part instead of the stock value",
                 );
             }
+            changed |= ui
+                .checkbox(&mut self.k_override, "Override K-factor")
+                .changed();
+            if self.k_override {
+                changed |= self.k_factor.show(
+                    ui,
+                    "K-factor",
+                    "Neutral-axis position as a fraction of thickness, 0–1",
+                );
+            }
+            ui.separator();
         }
-        changed |= ui
-            .checkbox(&mut self.reverse, "Material on the other side")
-            .changed();
-        changed |= ui
-            .checkbox(&mut self.radius_override, "Override inside radius")
-            .changed();
-        if self.radius_override {
-            changed |= self.radius.show(
-                ui,
-                "Inside radius",
-                "Inside bend radius for this part instead of the stock value",
-            );
-        }
-        changed |= ui
-            .checkbox(&mut self.k_override, "Override K-factor")
-            .changed();
-        if self.k_override {
-            changed |= self.k_factor.show(
-                ui,
-                "K-factor",
-                "Neutral-axis position as a fraction of thickness, 0–1",
-            );
-        }
-        ui.separator();
         ui.strong("Flanges");
         if self.rows.is_some() {
-            ui.small(
-                "Click a base edge here or in the viewport to add or select its flange; the \
-                 viewport shows its bend, leg and direction.",
-            );
+            if self.flange_edit.is_none() {
+                ui.small(
+                    "Click a base edge here or in the viewport to add or select its flange; the \
+                     viewport shows its bend, leg and direction.",
+                );
+            }
             let review = self.review(document);
             if let Some(edge) = self.diagram(ui, review.as_ref()) {
                 changed |= self.pick_edge(edge);
             }
             let selected = self.selected;
             let mut select = None;
+            let occupied: [bool; 4] = std::array::from_fn(|edge| self.kept_flange_at(edge));
             if let Some(rows) = &mut self.rows {
                 for (edge, (row, label)) in rows.iter_mut().zip(edges::EDGE_TEXT).enumerate() {
+                    if occupied[edge] {
+                        ui.small(format!("{label} · existing flange"));
+                        continue;
+                    }
                     ui.horizontal(|ui| {
                         if ui.checkbox(&mut row.on, "").changed() {
                             changed = true;
@@ -617,7 +729,9 @@ impl SheetPanel {
         ui.separator();
         form::preview_status(ui, self.stamp, preview);
         let validation = self.request(document, enabled);
-        if let Err(error) = &validation {
+        if let Err(error) = &validation
+            && !self.waiting_for_edge()
+        {
             ui.colored_label(egui::Color32::LIGHT_RED, error);
         }
         let action = form::actions(ui, validation.is_ok(), changed, self.stamp, preview);

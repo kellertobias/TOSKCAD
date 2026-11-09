@@ -86,6 +86,26 @@ pub fn groups(mode: Mode, tab: &RibbonTab) -> Vec<Group> {
     if mode == Mode::Model && tab.title == "Wood" {
         return crate::wood_navigation::groups();
     }
+    if mode == Mode::Model && tab.title == "Sheet metal" {
+        return vec![
+            Group {
+                label: "Form sheet",
+                entries: vec![
+                    Entry::Tool("sheet"),
+                    Entry::Tool("sheet-flange"),
+                    Entry::Tool("fastener"),
+                ],
+            },
+            Group {
+                label: "Developed view",
+                entries: vec![
+                    Entry::Tool("flat"),
+                    Entry::Tool("fold"),
+                    Entry::Tool("bend-list"),
+                ],
+            },
+        ];
+    }
     if mode == Mode::Model && tab.title == "Other" {
         return vec![
             Group {
@@ -396,8 +416,11 @@ fn tool_button(
         .inner;
     response
         .on_disabled_hover_text(match tool.action {
-            Command::Modeling(tool) => tool.requirements(),
-            _ => "Unavailable in the current context",
+            Command::Modeling(tool) => tool.requirements().to_string(),
+            Command::SheetFlange | Command::SheetFasteners | Command::SheetPattern(_) => {
+                hint(tool.action, tool.label)
+            }
+            _ => "Unavailable in the current context".into(),
         })
         .clicked()
         .then_some(tool.action)
@@ -1292,7 +1315,14 @@ mod tests {
                         "System 32 shelf pins",
                         "Joint",
                     ],
-                    (Mode::Model, "Sheet metal") => &["Sheet part / flanges"],
+                    (Mode::Model, "Sheet metal") => &[
+                        "Create sheet part",
+                        "Add flange",
+                        "Attached fasteners",
+                        "Unfold",
+                        "Fold",
+                        "Bend schedule",
+                    ],
                     (Mode::Model, "Other") => &["Surface Structure"],
                     (Mode::Export, "Print") => &["Preview package", "Write 3MF package"],
                     _ => &[],
@@ -1305,7 +1335,7 @@ mod tests {
                     );
                 }
                 // Placeholders stay hidden instead of appearing implemented.
-                for placeholder in ["Cut list", "Flat pattern", "Bend schedule"] {
+                for placeholder in ["Cut list", "Weld sequence"] {
                     assert!(!shown.iter().any(|shown| shown == placeholder));
                 }
             }

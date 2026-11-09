@@ -165,6 +165,9 @@ impl ModelToolController {
         self.form.is_some()
     }
     pub fn label(&self) -> &'static str {
+        if let Some(ModelForm::Sheet(panel)) = &self.form {
+            return panel.label();
+        }
         match self.scope.as_ref().map(|scope| scope.execution) {
             Some(Execution::EditGroup { .. }) => "Extrusion operation edit",
             Some(Execution::Edit { .. }) => "Feature edit",
@@ -987,6 +990,21 @@ impl ModelToolController {
             ))),
         )
     }
+    pub(crate) fn begin_sheet_fasteners(
+        &mut self,
+        session: &Session,
+        resources: &ProjectResources,
+        target: EntityId,
+        channel: Channel,
+    ) -> Result<(), String> {
+        let panel = super::sheet_fasteners::FastenerPanel::new(session.document(), target)?;
+        self.begin_form(
+            session,
+            resources,
+            channel,
+            ModelForm::SheetFasteners(Box::new(panel)),
+        )
+    }
     pub fn begin_wood_preset(
         &mut self,
         session: &Session,
@@ -1797,6 +1815,7 @@ impl ModelToolController {
                     | ModelRequest::Gear(_)
                     | ModelRequest::ScrewConnection(_)
                     | ModelRequest::ProfileConnection(_)
+                    | ModelRequest::SheetFasteners(_)
             )
         {
             self.generation = self
@@ -1962,6 +1981,7 @@ impl ModelToolController {
                     | ModelRequest::ProfileConnection(_)
                     | ModelRequest::CompoundCutout(_)
                     | ModelRequest::WoodBox(_)
+                    | ModelRequest::SheetFasteners(_)
             ) || !matches!(execution, Execution::Create),
             aid: match request {
                 ModelRequest::FdmAid(command) => Some(command.request.feature),
@@ -1996,6 +2016,9 @@ impl ModelToolController {
                     },
                     ModelRequest::ProfileConnection(_) => {
                         SceneProof::edited(prepared.outputs.clone(), &[], vec![])
+                    }
+                    ModelRequest::SheetFasteners(command) => {
+                        SceneProof::SheetFasteners { part: command.part }
                     }
                     _ => SceneProof::Create,
                 };
@@ -2371,6 +2394,7 @@ impl ModelToolController {
 
     fn preview_waits_for_input(&self) -> bool {
         self.stock_editor.is_some()
+            || matches!(&self.form, Some(ModelForm::Sheet(panel)) if panel.waiting_for_edge())
             || self.scale_origin_picking()
             || self.edge_treatment_picking()
             || self.advanced_picking()

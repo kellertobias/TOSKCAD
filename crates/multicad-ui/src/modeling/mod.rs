@@ -49,6 +49,7 @@ mod scale_gizmo;
 mod scaling;
 mod screw_connection;
 mod sheet;
+mod sheet_fasteners;
 mod split;
 mod surface_structure;
 mod termination;
@@ -292,7 +293,7 @@ impl ModelingTool {
             Self::Member => "Tube / profile",
             Self::Connection => "Miter / cope",
             Self::Weld => "Weld joint",
-            Self::Sheet => "Sheet part / flanges",
+            Self::Sheet => "Create sheet part",
             Self::Advanced(kind) => match kind {
                 AdvancedKind::Shell | AdvancedKind::Thickness => "Shell / Thickness",
                 AdvancedKind::Sweep => "Sweep",
