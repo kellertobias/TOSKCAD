@@ -49,6 +49,7 @@ struct Record {
     name: String,
     description: String,
     registered_unix_ms: u64,
+    tags: Vec<String>,
 }
 fn decode(bytes: &[u8]) -> Result<Vec<Record>, String> {
     let invalid = |m: &str| format!("Library index is damaged ({m})");
@@ -92,6 +93,14 @@ fn decode(bytes: &[u8]) -> Result<Vec<Record>, String> {
             path,
             name: text(entry, "name")?,
             description: text(entry, "description")?,
+            tags: match entry.get("tags") {
+                None => Vec::new(),
+                Some(tags) => multicad_ui::library::library_tags(
+                    serde_json::from_value::<Vec<String>>(tags.clone())
+                        .map_err(|e| invalid(&e.to_string()))?,
+                )
+                .map_err(|e| invalid(&e))?,
+            },
             registered_unix_ms: entry["registered_unix_ms"]
                 .as_u64()
                 .ok_or_else(|| invalid("registered_unix_ms must be an integer"))?,
@@ -110,6 +119,7 @@ fn encode(records: &[Record]) -> Result<Vec<u8>, String> {
                 "name": r.name,
                 "description": r.description,
                 "registered_unix_ms": r.registered_unix_ms,
+                "tags": r.tags,
             })
         })
         .collect();
@@ -222,6 +232,7 @@ impl LibraryFileStore {
             description: record.description.clone(),
             preview: None,
             registered_unix_ms: record.registered_unix_ms,
+            tags: record.tags.clone(),
             symbol_definitions: 0,
             mechanical_parts: Vec::new(),
             problem: None,
@@ -356,6 +367,7 @@ impl LibraryStore for LibraryFileStore {
             path: path.clone(),
             name: card.info.name.clone(),
             description: card.info.description.clone(),
+            tags: existing.map_or_else(Vec::new, |index| records[index].tags.clone()),
             registered_unix_ms: existing
                 .map_or_else(now_ms, |index| records[index].registered_unix_ms),
         };
@@ -382,6 +394,20 @@ impl LibraryStore for LibraryFileStore {
         }
         self.write_index(&records)?;
         Ok(self.merged(&records))
+    }
+    fn set_tags(&mut self, entry: EntityId, tags: Vec<String>) -> Result<Vec<String>, String> {
+        let tags = multicad_ui::library::library_tags(tags)?;
+        let _lock = self.lock()?;
+        let mut records = self.read_index()?;
+        let record = records
+            .iter_mut()
+            .find(|record| record.id == entry)
+            .ok_or("That Library listing no longer exists")?;
+        if record.tags != tags {
+            record.tags.clone_from(&tags);
+            self.write_index(&records)?;
+        }
+        Ok(tags)
     }
     fn card(&mut self, path: &Path) -> Result<ProjectCard, String> {
         let file = File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;

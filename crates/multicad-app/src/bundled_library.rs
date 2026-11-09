@@ -123,6 +123,7 @@ pub fn load(root: &Path) -> Result<Vec<LibraryEntry>, String> {
             description: String::new(),
             preview: None,
             registered_unix_ms: 0,
+            tags: Vec::new(),
             symbol_definitions: 0,
             mechanical_parts: Vec::new(),
             problem: None,
@@ -177,6 +178,7 @@ pub fn problem(root: &Path, error: String) -> LibraryEntry {
         description: String::new(),
         preview: None,
         registered_unix_ms: 0,
+        tags: Vec::new(),
         symbol_definitions: 0,
         mechanical_parts: Vec::new(),
         problem: Some(format!(

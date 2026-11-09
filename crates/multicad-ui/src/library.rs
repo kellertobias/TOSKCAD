@@ -35,6 +35,7 @@ pub struct LibraryEntry {
     pub preview: Option<PreviewImage>,
     pub registered_unix_ms: u64,
     pub symbol_definitions: usize,
+    pub tags: Vec<String>,
     pub mechanical_parts: Vec<multicad_core::model::MechanicalPartCard>,
     /// Set when the file is missing, unreadable or now holds another project.
     pub problem: Option<String>,
@@ -44,6 +45,28 @@ pub enum LibraryOrigin {
     ListedOriginal,
     Bundled,
 }
+/// Validate local Library tags independently from the project file.
+pub fn library_tags(tags: impl IntoIterator<Item = String>) -> Result<Vec<String>, String> {
+    let mut unique = BTreeSet::new();
+    let mut result = Vec::new();
+    for tag in tags {
+        let tag = tag.trim();
+        if tag.is_empty() {
+            continue;
+        }
+        if tag.chars().count() > 32 || tag.contains(',') || tag.chars().any(char::is_control) {
+            return Err("Use tags of up to 32 characters, separated by commas.".into());
+        }
+        if unique.insert(tag.to_lowercase()) {
+            result.push(tag.to_owned());
+        }
+        if result.len() > 12 {
+            return Err("A Library project can have up to 12 tags.".into());
+        }
+    }
+    Ok(result)
+}
+
 #[derive(Clone, Debug)]
 pub struct RegisterRequest {
     pub path: PathBuf,
@@ -92,6 +115,9 @@ pub trait LibraryStore: Send + 'static {
     ) -> Result<(RegisterReceipt, Vec<LibraryEntry>), String>;
     /// Remove one listing; the file itself is never touched.
     fn remove(&mut self, entry: EntityId) -> Result<Vec<LibraryEntry>, String>;
+    fn set_tags(&mut self, _entry: EntityId, _tags: Vec<String>) -> Result<Vec<String>, String> {
+        Err("Editing Library tags is unavailable in this host".into())
+    }
     /// Name, description and preview of a project file for the home screen.
     fn card(&mut self, path: &Path) -> Result<ProjectCard, String>;
     /// Read a user-chosen preview image file.
@@ -112,6 +138,7 @@ pub fn decode_preview(image: &PreviewImage) -> Result<egui::ColorImage, String> 
 enum Job {
     Load,
     Remove(EntityId),
+    SetTags { entry: EntityId, tags: Vec<String> },
     Register(RegisterRequest),
     Card(PathBuf),
     Preview { local: EntityId, path: PathBuf },
@@ -119,6 +146,10 @@ enum Job {
 pub enum LibraryEvent {
     Loaded(Result<Vec<LibraryEntry>, String>),
     Removed(Result<Vec<LibraryEntry>, String>),
+    Tags {
+        entry: EntityId,
+        result: Result<Vec<String>, String>,
+    },
     Registered {
         document: EntityId,
         result: Result<(RegisterReceipt, Vec<LibraryEntry>), String>,
@@ -149,6 +180,10 @@ impl LibraryWorker {
                     let event = match job {
                         Job::Load => LibraryEvent::Loaded(store.load()),
                         Job::Remove(id) => LibraryEvent::Removed(store.remove(id)),
+                        Job::SetTags { entry, tags } => LibraryEvent::Tags {
+                            entry,
+                            result: store.set_tags(entry, tags),
+                        },
                         Job::Register(request) => LibraryEvent::Registered {
                             document: request.document,
                             result: store.register(&request),
@@ -192,6 +227,9 @@ impl LibraryWorker {
     }
     pub fn remove(&mut self, entry: EntityId) -> Result<(), String> {
         self.submit(Job::Remove(entry))
+    }
+    pub fn set_tags(&mut self, entry: EntityId, tags: Vec<String>) -> Result<(), String> {
+        self.submit(Job::SetTags { entry, tags })
     }
     pub fn register(&mut self, request: RegisterRequest) -> Result<(), String> {
         if self.registering {

@@ -310,6 +310,9 @@ impl SearchIndex {
             })
             && query.contains(&part.text)
     }
+    pub fn has_hardware(&self) -> bool {
+        !self.parts.is_empty()
+    }
     pub fn matches(&self, query: &SearchQuery, facets: &CatalogFilters) -> bool {
         if query.conflicting_nominals {
             return false;
@@ -335,10 +338,11 @@ impl SearchIndex {
 pub(crate) fn entry_search(entry: &LibraryEntry) -> SearchIndex {
     SearchIndex::new(
         format!(
-            "{} {} {}",
+            "{} {} {} {}",
             entry.name,
             entry.description,
-            entry.path.display()
+            entry.path.display(),
+            entry.tags.join(" ")
         ),
         entry.mechanical_parts.clone(),
     )
@@ -434,6 +438,7 @@ mod tests {
             description: "Stainless steel and bronze fixtures".into(),
             preview: None,
             registered_unix_ms: 1,
+            tags: Vec::new(),
             symbol_definitions: card.symbol_definitions,
             mechanical_parts: card.mechanical_parts,
             problem: None,
@@ -442,6 +447,19 @@ mod tests {
 
     fn select(filters: &mut CatalogFilters, facet: Facet, value: FacetValue<'_>) {
         filters.selected[facet as usize] = Some(value.owned());
+    }
+
+    #[test]
+    fn listed_tags_are_searchable_without_changing_hardware_filters() {
+        let session = Session::new(Document::new("Bracket").unwrap()).unwrap();
+        let mut entry = original_entry(&session);
+        entry.tags = vec!["Workshop equipment".into()];
+        let index = entry_search(&entry);
+        assert!(index.matches(
+            &SearchQuery::new("WORKSHOP equipment"),
+            &CatalogFilters::default()
+        ));
+        assert!(!index.matches(&SearchQuery::new("warehouse"), &CatalogFilters::default()));
     }
 
     #[test]

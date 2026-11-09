@@ -51,6 +51,7 @@ impl Application {
             &event,
             LibraryEvent::Loaded(Ok(_))
                 | LibraryEvent::Removed(Ok(_))
+                | LibraryEvent::Tags { result: Ok(_), .. }
                 | LibraryEvent::Registered { result: Ok(_), .. }
         );
         match event {
@@ -75,6 +76,23 @@ impl Application {
                         format!("Could not remove the Library listing: {error}"),
                         true,
                     ),
+                };
+                self.library.status = Some((message.clone(), error));
+                self.message = message;
+                self.message_error = error;
+            }
+            LibraryEvent::Tags { entry, result } => {
+                let (message, error) = match result {
+                    Ok(tags) => {
+                        if let Some(listed) = std::sync::Arc::make_mut(&mut self.library.entries)
+                            .iter_mut()
+                            .find(|listing| listing.id == entry)
+                        {
+                            listed.tags = tags;
+                        }
+                        ("Library tags saved".into(), false)
+                    }
+                    Err(error) => (error, true),
                 };
                 self.library.status = Some((message.clone(), error));
                 self.message = message;
@@ -299,6 +317,7 @@ impl Application {
             return;
         }
         let mut remove = None;
+        let mut save_tags = None;
         let mut reload = false;
         let modal = egui::Modal::new(egui::Id::new("settings-library-listings")).show(ctx, |ui| {
             ui.set_width(510_f32.min(ctx.content_rect().width() - 36.));
@@ -320,6 +339,13 @@ impl Application {
                 ui.colored_label(Color32::LIGHT_RED, error);
             } else if listed.peek().is_none() {
                 ui.label("No projects listed.");
+            }
+            if let Some((message, error)) = &self.library.status {
+                if *error {
+                    ui.colored_label(Color32::LIGHT_RED, message);
+                } else {
+                    ui.weak(message);
+                }
             }
             egui::ScrollArea::vertical()
                 .max_height((ctx.content_rect().height() - 160.).clamp(70., 420.))
@@ -346,6 +372,50 @@ impl Application {
                             if let Some(problem) = &entry.problem {
                                 ui.colored_label(Color32::LIGHT_RED, problem);
                             }
+                            let summary = if entry.tags.is_empty() {
+                                "Add tags".into()
+                            } else {
+                                format!("Tags · {}", entry.tags.join(", "))
+                            };
+                            ui.collapsing(summary, |ui| {
+                                let key = ui.id().with("tag-draft");
+                                let mut draft = ui
+                                    .ctx()
+                                    .data(|data| data.get_temp::<String>(key))
+                                    .unwrap_or_else(|| entry.tags.join(", "));
+                                let field = ui.label("Separate tags with commas");
+                                if ui
+                                    .add(
+                                        egui::TextEdit::singleline(&mut draft)
+                                            .desired_width(f32::INFINITY)
+                                            .char_limit(420)
+                                            .hint_text("For example, workshop, metric"),
+                                    )
+                                    .labelled_by(field.id)
+                                    .changed()
+                                {
+                                    ui.ctx()
+                                        .data_mut(|data| data.insert_temp(key, draft.clone()));
+                                }
+                                let tags = crate::library::library_tags(
+                                    draft.split(',').map(str::to_owned),
+                                );
+                                if let Err(error) = &tags {
+                                    ui.colored_label(Color32::LIGHT_RED, error);
+                                }
+                                if ui
+                                    .add_enabled(
+                                        !busy
+                                            && self.library.worker.is_some()
+                                            && tags.as_ref().is_ok_and(|tags| tags != &entry.tags),
+                                        egui::Button::new("Save tags"),
+                                    )
+                                    .clicked()
+                                    && let Ok(tags) = tags
+                                {
+                                    save_tags = Some((entry.id, tags));
+                                }
+                            });
                             ui.separator();
                         });
                     }
@@ -368,6 +438,12 @@ impl Application {
         }
         let result = if let Some(id) = remove {
             self.remove_library_entry(id)
+        } else if let Some((entry, tags)) = save_tags {
+            self.library
+                .worker
+                .as_mut()
+                .ok_or_else(|| "The installation library is unavailable in this host".into())
+                .and_then(|worker| worker.set_tags(entry, tags))
         } else if reload {
             self.library
                 .worker

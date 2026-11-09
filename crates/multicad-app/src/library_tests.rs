@@ -204,7 +204,19 @@ fn moved_or_deleted_files_stay_listed_as_missing_and_can_be_relocated_or_removed
     let part = project("Part", "Original");
     let stamp = save(&mut projects, &first, &part, SaveMode::Create);
     let mut library = LibraryFileStore::new(root.path().join("library"));
-    library.register(&request(&first, stamp, &part)).unwrap();
+    let (receipt, _) = library.register(&request(&first, stamp, &part)).unwrap();
+    let original = fs::read(&first).unwrap();
+    let tags = vec!["Workshop".to_owned(), "Spare parts".to_owned()];
+    assert_eq!(
+        library
+            .set_tags(
+                receipt.entry.id,
+                vec![" Workshop ".into(), "workshop".into(), "Spare parts".into()]
+            )
+            .unwrap(),
+        tags
+    );
+    assert_eq!(fs::read(&first).unwrap(), original);
 
     let moved = root.path().join("moved.multicad");
     fs::rename(&first, &moved).unwrap();
@@ -212,6 +224,7 @@ fn moved_or_deleted_files_stay_listed_as_missing_and_can_be_relocated_or_removed
     assert_eq!(entries.len(), 1, "never dropped silently");
     assert_eq!(entries[0].path, canonical(root.path()).join("a.multicad"));
     assert_eq!(entries[0].name, "Part", "last known name");
+    assert_eq!(entries[0].tags, tags);
     let problem = entries[0].problem.as_ref().unwrap();
     assert!(
         problem.contains("Missing") && problem.contains("Add to Library"),
@@ -229,6 +242,7 @@ fn moved_or_deleted_files_stay_listed_as_missing_and_can_be_relocated_or_removed
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0].path, canonical(&moved));
     assert!(entries[0].problem.is_none());
+    assert_eq!(entries[0].tags, tags);
 
     // A Save As copy keeps the document id: listing it relocates too.
     let copy = root.path().join("copy.multicad");

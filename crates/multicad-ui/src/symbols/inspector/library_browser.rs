@@ -16,11 +16,34 @@ enum LibraryItem {
     Installed(usize),
 }
 
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+enum Category {
+    #[default]
+    All,
+    Projects,
+    Symbols,
+    Hardware,
+}
+impl Category {
+    const ALL: [Self; 4] = [Self::All, Self::Projects, Self::Symbols, Self::Hardware];
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::All => "All categories",
+            Self::Projects => "Projects",
+            Self::Symbols => "Symbols",
+            Self::Hardware => "Hardware",
+        }
+    }
+}
+
 #[derive(Default)]
 pub(in crate::symbols) struct LibraryBrowser {
     selected: Option<LibraryItem>,
     focused_search: bool,
     filter: String,
+    category: Category,
+    tag: Option<String>,
     facets: Option<CatalogFilters>,
     results: Vec<LibraryItem>,
     scroll_to_top: bool,
@@ -69,6 +92,16 @@ impl LibraryBrowser {
                 .matching(query)
                 .map(LibraryItem::Installed),
         );
+        let selected_tag = self.tag.as_ref().map(|tag| tag.to_lowercase());
+        self.results.retain(|&item| {
+            (self.category == Category::All || self.category == catalogue.category(item))
+                && selected_tag.as_ref().is_none_or(|tag| {
+                    catalogue
+                        .tags(item)
+                        .iter()
+                        .any(|entry_tag| entry_tag.to_lowercase() == *tag)
+                })
+        });
         self.facets = Some(facets.clone());
         self.selected = self
             .results
@@ -119,6 +152,37 @@ struct LibraryTile<'a> {
 }
 
 impl Catalogue<'_> {
+    fn category(&self, item: LibraryItem) -> Category {
+        match item {
+            LibraryItem::Loaded(index) if self.library_search[index].has_hardware() => {
+                Category::Hardware
+            }
+            LibraryItem::Embedded(index)
+                if self.embedded_search[&self.embedded[index].0].has_hardware() =>
+            {
+                Category::Hardware
+            }
+            LibraryItem::Installed(index) => {
+                let entry = self.installed.entry(index);
+                if !entry.mechanical_parts.is_empty() {
+                    Category::Hardware
+                } else if entry.symbol_definitions > 0 {
+                    Category::Symbols
+                } else {
+                    Category::Projects
+                }
+            }
+            _ => Category::Symbols,
+        }
+    }
+
+    fn tags(&self, item: LibraryItem) -> &[String] {
+        match item {
+            LibraryItem::Installed(index) => &self.installed.entry(index).tags,
+            _ => &[],
+        }
+    }
+
     fn tile_id(&self, item: LibraryItem) -> egui::Id {
         match item {
             LibraryItem::Loaded(index) => egui::Id::new(("loaded", self.library_pins[index].0)),
@@ -298,7 +362,14 @@ fn library_tile(
         if title.clicked() || title.has_focus() {
             *selected = Some(item);
         }
-        ui.add(egui::Label::new(egui::RichText::new(tile.source).small().weak()).truncate());
+        let tags = catalogue.tags(item);
+        let context = if tags.is_empty() {
+            tile.source.to_owned()
+        } else {
+            format!("{} · {}", tile.source, tags.join(", "))
+        };
+        ui.add(egui::Label::new(egui::RichText::new(&context).small().weak()).truncate())
+            .on_hover_text(context);
         let summary = match item {
             LibraryItem::Loaded(index) => definition_input_summary(&catalogue.library[index]),
             LibraryItem::Embedded(index) => definition_input_summary(&catalogue.embedded[index].1),
@@ -376,7 +447,7 @@ pub(in crate::symbols) fn show_library(
             let search = ui.add(
                 egui::TextEdit::singleline(&mut form.filter)
                     .id_salt("library-search")
-                    .hint_text("Search by name, size, or M3")
+                    .hint_text("Search by name, tag, size, or M3")
                     .desired_width((ui.available_width() - 170.).max(70.)),
             );
             if !browser.focused_search {
@@ -388,6 +459,39 @@ pub(in crate::symbols) fn show_library(
             }
         });
     });
+    let previous = (browser.category, browser.tag.clone());
+    if browser
+        .tag
+        .as_ref()
+        .is_some_and(|tag| !catalogue.installed.tags().contains(tag))
+    {
+        browser.tag = None;
+    }
+    ui.add_enabled_ui(enabled, |ui| {
+        ui.horizontal_wrapped(|ui| {
+            egui::ComboBox::from_id_salt("library-category")
+                .selected_text(browser.category.label())
+                .show_ui(ui, |ui| {
+                    for category in Category::ALL {
+                        ui.selectable_value(&mut browser.category, category, category.label());
+                    }
+                });
+            if !catalogue.installed.tags().is_empty() {
+                let label = browser.tag.as_deref().unwrap_or("All tags");
+                egui::ComboBox::from_id_salt("library-tag")
+                    .selected_text(label)
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut browser.tag, None, "All tags");
+                        for tag in catalogue.installed.tags() {
+                            ui.selectable_value(&mut browser.tag, Some(tag.clone()), tag);
+                        }
+                    });
+            }
+        })
+    });
+    if previous != (browser.category, browser.tag.clone()) {
+        browser.reset_catalogue();
+    }
     if browser.filter != form.filter {
         browser.filter.clone_from(&form.filter);
         browser.reset_catalogue();
@@ -408,9 +512,7 @@ pub(in crate::symbols) fn show_library(
             catalogue.installed.show_filters(ui);
             browser.update_results(&catalogue, &query);
             if browser.results.is_empty() {
-                ui.weak(
-                    "No Library items match. Try another search or clear the hardware filters.",
-                );
+                ui.weak("No Library items match. Try another search or clear the filters.");
                 return;
             }
 

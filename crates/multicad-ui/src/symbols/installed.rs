@@ -8,12 +8,13 @@ use crate::{
     },
 };
 use multicad_core::model::MechanicalPartCard;
-use std::sync::Arc;
+use std::{collections::BTreeMap, sync::Arc};
 
 #[derive(Default)]
 pub(super) struct Installed {
     entries: Arc<Vec<LibraryEntry>>,
     search: Vec<SearchIndex>,
+    tags: Vec<String>,
     previews: LibraryThumbnails,
     facets: CatalogFilters,
 }
@@ -23,11 +24,19 @@ impl Installed {
             return false;
         }
         self.search = entries.iter().map(entry_search).collect();
+        let mut tags = BTreeMap::new();
+        for tag in entries.iter().flat_map(|entry| &entry.tags) {
+            tags.entry(tag.to_lowercase()).or_insert(tag);
+        }
+        self.tags = tags.into_values().cloned().collect();
         self.entries = entries;
         true
     }
     pub fn facets(&self) -> &CatalogFilters {
         &self.facets
+    }
+    pub fn tags(&self) -> &[String] {
+        &self.tags
     }
     pub fn show_filters(&mut self, ui: &mut egui::Ui) {
         self.facets.show(ui, &self.entries);
@@ -156,6 +165,7 @@ mod tests {
             description: "Steel".into(),
             preview: None,
             registered_unix_ms: 1,
+            tags: Vec::new(),
             symbol_definitions: 2,
             mechanical_parts: vec![washer, bearing],
             problem: None,
