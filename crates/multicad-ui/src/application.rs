@@ -2548,6 +2548,11 @@ impl Application {
                 ShortcutAction::FindTool => self.focus_search = true,
                 ShortcutAction::FocusCommand => self.focus_command = true,
                 ShortcutAction::NextWorkspace | ShortcutAction::PreviousWorkspace => {
+                    // With a Sketch control focused, Tab traverses the controls.
+                    // A viewport without widget focus still cycles workspaces.
+                    if self.mode == Mode::Sketch && ctx.memory(|m| m.focused().is_some()) {
+                        continue;
+                    }
                     // Cycle the ribbon's visible workbenches in their chosen order.
                     if let Some(category) = self.active_architecture_category() {
                         self.cycle_architecture_category(

@@ -37,8 +37,8 @@ pub struct Group {
     pub label: &'static str,
     pub entries: Vec<Entry>,
 }
-/// Sketch → Common keeps its order but folds each drawing-mode family into
-/// one menu at the position of its first member.
+/// Sketch → Common replaces each drawing-mode family with a split action
+/// at the position of its first member.
 fn sketch_entries(tab: &RibbonTab) -> Vec<Entry> {
     use crate::sketch_editor::DrawTool;
     let families: [(&'static str, Icon, Vec<&'static str>); 2] = [
@@ -74,7 +74,7 @@ fn sketch_entries(tab: &RibbonTab) -> Vec<Entry> {
                             icon: *icon,
                             tools: present,
                             unavailable: None,
-                            split: false,
+                            split: true,
                         }
                     });
                 }
@@ -479,12 +479,13 @@ fn menu_button(
                     )
                 })
                 .inner;
-            if main
-                .on_disabled_hover_text(
-                    "The default is unavailable in this context. Open the options for other tools.",
-                )
-                .clicked()
-            {
+            let main = main.on_disabled_hover_text(
+                "The default is unavailable in this context. Open the options for other tools.",
+            );
+            if main.clicked() {
+                if mode == Mode::Sketch {
+                    main.request_focus();
+                }
                 action = Some(default.action);
             }
             arrow.on_hover_text(options)
@@ -521,9 +522,9 @@ fn menu_button(
         paint_menu_arrow(ui, caret);
         response
     };
-    let mut focus_first = !split && mode == Mode::Model && response.clicked();
+    let compact = split || mode == Mode::Model;
+    let mut focus_first = compact && (!split || mode == Mode::Sketch) && response.clicked();
     egui::Popup::menu(&response).show(|ui| {
-        let compact = mode == Mode::Model;
         if compact {
             ui.set_width(178.);
             ui.spacing_mut().item_spacing.y = 1.;
@@ -533,9 +534,13 @@ fn menu_button(
             let available = enabled(tool.action);
             let option = ui
                 .add_enabled_ui(available, |ui| {
-                    icons::labeled_button_sized(
+                    icons::labeled_glyph_button_sized(
                         ui,
-                        tool.icon,
+                        if mode == Mode::Sketch {
+                            tool_glyph(mode, tool.id, tool.icon)
+                        } else {
+                            icons::Glyph::Vector(tool.icon)
+                        },
                         tool.label,
                         egui::vec2(
                             ui.available_width().max(160.),
@@ -557,8 +562,10 @@ fn menu_button(
             if option.clicked() {
                 action = Some(tool.action);
                 let id: &'static str = id;
-                ui.ctx()
-                    .data_mut(|data| data.insert_temp(menu_memory(mode, label), id));
+                if !split {
+                    ui.ctx()
+                        .data_mut(|data| data.insert_temp(menu_memory(mode, label), id));
+                }
                 ui.close();
             }
         }
@@ -1124,20 +1131,36 @@ mod tests {
         }
     }
     #[test]
-    fn model_split_arrow_is_left_of_its_main_action_at_both_widths() {
+    fn split_arrows_are_left_of_their_main_action_at_both_widths() {
         let registry = Registry::default();
-        let tab = &registry.workspace(Mode::Model).tabs[0];
-        for width in [1024., 1360.] {
-            let ctx = egui::Context::default();
-            ctx.enable_accesskit();
-            let draw = || ribbon(&registry, Mode::Model, tab, false, width, vec![], &ctx).0;
-            draw().drop_without_applying_deltas();
-            let out = draw();
-            for label in ["Add Primitive", "Move / Copy"] {
-                let options = accessible_button(&out, &format!("{label} options"));
-                assert!(options.x < text(&out, label).x, "{label} at {width}");
+        for (mode, labels) in [
+            (Mode::Model, ["Add Primitive", "Move / Copy"]),
+            (Mode::Sketch, ["Rectangle", "Circle"]),
+        ] {
+            let tab = &registry.workspace(mode).tabs[0];
+            for width in [1024., 1360.] {
+                let ctx = egui::Context::default();
+                ctx.enable_accesskit();
+                let draw = || {
+                    ribbon(
+                        &registry,
+                        mode,
+                        tab,
+                        mode == Mode::Sketch,
+                        width,
+                        vec![],
+                        &ctx,
+                    )
+                    .0
+                };
+                draw().drop_without_applying_deltas();
+                let out = draw();
+                for label in labels {
+                    let options = accessible_button(&out, &format!("{label} options"));
+                    assert!(options.x < text(&out, label).x, "{label} at {width}");
+                }
+                out.drop_without_applying_deltas();
             }
-            out.drop_without_applying_deltas();
         }
     }
 
@@ -1452,13 +1475,18 @@ mod tests {
         .drop_without_applying_deltas();
     }
     #[test]
-    fn sketch_drawing_modes_fold_into_rectangle_and_circle_menus_in_place() {
+    fn sketch_split_actions_keep_all_variants_and_dispatch_fixed_defaults() {
         let registry = Registry::default();
         let tab = &registry.workspace(Mode::Sketch).tabs[0];
         let entries = &groups(Mode::Sketch, tab)[0].entries;
         let menu = |name: &str| {
             entries.iter().find_map(|entry| match entry {
-                Entry::Menu { label, tools, .. } if *label == name => Some(tools.clone()),
+                Entry::Menu {
+                    label,
+                    tools,
+                    split: true,
+                    ..
+                } if *label == name => Some(tools.clone()),
                 _ => None,
             })
         };
@@ -1481,6 +1509,17 @@ mod tests {
                 .any(|e| matches!(e, Entry::Tool("rectangle" | "circle-three")))
         );
         assert!(entries.iter().any(|e| matches!(e, Entry::Tool("line"))));
+        for (label, tool) in [
+            ("Rectangle", crate::sketch_editor::DrawTool::Rectangle),
+            ("Circle", crate::sketch_editor::DrawTool::Circle),
+        ] {
+            for width in [1024., 1360.] {
+                assert_eq!(
+                    click(&registry, Mode::Sketch, tab, true, width, label),
+                    Some(Command::Draw(tool))
+                );
+            }
+        }
     }
     #[test]
     fn additional_catalog_tools_are_not_lost_by_common_grouping() {

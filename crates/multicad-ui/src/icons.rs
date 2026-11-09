@@ -146,6 +146,15 @@ pub fn labeled_button_sized(
     label: &str,
     minimum: Vec2,
 ) -> egui::Response {
+    labeled_glyph_button_sized(ui, Glyph::Vector(icon), label, minimum)
+}
+
+pub(crate) fn labeled_glyph_button_sized(
+    ui: &mut egui::Ui,
+    glyph: Glyph,
+    label: &str,
+    minimum: Vec2,
+) -> egui::Response {
     let galley = ui.painter().layout_no_wrap(
         label.into(),
         egui::FontId::proportional(12.0),
@@ -167,9 +176,9 @@ pub fn labeled_button_sized(
             egui::StrokeKind::Inside,
         );
     }
-    paint_sized(
+    paint_glyph(
         ui,
-        icon,
+        glyph,
         Pos2::new(rect.left() + 14.0, rect.center().y),
         Color32::WHITE,
         16.0,
