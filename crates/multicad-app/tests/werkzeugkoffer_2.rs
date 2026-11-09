@@ -290,6 +290,40 @@ fn bundled_case_drawers_move_and_rebuild_from_edited_dimensions() {
         }
     }
 
+    for (study, pose, travel) in [
+        ("Upper drawer clearance", "Upper drawer extended", 185.),
+        (
+            "Small drawer and dovetail clearance",
+            "Small drawer fit check",
+            94.,
+        ),
+    ] {
+        let study = read_saved_motion_study(shipped.document(), named(&shipped, study)).unwrap();
+        let prepared = prepare_apply_pose(
+            &shipped,
+            shipped.revision(),
+            actor.clone(),
+            named(&shipped, pose),
+        )
+        .unwrap();
+        let moved = compiler
+            .compile_cached(
+                &mut cache,
+                prepared.prepared.document(),
+                shipped.revision(),
+                None,
+            )
+            .unwrap();
+        for (path, expected) in [(&study.pairs[0].a, travel), (&study.pairs[0].b, 0.)] {
+            let initial = closed.leaf_snapshot(path).unwrap();
+            let final_state = moved.leaf_snapshot(path).unwrap();
+            assert!(
+                (initial.bounds.min[1] - final_state.bounds.min[1] - expected).abs() < 1e-5,
+                "Incorrect travel for {pose} at {path:?}"
+            );
+        }
+    }
+
     let before = volume(&compiler, &shipped, initial.component);
     let rack = closed
         .snapshot()
