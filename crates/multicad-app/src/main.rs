@@ -92,7 +92,7 @@ fn main() -> ExitCode {
             .inspect_err(|error| record_startup_error(error)),
         Action::Help => {
             println!(
-                "{} {}\n\nUsage: multicad [PROJECT.tcd | --help | --version | --diagnostics | --self-test OUTPUT_DIRECTORY]\n       multicad --rust-model [PROJECT.tcd]\n       multicad --mcp [--project FILE.tcd] [--export-dir DIRECTORY] [--read-only]\n       multicad --mcp --app [--socket PATH]\n       multicad --command REQUEST.json --project FILE.tcd [--read-only] [--save]\n\nLaunches the native application host with no arguments, or opens PROJECT.tcd in it.\nIncludes Project, constrained Sketch and initial New body extrusion. Native .tcd project containers include atomic saves, embedded payloads, explicit JSON import and recovery copies; existing .multicad projects still open and save in place. Advanced modeling and manufacturing exports remain under development.\n\n--rust-model selects the experimental Rust backend for Model scenes and previews. It currently supports boxes, straight sketch extrusions, rounded panels, axial cylinders, and through-bores.\n\n--mcp serves the Model Context Protocol on stdin/stdout for a local client that launches this process. It controls one headless document: the --project file (opened, or created on first save), else an unsaved document. Exports write only into --export-dir. --mcp --app instead bridges to the open window once \"Allow local MCP connections\" is on (macOS and Linux; same-user local socket). No network port is opened.\n\n--command dispatches one JSON {{tool,arguments}} through the same canonical MCP/native validation path. It prints one JSON receipt and exits. Changes remain memory-only unless --save is present; failed commands never save. --read-only refuses mutations.",
+                "{} {}\n\nUsage: multicad [PROJECT.tcd | --help | --version | --diagnostics | --self-test OUTPUT_DIRECTORY]\n       multicad --rust-model [PROJECT.tcd]\n       multicad --mcp [--project FILE.tcd] [--export-dir DIRECTORY] [--read-only]\n       multicad --mcp --app [--socket PATH]\n       multicad --command REQUEST.json --project FILE.tcd [--read-only] [--save]\n\nLaunches the native application host with no arguments, or opens PROJECT.tcd in it.\nIncludes Project, constrained Sketch and initial New body extrusion. Native .tcd project containers include atomic saves, embedded payloads, explicit JSON import and recovery copies; existing .multicad projects still open and save in place. Advanced modeling and manufacturing exports remain under development.\n\n--rust-model selects the experimental Rust backend for Model and separate-part STEP export of straight-edged planar solids. It currently supports boxes, straight sketch extrusions, rounded panels, axial cylinders, and through-bores.\n\n--mcp serves the Model Context Protocol on stdin/stdout for a local client that launches this process. It controls one headless document: the --project file (opened, or created on first save), else an unsaved document. Exports write only into --export-dir. --mcp --app instead bridges to the open window once \"Allow local MCP connections\" is on (macOS and Linux; same-user local socket). No network port is opened.\n\n--command dispatches one JSON {{tool,arguments}} through the same canonical MCP/native validation path. It prints one JSON receipt and exits. Changes remain memory-only unless --save is present; failed commands never save. --read-only refuses mutations.",
                 build.product, build.version
             );
             Ok(())
@@ -184,10 +184,12 @@ fn run_application(project: Option<PathBuf>, model_backend: GeometryBackend) -> 
     app.set_mechanical_import_backend(std::sync::Arc::new(mechanical_imports::Backend));
     let proofs = pair_proofs.clone();
     app.set_export_backends(std::sync::Arc::new(move || {
-        multicad_model::with_pair_cycle_proofs(
-            proofs.clone(),
-            || Box::new(exchange::Backend::new()),
-        )
+        multicad_model::with_pair_cycle_proofs(proofs.clone(), || {
+            Box::new(match model_backend {
+                GeometryBackend::OpenCascade => exchange::Backend::new(),
+                GeometryBackend::Rust => exchange::Backend::with_geometry_backend(model_backend),
+            })
+        })
     }))?;
     let proofs = pair_proofs.clone();
     app.set_print_backends(std::sync::Arc::new(move || {

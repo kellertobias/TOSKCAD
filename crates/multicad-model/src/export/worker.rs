@@ -162,67 +162,90 @@ pub struct ExportWorker {
 }
 impl ExportWorker {
     pub fn new(exporter: Exporter) -> Result<Self, String> {
-        Self::spawn(move |request, interrupt| match request {
-            Request::PlanarCatalog {
-                document,
-                revision,
-                scope,
-                ..
-            } => ExportResult::PlanarCatalog(
-                exporter
-                    .planar_catalog(&document, revision, &scope, Some(interrupt))
-                    .map(Box::new),
-            ),
-            Request::Preview {
-                document,
-                revision,
-                set,
-                actor,
-            } => ExportResult::Preview(
-                exporter
-                    .preview(&document, revision, set, &actor, Some(interrupt))
-                    .map(Box::new),
-            ),
-            Request::Run {
-                document,
-                revision,
-                expected,
-                directory,
-                actor,
-            } => ExportResult::Run(exporter.run(
-                &document,
-                revision,
-                &expected,
-                &directory,
-                &actor,
-                Some(interrupt),
-            )),
-            Request::Schedule {
-                document,
-                revision,
-                spec,
-                target,
-                ..
-            } => ExportResult::Schedule(
-                exporter
-                    .schedule(
-                        &document,
-                        revision,
-                        spec,
-                        target
-                            .as_ref()
-                            .map(|(path, expected)| super::ScheduleTarget {
-                                path,
-                                expected: *expected,
-                            }),
-                        Some(interrupt),
-                    )
-                    .map(Box::new),
-            ),
+        Self::with_geometry_backend(exporter, GeometryBackend::OpenCascade)
+    }
+    pub fn with_geometry_backend(
+        exporter: Exporter,
+        backend: GeometryBackend,
+    ) -> Result<Self, String> {
+        Self::spawn(move |request, interrupt, retained| {
+            let retained = (backend == GeometryBackend::Rust).then_some(retained);
+            let mut configured = exporter.with_backend(backend, retained);
+            let unsupported = || {
+                failure(
+                    ErrorKind::Unsupported,
+                    None,
+                    "The Rust export backend currently supports separate-part STEP only",
+                )
+            };
+            match request {
+                Request::PlanarCatalog {
+                    document,
+                    revision,
+                    scope,
+                    ..
+                } => ExportResult::PlanarCatalog(if backend == GeometryBackend::Rust {
+                    Err(unsupported())
+                } else {
+                    exporter
+                        .planar_catalog(&document, revision, &scope, Some(interrupt))
+                        .map(Box::new)
+                }),
+                Request::Preview {
+                    document,
+                    revision,
+                    set,
+                    actor,
+                } => ExportResult::Preview(
+                    configured
+                        .preview(&document, revision, set, &actor, Some(interrupt))
+                        .map(Box::new),
+                ),
+                Request::Run {
+                    document,
+                    revision,
+                    expected,
+                    directory,
+                    actor,
+                } => ExportResult::Run(configured.run(
+                    &document,
+                    revision,
+                    &expected,
+                    &directory,
+                    &actor,
+                    Some(interrupt),
+                )),
+                Request::Schedule {
+                    document,
+                    revision,
+                    spec,
+                    target,
+                    ..
+                } => ExportResult::Schedule(if backend == GeometryBackend::Rust {
+                    Err(unsupported())
+                } else {
+                    exporter
+                        .schedule(
+                            &document,
+                            revision,
+                            spec,
+                            target
+                                .as_ref()
+                                .map(|(path, expected)| super::ScheduleTarget {
+                                    path,
+                                    expected: *expected,
+                                }),
+                            Some(interrupt),
+                        )
+                        .map(Box::new)
+                }),
+            }
         })
     }
     fn spawn(
-        handler: impl Fn(Request, &dyn Fn() -> bool) -> ExportResult + Send + 'static,
+        handler: impl Fn(Request, &dyn Fn() -> bool, &mut Option<Built>) -> ExportResult
+        + Send
+        + 'static,
     ) -> Result<Self, String> {
         let shared = Arc::new(Shared {
             slots: Mutex::new(Slots::default()),
@@ -241,6 +264,9 @@ impl ExportWorker {
                 // on this worker only, with the existing bounded cache policy.
                 // Drop it before Exit publishes any owner-failure replies.
                 let _evaluation_owner = crate::worker_cache::EvaluationOwner::enter();
+                // Retain one accepted Rust preview on its geometry owner.
+                // Run still validates the full source stamp and plan identity.
+                let mut retained = None;
                 loop {
                     let job = {
                         let mut slots = worker.slots.lock().unwrap_or_else(|e| e.into_inner());
@@ -257,7 +283,7 @@ impl ExportWorker {
                     let interrupt = || {
                         worker.stop.load(Ordering::Acquire) || job.cancel.load(Ordering::Acquire)
                     };
-                    let result = handler(job.request, &interrupt);
+                    let result = handler(job.request, &interrupt, &mut retained);
                     let mut slots = worker.slots.lock().unwrap_or_else(|e| e.into_inner());
                     slots.active = None;
                     if !slots.closed {
@@ -426,7 +452,7 @@ mod tests {
     fn bounded_queue_preserves_all_accepted_commands_in_order_and_rejects_overflow() {
         let (entered_tx, entered_rx) = mpsc::channel();
         let (release_tx, release_rx) = mpsc::channel();
-        let worker = ExportWorker::spawn(move |_, _| {
+        let worker = ExportWorker::spawn(move |_, _, _| {
             entered_tx.send(()).unwrap();
             release_rx.recv().unwrap();
             ExportResult::Preview(Err(failure(
@@ -459,7 +485,7 @@ mod tests {
     fn unexpected_exit_reports_active_and_queued_jobs_and_permanently_closes_worker() {
         let (entered_tx, entered_rx) = mpsc::channel();
         let (release_tx, release_rx) = mpsc::channel();
-        let worker = ExportWorker::spawn(move |_, _| {
+        let worker = ExportWorker::spawn(move |_, _, _| {
             entered_tx.send(()).unwrap();
             release_rx.recv().unwrap();
             panic!("controlled export worker panic")
@@ -483,7 +509,7 @@ mod tests {
     #[test]
     fn explicit_cancel_replies_and_drop_does_not_wait_for_active_work() {
         let (entered_tx, entered_rx) = mpsc::channel();
-        let worker = ExportWorker::spawn(move |_, interrupt| {
+        let worker = ExportWorker::spawn(move |_, interrupt, _| {
             entered_tx.send(()).unwrap();
             while !interrupt() {
                 std::thread::sleep(Duration::from_millis(1));
@@ -502,7 +528,7 @@ mod tests {
         );
         let (entered_tx, entered_rx) = mpsc::channel();
         let (release_tx, release_rx) = mpsc::channel();
-        let worker = ExportWorker::spawn(move |_, _| {
+        let worker = ExportWorker::spawn(move |_, _, _| {
             entered_tx.send(()).unwrap();
             release_rx.recv().unwrap();
             ExportResult::Preview(Err(failure(ErrorKind::Empty, None, "released")))

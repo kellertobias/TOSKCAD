@@ -182,6 +182,7 @@ fn reuse(
     exporter: &Exporter,
     built: &Built,
     directory: &Path,
+    actor: &Actor,
     interrupt: Option<&dyn Fn() -> bool>,
 ) -> Result<RunReceipt, ExportError> {
     let metadata = fs::symlink_metadata(directory).map_err(io)?;
@@ -254,7 +255,7 @@ fn reuse(
         stored.artifact = current.clone();
     }
     Ok(RunReceipt {
-        actor: preview.requested_by.clone(),
+        actor: actor.clone(),
         key: preview.key.clone(),
         directory: directory
             .to_str()
@@ -268,6 +269,7 @@ pub(super) fn run(
     exporter: &Exporter,
     built: &Built,
     root: &Path,
+    actor: &Actor,
     interrupt: Option<&dyn Fn() -> bool>,
 ) -> Result<RunReceipt, ExportError> {
     checkpoint(interrupt)?;
@@ -314,7 +316,7 @@ pub(super) fn run(
         ))
     })?;
     if fs::symlink_metadata(&directory).is_ok() {
-        return reuse(exporter, built, &directory, interrupt);
+        return reuse(exporter, built, &directory, actor, interrupt);
     }
     let staging = tempfile::Builder::new()
         .prefix(".multicad-export-")
@@ -365,7 +367,7 @@ pub(super) fn run(
         set: preview.key.set,
         source_hash: preview.key.source.source_hash,
         plan_hash: preview.key.plan_hash,
-        actor: preview.requested_by.clone(),
+        actor: actor.clone(),
         files: files.clone(),
     };
     let mut manifest_file = OpenOptions::new()
@@ -383,7 +385,7 @@ pub(super) fn run(
     let _ = staging.keep();
     // Publication succeeded. A later cancellation cannot relabel a completed run.
     Ok(RunReceipt {
-        actor: preview.requested_by.clone(),
+        actor: actor.clone(),
         key: preview.key.clone(),
         directory: directory
             .to_str()

@@ -1250,9 +1250,55 @@ impl Solid {
         };
         Some(self.topology_snapshot(feature, 0))
     }
+    /// Whether the active backend can encode this exact solid in STEP.
+    pub fn supports_step_export(&self) -> bool {
+        match &self.body {
+            SolidBody::Occt(_) => true,
+            SolidBody::PolygonPrism(placed) => placed.prism.circular_holes().is_empty(),
+            SolidBody::Prism(prism, _) => {
+                prism.rounded_end().is_none() && prism.inner_loops().len() == 0
+            }
+            SolidBody::AxialCylinder(_, _) => false,
+        }
+    }
+
     pub fn write_step(&self, path: &Path) -> Result<(), GeometryError> {
-        let path = crate::step_path(path).map_err(|e| input(e.to_string()))?;
-        ffi::write_step(self.occt()?, path).map_err(|e| native("write STEP", e))
+        use multicad_rust_kernel::step;
+
+        let path_text = crate::step_path(path).map_err(|e| input(e.to_string()))?;
+        if let SolidBody::Occt(shape) = &self.body {
+            return ffi::write_step(&shape.0, path_text).map_err(|e| native("write STEP", e));
+        }
+        let operation = "write STEP";
+        if !self.supports_step_export() {
+            return Err(error(
+                operation,
+                GeometryErrorKind::Unsupported,
+                "Rust STEP export currently supports straight-edged planar solids",
+            ));
+        }
+        let encoded = match &self.body {
+            SolidBody::PolygonPrism(placed) => step::write_polygon_prism(
+                &placed.prism,
+                placed.frame.origin,
+                placed.frame.u,
+                placed.frame.v,
+                placed.reverse_sweep,
+            ),
+            SolidBody::Prism(prism, frame) => {
+                step::write_box(prism.dimensions(), frame.origin, frame.u, frame.v)
+            }
+            _ => unreachable!("STEP support checked for this solid"),
+        }
+        .map_err(|e| {
+            error(
+                operation,
+                GeometryErrorKind::InvalidResult,
+                format!("{e:?}"),
+            )
+        })?;
+        std::fs::write(path, encoded)
+            .map_err(|e| error(operation, GeometryErrorKind::InvalidResult, e.to_string()))
     }
     /// Every solid in a STEP file as (representation name, exact BRep text).
     pub fn step_solids(path: &Path) -> Result<Vec<(String, String)>, GeometryError> {

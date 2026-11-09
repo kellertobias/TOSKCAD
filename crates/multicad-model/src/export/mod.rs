@@ -14,7 +14,7 @@ mod schedule;
 pub use schedule::ScheduleTarget;
 pub mod sheet_dxf;
 mod worker;
-use crate::{Compiler, Model};
+use crate::{Compiler, GeometryBackend, Model};
 use multicad_core::{
     commands::Actor,
     document::{Document, EntityId},
@@ -28,6 +28,11 @@ pub const MAX_STEP_BYTES: u64 = 64 * 1024 * 1024;
 #[derive(Clone, Copy, Default)]
 pub struct Exporter {
     pub compiler: Compiler,
+}
+struct GeometryExporter<'a> {
+    exporter: &'a Exporter,
+    backend: GeometryBackend,
+    retained: Option<&'a mut Option<Built>>,
 }
 struct Built {
     model: Option<Model>,
@@ -560,6 +565,23 @@ fn mesh_output(
     ))
 }
 impl Exporter {
+    fn with_backend<'a>(
+        &'a self,
+        backend: GeometryBackend,
+        retained: Option<&'a mut Option<Built>>,
+    ) -> GeometryExporter<'a> {
+        GeometryExporter {
+            exporter: self,
+            backend,
+            retained,
+        }
+    }
+
+    fn provider(&self) -> String {
+        self.with_backend(GeometryBackend::OpenCascade, None)
+            .provider()
+    }
+
     pub fn preview(
         &self,
         document: &Document,
@@ -568,9 +590,48 @@ impl Exporter {
         actor: &Actor,
         interrupt: Option<&dyn Fn() -> bool>,
     ) -> Result<ExportPreview, ExportError> {
-        Ok(self
-            .build(document, revision, set, actor, interrupt)?
-            .preview)
+        self.with_backend(GeometryBackend::OpenCascade, None)
+            .preview(document, revision, set, actor, interrupt)
+    }
+
+    pub fn run(
+        &self,
+        document: &Document,
+        revision: u64,
+        expected: &PreviewKey,
+        root: &Path,
+        actor: &Actor,
+        interrupt: Option<&dyn Fn() -> bool>,
+    ) -> Result<RunReceipt, ExportError> {
+        self.with_backend(GeometryBackend::OpenCascade, None)
+            .run(document, revision, expected, root, actor, interrupt)
+    }
+}
+
+impl GeometryExporter<'_> {
+    fn preview(
+        &mut self,
+        document: &Document,
+        revision: u64,
+        set: EntityId,
+        actor: &Actor,
+        interrupt: Option<&dyn Fn() -> bool>,
+    ) -> Result<ExportPreview, ExportError> {
+        if let Some(retained) = &mut self.retained {
+            **retained = None;
+        }
+        let mut built = self.build(document, revision, set, actor, interrupt)?;
+        if let Some(retained) = &mut self.retained {
+            if !built.preview.can_run() {
+                // Preserve the rejection report without retaining unpublishable geometry.
+                built.model = None;
+                built.generated.clear();
+            }
+            let preview = built.preview.clone();
+            **retained = Some(built);
+            return Ok(preview);
+        }
+        Ok(built.preview)
     }
     fn provider(&self) -> String {
         let build = multicad_core::BuildInfo::current()
@@ -580,9 +641,19 @@ impl Exporter {
                 static PROCESS: std::sync::OnceLock<EntityId> = std::sync::OnceLock::new();
                 format!("unversioned-process:{}", PROCESS.get_or_init(EntityId::new))
             });
-        let p = self.compiler.policy;
+        let p = self.exporter.compiler.policy;
+        let profile = match self.backend {
+            GeometryBackend::OpenCascade => {
+                "step-files.1;planar-dxf.1;mesh-obj-3mf.1;drawing-pdf-dxf.1;schedule-csv.1"
+            }
+            GeometryBackend::Rust => "step-files.rust-planar.1",
+        };
+        let occt_role = match self.backend {
+            GeometryBackend::OpenCascade => "occt",
+            GeometryBackend::Rust => "verify-occt",
+        };
         format!(
-            "step-files.1;planar-dxf.1;mesh-obj-3mf.1;drawing-pdf-dxf.1;schedule-csv.1;build:{build};occt:{};policy:{:?}",
+            "{profile};build:{build};{occt_role}:{};policy:{:?}",
             multicad_kernel::source_identity(),
             [
                 p.linear_tolerance_mm,
@@ -592,6 +663,14 @@ impl Exporter {
             ]
         )
     }
+    fn unsupported(&self, output: &RecipeOutput) -> Option<String> {
+        if self.backend == GeometryBackend::Rust && !matches!(output, RecipeOutput::Step { .. }) {
+            return Some(
+                "The Rust export backend currently supports separate-part STEP only".into(),
+            );
+        }
+        unsupported(output)
+    }
     fn build(
         &self,
         document: &Document,
@@ -600,19 +679,13 @@ impl Exporter {
         actor: &Actor,
         interrupt: Option<&dyn Fn() -> bool>,
     ) -> Result<Built, ExportError> {
-        if actor.id.trim().is_empty() || actor.id.len() > 256 {
-            return Err(failure(
-                ErrorKind::Invalid,
-                None,
-                "Invalid export actor identity",
-            ));
-        }
+        validate_actor(actor)?;
         checkpoint(interrupt)?;
         let selection = resolve(document, revision, set)?;
         let supported = selection
             .recipes
             .iter()
-            .any(|r| unsupported(&r.output).is_none());
+            .any(|r| self.unsupported(&r.output).is_none());
         let drawings = !selection.pages.is_empty()
             && selection.recipes.iter().any(|r| {
                 matches!(
@@ -625,11 +698,30 @@ impl Exporter {
             .iter()
             .any(|r| matches!(r.output, RecipeOutput::ScheduleCsv { .. }));
         let model = if supported && (!selection.parts.is_empty() || drawings || schedules) {
-            Some(
-                self.compiler
-                    .compile_interruptible(document, revision, interrupt)
-                    .map_err(|e| failure(ErrorKind::Invalid, e.entity, e.message))?,
-            )
+            let compiler = self.exporter.compiler;
+            let evaluated = match self.backend {
+                GeometryBackend::OpenCascade => {
+                    compiler.compile_interruptible(document, revision, interrupt)
+                }
+                GeometryBackend::Rust => Compiler {
+                    omit_display: true,
+                    ..compiler
+                }
+                .compile_with_backend(
+                    document,
+                    revision,
+                    GeometryBackend::Rust,
+                    interrupt,
+                ),
+            };
+            Some(evaluated.map_err(|e| {
+                let kind = if self.backend == GeometryBackend::Rust && crate::is_superseded(&e) {
+                    ErrorKind::Cancelled
+                } else {
+                    ErrorKind::Invalid
+                };
+                failure(kind, e.entity, e.message)
+            })?)
         } else {
             None
         };
@@ -641,7 +733,7 @@ impl Exporter {
                 return Err(failure(
                     ErrorKind::Stale,
                     None,
-                    "Native model source differs from export selection",
+                    "Model source differs from export selection",
                 ));
             }
             for part in &selection.parts {
@@ -683,7 +775,7 @@ impl Exporter {
             } else {
                 (requested, vec![])
             };
-            let mut status = if let Some(reason) = unsupported(&recipe.output) {
+            let mut status = if let Some(reason) = self.unsupported(&recipe.output) {
                 RecipeStatus::Unsupported(reason)
             } else if requested.is_empty() {
                 RecipeStatus::Empty
@@ -894,6 +986,21 @@ impl Exporter {
                                 "Current output availability was not evaluated",
                             )
                         })?;
+                    if self.backend == GeometryBackend::Rust {
+                        let model = model.as_ref().ok_or_else(|| {
+                            failure(
+                                ErrorKind::Invalid,
+                                Some(set),
+                                "No owned current model for STEP output",
+                            )
+                        })?;
+                        if !subject_solid(model, part, solid)?.supports_step_export() {
+                            status = RecipeStatus::Unsupported(
+                                "Rust STEP export requires a straight-edged planar solid".into(),
+                            );
+                            break;
+                        }
+                    }
                     let planar = if let RecipeOutput::PlanarDxf { units, layers, .. } =
                         &recipe.output
                     {
@@ -914,7 +1021,7 @@ impl Exporter {
                                     *units,
                                     layers,
                                     label,
-                                    self.compiler.policy.linear_tolerance_mm,
+                                    self.exporter.compiler.policy.linear_tolerance_mm,
                                 )
                                 .map_err(|e| failure(ErrorKind::Unsupported, Some(part.part), e))?;
                                 Ok((evidence, bytes))
@@ -1007,7 +1114,7 @@ impl Exporter {
             },
         })
     }
-    pub fn run(
+    fn run(
         &self,
         document: &Document,
         revision: u64,
@@ -1017,7 +1124,23 @@ impl Exporter {
         interrupt: Option<&dyn Fn() -> bool>,
     ) -> Result<RunReceipt, ExportError> {
         expected.source.check(document, revision)?;
-        let built = self.build(document, revision, expected.set, actor, interrupt)?;
+        let rebuilt;
+        let built = if let Some(retained) = self.retained.as_deref() {
+            validate_actor(actor)?;
+            retained
+                .as_ref()
+                .filter(|built| built.preview.key == *expected)
+                .ok_or_else(|| {
+                    failure(
+                        ErrorKind::Stale,
+                        Some(expected.set),
+                        "Rust export requires the latest preview from this output worker",
+                    )
+                })?
+        } else {
+            rebuilt = self.build(document, revision, expected.set, actor, interrupt)?;
+            &rebuilt
+        };
         if built.preview.key != *expected {
             return Err(failure(
                 ErrorKind::Stale,
@@ -1041,6 +1164,17 @@ impl Exporter {
                 "Export run requires nonempty supported recipes; inspect the preview",
             ));
         }
-        publish::run(self, &built, root, interrupt)
+        publish::run(self.exporter, built, root, actor, interrupt)
     }
+}
+
+fn validate_actor(actor: &Actor) -> Result<(), ExportError> {
+    if actor.id.trim().is_empty() || actor.id.len() > 256 {
+        return Err(failure(
+            ErrorKind::Invalid,
+            None,
+            "Invalid export actor identity",
+        ));
+    }
+    Ok(())
 }

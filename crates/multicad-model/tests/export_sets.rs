@@ -9,7 +9,10 @@ use multicad_core::{
     project_file::{self, ContentHash, ProjectFile},
 };
 use multicad_kernel::{GeometryPolicy, Solid};
-use multicad_model::export::{ExportWorker, Exporter};
+use multicad_model::{
+    GeometryBackend,
+    export::{ExportWorker, Exporter},
+};
 use std::{
     path::Path,
     time::{Duration, Instant},
@@ -426,6 +429,57 @@ fn native_worker_preserves_repeated_run_intents_and_current_scope_provenance() {
     assert!(matches!(first.result,ExportResult::Run(Ok(ref r)) if !r.reused));
     assert!(matches!(second.result,ExportResult::Run(Ok(ref r)) if r.reused));
     assert!(!worker.pending());
+}
+#[test]
+fn rust_worker_requires_its_own_current_preview_and_attributes_each_run() {
+    let f = Fixture::new();
+    let native = f.preview();
+    let worker =
+        ExportWorker::with_geometry_backend(Exporter::default(), GeometryBackend::Rust).unwrap();
+    let document = f.session.document();
+    let revision = f.session.revision();
+    let root = tempfile::tempdir().unwrap();
+    let preview_actor = Actor::local(Channel::Ui);
+    worker
+        .preview(document, revision, f.set, preview_actor.clone())
+        .unwrap();
+    let ExportResult::Preview(Ok(preview)) = reply(&worker).result else {
+        panic!("Rust preview failed")
+    };
+    assert!(preview.can_run());
+    assert_eq!(preview.requested_by, preview_actor);
+    assert_ne!(preview.key, native.key);
+    for (revision, key) in [(revision, &native.key), (revision + 1, &preview.key)] {
+        worker
+            .run(document, revision, key, root.path(), actor())
+            .unwrap();
+        let ExportResult::Run(Err(error)) = reply(&worker).result else {
+            panic!("Stale preview published an export")
+        };
+        assert_eq!(error.kind, ErrorKind::Stale);
+    }
+    assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 0);
+    for (run_actor, reused) in [(actor(), false), (Actor::local(Channel::Ui), true)] {
+        worker
+            .run(
+                document,
+                revision,
+                &preview.key,
+                root.path(),
+                run_actor.clone(),
+            )
+            .unwrap();
+        let ExportResult::Run(Ok(run)) = reply(&worker).result else {
+            panic!("Rust run failed")
+        };
+        assert_eq!(run.actor, run_actor);
+        assert_eq!(run.reused, reused);
+        let manifest =
+            std::fs::read(Path::new(&run.directory).join("multicad-export.json")).unwrap();
+        let manifest: serde_json::Value = serde_json::from_slice(&manifest).unwrap();
+        // The bundle manifest remains attributed to its original publication.
+        assert_eq!(manifest["actor"], serde_json::to_value(actor()).unwrap());
+    }
 }
 #[test]
 fn duplicate_part_names_get_short_suffixes_on_disk_with_identities_in_the_manifest() {
