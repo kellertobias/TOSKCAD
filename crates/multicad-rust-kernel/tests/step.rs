@@ -4,8 +4,10 @@ use multicad_rust_kernel::{
     polygon::PolygonPrism,
     prism::Prism,
     step::{
-        StepError, write_axial_cylinder, write_box, write_polygon_prism, write_rectangular_prism,
+        StepError, write_axial_cylinder, write_box, write_placed_cylinder, write_polygon_prism,
+        write_rectangular_prism,
     },
+    step_read::read_analytic_solid,
 };
 use std::collections::BTreeMap;
 
@@ -201,6 +203,31 @@ fn axial_cylinder_exports_two_fractional_rims_and_one_periodic_wall() {
         write_axial_cylinder(&cylinder, [1., 0., 1e-8]),
         Err(StepError::InvalidPlacement)
     );
+}
+
+#[test]
+fn placed_cylinder_step_retains_tilted_rims_and_exact_projected_bounds() {
+    let cylinder =
+        AxialCylinder::new(1, Circle::new([n(4), n(6)], n(2)).unwrap(), n(-3), n(5)).unwrap();
+    let encoded = write_placed_cylinder(&cylinder, [10., 20., 30.], X, [0., 0.8, 0.6]).unwrap();
+    let read = read_analytic_solid(&encoded, 1e-8).unwrap();
+    assert_eq!(read.face_count, 3);
+    assert_eq!(read.circles.len(), 2);
+    assert!((read.volume_mm3 - 20. * std::f64::consts::PI).abs() < 1e-8);
+    for (actual, expected) in read
+        .bounds_mm
+        .into_iter()
+        .flatten()
+        .zip([8., 15.4, 28.8, 12., 21.6, 35.2])
+    {
+        assert!((actual - expected).abs() < 1e-8);
+    }
+    for center in [[10., 20., 30.], [10., 17., 34.]] {
+        assert!(read.circles.iter().any(|rim| {
+            let alignment = rim.normal[1] * -0.6 + rim.normal[2] * 0.8;
+            rim.center_mm == center && (alignment.abs() - 1.).abs() < 1e-8 && rim.radius_mm == 2.
+        }));
+    }
 }
 
 #[test]

@@ -39,8 +39,35 @@ pub fn write_axial_cylinder(
     }
     let [x, y] = cylinder.circle().center().map(Rational::as_f64);
     let bottom = [x, y, cylinder.bottom().as_f64()];
+    let placement = Placement::new(bottom, reference, cross(axis, reference))?;
     let top = [x, y, cylinder.top().as_f64()];
-    Placement::new(bottom, reference, cross(axis, reference))?;
+    write_cylinder_between(cylinder, placement, top)
+}
+
+/// Write the same exact cylinder in a rigid world frame at its bottom center.
+pub fn write_placed_cylinder(
+    cylinder: &AxialCylinder,
+    bottom: Point,
+    reference: Point,
+    side: Point,
+) -> Result<String, StepError> {
+    let placement = Placement::new(bottom, reference, side)?;
+    let height = cylinder.height().as_f64();
+    let top = std::array::from_fn(|i| bottom[i] + placement.normal[i] * height);
+    write_cylinder_between(cylinder, placement, top)
+}
+
+fn write_cylinder_between(
+    cylinder: &AxialCylinder,
+    placement: Placement,
+    top: Point,
+) -> Result<String, StepError> {
+    let Placement {
+        origin: bottom,
+        u: reference,
+        normal: axis,
+        ..
+    } = placement;
     let radius = cylinder.circle().radius().as_f64();
     let mut file = StepFile::new();
     let trim = CylindricalTrim::new(&mut file, [bottom, top], axis, reference, radius)?;
