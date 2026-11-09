@@ -16,11 +16,12 @@ const MAX_DEVELOPED_SHEET_HOLES: usize = multicad_core::manufacturing::MAX_PLANA
 #[derive(Clone, Copy)]
 enum ProfileBudget {
     Interactive,
+    CabinetPanel,
     DevelopedSheet,
 }
 impl ProfileBudget {
-    fn developed_sheet(self) -> bool {
-        matches!(self, Self::DevelopedSheet)
+    fn native_manufacturing(self) -> bool {
+        matches!(self, Self::CabinetPanel | Self::DevelopedSheet)
     }
 }
 
@@ -358,6 +359,11 @@ impl CurvedProfile {
                 16,
                 "Curved profile exceeds the 64-edge/16-hole query budget",
             ),
+            ProfileBudget::CabinetPanel => (
+                128,
+                32,
+                "Panel profile exceeds the 128-edge/32-hole manufacturing budget",
+            ),
             ProfileBudget::DevelopedSheet => (
                 MAX_DEVELOPED_SHEET_EDGES,
                 MAX_DEVELOPED_SHEET_HOLES,
@@ -543,7 +549,7 @@ impl Solid {
                     y: displacement_mm[1],
                     z: displacement_mm[2],
                 },
-                budget.developed_sheet(),
+                budget.native_manufacturing(),
             )
             .map_err(native)?,
             policy,
@@ -572,6 +578,43 @@ impl Solid {
         origins: &[Origin],
         policy: GeometryPolicy,
     ) -> Result<Self, GeometryError> {
+        Self::extrude_curved_profile_vector_named_for(
+            profile,
+            displacement_mm,
+            feature,
+            origins,
+            policy,
+            ProfileBudget::Interactive,
+        )
+    }
+
+    /// Exact panel-stock profiles may include many finger joints and openings.
+    /// Retain native curve provenance while keeping a separate bounded budget.
+    pub fn extrude_panel_profile_vector_named(
+        profile: &CurvedProfile,
+        displacement_mm: [f64; 3],
+        feature: EntityId,
+        origins: &[Origin],
+        policy: GeometryPolicy,
+    ) -> Result<Self, GeometryError> {
+        Self::extrude_curved_profile_vector_named_for(
+            profile,
+            displacement_mm,
+            feature,
+            origins,
+            policy,
+            ProfileBudget::CabinetPanel,
+        )
+    }
+
+    fn extrude_curved_profile_vector_named_for(
+        profile: &CurvedProfile,
+        displacement_mm: [f64; 3],
+        feature: EntityId,
+        origins: &[Origin],
+        policy: GeometryPolicy,
+        budget: ProfileBudget,
+    ) -> Result<Self, GeometryError> {
         let edges: Vec<_> = profile
             .outer
             .iter()
@@ -582,7 +625,8 @@ impl Solid {
                 "Every curved profile edge needs an authored origin and feature identity",
             ));
         }
-        let mut solid = Self::extrude_curved_profile_vector(profile, displacement_mm, policy)?;
+        let mut solid =
+            Self::extrude_curved_profile_vector_for(profile, displacement_mm, policy, budget)?;
         let frames: Vec<_> = edges
             .into_iter()
             .map(|e| match e {

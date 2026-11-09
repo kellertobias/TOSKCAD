@@ -88,7 +88,7 @@ pub(crate) fn build(
         return Err(error(Some(id), "Panel stock has no thickness"));
     }
     let n = cross(profile.frame.u, profile.frame.v);
-    let solid = Solid::extrude_curved_profile_vector_named(
+    let solid = Solid::extrude_panel_profile_vector_named(
         &profile,
         n.map(|c| c * thickness),
         id,
