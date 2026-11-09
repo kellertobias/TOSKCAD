@@ -5,6 +5,7 @@ pub mod display;
 pub mod polygon;
 pub mod prism;
 pub mod step;
+pub mod step_read;
 
 use std::cmp::Ordering;
 

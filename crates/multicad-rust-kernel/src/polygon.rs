@@ -20,7 +20,7 @@ const SIX: Rational = Rational {
 };
 // The exact topology check compares edge pairs. Bound that work before any
 // pairwise validation, including comparisons between distinct rings.
-const MAX_VERTICES: usize = 1024;
+pub(crate) const MAX_VERTICES: usize = 1024;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PolygonError {
