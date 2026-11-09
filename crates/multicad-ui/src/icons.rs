@@ -322,7 +322,7 @@ pub(crate) fn paint_tool_glyph(
     let galley = tile_label_at_width(ui, label, text, rect.width() - label_inset);
     ui.painter().galley(
         Pos2::new(
-            rect.center().x + (label_inset - galley.size().x) * 0.5,
+            rect.center().x - (label_inset + galley.size().x) * 0.5,
             rect.top() + TOOL_LABEL_TOP,
         ),
         galley,

@@ -96,7 +96,7 @@ fn architecture_plan_and_level_buttons_are_source_neutral_at_compact_and_native_
         }
         let mut out = paint(&mut app, &ctx, size, vec![]);
         for _ in 0..3 {
-            let position = bounds(&out, "2D plan").center();
+            let position = bounds(&out, "3D").center();
             out = click(&mut app, &ctx, size, position);
             assert!(app.current().sketch.architecture_recall().plan);
             let position = bounds(&out, "Upper · 3000 mm").center();
@@ -114,7 +114,7 @@ fn architecture_plan_and_level_buttons_are_source_neutral_at_compact_and_native_
                 bounds(&out, "Floor slab · Upper floor").center(),
             );
             assert_eq!(app.current().sketch.selected_solid(), Some(bodies[1]));
-            let position = bounds(&out, "3D model").center();
+            let position = bounds(&out, "2D").center();
             out = click(&mut app, &ctx, size, position);
             assert!(!app.current().sketch.architecture_recall().plan);
             assert_eq!(

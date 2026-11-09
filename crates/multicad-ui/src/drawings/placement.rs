@@ -282,6 +282,12 @@ impl DrawingEditor {
         self.placement = None;
         self.focus_note = false;
     }
+    pub(crate) fn cancel_canvas_tool(&mut self) -> bool {
+        let section = self.section_pick.take().is_some();
+        let placement = self.placing();
+        self.cancel_placement();
+        section || placement
+    }
     /// Drafting points on the page and pending, for snapping.
     fn snap_targets(&self) -> Vec<[f64; 2]> {
         let mut targets: Vec<_> = self

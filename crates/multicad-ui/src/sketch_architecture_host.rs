@@ -71,25 +71,6 @@ impl SketchEditor {
             return;
         }
         ui.heading("Architecture");
-        let mut plan = self.architecture.recall.plan;
-        ui.horizontal(|ui| {
-            ui.selectable_value(&mut plan, true, "2D plan");
-            ui.selectable_value(&mut plan, false, "3D model");
-        });
-        if plan != self.architecture.recall.plan {
-            self.architecture.set_plan(plan, &mut self.camera);
-            if plan
-                && !session.document().entities().any(|entity| {
-                    matches!(
-                        entity.data,
-                        EntityData::Part { .. } | EntityData::Instance { .. }
-                    )
-                })
-            {
-                self.camera.scale = 0.05;
-            }
-            ui.ctx().request_repaint();
-        }
         if self.model.active() {
             ui.label(format!("Object · {}", self.model.label()));
         } else if let Some(member) = self.architecture.levels.as_ref().and_then(|levels| {

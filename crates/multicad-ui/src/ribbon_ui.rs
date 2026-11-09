@@ -125,10 +125,69 @@ pub fn groups(mode: Mode, tab: &RibbonTab) -> Vec<Group> {
         return crate::architecture_navigation::groups(None);
     }
     if mode == Mode::Sketch && tab.title == "Common" {
-        return vec![Group {
-            label: "",
-            entries: sketch_entries(tab),
-        }];
+        let (create, edit) = sketch_entries(tab).into_iter().partition(|entry| {
+            !matches!(entry, Entry::Tool("construction" | "dimension" | "delete"))
+        });
+        return vec![
+            Group {
+                label: "Draw",
+                entries: create,
+            },
+            Group {
+                label: "Constrain and edit",
+                entries: edit,
+            },
+        ];
+    }
+    if mode == Mode::Sketch || mode == Mode::Drawings {
+        let sections: &[(&str, &[&str])] = match (mode, tab.title) {
+            (Mode::Drawings, "Common") => &[
+                ("Drawing", &["drawing-new", "drawing-pdf"]),
+                (
+                    "Pages",
+                    &[
+                        "sheet-page",
+                        "page-duplicate",
+                        "page-remove",
+                        "page-earlier",
+                        "page-later",
+                        "page-setup",
+                        "page-apply",
+                        "page-discard",
+                    ],
+                ),
+                (
+                    "Views",
+                    &["drawing-projection", "drawing-section", "drawing-detail"],
+                ),
+            ],
+            (Mode::Drawings, "Annotate") => &[
+                (
+                    "Annotations",
+                    &[
+                        "drawing-note",
+                        "drawing-dimension",
+                        "drawing-leader",
+                        "drawing-weld",
+                    ],
+                ),
+                ("Tables", &["drawing-table", "drawing-schedule"]),
+            ],
+            (Mode::Drawings, _) => &[
+                ("Geometry", &["draft-line", "draft-circle", "draft-arc"]),
+                ("Detailing", &["draft-hatch", "draft-dimension"]),
+            ],
+            (Mode::Sketch, "Edit") => &[("Transform", tab.tools.as_slice())],
+            (Mode::Sketch, "References") => &[("References", tab.tools.as_slice())],
+            _ => &[("Room", tab.tools.as_slice())],
+        };
+        return sections
+            .iter()
+            .map(|&(label, tools)| Group {
+                label,
+                entries: tools.iter().copied().map(Entry::Tool).collect(),
+            })
+            .collect();
     }
     if mode != Mode::Model || tab.title != "Common" {
         return vec![Group {
@@ -326,11 +385,18 @@ pub(crate) fn tools_height(
     category: Option<crate::architecture_navigation::Category>,
 ) -> f32 {
     let height = Contents::new(registry, mode, tab, editing, category).height();
-    if matches!(mode, Mode::Model | Mode::Motion | Mode::Drawings) {
-        height.max(icons::TOOL_TILE.y + SECTION_LABEL)
+    if matches!(
+        mode,
+        Mode::Model | Mode::Sketch | Mode::Motion | Mode::Drawings
+    ) {
+        height.max(workspace_tool_height())
     } else {
         height
     }
+}
+
+pub(crate) fn workspace_tool_height() -> f32 {
+    icons::TOOL_TILE.y + SECTION_LABEL
 }
 
 fn top_row<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> egui::InnerResponse<R> {
@@ -460,14 +526,14 @@ fn menu_button(
                 egui::Sense::hover(),
             );
             let caret = egui::Rect::from_min_size(
-                rect.left_top() + egui::vec2(2., 45.),
+                rect.right_top() + egui::vec2(-ARROW_WIDTH, 45.),
                 egui::vec2(ARROW_WIDTH - 2., 21.),
             );
             let arrow = ui.interact(caret, slot.id.with("options"), egui::Sense::click());
             let main = ui
                 .add_enabled_ui(enabled(default.action), |ui| {
                     let hit =
-                        egui::Rect::from_min_max(rect.min + egui::vec2(ARROW_WIDTH, 0.), rect.max);
+                        egui::Rect::from_min_max(rect.min, rect.max - egui::vec2(ARROW_WIDTH, 0.));
                     let main = ui.interact(hit, slot.id.with("default"), egui::Sense::click());
                     icons::paint_tool_glyph(
                         ui,
@@ -542,11 +608,7 @@ fn menu_button(
             tools.iter().any(is_selected),
             tile_width,
         );
-        let caret = if mode == Mode::Model {
-            response.rect.left_top() + egui::vec2(9., 12.)
-        } else {
-            response.rect.right_top() + egui::vec2(-9., 12.)
-        };
+        let caret = response.rect.right_top() + egui::vec2(-9., 12.);
         paint_menu_arrow(ui, caret);
         response
     };
@@ -1164,7 +1226,7 @@ mod tests {
         }
     }
     #[test]
-    fn split_arrows_are_left_of_their_main_action_at_both_widths() {
+    fn split_arrows_are_right_of_their_main_action_at_both_widths() {
         let registry = Registry::default();
         for (mode, labels) in [
             (Mode::Model, ["Add Primitive", "Move / Copy"]),
@@ -1190,7 +1252,7 @@ mod tests {
                 let out = draw();
                 for label in labels {
                     let options = accessible_button(&out, &format!("{label} options"));
-                    assert!(options.x < text(&out, label).x, "{label} at {width}");
+                    assert!(options.x > text(&out, label).x, "{label} at {width}");
                 }
                 out.drop_without_applying_deltas();
             }

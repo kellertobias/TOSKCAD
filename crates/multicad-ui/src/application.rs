@@ -2203,17 +2203,15 @@ impl Application {
                             "architecture-tab-transition",
                             self.current().local_id,
                         ));
-                        let nested = ui.ctx().animate_bool_with_time(
-                            id,
-                            category.is_some(),
-                            ui.style().animation_time.min(0.16),
-                        );
+                        let nested = ui
+                            .ctx()
+                            .animate_bool_with_time(id, category.is_some(), 0.18);
                         let incoming = if category.is_some() {
                             nested
                         } else {
                             1. - nested
                         };
-                        ui.multiply_opacity(0.82 + 0.18 * incoming);
+                        ui.multiply_opacity(0.45 + 0.55 * incoming);
                     }
                     let category_action = category
                         .and_then(|category| self.architecture_category_tabs(ui, category, colors));
@@ -2248,12 +2246,14 @@ impl Application {
                         }
                     }
                     ui.set_opacity(opacity);
-                    let action =
-                        if matches!(visible_mode, Mode::Model | Mode::Motion | Mode::Drawings) {
-                            self.utility_actions(ui)
-                        } else {
-                            None
-                        };
+                    let action = if matches!(
+                        visible_mode,
+                        Mode::Model | Mode::Sketch | Mode::Motion | Mode::Drawings
+                    ) {
+                        self.utility_actions(ui)
+                    } else {
+                        None
+                    };
                     (selected_tab, category_action.or(action))
                 })
                 .inner
@@ -2659,8 +2659,13 @@ impl Application {
                 ShortcutAction::Cancel => {
                     if self.current().sketch.measurement.active() {
                         self.close_measurement();
-                    } else if self.mode == Mode::Drawings && self.current().drawings.placing() {
-                        self.current_mut().drawings.cancel_placement();
+                    } else if self.mode == Mode::Sketch && self.current().sketch.picking {
+                        self.execute(Command::AbortSketch, &[], Channel::Ui);
+                        continue;
+                    } else if self.mode == Mode::Drawings {
+                        if !self.current_mut().drawings.cancel_canvas_tool() {
+                            continue;
+                        }
                     } else if self.mode == Mode::Export {
                         self.execute(Command::Discard, &[], Channel::Ui);
                     } else if self.current().sketch.symbol_active() {
@@ -2876,9 +2881,6 @@ impl Application {
         if self.mode.top_level() == Mode::Parameters {
             self.project_tabs(ui);
         } else {
-            if self.mode == Mode::Sketch {
-                self.global_actions(ui);
-            }
             let category = self.active_architecture_category();
             let tab = &self.registry.workspace(self.mode).tabs[self.effective_ribbon_tab()];
             let tool_height = crate::ribbon_ui::tools_height(
@@ -2951,6 +2953,7 @@ impl Application {
                         ctx.request_repaint_after(delay);
                     }
                     let sketch_opened = !sketch_mode && p.sketch.editing;
+                    let sketch_closed = sketch_mode && !p.sketch.editing && !p.sketch.picking;
                     let modeling_cancelled = modeling_before
                         && !p.sketch.model_active()
                         && p.session.revision() == before;
@@ -2980,6 +2983,10 @@ impl Application {
                     }
                     if sketch_opened {
                         self.mode = Mode::Sketch;
+                        self.tab = 0;
+                        ctx.request_repaint();
+                    } else if sketch_closed {
+                        self.mode = Mode::Model;
                         self.tab = 0;
                         ctx.request_repaint();
                     }
@@ -3360,6 +3367,14 @@ mod tests {
         assert!(!app.current().sketch.picking);
         assert_eq!(app.current().session.document(), &source);
         assert_eq!(app.current().session.revision(), revision);
+        app.invoke(Command::NewSketch, &[], Channel::Ui).unwrap();
+        shortcut_frame(
+            &egui::Context::default(),
+            &mut app,
+            vec![key_event(egui::Key::Escape, egui::Modifiers::NONE)],
+        );
+        assert_eq!(app.mode, Mode::Model);
+        assert_eq!(app.current().session.document(), &source);
         assert!(app.invoke(Command::AbortSketch, &[], Channel::Ui).is_err());
         // Create engraving never falls back to plane picking.
         let error = app

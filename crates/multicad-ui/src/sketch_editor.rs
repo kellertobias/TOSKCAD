@@ -2137,7 +2137,44 @@ impl SketchEditor {
                     && s.stamp().revision == session.revision()
             })
             .map(|scene| {
+                use multicad_core::references::{Diagnostic, ReferenceAddress, ReferenceReport};
                 let revision = session.revision() + 1;
+                if let PlaneChoice::Face(face) = &preview.choice {
+                    let doc = prepared.prepared.document();
+                    let mut snapshot = face.snapshot.clone();
+                    snapshot.revision = revision;
+                    let entries = doc
+                        .get(prepared.plane)
+                        .into_iter()
+                        .flat_map(|plane| plane.references())
+                        .filter_map(|link| {
+                            let intent = link.geometry?;
+                            let resolution =
+                                multicad_core::references::resolve(&intent, &snapshot, revision);
+                            Some(Diagnostic {
+                                address: ReferenceAddress {
+                                    owner: prepared.plane,
+                                    reference: intent.id,
+                                },
+                                source: link.target,
+                                role: link.role,
+                                intent,
+                                resolution,
+                                affected: vec![prepared.sketch],
+                                dependency_hash: None,
+                            })
+                        })
+                        .collect();
+                    // The first frame only needs the newly authored attachment.
+                    // The native worker will publish the complete report.
+                    return ReferenceReport {
+                        revision,
+                        entries,
+                        external_results: Default::default(),
+                        external_errors: Default::default(),
+                        sketch_supports: Default::default(),
+                    };
+                }
                 let mut snapshots = scene.reference_snapshots();
                 for snapshot in snapshots.values_mut() {
                     snapshot.revision = revision;
@@ -2199,6 +2236,7 @@ impl SketchEditor {
         if self.context_key == Some(key) {
             return;
         }
+        let index = OnceCell::new();
         self.contexts = doc
             .entities()
             .filter(|e| matches!(e.data, EntityData::Sketch { .. }))
@@ -2211,8 +2249,14 @@ impl SketchEditor {
                     })
                     .and_then(|path| crate::sketch_context::exact_occurrence(scene, path))
                     .or_else(|| {
-                        crate::sketch_context::occurrence(doc, e.id, scene, self.occurrence)
-                            .map(|(_, pose)| pose)
+                        crate::sketch_context::occurrence_with_index(
+                            doc,
+                            e.id,
+                            scene,
+                            self.occurrence,
+                            &index,
+                        )
+                        .map(|(_, pose)| pose)
                     })
                     .map(|pose| (e.id, pose))
             })
@@ -3528,7 +3572,10 @@ impl SketchEditor {
                                 .map(|p| p.document())
                                 .or_else(|| self.constraints.preview_document())
                                 .unwrap_or(session.document());
-                            match self.read_sketch(view, id,session.revision()) {
+                            match self.read_sketch_with_hash(view, id,session.revision(), || {
+                                if std::ptr::eq(view, session.document()) { session.source_hash().ok() }
+                                else { ContentHash::document(view).ok() }
+                            }) {
                                 Ok((source, frame, _)) => {
                                     if self.element.is_some_and(|id|!source.geometry.iter().any(|geometry|geometry.id()==id)) {self.element=None;self.constraints.clear_geometry_selection();}
                                     ui.strong(&session.document().get(id).expect("read").name);
@@ -5475,6 +5522,7 @@ impl SketchEditor {
             .pivot(Align2::RIGHT_BOTTOM)
             .fixed_pos(rect.right_bottom() - Vec2::splat(12.))
             .show(ui.ctx(), |ui| {
+                let mut switch_architecture_view = false;
                 let actions = navigation::toolbar_for_model(
                     ui,
                     &mut self.camera,
@@ -5494,6 +5542,11 @@ impl SketchEditor {
                     },
                     |ui| {
                         if developed_view {return;}
+                        if self.architecture.enabled {
+                            let label = if self.architecture.planar() { "2D" } else { "3D" };
+                            let help = if self.architecture.planar() { "Switch to 3D model" } else { "Switch to 2D plan" };
+                            switch_architecture_view = ui.button(label).on_hover_text(help).clicked();
+                        }
                         if self.architecture.planar() {ui.label("Plan object picking").on_hover_text("Switch to 3D model to pick physical faces, edges or vertices.");}
                         else {self.solid.filter_control(ui);}
                         ui.add_enabled_ui(!self.architecture.planar(),|ui| {
@@ -5525,6 +5578,14 @@ impl SketchEditor {
                         });
                     },
                 );
+                if switch_architecture_view {
+                    let plan = !self.architecture.planar();
+                    self.architecture.set_plan(plan, &mut self.camera);
+                    if plan && !session.document().entities().any(|entity| matches!(entity.data, EntityData::Part { .. } | EntityData::Instance { .. })) {
+                        self.camera.scale = 0.05;
+                    }
+                    ui.ctx().request_repaint();
+                }
                 if actions.home {
                     self.home_requested = true;
                     ui.ctx().request_repaint();

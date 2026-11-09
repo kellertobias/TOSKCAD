@@ -20,13 +20,13 @@ pub struct ReferenceDiagnostic {
 
 /// The static reverse dependency graph can serve many diagnostics while the
 /// native topology for the same document is being evaluated.
-pub(crate) struct AffectedIndex {
+pub struct AffectedIndex {
     reverse: BTreeMap<EntityId, BTreeSet<EntityId>>,
     order: Vec<EntityId>,
 }
 
 impl AffectedIndex {
-    pub(crate) fn new(document: &Document) -> Result<Self, DocumentError> {
+    pub fn new(document: &Document) -> Result<Self, DocumentError> {
         let mut reverse = BTreeMap::<_, BTreeSet<_>>::new();
         for entity in document.entities() {
             for link in entity.references() {
@@ -40,7 +40,11 @@ impl AffectedIndex {
     }
 
     pub(crate) fn affected(&self, source: EntityId) -> Vec<EntityId> {
-        let affected = visit_dependents(&self.reverse, [source]);
+        self.affected_by([source])
+    }
+
+    pub fn affected_by(&self, sources: impl IntoIterator<Item = EntityId>) -> Vec<EntityId> {
+        let affected = visit_dependents(&self.reverse, sources);
         self.order
             .iter()
             .copied()

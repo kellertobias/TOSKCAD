@@ -1,10 +1,10 @@
 //! Occurrence placement is an editing/display context, not a history parent.
 use crate::viewport::{Scene, Transform};
 use multicad_core::{
-    document::{Document, EntityData, EntityId},
+    document::{AffectedIndex, Document, EntityData, EntityId},
     model::OccurrencePath,
 };
-use std::collections::BTreeSet;
+use std::{cell::OnceCell, collections::BTreeSet};
 
 /// Locate a displayed occurrence of the component that produces or consumes a
 /// sketch/plane. Producer links keep feature history acyclic; this pose is never
@@ -14,6 +14,16 @@ pub fn occurrence(
     seed: EntityId,
     scene: &Scene,
     preferred: Option<EntityId>,
+) -> Option<(EntityId, Transform)> {
+    occurrence_with_index(document, seed, scene, preferred, &OnceCell::new())
+}
+
+pub fn occurrence_with_index(
+    document: &Document,
+    seed: EntityId,
+    scene: &Scene,
+    preferred: Option<EntityId>,
+    index: &OnceCell<Option<AffectedIndex>>,
 ) -> Option<(EntityId, Transform)> {
     if scene.stamp().document != document.id()
         || multicad_core::model::developed_sheet_sketch(document, seed)
@@ -62,7 +72,12 @@ pub fn occurrence(
     if plane_only && component_anchor.is_none() {
         return None;
     }
-    let affected: BTreeSet<_> = document.affected(seeds).ok()?.into_iter().collect();
+    let affected: BTreeSet<_> = index
+        .get_or_init(|| AffectedIndex::new(document).ok())
+        .as_ref()?
+        .affected_by(seeds)
+        .into_iter()
+        .collect();
     let matches =
         |id: EntityId, geometry: EntityId| affected.contains(&id) || affected.contains(&geometry);
     // Downstream hardware can depend on a sheet's producer without owning the

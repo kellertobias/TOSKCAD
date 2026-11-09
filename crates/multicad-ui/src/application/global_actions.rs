@@ -3,41 +3,23 @@ use super::*;
 #[cfg(test)]
 mod tests;
 impl Application {
-    pub(super) fn global_actions(&mut self, ui: &mut egui::Ui) {
-        let mut action = None;
-        egui::Panel::top("global-actions")
-            .exact_size(36.)
-            .frame(
-                egui::Frame::new()
-                    .fill(crate::theme::PANEL)
-                    .inner_margin(egui::Margin::symmetric(8, 4)),
-            )
-            .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    ui.strong(if self.mode == Mode::Sketch {
-                        if self.current().sketch.editing {
-                            "Model · Sketch editing"
-                        } else {
-                            "Model · Choose a sketch plane"
-                        }
-                    } else {
-                        self.mode.title()
-                    });
-                    action = self.utility_actions(ui);
-                });
-            });
-        if let Some(command) = action {
-            self.execute(command, &[], Channel::Ui);
-        }
-    }
     pub(super) fn utility_actions(&self, ui: &mut egui::Ui) -> Option<Command> {
         let mut action = None;
-        let sketch = (
-            Icon::Sketch,
-            "Sketch",
-            Command::NewSketch,
-            "Use a selected planar face, or choose a plane in Model",
-        );
+        let sketch = if self.mode == Mode::Sketch && self.current().sketch.picking {
+            (
+                Icon::Back,
+                "Cancel",
+                Command::AbortSketch,
+                "Cancel plane selection and return to Model",
+            )
+        } else {
+            (
+                Icon::Sketch,
+                "Sketch",
+                Command::NewSketch,
+                "Use a selected planar face, or choose a plane in Model",
+            )
+        };
         let measure = (
             Icon::Measure,
             "Measure",
