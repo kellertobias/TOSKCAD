@@ -1,10 +1,13 @@
-//! Print packages run on their own bounded native owner thread.
+//! Print packages run on their own bounded geometry owner thread.
 use multicad_core::{
     commands::Actor,
     document::{Document, EntityId},
     exchange::*,
 };
-use multicad_model::export::{Exporter, PrintWorker};
+use multicad_model::{
+    GeometryBackend,
+    export::{Exporter, PrintWorker},
+};
 use std::path::Path;
 pub struct Backend {
     worker: Result<PrintWorker, String>,
@@ -13,6 +16,11 @@ impl Backend {
     pub fn new() -> Self {
         Self {
             worker: PrintWorker::new(Exporter::default()),
+        }
+    }
+    pub fn with_geometry_backend(backend: GeometryBackend) -> Self {
+        Self {
+            worker: PrintWorker::with_geometry_backend(Exporter::default(), backend),
         }
     }
     fn worker(&mut self) -> Result<&mut PrintWorker, ExportError> {
@@ -94,6 +102,17 @@ mod tests {
     }
     #[test]
     fn native_workspace_writes_a_3mf_that_reads_back_without_mutating_source() {
+        workspace_writes_a_3mf_that_reads_back_without_mutating_source(Backend::new());
+    }
+
+    #[test]
+    fn rust_workspace_writes_a_3mf_that_reads_back_without_mutating_source() {
+        workspace_writes_a_3mf_that_reads_back_without_mutating_source(
+            Backend::with_geometry_backend(GeometryBackend::Rust),
+        );
+    }
+
+    fn workspace_writes_a_3mf_that_reads_back_without_mutating_source(backend: Backend) {
         let mut session = Session::new(Document::new("Print fixture").unwrap()).unwrap();
         let primitive = PrimitiveRequest::new(
             "Stock",
@@ -123,7 +142,7 @@ mod tests {
         .unwrap();
         session.commit(p.prepared).unwrap();
         let mut workspace = PrintWorkspace::default();
-        workspace.set_backend(Box::new(Backend::new())).unwrap();
+        workspace.set_backend(Box::new(backend)).unwrap();
         workspace.capture(vec![primitive.body, copy.instance]);
         workspace.set_stl_per_part(true);
         let before = session.document().clone();

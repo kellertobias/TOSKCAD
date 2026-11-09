@@ -15,7 +15,10 @@ use multicad_core::{
     },
     parameters::BoundExpression,
 };
-use multicad_model::export::{Exporter, mesh};
+use multicad_model::{
+    GeometryBackend,
+    export::{Exporter, PrintWorker, mesh},
+};
 use std::{collections::BTreeSet, path::Path};
 
 fn actor() -> Actor {
@@ -882,4 +885,212 @@ fn rotated_cylinders_use_exact_bounds_and_overlap_instead_of_bounding_boxes() {
     near(separated.objects[1].bounds_mm[1][0], 18., 1e-6);
     plate.placements[1].position_mm = [7., 7.];
     assert!(preview(&plate).blocked.unwrap().contains("overlaps"));
+}
+
+fn print_worker_reply(worker: &PrintWorker, id: EntityId) -> PrintResult {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    loop {
+        if let Some(reply) = worker.poll() {
+            assert_eq!(reply.id, id);
+            return reply.result;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "Print worker did not reply"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+}
+
+fn rust_plate_preview(
+    worker: &PrintWorker,
+    session: &Session,
+    plate: &PrintPlateDefinition,
+) -> Box<PrintPreview> {
+    let id = worker
+        .preview_plate(session.document(), session.revision(), plate, actor())
+        .unwrap();
+    let PrintResult::Preview(result) = print_worker_reply(worker, id) else {
+        panic!("expected a print plate preview");
+    };
+    result.unwrap()
+}
+
+fn plate_fixture(geometry: PrimitiveParameters) -> (Session, PrintPlateDefinition) {
+    let mut session = Session::new(Document::new("Rust print plate").unwrap()).unwrap();
+    let stock = PrimitiveRequest::new("Stock", geometry);
+    primitive(&mut session, &stock);
+    let placed = copy(&mut session, stock.body, stock.feature, "World copy", 50.);
+    let placement = |root, position_mm| PrintPlatePlacement {
+        source: resolve_occurrences(session.document(), root).unwrap()[0]
+            .reference
+            .clone(),
+        position_mm,
+        rotation_deg: [0.; 3],
+    };
+    let plate = PrintPlateDefinition {
+        bed_mm: [30., 30.],
+        placements: vec![placement(stock.body, [0., 0.]), placement(placed, [8., 8.])],
+        stl_per_part: true,
+        ..Default::default()
+    };
+    (session, plate)
+}
+
+#[test]
+fn rust_print_worker_validates_and_writes_a_saved_plate_with_placed_parts() {
+    let (mut session, mut plate) = plate_fixture(PrimitiveParameters::Box {
+        size: [length(12.), length(8.), length(3.)],
+        frame: Default::default(),
+    });
+    plate.placements[0].rotation_deg[2] = 90.;
+    let saved = EntityId::new();
+    let prepared = prepare_print_plate(
+        &session,
+        session.revision(),
+        actor(),
+        saved,
+        "Quarter turn",
+        &plate,
+    )
+    .unwrap();
+    session.commit(prepared).unwrap();
+    let plate = read_print_plate(session.document(), saved).unwrap();
+    let before = session.document().clone();
+    let worker =
+        PrintWorker::with_geometry_backend(Exporter::default(), GeometryBackend::Rust).unwrap();
+    let ready = rust_plate_preview(&worker, &session, &plate);
+    assert!(ready.can_write(), "{:?}", ready.blocked);
+    assert!(ready.provider.contains("mesh-files.rust-certified."));
+    assert_eq!(ready.objects[0].bounds_mm, [[0., 0., 0.], [8., 12., 3.]]);
+    assert_eq!(ready.objects[1].bounds_mm, [[8., 8., 0.], [20., 16., 3.]]);
+    let native = Exporter::default()
+        .print_plate_preview(
+            session.document(),
+            session.revision(),
+            &plate,
+            &actor(),
+            None,
+        )
+        .unwrap();
+    assert_ne!(native.key, ready.key);
+
+    let directory = tempfile::tempdir().unwrap();
+    let target = directory.path().join("plate.3mf");
+    let write = |plate: &PrintPlateDefinition, key: &PrintKey| {
+        let id = worker
+            .write_plate(
+                session.document(),
+                session.revision(),
+                plate,
+                key,
+                &target,
+                actor(),
+            )
+            .unwrap();
+        let PrintResult::Write(result) = print_worker_reply(&worker, id) else {
+            panic!("expected a print plate write");
+        };
+        result
+    };
+    assert_eq!(
+        write(&plate, &native.key).unwrap_err().kind,
+        ErrorKind::Stale
+    );
+    assert!(listing(directory.path()).is_empty());
+
+    let mut colliding = plate.clone();
+    colliding.placements[1].position_mm[0] = 7.;
+    let blocked = rust_plate_preview(&worker, &session, &colliding);
+    assert!(blocked.blocked.as_ref().unwrap().contains("overlaps"));
+    assert!(!blocked.can_write());
+    assert!(blocked.files.is_empty());
+    assert!(write(&colliding, &blocked.key).is_err());
+    assert!(listing(directory.path()).is_empty());
+
+    let result = write(&plate, &ready.key).unwrap();
+    assert_eq!(result.files.len(), 3);
+    let read = mesh::read_three_mf(&std::fs::read(&target).unwrap()).unwrap();
+    assert_eq!((read.objects, read.items), (1, 2));
+    assert_eq!(read.bounds_mm().unwrap(), [[0., 0., 0.], [20., 16., 3.]]);
+    near(read.volume_mm3(), 576., 1e-6);
+    assert_eq!(session.document(), &before);
+}
+
+#[test]
+fn rust_print_worker_certifies_vertical_circles_and_blocks_uncertain_clearance() {
+    let (session, mut plate) = plate_fixture(PrimitiveParameters::Cylinder {
+        radius: length(5.),
+        height: length(10.),
+        frame: Default::default(),
+    });
+    for placement in &mut plate.placements {
+        placement.rotation_deg[2] = 45.;
+    }
+    let worker =
+        PrintWorker::with_geometry_backend(Exporter::default(), GeometryBackend::Rust).unwrap();
+    let separate = rust_plate_preview(&worker, &session, &plate);
+    assert!(separate.can_write(), "{:?}", separate.blocked);
+
+    plate.placements[1].position_mm = [7., 7.];
+    let overlap = rust_plate_preview(&worker, &session, &plate);
+    assert!(overlap.blocked.as_ref().unwrap().contains("overlaps"));
+    assert!(overlap.files.is_empty());
+
+    plate.placements[1].position_mm = [6., 8.];
+    let tangent = rust_plate_preview(&worker, &session, &plate);
+    assert!(
+        tangent
+            .blocked
+            .as_ref()
+            .unwrap()
+            .contains("cannot verify clearance")
+    );
+    assert!(tangent.files.is_empty());
+
+    plate.placements[1].position_mm = [1., 1.];
+    plate.placements[1].rotation_deg[0] = 15.;
+    let tilted = rust_plate_preview(&worker, &session, &plate);
+    assert!(
+        tilted
+            .blocked
+            .as_ref()
+            .unwrap()
+            .contains("cannot verify clearance")
+    );
+    assert!(tilted.files.is_empty());
+}
+
+#[test]
+fn rust_print_worker_rejects_unrepresentable_stl_without_blocking_three_mf() {
+    let mut session =
+        Session::new(Document::new("Thin stock far from the origin").unwrap()).unwrap();
+    let stock = PrimitiveRequest::new(
+        "Thin stock",
+        PrimitiveParameters::Box {
+            size: [length(0.015), length(2.), length(3.)],
+            frame: PrimitiveFrame {
+                origin: [length(1_000_000.), length(0.), length(0.)],
+                ..Default::default()
+            },
+        },
+    );
+    primitive(&mut session, &stock);
+    let worker =
+        PrintWorker::with_geometry_backend(Exporter::default(), GeometryBackend::Rust).unwrap();
+    let preview = |stl| {
+        let request = request(vec![stock.body], AidPolicy::ExcludeRemovable, stl);
+        let id = worker
+            .preview(session.document(), session.revision(), &request, actor())
+            .unwrap();
+        let PrintResult::Preview(result) = print_worker_reply(&worker, id) else {
+            panic!("expected a print package preview");
+        };
+        result
+    };
+    assert!(preview(false).unwrap().can_write());
+    let error = preview(true).unwrap_err();
+    assert_eq!(error.kind, ErrorKind::Invalid);
+    assert_eq!(error.entity, Some(stock.body));
+    assert!(error.message.contains("single-precision"));
 }

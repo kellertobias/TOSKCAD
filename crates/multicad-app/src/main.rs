@@ -193,7 +193,12 @@ fn run_application(project: Option<PathBuf>, model_backend: GeometryBackend) -> 
     }))?;
     let proofs = pair_proofs.clone();
     app.set_print_backends(std::sync::Arc::new(move || {
-        multicad_model::with_pair_cycle_proofs(proofs.clone(), || Box::new(print::Backend::new()))
+        multicad_model::with_pair_cycle_proofs(proofs.clone(), || {
+            Box::new(match model_backend {
+                GeometryBackend::OpenCascade => print::Backend::new(),
+                GeometryBackend::Rust => print::Backend::with_geometry_backend(model_backend),
+            })
+        })
     }))?;
     let proofs = pair_proofs.clone();
     app.set_sheet_pattern_backends(std::sync::Arc::new(move || {

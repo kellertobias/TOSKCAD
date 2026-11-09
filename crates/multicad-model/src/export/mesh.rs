@@ -1,12 +1,15 @@
-//! OBJ, 3MF, STL and GLB writers over exact native solids. Tessellation uses
+//! OBJ, 3MF, STL and GLB writers over exact solids. Tessellation uses
 //! the recipe's quality, independent of the viewport; display meshes are
 //! never an input. 3MF packages use stored (uncompressed) ZIP entries.
 use multicad_core::{
-    exchange::{LengthUnit, MeshQuality},
+    exchange::{LengthUnit, MeshFormat, MeshQuality},
     materials::Appearance,
 };
 use multicad_kernel::{MeshOptions, Solid};
-use std::{collections::BTreeSet, fmt::Write};
+use std::{
+    collections::{BTreeSet, HashMap},
+    fmt::Write,
+};
 
 /// One mesh in millimeters. For 3MF it is a resource object; for OBJ it is
 /// written in world coordinates.
@@ -58,7 +61,91 @@ fn unit_name(unit: LengthUnit) -> &'static str {
 
 /// Tessellate an exact solid at the recipe's chord and angular deviation.
 pub fn tessellate(solid: &Solid, quality: &MeshQuality, name: &str) -> Result<MeshObject, String> {
-    tessellate_with_connectivity(solid, quality, name, false, false)
+    tessellate_with_connectivity(solid, quality, name, solid.uses_rust_geometry(), false)
+}
+
+pub(super) fn tessellate_recipe(
+    solid: &Solid,
+    quality: &MeshQuality,
+    name: &str,
+    format: MeshFormat,
+    unit: LengthUnit,
+) -> Result<MeshObject, String> {
+    let object = if format == MeshFormat::ThreeMf {
+        tessellate_manufacturing(solid, quality, name)?
+    } else {
+        tessellate(solid, quality, name)?
+    };
+    if solid.uses_rust_geometry() {
+        match format {
+            // STL objects are tessellated in world coordinates. The writer
+            // receives an identity build item for each one.
+            MeshFormat::Stl => {
+                validate_float_positions(&object, unit, Some(&BuildItem::identity(0)))?
+            }
+            // glTF serializes local vertices in meters and composes each
+            // placement separately in its node hierarchy.
+            MeshFormat::Glb => validate_float_positions(&object, LengthUnit::Meter, None)?,
+            MeshFormat::Obj | MeshFormat::ThreeMf => {}
+        }
+    }
+    Ok(object)
+}
+
+/// Check the actual single-precision coordinate domain before writing a
+/// certified mesh. Coincident source points keep separate index ownership.
+pub(super) fn validate_float_positions(
+    object: &MeshObject,
+    unit: LengthUnit,
+    placement: Option<&BuildItem>,
+) -> Result<(), String> {
+    let error = |reason| {
+        format!(
+            "Mesh object {:?}: single-precision output {reason}",
+            object.name
+        )
+    };
+    let factor = scale(unit);
+    let place = |point| {
+        placement
+            .map_or(point, |item| item.apply(point))
+            .map(|c| c * factor)
+    };
+    let mut points = Vec::with_capacity(object.vertices.len());
+    let mut sources = HashMap::with_capacity(object.vertices.len());
+    for &source in &object.vertices {
+        let original = place(source);
+        let encoded = original.map(|c| c as f32);
+        if encoded.iter().any(|c| !c.is_finite()) {
+            return Err(error("has nonfinite positions"));
+        }
+        let key = encoded.map(|c| if c == 0. { 0 } else { c.to_bits() });
+        if *sources.entry(key).or_insert(source) != source {
+            return Err(error("collapses distinct vertices"));
+        }
+        points.push((original, encoded.map(f64::from)));
+    }
+    drop(sources);
+    let normal = |[a, b, c]: [[f64; 3]; 3]| {
+        cross3(
+            std::array::from_fn(|i| b[i] - a[i]),
+            std::array::from_fn(|i| c[i] - a[i]),
+        )
+    };
+    for triangle in &object.triangles {
+        let vertices = triangle.map(|i| points[i as usize]);
+        let original = normal(vertices.map(|(source, _)| source));
+        let encoded = normal(vertices.map(|(_, point)| point));
+        let orientation = original
+            .into_iter()
+            .zip(encoded)
+            .map(|(a, b)| a * b)
+            .sum::<f64>();
+        if !orientation.is_finite() || orientation <= 0. {
+            return Err(error("collapses or reverses a triangle"));
+        }
+    }
+    Ok(())
 }
 
 /// Preserve exact indexed closure when it already succeeds. Otherwise obtain
@@ -69,6 +156,9 @@ pub fn tessellate_manufacturing(
     quality: &MeshQuality,
     name: &str,
 ) -> Result<MeshObject, String> {
+    if solid.uses_rust_geometry() {
+        return tessellate_with_connectivity(solid, quality, name, true, false);
+    }
     let raw = tessellate_with_connectivity(solid, quality, name, false, true)?;
     match super::mesh_indexing::closed_indexed(&raw) {
         Ok(closed) => Ok(closed),
@@ -104,7 +194,7 @@ fn tessellate_with_connectivity(
         || mesh.face_indices.len() != mesh.indices.len() / 3
         || mesh.vertices.iter().any(|value| !value.is_finite())
     {
-        return Err("Native tessellation returned an invalid mesh".into());
+        return Err("Tessellation returned an invalid mesh".into());
     }
     let vertices: Vec<_> = mesh.vertices.as_chunks::<3>().0.to_vec();
     let mut triangles: Vec<_> = mesh.indices.as_chunks::<3>().0.to_vec();
@@ -113,7 +203,7 @@ fn tessellate_with_connectivity(
         .flatten()
         .any(|i| *i as usize >= vertices.len())
     {
-        return Err("Native tessellation referenced a missing vertex".into());
+        return Err("Tessellation referenced a missing vertex".into());
     }
     if normalize_exact_zero_triangles {
         let original_faces: BTreeSet<_> = mesh.face_indices.iter().copied().collect();
@@ -1145,4 +1235,44 @@ pub fn read_glb(bytes: &[u8]) -> Result<ReadMesh, String> {
         triangles: world.len(),
         world,
     })
+}
+
+#[cfg(test)]
+mod precision_tests {
+    use super::*;
+
+    #[test]
+    fn float_positions_refuse_flattened_or_reversed_triangles_with_distinct_vertices() {
+        let x = 8_388_608.;
+        for (b, c) in [(0.1, 0.), (0.49, 0.51)] {
+            let object = MeshObject {
+                name: "Thin triangle".into(),
+                vertices: vec![[x, 0., 0.], [x + b, 1., 0.], [x + c, 2., 0.]],
+                triangles: vec![[0, 1, 2]],
+            };
+            let error =
+                validate_float_positions(&object, LengthUnit::Millimeter, None).unwrap_err();
+            assert!(
+                error.contains("collapses or reverses a triangle"),
+                "{error}"
+            );
+        }
+    }
+
+    #[test]
+    fn float_positions_allow_index_separated_coincident_source_points() {
+        let object = MeshObject {
+            name: "Coincident source corners".into(),
+            vertices: vec![
+                [0., 0., 0.],
+                [1., 0., 0.],
+                [0., 1., 0.],
+                [-0., 0., 0.],
+                [-1., 0., 0.],
+                [0., -1., 0.],
+            ],
+            triangles: vec![[0, 1, 2], [3, 4, 5]],
+        };
+        validate_float_positions(&object, LengthUnit::Millimeter, None).unwrap();
+    }
 }

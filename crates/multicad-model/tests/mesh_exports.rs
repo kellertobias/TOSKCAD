@@ -1,4 +1,4 @@
-//! Real OBJ, 3MF, STL and GLB output from exact native solids, read back by
+//! Real OBJ, 3MF, STL and GLB output from exact solids, read back by
 //! readers that share no code with the writers: a local OBJ parser, a
 //! separate ZIP reader with CRC checks, quick-xml for the 3MF model, the
 //! system `unzip` when present, a binary STL parser and a glTF reader that
@@ -11,7 +11,10 @@ use multicad_core::{
     model::{self, PrimitiveFrame, PrimitiveParameters, PrimitiveRequest, length},
     project_file::ContentHash,
 };
-use multicad_model::export::Exporter;
+use multicad_model::{
+    GeometryBackend,
+    export::{ExportWorker, Exporter},
+};
 use quick_xml::{Reader, events::Event};
 use std::{collections::BTreeMap, f64::consts::PI, path::Path};
 
@@ -770,6 +773,205 @@ fn assert_bounds(b: [[f64; 3]; 2], e: [[f64; 3]; 2], tolerance: f64) {
         for i in 0..3 {
             near(b[side][i], e[side][i], tolerance);
         }
+    }
+}
+
+fn next_reply(worker: &ExportWorker) -> ExportResult {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        if let Some(reply) = worker.poll() {
+            return reply.result;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "export worker timed out"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+}
+
+fn assert_closed_winding(triangles: &Triangles) {
+    let mut edges = BTreeMap::new();
+    for triangle in triangles {
+        let ids = triangle.map(|p| p.map(|v| if v == 0. { 0 } else { v.to_bits() }));
+        for (a, b) in [(ids[0], ids[1]), (ids[1], ids[2]), (ids[2], ids[0])] {
+            assert_ne!(a, b, "collapsed edge in written mesh");
+            let uses = edges.entry([a.min(b), a.max(b)]).or_insert([0; 2]);
+            uses[usize::from(a > b)] += 1;
+        }
+    }
+    assert!(!edges.is_empty());
+    assert!(edges.values().all(|uses| *uses == [1, 1]));
+}
+
+#[test]
+fn rust_export_worker_round_trips_four_certified_mesh_formats_and_assembly_placements() {
+    let mut f = Fixture::new();
+    f.define(SetDefinition {
+        recipes: [
+            (MeshFormat::Obj, LengthUnit::Millimeter),
+            (MeshFormat::Stl, LengthUnit::Millimeter),
+            (MeshFormat::ThreeMf, LengthUnit::Millimeter),
+            (MeshFormat::Glb, LengthUnit::Meter),
+        ]
+        .into_iter()
+        .map(|(format, unit)| mesh(format, unit, HierarchyMode::PreserveAssembly))
+        .collect(),
+        ..Default::default()
+    });
+    let document = f.session.document();
+    let revision = f.session.revision();
+    let worker =
+        ExportWorker::with_geometry_backend(Exporter::default(), GeometryBackend::Rust).unwrap();
+    worker.preview(document, revision, f.set, actor()).unwrap();
+    let ExportResult::Preview(preview) = next_reply(&worker) else {
+        panic!("expected mesh preview");
+    };
+    let preview = preview.unwrap();
+    assert!(preview.can_run(), "{:?}", preview.recipes);
+    assert!(preview.provider.contains("mesh-files.rust-certified.1"));
+    assert!(!preview.provider.contains("occt:"));
+    assert_eq!(preview.artifacts.len(), 4);
+    let root = tempfile::tempdir().unwrap();
+    worker
+        .run(document, revision, &preview.key, root.path(), actor())
+        .unwrap();
+    let ExportResult::Run(receipt) = next_reply(&worker) else {
+        panic!("expected mesh publication");
+    };
+    let receipt = receipt.unwrap();
+    assert_eq!(receipt.files.len(), 4);
+    for file in &receipt.files {
+        let name = &file.artifact.output.filename;
+        let bytes = std::fs::read(Path::new(&receipt.directory).join(name)).unwrap();
+        let evidence = file.artifact.mesh.as_ref().unwrap();
+        assert_eq!(evidence.build_items, 4);
+        let triangles: Triangles = if name.ends_with(".obj") {
+            let (unit, objects) = parse_obj(std::str::from_utf8(&bytes).unwrap());
+            assert_eq!(unit.as_deref(), Some("millimeter"));
+            assert_eq!(objects.len(), 4);
+            objects.into_values().flatten().collect()
+        } else if name.ends_with(".stl") {
+            let (header, triangles) = parse_stl(&bytes);
+            assert!(header.contains("units=millimeter"), "{header}");
+            triangles
+        } else if name.ends_with(".3mf") {
+            let entries = unzip(&bytes);
+            let package = parse_3mf(&entries["3D/3dmodel.model"]);
+            assert_eq!(package.unit, "millimeter");
+            assert_eq!((package.objects.len(), package.items.len()), (3, 4));
+            (0..package.items.len())
+                .flat_map(|i| package.placed(i))
+                .collect()
+        } else {
+            assert!(name.ends_with(".glb"), "unexpected artifact {name}");
+            let glb = parse_glb(&bytes);
+            assert_eq!(glb.json["meshes"].as_array().unwrap().len(), 3);
+            let rotated = drawn_by(&glb, "Panel Rotated copy");
+            assert_bounds(bounds(&rotated), [[30., 5., 2.], [50., 15., 32.]], 1e-4);
+            glb.drawn
+                .into_iter()
+                .map(|(_, _, triangle)| triangle)
+                .collect()
+        };
+        assert_eq!(triangles.len(), evidence.triangles);
+        assert_closed_winding(&triangles);
+        assert_bounds(
+            bounds(&triangles),
+            [[-20., -5., 0.], [105., 60., 32.]],
+            0.051,
+        );
+        near(volume(&triangles), 3. * 6000. + PI * 25. * 10., 6.);
+    }
+}
+
+#[test]
+fn rust_export_refuses_collapsed_float_positions_and_keeps_glb_resource_placements_separate() {
+    let mut f = Fixture::new();
+    let distant = [9_000_000., 0., 0.];
+    let mut thin_box = |origin: [f64; 3]| {
+        let part = PrimitiveRequest::new(
+            "Thin part",
+            PrimitiveParameters::Box {
+                size: [length(0.01), length(2.), length(3.)],
+                frame: PrimitiveFrame {
+                    origin: origin.map(length),
+                    ..Default::default()
+                },
+            },
+        );
+        let prepared =
+            model::prepare_primitive(&f.session, f.session.revision(), actor(), &part).unwrap();
+        f.session.commit(prepared.prepared).unwrap();
+        part.body
+    };
+    let distant_part = thin_box(distant);
+    let local_part = thin_box([0.; 3]);
+    let copy = Entity::new(
+        "Distant copy",
+        EntityData::Instance {
+            component: local_part,
+            placement: Placement {
+                translation_mm: distant,
+                ..Default::default()
+            },
+            placement_source: None,
+        },
+    );
+    let instance = copy.id;
+    f.session
+        .apply(Request {
+            expected_revision: f.session.revision(),
+            actor: actor(),
+            label: "Place distant thin copy".into(),
+            edits: vec![Mutation::Insert(copy)],
+        })
+        .unwrap();
+    let worker =
+        ExportWorker::with_geometry_backend(Exporter::default(), GeometryBackend::Rust).unwrap();
+    for entity in [distant_part, instance] {
+        f.define(SetDefinition {
+            scope: Scope {
+                root: ScopeRoot::Explicit {
+                    entities: vec![entity],
+                },
+                tags: None,
+            },
+            recipes: [
+                (MeshFormat::Stl, LengthUnit::Millimeter),
+                (MeshFormat::Glb, LengthUnit::Meter),
+                (MeshFormat::ThreeMf, LengthUnit::Millimeter),
+            ]
+            .into_iter()
+            .map(|(format, unit)| mesh(format, unit, HierarchyMode::SeparateParts))
+            .collect(),
+            ..Default::default()
+        });
+        let document = f.session.document();
+        let revision = f.session.revision();
+        worker.preview(document, revision, f.set, actor()).unwrap();
+        let ExportResult::Preview(preview) = next_reply(&worker) else {
+            panic!("expected precision-checked preview");
+        };
+        let preview = preview.unwrap();
+        let [stl, glb, three_mf] = preview.recipes.as_slice() else {
+            panic!("expected the three mesh recipes");
+        };
+        let is_collapsed = |status: &RecipeStatus| matches!(status, RecipeStatus::Unsupported(reason) if reason.contains("single-precision output collapses distinct vertices"));
+        assert!(is_collapsed(&stl.status), "{stl:?}");
+        if entity == distant_part {
+            assert!(is_collapsed(&glb.status), "{glb:?}");
+        } else {
+            assert_eq!(glb.status, RecipeStatus::Ready);
+        }
+        assert_eq!(three_mf.status, RecipeStatus::Ready);
+        assert!(!preview.can_run());
+        let root = tempfile::tempdir().unwrap();
+        worker
+            .run(document, revision, &preview.key, root.path(), actor())
+            .unwrap();
+        assert!(matches!(next_reply(&worker), ExportResult::Run(Err(_))));
+        assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 0);
     }
 }
 

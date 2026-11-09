@@ -38,7 +38,7 @@ struct Built {
     backend: GeometryBackend,
     model: Option<Model>,
     preview: ExportPreview,
-    /// Bytes generated during the build (planar DXF, OBJ, 3MF), by filename.
+    /// Bytes generated during the build, by filename.
     generated: BTreeMap<String, Vec<u8>>,
 }
 fn failure(kind: ErrorKind, id: Option<EntityId>, message: impl ToString) -> ExportError {
@@ -497,12 +497,8 @@ fn mesh_output(
                 let object = match definitions.get(&definition) {
                     Some(object) => *object,
                     None => {
-                        let mesh = if *format == MeshFormat::ThreeMf {
-                            mesh::tessellate_manufacturing(local, quality, &name)
-                        } else {
-                            mesh::tessellate(local, quality, &name)
-                        }
-                        .map_err(|e| failure(ErrorKind::Invalid, Some(part.part), e))?;
+                        let mesh = mesh::tessellate_recipe(local, quality, &name, *format, *units)
+                            .map_err(|e| failure(ErrorKind::Invalid, Some(part.part), e))?;
                         objects.push(mesh);
                         definitions.insert(definition, objects.len() - 1);
                         objects.len() - 1
@@ -517,12 +513,8 @@ fn mesh_output(
             None => {
                 let world = subject_solid(model, part, solid)?;
                 objects.push(
-                    if *format == MeshFormat::ThreeMf {
-                        mesh::tessellate_manufacturing(world, quality, &name)
-                    } else {
-                        mesh::tessellate(world, quality, &name)
-                    }
-                    .map_err(|e| failure(ErrorKind::Invalid, Some(part.part), e))?,
+                    mesh::tessellate_recipe(world, quality, &name, *format, *units)
+                        .map_err(|e| failure(ErrorKind::Invalid, Some(part.part), e))?,
                 );
                 items.push(mesh::BuildItem::identity(objects.len() - 1));
             }
@@ -576,11 +568,6 @@ impl Exporter {
             backend,
             retained,
         }
-    }
-
-    fn provider(&self) -> String {
-        self.with_backend(GeometryBackend::OpenCascade, None)
-            .provider()
     }
 
     pub fn preview(
@@ -655,14 +642,22 @@ impl GeometryExporter<'_> {
                 multicad_kernel::source_identity(),
             ),
             GeometryBackend::Rust => {
-                format!("step-files.rust-analytic.1;build:{build};policy:{policy:?}")
+                format!(
+                    "step-files.rust-analytic.1;mesh-files.rust-certified.1;build:{build};policy:{policy:?}"
+                )
             }
         }
     }
     fn unsupported(&self, output: &RecipeOutput) -> Option<String> {
-        if self.backend == GeometryBackend::Rust && !matches!(output, RecipeOutput::Step { .. }) {
+        if self.backend == GeometryBackend::Rust
+            && !matches!(
+                output,
+                RecipeOutput::Step { .. } | RecipeOutput::Mesh { .. }
+            )
+        {
             return Some(
-                "The Rust export backend currently supports separate-part STEP only".into(),
+                "The Rust export backend currently supports separate-part STEP and mesh recipes"
+                    .into(),
             );
         }
         unsupported(output)

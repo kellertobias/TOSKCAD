@@ -175,7 +175,7 @@ impl ExportWorker {
                 failure(
                     ErrorKind::Unsupported,
                     None,
-                    "The Rust export backend currently supports separate-part STEP only",
+                    "This output catalog is unavailable for the Rust export backend",
                 )
             };
             match request {
