@@ -9,6 +9,7 @@ use std::path::Path;
 use std::rc::Rc;
 mod orthogonal_body;
 mod rust_compound;
+mod step_import;
 use orthogonal_body::OrthogonalBody;
 use rust_compound::RustCompound;
 
