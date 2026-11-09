@@ -1,6 +1,7 @@
 //! Optional, disposable preview publications. All I/O stays on the drawing
 //! worker. Canonical source and manufacturing export never consume this cache.
 use multicad_core::{document::Document, drawings::DrawingEvaluation, project_file::ContentHash};
+use multicad_model::GeometryBackend;
 use std::{
     io::{Read, Write},
     path::PathBuf,
@@ -43,6 +44,12 @@ impl Cache {
             root: base.join("MultiCAD/drawing-previews"),
             build,
         })
+    }
+    pub fn for_backend(mut self, backend: GeometryBackend) -> Self {
+        if backend == GeometryBackend::Rust {
+            self.build = ContentHash::of(format!("{}:rust", self.build).as_bytes());
+        }
+        self
     }
     fn path(&self, document: &Document, tag: u64) -> Option<PathBuf> {
         let hash = ContentHash::document(document).ok()?;
@@ -150,7 +157,11 @@ mod tests {
         };
         cache.write(&doc, 1, &result);
         assert_eq!(cache.read(&doc, 0, 1).unwrap().stamp.revision, 0);
+        let rust_cache = cache.clone().for_backend(GeometryBackend::Rust);
+        assert!(rust_cache.read(&doc, 0, 1).is_none());
+        rust_cache.write(&doc, 2, &result);
         assert!(cache.read(&doc, 0, 2).is_none());
+        assert_eq!(rust_cache.read(&doc, 42, 2).unwrap(), result);
         assert!(
             cache
                 .read(&Document::new("Changed").unwrap(), 0, 1)

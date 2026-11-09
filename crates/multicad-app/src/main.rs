@@ -176,10 +176,12 @@ fn run_application(project: Option<PathBuf>, model_backend: GeometryBackend) -> 
     }));
     let proofs = pair_proofs.clone();
     app.set_drawing_backends(std::sync::Arc::new(move || {
-        multicad_model::with_pair_cycle_proofs(
-            proofs.clone(),
-            || Box::new(drawings::Backend::new()),
-        )
+        multicad_model::with_pair_cycle_proofs(proofs.clone(), || {
+            Box::new(match model_backend {
+                GeometryBackend::OpenCascade => drawings::Backend::new(),
+                GeometryBackend::Rust => drawings::Backend::with_geometry_backend(model_backend),
+            })
+        })
     }));
     app.set_mechanical_import_backend(std::sync::Arc::new(
         mechanical_imports::Backend::with_geometry_backend(model_backend),

@@ -604,9 +604,9 @@ impl Compiler {
         checkpoint(interrupt)?;
         document.validate().map_err(|e| error(None, e))?;
         self.policy.validate().map_err(|e| error(None, e))?;
-        if backend == GeometryBackend::Rust {
-            crate::rust_backend::validate_document(document)?;
-        } else if roots.is_none() {
+        if backend == GeometryBackend::Rust && roots.is_none() {
+            crate::rust_backend::validate_document(document, None)?;
+        } else if backend == GeometryBackend::OpenCascade && roots.is_none() {
             crate::symbols::validate_definitions(
                 self,
                 document,
@@ -709,6 +709,9 @@ impl Compiler {
                     );
                 }
             }
+        }
+        if backend == GeometryBackend::Rust && roots.is_some() {
+            crate::rust_backend::validate_document(document, Some(&needed))?;
         }
         let mut cached = cache.map(|cache| {
             crate::eval_cache::Session::new(cache, self, backend, document, context.parameters())

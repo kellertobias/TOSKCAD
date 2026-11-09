@@ -20,8 +20,14 @@ use multicad_kernel::{
     },
 };
 
-pub(crate) fn validate_document(document: &Document) -> Result<(), ModelError> {
+pub(crate) fn validate_document(
+    document: &Document,
+    scope: Option<&std::collections::BTreeSet<EntityId>>,
+) -> Result<(), ModelError> {
     for entity in document.entities() {
+        if scope.is_some_and(|needed| !needed.contains(&entity.id)) {
+            continue;
+        }
         match &entity.data {
             EntityData::Feature {
                 definition,

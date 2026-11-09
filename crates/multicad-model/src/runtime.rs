@@ -133,13 +133,20 @@ impl<T: Send + 'static> Runtime<T> {
         cached: impl Fn(&Document, u64, u64) -> Option<T> + Send + 'static,
         publish: impl Fn(&Document, &Model, u64) -> Result<T, ModelError> + Send + 'static,
     ) -> Result<Self, String> {
-        Self::with_scoped_cached_model_publisher(compiler, cached, |_, _| None, publish)
+        Self::with_scoped_cached_model_publisher(
+            compiler,
+            GeometryBackend::OpenCascade,
+            cached,
+            |_, _| None,
+            publish,
+        )
     }
-    /// Select the native sources needed for an exact derived publication after
+    /// Select the model sources needed for an exact derived publication after
     /// a cache miss. The publisher must verify that the resulting scope covers
     /// its request. Returning `None` keeps the complete evaluation path.
     pub fn with_scoped_cached_model_publisher(
         compiler: Compiler,
+        backend: GeometryBackend,
         cached: impl Fn(&Document, u64, u64) -> Option<T> + Send + 'static,
         sources: impl Fn(&Document, u64) -> Option<Vec<multicad_core::document::EntityId>>
         + Send
@@ -148,7 +155,7 @@ impl<T: Send + 'static> Runtime<T> {
     ) -> Result<Self, String> {
         Self::with_worker_cache(
             compiler,
-            GeometryBackend::OpenCascade,
+            backend,
             true,
             cached,
             sources,

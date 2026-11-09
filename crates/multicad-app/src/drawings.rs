@@ -5,7 +5,7 @@ use multicad_core::{
     drawings::{DrawingEvaluation, DrawingStamp},
     schedules::ScheduleSpec,
 };
-use multicad_model::{Compiler, DrawingProviders, ModelError, Runtime, schedules};
+use multicad_model::{Compiler, DrawingProviders, GeometryBackend, ModelError, Runtime, schedules};
 use multicad_ui::{
     drawings::{DrawingBackend, DrawingReply},
     schedules::{ScheduleReply, ScheduleTable},
@@ -15,6 +15,7 @@ use std::sync::Arc;
 mod cache;
 type Tables = Vec<(ScheduleSpec, Result<ScheduleTable, String>)>;
 pub struct Backend {
+    geometry_backend: GeometryBackend,
     pair_cycle_proofs: Option<multicad_model::PairCycleProofStore>,
     runtime: Result<Runtime<Arc<DrawingEvaluation>>, String>,
     expected: Option<(u64, DrawingStamp)>,
@@ -63,17 +64,30 @@ fn page_for_tag(document: &Document, tag: u64) -> Result<EntityId, ModelError> {
 }
 impl Backend {
     pub fn new() -> Self {
-        Self::with_cache(cache::Cache::installed())
+        Self::with_geometry_backend(GeometryBackend::OpenCascade)
     }
-    pub(crate) fn with_cache(cache: Option<cache::Cache>) -> Self {
+    pub fn with_geometry_backend(geometry_backend: GeometryBackend) -> Self {
+        Self::with_cache_and_backend(cache::Cache::installed(), geometry_backend)
+    }
+    #[cfg(test)]
+    fn with_cache(cache: Option<cache::Cache>) -> Self {
+        Self::with_cache_and_backend(cache, GeometryBackend::OpenCascade)
+    }
+    fn with_cache_and_backend(
+        cache: Option<cache::Cache>,
+        geometry_backend: GeometryBackend,
+    ) -> Self {
+        let cache = cache.map(|cache| cache.for_backend(geometry_backend));
         let reader = cache.clone();
         Self {
+            geometry_backend,
             pair_cycle_proofs: multicad_model::current_pair_cycle_proofs(),
             runtime: Runtime::with_scoped_cached_model_publisher(
                 Compiler {
                     omit_display: true,
                     ..Default::default()
                 },
+                geometry_backend,
                 move |document, revision, tag| {
                     reader.as_ref()?.read(document, revision, tag).map(Arc::new)
                 },
@@ -149,9 +163,11 @@ impl DrawingBackend for Backend {
             .schedules
             .get_or_insert_with(|| {
                 let create = || {
-                    Runtime::with_model_publisher(Compiler::default(), |document, model, mask| {
-                        Ok(build_tables(document, model, mask))
-                    })
+                    Runtime::with_model_and_snapshot_backend(
+                        Compiler::default(),
+                        self.geometry_backend,
+                        |document, model, _, mask| Ok(build_tables(document, model, mask)),
+                    )
                 };
                 if let Some(store) = &self.pair_cycle_proofs {
                     multicad_model::with_pair_cycle_proofs(store.clone(), create)
@@ -461,18 +477,7 @@ mod tests {
         );
     }
 
-    #[test]
-    fn persisted_native_page_matches_fresh_vectors_and_rebuilds_after_corruption_or_view_edits() {
-        let directory = tempfile::tempdir().unwrap();
-        let cache = cache::Cache::isolated(directory.path().to_owned());
-        let mut session = Session::new(Document::new("Native cached drawing").unwrap()).unwrap();
-        add_box(&mut session, "Panel", 0.);
-        let source = session
-            .document()
-            .entities()
-            .find(|e| matches!(e.data, multicad_core::document::EntityData::Part { .. }))
-            .unwrap()
-            .id;
+    fn projection_page(source: EntityId) -> drawings::Page {
         let mut page = drawings::Page::new("1");
         page.views.push(drawings::DrawingView {
             id: EntityId::new(),
@@ -497,6 +502,16 @@ mod tests {
             guide: None,
             equipment_categories: None,
         });
+        page
+    }
+
+    #[test]
+    fn persisted_native_page_matches_fresh_vectors_and_rebuilds_after_corruption_or_view_edits() {
+        let directory = tempfile::tempdir().unwrap();
+        let cache = cache::Cache::isolated(directory.path().to_owned());
+        let mut session = Session::new(Document::new("Native cached drawing").unwrap()).unwrap();
+        let source = add_box(&mut session, "Panel", 0.).body;
+        let mut page = projection_page(source);
         let (book, prepared) = drawings::prepare_create(
             &session,
             session.revision(),
@@ -579,6 +594,87 @@ mod tests {
         let consumed = preview(&mut rebuilt, &session, page.id);
         assert!(
             matches!(&consumed.views[&page.views[0].id], drawings::ViewEvaluation::Unresolved { message } if message.contains("consumed"))
+        );
+    }
+
+    #[test]
+    fn rust_drawing_worker_projects_scoped_exact_geometry_and_reuses_its_publication() {
+        use drawings::{VectorCurve, VectorRole, ViewEvaluation};
+        use multicad_core::document::{Definition, Entity, EntityData, Mutation};
+
+        let directory = tempfile::tempdir().unwrap();
+        let cache = cache::Cache::isolated(directory.path().to_owned());
+        let mut session = Session::new(Document::new("Rust drawing").unwrap()).unwrap();
+        let source = add_box(&mut session, "Panel", 0.);
+        let unrelated = Entity::new(
+            "An unsupported feature outside the requested view",
+            EntityData::Feature {
+                definition: Definition {
+                    type_id: "test.drawing_scope".into(),
+                    schema_version: 1,
+                    data: serde_json::json!({}),
+                },
+                inputs: vec![],
+                suppressed: false,
+            },
+        );
+        let document = session
+            .document()
+            .edited(&[Mutation::Insert(unrelated)])
+            .unwrap();
+        let mut session = Session::new(document).unwrap();
+        let page = projection_page(source.body);
+        let (_, prepared) = drawings::prepare_create(
+            &session,
+            session.revision(),
+            Actor::local(Channel::Ui),
+            "Drawing",
+            Some(page.clone()),
+        )
+        .unwrap();
+        session.commit(prepared).unwrap();
+        assert!(
+            Compiler::default()
+                .compile_with_backend(
+                    session.document(),
+                    session.revision(),
+                    GeometryBackend::Rust,
+                    None,
+                )
+                .is_err()
+        );
+
+        let mut first = Backend::with_cache_and_backend(Some(cache.clone()), GeometryBackend::Rust);
+        let original = preview(&mut first, &session, page.id);
+        let ViewEvaluation::Ready { vectors, .. } = &original.views[&page.views[0].id] else {
+            panic!("{:?}", original.views);
+        };
+        assert_eq!(vectors.len(), 4);
+        assert!(vectors.iter().all(|vector| {
+            vector.source == source.body
+                && vector.role == VectorRole::Visible
+                && matches!(vector.curve, VectorCurve::Line { a, b }
+                    if [a, b].into_iter().all(|[x, y]| [0., 20.].contains(&x) && [0., 10.].contains(&y)))
+        }));
+        assert_eq!(
+            first
+                .runtime
+                .as_ref()
+                .unwrap()
+                .last_compile_stats()
+                .unwrap()
+                .evaluated,
+            [source.producer].into(),
+        );
+        let mut reopened = Backend::with_cache_and_backend(Some(cache), GeometryBackend::Rust);
+        assert_eq!(original, preview(&mut reopened, &session, page.id));
+        assert!(
+            reopened
+                .runtime
+                .as_ref()
+                .unwrap()
+                .last_compile_stats()
+                .is_none()
         );
     }
 
