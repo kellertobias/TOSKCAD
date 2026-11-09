@@ -117,6 +117,18 @@ impl Exporter {
         scope: &Scope,
         interrupt: Option<&dyn Fn() -> bool>,
     ) -> Result<PlanarCatalog, ExportError> {
+        self.with_backend(GeometryBackend::OpenCascade, None)
+            .planar_catalog(document, revision, scope, interrupt)
+    }
+}
+impl GeometryExporter<'_> {
+    pub(super) fn planar_catalog(
+        &self,
+        document: &Document,
+        revision: u64,
+        scope: &Scope,
+        interrupt: Option<&dyn Fn() -> bool>,
+    ) -> Result<PlanarCatalog, ExportError> {
         checkpoint(interrupt)?;
         let parts = resolve_parts(document, scope)?;
         if parts.len() > MAX_PLANAR_BINDINGS {
@@ -126,10 +138,7 @@ impl Exporter {
                 "Narrow the planar scope to at most 128 Part occurrences",
             ));
         }
-        let model = self
-            .compiler
-            .compile_interruptible(document, revision, interrupt)
-            .map_err(|e| failure(ErrorKind::Invalid, e.entity, e.message))?;
+        let model = self.compile_geometry(document, revision, interrupt)?;
         let stamp = ExportStamp::capture(document, revision)?;
         let mut result = vec![];
         let mut total_faces = 0;

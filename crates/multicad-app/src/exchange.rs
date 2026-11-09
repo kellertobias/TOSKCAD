@@ -301,6 +301,64 @@ mod tests {
         assert_eq!(session.document(), &before);
     }
     #[test]
+    fn rust_workspace_requests_exact_planar_faces_through_the_export_backend() {
+        use multicad_ui::exchange::ExportBackend;
+        let mut session = Session::new(Document::new("Rust planar catalog").unwrap()).unwrap();
+        let actor = Actor::local(Channel::Ui);
+        let cylinder = PrimitiveRequest::new(
+            "Cylinder",
+            PrimitiveParameters::Cylinder {
+                radius: length(5.),
+                height: length(6.),
+                frame: Default::default(),
+            },
+        );
+        let prepared = model::prepare_primitive(&session, 0, actor.clone(), &cylinder).unwrap();
+        session.commit(prepared.prepared).unwrap();
+        let before = session.document().clone();
+        let revision = session.revision();
+        let mut backend = Backend::with_geometry_backend(GeometryBackend::Rust);
+        let request = backend
+            .planar_catalog(session.document(), revision, &Scope::default(), actor)
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let reply = loop {
+            if let Some(reply) = backend.poll() {
+                break reply;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "Planar face catalog did not arrive"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        };
+        assert_eq!(reply.id, request);
+        let ExportResult::PlanarCatalog(catalog) = reply.result else {
+            panic!("expected the planar face catalog");
+        };
+        let catalog = catalog.unwrap();
+        let [part] = catalog.parts.as_slice() else {
+            panic!("expected the current cylinder");
+        };
+        assert_eq!(part.subject.part, cylinder.body);
+        assert_eq!(part.faces.len(), 2);
+        assert!(part.faces.iter().all(|face| {
+            face.source == cylinder.body
+                && face
+                    .intent
+                    .origins
+                    .iter()
+                    .any(|origin| origin.source == cylinder.feature)
+        }));
+        assert!(
+            part.faces
+                .iter()
+                .any(|face| { face.plane.origin_mm[2] == 6. && face.plane.normal()[2] > 0. })
+        );
+        assert_eq!(session.document(), &before);
+        assert_eq!(session.revision(), revision);
+    }
+    #[test]
     fn native_schedule_csv_writes_exactly_the_model_bom_off_the_ui_thread() {
         let mut session = Session::new(Document::new("Native CSV").unwrap()).unwrap();
         let actor = Actor::local(Channel::Ui);

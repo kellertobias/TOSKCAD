@@ -26,6 +26,8 @@ Join, Cut, and Intersect support world-axis-aligned boxes, rectilinear sketch ex
 
 OBJ, STL, 3MF, and GLB export tessellate supported Rust solids at the recipe’s chord and angular settings. The manufacturing check verifies shared edges, manifold vertex fans, and signed volume, including inward cavity shells. STL and GLB reject coordinate conversions that collapse geometry. Print Plate uses the same meshes and checks clearance for rectilinear parts and upright cylinders. Other pairs can share a plate when their world bounds are separated.
 
+Planar DXF uses the selected Rust face and its exact trim loops, including circular holes and arcs on placed parts.
+
 ## Verification
 
 Run the isolated tests and coverage checks from the repository root. The coverage command requires `cargo-llvm-cov` and the pinned toolchain's `llvm-tools` component.

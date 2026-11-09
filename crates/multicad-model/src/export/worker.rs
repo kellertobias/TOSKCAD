@@ -171,26 +171,17 @@ impl ExportWorker {
         Self::spawn(move |request, interrupt, retained| {
             let retained = (backend == GeometryBackend::Rust).then_some(retained);
             let mut configured = exporter.with_backend(backend, retained);
-            let unsupported = || {
-                failure(
-                    ErrorKind::Unsupported,
-                    None,
-                    "This output catalog is unavailable for the Rust export backend",
-                )
-            };
             match request {
                 Request::PlanarCatalog {
                     document,
                     revision,
                     scope,
                     ..
-                } => ExportResult::PlanarCatalog(if backend == GeometryBackend::Rust {
-                    Err(unsupported())
-                } else {
-                    exporter
+                } => ExportResult::PlanarCatalog(
+                    configured
                         .planar_catalog(&document, revision, &scope, Some(interrupt))
-                        .map(Box::new)
-                }),
+                        .map(Box::new),
+                ),
                 Request::Preview {
                     document,
                     revision,
@@ -222,7 +213,11 @@ impl ExportWorker {
                     target,
                     ..
                 } => ExportResult::Schedule(if backend == GeometryBackend::Rust {
-                    Err(unsupported())
+                    Err(failure(
+                        ErrorKind::Unsupported,
+                        None,
+                        "This output catalog is unavailable for the Rust export backend",
+                    ))
                 } else {
                     exporter
                         .schedule(

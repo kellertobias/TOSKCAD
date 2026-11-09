@@ -9,8 +9,19 @@ use multicad_core::{
     },
     project_file::{self, ProjectFile},
 };
-use multicad_model::export::{Exporter, dxf};
-use std::io::Cursor;
+use multicad_model::{
+    GeometryBackend,
+    export::{ExportWorker, Exporter, dxf},
+};
+use std::{
+    f64::consts::{FRAC_PI_4, PI},
+    io::Cursor,
+    path::Path,
+    time::{Duration, Instant},
+};
+#[path = "support/rust_panel.rs"]
+mod rust_panel;
+
 fn actor() -> Actor {
     Actor::local(Channel::Mcp)
 }
@@ -163,6 +174,14 @@ fn choose(s: &mut Session, scope: Scope, units: LengthUnit) -> (EntityId, SetDef
     let catalog = exporter
         .planar_catalog(s.document(), s.revision(), &scope, None)
         .unwrap();
+    choose_from_catalog(s, scope, units, &catalog)
+}
+fn choose_from_catalog(
+    s: &mut Session,
+    scope: Scope,
+    units: LengthUnit,
+    catalog: &PlanarCatalog,
+) -> (EntityId, SetDefinition) {
     assert_eq!(catalog.parts.len(), 1);
     let part = &catalog.parts[0];
     let choice = part
@@ -233,6 +252,144 @@ fn measured_area(poly: &::dxf::entities::LwPolyline) -> f64 {
         })
         .sum()
 }
+
+fn next_reply(worker: &ExportWorker) -> ExportResult {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if let Some(reply) = worker.poll() {
+            return reply.result;
+        }
+        assert!(Instant::now() < deadline, "export worker timed out");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
+#[test]
+fn rust_worker_exports_placed_rounded_panel_with_analytic_dxf_holes() {
+    let (mut session, _, _, body, _, cut) = rust_panel::fixture(false, 28.);
+    let instance = Entity::new(
+        "Placed rounded panel",
+        EntityData::Instance {
+            component: body,
+            placement: Placement {
+                translation_mm: [100., 40., 3.],
+                rotation_xyzw: [0., 0., FRAC_PI_4.sin(), FRAC_PI_4.cos()],
+            },
+            placement_source: None,
+        },
+    );
+    let instance_id = instance.id;
+    session
+        .apply(multicad_core::commands::Request {
+            expected_revision: session.revision(),
+            actor: actor(),
+            label: "Place rounded panel".into(),
+            edits: vec![Mutation::Insert(instance)],
+        })
+        .unwrap();
+    let worker =
+        ExportWorker::with_geometry_backend(Exporter::default(), GeometryBackend::Rust).unwrap();
+    let scope = scope(instance_id);
+    worker
+        .planar_catalog(session.document(), session.revision(), &scope, actor())
+        .unwrap();
+    let ExportResult::PlanarCatalog(catalog) = next_reply(&worker) else {
+        panic!("expected a Rust planar catalog");
+    };
+    let catalog = catalog.unwrap();
+    catalog
+        .stamp
+        .check(session.document(), session.revision())
+        .unwrap();
+    assert_eq!(catalog.scope, scope);
+    let (set, definition) =
+        choose_from_catalog(&mut session, scope, LengthUnit::Millimeter, &catalog);
+    assert_eq!(definition.planar_faces[0].source, instance_id);
+    worker
+        .preview(session.document(), session.revision(), set, actor())
+        .unwrap();
+    let ExportResult::Preview(preview) = next_reply(&worker) else {
+        panic!("expected a Rust DXF preview");
+    };
+    let preview = preview.unwrap();
+    assert!(preview.can_run(), "{:?}", preview.recipes);
+    assert!(preview.provider.contains("planar-dxf.rust-analytic.1"));
+    assert!(!preview.provider.contains("occt:"));
+    let [artifact] = preview.artifacts.as_slice() else {
+        panic!("expected one DXF artifact");
+    };
+    assert_eq!(artifact.solid, instance_id);
+    assert_eq!(artifact.producer, cut);
+    let evidence = artifact.planar.as_ref().unwrap();
+    let near = |a: f64, b: f64| assert!((a - b).abs() < 1e-6, "{a} != {b}");
+    assert_eq!((evidence.outer_loops, evidence.inner_loops), (1, 2));
+    near(evidence.area_mm2, 800. + 25. * PI);
+    for (a, b) in evidence
+        .bounds_mm
+        .into_iter()
+        .flatten()
+        .zip([80., 40., 100., 90.])
+    {
+        near(a, b);
+    }
+    let directory = tempfile::tempdir().unwrap();
+    worker
+        .run(
+            session.document(),
+            session.revision(),
+            &preview.key,
+            directory.path(),
+            actor(),
+        )
+        .unwrap();
+    let ExportResult::Run(receipt) = next_reply(&worker) else {
+        panic!("expected a verified Rust DXF run");
+    };
+    let receipt = receipt.unwrap();
+    let drawing = Drawing::load_file(
+        Path::new(&receipt.directory).join(&receipt.files[0].artifact.output.filename),
+    )
+    .unwrap();
+    assert_eq!(drawing.header.default_drawing_units, Units::Millimeters);
+    let mut areas = vec![];
+    let mut centers = vec![];
+    for entity in drawing.entities() {
+        match &entity.specific {
+            EntityType::LwPolyline(poly) if entity.common.layer == "CUT" => {
+                assert!(poly.is_closed());
+                assert_eq!(poly.vertices.len(), 4);
+                assert_eq!(
+                    poly.vertices
+                        .iter()
+                        .filter(|v| v.bulge.abs() > 1e-12)
+                        .count(),
+                    1
+                );
+                near(measured_area(poly), 800. + 50. * PI);
+            }
+            EntityType::LwPolyline(poly) if entity.common.layer == "CUT_INNER" => {
+                assert!(poly.is_closed());
+                assert_eq!(poly.vertices.len(), 2);
+                for vertex in &poly.vertices {
+                    near(vertex.bulge, -1.);
+                }
+                areas.push(measured_area(poly));
+            }
+            EntityType::ModelPoint(point) => centers.push([point.location.x, point.location.y]),
+            _ => {}
+        }
+    }
+    areas.sort_by(f64::total_cmp);
+    assert_eq!(areas.len(), 2);
+    near(areas[0], -16. * PI);
+    near(areas[1], -9. * PI);
+    centers.sort_by(|a, b| a[1].total_cmp(&b[1]));
+    assert_eq!(centers.len(), 2);
+    for (a, b) in centers.into_iter().flatten().zip([90., 52., 90., 68.]) {
+        near(a, b);
+    }
+}
+
 #[test]
 fn actual_panel_holes_import_as_exact_closed_dxf_loops_centers_and_labels() {
     let (mut s, p) = panel();

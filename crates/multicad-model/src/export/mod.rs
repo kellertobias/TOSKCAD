@@ -643,7 +643,7 @@ impl GeometryExporter<'_> {
             ),
             GeometryBackend::Rust => {
                 format!(
-                    "step-files.rust-analytic.1;mesh-files.rust-certified.1;build:{build};policy:{policy:?}"
+                    "step-files.rust-analytic.1;mesh-files.rust-certified.1;planar-dxf.rust-analytic.1;build:{build};policy:{policy:?}"
                 )
             }
         }
@@ -652,15 +652,43 @@ impl GeometryExporter<'_> {
         if self.backend == GeometryBackend::Rust
             && !matches!(
                 output,
-                RecipeOutput::Step { .. } | RecipeOutput::Mesh { .. }
+                RecipeOutput::Step { .. }
+                    | RecipeOutput::Mesh { .. }
+                    | RecipeOutput::PlanarDxf { .. }
             )
         {
             return Some(
-                "The Rust export backend currently supports separate-part STEP and mesh recipes"
+                "The Rust export backend currently supports separate-part STEP, mesh, and planar DXF recipes"
                     .into(),
             );
         }
         unsupported(output)
+    }
+    fn compile_geometry(
+        &self,
+        document: &Document,
+        revision: u64,
+        interrupt: Option<&dyn Fn() -> bool>,
+    ) -> Result<Model, ExportError> {
+        let compiler = self.exporter.compiler;
+        let evaluated = match self.backend {
+            GeometryBackend::OpenCascade => {
+                compiler.compile_interruptible(document, revision, interrupt)
+            }
+            GeometryBackend::Rust => Compiler {
+                omit_display: true,
+                ..compiler
+            }
+            .compile_with_backend(document, revision, GeometryBackend::Rust, interrupt),
+        };
+        evaluated.map_err(|e| {
+            let kind = if self.backend == GeometryBackend::Rust && crate::is_superseded(&e) {
+                ErrorKind::Cancelled
+            } else {
+                ErrorKind::Invalid
+            };
+            failure(kind, e.entity, e.message)
+        })
     }
     fn build(
         &self,
@@ -689,30 +717,7 @@ impl GeometryExporter<'_> {
             .iter()
             .any(|r| matches!(r.output, RecipeOutput::ScheduleCsv { .. }));
         let model = if supported && (!selection.parts.is_empty() || drawings || schedules) {
-            let compiler = self.exporter.compiler;
-            let evaluated = match self.backend {
-                GeometryBackend::OpenCascade => {
-                    compiler.compile_interruptible(document, revision, interrupt)
-                }
-                GeometryBackend::Rust => Compiler {
-                    omit_display: true,
-                    ..compiler
-                }
-                .compile_with_backend(
-                    document,
-                    revision,
-                    GeometryBackend::Rust,
-                    interrupt,
-                ),
-            };
-            Some(evaluated.map_err(|e| {
-                let kind = if self.backend == GeometryBackend::Rust && crate::is_superseded(&e) {
-                    ErrorKind::Cancelled
-                } else {
-                    ErrorKind::Invalid
-                };
-                failure(kind, e.entity, e.message)
-            })?)
+            Some(self.compile_geometry(document, revision, interrupt)?)
         } else {
             None
         };
@@ -977,7 +982,9 @@ impl GeometryExporter<'_> {
                                 "Current output availability was not evaluated",
                             )
                         })?;
-                    if self.backend == GeometryBackend::Rust {
+                    if self.backend == GeometryBackend::Rust
+                        && matches!(recipe.output, RecipeOutput::Step { .. })
+                    {
                         let model = model.as_ref().ok_or_else(|| {
                             failure(
                                 ErrorKind::Invalid,
