@@ -100,15 +100,10 @@ impl Application {
         }
         let p = self.current();
         let local = p.local_id;
-        let placement_intent = if place {
-            Some(
-                p.sketch
-                    .library_placement_intent()
-                    .ok_or("Open Library before choosing Place")?,
-            )
-        } else {
-            None
-        };
+        let browser_intent = p.sketch.library_placement_intent();
+        if place && browser_intent.is_none() {
+            return Err("Open Library before choosing Place".into());
+        }
         let guard = p
             .session
             .prepare(Request {
@@ -125,7 +120,7 @@ impl Application {
             PendingFile::SymbolOpen {
                 path,
                 place,
-                placement_intent,
+                browser_intent,
                 local,
                 guard,
                 resources,

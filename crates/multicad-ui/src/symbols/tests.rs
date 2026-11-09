@@ -233,6 +233,44 @@ fn sourced_nominal_search_is_exact_across_installed_embedded_and_loaded_definiti
     c.set_library_snapshot(definitions.clone()).unwrap();
     begin(&mut c, &session, SymbolTool::Library, Default::default());
     let ctx = egui::Context::default();
+    let catalogue_contains =
+        |c: &mut SymbolController, session: &mut Session, labels: &[String]| {
+            let mut present = vec![false; labels.len()];
+            for index in 0..13 {
+                let events = if index == 0 {
+                    vec![]
+                } else {
+                    vec![
+                        egui::Event::PointerMoved(egui::pos2(512., 300.)),
+                        egui::Event::MouseWheel {
+                            phase: egui::TouchPhase::Move,
+                            unit: egui::MouseWheelUnit::Point,
+                            delta: egui::vec2(0., -160.),
+                            modifiers: Default::default(),
+                        },
+                    ]
+                };
+                let (output, _) = frame(&ctx, c, session, events, 600.);
+                for (visible, label) in present.iter_mut().zip(labels) {
+                    *visible |= painted_text_count(&output, label) > 0;
+                }
+                output.drop_without_applying_deltas();
+            }
+            present
+        };
+    let labels: Vec<_> = definitions
+        .iter()
+        .flat_map(|definition| {
+            [
+                definition.name.clone(),
+                format!("Installed {}", definition.name),
+            ]
+        })
+        .chain([
+            "Source nominal fastener diameter: 3 mm".into(),
+            "Source grade: not specified".into(),
+        ])
+        .collect();
     for (query, selected) in [
         ("M3", Some(0)),
         ("m3 steel normal", Some(0)),
@@ -246,38 +284,24 @@ fn sourced_nominal_search_is_exact_across_installed_embedded_and_loaded_definiti
         ("M9", None),
     ] {
         c.form.as_mut().unwrap().filter = query.into();
-        let (output, _) = frame(&ctx, &mut c, &mut session, vec![], 6000.);
-        for (index, definition) in definitions.iter().enumerate() {
-            let expected = usize::from(selected == Some(index));
+        let present = catalogue_contains(&mut c, &mut session, &labels);
+        for (index, &sections) in present[..8].as_chunks::<2>().0.iter().enumerate() {
             assert_eq!(
-                painted_text_count(&output, &format!("Installed {}", definition.name)),
-                expected,
-                "Installed {query}"
-            );
-            assert_eq!(
-                painted_text_count(&output, &definition.name),
-                expected * 2,
-                "Embedded and loaded {query}"
+                sections,
+                [selected == Some(index); 2],
+                "{query}: {}",
+                definitions[index].name
             );
         }
         if selected == Some(0) {
-            assert_eq!(
-                painted_text_count(&output, "Source nominal fastener diameter: 3 mm"),
-                3
-            );
-            assert_eq!(
-                painted_text_count(&output, "Source grade: not specified"),
-                3
-            );
+            assert_eq!(present[8..], [true; 2], "source metadata");
         }
-        output.drop_without_applying_deltas();
     }
     c.form.as_mut().unwrap().filter = "washer 3.2".into();
-    let (output, _) = frame(&ctx, &mut c, &mut session, vec![], 6000.);
+    let present = catalogue_contains(&mut c, &mut session, &labels);
     for index in [0, 3] {
-        assert_eq!(painted_text_count(&output, &definitions[index].name), 2);
+        assert!(present[index * 2], "{}", definitions[index].name);
     }
-    output.drop_without_applying_deltas();
     let mut changed = entries;
     changed[0].mechanical_parts[0]
         .catalog_facts
@@ -286,18 +310,8 @@ fn sourced_nominal_search_is_exact_across_installed_embedded_and_loaded_definiti
         .nominal_fastener_diameter_mm = Some(30.);
     c.set_installed_library(Arc::new(changed));
     c.form.as_mut().unwrap().filter = "M3".into();
-    let (output, _) = frame(&ctx, &mut c, &mut session, vec![], 6000.);
-    assert_eq!(
-        painted_text_count(&output, "Installed Three fixture"),
-        0,
-        "Updated Library snapshot must refresh its cached facts"
-    );
-    assert_eq!(
-        painted_text_count(&output, "Three fixture"),
-        2,
-        "Embedded and loaded pins keep their own facts"
-    );
-    output.drop_without_applying_deltas();
+    let present = catalogue_contains(&mut c, &mut session, &labels);
+    assert_eq!(&present[..2], [true, false], "updated catalog facts");
     assert_eq!(session.document(), &before);
     assert_eq!(session.revision(), revision);
     assert!(!c.pending());
@@ -386,23 +400,35 @@ fn frame(
     events: Vec<egui::Event>,
     height: f32,
 ) -> (egui::FullOutput, Option<SymbolOutcome>) {
+    let library = c.library_active();
+    let warm = library && events.is_empty();
     let mut outcome = None;
-    let mut output = ctx.run_ui(
-        egui::RawInput {
-            screen_rect: Some(egui::Rect::from_min_size(
-                egui::Pos2::ZERO,
-                egui::vec2(250., height),
-            )),
-            events,
-            focused: true,
-            ..Default::default()
-        },
-        |ui| {
-            inspector_actions::scope(ui, Some(Owner::Symbols), egui::Color32::BLUE, |ui| {
-                outcome = c.show(ui, s, &Default::default(), true);
-            });
-        },
-    );
+    let mut render = |events| {
+        ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(if library { 1024. } else { 250. }, height),
+                )),
+                events,
+                focused: true,
+                ..Default::default()
+            },
+            |ui| {
+                if library {
+                    outcome = c.show_library_modal(ctx, s, &Default::default());
+                } else {
+                    inspector_actions::scope(ui, Some(Owner::Symbols), egui::Color32::BLUE, |ui| {
+                        outcome = c.show(ui, s, &Default::default(), true);
+                    });
+                }
+            },
+        )
+    };
+    if warm {
+        render(vec![]).drop_without_applying_deltas();
+    }
+    let mut output = render(events);
     output.textures_delta.clear();
     (output, outcome)
 }
@@ -1659,7 +1685,7 @@ fn update_review_keeps_two_instance_representation_controls_distinct_and_indepen
 }
 
 #[test]
-fn compact_library_keeps_file_open_and_cancel_reachable_above_long_catalog_results() {
+fn compact_library_scrolls_catalogue_between_fixed_search_close_and_placement() {
     use crate::library::{LibraryEntry, LibraryOrigin};
     use std::sync::Arc;
 
@@ -1689,24 +1715,174 @@ fn compact_library_keeps_file_open_and_cancel_reachable_above_long_catalog_resul
     ));
     begin(&mut c, &session, SymbolTool::Library, Default::default());
     let ctx = egui::Context::default();
-    let height = 420.;
+    let height = 600.;
     let (output, _) = frame(&ctx, &mut c, &mut session, vec![], height);
     let open = point(&output, "Open library file…");
-    let cancel = point(&output, "Cancel");
+    let close = point(&output, "Close");
+    let place = point(&output, "Place selected");
     let first = point(&output, "Fixture 0");
-    assert!(open.y < first.y && first.y < cancel.y && cancel.y < height);
+    assert!(close.y < open.y && open.y < first.y && first.y < place.y && place.y < height);
     assert!(
-        [open, cancel, first]
+        [open, close, place, first]
             .into_iter()
-            .all(|p| p.x > 0. && p.x < 250.)
+            .all(|p| p.x > 0. && p.x < 1024.)
     );
     output.drop_without_applying_deltas();
 
     click(&ctx, &mut c, &mut session, open, height);
     assert_eq!(c.take_action(), Some(SymbolAction::ImportLibrary));
-    click(&ctx, &mut c, &mut session, cancel, height);
+    for _ in 0..8 {
+        frame(
+            &ctx,
+            &mut c,
+            &mut session,
+            vec![
+                egui::Event::PointerMoved(first),
+                egui::Event::MouseWheel {
+                    phase: egui::TouchPhase::Move,
+                    unit: egui::MouseWheelUnit::Point,
+                    delta: egui::vec2(0., -400.),
+                    modifiers: Default::default(),
+                },
+            ],
+            height,
+        )
+        .0
+        .drop_without_applying_deltas();
+    }
+    let (output, _) = frame(&ctx, &mut c, &mut session, vec![], height);
+    assert_eq!(point(&output, "Close"), close);
+    assert_eq!(point(&output, "Place selected"), place);
+    output.drop_without_applying_deltas();
+    click(&ctx, &mut c, &mut session, place, height);
+    assert!(matches!(
+        c.take_action(),
+        Some(SymbolAction::OpenInstalledForPlace(_))
+    ));
+    click(&ctx, &mut c, &mut session, close, height);
     assert!(!c.active());
     assert_eq!(session.document(), &before);
+}
+
+#[test]
+fn library_search_is_focused_and_escape_dismisses_without_source_edits() {
+    let (mut session, _, _) = fixture();
+    let before = session.document().clone();
+    let mut c = controller();
+    begin(&mut c, &session, SymbolTool::Library, Default::default());
+    let ctx = egui::Context::default();
+    frame(&ctx, &mut c, &mut session, vec![], 600.)
+        .0
+        .drop_without_applying_deltas();
+    let (output, _) = frame(
+        &ctx,
+        &mut c,
+        &mut session,
+        vec![egui::Event::Text("m3 washer".into())],
+        600.,
+    );
+    output.drop_without_applying_deltas();
+    assert_eq!(c.form.as_ref().unwrap().filter, "m3 washer");
+
+    let search = ctx.memory(|memory| memory.focused()).expect("search focus");
+    for (modifiers, returns_to_search) in [
+        (egui::Modifiers::NONE, false),
+        (egui::Modifiers::SHIFT, true),
+    ] {
+        frame(
+            &ctx,
+            &mut c,
+            &mut session,
+            vec![egui::Event::Key {
+                key: egui::Key::Tab,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers,
+            }],
+            600.,
+        )
+        .0
+        .drop_without_applying_deltas();
+        frame(&ctx, &mut c, &mut session, vec![], 600.)
+            .0
+            .drop_without_applying_deltas();
+        assert_eq!(
+            ctx.memory(|memory| memory.has_focus(search)),
+            returns_to_search
+        );
+    }
+
+    let (output, outcome) = frame(
+        &ctx,
+        &mut c,
+        &mut session,
+        vec![egui::Event::Key {
+            key: egui::Key::Escape,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        }],
+        600.,
+    );
+    output.drop_without_applying_deltas();
+    assert_eq!(outcome, Some(SymbolOutcome::Cancelled));
+    assert!(!c.active());
+    assert_eq!(session.document(), &before);
+}
+
+#[test]
+fn library_escape_closes_a_filter_menu_before_the_modal() {
+    use crate::library::{LibraryEntry, LibraryOrigin};
+    use std::sync::Arc;
+
+    let (mut session, _, _) = fixture();
+    let mut c = controller();
+    let definition = catalog_search_fixture("Fixture", Some(3.), 3.2, "Fixture steel");
+    c.set_installed_library(Arc::new(vec![LibraryEntry {
+        origin: LibraryOrigin::ListedOriginal,
+        id: EntityId::new(),
+        document: definition.template.id(),
+        path: "/offline/library/fixture.tcd".into(),
+        name: "Fixture".into(),
+        description: String::new(),
+        preview: None,
+        registered_unix_ms: 1,
+        symbol_definitions: 1,
+        mechanical_parts: model::mechanical_part_cards(&definition.template),
+        problem: None,
+    }]));
+    begin(&mut c, &session, SymbolTool::Library, Default::default());
+    let ctx = egui::Context::default();
+    let (output, _) = frame(&ctx, &mut c, &mut session, vec![], 600.);
+    let filters = point(&output, "Hardware filters");
+    output.drop_without_applying_deltas();
+    click(&ctx, &mut c, &mut session, filters, 600.);
+    let (output, _) = frame(&ctx, &mut c, &mut session, vec![], 600.);
+    let choice = point(&output, "Any");
+    output.drop_without_applying_deltas();
+    click(&ctx, &mut c, &mut session, choice, 600.);
+    assert!(egui::Popup::is_any_open(&ctx));
+
+    for expected in [None, Some(SymbolOutcome::Cancelled)] {
+        let (output, outcome) = frame(
+            &ctx,
+            &mut c,
+            &mut session,
+            vec![egui::Event::Key {
+                key: egui::Key::Escape,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+            600.,
+        );
+        output.drop_without_applying_deltas();
+        assert_eq!(outcome, expected);
+        assert!(!egui::Popup::is_any_open(&ctx));
+    }
 }
 
 #[test]

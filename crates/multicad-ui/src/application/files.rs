@@ -29,7 +29,7 @@ pub(super) enum PendingFile {
     SymbolOpen {
         path: PathBuf,
         place: bool,
-        placement_intent: Option<u64>,
+        browser_intent: Option<u64>,
         local: EntityId,
         guard: multicad_core::commands::Prepared,
         resources: ProjectResources,
@@ -325,14 +325,13 @@ impl Application {
                 PendingFile::SymbolOpen {
                     path,
                     place,
-                    placement_intent,
+                    browser_intent,
                     local,
                     guard,
                     resources,
                 },
                 FileResult::Loaded(result),
             ) => {
-                let loaded = result.map_err(|e| e.to_string())?;
                 let p = self
                     .projects
                     .iter_mut()
@@ -344,15 +343,13 @@ impl Application {
                 if p.resources != resources {
                     return Err("Project resources changed while loading the symbol library".into());
                 }
-                if place
-                    && (placement_intent.is_none()
-                        || p.sketch.library_placement_intent() != placement_intent)
+                if (place && browser_intent.is_none())
+                    || (browser_intent.is_some()
+                        && p.sketch.library_placement_intent() != browser_intent)
                 {
-                    return Err(
-                        "This Library placement was cancelled or replaced; choose Place again"
-                            .into(),
-                    );
+                    return Err("This Library request was cancelled or replaced".into());
                 }
+                let loaded = result.map_err(|e| e.to_string())?;
                 let definitions = multicad_core::symbols::definitions(&loaded.file.document)
                     .map_err(|e| e.to_string())?
                     .into_iter()

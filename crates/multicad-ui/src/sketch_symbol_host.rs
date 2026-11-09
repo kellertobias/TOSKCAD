@@ -1,4 +1,4 @@
-//! Symbol tools share the model viewport, selection and fixed Inspector lane.
+//! Library browsing opens over the model. Symbol editing shares the viewport and Inspector.
 use super::*;
 use crate::symbols::{SymbolAction, SymbolOutcome, SymbolSelection, SymbolTool};
 use multicad_core::project_file::ProjectResources;
@@ -77,6 +77,22 @@ impl SketchEditor {
     pub(crate) fn symbol_library_active(&self) -> bool {
         self.symbols.library_active()
     }
+    pub(crate) fn show_symbol_library(
+        &mut self,
+        ctx: &egui::Context,
+        session: &mut Session,
+        resources: &ProjectResources,
+    ) {
+        if self.symbols.library_active()
+            && let Some(outcome) = self.symbols.show_library_modal(ctx, session, resources)
+        {
+            self.accept_symbol_outcome(outcome);
+        }
+    }
+    pub(crate) fn cancel_symbol_tool(&mut self) {
+        self.symbols.cancel();
+        self.accept_symbol_outcome(SymbolOutcome::Cancelled);
+    }
     pub fn close_symbol_browser(&mut self) {
         if self.symbols.active() && !self.symbols.dirty() {
             self.symbols.cancel();
@@ -153,7 +169,15 @@ impl SketchEditor {
                 Some(EntityData::Sketch { .. })
             )
         });
-        self.finish()?;
+        // Closing the active modeling context must not drop an exact viewport
+        // selection just because the user opened the Library to browse.
+        let solid_selection =
+            (tool == SymbolTool::Library && !self.editing).then(|| std::mem::take(&mut self.solid));
+        let finished = self.finish();
+        if let Some(selection) = solid_selection {
+            self.solid = selection;
+        }
+        finished?;
         self.symbols.begin(
             tool,
             session,
@@ -168,10 +192,14 @@ impl SketchEditor {
             },
             channel,
         )?;
-        self.message = format!(
-            "{} · choose content and parameters in the Inspector",
-            self.symbols.label()
-        );
+        self.message = if tool == SymbolTool::Library {
+            "Library · browse parts and symbols".into()
+        } else {
+            format!(
+                "{} · choose content and parameters in the Inspector",
+                self.symbols.label()
+            )
+        };
         Ok(())
     }
     pub(super) fn accept_symbol_outcome(&mut self, outcome: SymbolOutcome) {

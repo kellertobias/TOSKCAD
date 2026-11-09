@@ -75,7 +75,7 @@ impl SectionPlane {
         ]
     }
 }
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct SectionView {
     enabled: bool,
     axis: usize,

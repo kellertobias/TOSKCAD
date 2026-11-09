@@ -13,7 +13,7 @@ use multicad_core::{
     references::TopologyKind,
 };
 use std::{collections::BTreeSet, sync::Arc};
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct Interaction {
     selected: Option<Hit>,
     /// Command (macOS) / Control-click face set (CAD-152). Empty for a plain

@@ -194,7 +194,9 @@ impl Workspace {
         let Some(view) = &mut self.view else {
             return Show::Hidden;
         };
-        if ui.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+        if ui.is_enabled()
+            && ui.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
+        {
             if view.picking.take().is_some() {
                 view.pick_error = None;
             } else {

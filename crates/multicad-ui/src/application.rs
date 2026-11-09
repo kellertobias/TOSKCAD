@@ -1217,8 +1217,11 @@ impl Application {
                 p.sketch
                     .begin_symbol(tool, &p.session, &p.resources, &p.scene, channel)?;
                 self.mode = Mode::Model;
-                self.message =
-                    "Symbols · embedded definitions and explicit library revisions".into();
+                self.message = if tool == crate::symbols::SymbolTool::Library {
+                    "Library · browse parts and symbols".into()
+                } else {
+                    "Symbols · embedded definitions and explicit library revisions".into()
+                };
             }
             Command::Extension(id @ ("appearance" | "render-view" | "blender")) => {
                 self.invoke_render_view(id, channel)?;
@@ -1917,7 +1920,7 @@ impl Application {
                 let search_id = ui.id().with("tool-finder-input");
                 let mut find_step = 0;
                 let mut find_submit = false;
-                if self.find_open && ui.memory(|memory| memory.has_focus(search_id)) {
+                if ui.is_enabled() && self.find_open && ui.memory(|memory| memory.has_focus(search_id)) {
                     ui.input_mut(|input| {
                         if input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown) {find_step = 1;}
                         if input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp) {find_step = -1;}
@@ -2351,7 +2354,10 @@ impl Application {
                     Color32::WHITE,
                 );
             }
-            if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+            if ui.is_enabled()
+                && response.lost_focus()
+                && ui.input(|i| i.key_pressed(egui::Key::Enter))
+            {
                 let line = std::mem::take(&mut self.command);
                 self.submit_line(line);
                 response.request_focus();
@@ -2375,6 +2381,7 @@ impl Application {
                 || self.import_open
                 || self.settings_open
                 || self.render_preview.is_some()
+                || self.current().sketch.symbol_library_active()
                 || self.shortcut_help
                 || self.current().exchange.drawing_pdf_open()
                 || egui::Popup::is_any_open(ctx),
@@ -2412,7 +2419,9 @@ impl Application {
         let shell_interaction = shell_interaction || self.current().exchange.drawing_pdf_open();
         // egui clears keyboard focus for Escape before this application pass.
         // Remember text ownership so that same key cannot also cancel a tool.
-        if (shell_interaction || ctx.text_edit_focused() || self.text_input_was_focused)
+        if (shell_interaction
+            || (!self.current().sketch.symbol_library_active()
+                && (ctx.text_edit_focused() || self.text_input_was_focused)))
             && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
         {
             if self.replacement.is_some() {
@@ -2564,6 +2573,8 @@ impl Application {
                         self.current_mut().drawings.cancel_placement();
                     } else if self.mode == Mode::Export {
                         self.execute(Command::Discard, &[], Channel::Ui);
+                    } else if self.current().sketch.symbol_active() {
+                        self.current_mut().sketch.cancel_symbol_tool();
                     } else {
                         self.current_mut().sketch.cancel();
                     }
@@ -2629,7 +2640,8 @@ impl Application {
             self.close_confirm
                 || self.import_open
                 || self.file_action.is_some()
-                || self.replacement.is_some(),
+                || self.replacement.is_some()
+                || (!self.welcome && self.current().sketch.symbol_library_active()),
         );
         if self.welcome {
             self.show_welcome(ui);
@@ -2892,6 +2904,10 @@ impl Application {
                 }
             });
         self.render_window(&ctx);
+        let project = self.current_mut();
+        project
+            .sketch
+            .show_symbol_library(&ctx, &mut project.session, &project.resources);
         self.poll_symbol_actions();
         self.drawing_pdf_dialog(&ctx);
         self.file_windows(&ctx);

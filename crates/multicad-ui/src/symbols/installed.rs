@@ -1,5 +1,8 @@
 //! Browse the same included/original-file Library used by Project.
-use super::SymbolAction;
+use super::{
+    SymbolAction,
+    inspector::{LibraryKey, PrimaryAction, PrimaryControls, focus_button},
+};
 pub(super) use crate::library::facets::{SearchIndex, definition_search};
 use crate::{
     egui,
@@ -32,7 +35,12 @@ impl Installed {
     pub fn show_filters(&mut self, ui: &mut egui::Ui) {
         self.facets.show(ui, &self.entries);
     }
-    pub fn show(&mut self, ui: &mut egui::Ui, query: &SearchQuery) -> Option<SymbolAction> {
+    pub fn show(
+        &mut self,
+        ui: &mut egui::Ui,
+        query: &SearchQuery,
+        primary: &mut PrimaryControls<'_>,
+    ) -> Option<SymbolAction> {
         ui.strong("Installation Library");
         ui.small("Included definitions and files listed with Add to Library. Place a pinned definition directly, or load a file to inspect and choose its definitions.");
         let exact = self.facets.active() || query.has_structured_nominal();
@@ -47,21 +55,27 @@ impl Installed {
             let (entry, search) = entry;
             shown += 1;
             ui.push_id(entry.id, |ui| ui.group(|ui| {
-                ui.strong(&entry.name);
-                if entry.origin == crate::library::LibraryOrigin::Bundled { ui.small("Included with ToskCAD"); }
                 let unavailable = entry.problem.as_deref().or_else(|| (entry.symbol_definitions == 0).then_some("No reusable definitions. Open this file and use Create symbol before placing it here."));
+                let place_action = || if exact {
+                    SymbolAction::OpenInstalled(entry.path.clone())
+                } else {
+                    SymbolAction::OpenInstalledForPlace(entry.path.clone())
+                };
+                primary.title(ui, LibraryKey::Installed(entry.id), &entry.name,
+                    unavailable.is_none(), || PrimaryAction::Request(place_action()));
+                if entry.origin == crate::library::LibraryOrigin::Bundled { ui.small("Included with ToskCAD"); }
                 if let Some(problem) = unavailable {
                     ui.colored_label(egui::Color32::LIGHT_RED, problem);
                 }
                 ui.horizontal_wrapped(|ui| {
                     let place = ui.add_enabled(unavailable.is_none(), egui::Button::new(if exact { "Choose matching definition" } else { "Place" }));
                     let place = if let Some(reason) = unavailable { place.on_disabled_hover_text(reason) } else { place.on_hover_text("Choose this file's pinned definition and placement; Preview and Apply embed and place it together") };
-                    if place.clicked() {
+                    if focus_button(place) {
                         // Re-read originals and let the exact filters inspect the
                         // loaded definition before it can start a placement.
-                        action = Some(if exact { SymbolAction::OpenInstalled(entry.path.clone()) } else { SymbolAction::OpenInstalledForPlace(entry.path.clone()) });
+                        action = Some(place_action());
                     }
-                    if !exact && ui.add_enabled(unavailable.is_none(), egui::Button::new("Load definitions")).clicked() {
+                    if !exact && focus_button(ui.add_enabled(unavailable.is_none(), egui::Button::new("Load definitions"))) {
                         action = Some(SymbolAction::OpenInstalled(entry.path.clone()));
                     }
                 });
@@ -204,7 +218,12 @@ mod tests {
                     ..Default::default()
                 },
                 |ui| {
-                    installed.show(ui, &SearchQuery::new(""));
+                    let mut selected = None;
+                    installed.show(
+                        ui,
+                        &SearchQuery::new(""),
+                        &mut PrimaryControls::new(&mut selected),
+                    );
                 },
             )
         };

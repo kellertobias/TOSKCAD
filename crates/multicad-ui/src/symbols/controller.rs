@@ -48,6 +48,7 @@ pub struct SymbolController {
     handoff: Option<Handoff>,
     pub(super) library: Vec<SymbolDefinition>,
     installed: super::installed::Installed,
+    library_browser: super::inspector::LibraryBrowser,
     library_pins: Vec<ContentHash>,
     library_search: Vec<super::installed::SearchIndex>,
     actions: VecDeque<SymbolAction>,
@@ -100,6 +101,7 @@ impl SymbolController {
         let (pins, definitions) = entries.into_values().unzip();
         self.library_pins = pins;
         self.library = definitions;
+        self.library_browser.reset_catalogue();
         self.library_search = self
             .library
             .iter()
@@ -208,6 +210,7 @@ impl SymbolController {
             .checked_add(1)
             .ok_or("Library request limit reached")?;
         self.form = Some(form);
+        self.library_browser = Default::default();
         self.auto_preview.reset();
         self.candidate = None;
         self.handoff = None;
@@ -568,6 +571,84 @@ impl SymbolController {
     pub fn take_action(&mut self) -> Option<SymbolAction> {
         self.actions.pop_front()
     }
+    pub(crate) fn show_library_modal(
+        &mut self,
+        ctx: &egui::Context,
+        session: &mut Session,
+        resources: &ProjectResources,
+    ) -> Option<SymbolOutcome> {
+        if !self.library_active() {
+            return None;
+        }
+        let current = self.current(session, resources);
+        let failure = current
+            .as_ref()
+            .err()
+            .map(String::as_str)
+            .or(self.error.as_deref());
+        let version = self.form.as_ref()?.version;
+        let scope = self.scope.as_ref()?;
+        let size = ctx.content_rect().size();
+        let id = egui::Id::new(("symbol-library", session.document().id()));
+        let modal = egui::Modal::new(id)
+            .area(egui::Modal::default_area(id).fade_in(false))
+            .frame(
+                egui::Frame::popup(&ctx.global_style())
+                    .inner_margin(16)
+                    .corner_radius(8),
+            )
+            .backdrop_color(egui::Color32::from_black_alpha(100))
+            .show(ctx, |ui| {
+                ui.set_width((size.x - 56.).clamp(1., 760.));
+                ui.set_height((size.y - 56.).clamp(1., 540.));
+                super::inspector::show_library(
+                    self.form.as_mut().expect("open Library"),
+                    &mut self.library_browser,
+                    ui,
+                    session,
+                    super::inspector::Catalogue {
+                        embedded: &scope.embedded,
+                        embedded_pins: &scope.embedded_pins,
+                        embedded_search: &scope.embedded_search,
+                        library: &self.library,
+                        library_pins: &self.library_pins,
+                        library_search: &self.library_search,
+                        installed: &mut self.installed,
+                    },
+                    current.is_ok(),
+                    failure,
+                )
+            });
+        let close = modal.should_close();
+        let (action, error, close_button) = modal.inner;
+        if close || close_button {
+            self.cancel();
+            return Some(SymbolOutcome::Cancelled);
+        }
+        if self
+            .form
+            .as_ref()
+            .is_some_and(|form| form.version != version)
+        {
+            self.invalidate();
+        }
+        if let Some(action) = action {
+            self.actions.push_back(action);
+        }
+        if let Some(error) = error {
+            self.error = Some(error);
+        }
+        if self
+            .form
+            .as_mut()
+            .and_then(Form::placement_pose_mut)
+            .is_some()
+        {
+            let _ = self.preview(session, resources, Channel::Ui);
+        }
+        None
+    }
+
     pub fn show(
         &mut self,
         ui: &mut egui::Ui,
@@ -575,10 +656,12 @@ impl SymbolController {
         resources: &ProjectResources,
         enabled: bool,
     ) -> Option<SymbolOutcome> {
+        if self.library_active() {
+            return None;
+        }
         let current = self.current(session, resources).is_ok();
         let pending = self.pending();
         let version = self.form.as_ref().map(|f| f.version);
-        let was_library = self.library_active();
         let (action, error) = super::inspector::show(
             self.form.as_mut()?,
             ui,
@@ -602,15 +685,6 @@ impl SymbolController {
         }
         if let Some(error) = error {
             self.error = Some(error);
-        }
-        if was_library
-            && self
-                .form
-                .as_mut()
-                .and_then(Form::placement_pose_mut)
-                .is_some()
-        {
-            let _ = self.preview(session, resources, Channel::Ui);
         }
         if let Some(error) = &self.error {
             ui.colored_label(egui::Color32::LIGHT_RED, error);

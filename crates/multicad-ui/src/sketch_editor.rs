@@ -135,6 +135,7 @@ struct MoveDrag {
 struct ModelCanvas<'a> {
     resources: &'a multicad_core::project_file::ProjectResources,
     feed: &'a crate::viewport::SceneFeed,
+    symbol_view: bool,
 }
 struct SplinePointer {
     frame: Frame,
@@ -3280,7 +3281,7 @@ impl SketchEditor {
                 ui.separator();
                 use crate::inspector_actions::Owner;
                 let owner=if self.measurement.active(){None}
-                    else if self.symbols.active(){Some(Owner::Symbols)}
+                    else if self.symbols.active() && !self.symbols.library_active(){Some(Owner::Symbols)}
                     else if self.artwork.active() || self.mechanical.active(){Some(Owner::Import)}
                     else if self.transfer.active(){Some(Owner::Transfer)}
                     else if self.assembly.active(){Some(Owner::Assembly)}
@@ -3297,7 +3298,7 @@ impl SketchEditor {
                 let accent=if sketch_mode{crate::registry::Mode::Sketch.color()}else{crate::registry::Mode::Model.color()};
                 crate::inspector_actions::scope_with_preview(ui,owner,accent,owner == Some(Owner::Model),|ui| {
                         if self.measurement.active(){let allow=self.measure_pin_allowed && !self.has_pending_edits();self.measurement.show(ui,session,allow);if let Some((notice,_))=self.measurement.take_notice(){self.message=notice;}return;}
-                        if self.symbols.active(){
+                        if self.symbols.active() && !self.symbols.library_active(){
                             if let Some(outcome)=self.symbols.show(ui,session,resources,true){self.accept_symbol_outcome(outcome);}
                             if self.symbols.pending(){ui.ctx().request_repaint_after(std::time::Duration::from_millis(16));}
                             return;
@@ -3383,7 +3384,7 @@ impl SketchEditor {
                             self.assembly_edit_controls(ui,session,resources,feed);
                             if self.assembly.active(){return;}
                             self.symbol_edit_controls(ui,session,resources,feed);
-                            if self.symbols.active(){return;}
+                            if self.symbols.active() && !self.symbols.library_active(){return;}
                         } else {ui.small("This hardware belongs to a connection; edit its complete stack and receiving cuts together.");}
                         if feed.refining() {ui.small("Refining display…");}
                         if !self.model_workspace {
@@ -3644,6 +3645,7 @@ impl SketchEditor {
         let mut repair_view = false;
         let mut model_view = false;
         let mut assembly_view = false;
+        let mut symbol_view = false;
         let mut exploded_view = false;
         let mut anchor_view = false;
         let mut transfer_source_view = false;
@@ -3690,6 +3692,7 @@ impl SketchEditor {
             current = false;
             model_view = true;
             assembly_view = true;
+            symbol_view = true;
         }
         if !self.measurement.active()
             && !self.model.scale_origin_picking()
@@ -3882,7 +3885,11 @@ impl SketchEditor {
                     sketch_mode,
                     scene.clone(),
                     current,
-                    Some(ModelCanvas { resources, feed }),
+                    Some(ModelCanvas {
+                        resources,
+                        feed,
+                        symbol_view,
+                    }),
                 );
                 if self.model_workspace
                     && !developed_view
@@ -4479,18 +4486,26 @@ impl SketchEditor {
             } else {
                 None
             };
-            self.solid.set_display_scene(display);
-            let filter = self.solid.filter;
+            // A symbol candidate has its own topology stamp. Keep that
+            // preview's remapping away from the selection Cancel restores.
+            let section = self.modeling_section();
+            let mut candidate_interaction = model_context
+                .as_ref()
+                .filter(|context| context.symbol_view)
+                .map(|_| self.solid.clone());
+            let solid = candidate_interaction.as_mut().unwrap_or(&mut self.solid);
+            solid.set_display_scene(display);
+            let filter = solid.filter;
             if self.architecture.planar() {
-                self.solid.filter = crate::viewport::PickFilter::Parts;
+                solid.filter = crate::viewport::PickFilter::Parts;
             }
-            self.solid.set_section_override(self.modeling_section());
+            solid.set_section_override(section);
             if !self.measurement.active()
                 && let Some(highlight) = self.model.transform_highlight(scene)
             {
-                self.solid.highlight_reference(Some(highlight));
+                solid.highlight_reference(Some(highlight));
             }
-            self.solid.show(
+            solid.show(
                 ui,
                 &response,
                 scene.clone(),
@@ -4498,7 +4513,7 @@ impl SketchEditor {
                 self.style,
                 selectable,
             );
-            self.solid.filter = filter;
+            solid.filter = filter;
             if self.architecture.planar()
                 && let Some(Ok(plan)) = scene.architecture_plan()
             {

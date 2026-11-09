@@ -109,6 +109,7 @@ impl Host {
                         Some(ModelCanvas {
                             resources: &Default::default(),
                             feed: &self.feed,
+                            symbol_view: false,
                         }),
                     );
                 },

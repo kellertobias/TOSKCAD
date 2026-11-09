@@ -239,7 +239,7 @@ fn library_load_is_read_only_and_stale_target_cannot_receive_it() {
     let pending = PendingFile::SymbolOpen {
         path: "library.tcd".into(),
         place: false,
-        placement_intent: None,
+        browser_intent: None,
         local: p.local_id,
         guard,
         resources: p.resources.clone(),
@@ -377,11 +377,14 @@ fn direct_library_app() -> (
     (app, storage, requests)
 }
 fn pending_direct_place(app: &Application) -> PendingFile {
+    pending_library_read(app, true)
+}
+fn pending_library_read(app: &Application, place: bool) -> PendingFile {
     let project = app.current();
     PendingFile::SymbolOpen {
         path: "library.tcd".into(),
-        place: true,
-        placement_intent: project.sketch.library_placement_intent(),
+        place,
+        browser_intent: project.sketch.library_placement_intent(),
         local: project.local_id,
         guard: project
             .session
@@ -394,6 +397,48 @@ fn pending_direct_place(app: &Application) -> PendingFile {
             .unwrap(),
         resources: project.resources.clone(),
     }
+}
+#[test]
+fn library_modal_owns_shortcuts_even_while_search_has_focus() {
+    let (mut app, _, _) = direct_library_app();
+    let ctx = egui::Context::default();
+    let mut frame = |events| {
+        ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1024., 600.),
+                )),
+                focused: true,
+                events,
+                ..Default::default()
+            },
+            |ui| app.show(ui),
+        )
+        .drop_without_applying_deltas();
+    };
+    let key = |key, modifiers| egui::Event::Key {
+        key,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers,
+    };
+    for _ in 0..3 {
+        frame(vec![]);
+    }
+    assert!(
+        ctx.text_edit_focused(),
+        "the modal focuses its search field"
+    );
+    frame(vec![key(egui::Key::N, egui::Modifiers::COMMAND)]);
+    frame(vec![key(egui::Key::Escape, egui::Modifiers::NONE)]);
+    assert!(!app.current().sketch.symbol_library_active());
+    assert!(!app.welcome);
+    assert_eq!(app.mode, Mode::Model);
+    assert_eq!(app.projects.len(), 1);
+    assert_eq!(app.current().session.revision(), 0);
+    assert!(!app.current().session.can_undo());
 }
 #[test]
 fn direct_library_load_opens_single_definition_placement_without_import_and_cancel_is_neutral() {
@@ -567,14 +612,14 @@ fn failed_and_stale_direct_library_loads_never_import_or_start_placement() {
 }
 
 #[test]
-fn cancelled_library_place_reply_cannot_place_or_load_into_reopened_same_session_browser() {
+fn cancelled_library_reply_cannot_load_into_reopened_same_session_browser() {
     let (source, _, _, _) = seed();
     let (mut app, _, requests) = direct_library_app();
     let before = app.current().session.document().clone();
     let revision = app.current().session.revision();
     let old_intent = app.current().sketch.library_placement_intent();
     assert!(old_intent.is_some());
-    let pending = pending_direct_place(&app);
+    let pending = [false, true].map(|place| pending_library_read(&app, place));
     // Close/reopen without changing the Session, source or resources. A plain
     // revision/source guard cannot distinguish these two browser intents.
     app.current_mut().sketch.close_symbol_browser();
@@ -585,20 +630,19 @@ fn cancelled_library_place_reply_cannot_place_or_load_into_reopened_same_session
     assert_ne!(app.current().sketch.library_placement_intent(), old_intent);
     assert_eq!(app.current().session.document(), &before);
     assert_eq!(app.current().session.revision(), revision);
-    let error = app
-        .accept_file_reply(
-            pending,
-            FileResult::Loaded(Ok(Box::new(crate::storage::LoadedProject {
-                file: ProjectFile::new(source.document().clone()).unwrap(),
-                stamp: None,
-                diagnostics: vec![],
-            }))),
-        )
-        .unwrap_err();
-    assert!(
-        error.contains("cancel") || error.contains("changed"),
-        "{error}"
-    );
+    for reply in pending {
+        let error = app
+            .accept_file_reply(
+                reply,
+                FileResult::Loaded(Ok(Box::new(crate::storage::LoadedProject {
+                    file: ProjectFile::new(source.document().clone()).unwrap(),
+                    stamp: None,
+                    diagnostics: vec![],
+                }))),
+            )
+            .unwrap_err();
+        assert!(error.contains("cancel"), "{error}");
+    }
     // The stale single-definition snapshot must not even enter the new browser:
     // explicitly trying Place still has no candidate to send to the backend.
     let project = app.current_mut();
