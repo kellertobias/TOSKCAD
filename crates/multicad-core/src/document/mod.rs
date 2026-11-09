@@ -114,6 +114,50 @@ impl Document {
     pub fn hierarchy(&self) -> &Hierarchy {
         &self.hierarchy
     }
+    /// Visibility and file information are authored presentation state.
+    /// Reuse exact evaluation only if every model input still matches.
+    pub fn differs_only_in_presentation(&self, other: &Self) -> bool {
+        if self.schema_version != other.schema_version
+            || self.id != other.id
+            || self.hierarchy.members != other.hierarchy.members
+            || self.hierarchy.active_component != other.hierarchy.active_component
+        {
+            return false;
+        }
+        if self.entities == other.entities {
+            return self.name != other.name || self.hierarchy.hidden != other.hierarchy.hidden;
+        }
+        let is_file_info = |entity: &&Entity| {
+            matches!(&entity.data,
+                EntityData::Extension { definition, inputs }
+                    if definition.type_id == crate::project_file::info::FILE_INFO_TYPE && inputs.is_empty()
+            )
+        };
+        let metadata: std::collections::BTreeSet<_> = self
+            .entities()
+            .chain(other.entities())
+            .filter(is_file_info)
+            .map(|entity| entity.id)
+            .collect();
+        if metadata.is_empty() {
+            return false;
+        }
+        let before = self
+            .entities
+            .values()
+            .filter(|entity| !is_file_info(entity));
+        let after = other
+            .entities
+            .values()
+            .filter(|entity| !is_file_info(entity));
+        before.clone().eq(after)
+            && !before.clone().any(|entity| {
+                entity
+                    .references()
+                    .iter()
+                    .any(|link| metadata.contains(&link.target))
+            })
+    }
     pub fn entities(&self) -> impl Iterator<Item = &Entity> {
         self.entities.values()
     }

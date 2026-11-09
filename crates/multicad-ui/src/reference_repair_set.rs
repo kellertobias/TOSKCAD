@@ -678,7 +678,9 @@ impl RepairSetPanel {
                 }
             });
         }
-        self.draft_editor(ui, session, resources, &evaluation.snapshots);
+        if self.draft.sketch.is_some() {
+            self.draft_editor(ui, session, resources, evaluation.snapshots());
+        }
         if self.steps.is_empty() {
             return;
         }

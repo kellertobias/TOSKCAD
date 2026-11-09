@@ -399,55 +399,89 @@ pub fn inspect(
     revision: u64,
     snapshots: &BTreeMap<EntityId, TopologySnapshot>,
 ) -> ReferenceReport {
-    let mut entries = vec![];
-    let mut hashes = BTreeMap::new();
-    for entity in document.entities() {
-        for link in entity.references() {
-            if let Some(intent) = &link.geometry {
-                let resolution = if document.get(link.target).is_none() {
-                    Resolution::MissingSource
-                } else {
-                    match snapshots.get(&link.target) {
-                        None => Resolution::MissingSource,
-                        Some(snapshot) if snapshot.owner != link.target => Resolution::Invalid {
-                            message: "Topology snapshot belongs to another source".into(),
-                        },
-                        Some(snapshot) => resolve(intent, snapshot, revision),
-                    }
+    ReferenceInspector::new(document, revision).inspect(snapshots)
+}
+
+/// Reuse the source-only part of reference inspection while exact topology
+/// arrives incrementally. Each call resolves every intent against the supplied
+/// current topology; no resolved face or edge result is carried between calls.
+pub struct ReferenceInspector {
+    report: ReferenceReport,
+    missing_sources: BTreeSet<EntityId>,
+}
+
+impl ReferenceInspector {
+    pub fn new(document: &Document, revision: u64) -> Self {
+        let mut entries = vec![];
+        let mut missing_sources = BTreeSet::new();
+        let mut hashes = BTreeMap::new();
+        let mut affected_by_owner = BTreeMap::new();
+        let graph = std::sync::OnceLock::new();
+        for entity in document.entities() {
+            for link in entity.references() {
+                let Some(intent) = link.geometry else {
+                    continue;
                 };
+                if document.get(link.target).is_none() {
+                    missing_sources.insert(link.target);
+                }
+                let affected = affected_by_owner.entry(entity.id).or_insert_with(|| {
+                    graph
+                        .get_or_init(|| crate::document::AffectedIndex::new(document).ok())
+                        .as_ref()
+                        .map_or_else(Vec::new, |graph| graph.affected(entity.id))
+                });
                 entries.push(Diagnostic {
                     address: ReferenceAddress {
                         owner: entity.id,
                         reference: intent.id,
                     },
                     source: link.target,
-                    role: link.role.clone(),
-                    intent: intent.clone(),
-                    resolution,
-                    affected: document.affected([entity.id]).unwrap_or_default(),
+                    role: link.role,
+                    intent,
+                    resolution: Resolution::MissingSource,
+                    affected: affected.clone(),
                     dependency_hash: *hashes
                         .entry(link.target)
                         .or_insert_with(|| dependency_hash(document, link.target).ok()),
                 });
             }
         }
-    }
-    ReferenceReport {
-        revision,
-        entries,
-        external_results: BTreeMap::new(),
-        sketch_supports: BTreeMap::new(),
-        external_errors: document
-            .entities()
-            .filter(|e| crate::sketch_external::is_occurrence_reference(document, e.id))
-            .map(|e| {
-                (
+        let report = ReferenceReport {
+            revision,
+            entries,
+            external_results: BTreeMap::new(),
+            sketch_supports: BTreeMap::new(),
+            external_errors: document
+                .entities()
+                .filter(|e| crate::sketch_external::is_occurrence_reference(document, e.id))
+                .map(|e| (
                     e.id,
-                    "Occurrence sketch reference requires a current exact native result receipt"
-                        .into(),
-                )
-            })
-            .collect(),
+                    "Occurrence sketch reference requires a current exact native result receipt".into(),
+                ))
+                .collect(),
+        };
+        Self {
+            report,
+            missing_sources,
+        }
+    }
+
+    pub fn inspect(&self, snapshots: &BTreeMap<EntityId, TopologySnapshot>) -> ReferenceReport {
+        let mut report = self.report.clone();
+        for entry in &mut report.entries {
+            if self.missing_sources.contains(&entry.source) {
+                continue;
+            }
+            entry.resolution = match snapshots.get(&entry.source) {
+                None => Resolution::MissingSource,
+                Some(snapshot) if snapshot.owner != entry.source => Resolution::Invalid {
+                    message: "Topology snapshot belongs to another source".into(),
+                },
+                Some(snapshot) => resolve(&entry.intent, snapshot, report.revision),
+            };
+        }
+        report
     }
 }
 /// Authored datum coordinates are never a fallback for unresolved attachments.

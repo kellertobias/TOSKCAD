@@ -6,12 +6,21 @@ use multicad_core::{
     project_file::ProjectResources,
     references::{ReferenceGate, ReferenceReport, TopologySnapshot, inspect},
 };
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+    collections::BTreeMap,
+    sync::{Arc, OnceLock},
+};
 pub struct ReferenceEvaluation {
     pub stamp: SceneStamp,
     pub report: ReferenceReport,
-    pub snapshots: BTreeMap<EntityId, TopologySnapshot>,
+    pub(crate) snapshots: OnceLock<BTreeMap<EntityId, TopologySnapshot>>,
     pub candidate: Arc<Scene>,
+}
+impl ReferenceEvaluation {
+    pub fn snapshots(&self) -> &BTreeMap<EntityId, TopologySnapshot> {
+        self.snapshots
+            .get_or_init(|| self.candidate.reference_snapshots())
+    }
 }
 pub struct SceneReply {
     pub stamp: SceneStamp,
@@ -80,6 +89,7 @@ pub struct SceneFeed {
     backend: Option<Box<dyn SceneBackend>>,
     store: SceneStore,
     last_source: Option<(EntityId, u64)>,
+    requested_source: Option<(Document, ProjectResources)>,
     generation: u64,
     pending: bool,
     error: Option<String>,
@@ -97,6 +107,7 @@ impl SceneFeed {
     pub fn set_backend(&mut self, backend: Box<dyn SceneBackend>) {
         self.backend = Some(backend);
         self.last_source = None;
+        self.requested_source = None;
         self.pending = false;
         self.error = None;
         self.source_valid = false;
@@ -195,14 +206,52 @@ impl SceneFeed {
                 revision,
                 generation,
             };
+            let reused = self
+                .source_valid
+                .then(|| self.requested_source.as_ref().zip(self.store.visible()))
+                .flatten()
+                .filter(|((before, prior_resources), _)| {
+                    prior_resources == resources && before.differs_only_in_presentation(document)
+                })
+                .and_then(|(_, scene)| {
+                    let source =
+                        multicad_core::project_file::ContentHash::document(document).ok()?;
+                    scene.rebind_presentation(stamp, source)
+                });
             self.last_source = Some(source);
             self.expected = Some(stamp);
+            self.requested_source = Some((document.clone(), resources.clone()));
             self.error = None;
             self.source_valid = false;
             self.refining = false;
             self.quality_error = None;
             self.requested_quality = None;
             self.quality_unsupported = false;
+            if let Some(scene) = reused {
+                backend.cancel();
+                let scene = Arc::new(scene);
+                let accepted = self
+                    .store
+                    .begin(stamp)
+                    .and_then(|()| self.store.publish(scene.clone()));
+                if accepted.is_ok() {
+                    if let Some(evaluation) = &mut self.references {
+                        evaluation.stamp = stamp;
+                        evaluation.report.revision = revision;
+                        if let Some(info) = scene.model_evaluation()
+                            && let Some(report) = scene.native_reference_report(info.source_hash)
+                        {
+                            evaluation.report = report.clone();
+                        }
+                        evaluation.snapshots = OnceLock::new();
+                        evaluation.candidate = scene;
+                    }
+                    self.pending = false;
+                    self.source_valid = true;
+                    self.quality_unsupported = true;
+                    return;
+                }
+            }
             if let Err(error) = self
                 .store
                 .begin(stamp)
@@ -274,18 +323,27 @@ impl SceneFeed {
                             Some("Native scene belongs to a different source snapshot".into());
                         return;
                     }
-                    let has_references = document
-                        .entities()
-                        .any(|e| e.references().iter().any(|l| l.geometry.is_some()));
-                    let snapshots = if has_references {
-                        scene.reference_snapshots()
-                    } else {
-                        BTreeMap::new()
-                    };
+                    let snapshots = OnceLock::new();
                     let report = scene
                         .native_reference_report(source)
                         .cloned()
-                        .unwrap_or_else(|| inspect(document, revision, &snapshots));
+                        .unwrap_or_else(|| {
+                            // Source-only/test providers need topology to resolve
+                            // authored intents. Native providers send that report
+                            // already; build the replacement catalogue only when
+                            // the operator opens reference repair.
+                            let snapshots = snapshots.get_or_init(|| {
+                                if document
+                                    .entities()
+                                    .any(|e| e.references().iter().any(|l| l.geometry.is_some()))
+                                {
+                                    scene.reference_snapshots()
+                                } else {
+                                    BTreeMap::new()
+                                }
+                            });
+                            inspect(document, revision, snapshots)
+                        });
                     let driving = report.for_model(document);
                     let driving_resolved =
                         driving.as_ref().is_ok_and(ReferenceReport::all_resolved);
@@ -332,5 +390,110 @@ impl SceneFeed {
             }
             self.refining = false;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use multicad_core::{
+        document::{Entity, EntityData, Mutation},
+        model::ModelEvaluationInfo,
+        project_file::ContentHash,
+    };
+    use std::{cell::Cell, rc::Rc};
+
+    struct Backend {
+        requests: Rc<Cell<usize>>,
+        reply: Option<SceneReply>,
+    }
+
+    impl SceneBackend for Backend {
+        fn request(&mut self, document: &Document, stamp: SceneStamp) -> Result<(), String> {
+            self.requests.set(self.requests.get() + 1);
+            let hash = ContentHash::document(document)?;
+            let scene = Scene::new(stamp, vec![], vec![])?
+                .with_model_evaluation(Arc::new(ModelEvaluationInfo {
+                    source_hash: hash,
+                    consumed_bodies: Default::default(),
+                    cut_targets: vec![],
+                    screw_connection_checks: vec![],
+                }))?
+                .with_native_reference_report(
+                    hash,
+                    ReferenceReport {
+                        revision: stamp.revision,
+                        entries: vec![],
+                        external_results: BTreeMap::new(),
+                        external_errors: BTreeMap::new(),
+                        sketch_supports: BTreeMap::new(),
+                    },
+                )?;
+            self.reply = Some(SceneReply {
+                stamp,
+                result: Ok(Arc::new(scene)),
+            });
+            Ok(())
+        }
+
+        fn poll(&mut self) -> Option<SceneReply> {
+            self.reply.take()
+        }
+    }
+
+    #[test]
+    fn authored_visibility_and_file_info_reuse_current_geometry_but_model_changes_do_not() {
+        let group = Entity::new("Drawers and slides", EntityData::Group {});
+        let mut document = Document::new("Cabinet")
+            .unwrap()
+            .edited(&[Mutation::Insert(group.clone())])
+            .unwrap();
+        let requests = Rc::new(Cell::new(0));
+        let mut feed = SceneFeed::default();
+        feed.set_backend(Box::new(Backend {
+            requests: requests.clone(),
+            reply: None,
+        }));
+        feed.tick(&document, 0);
+        assert_eq!(requests.get(), 1);
+        assert!(feed.references().unwrap().snapshots.get().is_none());
+
+        let mut hierarchy = document.hierarchy().clone();
+        hierarchy.hidden.insert(group.id);
+        document = document
+            .edited(&[Mutation::SetHierarchy(hierarchy)])
+            .unwrap();
+        feed.tick(&document, 1);
+        assert_eq!(
+            requests.get(),
+            1,
+            "visibility must not call the native builder"
+        );
+        let info = multicad_core::project_file::info::FileInfo {
+            name: "Shop cabinet".into(),
+            description: "Fitted drawers".into(),
+            ..Default::default()
+        };
+        document = document
+            .edited(&multicad_core::project_file::info::edits(&document, &info).unwrap())
+            .unwrap();
+        feed.tick(&document, 2);
+        assert_eq!(
+            requests.get(),
+            1,
+            "metadata must not call the native builder"
+        );
+        assert!(feed.is_current(document.id(), 2));
+        let hash = ContentHash::document(&document).unwrap();
+        let scene = feed.visible().unwrap();
+        assert_eq!(scene.model_evaluation().unwrap().source_hash, hash);
+        assert_eq!(scene.native_reference_report(hash).unwrap().revision, 2);
+
+        let mut edited = group;
+        edited.name = "Different model entry".into();
+        document = document.edited(&[Mutation::Replace(edited)]).unwrap();
+        feed.tick(&document, 3);
+        assert_eq!(requests.get(), 2);
+        assert!(feed.is_current(document.id(), 3));
     }
 }

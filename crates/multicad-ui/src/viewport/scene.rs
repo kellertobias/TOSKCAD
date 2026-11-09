@@ -533,6 +533,7 @@ pub enum SceneScope {
     /// Source-neutral presentation, never a model preview or geometry proof.
     Presentation,
 }
+#[derive(Clone)]
 pub struct Scene {
     scope: SceneScope,
     stamp: SceneStamp,
@@ -564,10 +565,12 @@ pub struct WeldMarker {
     pub position: Point,
     pub normal: Point,
 }
+#[derive(Clone)]
 struct NativeBounds {
     source: multicad_core::project_file::ContentHash,
     entities: BTreeMap<EntityId, [Point; 2]>,
 }
+#[derive(Clone)]
 struct NativeReferences {
     source: multicad_core::project_file::ContentHash,
     report: ReferenceReport,
@@ -590,6 +593,57 @@ pub(crate) struct DisplayLeafHit {
     pub path: multicad_core::model::OccurrencePath,
 }
 impl Scene {
+    /// The feed checks that only presentation data changed and that
+    /// resources are identical. Reuse immutable geometry and rebind the
+    /// receipts to the new source revision before exposing the scene.
+    pub(super) fn rebind_presentation(
+        &self,
+        stamp: SceneStamp,
+        source: multicad_core::project_file::ContentHash,
+    ) -> Option<Self> {
+        if !self.is_full_model()
+            || self.stamp.document != stamp.document
+            || self.display_origin.is_some()
+            || self
+                .model_evaluation
+                .as_ref()
+                .is_none_or(|info| !info.cut_targets.is_empty())
+        {
+            return None;
+        }
+        let mut scene = self.clone();
+        scene.stamp = stamp;
+        if let Some(info) = &mut scene.model_evaluation {
+            Arc::make_mut(info).source_hash = source;
+        }
+        if let Some(info) = &mut scene.assembly_evaluation {
+            Arc::make_mut(info).source_hash = source;
+        }
+        if let Some(info) = &mut scene.transfer_evaluation {
+            Arc::make_mut(info).source_hash = source;
+        }
+        if let Some(info) = &mut scene.native_bounds {
+            Arc::make_mut(info).source = source;
+        }
+        if let Some(info) = &mut scene.native_references {
+            let info = Arc::make_mut(info);
+            info.source = source;
+            info.report.revision = stamp.revision;
+            for receipt in info.report.external_results.values_mut() {
+                receipt.revision = stamp.revision;
+                receipt.source_hash = source;
+            }
+        }
+        if let Some(plan) = &mut scene.architecture_plan
+            && let Ok(plan) = Arc::make_mut(plan)
+        {
+            plan.source_hash = source;
+        }
+        if let Some(reviews) = &mut scene.fdm_reviews {
+            Arc::make_mut(reviews).source = source;
+        }
+        Some(scene)
+    }
     pub fn set_architecture_plan(
         &mut self,
         plan: Result<super::ArchitecturePlan, String>,

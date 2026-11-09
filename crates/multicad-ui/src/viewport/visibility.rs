@@ -57,6 +57,12 @@ impl VisibilityFilter {
         if scene.stamp().revision != revision {
             return Err("Wait for a current model before applying source visibility".into());
         }
+        if document.hierarchy().hidden.is_empty()
+            && scene.instances().len() == scene.reference_instances().len()
+        {
+            self.cached = Some((scene.clone(), scene.clone()));
+            return Ok(scene.clone());
+        }
         let index = Index::new(document).map_err(|error| error.to_string())?;
         let mut visible = BTreeSet::new();
         for instance in scene.reference_instances() {

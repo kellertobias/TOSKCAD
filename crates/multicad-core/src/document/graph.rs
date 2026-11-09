@@ -17,6 +17,55 @@ pub struct ReferenceDiagnostic {
     pub role: String,
     pub problem: ReferenceProblem,
 }
+
+/// The static reverse dependency graph can serve many diagnostics while the
+/// native topology for the same document is being evaluated.
+pub(crate) struct AffectedIndex {
+    reverse: BTreeMap<EntityId, BTreeSet<EntityId>>,
+    order: Vec<EntityId>,
+}
+
+impl AffectedIndex {
+    pub(crate) fn new(document: &Document) -> Result<Self, DocumentError> {
+        let mut reverse = BTreeMap::<_, BTreeSet<_>>::new();
+        for entity in document.entities() {
+            for link in entity.references() {
+                reverse.entry(link.target).or_default().insert(entity.id);
+            }
+        }
+        Ok(Self {
+            reverse,
+            order: document.topological_order()?,
+        })
+    }
+
+    pub(crate) fn affected(&self, source: EntityId) -> Vec<EntityId> {
+        let affected = visit_dependents(&self.reverse, [source]);
+        self.order
+            .iter()
+            .copied()
+            .filter(|id| affected.contains(id))
+            .collect()
+    }
+}
+
+fn visit_dependents(
+    reverse: &BTreeMap<EntityId, BTreeSet<EntityId>>,
+    sources: impl IntoIterator<Item = EntityId>,
+) -> BTreeSet<EntityId> {
+    let mut affected: BTreeSet<_> = sources.into_iter().collect();
+    let mut pending = affected.clone();
+    while let Some(id) = pending.pop_first() {
+        if let Some(dependents) = reverse.get(&id) {
+            for dependent in dependents {
+                if affected.insert(*dependent) {
+                    pending.insert(*dependent);
+                }
+            }
+        }
+    }
+    affected
+}
 impl Document {
     pub fn reference_diagnostics(&self) -> Vec<ReferenceDiagnostic> {
         let mut output = Vec::new();
@@ -168,17 +217,7 @@ impl Document {
                 reverse.entry(association).or_default().insert(owner);
             }
         }
-        let mut affected: BTreeSet<_> = sources.into_iter().collect();
-        let mut pending = affected.clone();
-        while let Some(id) = pending.pop_first() {
-            if let Some(dependents) = reverse.get(&id) {
-                for dependent in dependents {
-                    if affected.insert(*dependent) {
-                        pending.insert(*dependent);
-                    }
-                }
-            }
-        }
+        let affected = visit_dependents(&reverse, sources);
         Ok(self
             .topological_order()?
             .into_iter()

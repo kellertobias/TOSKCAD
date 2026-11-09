@@ -173,7 +173,7 @@ impl RepairPanel {
         self.selection_error = None;
         self.message = None;
         self.inspecting = true;
-        let Some(snapshot) = self.source.and_then(|id| evaluation.snapshots.get(&id)) else {
+        let Some(snapshot) = self.source.and_then(|id| evaluation.snapshots().get(&id)) else {
             self.selection_error = Some("Replacement source geometry is unavailable".into());
             return;
         };
@@ -211,7 +211,7 @@ impl RepairPanel {
         }
         let snapshot = self
             .source
-            .and_then(|id| evaluation.snapshots.get(&id))
+            .and_then(|id| evaluation.snapshots().get(&id))
             .ok_or("Choose a replacement source")?;
         let address = self.address.ok_or("Choose a reference to repair")?;
         if external_owner(session.document(), address.owner) {
@@ -346,7 +346,7 @@ impl RepairPanel {
             },
         );
         let mut sources: Vec<_> = evaluation
-            .snapshots
+            .snapshots()
             .values()
             .filter(|s| {
                 s.revision == session.revision()
@@ -377,7 +377,7 @@ impl RepairPanel {
         {
             self.choose_source(source);
         }
-        let snapshot = self.source.and_then(|id| evaluation.snapshots.get(&id));
+        let snapshot = self.source.and_then(|id| evaluation.snapshots().get(&id));
         if let Some(snapshot) = snapshot {
             ui.label("Replacement candidates");
             ui.small("Choose the geometry this reference should use.");
@@ -539,7 +539,7 @@ mod tests {
         let evaluation = ReferenceEvaluation {
             stamp: current.stamp(),
             report,
-            snapshots,
+            snapshots: snapshots.into(),
             candidate: current,
         };
         let mut panel = RepairPanel::default();
@@ -597,7 +597,7 @@ mod tests {
         ReferenceEvaluation {
             stamp,
             report: references::inspect(session.document(), session.revision(), &snapshots),
-            snapshots,
+            snapshots: snapshots.into(),
             candidate: Arc::new(Scene::new(stamp, vec![], vec![]).unwrap()),
         }
     }
@@ -667,7 +667,7 @@ mod tests {
         panel.begin(&evaluation.report.entries[0]);
         panel.choose_candidate(
             evaluation,
-            evaluation.snapshots[&evaluation.report.entries[0].source].elements[1].key,
+            evaluation.snapshots()[&evaluation.report.entries[0].source].elements[1].key,
         );
     }
     #[test]
@@ -735,7 +735,7 @@ mod tests {
         let mut panel = RepairPanel::default();
         select(&mut panel, &session, &evaluated);
         panel.prepare(&session, &evaluated).unwrap();
-        let next = evaluation(&session, evaluated.snapshots.clone(), 2);
+        let next = evaluation(&session, evaluated.snapshots().clone(), 2);
         assert!(panel.commit(&mut session, &next).is_err());
         assert_eq!(session.revision(), 0);
         assert!(!panel.has_pending());
@@ -826,7 +826,12 @@ mod tests {
         );
         assert!(panel.selection_error.is_some());
         assert!(panel.prepare(&session, &evaluated).is_err());
-        let snapshot = evaluated.snapshots.get_mut(&source).unwrap();
+        let snapshot = evaluated
+            .snapshots
+            .get_mut()
+            .unwrap()
+            .get_mut(&source)
+            .unwrap();
         snapshot.elements[1].boundary = snapshot.elements[0].boundary.clone();
         let key = snapshot.elements[1].key;
         panel.choose_candidate(&evaluated, key);
@@ -940,7 +945,7 @@ mod tests {
     #[test]
     fn resolved_references_leave_the_inspector_empty() {
         let (mut session, evaluated, _) = fixture();
-        let mut snapshots = evaluated.snapshots.clone();
+        let mut snapshots = evaluated.snapshots().clone();
         snapshots.values_mut().for_each(|s| s.elements.truncate(1));
         let resolved = evaluation(&session, snapshots, 2);
         assert!(resolved.report.all_resolved());
@@ -962,7 +967,7 @@ mod tests {
     fn compact_candidates_use_friendly_roles_and_prioritize_original_intent() {
         let (_, evaluation, cut) = fixture();
         let diagnostic = &evaluation.report.entries[0];
-        let snapshot = &evaluation.snapshots[&diagnostic.source];
+        let snapshot = &evaluation.snapshots()[&diagnostic.source];
         let ambiguous = snapshot.elements[1].clone();
         let mut matching = ambiguous.clone();
         matching.key.ordinal = 90;

@@ -28,8 +28,9 @@ pub struct AidReview {
     pub bounds_mm: [Point; 2],
     pub exact_contact: Option<ExactContact>,
 }
+#[derive(Clone)]
 pub(super) struct AidReviews {
-    source: ContentHash,
+    pub(super) source: ContentHash,
     result: Result<Vec<AidReview>, String>,
 }
 /// A picked point on a face with its outward unit normal. On a planar face

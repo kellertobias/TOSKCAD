@@ -135,6 +135,7 @@ pub(crate) fn checkpoint(interrupt: Option<&dyn Fn() -> bool>) -> Result<(), Mod
 
 struct Profiles<'a> {
     context: &'a SketchEvaluationContext<'a>,
+    references: Option<references::ReferenceInspector>,
     queries: NativeRegionQueries,
     body_heads: &'a BTreeMap<EntityId, EntityId>,
     policy: GeometryPolicy,
@@ -151,11 +152,15 @@ impl Profiles<'_> {
         interrupt: Option<&dyn Fn() -> bool>,
     ) -> Result<(CurvedProfile, Vec<Origin>), ModelError> {
         if let std::collections::btree_map::Entry::Vacant(entry) = self.cache.entry(sketch) {
-            let mut report = references::inspect(
-                self.context.document(),
-                self.context.stamp().revision,
-                topologies,
-            );
+            let mut report = self
+                .references
+                .get_or_insert_with(|| {
+                    references::ReferenceInspector::new(
+                        self.context.document(),
+                        self.context.stamp().revision,
+                    )
+                })
+                .inspect(topologies);
             crate::external::Sources {
                 document: self.context.document(),
                 revision: self.context.stamp().revision,
@@ -585,6 +590,7 @@ impl Compiler {
             crate::eval_cache::Session::new(cache, self, document, context.parameters())
         });
         let mut profiles = Profiles {
+            references: None,
             context: &context,
             queries: NativeRegionQueries::new(self.policy).map_err(|e| error(None, e))?,
             body_heads: &bodies,
@@ -1432,7 +1438,11 @@ impl Compiler {
         };
         checkpoint(interrupt)?;
         timings.pair_validation_ms = pair_started.elapsed().as_secs_f64() * 1000.;
-        let mut references = references::inspect(document, revision, &topologies);
+        let mut references = profiles
+            .references
+            .take()
+            .unwrap_or_else(|| references::ReferenceInspector::new(document, revision))
+            .inspect(&topologies);
         crate::external::complete_report(
             self,
             &crate::external::Sources {

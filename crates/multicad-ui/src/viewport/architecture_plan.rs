@@ -8,6 +8,7 @@ use multicad_core::{
 };
 use std::{collections::BTreeSet, sync::Arc};
 
+#[derive(Clone)]
 pub struct ArchitecturePlan {
     pub source_hash: ContentHash,
     pub sources: BTreeSet<EntityId>,

@@ -158,6 +158,7 @@ pub struct Session {
     revision: u64,
     source_hash: Arc<OnceLock<Result<crate::project_file::ContentHash, String>>>,
     saved: Option<Document>,
+    dirty: OnceLock<bool>,
     undo: VecDeque<History>,
     redo: VecDeque<History>,
     activity: VecDeque<Activity>,
@@ -213,6 +214,7 @@ impl Session {
             revision: 0,
             source_hash: Arc::new(OnceLock::new()),
             saved: None,
+            dirty: OnceLock::new(),
             undo: VecDeque::new(),
             redo: VecDeque::new(),
             activity: VecDeque::new(),
@@ -237,6 +239,7 @@ impl Session {
         self.current = Arc::new(current);
         self.revision = revision;
         self.source_hash = Arc::new(OnceLock::new());
+        self.dirty = OnceLock::new();
     }
     pub fn stamp(&self) -> SessionStamp {
         SessionStamp {
@@ -269,6 +272,7 @@ impl Session {
                 revision: self.revision,
                 source_hash: self.source_hash.clone(),
                 saved: None,
+                dirty: OnceLock::new(),
                 undo: VecDeque::new(),
                 redo: VecDeque::new(),
                 activity: VecDeque::new(),
@@ -276,7 +280,9 @@ impl Session {
         }
     }
     pub fn dirty(&self) -> bool {
-        self.saved.as_ref() != Some(self.document())
+        *self
+            .dirty
+            .get_or_init(|| self.saved.as_ref() != Some(self.document()))
     }
     pub fn can_undo(&self) -> bool {
         !self.undo.is_empty()
@@ -308,6 +314,7 @@ impl Session {
     pub fn mark_saved(&mut self, expected: u64) -> Result<(), CommandError> {
         self.check_revision(expected)?;
         self.saved = Some(self.document().clone());
+        self.dirty = OnceLock::from(false);
         Ok(())
     }
     /// Acknowledge the exact immutable snapshot written by a completed file job.
@@ -321,6 +328,7 @@ impl Session {
         }
         let evaluated = parameters::evaluate(snapshot)?;
         self.saved = Some(evaluated.document);
+        self.dirty = OnceLock::new();
         Ok(())
     }
     fn validate_actor(actor: &Actor) -> Result<(), CommandError> {
