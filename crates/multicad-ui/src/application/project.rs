@@ -26,12 +26,22 @@ impl Application {
         if self.current().dirty() {
             label.push_str("  •");
         }
-        let switcher = ui.add(
-            egui::Button::new(egui::RichText::new(label).strong())
-                .frame(false)
-                .right_text("   ▾")
-                .min_size(egui::vec2(0., 26.)),
-        );
+        let chevron = ui.id().with("project-switcher-chevron");
+        let button = egui::Button::new(egui::RichText::new(label).strong())
+            .frame(false)
+            .right_text(egui::Atom::custom(chevron, egui::vec2(22., 14.)))
+            .min_size(egui::vec2(0., 26.))
+            .atom_ui(ui);
+        if let Some(rect) = button.rect(chevron) {
+            icons::paint_sized(
+                ui,
+                Icon::ArrowDown,
+                rect.center() + egui::vec2(3., 0.),
+                ui.visuals().text_color(),
+                13.,
+            );
+        }
+        let switcher = button.response;
         let accessible = format!("Switch project. Active project {title}. {count} open");
         switcher
             .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &accessible));
@@ -326,7 +336,9 @@ impl Application {
                                     contents_row(ui, &book.name, |ui| {
                                         match multicad_core::drawings::read(doc, book.id) {
                                             Ok(drawing) => {
-                                                egui::CollapsingHeader::new(format!("{} sheets", drawing.pages.len()))
+                                                let count = drawing.pages.len();
+                                                let label = if count == 1 { "1 sheet".into() } else { format!("{count} sheets") };
+                                                egui::CollapsingHeader::new(label)
                                                     .id_salt(book.id).show(ui, |ui| {
                                                         for page in &drawing.pages {
                                                             ui.small(format!("{} · {}", page.number, page.info.title));
