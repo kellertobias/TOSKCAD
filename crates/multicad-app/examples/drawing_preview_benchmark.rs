@@ -4,6 +4,7 @@ mod drawings;
 #[path = "../src/files.rs"]
 mod files;
 use multicad_core::drawings::{DrawingStamp, ViewEvaluation};
+use multicad_model::GeometryBackend;
 use multicad_ui::{drawings::DrawingBackend, storage::DocumentStorage};
 use std::{
     path::PathBuf,
@@ -22,19 +23,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         revision: 0,
         source_hash: multicad_core::project_file::ContentHash::document(doc)?,
     };
-    let mut backend = if std::env::args_os().any(|a| a == "--uncached") {
-        drawings::Backend::with_cache(None)
+    let uncached = std::env::args_os().any(|a| a == "--uncached");
+    let geometry = if std::env::args_os().any(|a| a == "--rust-model") {
+        GeometryBackend::Rust
     } else {
-        drawings::Backend::new()
+        GeometryBackend::OpenCascade
     };
+    let start_worker = || match (geometry, uncached) {
+        (GeometryBackend::OpenCascade, false) => drawings::Backend::new(),
+        (GeometryBackend::OpenCascade, true) => drawings::Backend::with_cache(None),
+        (GeometryBackend::Rust, false) => drawings::Backend::with_geometry_backend(geometry),
+        (GeometryBackend::Rust, true) => drawings::Backend::with_cache_and_backend(None, geometry),
+    };
+    let mut backend = start_worker();
     let mut first_results = std::collections::BTreeMap::new();
     for pass in 0..3 {
         if pass == 2 {
-            if std::env::args_os().any(|a| a == "--uncached") {
+            if uncached {
                 break;
             }
             // A new worker proves reuse after closing/reopening a document.
-            backend = drawings::Backend::new();
+            backend = start_worker();
         }
         for book in multicad_core::drawings::books(doc) {
             for page in multicad_core::drawings::read(doc, book)?.pages {
@@ -67,7 +76,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 println!(
                     "{}",
-                    serde_json::json!({"pass":pass,"page":page.number,"views":result.views.len(),
+                    serde_json::json!({"backend":format!("{geometry:?}"),"pass":pass,
+                    "page":page.number,"views":result.views.len(),
                     "ready":result.views.values().all(|v| matches!(v, ViewEvaluation::Ready {..})),
                     "vectors":vectors,"milliseconds":start.elapsed().as_secs_f64()*1000.})
                 );

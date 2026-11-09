@@ -72,7 +72,7 @@ impl Backend {
     pub(crate) fn with_cache(cache: Option<cache::Cache>) -> Self {
         Self::with_cache_and_backend(cache, GeometryBackend::OpenCascade)
     }
-    fn with_cache_and_backend(
+    pub(crate) fn with_cache_and_backend(
         cache: Option<cache::Cache>,
         geometry_backend: GeometryBackend,
     ) -> Self {
