@@ -22,6 +22,15 @@ fn box_session() -> (Session, PrimitiveRequest) {
 }
 #[test]
 fn native_reusable_assembly_publishes_one_root_and_exact_explodable_leaf_receipts() {
+    reusable_assembly_scene(GeometryBackend::OpenCascade);
+}
+
+#[test]
+fn rust_reusable_assembly_publishes_one_root_and_exact_explodable_leaf_receipts() {
+    reusable_assembly_scene(GeometryBackend::Rust);
+}
+
+fn reusable_assembly_scene(geometry_backend: GeometryBackend) {
     use std::collections::BTreeMap;
     let (mut session, stock) = box_session();
     let actor = || Actor::local(Channel::CommandLine);
@@ -66,10 +75,26 @@ fn native_reusable_assembly_publishes_one_root_and_exact_explodable_leaf_receipt
         )
         .unwrap();
     let original = session.document().clone();
-    let native = Compiler::default()
-        .compile(session.document(), session.revision())
+    let model = Compiler::default()
+        .compile_with_backend(
+            session.document(),
+            session.revision(),
+            geometry_backend,
+            None,
+        )
         .unwrap();
-    let scene = scene(session.document(), native.snapshot(), 7).unwrap();
+    let mut worker = Backend::factory(geometry_backend).unwrap()();
+    worker
+        .request(
+            session.document(),
+            SceneStamp {
+                document: session.document().id(),
+                revision: session.revision(),
+                generation: 7,
+            },
+        )
+        .unwrap();
+    let scene = wait_for_scene(&mut *worker).result.unwrap();
     assert!(scene.transfer_evaluation().unwrap().counts.is_empty());
     assert_eq!(scene.instances().len(), 1);
     assert_eq!(scene.instances()[0].id, placed.instance);
@@ -96,7 +121,7 @@ fn native_reusable_assembly_publishes_one_root_and_exact_explodable_leaf_receipt
     assert!(matches!(
         multicad_core::references::resolve(
             &intent,
-            &native.snapshot().occurrences[&placed.instance].topology,
+            &model.snapshot().occurrences[&placed.instance].topology,
             session.revision()
         ),
         multicad_core::references::Resolution::Resolved { .. }

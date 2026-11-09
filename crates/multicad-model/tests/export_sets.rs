@@ -509,6 +509,17 @@ fn rust_worker_publishes_the_exact_circular_boolean_cut_in_a_box() {
     let Fixture {
         mut session, part, ..
     } = Fixture::new();
+    let feature = bore_box(&mut session, &part);
+    let expected_volume = 6000. - std::f64::consts::PI * 1.25_f64.powi(2) * 30.;
+    verify_rust_prism_export(
+        session,
+        feature,
+        expected_volume,
+        Some([[5., 6., 0.], [5., 6., 30.]]),
+    );
+}
+
+fn bore_box(session: &mut Session, part: &PrimitiveRequest) -> EntityId {
     let tool = PrimitiveRequest::new(
         "Boring tool",
         PrimitiveParameters::Cylinder {
@@ -520,7 +531,7 @@ fn rust_worker_publishes_the_exact_circular_boolean_cut_in_a_box() {
             },
         },
     );
-    let prepared = model::prepare_primitive(&session, session.revision(), actor(), &tool).unwrap();
+    let prepared = model::prepare_primitive(session, session.revision(), actor(), &tool).unwrap();
     session.commit(prepared.prepared).unwrap();
     let cut = BooleanRequest::new(
         Operation::Cut,
@@ -533,15 +544,134 @@ fn rust_worker_publishes_the_exact_circular_boolean_cut_in_a_box() {
             producer: tool.feature,
         }],
     );
-    let prepared = model::prepare_boolean(&session, session.revision(), actor(), &cut).unwrap();
+    let prepared = model::prepare_boolean(session, session.revision(), actor(), &cut).unwrap();
     session.commit(prepared.prepared).unwrap();
-    let expected_volume = 6000. - std::f64::consts::PI * 1.25_f64.powi(2) * 30.;
-    verify_rust_prism_export(
-        session,
-        cut.feature,
-        expected_volume,
-        Some([[5., 6., 0.], [5., 6., 30.]]),
+    cut.feature
+}
+
+#[test]
+fn rust_worker_verifies_each_nested_leaf_in_world_space() {
+    let mut f = Fixture::new();
+    let feature = bore_box(&mut f.session, &f.part);
+    let q = std::f64::consts::FRAC_1_SQRT_2;
+    let instance = |name, component, translation_mm, rotation_xyzw| {
+        Entity::new(
+            name,
+            EntityData::Instance {
+                component,
+                placement: Placement {
+                    translation_mm,
+                    rotation_xyzw,
+                },
+                placement_source: None,
+            },
+        )
+    };
+    let rotated = instance("Rotated member", f.part.body, [8., 4., -3.], [0., 0., q, q]);
+    let translated = instance(
+        "Translated member",
+        f.part.body,
+        [-10., 30., 2.],
+        [0., 0., 0., 1.],
     );
+    let members = [rotated.id, translated.id];
+    let subassembly = Entity::new(
+        "Bored stock subassembly",
+        EntityData::Assembly {
+            instances: members.to_vec(),
+        },
+    );
+    let outer = instance(
+        "Placed subassembly",
+        subassembly.id,
+        [50., 10., 20.],
+        [q, 0., 0., q],
+    );
+    let outer_id = outer.id;
+    let assembly = Entity::new(
+        "Export assembly",
+        EntityData::Assembly {
+            instances: vec![outer_id],
+        },
+    );
+    let assembly_id = assembly.id;
+    apply(
+        &mut f.session,
+        [rotated, translated, subassembly, outer, assembly]
+            .into_iter()
+            .map(Mutation::Insert)
+            .collect(),
+    );
+    let mut definition = read(f.session.document(), f.set).unwrap();
+    definition.scope.root = ScopeRoot::Assembly {
+        assembly: assembly_id,
+    };
+    f.replace_set(&definition);
+
+    let document = f.session.document();
+    let revision = f.session.revision();
+    let worker =
+        ExportWorker::with_geometry_backend(Exporter::default(), GeometryBackend::Rust).unwrap();
+    worker.preview(document, revision, f.set, actor()).unwrap();
+    let ExportResult::Preview(preview) = reply(&worker).result else {
+        panic!("expected Rust preview reply");
+    };
+    let preview = preview.unwrap();
+    assert!(preview.can_run());
+    assert_eq!(preview.artifacts.len(), 2);
+    assert_ne!(
+        preview.artifacts[0].output.filename,
+        preview.artifacts[1].output.filename
+    );
+
+    let root = tempfile::tempdir().unwrap();
+    worker
+        .run(document, revision, &preview.key, root.path(), actor())
+        .unwrap();
+    let ExportResult::Run(run) = reply(&worker).result else {
+        panic!("expected Rust run reply");
+    };
+    let run = run.unwrap();
+    assert_eq!(run.files.len(), 2);
+    let expected_volume = 6000. - std::f64::consts::PI * 1.25_f64.powi(2) * 30.;
+    for (member, expected_bounds, expected_centers) in [
+        (
+            members[0],
+            [[38., -17., 24.], [58., 13., 34.]],
+            [[52., 13., 29.], [52., -17., 29.]],
+        ),
+        (
+            members[1],
+            [[40., -22., 50.], [50., 8., 70.]],
+            [[45., 8., 56.], [45., -22., 56.]],
+        ),
+    ] {
+        let file = run
+            .files
+            .iter()
+            .find(|file| {
+                matches!(&file.artifact.output.subject, OutputSubject::Part(part)
+                    if part.part == f.part.body
+                        && part.root_assembly == Some(assembly_id)
+                        && part.occurrence_path == [outer_id, member])
+            })
+            .unwrap();
+        assert_eq!(file.artifact.solid, outer_id);
+        assert_eq!(file.artifact.producer, feature);
+        let path = Path::new(&run.directory).join(&file.artifact.output.filename);
+        let imported = Solid::read_step(&path, GeometryPolicy::default()).unwrap();
+        let bounds = imported.bounds().unwrap();
+        assert_eq!(imported.solid_count().unwrap(), 1);
+        near(imported.volume_mm3().unwrap(), expected_volume);
+        for (actual, expected) in [bounds.min, bounds.max]
+            .into_iter()
+            .flatten()
+            .zip(expected_bounds.into_iter().flatten())
+        {
+            near(actual, expected);
+        }
+        verify_bore_circles(&imported, feature, revision, Some(expected_centers));
+    }
 }
 
 fn verify_rust_prism_export(
@@ -587,6 +717,15 @@ fn verify_rust_prism_export(
     let imported = Solid::read_step(&path, GeometryPolicy::default()).unwrap();
     assert_eq!(imported.solid_count().unwrap(), 1);
     assert!((imported.volume_mm3().unwrap() - expected_volume).abs() < 1e-6);
+    verify_bore_circles(&imported, feature, revision, expected_centers);
+}
+
+fn verify_bore_circles(
+    imported: &Solid,
+    feature: EntityId,
+    revision: u64,
+    expected_centers: Option<[[f64; 3]; 2]>,
+) {
     let topology = imported.topology_snapshot(feature, revision).unwrap();
     let circles: Vec<_> = topology
         .elements

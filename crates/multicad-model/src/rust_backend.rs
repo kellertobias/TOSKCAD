@@ -23,18 +23,6 @@ use multicad_kernel::{
 pub(crate) fn validate_document(document: &Document) -> Result<(), ModelError> {
     for entity in document.entities() {
         match &entity.data {
-            EntityData::Instance { .. } => {
-                return Err(error(
-                    Some(entity.id),
-                    "Rust solid occurrences are unavailable",
-                ));
-            }
-            EntityData::Assembly { instances } if !instances.is_empty() => {
-                return Err(error(
-                    Some(entity.id),
-                    "Rust solid assemblies are unavailable",
-                ));
-            }
             EntityData::Feature {
                 definition,
                 suppressed: false,

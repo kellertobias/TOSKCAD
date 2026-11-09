@@ -163,17 +163,37 @@ fn verify_rust_step(
             format!("Rust STEP readback rejected the solid: {e:?}"),
         )
     })?;
-    let shape = built
+    let topology = built
         .model
         .as_ref()
-        .and_then(|model| model.snapshot().shapes.get(&artifact.solid))
+        .and_then(|model| {
+            let OutputSubject::Part(part) = &artifact.output.subject else {
+                return None;
+            };
+            if let Some((&root, members)) = part.occurrence_path.split_first() {
+                let leaf = model.leaf_snapshot(&multicad_core::model::OccurrencePath {
+                    root,
+                    members: members.to_vec(),
+                })?;
+                (root == artifact.solid
+                    && leaf.component == part.part
+                    && leaf.producer == artifact.producer)
+                    .then_some(&leaf.topology)
+            } else {
+                model
+                    .snapshot()
+                    .shapes
+                    .get(&artifact.solid)
+                    .map(|shape| &shape.topology)
+            }
+        })
         .ok_or_else(|| {
             invalid("Rust STEP verification requires the exact source topology".into())
         })?;
     let mut faces = 0;
     let mut edges = Vec::new();
     let mut circles = Vec::new();
-    for element in &shape.topology.elements {
+    for element in &topology.elements {
         match element.key.kind {
             TopologyKind::Face => faces += 1,
             TopologyKind::Edge => match element.geometry {
