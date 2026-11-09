@@ -1435,7 +1435,7 @@ mod tests {
                         "Weld joint",
                     ],
                     (Mode::Model, "Other") => &["Surface Structure"],
-                    (Mode::Export, "Common") => &["Model export", "Generate print plate"],
+                    (Mode::Export, "Common") => &["Add export", "Add 3D print plate"],
                     (Mode::Export, "Print") => &["Write 3MF package"],
                     _ => &[],
                 };

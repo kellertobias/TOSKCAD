@@ -45,8 +45,8 @@ impl PlateJobs {
         self.job.is_some()
     }
 
-    pub(crate) fn waiting(&self) -> bool {
-        self.busy() || self.due.is_some()
+    pub(crate) fn scheduled(&self) -> bool {
+        self.due.is_some()
     }
 
     pub(crate) fn writing(&self) -> bool {

@@ -5,7 +5,7 @@ use crate::print::PlateEditorAction;
 impl Application {
     pub(super) fn begin_print_plate(&mut self) -> Result<(), String> {
         if self.current().pending_edits() || self.file_busy() {
-            return Err("Finish the current edits before generating a print plate".into());
+            return Err("Finish the current edits before adding a print plate".into());
         }
         if self.mode == Mode::Sketch {
             self.current_mut().sketch.finish()?;
@@ -58,6 +58,7 @@ impl Application {
                 Some(project.plate.save(&mut project.session, Channel::Ui))
             }
             Some(PlateEditorAction::Discard) => {
+                project.plate_jobs.cancel();
                 project.plate.discard(&project.session);
                 project.plate_active = project.plate.selected().is_some();
                 Some(Ok("Print plate edits discarded".into()))
@@ -96,7 +97,7 @@ impl Application {
                                 if ui.button("Retry preflight").clicked() {
                                     project.plate_jobs.retry(time);
                                 }
-                            } else if project.plate_jobs.waiting() {
+                            } else if project.plate_jobs.busy() {
                                 ui.spinner();
                                 ui.label(if project.plate_jobs.writing() {
                                     "Writing the print plate…"
@@ -105,6 +106,17 @@ impl Application {
                                 });
                                 ui.ctx()
                                     .request_repaint_after(std::time::Duration::from_millis(16));
+                            } else if project.plate_jobs.scheduled() {
+                                if allow_io {
+                                    ui.label("Preparing the print check…");
+                                    ui.ctx().request_repaint_after(
+                                        std::time::Duration::from_millis(16),
+                                    );
+                                } else {
+                                    ui.label(
+                                        "Finish the current file operation to check the arrangement.",
+                                    );
+                                }
                             } else if ready {
                                 ui.label("Ready to export");
                             } else if project

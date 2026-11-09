@@ -17,6 +17,7 @@ pub(crate) enum Owner {
     Operation,
     Move,
     Drawing,
+    Output,
 }
 #[derive(Clone)]
 struct Footer {
@@ -211,7 +212,7 @@ pub(crate) fn row_with_progress(
             Rect::from_min_size(egui::pos2(rect.left(), top), egui::vec2(width, 32.)),
             apply,
             Some(footer.accent),
-            Some("Apply"),
+            (owner != Owner::Output).then_some("Apply"),
         );
         clicks.cancel = slot(
             "cancel",
@@ -221,7 +222,7 @@ pub(crate) fn row_with_progress(
             ),
             cancel,
             Some(Color32::WHITE),
-            Some("Cancel"),
+            (owner != Owner::Output).then_some("Cancel"),
         );
         if let Some(message) = pending {
             let status_rect = Rect::from_min_size(

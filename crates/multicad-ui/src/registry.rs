@@ -489,10 +489,10 @@ impl Default for Registry {
         }
         registry.tools.push(Tool {
             id: "print-plate",
-            label: "Generate print plate",
+            label: "Add 3D print plate",
             icon: Icon::PrintPlate,
             action: Command::Extension("print-plate"),
-            aliases: &["newprintplate"],
+            aliases: &["newprintplate", "Generate print plate"],
         });
         for tool in crate::print::PrintTool::ALL {
             registry.tools.push(Tool {

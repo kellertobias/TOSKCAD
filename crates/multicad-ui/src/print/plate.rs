@@ -1,4 +1,5 @@
 //! Editor for saved output-only plate arrangements.
+use crate::inspector_actions::{self, Button, Owner};
 use crate::{controls, egui, viewport::Scene};
 use multicad_core::{
     commands::{Actor, Channel, Session, SessionStamp},
@@ -156,53 +157,75 @@ impl PlateEditor {
             ui.label("Choose or create a print plate.");
             return None;
         };
-        let mut action = None;
-        ui.horizontal_wrapped(|ui| {
-            if ui
-                .add_enabled(dirty, egui::Button::new("Save plate"))
-                .clicked()
-            {
-                action = Some(PlateEditorAction::Save);
-            }
-            if ui
-                .add_enabled(dirty, egui::Button::new("Discard edits"))
-                .clicked()
-            {
-                action = Some(PlateEditorAction::Discard);
-            }
-        });
         ui.separator();
-        egui::ScrollArea::vertical()
-            .id_salt("print-plate-settings")
-            .auto_shrink([false, false])
-            .show(ui, |ui| {
+        let accent = ui.visuals().selection.bg_fill;
+        inspector_actions::scope_with_preview(
+            ui,
+            dirty.then_some(Owner::Output),
+            accent,
+            true,
+            |ui| {
                 let name = ui.label("Plate name");
                 ui.add(egui::TextEdit::singleline(&mut draft.name).desired_width(f32::INFINITY))
                     .labelled_by(name.id);
                 ui.strong("Bed size");
-                number(ui, "Bed width (X)", &mut draft.definition.bed_mm[0], 1. ..=100_000., " mm", 1.);
-                number(ui, "Bed depth (Y)", &mut draft.definition.bed_mm[1], 1. ..=100_000., " mm", 1.);
+                number(
+                    ui,
+                    "Bed width (X)",
+                    &mut draft.definition.bed_mm[0],
+                    1. ..=100_000.,
+                    " mm",
+                    1.,
+                );
+                number(
+                    ui,
+                    "Bed depth (Y)",
+                    &mut draft.definition.bed_mm[1],
+                    1. ..=100_000.,
+                    " mm",
+                    1.,
+                );
                 ui.separator();
                 ui.strong("Add a Part or placed occurrence");
-                let placed: BTreeSet<_> = draft.definition.placements.iter().map(|p| &p.source).collect();
-                let choice = self.add_source.as_ref()
-                    .and_then(|source| self.choices.iter().find(|choice| &choice.reference == source))
+                let placed: BTreeSet<_> = draft
+                    .definition
+                    .placements
+                    .iter()
+                    .map(|p| &p.source)
+                    .collect();
+                let choice = self
+                    .add_source
+                    .as_ref()
+                    .and_then(|source| {
+                        self.choices
+                            .iter()
+                            .find(|choice| &choice.reference == source)
+                    })
                     .filter(|choice| !placed.contains(&choice.reference));
                 controls::inspector_combo(ui, "plate-pick-source")
                     .selected_text(choice.map_or("Choose a Part", |choice| &choice.label))
                     .show_ui(ui, |ui| {
                         for choice in &self.choices {
-                            if !placed.contains(&choice.reference) && ui
-                                .selectable_label(self.add_source.as_ref() == Some(&choice.reference), &choice.label)
-                                .clicked()
+                            if !placed.contains(&choice.reference)
+                                && ui
+                                    .selectable_label(
+                                        self.add_source.as_ref() == Some(&choice.reference),
+                                        &choice.label,
+                                    )
+                                    .clicked()
                             {
                                 self.add_source = Some(choice.reference.clone());
                             }
                         }
                     });
                 let can_add = draft.definition.placements.len() < MAX_PRINT_PARTS
-                    && self.add_source.as_ref().is_some_and(|source| !placed.contains(source));
-                if ui.add_enabled(can_add, egui::Button::new("Add to plate")).clicked()
+                    && self
+                        .add_source
+                        .as_ref()
+                        .is_some_and(|source| !placed.contains(source));
+                if ui
+                    .add_enabled(can_add, egui::Button::new("Add to plate"))
+                    .clicked()
                     && let Some(source) = self.add_source.take()
                 {
                     let mut placement = PrintPlatePlacement {
@@ -210,9 +233,9 @@ impl PlateEditor {
                         position_mm: [5., 5.],
                         rotation_deg: [0.; 3],
                     };
-                    placement.position_mm = self.view.initial_position(
-                        scene, session, &draft.definition, &placement,
-                    );
+                    placement.position_mm =
+                        self.view
+                            .initial_position(scene, session, &draft.definition, &placement);
                     draft.definition.placements.push(placement);
                     self.selected_placement = Some(draft.definition.placements.len() - 1);
                 }
@@ -220,13 +243,19 @@ impl PlateEditor {
                     ui.small("Create a finished Part or placed occurrence in Model first.");
                 }
                 ui.separator();
-                ui.strong(format!("Placed objects ({})", draft.definition.placements.len()));
+                ui.strong(format!(
+                    "Placed objects ({})",
+                    draft.definition.placements.len()
+                ));
                 for (index, placement) in draft.definition.placements.iter().enumerate() {
                     let label = source_label(session.document(), &placement.source);
-                    if ui.selectable_label(
-                        self.selected_placement == Some(index),
-                        format!("{}. {label}", index + 1),
-                    ).clicked() {
+                    if ui
+                        .selectable_label(
+                            self.selected_placement == Some(index),
+                            format!("{}. {label}", index + 1),
+                        )
+                        .clicked()
+                    {
                         self.selected_placement = Some(index);
                     }
                 }
@@ -235,18 +264,27 @@ impl PlateEditor {
                 {
                     ui.separator();
                     ui.strong("Selected placement");
-                    for (axis, position) in ["X position", "Y position"].into_iter().zip(&mut placement.position_mm) {
+                    for (axis, position) in ["X position", "Y position"]
+                        .into_iter()
+                        .zip(&mut placement.position_mm)
+                    {
                         number(ui, axis, position, -1_000_000. ..=1_000_000., " mm", 0.5);
                     }
-                    for (axis, angle) in ["X rotation", "Y rotation", "Z rotation"].into_iter().zip(&mut placement.rotation_deg) {
+                    for (axis, angle) in ["X rotation", "Y rotation", "Z rotation"]
+                        .into_iter()
+                        .zip(&mut placement.rotation_deg)
+                    {
                         number(ui, axis, angle, -360_000. ..=360_000., "°", 1.);
                     }
-                    let remove = ui.horizontal_wrapped(|ui| {
-                        if ui.button("Rotate Z +90°").clicked() {
-                            placement.rotation_deg[2] = (placement.rotation_deg[2] + 90.).rem_euclid(360.);
-                        }
-                        ui.button("Remove from plate").clicked()
-                    }).inner;
+                    let remove = ui
+                        .horizontal_wrapped(|ui| {
+                            if ui.button("Rotate Z +90°").clicked() {
+                                placement.rotation_deg[2] =
+                                    (placement.rotation_deg[2] + 90.).rem_euclid(360.);
+                            }
+                            ui.button("Remove from plate").clicked()
+                        })
+                        .inner;
                     if remove {
                         draft.definition.placements.remove(index);
                         self.selected_placement = None;
@@ -262,8 +300,25 @@ impl PlateEditor {
                         ui.small("Each STL contains the object in its arranged bed coordinates. STL stores no unit; coordinates are written in millimeters.");
                     }
                 });
-            });
-        action
+                if !dirty {
+                    return None;
+                }
+                let clicks = inspector_actions::row(
+                    ui,
+                    Owner::Output,
+                    None,
+                    Button::new("Save", true, "Save this arrangement as one Undo step"),
+                    Button::new("Discard", true, "Discard changes to this print plate"),
+                );
+                if clicks.apply {
+                    Some(PlateEditorAction::Save)
+                } else if clicks.cancel {
+                    Some(PlateEditorAction::Discard)
+                } else {
+                    None
+                }
+            },
+        )
     }
 
     pub fn show_canvas(

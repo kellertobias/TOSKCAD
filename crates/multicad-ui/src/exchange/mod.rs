@@ -53,7 +53,7 @@ impl ExportTool {
     }
     pub fn label(self) -> &'static str {
         match self {
-            Self::NewSet => "Model export",
+            Self::NewSet => "Add export",
             Self::SaveSet => "Save set",
             Self::Discard => "Discard edits",
             Self::Preview => "Preview outputs",
@@ -74,7 +74,7 @@ impl ExportTool {
     }
     pub fn aliases(self) -> &'static [&'static str] {
         match self {
-            Self::NewSet => &["exportset", "new export set"],
+            Self::NewSet => &["exportset", "new export set", "Model export"],
             Self::SaveSet => &["saveset"],
             Self::Discard => &["discardset"],
             Self::Preview => &["previewexport"],
@@ -852,31 +852,18 @@ impl ExportWorkspace {
                     .inner_margin(12),
             )
             .show(ui, |ui| {
+                use crate::inspector_actions::{self, Button, Owner};
                 crate::controls::inspector_layout(ui);
                 ui.heading("Output settings");
-                ui.horizontal_wrapped(|ui| {
-                    for tool in [ExportTool::SaveSet, ExportTool::Discard, ExportTool::Run] {
-                        if ui
-                            .add_enabled(
-                                self.enabled(tool, s) && (allow_io || tool != ExportTool::Run),
-                                egui::Button::new(tool.label()),
-                            )
-                            .on_hover_text(match tool {
-                                ExportTool::Run => {
-                                    "Export the exact previewed snapshot to the selected folder"
-                                }
-                                _ => "Edit the canonical export definition through one Undo step",
-                            })
-                            .clicked()
-                        {
-                            action = Some(tool);
-                        }
-                    }
-                });
                 ui.separator();
-                egui::ScrollArea::vertical()
-                    .id_salt("export-set-fields")
-                    .show(ui, |ui| {
+                let dirty = self.dirty();
+                let accent = ui.visuals().selection.bg_fill;
+                inspector_actions::scope_with_preview(
+                    ui,
+                    dirty.then_some(Owner::Output),
+                    accent,
+                    true,
+                    |ui| {
                         if self.draft.is_some() {
                             self.destination_settings(ui);
                             ui.separator();
@@ -892,7 +879,30 @@ impl ExportWorkspace {
                         } else {
                             ui.label("Choose a saved set or create one.");
                         }
-                    });
+                        if dirty {
+                            let clicks = inspector_actions::row(
+                                ui,
+                                Owner::Output,
+                                None,
+                                Button::new(
+                                    ExportTool::SaveSet.label(),
+                                    true,
+                                    "Save this export definition as one Undo step",
+                                ),
+                                Button::new(
+                                    ExportTool::Discard.label(),
+                                    true,
+                                    "Restore the saved export definition",
+                                ),
+                            );
+                            if clicks.apply {
+                                action = Some(ExportTool::SaveSet);
+                            } else if clicks.cancel {
+                                action = Some(ExportTool::Discard);
+                            }
+                        }
+                    },
+                );
             });
         self.observe_selection(s, time);
         self.show_preview(ui, s, allow_io, scene, &mut action);
@@ -957,7 +967,7 @@ impl ExportWorkspace {
                     .id_salt("export-results")
                     .show(ui, |ui| {
                         if self.draft.is_none() {
-                            ui.label("Choose a saved export or use Model export in the ribbon.");
+                            ui.label("Choose a saved export or use Add export in the ribbon.");
                         } else if self.dirty() {
                             ui.label("Edited · Save this definition to generate its preview.");
                         } else if self.backend.is_none() {
@@ -973,6 +983,16 @@ impl ExportWorkspace {
                             } else {
                                 "Blocked · Review the output checks below."
                             });
+                            if ui
+                                .add_enabled(
+                                    allow_io && self.enabled(ExportTool::Run, s),
+                                    egui::Button::new(ExportTool::Run.label()),
+                                )
+                                .on_hover_text("Export the checked snapshot to the selected folder")
+                                .clicked()
+                            {
+                                *action = Some(ExportTool::Run);
+                            }
                             if let Some(scene) = scene
                                 && scene.stamp().document == s.document().id()
                                 && scene.stamp().revision == s.revision()

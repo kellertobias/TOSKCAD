@@ -10,7 +10,7 @@ use super::{Exporter, checkpoint, failure, mesh};
 use crate::Model;
 use multicad_core::{
     commands::Actor,
-    document::{Document, EntityId},
+    document::{Document, EntityData, EntityId},
     exchange::*,
     model::{self, RigidPose},
     project_file::ContentHash,
@@ -36,6 +36,46 @@ struct Built {
     preview: PrintPreview,
     generated: Vec<Vec<u8>>,
     plate_meshes: Option<(Vec<mesh::MeshObject>, Vec<mesh::BuildItem>)>,
+}
+
+#[derive(Clone, Copy)]
+enum Arrangement<'a> {
+    Package,
+    PlatePreview(&'a PrintPlateDefinition),
+    PlateWrite(&'a PrintPlateDefinition),
+}
+
+fn direct_plate_roots(document: &Document, selection: &PrintSelection) -> Option<Vec<EntityId>> {
+    let mut roots = Vec::new();
+    let mut heads = BTreeSet::new();
+    for part in &selection.parts {
+        if !part.occurrence_path.is_empty() || part.role != PrintRole::Finished {
+            return None;
+        }
+        let EntityData::Part { features, .. } = &document.get(part.part)?.data else {
+            return None;
+        };
+        let head = features.iter().rev().find(|feature| {
+            matches!(
+                document.get(**feature).map(|entity| &entity.data),
+                Some(EntityData::Feature {
+                    suppressed: false,
+                    ..
+                })
+            )
+        })?;
+        roots.push(part.part);
+        heads.insert(*head);
+    }
+    // A consumer outside the direct input closure can remove a body from the
+    // final assembly. Keep the full membership check for those plates.
+    if document.entities().any(|entity| {
+        matches!(&entity.data, EntityData::Feature { inputs, suppressed: false, .. }
+            if inputs.iter().any(|input| heads.contains(&input.target)))
+    }) {
+        return None;
+    }
+    crate::validate_source_roots(document, &roots).ok()
 }
 fn io(e: impl ToString) -> ExportError {
     failure(ErrorKind::Io, None, e)
@@ -389,7 +429,7 @@ impl Exporter {
         document: &Document,
         revision: u64,
         request: &PrintRequest,
-        plate: Option<&PrintPlateDefinition>,
+        arrangement: Arrangement<'_>,
         actor: &Actor,
         interrupt: Option<&dyn Fn() -> bool>,
     ) -> Result<Built, ExportError> {
@@ -401,6 +441,10 @@ impl Exporter {
             ));
         }
         checkpoint(interrupt)?;
+        let plate = match arrangement {
+            Arrangement::Package => None,
+            Arrangement::PlatePreview(plate) | Arrangement::PlateWrite(plate) => Some(plate),
+        };
         let mut selection = match plate {
             Some(plate) => resolve_print_plate(document, revision, plate)?,
             None => resolve_print(document, revision, request)?,
@@ -436,9 +480,17 @@ impl Exporter {
             } else {
                 self.compiler
             };
-            let model = compiler
-                .compile_interruptible(document, revision, interrupt)
-                .map_err(|e| failure(ErrorKind::Invalid, e.entity, e.message))?;
+            let roots = match arrangement {
+                Arrangement::PlatePreview(_) => direct_plate_roots(document, &selection),
+                _ => None,
+            };
+            let model = match roots {
+                Some(roots) => {
+                    compiler.compile_sources_interruptible(document, revision, &roots, interrupt)
+                }
+                None => compiler.compile_interruptible(document, revision, interrupt),
+            }
+            .map_err(|e| failure(ErrorKind::Invalid, e.entity, e.message))?;
             if model.snapshot().stamp.source_hash != selection.stamp.source_hash {
                 return Err(failure(
                     ErrorKind::Stale,
@@ -752,7 +804,14 @@ impl Exporter {
         interrupt: Option<&dyn Fn() -> bool>,
     ) -> Result<PrintPreview, ExportError> {
         Ok(self
-            .build_print(document, revision, request, None, actor, interrupt)?
+            .build_print(
+                document,
+                revision,
+                request,
+                Arrangement::Package,
+                actor,
+                interrupt,
+            )?
             .preview)
     }
     /// Verify and tessellate a saved plate without changing its source model.
@@ -769,7 +828,7 @@ impl Exporter {
                 document,
                 revision,
                 &plate.summary_request(document),
-                Some(plate),
+                Arrangement::PlatePreview(plate),
                 actor,
                 interrupt,
             )?
@@ -834,7 +893,8 @@ impl Exporter {
     ) -> Result<PrintReceipt, ExportError> {
         expected.source.check(document, revision)?;
         let (directory, stem) = package_target(path)?;
-        let built = self.build_print(document, revision, request, plate, actor, interrupt)?;
+        let arrangement = plate.map_or(Arrangement::Package, Arrangement::PlateWrite);
+        let built = self.build_print(document, revision, request, arrangement, actor, interrupt)?;
         if built.preview.key != *expected {
             return Err(failure(
                 ErrorKind::Stale,

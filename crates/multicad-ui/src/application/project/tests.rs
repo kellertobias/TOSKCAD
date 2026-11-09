@@ -455,8 +455,8 @@ fn export_and_quick_3mf_use_one_project_tab_at_both_window_sizes() {
             "General",
             "Parameters",
             "Materials",
-            "Model export",
-            "Generate print plate",
+            "Add export",
+            "Add 3D print plate",
             "Quick 3MF package",
         ] {
             assert!(has(label), "Missing {label}");

@@ -817,6 +817,29 @@ fn arranged_plate_reopens_as_shared_3mf_items_and_stl_in_bed_coordinates() {
     }
     assert!(faces.is_empty());
     assert_eq!(ExportStamp::capture(document, revision).unwrap(), before);
+
+    // A direct-Part-only preflight can evaluate a subset of native geometry.
+    // Its plan must still match the independently rebuilt full write.
+    let mut direct = plate.clone();
+    direct.placements.truncate(1);
+    let direct_preview = preview_plate(&direct);
+    assert!(direct_preview.can_write(), "{:?}", direct_preview.blocked);
+    let direct_target = directory.path().join("direct.3mf");
+    let receipt = exporter
+        .write_print_plate(
+            document,
+            revision,
+            &direct,
+            &direct_preview.key,
+            &direct_target,
+            &actor(),
+            None,
+        )
+        .unwrap();
+    assert_eq!(receipt.key, direct_preview.key);
+    let reopened = mesh::read_three_mf(&std::fs::read(&direct_target).unwrap()).unwrap();
+    assert_eq!((reopened.objects, reopened.items), (1, 1));
+    verify_bounds(reopened.bounds_mm().unwrap(), expected[0]);
 }
 
 #[test]

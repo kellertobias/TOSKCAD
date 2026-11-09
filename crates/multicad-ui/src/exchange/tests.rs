@@ -506,7 +506,7 @@ fn new_sets_use_readable_names_and_the_naming_section_explains_suffixes() {
 }
 
 #[test]
-fn compact_common_export_keeps_draft_actions_above_long_recipe_fields() {
+fn compact_common_export_keeps_draft_actions_in_a_footer_below_the_recipe_fields() {
     let (mut s, mut w, _, _) = fixture();
     let before = s.document().clone();
     w.draft.as_mut().unwrap().name = "Edited without saving".into();
@@ -556,7 +556,10 @@ fn compact_common_export_keeps_draft_actions_above_long_recipe_fields() {
             .unwrap_or_else(|| panic!("Missing visible {label}"))
     };
     let discard = text("Discard edits");
-    assert!(text("Save set").x < discard.x);
+    let save = text("Save set");
+    assert!(save.x < discard.x);
+    assert!((save.y - discard.y).abs() < 1.);
+    assert!(discard.y > text("Choose folder…").y + 150.);
     assert!(text("Choose folder…").x < discard.x);
     out.drop_without_applying_deltas();
     for pressed in [true, false] {
