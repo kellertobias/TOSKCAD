@@ -30,10 +30,11 @@ fn frame(app: &mut Application, ctx: &egui::Context, size: egui::Vec2) -> Frame 
         |ui| app.show(ui),
     );
     output.textures_delta.clear();
-    let panel = if app.mode == Mode::Export {
-        "project-export-ribbon"
-    } else {
-        "ribbon"
+    let panel = match (app.mode, app.tab) {
+        (Mode::Export, _) => "project-export-ribbon",
+        (Mode::Parameters, project::PARAMETERS_TAB) => "project-parameter-ribbon",
+        (Mode::Parameters, project::MATERIALS_TAB) => "project-material-ribbon",
+        _ => "ribbon",
     };
     let ribbon = egui::PanelState::load(ctx, egui::Id::new(panel))
         .expect("ribbon panel")
@@ -274,4 +275,25 @@ fn compact_ribbon_uses_only_its_tool_and_caption_rows() {
         "{:?}",
         inactive_sketch.ribbon
     );
+}
+
+#[test]
+fn project_tool_ribbons_keep_the_same_height_when_switching_tabs() {
+    let mut app = Application::new(Box::new(Storage)).unwrap();
+    app.pending_files.clear();
+    let ctx = egui::Context::default();
+    for size in [egui::vec2(1360., 860.), egui::vec2(900., 640.)] {
+        let mut bounds = None;
+        for tab in [
+            project::PARAMETERS_TAB,
+            project::MATERIALS_TAB,
+            project::PROJECT_EXPORT_TAB,
+        ] {
+            app.select_project_tab(tab);
+            frame(&mut app, &ctx, size);
+            let ribbon = frame(&mut app, &ctx, size).ribbon;
+            let actual = (ribbon.min.y, ribbon.max.y);
+            assert_eq!(*bounds.get_or_insert(actual), actual, "{tab} at {size:?}");
+        }
+    }
 }
