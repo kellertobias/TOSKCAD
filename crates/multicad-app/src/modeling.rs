@@ -1,12 +1,14 @@
 //! Production composition: exact native evaluation to immutable UI scenes.
-use multicad_core::document::Document;
 use multicad_core::{
+    document::{Document, EntityData, EntityId},
+    materials::Resolver,
     model::{EvaluationOptions, ModelEvaluationInfo},
     project_file::ProjectResources,
+    references::{TopologyElement, TopologyKind},
 };
 use multicad_model::{Compiler, ModelError, ModelSnapshot, Runtime};
 use multicad_ui::viewport::{self, SceneBackend, SceneReply, SceneStamp};
-use std::sync::Arc;
+use std::{collections::BTreeMap, sync::Arc};
 #[cfg(test)]
 #[path = "modeling/architecture_authoring_tests.rs"]
 mod architecture_authoring_tests;
@@ -148,6 +150,40 @@ fn aid_reviews(
         })
         .collect())
 }
+
+/// Follow the exact member origin at each level of the native compound.
+/// Keeping the aggregate mesh preserves its face ordinals and pick identity.
+fn assembly_face_part(
+    document: &Document,
+    mut component: EntityId,
+    face: &TopologyElement,
+) -> Option<EntityId> {
+    for _ in 0..=32 {
+        let instances = match &document.get(component)?.data {
+            EntityData::Part { .. } => return Some(component),
+            EntityData::Assembly { instances } => instances,
+            _ => return None,
+        };
+        let mut members = face
+            .origins
+            .iter()
+            .filter(|origin| origin.source == component)
+            .filter_map(|origin| origin.role.strip_prefix("assembly/member/"));
+        let member = EntityId::parse(members.next()?).ok()?;
+        if members.next().is_some() || !instances.contains(&member) {
+            return None;
+        }
+        let EntityData::Instance {
+            component: next, ..
+        } = document.get(member)?.data
+        else {
+            return None;
+        };
+        component = next;
+    }
+    None
+}
+
 fn scene(
     document: &Document,
     model: &ModelSnapshot,
@@ -157,8 +193,20 @@ fn scene(
         entity: None,
         message,
     };
-    let materials =
-        multicad_core::materials::Resolver::new(document).map_err(|e| invalid(e.to_string()))?;
+    let materials = Resolver::new(document).map_err(|e| invalid(e.to_string()))?;
+    let mut part_colors = BTreeMap::new();
+    let mut part_color = |part| -> Result<[u8; 4], String> {
+        if let std::collections::btree_map::Entry::Vacant(entry) = part_colors.entry(part) {
+            entry.insert(
+                materials
+                    .resolve(part)
+                    .map_err(|e| e.to_string())?
+                    .appearance
+                    .color_rgba,
+            );
+        }
+        Ok(part_colors[&part])
+    };
     let geometries = model
         .shapes
         .iter()
@@ -180,6 +228,24 @@ fn scene(
                     );
                 }
                 face_colors.insert(face, palette[&material]);
+            }
+            if matches!(
+                document.get(*id).map(|e| &e.data),
+                Some(EntityData::Assembly { .. })
+            ) {
+                for face in shape
+                    .topology
+                    .elements
+                    .iter()
+                    .filter(|face| face.key.kind == TopologyKind::Face)
+                {
+                    if let std::collections::btree_map::Entry::Vacant(entry) =
+                        face_colors.entry(face.key.ordinal)
+                        && let Some(part) = assembly_face_part(document, *id, face)
+                    {
+                        entry.insert(part_color(part)?);
+                    }
+                }
             }
             let mesh = &shape.mesh;
             let geometry = viewport::Geometry::new(
@@ -217,11 +283,7 @@ fn scene(
         .bodies
         .iter()
         .map(|(body, producer)| {
-            let color = materials
-                .resolve(*body)
-                .map_err(|error| invalid(error.to_string()))?
-                .appearance
-                .color_rgba;
+            let color = part_color(*body).map_err(invalid)?;
             Ok(viewport::Instance {
                 id: *body,
                 geometry: *producer,
@@ -231,22 +293,17 @@ fn scene(
         })
         .collect::<Result<Vec<_>, ModelError>>()?;
     for occurrence in model.occurrences.values() {
-        // An aggregate assembly has no single manufacturing material. Its
-        // member Parts keep their assignments; the compound uses a neutral
-        // display appearance rather than inventing an assembly material.
+        // Aggregate faces carry their member colors. The instance color is the
+        // fallback for any face without a resolved member.
         let color = if matches!(
             document
                 .get(occurrence.component)
                 .map(|entity| &entity.data),
-            Some(multicad_core::document::EntityData::Assembly { .. })
+            Some(EntityData::Assembly { .. })
         ) {
             multicad_core::materials::Appearance::default().color_rgba
         } else {
-            materials
-                .resolve(occurrence.component)
-                .map_err(|error| invalid(error.to_string()))?
-                .appearance
-                .color_rgba
+            part_color(occurrence.component).map_err(invalid)?
         };
         instances.push(viewport::Instance {
             id: occurrence.instance,

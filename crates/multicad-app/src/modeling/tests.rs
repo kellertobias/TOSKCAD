@@ -128,6 +128,123 @@ fn native_reusable_assembly_publishes_one_root_and_exact_explodable_leaf_receipt
     assert_eq!(scene.instances().len(), 1);
     assert_eq!(session.document(), &original);
 }
+
+#[test]
+fn aggregate_faces_keep_nested_member_material_and_part_override() {
+    use multicad_core::{
+        document::{Entity, Mutation},
+        materials::{Appearance, Assignment, LibraryDefinition, prepare_assignment},
+    };
+    let (mut session, first) = box_session();
+    let actor = || Actor::local(Channel::CommandLine);
+    let red = [220, 60, 40, 255];
+    let blue = [30, 100, 220, 255];
+    let material = Entity::new(
+        "Red material",
+        EntityData::Material {
+            density_kg_m3: None,
+            color_rgba: red,
+            section_hatch: None,
+        },
+    );
+    let override_color = LibraryDefinition::Appearance(Appearance {
+        color_rgba: blue,
+        ..Default::default()
+    })
+    .entity(EntityId::new(), "Blue override")
+    .unwrap();
+    session
+        .apply(multicad_core::commands::Request {
+            expected_revision: session.revision(),
+            actor: actor(),
+            label: "Create material and appearance".into(),
+            edits: vec![
+                Mutation::Insert(material.clone()),
+                Mutation::Insert(override_color.clone()),
+            ],
+        })
+        .unwrap();
+    let second = PrimitiveRequest::new("Blue box", first.parameters.clone());
+    let prepared =
+        model::prepare_primitive(&session, session.revision(), actor(), &second).unwrap();
+    session.commit(prepared.prepared).unwrap();
+    for (body, appearance) in [(first.body, None), (second.body, Some(override_color.id))] {
+        let prepared = prepare_assignment(
+            &session,
+            session.revision(),
+            actor(),
+            &[body],
+            &Assignment {
+                material: Some(material.id),
+                stock: None,
+                appearance,
+                hatch: None,
+            },
+        )
+        .unwrap();
+        session.commit(prepared).unwrap();
+    }
+    let place = |session: &mut Session, component, x| {
+        let request = model::ComponentPlacementRequest::new(
+            component,
+            model::NumericTransform {
+                translation: [length(x), length(0.), length(0.)],
+                ..Default::default()
+            },
+        );
+        let prepared =
+            model::prepare_place_component(session, session.revision(), actor(), &request).unwrap();
+        session.commit(prepared.prepared).unwrap();
+        request.instance
+    };
+    let red_member = place(&mut session, first.body, 0.);
+    let blue_member = place(&mut session, second.body, 24.);
+    let pair = model::AssemblyRequest::new(
+        "Pair",
+        vec![red_member, blue_member],
+        vec![first.body, second.body],
+    );
+    let prepared = model::prepare_assembly(&session, session.revision(), actor(), &pair).unwrap();
+    session.commit(prepared.prepared).unwrap();
+    let pair_member = place(&mut session, pair.assembly, 0.);
+    let cabinet = model::AssemblyRequest::new("Nested pair", vec![pair_member], vec![]);
+    let prepared =
+        model::prepare_assembly(&session, session.revision(), actor(), &cabinet).unwrap();
+    session.commit(prepared.prepared).unwrap();
+    let root = place(&mut session, cabinet.assembly, 100.);
+
+    let native = Compiler::default()
+        .compile(session.document(), session.revision())
+        .unwrap();
+    let scene = scene(session.document(), native.snapshot(), 1).unwrap();
+    assert_eq!(
+        scene
+            .instances()
+            .iter()
+            .map(|item| item.id)
+            .collect::<Vec<_>>(),
+        [root]
+    );
+    let geometry = &scene.geometries()[&cabinet.assembly];
+    let palette: std::collections::BTreeSet<_> = geometry
+        .triangle_faces()
+        .iter()
+        .map(|face| {
+            geometry
+                .face_color(*face)
+                .expect("each compound face has a member color")
+        })
+        .collect();
+    assert_eq!(palette, [red, blue].into_iter().collect());
+    for (x, color) in [(105., red), (129., blue)] {
+        let hit = scene
+            .pick_face(viewport::Ray::new([x, 5., 100.], [0., 0., -1.]).unwrap())
+            .unwrap();
+        assert_eq!(hit.instance, root);
+        assert_eq!(geometry.face_color(hit.key.ordinal), Some(color));
+    }
+}
+
 fn receive(backend: &mut Backend) -> SceneReply {
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
