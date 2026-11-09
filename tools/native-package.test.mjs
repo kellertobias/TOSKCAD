@@ -176,7 +176,7 @@ test('native development layout includes a copied executable, identity pin and n
     for(const name of hardware.files)assert.deepEqual(readFileSync(join(layout.resources,'library',...name.split('/'))),readFileSync(new URL(`../library/${name}`,import.meta.url)),name);
     if(process.platform==='darwin')assert.equal(layout.resources,join(stage,'MultiCAD.app/Contents/Resources'));
     else assert.equal(layout.resources,join(stage,'resources'));
-    assert.match(readme,/Bundled examples \(Examples, or the welcome screen with no recent projects\): 2 m cabinet with doors, drawers and System 32 shelves, Welded steel workbench, C-channel front panel, Apartment with workshop, Werkzeugkoffer 2\./);
+    assert.match(readme,/Bundled examples \(Examples, or the welcome screen with no recent projects\): 2 m cabinet with doors, drawers and System 32 shelves, Welded steel workbench, C-channel front panel, Apartment with workshop, Toolcase\./);
     assert.match(readme,/editable copy in Documents\/ToskCAD Examples/);
     if(process.platform!=='win32')assert(statSync(layout.executable).mode&0o111);
   }finally{rmSync(directory,{recursive:true,force:true});}

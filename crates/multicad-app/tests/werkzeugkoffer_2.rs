@@ -61,7 +61,7 @@ fn volume(compiler: &Compiler, session: &Session, body: EntityId) -> f64 {
 }
 
 fn shipped() -> Session {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/werkzeugkoffer-2.tcd");
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/toolcase.tcd");
     let loaded = project_file::read(
         &mut std::fs::File::open(path).unwrap(),
         Default::default(),
@@ -69,6 +69,54 @@ fn shipped() -> Session {
     )
     .unwrap();
     Session::new(loaded.project.document).unwrap()
+}
+
+#[test]
+fn bundled_toolcase_keeps_drawers_in_their_named_components() {
+    let session = shipped();
+    let document = session.document();
+    let assembly = |name: &str| {
+        document
+            .entities()
+            .find(|entity| {
+                entity.name == name && matches!(entity.data, EntityData::Assembly { .. })
+            })
+            .unwrap_or_else(|| panic!("Missing component {name}"))
+    };
+    let index = multicad_core::hierarchy::Index::new(document).unwrap();
+    assert!(index.diagnostics().is_empty());
+    let wood = index
+        .children(Some(assembly("Toolcase wood assembly").id))
+        .unwrap();
+    assert_eq!(wood.len(), 7);
+    assert!(
+        wood.iter()
+            .all(|id| matches!(document.get(*id).unwrap().data, EntityData::Part { .. }))
+    );
+    let members = |name: &str| {
+        let EntityData::Assembly { instances } = &assembly(name).data else {
+            unreachable!();
+        };
+        instances
+            .iter()
+            .map(|id| match document.get(*id).unwrap().data {
+                EntityData::Instance { component, .. } => component,
+                _ => panic!("Assembly member {id} is not an instance"),
+            })
+            .collect::<Vec<_>>()
+    };
+    assert!(
+        members("Lower drawer")
+            .iter()
+            .any(|id| { document.get(*id).unwrap().name.contains("fixed channel") })
+    );
+    let upper = members("Upper drawer");
+    assert!(upper.contains(&assembly("Upper drawer box").id));
+    for i in 1..=8 {
+        let name = format!("Small drawer {i}");
+        assert!(upper.contains(&assembly(&name).id));
+        assert_eq!(members(&name).len(), 2);
+    }
 }
 
 #[test]

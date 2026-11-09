@@ -29,7 +29,7 @@ Source: [`examples.rs`](../../crates/multicad-ui/src/examples.rs) (catalog, loca
 }
 ```
 
-The intended order is cabinet (CAD-182), workbench, front panel, apartment (CAD-185), and Werkzeugkoffer 2 (CAD-291). A new demo must be added here. Packaging refuses an unlisted `.tcd`. At run time an unlisted top-level `.tcd` is still shown after the listed ones, sorted by name.
+The intended order is cabinet (CAD-182), workbench, front panel, apartment (CAD-185), and Toolcase (CAD-291). A new demo must be added here. Packaging refuses an unlisted `.tcd`. At run time an unlisted top-level `.tcd` is still shown after the listed ones, sorted by name.
 
 ### Package layout and validation
 
@@ -65,12 +65,12 @@ Selecting a card copies the example, then opens the copy through the ordinary op
 - `multicad --mcp --project` does not refuse a bundled original; an MCP client could write one if the operating system allows it (a signed macOS bundle then fails its signature check).
 - The cabinet (CAD-182) is listed first and requires `libraries/cabinet-hardware-library.tcd`, the pinned hardware symbols' source library. The library sits in a subfolder so it is copied with the cabinet but not shown as a demo of its own.
 
-## Werkzeugkoffer 2 (CAD-291)
+## Toolcase (CAD-291)
 
 Generate the editable case and its fabrication outputs from the repository root.
 
 ```sh
-cargo run -p multicad-app --example werkzeugkoffer_2 --locked -- examples/werkzeugkoffer-2.tcd artifacts/tool-case-exports
+cargo run -p multicad-app --example werkzeugkoffer_2 --locked -- examples/toolcase.tcd artifacts/tool-case-exports
 ```
 
 Open the example and use **Project → Parameters** to change `drawer_disk_cell`, `small_runner_play` or `dovetail_fit`. Use **Motion** for the closed and extended poses and three saved clearance studies. **Drawings** shows the mirrored side countersinks. **Project → Export** contains the six through-cut profiles, fabrication paperwork and print layouts.

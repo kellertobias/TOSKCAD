@@ -27,7 +27,7 @@ mod printed;
 mod model_preview;
 
 pub type Error = Box<dyn std::error::Error>;
-pub const NAME: &str = "Werkzeugkoffer 2";
+pub const NAME: &str = "Toolcase";
 const DESCRIPTION: &str = "Birch plywood and PETG tool case with two rail-driven drawers, eight small drawers, and an open rear compartment. Edit the lower drawer divider and runner fits in Project Parameters. Motion contains the closed and extended poses. Project Export contains the plywood cut profiles and print package.";
 const LARGE_TRAVEL: f64 = 185.;
 const SMALL_TRAVEL: f64 = 94.;
@@ -234,11 +234,11 @@ impl CaseBuilder {
     fn joint(
         &mut self,
         part: EntityId,
-        parent: EntityId,
+        parent: Option<EntityId>,
         travel: Option<f64>,
     ) -> Result<EntityId, Error> {
         let mut parameters = JointParameters {
-            parent: Some(parent),
+            parent,
             ..Default::default()
         };
         if let Some(maximum) = travel {
@@ -292,13 +292,23 @@ impl CaseBuilder {
     }
 
     fn group(&mut self, name: &str, entries: Vec<EntityId>, visible: bool) -> Result<(), Error> {
+        self.container(hierarchy::ContainerKind::Group, name, entries, visible)
+    }
+
+    fn container(
+        &mut self,
+        kind: hierarchy::ContainerKind,
+        name: &str,
+        entries: Vec<EntityId>,
+        visible: bool,
+    ) -> Result<(), Error> {
         let prepare = |session: &Session, action| {
             hierarchy::prepare(session, session.revision(), actor(), action)
         };
         let created = prepare(
             &self.session,
             hierarchy::Action::Create {
-                kind: hierarchy::ContainerKind::Group,
+                kind,
                 name: name.into(),
                 parent: None,
             },
@@ -319,6 +329,18 @@ impl CaseBuilder {
             self.session.commit(hidden.prepared)?;
         }
         Ok(())
+    }
+
+    fn assemble(
+        &mut self,
+        name: &str,
+        members: &[(EntityId, EntityId)],
+    ) -> Result<EntityId, Error> {
+        let (instances, parts) = members.iter().copied().unzip();
+        let request = AssemblyRequest::new(name, instances, parts);
+        let prepared = prepare_assembly(&self.session, self.session.revision(), actor(), &request)?;
+        self.checked(prepared.prepared)?;
+        self.place(request.assembly)
     }
 
     fn study(
@@ -517,50 +539,60 @@ pub fn build() -> Result<Scenario, Error> {
     let auxiliary = auxiliary(&mut case).map_err(|error| format!("Spacers and stops: {error}"))?;
     let magnets = magnets(&mut case).map_err(|error| format!("Drawer magnets: {error}"))?;
 
-    let mut parts = vec![printed.rack];
     let rack = case.place(printed.rack)?;
-    let mut instances = vec![rack];
     let mut joints = Vec::new();
     let mut moving_drawers = Vec::new();
     let mut fixed_rails = Vec::new();
+    let mut large_assemblies = Vec::new();
     for i in 0..2 {
         let drawer = case.place(printed.large[i])?;
         moving_drawers.push(drawer);
-        parts.push(printed.large[i]);
-        instances.push(drawer);
-        for part in metal.fixed[i] {
-            parts.push(part);
-            instances.push(case.place(part)?);
-        }
-        let left = instances[instances.len() - 2];
-        fixed_rails.push([left, instances[instances.len() - 1]]);
-        joints.push(case.joint(drawer, left, Some(LARGE_TRAVEL))?);
+        let mut members = vec![(drawer, printed.large[i])];
+        let [left_part, right_part] = metal.fixed[i];
+        let left = case.place(left_part)?;
+        let right = case.place(right_part)?;
+        members.extend([(left, left_part), (right, right_part)]);
+        fixed_rails.push([left, right]);
+        joints.push(case.joint(drawer, Some(left), Some(LARGE_TRAVEL))?);
         for part in metal.moving[i]
             .into_iter()
             .chain(metal.moving_hardware[i].iter().copied())
             .chain(magnets.large[i])
         {
             let member = case.place(part)?;
-            parts.push(part);
-            instances.push(member);
-            case.joint(member, drawer, None)?;
+            members.push((member, part));
+            case.joint(member, Some(drawer), None)?;
         }
+        let assembly = case.assemble(["Lower drawer", "Upper drawer box"][i], &members)?;
+        large_assemblies.push((assembly, members));
     }
-    for (part, magnet) in printed.small.into_iter().zip(magnets.small) {
+    let mut small_assemblies = Vec::new();
+    for (i, (part, magnet)) in printed.small.into_iter().zip(magnets.small).enumerate() {
         let drawer = case.place(part)?;
         moving_drawers.push(drawer);
-        parts.push(part);
-        instances.push(drawer);
-        joints.push(case.joint(drawer, rack, Some(SMALL_TRAVEL))?);
+        // The fixed rack and the small drawer belong to different component
+        // definitions. The slider follows the drawer component's local frame.
+        joints.push(case.joint(drawer, None, Some(SMALL_TRAVEL))?);
         let magnet_instance = case.place(magnet)?;
-        parts.push(magnet);
-        instances.push(magnet_instance);
-        case.joint(magnet_instance, drawer, None)?;
+        case.joint(magnet_instance, Some(drawer), None)?;
+        let members = [(drawer, part), (magnet_instance, magnet)];
+        let assembly = case.assemble(&format!("Small drawer {}", i + 1), &members)?;
+        small_assemblies.push((assembly, members));
     }
-    let assembly = AssemblyRequest::new("Drawers and slides", instances, parts);
-    let prepared = prepare_assembly(&case.session, case.session.revision(), actor(), &assembly)?;
-    case.checked(prepared.prepared)?;
-    let root = case.place(assembly.assembly)?;
+    let (lower, lower_members) = &large_assemblies[0];
+    let (upper_box, upper_box_members) = &large_assemblies[1];
+    let mut upper_members = vec![(*upper_box, None), (rack, Some(printed.rack))];
+    upper_members.extend(small_assemblies.iter().map(|(id, _)| (*id, None)));
+    let upper = {
+        let request = AssemblyRequest::new(
+            "Upper drawer",
+            upper_members.iter().map(|(id, _)| *id).collect(),
+            upper_members.iter().filter_map(|(_, part)| *part).collect(),
+        );
+        let prepared = prepare_assembly(&case.session, case.session.revision(), actor(), &request)?;
+        case.checked(prepared.prepared)?;
+        case.place(request.assembly)?
+    };
     let mut poses = vec![case.pose("All drawers closed", &joints, |_| 0.)?];
     for (index, label) in ["Lower drawer extended", "Upper drawer extended"]
         .into_iter()
@@ -575,9 +607,32 @@ pub fn build() -> Result<Scenario, Error> {
     poses.push(case.pose("Small drawer fit check", &joints, |i| {
         if i == 2 { SMALL_TRAVEL } else { 0. }
     })?);
-    let member = |id| OccurrencePath {
-        root,
-        members: vec![id],
+    let member = |id| {
+        if lower_members.iter().any(|(member, _)| *member == id) {
+            OccurrencePath {
+                root: *lower,
+                members: vec![id],
+            }
+        } else if id == rack {
+            OccurrencePath {
+                root: upper,
+                members: vec![id],
+            }
+        } else if upper_box_members.iter().any(|(member, _)| *member == id) {
+            OccurrencePath {
+                root: upper,
+                members: vec![*upper_box, id],
+            }
+        } else {
+            let (parent, _) = small_assemblies
+                .iter()
+                .find(|(_, members)| members.iter().any(|(member, _)| *member == id))
+                .expect("placed small drawer member");
+            OccurrencePath {
+                root: upper,
+                members: vec![*parent, id],
+            }
+        }
     };
     let fixed = |id| OccurrencePath {
         root: id,
@@ -619,7 +674,12 @@ pub fn build() -> Result<Scenario, Error> {
         SMALL_TRAVEL,
         23.5,
     )?);
-    case.group("Plywood carcass", panels.to_vec(), true)?;
+    case.container(
+        hierarchy::ContainerKind::Component,
+        "Toolcase wood assembly",
+        panels.to_vec(),
+        true,
+    )?;
     case.group("Aluminium edge trim", metal.trim, true)?;
     case.group("Rack strips", printed.strips.clone(), true)?;
     case.group("Spacers and magnet stops", auxiliary.clone(), true)?;

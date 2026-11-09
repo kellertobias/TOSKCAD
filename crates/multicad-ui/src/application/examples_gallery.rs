@@ -120,7 +120,7 @@ impl Application {
                     .position(|p| p.file_stamp.is_some() && p.path.as_ref() == Some(&path));
                 if let Some(index) = opened {
                     self.activate_project(index);
-                    if name == "Werkzeugkoffer 2" {
+                    if name == "Toolcase" {
                         // The drawers open toward negative Y. Match the gallery view.
                         let camera = &mut self.current_mut().sketch.camera;
                         camera.yaw = -2.58;

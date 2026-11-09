@@ -244,7 +244,7 @@ mod tests {
 
     #[test]
     fn cold_tool_case_preview_builds_only_the_drawn_parts() {
-        let session = open_example("werkzeugkoffer-2.tcd");
+        let session = open_example("toolcase.tcd");
         let document = session.document();
         let book = drawings::books(document).next().unwrap();
         let drawing = drawings::read(document, book).unwrap();

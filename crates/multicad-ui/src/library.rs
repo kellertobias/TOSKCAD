@@ -595,10 +595,9 @@ mod tests {
     use super::*;
     use std::time::{Duration, Instant};
     #[test]
-    fn bundled_project_preview_gets_a_dark_matte_without_recoloring_ordinary_images() {
+    fn legacy_project_preview_gets_a_dark_matte_without_recoloring_ordinary_images() {
         use multicad_core::project_file;
-        let path =
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/werkzeugkoffer-2.tcd");
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/toolcase.tcd");
         let mut file = std::fs::File::open(path).unwrap();
         let card = project_file::card(
             &mut file,
@@ -608,14 +607,19 @@ mod tests {
         .unwrap();
         let preview = card.info.preview.unwrap();
         let original = decode_preview(&preview).unwrap();
-        let mut display = original.clone();
+        assert_eq!(original.pixels[0], PROJECT_PREVIEW_BACKGROUND);
+        let mut display = egui::ColorImage::filled([640, 480], egui::Color32::WHITE);
+        let (rows, _) = display.pixels.as_chunks_mut::<640>();
+        let gray = |row: usize| (246. - 22. * row as f64 / 960.) as u16;
+        for (row, pixels) in rows.iter_mut().enumerate() {
+            let g = ((gray(row * 2) + gray(row * 2 + 1)) / 2) as u8;
+            pixels.fill(egui::Color32::from_rgb(g, g, g + 4));
+        }
+        let model_pixel = original.pixels[240 * 640 + 320];
+        display.pixels[240 * 640 + 320] = model_pixel;
         darken_example_background(&mut display);
         assert_eq!(display.pixels[0], PROJECT_PREVIEW_BACKGROUND);
-        assert_ne!(original.pixels[0], display.pixels[0]);
-        assert_eq!(
-            display.pixels[240 * 640 + 320],
-            original.pixels[240 * 640 + 320]
-        );
+        assert_eq!(display.pixels[240 * 640 + 320], model_pixel);
         assert_eq!(decode_preview(&preview).unwrap(), original);
 
         let mut custom = egui::ColorImage::filled([640, 480], egui::Color32::WHITE);
