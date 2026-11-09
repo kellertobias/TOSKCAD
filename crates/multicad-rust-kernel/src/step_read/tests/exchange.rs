@@ -1,8 +1,9 @@
 use crate::{
-    Rational,
+    Circle, Rational,
+    cylinder::AxialCylinder,
     polygon::PolygonPrism,
-    step::{write_box, write_polygon_prism},
-    step_read::{ReadError, read_planar_solid},
+    step::{write_axial_cylinder, write_box, write_polygon_prism},
+    step_read::{ReadError, read_analytic_solid, read_planar_solid},
 };
 
 const TOLERANCE: f64 = 1e-7;
@@ -15,6 +16,20 @@ fn n(value: i64) -> Rational {
 
 fn box_step() -> String {
     write_box([n(12), n(8), n(4)], [10., 20., 30.], X, Y).unwrap()
+}
+
+fn cylinder_step() -> String {
+    let diagonal = (0.5_f64).sqrt();
+    let circle = Circle::new([n(3), n(3)], n(1)).unwrap();
+    let cylinder = AxialCylinder::new(1, circle, n(-5), n(2)).unwrap();
+    write_axial_cylinder(&cylinder, [diagonal, diagonal, 0.]).unwrap()
+}
+
+fn close(actual: f64, expected: f64) {
+    assert!(
+        (actual - expected).abs() < TOLERANCE,
+        "{actual} differs from {expected}"
+    );
 }
 
 fn entity<'a>(step: &'a str, kind: &str, index: usize) -> &'a str {
@@ -61,6 +76,213 @@ fn readback_measures_actual_geometry() {
             .iter()
             .any(|edge| { edge.contains(&[22., 20., 34.]) && edge.contains(&[22., 28., 34.]) })
     );
+    assert_eq!(read_analytic_solid(&source, TOLERANCE).unwrap(), read);
+}
+
+#[test]
+fn read_cylinder_extrema_away_from_the_seam_and_measure_volume() {
+    let source = cylinder_step();
+    assert!(read_planar_solid(&source, TOLERANCE).is_err());
+    let read = read_analytic_solid(&source, TOLERANCE).unwrap();
+    assert_eq!(read.bounds_mm, [[2., 2., -5.], [4., 4., -3.]]);
+    close(read.volume_mm3, 2. * std::f64::consts::PI);
+    assert_eq!(read.face_count, 3);
+    assert!(read.edges_mm.is_empty());
+    assert_eq!(read.circles.len(), 2);
+    for (circle, z) in read.circles.iter().zip([-5., -3.]) {
+        assert_eq!(circle.center_mm, [3., 3., z]);
+        assert_eq!(circle.normal, [0., 0., 1.]);
+        assert_eq!(circle.radius_mm, 1.);
+    }
+}
+
+#[test]
+fn read_tilted_prism_with_straight_and_round_open_holes_in_both_sweeps() {
+    let outer = [[0, 0], [12, 0], [12, 8], [0, 8]];
+    let square_hole = [[2, 2], [2, 4], [4, 4], [4, 2]];
+    let round_holes = [[7, 3], [9, 6]];
+    let prism = PolygonPrism::with_circular_holes(
+        vec![
+            outer.map(|point| point.map(n)).to_vec(),
+            square_hole.map(|point| point.map(n)).to_vec(),
+        ],
+        round_holes
+            .iter()
+            .map(|&center| Circle::new(center.map(n), n(1)).unwrap())
+            .collect(),
+        n(3),
+    )
+    .unwrap();
+    let diagonal = (0.5_f64).sqrt();
+    let origin = [100., -20., 300.];
+    for reverse in [false, true] {
+        let source = write_polygon_prism(
+            &prism,
+            origin,
+            [diagonal, diagonal, 0.],
+            [0., 0., 1.],
+            reverse,
+        )
+        .unwrap();
+        let read = read_analytic_solid(&source, TOLERANCE).unwrap();
+        close(read.volume_mm3, 3. * (92. - 2. * std::f64::consts::PI));
+        assert_eq!(read.face_count, 12);
+        assert_eq!(read.edges_mm.len(), 24);
+        assert_eq!(read.circles.len(), 4);
+        let sign = if reverse { -1. } else { 1. };
+        let shift = 3. * sign * diagonal;
+        for ([x, z], pair) in round_holes.into_iter().zip(read.circles.as_chunks::<2>().0) {
+            for (circle, delta) in pair.iter().zip([0., shift]) {
+                close(circle.center_mm[0], origin[0] + x as f64 * diagonal + delta);
+                close(circle.center_mm[1], origin[1] + x as f64 * diagonal - delta);
+                close(circle.center_mm[2], origin[2] + z as f64);
+                close(circle.normal[0], diagonal * sign);
+                close(circle.normal[1], -diagonal * sign);
+                close(circle.normal[2], 0.);
+                close(circle.radius_mm, 1.);
+            }
+        }
+    }
+}
+
+#[test]
+fn readback_rejects_corrupted_round_geometry_and_trim() {
+    let source = cylinder_step();
+    let axis = id(entity(&source, "AXIS2_PLACEMENT_3D", 0));
+    let top_vertex = id(entity(&source, "VERTEX_POINT", 1));
+    let cap_plane = id(entity(&source, "PLANE", 1));
+    let wall = id(entity(&source, "CYLINDRICAL_SURFACE", 0));
+    let wall_bound = id(entity(&source, "FACE_OUTER_BOUND", 2));
+    let wall_circle = id(entity(&source, "ORIENTED_EDGE", 2));
+    let seam = id(entity(&source, "EDGE_CURVE", 2));
+    let bottom_circle = id(entity(&source, "EDGE_CURVE", 0));
+    let top_circle = id(entity(&source, "EDGE_CURVE", 1));
+    let bad_arc = replace(&source, "EDGE_CURVE", 0, |line| {
+        let mut args = line.split(',').map(str::to_owned).collect::<Vec<_>>();
+        args[2] = top_vertex.into();
+        args.join(",")
+    });
+    let shorter_wall = replace(&source, "EDGE_LOOP", 2, |line| {
+        line.replace(&format!("({wall_circle},"), "(")
+    });
+    let flip_wall_circle = replace(&source, "ORIENTED_EDGE", 2, |line| {
+        line.replace(".T.", ".F.")
+    });
+    let bend_wall = replace(&source, "CYLINDRICAL_SURFACE", 0, |line| {
+        let (prefix, _) = line.rsplit_once(',').unwrap();
+        format!("{prefix},1.5);")
+    });
+    let extra_bound = replace(&source, "ADVANCED_FACE", 2, |line| {
+        line.replace(
+            &format!("({wall_bound})"),
+            &format!("({wall_bound},{wall_bound})"),
+        )
+    });
+    let duplicate_seam = before_end(
+        &source,
+        &entity(&source, "EDGE_CURVE", 2).replacen(seam, "#999001", 1),
+    );
+    let different_seam = replace(&duplicate_seam, "ORIENTED_EDGE", 5, |line| {
+        line.replace(seam, "#999001")
+    });
+    let repeated_bottom_circle = before_end(
+        &source,
+        &format!("#999001=ORIENTED_EDGE('',*,*,{bottom_circle},.F.);"),
+    );
+    let wrong_wall_order = replace(&repeated_bottom_circle, "EDGE_LOOP", 2, |line| {
+        let wall_up = id(entity(&source, "ORIENTED_EDGE", 3));
+        let wall_down = id(entity(&source, "ORIENTED_EDGE", 5));
+        let (id, _) = line.split_once('=').unwrap();
+        format!("{id}=EDGE_LOOP('',({wall_circle},{wall_up},{wall_down},#999001));")
+    });
+    // Move the wall to the front so its repeated circular trim is checked
+    // before the incidence limit on the bottom cap can reject it.
+    let wrong_wall_order = replace(&wrong_wall_order, "CLOSED_SHELL", 0, |line| {
+        let face_ids = (0..3)
+            .map(|i| id(entity(&source, "ADVANCED_FACE", i)))
+            .collect::<Vec<_>>();
+        let (id, _) = line.split_once('=').unwrap();
+        format!(
+            "{id}=CLOSED_SHELL('',({},{},{}));",
+            face_ids[2], face_ids[0], face_ids[1]
+        )
+    });
+    for (name, changed, expected) in [
+        (
+            "missing circle fields",
+            arguments(&source, "CIRCLE", "''"),
+            ReadError::Invalid,
+        ),
+        (
+            "missing cylinder fields",
+            arguments(&source, "CYLINDRICAL_SURFACE", "''"),
+            ReadError::Invalid,
+        ),
+        (
+            "wrong circle radius",
+            arguments(&source, "CIRCLE", &format!("'',{axis},1.25")),
+            ReadError::Invalid,
+        ),
+        (
+            "zero circle radius",
+            arguments(&source, "CIRCLE", &format!("'',{axis},0.")),
+            ReadError::Invalid,
+        ),
+        ("open arc", bad_arc, ReadError::Invalid),
+        (
+            "cap plane offset",
+            replace(&source, "ADVANCED_FACE", 0, |line| {
+                line.replace(id(entity(&source, "PLANE", 0)), cap_plane)
+            }),
+            ReadError::Invalid,
+        ),
+        ("wall radius", bend_wall, ReadError::Invalid),
+        (
+            "wall repeats separate seam identities",
+            different_seam,
+            ReadError::Invalid,
+        ),
+        (
+            "wall places seam where circular trim belongs",
+            wrong_wall_order,
+            ReadError::Invalid,
+        ),
+        (
+            "wall lacks full boundary",
+            shorter_wall,
+            ReadError::Unsupported,
+        ),
+        (
+            "opposite wall winding",
+            flip_wall_circle,
+            ReadError::Invalid,
+        ),
+        (
+            "additional cylindrical trim",
+            extra_bound,
+            ReadError::Unsupported,
+        ),
+        (
+            "same circle on both caps",
+            replace(&source, "ORIENTED_EDGE", 1, |line| {
+                line.replace(top_circle, bottom_circle)
+            }),
+            ReadError::Invalid,
+        ),
+        (
+            "noncylinder wall",
+            replace(&source, "ADVANCED_FACE", 2, |line| {
+                line.replace(wall, cap_plane)
+            }),
+            ReadError::Invalid,
+        ),
+    ] {
+        assert_eq!(
+            read_analytic_solid(&changed, TOLERANCE),
+            Err(expected),
+            "{name}"
+        );
+    }
 }
 
 #[test]

@@ -1,14 +1,16 @@
-//! Readback for a single millimetre STEP advanced solid with planar faces and
-//! straight analytic edges. This reader follows the representation and shared
-//! topology in the file and integrates the boundary without tessellating it.
+//! Readback for a single millimetre STEP advanced solid bounded by planes and
+//! full cylindrical walls. The reader follows the shared topology in the
+//! file and integrates the analytic boundary without tessellating it.
 
 mod part21;
+mod round;
 
 use crate::polygon::MAX_VERTICES;
 use part21::{Entity, Value};
+use round::Trim;
 use std::collections::{BTreeMap, BTreeSet};
 
-/// Maximum size of a Part 21 file accepted by the planar reader.
+/// Maximum size of a Part 21 file accepted by either reader.
 pub const MAX_PLANAR_STEP_BYTES: usize = part21::MAX_BYTES;
 
 type Point = [f64; 3];
@@ -21,12 +23,21 @@ pub enum ReadError {
     Limit,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CircleEdge {
+    pub center_mm: Point,
+    pub normal: Point,
+    pub radius_mm: f64,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Readback {
     pub bounds_mm: [Point; 2],
     pub volume_mm3: f64,
     pub face_count: usize,
+    /// Straight model edges. Periodic surface seams are excluded.
     pub edges_mm: Vec<[Point; 2]>,
+    pub circles: Vec<CircleEdge>,
     pub solid_count: u32,
 }
 
@@ -35,6 +46,17 @@ type Result<T> = std::result::Result<T, ReadError>;
 /// Verify the supported STEP subset without relying on the writer's geometry,
 /// filenames or header metadata.
 pub fn read_planar_solid(input: &str, tolerance_mm: f64) -> Result<Readback> {
+    read(input, tolerance_mm, false)
+}
+
+/// Verify a planar solid or a solid containing closed circular edges and
+/// full cylindrical walls between planar caps. General STEP import and
+/// intersection tests between unrelated 3D faces are outside this profile.
+pub fn read_analytic_solid(input: &str, tolerance_mm: f64) -> Result<Readback> {
+    read(input, tolerance_mm, true)
+}
+
+fn read(input: &str, tolerance_mm: f64, allow_circles: bool) -> Result<Readback> {
     if !tolerance_mm.is_finite() || tolerance_mm <= 0. {
         return Err(ReadError::Invalid);
     }
@@ -42,6 +64,7 @@ pub fn read_planar_solid(input: &str, tolerance_mm: f64) -> Result<Readback> {
     let mut shell = Shell {
         entities: &entities,
         tolerance: tolerance_mm,
+        allow_circles,
         points: BTreeMap::new(),
         edges: BTreeMap::new(),
     };
@@ -58,6 +81,13 @@ fn cross([a, b, c]: Point, [d, e, f]: Point) -> Point {
 
 fn sub(a: Point, b: Point) -> Point {
     std::array::from_fn(|i| a[i] - b[i])
+}
+
+fn include_point(bounds: &mut [Point; 2], point: Point) {
+    for (i, coordinate) in point.into_iter().enumerate() {
+        bounds[0][i] = bounds[0][i].min(coordinate);
+        bounds[1][i] = bounds[1][i].max(coordinate);
+    }
 }
 
 fn length([a, b, c]: Point) -> f64 {
@@ -123,18 +153,52 @@ struct EdgeUse {
 
 struct Edge {
     vertices: [u32; 2],
+    curve: Curve,
     uses: Vec<EdgeUse>,
 }
 
-struct Face {
-    origin: Point,
-    normal: Point,
-    area: f64,
+#[derive(Clone, Copy)]
+enum Curve {
+    Line,
+    Circle(CircleEdge),
+}
+
+enum Face {
+    Planar {
+        origin: Point,
+        normal: Point,
+        area: f64,
+    },
+    Cylindrical {
+        seam: u32,
+        flux: f64,
+    },
+}
+
+impl Face {
+    fn flux(&self, anchor: Point) -> f64 {
+        match self {
+            Self::Planar {
+                origin,
+                normal,
+                area,
+            } => area * dot(sub(*origin, anchor), *normal),
+            Self::Cylindrical { flux, .. } => *flux,
+        }
+    }
+}
+
+struct Traversal {
+    edge: u32,
+    start: u32,
+    end: u32,
+    forward: bool,
 }
 
 struct Shell<'a, 'input> {
     entities: &'a BTreeMap<u32, Vec<Entity<'input>>>,
     tolerance: f64,
+    allow_circles: bool,
     points: BTreeMap<u32, Point>,
     edges: BTreeMap<u32, Edge>,
 }
@@ -165,7 +229,8 @@ impl<'input> Shell<'_, 'input> {
     fn read(&mut self) -> Result<Readback> {
         let face_ids = self.shell_faces()?;
         let distinct: BTreeSet<_> = face_ids.iter().collect();
-        if face_ids.len() < 4 || distinct.len() != face_ids.len() {
+        let minimum_faces = if self.allow_circles { 3 } else { 4 };
+        if face_ids.len() < minimum_faces || distinct.len() != face_ids.len() {
             return Err(ReadError::Invalid);
         }
         let faces = face_ids
@@ -173,35 +238,48 @@ impl<'input> Shell<'_, 'input> {
             .enumerate()
             .map(|(i, id)| self.face(id, i))
             .collect::<Result<Vec<_>>>()?;
-        self.check_incidence(faces.len())?;
+        self.check_incidence(&faces)?;
 
         let anchor = *self.points.values().next().ok_or(ReadError::Invalid)?;
         let mut bounds_mm = [anchor; 2];
         for &point in self.points.values() {
-            for (i, coordinate) in point.into_iter().enumerate() {
-                bounds_mm[0][i] = bounds_mm[0][i].min(coordinate);
-                bounds_mm[1][i] = bounds_mm[1][i].max(coordinate);
+            include_point(&mut bounds_mm, point);
+        }
+        let seams: BTreeSet<_> = faces
+            .iter()
+            .filter_map(|face| match face {
+                Face::Cylindrical { seam, .. } => Some(*seam),
+                Face::Planar { .. } => None,
+            })
+            .collect();
+        let mut circles = Vec::new();
+        let mut edges_mm = Vec::new();
+        for (&id, edge) in &self.edges {
+            match edge.curve {
+                Curve::Line if !seams.contains(&id) => {
+                    edges_mm.push(edge.vertices.map(|vertex| self.points[&vertex]));
+                }
+                Curve::Line => {}
+                Curve::Circle(circle) => {
+                    for point in circle.bounds() {
+                        include_point(&mut bounds_mm, point);
+                    }
+                    circles.push(circle);
+                }
             }
         }
         // Divergence theorem with a translated origin to avoid cancellation on
         // solids placed far from the world origin. Inner rings subtract area.
-        let volume_mm3 = faces
-            .iter()
-            .map(|face| face.area * dot(sub(face.origin, anchor), face.normal) / 3.)
-            .sum::<f64>();
+        let volume_mm3 = faces.iter().map(|face| face.flux(anchor)).sum::<f64>() / 3.;
         if !volume_mm3.is_finite() || volume_mm3 <= 0. {
             return Err(ReadError::Invalid);
         }
-        let edges_mm = self
-            .edges
-            .values()
-            .map(|edge| edge.vertices.map(|id| self.points[&id]))
-            .collect();
         Ok(Readback {
             bounds_mm,
             volume_mm3,
             face_count: faces.len(),
             edges_mm,
+            circles,
             solid_count: 1,
         })
     }
@@ -344,12 +422,30 @@ impl<'input> Shell<'_, 'input> {
         if let Some(edge) = self.edges.get(&id) {
             return Ok(edge.vertices);
         }
-        let [Value::String(_), start, end, line, forward] = self.args(id, "EDGE_CURVE")? else {
+        let [Value::String(_), start, end, geometry, forward] = self.args(id, "EDGE_CURVE")? else {
             return Err(ReadError::Invalid);
         };
         let vertices = [reference(start)?, reference(end)?];
         let forward = sense(forward)?;
-        let [Value::String(_), origin, vector] = self.args(reference(line)?, "LINE")? else {
+        let geometry = reference(geometry)?;
+        let curve = if self.allow_circles && self.simple(geometry)?.name == "CIRCLE" {
+            self.circle_curve(geometry, vertices, forward)?
+        } else {
+            self.line_curve(geometry, vertices, forward)?
+        };
+        self.edges.insert(
+            id,
+            Edge {
+                vertices,
+                curve,
+                uses: Vec::with_capacity(2),
+            },
+        );
+        Ok(vertices)
+    }
+
+    fn line_curve(&mut self, id: u32, vertices: [u32; 2], forward: bool) -> Result<Curve> {
+        let [Value::String(_), origin, vector] = self.args(id, "LINE")? else {
             return Err(ReadError::Invalid);
         };
         let origin = self.point(reference(origin)?)?;
@@ -372,22 +468,19 @@ impl<'input> Shell<'_, 'input> {
         {
             return Err(ReadError::Invalid);
         }
-        self.edges.insert(
-            id,
-            Edge {
-                vertices,
-                uses: Vec::with_capacity(2),
-            },
-        );
-        Ok(vertices)
+        Ok(Curve::Line)
     }
 
     fn face(&mut self, id: u32, face: usize) -> Result<Face> {
-        let [Value::String(_), bounds, plane, forward] = self.args(id, "ADVANCED_FACE")? else {
+        let [Value::String(_), bounds, surface, forward] = self.args(id, "ADVANCED_FACE")? else {
             return Err(ReadError::Invalid);
         };
         let bounds = refs(bounds)?;
-        let [Value::String(_), placement] = self.args(reference(plane)?, "PLANE")? else {
+        let surface = reference(surface)?;
+        if self.allow_circles && self.simple(surface)?.name == "CYLINDRICAL_SURFACE" {
+            return self.cylindrical_face(surface, &bounds, sense(forward)?, face);
+        }
+        let [Value::String(_), placement] = self.args(surface, "PLANE")? else {
             return Err(ReadError::Invalid);
         };
         let mut plane = self.placement(reference(placement)?)?;
@@ -400,23 +493,10 @@ impl<'input> Shell<'_, 'input> {
         let implicit_outer = bounds.len() == 1;
         let mut remaining_vertices = MAX_VERTICES;
         for id in bounds {
-            let boundary = self.simple(id)?;
-            let exterior = match boundary.name {
-                "FACE_OUTER_BOUND" => true,
-                "FACE_BOUND" => implicit_outer,
-                _ => return Err(ReadError::Unsupported),
-            };
-            let [Value::String(_), wire, forward] = boundary.args.as_slice() else {
-                return Err(ReadError::Invalid);
-            };
-            let ring = self.ring(
-                reference(wire)?,
-                sense(forward)?,
-                face,
-                &plane,
-                remaining_vertices,
-            )?;
-            remaining_vertices -= ring.len();
+            let (exterior, wire, forward) = self.bound(id, implicit_outer)?;
+            let traversals = self.traversals(wire, forward, face, remaining_vertices)?;
+            remaining_vertices -= traversals.len();
+            let ring = self.planar_trim(&traversals, &plane)?;
             if exterior {
                 if outer.replace(ring).is_some() {
                     return Err(ReadError::Invalid);
@@ -427,29 +507,38 @@ impl<'input> Shell<'_, 'input> {
         }
         let outer = outer.ok_or(ReadError::Invalid)?;
         let area = face_area(&outer, &holes, self.tolerance)?;
-        Ok(Face {
+        Ok(Face::Planar {
             origin: plane.origin,
             normal: plane.normal,
             area,
         })
     }
 
-    fn ring(
+    fn bound(&self, id: u32, implicit_outer: bool) -> Result<(bool, u32, bool)> {
+        let boundary = self.simple(id)?;
+        let exterior = match boundary.name {
+            "FACE_OUTER_BOUND" => true,
+            "FACE_BOUND" => implicit_outer,
+            _ => return Err(ReadError::Unsupported),
+        };
+        let [Value::String(_), wire, forward] = boundary.args.as_slice() else {
+            return Err(ReadError::Invalid);
+        };
+        Ok((exterior, reference(wire)?, sense(forward)?))
+    }
+
+    fn traversals(
         &mut self,
         id: u32,
         forward: bool,
         face: usize,
-        plane: &Plane,
-        remaining_vertices: usize,
-    ) -> Result<Vec<Point2>> {
+        remaining_edges: usize,
+    ) -> Result<Vec<Traversal>> {
         let [Value::String(_), oriented] = self.args(id, "EDGE_LOOP")? else {
             return Err(ReadError::Invalid);
         };
         let mut oriented = refs(oriented)?;
-        if oriented.len() < 3 {
-            return Err(ReadError::Invalid);
-        }
-        if oriented.len() > remaining_vertices {
+        if oriented.len() > remaining_edges {
             return Err(ReadError::Limit);
         }
         if !forward {
@@ -457,8 +546,7 @@ impl<'input> Shell<'_, 'input> {
         }
         let mut first = None;
         let mut previous = None;
-        let mut seen = BTreeSet::new();
-        let mut ring = Vec::with_capacity(oriented.len());
+        let mut traversals = Vec::with_capacity(oriented.len());
         for oriented in oriented {
             let [
                 Value::String(_),
@@ -474,16 +562,11 @@ impl<'input> Shell<'_, 'input> {
             let forwards = sense(orientation)? == forward;
             let [a, b] = self.edge(id)?;
             let [start, end] = if forwards { [a, b] } else { [b, a] };
-            if previous.is_some_and(|last| last != start) || !seen.insert(start) {
+            if previous.is_some_and(|last| last != start) {
                 return Err(ReadError::Invalid);
             }
             first.get_or_insert(start);
             previous = Some(end);
-            let delta = sub(self.points[&start], plane.origin);
-            if dot(delta, plane.normal).abs() > self.tolerance {
-                return Err(ReadError::Invalid);
-            }
-            ring.push([dot(delta, plane.u), dot(delta, plane.v)]);
             let edge = self.edges.get_mut(&id).ok_or(ReadError::Invalid)?;
             if edge.uses.len() == 2 {
                 return Err(ReadError::Invalid);
@@ -492,26 +575,42 @@ impl<'input> Shell<'_, 'input> {
                 face,
                 forward: forwards,
             });
+            traversals.push(Traversal {
+                edge: id,
+                start,
+                end,
+                forward: forwards,
+            });
         }
         if first != previous {
             return Err(ReadError::Invalid);
         }
-        Ok(ring)
+        Ok(traversals)
     }
 
-    fn check_incidence(&self, face_count: usize) -> Result<()> {
+    fn check_incidence(&self, faces: &[Face]) -> Result<()> {
+        let face_count = faces.len();
         let mut adjacency = vec![Vec::new(); face_count];
         let mut identities = BTreeSet::new();
         let mut fans = BTreeMap::<u32, Vec<[usize; 2]>>::new();
-        for edge in self.edges.values() {
+        for (&id, edge) in &self.edges {
             let [first, second] = edge.uses.as_slice() else {
                 return Err(ReadError::Invalid);
             };
             let mut key = edge.vertices;
             key.sort_unstable();
-            if first.face == second.face
-                || first.forward == second.forward
-                || !identities.insert(key)
+            if first.forward == second.forward || !identities.insert(key) {
+                return Err(ReadError::Invalid);
+            }
+            if first.face == second.face {
+                if matches!(faces[first.face], Face::Cylindrical { seam, .. } if seam == id) {
+                    continue;
+                }
+                return Err(ReadError::Invalid);
+            }
+            if matches!(edge.curve, Curve::Circle(_))
+                && matches!(faces[first.face], Face::Planar { .. })
+                    == matches!(faces[second.face], Face::Planar { .. })
             {
                 return Err(ReadError::Invalid);
             }
@@ -623,23 +722,20 @@ fn rings_meet(a: &[Point2], b: &[Point2], tolerance: f64) -> bool {
     edges(a).any(|a| edges(b).any(|b| segments_meet(a, b, tolerance)))
 }
 
-fn face_area(outer: &[Point2], holes: &[Vec<Point2>], tolerance: f64) -> Result<f64> {
-    let mut area = signed_area(outer);
+fn face_area(outer: &Trim, holes: &[Trim], tolerance: f64) -> Result<f64> {
+    let mut area = outer.signed_area();
     let minimum = tolerance * tolerance;
-    if area <= minimum || !simple_ring(outer, tolerance) {
+    if area <= minimum || !outer.simple(tolerance) {
         return Err(ReadError::Invalid);
     }
     for (i, hole) in holes.iter().enumerate() {
-        let hole_area = signed_area(hole);
+        let hole_area = hole.signed_area();
         if hole_area >= -minimum
-            || !simple_ring(hole, tolerance)
-            || !contains(outer, hole[0])
-            || rings_meet(outer, hole, tolerance)
-            || holes[..i].iter().any(|previous| {
-                contains(previous, hole[0])
-                    || contains(hole, previous[0])
-                    || rings_meet(previous, hole, tolerance)
-            })
+            || !hole.simple(tolerance)
+            || !outer.strictly_contains(hole, tolerance)
+            || holes[..i]
+                .iter()
+                .any(|previous| !previous.disjoint(hole, tolerance))
         {
             return Err(ReadError::Invalid);
         }

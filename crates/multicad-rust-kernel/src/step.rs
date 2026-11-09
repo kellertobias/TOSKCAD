@@ -1,7 +1,6 @@
-//! STEP AP214 output for straight-sided prisms. Shared analytic line edges
-//! bound planar faces directly, independently of display tessellation.
+//! STEP AP214 output for extruded solids with analytic lines and circles.
 
-use crate::{Rational, polygon::PolygonPrism};
+use crate::{Circle, Rational, cylinder::AxialCylinder, polygon::PolygonPrism, prism::Prism};
 use std::{collections::BTreeMap, fmt, fmt::Write, ops::Range};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -20,15 +19,42 @@ pub fn write_polygon_prism(
     v: Point,
     reverse_sweep: bool,
 ) -> Result<String, StepError> {
-    if !prism.circular_holes().is_empty() {
-        return Err(StepError::Unsupported);
-    }
     let height = prism.height().as_f64();
-    write_straight_prism(
-        prism.rings().iter().map(Vec::as_slice),
+    write_prism(
+        &mut prism.rings().iter().map(Vec::as_slice),
+        prism.circular_holes(),
         Placement::new(origin, u, v)?,
         if reverse_sweep { -height } else { height },
     )
+}
+
+/// Write the exact +Z cylinder, using a horizontal unit vector for the seam.
+pub fn write_axial_cylinder(
+    cylinder: &AxialCylinder,
+    reference: Point,
+) -> Result<String, StepError> {
+    let axis = [0., 0., 1.];
+    if reference[2] != 0. {
+        return Err(StepError::InvalidPlacement);
+    }
+    let [x, y] = cylinder.circle().center().map(Rational::as_f64);
+    let bottom = [x, y, cylinder.bottom().as_f64()];
+    let top = [x, y, cylinder.top().as_f64()];
+    Placement::new(bottom, reference, cross(axis, reference))?;
+    let radius = cylinder.circle().radius().as_f64();
+    let mut file = StepFile::new();
+    let trim = CylindricalTrim::new(&mut file, [bottom, top], axis, reference, radius)?;
+    let bottom_bound = trim.cap_bound(&mut file, false, true);
+    let top_bound = trim.cap_bound(&mut file, true, true);
+    let bottom_face = file.face(
+        &[bottom_bound],
+        trim.centers[0],
+        axis.map(|x| -x),
+        reference,
+    );
+    let top_face = file.face(&[top_bound], trim.centers[1], axis, reference);
+    let wall = trim.wall(&mut file, true);
+    Ok(file.finish_solid(&[bottom_face, top_face, wall]))
 }
 
 pub fn write_box(
@@ -36,6 +62,27 @@ pub fn write_box(
     origin: Point,
     u: Point,
     v: Point,
+) -> Result<String, StepError> {
+    write_rectangle(size, &[], Placement::new(origin, u, v)?)
+}
+
+pub fn write_rectangular_prism(
+    prism: &Prism,
+    origin: Point,
+    u: Point,
+    v: Point,
+) -> Result<String, StepError> {
+    if prism.rounded_end().is_some() {
+        return Err(StepError::Unsupported);
+    }
+    let holes: Vec<_> = prism.inner_loops().map(|(_, circle)| circle).collect();
+    write_rectangle(prism.dimensions(), &holes, Placement::new(origin, u, v)?)
+}
+
+fn write_rectangle(
+    size: [Rational; 3],
+    holes: &[Circle],
+    placement: Placement,
 ) -> Result<String, StepError> {
     let [length, width, height] = size;
     if size.iter().any(|extent| extent.numerator <= 0) {
@@ -46,9 +93,10 @@ pub fn write_box(
         denominator: 1,
     };
     let ring = [[zero, zero], [length, zero], [length, width], [zero, width]];
-    write_straight_prism(
-        [ring.as_slice()],
-        Placement::new(origin, u, v)?,
+    write_prism(
+        &mut [ring.as_slice()].into_iter(),
+        holes,
+        placement,
         height.as_f64(),
     )
 }
@@ -101,8 +149,9 @@ impl Placement {
     }
 }
 
-fn write_straight_prism<'a>(
-    rings: impl IntoIterator<Item = &'a [[Rational; 2]]>,
+fn write_prism(
+    rings: &mut dyn Iterator<Item = &[[Rational; 2]]>,
+    circular_holes: &[Circle],
     placement: Placement,
     end: f64,
 ) -> Result<String, StepError> {
@@ -120,9 +169,28 @@ fn write_straight_prism<'a>(
     let mut brep = BRep::new(base);
     let reverse = end < 0.;
     let normal = placement.normal.map(|n| if reverse { -n } else { n });
+    let round_trims = circular_holes
+        .iter()
+        .map(|circle| {
+            CylindricalTrim::new(
+                &mut brep.file,
+                [0., end].map(|z| placement.point(circle.center(), z)),
+                normal,
+                placement.u,
+                circle.radius().as_f64(),
+            )
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     let mut faces = vec![
-        brep.cap(&ranges, 0, normal.map(|n| -n), placement.u, !reverse)?,
-        brep.cap(&ranges, count, normal, placement.u, reverse)?,
+        brep.cap(
+            &ranges,
+            &round_trims,
+            0,
+            normal.map(|n| -n),
+            placement.u,
+            !reverse,
+        )?,
+        brep.cap(&ranges, &round_trims, count, normal, placement.u, reverse)?,
     ];
     for range in ranges {
         for a in range.clone() {
@@ -142,13 +210,12 @@ fn write_straight_prism<'a>(
             faces.push(brep.file.face(&[boundary], point, normal, tangent));
         }
     }
-    let shell = brep
-        .file
-        .entity(format_args!("CLOSED_SHELL('',{})", Entities(&faces)));
-    let solid = brep
-        .file
-        .entity(format_args!("MANIFOLD_SOLID_BREP('',{shell})"));
-    Ok(brep.file.finish(solid))
+    faces.extend(
+        round_trims
+            .iter()
+            .map(|trim| trim.wall(&mut brep.file, false)),
+    );
+    Ok(brep.file.finish_solid(&faces))
 }
 
 #[derive(Clone, Copy)]
@@ -215,6 +282,16 @@ impl StepFile {
         self.entity(format_args!("CARTESIAN_POINT('',{})", Coordinates(point)))
     }
 
+    fn vertex(&mut self, point: Point) -> Vertex {
+        let cartesian = self.point(point);
+        let vertex = self.entity(format_args!("VERTEX_POINT('',{cartesian})"));
+        Vertex {
+            point,
+            cartesian,
+            vertex,
+        }
+    }
+
     fn direction(&mut self, direction: Point) -> Entity {
         self.entity(format_args!("DIRECTION('',{})", Coordinates(direction)))
     }
@@ -236,10 +313,36 @@ impl StepFile {
     ) -> Entity {
         let axis = self.axis(point, normal, reference);
         let plane = self.entity(format_args!("PLANE('',{axis})"));
+        self.face_on(bounds, plane, true)
+    }
+
+    fn face_on(&mut self, bounds: &[Entity], surface: Entity, forward: bool) -> Entity {
+        let sense = if forward { ".T." } else { ".F." };
         self.entity(format_args!(
-            "ADVANCED_FACE('',{},{plane},.T.)",
+            "ADVANCED_FACE('',{},{surface},{sense})",
             Entities(bounds)
         ))
+    }
+
+    fn oriented_edge(&mut self, edge: Entity, forward: bool) -> Entity {
+        let sense = if forward { ".T." } else { ".F." };
+        self.entity(format_args!("ORIENTED_EDGE('',*,*,{edge},{sense})"))
+    }
+
+    fn bound(&mut self, edges: &[Entity], outer: bool) -> Entity {
+        let wire = self.entity(format_args!("EDGE_LOOP('',{})", Entities(edges)));
+        let entity = if outer {
+            "FACE_OUTER_BOUND"
+        } else {
+            "FACE_BOUND"
+        };
+        self.entity(format_args!("{entity}('',{wire},.T.)"))
+    }
+
+    fn finish_solid(mut self, faces: &[Entity]) -> String {
+        let shell = self.entity(format_args!("CLOSED_SHELL('',{})", Entities(faces)));
+        let solid = self.entity(format_args!("MANIFOLD_SOLID_BREP('',{shell})"));
+        self.finish(solid)
     }
 
     fn finish(mut self, solid: Entity) -> String {
@@ -305,18 +408,7 @@ struct BRep {
 impl BRep {
     fn new(points: Vec<Point>) -> Self {
         let mut file = StepFile::new();
-        let vertices = points
-            .into_iter()
-            .map(|point| {
-                let cartesian = file.point(point);
-                let vertex = file.entity(format_args!("VERTEX_POINT('',{cartesian})"));
-                Vertex {
-                    point,
-                    cartesian,
-                    vertex,
-                }
-            })
-            .collect();
+        let vertices = points.into_iter().map(|point| file.vertex(point)).collect();
         Self {
             file,
             vertices,
@@ -330,21 +422,10 @@ impl BRep {
             std::collections::btree_map::Entry::Occupied(entry) => *entry.get(),
             std::collections::btree_map::Entry::Vacant(entry) => {
                 let [from, to] = indices.map(|i| self.vertices[i]);
-                let direction = self.file.direction(direction(from.point, to.point)?);
-                let vector = self.file.entity(format_args!("VECTOR('',{direction},1.)"));
-                let start = from.cartesian;
-                let line = self.file.entity(format_args!("LINE('',{start},{vector})"));
-                let (start, end) = (from.vertex, to.vertex);
-                let edge = self
-                    .file
-                    .entity(format_args!("EDGE_CURVE('',{start},{end},{line},.T.)"));
-                *entry.insert(edge)
+                *entry.insert(line_edge(&mut self.file, from, to)?)
             }
         };
-        let sense = if a < b { ".T." } else { ".F." };
-        Ok(self
-            .file
-            .entity(format_args!("ORIENTED_EDGE('',*,*,{edge},{sense})")))
+        Ok(self.file.oriented_edge(edge, a < b))
     }
 
     fn bound(&mut self, ring: &[usize], outer: bool) -> Result<Entity, StepError> {
@@ -353,26 +434,19 @@ impl BRep {
             .zip(ring.iter().cycle().skip(1))
             .map(|(&a, &b)| self.oriented_edge(a, b))
             .collect::<Result<Vec<_>, _>>()?;
-        let wire = self
-            .file
-            .entity(format_args!("EDGE_LOOP('',{})", Entities(&edges)));
-        let entity = if outer {
-            "FACE_OUTER_BOUND"
-        } else {
-            "FACE_BOUND"
-        };
-        Ok(self.file.entity(format_args!("{entity}('',{wire},.T.)")))
+        Ok(self.file.bound(&edges, outer))
     }
 
     fn cap(
         &mut self,
         ranges: &[Range<usize>],
+        round_trims: &[CylindricalTrim],
         offset: usize,
         normal: Point,
         reference: Point,
         reverse: bool,
     ) -> Result<Entity, StepError> {
-        let bounds = ranges
+        let mut bounds = ranges
             .iter()
             .enumerate()
             .map(|(i, range)| {
@@ -383,7 +457,82 @@ impl BRep {
                 self.bound(&ring, i == 0)
             })
             .collect::<Result<Vec<_>, _>>()?;
+        bounds.extend(
+            round_trims
+                .iter()
+                .map(|trim| trim.cap_bound(&mut self.file, offset != 0, false)),
+        );
         let point = self.vertices[offset].cartesian;
         Ok(self.file.face(&bounds, point, normal, reference))
+    }
+}
+
+fn line_edge(file: &mut StepFile, from: Vertex, to: Vertex) -> Result<Entity, StepError> {
+    let direction = file.direction(direction(from.point, to.point)?);
+    let vector = file.entity(format_args!("VECTOR('',{direction},1.)"));
+    let start = from.cartesian;
+    let line = file.entity(format_args!("LINE('',{start},{vector})"));
+    let (start, end) = (from.vertex, to.vertex);
+    Ok(file.entity(format_args!("EDGE_CURVE('',{start},{end},{line},.T.)")))
+}
+
+struct CylindricalTrim {
+    centers: [Entity; 2],
+    rims: [Entity; 2],
+    seam: Entity,
+    surface: Entity,
+}
+
+impl CylindricalTrim {
+    fn new(
+        file: &mut StepFile,
+        centers: [Point; 2],
+        normal: Point,
+        reference: Point,
+        radius: f64,
+    ) -> Result<Self, StepError> {
+        let mut rim = |center: Point| {
+            let point = std::array::from_fn(|i| center[i] + radius * reference[i]);
+            if point == center || point.iter().any(|x| !x.is_finite()) {
+                return Err(StepError::InvalidGeometry);
+            }
+            let seam_vertex = file.vertex(point);
+            let vertex = seam_vertex.vertex;
+            let center = file.point(center);
+            let axis = file.axis(center, normal, reference);
+            let circle = file.entity(format_args!("CIRCLE('',{axis},{radius:.16E})"));
+            let edge = file.entity(format_args!(
+                "EDGE_CURVE('',{vertex},{vertex},{circle},.T.)"
+            ));
+            Ok((center, axis, edge, seam_vertex))
+        };
+        let (bottom, axis, bottom_rim, from) = rim(centers[0])?;
+        let (top, _, top_rim, to) = rim(centers[1])?;
+        let surface = file.entity(format_args!("CYLINDRICAL_SURFACE('',{axis},{radius:.16E})"));
+        let seam = line_edge(file, from, to)?;
+        Ok(Self {
+            centers: [bottom, top],
+            rims: [bottom_rim, top_rim],
+            seam,
+            surface,
+        })
+    }
+
+    fn cap_bound(&self, file: &mut StepFile, top: bool, outer: bool) -> Entity {
+        // Circle curves follow the sweep axis. The bottom plane opposes it.
+        let edge = file.oriented_edge(self.rims[usize::from(top)], top == outer);
+        file.bound(&[edge], outer)
+    }
+
+    fn wall(&self, file: &mut StepFile, outward: bool) -> Entity {
+        // A periodic wall uses one seam edge twice with opposite orientations.
+        let edges = [
+            file.oriented_edge(self.rims[0], outward),
+            file.oriented_edge(self.seam, true),
+            file.oriented_edge(self.rims[1], !outward),
+            file.oriented_edge(self.seam, false),
+        ];
+        let bound = file.bound(&edges, true);
+        file.face_on(&[bound], self.surface, outward)
     }
 }

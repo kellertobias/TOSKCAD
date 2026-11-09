@@ -1,7 +1,11 @@
 use multicad_rust_kernel::{
     Circle, Rational,
+    cylinder::AxialCylinder,
     polygon::PolygonPrism,
-    step::{StepError, write_box, write_polygon_prism},
+    prism::Prism,
+    step::{
+        StepError, write_axial_cylinder, write_box, write_polygon_prism, write_rectangular_prism,
+    },
 };
 use std::collections::BTreeMap;
 
@@ -84,6 +88,24 @@ fn box_step_is_deterministic_and_uses_a_shared_manifold_shell() {
 }
 
 #[test]
+fn rectangular_prism_keeps_circular_cuts_and_rejects_a_rounded_exterior() {
+    let stock = Prism::rectangular(1, [n(10), n(8), n(3)]).unwrap();
+    let bored = stock
+        .subtract_cylinder(2, Circle::new([n(4), n(5)], n(2)).unwrap(), n(-1), n(4))
+        .unwrap();
+    let encoded = write_rectangular_prism(&bored, ORIGIN, X, Y).unwrap();
+    assert_eq!(count(&encoded, "CYLINDRICAL_SURFACE"), 1);
+    assert_eq!(count(&encoded, "CIRCLE"), 2);
+    assert_eq!(count(&encoded, "ADVANCED_FACE"), 7);
+    closed_edges(&encoded, 15);
+    let rounded = Prism::extrude(1, n(10), n(4), n(3)).unwrap();
+    assert_eq!(
+        write_rectangular_prism(&rounded, ORIGIN, X, Y),
+        Err(StepError::Unsupported)
+    );
+}
+
+#[test]
 fn placed_signed_concave_prism_retains_its_separate_cap_hole_loops() {
     let prism = PolygonPrism::new(
         vec![
@@ -108,17 +130,86 @@ fn placed_signed_concave_prism_retains_its_separate_cap_hole_loops() {
 }
 
 #[test]
-fn step_rejects_round_trims_and_invalid_or_degenerate_placements() {
-    let rectangular = ring(&[[0, 0], [8, 0], [8, 8], [0, 8]]);
+fn mixed_polygon_prism_exports_shared_round_holes_in_both_sweep_directions() {
     let prism = PolygonPrism::with_circular_holes(
-        vec![rectangular],
-        vec![Circle::new([n(3), n(3)], n(1)).unwrap()],
-        n(2),
+        vec![
+            ring(&[[0, 0], [12, 0], [12, 8], [0, 8]]),
+            ring(&[[1, 1], [1, 2], [2, 2], [2, 1]]),
+        ],
+        vec![
+            Circle::new([n(4), n(3)], Rational::new(5, 4).unwrap()).unwrap(),
+            Circle::new([n(8), n(3)], n(2)).unwrap(),
+        ],
+        Rational::new(10, 3).unwrap(),
     )
     .unwrap();
+    let origin = [10., 20., 30.];
+    for reverse in [false, true] {
+        let step = write_polygon_prism(&prism, origin, X, Z, reverse).unwrap();
+        assert_eq!(count(&step, "ADVANCED_FACE"), 12);
+        assert_eq!(count(&step, "FACE_BOUND"), 6);
+        assert_eq!(count(&step, "CIRCLE"), 4);
+        assert_eq!(count(&step, "CYLINDRICAL_SURFACE"), 2);
+        assert_eq!(
+            entities(&step)
+                .filter(|(_, body)| body.starts_with("ADVANCED_FACE(") && body.ends_with(".F.)"))
+                .count(),
+            2
+        );
+        let end = 20. + if reverse { 10. / 3. } else { -10. / 3. };
+        assert!(cartesian_points(&step).any(|point| point == [15.25, end, 33.]));
+        closed_edges(&step, 30);
+    }
     assert_eq!(
-        write_polygon_prism(&prism, ORIGIN, X, Y, false),
-        Err(StepError::Unsupported)
+        write_polygon_prism(&prism, [1e100, 0., 0.], X, Z, false),
+        Err(StepError::InvalidGeometry)
+    );
+}
+
+#[test]
+fn axial_cylinder_exports_two_fractional_rims_and_one_periodic_wall() {
+    let cylinder = AxialCylinder::new(
+        1,
+        Circle::new([n(4), n(6)], Rational::new(5, 4).unwrap()).unwrap(),
+        n(-3),
+        Rational::new(10, 3).unwrap(),
+    )
+    .unwrap();
+    let step = write_axial_cylinder(&cylinder, Y).unwrap();
+    assert_eq!(step, write_axial_cylinder(&cylinder, Y).unwrap());
+    assert_eq!(count(&step, "ADVANCED_FACE"), 3);
+    assert_eq!(count(&step, "PLANE"), 2);
+    assert_eq!(count(&step, "FACE_BOUND"), 0);
+    assert_eq!(count(&step, "CIRCLE"), 2);
+    assert_eq!(count(&step, "CYLINDRICAL_SURFACE"), 1);
+    assert_eq!(count(&step, "LINE"), 1);
+    assert_eq!(
+        entities(&step)
+            .filter(|(_, body)| body.starts_with("CIRCLE("))
+            .filter(|(_, body)| body.ends_with(",1.2500000000000000E0)"))
+            .count(),
+        2
+    );
+    assert!(cartesian_points(&step).any(|point| point == [4., 7.25, -3.]));
+    assert!(cartesian_points(&step).any(|point| point == [4., 7.25, 1. / 3.]));
+    closed_edges(&step, 3);
+    assert_eq!(
+        write_axial_cylinder(&cylinder, Z),
+        Err(StepError::InvalidPlacement)
+    );
+    assert_eq!(
+        write_axial_cylinder(&cylinder, [1., 0., 1e-8]),
+        Err(StepError::InvalidPlacement)
+    );
+}
+
+#[test]
+fn step_rejects_invalid_or_degenerate_placements() {
+    let center = Circle::new([n(100_000_000_000_000_000), n(0)], n(1)).unwrap();
+    let collapsed_rim = AxialCylinder::new(1, center, n(0), n(2)).unwrap();
+    assert_eq!(
+        write_axial_cylinder(&collapsed_rim, X),
+        Err(StepError::InvalidGeometry)
     );
     assert_eq!(
         write_box([n(4), n(4), n(4)], ORIGIN, X, X),
