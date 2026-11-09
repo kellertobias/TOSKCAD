@@ -47,6 +47,8 @@ The native application includes Project, contextual sketch editing in Model, Mot
 
 The [native modeling checkpoint](docs/verification/native-modeling-2026-10-28.md) records shared-sketch extrusion, Undo/Redo, saved-project regeneration and the remaining limits. Advanced modeling controls, manufacturing exports and specialized workspaces remain under development. The [local MCP server](docs/architecture/mcp-server.md) (`multicad --mcp`) controls a headless project or the open window through the same transaction API. The foundation laboratory is a separate reference.
 
+The experimental Rust geometry backend can import STEP files containing a single supported millimeter prism or cylinder. The saved project embeds the source so it can rebuild the solid after the original file is moved. Reimport preserves the Part identity when the source changes.
+
 The [Parameters workflow checkpoint](docs/verification/native-parameter-workflow-2026-10-28.md) records table editing, expression diagnostics, stable renamed bindings, native solid rebuilding and save/reopen behavior.
 
 [Parametric threads](docs/architecture/threads.md) documents the Mechanical thread feature, sourced basic metric presets, explicit Custom profiles and unavailable families. Cosmetic envelopes require a switch to Modeled before manufacturing export.

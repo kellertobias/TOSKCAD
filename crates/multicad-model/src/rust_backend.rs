@@ -34,6 +34,7 @@ pub(crate) fn validate_document(document: &Document) -> Result<(), ModelError> {
                     | (model::BOOLEAN_TYPE, model::BOOLEAN_SCHEMA)
                     | (model::TRANSFORM_TYPE, model::TRANSFORM_SCHEMA)
                     | (model::ALIGN_TYPE, model::ALIGN_SCHEMA)
+                    | (model::imports::STEP_BODY_TYPE, 1)
             ) =>
             {
                 return Err(error(

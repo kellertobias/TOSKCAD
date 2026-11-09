@@ -616,6 +616,7 @@ pub fn supported_capabilities() -> BTreeSet<String> {
         crate::model::INSIDE_FACE_CAPABILITY.into(),
         crate::model::HARDWARE_PATTERN_CAPABILITY.into(),
         crate::model::imports::STEP_SOURCE_CAPABILITY.into(),
+        crate::model::imports::RUST_STEP_SOURCE_CAPABILITY.into(),
         crate::model::imports::STEP_BODY_CAPABILITY.into(),
         crate::model::imports::BOARD_CAPABILITY.into(),
         crate::model::imports::COMPONENT_CAPABILITY.into(),

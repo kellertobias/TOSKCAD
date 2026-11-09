@@ -1,5 +1,5 @@
 //! Mechanical imports. A STEP source keeps each imported solid's exact
-//! B-rep with a source identity and signature; one `import.step_body`
+//! geometry with a source identity and signature; one `import.step_body`
 //! feature per Part rebuilds it. A KiCad board becomes an `import.board`
 //! Part (outline, cutouts and drilled holes) and one `import.component` Part
 //! per footprint: its linked STEP model, or an envelope from its courtyard
@@ -24,16 +24,38 @@ use std::collections::BTreeSet;
 
 pub const STEP_SOURCE_KIND: &str = "import.step_source";
 pub const STEP_SOURCE_CAPABILITY: &str = "import.step_source.1";
+pub const RUST_STEP_SOURCE_CAPABILITY: &str = "import.step_source.2";
 pub const STEP_BODY_TYPE: &str = "import.step_body";
 pub const STEP_BODY_CAPABILITY: &str = "import.step_body.1";
 pub const BOARD_TYPE: &str = "import.board";
 pub const BOARD_CAPABILITY: &str = "import.board.1";
 pub const COMPONENT_TYPE: &str = "import.component";
 pub const COMPONENT_CAPABILITY: &str = "import.component.1";
-/// Total B-rep text one STEP source may store in the document.
+/// Total geometry text one STEP source may store in the document.
 pub const MAX_STEP_BREP_BYTES: usize = 8 * 1024 * 1024;
 pub const MAX_STEP_SOLIDS: usize = 512;
 pub const MAX_COMPONENTS: usize = 1024;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StepEncoding {
+    #[default]
+    OpenCascadeBrep,
+    RustStep,
+}
+
+impl StepEncoding {
+    fn is_native(&self) -> bool {
+        *self == Self::OpenCascadeBrep
+    }
+
+    fn schema_version(self) -> u32 {
+        match self {
+            Self::OpenCascadeBrep => 1,
+            Self::RustStep => 2,
+        }
+    }
+}
 
 /// Volume and bounds of a solid in millimeters, used to match solids on
 /// reimport.
@@ -63,7 +85,8 @@ pub struct ImportedSolid {
     pub id: String,
     pub name: String,
     pub signature: SolidSignature,
-    /// Exact OCCT BRep text in millimeters, located as in the file.
+    /// Exact embedded geometry in the source's declared encoding. The field
+    /// name is retained for compatibility with the native source schema.
     pub brep: String,
     /// The solid was not found in the latest reimport; its last geometry is
     /// kept so its Part and links survive.
@@ -77,15 +100,18 @@ pub struct StepSource {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
     pub content: ContentHash,
+    #[serde(default, skip_serializing_if = "StepEncoding::is_native")]
+    pub encoding: StepEncoding,
     pub solids: Vec<ImportedSolid>,
 }
-/// A STEP file as read by the native kernel, before it enters a document.
+/// A STEP file with verified embedded geometry, before it enters a document.
 #[derive(Clone, Debug, PartialEq)]
 pub struct StepFile {
     pub file_name: String,
     pub path: Option<String>,
     pub content: ContentHash,
-    /// (name, BRep text, signature) per solid.
+    pub encoding: StepEncoding,
+    /// (name, embedded geometry text, signature) per solid.
     pub solids: Vec<(String, String, SolidSignature)>,
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -186,6 +212,23 @@ impl StepSource {
         {
             return Err(invalid("STEP solids need distinct identities"));
         }
+        if self.encoding == StepEncoding::RustStep
+            && self.solids.iter().any(|solid| {
+                let sig = solid.signature;
+                solid.brep.is_empty()
+                    || !sig.volume_mm3.is_finite()
+                    || sig.volume_mm3 <= 0.
+                    || sig
+                        .min
+                        .into_iter()
+                        .zip(sig.max)
+                        .any(|(lo, hi)| !lo.is_finite() || !hi.is_finite() || lo >= hi)
+            })
+        {
+            return Err(invalid(
+                "Rust STEP solids need geometry and a finite, positive signature",
+            ));
+        }
         Ok(())
     }
     pub fn solid(&self, id: &str) -> Option<&ImportedSolid> {
@@ -193,8 +236,10 @@ impl StepSource {
     }
     fn entity_data(&self) -> Result<EntityData, DocumentError> {
         self.validate()?;
+        let mut definition = definition(STEP_SOURCE_KIND, self)?;
+        definition.schema_version = self.encoding.schema_version();
         Ok(EntityData::Extension {
-            definition: definition(STEP_SOURCE_KIND, self)?,
+            definition,
             inputs: vec![],
         })
     }
@@ -257,7 +302,15 @@ pub fn components(document: &Document) -> impl Iterator<Item = &Entity> {
 pub fn read_step_source(document: &Document, id: EntityId) -> Result<StepSource, DocumentError> {
     match document.get(id).map(|e| &e.data) {
         Some(EntityData::Extension { definition, .. }) => {
-            let value: StepSource = parse(definition, STEP_SOURCE_KIND)?;
+            if definition.type_id != STEP_SOURCE_KIND || !matches!(definition.schema_version, 1 | 2)
+            {
+                return Err(invalid("Expected a supported STEP source schema"));
+            }
+            let value: StepSource = serde_json::from_value(definition.data.clone())
+                .map_err(|e| invalid(e.to_string()))?;
+            if value.encoding.schema_version() != definition.schema_version {
+                return Err(invalid("STEP source encoding does not match its schema"));
+            }
             value.validate()?;
             Ok(value)
         }
@@ -361,6 +414,7 @@ fn step_source(file: &StepFile, ids: impl Iterator<Item = String>) -> StepSource
         file_name: file.file_name.clone(),
         path: file.path.clone(),
         content: file.content,
+        encoding: file.encoding,
         solids: file
             .solids
             .iter()
@@ -442,7 +496,9 @@ pub fn plan_step_update(source: &StepSource, file: &StepFile) -> StepUpdatePlan 
         {
             used.insert(i);
             matched.insert(old.id.clone());
-            plan.matched.push((old.id.clone(), i, false));
+            // The volume and bounds can stay the same while a pocket moves.
+            let changed = source.encoding == StepEncoding::RustStep && old.brep != file.solids[i].1;
+            plan.matched.push((old.id.clone(), i, changed));
         }
     }
     for old in &source.solids {
@@ -483,6 +539,11 @@ pub fn prepare_step_update(
     revision(session, expected_revision)?;
     let document = session.document();
     let old = read_step_source(document, source_id)?;
+    if old.encoding != file.encoding {
+        return Err(error(
+            "Reimport requires the same STEP geometry encoding as the original source",
+        ));
+    }
     let plan = plan_step_update(&old, file);
     let mut solids = vec![];
     for s in &old.solids {
@@ -543,6 +604,7 @@ pub fn prepare_step_update(
         file_name: file.file_name.clone(),
         path: file.path.clone().or(old.path),
         content: file.content,
+        encoding: file.encoding,
         solids,
     };
     let mut entity = document

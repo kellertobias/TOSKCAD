@@ -1,11 +1,12 @@
 //! Native mechanical imports: reading STEP and KiCad files from disk, and
 //! building STEP bodies, boards and component Parts from their document
 //! records.
-use crate::{ModelError, error};
+use crate::{GeometryBackend, ModelError, error};
 use multicad_core::{
     document::{Document, DocumentError, EntityId},
     model::imports::{
-        self, ComponentDefinition, KicadImport, OutlineEdge, SolidSignature, StepFile,
+        self, ComponentDefinition, ImportedSolid, KicadImport, OutlineEdge, SolidSignature,
+        StepEncoding, StepFile,
     },
     project_file::ContentHash,
     references::Origin,
@@ -14,7 +15,10 @@ use multicad_kernel::{
     BooleanOperation, CurvedEdge2d, CurvedProfile, GeometryPolicy, PlaneFrame, RigidTransform,
     Solid,
 };
-use std::path::{Path, PathBuf};
+use std::{
+    io::Read,
+    path::{Path, PathBuf},
+};
 
 fn file_name(path: &Path) -> String {
     path.file_name()
@@ -30,12 +34,7 @@ pub fn read_step_file(path: &Path) -> Result<StepFile, ModelError> {
     let mut solids = vec![];
     for (name, brep) in Solid::step_solids(path).map_err(|e| error(None, e))? {
         let solid = Solid::from_brep(&brep, policy).map_err(|e| error(None, e))?;
-        let b = solid.bounds().map_err(|e| error(None, e))?;
-        let signature = SolidSignature {
-            volume_mm3: solid.volume_mm3().map_err(|e| error(None, e))?,
-            min: b.min,
-            max: b.max,
-        };
+        let signature = step_signature(&solid).map_err(|e| error(None, e))?;
         solids.push((name, brep, signature));
     }
     if solids.is_empty() {
@@ -45,7 +44,63 @@ pub fn read_step_file(path: &Path) -> Result<StepFile, ModelError> {
         file_name: file_name(path),
         path: Some(path.display().to_string()),
         content: ContentHash::of(&bytes),
+        encoding: StepEncoding::OpenCascadeBrep,
         solids,
+    })
+}
+
+/// Verify the source with the selected geometry provider before preparing an import.
+pub fn read_step_file_with_backend(
+    path: &Path,
+    backend: GeometryBackend,
+) -> Result<StepFile, ModelError> {
+    if backend == GeometryBackend::OpenCascade {
+        return read_step_file(path);
+    }
+    let read_error = |cause| error(None, format!("Cannot read {}: {cause}", path.display()));
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)
+        .map_err(read_error)?
+        .take(imports::MAX_STEP_BREP_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(read_error)?;
+    if bytes.len() > imports::MAX_STEP_BREP_BYTES {
+        return Err(error(
+            None,
+            format!(
+                "Rust STEP source exceeds the {} MiB import limit",
+                imports::MAX_STEP_BREP_BYTES / (1024 * 1024)
+            ),
+        ));
+    }
+    let content = ContentHash::of(&bytes);
+    let source = String::from_utf8(bytes).map_err(|cause| {
+        error(
+            None,
+            format!(
+                "Rust STEP source {} must contain UTF-8 text: {cause}",
+                path.display()
+            ),
+        )
+    })?;
+    let solid = Solid::import_rust_step(&source, EntityId::new(), GeometryPolicy::default())
+        .map_err(|e| error(None, format!("Cannot import {}: {e}", path.display())))?;
+    let signature = step_signature(&solid).map_err(|e| error(None, e))?;
+    Ok(StepFile {
+        file_name: file_name(path),
+        path: Some(path.display().to_string()),
+        content,
+        encoding: StepEncoding::RustStep,
+        solids: vec![("Solid".into(), source, signature)],
+    })
+}
+
+fn step_signature(solid: &Solid) -> Result<SolidSignature, multicad_kernel::GeometryError> {
+    let b = solid.bounds()?;
+    Ok(SolidSignature {
+        volume_mm3: solid.volume_mm3()?,
+        min: b.min,
+        max: b.max,
     })
 }
 
@@ -147,6 +202,7 @@ pub(crate) fn build_step_body(
     document: &Document,
     id: EntityId,
     policy: GeometryPolicy,
+    backend: GeometryBackend,
 ) -> Result<Solid, ModelError> {
     let e = |e: DocumentError| error(Some(id), e);
     let body = imports::read_step_body(document, id).map_err(e)?;
@@ -157,7 +213,41 @@ pub(crate) fn build_step_body(
             format!("The STEP import has no solid {}", body.solid),
         )
     })?;
-    Solid::from_brep(&solid.brep, policy).map_err(|e| error(Some(id), e))
+    if backend == GeometryBackend::Rust && source.encoding == StepEncoding::OpenCascadeBrep {
+        return Err(error(
+            Some(id),
+            "This STEP body contains embedded OpenCascade geometry. Import the original STEP file with the Rust backend.",
+        ));
+    }
+    step_geometry(solid, source.encoding, id, policy)
+}
+
+fn step_geometry(
+    saved: &ImportedSolid,
+    encoding: StepEncoding,
+    id: EntityId,
+    policy: GeometryPolicy,
+) -> Result<Solid, ModelError> {
+    let model_error = |e| error(Some(id), e);
+    if encoding == StepEncoding::OpenCascadeBrep {
+        return Solid::from_brep(&saved.brep, policy).map_err(model_error);
+    }
+    let solid = Solid::import_rust_step(&saved.brep, id, policy).map_err(model_error)?;
+    let actual = step_signature(&solid).map_err(model_error)?;
+    if (actual.volume_mm3 - saved.signature.volume_mm3).abs() > actual.volume_mm3.max(1.) * 1e-9
+        || actual
+            .min
+            .into_iter()
+            .chain(actual.max)
+            .zip(saved.signature.min.into_iter().chain(saved.signature.max))
+            .any(|(a, b)| (a - b).abs() > policy.linear_tolerance_mm)
+    {
+        return Err(error(
+            Some(id),
+            "Embedded Rust STEP geometry differs from the saved solid signature",
+        ));
+    }
+    Ok(solid)
 }
 
 fn edge(e: &OutlineEdge) -> CurvedEdge2d {
@@ -258,7 +348,7 @@ pub(crate) fn build_component(
         let source = imports::read_step_source(document, model).map_err(e)?;
         let mut solid: Option<Solid> = None;
         for s in source.solids.iter().filter(|s| !s.missing) {
-            let next = Solid::from_brep(&s.brep, policy).map_err(|e| error(Some(id), e))?;
+            let next = step_geometry(s, source.encoding, id, policy)?;
             solid = Some(match solid {
                 None => next,
                 Some(prev) => prev

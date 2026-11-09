@@ -5,15 +5,18 @@
 //! driving a panel cutout through the transfer engine, and save/reopen.
 use multicad_core::{
     commands::{Actor, Channel, Session},
-    document::{Document, EntityId},
+    document::{Document, EntityData, EntityId, Mutation},
     model::{imports::*, *},
     project_file::{self, ProjectFile},
     references::{AnalyticGeometry, GeometryIntent},
 };
-use multicad_kernel::{BooleanOperation, GeometryPolicy, RigidTransform, Solid};
+use multicad_kernel::{
+    BooleanOperation, GeometryPolicy, RigidTransform, Solid,
+    rust_kernel::{Rational, step::write_box},
+};
 use multicad_model::{
-    Compiler, Model,
-    imports::{KicadOptions, read_kicad_file, read_step_file},
+    Compiler, GeometryBackend, Model,
+    imports::{KicadOptions, read_kicad_file, read_step_file, read_step_file_with_backend},
 };
 use std::{f64::consts::PI, path::Path};
 
@@ -157,6 +160,7 @@ fn named_solids_match_by_name_when_their_geometry_changes() {
         file_name: "a.step".into(),
         path: None,
         content: multicad_core::project_file::ContentHash::of(b"a"),
+        encoding: StepEncoding::OpenCascadeBrep,
         solids: vec![ImportedSolid {
             id: "solid-1".into(),
             name: "Lid".into(),
@@ -169,11 +173,154 @@ fn named_solids_match_by_name_when_their_geometry_changes() {
         file_name: "a.step".into(),
         path: None,
         content: multicad_core::project_file::ContentHash::of(b"b"),
+        encoding: StepEncoding::OpenCascadeBrep,
         solids: vec![("Lid".into(), String::new(), sig(12.))],
     };
     let plan = plan_step_update(&source, &file);
     assert_eq!(plan.matched, vec![("solid-1".to_string(), 0, true)]);
     assert!(plan.added.is_empty() && plan.missing.is_empty());
+}
+
+fn rust_box_step(x: i64) -> String {
+    write_box(
+        [x, 20, 30].map(|dimension| Rational::new(dimension, 1).unwrap()),
+        [5., 6., 7.],
+        [1., 0., 0.],
+        [0., 1., 0.],
+    )
+    .unwrap()
+}
+
+#[test]
+fn rust_step_reimport_and_reopen_preserve_the_part_and_exact_geometry() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("solid.step");
+    std::fs::write(&path, rust_box_step(10)).unwrap();
+    let file = read_step_file_with_backend(&path, GeometryBackend::Rust).unwrap();
+    let mut session = Session::new(Document::new("Rust STEP").unwrap()).unwrap();
+    let prepared = prepare_step_import(&session, 0, actor(), &file).unwrap();
+    let source = prepared.source;
+    let part = prepared.model.outputs[0].body;
+    session.commit(prepared.model.prepared).unwrap();
+
+    let native = read_step_file(&path).unwrap();
+    let refused = prepare_step_update(&session, session.revision(), actor(), source, &native)
+        .expect_err("changing encodings needs a separate import");
+    assert!(refused.to_string().contains("encoding"), "{refused}");
+    assert_eq!(session.revision(), 1);
+
+    let changed = rust_box_step(15);
+    std::fs::write(&path, &changed).unwrap();
+    let file = read_step_file_with_backend(&path, GeometryBackend::Rust).unwrap();
+    let (plan, prepared) =
+        prepare_step_update(&session, session.revision(), actor(), source, &file).unwrap();
+    assert_eq!(plan.matched, vec![("solid-1".into(), 0, true)]);
+    assert!(plan.added.is_empty() && plan.missing.is_empty());
+    session.commit(prepared.model.prepared).unwrap();
+    std::fs::remove_file(&path).unwrap();
+
+    let mut bytes = Vec::new();
+    project_file::write(
+        &ProjectFile::new(session.document().clone()).unwrap(),
+        &mut bytes,
+        Default::default(),
+    )
+    .unwrap();
+    let mut supported = project_file::supported_capabilities();
+    assert!(supported.remove(RUST_STEP_SOURCE_CAPABILITY));
+    assert!(
+        project_file::read(&mut bytes.as_slice(), Default::default(), &supported)
+            .expect_err("older readers must reject the new source schema")
+            .contains(RUST_STEP_SOURCE_CAPABILITY)
+    );
+    let opened = project_file::read(
+        &mut bytes.as_slice(),
+        Default::default(),
+        &project_file::supported_capabilities(),
+    )
+    .unwrap()
+    .project;
+    assert_eq!(&opened.document, session.document());
+    assert!(opened.capabilities().contains(RUST_STEP_SOURCE_CAPABILITY));
+    assert!(!opened.capabilities().contains(STEP_SOURCE_CAPABILITY));
+    let saved = read_step_source(&opened.document, source).unwrap();
+    assert_eq!(saved.encoding, StepEncoding::RustStep);
+    assert_eq!(saved.solids[0].brep, changed);
+
+    for backend in [GeometryBackend::Rust, GeometryBackend::OpenCascade] {
+        let model = Compiler::default()
+            .compile_with_backend(&opened.document, 0, backend, None)
+            .unwrap();
+        let rebuilt = solid(&model, part);
+        near(rebuilt.volume_mm3().unwrap(), 9000.);
+        assert_eq!(rebuilt.bounds().unwrap().min, [5., 6., 7.]);
+        assert_eq!(rebuilt.bounds().unwrap().max, [20., 26., 37.]);
+    }
+}
+
+#[test]
+fn rust_step_rejects_malformed_text_and_legacy_brep() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("solid.step");
+    std::fs::write(&path, b"bad STEP data").unwrap();
+    assert!(read_step_file_with_backend(&path, GeometryBackend::Rust).is_err());
+    std::fs::write(&path, [0xff]).unwrap();
+    let invalid_text = read_step_file_with_backend(&path, GeometryBackend::Rust).unwrap_err();
+    assert!(invalid_text.to_string().contains("UTF-8"));
+
+    boxes(&path, &[([10., 20., 30.], [0., 0., 0.])]);
+    let native = read_step_file(&path).unwrap();
+    let mut session = Session::new(Document::new("Native STEP").unwrap()).unwrap();
+    let prepared = prepare_step_import(&session, 0, actor(), &native).unwrap();
+    commit(&mut session, prepared.model);
+    let refused = Compiler::default()
+        .compile_with_backend(session.document(), 0, GeometryBackend::Rust, None)
+        .err()
+        .expect("Rust cannot parse a legacy B-rep payload");
+    assert!(
+        refused.to_string().contains("original STEP file"),
+        "{refused}"
+    );
+}
+
+#[test]
+fn rust_step_rejects_inconsistent_saved_geometry() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("solid.step");
+    std::fs::write(&path, rust_box_step(10)).unwrap();
+    let file = read_step_file_with_backend(&path, GeometryBackend::Rust).unwrap();
+    let mut session = Session::new(Document::new("Rust STEP").unwrap()).unwrap();
+    let prepared = prepare_step_import(&session, 0, actor(), &file).unwrap();
+    let source = prepared.source;
+    session.commit(prepared.model.prepared).unwrap();
+    let mut source = session.document().get(source).unwrap().clone();
+    let EntityData::Extension { definition, .. } = &mut source.data else {
+        panic!("expected an embedded STEP source");
+    };
+    definition.schema_version = 1;
+    let refused = session
+        .document()
+        .edited(&[Mutation::Replace(source.clone())])
+        .unwrap_err();
+    assert!(refused.to_string().contains("encoding"), "{refused}");
+
+    let EntityData::Extension { definition, .. } = &mut source.data else {
+        unreachable!();
+    };
+    definition.schema_version = 2;
+    definition.data["solids"][0]["brep"] = rust_box_step(15).into();
+    let tampered = session
+        .document()
+        .edited(&[Mutation::Replace(source)])
+        .unwrap();
+    let refused = Compiler::default()
+        .compile_with_backend(&tampered, 0, GeometryBackend::Rust, None)
+        .err()
+        .expect("geometry different from the stored signature must be rejected");
+    assert!(
+        refused.to_string().contains("saved solid signature"),
+        "{refused}"
+    );
 }
 
 const BOARD: &str = r#"(kicad_pcb (version 20240108) (generator "pcbnew")
