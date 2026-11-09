@@ -643,7 +643,7 @@ impl GeometryExporter<'_> {
             ),
             GeometryBackend::Rust => {
                 format!(
-                    "step-files.rust-analytic.1;mesh-files.rust-certified.1;planar-dxf.rust-analytic.1;build:{build};policy:{policy:?}"
+                    "step-files.rust-analytic.1;mesh-files.rust-certified.1;planar-dxf.rust-analytic.1;drawing-pdf-dxf.rust-planar.1;build:{build};policy:{policy:?}"
                 )
             }
         }
@@ -655,10 +655,12 @@ impl GeometryExporter<'_> {
                 RecipeOutput::Step { .. }
                     | RecipeOutput::Mesh { .. }
                     | RecipeOutput::PlanarDxf { .. }
+                    | RecipeOutput::Pdf
+                    | RecipeOutput::DrawingDxf { .. }
             )
         {
             return Some(
-                "The Rust export backend currently supports separate-part STEP, mesh, and planar DXF recipes"
+                "The Rust export backend supports separate-part STEP, mesh, planar DXF, and planar drawing PDF/DXF recipes"
                     .into(),
             );
         }
@@ -760,6 +762,7 @@ impl GeometryExporter<'_> {
         let mut recipes = Vec::new();
         let mut artifacts = Vec::new();
         let mut generated = BTreeMap::new();
+        let mut drawing_evaluation = None;
         for recipe in &selection.recipes {
             let requested: Vec<NamedOutput> = names
                 .iter()
@@ -877,13 +880,20 @@ impl GeometryExporter<'_> {
                     )
                 })?;
                 checkpoint(interrupt)?;
-                let evaluation = model
-                    .drawings(
-                        document,
-                        revision,
-                        &crate::drawings::DrawingProviders::default(),
-                    )
-                    .map_err(|e| failure(ErrorKind::Invalid, e.entity, e.message))?;
+                if drawing_evaluation.is_none() {
+                    drawing_evaluation = Some(
+                        model
+                            .drawings(
+                                document,
+                                revision,
+                                &crate::drawings::DrawingProviders::default(),
+                            )
+                            .map_err(|e| failure(ErrorKind::Invalid, e.entity, e.message))?,
+                    );
+                }
+                let evaluation = drawing_evaluation
+                    .as_ref()
+                    .expect("drawing evaluation initialized above");
                 for output in requested.iter() {
                     match drawing_output(
                         model,
@@ -892,7 +902,7 @@ impl GeometryExporter<'_> {
                         &selection,
                         &recipe.output,
                         output,
-                        &evaluation,
+                        evaluation,
                     ) {
                         Ok((bytes, evidence)) => {
                             recipe_bytes.insert(output.filename.clone(), bytes);

@@ -14,8 +14,15 @@ use multicad_core::{
     parameters::BoundExpression,
     references::{AnalyticGeometry, GeometryIntent, ReferenceFrame, TopologyKind},
 };
-use multicad_model::{Compiler, Model, export::Exporter};
-use std::{path::Path, process::Command};
+use multicad_model::{
+    Compiler, GeometryBackend, Model,
+    export::{ExportWorker, Exporter},
+};
+use std::{
+    path::Path,
+    process::Command,
+    time::{Duration, Instant},
+};
 
 fn actor() -> Actor {
     Actor::local(Channel::Ui)
@@ -376,6 +383,110 @@ fn extent(lines: &[([f64; 2], [f64; 2])]) -> [f64; 4] {
         }
     }
     b
+}
+
+#[test]
+fn rust_worker_publishes_pdf_and_exact_dxf_from_the_same_planar_drawing() {
+    let mut s = Session::new(Document::new("Rust drawing export").unwrap()).unwrap();
+    let block = PrimitiveRequest::new(
+        "Panel",
+        PrimitiveParameters::Box {
+            size: [length(40.), length(20.), length(30.)],
+            frame: Default::default(),
+        },
+    );
+    s.commit(
+        model::prepare_primitive(&s, 0, actor(), &block)
+            .unwrap()
+            .prepared,
+    )
+    .unwrap();
+    let mut sheet = Page::new("R-101");
+    let mut front = view(
+        "Front",
+        vec![block.body],
+        [30., 40.],
+        2,
+        ViewKind::Projection,
+    );
+    front.hidden_lines = false;
+    sheet.views.push(front);
+    let page = sheet.id;
+    let (book, prepared) =
+        prepare_create(&s, s.revision(), actor(), "Sheets", Some(sheet)).unwrap();
+    s.commit(prepared).unwrap();
+    let set = EntityId::new();
+    let definition = SetDefinition {
+        pages: Pages::Selected {
+            pages: vec![PageRef { book, page }],
+        },
+        recipes: vec![
+            Recipe {
+                id: EntityId::new(),
+                name: "PDF".into(),
+                output: RecipeOutput::Pdf,
+            },
+            Recipe {
+                id: EntityId::new(),
+                name: "DXF".into(),
+                output: RecipeOutput::DrawingDxf {
+                    units: LengthUnit::Millimeter,
+                    layers: Layers::default(),
+                },
+            },
+        ],
+        ..Default::default()
+    };
+    s.commit(prepare_set(&s, s.revision(), actor(), set, "Sheets", &definition).unwrap())
+        .unwrap();
+    let worker =
+        ExportWorker::with_geometry_backend(Exporter::default(), GeometryBackend::Rust).unwrap();
+    let wait = || {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            if let Some(reply) = worker.poll() {
+                return reply.result;
+            }
+            assert!(Instant::now() < deadline, "Drawing export did not reply");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    };
+    worker
+        .preview(s.document(), s.revision(), set, actor())
+        .unwrap();
+    let ExportResult::Preview(Ok(preview)) = wait() else {
+        panic!("Rust drawing preview failed");
+    };
+    assert!(preview.can_run(), "{:?}", preview.recipes);
+    let root = tempfile::tempdir().unwrap();
+    worker
+        .run(
+            s.document(),
+            s.revision(),
+            &preview.key,
+            root.path(),
+            actor(),
+        )
+        .unwrap();
+    let ExportResult::Run(Ok(receipt)) = wait() else {
+        panic!("Rust drawing export failed");
+    };
+    assert_eq!(receipt.files.len(), 2);
+    for file in &receipt.files {
+        let evidence = file.artifact.drawing.as_ref().unwrap();
+        assert_eq!(evidence.pages, [PageRef { book, page }]);
+        let path = Path::new(&receipt.directory).join(&file.artifact.output.filename);
+        if path.extension().unwrap() == "pdf" {
+            let bytes = std::fs::read(path).unwrap();
+            assert!(bytes.starts_with(b"%PDF-1.4"));
+            assert!(String::from_utf8_lossy(&bytes).contains("R-101"));
+        } else {
+            let dxf = Drawing::load_file(path).unwrap();
+            let visible = lines_on(&dxf, "VIEW_VISIBLE");
+            assert_eq!(visible.len(), 4);
+            assert_eq!(extent(&visible), [30., 170., 50., 185.]);
+        }
+    }
 }
 
 #[test]
