@@ -406,6 +406,116 @@
       "id": "wood-cut-list",
       "label": "Cut list",
       "status": "Proposed report"
+    },
+    {
+      "group": "Architecture equipment",
+      "id": "equipment-power-outlet-type-f",
+      "label": "Socket"
+    },
+    {
+      "group": "Architecture equipment",
+      "id": "equipment-double-power-outlet-type-f",
+      "label": "Double socket"
+    },
+    {
+      "group": "Architecture equipment",
+      "id": "equipment-triple-power-outlet-type-f",
+      "label": "Triple socket"
+    },
+    {
+      "group": "Architecture equipment",
+      "id": "equipment-data-outlet-rj45",
+      "label": "Data socket"
+    },
+    {
+      "group": "Architecture equipment",
+      "id": "equipment-tv-antenna-outlet",
+      "label": "TV socket"
+    },
+    {
+      "group": "Architecture equipment",
+      "id": "equipment-switch",
+      "label": "Switch"
+    },
+    {
+      "group": "Architecture equipment",
+      "id": "equipment-ceiling-luminaire",
+      "label": "Ceiling light"
+    },
+    {
+      "group": "Architecture equipment",
+      "id": "equipment-wall-luminaire",
+      "label": "Wall light"
+    },
+    {
+      "group": "Architecture equipment",
+      "id": "equipment-lamp-holder-e27",
+      "label": "Lamp holder"
+    },
+    {
+      "group": "Architecture equipment",
+      "id": "equipment-radiator",
+      "label": "Radiator"
+    },
+    {
+      "group": "Architecture equipment",
+      "id": "equipment-kitchen-sink",
+      "label": "Kitchen sink"
+    },
+    {
+      "group": "Architecture equipment",
+      "id": "equipment-washbasin",
+      "label": "Washbasin"
+    },
+    {
+      "group": "Architecture equipment",
+      "id": "equipment-toilet",
+      "label": "Toilet"
+    },
+    {
+      "group": "Architecture equipment",
+      "id": "equipment-bathtub",
+      "label": "Bathtub"
+    },
+    {
+      "group": "Architecture equipment",
+      "id": "equipment-shower",
+      "label": "Shower"
+    },
+    {
+      "group": "Architecture equipment",
+      "id": "equipment-cooker-oven",
+      "label": "Cooker / oven"
+    },
+    {
+      "group": "Architecture equipment",
+      "id": "equipment-cooktop",
+      "label": "Cooktop"
+    },
+    {
+      "group": "Architecture equipment",
+      "id": "equipment-washing-machine",
+      "label": "Washing machine"
+    },
+    {
+      "group": "Architecture equipment",
+      "id": "equipment-dryer",
+      "label": "Dryer"
+    },
+    {
+      "group": "Architecture equipment",
+      "id": "equipment-refrigerator",
+      "label": "Refrigerator"
+    },
+    {
+      "group": "Architecture equipment",
+      "id": "equipment-dishwasher",
+      "label": "Dishwasher"
+    },
+    {
+      "group": "Architecture equipment",
+      "id": "equipment-junction-box",
+      "label": "Junction box"
     }
   ],
   "retained": [

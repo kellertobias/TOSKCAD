@@ -1,0 +1,7 @@
+<svg class="toskcad-icon" xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64" fill="none" color="#000" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+  <title>Schuko socket</title>
+  <rect x="8" y="8" width="48" height="48" rx="5"/>
+  <circle cx="32" cy="32" r="16"/>
+  <path d="M28 17h8m-8 30h8"/>
+  <path d="M25 31v2m14-2v2" stroke-width="5"/>
+</svg>

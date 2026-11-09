@@ -1,0 +1,7 @@
+<svg class="toskcad-icon" xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64" fill="none" color="#000" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+  <title>Junction box</title>
+  <rect x="14" y="14" width="36" height="36" rx="5"/>
+  <path d="M27 14V7h10v7M14 27H7v10h7m36-10h7v10h-7M27 50v7h10v-7"/>
+  <circle cx="32" cy="32" r="8"/>
+  <path d="M28 32h8"/>
+</svg>

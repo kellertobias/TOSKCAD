@@ -1,0 +1,6 @@
+<svg class="toskcad-icon" xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64" fill="none" color="#000" stroke="currentColor" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round">
+  <title>Kitchen sink</title>
+  <rect x="5" y="22" width="54" height="31" rx="4"/>
+  <rect x="12" y="29" width="23" height="17" rx="3"/>
+  <path d="M18 22V14a6 6 0 0 1 12 0v2M42 30h10M42 38h10M42 46h10"/>
+</svg>

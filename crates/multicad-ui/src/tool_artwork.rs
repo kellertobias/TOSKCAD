@@ -86,12 +86,40 @@ pub static SOURCES: &[(&str, &str)] = artwork![
     "fdm-support",
 ];
 
+const EQUIPMENT_SOURCES: &[(&str, &str)] = artwork![
+    "equipment-power-outlet-type-f",
+    "equipment-double-power-outlet-type-f",
+    "equipment-triple-power-outlet-type-f",
+    "equipment-data-outlet-rj45",
+    "equipment-tv-antenna-outlet",
+    "equipment-switch",
+    "equipment-ceiling-luminaire",
+    "equipment-wall-luminaire",
+    "equipment-lamp-holder-e27",
+    "equipment-radiator",
+    "equipment-kitchen-sink",
+    "equipment-washbasin",
+    "equipment-toilet",
+    "equipment-bathtub",
+    "equipment-shower",
+    "equipment-cooker-oven",
+    "equipment-cooktop",
+    "equipment-washing-machine",
+    "equipment-dryer",
+    "equipment-refrigerator",
+    "equipment-dishwasher",
+    "equipment-junction-box",
+];
+
 /// Catalog asset for a registered tool in a workspace. Shared action meanings
 /// stay consistent: checked hammer Apply/Rebuild, stop sign Discard, box and
 /// magnifier for the Parameters model Preview, eye for other previews, green
 /// check Finish sketch / Apply page and eraser Delete.
 pub fn artwork_id(mode: Mode, tool: &str) -> Option<&'static str> {
     Some(match (mode, tool) {
+        (Mode::Model, id) if id.starts_with("equipment-") => EQUIPMENT_SOURCES
+            .iter()
+            .find_map(|(key, _)| (*key == id).then_some(*key))?,
         (_, "apply") => "apply-rebuild",
         (_, "discard" | "abort-sketch" | "page-discard" | "export-set-discard") => "discard",
         (Mode::Parameters, "preview") => "preview-model",
@@ -196,6 +224,7 @@ pub fn artwork(id: &str) -> Option<&'static SvgIcon> {
         .get_or_init(|| {
             SOURCES
                 .iter()
+                .chain(EQUIPMENT_SOURCES)
                 .map(|(id, source)| (*id, crate::svg_icon::parse(source).ok()))
                 .collect()
         })
@@ -234,7 +263,7 @@ mod tests {
     #[test]
     fn every_embedded_asset_is_a_catalog_entry_that_parses_and_renders() {
         let catalog = catalog();
-        for (id, source) in SOURCES {
+        for (id, source) in SOURCES.iter().chain(EQUIPMENT_SOURCES) {
             assert!(catalog.contains(*id), "{id} is not in catalog.json");
             let icon = crate::svg_icon::parse(source)
                 .unwrap_or_else(|error| panic!("{id} failed to parse: {error}"));
@@ -273,6 +302,24 @@ mod tests {
             bound >= 30,
             "only {bound} ribbon entries use reviewed artwork"
         );
+    }
+
+    #[test]
+    fn equipment_presets_have_distinct_compact_artwork() {
+        let registry = Registry::default();
+        let mut masks = BTreeSet::new();
+        for id in crate::architecture_navigation::tab_tools() {
+            let tool = registry.tool(id).unwrap();
+            if matches!(tool.action, crate::registry::Command::EquipmentPreset(_)) {
+                let (key, icon) = tool_artwork(Mode::Model, id).expect(id);
+                assert_eq!(key, id);
+                assert!(
+                    masks.insert(icon.rasterize(16).alpha),
+                    "duplicate icon for {id}"
+                );
+            }
+        }
+        assert_eq!(masks.len(), multicad_core::equipment::Kind::ALL.len());
     }
 
     #[test]

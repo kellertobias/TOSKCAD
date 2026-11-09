@@ -1,0 +1,7 @@
+<svg class="toskcad-icon" xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64" fill="none" color="#000" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+  <title>Triple Schuko socket</title>
+  <rect x="8" y="20" width="48" height="24" rx="4"/>
+  <circle cx="16" cy="32" r="5.8"/>
+  <circle cx="32" cy="32" r="5.8"/>
+  <circle cx="48" cy="32" r="5.8"/>
+</svg>

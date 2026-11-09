@@ -1,0 +1,6 @@
+<svg class="toskcad-icon" xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64" fill="none" color="#000" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+  <title>RJ45 data socket</title>
+  <rect x="8" y="8" width="48" height="48" rx="5"/>
+  <path d="M17 20h30v18h-8v7H25v-7h-8Z"/>
+  <path d="M23 21v7m6-7v7m6-7v7m6-7v7"/>
+</svg>

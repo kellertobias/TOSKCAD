@@ -1,0 +1,7 @@
+<svg class="toskcad-icon" xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64" fill="none" color="#000" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+  <title>Dryer</title>
+  <rect x="10" y="7" width="44" height="50" rx="3"/>
+  <path d="M10 19h44m-16-6h8M24 52h16"/>
+  <rect x="18" y="24" width="28" height="23" rx="5"/>
+  <path d="M27 42c-6-5 6-8 0-13m10 13c-6-5 6-8 0-13"/>
+</svg>

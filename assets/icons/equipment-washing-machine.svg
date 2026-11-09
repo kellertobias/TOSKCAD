@@ -1,0 +1,8 @@
+<svg class="toskcad-icon" xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64" fill="none" color="#000" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+  <title>Washing machine</title>
+  <rect x="9" y="7" width="46" height="50" rx="3"/>
+  <path d="M9 20h46m-37-7h10"/>
+  <circle cx="45" cy="13.5" r="2.5"/>
+  <circle cx="32" cy="38" r="12"/>
+  <path d="M20 39c4-4 8-4 12 0s8 4 12 0"/>
+</svg>

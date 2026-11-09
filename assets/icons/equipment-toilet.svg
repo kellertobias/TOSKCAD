@@ -1,0 +1,5 @@
+<svg class="toskcad-icon" xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64" fill="none" color="#000" stroke="currentColor" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round">
+  <title>Toilet</title>
+  <rect x="9" y="8" width="17" height="22" rx="3"/>
+  <path d="M15 15h5M21 30h36c-1 9-7 14-16 15v6l4 6H17l5-9V30"/>
+</svg>

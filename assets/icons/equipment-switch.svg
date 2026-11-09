@@ -1,0 +1,6 @@
+<svg class="toskcad-icon" xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64" fill="none" color="#000" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+  <title>Rocker switch</title>
+  <rect x="14" y="8" width="36" height="48" rx="5"/>
+  <rect x="21" y="14" width="22" height="36" rx="2"/>
+  <path d="M21 34h22m-14-11h6"/>
+</svg>
