@@ -479,9 +479,7 @@ impl Form {
             }
             Operation::ApplyPose(id) => {
                 ui.label(format!("Restore {}", widgets::name(document, *id)));
-                ui.small(
-                    "Preview all stored coordinates, then Apply them in one undoable transaction.",
-                );
+                ui.small("Apply commits the stored joint coordinates in one undoable transaction.");
             }
             Operation::ReadOnly => {}
         }

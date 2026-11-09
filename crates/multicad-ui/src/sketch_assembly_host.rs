@@ -33,6 +33,93 @@ pub(super) struct PendingAnchor {
     source: ContentHash,
 }
 impl SketchEditor {
+    pub(super) fn show_saved_motion(
+        &mut self,
+        ui: &mut egui::Ui,
+        session: &Session,
+        resources: &ProjectResources,
+        feed: &SceneFeed,
+    ) {
+        if self.assembly.saved_view().is_none()
+            && (self.assembly.active() || self.has_pending_edits())
+        {
+            return;
+        }
+        let mut studies = Vec::new();
+        let mut poses = Vec::new();
+        for entity in session.document().entities() {
+            if let EntityData::Extension { definition, .. } = &entity.data {
+                match definition.type_id.as_str() {
+                    multicad_core::model::MOTION_STUDY_TYPE => studies.push(entity),
+                    multicad_core::model::NAMED_POSE_TYPE => poses.push(entity),
+                    _ => {}
+                }
+            }
+        }
+        if studies.is_empty() && poses.is_empty() {
+            return;
+        }
+        studies.sort_by(|a, b| a.name.cmp(&b.name));
+        poses.sort_by(|a, b| (a.name != "Closed", &a.name).cmp(&(b.name != "Closed", &b.name)));
+        let scene = feed
+            .visible()
+            .filter(|_| feed.is_current(session.document().id(), session.revision()));
+        let mut selected = None;
+        if scene.is_none() {
+            ui.small("Waiting for the current native model…");
+        }
+        if !studies.is_empty() {
+            ui.strong("Motion studies");
+            for study in studies {
+                if ui
+                    .add_enabled(
+                        scene.is_some() && self.assembly.has_query_factory(),
+                        egui::Button::new(format!("Run {}", study.name)),
+                    )
+                    .on_hover_text(
+                        "Evaluate the saved native samples without changing the assembly",
+                    )
+                    .clicked()
+                {
+                    selected = Some((study.id, true));
+                }
+            }
+        }
+        if !poses.is_empty() {
+            ui.strong("Saved poses");
+            for pose in poses {
+                if ui
+                    .add_enabled(
+                        scene.is_some() && self.assembly.has_backend(),
+                        egui::Button::selectable(
+                            self.assembly.saved_view() == Some(pose.id),
+                            &pose.name,
+                        ),
+                    )
+                    .on_hover_text("Preview this saved pose")
+                    .clicked()
+                {
+                    selected = Some((pose.id, false));
+                }
+            }
+        }
+        if let (Some((id, study)), Some(scene)) = (selected, scene) {
+            if let Err(error) = self
+                .assembly
+                .begin_saved_view(session, resources, scene, id, study)
+            {
+                self.message = error;
+            }
+            ui.ctx().request_repaint();
+        }
+        ui.separator();
+    }
+
+    pub(crate) fn close_saved_motion(&mut self) {
+        if self.assembly.saved_view().is_some() {
+            self.assembly.cancel();
+        }
+    }
     /// Definition members can be reused at several outer placements. Pick their
     /// actual native component mesh in its authored placement, explicitly scoped
     /// as source inspection, so an outer aggregate cannot masquerade as a member.

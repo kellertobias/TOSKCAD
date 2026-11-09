@@ -8,15 +8,21 @@
 #[allow(dead_code)]
 mod demo;
 use multicad_core::{
-    assembly_inspection::{InspectionStamp, OccurrencePair, PairQuery, PairRelation},
+    assembly_inspection::{
+        InspectionStamp, OccurrencePair, PairQuery, PairRelation, RangeCoverage, SampleUnit,
+        read_saved_motion_study,
+    },
     commands::{Request, Session},
     document::{Document, EntityData, EntityId, Mutation},
     drawings::{self, AnnotationEvaluation},
-    model::{self, OccurrencePath, PanelJointKind},
+    model::{self, JointCoordinate, OccurrencePath, PanelJointKind},
     project_file,
     symbols::{self, SymbolUpdateRequest},
 };
-use multicad_model::{Compiler, DrawingProviders, Model, assembly_inspection::inspect_assembly};
+use multicad_model::{
+    Compiler, DrawingProviders, Model,
+    assembly_inspection::{inspect_assembly, sample_assembly_range},
+};
 use std::path::PathBuf;
 
 fn shipped(file: &str) -> PathBuf {
@@ -329,6 +335,61 @@ fn shipped_cabinet_opens_with_its_structure_hardware_and_drawings() {
     );
 }
 
+#[test]
+fn shipped_drawer_motion_study_runs_the_existing_slider_at_its_saved_samples() {
+    let mut session = Session::new(open(demo::CABINET_FILE)).unwrap();
+    let study_id = named(session.document(), demo::DRAWER_STUDY);
+    let study = read_saved_motion_study(session.document(), study_id).unwrap();
+    let query = study.query(&session).unwrap();
+    let drawer = instance(session.document(), "Drawer 1");
+    assert_eq!(
+        model::read_joint(session.document(), query.joint)
+            .unwrap()
+            .0
+            .owner,
+        drawer
+    );
+    assert_eq!(query.coordinate, JointCoordinate::Z);
+    assert_eq!(query.sample_values().unwrap(), [0., 150., 300., 450.]);
+    assert_eq!(study.required_clearance_mm, 1.);
+    assert_eq!(query.pairs.len(), 1);
+    assert_eq!(query.pairs[0].a.root, drawer);
+    assert_eq!(
+        query.pairs[0].b,
+        OccurrencePath {
+            root: part(session.document(), "Cabinet left side"),
+            members: vec![],
+        }
+    );
+
+    let original = session.document().clone();
+    let report =
+        sample_assembly_range(&Compiler::default(), session.document(), &query, None).unwrap();
+    assert_eq!(report.coverage, RangeCoverage::SamplesOnly);
+    assert_eq!(report.unit, SampleUnit::Millimeters);
+    assert_ne!(
+        report.samples.first().unwrap().candidate_stamp,
+        report.samples.last().unwrap().candidate_stamp
+    );
+    for sample in &report.samples {
+        let values = sample.result.as_ref().unwrap().pairs[0]
+            .result
+            .as_ref()
+            .unwrap();
+        assert_eq!(values.relation, PairRelation::Separated);
+        assert!(values.minimum_clearance_mm >= study.required_clearance_mm);
+    }
+    assert_eq!(session.document(), &original);
+    assert_eq!(session.revision(), 0);
+
+    // The study's bound end follows the same parameter as the slider limit.
+    set_parameter(&mut session, "drawer_travel", "360");
+    let changed = read_saved_motion_study(session.document(), study_id).unwrap();
+    assert_eq!(
+        changed.query(&session).unwrap().sample_values().unwrap(),
+        [0., 150., 300., 360.]
+    );
+}
 #[test]
 fn width_edit_undo_redo_and_reopen_keep_identities_and_references() {
     let mut session = Session::new(open(demo::CABINET_FILE)).unwrap();

@@ -862,6 +862,9 @@ impl Application {
             }
             Command::Mode(mode) => {
                 self.current_mut().sketch.close_symbol_browser();
+                if mode != Mode::Motion {
+                    self.current_mut().sketch.close_saved_motion();
+                }
                 if !matches!(mode, Mode::Sketch | Mode::Model | Mode::Motion)
                     && self.current().sketch.measurement.active()
                 {
@@ -2784,13 +2787,13 @@ impl Application {
                         self.render_sidebar(ui);
                     }
                     let sketch_mode = self.mode == Mode::Sketch;
-                    let model_workspace = self.mode == Mode::Model;
-                    let architecture = model_workspace
+                    let mode = self.mode;
+                    let architecture = mode == Mode::Model
                         && self.registry.workspace(Mode::Model).tabs[self.tab].title
                             == "Architecture";
                     let p = self.current_mut();
                     p.sketch.set_architecture_active(architecture, &p.session);
-                    p.sketch.set_model_workspace(model_workspace);
+                    p.sketch.set_workspace_mode(mode);
                     let before = p.session.revision();
                     p.sketch.set_measure_pin_allowed(
                         !p.editor.dirty() && !p.drawings.dirty() && !p.exchange.dirty(),

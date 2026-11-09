@@ -253,6 +253,16 @@ impl Application {
                                 ui.label(format!("Parts: {parts}   Assemblies: {assemblies}   Instances: {instances}   Sketches: {sketches}"));
                             }
                             Mode::Motion => {
+                                let studies = doc.entities().filter(|entity| {
+                                    matches!(&entity.data, EntityData::Extension { definition, .. }
+                                        if definition.type_id == multicad_core::model::MOTION_STUDY_TYPE)
+                                }).collect::<Vec<_>>();
+                                if !studies.is_empty() {
+                                    ui.label("Saved motion studies");
+                                    for study in studies {
+                                        ui.label(&study.name);
+                                    }
+                                }
                                 let poses = doc.entities().filter(|entity| {
                                     matches!(&entity.data, EntityData::Extension { definition, .. }
                                         if definition.type_id == multicad_core::model::NAMED_POSE_TYPE)

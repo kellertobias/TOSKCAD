@@ -405,6 +405,9 @@ pub(crate) fn validate_document(document: &Document) -> Result<(), DocumentError
                 NAMED_POSE_TYPE => {
                     read_named_pose(document, entity.id)?;
                 }
+                MOTION_STUDY_TYPE => {
+                    read_saved_motion_study(document, entity.id).map_err(invalid)?;
+                }
                 _ => {}
             }
         }

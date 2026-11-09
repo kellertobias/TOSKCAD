@@ -916,6 +916,7 @@ pub fn required_capabilities(document: &Document) -> BTreeSet<String> {
                     super::GEAR_PAIR_TYPE,
                     super::ASSEMBLY_TYPE,
                     super::NAMED_POSE_TYPE,
+                    super::MOTION_STUDY_TYPE,
                     super::TRANSFER_GROUP_TYPE,
                     super::SCREW_CONNECTION_TYPE,
                     super::SCREW_CONNECTION_AXIS_TYPE,

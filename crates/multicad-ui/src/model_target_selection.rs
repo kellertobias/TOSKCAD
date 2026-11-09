@@ -225,7 +225,7 @@ impl SketchEditor {
     }
     pub fn model_interaction_active(&self) -> bool {
         self.model.active()
-            || self.assembly.active()
+            || self.assembly.active() && self.assembly.saved_view().is_none()
             || self.transfer.active()
             || self.symbols.dirty()
             || self.acquisition.is_some()

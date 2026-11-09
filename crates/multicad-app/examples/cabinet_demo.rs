@@ -17,8 +17,10 @@
 //! The carcass is birch plywood joined with Domino-style loose tenons; the
 //! drawer boxes are finger jointed. Runners, hinges and mounting plates are
 //! pinned symbols imported from the hardware library file. Doors and
-//! drawers move through revolute and slider joints with saved poses.
+//! drawers move through revolute and slider joints with saved poses and a
+//! sampled study of the first drawer’s full travel.
 use multicad_core::{
+    assembly_inspection::{OccurrencePair, SavedMotionStudy},
     commands::{Actor, Channel, Prepared, Request, Session},
     constraint_sketch::Dimension,
     document::{Document, Entity, EntityData, EntityId, Mutation, Placement},
@@ -28,13 +30,13 @@ use multicad_core::{
     model::{
         self, AssemblyRequest, Back, BodyOutput, CarcassDefinition, CarcassRequest,
         ComponentPlacementRequest, Construction, GrainAxis, HardwareHole,
-        HardwarePatternDefinition, InstanceMoveRequest, JointAnchor, JointKind, JointLimit,
-        JointLimits, JointParameters, JointPoseValue, JointRequest, JointValues, LooseTenonSpec,
-        MachiningDefinition, MachiningFace, MachiningKind, NamedPoseRequest, NumericTransform,
-        PanelAxis, PanelDefinition, PanelEdges, PanelJointDefinition, PanelJointKind,
-        PanelJointPair, PanelPlane, PanelRequest, PanelRole, PanelSource, PrimitiveFrame,
-        PrimitiveParameters, PrimitiveRequest, RowEdge, ShelfLayout, ShelfPinRow, Shelves, angle,
-        length,
+        HardwarePatternDefinition, InstanceMoveRequest, JointAnchor, JointCoordinate, JointKind,
+        JointLimit, JointLimits, JointParameters, JointPoseValue, JointRequest, JointValues,
+        LooseTenonSpec, MachiningDefinition, MachiningFace, MachiningKind, NamedPoseRequest,
+        NumericTransform, PanelAxis, PanelDefinition, PanelEdges, PanelJointDefinition,
+        PanelJointKind, PanelJointPair, PanelPlane, PanelRequest, PanelRole, PanelSource,
+        PrimitiveFrame, PrimitiveParameters, PrimitiveRequest, RowEdge, ShelfLayout, ShelfPinRow,
+        Shelves, angle, length,
     },
     parameters::BoundExpression,
     project_file::{self, ProjectFile, info::FileInfo},
@@ -1466,13 +1468,60 @@ pub fn build_cabinet(hardware: &Hardware) -> Result<Cabinet, Error> {
 }
 
 // ---------------------------------------------------------------------------
-// Movement: named poses
+// Movement: named poses and drawer travel
 // ---------------------------------------------------------------------------
 
 pub const POSE_CLOSED: &str = "Closed";
 pub const POSE_DOORS: &str = "Doors open 90°";
 pub const POSE_DRAWERS: &str = "Drawers open";
 pub const POSE_ALL: &str = "Doors and drawers open";
+pub const DRAWER_STUDY: &str = "Drawer 1 travel";
+pub const MOTION_DRAWING_NOTE: &str = "Saved poses and the Drawer 1 travel study are in Motion.";
+
+/// Save a sampled clearance study against the actual drawer slider and
+/// two physical panel occurrences. The end stays linked to drawer travel.
+pub fn add_drawer_motion_study(
+    session: &mut Session,
+    slider: EntityId,
+    drawer_side: EntityId,
+    cabinet_side: EntityId,
+) -> Result<EntityId, Error> {
+    let occurrences = model::transfer_occurrence_catalog(session.document())?;
+    let leaf_path = |part| {
+        let mut matches = occurrences.iter().filter(|leaf| leaf.component == part);
+        let first = matches
+            .next()
+            .ok_or("Motion study panel has no occurrence")?;
+        if matches.next().is_some() {
+            return Err("Motion study panel has multiple occurrences");
+        }
+        Ok(first.path.clone())
+    };
+    let study = SavedMotionStudy {
+        pairs: vec![OccurrencePair {
+            a: leaf_path(drawer_side)?,
+            b: leaf_path(cabinet_side)?,
+        }],
+        joint: slider,
+        coordinate: JointCoordinate::Z,
+        start: length(0.),
+        end: dim(session, "=$drawer_travel")?,
+        step: length(150.),
+        contact_tolerance_mm: 1e-6,
+        required_clearance_mm: 1.,
+    };
+    study.query(session)?;
+    let id = EntityId::new();
+    let entity = study.entity(id, DRAWER_STUDY)?;
+    let prepared = session.prepare(Request {
+        expected_revision: session.revision(),
+        actor: actor(),
+        label: "Add the first drawer’s motion study".into(),
+        edits: vec![Mutation::Insert(entity)],
+    })?;
+    checked(session, prepared)?;
+    Ok(id)
+}
 
 fn add_poses(c: &mut Cabinet) -> Result<(), Error> {
     let s = &mut c.session;
@@ -1805,10 +1854,7 @@ fn add_drawings(c: &mut Cabinet) -> Result<(), Error> {
             [225., 128.],
             "Birch ply 18 carcass, Domino 8 × 22 × 40 joints; finger-jointed birch ply 12 drawer boxes",
         ),
-        note(
-            [225., 136.],
-            "Poses: Closed, Doors open 90°, Drawers open, Doors and drawers open (Model → assembly poses)",
-        ),
+        note([225., 136.], MOTION_DRAWING_NOTE),
         note(
             [225., 144.],
             "Door axes: vertical, at the carcass front outer corners. Drawer axis: −Y, 0–450 mm",
@@ -2162,15 +2208,22 @@ fn set_info(
     Ok(())
 }
 
-pub const CABINET_DESCRIPTION: &str = "Editable 2000 × 800 × 500 mm birch plywood cabinet. Bottom to top: a door compartment behind a left-hand and a right-hand full-overlay door on concealed 35 mm hinges, with one adjustable shelf; two drawers on side-mount full-extension runners with finger-jointed boxes; open adjustable shelving on System 32 shelf-pin rows. The carcass is joined with Domino 8 × 22 × 40 loose tenons. Runners, hinges and plates are pinned symbols from the Cabinet hardware library. Parameters: cabinet_width, cabinet_depth, cabinet_height, door_zone, drawer_zone, door_max_angle, drawer_travel. Poses: Closed, Doors open 90°, Drawers open, Doors and drawers open. Drawings C-101 to C-106 hold the assembly, cutaway sections, joint and drilling details and the parts, hardware, cut-list and machining schedules.";
+pub const CABINET_DESCRIPTION: &str = "Editable 2000 × 800 × 500 mm birch plywood cabinet. Bottom to top: a door compartment behind a left-hand and a right-hand full-overlay door on concealed 35 mm hinges, with one adjustable shelf; two drawers on side-mount full-extension runners with finger-jointed boxes; open adjustable shelving on System 32 shelf-pin rows. The carcass is joined with Domino 8 × 22 × 40 loose tenons. Runners, hinges and plates are pinned symbols from the Cabinet hardware library. Parameters: cabinet_width, cabinet_depth, cabinet_height, door_zone, drawer_zone, door_max_angle, drawer_travel. Poses: Closed, Doors open 90°, Drawers open, Doors and drawers open. Motion includes the Drawer 1 travel study from closed to full extension. Drawings C-101 to C-106 hold the assembly, cutaway sections, joint and drilling details and the parts, hardware, cut-list and machining schedules.";
 pub const LIBRARY_DESCRIPTION: &str = "Reusable cabinet hardware as pinned symbols: a 450 mm side-mount full-extension drawer runner (cabinet and drawer members, runner_length exposed), a concealed 35 mm cup hinge (110°, full overlay) and its cruciform mounting plate. Generic example dimensions, not a product compatibility claim. Matching drilling patterns are defined in the cabinet demo.";
 
-/// The complete demo: library, cabinet, poses, drawings and file info,
+/// The complete demo: library, cabinet, poses, motion study, drawings and file info,
 /// left in the Closed pose.
 pub fn build() -> Result<(Library, Cabinet), Error> {
     let mut library = build_library(450., "1")?;
     let mut cabinet = build_cabinet(&library.hardware)?;
     add_poses(&mut cabinet)?;
+    let cabinet_side = cabinet.role(PanelRole::LeftSide);
+    add_drawer_motion_study(
+        &mut cabinet.session,
+        cabinet.drawers[0].slider,
+        cabinet.drawers[0].left,
+        cabinet_side,
+    )?;
     add_drawings(&mut cabinet)?;
     // Preview with doors and drawers open, then save in the Closed pose.
     apply_pose(&mut cabinet, POSE_ALL)?;

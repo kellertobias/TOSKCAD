@@ -38,6 +38,7 @@ struct SampleView {
 }
 pub(super) struct InspectionPanel {
     range: bool,
+    saved_study: bool,
     catalog: Vec<(OccurrencePath, String)>,
     a: Option<OccurrencePath>,
     b: Option<OccurrencePath>,
@@ -64,6 +65,20 @@ pub(super) struct InspectionPanel {
     pub pending: bool,
 }
 impl InspectionPanel {
+    pub(super) fn seed_study(&mut self, study: SavedMotionStudy) {
+        self.saved_study = true;
+        self.a = study.pairs.first().map(|pair| pair.a.clone());
+        self.b = study.pairs.first().map(|pair| pair.b.clone());
+        self.pairs = study.pairs;
+        self.joint = Some(study.joint);
+        self.coordinate = study.coordinate;
+        self.start = study.start;
+        self.end = study.end;
+        self.step = study.step;
+        self.tolerance = study.contact_tolerance_mm;
+        self.required = widgets::literal(study.required_clearance_mm, "mm");
+    }
+
     pub fn new(
         range: bool,
         document: &Document,
@@ -91,6 +106,7 @@ impl InspectionPanel {
             .collect();
         Self {
             range,
+            saved_study: false,
             catalog,
             a: selection.occurrences.first().cloned(),
             b: selection.occurrences.get(1).cloned(),
@@ -443,10 +459,9 @@ impl InspectionPanel {
             }
         }
     }
-    pub fn show(&mut self, ui: &mut egui::Ui, session: &Session, scene: Option<&Arc<Scene>>) {
+    fn show_inputs(&mut self, ui: &mut egui::Ui, session: &Session) {
         self.fields.start();
         let mut changed = false;
-        ui.small(if self.range{"Samples only · no continuous collision, dynamics or safety guarantee between poses."}else{"Exact native solid overlap and finite-BRep minimum clearance at the current assembled pose."});
         if self.catalog.is_empty() {
             ui.label("Wait for a current native model with physical Part occurrences, then reopen this tool.");
         }
@@ -626,6 +641,38 @@ impl InspectionPanel {
         if changed {
             self.invalidate();
             self.error = None;
+        }
+    }
+
+    pub fn show(&mut self, ui: &mut egui::Ui, session: &Session, scene: Option<&Arc<Scene>>) {
+        ui.small(if self.range{"Samples only · no continuous collision, dynamics or safety guarantee between poses."}else{"Exact native solid overlap and finite-BRep minimum clearance at the current assembled pose."});
+        if self.saved_study {
+            let unit = if self.coordinate == JointCoordinate::Rotation {
+                Unit::Degree
+            } else {
+                Unit::Millimeter
+            };
+            let value =
+                |dimension: &Dimension| dimension.value_in(unit, Some(session.parameters()));
+            if let [Ok(start), Ok(end), Ok(step)] = [&self.start, &self.end, &self.step].map(value)
+            {
+                let suffix = if unit == Unit::Degree { "°" } else { " mm" };
+                ui.label(format!(
+                    "{start}{suffix} to {end}{suffix} · step {step}{suffix}"
+                ));
+            }
+            if let Some(joint) = self.joint.and_then(|id| session.document().get(id)) {
+                ui.small(&joint.name);
+            }
+            for pair in &self.pairs {
+                ui.small(format!(
+                    "{} / {}",
+                    path_name(session.document(), &pair.a),
+                    path_name(session.document(), &pair.b)
+                ));
+            }
+        } else {
+            self.show_inputs(ui, session);
         }
         if self.backend.is_none() {
             ui.colored_label(

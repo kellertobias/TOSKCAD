@@ -569,6 +569,7 @@ pub fn supported_capabilities() -> BTreeSet<String> {
         crate::model::JOINT_CAPABILITY.into(),
         crate::model::ASSEMBLY_CAPABILITY.into(),
         crate::model::NAMED_POSE_CAPABILITY.into(),
+        crate::model::MOTION_STUDY_CAPABILITY.into(),
         crate::model::ALIGN_CAPABILITY.into(),
         crate::model::INSTANCE_PLACEMENT_CAPABILITY.into(),
         crate::model::INSTANCE_ALIGNMENT_CAPABILITY.into(),

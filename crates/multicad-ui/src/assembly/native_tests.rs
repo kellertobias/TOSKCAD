@@ -230,6 +230,31 @@ fn native_controller_joint_motion_named_poses_saved_edit_and_atomic_undo_reopen(
     c.apply(&mut s, &Default::default()).unwrap();
     assert_eq!(s.document(), &middle_candidate);
     let before_pose = s.document().clone();
+    let pose_revision = s.revision();
+    let canonical = multicad_model::Compiler::default()
+        .compile(s.document(), pose_revision)
+        .unwrap();
+    let canonical =
+        crate::modeling::native_fixture::scene(s.document(), canonical.snapshot(), 1).unwrap();
+    for (pose, expected_z) in [(poses[2], 85.), (poses[0], 5.)] {
+        c.begin_saved_view(&s, &Default::default(), &canonical, pose, false)
+            .unwrap();
+        let until = Instant::now() + Duration::from_secs(5);
+        while c.pending() {
+            c.poll(&s, &Default::default());
+            assert!(Instant::now() < until, "Saved pose preview timed out");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let candidate = c.display_scene(&s, &Default::default()).unwrap();
+        assert_eq!(
+            candidate.native_instance_bounds(placed.instance).unwrap()[0][2],
+            expected_z
+        );
+        assert!(!c.can_apply(&s, &Default::default()));
+        assert_eq!(s.document(), &before_pose);
+        assert_eq!(s.revision(), pose_revision);
+    }
+    c.cancel();
     c.begin(
         AssemblyTool::NamedPose,
         &s,

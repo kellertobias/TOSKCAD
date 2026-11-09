@@ -1,5 +1,6 @@
 //! Source-bound, read-only assembly inspection receipts. These DTOs contain no
 //! meshes/native handles and never assert safety between explicitly sampled poses.
+pub use crate::model::{SavedMotionStudy, read_saved_motion_study};
 use crate::{
     document::{Document, EntityId},
     model::{JointCoordinate, OccurrencePath},

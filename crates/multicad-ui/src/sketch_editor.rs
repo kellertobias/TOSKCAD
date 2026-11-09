@@ -148,6 +148,7 @@ pub struct SketchEditor {
     show_source_tree: bool,
     show_inspector: bool,
     model_workspace: bool,
+    motion_workspace: bool,
     pub selected: Option<EntityId>,
     pub editing: bool,
     pub picking: bool,
@@ -253,6 +254,7 @@ impl Default for SketchEditor {
             show_source_tree: true,
             show_inspector: true,
             model_workspace: false,
+            motion_workspace: false,
             selected: None,
             editing: false,
             picking: false,
@@ -1743,8 +1745,9 @@ impl SketchEditor {
     pub fn set_measure_pin_allowed(&mut self, allowed: bool) {
         self.measure_pin_allowed = allowed;
     }
-    pub(crate) fn set_model_workspace(&mut self, model: bool) {
-        self.model_workspace = model;
+    pub(crate) fn set_workspace_mode(&mut self, mode: crate::registry::Mode) {
+        self.model_workspace = mode == crate::registry::Mode::Model;
+        self.motion_workspace = mode == crate::registry::Mode::Motion;
     }
     pub fn has_pending_edits(&self) -> bool {
         if self.materials.pending() {
@@ -3195,6 +3198,9 @@ impl SketchEditor {
                             }
                             if self.transfer.pending(){ui.ctx().request_repaint_after(std::time::Duration::from_millis(16));}
                             return;
+                        }
+                        if self.motion_workspace {
+                            self.show_saved_motion(ui, session, resources, feed);
                         }
                         if self.assembly.active() {
                             self.assembly_anchor_controls(ui,session,resources,feed);

@@ -50,6 +50,7 @@ pub struct AssemblyController {
     base_scene: Option<Arc<Scene>>,
     query_factory: Option<AssemblyInspectionBackendFactory>,
     inspection: Option<InspectionPanel>,
+    saved_view: Option<EntityId>,
 }
 impl AssemblyController {
     pub fn set_query_factory(&mut self, factory: AssemblyInspectionBackendFactory) {
@@ -72,10 +73,13 @@ impl AssemblyController {
         self.form.is_some()
     }
     pub fn dirty(&self) -> bool {
-        self.form.as_ref().is_some_and(|f| f.tool.authoring())
+        self.saved_view.is_none() && self.form.as_ref().is_some_and(|f| f.tool.authoring())
     }
     pub fn label(&self) -> &'static str {
         self.form.as_ref().map_or("Assembly", |f| f.tool.label())
+    }
+    pub(crate) fn saved_view(&self) -> Option<EntityId> {
+        self.saved_view
     }
     pub fn pending(&self) -> bool {
         self.candidate.as_ref().is_some_and(|c| c.pending)
@@ -116,6 +120,49 @@ impl AssemblyController {
     ) -> Result<(), String> {
         let form = Form::existing(session.document(), entity)?;
         self.open(session, resources, scene, form, channel)
+    }
+    pub(crate) fn begin_saved_view(
+        &mut self,
+        session: &Session,
+        resources: &ProjectResources,
+        scene: &Arc<Scene>,
+        id: EntityId,
+        study: bool,
+    ) -> Result<(), String> {
+        let definition = if study {
+            let definition = model::read_saved_motion_study(session.document(), id)?;
+            definition.query(session)?;
+            Some(definition)
+        } else {
+            model::read_named_pose(session.document(), id).map_err(|error| error.to_string())?;
+            None
+        };
+        if self.saved_view.is_some() {
+            self.cancel();
+        }
+        self.begin(
+            if study {
+                AssemblyTool::MotionRange
+            } else {
+                AssemblyTool::NamedPose
+            },
+            session,
+            resources,
+            Some(scene),
+            AssemblySelection::default(),
+            Channel::Ui,
+        )?;
+        if let Some(definition) = definition {
+            self.inspection
+                .as_mut()
+                .expect("motion range")
+                .seed_study(definition);
+        } else {
+            let form = self.form.as_mut().expect("named pose");
+            form.operation = Operation::ApplyPose(id);
+        }
+        self.saved_view = Some(id);
+        self.preview(session, resources, Channel::Ui)
     }
     fn open(
         &mut self,
@@ -194,6 +241,7 @@ impl AssemblyController {
             p.invalidate();
         }
         self.inspection = None;
+        self.saved_view = None;
     }
     pub fn preview(
         &mut self,
@@ -352,8 +400,10 @@ impl AssemblyController {
         }
     }
     pub fn can_apply(&self, session: &Session, resources: &ProjectResources) -> bool {
-        self.dirty()
-            && self.form.as_ref().is_some_and(|f| f.pick.is_none())
+        self.dirty() && self.candidate_ready(session, resources)
+    }
+    fn candidate_ready(&self, session: &Session, resources: &ProjectResources) -> bool {
+        self.form.as_ref().is_some_and(|f| f.pick.is_none())
             && self.current(session, resources).is_ok()
             && self.error.is_none()
             && self.candidate.as_ref().is_some_and(|c| {
@@ -408,7 +458,7 @@ impl AssemblyController {
         {
             return Some(scene);
         }
-        if self.can_apply(session, resources) {
+        if self.candidate_ready(session, resources) {
             return self.candidate.as_ref().and_then(|c| c.scene.clone());
         }
         self.handoff
@@ -669,8 +719,17 @@ impl AssemblyController {
             return Ok(None);
         };
         crate::controls::inspector_layout(ui);
-        ui.heading(form.tool.label());
-        let changed = form.show(ui, session.document());
+        if let Some(entity) = self.saved_view.and_then(|id| session.document().get(id)) {
+            ui.heading(&entity.name);
+        } else {
+            ui.heading(form.tool.label());
+        }
+        let changed = if self.saved_view.is_some() && self.inspection.is_none() {
+            ui.small("Preview of the saved joint coordinates.");
+            false
+        } else {
+            form.show(ui, session.document())
+        };
         if changed {
             self.candidate = None;
             self.error = None;
@@ -693,16 +752,20 @@ impl AssemblyController {
         }
         if let Some(error) = &self.error {
             ui.colored_label(egui::Color32::LIGHT_RED, error);
-        } else if self.can_apply(session, resources) {
+        } else if self.candidate_ready(session, resources) {
             ui.label("Native preview ready");
         }
         let authoring = self.dirty();
         let actions = inspector_actions::row_with_progress(
             ui,
             Owner::Assembly,
-            (authoring || self.inspection.is_some()).then(|| {
+            ((authoring && self.saved_view.is_none()) || self.inspection.is_some()).then(|| {
                 Button::new(
-                    "Preview",
+                    if self.saved_view.is_some() {
+                        "Run study"
+                    } else {
+                        "Preview"
+                    },
                     !self.pending(),
                     "Check the current candidate using the native geometry engine",
                 )

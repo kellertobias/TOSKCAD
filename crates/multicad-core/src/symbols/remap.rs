@@ -80,6 +80,9 @@ fn provider(d: &Definition) -> Result<(), DocumentError> {
                 serde_json::from_value(d.data.clone()).map_err(|e| invalid(e.to_string()))?;
             v.definition()?;
         }
+        model::MOTION_STUDY_TYPE => {
+            model::SavedMotionStudy::from_definition(d).map_err(invalid)?;
+        }
         // Weldment and cabinetry geometry (CAD-185). Their payloads name
         // canonical entities only by complete UUID strings or slash paths;
         // the typed decoders reject unknown fields, so nothing opaque is
