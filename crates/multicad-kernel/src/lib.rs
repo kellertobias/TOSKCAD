@@ -653,6 +653,7 @@ pub use drawing::*;
 mod worker;
 pub use worker::*;
 mod curves;
+mod elementary_curves;
 mod sketch_queries;
 pub use sketch_queries::NativeRegionQueries;
 mod provenance;

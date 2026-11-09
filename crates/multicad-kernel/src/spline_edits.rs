@@ -1,6 +1,7 @@
 //! Exact native spline editing. Parameters here are native, not normalized.
 //! Segmentation uses OCCT knot insertion on a private copy. Continuation adds
 //! a finite straight tangent span without fitting or extrapolating old spans.
+use crate::elementary_curves::ElementaryCurve;
 use crate::{BSpline2d, CurvedEdge2d, GeometryError, GeometryErrorKind, GeometryPolicy, ffi};
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CurveProjection2d {
@@ -32,6 +33,9 @@ impl CurvedEdge2d {
     ) -> Result<Vec<CurveProjection2d>, GeometryError> {
         policy.point([point[0], point[1], 0.])?;
         let data = self.data(policy, 0)?;
+        if let Some(elementary) = ElementaryCurve::new(self, &data) {
+            return elementary.project(point, policy.linear_tolerance_mm);
+        }
         let result = ffi::curve_project(
             &data,
             &ffi::Point3 {

@@ -1,5 +1,6 @@
 //! Exact nonperiodic clamped B-spline groundwork. Native queries use the basis
 //! directly; display sampling never participates in profile construction.
+use crate::elementary_curves::ElementaryCurve;
 use crate::{GeometryError, GeometryErrorKind, GeometryPolicy, PlaneFrame, Solid, ffi};
 use multicad_core::{
     document::EntityId,
@@ -54,7 +55,7 @@ fn empty_spline() -> ffi::SplineData {
         weights: vec![],
     }
 }
-fn arc_sweep(center: [f64; 2], a: [f64; 2], b: [f64; 2], clockwise: bool) -> f64 {
+pub(crate) fn arc_sweep(center: [f64; 2], a: [f64; 2], b: [f64; 2], clockwise: bool) -> f64 {
     let first = (a[1] - center[1]).atan2(a[0] - center[0]);
     let last = (b[1] - center[1]).atan2(b[0] - center[0]);
     (if clockwise {
@@ -217,6 +218,12 @@ impl CurvedEdge2d {
                         "Arc endpoints must be distinct and lie on the same authored circle",
                     ));
                 }
+                let sweep = arc_sweep(*center, *a, *b, *clockwise);
+                if sweep <= 0. || sweep >= std::f64::consts::TAU {
+                    return Err(input(
+                        "Arc sweep must be positive and smaller than a full circle",
+                    ));
+                }
                 ffi::CurvedEdgeData {
                     kind: 2,
                     a: p(*a),
@@ -250,6 +257,9 @@ impl CurvedEdge2d {
         policy: GeometryPolicy,
     ) -> Result<CurveSample2d, GeometryError> {
         let curve = self.data(policy, 0)?;
+        if let Some(elementary) = ElementaryCurve::new(self, &curve) {
+            return elementary.evaluate(parameter);
+        }
         let out = ffi::curve_evaluate(&curve, parameter).map_err(native)?;
         let point = [out.point.x, out.point.y];
         let derivative = [out.derivative.x, out.derivative.y];
