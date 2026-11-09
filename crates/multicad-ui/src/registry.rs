@@ -105,7 +105,7 @@ pub enum Command {
     SheetFlange,
     SheetCutout,
     SheetFasteners,
-    SheetPattern(crate::sheet_pattern::Tool),
+    SheetView,
     Construction,
     Dimension,
     FinishSketch,
@@ -145,14 +145,7 @@ pub(crate) const METAL_TITLE: &str = "Metal";
 pub(crate) const METAL_GROUPS: [(&str, &[&str]); 3] = [
     (
         "Sheet metal",
-        &[
-            "sheet",
-            "sheet-flange",
-            "sheet-cutout",
-            "fastener",
-            "flat",
-            "bend-list",
-        ],
+        &["sheet", "sheet-flange", "sheet-cutout", "fastener"],
     ),
     ("Profiles", &["tube", "cope"]),
     ("Weld", &["weld-joint", "weld-list"]),
@@ -180,7 +173,7 @@ fn command_home(command: Command) -> Option<(Mode, &'static str)> {
         Command::SheetFlange
         | Command::SheetCutout
         | Command::SheetFasteners
-        | Command::SheetPattern(_) => Some((Mode::Model, METAL_TITLE)),
+        | Command::SheetView => Some((Mode::Model, METAL_TITLE)),
         Command::WoodPreset(_)
         | Command::Modeling(
             ModelingTool::Panel
@@ -527,7 +520,6 @@ impl Default for Registry {
                 "workbenches",
             ],
         });
-        use crate::sheet_pattern::Tool as PatternTool;
         for (id, label, icon, action, aliases) in [
             (
                 "sheet-flange",
@@ -552,24 +544,10 @@ impl Default for Registry {
             ),
             (
                 "flat",
-                "Unfold",
+                "Fold/Unfold",
                 Icon::SheetUnfold,
-                Command::SheetPattern(PatternTool::Unfold),
-                &["unfold", "flat-pattern"][..],
-            ),
-            (
-                "fold",
-                "Fold",
-                Icon::SheetFold,
-                Command::SheetPattern(PatternTool::Fold),
-                &["fold"][..],
-            ),
-            (
-                "bend-list",
-                "Bend schedule",
-                Icon::SheetSchedule,
-                Command::SheetPattern(PatternTool::BendSchedule),
-                &["bend-schedule"][..],
+                Command::SheetView,
+                &["unfold", "fold", "flat-pattern"][..],
             ),
         ] {
             registry.tools.push(Tool {
@@ -1127,8 +1105,6 @@ mod tests {
                 "sheet-flange",
                 "sheet-cutout",
                 "fastener",
-                "flat",
-                "bend-list",
                 "tube",
                 "cope",
                 "weld-joint",

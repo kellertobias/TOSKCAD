@@ -1,20 +1,10 @@
 //! Route Sheet Metal tools and keep the developed view local to each project.
 use super::*;
-use crate::sheet_pattern::{BackendFactory, Tool};
+use crate::sheet_pattern::BackendFactory;
 
 impl Application {
     pub fn set_sheet_pattern_backends(&mut self, factory: BackendFactory) {
         self.sheet_pattern_backends = Some(factory);
-    }
-
-    pub(super) fn sheet_metal_tab(&self) -> bool {
-        self.mode == Mode::Model
-            && self
-                .registry
-                .workspace(Mode::Model)
-                .tabs
-                .get(self.tab)
-                .is_some_and(|tab| tab.title == crate::registry::METAL_TITLE)
     }
 
     pub(super) fn sheet_action_ready(&self, command: Command) -> Result<(), String> {
@@ -22,10 +12,8 @@ impl Application {
         if self.mode != Mode::Model {
             return Err("Open Model to use Sheet Metal tools".into());
         }
-        if command == Command::SheetPattern(Tool::Fold) {
-            return project.sheet_pattern.active().then_some(()).ok_or_else(|| {
-                "Unfold a sheet to switch between the flat pattern and the folded model".into()
-            });
+        if command == Command::SheetView && project.sheet_pattern.active() {
+            return Ok(());
         }
         if project.pending_edits()
             || project.sketch.model_active()
@@ -57,8 +45,11 @@ impl Application {
                     _ => {}
                 }
             }
-            Command::SheetPattern(_) if self.sheet_pattern_backends.is_none() => {
-                return Err("Native flat-pattern evaluation is unavailable".into());
+            Command::SheetView => {
+                if self.sheet_pattern_backends.is_none() {
+                    return Err("Native flat-pattern evaluation is unavailable".into());
+                }
+                crate::sheet_pattern::current_bends(&project.scene, &project.session, part)?;
             }
             _ => {}
         }
@@ -71,7 +62,7 @@ impl Application {
         channel: Channel,
     ) -> Result<(), String> {
         self.sheet_action_ready(command)?;
-        if command == Command::SheetPattern(Tool::Fold) {
+        if command == Command::SheetView && self.current().sheet_pattern.active() {
             self.current_mut().sheet_pattern.close();
             self.message = "Folded model".into();
             return Ok(());
@@ -79,7 +70,6 @@ impl Application {
         let tab = self.workbench_tab(Mode::Model, command);
         let factory = self.sheet_pattern_backends.clone();
         let p = self.current_mut();
-        let document = p.session.document();
         let part = p
             .sketch
             .selected_sheet_part(&p.session)
@@ -106,14 +96,15 @@ impl Application {
                 self.active_tool = Some((self.active, command));
                 self.message = "Attached fasteners · place a metric screw on the sheet".into();
             }
-            Command::SheetPattern(tool) => {
+            Command::SheetView => {
                 p.sheet_pattern.open(
                     &factory.expect("backend checked"),
-                    document,
+                    p.session.document(),
                     p.session.revision(),
                     part,
-                    tool == Tool::BendSchedule,
                 )?;
+                self.message = "Flat pattern".into();
+                return Ok(());
             }
             _ => unreachable!("sheet command routing"),
         }

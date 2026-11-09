@@ -40,7 +40,6 @@ pub enum Icon {
     SheetFlange,
     SheetUnfold,
     SheetFold,
-    SheetSchedule,
     SheetFasteners,
     Sweep,
     Loft,
@@ -564,12 +563,6 @@ pub(crate) fn paint_sized(ui: &egui::Ui, icon: Icon, center: Pos2, color: Color3
         Icon::SheetFold => {
             path(&[[2., 17.], [12., 12.], [22., 17.], [12., 22.], [2., 17.]]);
             path(&[[12., 12.], [12., 3.], [22., 8.], [22., 17.]]);
-        }
-        Icon::SheetSchedule => {
-            for y in [5., 12., 19.] {
-                path(&[[4., y], [6., y]]);
-                path(&[[10., y], [21., y]]);
-            }
         }
         Icon::SheetFasteners => {
             path(&[[7., 7.], [8.5, 3.], [15.5, 3.], [17., 7.], [7., 7.]]);

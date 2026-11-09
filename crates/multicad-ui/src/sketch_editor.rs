@@ -223,6 +223,7 @@ pub struct SketchEditor {
     home_requested: bool,
     tree: crate::model_tree::ModelTree,
     tree_selection: std::collections::BTreeSet<EntityId>,
+    sheet_view_requested: bool,
     /// Sketch selected as a whole (not merely open) when Extrude/Revolve began.
     whole_sketch: Option<EntityId>,
     /// Planar model faces chosen as Extrude / Revolve inputs (CAD-146).
@@ -330,6 +331,7 @@ impl Default for SketchEditor {
             home_requested: false,
             tree: Default::default(),
             tree_selection: Default::default(),
+            sheet_view_requested: false,
             whole_sketch: None,
             profile_faces: Vec::new(),
             visibility: Default::default(),
@@ -3005,6 +3007,9 @@ impl SketchEditor {
                 "Show or hide the Inspector while keeping the current tool and selection",
             );
     }
+    pub(crate) fn take_sheet_view_request(&mut self) -> bool {
+        std::mem::take(&mut self.sheet_view_requested)
+    }
     pub fn show_project(
         &mut self,
         ui: &mut egui::Ui,
@@ -3315,6 +3320,13 @@ impl SketchEditor {
                             self.handle_tree_events(session,scene.as_deref(),events);
                         }
                         if hierarchy_tool {return;}
+                        if self.model_workspace && let Some(part) = self.selected_sheet_part(session) {
+                            ui.separator();
+                            self.sheet_view_requested = crate::sheet_pattern::sheet_inspector(
+                                ui, false, crate::sheet_pattern::current_bends(feed, session, part),
+                            );
+                            ui.separator();
+                        }
                         let connection = self.selected_screw_connection(session.document());
                         if let Some(connection) = connection {
                             let ready=self.feature_edit_ready(session,feed,connection);

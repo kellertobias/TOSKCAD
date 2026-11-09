@@ -389,12 +389,6 @@ fn tool_button(
     hint: &impl Fn(Command, &str) -> String,
     selected: &impl Fn(Command) -> bool,
 ) -> Option<Command> {
-    // One slot switches action while the selected sheet is developed.
-    let id = if id == "flat" && selected(Command::SheetPattern(crate::sheet_pattern::Tool::Fold)) {
-        "fold"
-    } else {
-        id
-    };
     let tool = registry.tool(id).expect("catalog entry");
     let response = ui
         .add_enabled_ui(enabled(tool.action), |ui| {
@@ -414,7 +408,7 @@ fn tool_button(
             Command::SheetFlange
             | Command::SheetCutout
             | Command::SheetFasteners
-            | Command::SheetPattern(_) => hint(tool.action, tool.label),
+            | Command::SheetView => hint(tool.action, tool.label),
             _ => "Unavailable in the current context".into(),
         })
         .clicked()
@@ -836,49 +830,21 @@ mod tests {
     }
 
     #[test]
-    fn metal_uses_the_same_slot_for_unfold_and_fold() {
-        use crate::sheet_pattern::Tool;
+    fn sheet_view_and_bend_schedule_are_properties_instead_of_ribbon_tiles() {
         let registry = Registry::default();
-        let tab = registry
+        let metal = registry
             .workspace(Mode::Model)
             .tabs
             .iter()
             .find(|tab| tab.title == METAL_TITLE)
             .unwrap();
-        let ctx = egui::Context::default();
-        let fold = Command::SheetPattern(Tool::Fold);
-        let unfold = Command::SheetPattern(Tool::Unfold);
-        let render = |is_flat, events, chosen: &mut Option<Command>| {
-            frame_at(&ctx, 1024., events, |ui| {
-                *chosen = show_selectable(
-                    ui,
-                    &registry,
-                    Mode::Model,
-                    tab,
-                    false,
-                    |_| true,
-                    |_, label| label.into(),
-                    |command| command == fold && is_flat,
-                );
-            })
-        };
-        let mut chosen = None;
-        render(false, vec![], &mut chosen).drop_without_applying_deltas();
-        let folded = render(false, vec![], &mut chosen);
-        assert!(fully_visible(&folded, "Unfold"));
-        assert!(!fully_visible(&folded, "Fold"));
-        let slot = text(&folded, "Unfold");
-        render(false, events(slot, true), &mut chosen).drop_without_applying_deltas();
-        render(false, events(slot, false), &mut chosen).drop_without_applying_deltas();
-        assert_eq!(chosen, Some(unfold));
-
-        let flat = render(true, vec![], &mut chosen);
-        assert!(fully_visible(&flat, "Fold"));
-        assert!(!fully_visible(&flat, "Unfold"));
-        assert!((text(&flat, "Fold").x - slot.x).abs() < 12.);
-        render(true, events(slot, true), &mut chosen).drop_without_applying_deltas();
-        render(true, events(slot, false), &mut chosen).drop_without_applying_deltas();
-        assert_eq!(chosen, Some(fold));
+        assert!(!metal.tools.contains(&"flat"));
+        assert!(!metal.tools.contains(&"bend-list"));
+        assert_eq!(
+            registry.resolve("unfold").unwrap().action,
+            Command::SheetView
+        );
+        assert_eq!(registry.resolve("fold").unwrap().label, "Fold/Unfold");
     }
 
     #[test]
@@ -1401,8 +1367,6 @@ mod tests {
                         "Add flange",
                         "Add cutout",
                         "Attached fasteners",
-                        "Unfold",
-                        "Bend schedule",
                         "Tube / profile",
                         "Miter / cope",
                         "Weld joint",

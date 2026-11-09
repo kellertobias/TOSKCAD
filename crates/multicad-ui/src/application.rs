@@ -460,15 +460,6 @@ impl Application {
         if let Command::WoodPreset(preset) = command {
             return self.current().sketch.wood_preset() == Some(preset);
         }
-        match command {
-            Command::SheetPattern(crate::sheet_pattern::Tool::Fold) => {
-                return self.current().sheet_pattern.active();
-            }
-            Command::SheetPattern(crate::sheet_pattern::Tool::BendSchedule) => {
-                return self.current().sheet_pattern.schedule();
-            }
-            _ => {}
-        }
         if command == Command::Extension("library") {
             return self.current().sketch.symbol_library_active();
         }
@@ -1507,7 +1498,7 @@ impl Application {
             Command::SheetFlange
             | Command::SheetCutout
             | Command::SheetFasteners
-            | Command::SheetPattern(_) => {
+            | Command::SheetView => {
                 if !args.is_empty() {
                     return Err("This Sheet Metal tool takes no command arguments".into());
                 }
@@ -1675,7 +1666,7 @@ impl Application {
             Command::SheetFlange
             | Command::SheetCutout
             | Command::SheetFasteners
-            | Command::SheetPattern(_) => self.sheet_action_ready(command).is_ok(),
+            | Command::SheetView => self.sheet_action_ready(command).is_ok(),
             Command::Modeling(_) => {
                 matches!(self.mode, Mode::Sketch | Mode::Model)
                     && !self.current().editor.dirty()
@@ -2384,20 +2375,10 @@ impl Application {
             Command::SheetFlange
                 | Command::SheetCutout
                 | Command::SheetFasteners
-                | Command::SheetPattern(_)
+                | Command::SheetView
         ) && let Err(reason) = self.sheet_action_ready(command)
         {
             return reason;
-        }
-        match command {
-            Command::SheetPattern(crate::sheet_pattern::Tool::Unfold) => {
-                return "Unfold · Show the selected sheet’s developed cut contours and bends"
-                    .into();
-            }
-            Command::SheetPattern(crate::sheet_pattern::Tool::Fold) => {
-                return "Fold · Return to the same selected sheet in the 3D model".into();
-            }
-            _ => {}
         }
         let hint = self
             .shortcuts
@@ -2806,7 +2787,7 @@ impl Application {
                     .inner_margin(egui::Margin::symmetric(8, 3)),
             )
             .show(ui, |ui| self.command_line(ui));
-        let show_sheet_pattern = self.sheet_metal_tab()
+        let show_sheet_pattern = self.mode == Mode::Model
             && !self.current().sketch.model_active()
             && !self.current().sketch.measurement.active()
             && !self.current().pending_edits();
@@ -2817,11 +2798,15 @@ impl Application {
             .frame(egui::Frame::new().fill(crate::theme::PANEL))
             .show(ui, |ui| {
                 let p = self.current_mut();
-                if show_sheet_pattern
-                    && p.sheet_pattern
-                        .show(ui, p.session.document().id(), p.session.revision())
-                {
-                    return;
+                if show_sheet_pattern && p.sheet_pattern.active() {
+                    let drawn = p.sheet_pattern.show(ui, &p.session, &p.scene);
+                    if !p.sheet_pattern.active() {
+                        self.message = "Folded model".into();
+                        self.message_error = false;
+                    }
+                    if drawn {
+                        return;
+                    }
                 }
                 if self.mode == Mode::Parameters {
                     self.project_workspace(ui);
@@ -2871,6 +2856,7 @@ impl Application {
                         &mut p.scene,
                         &p.resources,
                     );
+                    let sheet_view_requested = p.sketch.take_sheet_view_request();
                     let confirmation_error = p
                         .sketch
                         .finish_model_confirmation(&mut p.session, &p.resources)
@@ -2898,6 +2884,10 @@ impl Application {
                     } else if modeling_cancelled {
                         self.message = "Modeling cancelled · document unchanged".into();
                         self.message_error = false;
+                    }
+                    if sheet_view_requested {
+                        self.execute(Command::SheetView, &[], Channel::Ui);
+                        ctx.request_repaint();
                     }
                     if sketch_opened {
                         self.mode = Mode::Sketch;

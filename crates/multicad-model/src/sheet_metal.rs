@@ -613,23 +613,36 @@ impl Model {
         let head = self.sheet_head(document, part)?;
         Some((layout, self.solid(head)?))
     }
+    fn final_sheet_layouts<'a>(
+        &'a self,
+        document: &'a Document,
+    ) -> impl Iterator<Item = (EntityId, EntityId, &'a SheetLayout)> + 'a {
+        let snapshot = self.snapshot();
+        let full = snapshot.scope == crate::EvaluationScope::Full
+            && snapshot.stamp.document == document.id();
+        full.then_some(&snapshot.body_sources)
+            .into_iter()
+            .flatten()
+            .filter_map(move |(&part, &feature)| {
+                let layout = snapshot.sheet_layouts.get(&feature)?;
+                (self.sheet_head(document, part) == Some(feature))
+                    .then_some((part, feature, layout))
+            })
+    }
+
+    /// Bend schedules for current sheet Parts from the evaluated folded layout.
+    /// An unbent sheet has an empty schedule. Scoped evaluations omit schedules.
+    pub fn sheet_bend_schedules(&self, document: &Document) -> Vec<(EntityId, Vec<BendRecord>)> {
+        self.final_sheet_layouts(document)
+            .map(|(part, _, layout)| (part, bend_records(layout)))
+            .collect()
+    }
+
     /// Exact base and final-leg cutter frames for current sheet Parts.
     /// Source-only evaluations cannot establish final physical Part ownership.
     pub fn sheet_authoring_faces(&self, document: &Document) -> Vec<SheetFaceFrame> {
-        let snapshot = self.snapshot();
-        if snapshot.scope != crate::EvaluationScope::Full
-            || snapshot.stamp.document != document.id()
-        {
-            return vec![];
-        }
         let mut frames = Vec::new();
-        for (&part, &feature) in &snapshot.body_sources {
-            let Some(layout) = snapshot.sheet_layouts.get(&feature) else {
-                continue;
-            };
-            if self.sheet_head(document, part) != Some(feature) {
-                continue;
-            }
+        for (part, feature, layout) in self.final_sheet_layouts(document) {
             let space = layout.space();
             let faces =
                 std::iter::once(CutoutFace::Base).chain(layout.flanges.iter().map(|flange| {

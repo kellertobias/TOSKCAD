@@ -551,6 +551,7 @@ pub struct Scene {
     guide_outlines: Arc<BTreeMap<EntityId, Vec<[Point; 4]>>>,
     weld_markers: Arc<[WeldMarker]>,
     sheet_faces: Arc<[multicad_core::model::SheetFaceFrame]>,
+    sheet_bend_schedules: Arc<BTreeMap<EntityId, Vec<crate::sheet_pattern::Bend>>>,
     fdm_reviews: Option<Arc<fdm_review::AidReviews>>,
     display_leaf_paths: BTreeMap<EntityId, multicad_core::model::OccurrencePath>,
     display_origin: Option<(SceneStamp, multicad_core::project_file::ContentHash)>,
@@ -675,6 +676,7 @@ impl Scene {
             guide_outlines: Arc::new(BTreeMap::new()),
             weld_markers: Arc::default(),
             sheet_faces: Arc::default(),
+            sheet_bend_schedules: Arc::default(),
             fdm_reviews: None,
             display_leaf_paths: BTreeMap::new(),
             display_origin: None,
@@ -945,6 +947,18 @@ impl Scene {
     }
     pub(crate) fn sheet_faces(&self) -> &[multicad_core::model::SheetFaceFrame] {
         &self.sheet_faces
+    }
+    pub fn set_sheet_bend_schedules(
+        &mut self,
+        schedules: BTreeMap<EntityId, Vec<crate::sheet_pattern::Bend>>,
+    ) {
+        self.sheet_bend_schedules = Arc::new(schedules);
+    }
+    pub(crate) fn sheet_bend_schedule(
+        &self,
+        part: EntityId,
+    ) -> Option<&[crate::sheet_pattern::Bend]> {
+        self.sheet_bend_schedules.get(&part).map(Vec::as_slice)
     }
     /// Callers still verify this Scene's source hash and document/revision.
     /// Source-inspection views never authorize placement defaults.
@@ -1356,6 +1370,7 @@ impl Scene {
         view.native_bounds = self.native_bounds.clone();
         view.weld_markers = self.weld_markers.clone();
         view.sheet_faces = self.sheet_faces.clone();
+        view.sheet_bend_schedules = self.sheet_bend_schedules.clone();
         view.scope = self.scope.clone();
         Ok(Arc::new(view))
     }

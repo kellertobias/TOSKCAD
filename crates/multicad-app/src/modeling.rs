@@ -33,6 +33,27 @@ impl Backend {
                     let published = Arc::get_mut(&mut published)
                         .expect("publication is not shared before return");
                     published.set_sheet_faces(model.sheet_authoring_faces(document));
+                    published.set_sheet_bend_schedules(
+                        model
+                            .sheet_bend_schedules(document)
+                            .into_iter()
+                            .map(|(part, records)| {
+                                let bends = records
+                                    .into_iter()
+                                    .enumerate()
+                                    .map(|(order, record)| multicad_ui::sheet_pattern::Bend {
+                                        order,
+                                        line: record.line,
+                                        direction: record.direction,
+                                        angle_deg: record.angle_deg,
+                                        inside_radius_mm: record.inside_radius_mm,
+                                        allowance_mm: record.allowance_mm,
+                                    })
+                                    .collect();
+                                (part, bends)
+                            })
+                            .collect(),
+                    );
                     published
                         .set_architecture_plan(plan)
                         .map_err(|message| ModelError {

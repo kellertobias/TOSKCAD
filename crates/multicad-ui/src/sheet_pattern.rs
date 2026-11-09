@@ -33,13 +33,6 @@ pub struct Bend {
     pub allowance_mm: f64,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Tool {
-    Unfold,
-    Fold,
-    BendSchedule,
-}
-
 #[derive(Default)]
 pub(crate) struct Workspace {
     backend: Option<Box<dyn Backend>>,
@@ -49,7 +42,6 @@ pub(crate) struct Workspace {
 struct View {
     source: (EntityId, u64, EntityId),
     result: Option<Result<Pattern, String>>,
-    schedule: bool,
     scale: f32,
     pan: Vec2,
 }
@@ -61,14 +53,13 @@ impl Workspace {
         document: &Document,
         revision: u64,
         part: EntityId,
-        schedule: bool,
     ) -> Result<(), String> {
         let source = (document.id(), revision, part);
-        if let Some(view) = &mut self.view
-            && view.source == source
-            && !matches!(view.result, Some(Err(_)))
+        if self
+            .view
+            .as_ref()
+            .is_some_and(|view| view.source == source && !matches!(view.result, Some(Err(_))))
         {
-            view.schedule = schedule;
             return Ok(());
         }
         self.close();
@@ -77,7 +68,6 @@ impl Workspace {
         self.view = Some(View {
             source,
             result: None,
-            schedule,
             scale: 1.,
             pan: Vec2::ZERO,
         });
@@ -88,10 +78,6 @@ impl Workspace {
         self.view.is_some()
     }
 
-    pub(crate) fn schedule(&self) -> bool {
-        self.view.as_ref().is_some_and(|view| view.schedule)
-    }
-
     pub(crate) fn close(&mut self) {
         if self.view.take().is_some()
             && let Some(backend) = &mut self.backend
@@ -100,11 +86,17 @@ impl Workspace {
         }
     }
 
-    pub(crate) fn show(&mut self, ui: &mut egui::Ui, document: EntityId, revision: u64) -> bool {
+    pub(crate) fn show(
+        &mut self,
+        ui: &mut egui::Ui,
+        session: &multicad_core::commands::Session,
+        scene: &crate::viewport::SceneFeed,
+    ) -> bool {
         let Some(view) = &mut self.view else {
             return false;
         };
-        if (view.source.0, view.source.1) != (document, revision)
+        let document = session.document();
+        if (view.source.0, view.source.1) != (document.id(), session.revision())
             || ui.input(|input| input.key_pressed(egui::Key::Escape))
         {
             self.close();
@@ -112,6 +104,24 @@ impl Workspace {
         }
         if view.result.is_none() {
             view.result = self.backend.as_mut().and_then(|backend| backend.poll());
+        }
+        let part = view.source.2;
+        let folded = crate::controls::inspector_panel(ui, "source-inspector")
+            .show(ui, |ui| {
+                crate::controls::inspector_layout(ui);
+                ui.heading("Inspector");
+                ui.separator();
+                if let Some(sheet) = document.get(part) {
+                    ui.strong(&sheet.name);
+                }
+                ui.separator();
+                sheet_inspector(ui, true, current_bends(scene, session, part))
+            })
+            .inner;
+        if folded {
+            self.close();
+            ui.ctx().request_repaint();
+            return true;
         }
         egui::Frame::new()
             .inner_margin(egui::Margin::same(crate::theme::GUTTER))
@@ -139,17 +149,11 @@ impl Workspace {
                             ui.colored_label(BEND, "Bend lines");
                             ui.colored_label(DRILL, "Drill centers");
                         });
-                        if view.schedule {
-                            egui::Panel::right("sheet-bend-schedule")
-                                .exact_size(245.)
-                                .frame(egui::Frame::new().inner_margin(egui::Margin::same(10)))
-                                .show(ui, |ui| schedule(ui, pattern));
-                        }
                         paint(ui, pattern, &mut view.scale, &mut view.pan);
                     }
                     Some(Err(error)) => {
                         ui.colored_label(Color32::LIGHT_RED, error);
-                        ui.label("Use Fold in the ribbon to return to the 3D model.");
+                        ui.label("Use Fold/Unfold in the Inspector to return to the 3D model.");
                     }
                     None => {
                         ui.horizontal(|ui| {
@@ -168,28 +172,69 @@ const CUT: Color32 = Color32::from_rgb(211, 228, 243);
 const BEND: Color32 = Color32::from_rgb(255, 183, 91);
 const DRILL: Color32 = Color32::from_rgb(102, 213, 237);
 
-fn schedule(ui: &mut egui::Ui, pattern: &Pattern) {
-    ui.heading("Bend schedule");
-    ui.label("Proposed bend order");
-    ui.separator();
-    if pattern.bends.is_empty() {
-        ui.label("This sheet has no bends.");
+pub(crate) fn current_bends<'a>(
+    feed: &'a crate::viewport::SceneFeed,
+    session: &multicad_core::commands::Session,
+    part: EntityId,
+) -> Result<&'a [Bend], &'static str> {
+    if !feed.is_current(session.document().id(), session.revision()) {
+        return Err(if feed.error().is_some() {
+            "Bend schedule unavailable until the Model rebuild succeeds."
+        } else {
+            "Waiting for the current native sheet…"
+        });
     }
-    egui::ScrollArea::vertical().show(ui, |ui| {
-        for bend in &pattern.bends {
-            ui.strong(format!(
-                "{} · {:.2}° {}",
-                bend.order + 1,
-                bend.angle_deg,
-                bend.direction
-            ));
-            ui.label(format!(
-                "Inside radius {:.2} mm\nAllowance {:.2} mm",
-                bend.inside_radius_mm, bend.allowance_mm
-            ));
-            ui.separator();
-        }
+    feed.visible()
+        .filter(|scene| scene.is_full_model())
+        .and_then(|scene| scene.sheet_bend_schedule(part))
+        .ok_or("Bend schedule is unavailable for this sheet.")
+}
+
+pub(crate) fn sheet_inspector(
+    ui: &mut egui::Ui,
+    flat: bool,
+    bends: Result<&[Bend], &'static str>,
+) -> bool {
+    ui.strong("Sheet metal");
+    let mut toggle = false;
+    ui.horizontal_wrapped(|ui| {
+        toggle = ui
+            .add_enabled(flat || bends.is_ok(), egui::Button::new("Fold/Unfold"))
+            .on_hover_text(if flat {
+                "Return to the folded 3D view"
+            } else {
+                "Show the developed flat pattern"
+            })
+            .clicked();
+        ui.small(if flat { "Flat view" } else { "Folded view" });
     });
+    egui::CollapsingHeader::new("Bend schedule")
+        .default_open(true)
+        .show(ui, |ui| match bends {
+            Ok([]) => {
+                ui.label("This sheet has no bends.");
+            }
+            Ok(bends) => {
+                ui.small("Proposed bend order");
+                for bend in bends {
+                    ui.strong(format!(
+                        "{} · {:.2}° {}",
+                        bend.order + 1,
+                        bend.angle_deg,
+                        bend.direction
+                    ));
+                    ui.label(format!(
+                        "Inside radius {:.2} mm · Allowance {:.2} mm",
+                        bend.inside_radius_mm, bend.allowance_mm
+                    ));
+                    ui.separator();
+                }
+            }
+            Err(message) => {
+                ui.label(message);
+            }
+        });
+    toggle
 }
 
 fn paint(ui: &mut egui::Ui, pattern: &Pattern, zoom: &mut f32, pan: &mut Vec2) {
@@ -331,10 +376,12 @@ mod tests {
         let fake = calls.clone();
         let factory: BackendFactory = Arc::new(move || Box::new(Fake(fake.clone())));
         let doc = Document::new("Sheet").unwrap();
+        let session = multicad_core::commands::Session::new(doc.clone()).unwrap();
+        let feed = crate::viewport::SceneFeed::default();
         let part = EntityId::new();
         let mut workspace = Workspace::default();
         for failed in [false, true] {
-            workspace.open(&factory, &doc, 0, part, false).unwrap();
+            workspace.open(&factory, &doc, 0, part).unwrap();
             if failed {
                 workspace.view.as_mut().unwrap().result = Some(Err("Invalid sheet".into()));
             }
@@ -342,7 +389,7 @@ mod tests {
             assert!(!workspace.active());
             egui::Context::default()
                 .run_ui(Default::default(), |ui| {
-                    assert!(!workspace.show(ui, doc.id(), 0));
+                    assert!(!workspace.show(ui, &session, &feed));
                 })
                 .drop_without_applying_deltas();
         }
@@ -355,20 +402,22 @@ mod tests {
         let fake = calls.clone();
         let factory: BackendFactory = Arc::new(move || Box::new(Fake(fake.clone())));
         let doc = Document::new("Sheet").unwrap();
+        let session = multicad_core::commands::Session::new(doc.clone()).unwrap();
+        let feed = crate::viewport::SceneFeed::default();
         let part = EntityId::new();
         let mut workspace = Workspace::default();
-        workspace.open(&factory, &doc, 1, part, false).unwrap();
-        workspace.open(&factory, &doc, 1, part, true).unwrap();
-        assert!(workspace.schedule());
+        workspace.open(&factory, &doc, 0, part).unwrap();
+        workspace.open(&factory, &doc, 0, part).unwrap();
         assert_eq!(calls.requests.load(Ordering::Relaxed), 1);
 
         let ctx = egui::Context::default();
         ctx.run_ui(Default::default(), |ui| {
-            assert!(workspace.show(ui, doc.id(), 1));
+            assert!(workspace.show(ui, &session, &feed));
         })
         .drop_without_applying_deltas();
+        let other = multicad_core::commands::Session::new(Document::new("Other").unwrap()).unwrap();
         ctx.run_ui(Default::default(), |ui| {
-            assert!(!workspace.show(ui, doc.id(), 2));
+            assert!(!workspace.show(ui, &other, &feed));
         })
         .drop_without_applying_deltas();
         assert!(!workspace.active());
