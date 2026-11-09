@@ -554,8 +554,8 @@ mod tests {
         assert_eq!(model[other + 1], "Mechanical");
         // Other modes are untouched; showing it again restores it in place.
         assert_eq!(
-            titles(&preferences, &registry, Mode::Export),
-            ["Common", "Print", "Render"]
+            titles(&preferences, &registry, Mode::Parameters),
+            ["General", "Parameters", "Materials", "Export"]
         );
         preferences.set_visible(Mode::Model, "Wood", true).unwrap();
         assert!(titles(&preferences, &registry, Mode::Model).contains(&"Wood"));
@@ -605,10 +605,10 @@ mod tests {
             length_unit: LengthUnit::Inch,
             scale_step_percent: DEFAULT_SCALE_STEP_PERCENT,
             workbenches: BTreeMap::from([(
-                Mode::Export,
+                Mode::Sketch,
                 vec![
                     WorkbenchPreference {
-                        title: "Render".into(),
+                        title: "References".into(),
                         visible: false,
                     },
                     WorkbenchPreference {
@@ -616,7 +616,7 @@ mod tests {
                         visible: true,
                     },
                     WorkbenchPreference {
-                        title: "Render".into(),
+                        title: "References".into(),
                         visible: true,
                     },
                 ],
@@ -625,8 +625,8 @@ mod tests {
         preferences.validate().unwrap();
         preferences.normalize(&registry);
         assert_eq!(
-            preferences.order(&registry, Mode::Export),
-            [(2, false), (0, true), (1, true)]
+            preferences.order(&registry, Mode::Sketch),
+            [(2, false), (0, true), (1, true), (3, true)]
         );
         assert_eq!(preferences.length_unit, LengthUnit::Inch);
         assert_eq!(
