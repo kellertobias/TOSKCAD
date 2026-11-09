@@ -10,10 +10,10 @@ pub(crate) fn workspace_tab_icon(mode: Mode, title: &str) -> Option<Icon> {
         (Mode::Parameters, "General") => Icon::Page,
         (Mode::Parameters, "Parameters") => Icon::Grid,
         (Mode::Parameters, "Materials") => Icon::Materials,
-        (Mode::Model, "Architecture") => Icon::Home,
-        (Mode::Model, "Wood") => Icon::Furniture,
+        (Mode::Model, "Architecture") => Icon::ArchitectureTower,
+        (Mode::Model, "Wood") => Icon::Timber,
         (Mode::Model, METAL_TITLE) => Icon::Thickness,
-        (Mode::Model, "Mechanical") => Icon::Cylinder,
+        (Mode::Model, "Mechanical") => Icon::MechanicalScrew,
         (Mode::Model, "Other") => Icon::Grid,
         (Mode::Model, "Relations") => Icon::Link,
         (Mode::Model, _) => Icon::Box,
@@ -811,6 +811,28 @@ mod tests {
             }
             _ => false,
         })
+    }
+
+    #[test]
+    fn workbench_and_sheet_fastener_symbols_describe_their_tools() {
+        assert!(matches!(
+            workspace_tab_icon(Mode::Model, "Architecture"),
+            Some(Icon::ArchitectureTower)
+        ));
+        assert!(matches!(
+            workspace_tab_icon(Mode::Model, "Wood"),
+            Some(Icon::Timber)
+        ));
+        assert!(matches!(
+            workspace_tab_icon(Mode::Model, "Mechanical"),
+            Some(Icon::MechanicalScrew)
+        ));
+        let registry = Registry::default();
+        let fastener = registry.tool("fastener").unwrap();
+        assert!(matches!(
+            tool_glyph(Mode::Model, fastener.id, fastener.icon),
+            icons::Glyph::Vector(Icon::SheetFasteners)
+        ));
     }
 
     #[test]

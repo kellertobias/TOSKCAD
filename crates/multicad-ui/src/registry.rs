@@ -546,7 +546,7 @@ impl Default for Registry {
             (
                 "fastener",
                 "Attached fasteners",
-                Icon::Link,
+                Icon::SheetFasteners,
                 Command::SheetFasteners,
                 &["sheet-hardware"][..],
             ),
