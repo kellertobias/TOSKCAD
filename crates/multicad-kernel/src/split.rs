@@ -110,7 +110,7 @@ impl Solid {
         }
         let clip = |positive| -> Result<Solid, GeometryError> {
             let shape = crate::ffi::clip_half_space(
-                &self.native.0,
+                self.occt()?,
                 &frame,
                 positive,
                 policy.boolean_fuzzy_mm,

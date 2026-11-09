@@ -1,7 +1,7 @@
-use multicad_rust_kernel_precision::prism::{
+use multicad_rust_kernel::prism::{
     BoundaryCurve, Face, FaceKey, FaceRole, Location, Measure, PrismError, RoundedPrism,
 };
-use multicad_rust_kernel_precision::{Circle, Error, Rational, parse_length_mm};
+use multicad_rust_kernel::{Circle, Error, Rational, parse_length_mm};
 
 fn n(value: i64) -> Rational {
     Rational::new(value, 1).unwrap()

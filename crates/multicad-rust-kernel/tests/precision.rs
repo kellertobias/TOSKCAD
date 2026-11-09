@@ -1,4 +1,4 @@
-use multicad_rust_kernel_precision::{
+use multicad_rust_kernel::{
     Circle, Error, GridCoordinate, Quantum, Rational, VerticalIntersection, parse_length_mm,
 };
 

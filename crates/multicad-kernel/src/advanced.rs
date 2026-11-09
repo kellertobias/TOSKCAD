@@ -36,7 +36,7 @@ impl Solid {
             ));
         }
         let mut result = Self::adopt(
-            ffi::mirror_shape(&self.native.0, &plane.checked(policy)?)
+            ffi::mirror_shape(self.occt()?, &plane.checked(policy)?)
                 .map_err(|e| failure(GeometryErrorKind::Native, e.to_string()))?,
             policy,
             "mirror",

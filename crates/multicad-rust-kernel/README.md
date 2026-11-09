@@ -1,6 +1,6 @@
 # Rust kernel precision and rounded panel experiment
 
-This standalone experiment builds a rounded panel with an authored circular hole and a second bore cut through the solid. It also tests exact lengths and analytic circle intersections. It runs with the repository's pinned Rust toolchain and no native geometry dependencies. [OCCT baseline](../../docs/architecture/kernel-replacement-baseline.md)
+This Rust kernel crate builds a rounded panel with an authored circular hole and a second bore cut through the solid. It also tests exact lengths and analytic circle intersections. It runs with the repository's pinned Rust toolchain and no native geometry dependencies. [OCCT baseline](../../docs/architecture/kernel-replacement-baseline.md)
 
 `parse_length_mm` accepts signed decimals and one division with a unit. Examples include `0.1 mm`, `1/3 in` and `10 mm / 3`. An inch is exactly `127/5 mm`. Fractions are reduced to a signed numerator and a positive denominator. Both components have a magnitude limit of `10^18`. Products and sums use `i128`, which is wide enough for intermediate arithmetic on this domain. Inputs and reduced results outside the supported range return an error. A zero denominator has a separate error.
 
@@ -14,14 +14,14 @@ The profile uses three axis-aligned segments and one semicircle. The solid extru
 
 Top area and volume remain exact as rational coefficients of `constant + π × factor`. A point probe distinguishes material, boundary, and empty space. A face key uses an authored 128-bit ID and a surface role; the tests rebuild the panel with a fractional thickness and a different bore diameter, then resolve the same keys. The [panel tests](tests/prism.rs) compare the exact measures against the recorded OCCT results for both panel sizes and cutter seam orientations.
 
-The experiment represents an analytic cylinder by its axis and radius, independent of its seam orientation. It does not build general trimmed surface topology or validate seam edges in exchange files. Compiler integration, downstream document reference resolution, helical seam tests, independent STEP readback, and matched workload timings still need separate verification.
+The kernel façade can own a rounded prism directly and publish its analytic faces, edges, vertices, and source roles. A panel rebuilt with different dimensions keeps its cap reference and identifies its bores by source even when their order changes. The cylinder representation uses its axis and radius. Compiler selection, general trimmed surfaces, helical seam tests, independent STEP readback, and matched workload timings still need verification.
 
 ## Verification
 
 Run the isolated tests and coverage checks from the repository root. The coverage command requires `cargo-llvm-cov` and the pinned toolchain's `llvm-tools` component.
 
 ```sh
-cargo test --locked --offline --manifest-path spikes/rust-kernel-precision/Cargo.toml
-cargo llvm-cov --locked --offline --manifest-path spikes/rust-kernel-precision/Cargo.toml \
+cargo test --locked -p multicad-rust-kernel
+cargo llvm-cov --locked -p multicad-rust-kernel \
   --fail-under-lines 100 --fail-under-functions 100
 ```

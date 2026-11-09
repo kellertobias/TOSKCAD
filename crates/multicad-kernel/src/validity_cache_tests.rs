@@ -5,15 +5,15 @@ use crate::{
 use multicad_core::document::EntityId;
 
 fn checks(solid: &Solid) -> u64 {
-    ffi::validity_check_count(&solid.native.0).unwrap()
+    ffi::validity_check_count(solid.occt().unwrap()).unwrap()
 }
 fn shares(a: &Solid, b: &Solid) -> bool {
-    ffi::shares_validity_cache(&a.native.0, &b.native.0)
+    ffi::shares_validity_cache(a.occt().unwrap(), b.occt().unwrap())
 }
 fn accepted_once(solid: &Solid) {
     assert_eq!(checks(solid), 1);
     for _ in 0..8 {
-        assert!(ffi::valid(&solid.native.0).unwrap());
+        assert!(ffi::valid(solid.occt().unwrap()).unwrap());
     }
     assert_eq!(checks(solid), 1);
 }
@@ -118,6 +118,6 @@ fn thread_factory_validity_reuse_keeps_owner_specific_persistent_face_metadata_s
 fn unsuccessful_checks_are_not_cached_and_concurrent_same_shape_queries_publish_once() {
     assert!(ffi::validity_cache_rejection_probe().unwrap());
     let solid = Solid::box_solid([4., 5., 6.], GeometryPolicy::default()).unwrap();
-    assert!(ffi::validity_cache_concurrent_probe(&solid.native.0).unwrap());
+    assert!(ffi::validity_cache_concurrent_probe(solid.occt().unwrap()).unwrap());
     accepted_once(&solid);
 }

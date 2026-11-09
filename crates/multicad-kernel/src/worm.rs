@@ -168,7 +168,7 @@ impl Solid {
         let mut worm_mask = 0_u8;
         let mut wheel_masks = vec![0_u8; wheel.unwrap_or(0) as usize];
         let mut found_bore = false;
-        for seed in ffi::seeds(&self.native.0).map_err(native)? {
+        for seed in ffi::seeds(self.occt()?).map_err(native)? {
             if !receipts.insert((seed.face, seed.role, seed.source_index)) {
                 return Err(invalid("Duplicate native ZA face receipt"));
             }
@@ -264,7 +264,7 @@ impl Solid {
                 "ZA solid needs complete face ancestry, both caps, all bounded flank/root/tip roles and the requested bore",
             ));
         }
-        let nodes = ffi::topology(&self.native.0).map_err(native)?;
+        let nodes = ffi::topology(self.occt()?).map_err(native)?;
         self.finish_provenance(elements, &nodes)
     }
     /// Right, single-start, q=10 axial-straight worm. Its axis is local +Z,

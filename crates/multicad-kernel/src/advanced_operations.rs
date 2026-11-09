@@ -47,7 +47,7 @@ impl Solid {
         let mut sum = 0.;
         for index in 0..count {
             checkpoint()?;
-            let handle = ffi::solid_component_at(&self.native.0, index)
+            let handle = ffi::solid_component_at(self.occt()?, index)
                 .map_err(|e| failure(GeometryErrorKind::Native, e.to_string()))?;
             let mut component = Self::adopt(handle, policy, "solid component")?;
             if component.solid_count()? != 1 {
@@ -138,7 +138,7 @@ impl Solid {
         policy.length(thickness_mm.abs())?;
         let indices = self.selected_faces(openings, feature, true)?;
         let handle = ffi::shell_solid(
-            &self.native.0,
+            self.occt()?,
             &indices,
             thickness_mm,
             policy.linear_tolerance_mm,
@@ -221,7 +221,7 @@ impl Solid {
         };
         let indices = self.selected_faces(faces, feature, false)?;
         let handle = ffi::draft_solid(
-            &self.native.0,
+            self.occt()?,
             &indices,
             &direction,
             &neutral.checked(policy)?,
@@ -288,7 +288,7 @@ impl Solid {
             ffi::compound_job().map_err(|e| failure(GeometryErrorKind::Native, e.to_string()))?;
         for solid in solids {
             checkpoint()?;
-            ffi::compound_add(job.pin_mut(), &solid.native.0)
+            ffi::compound_add(job.pin_mut(), solid.occt()?)
                 .map_err(|e| failure(GeometryErrorKind::Native, e.to_string()))?;
         }
         checkpoint()?;
@@ -313,10 +313,10 @@ mod compound_property_tests {
     use crate::{HelicalThread, ffi};
     use multicad_core::references::TopologyKind;
     fn faces_count(s: &Solid) -> u64 {
-        ffi::face_integration_count(&s.native.0).unwrap()
+        ffi::face_integration_count(s.occt().unwrap()).unwrap()
     }
     fn volumes_count(s: &Solid) -> u64 {
-        ffi::volume_integration_count(&s.native.0).unwrap()
+        ffi::volume_integration_count(s.occt().unwrap()).unwrap()
     }
     #[test]
     fn curved_compound_copies_keep_certificates_and_distinct_coincident_members() {
@@ -415,7 +415,7 @@ mod compound_property_tests {
                 + 1e-7 * (solid.volume_mm3().unwrap().abs() + step.volume_mm3().unwrap().abs());
             assert!((step.volume_mm3().unwrap() - solid.volume_mm3().unwrap()).abs() < budget);
         }
-        assert!(ffi::compound_property_fallback_probe(&source.native.0).unwrap());
+        assert!(ffi::compound_property_fallback_probe(source.occt().unwrap()).unwrap());
         let raw = ffi::shape_from_brep(&original).unwrap();
         let mut job = ffi::compound_job().unwrap();
         ffi::compound_add(job.pin_mut(), &raw).unwrap();

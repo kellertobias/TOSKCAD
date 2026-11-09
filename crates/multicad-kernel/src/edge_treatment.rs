@@ -98,7 +98,7 @@ impl Solid {
             .iter()
             .map(|edge| edge.reference_face.ordinal)
             .collect();
-        let handle = ffi::treat_edges_sided(&self.native.0, &indices, &sides, mode, first, second)
+        let handle = ffi::treat_edges_sided(self.occt()?, &indices, &sides, mode, first, second)
             .map_err(|e| failure(GeometryErrorKind::Native, e.to_string()))?;
         let mut result = Self::adopt(handle, policy, "sided chamfer")?;
         if result.solid_count()? != 1 {
@@ -126,7 +126,7 @@ impl Solid {
         };
         policy.length(size)?;
         let indices = self.validate_treatment_edges(edges, feature)?;
-        let handle = ffi::treat_edges(&self.native.0, &indices, mode, size)
+        let handle = ffi::treat_edges(self.occt()?, &indices, mode, size)
             .map_err(|e| failure(GeometryErrorKind::Native, e.to_string()))?;
         let mut result = Self::adopt(handle, policy, "edge treatment")?;
         if result.solid_count()? != 1 {

@@ -67,7 +67,7 @@ impl Solid {
             SketchReferenceMethod::Intersect => 2,
         };
         let out = ffi::sketch_reference_geometry(
-            &self.native.0,
+            self.occt()?,
             kind,
             index,
             &native_frame,

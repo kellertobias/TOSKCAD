@@ -216,7 +216,7 @@ impl Solid {
         let mut frames = vec![None; edges.len()];
         let mut seen = vec![false; edges.len()];
         let mut rejected = vec![false; edges.len()];
-        for seed in ffi::seeds(&solid.native.0)
+        for seed in ffi::seeds(solid.occt()?)
             .map_err(|e| error(GeometryErrorKind::Native, e.to_string()))?
         {
             if seed.role != 2 {

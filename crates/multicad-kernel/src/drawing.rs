@@ -162,7 +162,7 @@ pub fn project_drawing(
         });
         ffi::drawing_add(
             job.pin_mut(),
-            &input.solid.native.0,
+            input.solid.occt()?,
             match hatch.pattern {
                 multicad_core::materials::HatchPattern::None => 0,
                 multicad_core::materials::HatchPattern::Lines => 1,

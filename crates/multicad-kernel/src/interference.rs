@@ -90,7 +90,7 @@ impl Solid {
     }
     fn inspection_occupied_space(&self, policy: GeometryPolicy) -> Result<Solid, GeometryError> {
         Self::adopt(
-            crate::ffi::inspection_union(&self.native.0)
+            crate::ffi::inspection_union(self.occt()?)
                 .map_err(|e| failure(GeometryErrorKind::Native, e.to_string()))?,
             policy,
             "inspection occupied space",

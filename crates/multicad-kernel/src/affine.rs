@@ -154,7 +154,7 @@ impl Solid {
         let matrix: Vec<_> = transform.matrix.into_iter().flatten().collect();
         let mut result = Self::adopt(
             ffi::affine_transform_shape(
-                &self.native.0,
+                self.occt()?,
                 &matrix,
                 &ffi::Point3 {
                     x: transform.translation_mm[0],

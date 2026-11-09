@@ -96,7 +96,7 @@ impl Solid {
         };
         let policy = self.geometry_policy();
         let native = crate::ffi::transfer_hole_axis(
-            &self.native.0,
+            self.occt()?,
             kind,
             key.ordinal,
             policy.linear_tolerance_mm,

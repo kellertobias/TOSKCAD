@@ -43,9 +43,8 @@ fn extract_sourced(
     policy: GeometryPolicy,
 ) -> Result<SourcedPlanarContours, GeometryError> {
     let native = frame.checked(policy)?;
-    let wires =
-        ffi::planar_face_contours(&solid.native.0, face, &native, policy.linear_tolerance_mm)
-            .map_err(|e| error(GeometryErrorKind::Native, e))?;
+    let wires = ffi::planar_face_contours(solid.occt()?, face, &native, policy.linear_tolerance_mm)
+        .map_err(|e| error(GeometryErrorKind::Native, e))?;
     let mut loops = Vec::with_capacity(wires.len());
     let mut edge_keys = Vec::with_capacity(wires.len());
     for wire in wires {

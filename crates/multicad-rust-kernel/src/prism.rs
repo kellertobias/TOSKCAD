@@ -90,6 +90,7 @@ pub enum BoundaryCurve {
 pub struct RoundedPrism {
     feature: u128,
     straight_length: Rational,
+    maximum_x: Rational,
     end: Circle,
     width: Rational,
     height: Rational,
@@ -120,7 +121,7 @@ impl RoundedPrism {
         }
         let width = radius.checked_mul(TWO)?;
         // Validate that the farthest point can be represented in this domain.
-        straight_length.checked_add(radius)?;
+        let maximum_x = straight_length.checked_add(radius)?;
         let area = Measure {
             constant: straight_length.checked_mul(width)?,
             pi_factor: square(radius)?.checked_div(TWO)?,
@@ -129,6 +130,7 @@ impl RoundedPrism {
         Ok(Self {
             feature,
             straight_length,
+            maximum_x,
             end: Circle::new([straight_length, radius], radius)?,
             width,
             height,
@@ -136,6 +138,20 @@ impl RoundedPrism {
             volume,
             holes: Vec::new(),
         })
+    }
+
+    /// Straight profile length, semicircle radius, and extrusion height.
+    pub fn dimensions(&self) -> [Rational; 3] {
+        [self.straight_length, self.end.radius, self.height]
+    }
+
+    pub fn feature(&self) -> u128 {
+        self.feature
+    }
+
+    /// Upper corner of the exact bounds. The lower corner is the origin.
+    pub fn maximum(&self) -> [Rational; 3] {
+        [self.maximum_x, self.width, self.height]
     }
 
     pub fn outer_loop(&self) -> [BoundaryCurve; 4] {

@@ -13,6 +13,12 @@ impl EntityId {
     pub fn is_nil(&self) -> bool {
         self.0.is_nil()
     }
+    pub const fn from_uuid_bits(bits: u128) -> Self {
+        Self(Uuid::from_u128(bits))
+    }
+    pub const fn uuid_bits(self) -> u128 {
+        self.0.as_u128()
+    }
     /// The explicit nil identity, used where a source slot is intentionally
     /// absent (for example a face-profile request without a sketch).
     pub const fn nil() -> Self {

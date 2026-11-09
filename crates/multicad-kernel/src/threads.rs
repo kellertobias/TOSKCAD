@@ -352,7 +352,7 @@ impl Solid {
             ));
         }
         solid.name_thread(feature, 1)?;
-        let _ = ffi::remember_validated_thread(&solid.native.0);
+        let _ = ffi::remember_validated_thread(solid.occt()?);
         Ok(solid)
     }
     pub fn root_rounded_helical_thread_named(
@@ -389,9 +389,9 @@ impl Solid {
         }
         solid.name_thread(feature, 1)?;
         if from_prototype {
-            let _ = ffi::remember_thread_prototype(&solid.native.0, &data);
+            let _ = ffi::remember_thread_prototype(solid.occt()?, &data);
         } else {
-            let _ = ffi::remember_validated_thread(&solid.native.0);
+            let _ = ffi::remember_validated_thread(solid.occt()?);
         }
         Ok(solid)
     }
@@ -441,7 +441,7 @@ impl Solid {
             ));
         }
         solid.name_thread(feature, spec.profile.starts)?;
-        let _ = ffi::remember_validated_thread(&solid.native.0);
+        let _ = ffi::remember_validated_thread(solid.occt()?);
         Ok(solid)
     }
     pub fn rounded_helical_thread_named(
@@ -468,7 +468,7 @@ impl Solid {
         // The optional factory only remembers geometry after every ordinary
         // adoption, policy and owner-specific naming guard succeeded. Cache
         // allocation/serialization failure must not invalidate a valid solid.
-        let _ = ffi::remember_validated_thread(&solid.native.0);
+        let _ = ffi::remember_validated_thread(solid.occt()?);
         Ok(solid)
     }
     /// Build a real helical B-rep around +Z with flat cut ends. Native face
@@ -509,9 +509,9 @@ impl Solid {
         }
         solid.name_thread(feature, spec.starts)?;
         if from_prototype {
-            let _ = ffi::remember_thread_prototype(&solid.native.0, &data);
+            let _ = ffi::remember_thread_prototype(solid.occt()?, &data);
         } else {
-            let _ = ffi::remember_validated_thread(&solid.native.0);
+            let _ = ffi::remember_validated_thread(solid.occt()?);
         }
         Ok(solid)
     }
@@ -626,8 +626,8 @@ mod factory_tests {
         // any compiled default-M3 asset registration.
         let first =
             Solid::helical_thread_named_fresh(spec, first_id, GeometryPolicy::default()).unwrap();
-        assert!(ffi::remember_validated_thread(&first.native.0).unwrap());
-        let face_integrations = ffi::face_integration_count(&first.native.0).unwrap();
+        assert!(ffi::remember_validated_thread(first.occt().unwrap()).unwrap());
+        let face_integrations = ffi::face_integration_count(first.occt().unwrap()).unwrap();
         assert!(face_integrations > 0);
         let before = thread_factory_stats().unwrap();
         assert_eq!(
@@ -643,14 +643,17 @@ mod factory_tests {
         let started = std::time::Instant::now();
         let second = build(spec, second_id);
         let warm = started.elapsed();
-        assert!(ffi::shares_face_cache(&first.native.0, &second.native.0));
+        assert!(ffi::shares_face_cache(
+            first.occt().unwrap(),
+            second.occt().unwrap()
+        ));
         assert_eq!(
-            ffi::face_integration_count(&second.native.0).unwrap(),
+            ffi::face_integration_count(second.occt().unwrap()).unwrap(),
             face_integrations
         );
         assert_eq!(first.faces().unwrap(), second.faces().unwrap());
         assert_eq!(
-            ffi::face_integration_count(&first.native.0).unwrap(),
+            ffi::face_integration_count(first.occt().unwrap()).unwrap(),
             face_integrations
         );
         let after = thread_factory_stats().unwrap();
@@ -682,14 +685,14 @@ mod factory_tests {
             .unwrap()
             .unwrap();
         assert!(modified.volume_mm3().unwrap() < initial_volume - 0.001);
-        assert!(!ffi::remember_validated_thread(&modified.native.0).unwrap());
+        assert!(!ffi::remember_validated_thread(modified.occt().unwrap()).unwrap());
         let moved = second
             .transformed(RigidTransform {
                 translation_mm: [3., 4., 5.],
                 ..Default::default()
             })
             .unwrap();
-        assert!(!ffi::remember_validated_thread(&moved.native.0).unwrap());
+        assert!(!ffi::remember_validated_thread(moved.occt().unwrap()).unwrap());
         let third_id = EntityId::new();
         let third = build(spec, third_id);
         assert_eq!(thread_factory_stats().unwrap().constructions, 1);

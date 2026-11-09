@@ -50,8 +50,8 @@ pub(crate) fn measure(
     let (ak, ai) = selection_a.native();
     let (bk, bi) = selection_b.native();
     let result = ffi::minimum_distance(
-        &a.native.0,
-        &b.native.0,
+        a.occt()?,
+        b.occt()?,
         &ffi::DistanceOptionsData {
             a_kind: ak,
             a_index: ai,

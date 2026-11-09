@@ -1,7 +1,9 @@
 //! Safe solid operations in millimeters. Display meshes are detached copies;
 //! callers rebuild exact solids from source rather than editing triangles.
 use crate::{Shape, ffi};
+use multicad_rust_kernel::{Circle, Rational, prism::RoundedPrism};
 use std::path::Path;
+use std::rc::Rc;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GeometryErrorKind {
@@ -12,6 +14,7 @@ pub enum GeometryErrorKind {
     Cancelled,
     Stale,
     Busy,
+    Unsupported,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GeometryError {
@@ -440,8 +443,7 @@ impl Default for MeshOptions {
         }
     }
 }
-/// Opaque owned B-rep. It is deliberately not Send/Sync; a worker must construct,
-/// use and destroy its native handles on its own thread.
+/// Owned solid geometry and its provenance. Each solid stays on its owner thread.
 /// ```compile_fail
 /// fn requires_send<T: Send>() {}
 /// requires_send::<multicad_kernel::Solid>();
@@ -451,11 +453,96 @@ impl Default for MeshOptions {
 /// requires_sync::<multicad_kernel::Solid>();
 /// ```
 pub struct Solid {
-    pub(crate) native: Shape,
+    body: SolidBody,
     policy: GeometryPolicy,
     pub(crate) provenance: Vec<multicad_core::references::TopologyElement>,
 }
+
+enum SolidBody {
+    Occt(Shape),
+    RoundedPrism(Rc<RoundedPrism>),
+}
+
 impl Solid {
+    /// Own a validated analytic prism in the Rust backend.
+    pub fn from_rounded_prism(
+        prism: RoundedPrism,
+        policy: GeometryPolicy,
+    ) -> Result<Self, GeometryError> {
+        policy.validate()?;
+        if prism.feature() == 0 || prism.inner_loops().any(|(id, _)| id == 0) {
+            return Err(input(
+                "Rounded prism topology requires non-nil source identities",
+            ));
+        }
+        for size in prism.dimensions() {
+            policy.length(size.as_f64())?;
+        }
+        policy.point(prism.maximum().map(Rational::as_f64))?;
+        for (_, circle) in prism.inner_loops() {
+            policy.length(circle.radius().as_f64())?;
+        }
+        Ok(Self {
+            body: SolidBody::RoundedPrism(Rc::new(prism)),
+            policy,
+            provenance: vec![],
+        })
+    }
+
+    pub fn rounded_prism(&self) -> Option<&RoundedPrism> {
+        match &self.body {
+            SolidBody::RoundedPrism(prism) => Some(prism),
+            SolidBody::Occt(_) => None,
+        }
+    }
+
+    /// Subtract an exact axial through-cylinder in the Rust backend.
+    pub fn subtract_rounded_prism_cylinder(
+        &self,
+        feature: u128,
+        circle: Circle,
+        bottom: Rational,
+        top: Rational,
+    ) -> Result<Self, GeometryError> {
+        let prism = self.rounded_prism().ok_or_else(|| {
+            error(
+                "cylindrical cut",
+                GeometryErrorKind::Unsupported,
+                "Expected a Rust rounded prism",
+            )
+        })?;
+        self.policy.point([0., 0., bottom.as_f64()])?;
+        self.policy.point([0., 0., top.as_f64()])?;
+        let next = prism
+            .subtract_cylinder(feature, circle, bottom, top)
+            .map_err(|reason| {
+                error(
+                    "cylindrical cut",
+                    GeometryErrorKind::Input,
+                    format!("{reason:?}"),
+                )
+            })?;
+        Self::from_rounded_prism(next, self.policy)
+    }
+
+    pub(crate) fn occt(&self) -> Result<&ffi::Shape, GeometryError> {
+        match &self.body {
+            SolidBody::Occt(shape) => Ok(&shape.0),
+            SolidBody::RoundedPrism(_) => Err(error(
+                "solid backend",
+                GeometryErrorKind::Unsupported,
+                "This operation is unavailable for the Rust rounded prism",
+            )),
+        }
+    }
+
+    pub(crate) fn into_occt(self) -> Option<cxx::UniquePtr<ffi::Shape>> {
+        match self.body {
+            SolidBody::Occt(shape) => Some(shape.0),
+            SolidBody::RoundedPrism(_) => None,
+        }
+    }
+
     pub fn geometry_policy(&self) -> GeometryPolicy {
         self.policy
     }
@@ -464,7 +551,14 @@ impl Solid {
     /// shapes, so both owners observe identical geometry. Like every Solid
     /// the share stays on the thread that created it (`!Send`/`!Sync`).
     pub fn share(&self) -> Result<Self, GeometryError> {
-        let handle = ffi::share_shape(&self.native.0).map_err(|e| native("share", e))?;
+        if let SolidBody::RoundedPrism(prism) = &self.body {
+            return Ok(Self {
+                body: SolidBody::RoundedPrism(Rc::clone(prism)),
+                policy: self.policy,
+                provenance: self.provenance.clone(),
+            });
+        }
+        let handle = ffi::share_shape(self.occt()?).map_err(|e| native("share", e))?;
         if handle.is_null() {
             return Err(error(
                 "share",
@@ -473,7 +567,7 @@ impl Solid {
             ));
         }
         Ok(Self {
-            native: Shape(handle),
+            body: SolidBody::Occt(Shape(handle)),
             policy: self.policy,
             provenance: self.provenance.clone(),
         })
@@ -491,11 +585,11 @@ impl Solid {
             ));
         }
         let solid = Self {
-            native: Shape(handle),
+            body: SolidBody::Occt(Shape(handle)),
             policy,
             provenance: vec![],
         };
-        if !ffi::valid(&solid.native.0).map_err(|e| native(operation, e))?
+        if !ffi::valid(solid.occt()?).map_err(|e| native(operation, e))?
             || solid.solid_count()? == 0
         {
             return Err(error(
@@ -571,9 +665,8 @@ impl Solid {
             BooleanOperation::Subtract => 1,
             BooleanOperation::Intersect => 2,
         };
-        let handle =
-            ffi::boolean_shapes(&self.native.0, &other.native.0, op, policy.boolean_fuzzy_mm)
-                .map_err(|e| native("boolean", e))?;
+        let handle = ffi::boolean_shapes(self.occt()?, other.occt()?, op, policy.boolean_fuzzy_mm)
+            .map_err(|e| native("boolean", e))?;
         if handle.is_null() {
             return Ok(None);
         }
@@ -590,9 +683,8 @@ impl Solid {
         policy: GeometryPolicy,
     ) -> Result<Option<Self>, GeometryError> {
         policy.validate()?;
-        let handle =
-            ffi::intersect_parallel(&self.native.0, &other.native.0, policy.boolean_fuzzy_mm)
-                .map_err(|e| native("parallel intersection", e))?;
+        let handle = ffi::intersect_parallel(self.occt()?, other.occt()?, policy.boolean_fuzzy_mm)
+            .map_err(|e| native("parallel intersection", e))?;
         if handle.is_null() {
             return Ok(None);
         }
@@ -604,7 +696,7 @@ impl Solid {
         transform.validate(self.policy)?;
         let r: Vec<_> = transform.rotation.into_iter().flatten().collect();
         let mut result = Self::adopt(
-            ffi::transform_shape(&self.native.0, &r, &point(transform.translation_mm))
+            ffi::transform_shape(self.occt()?, &r, &point(transform.translation_mm))
                 .map_err(|e| native("transform", e))?,
             self.policy,
             "transform",
@@ -613,13 +705,29 @@ impl Solid {
         Ok(result)
     }
     pub fn volume_mm3(&self) -> Result<f64, GeometryError> {
-        ffi::volume(&self.native.0).map_err(|e| native("volume", e))
+        if let Some(prism) = self.rounded_prism() {
+            let volume = prism.volume();
+            return Ok(volume
+                .pi_factor
+                .as_f64()
+                .mul_add(std::f64::consts::PI, volume.constant.as_f64()));
+        }
+        ffi::volume(self.occt()?).map_err(|e| native("volume", e))
     }
     pub fn solid_count(&self) -> Result<u32, GeometryError> {
-        ffi::solid_count(&self.native.0).map_err(|e| native("solid count", e))
+        if self.rounded_prism().is_some() {
+            return Ok(1);
+        }
+        ffi::solid_count(self.occt()?).map_err(|e| native("solid count", e))
     }
     pub fn bounds(&self) -> Result<Bounds, GeometryError> {
-        let b = ffi::bounds(&self.native.0).map_err(|e| native("bounds", e))?;
+        if let Some(prism) = self.rounded_prism() {
+            return Ok(Bounds {
+                min: [0.; 3],
+                max: prism.maximum().map(Rational::as_f64),
+            });
+        }
+        let b = ffi::bounds(self.occt()?).map_err(|e| native("bounds", e))?;
         Ok(Bounds {
             min: xyz(b.min),
             max: xyz(b.max),
@@ -653,6 +761,9 @@ impl Solid {
         crate::planar_contours::extract(self, face, frame, self.policy)
     }
     pub fn faces(&self) -> Result<Vec<Face>, GeometryError> {
+        if let Some(prism) = self.rounded_prism() {
+            return Ok(crate::rust_prism_topology::faces(prism));
+        }
         // An exact affine image of a proven plane stays planar even when OCCT
         // stores it as a NURBS surface. Preserve that typed proof for picking;
         // no surface fitting or display triangles establish this descriptor.
@@ -668,7 +779,7 @@ impl Solid {
                 _ => None,
             })
             .collect();
-        ffi::faces(&self.native.0)
+        ffi::faces(self.occt()?)
             .map_err(|e| native("faces", e))
             .map(|faces| {
                 faces
@@ -697,7 +808,7 @@ impl Solid {
             return Err(input("Invalid display tessellation settings/budget"));
         }
         let mesh = ffi::tessellate(
-            &self.native.0,
+            self.occt()?,
             options.linear_deflection_mm,
             options.angular_deflection_rad,
             options.maximum_triangles,
@@ -722,7 +833,7 @@ impl Solid {
         // Retain only after every ordinary detached TriangleMesh validation.
         // Optional receipt allocation failure does not invalidate display data.
         let _ = ffi::remember_validated_mesh(
-            &self.native.0,
+            self.occt()?,
             options.linear_deflection_mm,
             options.angular_deflection_rad,
             options.maximum_triangles,
@@ -754,7 +865,7 @@ impl Solid {
             .linear_tolerance_mm
             .min(options.linear_deflection_mm / 16.);
         let receipt = ffi::tessellate_manufacturing(
-            &self.native.0,
+            self.occt()?,
             options.linear_deflection_mm,
             options.angular_deflection_rad,
             options.maximum_triangles,
@@ -790,7 +901,7 @@ impl Solid {
         {
             return Err(input("Invalid edge display deflection"));
         }
-        let edges = ffi::display_edges(&self.native.0, deflection_mm)
+        let edges = ffi::display_edges(self.occt()?, deflection_mm)
             .map_err(|e| native("display edges", e))?;
         edges
             .into_iter()
@@ -813,7 +924,7 @@ impl Solid {
             .collect()
     }
     pub fn display_vertices(&self) -> Result<Vec<DisplayVertex>, GeometryError> {
-        ffi::vertices(&self.native.0)
+        ffi::vertices(self.occt()?)
             .map_err(|e| native("display vertices", e))?
             .into_iter()
             .map(|v| {
@@ -828,7 +939,7 @@ impl Solid {
     }
     pub fn write_step(&self, path: &Path) -> Result<(), GeometryError> {
         let path = crate::step_path(path).map_err(|e| input(e.to_string()))?;
-        ffi::write_step(&self.native.0, path).map_err(|e| native("write STEP", e))
+        ffi::write_step(self.occt()?, path).map_err(|e| native("write STEP", e))
     }
     /// Every solid in a STEP file as (representation name, exact BRep text).
     pub fn step_solids(path: &Path) -> Result<Vec<(String, String)>, GeometryError> {
@@ -841,7 +952,7 @@ impl Solid {
     }
     /// The exact shape as OCCT BRep text.
     pub fn to_brep(&self) -> Result<String, GeometryError> {
-        ffi::shape_to_brep(&self.native.0).map_err(|e| native("write BRep", e))
+        ffi::shape_to_brep(self.occt()?).map_err(|e| native("write BRep", e))
     }
     /// Lossless native BRep representation digest for exact proof-cache keys.
     ///
@@ -855,7 +966,7 @@ impl Solid {
     pub fn exact_geometry_digest(
         &self,
     ) -> Result<multicad_core::project_file::ContentHash, GeometryError> {
-        let bytes = ffi::shape_binary_geometry(&self.native.0, 16 * 1024 * 1024)
+        let bytes = ffi::shape_binary_geometry(self.occt()?, 16 * 1024 * 1024)
             .map_err(|e| native("binary geometry digest", e))?;
         Ok(multicad_core::project_file::ContentHash::of(&bytes))
     }
@@ -903,13 +1014,13 @@ mod bounds_tests {
         let volume = original.volume_mm3().unwrap();
         assert_eq!(shared.bounds().unwrap(), bounds);
         assert!((volume - 36. * std::f64::consts::PI).abs() < 1e-9);
-        assert!(ffi::valid(&original.native.0).unwrap());
-        assert!(ffi::valid(&shared.native.0).unwrap());
+        assert!(ffi::valid(original.occt().unwrap()).unwrap());
+        assert!(ffi::valid(shared.occt().unwrap()).unwrap());
 
         // Exercise the legacy entry point, rather than the newer boolean API.
         // This removes the complete positive-X half of the offset cylinder.
         let cut = Solid::adopt(
-            ffi::cut(&shared.native.0, 0., 4., 6., 4.).unwrap(),
+            ffi::cut(shared.occt().unwrap(), 0., 4., 6., 4.).unwrap(),
             policy,
             "legacy cut regression",
         )
@@ -919,7 +1030,7 @@ mod bounds_tests {
         for source in [&original, &shared] {
             assert_eq!(source.bounds().unwrap(), bounds);
             assert!((source.volume_mm3().unwrap() - volume).abs() < 1e-9);
-            assert!(ffi::valid(&source.native.0).unwrap());
+            assert!(ffi::valid(source.occt().unwrap()).unwrap());
             assert_eq!(source.solid_count().unwrap(), 1);
         }
         // A fresh reader has no shared cache, so unchanged cached numbers
@@ -987,7 +1098,7 @@ mod bounds_tests {
                 Default::default(),
             )
             .unwrap();
-        assert!(ffi::bounds_cache_concurrent_probe(&ellipsoid.native.0).unwrap());
+        assert!(ffi::bounds_cache_concurrent_probe(ellipsoid.occt().unwrap()).unwrap());
         let bounds = ellipsoid.bounds().unwrap();
         for (axis, radius) in [1.2, 1.4, 1.6].into_iter().enumerate() {
             assert!((bounds.min[axis] + radius).abs() < 1e-6);
@@ -1005,10 +1116,10 @@ mod volume_cache_tests {
     use multicad_core::document::EntityId;
 
     fn integrations(solid: &Solid) -> u64 {
-        ffi::volume_integration_count(&solid.native.0).unwrap()
+        ffi::volume_integration_count(solid.occt().unwrap()).unwrap()
     }
     fn shares(a: &Solid, b: &Solid) -> bool {
-        ffi::shares_volume_cache(&a.native.0, &b.native.0)
+        ffi::shares_volume_cache(a.occt().unwrap(), b.occt().unwrap())
     }
 
     #[test]
@@ -1081,13 +1192,13 @@ mod volume_cache_tests {
         assert_eq!(source.bounds().unwrap(), initial_bounds);
         assert_eq!(integrations(&source), 1);
         assert!((source.volume_mm3().unwrap() - 120.).abs() < 1e-10);
-        assert!(ffi::valid(&source.native.0).unwrap());
+        assert!(ffi::valid(source.occt().unwrap()).unwrap());
     }
 
     #[test]
     fn cold_native_volume_cache_integrates_once_across_concurrent_shared_owners() {
         let cylinder = Solid::cylinder(Default::default(), 3., 4., Default::default()).unwrap();
-        assert!(ffi::volume_cache_concurrent_probe(&cylinder.native.0).unwrap());
+        assert!(ffi::volume_cache_concurrent_probe(cylinder.occt().unwrap()).unwrap());
         assert_eq!(integrations(&cylinder), 1);
         assert!((cylinder.volume_mm3().unwrap() - 36. * std::f64::consts::PI).abs() < 1e-9);
     }
@@ -1142,10 +1253,10 @@ mod volume_cache_tests {
 mod face_cache_tests {
     use super::*;
     fn count(s: &Solid) -> u64 {
-        ffi::face_integration_count(&s.native.0).unwrap()
+        ffi::face_integration_count(s.occt().unwrap()).unwrap()
     }
     fn shares(a: &Solid, b: &Solid) -> bool {
-        ffi::shares_face_cache(&a.native.0, &b.native.0)
+        ffi::shares_face_cache(a.occt().unwrap(), b.occt().unwrap())
     }
     fn area(s: &Solid) -> f64 {
         s.faces().unwrap().iter().map(|f| f.area_mm2).sum()
@@ -1388,7 +1499,7 @@ mod face_cache_tests {
     #[test]
     fn cold_face_cache_serializes_eight_native_queries_without_crossing_rust_ownership() {
         let solid = Solid::cylinder(Default::default(), 3., 4., Default::default()).unwrap();
-        assert!(ffi::face_cache_concurrent_probe(&solid.native.0).unwrap());
+        assert!(ffi::face_cache_concurrent_probe(solid.occt().unwrap()).unwrap());
         assert!((area(&solid) - 42. * std::f64::consts::PI).abs() < 1e-9);
         let initial = count(&solid);
         for _ in 0..100 {
@@ -1498,7 +1609,7 @@ mod exact_geometry_digest_tests {
         let before = source.to_brep().unwrap();
         let complete = source.exact_geometry_digest().unwrap();
         for limit in [0, 16, 128, 16 * 1024 * 1024 + 1] {
-            assert!(ffi::shape_binary_geometry(&source.native.0, limit).is_err());
+            assert!(ffi::shape_binary_geometry(source.occt().unwrap(), limit).is_err());
             assert_eq!(source.exact_geometry_digest().unwrap(), complete);
         }
         assert_eq!(source.to_brep().unwrap(), before);

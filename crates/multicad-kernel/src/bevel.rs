@@ -131,7 +131,7 @@ impl Solid {
             .map(|e| (e.key, e))
             .collect();
         let mut caps = [false; 2];
-        for seed in ffi::seeds(&self.native.0).map_err(|e| failure(GeometryErrorKind::Native, e))? {
+        for seed in ffi::seeds(self.occt()?).map_err(|e| failure(GeometryErrorKind::Native, e))? {
             let role = match seed.role {
                 0 | 1 if seed.source_index < 2 * teeth => {
                     caps[seed.role as usize] = true;
@@ -195,7 +195,7 @@ impl Solid {
             ));
         }
         let nodes =
-            ffi::topology(&self.native.0).map_err(|e| failure(GeometryErrorKind::Native, e))?;
+            ffi::topology(self.occt()?).map_err(|e| failure(GeometryErrorKind::Native, e))?;
         self.finish_provenance(elements, &nodes)
     }
 }

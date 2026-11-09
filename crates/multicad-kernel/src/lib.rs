@@ -621,6 +621,8 @@ mod ffi {
 }
 pub use ffi::{ManufacturingMesh, Mesh};
 pub struct Shape(cxx::UniquePtr<ffi::Shape>);
+
+pub use multicad_rust_kernel as rust_kernel;
 pub type Error = Box<dyn std::error::Error>;
 mod distance;
 pub use distance::{BRepSelection, DistanceWitness, MinimumDistance};
@@ -656,6 +658,7 @@ mod worker;
 pub use worker::*;
 mod curves;
 mod elementary_curves;
+mod rust_prism_topology;
 mod sketch_queries;
 pub use sketch_queries::NativeRegionQueries;
 mod provenance;

@@ -15,7 +15,7 @@ fn cylinder(radius: f64) -> Solid {
     .unwrap()
 }
 fn shares(a: &Solid, b: &Solid) -> bool {
-    ffi::shares_mesh_identity(&a.native.0, &b.native.0)
+    ffi::shares_mesh_identity(a.occt().unwrap(), b.occt().unwrap())
 }
 fn options() -> MeshOptions {
     MeshOptions::default()
@@ -57,7 +57,7 @@ fn curved_mesh_warm_numeric_receipts_equal_forced_fresh_without_mutating_native_
     assert_eq!(warm.builds, 1);
     assert_eq!(warm.hits, 1);
     let fresh = ffi::tessellate_fresh(
-        &source.native.0,
+        source.occt().unwrap(),
         options().linear_deflection_mm,
         options().angular_deflection_rad,
         options().maximum_triangles,
@@ -214,7 +214,7 @@ fn changed_geometry_and_nonidentity_world_poses_and_imports_have_independent_mes
         assert_eq!(after.hits, before.hits);
         assert_eq!(after.builds, before.builds + 1);
         let fresh = ffi::tessellate_fresh(
-            &other.native.0,
+            other.occt().unwrap(),
             options().linear_deflection_mm,
             options().angular_deflection_rad,
             options().maximum_triangles,

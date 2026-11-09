@@ -281,7 +281,7 @@ fn fitted_registered_assets_preserve_native_mass_profiles_step_and_owner_lifetim
     assert!(restore(&format!("{}corrupt", entry.brep), &entry.receipt, policy).is_err());
     ffi::reset_thread_factory_cache().unwrap();
     let imported = Solid::from_brep(entry.brep, policy).unwrap();
-    assert!(!ffi::remember_validated_thread(&imported.native.0).unwrap());
+    assert!(!ffi::remember_validated_thread(imported.occt().unwrap()).unwrap());
     assert_eq!(crate::thread_factory_stats().unwrap().entries, 0);
     // Re-establish an actual owner-thread hit after the separate import control.
     let _retained = Solid::root_rounded_helical_thread_named(spec, owner, policy).unwrap();

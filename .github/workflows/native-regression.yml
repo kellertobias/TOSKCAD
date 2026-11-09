@@ -43,9 +43,7 @@ jobs:
           node-version: "24"
       - run: rustup show active-toolchain
       - name: Rust kernel study (no native dependencies)
-        run: >-
-          cargo test --locked --offline
-          --manifest-path spikes/rust-kernel-precision/Cargo.toml
+        run: cargo test --locked -p multicad-rust-kernel
       - name: Linux native window development libraries
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libwayland-dev libxkbcommon-dev

@@ -83,7 +83,9 @@ pub fn inspect_assembly_interruptible(
                     failure(
                         match error.kind {
                             GeometryErrorKind::Cancelled => InspectionFailureKind::Cancelled,
-                            GeometryErrorKind::Limit => InspectionFailureKind::Unsupported,
+                            GeometryErrorKind::Limit | GeometryErrorKind::Unsupported => {
+                                InspectionFailureKind::Unsupported
+                            }
                             _ => InspectionFailureKind::Invalid,
                         },
                         error.to_string(),

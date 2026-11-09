@@ -89,7 +89,7 @@ impl Solid {
             crate::GearSweep::Chevron | crate::GearSweep::GappedChevron { .. }
         );
         let mut caps = [false; 2];
-        for seed in ffi::seeds(&self.native.0).map_err(failure)? {
+        for seed in ffi::seeds(self.occt()?).map_err(failure)? {
             let role = match seed.role {
                 0 | 1 => {
                     caps[seed.role as usize] = true;
@@ -161,7 +161,7 @@ impl Solid {
                 "Native gear needs complete face ancestry and both end caps",
             ));
         }
-        let nodes = ffi::topology(&self.native.0).map_err(failure)?;
+        let nodes = ffi::topology(self.occt()?).map_err(failure)?;
         self.finish_provenance(elements, &nodes)
     }
     pub(crate) fn name_thread(
@@ -176,7 +176,7 @@ impl Solid {
             .map(|element| (element.key, element))
             .collect();
         let mut caps = [false; 2];
-        for seed in ffi::seeds(&self.native.0).map_err(failure)? {
+        for seed in ffi::seeds(self.occt()?).map_err(failure)? {
             let role = match seed.role {
                 0 | 1 => {
                     caps[seed.role as usize] = true;
@@ -230,7 +230,7 @@ impl Solid {
                 "Native thread needs complete face ancestry and both end caps",
             ));
         }
-        let nodes = ffi::topology(&self.native.0).map_err(failure)?;
+        let nodes = ffi::topology(self.occt()?).map_err(failure)?;
         self.finish_provenance(elements, &nodes)
     }
     pub(crate) fn name_advanced_profile(
@@ -245,7 +245,7 @@ impl Solid {
             .map(|element| (element.key, element))
             .collect();
         let mut caps = [false; 2];
-        for seed in ffi::seeds(&self.native.0).map_err(failure)? {
+        for seed in ffi::seeds(self.occt()?).map_err(failure)? {
             let element = elements
                 .get_mut(&key(0, seed.face)?)
                 .ok_or_else(|| failure("Profile history names an absent face"))?;
@@ -293,7 +293,7 @@ impl Solid {
         if !caps.into_iter().all(|cap| cap) {
             return Err(failure("Both native profile end caps need exact history"));
         }
-        let nodes = ffi::topology(&self.native.0).map_err(failure)?;
+        let nodes = ffi::topology(self.occt()?).map_err(failure)?;
         self.finish_provenance(elements, &nodes)
     }
     pub fn with_member_origin(self, feature: EntityId, index: u32) -> Result<Self, GeometryError> {
@@ -381,7 +381,7 @@ impl Solid {
                 (element.key, element)
             })
             .collect();
-        let nodes = ffi::topology(&self.native.0).map_err(failure)?;
+        let nodes = ffi::topology(self.occt()?).map_err(failure)?;
         self.finish_provenance(elements, &nodes)?;
         Ok(self)
     }
@@ -407,7 +407,7 @@ impl Solid {
                 (e.key, e)
             })
             .collect();
-        for seed in ffi::seeds(&self.native.0).map_err(failure)? {
+        for seed in ffi::seeds(self.occt()?).map_err(failure)? {
             let origins: Vec<_> = match seed.role {
                 3 => vec![
                     selected
@@ -448,7 +448,7 @@ impl Solid {
                 }
             }
         }
-        let nodes = ffi::topology(&self.native.0).map_err(failure)?;
+        let nodes = ffi::topology(self.occt()?).map_err(failure)?;
         self.finish_provenance(elements, &nodes)
     }
     /// Deformation/reflection frames must describe current native planes rather
@@ -500,7 +500,7 @@ impl Solid {
             })
             .collect();
         let mut generated = 0;
-        for seed in ffi::seeds(&self.native.0).map_err(failure)? {
+        for seed in ffi::seeds(self.occt()?).map_err(failure)? {
             if seed.role != 3 {
                 return Err(failure("Unexpected native edge-treatment seed role"));
             }
@@ -525,7 +525,7 @@ impl Solid {
                 "Native edge treatment produced no attributable generated faces",
             ));
         }
-        let nodes = ffi::topology(&self.native.0).map_err(failure)?;
+        let nodes = ffi::topology(self.occt()?).map_err(failure)?;
         self.finish_provenance(elements, &nodes)
     }
     /// Curve origins are supplied in authored outer-wire then hole-wire order.
@@ -639,12 +639,12 @@ impl Solid {
             .map_err(failure)?;
         }
         let result = self;
-        let nodes = ffi::topology(&result.native.0).map_err(failure)?;
+        let nodes = ffi::topology(result.occt()?).map_err(failure)?;
         let mut elements: BTreeMap<_, _> = nodes
             .iter()
             .map(|n| key(n.kind, n.index).map(|k| (k, empty(k))))
             .collect::<Result<_, _>>()?;
-        for seed in ffi::seeds(&result.native.0).map_err(failure)? {
+        for seed in ffi::seeds(result.occt()?).map_err(failure)? {
             let key = key(0, seed.face)?;
             let element = elements
                 .get_mut(&key)
@@ -719,7 +719,7 @@ impl Solid {
         if previous.is_nil()
             || next.is_nil()
             || self.provenance.is_empty()
-            || !ffi::valid(&self.native.0).map_err(failure)?
+            || !ffi::valid(self.occt()?).map_err(failure)?
             || self.solid_count()? != 1
             || self.volume_mm3()? <= 0.
         {
@@ -897,8 +897,11 @@ impl Solid {
         owner: EntityId,
         revision: u64,
     ) -> Result<TopologySnapshot, GeometryError> {
+        if let Some(prism) = self.rounded_prism() {
+            return crate::rust_prism_topology::snapshot(prism, owner, revision).map_err(failure);
+        }
         let mut elements: Vec<TopologyElement> = if self.provenance.is_empty() {
-            ffi::topology(&self.native.0)
+            ffi::topology(self.occt()?)
                 .map_err(failure)?
                 .iter()
                 .map(|n| key(n.kind, n.index).map(empty))
@@ -908,7 +911,7 @@ impl Solid {
         };
         let xyz = |p: ffi::Point3| [p.x, p.y, p.z];
         let mut geometry = BTreeMap::new();
-        for edge in ffi::analytic_edges(&self.native.0).map_err(failure)? {
+        for edge in ffi::analytic_edges(self.occt()?).map_err(failure)? {
             let exact = match edge.kind {
                 0 => AnalyticGeometry::Line {
                     a_mm: xyz(edge.a),
@@ -928,7 +931,7 @@ impl Solid {
             };
             geometry.insert(key(1, edge.index)?, exact);
         }
-        for vertex in ffi::vertices(&self.native.0).map_err(failure)? {
+        for vertex in ffi::vertices(self.occt()?).map_err(failure)? {
             geometry.insert(
                 key(2, vertex.index)?,
                 AnalyticGeometry::Point {
@@ -984,7 +987,7 @@ impl Solid {
         if operands.iter().all(|s| s.provenance.is_empty()) {
             return Ok(());
         }
-        let nodes = ffi::topology(&self.native.0).map_err(failure)?;
+        let nodes = ffi::topology(self.occt()?).map_err(failure)?;
         let mut elements: BTreeMap<_, _> = nodes
             .iter()
             .map(|n| key(n.kind, n.index).map(|k| (k, empty(k))))
@@ -995,7 +998,7 @@ impl Solid {
             .collect();
         let mut frames: BTreeMap<TopologyKey, BTreeMap<Origin, Option<ReferenceFrame>>> =
             BTreeMap::new();
-        for relation in ffi::ancestry(&self.native.0).map_err(failure)? {
+        for relation in ffi::ancestry(self.occt()?).map_err(failure)? {
             let out = key(relation.kind, relation.output)?;
             let source = key(relation.kind, relation.input)?;
             let operand = inputs
@@ -1048,13 +1051,13 @@ impl Solid {
     ) -> Result<(), GeometryError> {
         let snapshot = source.topology_snapshot(owner, 0)?;
         let inputs: BTreeMap<_, _> = snapshot.elements.iter().map(|e| (e.key, e)).collect();
-        let nodes = ffi::topology(&self.native.0).map_err(failure)?;
+        let nodes = ffi::topology(self.occt()?).map_err(failure)?;
         let mut elements: BTreeMap<_, _> = nodes
             .iter()
             .map(|n| key(n.kind, n.index).map(|k| (k, empty(k))))
             .collect::<Result<_, _>>()?;
         let mut mapped = BTreeSet::new();
-        for relation in ffi::ancestry(&self.native.0).map_err(failure)? {
+        for relation in ffi::ancestry(self.occt()?).map_err(failure)? {
             let out = key(relation.kind, relation.output)?;
             if relation.operand != 0 || !mapped.insert(out) {
                 return Err(failure("Affine history is not a unique source mapping"));
@@ -1105,7 +1108,7 @@ impl Solid {
             source: feature,
             role: role.into(),
         };
-        let seeds = ffi::seeds(&self.native.0).map_err(failure)?;
+        let seeds = ffi::seeds(self.occt()?).map_err(failure)?;
         if seeds.is_empty() {
             return Err(failure("Plane Split lacks exact boundary-face ancestry"));
         }
@@ -1125,7 +1128,7 @@ impl Solid {
                 frame: reference_frame(frame),
             });
         }
-        let nodes = ffi::topology(&self.native.0).map_err(failure)?;
+        let nodes = ffi::topology(self.occt()?).map_err(failure)?;
         self.finish_provenance(elements, &nodes)
     }
     pub(crate) fn finish_provenance(

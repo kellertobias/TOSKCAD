@@ -282,7 +282,7 @@ pub(crate) fn load(
     };
     Ok(restore(entry.brep, &entry.receipt, policy)
         .ok()
-        .map(|solid| solid.native.0))
+        .and_then(Solid::into_occt))
 }
 /// Typed root-rounded lookup. It cannot consume flat, asymmetric or stock-clipped receipts.
 pub(crate) fn load_root_rounded(
@@ -294,7 +294,7 @@ pub(crate) fn load_root_rounded(
     };
     Ok(restore(entry.brep, &entry.receipt, policy)
         .ok()
-        .map(|solid| solid.native.0))
+        .and_then(Solid::into_occt))
 }
 /// Exact symmetric root profile, all native inputs and policy identity. The
 /// distinct kind prefix preserves every existing flat key and filename.
@@ -398,7 +398,7 @@ fn generate_impl(
             face.area_mm2,
         ];
     }
-    let mut seeds: Vec<_> = ffi::seeds(&fresh.native.0)
+    let mut seeds: Vec<_> = ffi::seeds(fresh.occt().unwrap())
         .map_err(|e| failure(e.to_string()))?
         .into_iter()
         .map(|s| (s.face, s.source_index, s.role))

@@ -2151,6 +2151,7 @@ dependencies = [
  "cxx-build",
  "multicad-core",
  "multicad-native-build",
+ "multicad-rust-kernel",
  "serde_json",
  "tempfile",
 ]
@@ -2196,6 +2197,10 @@ dependencies = [
  "sha2",
  "tempfile",
 ]
+
+[[package]]
+name = "multicad-rust-kernel"
+version = "0.1.0-dev"
 
 [[package]]
 name = "multicad-solver"

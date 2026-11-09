@@ -31,6 +31,11 @@ impl Rational {
         (self.numerator, self.denominator)
     }
 
+    /// Approximate this value for consumers of floating-point coordinates.
+    pub fn as_f64(self) -> f64 {
+        self.numerator as f64 / self.denominator as f64
+    }
+
     fn normalize(numerator: i128, denominator: i128) -> Result<Self, Error> {
         if denominator == 0 {
             return Err(Error::DivisionByZero);
