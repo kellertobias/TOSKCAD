@@ -72,6 +72,7 @@ pub(crate) fn validate_document(
                         model::SHEET_PROFILE_CUT_SCHEMA
                     )
                     | (model::MEMBER_TYPE, model::MEMBER_SCHEMA)
+                    | (model::AID_TYPE, model::AID_SCHEMA)
                     | (model::imports::STEP_BODY_TYPE, 1)
             ) =>
             {

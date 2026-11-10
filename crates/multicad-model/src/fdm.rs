@@ -1,8 +1,8 @@
-//! Native FDM aids: tab, bridge and support solids, and the aid inspection
+//! FDM aids: tab, bridge and support solids, and the aid inspection
 //! measured from the evaluated aid, target and neighbouring Part solids.
 //! A support's top is derived from the target's current exact solid: the
 //! lowest target material over the footprint, less the authored gap.
-use crate::{Model, ModelError, error};
+use crate::{GeometryBackend, Model, ModelError, error};
 use multicad_core::{
     document::{Document, DocumentError, EntityId},
     model::{self, AidKind, ResolvedAid, ResolvedProcess},
@@ -14,7 +14,7 @@ use multicad_kernel::{
     Solid, SolidPairRelation,
 };
 
-/// Contact tolerance for aid inspections, within the native precision.
+/// Contact tolerance for aid inspections.
 const CONTACT_MM: f64 = 1e-3;
 /// Allowance tolerance for comparing measured and authored values.
 const TOLERANCE_MM: f64 = 1e-4;
@@ -46,6 +46,7 @@ fn oriented_box(
     id: EntityId,
     roles: [&str; 4],
     policy: GeometryPolicy,
+    backend: GeometryBackend,
 ) -> Result<Solid, ModelError> {
     let [l, w, h] = size;
     let corners = [[0., 0.], [l, 0.], [l, w], [0., w]];
@@ -70,13 +71,15 @@ fn oriented_box(
             role: (*role).into(),
         })
         .collect();
-    Solid::extrude_curved_profile_vector_named(
-        &profile,
-        cross(u, v).map(|c| c * h),
-        id,
-        &origins,
-        policy,
-    )
+    let displacement = cross(u, v).map(|c| c * h);
+    match backend {
+        GeometryBackend::OpenCascade => {
+            Solid::extrude_curved_profile_vector_named(&profile, displacement, id, &origins, policy)
+        }
+        GeometryBackend::Rust => {
+            Solid::rust_extrude_linear_named(&profile, displacement, 0., id, &origins, policy)
+        }
+    }
     .map_err(|e| error(Some(id), e))
 }
 fn plan_axes(angle_rad: f64) -> ([f64; 3], [f64; 3]) {
@@ -92,6 +95,7 @@ pub(crate) fn build(
     id: EntityId,
     policy: GeometryPolicy,
     target: Option<&Solid>,
+    backend: GeometryBackend,
 ) -> Result<Solid, ModelError> {
     let e = |e: DocumentError| error(Some(id), e);
     let aid = model::read_aid(document, id).map_err(e)?;
@@ -114,6 +118,7 @@ pub(crate) fn build(
                 id,
                 ["tab.side_start", "tab.end", "tab.side_end", "tab.contact"],
                 policy,
+                backend,
             )
         }
         ResolvedAid::Bridge {
@@ -141,6 +146,7 @@ pub(crate) fn build(
                     "bridge.start",
                 ],
                 policy,
+                backend,
             )
         }
         ResolvedAid::Support {
@@ -170,24 +176,31 @@ pub(crate) fn build(
                 id,
                 ["probe.0", "probe.1", "probe.2", "probe.3"],
                 policy,
+                backend,
             )?;
-            let over = target
-                .boolean(
-                    &probe,
-                    BooleanOperation::Intersect,
-                    GeometryPolicy {
-                        boolean_fuzzy_mm: 0.,
-                        ..policy
-                    },
-                )
+            let exact_policy = GeometryPolicy {
+                boolean_fuzzy_mm: 0.,
+                ..policy
+            };
+            let intersection = match backend {
+                GeometryBackend::OpenCascade => target
+                    .boolean(&probe, BooleanOperation::Intersect, exact_policy)
+                    .and_then(|result| result.as_ref().map(Solid::bounds).transpose()),
+                // The clipped material gives the support height even when the
+                // lowest point of the target lies outside the footprint.
+                GeometryBackend::Rust => target
+                    .rust_planar_intersection_metrics(&probe, exact_policy)
+                    .map(|result| result.map(|(_, bounds)| bounds)),
+            };
+            let lowest = intersection
                 .map_err(|e| error(Some(id), e))?
                 .ok_or_else(|| {
                     error(
                         Some(id),
                         "The support footprint is not under any target material",
                     )
-                })?;
-            let lowest = over.bounds().map_err(|e| error(Some(id), e))?.min[2];
+                })?
+                .min[2];
             let height = lowest - gap_mm - base_mm;
             if height < policy.minimum_feature_mm.max(TOLERANCE_MM) {
                 return Err(error(
@@ -210,6 +223,7 @@ pub(crate) fn build(
                     "support.start",
                 ],
                 policy,
+                backend,
             )
         }
     }
@@ -304,6 +318,11 @@ impl Model {
             }
         }
         let half = PROBE_MM / 2.;
+        let backend = if solid.uses_rust_geometry() {
+            GeometryBackend::Rust
+        } else {
+            GeometryBackend::OpenCascade
+        };
         let probe = oriented_box(
             [xy[0] - half, xy[1] - half, z - half],
             [1., 0., 0.],
@@ -312,6 +331,7 @@ impl Model {
             target,
             ["probe.a", "probe.b", "probe.c", "probe.d"],
             self.policy,
+            backend,
         )?;
         let d = solid
             .minimum_distance(BRepSelection::Whole, &probe, BRepSelection::Vertex(0))

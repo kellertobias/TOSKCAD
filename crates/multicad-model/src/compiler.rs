@@ -1257,7 +1257,14 @@ impl Compiler {
                         .map_err(|e| error(Some(id), e))?
                         .target;
                     let target = bodies.get(&target).and_then(|head| solids.get(head));
-                    crate::fdm::build(document, context.parameters(), id, self.policy, target)?
+                    crate::fdm::build(
+                        document,
+                        context.parameters(),
+                        id,
+                        self.policy,
+                        target,
+                        backend,
+                    )?
                 }
                 (model::MEMBER_TYPE, model::MEMBER_SCHEMA) => {
                     let (solid, member) = crate::weldment::build(
@@ -1857,9 +1864,9 @@ impl Compiler {
         if full {
             let envelopes = model.envelope_boxes(document, context.parameters());
             let guides = model.guide_outlines(document, context.parameters());
-            let aids = (backend == GeometryBackend::OpenCascade
-                && model::aids(document).next().is_some())
-            .then(|| model.fdm_aids(document).map_err(|e| e.to_string()));
+            let aids = model::aids(document)
+                .next()
+                .map(|_| model.fdm_aids(document).map_err(|e| e.to_string()));
             let snapshot = Arc::make_mut(&mut model.snapshot);
             snapshot.envelope_boxes = envelopes;
             snapshot.guide_outlines = guides;

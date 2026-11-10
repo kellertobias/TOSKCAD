@@ -10,6 +10,7 @@ use multicad_mcp::{
     Headless, Workspace,
     tools::{Call, dispatch},
 };
+use multicad_model::GeometryBackend;
 use serde_json::{Value, json};
 use std::sync::{Arc, atomic::AtomicBool};
 
@@ -28,10 +29,56 @@ fn mm(v: f64) -> Value {
 
 #[test]
 fn mcp_adds_inspects_edits_and_removes_fdm_aids() {
-    let host = Headless::new(
+    for backend in [GeometryBackend::OpenCascade, GeometryBackend::Rust] {
+        fdm_workflow(backend);
+    }
+}
+
+#[test]
+fn rust_mcp_refuses_uncertified_aid_contact_before_commit() {
+    let host = Headless::with_geometry_backend(
+        Workspace::new(Document::new("Curved contact").unwrap()).unwrap(),
+        None,
+        false,
+        GeometryBackend::Rust,
+    );
+    let run = |name: &str, arguments: Value| dispatch(&host, &call(), name, arguments);
+    let sketch = run(
+        "create_sketch",
+        json!({"expected_revision": 0, "plane": "xy", "name": "Disk"}),
+    )
+    .unwrap()["sketch"]
+        .clone();
+    run(
+        "sketch_add_circle",
+        json!({"expected_revision": 1, "sketch": sketch, "center_mm": [0, 0],
+            "diameter": mm(20.)}),
+    )
+    .unwrap();
+    let disk = run(
+        "extrude",
+        json!({"expected_revision": 2, "sketch": sketch, "regions": [0],
+            "distance": mm(10.), "operation": "new_body"}),
+    )
+    .unwrap();
+    let before = host.document();
+    let error = run(
+        "set_fdm_aid",
+        json!({"expected_revision": 3, "name": "Tab", "kind": "tab",
+            "target": disk["created"][0]["part"], "origin_mm": [10, 0, 0],
+            "length": mm(5.), "width": mm(4.), "thickness": mm(0.4), "overlap": mm(1.)}),
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("planar"), "{error}");
+    assert_eq!(host.document(), before);
+}
+
+fn fdm_workflow(backend: GeometryBackend) {
+    let host = Headless::with_geometry_backend(
         Workspace::new(Document::new("FDM").unwrap()).unwrap(),
         None,
         false,
+        backend,
     );
     let run = |name: &str, arguments: Value| dispatch(&host, &call(), name, arguments);
     // A 40 × 20 × 10 mm block on the XY plane; supports start at z = −10.

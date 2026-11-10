@@ -16,8 +16,8 @@ use multicad_core::{
     parameters::BoundExpression,
     project_file::{self, ProjectFile},
 };
-use multicad_kernel::SolidPairRelation;
-use multicad_model::{AidInspection, Compiler, Model, export::Exporter};
+use multicad_kernel::{MeshOptions, SolidPairRelation};
+use multicad_model::{AidInspection, Compiler, GeometryBackend, Model, export::Exporter};
 use std::path::Path;
 
 fn actor() -> Actor {
@@ -363,6 +363,200 @@ fn tabs_and_bridges_report_measured_contact_thickness_and_fit_clearance() {
     assert_eq!(crowding.crowded.len(), 1);
     assert_eq!(crowding.crowded[0].0, f.post.body);
     assert!((crowding.crowded[0].1 - 0.1).abs() < 1e-6);
+}
+
+#[test]
+fn rust_aids_match_native_contacts_and_use_the_lowest_material_over_the_footprint() {
+    let mut f = fixture();
+    let slope = std::f64::consts::FRAC_1_SQRT_2;
+    let inclined = PrimitiveRequest::new(
+        "Inclined stock",
+        PrimitiveParameters::Box {
+            size: xyz([20., 20., 2.]),
+            frame: PrimitiveFrame {
+                origin: xyz([100., 0., 10.]),
+                u: [slope, 0., slope],
+                v: [0., 1., 0.],
+            },
+        },
+    );
+    let p = model::prepare_primitive(&f.s, f.s.revision(), actor(), &inclined).unwrap();
+    checked(&mut f.s, p.prepared);
+    let mut footprint = support([104., 5.], [3., 3.], 0.2);
+    if let AidShape::Support { angle: a, .. } = &mut footprint {
+        *a = angle(45.);
+    }
+    let (support_id, _) = create(
+        &mut f.s,
+        "Inclined support",
+        aid(f.process, inclined.body, footprint),
+    );
+    create(
+        &mut f.s,
+        "Flat support",
+        aid(f.process, f.block.body, support([5., 5.], [30., 10.], 0.2)),
+    );
+    let (tab_id, _) = create(
+        &mut f.s,
+        "Angled tab",
+        aid(f.process, f.block.body, tab([40., 10., 15.], 30., 0.4)),
+    );
+    let (bridge_id, _) = create(
+        &mut f.s,
+        "Sloping bridge",
+        aid(
+            f.process,
+            f.block.body,
+            AidShape::Bridge {
+                start: xyz([39., 5., 18.]),
+                end: xyz([61., 5., 5.]),
+                width: length(2.),
+                thickness: length(0.6),
+                other: Some(f.post.body),
+            },
+        ),
+    );
+    let native = compile(&f.s);
+    let rust = Compiler::default()
+        .compile_with_backend(f.s.document(), f.s.revision(), GeometryBackend::Rust, None)
+        .unwrap();
+    let actual = rust.snapshot().fdm_aids.as_ref().unwrap();
+    let expected = native.snapshot().fdm_aids.as_ref().unwrap();
+    assert_eq!(actual, &rust.fdm_aids(f.s.document()).unwrap());
+    assert_eq!(actual.len(), 4);
+    for (feature, role) in [
+        (support_id, "support.start"),
+        (tab_id, "tab.contact"),
+        (bridge_id, "bridge.start"),
+    ] {
+        let solid = rust.solid(feature).unwrap();
+        assert!(solid.uses_rust_geometry());
+        assert_eq!(solid.solid_count().unwrap(), 1);
+        assert!(
+            !solid
+                .manufacturing_mesh(MeshOptions::default())
+                .unwrap()
+                .indices
+                .is_empty()
+        );
+        assert!(
+            rust.snapshot().shapes[&feature]
+                .topology
+                .elements
+                .iter()
+                .any(|element| element
+                    .origins
+                    .iter()
+                    .any(|origin| origin.source == feature && origin.role == role))
+        );
+        let a = actual.iter().find(|aid| aid.feature == feature).unwrap();
+        let e = inspection(expected, &a.name);
+        assert_eq!(a.part, e.part);
+        assert_eq!(a.process, e.process);
+        assert_eq!(a.target.relation, e.target.relation);
+        near(a.target.distance_mm, e.target.distance_mm);
+        near(a.target.common_volume_mm3, e.target.common_volume_mm3);
+        if let Some(other) = &a.other {
+            let native_other = e.other.as_ref().unwrap();
+            assert_eq!(other.part, native_other.part);
+            assert_eq!(other.relation, SolidPairRelation::Overlapping);
+            near(other.common_volume_mm3, native_other.common_volume_mm3);
+        }
+        near(a.volume_mm3, e.volume_mm3);
+        for (a, e) in a
+            .bounds_mm
+            .iter()
+            .flatten()
+            .zip(e.bounds_mm.iter().flatten())
+        {
+            near(*a, *e);
+        }
+    }
+    let tab = inspection(actual, "Angled tab");
+    near(tab.target.common_volume_mm3, 4.8);
+    let contact = tab.exact_contact.unwrap();
+    near(contact.point_mm[0], 40.);
+    near(contact.point_mm[2], 15.);
+    near(contact.angle_deg, 0.);
+    let inclined = inspection(actual, "Inclined support");
+    near(inclined.bounds_mm[1][2], 14. - 3. * slope - 0.2);
+    assert_eq!(inclined.target.relation, SolidPairRelation::Separated);
+    let flat = inspection(actual, "Flat support");
+    near(flat.bounds_mm[1][2], 14.8);
+    near(flat.target.distance_mm, 0.2);
+    assert!(flat.contact_issues.is_empty(), "{:?}", flat.contact_issues);
+}
+
+#[test]
+fn rust_aids_report_missing_footprint_and_uncertified_curved_contact() {
+    let mut f = fixture();
+    let compiler = Compiler::default();
+    let missing = AidRequest::new(
+        "Beside stock",
+        aid(
+            f.process,
+            f.block.body,
+            support([100., 100.], [5., 5.], 0.2),
+        ),
+    );
+    let preview = model::prepare_aid(&f.s, f.s.revision(), actor(), &missing).unwrap();
+    let missing_error = compiler
+        .compile_with_backend(
+            preview.prepared.document(),
+            f.s.revision() + 1,
+            GeometryBackend::Rust,
+            None,
+        )
+        .err()
+        .unwrap();
+    assert_eq!(missing_error.entity, Some(missing.feature));
+    assert!(
+        missing_error.message.contains("not under"),
+        "{missing_error}"
+    );
+    assert!(f.s.document().get(missing.body).is_none());
+
+    let cylinder = PrimitiveRequest::new(
+        "Cylinder",
+        PrimitiveParameters::Cylinder {
+            radius: length(8.),
+            height: length(6.),
+            frame: PrimitiveFrame {
+                origin: xyz([100., 100., 15.]),
+                ..Default::default()
+            },
+        },
+    );
+    let p = model::prepare_primitive(&f.s, f.s.revision(), actor(), &cylinder).unwrap();
+    checked(&mut f.s, p.prepared);
+    let support = AidRequest::new(
+        "Below a curved body",
+        aid(f.process, cylinder.body, support([99., 99.], [2., 2.], 0.2)),
+    );
+    let preview = model::prepare_aid(&f.s, f.s.revision(), actor(), &support).unwrap();
+    let curved_error = compiler
+        .compile_with_backend(
+            preview.prepared.document(),
+            f.s.revision() + 1,
+            GeometryBackend::Rust,
+            None,
+        )
+        .err()
+        .unwrap();
+    assert_eq!(curved_error.entity, Some(support.feature));
+    assert!(curved_error.message.contains("planar"), "{curved_error}");
+    assert!(f.s.document().get(support.body).is_none());
+
+    create(
+        &mut f.s,
+        "Tab on cylinder",
+        aid(f.process, cylinder.body, tab([108., 100., 15.], 0., 0.4)),
+    );
+    let rust = compiler
+        .compile_with_backend(f.s.document(), f.s.revision(), GeometryBackend::Rust, None)
+        .unwrap();
+    let error = rust.snapshot().fdm_aids.as_ref().unwrap_err();
+    assert!(error.contains("Rust distance"), "{error}");
 }
 
 #[test]

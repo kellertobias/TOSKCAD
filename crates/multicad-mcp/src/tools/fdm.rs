@@ -1,5 +1,5 @@
 //! FDM design-aid tools over the shared aid and process API. Each aid
-//! mutation builds the aid natively before it commits one transaction; the
+//! mutation evaluates the aid before it commits one transaction; the
 //! report measures the evaluated aid, target and neighbour solids.
 use super::{Quantity, Request, ToolResult, commit, compile, id, revision_guard, snapshot};
 use crate::{
@@ -14,6 +14,7 @@ use multicad_core::{
     parameters::EvaluatedParameters,
 };
 use multicad_kernel::SolidPairRelation;
+use multicad_model::GeometryBackend;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -168,9 +169,16 @@ fn shape(args: &AidArgs, d: &Document, e: &EvaluatedParameters) -> Result<AidSha
         },
     })
 }
-/// Build the candidate natively, then commit; returns the committed revision.
+/// Build the candidate and commit its geometry and inspection together.
 fn finish(host: &dyn Host, call: &Request, prepared: Prepared, revision: u64) -> ToolResult {
-    compile(prepared.document(), revision, call)?;
+    let model = compile(prepared.document(), revision, call)?;
+    if call.backend == GeometryBackend::Rust {
+        model
+            .snapshot()
+            .fdm_aids
+            .as_ref()
+            .map_err(ToolError::invalid)?;
+    }
     let call = call.clone();
     let committed = with(host, move |target| commit(target, &call, prepared))??;
     Ok(json!({ "revision": committed }))
@@ -297,7 +305,15 @@ fn relation(r: SolidPairRelation) -> &'static str {
 pub(super) fn fdm_aid_report(host: &dyn Host, call: &Request, _: super::NoArgs) -> ToolResult {
     let (document, revision, _) = snapshot(host)?;
     let model = compile(&document, revision, call)?;
-    let aids = model.fdm_aids(&document)?;
+    let recovered;
+    let aids = match &model.snapshot().fdm_aids {
+        Ok(aids) => aids,
+        Err(_) => {
+            // Recover the typed failure and involved Part identity for MCP.
+            recovered = model.fdm_aids(&document)?;
+            &recovered
+        }
+    };
     let contact = |c: &multicad_model::AidContact| {
         json!({
             "part": c.part, "relation": relation(c.relation),
