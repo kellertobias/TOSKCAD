@@ -353,6 +353,50 @@ fn disjoint_round_and_planar_sources_share_the_view_and_global_output_budget() {
 }
 
 #[test]
+fn foreground_cylinder_splits_rear_lines_at_its_exact_silhouette() {
+    let front = stock();
+    let int = |n| Rational::new(n, 1).unwrap();
+    let back = Solid::rust_box(
+        EntityId::new().uuid_bits(),
+        [int(16), int(2), int(2)],
+        PlaneFrame {
+            origin: [-8., -1., -4.],
+            ..Default::default()
+        },
+        Default::default(),
+    )
+    .unwrap();
+    let draw = |hidden_lines| {
+        project_drawing(
+            &[&back, &front].map(|solid| DrawingSolid { solid, hatch: None }),
+            DrawingProjection {
+                hidden_lines,
+                ..Default::default()
+            },
+        )
+        .unwrap()
+    };
+    let root = 24_f64.sqrt();
+    for hidden_lines in [false, true] {
+        let output = draw(hidden_lines);
+        let line_coverage = |x, y, role| {
+            output.iter().any(|vector| {
+                vector.source_index == 0 && vector.role == role && on_curve([x, y], &vector.curve)
+            })
+        };
+        for y in [-1., 1.] {
+            assert!(line_coverage(root, y, VectorRole::Visible));
+            assert!(line_coverage(-root, y, VectorRole::Visible));
+            assert!(!line_coverage(0., y, VectorRole::Visible));
+            assert_eq!(line_coverage(0., y, VectorRole::Hidden), hidden_lines);
+        }
+        assert!(output.iter().any(|vector| vector.source_index == 1
+            && vector.role == VectorRole::Visible
+            && matches!(vector.curve, VectorCurve::Ellipse { major_mm: 5., .. })));
+    }
+}
+
+#[test]
 fn transverse_annulus_section_depth_distinguishes_cut_retained_and_empty_views() {
     let ring = annulus();
     let draw = |offset, range| {

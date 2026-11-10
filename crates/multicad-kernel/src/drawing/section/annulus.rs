@@ -87,7 +87,7 @@ impl Halfspace {
     }
 }
 
-pub(in crate::drawing) fn project_annulus(
+pub(in crate::drawing) fn project_circular(
     input: &DrawingSolid<'_>,
     options: DrawingProjection,
     depth: f64,
@@ -95,15 +95,16 @@ pub(in crate::drawing) fn project_annulus(
     if !options.section_only || options.detail.is_some() {
         return Err(err(
             GeometryErrorKind::Unsupported,
-            "Rust annulus sections require a section-only view without a detail crop",
+            "Rust circular sections require a section-only view without a detail crop",
         ));
     }
-    let (body, placement) = input.solid.annulus_body().ok_or_else(|| {
-        err(
-            GeometryErrorKind::Unsupported,
-            "Rust annulus section requires a circular annulus",
-        )
-    })?;
+    let (placement, outer, h, bore) =
+        curved::circular_dimensions(input.solid).ok_or_else(|| {
+            err(
+                GeometryErrorKind::Unsupported,
+                "Rust circular section requires a circular cylinder or annulus",
+            )
+        })?;
     let axes = planar::view_axes(options.frame);
     let local = |point: [f64; 3]| {
         axes.map(|axis| axis.into_iter().zip(point).map(|(a, b)| a * b).sum::<f64>())
@@ -123,9 +124,7 @@ pub(in crate::drawing) fn project_annulus(
     let v = perpendicular(u);
     let origin = [base[0], base[1]];
     let delta_depth = depth - base[2];
-    let h = body.geometry.height_mm();
-    let inner = body.geometry.inner_radius_mm();
-    let outer = body.geometry.outer_radius_mm();
+    let inner = bore.unwrap_or(0.);
     let tolerance = input.solid.geometry_policy().linear_tolerance_mm;
     let radial_depth = s * outer;
     if delta_depth < (c * h).min(0.) - radial_depth - tolerance
@@ -248,6 +247,9 @@ fn elliptical_section(
     let mut points = options.maximum_points as usize;
     let mut output = Vec::new();
     for [major, minor] in [outer, inner] {
+        if minor == 0. {
+            continue;
+        }
         for trim in ellipse_trims([major, minor], planes) {
             let ellipse = Ellipse {
                 center: frame.origin,
@@ -291,7 +293,10 @@ fn elliptical_section(
         else {
             continue;
         };
-        for span in subtract_span(span, ellipse_interval(inner, origin, direction), tolerance) {
+        let hole = (inner[1] > 0.)
+            .then(|| ellipse_interval(inner, origin, direction))
+            .flatten();
+        for span in subtract_span(span, hole, tolerance) {
             output.push(planar::line(
                 0,
                 VectorRole::Section,
@@ -479,7 +484,11 @@ fn hatch_boundary(
         )
     };
     let outer = sample(outer, 1.);
-    let inner = sample(inner, 1. / (std::f64::consts::PI / count as f64).cos());
+    let inner = if inner[1] > 0. {
+        sample(inner, 1. / (std::f64::consts::PI / count as f64).cos())
+    } else {
+        Vec::new()
+    };
     let mut boundary = polygon_edges(&outer)
         .chain(polygon_edges(&inner))
         .filter_map(|(ends, tag)| tag.is_none().then_some(ends))

@@ -1,6 +1,9 @@
 //! Drawing adapter for exact circular cylinders and annuli.
 use super::*;
-use multicad_rust_kernel::curved_projection::{self, Curve, Cylinder, Detail, Error};
+use multicad_rust_kernel::{
+    curved_projection::{self, Curve, Cylinder, Detail, Error},
+    round_occlusion::RoundOccluder,
+};
 
 fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
     a.into_iter().zip(b).map(|(x, y)| x * y).sum()
@@ -24,7 +27,7 @@ fn projection_error(error: Error) -> GeometryError {
     }
 }
 
-fn circular_dimensions(solid: &Solid) -> Option<(PlaneFrame, f64, f64, Option<f64>)> {
+pub(super) fn circular_dimensions(solid: &Solid) -> Option<(PlaneFrame, f64, f64, Option<f64>)> {
     if let Some((body, frame)) = solid.revolution_body() {
         return body.circular_sweep(frame);
     }
@@ -50,6 +53,13 @@ pub(super) fn is_round(solid: &Solid) -> bool {
     circular_dimensions(solid).is_some()
 }
 
+pub(super) fn contains_round(solid: &Solid) -> bool {
+    is_round(solid)
+        || solid
+            .rust_compound()
+            .is_some_and(|compound| compound.members().any(contains_round))
+}
+
 fn projection_cylinder(solid: &Solid, frame: PlaneFrame) -> Option<(Cylinder, Option<f64>)> {
     let (placement, radius, height, bore) = circular_dimensions(solid)?;
     let [u, v, n] = planar::view_axes(frame);
@@ -66,22 +76,34 @@ fn projection_cylinder(solid: &Solid, frame: PlaneFrame) -> Option<(Cylinder, Op
     ))
 }
 
-fn screen_bounds(solid: &Solid, frame: PlaneFrame) -> Result<[[f64; 2]; 2], GeometryError> {
-    if let Some((round, _)) = projection_cylinder(solid, frame) {
-        return Ok(std::array::from_fn(|i| {
-            let end = round.axis[i] * round.height;
-            let other_axes = [round.axis[(i + 1) % 3], round.axis[(i + 2) % 3]];
-            let radial = round.radius * other_axes[0].hypot(other_axes[1]);
-            [
-                round.base[i] + end.min(0.) - radial,
-                round.base[i] + end.max(0.) + radial,
-            ]
-        }));
-    }
+fn round_occluder(
+    solid: &Solid,
+    frame: PlaneFrame,
+) -> Result<Option<RoundOccluder>, GeometryError> {
+    let Some((cylinder, bore)) = projection_cylinder(solid, frame) else {
+        return Ok(None);
+    };
+    let placement = circular_dimensions(solid)
+        .expect("classified circular solid")
+        .0;
+    let offset = std::array::from_fn(|i| placement.origin[i] - frame.origin[i]);
+    let depth = dot(offset, planar::view_axes(frame)[2]);
+    RoundOccluder::new(
+        [cylinder.base[0], cylinder.base[1], depth],
+        cylinder.axis,
+        cylinder.radius,
+        cylinder.height,
+        bore,
+    )
+    .map(Some)
+    .map_err(planar::projection_error)
+}
+
+fn screen_bounds(solid: &Solid, frame: PlaneFrame) -> Result<[[f64; 3]; 2], GeometryError> {
     let bounds = solid.bounds()?;
-    let [u, v, _] = planar::view_axes(frame);
-    Ok([u, v].map(|axis| {
-        let support = |upper: bool| {
+    let axes = planar::view_axes(frame);
+    Ok([false, true].map(|upper| {
+        axes.map(|axis| {
             let corner = std::array::from_fn(|i| {
                 let coordinate = if upper == (axis[i] >= 0.) {
                     bounds.max[i]
@@ -91,8 +113,7 @@ fn screen_bounds(solid: &Solid, frame: PlaneFrame) -> Result<[[f64; 2]; 2], Geom
                 coordinate - frame.origin[i]
             });
             dot(corner, axis)
-        };
-        [support(false), support(true)]
+        })
     }))
 }
 
@@ -100,55 +121,60 @@ pub(super) fn project_scene(
     solids: &[DrawingSolid<'_>],
     mut options: DrawingProjection,
 ) -> Result<Vec<ProjectedVector>, GeometryError> {
-    if let [input] = solids {
+    if let [input] = solids
+        && is_round(input.solid)
+    {
         return project(input, options, 0);
     }
-    let mut regions = solids
-        .iter()
-        .map(|input| {
-            Ok((
-                screen_bounds(input.solid, options.frame)?,
-                is_round(input.solid),
-            ))
-        })
-        .collect::<Result<Vec<_>, GeometryError>>()?;
+    let mut planar_sources = Vec::new();
+    let mut planar_solids = Vec::new();
+    let mut curved = Vec::new();
+    let mut regions = Vec::new();
+    for (source, solid) in projection_members(solids) {
+        let input = DrawingSolid { solid, hatch: None };
+        if let Some(round) = round_occluder(input.solid, options.frame)? {
+            regions.push((round.bounds(), true));
+            curved.push((source, input, round));
+        } else {
+            regions.push((screen_bounds(input.solid, options.frame)?, false));
+            planar_sources.push(source);
+            planar_solids.push(input);
+        }
+    }
     regions.sort_unstable_by(|a, b| a.0[0][0].total_cmp(&b.0[0][0]));
     let tolerance = GeometryPolicy::default().linear_tolerance_mm;
-    for (i, (a, curved)) in regions.iter().enumerate() {
-        for (b, other_curved) in &regions[i + 1..] {
-            if b[0][0] > a[0][1] + tolerance {
+    for (i, ([a_min, a_max], a_round)) in regions.iter().copied().enumerate() {
+        for ([b_min, b_max], b_round) in regions[i + 1..].iter().copied() {
+            if b_min[0] > a_max[0] + tolerance {
                 break;
             }
-            if (*curved || *other_curved)
-                && a[1][0] <= b[1][1] + tolerance
-                && b[1][0] <= a[1][1] + tolerance
+            if (!a_round && !b_round)
+                || a_min[1] > b_max[1] + tolerance
+                || b_min[1] > a_max[1] + tolerance
             {
+                continue;
+            }
+            // Straight edges can be split against exact curved material.
+            // Until round edges also carry depth, prove the round is in front
+            // everywhere in the overlap before publishing its own edge trims.
+            let separated = if a_round {
+                !b_round && a_min[2] > b_max[2] + tolerance
+            } else {
+                b_min[2] > a_max[2] + tolerance
+            };
+            if !separated {
                 return Err(err(
                     GeometryErrorKind::Unsupported,
-                    "Rust drawing projection cannot yet resolve occlusion between overlapping circular and other solids",
+                    "Rust projection cannot yet resolve round edges behind overlapping geometry",
                 ));
             }
         }
     }
-    let planar_inputs: Vec<_> = solids
-        .iter()
-        .enumerate()
-        .filter(|(_, input)| !is_round(input.solid))
-        .map(|(source, input)| {
-            (
-                source,
-                DrawingSolid {
-                    solid: input.solid,
-                    hatch: input.hatch,
-                },
-            )
-        })
-        .collect();
-    let (planar_sources, planar_solids): (Vec<_>, Vec<_>) = planar_inputs.into_iter().unzip();
+    let rounds: Vec<_> = curved.iter().map(|(_, _, round)| *round).collect();
     let mut output = if planar_solids.is_empty() {
         Vec::new()
     } else {
-        planar::project(&planar_solids, options)?
+        planar::project_scene(&planar_solids, &rounds, options)?
     };
     for vector in &mut output {
         vector.source_index = planar_sources[vector.source_index];
@@ -158,12 +184,8 @@ pub(super) fn project_scene(
         .iter()
         .map(|vector| vector.preview_mm.len() as u32)
         .sum::<u32>();
-    for (source, input) in solids
-        .iter()
-        .enumerate()
-        .filter(|(_, input)| is_round(input.solid))
-    {
-        let projected = project(input, options, source)?;
+    for (source, input, _) in curved {
+        let projected = project(&input, options, source)?;
         options.maximum_curves -= projected.len() as u32;
         options.maximum_points -= projected
             .iter()
@@ -211,7 +233,7 @@ pub(super) fn project_annulus_depth(
     if depth < high - tolerance {
         // With the view along the bore, every retained cross section projects
         // onto the same two circles. The cut rims replace those visible rims.
-        return section::project_annulus(
+        return section::project_circular(
             input,
             DrawingProjection {
                 section_only: true,

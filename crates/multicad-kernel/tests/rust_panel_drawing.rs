@@ -229,6 +229,10 @@ fn unsupported_view_types_and_output_limits_keep_typed_failures() {
         DrawingProjection {
             section_offset_mm: Some(9.),
             section_only: true,
+            frame: PlaneFrame {
+                u: [0.8, 0., 0.6],
+                ..Default::default()
+            },
             ..Default::default()
         },
         DrawingProjection {
@@ -262,4 +266,65 @@ fn unsupported_view_types_and_output_limits_keep_typed_failures() {
             GeometryErrorKind::Limit
         );
     }
+}
+
+#[test]
+fn exact_section_retains_both_recess_profiles_and_hatches_only_material() {
+    use multicad_core::materials::HatchPattern;
+    use multicad_kernel::DrawingHatch;
+    let solid = with_front_mortise()
+        .rust_drill_circular_pockets(&[bore(true, [14., 7.], 1.)], GeometryPolicy::default())
+        .unwrap();
+    let options = DrawingProjection {
+        section_offset_mm: Some(9.),
+        section_only: true,
+        ..Default::default()
+    };
+    let vectors = project_drawing(
+        &[DrawingSolid {
+            solid: &solid,
+            hatch: Some(DrawingHatch {
+                angle_rad: 0.,
+                spacing_mm: 1.,
+                line_width_mm: 0.18,
+                pattern: HatchPattern::Lines,
+            }),
+        }],
+        options,
+    )
+    .unwrap();
+    let arcs: Vec<_> = vectors
+        .iter()
+        .filter_map(|vector| match (vector.role, &vector.curve) {
+            (
+                VectorRole::Section,
+                VectorCurve::Ellipse {
+                    major_mm,
+                    start_rad,
+                    end_rad,
+                    ..
+                },
+            ) => Some((*major_mm, end_rad - start_rad)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(arcs.len(), 3);
+    assert!(arcs.contains(&(1., TAU)));
+    assert_eq!(arcs.iter().filter(|&&arc| arc == (2., PI)).count(), 2);
+    let mut hatches = 0;
+    for vector in vectors
+        .iter()
+        .filter(|vector| vector.role == VectorRole::Hatch)
+    {
+        let VectorCurve::Line { a, b } = vector.curve else {
+            panic!("Expected a hatch line")
+        };
+        hatches += 1;
+        for t in [0., 0.25, 0.5, 0.75, 1.] {
+            let [x, y] = std::array::from_fn(|i| a[i] + (b[i] - a[i]) * t);
+            assert!((x - x.clamp(5., 9.)).hypot(y - 6.) >= 2. - 1e-6);
+            assert!((x - 14.).hypot(y - 7.) >= 1. - 1e-6);
+        }
+    }
+    assert!(hatches > 16);
 }

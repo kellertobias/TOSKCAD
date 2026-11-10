@@ -136,6 +136,15 @@ impl Solid {
 }
 
 impl RoundedSlotBody {
+    pub(crate) fn section_profile(&self) -> (Stadium, [f64; 2]) {
+        let depth = if self.reverse {
+            [-self.height, 0.]
+        } else {
+            [0., self.height]
+        };
+        (self.profile, depth)
+    }
+
     fn cap(&self, frame: PlaneFrame, end: bool, outward: bool) -> ReferenceFrame {
         let height = if end { self.height } else { 0. };
         let origin_mm = position(frame, [0., 0., if self.reverse { -height } else { height }]);

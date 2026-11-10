@@ -4,9 +4,26 @@ use multicad_core::materials::HatchPattern;
 use multicad_rust_kernel::{planar_section, section_hatch};
 
 mod annulus;
-pub(super) use annulus::project_annulus;
+mod machined;
+pub(super) use annulus::project_circular;
 
 pub(super) fn project(
+    solids: &[DrawingSolid<'_>],
+    options: DrawingProjection,
+    depth: f64,
+) -> Result<Vec<ProjectedVector>, GeometryError> {
+    if options.section_only
+        && options.detail.is_none()
+        && solids
+            .iter()
+            .any(|input| machined::needs_analytic_section(input.solid))
+    {
+        return machined::project(solids, options, depth);
+    }
+    project_planar(solids, options, depth)
+}
+
+fn project_planar(
     solids: &[DrawingSolid<'_>],
     options: DrawingProjection,
     depth: f64,

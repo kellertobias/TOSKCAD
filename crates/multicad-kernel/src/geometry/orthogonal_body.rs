@@ -167,6 +167,51 @@ fn operation_error(cause: BooleanError) -> GeometryError {
 }
 
 impl Solid {
+    /// When every blind opening is edge-on, the first material hit along a
+    /// view ray is unchanged. The cut never reaches a front-facing stock face.
+    /// The stripped body is valid only for visible-line projection.
+    pub(crate) fn stock_for_visible_projection(&self, toward_viewer: Point) -> Option<Self> {
+        let perpendicular = |normal| dot(normal, toward_viewer).abs() <= 32. * f64::EPSILON;
+        let body = match &self.body {
+            SolidBody::Orthogonal(stock, frame)
+                if stock.has_curved_cuts()
+                    && stock
+                        .pockets
+                        .iter()
+                        .map(|pocket| pocket.face)
+                        .chain(stock.slots.iter().map(|slot| slot.face))
+                        .all(|face| {
+                            perpendicular(transform_vector(
+                                *frame,
+                                stock.boundary.faces[face].normal,
+                            ))
+                        }) =>
+            {
+                let mut stock = (**stock).clone();
+                stock.pockets = Rc::from([]);
+                stock.pocket_origins = Rc::from([]);
+                stock.slots = Rc::from([]);
+                stock.slot_origins = Rc::from([]);
+                SolidBody::Orthogonal(Rc::new(stock), *frame)
+            }
+            SolidBody::PolygonPrism(stock)
+                if !stock.pockets.is_empty() && perpendicular(stock.frame.normal()) =>
+            {
+                let mut stock = (**stock).clone();
+                stock.pockets = Rc::from([]);
+                stock.pocket_origins = Rc::from([]);
+                SolidBody::PolygonPrism(Rc::new(stock))
+            }
+            _ => return None,
+        };
+        Some(Self {
+            body,
+            policy: self.policy,
+            provenance: vec![],
+            rust_origins: vec![],
+        })
+    }
+
     fn orthogonal_cells(&self) -> Result<Option<Vec<Box3>>, GeometryError> {
         if let Some((body, frame)) = self.orthogonal_body()
             && cardinal(frame)
@@ -662,6 +707,26 @@ fn imported_origin(
 }
 
 impl OrthogonalBody {
+    pub(crate) fn has_curved_cuts(&self) -> bool {
+        !self.pockets.is_empty() || !self.slots.is_empty()
+    }
+
+    pub(crate) fn section(
+        &self,
+        options: multicad_rust_kernel::orthogonal_section::Options,
+    ) -> Result<
+        Vec<Vec<multicad_rust_kernel::orthogonal_section::Edge>>,
+        multicad_rust_kernel::orthogonal_section::SectionError,
+    > {
+        multicad_rust_kernel::orthogonal_section::section(
+            &self.geometry,
+            &self.boundary,
+            &self.pockets,
+            &self.slots,
+            options,
+        )
+    }
+
     fn build(
         feature: EntityId,
         geometry: OrthogonalSolid,

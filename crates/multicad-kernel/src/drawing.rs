@@ -75,6 +75,23 @@ fn p(p: [f64; 3]) -> ffi::Point3 {
         z: p[2],
     }
 }
+fn projection_members<'a>(solids: &[DrawingSolid<'a>]) -> Vec<(usize, &'a Solid)> {
+    fn leaves<'a>(solid: &'a Solid, source: usize, output: &mut Vec<(usize, &'a Solid)>) {
+        if let Some(compound) = solid.rust_compound() {
+            for member in compound.members() {
+                leaves(member, source, output);
+            }
+        } else {
+            output.push((source, solid));
+        }
+    }
+    let mut members = Vec::new();
+    for (source, input) in solids.iter().enumerate() {
+        leaves(input.solid, source, &mut members);
+    }
+    members
+}
+
 pub fn project_drawing(
     solids: &[DrawingSolid<'_>],
     options: DrawingProjection,
@@ -147,7 +164,7 @@ pub fn project_drawing(
                 && input.solid.annulus_body().is_some()
             {
                 return if options.section_only {
-                    section::project_annulus(input, options, depth)
+                    section::project_circular(input, options, depth)
                 } else {
                     curved::project_annulus_depth(input, options, depth)
                 };
@@ -159,7 +176,10 @@ pub fn project_drawing(
         {
             return projection;
         }
-        if solids.iter().any(|input| curved::is_round(input.solid)) {
+        if solids
+            .iter()
+            .any(|input| curved::contains_round(input.solid))
+        {
             return curved::project_scene(solids, options);
         }
         return planar::project(solids, options);
