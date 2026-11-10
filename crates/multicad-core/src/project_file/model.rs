@@ -17,9 +17,7 @@ impl ContentHash {
         Self(Sha256::digest(bytes).into())
     }
     pub fn document(document: &Document) -> Result<Self, String> {
-        serde_json::to_vec(document)
-            .map(|bytes| Self::of(&bytes))
-            .map_err(|e| e.to_string())
+        document.canonical_hash()
     }
 }
 impl std::fmt::Display for ContentHash {

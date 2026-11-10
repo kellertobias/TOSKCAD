@@ -3,6 +3,51 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     sync::Arc,
 };
+
+#[test]
+fn document_fingerprint_tracks_copy_on_write_and_canonical_bytes() {
+    let original = Document::new("Original").unwrap();
+    let original_bytes = serde_json::to_vec(&original).unwrap();
+    let fingerprint = ContentHash::document(&original).unwrap();
+    assert_eq!(fingerprint, ContentHash::of(&original_bytes));
+    let mut changed = original.clone();
+    assert_eq!(changed, original);
+    assert!(changed.validated().unwrap().topological_order().is_empty());
+    let parameter = Entity::new(
+        "width",
+        EntityData::Parameter {
+            expression: "600".into(),
+            unit: "mm".into(),
+            exposed: true,
+            inputs: vec![],
+        },
+    );
+    let id = parameter.id;
+    changed.insert(parameter.clone()).unwrap();
+    assert_eq!(changed.validated().unwrap().topological_order(), &[id]);
+    let width = ContentHash::document(&changed).unwrap();
+    assert_ne!(width, fingerprint);
+    assert_eq!(ContentHash::document(&original).unwrap(), fingerprint);
+    assert!(changed.insert(parameter).is_err());
+    assert_eq!(ContentHash::document(&changed).unwrap(), width);
+    changed.remove(id).unwrap();
+    assert!(changed.validated().unwrap().topological_order().is_empty());
+    assert_eq!(ContentHash::document(&changed).unwrap(), fingerprint);
+
+    let renamed = changed
+        .edited(&[Mutation::RenameDocument("Renamed".into())])
+        .unwrap();
+    let renamed_bytes = serde_json::to_vec(&renamed).unwrap();
+    let renamed_hash = ContentHash::document(&renamed).unwrap();
+    assert_eq!(renamed_hash, ContentHash::of(&renamed_bytes));
+    assert_ne!(renamed_hash, fingerprint);
+    assert_eq!(
+        serde_json::from_slice::<Document>(&renamed_bytes).unwrap(),
+        renamed
+    );
+    assert_eq!(serde_json::to_vec(&original).unwrap(), original_bytes);
+}
+
 fn project() -> ProjectFile {
     let mut edits = Vec::new();
     let parameter = Entity::new(
