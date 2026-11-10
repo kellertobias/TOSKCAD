@@ -144,6 +144,15 @@ pub struct Face {
     pub source_face: usize,
 }
 
+/// One connected closed component of a certified planar boundary.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Shell {
+    /// Face ordinals in the parent boundary, in ascending order.
+    pub faces: Vec<usize>,
+    /// Negative for an inward shell bounding a cavity.
+    pub signed_volume_mm3: f64,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Union {
     vertices: Vec<Point>,
@@ -151,7 +160,7 @@ pub struct Union {
     bounds: [Point; 2],
     volume_mm3: f64,
     solid_count: usize,
-    shell_count: usize,
+    shells: Vec<Shell>,
 }
 
 impl Union {
@@ -179,7 +188,7 @@ impl Union {
             bounds,
             volume_mm3: proof.volume_mm3,
             solid_count: proof.solid_count,
-            shell_count: proof.shell_count,
+            shells: proof.shells,
         })
     }
 
@@ -204,7 +213,12 @@ impl Union {
     }
 
     pub fn shell_count(&self) -> usize {
-        self.shell_count
+        self.shells.len()
+    }
+
+    /// Closed boundary components in order of first face ordinal.
+    pub fn shells(&self) -> &[Shell] {
+        &self.shells
     }
 
     pub fn mesh(&self, options: Tessellation) -> Result<DisplayMesh, MeshError> {

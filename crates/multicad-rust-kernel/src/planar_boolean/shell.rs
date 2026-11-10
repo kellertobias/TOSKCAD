@@ -105,7 +105,7 @@ impl Boundary {
 pub(super) struct Proof {
     pub(super) volume_mm3: f64,
     pub(super) solid_count: usize,
-    pub(super) shell_count: usize,
+    pub(super) shells: Vec<Shell>,
 }
 
 pub(super) fn prove(vertices: &[Point], faces: &[Face]) -> Result<Proof, Error> {
@@ -128,18 +128,18 @@ pub(super) fn prove(vertices: &[Point], faces: &[Face]) -> Result<Proof, Error> 
             }
         }
     }
-    let mut visited = vec![false; faces.len()];
+    let mut shell_ids = vec![usize::MAX; faces.len()];
     let mut solid_count = 0;
-    let mut shell_count = 0;
+    let mut shells = Vec::new();
     for (index, face) in faces.iter().enumerate() {
-        if visited[index] {
+        if shell_ids[index] != usize::MAX {
             continue;
         }
-        shell_count += 1;
+        let shell_id = shells.len();
         let origin = vertices[face.vertices[0]];
         let mut pending = vec![index];
         let mut six_volume = 0.;
-        visited[index] = true;
+        shell_ids[index] = shell_id;
         while let Some(current) = pending.pop() {
             let ring = &faces[current].vertices;
             let a = sub(vertices[ring[0]], origin);
@@ -149,8 +149,8 @@ pub(super) fn prove(vertices: &[Point], faces: &[Face]) -> Result<Proof, Error> 
                 six_volume += dot(a, cross(b, c));
             }
             for &next in &adjacent[current] {
-                if !visited[next] {
-                    visited[next] = true;
+                if shell_ids[next] == usize::MAX {
+                    shell_ids[next] = shell_id;
                     pending.push(next);
                 }
             }
@@ -158,11 +158,18 @@ pub(super) fn prove(vertices: &[Point], faces: &[Face]) -> Result<Proof, Error> 
         if six_volume > 0. {
             solid_count += 1;
         }
+        shells.push(Shell {
+            faces: Vec::new(),
+            signed_volume_mm3: six_volume / 6.,
+        });
+    }
+    for (face, shell_id) in shell_ids.into_iter().enumerate() {
+        shells[shell_id].faces.push(face);
     }
     Ok(Proof {
         volume_mm3: proof.signed_volume_mm3,
         solid_count,
-        shell_count,
+        shells,
     })
 }
 

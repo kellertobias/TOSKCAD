@@ -570,7 +570,21 @@ impl Writer {
             return Err(StepError::Unsupported);
         }
         let placement = Placement::new(origin, u, v)?;
-        self.append(|file| planar_union::encode(file, placement, union))
+        let previous = (self.solids.len(), self.file.data.len(), self.file.next);
+        if previous.0 + union.shell_count() > MAX_COMPOUND_SOLIDS {
+            return Err(StepError::Limit);
+        }
+        for shell in union.shells() {
+            if let Err(error) =
+                self.append(|file| planar_union::encode(file, &placement, union, &shell.faces))
+            {
+                self.solids.truncate(previous.0);
+                self.file.data.truncate(previous.1);
+                self.file.next = previous.2;
+                return Err(error);
+            }
+        }
+        Ok(())
     }
 
     pub fn append_warped_union(

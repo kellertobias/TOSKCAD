@@ -21,7 +21,7 @@ impl Union {
             bounds_mm.push((bounds(ring.iter().copied()), plane));
         }
         let proof = boundary.prove()?;
-        if proof.solid_count != 1 || proof.shell_count != 1 {
+        if proof.solid_count != 1 || proof.shells.len() != 1 {
             return Err(Error::Invalid);
         }
         // Two convex faces meet only at the vertices/edge already shared by
@@ -59,7 +59,7 @@ impl Union {
             bounds: bounds_mm,
             volume_mm3: proof.volume_mm3,
             solid_count: proof.solid_count,
-            shell_count: proof.shell_count,
+            shells: proof.shells,
         })
     }
 }
