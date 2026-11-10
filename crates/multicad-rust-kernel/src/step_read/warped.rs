@@ -6,6 +6,7 @@ use crate::{
 };
 use std::f64::consts::FRAC_PI_2;
 
+mod axial_cuts;
 mod bosses;
 
 #[derive(Debug)]
@@ -325,7 +326,9 @@ pub(super) fn read_member(
     solid: u32,
 ) -> Result<(Readback, ImportedWarped)> {
     let boundary = Boundary::parse(reader, solid)?;
-    let imported = if boundary.faces.iter().any(|face| !face.holes.is_empty()) {
+    let imported = if let Some(imported) = axial_cuts::reconstruct(reader, &boundary)? {
+        imported
+    } else if boundary.faces.iter().any(|face| !face.holes.is_empty()) {
         bosses::reconstruct(reader, &boundary)?
     } else {
         resolve_chart(reader, &boundary, false)?.0

@@ -15,6 +15,13 @@ struct Attachment {
 }
 
 pub(super) fn reconstruct(reader: &Shell<'_, '_>, source: &Boundary) -> Result<ImportedWarped> {
+    reconstruct_with_chart(reader, source).map(|(imported, _)| imported)
+}
+
+pub(super) fn reconstruct_with_chart(
+    reader: &Shell<'_, '_>,
+    source: &Boundary,
+) -> Result<(ImportedWarped, Chart)> {
     let attachments = attachments(reader, source)?;
     let removed: BTreeSet<_> = attachments
         .iter()
@@ -122,7 +129,7 @@ pub(super) fn reconstruct(reader: &Shell<'_, '_>, source: &Boundary) -> Result<I
             }
         }
     }
-    Ok(imported)
+    Ok((imported, chart))
 }
 
 fn attachments(reader: &Shell<'_, '_>, source: &Boundary) -> Result<Vec<Attachment>> {

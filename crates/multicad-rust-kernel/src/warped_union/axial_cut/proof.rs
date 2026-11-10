@@ -141,8 +141,24 @@ impl Tube {
 }
 
 impl<'a> Plan<'a> {
-    pub(super) fn prove(shell: &Shell, spec: &'a AxialCut, tolerance: f64) -> Result<Self, Error> {
-        let tube = Tube::new(spec.start_mm, spec.end_mm, spec.radius_mm, tolerance)?;
+    pub(super) fn prove(
+        shell: &Shell,
+        spec: &'a AxialCut,
+        radial: Option<Point>,
+        tolerance: f64,
+    ) -> Result<Self, Error> {
+        let mut tube = Tube::new(spec.start_mm, spec.end_mm, spec.radius_mm, tolerance)?;
+        if let Some(radial) = radial {
+            let axis = tube.axes[2];
+            let length = length3(radial);
+            if !length.is_finite() || (length - 1.).abs() > 1e-10 || dot(radial, axis).abs() > 1e-10
+            {
+                return Err(Error::Invalid);
+            }
+            let side = cross(axis, radial);
+            let v = side.map(|x| x / length3(side));
+            tube.axes = [cross(v, axis), v, axis];
+        }
         let path = tube.path(shell, tolerance)?;
         let tube = if path.reversed { tube.reversed() } else { tube };
         let recess = spec

@@ -94,15 +94,36 @@ impl Shell {
     /// Subtract separated axial cutters only after certifying their complete
     /// swept envelopes against the existing analytic boundary.
     pub fn cut_axial(&self, cuts: &[AxialCut], tolerance_mm: f64) -> Result<Self, Error> {
-        if !(1e-10..=1e-3).contains(&tolerance_mm) || cuts.is_empty() {
+        self.cut_axial_inner(cuts.len(), cuts.iter().map(|cut| (cut, None)), tolerance_mm)
+    }
+
+    pub(crate) fn cut_axial_with_reference(
+        &self,
+        cuts: &[(AxialCut, Point)],
+        tolerance_mm: f64,
+    ) -> Result<Self, Error> {
+        self.cut_axial_inner(
+            cuts.len(),
+            cuts.iter().map(|(cut, radial)| (cut, Some(*radial))),
+            tolerance_mm,
+        )
+    }
+
+    fn cut_axial_inner<'a>(
+        &self,
+        count: usize,
+        cuts: impl Iterator<Item = (&'a AxialCut, Option<Point>)>,
+        tolerance_mm: f64,
+    ) -> Result<Self, Error> {
+        if !(1e-10..=1e-3).contains(&tolerance_mm) || count == 0 {
             return Err(Error::Invalid);
         }
-        if cuts.len() > MAX_CUTS {
+        if count > MAX_CUTS {
             return Err(Error::Limit);
         }
-        let mut plans: Vec<Plan<'_>> = Vec::with_capacity(cuts.len());
-        for spec in cuts {
-            let plan = Plan::prove(self, spec, tolerance_mm)?;
+        let mut plans: Vec<Plan<'_>> = Vec::with_capacity(count);
+        for (spec, radial) in cuts {
+            let plan = Plan::prove(self, spec, radial, tolerance_mm)?;
             if plans
                 .iter()
                 .any(|previous| !plan.disjoint(previous, tolerance_mm))
