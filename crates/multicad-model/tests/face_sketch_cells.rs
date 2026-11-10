@@ -13,7 +13,7 @@ use multicad_core::{
     sketch_regions::{Extraction, RegionIntent},
 };
 use multicad_kernel::NativeRegionQueries;
-use multicad_model::{Compiler, Model};
+use multicad_model::{Compiler, GeometryBackend, Model};
 
 fn actor() -> Actor {
     Actor::local(Channel::Mcp)
@@ -22,8 +22,11 @@ fn near(a: f64, b: f64) {
     assert!((a - b).abs() < 1e-5, "{a} != {b}");
 }
 fn compile(s: &Session) -> Model {
+    compile_on(s, GeometryBackend::default())
+}
+fn compile_on(s: &Session, backend: GeometryBackend) -> Model {
     Compiler::default()
-        .compile(s.document(), s.revision())
+        .compile_with_backend(s.document(), s.revision(), backend, None)
         .unwrap()
 }
 fn save_review(session: &Session, name: &str) {
@@ -48,6 +51,9 @@ impl Fixture {
         Self::with_hole(None)
     }
     fn with_hole(center: Option<[f64; 2]>) -> Self {
+        Self::on(GeometryBackend::default(), center)
+    }
+    fn on(backend: GeometryBackend, center: Option<[f64; 2]>) -> Self {
         let mut session = Session::new(Document::new("Diagonal face regions").unwrap()).unwrap();
         let mut stock = PrimitiveRequest::new(
             "20 × 20 × 10 box",
@@ -93,11 +99,10 @@ impl Fixture {
         if center.is_none() {
             save_review(&session, "box-only.tcd");
         }
-        let native = compile(&session);
-        let snapshot = &native.snapshot().shapes[&stock.feature].topology;
-        // Select the genuinely native planar face at z=10, independent of
-        // evaluation-local face ordering and current provenance role spelling.
-        let face = native
+        let compiled = compile_on(&session, backend);
+        let snapshot = &compiled.snapshot().shapes[&stock.feature].topology;
+        // Find the top face independently of evaluation-local face order and provenance roles.
+        let face = compiled
             .solid(stock.feature)
             .unwrap()
             .faces()
@@ -134,7 +139,7 @@ impl Fixture {
             session.document(),
             sketch,
             session.revision(),
-            Some(&compile(&session).snapshot().references),
+            Some(&compile_on(&session, backend).snapshot().references),
         )
         .unwrap()
         .0;
@@ -156,8 +161,16 @@ impl Fixture {
         }
     }
     fn regions(&self) -> Extraction {
-        let native = compile(&self.session);
-        let report = &native.snapshot().references;
+        self.regions_on(GeometryBackend::default())
+    }
+    fn regions_on(&self, backend: GeometryBackend) -> Extraction {
+        let compiled = compile_on(&self.session, backend);
+        let report = &compiled.snapshot().references;
+        let queries = if backend == GeometryBackend::Rust {
+            NativeRegionQueries::analytic(Default::default()).unwrap()
+        } else {
+            NativeRegionQueries::default()
+        };
         assert!(
             report.sketch_supports[&self.sketch].is_ok(),
             "{:?}",
@@ -170,7 +183,7 @@ impl Fixture {
             Some(report),
         )
         .unwrap()
-        .regions_with_queries(&NativeRegionQueries::default())
+        .regions_with_queries(&queries)
         .unwrap()
     }
     fn edit_strokes(&mut self, edit: impl FnOnce(&mut Source, sketch::Frame)) {
@@ -194,13 +207,8 @@ impl Fixture {
             })
             .unwrap();
     }
-    fn prepare_extrusion(
-        &self,
-        regions: Vec<RegionIntent>,
-        operation: Operation,
-        distance: f64,
-    ) -> (model::ModelPrepared, Vec<EntityId>) {
-        let request = ExtrudeRequest::new(
+    fn extrusion_request(&self, regions: Vec<RegionIntent>, distance: f64) -> ExtrudeRequest {
+        ExtrudeRequest::new(
             self.sketch,
             regions,
             ExtrudeParameters {
@@ -211,7 +219,15 @@ impl Fixture {
                 },
                 ..Default::default()
             },
-        );
+        )
+    }
+    fn prepare_extrusion(
+        &self,
+        regions: Vec<RegionIntent>,
+        operation: Operation,
+        distance: f64,
+    ) -> (model::ModelPrepared, Vec<EntityId>) {
+        let request = self.extrusion_request(regions, distance);
         let ids = request.outputs.iter().map(|o| o.feature).collect();
         let prepared = if operation == Operation::NewBody {
             model::prepare_extrude(&self.session, self.session.revision(), actor(), &request)
@@ -308,6 +324,194 @@ fn either_or_both_triangles_join_and_cut_without_double_counting_shared_edges() 
             );
         }
     }
+}
+
+#[test]
+fn rust_cuts_attached_triangles_through_both_model_commands() {
+    for (composite, keep_tools, count) in [(true, false, 2), (false, true, 1), (false, false, 1)] {
+        let mut f = Fixture::on(GeometryBackend::Rust, None);
+        let regions = f.regions_on(GeometryBackend::Rust);
+        let intents: Vec<_> = regions
+            .regions
+            .iter()
+            .take(count)
+            .map(|r| r.intent())
+            .collect();
+        assert_eq!(intents.len(), count);
+        let extrusion = f.extrusion_request(intents.clone(), -5.);
+        let target = BodyInput {
+            body: f.stock.body,
+            producer: f.stock.feature,
+        };
+        let tools =
+            model::prepare_extrude(&f.session, f.session.revision(), actor(), &extrusion).unwrap();
+        let document = tools.prepared.document();
+        let revision = f.session.revision() + 1;
+        let query = model::CutTargetQuery {
+            tools: extrusion
+                .outputs
+                .iter()
+                .map(|output| output.feature)
+                .collect(),
+            component: None,
+            include: Vec::new(),
+            exclude: Vec::new(),
+        };
+        let discover = |backend| {
+            Compiler::default()
+                .compile_with_backend(document, revision, backend, None)
+                .unwrap()
+                .cut_targets(document, revision, &query, None)
+                .unwrap()
+        };
+        let selection = discover(GeometryBackend::Rust);
+        assert_eq!(selection.targets, vec![target]);
+        #[cfg(feature = "occt")]
+        assert_eq!(selection, discover(GeometryBackend::OpenCascade));
+
+        let request =
+            ExtrudeBooleanRequest::new(extrusion, Operation::Cut, selection.targets, keep_tools);
+        let cut = &request.booleans[0];
+        let prepared = if composite {
+            model::prepare_extrude_boolean(&f.session, f.session.revision(), actor(), &request)
+        } else {
+            f.session.commit(tools.prepared).unwrap();
+            model::prepare_boolean(&f.session, f.session.revision(), actor(), cut)
+        }
+        .unwrap();
+        let preview = Compiler::default()
+            .compile_with_backend(
+                prepared.prepared.document(),
+                f.session.revision() + 1,
+                GeometryBackend::Rust,
+                None,
+            )
+            .unwrap();
+        near(
+            preview.snapshot().shapes[&cut.feature].volume_mm3,
+            4000. - 1000. * count as f64,
+        );
+        f.session.commit(prepared.prepared).unwrap();
+
+        let mut bytes = Vec::new();
+        project_file::write(
+            &ProjectFile::new(f.session.document().clone()).unwrap(),
+            &mut bytes,
+            FileLimits::default(),
+        )
+        .unwrap();
+        let reopened = project_file::read(
+            &mut std::io::Cursor::new(bytes),
+            FileLimits::default(),
+            &project_file::supported_capabilities(),
+        )
+        .unwrap();
+        f.session = Session::new(reopened.project.document).unwrap();
+
+        for height in [10., 15.] {
+            if height == 15. {
+                let edit = model::prepare_primitive_edit(
+                    &f.session,
+                    f.session.revision(),
+                    actor(),
+                    f.stock.feature,
+                    &PrimitiveParameters::Box {
+                        size: [length(20.), length(20.), length(height)],
+                        frame: PrimitiveFrame::default(),
+                    },
+                )
+                .unwrap();
+                f.session.commit(edit.prepared).unwrap();
+            }
+            let saved_regions = f.regions_on(GeometryBackend::Rust);
+            for intent in &intents {
+                assert!(saved_regions.resolve(intent).is_some());
+            }
+            let result = compile_on(&f.session, GeometryBackend::Rust);
+            let snapshot = result.snapshot();
+            let shape = &snapshot.shapes[&cut.feature];
+            assert_eq!(snapshot.bodies[&f.stock.body], cut.feature);
+            assert_eq!(shape.solid_count, 1);
+            for tool in &cut.tools {
+                assert_eq!(snapshot.bodies.contains_key(&tool.body), keep_tools);
+                assert_eq!(snapshot.consumed_bodies.contains(&tool.body), !keep_tools);
+                assert!(shape.topology.elements.iter().any(|face| {
+                    face.key.kind == TopologyKind::Face
+                        && face
+                            .origins
+                            .iter()
+                            .any(|origin| origin.source == tool.producer)
+                }));
+            }
+            assert!(shape.topology.elements.iter().any(|face| {
+                face.key.kind == TopologyKind::Face
+                    && face
+                        .origins
+                        .iter()
+                        .any(|origin| origin.source == f.stock.feature)
+            }));
+            near(shape.volume_mm3, 400. * height - 1000. * count as f64);
+            near(shape.bounds.min[2], 0.);
+            near(
+                shape.bounds.max[2],
+                height - if count == 2 { 5. } else { 0. },
+            );
+            let area = |m: &Model| {
+                m.solid(cut.feature)
+                    .unwrap()
+                    .faces()
+                    .unwrap()
+                    .iter()
+                    .map(|face| face.area_mm2)
+                    .sum::<f64>()
+            };
+            let expected_area = if count == 2 {
+                800. + 80. * (height - 5.)
+            } else {
+                600. + 80. * height + 100. * 2.0_f64.sqrt()
+            };
+            near(area(&result), expected_area);
+            #[cfg(feature = "occt")]
+            {
+                let native = compile_on(&f.session, GeometryBackend::OpenCascade);
+                let native_shape = &native.snapshot().shapes[&cut.feature];
+                near(shape.volume_mm3, native_shape.volume_mm3);
+                near(area(&result), area(&native));
+                for axis in 0..3 {
+                    near(shape.bounds.min[axis], native_shape.bounds.min[axis]);
+                    near(shape.bounds.max[axis], native_shape.bounds.max[axis]);
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn rust_cut_of_both_full_depth_triangles_rejects_empty_output_before_commit() {
+    let f = Fixture::on(GeometryBackend::Rust, None);
+    let regions = f.regions_on(GeometryBackend::Rust);
+    let (prepared, _) = f.prepare_extrusion(
+        regions
+            .regions
+            .iter()
+            .map(|region| region.intent())
+            .collect(),
+        Operation::Cut,
+        -10.,
+    );
+    let before = f.session.document().clone();
+    let result = Compiler::default().compile_with_backend(
+        prepared.prepared.document(),
+        f.session.revision() + 1,
+        GeometryBackend::Rust,
+        None,
+    );
+    let failure = result.err().expect("an empty cut must refuse the preview");
+    assert!(
+        failure.to_string().contains("removed all material"),
+        "{failure}"
+    );
+    assert_eq!(f.session.document(), &before);
 }
 
 #[test]

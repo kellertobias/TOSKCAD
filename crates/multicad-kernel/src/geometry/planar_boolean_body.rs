@@ -371,7 +371,7 @@ impl Solid {
     /// Subtract supported exact positive planar tools in a single evaluation.
     pub fn rust_subtract_planar_tools(
         &self,
-        tools: &[Self],
+        tools: &[&Self],
         feature: EntityId,
         policy: GeometryPolicy,
     ) -> Result<Option<Self>, GeometryError> {

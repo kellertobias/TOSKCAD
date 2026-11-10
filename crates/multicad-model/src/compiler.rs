@@ -7,8 +7,9 @@ use multicad_core::{
     sketch_regions::{Extraction, RegionIntent, RegionQueries},
 };
 use multicad_kernel::{
-    Bounds, CurvedEdge2d, CurvedProfile, DisplayEdge, DisplayVertex, GeometryPolicy, Mesh,
-    MeshOptions, NativeRegionQueries, PlaneFrame, RevolutionAxis, Solid, TopologyDisplay,
+    Bounds, CurvedEdge2d, CurvedProfile, DisplayEdge, DisplayVertex, GeometryErrorKind,
+    GeometryPolicy, Mesh, MeshOptions, NativeRegionQueries, PlaneFrame, RevolutionAxis, Solid,
+    TopologyDisplay,
 };
 use multicad_solver::SketchEvaluationContext;
 use std::{
@@ -1652,14 +1653,51 @@ impl Compiler {
                     let solid = if let Some(analytic) = analytic {
                         analytic.map_err(|e| error(Some(id), e))?
                     } else {
+                        let removed = || {
+                            error(
+                                Some(id),
+                                "Boolean removed all material; no output body can be committed",
+                            )
+                        };
                         let mut result: Option<Solid> = None;
                         for &tool in &operands[1..] {
                             checkpoint(interrupt)?;
-                            let next = result.as_ref().unwrap_or(target)
-                                .boolean(tool, operation, self.policy)
-                                .map_err(|e| error(Some(id), e))?
-                                .ok_or_else(|| error(Some(id), "Boolean removed all material; no output body can be committed"))?;
-                            result = Some(next);
+                            let next = result.as_ref().unwrap_or(target).boolean(
+                                tool,
+                                operation,
+                                self.policy,
+                            );
+                            match next {
+                                Err(cause)
+                                    if backend == GeometryBackend::Rust
+                                        && operation
+                                            == multicad_kernel::BooleanOperation::Subtract
+                                        && cause.kind == GeometryErrorKind::Unsupported =>
+                                {
+                                    // Trim all tools against the original stock so adjacent cuts
+                                    // share boundaries in a single planar evaluation.
+                                    let cut = target.rust_subtract_planar_tools(
+                                        &operands[1..],
+                                        id,
+                                        self.policy,
+                                    );
+                                    result = Some(match cut {
+                                        Err(e) if e.kind == GeometryErrorKind::Unsupported => {
+                                            return Err(error(Some(id), cause));
+                                        }
+                                        cut => cut
+                                            .map_err(|e| error(Some(id), e))?
+                                            .ok_or_else(removed)?,
+                                    });
+                                    break;
+                                }
+                                next => {
+                                    result = Some(
+                                        next.map_err(|e| error(Some(id), e))?
+                                            .ok_or_else(removed)?,
+                                    );
+                                }
+                            }
                         }
                         result.ok_or_else(|| error(Some(id), "Boolean requires a tool"))?
                     };

@@ -9,7 +9,7 @@ use multicad_core::{
     model::{BodyInput, MAX_BOOLEAN_TARGETS, MAX_BOOLEAN_TOOLS},
     project_file::ContentHash,
 };
-use multicad_kernel::{BooleanOperation, Bounds};
+use multicad_kernel::{BooleanOperation, Bounds, GeometryErrorKind};
 use std::collections::{BTreeMap, BTreeSet};
 fn checkpoint(interrupt: Option<&dyn Fn() -> bool>) -> Result<(), ModelError> {
     if interrupt.is_some_and(|f| f()) {
@@ -192,17 +192,31 @@ impl Model {
                 if !overlap(shape.bounds, tool_shape.bounds) {
                     continue;
                 }
-                let common = target
-                    .boolean(
-                        self.solid(*tool).expect("validated tool"),
-                        BooleanOperation::Intersect,
-                        self.policy,
-                    )
+                let tool = self.solid(*tool).expect("validated tool");
+                let overlaps = target
+                    .boolean(tool, BooleanOperation::Intersect, self.policy)
+                    .map(|solid| solid.is_some())
+                    .or_else(|cause| {
+                        if cause.kind != GeometryErrorKind::Unsupported
+                            || !target.uses_rust_geometry()
+                            || !tool.uses_rust_geometry()
+                        {
+                            return Err(cause);
+                        }
+                        target
+                            .rust_planar_intersection_volume(tool, self.policy)
+                            .map(|volume| volume > 0.)
+                            .map_err(|e| {
+                                if e.kind == GeometryErrorKind::Unsupported {
+                                    cause
+                                } else {
+                                    e
+                                }
+                            })
+                    })
                     .map_err(|e| error(Some(body), e))?;
                 checkpoint(interrupt)?;
-                // Solid::boolean only returns Some after validating positive
-                // finite native volume; contact-only results return None.
-                if common.is_some() {
+                if overlaps {
                     hit = true;
                     break;
                 }

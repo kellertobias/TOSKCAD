@@ -132,7 +132,7 @@ fn subtract(
     let result = if target.uses_rust_geometry() {
         match target.rust_subtract_orthogonal_tools(tools, policy) {
             Err(cause) if cause.kind == GeometryErrorKind::Unsupported => target
-                .rust_subtract_planar_tools(tools, id, policy)
+                .rust_subtract_planar_tools(&tools.iter().collect::<Vec<_>>(), id, policy)
                 .map(|solid| (solid, true)),
             result => result.map(|solid| (solid, false)),
         }
