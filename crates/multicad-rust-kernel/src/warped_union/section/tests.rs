@@ -1,0 +1,324 @@
+use super::*;
+use crate::normal_sweep::Edge;
+
+const TOL: f64 = 1e-7;
+const X: Point = [1., 0., 0.];
+const Z: Point = [0., 0., 1.];
+
+fn rectangle<const N: usize>(corners: [[f64; 2]; N]) -> [(Edge, usize); N] {
+    std::array::from_fn(|i| {
+        (
+            Edge::Line {
+                a: corners[i],
+                b: corners[(i + 1) % N],
+            },
+            i,
+        )
+    })
+}
+
+fn fixture(up: f64) -> Shell {
+    let web = rectangle([[0., 0.], [2., 0.], [8., 0.], [10., 0.], [10., 8.], [0., 8.]]).map(
+        |(edge, source)| SheetWebEdge {
+            ends: [edge.start(), edge.end()],
+            source,
+            flange: (source == 1).then_some(0),
+        },
+    );
+    let arc = |a, b, clockwise| Edge::Arc {
+        center: [0., -1.],
+        a,
+        b,
+        clockwise,
+    };
+    let line = |a, b| Edge::Line { a, b };
+    let section = [
+        arc([0., 0.], [1., -1.], true),
+        line([1., -1.], [1., -3.]),
+        line([1., -3.], [2., -3.]),
+        line([2., -3.], [2., -1.]),
+        arc([2., -1.], [0., 1.], false),
+        line([0., 1.], [0., 0.]),
+    ]
+    .into_iter()
+    .enumerate()
+    .map(|(i, edge)| (edge, 10 + i))
+    .collect::<Vec<_>>();
+    let opening = |x, z, outline| SheetFlangeOpening {
+        walls: [1, 3],
+        origin_mm: [x, -1., z * up],
+        u: X,
+        v: [0., 0., up],
+        through_mm: [0., -1., 0.],
+        outline,
+    };
+    let rect = rectangle([[0., 0.], [1.5, 0.], [1.5, 0.6], [0., 0.6]]);
+    let circle = [(
+        Edge::Circle {
+            center: [0.; 2],
+            radius_mm: 0.3,
+            clockwise: false,
+        },
+        80,
+    )];
+    let web_circle = [(
+        Edge::Circle {
+            center: [5., 4.],
+            radius_mm: 1.,
+            clockwise: true,
+        },
+        81,
+    )];
+    formed_sheet_with_openings(
+        &web,
+        &[web_circle.to_vec()],
+        [20, 21],
+        &[SheetFlange {
+            section: &section,
+            ends: [30, 31],
+        }],
+        &[&[opening(3., -2.2, &rect), opening(6.5, -2., &circle)]],
+        up,
+        TOL,
+        1e-5,
+    )
+    .unwrap()
+}
+
+fn area(loops: &[Vec<SectionEdge>], normal: Point) -> f64 {
+    loops
+        .iter()
+        .flat_map(|wire| {
+            for (current, next) in wire.iter().zip(wire.iter().cycle().skip(1)) {
+                assert_eq!(current.ends_mm[1], next.ends_mm[0]);
+            }
+            wire
+        })
+        .map(|edge| {
+            let [a, b] = edge.ends_mm;
+            match edge.curve {
+                Curve::Line => dot(cross(a, b), normal) / 2.,
+                Curve::Ellipse(arc) => {
+                    let ellipse = arc.ellipse();
+                    let [r, s] = ellipse.semiaxes_mm();
+                    let center = ellipse.center_mm();
+                    (dot(cross(center, sub(b, a)), normal)
+                        + r * s * arc.sweep_rad() * dot(ellipse.normal(), normal))
+                        / 2.
+                }
+            }
+        })
+        .sum()
+}
+
+#[test]
+fn section_follows_exact_bends_and_skips_web_and_flange_openings() {
+    for up in [-1., 1.] {
+        let shell = fixture(up);
+        for normal in [X, [-1., 0., 0.]] {
+            let uncut = 10. + 3. * std::f64::consts::FRAC_PI_4;
+            let web_gap = 2. * (1_f64 - 0.3_f64.powi(2)).sqrt();
+            let round_gap = 2. * (0.3_f64.powi(2) - 0.15_f64.powi(2)).sqrt();
+            for (x, expected, count, arc_count) in [
+                (0.5, 8., 1, 0),
+                (3.5, uncut - 0.6, 2, 2),
+                (5.3, uncut - web_gap, 2, 2),
+                (6.65, uncut - round_gap, 2, 2),
+            ] {
+                let loops = shell.section([x, 0., 0.], normal, TOL, 100).unwrap();
+                assert_eq!(loops.len(), count);
+                assert_eq!(
+                    loops
+                        .iter()
+                        .flatten()
+                        .filter(|e| matches!(e.curve, Curve::Ellipse(_)))
+                        .count(),
+                    arc_count
+                );
+                assert!(
+                    (area(&loops, normal) - expected).abs() < TOL,
+                    "{x}: {} != {expected}",
+                    area(&loops, normal)
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn section_keeps_closed_circular_web_hole_in_a_face_on_cut() {
+    let shell = fixture(1.);
+    let loops = shell.section([0., 0., 0.5], Z, TOL, 100).unwrap();
+    assert_eq!(loops.len(), 2);
+    assert!((area(&loops, Z) - (80. - std::f64::consts::PI + 6. * 1.75_f64.sqrt())).abs() < TOL);
+}
+
+#[test]
+fn sections_reject_unresolved_contact_oblique_bends_and_excess_work() {
+    let shell = fixture(1.);
+    assert_eq!(shell.section([-1., 0., 0.], X, TOL, 100), Ok(vec![]));
+    assert_eq!(shell.section([3.5, 0., 0.], X, TOL, 1), Err(Error::Limit));
+    assert_eq!(
+        shell.section([3.5, 0., 0.], X, f64::NAN, 100),
+        Err(Error::Invalid)
+    );
+    assert_eq!(
+        shell.section([f64::NAN, 0., 0.], X, TOL, 100),
+        Err(Error::Invalid)
+    );
+    assert_eq!(
+        shell.section([3.5, 0., 0.], [0.; 3], TOL, 100),
+        Err(Error::Invalid)
+    );
+    assert_eq!(
+        shell.section([2., 0., 0.], X, TOL, 100),
+        Err(Error::Unsupported)
+    );
+    assert_eq!(
+        shell.section([4.73, 0., 0.], [1., 0.05, 0.], TOL, 100),
+        Err(Error::Unsupported)
+    );
+}
+
+#[test]
+fn bend_extrema_outside_vertex_range_are_still_cut() {
+    let normal = unit([0., -1., 1.]).unwrap();
+    let loops = fixture(1.)
+        .section([0., -1.4, 0.], normal, TOL, 100)
+        .unwrap();
+    assert_eq!(loops.len(), 1);
+    assert_eq!(loops[0].len(), 4);
+    assert!((area(&loops, normal) - 12. * 1.12_f64.sqrt()).abs() < TOL);
+}
+
+#[test]
+fn an_interior_tangency_and_a_coincident_arc_need_contact_resolution() {
+    let ellipse = Ellipse::new([0.; 3], Z, X, [1.; 2]).unwrap();
+    let arc = EllipseArc::new(ellipse, 0.2, 0.8).unwrap();
+    for (t, supported) in [(0.5, false), (1.5, true)] {
+        let point = ellipse.point_at(t);
+        assert_eq!(
+            arc_hits(arc, Plane::new(point, point).unwrap(), TOL),
+            if supported {
+                Ok(vec![])
+            } else {
+                Err(Error::Unsupported)
+            }
+        );
+    }
+    assert_eq!(
+        arc_hits(arc, Plane::new([0.; 3], Z).unwrap(), TOL),
+        Err(Error::Unsupported)
+    );
+}
+
+fn section_state(shell: &Shell, normal: Point) -> Section {
+    Section {
+        origin: [3.5, 0., 0.],
+        normal,
+        tolerance: TOL,
+        limit: 10,
+        hits: vec![Vec::new(); shell.edges.len()],
+        edges: BTreeMap::new(),
+    }
+}
+
+#[test]
+fn only_paired_cap_arcs_and_axial_rails_define_a_cylinder_chart() {
+    let mut shell = fixture(1.);
+    let face = &shell.faces[0];
+    let Support::Cylinder {
+        axis_origin_mm: origin,
+        axis_direction: axis,
+        radius_mm: radius,
+        ..
+    } = face.support
+    else {
+        panic!("The first face is a flange bend");
+    };
+    let mut altered = face.clone();
+    altered.boundary.pop();
+    assert!(matches!(
+        CylinderPatch::new(&shell, &altered, origin, axis, radius, TOL),
+        Err(Error::Unsupported)
+    ));
+    let arc = face.boundary[0].edge;
+    let rail = face.boundary[1].edge;
+    let Curve::Ellipse(original) = shell.edges[arc].curve else {
+        panic!("Bend arc")
+    };
+    shell.edges[arc].curve = Curve::Line;
+    assert!(matches!(
+        CylinderPatch::new(&shell, face, origin, axis, radius, TOL),
+        Err(Error::Unsupported)
+    ));
+    shell.edges[arc].curve = Curve::Ellipse(original);
+    assert!(matches!(
+        CylinderPatch::new(&shell, face, origin, axis, radius + 1., TOL),
+        Err(Error::Unsupported)
+    ));
+    shell.edges[rail].curve = Curve::Ellipse(original);
+    assert!(matches!(
+        CylinderPatch::new(&shell, face, origin, axis, radius, TOL),
+        Err(Error::Unsupported)
+    ));
+}
+
+#[test]
+fn inconsistent_face_intersections_fail_closed() {
+    let shell = fixture(1.);
+    let face = &shell.faces[0];
+    let Support::Cylinder {
+        axis_origin_mm: origin,
+        axis_direction: axis,
+        radius_mm: radius,
+        outward,
+    } = face.support
+    else {
+        panic!("The first face is a flange bend");
+    };
+    let hit = |edge, point| Hit {
+        port: [edge, 0],
+        point,
+    };
+    let [a, b] = [face.boundary[1].edge, face.boundary[3].edge];
+    let mut state = section_state(&shell, X);
+    state.hits[a].push(hit(a, [3.5, 100., 100.]));
+    assert_eq!(
+        state.cylinder(&shell, face, origin, axis, radius, outward),
+        Err(Error::Unsupported)
+    );
+    state.hits[b].push(hit(b, [3.5, 101., 101.]));
+    assert_eq!(
+        state.cylinder(&shell, face, origin, axis, radius, outward),
+        Err(Error::Unsupported)
+    );
+    state.normal = unit([1., 1., 0.]).unwrap();
+    assert_eq!(
+        state.cylinder(&shell, face, origin, axis, radius, outward),
+        Err(Error::Unsupported)
+    );
+    state.normal = Z;
+    let arc = face.boundary[0].edge;
+    state.hits[arc].push(hit(arc, [2., 0., 0.]));
+    assert_eq!(
+        state.cylinder(&shell, face, origin, axis, radius, outward),
+        Err(Error::Unsupported)
+    );
+
+    let mut state = section_state(&shell, X);
+    state.hits[a].push(hit(a, [3.5, 2., 0.]));
+    assert_eq!(state.planar(face, Z), Err(Error::Unsupported));
+    assert_eq!(
+        state.add([hit(a, [0.; 3]), hit(b, [0.; 3])], Curve::Line),
+        Err(Error::Unsupported)
+    );
+    state
+        .add([hit(a, [0.; 3]), hit(b, [0., 1., 0.])], Curve::Line)
+        .unwrap();
+    assert_eq!(
+        state.add([hit(a, [0.; 3]), hit(b, [0., 1., 0.])], Curve::Line),
+        Err(Error::Unsupported)
+    );
+    assert_eq!(state.loops(), Err(Error::Unsupported));
+}

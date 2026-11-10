@@ -7,6 +7,7 @@ mod annulus;
 mod end_on;
 mod machined;
 mod retained;
+mod warped;
 pub(super) use annulus::{project_circular, project_concentric};
 
 pub(super) fn project(

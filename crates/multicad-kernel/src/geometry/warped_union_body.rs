@@ -439,6 +439,11 @@ impl Solid {
         }
     }
 
+    pub(crate) fn drawing_warped_shell(&self) -> Option<(&Shell, PlaneFrame)> {
+        self.warped_union_body()
+            .map(|(body, frame)| (&body.geometry, frame))
+    }
+
     /// Place a certified analytic shell and preserve its authored face identities.
     pub fn rust_place_formed_sheet(
         geometry: Shell,

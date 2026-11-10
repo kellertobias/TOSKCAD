@@ -9,9 +9,11 @@ mod axial_cut;
 mod boss;
 mod mesh;
 mod metrics;
+mod section;
 mod sheet;
 pub use axial_cut::{AxialCut, ConvexRecess, OpenBoreSide};
 pub use boss::Boss;
+pub use section::SectionEdge;
 pub use sheet::{
     SheetFlange, SheetFlangeOpening, SheetWebEdge, formed_sheet, formed_sheet_with_openings,
 };

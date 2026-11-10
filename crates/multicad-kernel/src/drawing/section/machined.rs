@@ -17,6 +17,7 @@ pub(super) fn needs_analytic_section(solid: &Solid) -> bool {
             .polygon_prism()
             .is_some_and(|body| !body.pockets.is_empty())
         || solid.rounded_slot_body().is_some()
+        || solid.warped_union_body().is_some()
         || curved::is_round(solid)
         || solid
             .rust_compound()
@@ -169,6 +170,37 @@ impl SectionOutput {
             let loops =
                 stadium_section(profile, axial, frame.axis, frame.depth, windows, tolerance)?;
             return self.publish(source, hatch, policy, &loops, frame, false);
+        }
+
+        if let Some((shell, placement)) = solid.drawing_warped_shell() {
+            let hatch = hatch.filter(|h| h.pattern != HatchPattern::None);
+            let (vectors, boundary) = warped::project(
+                shell,
+                placement,
+                self.options,
+                policy,
+                source,
+                depth,
+                hatch.is_some(),
+            )?;
+            self.extend(vectors)?;
+            if let Some(hatch) = hatch
+                && !boundary.is_empty()
+            {
+                let mut curves = self.options.maximum_curves as usize;
+                let mut points = self.options.maximum_points as usize;
+                let strokes = publish_hatch(
+                    source,
+                    hatch,
+                    &boundary,
+                    tolerance,
+                    &mut curves,
+                    &mut points,
+                    &mut self.hatch_budget,
+                )?;
+                self.extend(strokes)?;
+            }
+            return Ok(());
         }
 
         let input = DrawingSolid { solid, hatch };

@@ -73,6 +73,87 @@ fn check_saved_step_import(path: &std::path::Path, expected: &Solid) {
     .compile_with_backend(&reopened.document, 0, GeometryBackend::Rust, None)
     .unwrap();
     assert_same_solid(model.solid(part).unwrap(), expected);
+    check_inset_sections(model.solid(part).unwrap());
+}
+
+fn check_inset_sections(solid: &Solid) {
+    use multicad_core::{
+        drawings::{VectorCurve, VectorRole},
+        materials::HatchPattern,
+    };
+    use multicad_kernel::{
+        DrawingHatch, DrawingProjection, DrawingSolid, PlaneFrame, project_drawing,
+    };
+
+    let bend_area = std::f64::consts::FRAC_PI_2 * (3_f64.powi(2) - 1.5_f64.powi(2));
+    let round_chord = 2. * (2.1_f64.powi(2) - 0.5_f64.powi(2)).sqrt();
+    for (x, expected_area, bends) in [
+        (7., 160. * 1.5, false),
+        (120., (160. + 50. + 30. - 22. - 8.) * 1.5 + bend_area, true),
+        (
+            44.5,
+            (160. + 50. + 30. - round_chord) * 1.5 + bend_area,
+            true,
+        ),
+    ] {
+        let vectors = project_drawing(
+            &[DrawingSolid {
+                solid,
+                hatch: Some(DrawingHatch {
+                    angle_rad: 0.,
+                    spacing_mm: 2.,
+                    line_width_mm: 0.2,
+                    pattern: HatchPattern::Solid,
+                }),
+            }],
+            DrawingProjection {
+                frame: PlaneFrame {
+                    origin: [0.; 3],
+                    u: [0., 1., 0.],
+                    v: [0., 0., 1.],
+                },
+                section_only: true,
+                section_offset_mm: Some(x),
+                chord_tolerance_mm: 0.0001,
+                ..Default::default()
+            },
+        )
+        .unwrap_or_else(|error| panic!("Section at X={x}: {error}"));
+        let mut radii = Vec::new();
+        let mut hatch_area = 0.;
+        for vector in vectors {
+            match (vector.role, vector.curve) {
+                (VectorRole::Section, VectorCurve::Line { .. }) => {}
+                (
+                    VectorRole::Section,
+                    VectorCurve::Ellipse {
+                        major_mm, minor_mm, ..
+                    },
+                ) => {
+                    near(major_mm, minor_mm);
+                    radii.push(major_mm);
+                }
+                (VectorRole::Hatch, VectorCurve::HatchTriangle { points: [a, b, c] }) => {
+                    hatch_area +=
+                        0.5 * ((b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])).abs();
+                }
+                other => panic!("Unexpected inset section output: {other:?}"),
+            }
+        }
+        radii.sort_by(f64::total_cmp);
+        if bends {
+            assert_eq!(radii.len(), 4);
+            for (actual, expected) in radii.into_iter().zip([1.5, 1.5, 3., 3.]) {
+                near(actual, expected);
+            }
+        } else {
+            assert!(radii.is_empty());
+        }
+        assert!(
+            (hatch_area - expected_area).abs() < 0.02,
+            "Section X={x}: hatch area {hatch_area}, expected {expected_area}"
+        );
+    }
 }
 
 fn prepare_sheet_rectangle(
@@ -656,6 +737,7 @@ fn control_desk_reliefs_form_one_solid_and_develop_exactly() {
         let folded = evaluate(&reopened, GeometryBackend::Rust);
         assert_eq!(folded.snapshot().body_sources[&request.body], cut);
         let punched = folded.solid(cut).unwrap();
+        check_inset_sections(punched);
         near(
             solid.volume_mm3().unwrap() - punched.volume_mm3().unwrap(),
             removed_area * 1.5,
