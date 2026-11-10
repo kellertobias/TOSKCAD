@@ -1,6 +1,7 @@
 use multicad_core::{
     commands::{Actor, Channel, Session},
-    model::{self, SheetRequest, length},
+    document::Document,
+    model::{self, Cutout, CutoutFace, CutoutShape, SheetDefinition, SheetRequest, length},
     project_file,
     references::TopologyKind,
 };
@@ -11,8 +12,7 @@ fn near(a: f64, b: f64) {
     assert!((a - b).abs() <= 1e-7 * b.abs().max(1.), "{a} != {b}");
 }
 
-#[test]
-fn rust_builds_and_develops_the_saved_front_panel_channel_before_piercing() {
+fn front_panel_sheet() -> (Document, SheetDefinition) {
     let document = project_file::read(
         &mut include_bytes!("../../../examples/front-panel.tcd").as_slice(),
         Default::default(),
@@ -27,7 +27,13 @@ fn rust_builds_and_develops_the_saved_front_panel_channel_before_piercing() {
         .unwrap()
         .id;
     let feature = model::sheet_feature(&document, part).unwrap();
-    let mut sheet = model::read_sheet(&document, feature).unwrap();
+    let sheet = model::read_sheet(&document, feature).unwrap();
+    (document, sheet)
+}
+
+#[test]
+fn rust_builds_and_develops_the_saved_front_panel_channel_before_piercing() {
+    let (document, mut sheet) = front_panel_sheet();
     sheet.cutouts.clear();
     sheet.fasteners.clear();
     let mut session = Session::new(document).unwrap();
@@ -158,4 +164,113 @@ fn rust_builds_and_develops_the_saved_front_panel_channel_before_piercing() {
         error.message.contains("opposite full-length bends"),
         "{error}"
     );
+}
+
+#[test]
+fn rust_builds_and_develops_a_single_full_length_bend_with_a_web_opening() {
+    let (document, sheet) = front_panel_sheet();
+    let mut session = Session::new(document).unwrap();
+    let compiler = Compiler {
+        omit_display: true,
+        ..Default::default()
+    };
+    let temporary = tempfile::tempdir().unwrap();
+    for (reverse, index) in [(false, 0), (true, 1)] {
+        let flange = sheet.flanges[index].clone();
+        let opposite = (flange.edge + 2) % 4;
+        let request = SheetRequest::new(
+            "One-sided front panel",
+            SheetDefinition {
+                reverse,
+                flanges: vec![flange],
+                fasteners: vec![],
+                cutouts: vec![Cutout {
+                    face: CutoutFace::Base,
+                    shape: CutoutShape::Circle {
+                        center: [length(20.), length(20.)],
+                        diameter: length(8.),
+                    },
+                }],
+                ..sheet.clone()
+            },
+        );
+        let prepared = model::prepare_sheet(
+            &session,
+            session.revision(),
+            Actor::local(Channel::Ui),
+            &request,
+        )
+        .unwrap();
+        session.commit(prepared.prepared).unwrap();
+        let [rust, native] = [GeometryBackend::Rust, GeometryBackend::OpenCascade].map(|backend| {
+            compiler
+                .compile_sources_with_backend(
+                    session.document(),
+                    session.revision(),
+                    &[request.body],
+                    backend,
+                    None,
+                )
+                .unwrap_or_else(|error| panic!("{backend:?}: {error}"))
+        });
+        let [solid, expected] = [&rust, &native].map(|m| m.solid(request.feature).unwrap());
+        assert!(solid.uses_rust_geometry());
+        let role = format!("sheet.base.edge.{opposite}");
+        let topology = solid
+            .topology_snapshot(request.feature, session.revision())
+            .unwrap();
+        assert!(topology.elements.iter().any(|element| {
+            element.key.kind == TopologyKind::Face
+                && element
+                    .origins
+                    .iter()
+                    .any(|origin| origin.role.ends_with(&role))
+        }));
+        assert!(
+            !solid
+                .manufacturing_mesh_with_receipt(Default::default())
+                .unwrap()
+                .mesh
+                .indices
+                .is_empty()
+        );
+        let step = temporary.path().join(format!("single-{reverse}.step"));
+        solid.write_step(&step).unwrap();
+        let native_readback = Solid::read_step(&step, compiler.policy).unwrap();
+        let rust_readback = Solid::import_rust_step(
+            &std::fs::read_to_string(&step).unwrap(),
+            request.feature,
+            compiler.policy,
+        )
+        .unwrap();
+        let surface_area = |solid: &Solid| {
+            solid
+                .faces()
+                .unwrap()
+                .iter()
+                .map(|face| face.area_mm2)
+                .sum()
+        };
+        let bounds = expected.bounds().unwrap();
+        for shape in [solid, &native_readback, &rust_readback] {
+            assert_eq!(shape.solid_count().unwrap(), 1);
+            near(shape.volume_mm3().unwrap(), expected.volume_mm3().unwrap());
+            near(surface_area(shape), surface_area(expected));
+            let actual = shape.bounds().unwrap();
+            for i in 0..3 {
+                near(actual.min[i], bounds.min[i]);
+                near(actual.max[i], bounds.max[i]);
+            }
+        }
+        let [flat, expected_flat] =
+            [&rust, &native].map(|m| m.unfold(session.document(), request.body).unwrap());
+        assert_eq!(flat.bends, expected_flat.bends);
+        assert_eq!(flat.bends.len(), 1);
+        assert_eq!(flat.cut.loops.len(), 2);
+        assert_eq!(flat.drills, expected_flat.drills);
+        near(flat.area_mm2, expected_flat.area_mm2);
+        for (a, b) in flat.size_mm.into_iter().zip(expected_flat.size_mm) {
+            near(a, b);
+        }
+    }
 }

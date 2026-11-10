@@ -1,5 +1,5 @@
-//! A rectangular sheet with full-length bends on opposite edges has one
-//! continuous cross-section. Sweep it without introducing faces at the roots.
+//! A rectangular sheet with one full-length bend or two opposite bends has
+//! one continuous cross-section. Sweep it without faces at the roots.
 
 use super::*;
 use crate::sheet_forming::section;
@@ -10,30 +10,31 @@ pub(super) use piercing::append_profile;
 
 const WEB_A: &str = "sheet.web/cap.start";
 const WEB_B: &str = "sheet.web/cap.end";
+const UNSUPPORTED: &str = "Rust formed sheet requires one full-length bend or two opposite full-length bends without reliefs";
 
 pub(super) fn build(
     layout: &mut SheetLayout,
     section_width_mm: f64,
     policy: GeometryPolicy,
 ) -> Result<Solid, String> {
-    let [first, second] = layout.flanges.as_slice() else {
-        return Err("Rust formed sheet requires two opposite full-length bends".into());
+    let (first, second) = match layout.flanges.as_slice() {
+        [first] => (first, None),
+        [first, second] if first.flange.edge.abs_diff(second.flange.edge) == 2 => {
+            (first, Some(second))
+        }
+        _ => return Err(UNSUPPORTED.into()),
     };
-    if first.flange.edge.abs_diff(second.flange.edge) != 2
-        || [first, second].into_iter().any(|flange| {
-            let f = &flange.flange;
-            f.start_inset_mm != 0.
-                || f.end_inset_mm != 0.
-                || f.relief_mm.is_some()
-                || !matches!(
-                    f.segments.as_slice(),
-                    [StripSegment::Bend { .. }, StripSegment::Straight { .. }]
-                )
-        })
-    {
-        return Err(
-            "Rust formed sheet requires two opposite full-length bends without reliefs".into(),
-        );
+    if layout.flanges.iter().any(|flange| {
+        let f = &flange.flange;
+        f.start_inset_mm != 0.
+            || f.end_inset_mm != 0.
+            || f.relief_mm.is_some()
+            || !matches!(
+                f.segments.as_slice(),
+                [StripSegment::Bend { .. }, StripSegment::Straight { .. }]
+            )
+    }) {
+        return Err(UNSUPPORTED.into());
     }
     let [u, v] = first.outward.map(|c| -c);
     let across = [u, v];
@@ -46,10 +47,9 @@ pub(super) fn build(
     let along = std::array::from_fn(|i| du * layout.frame.u[i] + dv * layout.frame.v[i]);
     let height = first.width.copysign(dot(frame.normal(), along));
     let t = layout.thickness_mm;
-    let (left, right) = (section(&first.flange, t), section(&second.flange, t));
+    let left = section(&first.flange, t);
     let mut boundary = Vec::new();
-    // Each canonical flange closes with a root segment. The web replaces
-    // both root segments with two straight portions of its outer boundary.
+    // Replace each flange's temporary root edge with the web boundary.
     let left_count = left.edges.len() - 1;
     boundary.extend(
         left.edges
@@ -65,15 +65,27 @@ pub(super) fn build(
         },
         WEB_B.into(),
     ));
-    boundary.extend(
-        right
-            .edges
-            .into_iter()
-            .zip(right.roles)
-            .rev()
-            .skip(1)
-            .map(|(edge, role)| (section_edge(edge, section_width_mm, false), role)),
-    );
+    if let Some(second) = second {
+        let right = section(&second.flange, t);
+        boundary.extend(
+            right
+                .edges
+                .into_iter()
+                .zip(right.roles)
+                .rev()
+                .skip(1)
+                .map(|(edge, role)| (section_edge(edge, section_width_mm, false), role)),
+        );
+    } else {
+        let opposite = (first.flange.edge + 2) % 4;
+        boundary.push((
+            CurvedEdge2d::Line {
+                a: [section_width_mm, t],
+                b: [section_width_mm, 0.],
+            },
+            format!("sheet.base.edge.{opposite}"),
+        ));
+    }
     boundary.push((
         CurvedEdge2d::Line {
             a: [section_width_mm, 0.],
@@ -107,12 +119,13 @@ pub(super) fn build(
     )
     .map_err(|e| e.to_string())?;
 
-    let developed = [first, second].map(|f| f.flange.developed_mm(t, layout.k_factor));
+    let developed_left = first.flange.developed_mm(t, layout.k_factor);
+    let developed_right = second.map_or(0., |f| f.flange.developed_mm(t, layout.k_factor));
     let developed_corners = [
-        [0., -developed[0]],
-        [first.width, -developed[0]],
-        [first.width, section_width_mm + developed[1]],
-        [0., section_width_mm + developed[1]],
+        [0., -developed_left],
+        [first.width, -developed_left],
+        [first.width, section_width_mm + developed_right],
+        [0., section_width_mm + developed_right],
     ]
     .map(|[s, a]| std::array::from_fn(|i| first.start[i] + s * first.along[i] + a * across[i]));
     let mut outer = PlanarLoop {

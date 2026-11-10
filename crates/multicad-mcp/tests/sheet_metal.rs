@@ -312,7 +312,7 @@ fn mcp_exports_a_developed_sheet_dxf_into_the_export_folder() {
 }
 
 #[test]
-fn mcp_rust_backend_builds_and_exports_a_flat_sheet_with_a_round_opening() {
+fn mcp_rust_backend_builds_and_exports_flat_and_single_bend_sheets() {
     let folder = tempfile::tempdir().unwrap();
     let host = Headless::with_geometry_backend(
         Workspace::new(Document::new("Rust sheet DXF").unwrap()).unwrap(),
@@ -358,15 +358,58 @@ fn mcp_rust_backend_builds_and_exports_a_flat_sheet_with_a_round_opening() {
     assert!(text.contains("\n8\nCUT_INNER\n") && text.contains("cutout.0 D6.000"));
     assert!(!text.contains("\n8\nBEND_UP\n"));
 
-    let before = host.document();
     let bent = run(
         "set_sheet_forming",
         json!({ "expected_revision": 3, "feature": blank["feature"],
-            "flanges": [{ "edge": 0, "kind": "bend", "length": mm(10.) }] }),
+            "flanges": [{ "edge": 0, "kind": "bend", "length": mm(10.) }],
+            "cutouts": [{ "shape": "circle", "center_mm": [40, 25], "diameter": mm(6.) }] }),
     )
-    .unwrap_err();
-    assert!(bent.message.contains("without bends"), "{bent:?}");
-    assert_eq!(host.document(), before);
+    .unwrap();
+    assert_eq!(bent["revision"], 4);
+    let listed = run("sheet_metal", json!({})).unwrap();
+    let bracket = sheet(&listed, "Lid");
+    let pi = std::f64::consts::PI;
+    near(
+        &bracket["volume_mm3"],
+        4000. + 80. * (10. + 0.75 * pi) - 9. * pi,
+    );
+    near(
+        &bracket["flat_area_mm2"],
+        80. * (50. + 10. + 0.7 * pi) - 9. * pi,
+    );
+    assert_eq!(bracket["bends"].as_array().unwrap().len(), 1);
+    let out = run(
+        "export_sheet_dxf",
+        json!({ "part": blank["part"], "file_name": "bent-lid.dxf" }),
+    )
+    .unwrap();
+    assert_eq!(out["revision"], 4);
+    let bent_dxf = std::fs::read_to_string(folder.path().join("bent-lid.dxf")).unwrap();
+    assert!(bent_dxf.contains("\n8\nBEND_UP\n") && bent_dxf.contains("\n8\nCUT_INNER\n"));
+
+    let before = host.document();
+    let unsupported = [
+        (
+            json!([{ "edge": 0, "kind": "bend", "length": mm(10.), "start_inset": mm(2.) }]),
+            "full-length bend",
+        ),
+        (
+            json!([
+                { "edge": 0, "kind": "bend", "length": mm(10.) },
+                { "edge": 1, "kind": "bend", "length": mm(10.) }
+            ]),
+            "touch",
+        ),
+    ];
+    for (flanges, reason) in unsupported {
+        let refusal = run(
+            "set_sheet_forming",
+            json!({ "expected_revision": 4, "feature": blank["feature"], "flanges": flanges }),
+        )
+        .unwrap_err();
+        assert!(refusal.message.contains(reason), "{refusal:?}");
+        assert_eq!(host.document(), before);
+    }
 }
 
 #[test]
