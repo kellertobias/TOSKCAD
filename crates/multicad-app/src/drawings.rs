@@ -1213,7 +1213,7 @@ mod tests {
     }
 
     #[test]
-    fn rust_worker_matches_native_geometry_of_saved_cabinet_joint_views() {
+    fn rust_worker_preserves_exact_saved_cabinet_joint_geometry() {
         use drawings::{VectorCurve, VectorRole, ViewEvaluation};
         use std::f64::consts::TAU;
 
@@ -1334,10 +1334,10 @@ mod tests {
                 side_circles,
             )
         };
-        let native = coverage(GeometryBackend::OpenCascade);
-        assert_eq!(native.0[&((), 1, -243_000)], [[-398_000, 398_000]]);
-        assert_eq!(native.0[&((), 0, -357_300)], [[-213_000, 213_000]]);
-        assert_eq!(native.1[0], native.1[1]);
+        let actual = coverage(GeometryBackend::Rust);
+        assert_eq!(actual.0[&((), 1, -243_000)], [[-398_000, 398_000]]);
+        assert_eq!(actual.0[&((), 0, -357_300)], [[-213_000, 213_000]]);
+        assert_eq!(actual.1[0], actual.1[1]);
         let tenons = tenon_view
             .source
             .entities()
@@ -1345,17 +1345,18 @@ mod tests {
             .find(|&id| document.get(id).unwrap().name == "Carcass Dominos tenons 5")
             .unwrap();
         assert_eq!(
-            native.1[0][&(tenons, 0, -4_500)],
+            actual.1[0][&(tenons, 0, -4_500)],
             [[-201_000, -179_000], [-20_000, 2_000], [161_000, 183_000]]
         );
-        assert!(native.2[0].keys().all(|key| native.2[1].contains_key(key)));
-        assert!(native.2[1].len() > native.2[0].len());
-        assert_eq!(native.4.len(), 54);
-        assert_eq!(coverage(GeometryBackend::Rust), native);
+        assert!(actual.2[0].keys().all(|key| actual.2[1].contains_key(key)));
+        assert!(actual.2[1].len() > actual.2[0].len());
+        assert_eq!(actual.4.len(), 54);
+        #[cfg(feature = "occt")]
+        assert_eq!(actual, coverage(GeometryBackend::OpenCascade));
     }
 
     #[test]
-    fn rust_worker_matches_native_saved_cabinet_assembly_views() {
+    fn rust_worker_preserves_exact_saved_cabinet_assembly_views() {
         use drawings::{AnnotationEvaluation, VectorRole, ViewEvaluation};
 
         let session = open_example("cabinet.tcd");
@@ -1412,13 +1413,14 @@ mod tests {
                 }),
             )
         };
-        let native = coverage(GeometryBackend::OpenCascade);
-        assert_eq!(native.0[&((), 1, 1_000_000)], [[-400_000, 400_000]]);
-        assert_eq!(coverage(GeometryBackend::Rust), native);
+        let actual = coverage(GeometryBackend::Rust);
+        assert_eq!(actual.0[&((), 1, 1_000_000)], [[-400_000, 400_000]]);
+        #[cfg(feature = "occt")]
+        assert_eq!(actual, coverage(GeometryBackend::OpenCascade));
     }
 
     #[test]
-    fn rust_worker_matches_native_hardware_in_the_saved_cabinet_drilling_page() {
+    fn rust_worker_preserves_exact_hardware_in_the_saved_cabinet_drilling_page() {
         use drawings::{VectorCurve, VectorRole, ViewEvaluation};
         use std::{collections::BTreeMap, f64::consts::TAU};
 
@@ -1520,13 +1522,13 @@ mod tests {
             )
         };
 
-        let mut native = Backend::with_cache_and_backend(None, GeometryBackend::OpenCascade);
-        let expected = coverage(
-            &preview(&mut native, &session, page.id),
-            GeometryBackend::OpenCascade,
-        );
+        let directory = tempfile::tempdir().unwrap();
+        let cache = cache::Cache::isolated(directory.path().to_owned());
+        let mut cold = Backend::with_cache_and_backend(Some(cache.clone()), GeometryBackend::Rust);
+        let published = preview(&mut cold, &session, page.id);
+        let actual = coverage(&published, GeometryBackend::Rust);
         assert_eq!(
-            expected.1,
+            actual.1,
             [
                 [166_000, -334_500, 1_250],
                 [166_000, -289_500, 1_250],
@@ -1536,12 +1538,18 @@ mod tests {
                 [175_500, 311_500, 17_500],
             ]
         );
-        assert_eq!(expected.2[0][&((), 1, 22_500)], [[-225_000, 225_000]]);
-        let directory = tempfile::tempdir().unwrap();
-        let cache = cache::Cache::isolated(directory.path().to_owned());
-        let mut cold = Backend::with_cache_and_backend(Some(cache.clone()), GeometryBackend::Rust);
-        let published = preview(&mut cold, &session, page.id);
-        assert_eq!(coverage(&published, GeometryBackend::Rust), expected);
+        assert_eq!(actual.2[0][&((), 1, 22_500)], [[-225_000, 225_000]]);
+        #[cfg(feature = "occt")]
+        {
+            let mut native = Backend::with_cache_and_backend(None, GeometryBackend::OpenCascade);
+            assert_eq!(
+                actual,
+                coverage(
+                    &preview(&mut native, &session, page.id),
+                    GeometryBackend::OpenCascade
+                )
+            );
+        }
         published
             .checked_page(document, session.revision(), book, page.id)
             .unwrap();
