@@ -57,7 +57,7 @@ fn reopen(session: &Session) -> Session {
 }
 
 #[test]
-fn saved_front_panel_primitive_uses_its_bound_placement_formula() {
+fn saved_front_panel_primitives_use_their_bound_placement_and_size_formulas() {
     let mut bytes = include_bytes!("../../../examples/front-panel.tcd").as_slice();
     let document = project_file::read(
         &mut bytes,
@@ -67,32 +67,36 @@ fn saved_front_panel_primitive_uses_its_bound_placement_formula() {
     .unwrap()
     .project
     .document;
-    let feature = document
+    let features = document
         .entities()
-        .find(|entity| {
+        .filter_map(|entity| {
             let EntityData::Feature { definition, .. } = &entity.data else {
-                return false;
+                return None;
             };
-            definition.type_id == model::PRIMITIVE_TYPE
-                && entity.name.contains("Push button")
-                && definition.data.to_string().contains("$sheet_t - 4 mm")
+            (definition.type_id == model::PRIMITIVE_TYPE
+                && (entity.name == "Left end part plug feature"
+                    || (entity.name.contains("Push button")
+                        && definition.data.to_string().contains("$sheet_t - 4 mm"))))
+            .then_some(entity.id)
         })
-        .expect("saved front panel push-button placement")
-        .id;
+        .collect::<Vec<_>>();
+    assert_eq!(features.len(), 2);
     let build = |backend| {
         compiler()
-            .compile_sources_with_backend(&document, 0, &[feature], backend, None)
+            .compile_sources_with_backend(&document, 0, &features, backend, None)
             .unwrap()
     };
     let native = build(GeometryBackend::OpenCascade);
     let rust = build(GeometryBackend::Rust);
-    let a = rust.solid(feature).unwrap();
-    let b = native.solid(feature).unwrap();
-    near(a.volume_mm3().unwrap(), b.volume_mm3().unwrap());
-    let (a, b) = (a.bounds().unwrap(), b.bounds().unwrap());
-    for axis in 0..3 {
-        near(a.min[axis], b.min[axis]);
-        near(a.max[axis], b.max[axis]);
+    for feature in features {
+        let a = rust.solid(feature).unwrap();
+        let b = native.solid(feature).unwrap();
+        near(a.volume_mm3().unwrap(), b.volume_mm3().unwrap());
+        let (a, b) = (a.bounds().unwrap(), b.bounds().unwrap());
+        for axis in 0..3 {
+            near(a.min[axis], b.min[axis]);
+            near(a.max[axis], b.max[axis]);
+        }
     }
 }
 

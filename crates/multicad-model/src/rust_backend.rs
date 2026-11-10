@@ -7,7 +7,7 @@ use multicad_core::{
         self, Extent, ExtrudeParameters, PrimitiveParameters, ResolvedExtent,
         ResolvedExtrudeControls, ResolvedTermination, Termination,
     },
-    parameters::EvaluatedParameters,
+    parameters::{EvaluatedParameters, Unit},
     references::Origin,
 };
 use multicad_kernel::{
@@ -588,7 +588,7 @@ pub(crate) fn primitive(
     let fail = |message: String| error(Some(id), message);
     if let PrimitiveParameters::Box { size, frame } = source {
         let resolved = frame.resolve(parameters).map_err(|e| error(Some(id), e))?;
-        let [length, width, height] = size.each_ref().map(|d| exact_length(d, parameters));
+        let [length, width, height] = size.each_ref().map(|d| primitive_length(d, parameters));
         let placement = PlaneFrame {
             origin: resolved.origin,
             u: frame.u,
@@ -645,13 +645,13 @@ pub(crate) fn primitive(
     } else {
         [zero; 3]
     };
-    let circle = Circle::new([x, y], exact_length(radius, parameters).map_err(fail)?)
+    let circle = Circle::new([x, y], primitive_length(radius, parameters).map_err(fail)?)
         .map_err(|e| fail(format!("Rust cylinder circle failed: {e:?}")))?;
     let cylinder = AxialCylinder::new(
         id.uuid_bits(),
         circle,
         bottom,
-        exact_length(height, parameters).map_err(fail)?,
+        primitive_length(height, parameters).map_err(fail)?,
     )
     .map_err(|e| fail(format!("Rust cylinder failed: {e:?}")))?;
     let solid = Solid::from_axial_cylinder(
@@ -676,6 +676,18 @@ pub(crate) fn primitive(
             translation_mm: placement.origin,
         })
         .map_err(|e| error(Some(id), e))
+}
+
+fn primitive_length(
+    dimension: &Dimension,
+    parameters: &EvaluatedParameters,
+) -> Result<Rational, String> {
+    exact_length(dimension, parameters).or_else(|_| {
+        let value = dimension
+            .value_in(Unit::Millimeter, Some(parameters))
+            .map_err(|cause| cause.to_string())?;
+        coordinate(value).map(compact_literal_mm)
+    })
 }
 
 fn compact_literal_mm(exact: Rational) -> Rational {
