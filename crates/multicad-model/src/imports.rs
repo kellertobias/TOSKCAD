@@ -86,6 +86,8 @@ pub fn read_step_file_with_backend(
     let solid = Solid::import_rust_step(&source, EntityId::new(), GeometryPolicy::default())
         .map_err(|e| error(None, format!("Cannot import {}: {e}", path.display())))?;
     let signature = step_signature(&solid).map_err(|e| error(None, e))?;
+    // A Rust STEP source becomes one Part. Its original text stores all
+    // independently closed members and their relative placements together.
     Ok(StepFile {
         file_name: file_name(path),
         path: Some(path.display().to_string()),

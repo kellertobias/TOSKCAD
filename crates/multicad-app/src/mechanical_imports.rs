@@ -250,6 +250,177 @@ mod tests {
     }
 
     #[test]
+    fn rust_step_cabinet_tenon_group_publishes_and_reopens_as_one_part() {
+        use multicad_core::{
+            commands::{Actor, Channel},
+            document::EntityId,
+            exchange::{ExportResult, Scope, ScopeRoot, SetDefinition, prepare_set},
+            model, parameters, project_file,
+        };
+        use multicad_kernel::{GeometryPolicy, MeshOptions, Solid, rust_kernel::step_read};
+        use multicad_ui::exchange::ExportBackend;
+
+        let mut bytes = &include_bytes!("../../../examples/cabinet.tcd")[..];
+        let cabinet = project_file::read(
+            &mut bytes,
+            Default::default(),
+            &project_file::supported_capabilities(),
+        )
+        .unwrap()
+        .project;
+        let mut source = Session::new(cabinet.document).unwrap();
+        let document = source.document();
+        let feature = model::loose_tenons(document).next().unwrap().id;
+        let part = model::read_loose_tenon(document, feature)
+            .unwrap()
+            .output
+            .body;
+        let layout = model::resolve_loose_tenon_feature(
+            document,
+            &parameters::evaluate(document).unwrap(),
+            feature,
+        )
+        .unwrap();
+        let member_count = layout.len();
+        assert!(member_count > 1);
+        let expected_volume = layout
+            .iter()
+            .map(|tenon| {
+                let r = tenon.thickness_mm / 2.;
+                let area =
+                    std::f64::consts::PI * r * r + 2. * r * (tenon.width_mm - 2. * r).max(0.);
+                area * (tenon.into_face_mm + tenon.into_edge_mm)
+            })
+            .sum::<f64>();
+        let actor = Actor::local(Channel::Ui);
+        let set = EntityId::new();
+        let prepared = prepare_set(
+            &source,
+            source.revision(),
+            actor.clone(),
+            set,
+            "Cabinet tenons",
+            &SetDefinition {
+                scope: Scope {
+                    root: ScopeRoot::Explicit {
+                        entities: vec![part],
+                    },
+                    tags: None,
+                },
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        source.commit(prepared).unwrap();
+        let scratch = tempfile::tempdir().unwrap();
+        let mut backend = crate::exchange::Backend::with_geometry_backend(GeometryBackend::Rust);
+        let wait = |backend: &mut crate::exchange::Backend, id| {
+            let deadline = Instant::now() + Duration::from_secs(15);
+            loop {
+                if let Some(reply) = backend.poll() {
+                    assert_eq!(reply.id, id);
+                    break reply.result;
+                }
+                assert!(Instant::now() < deadline, "STEP export timed out");
+                std::thread::sleep(Duration::from_millis(2));
+            }
+        };
+        let job = backend
+            .preview(source.document(), source.revision(), set, actor.clone())
+            .unwrap();
+        let ExportResult::Preview(preview) = wait(&mut backend, job) else {
+            panic!("expected the STEP preview");
+        };
+        let preview = preview.unwrap();
+        assert!(preview.can_run(), "{:?}", preview.recipes);
+        assert_eq!(preview.artifacts.len(), 1);
+        assert_eq!(preview.artifacts[0].solid_count as usize, member_count);
+        let job = backend
+            .run(
+                source.document(),
+                source.revision(),
+                &preview.key,
+                scratch.path(),
+                actor,
+            )
+            .unwrap();
+        let ExportResult::Run(receipt) = wait(&mut backend, job) else {
+            panic!("expected the STEP publication receipt");
+        };
+        let receipt = receipt.unwrap();
+        let [written] = receipt.files.as_slice() else {
+            panic!("one Part must publish one STEP file")
+        };
+        assert_eq!(written.artifact, preview.artifacts[0]);
+        let path = Path::new(&receipt.directory).join(&written.artifact.output.filename);
+        let policy = GeometryPolicy::default();
+        let check = |solid: &Solid| {
+            assert_eq!(solid.solid_count().unwrap() as usize, member_count);
+            assert!((solid.volume_mm3().unwrap() - expected_volume).abs() < 1e-6);
+            let bounds = solid.bounds().unwrap();
+            for (actual, expected) in bounds
+                .min
+                .into_iter()
+                .chain(bounds.max)
+                .zip(written.artifact.bounds_mm.into_iter().flatten())
+            {
+                assert!((actual - expected).abs() <= policy.linear_tolerance_mm);
+            }
+        };
+        let members = step_read::read_analytic_compound(
+            &std::fs::read_to_string(&path).unwrap(),
+            policy.linear_tolerance_mm,
+        )
+        .unwrap();
+        assert_eq!(members.len(), member_count);
+        assert!(
+            members
+                .iter()
+                .all(|member| member.solid_count == 1 && member.semicircles.len() == 4)
+        );
+        check(&Solid::read_step(&path, policy).unwrap());
+
+        let mut target = Session::new(Document::new("Imported cabinet tenons").unwrap()).unwrap();
+        let mut import = check_import(&target, &path, Target::New);
+        assert_eq!(
+            import.report(),
+            Some(&Report::StepNew { parts: 1 }),
+            "{:?}",
+            import.checked()
+        );
+        assert!(matches!(
+            import.apply(&mut target),
+            Ok(Outcome::Applied { .. })
+        ));
+        let source_id = step_sources(target.document()).next().unwrap().id;
+        let embedded = read_step_source(target.document(), source_id).unwrap();
+        assert_eq!(embedded.encoding, StepEncoding::RustStep);
+        assert_eq!(embedded.solids.len(), 1);
+        let body = step_bodies(target.document()).next().unwrap().id;
+        let mut store = crate::files::ProjectStore::new(scratch.path().join("recovery"));
+        let project = scratch.path().join("tenon-group.tcd");
+        store
+            .save_project(
+                &project,
+                &ProjectFile::new(target.document().clone()).unwrap(),
+                SaveMode::Create,
+            )
+            .unwrap();
+        std::fs::remove_file(path).unwrap();
+        let document = store.open_project(&project).unwrap().file.document;
+        let model = Compiler::default()
+            .compile_with_backend(&document, 0, GeometryBackend::Rust, None)
+            .unwrap();
+        assert_eq!(model.snapshot().bodies.len(), 1);
+        let solid = model.solid(body).unwrap();
+        assert!(solid.uses_rust_geometry());
+        check(solid);
+        solid
+            .manufacturing_mesh_with_receipt(MeshOptions::default())
+            .unwrap();
+    }
+
+    #[test]
     fn unsupported_step_units_do_not_fall_back_to_native_or_change_the_project() {
         let scratch = tempfile::tempdir().unwrap();
         let path = scratch.path().join("centimetres.step");

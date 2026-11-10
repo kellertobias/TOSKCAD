@@ -94,12 +94,7 @@ fn verify(
     let tolerance = exporter.compiler.policy.linear_tolerance_mm;
     let actual = if built.backend == GeometryBackend::Rust {
         let topology = rust_step_topology(built, artifact)?;
-        step_metrics(&read_rust_step(
-            path,
-            topology,
-            artifact.producer,
-            tolerance,
-        )?)
+        read_rust_step(path, topology, artifact.producer, tolerance)?
     } else {
         let read = Solid::read_step(path, exporter.compiler.policy).map_err(io)?;
         let bounds = read.bounds().map_err(io)?;
@@ -122,10 +117,6 @@ fn verify(
 }
 
 type StepMetrics = (u32, f64, [[f64; 3]; 2]);
-
-fn step_metrics(read: &step_read::Readback) -> StepMetrics {
-    (read.solid_count, read.volume_mm3, read.bounds_mm)
-}
 
 fn verify_step_dimensions(
     producer: EntityId,
@@ -152,14 +143,14 @@ fn verify_step_dimensions(
     Ok(())
 }
 
-/// Check one Rust-authored STEP against the same analytic edges, bounds,
-/// volume and solid count required for an export set.
+/// Check the member topology and aggregate bounds, volume and solid count
+/// of a Rust-authored STEP against the exact source shape.
 pub fn verify_rust_step_shape(
     path: &Path,
     shape: &crate::ShapeSnapshot,
     tolerance: f64,
 ) -> Result<f64, ExportError> {
-    let readback = read_rust_step(path, &shape.topology, shape.producer, tolerance)?;
+    let actual = read_rust_step(path, &shape.topology, shape.producer, tolerance)?;
     verify_step_dimensions(
         shape.producer,
         (
@@ -167,10 +158,10 @@ pub fn verify_rust_step_shape(
             shape.volume_mm3,
             [shape.bounds.min, shape.bounds.max],
         ),
-        step_metrics(&readback),
+        actual,
         tolerance,
     )?;
-    Ok(readback.volume_mm3)
+    Ok(actual.1)
 }
 
 fn rust_step_topology<'a>(
@@ -215,7 +206,7 @@ fn read_rust_step(
     topology: &TopologySnapshot,
     producer: EntityId,
     tolerance: f64,
-) -> Result<step_read::Readback, ExportError> {
+) -> Result<StepMetrics, ExportError> {
     let invalid = |message: String| failure(ErrorKind::Invalid, Some(producer), message);
     let mut bytes = Vec::new();
     fs::File::open(path)
@@ -231,7 +222,7 @@ fn read_rust_step(
         ));
     }
     let source = std::str::from_utf8(&bytes).map_err(|e| invalid(e.to_string()))?;
-    let readback = step_read::read_analytic_solid(source, tolerance).map_err(|e| {
+    let members = step_read::read_analytic_compound(source, tolerance).map_err(|e| {
         let kind = match e {
             step_read::ReadError::Limit => ErrorKind::Budget,
             _ => ErrorKind::Invalid,
@@ -239,15 +230,28 @@ fn read_rust_step(
         failure(
             kind,
             Some(producer),
-            format!("Rust STEP readback rejected the solid: {e:?}"),
+            format!("Rust STEP readback rejected the geometry: {e:?}"),
         )
     })?;
-    if !Solid::step_topology_matches(topology, &readback, tolerance * 2.) {
+    if !Solid::step_compound_topology_matches(topology, &members, tolerance * 2.) {
         return Err(invalid(
-            "STEP readback differs from the source face count or analytic edges".into(),
+            "STEP readback differs from the source member topology".into(),
         ));
     }
-    Ok(readback)
+    Ok(members.into_iter().fold(
+        (0, 0., [[f64::INFINITY; 3], [f64::NEG_INFINITY; 3]]),
+        |(count, volume, [min, max]), member| {
+            let [lo, hi] = member.bounds_mm;
+            (
+                count + member.solid_count,
+                volume + member.volume_mm3,
+                [
+                    std::array::from_fn(|i| min[i].min(lo[i])),
+                    std::array::from_fn(|i| max[i].max(hi[i])),
+                ],
+            )
+        },
+    ))
 }
 
 fn verify_mesh(

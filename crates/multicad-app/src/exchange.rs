@@ -383,10 +383,9 @@ mod tests {
         assert!(!error && notice.contains("Exported 1 file"), "{notice}");
         let bundle = std::fs::read_dir(output.path())
             .unwrap()
-            .next()
-            .unwrap()
-            .unwrap()
-            .path();
+            .map(|entry| entry.unwrap().path())
+            .find(|path| path.is_dir())
+            .unwrap();
         let published = std::fs::read_dir(bundle)
             .unwrap()
             .map(|e| e.unwrap().path())
