@@ -162,25 +162,29 @@ pub(crate) fn build(
     let pose =
         resolve_instance_pose_with_snapshots(document, instance, parameters, revision, topologies)
             .map_err(|e| error(Some(instance), e))?;
-    let mut topology = topologies
-        .get(&producer)
-        .ok_or_else(|| {
-            error(
-                Some(instance),
-                "Occurrence component topology is unavailable",
-            )
-        })?
-        .clone();
+    let source_topology = topologies.get(&producer).ok_or_else(|| {
+        error(
+            Some(instance),
+            "Occurrence component topology is unavailable",
+        )
+    })?;
     let exact_identity = pose == RigidPose::default()
         && source.geometry_policy() == policy
-        && topology.owner == producer
-        && topology.revision == revision;
-    topology.owner = instance;
-    topology.revision = revision;
-    let solid = if exact_identity {
-        // Sharing the checked producer keeps the exact native geometry and
-        // ordinal map. Only the occurrence owner of its topology changes.
-        source.share().map_err(|e| error(Some(instance), e))?
+        && source_topology.owner == producer
+        && source_topology.revision == revision;
+    let rebind = || {
+        let mut topology = source_topology.clone();
+        topology.owner = instance;
+        topology.revision = revision;
+        topology
+    };
+    let (solid, topology) = if exact_identity {
+        // Sharing the checked producer keeps the exact geometry and ordinal
+        // map. Only the occurrence owner of its topology changes.
+        (
+            source.share().map_err(|e| error(Some(instance), e))?,
+            rebind(),
+        )
     } else {
         let solid = source
             .transformed(RigidTransform {
@@ -191,10 +195,9 @@ pub(crate) fn build(
         let actual = solid
             .topology_snapshot(instance, revision)
             .map_err(|e| error(Some(instance), e))?;
-        // A rigid transform preserves topology. Refuse an unexpected native
-        // reordering rather than assigning component ordinals to different faces.
-        if topology.elements.len() != actual.elements.len()
-            || topology
+        // A rigid transform must preserve the identity of each element.
+        if source_topology.elements.len() != actual.elements.len()
+            || source_topology
                 .elements
                 .iter()
                 .zip(&actual.elements)
@@ -205,27 +208,61 @@ pub(crate) fn build(
                 "Native occurrence transform changed topology identity unexpectedly",
             ));
         }
-        for element in &mut topology.elements {
-            element.geometry = element
-                .geometry
-                .map(|geometry| geometry.transformed(|p| pose.point(p), |v| pose.vector(v)));
-            for anchor in &mut element.frames {
-                anchor.frame = pose.frame(anchor.frame);
+        let topology = if source.uses_rust_geometry() {
+            // The Rust kernel places its analytic body directly and publishes
+            // exact world descriptors, including ellipses. Check that named
+            // attachment frames followed the same placement.
+            let anchors_changed =
+                source_topology
+                    .elements
+                    .iter()
+                    .zip(&actual.elements)
+                    .any(|(a, b)| {
+                        a.frames.len() != b.frames.len()
+                            || a.frames.iter().zip(&b.frames).any(|(a, b)| {
+                                let expected = pose.frame(a.frame);
+                                a.origin != b.origin
+                                    || distance(expected.origin_mm, b.frame.origin_mm)
+                                        > policy.linear_tolerance_mm
+                                    || distance(expected.u, b.frame.u) > 1e-10
+                                    || distance(expected.v, b.frame.v) > 1e-10
+                            })
+                    });
+            if anchors_changed {
+                return Err(error(
+                    Some(instance),
+                    "Rust occurrence transform changed anchored reference frames unexpectedly",
+                ));
             }
-        }
-        topology.validate().map_err(|e| error(Some(instance), e))?;
-        if topology
-            .elements
-            .iter()
-            .zip(&actual.elements)
-            .any(|(a, b)| !equivalent(a.geometry, b.geometry, policy.linear_tolerance_mm))
-        {
-            return Err(error(
-                Some(instance),
-                "Native world geometry disagrees with its rigid occurrence descriptors",
-            ));
-        }
-        solid
+            actual.validate().map_err(|e| error(Some(instance), e))?;
+            actual
+        } else {
+            // OpenCascade creates a new B-rep during a transform. Retain the
+            // independent comparison against the source analytic descriptors.
+            let mut topology = rebind();
+            for element in &mut topology.elements {
+                element.geometry = element
+                    .geometry
+                    .map(|geometry| geometry.transformed(|p| pose.point(p), |v| pose.vector(v)));
+                for anchor in &mut element.frames {
+                    anchor.frame = pose.frame(anchor.frame);
+                }
+            }
+            topology.validate().map_err(|e| error(Some(instance), e))?;
+            if topology
+                .elements
+                .iter()
+                .zip(&actual.elements)
+                .any(|(a, b)| !equivalent(a.geometry, b.geometry, policy.linear_tolerance_mm))
+            {
+                return Err(error(
+                    Some(instance),
+                    "Native world geometry disagrees with its rigid occurrence descriptors",
+                ));
+            }
+            topology
+        };
+        (solid, topology)
     };
 
     let snapshot = OccurrenceSnapshot {

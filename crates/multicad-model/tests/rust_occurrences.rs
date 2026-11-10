@@ -257,7 +257,7 @@ fn member_origin(assembly: EntityId, member: EntityId) -> Origin {
 }
 
 fn verify(fixture: &Fixture, session: &Session, translation: Point) -> Model {
-    let native = compile(session, GeometryBackend::OpenCascade);
+    let native = cfg!(feature = "occt").then(|| compile(session, GeometryBackend::OpenCascade));
     let rust = compile(session, GeometryBackend::Rust);
     let root = fixture.root.instance;
     let snapshot = rust.snapshot();
@@ -272,10 +272,20 @@ fn verify(fixture: &Fixture, session: &Session, translation: Point) -> Model {
     assert_eq!(snapshot.leaf_occurrences.len(), 4);
     let group = rust.solid(root).unwrap();
     assert_eq!(group.solid_count().unwrap(), 4);
+    let volumes = [
+        BOX_SIZE.into_iter().product::<f64>(),
+        std::f64::consts::PI * RADIUS.powi(2) * HEIGHT,
+    ];
     near(
         group.volume_mm3().unwrap(),
-        native.solid(root).unwrap().volume_mm3().unwrap(),
+        2. * volumes.iter().sum::<f64>(),
     );
+    if let Some(native) = &native {
+        near(
+            group.volume_mm3().unwrap(),
+            native.solid(root).unwrap().volume_mm3().unwrap(),
+        );
+    }
     let mut extrema = Vec::new();
     for (copy, &copy_instance) in fixture.copies.iter().enumerate() {
         let (cylinder_bounds, rims, axis) = expected_cylinder(copy, translation);
@@ -295,11 +305,16 @@ fn verify(fixture: &Fixture, session: &Session, translation: Point) -> Model {
             assert_eq!(leaf.topology.revision, session.revision());
             let solid = rust.leaf_solid(&path).unwrap();
             assert_eq!(solid.solid_count().unwrap(), 1);
-            let native_solid = native.leaf_solid(&path).unwrap();
-            near(
-                solid.volume_mm3().unwrap(),
-                native_solid.volume_mm3().unwrap(),
-            );
+            near(solid.volume_mm3().unwrap(), volumes[member]);
+            let native_solid = native
+                .as_ref()
+                .map(|model| model.leaf_solid(&path).unwrap());
+            if let Some(native_solid) = native_solid {
+                near(
+                    solid.volume_mm3().unwrap(),
+                    native_solid.volume_mm3().unwrap(),
+                );
+            }
             near_point(leaf.bounds.min, expected[0]);
             near_point(leaf.bounds.max, expected[1]);
             let actual = solid.bounds().unwrap();
@@ -310,9 +325,11 @@ fn verify(fixture: &Fixture, session: &Session, translation: Point) -> Model {
                 world(CYLINDER_BASE, member, copy, translation),
             );
             if member == 0 {
-                let reference = native_solid.bounds().unwrap();
-                near_point(reference.min, expected[0]);
-                near_point(reference.max, expected[1]);
+                if let Some(native_solid) = native_solid {
+                    let reference = native_solid.bounds().unwrap();
+                    near_point(reference.min, expected[0]);
+                    near_point(reference.max, expected[1]);
+                }
             } else {
                 let circular_edges = leaf
                     .topology
@@ -441,4 +458,87 @@ fn rust_nested_occurrences_rebuild_and_reopen_with_exact_world_geometry() {
             .sum(),
         0.,
     );
+}
+
+#[test]
+fn saved_toolcase_drawer_preserves_exact_ellipses_in_a_rotated_occurrence() {
+    let document = project_file::read(
+        &mut include_bytes!("../../../examples/toolcase.tcd").as_slice(),
+        Default::default(),
+        &project_file::supported_capabilities(),
+    )
+    .unwrap()
+    .project
+    .document;
+    let drawer = EntityId::parse("bca11863-a6dd-48f1-9f34-63cc66eb7474").unwrap();
+    let producer = EntityId::parse("d12c787f-4e61-4797-854e-64278f2b81f9").unwrap();
+    let mut session = Session::new(document).unwrap();
+    let translation = [37., -81., 19.];
+    let copy = placed(&mut session, drawer, pose(translation, [1., 0., 1.], ANGLE)).instance;
+    let session = reopen(&session);
+    let model = Compiler::default()
+        .compile_sources_with_backend(
+            session.document(),
+            session.revision(),
+            &[copy],
+            GeometryBackend::Rust,
+            None,
+        )
+        .unwrap();
+    let occurrence = &model.snapshot().occurrences[&copy];
+    assert_eq!(occurrence.producer, producer);
+    assert_eq!(occurrence.topology.owner, copy);
+    assert_eq!(occurrence.topology.revision, session.revision());
+    near_point(occurrence.pose.translation_mm, translation);
+    assert_ne!(occurrence.pose.vector([0., 1., 0.]), [0., 1., 0.]);
+    let source = &model.snapshot().shapes[&producer].topology;
+    assert_eq!(source.elements.len(), occurrence.topology.elements.len());
+
+    let mut ellipses = 0;
+    let mut anchors = 0;
+    for (local, world) in source.elements.iter().zip(&occurrence.topology.elements) {
+        assert_eq!(local.key, world.key);
+        assert_eq!(local.origins, world.origins);
+        assert_eq!(local.boundary, world.boundary);
+        assert_eq!(local.frames.len(), world.frames.len());
+        for (a, b) in local.frames.iter().zip(&world.frames) {
+            assert_eq!(a.origin, b.origin);
+            let placed = occurrence.pose.frame(a.frame);
+            near_point(placed.origin_mm, b.frame.origin_mm);
+            near_point(placed.u, b.frame.u);
+            near_point(placed.v, b.frame.v);
+            anchors += 1;
+        }
+        if let Some(AnalyticGeometry::EllipticArc {
+            frame,
+            semiaxes_mm,
+            start_rad,
+            sweep_rad,
+        }) = local.geometry
+        {
+            let Some(AnalyticGeometry::EllipticArc {
+                frame: placed,
+                semiaxes_mm: actual_axes,
+                start_rad: actual_start,
+                sweep_rad: actual_sweep,
+            }) = world.geometry
+            else {
+                panic!("ellipse descriptor was lost during placement");
+            };
+            let expected = occurrence.pose.frame(frame);
+            near_point(placed.origin_mm, expected.origin_mm);
+            near_point(placed.u, expected.u);
+            near_point(placed.v, expected.v);
+            assert_eq!(
+                (actual_axes, actual_start, actual_sweep),
+                (semiaxes_mm, start_rad, sweep_rad)
+            );
+            ellipses += 1;
+        }
+    }
+    assert!(ellipses > 0);
+    assert!(anchors > 0);
+    let [local, world] = [producer, copy].map(|id| model.solid(id).unwrap());
+    near(world.volume_mm3().unwrap(), local.volume_mm3().unwrap());
+    assert_eq!(occurrence.bounds, world.bounds().unwrap());
 }
