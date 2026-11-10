@@ -15,6 +15,7 @@ pub mod hex_nut;
 pub mod linear_sweep;
 pub mod linear_sweep_mesh;
 pub mod manufacturing;
+pub mod normal_sweep;
 pub mod orthogonal;
 pub mod orthogonal_boundary;
 pub mod orthogonal_pockets;
