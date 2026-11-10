@@ -363,7 +363,16 @@ fn rotated_socket_screw_has_one_shell_and_analytic_socket_faces() {
             .all(|origin| !origin.role.ends_with("/crest"))
     );
     assert_eq!(screw.solid_count().unwrap(), 1);
-    assert!(!screw.supports_step_export());
+    assert!(screw.supports_step_export());
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("rotated-socket-screw.step");
+    screw.write_step(&path).unwrap();
+    if cfg!(feature = "occt") {
+        let native = multicad_kernel::Shape::read_step(&path).unwrap();
+        assert!(native.valid().unwrap());
+        assert_eq!(Solid::step_solids(&path).unwrap().len(), 1);
+        assert!((native.volume().unwrap() - expected).abs() < 1e-5);
+    }
     let receipt = screw
         .manufacturing_mesh_with_receipt(MeshOptions::default())
         .unwrap();
