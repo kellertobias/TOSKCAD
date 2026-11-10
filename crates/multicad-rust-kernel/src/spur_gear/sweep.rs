@@ -179,7 +179,7 @@ impl Profile {
         footprint.tessellate(0., self.height_mm)
     }
 
-    fn outline_samples(
+    pub(super) fn outline_samples(
         &self,
         options: Tessellation,
         opening: Option<f64>,

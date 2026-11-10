@@ -137,6 +137,12 @@ impl Chord {
     }
 }
 
+pub(super) fn segment_tubes_clear(a: [Point; 2], b: [Point; 2], margin: f64) -> bool {
+    let a = Chord::new(a[0], a[1]);
+    let b = Chord::new(b[0], b[1]);
+    a.bounds.apart(b.bounds, margin) || a.clear(b, margin)
+}
+
 struct Rim {
     chords: Vec<Chord>,
     bounds: Bounds,
