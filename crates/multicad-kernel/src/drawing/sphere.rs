@@ -1,6 +1,9 @@
-//! Exact silhouettes and section disks of one analytic sphere.
+//! Exact spherical silhouettes, sections and scene blockers.
 use super::*;
-use multicad_rust_kernel::curved_projection::{Curve, Detail, Edge, Ellipse};
+use multicad_rust_kernel::{
+    curved_projection::{Curve, Detail, Edge, Ellipse},
+    planar_projection::{AnalyticFace, SpatialRimCandidate},
+};
 use std::f64::consts::TAU;
 
 pub(super) fn project(
@@ -9,13 +12,7 @@ pub(super) fn project(
     radius: f64,
     mut options: DrawingProjection,
 ) -> Result<Vec<ProjectedVector>, GeometryError> {
-    let offset: [f64; 3] = std::array::from_fn(|i| origin[i] - options.frame.origin[i]);
-    let [x, y, z] = planar::view_axes(options.frame).map(|axis| {
-        axis.into_iter()
-            .zip(offset)
-            .map(|(a, b)| a * b)
-            .sum::<f64>()
-    });
+    let [x, y, z] = drawing_center(origin, options.frame);
     let center = [x, y];
     let Some(depth) = options.section_offset_mm else {
         return silhouette(center, radius, options);
@@ -53,19 +50,52 @@ pub(super) fn project(
     Ok(output)
 }
 
-fn silhouette(
-    center: [f64; 2],
+fn drawing_center(origin: [f64; 3], frame: PlaneFrame) -> [f64; 3] {
+    let offset: [f64; 3] = std::array::from_fn(|i| origin[i] - frame.origin[i]);
+    planar::view_axes(frame).map(|axis| {
+        axis.into_iter()
+            .zip(offset)
+            .map(|(a, b)| a * b)
+            .sum::<f64>()
+    })
+}
+
+pub(super) fn scene_member(
+    origin: [f64; 3],
     radius: f64,
-    options: DrawingProjection,
-) -> Result<Vec<ProjectedVector>, GeometryError> {
-    let ellipse = Ellipse {
+    frame: PlaneFrame,
+    source: usize,
+) -> Result<(AnalyticFace, SpatialRimCandidate), GeometryError> {
+    let [x, y, z] = drawing_center(origin, frame);
+    let blocker = AnalyticFace::sphere([x, y, z], radius).map_err(planar::projection_error)?;
+    Ok((
+        blocker,
+        SpatialRimCandidate {
+            source,
+            ellipse: outline([x, y], radius),
+            depth: z,
+            depth_sine: 0.,
+        },
+    ))
+}
+
+fn outline(center: [f64; 2], radius: f64) -> Ellipse {
+    Ellipse {
         center,
         u: [1., 0.],
         v: [0., 1.],
         major: radius,
         minor: radius,
         trim: [0., TAU],
-    };
+    }
+}
+
+fn silhouette(
+    center: [f64; 2],
+    radius: f64,
+    options: DrawingProjection,
+) -> Result<Vec<ProjectedVector>, GeometryError> {
+    let ellipse = outline(center, radius);
     let spans = options.detail.map_or_else(
         || vec![ellipse.trim],
         |(center, radius)| ellipse.in_detail(Detail { center, radius }),

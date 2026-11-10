@@ -66,6 +66,7 @@ pub(super) fn is_round(solid: &Solid) -> bool {
 
 pub(super) fn needs_curved_scene(solid: &Solid) -> bool {
     is_round(solid)
+        || solid.sphere_body().is_some()
         || pockets::has_machined_stock(solid)
         || apertures::has_through_bores(solid)
         || solid.rounded_slot_body().is_some()
@@ -173,6 +174,14 @@ fn project_members(
     let mut spatial_ellipses = Vec::new();
     let mut shell_tolerance = 0.0_f64;
     for (index, &(source, solid)) in members.iter().enumerate() {
+        if let Some((body, frame)) = solid.sphere_body() {
+            let (blocker, silhouette) =
+                sphere::scene_member(frame.origin, body.radius_mm(), options.frame, source)?;
+            shell_faces.push(blocker);
+            rounded.rims.push(silhouette);
+            shell_tolerance = shell_tolerance.max(solid.geometry_policy().linear_tolerance_mm);
+            continue;
+        }
         if solid.rounded_slot_body().is_some() {
             rounded.add(solid, source, options)?;
             continue;

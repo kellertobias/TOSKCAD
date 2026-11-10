@@ -1,6 +1,8 @@
 //! Finite plane and circular cylinder faces in drawing coordinates.
 use super::*;
+mod sphere;
 use crate::{curved_projection::roots, trim_curve::EllipseArc};
+use sphere::Sphere;
 use std::f64::consts::{FRAC_PI_2, TAU};
 
 const ANGULAR: f64 = 64. * f64::EPSILON;
@@ -25,6 +27,7 @@ pub struct AnalyticFace {
 enum Surface {
     Plane(Plane),
     Cylinder(Cylinder),
+    Sphere(Sphere),
 }
 
 struct Plane {
@@ -380,7 +383,7 @@ impl AnalyticFace {
     pub(super) fn build_work(&self) -> usize {
         match &self.surface {
             Surface::Plane(plane) => plane.boundary.len(),
-            Surface::Cylinder(_) => 1,
+            Surface::Cylinder(_) | Surface::Sphere(_) => 1,
         }
     }
 
@@ -424,6 +427,9 @@ impl AnalyticFace {
             Surface::Plane(plane) => plane.hide(path, span, depth_gap, self.depth, work),
             Surface::Cylinder(cylinder) => {
                 cylinder.hide(path, span, depth_gap, roundoff, self.depth, work)
+            }
+            Surface::Sphere(sphere) => {
+                sphere.hide(path, span, depth_gap, roundoff, self.depth, work)
             }
         }
     }
@@ -727,20 +733,23 @@ impl Trace {
     }
 
     fn circle(self, other: Self, radius: f64, span: Span, cuts: &mut Vec<f64>) {
-        if self.harmonic {
-            drawing_events::circle(
-                Harmonic(self.coefficients),
-                Harmonic(other.coefficients),
+        Self::norm([self, other], radius, span, cuts);
+    }
+
+    fn norm<const N: usize>(coordinates: [Self; N], radius: f64, span: Span, cuts: &mut Vec<f64>) {
+        if coordinates[0].harmonic {
+            drawing_events::norm(
+                coordinates.map(|trace| Harmonic(trace.coefficients)),
                 radius,
                 span,
                 cuts,
             );
         } else {
-            // Normalize the parameter to the candidate span before solving,
-            // so a long edge cannot lose its quadratic terms to root scaling.
+            // Normalize to the candidate span so a long edge cannot lose
+            // its quadratic terms to root scaling.
             let scale = span[1] - span[0];
-            let start = [self.at(span[0]), other.at(span[0])];
-            let delta = [self.coefficients[1] * scale, other.coefficients[1] * scale];
+            let start = coordinates.map(|trace| trace.at(span[0]));
+            let delta = coordinates.map(|trace| trace.coefficients[1] * scale);
             let polynomial = [
                 dot(start, start) - radius * radius,
                 2. * dot(start, delta),

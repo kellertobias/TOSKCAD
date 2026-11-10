@@ -1174,3 +1174,123 @@ fn trimmed_rim_bounds_enclose_tiny_and_edge_on_curves_with_depth() {
         assert!(bounds.max[2] - bounds.min[2] < 1e-3);
     }
 }
+
+fn spherical_rim(source: usize, [x, y, depth]: Point, radius: f64) -> SpatialRimCandidate {
+    SpatialRimCandidate {
+        source,
+        ellipse: Ellipse {
+            center: [x, y],
+            u: [1., 0.],
+            v: [0., 1.],
+            major: radius,
+            minor: radius,
+            trim: [0., TAU],
+        },
+        depth,
+        depth_sine: 0.,
+    }
+}
+
+#[test]
+fn sphere_blocks_lines_and_arcs_at_exact_changes_of_depth() {
+    let sphere = AnalyticFace::sphere([0.; 3], 5.).unwrap();
+    let edges = [LineCandidate {
+        source: 4,
+        points: [[-6., 0., 3.], [6., 0., 3.]],
+    }];
+    let rims = [spherical_rim(7, [3., 0., 3.], 2.)];
+    let (_, _, result) = project_scene_with_analytic_faces(
+        &[],
+        &[],
+        SceneExtras {
+            lines: &edges,
+            spatial_rims: &rims,
+            ..Default::default()
+        },
+        &[sphere],
+        options(),
+    )
+    .unwrap();
+    let hidden = result
+        .iter()
+        .find_map(|segment| match segment.edge.curve {
+            Curve::Line(ends) if segment.source == 4 && segment.edge.hidden => Some(ends),
+            _ => None,
+        })
+        .unwrap();
+    close(hidden[0][0], -4.);
+    close(hidden[1][0], 4.);
+    let angle = 0.25_f64.acos();
+    intervals(
+        &circles(&result, 7, [3., 0.]),
+        &[
+            (false, [0., angle]),
+            (true, [angle, TAU - angle]),
+            (false, [TAU - angle, TAU]),
+        ],
+    );
+}
+
+#[test]
+fn coincident_sphere_outlines_resolve_depth_without_hiding_the_front_rim() {
+    let near = [0., 0., 4.];
+    let far = [0.; 3];
+    let rims = [spherical_rim(1, near, 1.), spherical_rim(2, far, 1.)];
+    let blockers = [near, far].map(|center| AnalyticFace::sphere(center, 1.).unwrap());
+    let (_, _, result) = project_scene_with_analytic_faces(
+        &[],
+        &[],
+        SceneExtras {
+            spatial_rims: &rims,
+            ..Default::default()
+        },
+        &blockers,
+        options(),
+    )
+    .unwrap();
+    intervals(&circles(&result, 1, [0.; 2]), &[(false, [0., TAU])]);
+    intervals(&circles(&result, 2, [0.; 2]), &[(true, [0., TAU])]);
+    assert!(matches!(
+        AnalyticFace::sphere([f64::NAN, 0., 0.], 1.),
+        Err(ProjectionError::Invalid)
+    ));
+}
+
+#[test]
+fn sphere_hemisphere_hits_respect_finite_clip_planes() {
+    let face = AnalyticFace::sphere([0.; 3], 5.)
+        .unwrap()
+        .retained(DepthRange::new(3., Some(2.)).unwrap())
+        .unwrap();
+    let line = [LineCandidate {
+        source: 2,
+        points: [[-6., 0., 0.], [6., 0., 0.]],
+    }];
+    let (_, _, result) = project_scene_with_analytic_faces(
+        &[],
+        &[],
+        SceneExtras {
+            lines: &line,
+            ..Default::default()
+        },
+        &[face],
+        options(),
+    )
+    .unwrap();
+    let hidden: Vec<_> = result
+        .iter()
+        .filter_map(|segment| match segment.edge.curve {
+            Curve::Line(ends) if segment.edge.hidden => Some(ends.map(|p| p[0])),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(hidden.len(), 2);
+    for (actual, expected) in
+        hidden
+            .into_iter()
+            .flatten()
+            .zip([-21_f64.sqrt(), -4., 4., 21_f64.sqrt()])
+    {
+        close(actual, expected);
+    }
+}

@@ -187,10 +187,13 @@ pub fn project_drawing(
         {
             return sphere::project(input, frame.origin, sphere.radius_mm(), options);
         }
-        if solids.iter().any(|input| contains_sphere(input.solid)) {
+        if options.section_offset_mm.is_some()
+            && !options.section_only
+            && solids.iter().any(|input| contains_sphere(input.solid))
+        {
             return Err(err(
                 GeometryErrorKind::Unsupported,
-                "Rust sphere projection currently requires an isolated sphere",
+                "Rust retained sections with a sphere currently require an isolated sphere",
             ));
         }
         if let [input] = solids

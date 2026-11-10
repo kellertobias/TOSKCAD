@@ -53,15 +53,25 @@ fn push_cut(cuts: &mut Vec<f64>, angle: f64, [lo, hi]: Span) {
 
 /// Roots of x(t)^2 + y(t)^2 = radius^2 in the bounded rim trim.
 pub(crate) fn circle(x: Harmonic, y: Harmonic, radius: f64, trim: Span, cuts: &mut Vec<f64>) {
-    let scale =
-        x.0.into_iter()
-            .chain(y.0)
-            .map(f64::abs)
-            .fold(radius, f64::max);
+    norm([x, y], radius, trim, cuts);
+}
+
+/// Roots of the squared distance to the origin along a harmonic curve.
+pub(crate) fn norm<const N: usize>(
+    coordinates: [Harmonic; N],
+    radius: f64,
+    trim: Span,
+    cuts: &mut Vec<f64>,
+) {
+    let scale = coordinates
+        .into_iter()
+        .flat_map(|v| v.0)
+        .map(f64::abs)
+        .fold(radius, f64::max);
     if scale == 0. {
         return;
     }
-    let [x, y] = [x, y].map(|v| Harmonic(v.0.map(|coordinate| coordinate / scale)));
+    let coordinates = coordinates.map(|v| Harmonic(v.0.map(|coordinate| coordinate / scale)));
     let radius = radius / scale;
     for (phase, sign) in [(0., 1.), (PI, -1.), (TAU, 1.)] {
         let start = trim[0].max(phase - FRAC_PI_2);
@@ -70,7 +80,7 @@ pub(crate) fn circle(x: Harmonic, y: Harmonic, radius: f64, trim: Span, cuts: &m
             continue;
         }
         let numerator = |Harmonic([a, b, c])| [a + sign * b, 2. * sign * c, a - sign * b];
-        let [x, y] = [x, y].map(numerator);
+
         let mut polynomial = [
             -radius * radius,
             0.,
@@ -78,9 +88,15 @@ pub(crate) fn circle(x: Harmonic, y: Harmonic, radius: f64, trim: Span, cuts: &m
             0.,
             -radius * radius,
         ];
-        for (i, (u, v)) in x.into_iter().zip(y).enumerate() {
-            for (j, (p, q)) in x.into_iter().zip(y).enumerate() {
-                polynomial[i + j] = u.mul_add(p, v.mul_add(q, polynomial[i + j]));
+        let coefficients = coordinates.map(numerator);
+        for i in 0..3 {
+            for j in 0..3 {
+                polynomial[i + j] = coefficients
+                    .iter()
+                    .rev()
+                    .fold(polynomial[i + j], |value, axis| {
+                        axis[i].mul_add(axis[j], value)
+                    });
             }
         }
         let chart = [start, end].map(|angle| ((angle - phase) / 2.).tan());
