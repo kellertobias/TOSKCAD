@@ -146,17 +146,15 @@ impl Solid {
         }
         policy.validate()?;
         sweep_origins(profile, path_mm, feature, profile_origins, path_origins)?;
-        if let ([CurvedEdge2d::Circle { center, radius_mm }], &[start, corner, end]) =
-            (profile.outer.as_slice(), path_mm)
-        {
-            sweep_start_height(profile.frame, start, corner, policy)?;
+        if let [CurvedEdge2d::Circle { center, radius_mm }] = profile.outer.as_slice() {
+            sweep_start_height(profile.frame, path_mm[0], path_mm[1], policy)?;
             return Self::rust_sweep_circular_miter_named(
                 profile.frame,
                 *center,
                 *radius_mm,
-                [start, corner, end],
+                path_mm,
                 feature,
-                [&profile_origins[0], &path_origins[0], &path_origins[1]],
+                (&profile_origins[0], path_origins),
                 policy,
             );
         }

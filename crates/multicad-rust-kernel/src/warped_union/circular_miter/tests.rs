@@ -37,11 +37,10 @@ fn transports_quarters_through_non_coplanar_joints() {
     }
     close(trim(&shell, 4).start_rad(), 0.);
     close(trim(&shell, 8).start_rad(), 3. * FRAC_PI_2);
-    for joint in 1..3 {
-        let arms = [joint - 1, joint].map(|i| {
-            let delta = sub(SKEW_CHAIN[i + 1], SKEW_CHAIN[i]);
-            scale(delta, length3(delta).recip())
-        });
+    for (leg, points) in SKEW_CHAIN.windows(3).enumerate() {
+        let joint = leg + 1;
+        let arms = [sub(points[1], points[0]), sub(points[2], points[1])]
+            .map(|delta| scale(delta, length3(delta).recip()));
         for i in 0..4 {
             let edge = 4 * joint + i;
             let arc = trim(&shell, edge);
@@ -51,7 +50,7 @@ fn transports_quarters_through_non_coplanar_joints() {
             );
             let point = arc.ellipse().point_at(arc.start_rad() + FRAC_PI_2 / 3.);
             for axis in arms {
-                close(length3(cross(sub(point, SKEW_CHAIN[joint]), axis)), 2.);
+                close(length3(cross(sub(point, points[1]), axis)), 2.);
             }
             let uses: Vec<_> = shell
                 .faces()
