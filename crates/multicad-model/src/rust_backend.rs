@@ -585,11 +585,10 @@ pub(crate) fn primitive(
 ) -> Result<Solid, ModelError> {
     let fail = |message: String| error(Some(id), message);
     if let PrimitiveParameters::Box { size, frame } = source {
-        frame.validate().map_err(|e| error(Some(id), e))?;
-        let [x, y, z] = frame.origin.each_ref().map(|d| exact_length(d, parameters));
+        let resolved = frame.resolve(parameters).map_err(|e| error(Some(id), e))?;
         let [length, width, height] = size.each_ref().map(|d| exact_length(d, parameters));
         let placement = PlaneFrame {
-            origin: [x.map_err(fail)?, y.map_err(fail)?, z.map_err(fail)?].map(Rational::as_f64),
+            origin: resolved.origin,
             u: frame.u,
             v: frame.v,
         };
@@ -625,11 +624,9 @@ pub(crate) fn primitive(
             "Rust backend supports only box and axial cylinder primitives".into(),
         ));
     };
-    frame.validate().map_err(|e| error(Some(id), e))?;
-    let [x, y, z] = frame.origin.each_ref().map(|d| exact_length(d, parameters));
-    let origin = [x.map_err(fail)?, y.map_err(fail)?, z.map_err(fail)?];
+    let resolved = frame.resolve(parameters).map_err(|e| error(Some(id), e))?;
     let placement = PlaneFrame {
-        origin: origin.map(Rational::as_f64),
+        origin: resolved.origin,
         u: frame.u,
         v: frame.v,
     };
@@ -638,7 +635,14 @@ pub(crate) fn primitive(
     // Upward XY cylinders retain exact world coordinates for the axial
     // Boolean path. Other orientations place the same exact local solid.
     let zero = Rational::new(0, 1).expect("zero is representable");
-    let [x, y, bottom] = if axial { origin } else { [zero; 3] };
+    let [x, y, bottom] = if axial {
+        let [x, y, z] = [0, 1, 2].map(|i| {
+            exact_length(&frame.origin[i], parameters).or_else(|_| coordinate(resolved.origin[i]))
+        });
+        [x.map_err(fail)?, y.map_err(fail)?, z.map_err(fail)?]
+    } else {
+        [zero; 3]
+    };
     let circle = Circle::new([x, y], exact_length(radius, parameters).map_err(fail)?)
         .map_err(|e| fail(format!("Rust cylinder circle failed: {e:?}")))?;
     let cylinder = AxialCylinder::new(
@@ -651,7 +655,10 @@ pub(crate) fn primitive(
     let solid = Solid::from_axial_cylinder(
         cylinder,
         if axial {
-            placement
+            PlaneFrame {
+                origin: [x, y, bottom].map(Rational::as_f64),
+                ..placement
+            }
         } else {
             PlaneFrame::default()
         },
