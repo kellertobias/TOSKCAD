@@ -1126,11 +1126,14 @@ fn compile_stock_sources(
 }
 
 fn compare_stock_source(name: &str, id: EntityId, rust: &Model, native: &Model) {
+    assert_eq!(compare_exact_source(name, id, rust, native), 1, "{name}");
+}
+
+fn compare_exact_source(name: &str, id: EntityId, rust: &Model, native: &Model) -> u32 {
     assert!(rust.solid(id).unwrap().uses_rust_geometry(), "{name}");
     let a = &rust.snapshot().shapes[&id];
     let b = &native.snapshot().shapes[&id];
     assert_eq!(a.solid_count, b.solid_count, "{name}");
-    assert_eq!(a.solid_count, 1, "{name}");
     assert!(
         (a.volume_mm3 - b.volume_mm3).abs() <= 1e-7 + b.volume_mm3 * 1e-10,
         "{name}: {} != {}",
@@ -1146,6 +1149,7 @@ fn compare_stock_source(name: &str, id: EntityId, rust: &Model, native: &Model) 
     {
         near(a, b);
     }
+    a.solid_count
 }
 
 fn compare_stock_cut_lists(document: &Document, rust: &Model, native: &Model) -> usize {
@@ -1165,12 +1169,13 @@ fn rust_rebuilds_the_bundled_cabinet_panels_finger_joints_and_drawer_grooves() {
     let project = read_bundled_project(include_bytes!("../../../examples/cabinet.tcd"));
     let document = &project.document;
     let panels: Vec<_> = model::panels(document).map(|entity| entity.id).collect();
-    let (finger_cuts, rounded_slots): (Vec<_>, Vec<_>) = model::panel_joint_cuts(document)
-        .partition(|entity| {
+    let finger_cuts: Vec<_> = model::panel_joint_cuts(document)
+        .filter(|entity| {
             let cut = model::read_panel_joint_cut(document, entity.id).unwrap();
             let joint = model::read_panel_joint(document, cut.joint).unwrap();
             matches!(joint.kind, PanelJointKind::Finger { .. })
-        });
+        })
+        .collect();
     let grooves: Vec<_> = model::machining_cuts(document)
         .filter(|entity| {
             let cut = model::read_machining_cut(document, entity.id).unwrap();
@@ -1236,26 +1241,132 @@ fn rust_rebuilds_the_bundled_cabinet_panels_finger_joints_and_drawer_grooves() {
         }
     }
     assert!(compare_stock_cut_lists(document, &rust, &native) >= 8);
+}
 
-    // Select the first rounded-slot cut on a panel without including earlier cuts.
-    let unsupported = rounded_slots
-        .into_iter()
-        .find(|entity| {
-            let source = model::read_panel_joint_cut(document, entity.id).unwrap();
-            panels.contains(&source.input.producer)
+#[test]
+fn rust_rebuilds_the_whole_bundled_cabinet_with_exact_tenon_inserts_and_mortises() {
+    let project = read_bundled_project(include_bytes!("../../../examples/cabinet.tcd"));
+    let document = &project.document;
+    let parameters = multicad_core::parameters::evaluate(document).unwrap();
+    let mortises: Vec<_> = model::panel_joint_cuts(document)
+        .filter_map(|entity| {
+            let cut = model::read_panel_joint_cut(document, entity.id).unwrap();
+            let joint = model::read_panel_joint(document, cut.joint).unwrap();
+            matches!(joint.kind, PanelJointKind::LooseTenon(_)).then_some((entity, cut, joint))
         })
-        .unwrap();
-    let Err(error) = Compiler::default().compile_sources_with_backend(
-        document,
-        0,
-        &[unsupported.id],
-        GeometryBackend::Rust,
-        None,
-    ) else {
-        panic!("rounded slot unexpectedly built");
+        .collect();
+    let inserts: Vec<_> = model::loose_tenons(document).collect();
+    assert_eq!((mortises.len(), inserts.len()), (16, 8));
+    let roots: Vec<_> = mortises
+        .iter()
+        .map(|(entity, _, _)| entity.id)
+        .chain(inserts.iter().map(|entity| entity.id))
+        .collect();
+    let compile = |backend| {
+        Compiler::default()
+            .compile_with_backend(document, 0, backend, None)
+            .unwrap_or_else(|error| panic!("{backend:?} failed: {error}"))
     };
-    assert_eq!(error.entity, Some(unsupported.id));
-    assert!(error.message.contains("slot"), "{error}");
+    let rust = compile(GeometryBackend::Rust);
+    let native = compile(GeometryBackend::OpenCascade);
+    let a = rust.snapshot();
+    let b = native.snapshot();
+    assert_eq!((a.shapes.len(), a.bodies.len()), (137, 19));
+    assert!(a.shapes.keys().eq(b.shapes.keys()));
+    assert_eq!(a.bodies, b.bodies);
+    for (&id, shape) in &a.shapes {
+        assert!(rust.solid(id).unwrap().uses_rust_geometry(), "{id}");
+        assert!(!shape.mesh.indices.is_empty(), "{id}");
+    }
+    for (&body, &id) in &a.bodies {
+        compare_exact_source(&document.get(body).unwrap().name, id, &rust, &native);
+    }
+    let stadium_area =
+        |span: f64, radius: f64| 2. * radius * span + std::f64::consts::PI * radius.powi(2);
+    for (entity, cut, joint) in mortises {
+        let id = entity.id;
+        compare_stock_source(&entity.name, id, &rust, &native);
+        let PanelJointKind::LooseTenon(spec) = joint.kind else {
+            unreachable!();
+        };
+        let (corner, layout) = model::resolve_loose_tenon(
+            document,
+            &parameters,
+            &spec,
+            &joint.pairs[cut.pair as usize],
+        )
+        .unwrap();
+        let tools = match cut.side {
+            model::PanelJointSide::A => corner.cut_a,
+            model::PanelJointSide::B => corner.cut_b,
+        };
+        let recesses = if cut.side == layout.face_side {
+            layout.face_mortises
+        } else {
+            layout.edge_mortises
+        };
+        assert_eq!(tools.len(), recesses.len());
+        let solid = rust.solid(id).unwrap();
+        let faces = solid.faces().unwrap();
+        let mut removed = 0.;
+        for (tool, recess) in tools.iter().zip(recesses) {
+            let (a, b, radius) = tool.slot.unwrap();
+            let area = stadium_area((b[0] - a[0]).hypot(b[1] - a[1]), radius);
+            removed += area * recess.depth_mm;
+            let center: [f64; 3] = std::array::from_fn(|i| {
+                tool.origin[i]
+                    + tool.sweep[i]
+                    + tool.u[i] * (a[0] + b[0]) / 2.
+                    + tool.v[i] * (a[1] + b[1]) / 2.
+            });
+            let floor = faces
+                .iter()
+                .find(|face| {
+                    face.plane.is_some()
+                        && face
+                            .center_mm
+                            .into_iter()
+                            .zip(center)
+                            .all(|(a, b)| (a - b).abs() < 1e-6)
+                })
+                .expect("mortise has a planar floor at its resolved center");
+            near(floor.area_mm2, area);
+        }
+        near(
+            rust.solid(cut.input.producer)
+                .unwrap()
+                .volume_mm3()
+                .unwrap()
+                - solid.volume_mm3().unwrap(),
+            removed,
+        );
+    }
+    for entity in inserts {
+        let id = entity.id;
+        let layout = model::resolve_loose_tenon_feature(document, &parameters, id).unwrap();
+        assert_eq!(
+            compare_exact_source(&entity.name, id, &rust, &native) as usize,
+            layout.len()
+        );
+        let volume = layout
+            .iter()
+            .map(|tenon| {
+                let radius = tenon.thickness_mm / 2.;
+                stadium_area((tenon.width_mm - 2. * radius).max(0.), radius)
+                    * (tenon.into_face_mm + tenon.into_edge_mm)
+            })
+            .sum();
+        near(rust.solid(id).unwrap().volume_mm3().unwrap(), volume);
+    }
+    for id in roots {
+        let name = &document.get(id).unwrap().name;
+        multicad_model::export::mesh::tessellate_manufacturing(
+            rust.solid(id).unwrap(),
+            &Default::default(),
+            name,
+        )
+        .unwrap_or_else(|error| panic!("{name}: {error}"));
+    }
 }
 
 #[test]

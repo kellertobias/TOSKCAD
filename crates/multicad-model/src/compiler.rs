@@ -1186,6 +1186,7 @@ impl Compiler {
                         context.parameters(),
                         id,
                         self.policy,
+                        backend,
                     )?
                 }
                 (model::MACHINING_CUT_TYPE, model::MACHINING_CUT_SCHEMA) => {

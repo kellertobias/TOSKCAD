@@ -10,7 +10,7 @@ use multicad_core::{
     model::*,
     project_file::{self, ProjectFile},
 };
-use multicad_model::{Compiler, Model};
+use multicad_model::{Compiler, GeometryBackend, Model};
 use std::f64::consts::PI;
 
 fn actor() -> Actor {
@@ -144,6 +144,40 @@ fn joint(f: &Fixture, spec: LooseTenonSpec) -> PanelJointDefinition {
             b: f.part(PanelRole::Top),
         }],
     }
+}
+
+#[test]
+fn rust_preserves_coincident_tenon_end_centers_as_exact_circles() {
+    let f = fixture();
+    let side = f.part(PanelRole::RightSide);
+    let top = f.part(PanelRole::Top);
+    let spec = LooseTenonSpec {
+        width: length(8.),
+        ..domino()
+    };
+    let p = prepare_panel_joint(
+        &f.s,
+        f.s.revision(),
+        actor(),
+        "Round tenon",
+        &joint(&f, spec),
+    )
+    .unwrap();
+    let document = p.model.prepared.document();
+    let tenon = joint_tenons(document, p.joint)[0].2;
+    let rust = Compiler::default()
+        .compile_with_backend(document, 0, GeometryBackend::Rust, None)
+        .unwrap();
+    near(
+        volume(&rust, side),
+        18. * 400. * 720. - 2. * slot(14., 8.) * 15.,
+    );
+    near(volume(&rust, top), 18. * 400. * 564. - 2. * PI * 16. * 28.);
+    near(volume(&rust, tenon), 2. * PI * 16. * 40.);
+    let inserts = solid(&rust, tenon);
+    assert!(inserts.uses_rust_geometry());
+    assert_eq!(inserts.solid_count().unwrap(), 2);
+    assert_eq!(inserts.faces().unwrap().len(), 6);
 }
 
 #[test]

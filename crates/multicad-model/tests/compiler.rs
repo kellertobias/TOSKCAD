@@ -16,7 +16,7 @@ use multicad_core::{
     sketch_regions,
 };
 use multicad_kernel::Solid;
-use multicad_model::{Compiler, Model, ShapeSnapshot};
+use multicad_model::{Compiler, GeometryBackend, Model, ShapeSnapshot};
 
 fn shape(model: &Model, body: multicad_core::document::EntityId) -> &ShapeSnapshot {
     let producer = model.snapshot().bodies.get(&body).expect("Part producer");
@@ -599,38 +599,44 @@ fn rotated_box_and_cylinder_primitives_compile_named_exact_solids_in_their_frame
         session.commit(prepared.prepared).unwrap();
     }
     let original = session.document().clone();
-    let model = Compiler::default()
-        .compile(&original, session.revision())
-        .unwrap();
-    assert_eq!(model.snapshot().bodies.len(), 2);
-    let box_shape = shape(&model, box_request.body);
-    near(box_shape.volume_mm3, 6000.);
-    point_near(box_shape.bounds.min, [100., -10., 5.]);
-    point_near(box_shape.bounds.max, [130., 0., 25.]);
-    let cylinder_shape = shape(&model, cylinder.body);
-    near(cylinder_shape.volume_mm3, 108. * std::f64::consts::PI);
-    point_near(cylinder_shape.bounds.min, [-23., 15., 5.]);
-    point_near(cylinder_shape.bounds.max, [-17., 27., 11.]);
-    for request in [&box_request, &cylinder] {
-        let shape = shape(&model, request.body);
-        assert_eq!(shape.solid_count, 1);
-        for role in ["cap.start", "cap.end"] {
-            let cap = shape
-                .topology
-                .elements
-                .iter()
-                .find(|element| {
-                    element.key.kind == TopologyKind::Face
-                        && element.origins.contains(&Origin {
-                            source: request.feature,
-                            role: role.into(),
-                        })
-                })
-                .expect("Named primitive cap");
-            assert!(
-                !cap.frames.is_empty(),
-                "Primitive planar cap has no truthful source frame"
+    for backend in [GeometryBackend::OpenCascade, GeometryBackend::Rust] {
+        let model = Compiler::default()
+            .compile_with_backend(&original, session.revision(), backend, None)
+            .unwrap();
+        assert_eq!(model.snapshot().bodies.len(), 2);
+        let box_shape = shape(&model, box_request.body);
+        near(box_shape.volume_mm3, 6000.);
+        point_near(box_shape.bounds.min, [100., -10., 5.]);
+        point_near(box_shape.bounds.max, [130., 0., 25.]);
+        let cylinder_shape = shape(&model, cylinder.body);
+        near(cylinder_shape.volume_mm3, 108. * std::f64::consts::PI);
+        point_near(cylinder_shape.bounds.min, [-23., 15., 5.]);
+        point_near(cylinder_shape.bounds.max, [-17., 27., 11.]);
+        for request in [&box_request, &cylinder] {
+            assert_eq!(
+                model.solid(request.feature).unwrap().uses_rust_geometry(),
+                backend == GeometryBackend::Rust
             );
+            let shape = shape(&model, request.body);
+            assert_eq!(shape.solid_count, 1);
+            for role in ["cap.start", "cap.end"] {
+                let cap = shape
+                    .topology
+                    .elements
+                    .iter()
+                    .find(|element| {
+                        element.key.kind == TopologyKind::Face
+                            && element.origins.contains(&Origin {
+                                source: request.feature,
+                                role: role.into(),
+                            })
+                    })
+                    .expect("Named primitive cap");
+                assert!(
+                    !cap.frames.is_empty(),
+                    "Primitive planar cap has no truthful source frame"
+                );
+            }
         }
     }
     assert_eq!(session.document(), &original);

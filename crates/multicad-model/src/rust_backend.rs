@@ -11,7 +11,7 @@ use multicad_core::{
     references::Origin,
 };
 use multicad_kernel::{
-    CurvedEdge2d, CurvedProfile, GeometryPolicy, PlaneFrame, Solid,
+    CurvedEdge2d, CurvedProfile, GeometryPolicy, PlaneFrame, RigidTransform, Solid,
     rust_kernel::{
         Circle, Rational,
         cylinder::AxialCylinder,
@@ -49,6 +49,7 @@ pub(crate) fn validate_document(
                         model::PANEL_SCHEMA | model::RECIPE_PANEL_SCHEMA
                     )
                     | (model::PANEL_JOINT_CUT_TYPE, model::PANEL_JOINT_CUT_SCHEMA)
+                    | (model::LOOSE_TENON_TYPE, model::LOOSE_TENON_SCHEMA)
                     | (model::MACHINING_CUT_TYPE, model::MACHINING_CUT_SCHEMA)
                     | (model::imports::STEP_BODY_TYPE, 1)
             ) =>
@@ -604,27 +605,47 @@ pub(crate) fn primitive(
         ));
     };
     frame.validate().map_err(|e| error(Some(id), e))?;
-    let [x, y, bottom] =
-        [&frame.origin[0], &frame.origin[1], &frame.origin[2]].map(|d| exact_length(d, parameters));
-    let circle = Circle::new(
-        [x.map_err(fail)?, y.map_err(fail)?],
-        exact_length(radius, parameters).map_err(fail)?,
-    )
-    .map_err(|e| fail(format!("Rust cylinder circle failed: {e:?}")))?;
-    let cylinder = AxialCylinder::new(
-        id.uuid_bits(),
-        circle,
-        bottom.map_err(fail)?,
-        exact_length(height, parameters).map_err(fail)?,
-    )
-    .map_err(|e| fail(format!("Rust cylinder failed: {e:?}")))?;
-    let [x, y] = circle.center().map(Rational::as_f64);
+    let [x, y, z] = frame.origin.each_ref().map(|d| exact_length(d, parameters));
+    let origin = [x.map_err(fail)?, y.map_err(fail)?, z.map_err(fail)?];
     let placement = PlaneFrame {
-        origin: [x, y, cylinder.bottom().as_f64()],
+        origin: origin.map(Rational::as_f64),
         u: frame.u,
         v: frame.v,
     };
-    Solid::from_axial_cylinder(cylinder, placement, policy).map_err(|e| error(Some(id), e))
+    let normal = placement.normal();
+    let axial = placement.u[2] == 0. && placement.v[2] == 0. && normal[2] > 0.;
+    // Upward XY cylinders retain exact world coordinates for the axial
+    // Boolean path. Other orientations place the same exact local solid.
+    let zero = Rational::new(0, 1).expect("zero is representable");
+    let [x, y, bottom] = if axial { origin } else { [zero; 3] };
+    let circle = Circle::new([x, y], exact_length(radius, parameters).map_err(fail)?)
+        .map_err(|e| fail(format!("Rust cylinder circle failed: {e:?}")))?;
+    let cylinder = AxialCylinder::new(
+        id.uuid_bits(),
+        circle,
+        bottom,
+        exact_length(height, parameters).map_err(fail)?,
+    )
+    .map_err(|e| fail(format!("Rust cylinder failed: {e:?}")))?;
+    let solid = Solid::from_axial_cylinder(
+        cylinder,
+        if axial {
+            placement
+        } else {
+            PlaneFrame::default()
+        },
+        policy,
+    )
+    .map_err(|e| error(Some(id), e))?;
+    if axial {
+        return Ok(solid);
+    }
+    solid
+        .transformed(RigidTransform {
+            rotation: std::array::from_fn(|i| [placement.u[i], placement.v[i], normal[i]]),
+            translation_mm: placement.origin,
+        })
+        .map_err(|e| error(Some(id), e))
 }
 
 #[cfg(test)]
