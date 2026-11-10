@@ -124,7 +124,38 @@ pub(crate) fn build(
             Solid::generated_za_worm_wheel_named(spec, feature, policy)
         }
     };
-    let frame = r.frame();
+    place(feature, &r, solid)
+}
+
+pub(crate) fn build_rust(
+    feature: EntityId,
+    source: &GearDefinition,
+    parameters: &EvaluatedParameters,
+    policy: GeometryPolicy,
+) -> Result<Solid, ModelError> {
+    let resolved = source
+        .parameters
+        .resolve_geometry(parameters)
+        .map_err(|e| error(Some(feature), e))?;
+    let NativeSpecification::Rack(spec) = specification(feature, &resolved)? else {
+        return Err(error(
+            Some(feature),
+            "Rust gear geometry currently requires a straight rack",
+        ));
+    };
+    place(
+        feature,
+        &resolved,
+        Solid::rust_straight_rack_named(spec, feature, policy),
+    )
+}
+
+fn place(
+    feature: EntityId,
+    geometry: &ResolvedGearGeometry,
+    solid: Result<Solid, multicad_kernel::GeometryError>,
+) -> Result<Solid, ModelError> {
+    let frame = geometry.frame();
     let placement = RigidTransform {
         rotation: std::array::from_fn(|i| [frame.u[i], frame.v[i], frame.n[i]]),
         translation_mm: frame.origin,

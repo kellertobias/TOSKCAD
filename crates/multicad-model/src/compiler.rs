@@ -1190,8 +1190,11 @@ impl Compiler {
                 (model::GEAR_TYPE, model::GEAR_SCHEMA) => {
                     let source = model::read_gear(document, id).map_err(|e| error(Some(id), e))?;
                     let started = std::time::Instant::now();
-                    let solid =
-                        crate::gears::build(id, &source, context.parameters(), self.policy)?;
+                    let build = match backend {
+                        GeometryBackend::OpenCascade => crate::gears::build,
+                        GeometryBackend::Rust => crate::gears::build_rust,
+                    };
+                    let solid = build(id, &source, context.parameters(), self.policy)?;
                     timings.gear_construction_ms += started.elapsed().as_secs_f64() * 1000.;
                     solid
                 }

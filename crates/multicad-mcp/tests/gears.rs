@@ -112,8 +112,17 @@ fn stale_cancelled_unsupported_and_invalid_requests_leave_no_recipe_or_solid() {
 }
 
 #[test]
-fn rack_dimensions_edit_history_and_invalid_requests_share_native_preflight() {
-    let h = host();
+fn rack_dimensions_edit_history_and_invalid_requests_share_backend_preflight() {
+    rack_edit_history(host());
+    rack_edit_history(Headless::with_geometry_backend(
+        Workspace::new(Document::new("Rust rack").unwrap()).unwrap(),
+        None,
+        false,
+        multicad_model::GeometryBackend::Rust,
+    ));
+}
+
+fn rack_edit_history(h: Headless) {
     let created = run(
         &h,
         "set_gear",

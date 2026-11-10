@@ -55,6 +55,7 @@ pub(crate) fn validate_document(
                         model::WALL_SCHEMA | model::LAYERED_WALL_SCHEMA
                     )
                     | (model::THREAD_TYPE, model::THREAD_SCHEMA)
+                    | (model::GEAR_TYPE, model::GEAR_SCHEMA)
                     | (model::MECHANICAL_PART_TYPE, model::MECHANICAL_PART_SCHEMA)
                     | (model::EDGE_TREATMENT_TYPE, model::EDGE_TREATMENT_SCHEMA)
                     | (
