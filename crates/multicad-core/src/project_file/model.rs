@@ -558,6 +558,7 @@ pub fn supported_capabilities() -> BTreeSet<String> {
         crate::model::SPLIT_V2_CAPABILITY.into(),
         crate::model::TRANSFORM_CAPABILITY.into(),
         crate::model::SCALE_CAPABILITY.into(),
+        crate::model::HELICAL_TUBE_CUT_CAPABILITY.into(),
         crate::model::EDGE_TREATMENT_CAPABILITY.into(),
         crate::model::EDGE_TREATMENT_V2_CAPABILITY.into(),
         crate::model::ADVANCED_CAPABILITY.into(),

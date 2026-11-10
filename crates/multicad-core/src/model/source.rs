@@ -742,6 +742,9 @@ pub(crate) fn validate(document: &Document) -> Result<(), DocumentError> {
                 super::EDGE_TREATMENT_TYPE => {
                     super::read_edge_treatment(document, entity.id)?;
                 }
+                super::HELICAL_TUBE_CUT_TYPE => {
+                    super::read_helical_tube_cut(document, entity.id)?;
+                }
                 super::ADVANCED_TYPE => {
                     super::read_advanced(document, entity.id)?;
                 }
@@ -879,6 +882,7 @@ pub fn required_capabilities(document: &Document) -> BTreeSet<String> {
                     super::TRANSFORM_TYPE,
                     super::SCALE_TYPE,
                     super::EDGE_TREATMENT_TYPE,
+                    super::HELICAL_TUBE_CUT_TYPE,
                     super::ADVANCED_TYPE,
                     super::TRANSFER_TYPE,
                     super::ALIGN_TYPE,

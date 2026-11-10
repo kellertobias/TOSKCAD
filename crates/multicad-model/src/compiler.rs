@@ -1484,6 +1484,43 @@ impl Compiler {
                         &captures,
                     )?
                 }
+                (model::HELICAL_TUBE_CUT_TYPE, model::HELICAL_TUBE_CUT_SCHEMA) => {
+                    if backend != GeometryBackend::Rust {
+                        return Err(error(
+                            Some(id),
+                            "Helical tube cut requires the Rust geometry backend",
+                        ));
+                    }
+                    let source = model::read_helical_tube_cut(document, id)
+                        .map_err(|e| error(Some(id), e))?;
+                    let producer = source
+                        .input
+                        .resolve_producer(document)
+                        .map_err(|e| error(Some(id), e))?;
+                    let stock = solids.get(&producer).ok_or_else(|| {
+                        error(
+                            Some(id),
+                            "Helical tube cut stock has no current exact solid",
+                        )
+                    })?;
+                    let tool = source
+                        .parameters
+                        .resolve(context.parameters())
+                        .map_err(|e| error(Some(id), e))?;
+                    stock
+                        .rust_cut_helical_tube(
+                            multicad_kernel::HelicalTube {
+                                radius_mm: tool.radius_mm,
+                                pitch_mm: tool.pitch_mm,
+                                path_height_mm: tool.path_height_mm,
+                                start_height_mm: tool.start_height_mm,
+                                start_angle_rad: tool.start_angle_rad,
+                            },
+                            id,
+                            self.policy,
+                        )
+                        .map_err(|e| error(Some(id), e))?
+                }
                 (model::TRANSFER_TYPE, 1) => {
                     let (_, source, target, captures) = model::read_transfer_feature(document, id)
                         .map_err(|e| error(Some(id), e))?;

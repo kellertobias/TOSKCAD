@@ -42,6 +42,7 @@ pub(crate) fn validate_document(
                     | (model::BOOLEAN_TYPE, model::BOOLEAN_SCHEMA)
                     | (model::TRANSFORM_TYPE, model::TRANSFORM_SCHEMA)
                     | (model::SCALE_TYPE, model::SCALE_SCHEMA)
+                    | (model::HELICAL_TUBE_CUT_TYPE, model::HELICAL_TUBE_CUT_SCHEMA)
                     | (model::ALIGN_TYPE, model::ALIGN_SCHEMA)
                     | (model::ADVANCED_TYPE, model::ADVANCED_SCHEMA)
                     | (

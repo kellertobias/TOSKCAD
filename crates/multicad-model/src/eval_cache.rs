@@ -99,6 +99,7 @@ pub fn cacheable_type(type_id: &str) -> bool {
         model::SPLIT_TYPE,
         model::TRANSFORM_TYPE,
         model::EDGE_TREATMENT_TYPE,
+        model::HELICAL_TUBE_CUT_TYPE,
         model::ADVANCED_TYPE,
         model::ALIGN_TYPE,
         model::PANEL_TYPE,
