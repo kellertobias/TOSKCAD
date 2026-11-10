@@ -1513,6 +1513,7 @@ impl Compiler {
                             model::AdvancedParameters::Sweep(_)
                                 | model::AdvancedParameters::Loft(_)
                                 | model::AdvancedParameters::Mirror(_)
+                                | model::AdvancedParameters::Draft(_)
                                 | model::AdvancedParameters::Shell(_)
                                 | model::AdvancedParameters::LinearPattern(_)
                                 | model::AdvancedParameters::CircularPattern(
@@ -1522,7 +1523,7 @@ impl Compiler {
                     {
                         return Err(error(
                             Some(id),
-                            "Rust advanced operations currently support straight sweeps, coaxial circular lofts, cardinal mirrors, rectangular shells, linear patterns and separate-member circular patterns",
+                            "Rust advanced operations currently support straight sweeps, coaxial circular lofts, cardinal mirrors, rectangular drafts, rectangular shells, linear patterns and separate-member circular patterns",
                         ));
                     }
                     let selected =

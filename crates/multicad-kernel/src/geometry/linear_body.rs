@@ -6,7 +6,9 @@ use crate::{
     rust_prism_topology::{Builder, polygon_planar_loops, position},
     taper,
 };
-use multicad_core::references::{AnalyticGeometry, ReferenceFrame, TopologySnapshot};
+use multicad_core::references::{
+    AnalyticGeometry, AnchoredFrame, ReferenceFrame, TopologySnapshot,
+};
 use multicad_rust_kernel::{
     display::{DisplayMesh, MeshError, Tessellation},
     linear_sweep::{Error as SweepError, Sweep},
@@ -24,6 +26,7 @@ pub(crate) struct LinearBody {
     geometry: Geometry,
     pub(super) feature: EntityId,
     edges: Vec<(Origin, bool)>,
+    draft_face_origins: Option<Box<[Vec<Origin>; 6]>>,
     authored_offset: Point2,
     reverse: bool,
 }
@@ -291,6 +294,7 @@ impl Solid {
                 },
                 feature,
                 edges,
+                draft_face_origins: None,
                 authored_offset: [0.; 2],
                 reverse: false,
             },
@@ -397,12 +401,35 @@ impl Solid {
                 geometry: Geometry::Ruled(geometry),
                 feature,
                 edges,
+                draft_face_origins: None,
                 authored_offset,
                 reverse,
             },
             frame,
             policy,
         )
+    }
+
+    pub(super) fn from_attributed_linear_draft(
+        geometry: Sweep,
+        frame: PlaneFrame,
+        feature: EntityId,
+        face_origins: [Vec<Origin>; 6],
+        policy: GeometryPolicy,
+    ) -> Result<Self, GeometryError> {
+        let edges = face_origins[2..]
+            .iter()
+            .map(|origins| (origins[0].clone(), false))
+            .collect();
+        let mut solid =
+            Self::from_linear_sweep(geometry, frame, feature, edges, [0.; 2], false, policy)?;
+        let SolidBody::Linear(body, _) = &mut solid.body else {
+            unreachable!("linear draft result");
+        };
+        Rc::get_mut(body)
+            .expect("new linear body")
+            .draft_face_origins = Some(Box::new(face_origins));
+        Ok(solid)
     }
 
     fn from_linear_body(
@@ -674,24 +701,29 @@ impl LinearBody {
         owner: EntityId,
         revision: u64,
     ) -> TopologySnapshot {
-        let face_origins = ["cap.start", "cap.end"]
-            .into_iter()
-            .map(|role| {
-                vec![Origin {
-                    source: self.feature,
-                    role: role.into(),
-                }]
-            })
-            .chain(self.edges.iter().map(|(curve, _)| {
-                vec![
-                    Origin {
-                        source: self.feature,
-                        role: format!("side/{}/{}", curve.source, curve.role),
-                    },
-                    curve.clone(),
-                ]
-            }))
-            .collect();
+        let face_origins = self.draft_face_origins.as_ref().map_or_else(
+            || {
+                ["cap.start", "cap.end"]
+                    .into_iter()
+                    .map(|role| {
+                        vec![Origin {
+                            source: self.feature,
+                            role: role.into(),
+                        }]
+                    })
+                    .chain(self.edges.iter().map(|(curve, _)| {
+                        vec![
+                            Origin {
+                                source: self.feature,
+                                role: format!("side/{}/{}", curve.source, curve.role),
+                            },
+                            curve.clone(),
+                        ]
+                    }))
+                    .collect()
+            },
+            |origins| origins.to_vec(),
+        );
         let mut build = Builder::new(face_origins);
         for (cap, end) in [false, true].into_iter().enumerate() {
             build.face(
@@ -729,10 +761,23 @@ impl LinearBody {
                 &[side.previous + 2, side.index + 2],
             );
         }
+        let mut elements = build.into_elements();
+        if self.draft_face_origins.is_some() {
+            for element in &mut elements {
+                if let Some(AnalyticGeometry::Plane { frame }) = element.geometry {
+                    element.frames = element
+                        .origins
+                        .iter()
+                        .cloned()
+                        .map(|origin| AnchoredFrame { origin, frame })
+                        .collect();
+                }
+            }
+        }
         TopologySnapshot {
             owner,
             revision,
-            elements: build.into_elements(),
+            elements,
         }
     }
 

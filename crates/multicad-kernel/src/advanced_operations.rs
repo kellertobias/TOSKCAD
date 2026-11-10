@@ -242,17 +242,21 @@ impl Solid {
             ));
         }
         let direction = pull_direction.map(|v| v / length);
+        let indices = self.selected_faces(faces, feature, false)?;
+        let checked_neutral = neutral.checked(policy)?;
+        if self.uses_rust_geometry() {
+            return self.draft_rectangular(faces, direction, neutral, angle_rad, feature, policy);
+        }
         let direction = ffi::Point3 {
             x: direction[0],
             y: direction[1],
             z: direction[2],
         };
-        let indices = self.selected_faces(faces, feature, false)?;
         let handle = ffi::draft_solid(
             self.occt()?,
             &indices,
             &direction,
-            &neutral.checked(policy)?,
+            &checked_neutral,
             angle_rad,
         )
         .map_err(|e| failure(GeometryErrorKind::Native, e.to_string()))?;

@@ -13,6 +13,7 @@ use multicad_rust_kernel::{
 };
 use std::collections::{BTreeMap, BTreeSet};
 
+mod draft;
 mod mirror;
 mod plane_split;
 mod pockets;
