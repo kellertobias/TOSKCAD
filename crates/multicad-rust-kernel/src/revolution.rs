@@ -195,25 +195,25 @@ impl Revolution {
     }
 }
 
-fn edges(ring: &[Point]) -> impl Iterator<Item = Segment> + '_ {
+pub(crate) fn edges(ring: &[Point]) -> impl Iterator<Item = Segment> + '_ {
     ring.iter()
         .zip(ring.iter().cycle().skip(1))
         .map(|(&a, &b)| [a, b])
 }
 
-fn sub([a, b]: Point, [c, d]: Point) -> Point {
+pub(crate) fn sub([a, b]: Point, [c, d]: Point) -> Point {
     [a - c, b - d]
 }
 
-fn dot([a, b]: Point, [c, d]: Point) -> f64 {
+pub(crate) fn dot([a, b]: Point, [c, d]: Point) -> f64 {
     a.mul_add(c, b * d)
 }
 
-fn cross([a, b]: Point, [c, d]: Point) -> f64 {
+pub(crate) fn cross([a, b]: Point, [c, d]: Point) -> f64 {
     a.mul_add(d, -b * c)
 }
 
-fn length([x, y]: Point) -> f64 {
+pub(crate) fn length([x, y]: Point) -> f64 {
     x.hypot(y)
 }
 
@@ -221,7 +221,7 @@ fn orientation([a, b]: Segment, point: Point) -> f64 {
     cross(sub(b, a), sub(point, a))
 }
 
-fn distance_to_segment(point: Point, [a, b]: Segment) -> f64 {
+pub(crate) fn distance_to_segment(point: Point, [a, b]: Segment) -> f64 {
     let segment = sub(b, a);
     let relative = sub(point, a);
     let along = dot(relative, segment);
@@ -249,13 +249,18 @@ fn segments_meet(a: Segment, b: Segment, slack: f64) -> bool {
 }
 
 fn valid_ring(ring: &[Point], exterior: bool, slack: f64) -> bool {
-    for (i, segment @ [a, b]) in edges(ring).enumerate() {
-        let c = ring[(i + 2) % ring.len()];
-        if b[0] == 0. && (!exterior || (a[0] != 0. && c[0] != 0.)) {
+    for (i, [a, b]) in edges(ring).enumerate() {
+        if b[0] == 0. && (!exterior || (a[0] != 0. && ring[(i + 2) % ring.len()][0] != 0.)) {
             return false;
         }
+    }
+    simple_ring(ring, slack)
+}
+
+pub(crate) fn simple_ring(ring: &[Point], slack: f64) -> bool {
+    for (i, segment @ [a, b]) in edges(ring).enumerate() {
         let ab = sub(b, a);
-        let bc = sub(c, b);
+        let bc = sub(ring[(i + 2) % ring.len()], b);
         let span = length(ab);
         if span <= slack
             || (cross(ab, bc).abs() <= slack * span && dot(ab, bc) < 0.)
@@ -270,7 +275,7 @@ fn valid_ring(ring: &[Point], exterior: bool, slack: f64) -> bool {
     true
 }
 
-fn separated(previous: &[Point], hole: &[Point], exterior: bool, slack: f64) -> bool {
+pub(crate) fn separated(previous: &[Point], hole: &[Point], exterior: bool, slack: f64) -> bool {
     if edges(previous).any(|a| edges(hole).any(|b| segments_meet(a, b, slack))) {
         return false;
     }
@@ -281,7 +286,7 @@ fn separated(previous: &[Point], hole: &[Point], exterior: bool, slack: f64) -> 
     }
 }
 
-fn inside(ring: &[Point], point: Point) -> bool {
+pub(crate) fn inside(ring: &[Point], point: Point) -> bool {
     let mut inside = false;
     for segment @ [a, b] in edges(ring) {
         if (a[1] > point[1]) != (b[1] > point[1])
@@ -296,10 +301,10 @@ fn inside(ring: &[Point], point: Point) -> bool {
 // Neumaier compensated summation also handles terms larger than the running
 // total. Rebasing the triangles keeps narrow sections at large radii stable.
 #[derive(Clone, Copy, Default)]
-struct Sum(f64, f64);
+pub(crate) struct Sum(f64, f64);
 
 impl Sum {
-    fn add(&mut self, term: f64) {
+    pub(crate) fn add(&mut self, term: f64) {
         let sum = self.0 + term;
         self.1 += if self.0.abs() >= term.abs() {
             (self.0 - sum) + term
@@ -309,12 +314,12 @@ impl Sum {
         self.0 = sum;
     }
 
-    fn value(self) -> f64 {
+    pub(crate) fn value(self) -> f64 {
         self.0 + self.1
     }
 }
 
-fn moments(ring: &[Point], origin: Point) -> [f64; 3] {
+pub(crate) fn moments(ring: &[Point], origin: Point) -> [f64; 3] {
     let mut sum = [Sum::default(); 3];
     for [a, b] in edges(ring).map(|edge| edge.map(|p| sub(p, origin))) {
         let area = cross(a, b) / 2.;

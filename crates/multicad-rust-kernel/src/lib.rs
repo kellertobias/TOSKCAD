@@ -8,6 +8,8 @@ pub mod headed_screw;
 pub mod helical_thread;
 pub mod helical_thread_mesh;
 pub mod hex_nut;
+pub mod linear_sweep;
+pub mod linear_sweep_mesh;
 pub mod manufacturing;
 pub mod orthogonal;
 pub mod orthogonal_boundary;
