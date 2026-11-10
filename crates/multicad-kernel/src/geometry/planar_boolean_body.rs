@@ -11,6 +11,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 type Point = [f64; 3];
 type Key = [usize; 2];
+type ConvexPart = (ConvexPiece, Vec<usize>);
 
 pub(crate) struct PlanarBooleanBody {
     pub(super) feature: EntityId,
@@ -49,7 +50,7 @@ fn norm([x, y, z]: Point) -> f64 {
     x.hypot(y).hypot(z)
 }
 
-fn winding(points: &[Point], normal: Point) -> f64 {
+pub(super) fn winding(points: &[Point], normal: Point) -> f64 {
     let a = points[0];
     points
         .windows(2)
@@ -130,6 +131,32 @@ fn convex_faces(
 }
 
 impl Solid {
+    pub(super) fn planar_convex_parts(
+        &self,
+        topology: &TopologySnapshot,
+        policy: GeometryPolicy,
+    ) -> Option<Vec<ConvexPart>> {
+        let tolerance = policy.linear_tolerance_mm;
+        if let Some((body, frame)) = self.orthogonal_body() {
+            if body.has_curved_cuts() {
+                return None;
+            }
+            body.drawing_stock()
+                .cells
+                .iter()
+                .map(|&cell| {
+                    Some((
+                        ConvexPiece::new(cell_faces(cell, frame), tolerance).ok()?,
+                        Vec::new(),
+                    ))
+                })
+                .collect()
+        } else {
+            let (faces, ancestry) = convex_faces(self, topology, policy)?;
+            Some(vec![(ConvexPiece::new(faces, tolerance).ok()?, ancestry)])
+        }
+    }
+
     /// Join supported positive convex planar pieces with one shared Boolean.
     pub fn union_planar_pieces(
         solids: &[&Self],
@@ -162,21 +189,7 @@ impl Solid {
                 Ok(topology) => topology,
                 Err(cause) => return Some(Err(cause)),
             };
-            if let Some((body, frame)) = solid.orthogonal_body() {
-                if body.has_curved_cuts() {
-                    return None;
-                }
-                for &cell in body.drawing_stock().cells {
-                    let piece = ConvexPiece::new(cell_faces(cell, frame), tolerance).ok()?;
-                    pieces.push(piece);
-                    sources.push(SourcePart {
-                        operand,
-                        faces: Vec::new(),
-                    });
-                }
-            } else {
-                let (faces, ancestry) = convex_faces(solid, &topology, policy)?;
-                let piece = ConvexPiece::new(faces, tolerance).ok()?;
+            for (piece, ancestry) in solid.planar_convex_parts(&topology, policy)? {
                 pieces.push(piece);
                 sources.push(SourcePart {
                     operand,

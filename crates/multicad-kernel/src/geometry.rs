@@ -24,6 +24,7 @@ mod revolution_body;
 mod rounded_slot_body;
 mod rust_compound;
 mod step_import;
+mod warped_union_body;
 use annulus_body::AnnulusBody;
 use axial_stack_body::AxialStackBody;
 pub use circular_pocket_body::CircularPocketTool;
@@ -38,6 +39,7 @@ use planar_boolean_body::PlanarBooleanBody;
 use revolution_body::RevolutionBody;
 use rounded_slot_body::RoundedSlotBody;
 use rust_compound::RustCompound;
+use warped_union_body::WarpedUnionBody;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GeometryErrorKind {
@@ -553,6 +555,7 @@ enum SolidBody {
     RustCompound(Rc<RustCompound>),
     Orthogonal(Rc<OrthogonalBody>, PlaneFrame),
     PlanarBoolean(Rc<PlanarBooleanBody>, PlaneFrame),
+    WarpedUnion(Rc<WarpedUnionBody>, PlaneFrame),
 }
 
 pub(crate) struct CylinderSketch {
@@ -910,6 +913,7 @@ impl Solid {
             SolidBody::PlanarBoolean(body, frame) => {
                 SolidBody::PlanarBoolean(Rc::clone(body), *frame)
             }
+            SolidBody::WarpedUnion(body, frame) => SolidBody::WarpedUnion(Rc::clone(body), *frame),
             SolidBody::RustCompound(compound) => SolidBody::RustCompound(Rc::clone(compound)),
             SolidBody::Orthogonal(body, frame) => SolidBody::Orthogonal(Rc::clone(body), *frame),
             SolidBody::Occt(shape) => {
@@ -1178,6 +1182,9 @@ impl Solid {
                 SolidBody::PlanarBoolean(body, frame) => {
                     SolidBody::PlanarBoolean(Rc::clone(body), transform.frame(*frame))
                 }
+                SolidBody::WarpedUnion(body, frame) => {
+                    SolidBody::WarpedUnion(Rc::clone(body), transform.frame(*frame))
+                }
                 SolidBody::RustCompound(compound) => {
                     SolidBody::RustCompound(compound.transformed(transform, self.policy)?)
                 }
@@ -1208,6 +1215,9 @@ impl Solid {
         Ok(result)
     }
     pub fn volume_mm3(&self) -> Result<f64, GeometryError> {
+        if let Some((body, _)) = self.warped_union_body() {
+            return Ok(body.volume_mm3());
+        }
         if let Some((body, _)) = self.planar_boolean_body() {
             return Ok(body.volume_mm3());
         }
@@ -1259,6 +1269,9 @@ impl Solid {
         ffi::volume(self.occt()?).map_err(|e| native("volume", e))
     }
     pub fn solid_count(&self) -> Result<u32, GeometryError> {
+        if let Some((body, _)) = self.warped_union_body() {
+            return Ok(body.solid_count());
+        }
         if let Some((body, _)) = self.planar_boolean_body() {
             return Ok(body.solid_count());
         }
@@ -1274,6 +1287,9 @@ impl Solid {
         ffi::solid_count(self.occt()?).map_err(|e| native("solid count", e))
     }
     pub fn bounds(&self) -> Result<Bounds, GeometryError> {
+        if let Some((body, frame)) = self.warped_union_body() {
+            return Ok(body.bounds(frame));
+        }
         if let Some((body, frame)) = self.planar_boolean_body() {
             return Ok(body.bounds(frame));
         }
@@ -1389,6 +1405,9 @@ impl Solid {
         crate::planar_contours::extract(self, face, frame, self.policy)
     }
     pub fn faces(&self) -> Result<Vec<Face>, GeometryError> {
+        if let Some((body, frame)) = self.warped_union_body() {
+            return Ok(body.faces(frame));
+        }
         if let Some((body, frame)) = self.planar_boolean_body() {
             return Ok(body.faces(frame));
         }
@@ -1540,6 +1559,7 @@ impl Solid {
             SolidBody::NormalSweep(body, frame) => body.mesh(*frame, rust_options),
             SolidBody::AxialStack(body, frame) => body.mesh(*frame, rust_options),
             SolidBody::PlanarBoolean(body, frame) => body.mesh(*frame, rust_options),
+            SolidBody::WarpedUnion(body, frame) => body.mesh(*frame, rust_options),
             SolidBody::RustCompound(compound) => compound.mesh(options, usage),
             SolidBody::Orthogonal(body, frame) => body.mesh(*frame, rust_options, usage),
             SolidBody::Occt(_) => unreachable!("Rust-only tessellation"),
@@ -1849,6 +1869,7 @@ impl Solid {
             SolidBody::NormalSweep(body, _) => body.feature,
             SolidBody::AxialStack(body, _) => body.feature,
             SolidBody::PlanarBoolean(body, _) => body.feature,
+            SolidBody::WarpedUnion(body, _) => body.feature,
             SolidBody::RustCompound(compound) => compound.feature,
             SolidBody::Orthogonal(body, _) => body.feature,
             SolidBody::Occt(_) => return None,
@@ -1869,6 +1890,9 @@ impl Solid {
             SolidBody::Prism(prism, _) => prism.rounded_end().is_none(),
             SolidBody::RustCompound(compound) => compound.members().all(Self::supports_step_export),
             SolidBody::Helical(..) | SolidBody::CosmeticFastener(..) => false,
+            SolidBody::WarpedUnion(body, _) => {
+                multicad_rust_kernel::step::supports_warped_union(&body.geometry)
+            }
             SolidBody::PlanarBoolean(body, _) => {
                 multicad_rust_kernel::step::supports_planar_union(&body.geometry)
             }
@@ -1971,6 +1995,9 @@ impl Solid {
             SolidBody::AxialStack(body, frame) => body.append_step(writer, *frame),
             SolidBody::PlanarBoolean(body, frame) => {
                 writer.append_planar_union(&body.geometry, frame.origin, frame.u, frame.v)
+            }
+            SolidBody::WarpedUnion(body, frame) => {
+                writer.append_warped_union(&body.geometry, frame.origin, frame.u, frame.v)
             }
             SolidBody::Revolved(body, frame) => {
                 if let Some((base, radius, height, bore)) = body.circular_sweep(*frame) {

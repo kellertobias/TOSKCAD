@@ -10,6 +10,8 @@ use std::collections::BTreeMap;
 
 mod clipping;
 mod shell;
+mod slab;
+pub use slab::Slab;
 
 type Point = [f64; 3];
 const MAX_COORDINATE: f64 = 1e8;

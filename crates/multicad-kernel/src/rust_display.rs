@@ -76,12 +76,43 @@ fn point_on_arc(frame: ReferenceFrame, radius: f64, angle: f64) -> [f64; 3] {
     std::array::from_fn(|i| frame.origin_mm[i] + radius * (cos * frame.u[i] + sin * frame.v[i]))
 }
 
+fn point_on_ellipse(frame: ReferenceFrame, [major, minor]: [f64; 2], angle: f64) -> [f64; 3] {
+    let (sin, cos) = angle.sin_cos();
+    std::array::from_fn(|i| {
+        frame.origin_mm[i] + major * cos * frame.u[i] + minor * sin * frame.v[i]
+    })
+}
+
 pub(crate) fn edges(
     topology: &TopologySnapshot,
     deflection: f64,
 ) -> Result<Vec<DisplayEdge>, GeometryError> {
     const MAX_EDGE_POINTS: usize = 5_000_000;
     let mut total_points = 0;
+    let sample = |frame, radii: [f64; 2], start, sweep: f64, total_points: &mut usize| {
+        // Scaling a unit circle by the two semiaxes amplifies any chord
+        // error by at most the longer semiaxis.
+        let sagitta_angle = 4. * (deflection / (2. * radii[0])).sqrt().min(1.).asin();
+        let segments = (sweep.abs() / sagitta_angle.min(0.3)).ceil() as usize;
+        *total_points += segments + 1;
+        if *total_points > MAX_EDGE_POINTS {
+            return Err(error(
+                "display edges",
+                GeometryErrorKind::Limit,
+                "Rust edge sampling exceeds the point budget",
+            ));
+        }
+        Ok((0..=segments)
+            .map(|i| {
+                let angle = start + sweep * i as f64 / segments as f64;
+                if radii[0] == radii[1] {
+                    point_on_arc(frame, radii[0], angle)
+                } else {
+                    point_on_ellipse(frame, radii, angle)
+                }
+            })
+            .collect())
+    };
     topology
         .elements
         .iter()
@@ -97,27 +128,19 @@ pub(crate) fn edges(
                     radius_mm,
                     start_rad,
                     sweep_rad,
-                }) => {
-                    let sagitta_angle = 4. * (deflection / (2. * radius_mm)).sqrt().min(1.).asin();
-                    let segments = (sweep_rad.abs() / sagitta_angle.min(0.3)).ceil() as usize;
-                    total_points += segments + 1;
-                    if total_points > MAX_EDGE_POINTS {
-                        return Err(error(
-                            "display edges",
-                            GeometryErrorKind::Limit,
-                            "Rust edge sampling exceeds the point budget",
-                        ));
-                    }
-                    (0..=segments)
-                        .map(|i| {
-                            point_on_arc(
-                                frame,
-                                radius_mm,
-                                start_rad + sweep_rad * i as f64 / segments as f64,
-                            )
-                        })
-                        .collect()
-                }
+                }) => sample(
+                    frame,
+                    [radius_mm; 2],
+                    start_rad,
+                    sweep_rad,
+                    &mut total_points,
+                )?,
+                Some(AnalyticGeometry::EllipticArc {
+                    frame,
+                    semiaxes_mm,
+                    start_rad,
+                    sweep_rad,
+                }) => sample(frame, semiaxes_mm, start_rad, sweep_rad, &mut total_points)?,
                 _ => {
                     return Err(error(
                         "display edges",
@@ -199,6 +222,9 @@ pub(crate) fn planar_loops(solid: &Solid, face: u32) -> Vec<Vec<(u32, bool)>> {
         return body.planar_loops(face);
     }
     if let Some((body, _)) = solid.planar_boolean_body() {
+        return body.planar_loops(face);
+    }
+    if let Some((body, _)) = solid.warped_union_body() {
         return body.planar_loops(face);
     }
     let Some(prism) = solid.rust_prism() else {

@@ -23,6 +23,7 @@ mod normal_sweep;
 mod pierced_sweep;
 mod planar_union;
 mod stadium;
+mod warped_union;
 mod writer;
 pub use axial_stack::write_axial_profile_stack;
 pub use cylindrical_revolution::{supports_cylindrical_revolution, write_cylindrical_revolution};
@@ -31,6 +32,7 @@ pub use pierced_sweep::write_pierced_normal_sweep;
 pub use planar_union::{supports_planar_union, write_planar_union};
 use stadium::StadiumTrim;
 pub use stadium::write_stadium_prism;
+pub use warped_union::{supports_warped_union, write_warped_union};
 use writer::write_one;
 pub use writer::{MAX_COMPOUND_SOLIDS, Writer};
 

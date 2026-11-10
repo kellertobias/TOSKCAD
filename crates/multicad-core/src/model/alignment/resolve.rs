@@ -37,6 +37,7 @@ impl Anchor {
                 (a_mm, std::array::from_fn(|i| b_mm[i] - a_mm[i]))
             }
             Some(AnalyticGeometry::CircularArc { frame, .. })
+            | Some(AnalyticGeometry::EllipticArc { frame, .. })
             | Some(AnalyticGeometry::Plane { frame }) => (frame.origin_mm, frame.normal()),
             Some(AnalyticGeometry::Point { .. }) => {
                 return Err(invalid("A point does not define an alignment axis"));

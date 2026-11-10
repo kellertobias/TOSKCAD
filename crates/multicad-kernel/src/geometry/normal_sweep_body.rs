@@ -169,6 +169,15 @@ fn convert_edge(edge: &CurvedEdge2d) -> Result<Edge, GeometryError> {
 }
 
 impl NormalSweepBody {
+    pub(super) fn unpierced_profile(&self) -> Option<(&[Vec<Edge>], f64)> {
+        self.openings.is_none().then(|| {
+            let height = self.sweep.height_mm();
+            (
+                self.sweep.rings(),
+                if self.reverse { -height } else { height },
+            )
+        })
+    }
     pub(crate) fn end_on_rims(
         &self,
         frame: PlaneFrame,

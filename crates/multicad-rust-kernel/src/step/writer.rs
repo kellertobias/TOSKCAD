@@ -438,6 +438,20 @@ impl Writer {
         self.append(|file| planar_union::encode(file, placement, union))
     }
 
+    pub fn append_warped_union(
+        &mut self,
+        shell: &crate::warped_union::Shell,
+        origin: Point,
+        u: Point,
+        v: Point,
+    ) -> Result<(), StepError> {
+        if !supports_warped_union(shell) {
+            return Err(StepError::Unsupported);
+        }
+        let placement = Placement::new(origin, u, v)?;
+        self.append(|file| warped_union::encode(file, placement, shell))
+    }
+
     pub fn append_box(
         &mut self,
         size: [Rational; 3],

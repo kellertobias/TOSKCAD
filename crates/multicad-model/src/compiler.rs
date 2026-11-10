@@ -1540,6 +1540,7 @@ impl Compiler {
                                 .or_else(|| {
                                     Solid::union_round_rectangular_stack(&operands, id, self.policy)
                                 })
+                                .or_else(|| Solid::union_quarter_rounds(&operands, id, self.policy))
                                 .or_else(|| Solid::union_planar_pieces(&operands, id, self.policy))
                         })
                         .flatten();

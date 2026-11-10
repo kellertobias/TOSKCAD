@@ -37,7 +37,9 @@ pub mod sketch_reference;
 pub mod stadium;
 pub mod step;
 pub mod step_read;
+pub mod trim_curve;
 pub mod trimmed_sweep;
+pub mod warped_union;
 
 use std::cmp::Ordering;
 

@@ -19,6 +19,12 @@ pub enum AnalyticGeometry {
         start_rad: f64,
         sweep_rad: f64,
     },
+    EllipticArc {
+        frame: ReferenceFrame,
+        semiaxes_mm: [f64; 2],
+        start_rad: f64,
+        sweep_rad: f64,
+    },
     Plane {
         frame: ReferenceFrame,
     },
@@ -26,11 +32,22 @@ pub enum AnalyticGeometry {
 fn point_valid(p: [f64; 3]) -> bool {
     p.into_iter().all(|v| v.is_finite() && v.abs() <= 1e9)
 }
+fn valid_arc(frame: ReferenceFrame, start_rad: f64, sweep_rad: f64) -> bool {
+    frame.validate().is_ok()
+        && start_rad.is_finite()
+        && start_rad.abs() <= 1e9
+        && sweep_rad.is_finite()
+        && sweep_rad.abs() > 1e-12
+        && sweep_rad.abs() <= std::f64::consts::TAU + 1e-9
+}
+
 impl AnalyticGeometry {
     pub fn topology_kind(self) -> TopologyKind {
         match self {
             Self::Point { .. } => TopologyKind::Vertex,
-            Self::Line { .. } | Self::CircularArc { .. } => TopologyKind::Edge,
+            Self::Line { .. } | Self::CircularArc { .. } | Self::EllipticArc { .. } => {
+                TopologyKind::Edge
+            }
             Self::Plane { .. } => TopologyKind::Face,
         }
     }
@@ -52,15 +69,17 @@ impl AnalyticGeometry {
                 radius_mm,
                 start_rad,
                 sweep_rad,
+            } => (1e-9..=1e9).contains(&radius_mm) && valid_arc(frame, start_rad, sweep_rad),
+            Self::EllipticArc {
+                frame,
+                semiaxes_mm: [major, minor],
+                start_rad,
+                sweep_rad,
             } => {
-                frame.validate().is_ok()
-                    && radius_mm.is_finite()
-                    && (1e-9..=1e9).contains(&radius_mm)
-                    && start_rad.is_finite()
-                    && start_rad.abs() <= 1e9
-                    && sweep_rad.is_finite()
-                    && sweep_rad.abs() > 1e-12
-                    && sweep_rad.abs() <= std::f64::consts::TAU + 1e-9
+                minor <= major
+                    && (1e-9..=1e9).contains(&minor)
+                    && (1e-9..=1e9).contains(&major)
+                    && valid_arc(frame, start_rad, sweep_rad)
             }
             Self::Plane { frame } => frame.validate().is_ok(),
         };
@@ -97,6 +116,17 @@ impl AnalyticGeometry {
             } => Self::CircularArc {
                 frame: frame(f),
                 radius_mm,
+                start_rad,
+                sweep_rad,
+            },
+            Self::EllipticArc {
+                frame: f,
+                semiaxes_mm,
+                start_rad,
+                sweep_rad,
+            } => Self::EllipticArc {
+                frame: frame(f),
+                semiaxes_mm,
                 start_rad,
                 sweep_rad,
             },
