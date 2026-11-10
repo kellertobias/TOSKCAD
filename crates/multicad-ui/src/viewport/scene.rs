@@ -689,7 +689,7 @@ impl Scene {
     }
     pub fn set_architecture_plan(
         &mut self,
-        plan: Result<super::ArchitecturePlan, String>,
+        plan: impl Into<Arc<Result<super::ArchitecturePlan, String>>>,
     ) -> Result<(), String> {
         let source = self
             .model_evaluation
@@ -697,7 +697,8 @@ impl Scene {
             .filter(|_| self.is_full_model())
             .ok_or("Native plan needs a complete current model receipt")?
             .source_hash;
-        if let Ok(plan) = &plan {
+        let plan = plan.into();
+        if let Ok(plan) = plan.as_ref() {
             plan.validate(
                 source,
                 &self
@@ -707,7 +708,7 @@ impl Scene {
                     .collect(),
             )?;
         }
-        self.architecture_plan = Some(Arc::new(plan));
+        self.architecture_plan = Some(plan);
         Ok(())
     }
     pub fn architecture_plan(&self) -> Option<&Result<super::ArchitecturePlan, String>> {

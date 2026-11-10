@@ -631,6 +631,37 @@ fn native_architecture_plan_exposes_real_opening_gaps_symbols_and_source_bound_p
     );
     context.set_plan(false, &mut camera);
     assert!(Arc::ptr_eq(&context.scene(&copy).unwrap(), &copy));
+    let next = SceneStamp {
+        generation: stamp.generation + 1,
+        ..stamp
+    };
+    backend.request(session.document(), next).unwrap();
+    let repeated = receive(&mut backend).result.unwrap();
+    assert_eq!(repeated.stamp(), next);
+    assert!(repeated.model_evaluation().unwrap().cut_targets.is_empty());
+    assert!(std::ptr::eq(
+        native.architecture_plan().unwrap(),
+        repeated.architecture_plan().unwrap(),
+    ));
+
+    // Candidate documents can share the same base revision. A changed
+    // source must still generate its own plan and receive its own stamp.
+    let mut candidate = before.clone();
+    candidate.rename("Renamed authoring plan").unwrap();
+    backend
+        .request(
+            &candidate,
+            SceneStamp {
+                generation: next.generation + 1,
+                ..next
+            },
+        )
+        .unwrap();
+    let changed = receive(&mut backend).result.unwrap();
+    let changed_plan = changed.architecture_plan().unwrap().as_ref().unwrap();
+    assert_ne!(changed_plan.source_hash, plan.source_hash);
+    assert_eq!(changed_plan.sources, plan.sources);
+    assert_eq!(changed_plan.vectors, plan.vectors);
     assert_eq!(session.document(), &before);
 }
 #[test]

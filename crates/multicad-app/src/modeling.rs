@@ -32,6 +32,7 @@ pub struct Backend {
 impl Backend {
     fn runtime(backend: GeometryBackend) -> Result<Runtime<Arc<viewport::Scene>>, String> {
         let display = RefCell::new(DisplayCache::default());
+        let architecture = RefCell::new(architecture_plan::Cache::default());
         Runtime::with_model_and_snapshot_backend(
             Compiler::default(),
             backend,
@@ -43,7 +44,7 @@ impl Backend {
                     &mut display.borrow_mut(),
                 )?;
                 if published.is_full_model() {
-                    let plan = architecture_plan::build(document, model);
+                    let plan = architecture.borrow_mut().plan(document, model);
                     let published = Arc::get_mut(&mut published)
                         .expect("publication is not shared before return");
                     published.set_sheet_faces(model.sheet_authoring_faces(document));

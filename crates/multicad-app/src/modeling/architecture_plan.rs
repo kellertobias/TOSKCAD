@@ -8,8 +8,32 @@ use multicad_core::{
 };
 use multicad_model::{DrawingProviders, Model};
 use multicad_ui::viewport::ArchitecturePlan;
+use std::sync::Arc;
 
-pub(super) fn build(document: &Document, model: &Model) -> Result<ArchitecturePlan, String> {
+#[derive(Default)]
+pub(super) struct Cache(Option<Arc<Result<ArchitecturePlan, String>>>);
+
+impl Cache {
+    pub(super) fn plan(
+        &mut self,
+        document: &Document,
+        model: &Model,
+    ) -> Arc<Result<ArchitecturePlan, String>> {
+        let source = model.snapshot().stamp.source_hash;
+        // The plan is derived from the canonical source, independent of
+        // publication generation and per-request modeling probes.
+        if let Some(cached) = &self.0
+            && matches!(cached.as_ref(), Ok(plan) if plan.source_hash == source)
+        {
+            return Arc::clone(cached);
+        }
+        let plan = Arc::new(build(document, model));
+        self.0 = plan.is_ok().then(|| Arc::clone(&plan));
+        plan
+    }
+}
+
+fn build(document: &Document, model: &Model) -> Result<ArchitecturePlan, String> {
     let snapshot = model.snapshot();
     let sources = snapshot
         .bodies
