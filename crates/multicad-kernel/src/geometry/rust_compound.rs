@@ -209,18 +209,14 @@ impl RustCompound {
         Ok(faces)
     }
 
-    pub(super) fn mesh(
-        &self,
-        options: MeshOptions,
-        usage: MeshUse,
-    ) -> Result<ffi::Mesh, GeometryError> {
+    pub(super) fn mesh(&self, options: MeshOptions, usage: MeshUse) -> Result<Mesh, GeometryError> {
         let budget_error = || {
             compound_error(
                 GeometryErrorKind::Limit,
                 "Compound tessellation triangle budget exceeded",
             )
         };
-        let mut result = ffi::Mesh {
+        let mut result = Mesh {
             vertices: vec![],
             indices: vec![],
             face_indices: vec![],

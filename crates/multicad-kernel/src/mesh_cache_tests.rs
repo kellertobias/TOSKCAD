@@ -1,4 +1,6 @@
-use crate::{GeometryPolicy, HelicalThread, MeshOptions, PlaneFrame, RigidTransform, Solid, ffi};
+use crate::{
+    GeometryPolicy, HelicalThread, Mesh, MeshOptions, PlaneFrame, RigidTransform, Solid, ffi,
+};
 use multicad_core::document::EntityId;
 
 fn cylinder(radius: f64) -> Solid {
@@ -63,7 +65,7 @@ fn curved_mesh_warm_numeric_receipts_equal_forced_fresh_without_mutating_native_
         options().maximum_triangles,
     )
     .unwrap();
-    assert_eq!(first, fresh);
+    assert_eq!(first, Mesh::from(fresh));
     let alias = source.share().unwrap();
     let identity = source.transformed(RigidTransform::default()).unwrap();
     assert!(shares(&source, &alias));
@@ -220,7 +222,7 @@ fn changed_geometry_and_nonidentity_world_poses_and_imports_have_independent_mes
             options().maximum_triangles,
         )
         .unwrap();
-        assert_eq!(mesh, fresh);
+        assert_eq!(mesh, Mesh::from(fresh));
     }
 }
 #[test]

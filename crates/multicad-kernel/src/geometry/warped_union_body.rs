@@ -740,7 +740,7 @@ impl WarpedUnionBody {
         &self,
         frame: PlaneFrame,
         options: Tessellation,
-    ) -> Result<ffi::Mesh, GeometryError> {
+    ) -> Result<Mesh, GeometryError> {
         crate::rust_display::placed_mesh(self.geometry.mesh(options), frame, false)
     }
 }

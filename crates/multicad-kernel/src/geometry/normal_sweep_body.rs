@@ -282,7 +282,7 @@ impl NormalSweepBody {
         &self,
         frame: PlaneFrame,
         options: multicad_rust_kernel::display::Tessellation,
-    ) -> Result<ffi::Mesh, GeometryError> {
+    ) -> Result<Mesh, GeometryError> {
         if let Some(result) = self.pierced_mesh(frame, options) {
             return result;
         }

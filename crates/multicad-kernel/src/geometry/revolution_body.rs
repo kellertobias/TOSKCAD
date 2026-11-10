@@ -343,7 +343,7 @@ impl RevolutionBody {
         &self,
         frame: PlaneFrame,
         options: multicad_rust_kernel::display::Tessellation,
-    ) -> Result<ffi::Mesh, GeometryError> {
+    ) -> Result<Mesh, GeometryError> {
         crate::rust_display::placed_mesh(
             revolution_mesh::tessellate(&self.geometry, options),
             frame,

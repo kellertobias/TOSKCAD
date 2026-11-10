@@ -1,7 +1,7 @@
 //! Display and planar queries on Rust solid topology.
 use crate::{
-    DisplayEdge, DisplayVertex, GeometryError, GeometryErrorKind, GeometryPolicy, PlaneFrame,
-    Solid, ffi, planar_contours::SourcedPlanarContours,
+    DisplayEdge, DisplayVertex, GeometryError, GeometryErrorKind, GeometryPolicy, Mesh, PlaneFrame,
+    Solid, planar_contours::SourcedPlanarContours,
 };
 use multicad_core::{
     manufacturing::{PlanarContours, PlanarEdge, PlanarLoop},
@@ -22,7 +22,7 @@ fn error(
     }
 }
 
-pub(crate) fn mesh(result: Result<DisplayMesh, MeshError>) -> Result<ffi::Mesh, GeometryError> {
+pub(crate) fn mesh(result: Result<DisplayMesh, MeshError>) -> Result<Mesh, GeometryError> {
     let mesh = result.map_err(|cause| {
         let (kind, message) = match cause {
             MeshError::InvalidOptions => (
@@ -40,7 +40,7 @@ pub(crate) fn mesh(result: Result<DisplayMesh, MeshError>) -> Result<ffi::Mesh, 
         };
         error("mesh", kind, message)
     })?;
-    Ok(ffi::Mesh {
+    Ok(Mesh {
         vertices: mesh.vertices,
         indices: mesh.indices,
         face_indices: mesh.face_indices,
@@ -51,7 +51,7 @@ pub(crate) fn placed_mesh(
     result: Result<DisplayMesh, MeshError>,
     frame: PlaneFrame,
     reverse_sweep: bool,
-) -> Result<ffi::Mesh, GeometryError> {
+) -> Result<Mesh, GeometryError> {
     let mut mesh = mesh(result)?;
     if reverse_sweep {
         for point in mesh.vertices.as_chunks_mut::<3>().0 {

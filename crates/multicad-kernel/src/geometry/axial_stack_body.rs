@@ -413,7 +413,7 @@ impl AxialStackBody {
         &self,
         frame: PlaneFrame,
         options: display::Tessellation,
-    ) -> Result<ffi::Mesh, GeometryError> {
+    ) -> Result<Mesh, GeometryError> {
         crate::rust_display::placed_mesh(
             display::axial_profile_stack(&self.geometry, options),
             frame,

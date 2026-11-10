@@ -213,7 +213,7 @@ impl RoundedSlotBody {
         &self,
         frame: PlaneFrame,
         options: multicad_rust_kernel::display::Tessellation,
-    ) -> Result<ffi::Mesh, GeometryError> {
+    ) -> Result<Mesh, GeometryError> {
         crate::rust_display::placed_mesh(
             multicad_rust_kernel::display::stadium_prism(&self.profile, self.height, options),
             frame,

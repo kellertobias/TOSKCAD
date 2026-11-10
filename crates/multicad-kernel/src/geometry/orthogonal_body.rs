@@ -1237,7 +1237,7 @@ impl OrthogonalBody {
         frame: PlaneFrame,
         options: multicad_rust_kernel::display::Tessellation,
         usage: MeshUse,
-    ) -> Result<ffi::Mesh, GeometryError> {
+    ) -> Result<Mesh, GeometryError> {
         if !self.through_bores.is_empty() {
             return crate::rust_display::placed_mesh(
                 multicad_rust_kernel::display::bored_orthogonal(
@@ -1280,7 +1280,7 @@ impl OrthogonalBody {
         // A conformal grid corner is shared only within its own exact solid.
         // Coincident corners of distinct solids have separate index identities.
         let mut indexed = (usage == MeshUse::Manufacturing).then(BTreeMap::new);
-        let mut mesh = ffi::Mesh {
+        let mut mesh = Mesh {
             vertices: Vec::with_capacity(quads.len() * 12),
             indices: Vec::with_capacity(quads.len() * 6),
             face_indices: Vec::with_capacity(quads.len() * 2),

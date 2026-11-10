@@ -221,7 +221,7 @@ impl NormalSweepBody {
         &self,
         placement: PlaneFrame,
         options: multicad_rust_kernel::display::Tessellation,
-    ) -> Option<Result<ffi::Mesh, GeometryError>> {
+    ) -> Option<Result<Mesh, GeometryError>> {
         self.openings.as_ref().map(|openings| {
             crate::rust_display::placed_mesh(
                 multicad_rust_kernel::display::pierced_normal_sweep(&openings.geometry, options),

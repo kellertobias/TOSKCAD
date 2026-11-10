@@ -5,14 +5,13 @@
 #[allow(unsafe_code)]
 #[cxx::bridge(namespace = "multicad::kernel")]
 mod ffi {
-    #[derive(Clone, Debug, PartialEq)]
+    // Transfer DTOs. Public mesh data is owned by the Rust mesh module.
     pub struct Mesh {
         pub vertices: Vec<f64>,
         pub indices: Vec<u32>,
         /// One evaluation-local B-rep face index per display triangle.
         pub face_indices: Vec<u32>,
     }
-    #[derive(Clone, Debug, PartialEq)]
     pub struct ManufacturingMesh {
         pub mesh: Mesh,
         pub maximum_displacement_mm: f64,
@@ -619,7 +618,8 @@ mod ffi {
         ) -> Result<Mesh>;
     }
 }
-pub use ffi::{ManufacturingMesh, Mesh};
+mod mesh;
+pub use mesh::{ManufacturingMesh, Mesh};
 pub struct Shape(cxx::UniquePtr<ffi::Shape>);
 
 pub use multicad_rust_kernel as rust_kernel;
@@ -714,7 +714,7 @@ impl Shape {
     }
     pub fn mesh(&self, deflection: f64) -> Result<Mesh, Error> {
         positive(&[deflection])?;
-        Ok(ffi::mesh(&self.0, deflection)?)
+        Ok(ffi::mesh(&self.0, deflection)?.into())
     }
     pub fn volume(&self) -> Result<f64, Error> {
         Ok(ffi::volume(&self.0)?)

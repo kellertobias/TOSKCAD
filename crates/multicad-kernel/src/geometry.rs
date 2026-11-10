@@ -1,6 +1,6 @@
 //! Safe solid operations in millimeters. Display meshes are detached copies;
 //! callers rebuild exact solids from source rather than editing triangles.
-use crate::{Shape, ffi, rust_prism_topology::PlacedPolygon};
+use crate::{Mesh, Shape, ffi, mesh::valid_parts, rust_prism_topology::PlacedPolygon};
 use multicad_core::{
     document::EntityId,
     references::{Origin, TopologySnapshot},
@@ -1497,7 +1497,7 @@ impl Solid {
         }
     }
 
-    fn rust_mesh(&self, options: MeshOptions, usage: MeshUse) -> Result<ffi::Mesh, GeometryError> {
+    fn rust_mesh(&self, options: MeshOptions, usage: MeshUse) -> Result<Mesh, GeometryError> {
         let rust_options = Self::rust_mesh_options(options);
         match &self.body {
             SolidBody::Prism(prism, frame) => crate::rust_display::placed_mesh(
@@ -1566,51 +1566,49 @@ impl Solid {
         }
     }
 
-    pub fn mesh(&self, options: MeshOptions) -> Result<ffi::Mesh, GeometryError> {
+    pub fn mesh(&self, options: MeshOptions) -> Result<Mesh, GeometryError> {
         if !self.mesh_options_valid(options) {
             return Err(input("Invalid display tessellation settings/budget"));
         }
+        let validate = |vertices: &[f64], indices: &[u32], faces: &[u32]| {
+            valid_parts(vertices, indices, faces)
+                .then_some(())
+                .ok_or_else(|| {
+                    error(
+                        "mesh",
+                        GeometryErrorKind::InvalidResult,
+                        "Invalid display mesh",
+                    )
+                })
+        };
         let mesh = match &self.body {
-            SolidBody::Occt(shape) => ffi::tessellate(
-                &shape.0,
-                options.linear_deflection_mm,
-                options.angular_deflection_rad,
-                options.maximum_triangles,
-            )
-            .map_err(|e| native("mesh", e))?,
+            SolidBody::Occt(shape) => {
+                let mesh = ffi::tessellate(
+                    &shape.0,
+                    options.linear_deflection_mm,
+                    options.angular_deflection_rad,
+                    options.maximum_triangles,
+                )
+                .map_err(|e| native("mesh", e))?;
+                validate(&mesh.vertices, &mesh.indices, &mesh.face_indices)?;
+                // Retain only after validating all detached arrays. Optional
+                // receipt allocation failure does not invalidate the mesh.
+                let _ = ffi::remember_validated_mesh(
+                    &shape.0,
+                    options.linear_deflection_mm,
+                    options.angular_deflection_rad,
+                    options.maximum_triangles,
+                    &mesh,
+                );
+                return Ok(mesh.into());
+            }
             _ => self.rust_mesh(options, MeshUse::Display)?,
         };
-        if mesh.vertices.is_empty()
-            || !mesh.vertices.len().is_multiple_of(3)
-            || !mesh.indices.len().is_multiple_of(3)
-            || mesh.face_indices.len() != mesh.indices.len() / 3
-            || mesh.vertices.iter().any(|v| !v.is_finite())
-            || mesh
-                .indices
-                .iter()
-                .any(|i| *i as usize >= mesh.vertices.len() / 3)
-        {
-            return Err(error(
-                "mesh",
-                GeometryErrorKind::InvalidResult,
-                "Invalid display mesh",
-            ));
-        }
-        // Retain only after every ordinary detached TriangleMesh validation.
-        // Optional receipt allocation failure does not invalidate display data.
-        if let SolidBody::Occt(shape) = &self.body {
-            let _ = ffi::remember_validated_mesh(
-                &shape.0,
-                options.linear_deflection_mm,
-                options.angular_deflection_rad,
-                options.maximum_triangles,
-                &mesh,
-            );
-        }
+        validate(&mesh.vertices, &mesh.indices, &mesh.face_indices)?;
         Ok(mesh)
     }
     /// Fresh manufacturing triangulation with exact boundary identity.
-    pub fn manufacturing_mesh(&self, options: MeshOptions) -> Result<ffi::Mesh, GeometryError> {
+    pub fn manufacturing_mesh(&self, options: MeshOptions) -> Result<Mesh, GeometryError> {
         Ok(self.manufacturing_mesh_with_receipt(options)?.mesh)
     }
 
@@ -1623,7 +1621,7 @@ impl Solid {
             manufacturing,
         };
         const OPERATION: &str = "manufacturing mesh";
-        let ffi::Mesh {
+        let Mesh {
             vertices,
             indices,
             face_indices,
@@ -1662,7 +1660,7 @@ impl Solid {
             face_indices,
         } = tessellation;
         Ok(crate::ManufacturingMesh {
-            mesh: ffi::Mesh {
+            mesh: Mesh {
                 vertices,
                 indices,
                 face_indices,
@@ -1746,15 +1744,7 @@ impl Solid {
         )
         .map_err(|e| native("manufacturing mesh", e))?;
         let mesh = &receipt.mesh;
-        if mesh.vertices.is_empty()
-            || !mesh.vertices.len().is_multiple_of(3)
-            || !mesh.indices.len().is_multiple_of(3)
-            || mesh.face_indices.len() != mesh.indices.len() / 3
-            || mesh.vertices.iter().any(|v| !v.is_finite())
-            || mesh
-                .indices
-                .iter()
-                .any(|i| *i as usize >= mesh.vertices.len() / 3)
+        if !valid_parts(&mesh.vertices, &mesh.indices, &mesh.face_indices)
             || !receipt.maximum_displacement_mm.is_finite()
             || receipt.maximum_displacement_mm < 0.
             || receipt.maximum_displacement_mm > tolerance
@@ -1765,7 +1755,7 @@ impl Solid {
                 "Invalid native manufacturing mesh or seam receipt",
             ));
         }
-        Ok(receipt)
+        Ok(receipt.into())
     }
     /// Publish exact topology and its viewport overlays together. Pass no
     /// deflection for topology alone, without sampling edges or vertices.

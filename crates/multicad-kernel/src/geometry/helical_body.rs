@@ -830,7 +830,7 @@ impl HelicalBody {
         &self,
         frame: PlaneFrame,
         options: multicad_rust_kernel::display::Tessellation,
-    ) -> Result<ffi::Mesh, GeometryError> {
+    ) -> Result<Mesh, GeometryError> {
         let mesh = match &self.form {
             HelicalForm::Shaft => helical_thread_mesh::tessellate(&self.geometry, options),
             HelicalForm::Bore(stock) => {
