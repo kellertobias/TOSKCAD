@@ -952,10 +952,166 @@ mod tests {
         );
     }
 
+    fn cabinet_panel_curve_counts(
+        vectors: &[drawings::DrawingVector],
+        role: drawings::VectorRole,
+    ) -> [usize; 3] {
+        use drawings::VectorCurve;
+        use std::f64::consts::{PI, TAU};
+
+        let mut counts = [0; 3];
+        for vector in vectors.iter().filter(|vector| vector.role == role) {
+            match vector.curve {
+                VectorCurve::Line { .. } => counts[0] += 1,
+                VectorCurve::Ellipse {
+                    major_mm,
+                    minor_mm,
+                    start_rad,
+                    end_rad,
+                    ..
+                } => {
+                    assert!((major_mm - minor_mm).abs() < 1e-8);
+                    let sweep = (end_rad - start_rad).abs();
+                    if (sweep - TAU).abs() < 1e-8 {
+                        counts[1] += 1;
+                    } else {
+                        assert!((sweep - PI).abs() < 1e-8);
+                        assert!((major_mm - 4.).abs() < 1e-8);
+                        counts[2] += 1;
+                    }
+                }
+                _ => panic!("Unexpected cabinet panel curve: {:?}", vector.curve),
+            }
+        }
+        counts
+    }
+
+    #[test]
+    fn rust_worker_opens_the_saved_cabinet_drilling_view() {
+        use drawings::{VectorRole, ViewEvaluation};
+
+        let session = open_example("cabinet.tcd");
+        let document = session.document();
+        let book = drawings::books(document).next().unwrap();
+        let drawing = drawings::read(document, book).unwrap();
+        let page = drawing
+            .pages
+            .iter()
+            .find(|page| page.number == "C-103")
+            .unwrap();
+        let saved = page
+            .views
+            .iter()
+            .find(|view| view.name == "Left side, inner face")
+            .unwrap();
+        let [panel] = saved.source.entities().try_into().unwrap();
+        assert_eq!(document.get(panel).unwrap().name, "Cabinet left side");
+
+        let mut worker = Backend::with_cache_and_backend(None, GeometryBackend::Rust);
+        let published = preview(&mut worker, &session, page.id);
+        published.stamp.check(document, session.revision()).unwrap();
+        assert_eq!(published.views.len(), page.views.len());
+        let ViewEvaluation::Ready { vectors, .. } = &published.views[&saved.id] else {
+            panic!(
+                "Saved drilling view failed: {:?}",
+                published.views[&saved.id]
+            );
+        };
+        assert!(
+            vectors
+                .iter()
+                .all(|vector| vector.source == panel && vector.role == VectorRole::Visible)
+        );
+        assert_eq!(
+            cabinet_panel_curve_counts(vectors, VectorRole::Visible),
+            [28, 66, 24]
+        );
+        let mut bounds = [[f64::INFINITY; 2], [f64::NEG_INFINITY; 2]];
+        for point in vectors.iter().flat_map(|vector| &vector.preview_mm) {
+            for (axis, coordinate) in point.iter().enumerate() {
+                bounds[0][axis] = bounds[0][axis].min(*coordinate);
+                bounds[1][axis] = bounds[1][axis].max(*coordinate);
+            }
+        }
+        assert_eq!(bounds, [[-250., -1000.], [250., 1000.]]);
+    }
+
+    #[test]
+    fn rust_worker_matches_native_geometry_of_the_saved_cabinet_drawer_detail() {
+        use drawings::{VectorCurve, VectorRole, ViewEvaluation};
+        use std::collections::BTreeMap;
+
+        let session = open_example("cabinet.tcd");
+        let document = session.document();
+        let book = drawings::books(document).next().unwrap();
+        let drawing = drawings::read(document, book).unwrap();
+        let page = drawing
+            .pages
+            .iter()
+            .find(|page| page.number == "C-102")
+            .unwrap();
+        let saved = page
+            .views
+            .iter()
+            .find(|view| view.name == "Detail D: drawer 1 box, finger joints (top)")
+            .unwrap();
+        let [drawer] = saved.source.entities().try_into().unwrap();
+        assert_eq!(document.get(drawer).unwrap().name, "Drawer 1");
+
+        let coverage = |backend| {
+            let mut worker = Backend::with_cache_and_backend(None, backend);
+            let published = preview(&mut worker, &session, page.id);
+            let ViewEvaluation::Ready { vectors, .. } = &published.views[&saved.id] else {
+                panic!(
+                    "{backend:?} failed the saved drawer detail: {:?}",
+                    published.views[&saved.id]
+                );
+            };
+            // Both backends must show the same geometry, even when one
+            // splits an edge where it meets an adjacent coplanar panel.
+            let mut lines = BTreeMap::<(usize, i64), Vec<[i64; 2]>>::new();
+            let micrometers = |point: [f64; 2]| point.map(|value| (value * 1000.).round() as i64);
+            for vector in vectors {
+                assert_eq!((vector.source, vector.role), (drawer, VectorRole::Visible));
+                let VectorCurve::Line { a, b } = vector.curve else {
+                    panic!(
+                        "The top detail contains a non-straight visible edge: {:?}",
+                        vector.curve
+                    );
+                };
+                let [a, b] = [a, b].map(micrometers);
+                let axis = usize::from(a[0] != b[0]);
+                assert_eq!(a[axis], b[axis]);
+                let [lo, hi] = [a[1 - axis].min(b[1 - axis]), a[1 - axis].max(b[1 - axis])];
+                if lo != hi {
+                    lines.entry((axis, a[axis])).or_default().push([lo, hi]);
+                }
+            }
+            for spans in lines.values_mut() {
+                spans.sort_unstable();
+                let mut merged: Vec<[i64; 2]> = Vec::new();
+                for [lo, hi] in spans.drain(..) {
+                    if let Some(last) = merged.last_mut()
+                        && lo <= last[1]
+                    {
+                        last[1] = last[1].max(hi);
+                    } else {
+                        merged.push([lo, hi]);
+                    }
+                }
+                *spans = merged;
+            }
+            lines
+        };
+        let native = coverage(GeometryBackend::OpenCascade);
+        assert_eq!(native[&(1, -243_000)], [[-398_000, 398_000]]);
+        assert_eq!(native[&(0, -357_300)], [[-213_000, 213_000]]);
+        assert_eq!(coverage(GeometryBackend::Rust), native);
+    }
+
     #[test]
     fn rust_worker_draws_the_shipped_cabinet_panel_and_reuses_the_cached_page() {
-        use drawings::{VectorCurve, VectorRole, ViewEvaluation};
-        use std::f64::consts::{PI, TAU};
+        use drawings::{VectorRole, ViewEvaluation};
 
         let directory = tempfile::tempdir().unwrap();
         let cache = cache::Cache::isolated(directory.path().to_owned());
@@ -1003,31 +1159,7 @@ mod tests {
                 panic!("{:?}", original.views[&id]);
             };
             assert!(vectors.iter().all(|vector| vector.source == panel));
-            let mut counts = [0; 3];
-            for vector in vectors.iter().filter(|vector| vector.role == role) {
-                match vector.curve {
-                    VectorCurve::Line { .. } => counts[0] += 1,
-                    VectorCurve::Ellipse {
-                        major_mm,
-                        minor_mm,
-                        start_rad,
-                        end_rad,
-                        ..
-                    } => {
-                        assert!((major_mm - minor_mm).abs() < 1e-8);
-                        let sweep = (end_rad - start_rad).abs();
-                        if (sweep - TAU).abs() < 1e-8 {
-                            counts[1] += 1;
-                        } else {
-                            assert!((sweep - PI).abs() < 1e-8);
-                            assert!((major_mm - 4.).abs() < 1e-8);
-                            counts[2] += 1;
-                        }
-                    }
-                    _ => panic!("Unexpected cabinet panel curve: {:?}", vector.curve),
-                }
-            }
-            counts
+            cabinet_panel_curve_counts(vectors, role)
         };
         assert_eq!(count(front_id, VectorRole::Visible), [28, 66, 24]);
         assert_eq!(count(front_id, VectorRole::Hidden), [0; 3]);
