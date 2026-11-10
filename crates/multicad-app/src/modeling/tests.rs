@@ -195,6 +195,87 @@ fn rust_smooth_polygon_loft_publishes_its_taper_in_the_app() {
 }
 
 #[test]
+fn rust_twisted_loft_preview_publishes_a_pickable_wall() {
+    use multicad_core::{
+        constraint_sketch::source::Source,
+        document::Mutation,
+        model::{AdvancedParameters, AdvancedRequest, LoftParameters, ProfileSource},
+        sketch::Datum,
+        sketch_regions,
+    };
+    use multicad_ui::modeling::ModelToolController;
+
+    let bottom = [[-2., -1.], [2., -1.], [2., 1.], [-2., 1.]];
+    let (sin, cos) = std::f64::consts::FRAC_PI_6.sin_cos();
+    let top = bottom.map(|[x, y]| [cos * x - sin * y + 1., sin * x + cos * y + 0.5]);
+    let mut document = Document::new("Twisted loft preview").unwrap();
+    let mut profiles = Vec::new();
+    let mut seams = Vec::new();
+    for (name, z, ring) in [("Start", 0., bottom), ("Rotated end", 6., top)] {
+        let (sketch, mut edits) = Source::create(Datum::Xy, name).unwrap();
+        for edit in &mut edits {
+            if let Mutation::Insert(entity) = edit
+                && let EntityData::Plane { origin_mm, .. } = &mut entity.data
+            {
+                origin_mm[2] = z;
+            }
+        }
+        document = document.edited(&edits).unwrap();
+        let mut source = Source::read(&document, sketch).unwrap().0;
+        let ids = ring.map(|p| source.add_point(p));
+        for i in 0..4 {
+            source.add_line(ids[i], ids[(i + 1) % 4]);
+        }
+        seams.push(source.sketch.curves[0].id);
+        let region = sketch_regions::extract(&source).regions[0].intent();
+        profiles.push(ProfileSource { sketch, region });
+        document = document
+            .edited(&source.replace(&document, sketch).unwrap())
+            .unwrap();
+    }
+    let mut session = Session::new(document).unwrap();
+    let request = AdvancedRequest::new_body(
+        "Twisted loft",
+        AdvancedParameters::Loft(LoftParameters {
+            seams: seams.clone(),
+            ..Default::default()
+        }),
+        profiles,
+        None,
+    );
+    let prepared =
+        model::prepare_advanced(&session, 0, Actor::local(Channel::Ui), &request).unwrap();
+    session.commit(prepared.prepared).unwrap();
+
+    let resources = ProjectResources::default();
+    let mut tool = ModelToolController::default();
+    tool.set_backend(Backend::factory(GeometryBackend::Rust).unwrap()());
+    tool.begin_existing(&session, &resources, request.feature, Channel::Ui)
+        .unwrap();
+    tool.preview(&session, &resources, Channel::Ui).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while tool.pending() {
+        tool.poll(&session, &resources);
+        assert!(Instant::now() < deadline, "Rust loft preview timed out");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert!(tool.can_apply(&session, &resources), "{:?}", tool.error());
+    let scene = tool.display_scene(&session, &resources).unwrap();
+    let hit = scene
+        .pick_face(viewport::Ray::new([0.75, -10., 3.], [0., 1., 0.]).unwrap())
+        .unwrap();
+    assert_eq!(hit.geometry, request.feature);
+    assert!((hit.point_mm[1] - (-1. + 0.5 - cos) * 0.5).abs() < 0.1);
+    let intent = hit.intent.unwrap();
+    for seam in seams {
+        assert!(intent.origins.iter().any(|origin| origin.source == seam));
+    }
+    assert!(intent.attachment.is_none());
+    tool.cancel();
+    assert_eq!(session.revision(), 1);
+}
+
+#[test]
 fn rust_thread_tool_previews_real_m8_ridges_and_cancel_keeps_the_document() {
     use multicad_ui::modeling::ModelToolController;
 
