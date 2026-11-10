@@ -312,6 +312,27 @@ fn check_twisted_loft_drawing_worker(session: &mut Session, body: EntityId) {
         guide: None,
         equipment_categories: None,
     });
+    let mut ordinary = page.views[0].clone();
+    ordinary.id = EntityId::new();
+    ordinary.name = "Loft projection".into();
+    ordinary.kind = drawings::ViewKind::Projection;
+    ordinary.hidden_lines = true;
+    let mut retained = ordinary.clone();
+    retained.id = EntityId::new();
+    retained.name = "Loft depth section".into();
+    retained.frame = ReferenceFrame {
+        origin_mm: [0.; 3],
+        u: [1., 0., 0.],
+        v: [0., 1., 0.],
+    };
+    retained.kind = drawings::ViewKind::Section {
+        offset_mm: 4.,
+        range: drawings::SectionRange::Depth { depth_mm: 2.5 },
+        window: drawings::SectionWindow::default(),
+    };
+    let ordinary_id = ordinary.id;
+    let retained_id = retained.id;
+    page.views.extend([ordinary, retained]);
     let page_id = page.id;
     let (_, prepared) = drawings::prepare_create(
         session,
@@ -355,6 +376,29 @@ fn check_twisted_loft_drawing_worker(session: &mut Session, body: EntityId) {
             .count(),
         2
     );
+    for (id, sections) in [(ordinary_id, 0), (retained_id, 4)] {
+        let drawings::ViewEvaluation::Ready { vectors, .. } = &result.views[&id] else {
+            panic!("{:?}", result.views[&id]);
+        };
+        assert!(vectors.iter().all(|v| v.source == body));
+        assert!(
+            vectors
+                .iter()
+                .any(|v| v.role == drawings::VectorRole::Visible)
+        );
+        assert!(
+            vectors
+                .iter()
+                .any(|v| v.role == drawings::VectorRole::Hidden)
+        );
+        assert_eq!(
+            vectors
+                .iter()
+                .filter(|v| v.role == drawings::VectorRole::Section)
+                .count(),
+            sections
+        );
+    }
 }
 
 #[test]
