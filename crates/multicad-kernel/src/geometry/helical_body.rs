@@ -297,6 +297,16 @@ impl Solid {
         source: &str,
     ) -> Option<Result<f64, multicad_rust_kernel::step_read::ReadError>> {
         let (body, frame) = self.helical_body()?;
+        if let HelicalForm::Screw(screw) = &body.form {
+            return Some(multicad_rust_kernel::step_read::verify_helical_screw(
+                source,
+                screw,
+                frame.origin,
+                frame.u,
+                frame.v,
+                self.policy.linear_tolerance_mm,
+            ));
+        }
         let radius = body.step_stock()?;
         Some(multicad_rust_kernel::step_read::verify_helical_thread(
             source,
@@ -454,6 +464,13 @@ impl HelicalBody {
     }
 
     pub(super) fn supports_step(&self, frame: PlaneFrame, policy: GeometryPolicy) -> bool {
+        if let HelicalForm::Screw(screw) = &self.form {
+            return multicad_rust_kernel::step::supports_helical_screw(
+                screw,
+                frame.origin,
+                policy.linear_tolerance_mm,
+            );
+        }
         self.step_stock().is_some_and(|radius| {
             multicad_rust_kernel::step::supports_helical_thread(
                 &self.geometry,
@@ -470,6 +487,15 @@ impl HelicalBody {
         frame: PlaneFrame,
         policy: GeometryPolicy,
     ) -> Result<(), multicad_rust_kernel::step::StepError> {
+        if let HelicalForm::Screw(screw) = &self.form {
+            return writer.append_helical_screw(
+                screw,
+                frame.origin,
+                frame.u,
+                frame.v,
+                policy.linear_tolerance_mm,
+            );
+        }
         let radius = self
             .step_stock()
             .ok_or(multicad_rust_kernel::step::StepError::Unsupported)?;

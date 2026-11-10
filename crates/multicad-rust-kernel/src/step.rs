@@ -31,7 +31,9 @@ mod warped_union;
 mod writer;
 pub use axial_stack::write_axial_profile_stack;
 pub use cylindrical_revolution::{supports_cylindrical_revolution, write_cylindrical_revolution};
-pub use helical::{supports_helical_thread, write_helical_thread};
+pub use helical::{
+    supports_helical_screw, supports_helical_thread, write_helical_screw, write_helical_thread,
+};
 pub use normal_sweep::write_normal_sweep;
 pub use pierced_sweep::write_pierced_normal_sweep;
 pub use planar_union::{supports_planar_union, write_planar_union};

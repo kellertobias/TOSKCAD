@@ -96,7 +96,28 @@ impl Writer {
         tolerance_mm: f64,
     ) -> Result<(), StepError> {
         let placement = Placement::new(origin, u, v)?;
-        self.append(|file| helical::encode(file, thread, stock_radius_mm, placement, tolerance_mm))
+        self.append(|file| {
+            helical::encode(
+                file,
+                thread,
+                helical::Closure::stock(stock_radius_mm),
+                placement,
+                tolerance_mm,
+            )
+        })
+    }
+
+    pub fn append_helical_screw(
+        &mut self,
+        screw: &crate::headed_screw::Screw,
+        origin: Point,
+        u: Point,
+        v: Point,
+        tolerance_mm: f64,
+    ) -> Result<(), StepError> {
+        let placement = Placement::new(origin, u, v)?;
+        let closure = helical::Closure::screw(screw)?;
+        self.append(|file| helical::encode(file, screw.thread(), closure, placement, tolerance_mm))
     }
 
     pub fn append_orthogonal(

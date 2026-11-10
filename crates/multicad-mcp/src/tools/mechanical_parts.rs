@@ -941,8 +941,9 @@ pub(super) fn mechanical_part_profiles(_: &dyn Host, call: &Request, _: NoArgs) 
                 "end_treatments": false,
                 "radial_taper": false,
                 "mesh": true,
-                "threaded_step": false,
-                "step_geometry": ["washer", "bearing_envelope"]
+                "threaded_step": true,
+                "threaded_step_scope": "Fully threaded external-hex modeled screws with straight single-start flat-root threads, within the bounded spline budget",
+                "step_geometry": ["washer", "bearing_envelope", "machine_screw"]
             },
             "machine_screw": "The underhead length runs from the head seat to the tip. Overall length adds the head height. The thread length is its extent ending at the tip, and its frame locates the underhead datum.",
             "nut_thread": "Rust supports modeled hex nuts and cosmetic cylindrical thread envelopes. The thread length sets the nut height.",

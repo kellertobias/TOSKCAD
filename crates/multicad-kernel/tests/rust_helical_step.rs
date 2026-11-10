@@ -49,3 +49,61 @@ fn occt_reads_bounded_spline_threads_as_real_solids() {
         assert_ne!(measured, expected);
     }
 }
+
+#[test]
+fn occt_reads_placed_headed_screw_as_one_connected_solid() {
+    use multicad_kernel::rust_kernel::{
+        headed_screw::{Screw, ScrewHead, ScrewSpec},
+        step::write_helical_screw,
+        step_read::verify_helical_screw,
+    };
+    let thread = Thread::new(Spec {
+        major_radius_mm: 3.,
+        pitch_mm: 1.,
+        length_mm: 8.,
+        depth_mm: 5. * 3_f64.sqrt() / 16.,
+        crest_width_mm: 0.125,
+        lower_flank_deg: 30.,
+        upper_flank_deg: 30.,
+        starts: 1,
+        left_hand: true,
+        root_radius_mm: None,
+    })
+    .unwrap();
+    let screw = Screw::new(
+        thread,
+        ScrewSpec {
+            head: ScrewHead::ExternalHex {
+                across_flats_mm: 10.,
+                height_mm: 4.,
+            },
+            shank_length_mm: 0.,
+            shank_radius_mm: 3.,
+        },
+    )
+    .unwrap();
+    let scratch = tempfile::tempdir().unwrap();
+    let path = scratch.path().join("tilted-m6-hex.step");
+    let angle = 0.3_f64;
+    let origin = [19., -7., 17.];
+    let u = [angle.cos(), 0., angle.sin()];
+    let v = [0., 1., 0.];
+    let encoded = write_helical_screw(&screw, origin, u, v, 1e-7).unwrap();
+    let measured = verify_helical_screw(&encoded, &screw, origin, u, v, 1e-7).unwrap();
+    std::fs::write(&path, encoded).unwrap();
+    assert!(
+        multicad_kernel::rust_kernel::step_read::read_analytic_solid(
+            &std::fs::read_to_string(&path).unwrap(),
+            1e-7
+        )
+        .is_err()
+    );
+    // The legacy Solid wrapper also runs its exact trimmed-bounds solver.
+    // Test the independently decoded OCCT B-rep directly for this oblique case.
+    let read = multicad_kernel::Shape::read_step(&path).unwrap();
+    assert!(read.valid().unwrap());
+    assert_eq!(Solid::step_solids(&path).unwrap().len(), 1);
+    let actual = read.volume().unwrap();
+    assert!((actual - screw.volume_mm3()).abs() < 1e-5);
+    assert!((actual - measured).abs() < 1e-5);
+}

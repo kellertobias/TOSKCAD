@@ -634,6 +634,70 @@ fn rust_stdio_exports_verified_metric_shaft_and_receiving_thread_after_reopen() 
 }
 
 #[test]
+fn rust_stdio_exports_verified_m6_hex_screw_after_reopen() {
+    let directory = tempfile::tempdir().unwrap();
+    let project = directory.path().join("m6-hex.tcd");
+    let exports = directory.path().join("exports");
+    std::fs::create_dir(&exports).unwrap();
+    let arguments = [
+        "--rust-model",
+        "--project",
+        project.to_str().unwrap(),
+        "--export-dir",
+        exports.to_str().unwrap(),
+    ];
+    let mut client = Client::start(&arguments);
+    let screw = client.ok("set_mechanical_part", json!({
+        "expected_revision": 0, "name": "Fully threaded M6 hex screw",
+        "recipe": {
+            "kind": "machine_screw", "underhead_length": length(8.),
+            "shank_diameter": length(6.),
+            "head": {"kind": "external_hex", "across_flats": length(10.), "height": length(4.)},
+            "drive": {"kind": "external_hex"},
+            "thread": {"family": "iso_metric", "fit": "nominal_basic", "major_diameter": length(6.),
+                "pitch": length(1.), "length": length(8.), "representation": "modeled"}
+        }
+    }));
+    let source = client.ok(
+        "inspect_mechanical_part",
+        json!({"feature": screw["feature"]}),
+    );
+    assert_eq!(source["resolved"]["fully_threaded"], true);
+    let authored_volume = client.part_volume();
+    client.ok("save_project", json!({"expected_revision": 1}));
+    drop(client);
+
+    let saved = std::fs::read(&project).unwrap();
+    let mut reopened = Client::start(&arguments);
+    let receipt = reopened.ok(
+        "export_step",
+        json!({
+            "part": screw["part"], "file_name": "m6-hex.step"
+        }),
+    );
+    close(
+        receipt["readback_volume_mm3"].as_f64().unwrap(),
+        authored_volume,
+    );
+    let path = exports.join("m6-hex.step");
+    let step = std::fs::read_to_string(&path).unwrap();
+    assert_eq!(step.matches("B_SPLINE_SURFACE_WITH_KNOTS").count(), 4);
+    assert_eq!(step.matches("ADVANCED_FACE").count(), 13);
+    assert_eq!(step.matches("MANIFOLD_SOLID_BREP").count(), 1);
+    assert!(!step.contains("FACETED_BREP"));
+    if multicad_kernel::OCCT_LINKED {
+        let decoded = multicad_kernel::Shape::read_step(&path).unwrap();
+        assert!(decoded.valid().unwrap());
+        assert_eq!(multicad_kernel::Solid::step_solids(&path).unwrap().len(), 1);
+        close(
+            decoded.volume().unwrap(),
+            receipt["readback_volume_mm3"].as_f64().unwrap(),
+        );
+    }
+    assert_eq!(std::fs::read(project).unwrap(), saved);
+}
+
+#[test]
 fn rust_stdio_exports_verified_spur_step_after_reopen() {
     export_spur_step_after_reopen(None);
 }

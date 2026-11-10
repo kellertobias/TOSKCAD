@@ -1,13 +1,15 @@
 //! Readback proof for certified helical tensor surfaces in an authored solid.
 use super::*;
 use crate::{
+    headed_screw::Screw,
     helical_thread::Thread,
     step::{
         StepError,
-        helical::{DEGREE, Spline, prepare, product},
+        helical::{Closure, DEGREE, Spline, prepare, product},
     },
 };
 
+mod hex_head;
 mod volume;
 
 type EdgeRef = (u32, bool);
@@ -25,11 +27,44 @@ pub fn verify_helical_thread(
     v: Point,
     tolerance: f64,
 ) -> Result<f64> {
-    let splines = prepare(thread, stock_radius_mm, origin, tolerance).map_err(|err| match err {
+    verify(
+        input,
+        thread,
+        Closure::stock(stock_radius_mm),
+        [origin, u, v],
+        tolerance,
+    )
+}
+
+/// Verify and integrate an authored external-hex fully threaded screw STEP.
+pub fn verify_helical_screw(
+    input: &str,
+    screw: &Screw,
+    origin: Point,
+    u: Point,
+    v: Point,
+    tolerance: f64,
+) -> Result<f64> {
+    let closure = Closure::screw(screw).map_err(step_error)?;
+    verify(input, screw.thread(), closure, [origin, u, v], tolerance)
+}
+
+fn step_error(error: StepError) -> ReadError {
+    match error {
         StepError::Limit => ReadError::Limit,
         StepError::Unsupported => ReadError::Unsupported,
         _ => ReadError::Invalid,
-    })?;
+    }
+}
+
+fn verify(
+    input: &str,
+    thread: &Thread,
+    closure: Closure,
+    [origin, u, v]: [Point; 3],
+    tolerance: f64,
+) -> Result<f64> {
+    let splines = prepare(thread, closure, origin, tolerance).map_err(step_error)?;
     let normal = cross(u, v);
     let axis = unit(normal)?;
     let quadrature = volume::Quadrature::new();
@@ -37,11 +72,10 @@ pub fn verify_helical_thread(
         std::array::from_fn(|i| origin[i] + u[i] * x + v[i] * y + normal[i] * z)
     };
     let height = thread.spec().length_mm;
-    let outside = stock_radius_mm.is_some();
-    let forward = thread.spec().left_hand != outside;
+    let forward = thread.spec().left_hand != closure.inside();
     let mut volumes = compound::read_members_by(input, tolerance, true, true, |shell, id, _| {
         let faces = shell.member_faces(id)?;
-        require(faces.len() == 6 + usize::from(outside))?;
+        require(faces.len() == closure.face_count())?;
         let mut rings = [[0; 4]; 2];
         let mut rails = [[0; 2]; 4];
         let mut corners = [[[0; 2]; 2]; 4];
@@ -140,21 +174,26 @@ pub fn verify_helical_thread(
 
         let mut cylinder_rims = [0; 2];
         let mut caps = [[0.; 3]; 2];
+        let mut shoulder = None;
         for (end, (face_id, z)) in faces[4..6].iter().zip([0., height]).enumerate() {
             let top = end == 1;
             let (surface, outward, bounds) = face(shell, *face_id)?;
-            require(outward && bounds.len() == 1 + usize::from(outside))?;
+            let hole = closure.cap_hole(top);
+            require(outward && bounds.len() == 1 + usize::from(hole))?;
             let [Value::String(_), axis] = shell.args(surface, "PLANE")? else {
                 return Err(ReadError::Invalid);
             };
-            let cap_axis = normal.map(|n| if top { n } else { -n });
+            let positive = top || matches!(closure, Closure::HexHead { .. });
+            let cap_axis = normal.map(|n| if positive { n } else { -n });
             caps[end] = check_axis(shell, axis, world([0.; 2], z), cap_axis, u)?.origin;
             let expected = rings[end].map(|edge| (edge, true));
             require(
-                ring(shell, bounds[usize::from(outside)], !outside)?
-                    == orient(&expected, top == forward),
+                ring(shell, bounds[usize::from(hole)], !hole)? == orient(&expected, top == forward),
             )?;
-            if let Some(radius) = stock_radius_mm {
+            if matches!(closure, Closure::HexHead { .. }) && !top {
+                shoulder = Some(bounds[0]);
+            }
+            if let Closure::Bore(radius) = closure {
                 let rim = ring(shell, bounds[0], true)?;
                 let [(edge, sense)] = rim[..] else {
                     return Err(ReadError::Invalid);
@@ -172,12 +211,25 @@ pub fn verify_helical_thread(
                 cylinder_rims[end] = edge;
             }
         }
-        let outside_volume = if let Some(radius) = stock_radius_mm {
-            let (radius, axis) =
-                check_cylinder(shell, faces[6], cylinder_rims, radius, [origin, normal, u])?;
-            std::f64::consts::PI * radius * radius * dot(sub(caps[1], caps[0]), axis)
-        } else {
-            0.
+        let outside_volume = match closure {
+            Closure::Shaft => 0.,
+            Closure::Bore(radius) => {
+                let (radius, axis) =
+                    check_cylinder(shell, faces[6], cylinder_rims, radius, [origin, normal, u])?;
+                std::f64::consts::PI * radius * radius * dot(sub(caps[1], caps[0]), axis)
+            }
+            Closure::HexHead {
+                across_flats_mm,
+                height_mm,
+            } => hex_head::verify(
+                shell,
+                &faces[6..],
+                shoulder.ok_or(ReadError::Invalid)?,
+                caps[0],
+                [u, normal],
+                [across_flats_mm, height_mm],
+                world,
+            )?,
         };
         let volume = outside_volume + if forward { flux } else { -flux };
         require(volume.is_finite() && volume > 0.)?;
