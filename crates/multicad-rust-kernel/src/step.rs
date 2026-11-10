@@ -21,6 +21,7 @@ mod axial_stack;
 mod cubic_trim;
 mod cylindrical_revolution;
 pub(crate) mod helical;
+pub mod helical_trim;
 pub(crate) mod herringbone;
 pub use herringbone::{supports_herringbone, write_herringbone};
 mod normal_sweep;
