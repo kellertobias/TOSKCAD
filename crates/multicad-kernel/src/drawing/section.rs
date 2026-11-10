@@ -3,6 +3,9 @@ use super::*;
 use multicad_core::materials::HatchPattern;
 use multicad_rust_kernel::{planar_section, section_hatch};
 
+mod annulus;
+pub(super) use annulus::project_annulus;
+
 pub(super) fn project(
     solids: &[DrawingSolid<'_>],
     options: DrawingProjection,
@@ -65,48 +68,72 @@ pub(super) fn project(
             continue;
         }
         let Some(hatch) = input.hatch else { continue };
-        let pattern = match hatch.pattern {
-            HatchPattern::None => continue,
-            HatchPattern::Lines => section_hatch::Pattern::Lines,
-            HatchPattern::Cross => section_hatch::Pattern::Cross,
-            HatchPattern::Alternating => section_hatch::Pattern::Alternating,
-            HatchPattern::Solid => section_hatch::Pattern::Solid,
-            HatchPattern::Dots => section_hatch::Pattern::Dots,
-            HatchPattern::SmallCrosses => section_hatch::Pattern::SmallCrosses,
-            HatchPattern::Brick => section_hatch::Pattern::Brick,
-            HatchPattern::Concrete => section_hatch::Pattern::Concrete,
-            HatchPattern::Grass => section_hatch::Pattern::Grass,
-        };
-        let point_cost = if pattern == section_hatch::Pattern::Solid {
-            3
-        } else {
-            2
-        };
-        let strokes = section_hatch::hatch_with_budget(
+        output.extend(publish_hatch(
+            source,
+            hatch,
             &boundary,
-            pattern,
-            section_hatch::Options {
-                angle_rad: hatch.angle_rad,
-                spacing_mm: hatch.spacing_mm,
-                line_width_mm: hatch.line_width_mm,
-                tolerance_mm: tolerance,
-                stroke_limit: curves.min(points / point_cost),
-            },
+            tolerance,
+            &mut curves,
+            &mut points,
             &mut hatch_budget,
-        )
-        .map_err(|cause| match cause {
-            section_hatch::HatchError::Invalid => err(
-                GeometryErrorKind::InvalidResult,
-                "Rust drawing section has an invalid hatch region",
-            ),
-            section_hatch::HatchError::Limit => err(
-                GeometryErrorKind::Limit,
-                "Rust drawing section exceeded its hatch budget",
-            ),
-        })?;
-        curves -= strokes.len();
-        points -= point_cost * strokes.len();
-        output.extend(strokes.into_iter().map(|stroke| match stroke {
+        )?);
+    }
+    Ok(output)
+}
+
+fn publish_hatch(
+    source: usize,
+    hatch: DrawingHatch,
+    boundary: &[[[f64; 2]; 2]],
+    tolerance: f64,
+    curves: &mut usize,
+    points: &mut usize,
+    hatch_budget: &mut section_hatch::Budget,
+) -> Result<Vec<ProjectedVector>, GeometryError> {
+    let pattern = match hatch.pattern {
+        HatchPattern::None => return Ok(Vec::new()),
+        HatchPattern::Lines => section_hatch::Pattern::Lines,
+        HatchPattern::Cross => section_hatch::Pattern::Cross,
+        HatchPattern::Alternating => section_hatch::Pattern::Alternating,
+        HatchPattern::Solid => section_hatch::Pattern::Solid,
+        HatchPattern::Dots => section_hatch::Pattern::Dots,
+        HatchPattern::SmallCrosses => section_hatch::Pattern::SmallCrosses,
+        HatchPattern::Brick => section_hatch::Pattern::Brick,
+        HatchPattern::Concrete => section_hatch::Pattern::Concrete,
+        HatchPattern::Grass => section_hatch::Pattern::Grass,
+    };
+    let point_cost = if pattern == section_hatch::Pattern::Solid {
+        3
+    } else {
+        2
+    };
+    let strokes = section_hatch::hatch_with_budget(
+        boundary,
+        pattern,
+        section_hatch::Options {
+            angle_rad: hatch.angle_rad,
+            spacing_mm: hatch.spacing_mm,
+            line_width_mm: hatch.line_width_mm,
+            tolerance_mm: tolerance,
+            stroke_limit: (*curves).min(*points / point_cost),
+        },
+        hatch_budget,
+    )
+    .map_err(|cause| match cause {
+        section_hatch::HatchError::Invalid => err(
+            GeometryErrorKind::InvalidResult,
+            "Rust drawing section has an invalid hatch region",
+        ),
+        section_hatch::HatchError::Limit => err(
+            GeometryErrorKind::Limit,
+            "Rust drawing section exceeded its hatch budget",
+        ),
+    })?;
+    *curves -= strokes.len();
+    *points -= point_cost * strokes.len();
+    Ok(strokes
+        .into_iter()
+        .map(|stroke| match stroke {
             section_hatch::Stroke::Line(ends) => planar::line(source, VectorRole::Hatch, ends),
             section_hatch::Stroke::Triangle(points) => ProjectedVector {
                 source_index: source,
@@ -114,7 +141,6 @@ pub(super) fn project(
                 curve: VectorCurve::HatchTriangle { points },
                 preview_mm: points.to_vec(),
             },
-        }));
-    }
-    Ok(output)
+        })
+        .collect())
 }

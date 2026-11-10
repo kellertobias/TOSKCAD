@@ -10,7 +10,7 @@ use multicad_rust_kernel::annulus::Annulus;
 use std::{collections::BTreeSet, f64::consts::TAU};
 
 pub(crate) struct AnnulusBody {
-    pub(super) geometry: Annulus,
+    pub(crate) geometry: Annulus,
     pub(super) feature: EntityId,
     // The wall orders are inner, outer, as in the sketch-facing interface.
     wall_origins: [Origin; 2],

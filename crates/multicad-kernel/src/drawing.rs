@@ -142,12 +142,19 @@ pub fn project_drawing(
             ));
         }
         if let Some(depth) = options.section_offset_mm {
+            if let [input] = solids
+                && input.solid.annulus_body().is_some()
+            {
+                return if options.section_only {
+                    section::project_annulus(input, options, depth)
+                } else {
+                    curved::project_annulus_depth(input, options, depth)
+                };
+            }
             return section::project(solids, options, depth);
         }
-        if let [input] = solids
-            && input.solid.axial_cylinder_frame().is_some()
-        {
-            return curved::project(input, options);
+        if solids.iter().any(|input| curved::is_round(input.solid)) {
+            return curved::project_scene(solids, options);
         }
         return planar::project(solids, options);
     }

@@ -1,7 +1,10 @@
-use multicad_core::drawings::{VectorCurve, VectorRole};
+use multicad_core::{
+    document::EntityId,
+    drawings::{VectorCurve, VectorRole},
+};
 use multicad_kernel::{
-    DrawingProjection, DrawingSolid, GeometryErrorKind, PlaneFrame, ProjectedVector,
-    RigidTransform, Solid, project_drawing,
+    BooleanOperation, DrawingProjection, DrawingSolid, GeometryErrorKind, PlaneFrame,
+    ProjectedVector, RigidTransform, Solid, project_drawing,
     rust_kernel::{Circle, Rational, cylinder::AxialCylinder},
 };
 use std::f64::consts::TAU;
@@ -224,4 +227,176 @@ fn detail_bounds_each_output_and_budget_failures_do_not_publish_partial_curves()
         );
         assert_eq!(result.unwrap_err().kind, GeometryErrorKind::Limit);
     }
+}
+
+fn annulus() -> Solid {
+    Solid::rust_annulus(
+        3.,
+        6.,
+        2.5,
+        EntityId::new(),
+        PlaneFrame::default(),
+        Default::default(),
+    )
+    .unwrap()
+}
+
+#[test]
+fn native_and_rust_annulus_agree_on_visible_end_and_oblique_bore_rims() {
+    let rust = annulus();
+    let policy = Default::default();
+    let frame = PlaneFrame::default();
+    let native = Solid::cylinder(frame, 6., 2.5, policy)
+        .unwrap()
+        .boolean(
+            &Solid::cylinder(frame, 3., 2.5, policy).unwrap(),
+            BooleanOperation::Subtract,
+            policy,
+        )
+        .unwrap()
+        .unwrap();
+    for frame in [
+        frame,
+        PlaneFrame {
+            v: [0., 0.8, 0.6],
+            ..frame
+        },
+        PlaneFrame {
+            v: [0., -0.8, -0.6],
+            ..frame
+        },
+    ] {
+        let options = DrawingProjection {
+            frame,
+            hidden_lines: false,
+            ..Default::default()
+        };
+        let rust = project(&rust, options);
+        let native = project(&native, options);
+        assert!(
+            rust.iter().any(
+                |v| matches!(v.curve, VectorCurve::Ellipse { major_mm, .. } if major_mm == 3.)
+            )
+        );
+        assert_layer_coverage(&rust, &native);
+        assert_layer_coverage(&native, &rust);
+    }
+}
+
+#[test]
+fn disjoint_round_and_planar_sources_share_the_view_and_global_output_budget() {
+    let ring = annulus();
+    let second = annulus()
+        .transformed(RigidTransform {
+            translation_mm: [0., 20., 0.],
+            ..Default::default()
+        })
+        .unwrap();
+    let int = |n| Rational::new(n, 1).unwrap();
+    let box_at = |x| {
+        Solid::rust_box(
+            EntityId::new().uuid_bits(),
+            [int(3); 3],
+            PlaneFrame {
+                origin: [x, -1., 1.],
+                ..PlaneFrame::default()
+            },
+            Default::default(),
+        )
+        .unwrap()
+    };
+    let block = box_at(15.);
+    let sources = |block| [block, &ring, &second].map(|solid| DrawingSolid { solid, hatch: None });
+    let options = DrawingProjection::default();
+    let combined = project_drawing(&sources(&block), options).unwrap();
+    for (index, solid) in [&block, &ring, &second].into_iter().enumerate() {
+        let isolated = project(solid, options);
+        let portion: Vec<_> = combined
+            .iter()
+            .filter(|v| v.source_index == index)
+            .cloned()
+            .map(|mut v| {
+                v.source_index = 0;
+                v
+            })
+            .collect();
+        assert_eq!(portion, isolated);
+    }
+    for restricted in [
+        DrawingProjection {
+            maximum_curves: combined.len() as u32 - 1,
+            ..options
+        },
+        DrawingProjection {
+            maximum_points: combined
+                .iter()
+                .map(|v| v.preview_mm.len() as u32)
+                .sum::<u32>()
+                - 1,
+            ..options
+        },
+    ] {
+        assert_eq!(
+            project_drawing(&sources(&block), restricted)
+                .unwrap_err()
+                .kind,
+            GeometryErrorKind::Limit
+        );
+    }
+    let overlapping = box_at(0.);
+    assert_eq!(
+        project_drawing(&sources(&overlapping), options)
+            .unwrap_err()
+            .kind,
+        GeometryErrorKind::Unsupported,
+    );
+}
+
+#[test]
+fn transverse_annulus_section_depth_distinguishes_cut_retained_and_empty_views() {
+    let ring = annulus();
+    let draw = |offset, range| {
+        project(
+            &ring,
+            DrawingProjection {
+                section_offset_mm: Some(offset),
+                section_depth_mm: range,
+                ..Default::default()
+            },
+        )
+    };
+    for depth in [None, Some(0.4)] {
+        let cut = draw(1., depth);
+        assert_eq!(cut.len(), 2);
+        assert!(cut.iter().all(|v| v.role == VectorRole::Section));
+        assert!(cut.iter().all(|v| matches!(
+            v.curve,
+            VectorCurve::Ellipse {
+                major_mm: 3. | 6.,
+                ..
+            }
+        )));
+    }
+    assert!(draw(-1., None).is_empty());
+    assert!(draw(3., Some(0.4)).is_empty());
+    let retained = draw(3., Some(1.));
+    assert_eq!(retained, project(&ring, DrawingProjection::default()));
+    let unsupported = project_drawing(
+        &[DrawingSolid {
+            solid: &ring,
+            hatch: None,
+        }],
+        DrawingProjection {
+            frame: PlaneFrame {
+                v: [0., 0., 1.],
+                ..PlaneFrame::default()
+            },
+            section_offset_mm: Some(0.),
+            ..Default::default()
+        },
+    );
+    assert_eq!(
+        unsupported.unwrap_err().kind,
+        GeometryErrorKind::Unsupported
+    );
 }
