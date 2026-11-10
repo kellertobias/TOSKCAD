@@ -4,3 +4,5 @@ mod common;
 mod parts;
 #[path = "advanced/profiles.rs"]
 mod profiles;
+#[path = "advanced/rust_patterns.rs"]
+mod rust_patterns;

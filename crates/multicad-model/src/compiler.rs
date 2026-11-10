@@ -1512,12 +1512,14 @@ impl Compiler {
                             source.parameters,
                             model::AdvancedParameters::LinearPattern(
                                 model::LinearPatternParameters { merge: false, .. }
+                            ) | model::AdvancedParameters::CircularPattern(
+                                model::CircularPatternParameters { merge: false, .. }
                             )
                         )
                     {
                         return Err(error(
                             Some(id),
-                            "Rust advanced operations currently require a separate-member linear pattern",
+                            "Rust advanced operations currently require a separate-member linear or circular pattern",
                         ));
                     }
                     let selected =

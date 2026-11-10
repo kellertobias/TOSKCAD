@@ -7,7 +7,7 @@ use multicad_core::{
     },
     project_file::{self, ProjectFile},
 };
-use multicad_model::Compiler;
+use multicad_model::{Compiler, GeometryBackend};
 fn actor() -> Actor {
     Actor::local(Channel::Mcp)
 }
@@ -164,22 +164,53 @@ fn a_closed_model_partitions_every_target_at_its_real_boundary_and_keep_tool_is_
         let prepared =
             model::prepare_split_operation(&f.session, f.session.revision(), actor(), &request)
                 .unwrap();
-        let native = Compiler::default()
-            .compile(prepared.prepared.document(), f.session.revision() + 1)
-            .unwrap();
-        assert_eq!(native.snapshot().bodies.len(), 4 + usize::from(keep_tools));
-        for target in &request.targets {
-            for output in &target.outputs {
-                let solid = native.solid(output.body).unwrap();
-                let inside = output.side == SplitSideV2::InsideTool;
-                near(
-                    solid.volume_mm3().unwrap(),
-                    if inside { 600. } else { 400. },
-                );
-                if inside {
-                    near(solid.bounds().unwrap().min[1], 4.);
-                } else {
-                    near(solid.bounds().unwrap().max[1], 4.);
+        let document = prepared.prepared.document();
+        let mut bytes = vec![];
+        project_file::write(
+            &ProjectFile::new(document.clone()).unwrap(),
+            &mut bytes,
+            Default::default(),
+        )
+        .unwrap();
+        let reopened = project_file::read(
+            &mut bytes.as_slice(),
+            Default::default(),
+            &project_file::supported_capabilities(),
+        )
+        .unwrap()
+        .project;
+        assert_eq!(&reopened.document, document);
+        for backend in [
+            GeometryBackend::Rust,
+            #[cfg(feature = "occt")]
+            GeometryBackend::OpenCascade,
+        ] {
+            let result = Compiler::default()
+                .compile_with_backend(&reopened.document, f.session.revision() + 1, backend, None)
+                .unwrap();
+            assert_eq!(result.snapshot().bodies.len(), 4 + usize::from(keep_tools));
+            for target in &request.targets {
+                for output in &target.outputs {
+                    let solid = result.solid(output.body).unwrap();
+                    assert_eq!(solid.uses_rust_geometry(), backend == GeometryBackend::Rust);
+                    assert_eq!(solid.solid_count().unwrap(), 1);
+                    let inside = output.side == SplitSideV2::InsideTool;
+                    near(
+                        solid.volume_mm3().unwrap(),
+                        if inside { 600. } else { 400. },
+                    );
+                    let bounds = solid.bounds().unwrap();
+                    near(if inside { bounds.min[1] } else { bounds.max[1] }, 4.);
+                    if backend == GeometryBackend::Rust {
+                        let topology = &result.snapshot().shapes[&output.feature].topology;
+                        assert!(topology.elements.iter().any(|element| {
+                            element.key.kind == multicad_core::references::TopologyKind::Face
+                                && element
+                                    .origins
+                                    .iter()
+                                    .any(|origin| origin.source == f.tool.producer)
+                        }));
+                    }
                 }
             }
         }
