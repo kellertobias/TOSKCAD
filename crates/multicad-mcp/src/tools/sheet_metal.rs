@@ -1,6 +1,6 @@
 //! Sheet-metal tools over the shared sheet API. Each mutation builds the
-//! sheet natively before it commits one transaction; records and flat
-//! patterns are measured from the evaluated solids.
+//! sheet with the selected backend before it commits. Records and flat
+//! patterns use the evaluated solids.
 use super::{
     Quantity, Request, ToolResult, commit, compile, id, revision_guard, sketch_support_report,
     snapshot,
@@ -22,7 +22,10 @@ use multicad_core::{
     },
     parameters::EvaluatedParameters,
 };
-use multicad_model::export::{Exporter, sheet_dxf::SheetDxfLayers};
+use multicad_model::export::{
+    Exporter,
+    sheet_dxf::{SheetDxfLayers, SheetDxfOptions},
+};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -788,7 +791,7 @@ pub(super) fn export_sheet_dxf(host: &dyn Host, call: &Request, args: SheetDxfAr
             "file_name must be a bare name ending in .dxf",
         ));
     }
-    call.require_open_cascade("Developed sheet DXF export")?;
+    call.check()?;
     let part = id(&args.part)?;
     let units = match args.units {
         Some(DxfUnitArg::Cm) => LengthUnit::Centimeter,
@@ -799,12 +802,15 @@ pub(super) fn export_sheet_dxf(host: &dyn Host, call: &Request, args: SheetDxfAr
     let (document, revision, _) = snapshot(host)?;
     let interrupt = || call.cancelled();
     let file = Exporter::default()
-        .developed_sheet_dxf(
+        .developed_sheet_dxf_with_backend(
             &document,
             revision,
             part,
-            units,
-            &SheetDxfLayers::default(),
+            SheetDxfOptions {
+                backend: call.backend,
+                units,
+                layers: &SheetDxfLayers::default(),
+            },
             Some(&interrupt),
         )
         .map_err(|e| ToolError::new("export_failed", e.message.clone()))?;

@@ -294,6 +294,238 @@ fn rectangle_base_sheet_follows_parameters_stock_and_part_values() {
     assert!(e.message.contains("not sheet stock"), "{}", e.message);
 }
 
+#[test]
+fn rust_flat_sheet_preserves_reverse_stock_cutouts_and_an_authored_sketch_cut_in_dxf() {
+    use multicad_core::{
+        exchange::LengthUnit,
+        manufacturing::PlanarEdge,
+        model::{BodyInput, Cutout, CutoutFace, CutoutShape, SheetProfileCutDefinition},
+        references::TopologyKind,
+    };
+    use multicad_model::{
+        GeometryBackend,
+        export::{Exporter, sheet_dxf::SheetDxfOptions},
+    };
+    let mut f = fixture();
+    let mut definition = rectangle(&f, f.steel);
+    let SheetBase::Rectangle { origin, .. } = &mut definition.base else {
+        unreachable!();
+    };
+    origin[2] = length(0.);
+    definition.reverse = true;
+    definition.cutouts = vec![
+        Cutout {
+            face: CutoutFace::Base,
+            shape: CutoutShape::Circle {
+                center: [length(20.), length(20.)],
+                diameter: length(10.),
+            },
+        },
+        Cutout {
+            face: CutoutFace::Base,
+            shape: CutoutShape::Rectangle {
+                center: [length(60.), length(40.)],
+                size: [length(8.), length(6.)],
+            },
+        },
+    ];
+    let request = SheetRequest::new("Rust blank", definition);
+    let prepared = model::prepare_sheet(&f.s, f.s.revision(), actor(), &request).unwrap();
+    f.s.commit(prepared.prepared).unwrap();
+    let compiler = Compiler {
+        omit_display: true,
+        ..Default::default()
+    };
+    let compile_rust = |session: &Session| {
+        compiler
+            .compile_with_backend(
+                session.document(),
+                session.revision(),
+                GeometryBackend::Rust,
+                None,
+            )
+            .unwrap()
+    };
+    let base = compile_rust(&f.s);
+    let solid = base.solid(request.feature).unwrap();
+    assert!(solid.uses_rust_geometry());
+    let initial_area = 24_000. - 25. * std::f64::consts::PI - 48.;
+    near(solid.volume_mm3().unwrap(), initial_area * 1.5);
+    near(solid.bounds().unwrap().min[2], -1.5);
+    near(solid.bounds().unwrap().max[2], 0.);
+    let initial = base.snapshot().shapes[&request.feature].topology.clone();
+    assert_eq!(
+        initial
+            .elements
+            .iter()
+            .filter(|element| element.key.kind == TopologyKind::Face)
+            .count(),
+        11
+    );
+
+    let (sketch, edits) = Source::create(Datum::Xy, "Through opening").unwrap();
+    insert(&mut f.s, edits);
+    let mut source = Source::read(f.s.document(), sketch).unwrap().0;
+    let points =
+        [[80., 60.], [90., 60.], [90., 70.], [80., 70.]].map(|point| source.add_point(point));
+    let edges = std::array::from_fn::<_, 4, _>(|i| {
+        source.add_line(points[i], points[(i + 1) % points.len()])
+    });
+    let region = sketch_regions::extract(&source).regions[0].intent();
+    let edits = source.replace(f.s.document(), sketch).unwrap();
+    insert(&mut f.s, edits);
+    let cut = EntityId::new();
+    let continuation = SheetProfileCutDefinition {
+        output: BodyOutput { body: request.body },
+        input: BodyInput {
+            body: request.body,
+            producer: request.feature,
+        },
+        profile: ProfileSource { sketch, region },
+        face: CutoutFace::Base,
+    };
+    let prepared =
+        model::prepare_sheet_profile_cut(&f.s, f.s.revision(), actor(), cut, &continuation)
+            .unwrap();
+    f.s.commit(prepared.prepared).unwrap();
+
+    let model = compile_rust(&f.s);
+    let rebuilt = model.solid(cut).unwrap();
+    assert!(rebuilt.uses_rust_geometry());
+    assert_eq!(model.snapshot().bodies[&request.body], cut);
+    let area = initial_area - 100.;
+    let record = model.sheet_metal(f.s.document()).unwrap().pop().unwrap();
+    assert_eq!(record.material, Some(f.steel_material));
+    assert_eq!(record.solid_count, 1);
+    assert!(record.issues.is_empty() && record.bends.is_empty());
+    near(record.volume_mm3, area * 1.5);
+    near(record.measured_thickness_mm, 1.5);
+    let EntityData::Material {
+        density_kg_m3: Some(density),
+        ..
+    } = f.s.document().get(f.steel_material).unwrap().data
+    else {
+        panic!("missing material density")
+    };
+    near(record.volume_mm3 * density / 1e9, area * 1.5 * 7850. / 1e9);
+
+    let topology = &model.snapshot().shapes[&cut].topology;
+    assert_eq!(
+        topology
+            .elements
+            .iter()
+            .filter(|element| element.key.kind == TopologyKind::Face)
+            .count(),
+        15
+    );
+    assert!(topology.elements.iter().any(|element| {
+        element.key.kind == TopologyKind::Face
+            && element
+                .origins
+                .iter()
+                .any(|origin| edges.contains(&origin.source))
+    }));
+    for face in initial
+        .elements
+        .iter()
+        .filter(|element| element.key.kind == TopologyKind::Face)
+    {
+        assert!(
+            topology.elements.iter().any(|element| {
+                element.key.kind == TopologyKind::Face && element.origins == face.origins
+            }),
+            "missing stable base origins {:?}",
+            face.origins
+        );
+    }
+    let developed = model.unfold(f.s.document(), request.body).unwrap();
+    near(developed.cut.area_mm2(), area);
+    assert_eq!(developed.cut.loops.len(), 4);
+    assert_eq!(
+        developed
+            .cut
+            .loops
+            .iter()
+            .flat_map(|wire| &wire.edges)
+            .filter(|edge| matches!(edge, PlanarEdge::Arc { .. }))
+            .count(),
+        1
+    );
+    let repeated = EntityId::new();
+    let repeated_cut = SheetProfileCutDefinition {
+        input: BodyInput {
+            body: request.body,
+            producer: cut,
+        },
+        ..continuation
+    };
+    let prepared =
+        model::prepare_sheet_profile_cut(&f.s, f.s.revision(), actor(), repeated, &repeated_cut)
+            .unwrap();
+    let refused = compiler
+        .compile_with_backend(
+            prepared.prepared.document(),
+            f.s.revision() + 1,
+            GeometryBackend::Rust,
+            None,
+        )
+        .err()
+        .expect("the same exact opening cannot cut the blank twice");
+    assert_eq!(refused.entity, Some(repeated));
+    assert!(
+        refused.message.contains("separate through openings"),
+        "{refused}"
+    );
+
+    let export = Exporter { compiler }
+        .developed_sheet_dxf_with_backend(
+            f.s.document(),
+            f.s.revision(),
+            request.body,
+            SheetDxfOptions {
+                backend: GeometryBackend::Rust,
+                units: LengthUnit::Millimeter,
+                layers: &Default::default(),
+            },
+            None,
+        )
+        .unwrap();
+    assert_eq!(export.pattern.cut, developed.cut);
+    let dxf = ::dxf::Drawing::load(&mut std::io::Cursor::new(export.bytes)).unwrap();
+    let cut_entities: Vec<_> = dxf
+        .entities()
+        .filter_map(|entity| {
+            let ::dxf::entities::EntityType::LwPolyline(line) = &entity.specific else {
+                return None;
+            };
+            assert!(line.is_closed());
+            Some((entity.common.layer.as_str(), line))
+        })
+        .collect();
+    assert_eq!(
+        cut_entities
+            .iter()
+            .filter(|(layer, _)| *layer == "CUT")
+            .count(),
+        1
+    );
+    assert_eq!(
+        cut_entities
+            .iter()
+            .filter(|(layer, _)| *layer == "CUT_INNER")
+            .count(),
+        3
+    );
+    assert!(cut_entities.iter().any(|(layer, line)| {
+        *layer == "CUT_INNER"
+            && line.vertices.len() == 2
+            && line
+                .vertices
+                .iter()
+                .all(|v| (v.bulge.abs() - 1.).abs() < 1e-9)
+    }));
+}
+
 fn read_sheet_stock_spec(s: &Session, id: EntityId) -> StockKind {
     model::read_sheet_stock(s.document(), id)
         .unwrap()
@@ -364,6 +596,19 @@ fn sketch_region_sheet_keeps_openings_in_its_flat_pattern_and_reopens() {
     assert_eq!(r.flat.loops.iter().filter(|l| l.outer).count(), 1);
     near(r.flat_size_mm[0], 150.);
     near(r.flat_size_mm[1], 90.);
+    let rust = Compiler::default()
+        .compile_with_backend(
+            f.s.document(),
+            f.s.revision(),
+            multicad_model::GeometryBackend::Rust,
+            None,
+        )
+        .unwrap();
+    assert!(rust.solid(request.feature).unwrap().uses_rust_geometry());
+    let rust_record = rust.sheet_metal(f.s.document()).unwrap().pop().unwrap();
+    near(rust_record.volume_mm3, r.volume_mm3);
+    near(rust_record.flat.area_mm2(), r.flat.area_mm2());
+    assert_eq!(rust_record.flat.loops.len(), r.flat.loops.len());
 
     // Save and reopen keep the editable sheet and identical records.
     let mut bytes = vec![];

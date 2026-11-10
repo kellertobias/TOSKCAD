@@ -312,6 +312,64 @@ fn mcp_exports_a_developed_sheet_dxf_into_the_export_folder() {
 }
 
 #[test]
+fn mcp_rust_backend_builds_and_exports_a_flat_sheet_with_a_round_opening() {
+    let folder = tempfile::tempdir().unwrap();
+    let host = Headless::with_geometry_backend(
+        Workspace::new(Document::new("Rust sheet DXF").unwrap()).unwrap(),
+        Some(folder.path().to_path_buf()),
+        false,
+        multicad_model::GeometryBackend::Rust,
+    );
+    let run = |name: &str, arguments: Value| dispatch(&host, &call(), name, arguments);
+    let stock = run(
+        "create_sheet_stock",
+        json!({ "expected_revision": 0, "name": "Steel 1.0", "material_name": "Steel",
+            "thickness_mm": 1, "sheet_length_mm": 2000, "sheet_width_mm": 1000,
+            "inside_bend_radius_mm": 1, "k_factor": 0.4 }),
+    )
+    .unwrap();
+    let blank = run(
+        "set_sheet_part",
+        json!({ "expected_revision": 1, "name": "Lid", "stock": stock["stock"],
+            "plane": "xy", "length": mm(80.), "width": mm(50.) }),
+    )
+    .unwrap();
+    run(
+        "set_sheet_forming",
+        json!({ "expected_revision": 2, "feature": blank["feature"],
+            "cutouts": [{ "shape": "circle", "center_mm": [40, 25], "diameter": mm(6.) }] }),
+    )
+    .unwrap();
+    let listed = run("sheet_metal", json!({})).unwrap();
+    near(
+        &sheet(&listed, "Lid")["volume_mm3"],
+        4000. - 9. * std::f64::consts::PI,
+    );
+
+    let out = run(
+        "export_sheet_dxf",
+        json!({ "part": blank["part"], "file_name": "lid.dxf" }),
+    )
+    .unwrap();
+    let bytes = std::fs::read(folder.path().join("lid.dxf")).unwrap();
+    assert_eq!(out["bytes"], bytes.len());
+    assert_eq!(out["revision"], 3);
+    let text = String::from_utf8(bytes).unwrap();
+    assert!(text.contains("\n8\nCUT_INNER\n") && text.contains("cutout.0 D6.000"));
+    assert!(!text.contains("\n8\nBEND_UP\n"));
+
+    let before = host.document();
+    let bent = run(
+        "set_sheet_forming",
+        json!({ "expected_revision": 3, "feature": blank["feature"],
+            "flanges": [{ "edge": 0, "kind": "bend", "length": mm(10.) }] }),
+    )
+    .unwrap_err();
+    assert!(bent.message.contains("without bends"), "{bent:?}");
+    assert_eq!(host.document(), before);
+}
+
+#[test]
 fn mcp_attaches_hardware_with_holes_and_separate_parts() {
     let host = Headless::new(
         Workspace::new(Document::new("Hardware").unwrap()).unwrap(),

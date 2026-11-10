@@ -1260,6 +1260,7 @@ impl Compiler {
                         context.parameters(),
                         id,
                         self.policy,
+                        backend,
                         |sketch, region| {
                             profiles.get(sketch, region, id, &solids, &topologies, interrupt)
                         },
@@ -1307,6 +1308,7 @@ impl Compiler {
                         crate::sheet_metal::CutProfile {
                             geometry: profile,
                             developed: chart.is_some(),
+                            backend,
                         },
                         &origins,
                         self.policy,

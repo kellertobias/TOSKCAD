@@ -1,11 +1,9 @@
-//! Native sheet metal: folded solids and developed flat patterns built from
-//! the same sheet feature, sheet records measured from the evaluated solids,
-//! and the analysis that converts a constant-thickness solid into a sheet
-//! part.
+//! Folded solids, flat blanks, and developed patterns from the same sheet
+//! feature. Sheet records and conversion use the evaluated solid.
 use crate::sheet_forming::{
     PlacedFlange, SheetSpace, developed_rect, flat_cutout, fuse, interfere, polygon_edges,
 };
-use crate::{Model, ModelError, error};
+use crate::{GeometryBackend, Model, ModelError, error};
 use multicad_core::{
     commands::{Actor, CommandError, ErrorCode, Session},
     document::{Document, DocumentError, EntityData, EntityId},
@@ -61,6 +59,7 @@ pub struct SheetLayout {
     pub patterns: Vec<model::ResolvedPattern>,
     pub(crate) profile_cuts: Vec<profile_cut::ProfileCut>,
     pub(crate) developed: Option<PlanarContours>,
+    rust_base_origins: Option<Vec<Origin>>,
 }
 impl SheetLayout {
     pub(crate) fn space(&self) -> SheetSpace {
@@ -148,6 +147,7 @@ pub(crate) fn build(
     parameters: &EvaluatedParameters,
     id: EntityId,
     policy: GeometryPolicy,
+    backend: GeometryBackend,
     profile: impl FnOnce(EntityId, &RegionIntent) -> Result<(CurvedProfile, Vec<Origin>), ModelError>,
 ) -> Result<(Solid, SheetLayout), ModelError> {
     let e = |e: DocumentError| error(Some(id), e);
@@ -155,6 +155,11 @@ pub(crate) fn build(
     let g = |e: multicad_kernel::GeometryError| error(Some(id), e);
     let source = model::read_sheet(document, id).map_err(e)?;
     let sheet = model::resolve_sheet(document, parameters, &source).map_err(e)?;
+    if backend == GeometryBackend::Rust && !sheet.flanges.is_empty() {
+        return Err(m(
+            "Rust sheet metal currently requires a flat blank without bends, hems or jogs".into(),
+        ));
+    }
     let (base, origins) = match &sheet.base {
         ResolvedBase::Rectangle {
             frame,
@@ -190,8 +195,11 @@ pub(crate) fn build(
     let n = base.frame.normal();
     let direction = if sheet.reverse { scale(n, -1.) } else { n };
     let t = sheet.thickness_mm;
-    let flanges = place_flanges(&base, &sheet.flanges).map_err(m)?;
-    let layout = SheetLayout {
+    let flanges = match backend {
+        GeometryBackend::OpenCascade => place_flanges(&base, &sheet.flanges).map_err(m)?,
+        GeometryBackend::Rust => Vec::new(),
+    };
+    let mut layout = SheetLayout {
         forming_feature: id,
         frame: base.frame,
         thickness_direction: direction,
@@ -203,7 +211,13 @@ pub(crate) fn build(
         patterns: sheet.patterns.clone(),
         profile_cuts: vec![],
         developed: None,
+        rust_base_origins: None,
     };
+    if backend == GeometryBackend::Rust {
+        layout.rust_base_origins = Some(origins);
+        let solid = rebuild_rust_flat(&mut layout, id, policy)?;
+        return Ok((solid, layout));
+    }
     let space = layout.space();
     let mut solid = Solid::extrude_curved_profile_vector_named(
         &base,
@@ -266,6 +280,55 @@ pub(crate) fn build(
         return Err(m("The sheet part falls apart into separate pieces".into()));
     }
     Ok((solid, layout))
+}
+
+fn rebuild_rust_flat(
+    layout: &mut SheetLayout,
+    feature: EntityId,
+    policy: GeometryPolicy,
+) -> Result<Solid, ModelError> {
+    let fail = |message: String| error(Some(feature), message);
+    let Some(mut origins) = layout.rust_base_origins.clone() else {
+        return Err(fail(
+            "The previous sheet feature has no Rust flat layout".into(),
+        ));
+    };
+    let mut profile = layout.base.clone();
+    for cutout in &layout.cutouts {
+        let outline = flat_cutout(cutout, &[], layout.thickness_mm, layout.k_factor)
+            .ok_or_else(|| fail("Rust sheet cutouts must be on the flat base".into()))?;
+        let role = cutout.source.id();
+        origins.extend((0..outline.len()).map(|i| Origin {
+            source: layout.forming_feature,
+            role: format!("sheet.{role}.edge.{i}"),
+        }));
+        profile.holes.push(outline);
+    }
+    for cut in &layout.profile_cuts {
+        origins.extend(cut.origins.iter().cloned());
+        profile.holes.push(cut.outline.clone());
+    }
+    let height =
+        layout.thickness_mm * dot(layout.frame.normal(), layout.thickness_direction).signum();
+    let solid = crate::rust_backend::stock_profile(
+        layout.forming_feature,
+        &profile,
+        &origins,
+        height,
+        policy,
+    )
+    .map_err(|cause| {
+        fail(format!(
+            "Rust flat sheet requires an exact outline and separate through openings: {}",
+            cause.message
+        ))
+    })?;
+    let area = solid
+        .volume_mm3()
+        .map_err(|cause| fail(cause.to_string()))?
+        / layout.thickness_mm;
+    layout.developed = Some(base_contours(&solid, layout, area, policy).map_err(fail)?);
+    Ok(solid)
 }
 fn subtract(solid: Solid, tool: &Solid, policy: GeometryPolicy) -> Result<Solid, String> {
     solid
@@ -484,6 +547,15 @@ pub(crate) fn flat_contours(
         return Ok(contours.clone());
     }
     let (solid, area) = flat_solid(layout, policy)?;
+    base_contours(&solid, layout, area, policy)
+}
+
+fn base_contours(
+    solid: &Solid,
+    layout: &SheetLayout,
+    area: f64,
+    policy: GeometryPolicy,
+) -> Result<PlanarContours, String> {
     let outward = scale(layout.thickness_direction, -1.);
     let faces = solid.faces().map_err(|e| e.to_string())?;
     let on_base: Vec<_> = faces

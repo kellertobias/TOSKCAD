@@ -1,5 +1,5 @@
-use super::{SheetLayout, cross, dot, flat_contours, polygon_edges, scale};
-use crate::{ModelError, error, sheet_forming::FlatFrame};
+use super::{SheetLayout, cross, dot, flat_contours, polygon_edges, rebuild_rust_flat, scale};
+use crate::{GeometryBackend, ModelError, error, sheet_forming::FlatFrame};
 use multicad_core::{document::EntityId, model::CutoutFace, references::Origin};
 use multicad_kernel::{BooleanOperation, CurvedEdge2d, CurvedProfile, GeometryPolicy, Solid};
 
@@ -9,11 +9,13 @@ pub(crate) struct ProfileCut {
     pub face: CutoutFace,
     pub outline: Vec<CurvedEdge2d>,
     pub area_mm2: f64,
+    pub origins: Vec<Origin>,
 }
 
 pub(crate) struct CutProfile {
     pub geometry: CurvedProfile,
     pub developed: bool,
+    pub backend: GeometryBackend,
 }
 
 pub(crate) fn build_profile_cut(
@@ -28,12 +30,20 @@ pub(crate) fn build_profile_cut(
     let CutProfile {
         geometry: profile,
         developed,
+        backend,
     } = profile;
     let failure = |message: String| error(Some(feature), message);
     let native = |e: multicad_kernel::GeometryError| failure(e.to_string());
     if !profile.holes.is_empty() {
         return Err(failure(
             "Choose one closed region without internal islands for a sheet cut".into(),
+        ));
+    }
+    if backend == GeometryBackend::Rust
+        && (face != CutoutFace::Base || !previous.flanges.is_empty())
+    {
+        return Err(failure(
+            "Rust sheet cuts currently require the flat base face".into(),
         ));
     }
 
@@ -108,6 +118,29 @@ pub(crate) fn build_profile_cut(
             transform(&outer, |p| flat_frame.point(p), flat_frame.reflected()).map_err(failure)?;
         (outer, outline)
     };
+    if backend == GeometryBackend::Rust {
+        let mut layout = previous.clone();
+        layout.profile_cuts.push(ProfileCut {
+            feature,
+            face,
+            outline,
+            area_mm2: 0.,
+            origins: origins.to_vec(),
+        });
+        let cut = rebuild_rust_flat(&mut layout, feature, policy)?;
+        let removed = sheet.volume_mm3().map_err(native)? - cut.volume_mm3().map_err(native)?;
+        if removed <= 0. || !removed.is_finite() {
+            return Err(failure(
+                "The exact cut does not remove material from the flat sheet".into(),
+            ));
+        }
+        layout
+            .profile_cuts
+            .last_mut()
+            .expect("newly appended profile cut")
+            .area_mm2 = removed / thickness;
+        return Ok((cut, layout));
+    }
     let support = flange.map_or_else(
         || previous.base.outer.clone(),
         |flange| {
@@ -164,6 +197,7 @@ pub(crate) fn build_profile_cut(
         face,
         outline,
         area_mm2: expected / thickness,
+        origins: origins.to_vec(),
     });
     layout.developed = None;
     layout.developed = Some(
@@ -259,6 +293,7 @@ mod tests {
                         holes: vec![],
                     },
                     developed: false,
+                    backend: GeometryBackend::OpenCascade,
                 },
                 &origins,
                 compiler.policy,
