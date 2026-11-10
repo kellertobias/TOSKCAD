@@ -413,6 +413,16 @@ fn check_twisted_loft_drawing_worker(session: &mut Session, body: EntityId) {
     round.source = drawings::ViewSource::Model {
         entities: vec![body, rear.body, cylinder.body],
     };
+    let mut round_section = round.clone();
+    round_section.id = EntityId::new();
+    round_section.name = "Round stock depth section".into();
+    round_section.frame.origin_mm = [0.; 3];
+    round_section.kind = drawings::ViewKind::Section {
+        offset_mm: 7.8,
+        range: drawings::SectionRange::Depth { depth_mm: 4. },
+        window: drawings::SectionWindow::default(),
+    };
+    let round_section_id = round_section.id;
     let round_id = round.id;
     let section_id = section.id;
     let assembly_id = assembly.id;
@@ -420,7 +430,14 @@ fn check_twisted_loft_drawing_worker(session: &mut Session, body: EntityId) {
     let ordinary_id = ordinary.id;
     let retained_id = retained.id;
     page.views.extend([
-        ordinary, retained, oblique, bounded, assembly, section, round,
+        ordinary,
+        retained,
+        oblique,
+        bounded,
+        assembly,
+        section,
+        round,
+        round_section,
     ]);
     let page_id = page.id;
     let (_, prepared) = drawings::prepare_create(
@@ -538,6 +555,17 @@ fn check_twisted_loft_drawing_worker(session: &mut Session, body: EntityId) {
         vectors
             .iter()
             .any(|v| v.source == body && v.role == drawings::VectorRole::Hidden)
+    );
+    let drawings::ViewEvaluation::Ready { vectors, .. } = &result.views[&round_section_id] else {
+        panic!("{:?}", result.views[&round_section_id]);
+    };
+    assert!(vectors.iter().any(|v| v.source == cylinder.body
+        && v.role == drawings::VectorRole::Section
+        && matches!(v.curve, drawings::VectorCurve::Ellipse { .. })));
+    assert!(
+        vectors
+            .iter()
+            .any(|v| v.source == body && v.role == drawings::VectorRole::Visible)
     );
     let drawings::ViewEvaluation::Ready { vectors, .. } = &result.views[&section_id] else {
         panic!("{:?}", result.views[&section_id]);
