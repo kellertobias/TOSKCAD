@@ -182,13 +182,14 @@ impl NormalSweepBody {
         (self.sweep.rings(), self.z(true))
     }
 
-    pub(crate) fn end_on_rims(
+    pub(crate) fn drawing_rims(
         &self,
         frame: PlaneFrame,
+        end: bool,
     ) -> impl Iterator<Item = AnalyticGeometry> + '_ {
         self.sides
             .iter()
-            .map(move |side| self.rim(frame, side, false))
+            .map(move |side| self.rim(frame, side, end))
     }
 
     fn z(&self, end: bool) -> f64 {

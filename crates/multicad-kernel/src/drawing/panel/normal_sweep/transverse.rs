@@ -12,6 +12,36 @@ fn unsupported(message: &str) -> GeometryError {
     err(GeometryErrorKind::Unsupported, message)
 }
 
+pub(in crate::drawing) fn transverse_rails(
+    solid: &Solid,
+    frame: PlaneFrame,
+    options: DrawingProjection,
+) -> Result<Vec<[Point3; 2]>, GeometryError> {
+    let (body, _) = solid.normal_sweep_body().expect("classified normal sweep");
+    let (rings, height) = body.drawing_section();
+    let [u, v, toward_viewer] = planar::view_axes(options.frame);
+    let chart = Chart::new(
+        frame,
+        &Screen {
+            origin: options.frame.origin,
+            axes: [u, v],
+            toward_viewer,
+        },
+    );
+    let tolerance = solid.geometry_policy().linear_tolerance_mm;
+    let profile = Profile::new(rings, chart, tolerance, options.tangent_edges)?;
+    Ok(profile
+        .rails
+        .into_iter()
+        .map(|[s, depth]| {
+            [0., height].map(|at| {
+                let point = chart.point(s, at);
+                std::array::from_fn(|i| point[i] + chart.depth[i] * depth)
+            })
+        })
+        .collect())
+}
+
 pub(super) fn project(
     input: &DrawingSolid<'_>,
     options: DrawingProjection,

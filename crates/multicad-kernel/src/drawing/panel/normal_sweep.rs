@@ -4,6 +4,7 @@ use multicad_core::references::ReferenceFrame;
 use multicad_rust_kernel::normal_sweep::Edge as ProfileEdge;
 
 mod transverse;
+pub(in crate::drawing) use transverse::transverse_rails;
 
 type Point3 = [f64; 3];
 
@@ -36,7 +37,7 @@ pub(in crate::drawing) fn project_normal_sweep(
     let tolerance = input.solid.geometry_policy().linear_tolerance_mm;
     Some((|| {
         let mut edges = Vec::new();
-        for rim in body.end_on_rims(frame) {
+        for rim in body.drawing_rims(frame, false) {
             let curve = screen.curve(Some(rim))?;
             edges.push(Edge {
                 hidden: false,

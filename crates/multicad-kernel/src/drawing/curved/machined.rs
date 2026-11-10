@@ -33,15 +33,15 @@ impl Screen {
     }
 }
 
-struct Cut {
-    faces: [Option<usize>; 2],
-    centers: [Point; 2],
-    outward: Point,
-    radius: f64,
+pub(super) struct Cut {
+    pub faces: [Option<usize>; 2],
+    pub centers: [Point; 2],
+    pub outward: Point,
+    pub radius: f64,
 }
 
 impl Cut {
-    fn append<T>(
+    pub(super) fn append<T>(
         self,
         result: &mut Stock<T>,
         source: usize,
@@ -110,7 +110,7 @@ impl Cut {
     }
 }
 
-fn stock_with_cuts<T>(solid: T, count: usize) -> Stock<T> {
+pub(super) fn stock_with_cuts<T>(solid: T, count: usize) -> Stock<T> {
     Stock {
         solid,
         rims: Vec::with_capacity(count),

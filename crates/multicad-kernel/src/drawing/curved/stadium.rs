@@ -4,7 +4,9 @@ use super::*;
 use multicad_core::references::{AnalyticGeometry, ReferenceFrame, TopologyKind};
 use multicad_rust_kernel::{
     curved_projection::Ellipse,
-    planar_projection::{Body, Face, LineCandidate, SpatialRimCandidate},
+    planar_projection::{
+        Body, Face, FaceOpening, HiddenCandidate, LineCandidate, SpatialRimCandidate,
+    },
 };
 use std::f64::consts::TAU;
 
@@ -17,6 +19,8 @@ pub(in crate::drawing) struct Shapes {
     pub rounds: Vec<RoundOccluder>,
     pub lines: Vec<LineCandidate>,
     pub rims: Vec<SpatialRimCandidate>,
+    pub openings: Vec<FaceOpening>,
+    pub hidden: Vec<HiddenCandidate>,
 }
 
 impl Shapes {
@@ -152,7 +156,7 @@ fn corridor([bottom, top]: [[Point; 4]; 2]) -> Body {
     Body { edges, faces }
 }
 
-fn spatial_rims(
+pub(super) fn spatial_rims(
     source: usize,
     frame: ReferenceFrame,
     radius: f64,

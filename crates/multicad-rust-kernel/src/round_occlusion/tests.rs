@@ -262,3 +262,103 @@ fn distinct_certified_axial_occurrences_hide_a_farther_coincident_rim() {
         );
     }
 }
+
+#[test]
+fn quarter_annulus_clips_exact_lines_and_rims_in_cardinal_views() {
+    use crate::planar_projection::{
+        Options, RimCandidate, SceneExtras, project_scene, project_scene_with_candidates,
+    };
+
+    let axis = [0., 0., 1.];
+    let spokes = [[1., 0., 0.], [0., 1., 0.]];
+    let sector = RoundOccluder::quarter_annulus([0.; 3], axis, spokes, 3., 1., 2.).unwrap();
+    let straight = |offset| [[-4., offset, -1.], [4., offset, -1.]];
+    intervals(
+        sector.hidden_intervals(straight(1.5), TOLERANCE).unwrap(),
+        &[[0.5, (4. + 6.75_f64.sqrt()) / 8.]],
+    );
+    assert!(
+        sector
+            .hidden_intervals(straight(-1.5), TOLERANCE)
+            .unwrap()
+            .is_empty()
+    );
+    let options = || Options {
+        tolerance: TOLERANCE,
+        hidden_lines: true,
+        tangent_edges: false,
+        detail: None,
+        segment_limit: 100,
+    };
+    let circle = RimCandidate {
+        source: 7,
+        center: [0.; 2],
+        radius: 2.,
+        depth: -1.,
+        trim: [0., std::f64::consts::TAU],
+    };
+    let (_, _, output) = project_scene_with_candidates(
+        &[],
+        &[],
+        SceneExtras {
+            blocker_rounds: &[sector],
+            rims: &[circle],
+            ..Default::default()
+        },
+        options(),
+    )
+    .unwrap();
+    assert_eq!(output.len(), 2);
+    assert!(output[0].edge.hidden);
+    let curved_projection::Curve::Ellipse(ellipse) = output[0].edge.curve else {
+        panic!("circle expected")
+    };
+    assert_eq!(ellipse.trim, [0., std::f64::consts::FRAC_PI_2]);
+    assert_eq!(
+        project_scene(&[], &[sector], options()),
+        Err(ProjectionError::Invalid)
+    );
+
+    let side = |direction| {
+        RoundOccluder::quarter_annulus(
+            [0.; 3],
+            [1., 0., 0.],
+            [[0., 1., 0.], [0., 0., direction]],
+            3.,
+            1.,
+            5.,
+        )
+        .unwrap()
+    };
+    let lateral = |y, z| [[-1., y, z], [6., y, z]];
+    intervals(
+        side(1.)
+            .hidden_intervals(lateral(1.5, -4.), TOLERANCE)
+            .unwrap(),
+        &[[1. / 7., 6. / 7.]],
+    );
+    intervals(
+        side(-1.)
+            .hidden_intervals(lateral(1.5, -0.5), TOLERANCE)
+            .unwrap(),
+        &[[1. / 7., 6. / 7.]],
+    );
+    assert!(
+        side(-1.)
+            .hidden_intervals(lateral(0.5, -0.5), TOLERANCE)
+            .unwrap()
+            .is_empty()
+    );
+    for (axis, spokes, outer) in [
+        ([0.6, 0., 0.8], spokes, 3.),
+        (axis, [[0., 0., 1.], spokes[1]], 3.),
+        (axis, [[0.6, 0.8, 0.], spokes[1]], 3.),
+        (axis, [spokes[0]; 2], 3.),
+        (axis, spokes, 0.5),
+    ] {
+        assert!(matches!(
+            RoundOccluder::quarter_annulus([0.; 3], axis, spokes, outer, 1., 2.),
+            Err(ProjectionError::Invalid)
+        ));
+    }
+}

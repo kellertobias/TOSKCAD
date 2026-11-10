@@ -160,6 +160,7 @@ fn project_with_extras(
             let source = match candidate {
                 HiddenCandidate::Line(line) => line.source,
                 HiddenCandidate::Rim(rim) => rim.source,
+                HiddenCandidate::SpatialRim(rim) => rim.source,
             };
             let mut output = Output {
                 source,
@@ -178,6 +179,9 @@ fn project_with_extras(
                     &mut work,
                 )?,
                 HiddenCandidate::Rim(rim) => {
+                    scene.supplied_rim(rim.spatial()?, true, detail, &mut output, &mut work)?;
+                }
+                HiddenCandidate::SpatialRim(rim) => {
                     scene.supplied_rim(rim.spatial()?, true, detail, &mut output, &mut work)?;
                 }
             }

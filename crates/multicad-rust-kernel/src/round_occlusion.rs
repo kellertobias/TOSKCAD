@@ -21,6 +21,7 @@ pub struct RoundOccluder {
     height: f64,
     bore: Option<f64>,
     contour_owner: Option<usize>,
+    quarter: Option<[f64; 2]>,
     bounds: [Point; 2],
 }
 
@@ -70,8 +71,55 @@ impl RoundOccluder {
             height,
             bore,
             contour_owner: None,
+            quarter: None,
             bounds,
         })
+    }
+
+    /// An exact annular quarter sweep used only as a blocker. The two
+    /// radial spokes must align with the axial or side-on ray chart.
+    pub fn quarter_annulus(
+        base: Point,
+        axis: Point,
+        spokes: [Point; 2],
+        outer: f64,
+        inner: f64,
+        height: f64,
+    ) -> Result<Self, ProjectionError> {
+        let original = Self::new(base, axis, outer, height, Some(inner))?;
+        let guard = curved_projection::ANGULAR_ROUNDOFF;
+        let axis = if original.projected <= guard {
+            [0., 0., axis[2].signum()]
+        } else if original.axis[2].abs() <= guard {
+            [original.screen_axis[0], original.screen_axis[1], 0.]
+        } else {
+            return Err(ProjectionError::Invalid);
+        };
+        let mut round = Self::new(base, axis, outer, height, Some(inner))?;
+        let [u, v] = round.screen_axis;
+        let mut sides = [0.; 2];
+        for [x, y, z] in spokes {
+            let along = u.mul_add(x, v * y);
+            let radial = along.mul_add(round.axis[2], -z * round.projected);
+            let transverse = u.mul_add(y, -v * x);
+            let axial = along.mul_add(round.projected, z * round.axis[2]);
+            if !axial.is_finite() || axial.abs() > guard {
+                return Err(ProjectionError::Invalid);
+            }
+            let side = if (radial.abs() - 1.).abs() <= guard && transverse.abs() <= guard {
+                (0, radial)
+            } else if (transverse.abs() - 1.).abs() <= guard && radial.abs() <= guard {
+                (1, transverse)
+            } else {
+                return Err(ProjectionError::Invalid);
+            };
+            if sides[side.0] != 0. {
+                return Err(ProjectionError::Invalid);
+            }
+            sides[side.0] = side.1.signum();
+        }
+        round.quarter = Some(sides);
+        Ok(round)
     }
 
     /// Identify the solid occurrence that owns this analytic axial band.
@@ -128,6 +176,9 @@ impl RoundOccluder {
         hidden_lines: bool,
         detail: Option<Detail>,
     ) -> Result<Vec<SpatialEdge>, ProjectionError> {
+        if self.quarter.is_some() {
+            return Err(ProjectionError::Invalid);
+        }
         curved_projection::project_in_depth(
             Cylinder {
                 base: [self.base[0], self.base[1]],
@@ -215,11 +266,17 @@ impl RoundOccluder {
             && ([-self.radius, self.radius]
                 .into_iter()
                 .any(|side| follows(y, side))
-                || (c == 0. && [0., self.height].into_iter().any(|cap| follows(axial, cap))))
+                || (self.quarter.is_none()
+                    && c == 0.
+                    && [0., self.height].into_iter().any(|cap| follows(axial, cap))))
         {
             return;
         }
         let mut events = Events::new();
+        if self.quarter.is_some() {
+            events.level(y, 0.);
+            events.level(radial, 0.);
+        }
         for cap in [0., self.height] {
             events.level(axial, cap);
         }
@@ -301,6 +358,10 @@ impl RoundOccluder {
             return;
         }
         cuts.clear();
+        if self.quarter.is_some() {
+            y.level(0., trim, cuts);
+            radial.level(0., trim, cuts);
+        }
         for cap in [0., self.height] {
             axial.level(cap, trim, cuts);
         }
@@ -358,7 +419,12 @@ impl RoundOccluder {
         let p = self.projected;
         let mut front = [0., f64::INFINITY];
         if c == 0. {
-            if axial <= 0. || axial >= self.height {
+            if self.quarter.is_some() {
+                let guard = 16. * f64::EPSILON * self.height;
+                if axial < -guard || axial > self.height + guard {
+                    return false;
+                }
+            } else if axial <= 0. || axial >= self.height {
                 return false;
             }
         } else {
@@ -366,6 +432,20 @@ impl RoundOccluder {
             front = [a.min(b).max(0.), a.max(b)];
             if front[1] <= front[0] {
                 return false;
+            }
+        }
+        if let Some([side, transverse]) = self.quarter {
+            if transverse * y < 0. {
+                return false;
+            }
+            if p == 0. {
+                if side * radial < 0. {
+                    return false;
+                }
+            } else if side > 0. {
+                front[1] = front[1].min(radial / p);
+            } else {
+                front[0] = front[0].max(radial / p);
             }
         }
         if p == 0. {
@@ -432,15 +512,15 @@ impl Affine {
 }
 
 struct Events {
-    roots: [f64; 20],
+    roots: [f64; 22],
     len: usize,
 }
 
 impl Events {
     fn new() -> Self {
-        // Two endpoints, two cap-depth events, and up to eight events per
-        // circular boundary (two tangent, two depth, four cap intersections).
-        let mut roots = [0.; 20];
+        // Two endpoints, two cap-depth and two sector-plane events, plus up
+        // to eight events per circular boundary (tangent, depth and cap hits).
+        let mut roots = [0.; 22];
         roots[1] = 1.;
         Self { roots, len: 2 }
     }

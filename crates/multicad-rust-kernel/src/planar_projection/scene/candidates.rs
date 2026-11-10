@@ -36,6 +36,7 @@ pub struct LineCandidate {
 pub enum HiddenCandidate {
     Line(LineCandidate),
     Rim(RimCandidate),
+    SpatialRim(SpatialRimCandidate),
 }
 
 /// End condition of a certified circular cut.

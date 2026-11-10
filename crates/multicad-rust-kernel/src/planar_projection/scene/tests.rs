@@ -941,9 +941,23 @@ fn transparent_aperture_preserves_rear_geometry_and_hidden_sources() {
     };
     let lines = [supplied_line(10, -1., 0.)];
     let rims = [supplied_rim(11, [0.; 2], 1., -1.)];
+    let arc = SpatialRimCandidate {
+        source: 14,
+        ellipse: Ellipse {
+            center: [0.; 2],
+            u: [1., 0.],
+            v: [0., 1.],
+            major: 2.,
+            minor: 2.,
+            trim: [0., PI],
+        },
+        depth: 0.,
+        depth_sine: 0.,
+    };
     let hidden = [
         HiddenCandidate::Line(supplied_line(12, 0., 0.)),
         HiddenCandidate::Rim(supplied_rim(13, [0.; 2], 2., 0.)),
+        HiddenCandidate::SpatialRim(arc),
     ];
     let project = |blockers: &[Body], opts| {
         project_scene_with_candidates(
@@ -967,6 +981,7 @@ fn transparent_aperture_preserves_rear_geometry_and_hidden_sources() {
     assert_eq!(supplied_lines(&shown, 12, true), [[-4., 4.]]);
     intervals(&circles(&shown, 11, [0.; 2]), &[(false, [0., TAU])]);
     intervals(&circles(&shown, 13, [0.; 2]), &[(true, [0., TAU])]);
+    intervals(&circles(&shown, 14, [0.; 2]), &[(true, [0., PI])]);
 
     let blocker = project(&[rect([-5., -5., 5., 5.], 0., 5.), blocker], options());
     assert_eq!(supplied_lines(&blocker, 10, false), [[-2., 0.]]);

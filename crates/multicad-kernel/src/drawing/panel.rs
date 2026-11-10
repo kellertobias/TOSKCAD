@@ -8,7 +8,7 @@ mod chamfered;
 mod normal_sweep;
 mod spline;
 pub(super) use chamfered::project_chamfered_bores;
-pub(super) use normal_sweep::project_normal_sweep;
+pub(super) use normal_sweep::{project_normal_sweep, transverse_rails};
 pub(super) use spline::{contains_spline_sweep, project_spline_sweep};
 
 type Point = [f64; 2];

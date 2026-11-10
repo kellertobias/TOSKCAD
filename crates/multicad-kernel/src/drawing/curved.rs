@@ -7,6 +7,7 @@ use multicad_rust_kernel::{
 };
 
 mod apertures;
+mod channel;
 mod machined;
 mod opaque;
 mod pockets;
@@ -68,6 +69,7 @@ pub(super) fn needs_curved_scene(solid: &Solid) -> bool {
         || apertures::has_through_bores(solid)
         || solid.rounded_slot_body().is_some()
         || solid.revolution_body().is_some()
+        || solid.normal_sweep_body().is_some()
         || solid.cosmetic_fastener_body().is_some()
         || solid
             .rust_compound()
@@ -151,7 +153,12 @@ fn project_members(
     for (index, &(source, solid)) in members.iter().enumerate() {
         if solid.rounded_slot_body().is_some() {
             rounded.add(solid, source, options)?;
-        } else if let Some(round) = round_occluder(solid, options.frame)? {
+            continue;
+        }
+        if channel::add(solid, source, options, &mut rounded)? {
+            continue;
+        }
+        if let Some(round) = round_occluder(solid, options.frame)? {
             round_sources.push(source);
             rounds.push(round);
         } else if let Some(bands) = stepped::rounds(solid, index, options)? {
@@ -222,6 +229,11 @@ fn project_members(
         }
         openings.extend(stock.openings);
     }
+    for opening in &mut rounded.openings {
+        opening.body += bodies.len();
+    }
+    openings.extend(rounded.openings);
+    intrinsic_hidden.extend(rounded.hidden);
     let projection = planar_projection::project_scene_with_candidates(
         &bodies,
         &rounds,

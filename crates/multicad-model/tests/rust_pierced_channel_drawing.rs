@@ -8,10 +8,7 @@ use multicad_kernel::{
 };
 use multicad_model::{Compiler, GeometryBackend, drawing_preview_sources};
 
-fn with_channel<T>(
-    backend: GeometryBackend,
-    inspect: impl FnOnce(&Solid, [DrawingProjection; 3]) -> T,
-) -> T {
+fn fixture() -> (multicad_core::document::Document, drawings::Page) {
     let document = project_file::read(
         &mut include_bytes!("../../../examples/front-panel.tcd").as_slice(),
         Default::default(),
@@ -24,6 +21,14 @@ fn with_channel<T>(
         .flat_map(|id| drawings::read(&document, id).unwrap().pages)
         .find(|page| page.number == "FP-101")
         .unwrap();
+    (document, page)
+}
+
+fn with_channel<T>(
+    backend: GeometryBackend,
+    inspect: impl FnOnce(&Solid, [DrawingProjection; 3]) -> T,
+) -> T {
+    let (document, page) = fixture();
     let roots = drawing_preview_sources(&document, page.id).unwrap();
     let model = Compiler {
         omit_display: true,
@@ -155,8 +160,8 @@ fn saved_pierced_channel_projects_both_transverse_views_with_hidden_lines() {
 }
 
 #[cfg(feature = "occt")]
-#[test]
-fn saved_pierced_channel_views_match_native_physical_intervals() {
+mod native {
+    use super::*;
     use multicad_core::manufacturing::PlanarEdge;
     use std::{
         collections::{BTreeMap, BTreeSet},
@@ -164,20 +169,21 @@ fn saved_pierced_channel_views_match_native_physical_intervals() {
     };
 
     type Point = [i64; 2];
-    type Key = (bool, [i64; 4]);
+    type Segment = [Point; 2];
+    type SpanKey = (bool, [i64; 4]);
+    type Spans = BTreeMap<SpanKey, Vec<Point>>;
+
     fn q(value: f64) -> i64 {
         (value * 1e6).round() as i64
     }
-    fn line_key(a: [f64; 2], b: [f64; 2]) -> [Point; 2] {
+
+    fn line_key(a: [f64; 2], b: [f64; 2]) -> Segment {
         let mut points = [a.map(q), b.map(q)];
         points.sort_unstable();
         points
     }
 
-    let rust = with_channel(GeometryBackend::Rust, |solid, views| {
-        views.map(|options| project(solid, options))
-    });
-    let (native, seams) = with_channel(GeometryBackend::OpenCascade, |solid, views| {
+    fn construction_seams(solid: &Solid, end_view: DrawingProjection) -> [Vec<Segment>; 3] {
         let mut cap_lines = BTreeMap::new();
         let mut cap_edges = BTreeMap::<_, Vec<PlanarEdge>>::new();
         for face in solid.faces().unwrap() {
@@ -187,7 +193,7 @@ fn saved_pierced_channel_views_match_native_physical_intervals() {
             if (normal[0].abs() - 1.).abs() > 1e-10 {
                 continue;
             }
-            let mut frame = views[2].frame;
+            let mut frame = end_view.frame;
             frame.origin[0] = point[0];
             let sourced = solid
                 .planar_face_contours_with_sources(face.index, frame)
@@ -254,22 +260,23 @@ fn saved_pierced_channel_views_match_native_physical_intervals() {
             }
         }
         let bend_rails = [0., 80.].map(|z| line_key([0., z], [260., z]));
-        (
-            views.map(|options| project(solid, options)),
-            [bend_rails.as_slice(), &[], web_joints.as_slice()].map(<[_]>::to_vec),
-        )
-    });
+        [bend_rails.as_slice(), &[], web_joints.as_slice()].map(<[_]>::to_vec)
+    }
 
-    let intervals = |vectors: Vec<ProjectedVector>, seams: &[[Point; 2]]| {
-        let mut spans: BTreeMap<Key, Vec<Point>> = BTreeMap::new();
+    fn intervals<'a>(
+        vectors: impl IntoIterator<Item = (VectorRole, &'a VectorCurve)>,
+        skip: impl Fn(bool, Segment) -> bool,
+    ) -> (Spans, usize) {
+        let mut spans: Spans = BTreeMap::new();
         let mut removed = 0;
-        for vector in vectors {
-            let hidden = match vector.role {
+        for (role, curve) in vectors {
+            let hidden = match role {
                 VectorRole::Hidden => true,
                 VectorRole::Visible => false,
-                other => panic!("unexpected end projection role {other:?}"),
+                other => panic!("unexpected projection role {other:?}"),
             };
-            let points = match vector.curve {
+            let line;
+            let points = match *curve {
                 VectorCurve::Ellipse {
                     center,
                     u,
@@ -279,7 +286,7 @@ fn saved_pierced_channel_views_match_native_physical_intervals() {
                     start_rad,
                     end_rad,
                 } => {
-                    assert_eq!(major_mm, minor_mm);
+                    assert!((major_mm - minor_mm).abs() < 1e-9);
                     let direct = u[0] * v[1] > u[1] * v[0];
                     let angle = if direct { start_rad } else { -end_rad };
                     let start = (u[1].atan2(u[0]) + angle).rem_euclid(TAU);
@@ -294,17 +301,18 @@ fn saved_pierced_channel_views_match_native_physical_intervals() {
                     continue;
                 }
                 VectorCurve::Line { a, b } => {
-                    if seams.contains(&line_key(a, b)) {
+                    if skip(hidden, line_key(a, b)) {
                         removed += 1;
                         continue;
                     }
-                    vec![a, b]
+                    line = [a, b];
+                    &line[..]
                 }
                 VectorCurve::BSpline {
                     degree: 1,
                     periodic: false,
-                    poles,
-                    knots,
+                    ref poles,
+                    ref knots,
                     first,
                     last,
                     ..
@@ -313,25 +321,34 @@ fn saved_pierced_channel_views_match_native_physical_intervals() {
                     assert_eq!(knots.last().copied(), Some(last));
                     poles
                 }
-                other => panic!("unexpected end projection curve {other:?}"),
+                ref other => panic!("unexpected projection curve {other:?}"),
             };
-            let bounds = |axis: usize| {
-                let values = points.iter().map(|p| q(p[axis]));
-                [values.clone().min().unwrap(), values.max().unwrap()]
-            };
-            let [x, y] = [bounds(0), bounds(1)];
-            if x[0] == x[1] && y[0] == y[1] {
+            let a = points[0];
+            let length = |b: [f64; 2]| (b[0] - a[0]).hypot(b[1] - a[1]);
+            let b = points
+                .iter()
+                .copied()
+                .max_by(|a, b| length(*a).total_cmp(&length(*b)))
+                .unwrap();
+            let length = length(b);
+            if length <= 1e-7 {
                 continue;
             }
-            let (key, range) = if x[0] == x[1] {
-                ([0, x[0], 0, 0], y)
-            } else {
-                assert_eq!(y[0], y[1]);
-                ([1, y[0], 0, 0], x)
-            };
-            spans.entry((hidden, key)).or_default().push(range);
+            let [mut x, mut y] = [(b[0] - a[0]) / length, (b[1] - a[1]) / length];
+            if x < -1e-10 || (x.abs() <= 1e-10 && y < 0.) {
+                [x, y] = [-x, -y];
+            }
+            let offset = a[0] * y - a[1] * x;
+            let along = points.iter().map(|p| {
+                assert!((p[0] * y - p[1] * x - offset).abs() < 1e-7);
+                q(p[0] * x + p[1] * y)
+            });
+            let range = [along.clone().min().unwrap(), along.max().unwrap()];
+            spans
+                .entry((hidden, [1, q(x), q(y), q(offset)]))
+                .or_default()
+                .push(range);
         }
-        assert_eq!(removed, seams.len() * 2);
         for values in spans.values_mut() {
             values.sort_unstable();
             let mut merged: Vec<Point> = Vec::new();
@@ -346,16 +363,195 @@ fn saved_pierced_channel_views_match_native_physical_intervals() {
             }
             *values = merged;
         }
-        spans
-    };
-    let mut totals = [0; 2];
-    for ((rust, native), seams) in rust.into_iter().zip(native).zip(seams) {
-        let rust = intervals(rust, &[]);
-        assert_eq!(rust, intervals(native, &seams));
-        totals[0] += rust.len();
-        totals[1] += rust.values().map(Vec::len).sum::<usize>();
+        (spans, removed)
     }
-    assert_eq!(totals, [101, 109]);
+
+    #[test]
+    fn saved_pierced_channel_views_match_native_physical_intervals() {
+        let rust = with_channel(GeometryBackend::Rust, |solid, views| {
+            views.map(|options| project(solid, options))
+        });
+        let (native, seams) = with_channel(GeometryBackend::OpenCascade, |solid, views| {
+            (
+                views.map(|options| project(solid, options)),
+                construction_seams(solid, views[2]),
+            )
+        });
+
+        let mut totals = [0; 2];
+        for ((rust, native), seams) in rust.into_iter().zip(native).zip(seams) {
+            let source = native[0].source_index;
+            assert!(
+                rust.iter()
+                    .chain(&native)
+                    .all(|vector| vector.source_index == source)
+            );
+            let (rust, _) = intervals(rust.iter().map(|v| (v.role, &v.curve)), |_, _| false);
+            let (native, removed) =
+                intervals(native.iter().map(|v| (v.role, &v.curve)), |_, line| {
+                    seams.contains(&line)
+                });
+            assert_eq!(removed, seams.len() * 2);
+            assert_eq!(rust, native);
+            totals[0] += rust.len();
+            totals[1] += rust.values().map(Vec::len).sum::<usize>();
+        }
+        assert_eq!(totals, [101, 109]);
+    }
+
+    #[test]
+    fn saved_front_panel_assembly_matches_native_physical_intervals() {
+        let rust = assembly_views(GeometryBackend::Rust);
+        let native = assembly_views(GeometryBackend::OpenCascade);
+        let seams = with_channel(GeometryBackend::OpenCascade, |solid, views| {
+            construction_seams(solid, views[2])
+        });
+        let mut totals = [0; 2];
+        for (index, ((rust, native), seams)) in rust.into_iter().zip(native).zip(seams).enumerate()
+        {
+            let source = native[0].source;
+            assert!(
+                rust.iter()
+                    .chain(&native)
+                    .all(|vector| vector.source == source)
+            );
+            let (rust, _) = intervals(rust.iter().map(|v| (v.role, &v.curve)), |_, _| false);
+            let (native, removed) =
+                intervals(native.iter().map(|v| (v.role, &v.curve)), |hidden, line| {
+                    (index != 2 || hidden) && seams.contains(&line)
+                });
+            assert_eq!(removed, [4, 0, 4][index]);
+            assert_eq!(rust, native, "physical interval union in view {index}");
+            totals[0] += rust.len();
+            totals[1] += rust.values().map(Vec::len).sum::<usize>();
+        }
+        assert_eq!(totals, [310, 374]);
+    }
+}
+
+fn assembly_views(backend: GeometryBackend) -> [Vec<drawings::DrawingVector>; 3] {
+    let (document, page) = fixture();
+    let roots = drawing_preview_sources(&document, page.id).unwrap();
+    let model = Compiler {
+        omit_display: true,
+        ..Default::default()
+    }
+    .compile_sources_with_backend(&document, 0, &roots, backend, None)
+    .unwrap();
+    let result = model
+        .drawing_page_preview(&document, 0, &Default::default(), page.id)
+        .unwrap();
+    ["Front", "Top", "Left end"].map(|name| {
+        let view = page.views.iter().find(|view| view.name == name).unwrap();
+        let evaluation = &result.views[&view.id];
+        let drawings::ViewEvaluation::Ready { vectors, .. } = evaluation else {
+            panic!("saved {name} view: {evaluation:?}");
+        };
+        vectors.clone()
+    })
+}
+
+#[test]
+fn saved_front_panel_assembly_draws_the_near_window_and_six_buttons() {
+    let views = assembly_views(GeometryBackend::Rust);
+    for vectors in &views {
+        assert!(vectors.iter().any(|v| v.role == VectorRole::Visible));
+        assert!(vectors.iter().any(|v| v.role == VectorRole::Hidden));
+    }
+    let front = &views[0];
+    assert!(front.iter().any(|v| v.role == VectorRole::Visible
+        && matches!(
+            v.curve,
+            VectorCurve::Line {
+                a: [34., 27.5],
+                b: [106., 27.5]
+            }
+        )));
+    assert_eq!(
+        front
+            .iter()
+            .filter(|v| v.role == VectorRole::Visible
+                && matches!(
+                    v.curve,
+                    VectorCurve::Ellipse {
+                        major_mm: 7.5,
+                        minor_mm: 7.5,
+                        ..
+                    }
+                ))
+            .count(),
+        6
+    );
+}
+
+#[test]
+fn assembled_bent_channel_only_reveals_foreign_edges_through_material_openings() {
+    use multicad_kernel::{GeometryPolicy, rust_kernel::Rational};
+
+    with_channel(GeometryBackend::Rust, |channel, [front, _, _]| {
+        let frame = front.frame;
+        let n = frame.normal();
+        let behind = |u| PlaneFrame {
+            origin: std::array::from_fn(|i| {
+                frame.origin[i] + u * frame.u[i] + 40. * frame.v[i] - 300. * n[i]
+            }),
+            ..frame
+        };
+        let make_box = |id, u| {
+            Solid::rust_box(
+                id,
+                [2; 3].map(|value| Rational::new(value, 1).unwrap()),
+                behind(u),
+                GeometryPolicy::default(),
+            )
+            .unwrap()
+        };
+        let [through_window, behind_web] = [make_box(1, 50.), make_box(2, 20.)];
+        let scene = [channel, &through_window, &behind_web]
+            .map(|solid| DrawingSolid { solid, hatch: None });
+        let vectors = project_drawing(&scene, front).unwrap();
+        for (source, visible) in [(1, true), (2, false)] {
+            let vectors: Vec<_> = vectors
+                .iter()
+                .filter(|v| v.source_index == source)
+                .collect();
+            assert!(!vectors.is_empty());
+            assert_eq!(
+                vectors.iter().any(|v| v.role == VectorRole::Visible),
+                visible
+            );
+        }
+    });
+}
+
+#[test]
+fn assembled_bent_channel_refuses_an_uncertified_oblique_view() {
+    use multicad_kernel::{GeometryPolicy, rust_kernel::Rational};
+
+    with_channel(GeometryBackend::Rust, |channel, [front, _, _]| {
+        let box_solid = Solid::rust_box(
+            1,
+            [2; 3].map(|value| Rational::new(value, 1).unwrap()),
+            PlaneFrame {
+                origin: [50., 5., 40.],
+                ..Default::default()
+            },
+            GeometryPolicy::default(),
+        )
+        .unwrap();
+        let scene = [channel, &box_solid].map(|solid| DrawingSolid { solid, hatch: None });
+        let a = std::f64::consts::FRAC_1_SQRT_2;
+        let oblique = DrawingProjection {
+            frame: PlaneFrame {
+                v: [0., a, a],
+                ..front.frame
+            },
+            ..front
+        };
+        let error = project_drawing(&scene, oblique).unwrap_err();
+        assert_eq!(error.kind, GeometryErrorKind::Unsupported);
+        assert!(error.message.contains("cardinal quarter bend spokes"));
+    });
 }
 
 #[test]
