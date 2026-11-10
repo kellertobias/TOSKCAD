@@ -22,25 +22,31 @@ pub(super) fn read_members_with_warped<T>(
     member: impl Fn(&Shell<'_, '_>, &[Face]) -> Result<T>,
     warped_member: impl Fn(Readback, ImportedWarped) -> T,
 ) -> Result<Vec<T>> {
-    read_members_by(input, tolerance, true, single, |shell, id, has_ellipses| {
-        let regular = shell
-            .member_faces(id)
-            .and_then(|face_ids| shell.validate_faces(face_ids))
-            .and_then(|faces| member(shell, &faces));
-        match regular {
-            Err(ReadError::Invalid | ReadError::Unsupported) if has_ellipses => {
-                // The independent verifier accepts only its own complete
-                // chart class, and does not reuse a partially parsed shell.
-                let mut clean = Shell::new(shell.entities, shell.tolerance, true);
-                match warped::read_member(&mut clean, id) {
-                    Ok((readback, import)) => Ok(warped_member(readback, import)),
-                    Err(ReadError::Limit) => Err(ReadError::Limit),
-                    Err(_) => regular,
+    read_members_by(
+        input,
+        tolerance,
+        true,
+        single,
+        |shell, id, may_be_warped| {
+            let regular = shell
+                .member_faces(id)
+                .and_then(|face_ids| shell.validate_faces(face_ids))
+                .and_then(|faces| member(shell, &faces));
+            match regular {
+                Err(ReadError::Invalid | ReadError::Unsupported) if may_be_warped => {
+                    // The independent verifier accepts only its own complete
+                    // chart class, and does not reuse a partially parsed shell.
+                    let mut clean = Shell::new(shell.entities, shell.tolerance, true);
+                    match warped::read_member(&mut clean, id) {
+                        Ok((readback, import)) => Ok(warped_member(readback, import)),
+                        Err(ReadError::Limit) => Err(ReadError::Limit),
+                        Err(_) => regular,
+                    }
                 }
+                _ => regular,
             }
-            _ => regular,
-        }
-    })
+        },
+    )
 }
 
 pub(super) fn read_members_by<T>(
@@ -52,17 +58,14 @@ pub(super) fn read_members_by<T>(
 ) -> Result<Vec<T>> {
     let entities = parse_entities(input, tolerance)?;
     let solids = Shell::new(&entities, tolerance, allow_circles).represented_solids(single)?;
-    let topology_count = count_flat_topology(entities.values().flatten())?;
-    let has_ellipses = allow_circles
-        && entities
-            .values()
-            .any(|items| matches!(items.as_slice(), [item] if item.name == "ELLIPSE"));
+    let (topology_count, analytic_candidate) = inspect_flat_entities(entities.values().flatten())?;
+    let may_be_warped = allow_circles && analytic_candidate;
     let mut owners = BTreeMap::new();
     let members = solids
         .into_iter()
         .map(|id| {
             let mut shell = Shell::new(&entities, tolerance, allow_circles);
-            let result = member(&mut shell, id, has_ellipses)?;
+            let result = member(&mut shell, id, may_be_warped)?;
             claim_topology(&shell, id, &mut owners)?;
             Ok(result)
         })
@@ -73,8 +76,13 @@ pub(super) fn read_members_by<T>(
     Ok(members)
 }
 
-fn count_flat_topology<'a>(entities: impl Iterator<Item = &'a Entity<'a>>) -> Result<usize> {
+fn inspect_flat_entities<'a>(
+    entities: impl Iterator<Item = &'a Entity<'a>>,
+) -> Result<(usize, bool)> {
     let mut count = 0;
+    let mut ellipse = false;
+    let mut inner_bound = false;
+    let mut cylinder = false;
     for entity in entities {
         if matches!(
             entity.name,
@@ -86,8 +94,11 @@ fn count_flat_topology<'a>(entities: impl Iterator<Item = &'a Entity<'a>>) -> Re
             return Err(ReadError::Unsupported);
         }
         count += usize::from(topology(entity.name));
+        ellipse |= entity.name == "ELLIPSE";
+        inner_bound |= entity.name == "FACE_BOUND";
+        cylinder |= entity.name == "CYLINDRICAL_SURFACE";
     }
-    Ok(count)
+    Ok((count, ellipse || inner_bound && cylinder))
 }
 
 fn topology(name: &str) -> bool {

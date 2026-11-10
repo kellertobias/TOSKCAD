@@ -210,3 +210,14 @@ fn covered_face_representatives_and_later_sweeps_keep_certified_material() {
         Error::Unsupported
     );
 }
+
+#[test]
+fn rejects_an_inconsistent_explicit_rim_reference() {
+    let old = remap(&Union::new(&[stock()], TOL).unwrap(), BAND, TOL).unwrap();
+    let tool = boss(20., 2., 10);
+    assert_eq!(
+        old.attach_bosses_with_reference(&[(tool, [1., 0., 0.])], TOL)
+            .unwrap_err(),
+        Error::Invalid,
+    );
+}

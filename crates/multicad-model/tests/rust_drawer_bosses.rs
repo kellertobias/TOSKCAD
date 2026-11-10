@@ -1,6 +1,6 @@
 use multicad_core::{document::EntityId, project_file, references::AnalyticGeometry};
 use multicad_kernel::Solid;
-use multicad_model::{Compiler, GeometryBackend};
+use multicad_model::{Compiler, GeometryBackend, export::verify_rust_step_shape};
 
 #[test]
 fn saved_toolcase_joins_round_mounting_and_magnet_bosses_to_both_drawers() {
@@ -58,9 +58,17 @@ fn saved_toolcase_joins_round_mounting_and_magnet_bosses_to_both_drawers() {
         );
         let path = scratch.path().join(format!("bosses-{feature}.step"));
         actual.write_step(&path).unwrap();
-        let independent = Solid::read_step(&path, compiler.policy).unwrap();
+        let [independent, reimported] = [
+            Solid::read_step(&path, compiler.policy).unwrap(),
+            Solid::import_rust_step(
+                &std::fs::read_to_string(&path).unwrap(),
+                feature,
+                compiler.policy,
+            )
+            .unwrap(),
+        ];
         let expected_bounds = expected.bounds().unwrap();
-        for solid in [actual, &independent] {
+        for solid in [actual, &independent, &reimported] {
             assert_eq!(solid.solid_count().unwrap(), 1);
             near(solid.volume_mm3().unwrap(), expected.volume_mm3().unwrap());
             near(area(solid), area(expected));
@@ -70,5 +78,12 @@ fn saved_toolcase_joins_round_mounting_and_magnet_bosses_to_both_drawers() {
                 near(bounds.max[i], expected_bounds.max[i]);
             }
         }
+        let receipt = verify_rust_step_shape(
+            &path,
+            &rust.snapshot().shapes[&feature],
+            compiler.policy.linear_tolerance_mm,
+        )
+        .unwrap();
+        near(receipt, actual.volume_mm3().unwrap());
     }
 }

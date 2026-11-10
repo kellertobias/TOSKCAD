@@ -6,6 +6,8 @@ use crate::{
 };
 use std::f64::consts::FRAC_PI_2;
 
+mod bosses;
+
 #[derive(Debug)]
 pub struct ImportedWarped {
     pub shell: warped_union::Shell,
@@ -43,11 +45,14 @@ enum Surface {
     },
 }
 
+#[cfg_attr(test, derive(Clone))]
 struct FaceLoop {
     surface: Surface,
     loop_: Vec<(u32, bool)>,
+    holes: Vec<Vec<(u32, bool)>>,
 }
 
+#[cfg_attr(test, derive(Clone))]
 struct Boundary {
     faces: Vec<FaceLoop>,
     curves: BTreeMap<u32, ([u32; 2], TrimCurve)>,
@@ -66,61 +71,91 @@ impl Boundary {
             };
             let surface = surface_geometry(reader, reference(surface)?, sense(forward)?)?;
             let bounds = refs(bounds)?;
-            let [bound] = bounds.as_slice() else {
-                return Err(ReadError::Unsupported);
-            };
-            let (_, wire, sense_) = reader.bound(*bound, true)?;
-            let [Value::String(_), oriented] = reader.args(wire, "EDGE_LOOP")? else {
-                return Err(ReadError::Invalid);
-            };
-            let mut oriented = refs(oriented)?;
-            if oriented.len() > MAX_VERTICES {
-                return Err(ReadError::Limit);
-            }
-            if !sense_ {
-                oriented.reverse();
-            }
-            let mut loop_ = Vec::with_capacity(oriented.len());
-            let mut vertices = Vec::with_capacity(oriented.len());
-            for use_ in oriented {
-                let [
-                    Value::String(_),
-                    Value::Derived,
-                    Value::Derived,
-                    edge,
-                    direction,
-                ] = reader.args(use_, "ORIENTED_EDGE")?
-                else {
-                    return Err(ReadError::Invalid);
-                };
-                let edge = reference(edge)?;
-                let forward = sense(direction)? == sense_;
-                let (ends, _) = match curves.entry(edge) {
-                    std::collections::btree_map::Entry::Vacant(entry) => {
-                        entry.insert(trim_curve(reader, edge)?)
+            let implicit_outer = bounds.len() == 1;
+            let mut outer = None;
+            let mut holes = Vec::new();
+            let mut remaining = MAX_VERTICES;
+            for bound in bounds {
+                let (exterior, wire, sense_) = reader.bound(bound, implicit_outer)?;
+                let loop_ =
+                    Self::parse_loop(reader, wire, sense_, remaining, &mut curves, &mut uses)?;
+                remaining -= loop_.len();
+                if exterior {
+                    if outer.replace(loop_).is_some() {
+                        return Err(ReadError::Invalid);
                     }
-                    std::collections::btree_map::Entry::Occupied(entry) => entry.into_mut(),
-                };
-                let ends = if forward { *ends } else { [ends[1], ends[0]] };
-                vertices.push(ends);
-                loop_.push((edge, forward));
-                uses.entry(edge).or_default()[usize::from(forward)] += 1;
+                } else {
+                    holes.push(loop_);
+                }
             }
-            if vertices.len() < 3
-                || vertices
-                    .iter()
-                    .zip(vertices.iter().cycle().skip(1))
-                    .any(|(a, b)| a[1] != b[0])
-            {
-                return Err(ReadError::Invalid);
-            }
-            faces.push(FaceLoop { surface, loop_ });
+            let loop_ = outer.ok_or(ReadError::Unsupported)?;
+            faces.push(FaceLoop {
+                surface,
+                loop_,
+                holes,
+            });
         }
         if uses.values().any(|&usage| usage != [1, 1]) {
             return Err(ReadError::Invalid);
         }
         Ok(Self { faces, curves })
     }
+
+    fn parse_loop(
+        reader: &mut Shell<'_, '_>,
+        wire: u32,
+        sense_: bool,
+        remaining: usize,
+        curves: &mut BTreeMap<u32, ([u32; 2], TrimCurve)>,
+        uses: &mut BTreeMap<u32, [usize; 2]>,
+    ) -> Result<Vec<(u32, bool)>> {
+        let [Value::String(_), oriented] = reader.args(wire, "EDGE_LOOP")? else {
+            return Err(ReadError::Invalid);
+        };
+        let mut oriented = refs(oriented)?;
+        if oriented.len() > remaining {
+            return Err(ReadError::Limit);
+        }
+        if !sense_ {
+            oriented.reverse();
+        }
+        let mut loop_ = Vec::with_capacity(oriented.len());
+        let mut vertices = Vec::with_capacity(oriented.len());
+        for use_ in oriented {
+            let [
+                Value::String(_),
+                Value::Derived,
+                Value::Derived,
+                edge,
+                direction,
+            ] = reader.args(use_, "ORIENTED_EDGE")?
+            else {
+                return Err(ReadError::Invalid);
+            };
+            let edge = reference(edge)?;
+            let forward = sense(direction)? == sense_;
+            let (ends, _) = match curves.entry(edge) {
+                std::collections::btree_map::Entry::Vacant(entry) => {
+                    entry.insert(trim_curve(reader, edge)?)
+                }
+                std::collections::btree_map::Entry::Occupied(entry) => entry.into_mut(),
+            };
+            let ends = if forward { *ends } else { [ends[1], ends[0]] };
+            vertices.push(ends);
+            loop_.push((edge, forward));
+            uses.entry(edge).or_default()[usize::from(forward)] += 1;
+        }
+        if vertices.len() < 3
+            || vertices
+                .iter()
+                .zip(vertices.iter().cycle().skip(1))
+                .any(|(a, b)| a[1] != b[0])
+        {
+            return Err(ReadError::Invalid);
+        }
+        Ok(loop_)
+    }
+
     fn readback(&self, reader: &Shell<'_, '_>, volume_mm3: f64) -> Result<Readback> {
         let anchor = *reader.points.values().next().ok_or(ReadError::Invalid)?;
         let mut bounds_mm = [anchor; 2];
@@ -290,18 +325,58 @@ pub(super) fn read_member(
     solid: u32,
 ) -> Result<(Readback, ImportedWarped)> {
     let boundary = Boundary::parse(reader, solid)?;
-    let ellipse = boundary
-        .curves
-        .values()
-        .find_map(|(_, curve)| match curve {
-            TrimCurve::Arc(arc)
-                if arc.ellipse().semiaxes_mm()[0] > arc.ellipse().semiaxes_mm()[1] =>
-            {
-                Some(arc.ellipse())
-            }
-            _ => None,
-        })
-        .ok_or(ReadError::Unsupported)?;
+    let imported = if boundary.faces.iter().any(|face| !face.holes.is_empty()) {
+        bosses::reconstruct(reader, &boundary)?
+    } else {
+        resolve_chart(reader, &boundary, false)?.0
+    };
+    let readback = boundary.readback(reader, imported.shell.volume_mm3())?;
+    Ok((readback, imported))
+}
+
+fn resolve_chart(
+    reader: &Shell<'_, '_>,
+    boundary: &Boundary,
+    allow_flat: bool,
+) -> Result<(ImportedWarped, Chart)> {
+    let ellipse = boundary.curves.values().find_map(|(_, curve)| match curve {
+        TrimCurve::Arc(arc) if arc.ellipse().semiaxes_mm()[0] > arc.ellipse().semiaxes_mm()[1] => {
+            Some(arc.ellipse())
+        }
+        _ => None,
+    });
+    let origin = *reader.points.values().next().ok_or(ReadError::Invalid)?;
+    let Some(ellipse) = ellipse else {
+        if !allow_flat {
+            return Err(ReadError::Unsupported);
+        }
+        let lower = reader
+            .points
+            .values()
+            .map(|point| point[2] - origin[2])
+            .fold(f64::INFINITY, f64::min);
+        let chart = Chart {
+            origin,
+            u: [1., 0., 0.],
+            v: [0., 1., 0.],
+            up: [0., 0., 1.],
+            band: Band {
+                center_z_mm: lower - 1.,
+                radius_mm: 1.,
+            },
+        };
+        return reconstruct(reader, boundary, chart).map(|shell| {
+            (
+                ImportedWarped {
+                    shell,
+                    origin_mm: origin,
+                    u: chart.u,
+                    v: chart.v,
+                },
+                chart,
+            )
+        });
+    };
     let cylinder_axis = boundary
         .faces
         .iter()
@@ -310,7 +385,6 @@ pub(super) fn read_member(
             Surface::Plane { .. } => None,
         })
         .ok_or(ReadError::Unsupported)?;
-    let origin = *reader.points.values().next().ok_or(ReadError::Invalid)?;
     let [major, minor] = ellipse.semiaxes_mm();
     for (direction, radius_mm) in [(ellipse.major_axis(), major), (ellipse.minor_axis(), minor)] {
         if dot(direction, cylinder_axis).abs() > 1e-10 {
@@ -331,17 +405,16 @@ pub(super) fn read_member(
                 up,
                 band,
             };
-            match reconstruct(reader, &boundary, chart) {
+            match reconstruct(reader, boundary, chart) {
                 Ok(shell) => {
-                    let readback = boundary.readback(reader, shell.volume_mm3())?;
                     return Ok((
-                        readback,
                         ImportedWarped {
                             shell,
                             origin_mm: origin,
                             u,
                             v,
                         },
+                        chart,
                     ));
                 }
                 Err(ReadError::Limit) => return Err(ReadError::Limit),

@@ -26,15 +26,40 @@ impl Shell {
     /// Join mutually separated bosses with an embedded start and one
     /// perpendicular exit through strictly interior planar material.
     pub fn attach_bosses(&self, bosses: &[Boss], tolerance_mm: f64) -> Result<Self, Error> {
-        if !(1e-10..=1e-3).contains(&tolerance_mm) || bosses.is_empty() {
+        self.attach_bosses_inner(
+            bosses.len(),
+            bosses.iter().map(|&boss| (boss, None)),
+            tolerance_mm,
+        )
+    }
+
+    pub(crate) fn attach_bosses_with_reference(
+        &self,
+        bosses: &[(Boss, Point)],
+        tolerance_mm: f64,
+    ) -> Result<Self, Error> {
+        self.attach_bosses_inner(
+            bosses.len(),
+            bosses.iter().map(|&(boss, radial)| (boss, Some(radial))),
+            tolerance_mm,
+        )
+    }
+
+    fn attach_bosses_inner(
+        &self,
+        count: usize,
+        bosses: impl Iterator<Item = (Boss, Option<Point>)>,
+        tolerance_mm: f64,
+    ) -> Result<Self, Error> {
+        if !(1e-10..=1e-3).contains(&tolerance_mm) || count == 0 {
             return Err(Error::Invalid);
         }
-        if bosses.len() > MAX_BOSSES {
+        if count > MAX_BOSSES {
             return Err(Error::Limit);
         }
-        let mut attachments: Vec<Attachment> = Vec::with_capacity(bosses.len());
-        for &boss in bosses {
-            let next = Attachment::prove(self, boss, tolerance_mm)?;
+        let mut attachments: Vec<Attachment> = Vec::with_capacity(count);
+        for (boss, reference) in bosses {
+            let next = Attachment::prove(self, boss, reference, tolerance_mm)?;
             if attachments
                 .iter()
                 .any(|old| !old.disjoint(&next, tolerance_mm))
@@ -60,7 +85,12 @@ impl Shell {
 }
 
 impl Attachment {
-    fn prove(shell: &Shell, tool: Boss, tolerance: f64) -> Result<Self, Error> {
+    fn prove(
+        shell: &Shell,
+        tool: Boss,
+        reference: Option<Point>,
+        tolerance: f64,
+    ) -> Result<Self, Error> {
         if !tool.radius_mm.is_finite()
             || tool.radius_mm <= tolerance
             || tool
@@ -94,7 +124,18 @@ impl Attachment {
         if hosts.next().is_some() {
             return Err(Error::Unsupported);
         }
-        let [u, v] = perpendicular_axes(axis);
+        let [u, v] = if let Some(radial) = reference {
+            let length = length3(radial);
+            if !length.is_finite() || (length - 1.).abs() > 1e-10 || dot(radial, axis).abs() > 1e-10
+            {
+                return Err(Error::Invalid);
+            }
+            let side = cross(axis, radial);
+            let v = side.map(|x| x / length3(side));
+            [cross(v, axis), v]
+        } else {
+            perpendicular_axes(axis)
+        };
         let attached = Self {
             tool,
             host,

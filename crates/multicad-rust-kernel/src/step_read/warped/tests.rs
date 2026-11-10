@@ -317,3 +317,69 @@ fn reimport_refuses_an_out_of_range_chart() {
         ReadError::Limit
     );
 }
+
+pub(super) fn boss_step_fixture() -> (warped_union::Shell, String) {
+    use crate::warped_union::Boss;
+    let piece = ConvexPiece::from_box([0., 0., 3.], [10., 80., 30.], TOL).unwrap();
+    let base = warped_union::remap(
+        &Union::new(&[piece], TOL).unwrap(),
+        Band {
+            center_z_mm: 10.,
+            radius_mm: 2.,
+        },
+        TOL,
+    )
+    .unwrap();
+    let bosses = [(20., 2.), (60., 3.)].map(|(y, radius_mm)| Boss {
+        start_mm: [9.95, y, 20.],
+        end_mm: [13.5, y, 20.],
+        radius_mm,
+        source: 1,
+        wall_source_face: 2,
+        cap_source_face: 1,
+    });
+    let shell = base.attach_bosses(&bosses, TOL).unwrap();
+    let source = step::write_warped_union(&shell, ORIGIN, U, V).unwrap();
+    (shell, source)
+}
+
+#[test]
+fn round_trips_two_bosses_with_exact_rim_phase_in_an_oblique_frame() {
+    let (shell, source) = boss_step_fixture();
+    let (metrics, imported) = read_import_solid(&source, TOL).unwrap();
+    assert_eq!(metrics.arcs.len(), 16);
+    assert_eq!(metrics.solid_count, 1);
+    assert!((metrics.volume_mm3 - shell.volume_mm3()).abs() < TOL);
+    let ImportProfile::WarpedUnion { shell: output } = imported.profile else {
+        unreachable!()
+    };
+    assert!(output.faces().iter().any(|f| f.holes.len() == 2));
+    let rewritten =
+        step::write_warped_union(&output, imported.origin_mm, imported.u, imported.v).unwrap();
+    let second = read_analytic_solid(&rewritten, TOL).unwrap();
+    assert!((second.volume_mm3 - metrics.volume_mm3).abs() < TOL);
+    assert_eq!(second.arcs.len(), metrics.arcs.len());
+    for i in 0..3 {
+        assert!((second.bounds_mm[0][i] - metrics.bounds_mm[0][i]).abs() < TOL);
+        assert!((second.bounds_mm[1][i] - metrics.bounds_mm[1][i]).abs() < TOL);
+    }
+}
+
+#[test]
+fn rejects_duplicate_outer_bounds_and_nonwarped_standalone_shell() {
+    let (_, source) = boss_step_fixture();
+    let malformed = source.replacen("=FACE_BOUND(", "=FACE_OUTER_BOUND(", 1);
+    assert_eq!(
+        read_warped_solid(&malformed, TOL).unwrap_err(),
+        ReadError::Invalid
+    );
+
+    let mut writer = Writer::new();
+    writer
+        .append_box([crate::Rational::new(4, 1).unwrap(); 3], ORIGIN, U, V)
+        .unwrap();
+    assert_eq!(
+        read_warped_solid(&writer.finish().unwrap(), TOL).unwrap_err(),
+        ReadError::Unsupported
+    );
+}
