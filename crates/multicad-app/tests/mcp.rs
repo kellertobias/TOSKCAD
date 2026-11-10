@@ -169,6 +169,66 @@ fn rust_stdio_rebuilds_and_reopens_geometry_through_the_real_cli() {
 }
 
 #[test]
+fn rust_stdio_extrude_cut_keeps_an_imported_triangle_after_reopen() {
+    let directory = tempfile::tempdir().unwrap();
+    let project = directory.path().join("triangular-cut.tcd");
+    let arguments = ["--rust-model", "--project", project.to_str().unwrap()];
+    let mut client = Client::start(&arguments);
+    let sketch = client.ok(
+        "create_sketch",
+        json!({"expected_revision": 0, "plane": "xy", "name": "Stock"}),
+    )["sketch"]
+        .clone();
+    client.ok(
+        "sketch_add_rectangle",
+        json!({"expected_revision": 1, "sketch": sketch, "origin_mm": [0, 0],
+            "width": length(20.), "height": length(20.)}),
+    );
+    let stock = client.ok(
+        "extrude",
+        json!({"expected_revision": 2, "sketch": sketch, "regions": [0],
+            "distance": length(10.), "operation": "new_body"}),
+    );
+    let part = &stock["created"][0]["part"];
+    close(client.part_volume(), 4000.);
+
+    let artwork = r#"<svg xmlns="http://www.w3.org/2000/svg" width="20mm" height="20mm" viewBox="0 0 20 20">
+        <polygon points="2,2 12,2 2,12"/>
+        </svg>"#;
+    let triangle = client.ok(
+        "import_sketch_artwork",
+        json!({"expected_revision": 3, "format": "svg", "file_name": "triangle.svg",
+            "content": artwork, "new_sketch": {"plane": "xy", "name": "Triangle"}}),
+    );
+    let inspected = client.ok("inspect_sketch", json!({"sketch": triangle["sketch"]}));
+    let [region] = inspected["regions"].as_array().unwrap().as_slice() else {
+        panic!("expected exactly one triangle region: {inspected}");
+    };
+    close(region["area_mm2"].as_f64().unwrap(), 50.);
+    let cut = client.ok(
+        "extrude",
+        json!({"expected_revision": 4, "sketch": triangle["sketch"], "regions": [region["index"]],
+            "distance": length(5.), "operation": "cut", "target_part": part}),
+    );
+    assert_eq!(cut["revision"], 5);
+    assert_eq!(cut["bodies"][0]["part"], *part);
+    assert_eq!(cut["bodies"][0]["solid_count"], 1);
+    close(cut["bodies"][0]["volume_mm3"].as_f64().unwrap(), 3750.);
+    client.ok("undo", json!({"expected_revision": 5}));
+    close(client.part_volume(), 4000.);
+    client.ok("redo", json!({"expected_revision": 6}));
+    close(client.part_volume(), 3750.);
+    client.ok("save_project", json!({"expected_revision": 7}));
+    drop(client);
+
+    let mut reopened = Client::start(&arguments);
+    let model = reopened.ok("evaluate_model", json!({}));
+    assert_eq!(model["parts"][0]["part"], *part);
+    assert_eq!(model["parts"][0]["feature"], cut["bodies"][0]["feature"]);
+    close(reopened.part_volume(), 3750.);
+}
+
+#[test]
 fn tool_discovery_is_complete_and_schemas_are_objects() {
     let mut client = Client::start(&[]);
     let tools = client.request("tools/list", json!({}));
