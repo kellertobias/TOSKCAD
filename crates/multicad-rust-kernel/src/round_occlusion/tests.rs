@@ -172,3 +172,57 @@ fn checks_inputs_before_classifying_visibility() {
         Err(ProjectionError::Invalid)
     );
 }
+
+#[test]
+fn separate_certified_side_on_occurrences_hide_coincident_closed_contours() {
+    use crate::planar_projection::{Options, project_scene};
+
+    let band = |depth| RoundOccluder::new([0., 0., depth], [1., 0., 0.], 3., 5., None).unwrap();
+    let [near, far] = [
+        band(10.).with_contour_owner(7),
+        band(0.).with_contour_owner(8),
+    ];
+    assert!(near.closes_contour_of(Some(&far)));
+    assert!(!near.closes_contour_of(Some(&band(0.).with_contour_owner(7))));
+    assert!(!near.closes_contour_of(Some(&band(0.))));
+    assert!(!near.closes_contour_of(None));
+    assert!(
+        !view_cylinder(None)
+            .with_contour_owner(7)
+            .closes_contour_of(Some(&far))
+    );
+    let annulus = RoundOccluder::new([0.; 3], [1., 0., 0.], 3., 5., Some(1.)).unwrap();
+    assert!(!annulus.with_contour_owner(7).closes_contour_of(Some(&far)));
+
+    let contour = [[-2., 3., 0.], [7., 3., 0.]];
+    let mut hidden = Vec::new();
+    near.hide(contour, TOLERANCE, true, |span| hidden.push(span));
+    intervals(hidden, &[[2. / 9., 7. / 9.]]);
+    let options = Options {
+        hidden_lines: true,
+        tolerance: TOLERANCE,
+        tangent_edges: false,
+        detail: None,
+        segment_limit: 100,
+    };
+    let (_, edges) = project_scene(&[], &[near, far], options).unwrap();
+    assert!(
+        edges
+            .iter()
+            .all(|edge| edge.source == 0 || edge.edge.hidden)
+    );
+    assert_eq!(
+        edges
+            .iter()
+            .filter(|edge| edge.source == 0 && !edge.edge.hidden)
+            .count(),
+        4
+    );
+    assert_eq!(
+        edges
+            .iter()
+            .filter(|edge| edge.source == 1 && edge.edge.hidden)
+            .count(),
+        6
+    );
+}

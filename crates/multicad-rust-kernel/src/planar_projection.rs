@@ -512,7 +512,8 @@ fn hide_line(
         work.charge(1)?;
         if Some(round_id) != source && round.may_hide(points, work.tolerance) {
             work.charge(20)?;
-            round.hide(points, work.tolerance, |interval| {
+            let contour = round.closes_contour_of(source.map(|id| &rounds[id]));
+            round.hide(points, work.tolerance, contour, |interval| {
                 let along = interval.map(|t| (span[1] - span[0]).mul_add(t, span[0]));
                 work.hidden.push(along);
             });

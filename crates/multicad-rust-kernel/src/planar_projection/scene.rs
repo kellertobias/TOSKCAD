@@ -317,7 +317,8 @@ fn hide_rim(
             // Charge the bounded conic and cap root work even when no
             // resulting interval covers the candidate rim.
             work.charge(160)?;
-            round.hide_rim(rim, work.tolerance, &mut work.crossings, |span| {
+            let contour = round.closes_contour_of(source.map(|id| &rounds[id]));
+            round.hide_rim(rim, work.tolerance, &mut work.crossings, contour, |span| {
                 work.hidden.push(span)
             });
         }

@@ -11,6 +11,7 @@ mod opaque;
 mod pockets;
 mod shadows;
 pub(super) mod stadium;
+mod stepped;
 
 fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
     a.into_iter().zip(b).map(|(x, y)| x * y).sum()
@@ -65,6 +66,7 @@ pub(super) fn needs_curved_scene(solid: &Solid) -> bool {
         || pockets::has_machined_stock(solid)
         || apertures::has_through_bores(solid)
         || solid.rounded_slot_body().is_some()
+        || solid.revolution_body().is_some()
         || solid
             .rust_compound()
             .is_some_and(|compound| compound.members().any(needs_curved_scene))
@@ -149,6 +151,9 @@ fn project_members(
         } else if let Some(round) = round_occluder(solid, options.frame)? {
             round_sources.push(source);
             rounds.push(round);
+        } else if let Some(bands) = stepped::rounds(solid, index, options)? {
+            round_sources.extend(std::iter::repeat_n(source, bands.len()));
+            rounds.extend(bands);
         } else {
             let proxy = if options.hidden_lines {
                 None

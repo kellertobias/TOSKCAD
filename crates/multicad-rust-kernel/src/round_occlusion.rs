@@ -20,6 +20,7 @@ pub struct RoundOccluder {
     radius: f64,
     height: f64,
     bore: Option<f64>,
+    contour_owner: Option<usize>,
     bounds: [Point; 2],
 }
 
@@ -68,8 +69,27 @@ impl RoundOccluder {
             radius,
             height,
             bore,
+            contour_owner: None,
             bounds,
         })
+    }
+
+    /// Identify the solid occurrence that owns this analytic axial band.
+    /// Distinct side-on occurrences can cover one another's coincident
+    /// contours at strictly different view depths.
+    pub fn with_contour_owner(mut self, owner: usize) -> Self {
+        self.contour_owner = Some(owner);
+        self
+    }
+
+    pub(crate) fn closes_contour_of(&self, candidate: Option<&Self>) -> bool {
+        self.axis[2] == 0.
+            && self.bore.is_none()
+            && self.contour_owner.is_some_and(|owner| {
+                candidate
+                    .and_then(|round| round.contour_owner)
+                    .is_some_and(|other| owner != other)
+            })
     }
 
     pub fn bounds(&self) -> [Point; 2] {
@@ -136,7 +156,7 @@ impl RoundOccluder {
         if (edge[1][0] - edge[0][0]).hypot(edge[1][1] - edge[0][1]) > tolerance
             && self.may_hide(edge, tolerance)
         {
-            self.hide(edge, tolerance, |span| hidden.push(span));
+            self.hide(edge, tolerance, false, |span| hidden.push(span));
         }
         Ok(hidden)
     }
@@ -147,7 +167,13 @@ impl RoundOccluder {
             && (0..2).all(|i| a[i].min(b[i]) <= max[i] && a[i].max(b[i]) >= min[i])
     }
 
-    pub(crate) fn hide(&self, edge: [Point; 2], tolerance: f64, mut emit: impl FnMut(Span)) {
+    pub(crate) fn hide(
+        &self,
+        edge: [Point; 2],
+        tolerance: f64,
+        contour: bool,
+        mut emit: impl FnMut(Span),
+    ) {
         let [u, v] = self.screen_axis;
         let scale = edge
             .into_iter()
@@ -183,10 +209,11 @@ impl RoundOccluder {
         // Rotating a silhouette line into the axial frame can put both
         // endpoints a few ulps inside a tangent plane. This is contact with
         // the outline, and cannot certify that the line is behind material.
-        if [-self.radius, self.radius]
-            .into_iter()
-            .any(|side| follows(y, side))
-            || (c == 0. && [0., self.height].into_iter().any(|cap| follows(axial, cap)))
+        if !contour
+            && ([-self.radius, self.radius]
+                .into_iter()
+                .any(|side| follows(y, side))
+                || (c == 0. && [0., self.height].into_iter().any(|cap| follows(axial, cap))))
         {
             return;
         }
@@ -207,7 +234,16 @@ impl RoundOccluder {
                 }
             }
         }
-        let ray = |t| self.ray_hits(axial.at(t), radial.at(t), y.at(t), self.radius, self.bore);
+        let ray = |t| {
+            self.occludes(
+                axial.at(t),
+                radial.at(t),
+                y.at(t),
+                self.radius,
+                self.bore,
+                contour,
+            )
+        };
         let mut hidden: Option<Span> = None;
         for interval in events.sorted().windows(2) {
             let [start, end] = [interval[0], interval[1]];
@@ -230,6 +266,7 @@ impl RoundOccluder {
         rim: Rim,
         tolerance: f64,
         cuts: &mut Vec<f64>,
+        contour: bool,
         emit: impl FnMut(Span),
     ) {
         let [origin, cosine, sine] = rim.basis();
@@ -252,7 +289,11 @@ impl RoundOccluder {
         // In a coaxial view two circumferences can coincide along their
         // whole trim. A few ulps of trig error must not hide the silhouette.
         let radial_guard = 16. * f64::EPSILON * self.radius.max(rim.ellipse.major);
-        let outer = self.radius - radial_guard;
+        let outer = if contour {
+            self.radius
+        } else {
+            self.radius - radial_guard
+        };
         let bore = self.bore.map(|radius| radius + radial_guard);
         if bore.is_some_and(|inner| inner >= outer) {
             return;
@@ -281,9 +322,33 @@ impl RoundOccluder {
         drawing_events::spans(
             cuts,
             trim,
-            |t| self.ray_hits(axial.at(t), radial.at(t), y.at(t), outer, bore),
+            |t| self.occludes(axial.at(t), radial.at(t), y.at(t), outer, bore, contour),
             emit,
         );
+    }
+
+    fn occludes(
+        &self,
+        axial: f64,
+        radial: f64,
+        y: f64,
+        outer: f64,
+        bore: Option<f64>,
+        contour: bool,
+    ) -> bool {
+        if !contour {
+            return self.ray_hits(axial, radial, y, outer, bore);
+        }
+        // This branch is certified only for an opaque, side-on cylinder.
+        // Its closed disk projects to the interval between the two tangents,
+        // and the frontmost point has the depth of the circular chord.
+        let guard = 16. * f64::EPSILON * self.height.max(outer);
+        if axial < -guard || axial > self.height + guard || y.abs() > outer + guard {
+            return false;
+        }
+        let offset = y.abs().min(outer);
+        let front = ((outer - offset) * (outer + offset)).sqrt();
+        radial + front > 0.
     }
 
     fn ray_hits(&self, axial: f64, radial: f64, y: f64, outer: f64, bore: Option<f64>) -> bool {
