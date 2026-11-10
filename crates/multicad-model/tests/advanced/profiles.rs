@@ -101,6 +101,30 @@ fn path(session: &mut Session) -> SketchPathSource {
         curves: vec![line],
     }
 }
+
+fn miter_path(session: &mut Session) -> SketchPathSource {
+    let mut curves = vec![];
+    let (sketch, _) = add_sketch(session, Datum::Xz, "Miter path", 0., |s, session| {
+        let start = s.add_point([0., 0.]);
+        let corner = s.add_point([0., 40.]);
+        let end = s.add_point([20., 40.]);
+        let first = s.add_line(start, corner);
+        let second = s.add_line(corner, end);
+        curves.extend([first, second]);
+        s.add_constraint(ConstraintKind::Fix { point: start });
+        s.add_constraint(ConstraintKind::Vertical { line: first });
+        s.add_constraint(ConstraintKind::Horizontal { line: second });
+        s.add_constraint(ConstraintKind::Length {
+            line: first,
+            dimension: bound(session, "pitch", "mm"),
+        });
+        s.add_constraint(ConstraintKind::Length {
+            line: second,
+            dimension: length(20.),
+        });
+    });
+    SketchPathSource { sketch, curves }
+}
 fn check_saved_rust_profile(
     session: &mut Session,
     request: &AdvancedRequest,
@@ -236,27 +260,7 @@ fn mitered_sweep_preserves_path_faces_after_edit_reopen_and_step() {
         sketch,
         region: sketch_regions::extract(&section).regions[0].intent(),
     };
-    let mut curves = vec![];
-    let (sketch, _) = add_sketch(&mut session, Datum::Xz, "Miter path", 0., |s, session| {
-        let start = s.add_point([0., 0.]);
-        let corner = s.add_point([0., 40.]);
-        let end = s.add_point([20., 40.]);
-        let first = s.add_line(start, corner);
-        let second = s.add_line(corner, end);
-        curves.extend([first, second]);
-        s.add_constraint(ConstraintKind::Fix { point: start });
-        s.add_constraint(ConstraintKind::Vertical { line: first });
-        s.add_constraint(ConstraintKind::Horizontal { line: second });
-        s.add_constraint(ConstraintKind::Length {
-            line: first,
-            dimension: bound(session, "pitch", "mm"),
-        });
-        s.add_constraint(ConstraintKind::Length {
-            line: second,
-            dimension: length(20.),
-        });
-    });
-    let path = SketchPathSource { sketch, curves };
+    let path = miter_path(&mut session);
     let request = AdvancedRequest::new_body(
         "Mitered sweep",
         AdvancedParameters::Sweep(Default::default()),
@@ -375,6 +379,206 @@ fn mitered_sweep_preserves_path_faces_after_edit_reopen_and_step() {
             .path,
         Some(path),
     );
+}
+
+#[test]
+fn circular_miter_rebuilds_its_exact_trim_after_saved_path_and_radius_edits() {
+    use multicad_core::drawings::{
+        DrawingView, Scale, VectorCurve, VectorRole, ViewEvaluation, ViewKind, ViewSource,
+    };
+    use multicad_core::references::{
+        self, AnalyticGeometry, GeometryIntent, Resolution, TopologyKind,
+    };
+    use multicad_kernel::Solid;
+
+    let (mut session, _) = fixture();
+    let (profile, circle_curve) = circle(&mut session, "Round sweep section", 0., 2., true);
+    let path = miter_path(&mut session);
+    let request = AdvancedRequest::new_body(
+        "Circular miter",
+        AdvancedParameters::Sweep(Default::default()),
+        vec![profile],
+        Some(path.clone()),
+    );
+    let preview = commit(&mut session, &request);
+    let check_geometry = |solid: &Solid, radius: f64, bend_z: f64| {
+        let centerline = bend_z + 20.;
+        assert_eq!(solid.solid_count().unwrap(), 1);
+        near(
+            solid.volume_mm3().unwrap(),
+            PI * radius.powi(2) * centerline,
+        );
+        near(
+            solid
+                .faces()
+                .unwrap()
+                .iter()
+                .map(|face| face.area_mm2)
+                .sum(),
+            2. * PI * radius * (centerline + radius),
+        );
+        let bounds = solid.bounds().unwrap();
+        for (actual, expected) in bounds.min.into_iter().chain(bounds.max).zip([
+            -radius,
+            -radius,
+            0.,
+            20.,
+            radius,
+            bend_z + radius,
+        ]) {
+            near(actual, expected);
+        }
+    };
+    check_geometry(preview.solid(request.body).unwrap(), 2., 40.);
+    let initial = check_saved_rust_profile(&mut session, &request, PI * 240.);
+    let topology = &initial.snapshot().shapes[&request.feature].topology;
+    let walls: Vec<_> = topology
+        .elements
+        .iter()
+        .filter(|face| {
+            face.key.kind == TopologyKind::Face
+                && face
+                    .origins
+                    .iter()
+                    .any(|origin| origin.source == circle_curve)
+                && face
+                    .origins
+                    .iter()
+                    .any(|origin| path.curves.contains(&origin.source))
+        })
+        .map(|face| GeometryIntent::capture(topology, face.key).unwrap())
+        .collect();
+    assert_eq!(walls.len(), 8);
+    let trims: Vec<_> = topology
+        .elements
+        .iter()
+        .filter_map(|edge| {
+            if let Some(AnalyticGeometry::EllipticArc { semiaxes_mm, .. }) = edge.geometry {
+                Some(semiaxes_mm)
+            } else {
+                None
+            }
+        })
+        .collect();
+    assert_eq!(trims.len(), 4);
+    for [major, minor] in trims {
+        near(major, 2. * 2_f64.sqrt());
+        near(minor, 2.);
+    }
+
+    apply_parameter(&mut session, "pitch", "55");
+    apply_parameter(&mut session, "wall", "3");
+    let reopened = check_saved_rust_profile(&mut session, &request, PI * 675.);
+    let solid = reopened.solid(request.body).unwrap();
+    check_geometry(solid, 3., 55.);
+    let topology = &reopened.snapshot().shapes[&request.feature].topology;
+    let resolved: std::collections::BTreeSet<_> = walls
+        .iter()
+        .map(
+            |intent| match references::resolve(intent, topology, topology.revision) {
+                Resolution::Resolved { key, .. } => key,
+                diagnostic => {
+                    panic!("Circular miter wall did not survive the edit: {diagnostic:?}")
+                }
+            },
+        )
+        .collect();
+    assert_eq!(resolved.len(), 8);
+    let diagonal = std::f64::consts::FRAC_1_SQRT_2;
+    let view = DrawingView {
+        id: EntityId::new(),
+        name: "Oblique miter".into(),
+        source: ViewSource::Model {
+            entities: vec![request.body],
+        },
+        frame: references::ReferenceFrame {
+            origin_mm: [0.; 3],
+            u: [1., 0., 0.],
+            v: [0., diagonal, diagonal],
+        },
+        kind: ViewKind::Projection,
+        position_mm: [0.; 2],
+        scale: Scale {
+            numerator: 1,
+            denominator: 1,
+        },
+        hidden_lines: true,
+        tangent_edges: false,
+        paper_chord_tolerance_mm: 0.01,
+        guide: None,
+        equipment_categories: None,
+    };
+    let drawing_model = multicad_model::Compiler {
+        omit_display: true,
+        ..Default::default()
+    }
+    .compile_with_backend(
+        session.document(),
+        session.revision(),
+        multicad_model::GeometryBackend::Rust,
+        None,
+    )
+    .unwrap();
+    let drawing = drawing_model
+        .drawing_view(
+            session.document(),
+            session.revision(),
+            &view,
+            &Default::default(),
+        )
+        .unwrap();
+    let ViewEvaluation::Ready { vectors, .. } = drawing else {
+        panic!("Expected exact circular miter drawing: {drawing:?}");
+    };
+    assert!(
+        vectors.iter().any(|vector| matches!(vector.curve,
+            VectorCurve::Ellipse { center, major_mm, minor_mm, .. }
+            if center[0].abs() < 1e-7 && (center[1] - 55. * diagonal).abs() < 1e-7
+                && (major_mm - 3. * (1. + diagonal).sqrt()).abs() < 1e-7
+                && (minor_mm - 3. * (1. - diagonal).sqrt()).abs() < 1e-7
+        )),
+        "the projected miter must retain its exact ellipse"
+    );
+    let section = multicad_kernel::project_drawing(
+        &[multicad_kernel::DrawingSolid { solid, hatch: None }],
+        multicad_kernel::DrawingProjection {
+            section_offset_mm: Some(55.),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let mut arc_sweep = 0.;
+    for vector in section
+        .iter()
+        .filter(|vector| vector.role == VectorRole::Section)
+    {
+        if let VectorCurve::Ellipse {
+            major_mm,
+            minor_mm,
+            start_rad,
+            end_rad,
+            ..
+        } = vector.curve
+        {
+            near(major_mm, 3.);
+            near(minor_mm, 3.);
+            arc_sweep += (end_rad - start_rad).abs();
+        }
+    }
+    near(arc_sweep, PI);
+    #[cfg(feature = "occt")]
+    {
+        let native = compile(&session);
+        check_geometry(native.solid(request.body).unwrap(), 3., 55.);
+        let directory = tempfile::tempdir().unwrap();
+        let step = directory.path().join("circular-miter.step");
+        solid.write_step(&step).unwrap();
+        check_geometry(
+            &Solid::read_step(&step, Default::default()).unwrap(),
+            3.,
+            55.,
+        );
+    }
 }
 
 #[test]

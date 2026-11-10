@@ -89,6 +89,41 @@ fn sweep_origins(
     Ok(origins)
 }
 
+fn sweep_start_height(
+    frame: PlaneFrame,
+    start: [f64; 3],
+    end: [f64; 3],
+    policy: GeometryPolicy,
+) -> Result<f64, GeometryError> {
+    frame.checked(policy)?;
+    policy.point(start)?;
+    policy.point(end)?;
+    let offset = std::array::from_fn(|i| start[i] - frame.origin[i]);
+    let delta: [f64; 3] = std::array::from_fn(|i| end[i] - start[i]);
+    let length = delta[0].hypot(delta[1]).hypot(delta[2]);
+    policy.length(length)?;
+    let normal = frame.normal();
+    let dot = |a: [f64; 3], b: [f64; 3]| a.into_iter().zip(b).map(|(a, b)| a * b).sum::<f64>();
+    let height = dot(delta, normal) / dot(normal, normal);
+    let lateral: [f64; 3] = std::array::from_fn(|i| delta[i] - height * normal[i]);
+    let roundoff = 64.
+        * f64::EPSILON
+        * start
+            .into_iter()
+            .chain(end)
+            .map(f64::abs)
+            .fold(length.max(1.), f64::max);
+    if dot(offset, normal).abs() > policy.linear_tolerance_mm
+        || lateral[0].hypot(lateral[1]).hypot(lateral[2]) > roundoff.min(policy.linear_tolerance_mm)
+    {
+        return Err(failure(
+            GeometryErrorKind::Input,
+            "Sweep profile plane must contain the path start and be perpendicular to its first segment",
+        ));
+    }
+    Ok(height)
+}
+
 impl Solid {
     /// Sweep a closed profile along an authored straight or mitered polyline.
     pub fn rust_sweep_polyline_named(
@@ -111,6 +146,20 @@ impl Solid {
         }
         policy.validate()?;
         sweep_origins(profile, path_mm, feature, profile_origins, path_origins)?;
+        if let ([CurvedEdge2d::Circle { center, radius_mm }], &[start, corner, end]) =
+            (profile.outer.as_slice(), path_mm)
+        {
+            sweep_start_height(profile.frame, start, corner, policy)?;
+            return Self::rust_sweep_circular_miter_named(
+                profile.frame,
+                *center,
+                *radius_mm,
+                [start, corner, end],
+                feature,
+                [&profile_origins[0], &path_origins[0], &path_origins[1]],
+                policy,
+            );
+        }
         Self::rust_sweep_miter_named(
             profile,
             path_mm,
@@ -139,33 +188,7 @@ impl Solid {
                 "Rust sweep supports one straight path segment; corner transitions are unavailable",
             ));
         };
-        profile.frame.checked(policy)?;
-        policy.point(start)?;
-        policy.point(end)?;
-        let offset = std::array::from_fn(|i| start[i] - profile.frame.origin[i]);
-        let delta: [f64; 3] = std::array::from_fn(|i| end[i] - start[i]);
-        let length = delta[0].hypot(delta[1]).hypot(delta[2]);
-        policy.length(length)?;
-        let normal = profile.frame.normal();
-        let dot = |a: [f64; 3], b: [f64; 3]| a.into_iter().zip(b).map(|(a, b)| a * b).sum::<f64>();
-        let height = dot(delta, normal) / dot(normal, normal);
-        let lateral: [f64; 3] = std::array::from_fn(|i| delta[i] - height * normal[i]);
-        let roundoff = 64.
-            * f64::EPSILON
-            * start
-                .into_iter()
-                .chain(end)
-                .map(f64::abs)
-                .fold(length.max(1.), f64::max);
-        if dot(offset, normal).abs() > policy.linear_tolerance_mm
-            || lateral[0].hypot(lateral[1]).hypot(lateral[2])
-                > roundoff.min(policy.linear_tolerance_mm)
-        {
-            return Err(failure(
-                GeometryErrorKind::Input,
-                "Sweep profile plane must contain the path start and be perpendicular to its first segment",
-            ));
-        }
+        let height = sweep_start_height(profile.frame, start, end, policy)?;
         Self::rust_extrude_normal_profile_with_path(
             profile,
             height,

@@ -123,7 +123,9 @@ fn mesh_shares_the_miter_samples_and_rejects_small_budgets() {
     };
     let mut incidence = BTreeMap::<[u32; 2], [u32; 2]>::new();
     let mut volume = 0.;
-    for triangle in mesh.indices.chunks_exact(3) {
+    let (triangles, remainder) = mesh.indices.as_chunks::<3>();
+    assert!(remainder.is_empty());
+    for triangle in triangles {
         let [a, b, c] = [triangle[0], triangle[1], triangle[2]];
         volume += dot(vertex(a), cross(vertex(b), vertex(c))) / 6.;
         for (from, to) in [(a, b), (b, c), (c, a)] {
