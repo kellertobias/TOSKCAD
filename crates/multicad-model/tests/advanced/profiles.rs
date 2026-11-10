@@ -382,6 +382,125 @@ fn mitered_sweep_preserves_path_faces_after_edit_reopen_and_step() {
 }
 
 #[test]
+fn concave_miter_keeps_the_notched_caps_and_authored_wall_after_edit() {
+    use multicad_core::{
+        drawings::{VectorCurve, VectorRole},
+        references::{self, GeometryIntent, Resolution, TopologyKind},
+    };
+    use multicad_kernel::{DrawingProjection, DrawingSolid, Solid, project_drawing};
+
+    let (mut session, _) = fixture();
+    let mut notch = EntityId::nil();
+    let (sketch, section) = add_sketch(&mut session, Datum::Xy, "U section", 0., |s, _| {
+        let points = [
+            [-3., -2.],
+            [3., -2.],
+            [3., 2.],
+            [1., 2.],
+            [1., 0.],
+            [-1., 0.],
+            [-1., 2.],
+            [-3., 2.],
+        ]
+        .map(|point| s.add_point(point));
+        for (i, (a, b)) in points
+            .into_iter()
+            .zip(points.into_iter().cycle().skip(1))
+            .enumerate()
+        {
+            let curve = s.add_line(a, b);
+            if i == 4 {
+                notch = curve;
+            }
+        }
+    });
+    let profile = ProfileSource {
+        sketch,
+        region: sketch_regions::extract(&section).regions[0].intent(),
+    };
+    let path = miter_path(&mut session);
+    let request = AdvancedRequest::new_body(
+        "Notched sweep",
+        AdvancedParameters::Sweep(Default::default()),
+        vec![profile],
+        Some(path.clone()),
+    );
+    let native_preview = commit(&mut session, &request);
+    let check_geometry = |solid: &Solid, bend_z: f64| {
+        let path_length = bend_z + 20.;
+        assert_eq!(solid.solid_count().unwrap(), 1);
+        // The cross section and its perimeter are symmetric in X, so the
+        // miter's shorter and longer generators cancel in both integrals.
+        near(solid.volume_mm3().unwrap(), 20. * path_length);
+        near(
+            solid.faces().unwrap().iter().map(|f| f.area_mm2).sum(),
+            40. + 24. * path_length,
+        );
+        let bounds = solid.bounds().unwrap();
+        for (actual, expected) in
+            bounds
+                .min
+                .into_iter()
+                .chain(bounds.max)
+                .zip([-3., -2., 0., 20., 2., bend_z + 3.])
+        {
+            near(actual, expected);
+        }
+    };
+    check_geometry(native_preview.solid(request.body).unwrap(), 40.);
+    let initial = check_saved_rust_profile(&mut session, &request, 1_200.);
+    let topology = &initial.snapshot().shapes[&request.feature].topology;
+    let notch = topology
+        .elements
+        .iter()
+        .find(|face| {
+            face.key.kind == TopologyKind::Face
+                && face.origins.iter().any(|origin| origin.source == notch)
+                && face
+                    .origins
+                    .iter()
+                    .any(|origin| origin.source == path.curves[1])
+        })
+        .unwrap();
+    let notch = GeometryIntent::capture(topology, notch.key).unwrap();
+
+    apply_parameter(&mut session, "pitch", "55");
+    let reopened = check_saved_rust_profile(&mut session, &request, 1_500.);
+    let solid = reopened.solid(request.body).unwrap();
+    check_geometry(solid, 55.);
+    let topology = &reopened.snapshot().shapes[&request.feature].topology;
+    assert!(matches!(
+        references::resolve(&notch, topology, topology.revision),
+        Resolution::Resolved { .. }
+    ));
+    let drawing = project_drawing(
+        &[DrawingSolid { solid, hatch: None }],
+        DrawingProjection {
+            section_offset_mm: Some(10.),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert!(
+        drawing
+            .iter()
+            .any(|vector| vector.role == VectorRole::Section
+                && matches!(vector.curve, VectorCurve::Line { a, b }
+            if a[1].abs() < 1e-7 && b[1].abs() < 1e-7
+                && (a[0].min(b[0]) + 1.).abs() < 1e-7 && (a[0].max(b[0]) - 1.).abs() < 1e-7))
+    );
+    #[cfg(feature = "occt")]
+    {
+        let native = compile(&session);
+        check_geometry(native.solid(request.body).unwrap(), 55.);
+        let directory = tempfile::tempdir().unwrap();
+        let step = directory.path().join("notched-sweep.step");
+        solid.write_step(&step).unwrap();
+        check_geometry(&Solid::read_step(&step, Default::default()).unwrap(), 55.);
+    }
+}
+
+#[test]
 fn circular_miter_rebuilds_its_exact_trim_after_saved_path_and_radius_edits() {
     use multicad_core::drawings::{
         DrawingView, Scale, VectorCurve, VectorRole, ViewEvaluation, ViewKind, ViewSource,

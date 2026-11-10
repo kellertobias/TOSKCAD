@@ -33,8 +33,48 @@ pub(crate) struct PlanarBooleanBody {
 
 enum Material {
     Positive(Vec<ConvexPiece>),
-    LabeledCells(Vec<ConvexPiece>),
+    LabeledCells {
+        pieces: Vec<ConvexPiece>,
+        exterior_faces: Vec<Vec<Option<usize>>>,
+    },
     Cut(Box<CutRecipe>),
+}
+
+impl Material {
+    /// Relate each cell's faces to the exact boundary. Partition walls and
+    /// the caps shared between adjacent sections have no exterior identity.
+    fn profile_cells(
+        geometry: &Union,
+        cells: impl Iterator<Item = (ConvexPiece, usize, Vec<ProfileFace>)>,
+    ) -> Self {
+        let ordinals: BTreeMap<_, _> = geometry
+            .faces()
+            .iter()
+            .enumerate()
+            .map(|(ordinal, face)| ((face.source, face.source_face), ordinal))
+            .collect();
+        let (pieces, exterior_faces) = cells
+            .map(|(piece, segment, source_faces)| {
+                let faces = source_faces
+                    .into_iter()
+                    .map(|source| {
+                        let source = match source {
+                            ProfileFace::StartCap => 0,
+                            ProfileFace::EndCap => 1,
+                            ProfileFace::Edge(edge) => edge + 2,
+                            ProfileFace::Partition => return None,
+                        };
+                        ordinals.get(&(segment, source)).copied()
+                    })
+                    .collect();
+                (piece, faces)
+            })
+            .unzip();
+        Self::LabeledCells {
+            pieces,
+            exterior_faces,
+        }
+    }
 }
 
 struct CutRecipe {
@@ -288,16 +328,19 @@ impl Solid {
     ) -> Option<Vec<ConvexPart>> {
         let tolerance = policy.linear_tolerance_mm;
         if let Some((body, frame)) = self.planar_boolean_body() {
-            let (pieces, named) = match body.material.as_ref()? {
-                Material::Positive(pieces) => (pieces, false),
-                Material::LabeledCells(pieces) => (pieces, true),
+            let (pieces, exterior_faces) = match body.material.as_ref()? {
+                Material::Positive(pieces) => (pieces, None),
+                Material::LabeledCells {
+                    pieces,
+                    exterior_faces,
+                } => (pieces, Some(exterior_faces)),
                 Material::Cut(_) => return None,
             };
             let placed = PlanarBooleanBody::placed_pieces(pieces, frame, tolerance).ok()?;
-            return Some(if named {
+            return Some(if let Some(exterior_faces) = exterior_faces {
                 placed
                     .into_iter()
-                    .zip(body.labeled_cell_faces(topology, pieces.len()))
+                    .zip(body.labeled_cell_faces(topology, exterior_faces))
                     .collect()
             } else {
                 placed
@@ -599,7 +642,7 @@ impl PlanarBooleanBody {
         tolerance: f64,
     ) -> Result<Vec<ConvexPiece>, GeometryError> {
         let pieces = match self.material.as_ref().ok_or_else(planar_unsupported)? {
-            Material::Positive(pieces) | Material::LabeledCells(pieces) => pieces,
+            Material::Positive(pieces) | Material::LabeledCells { pieces, .. } => pieces,
             Material::Cut(recipe) => recipe.certify(&self.geometry, tolerance)?.pieces(),
         };
         Self::placed_pieces(pieces, frame, tolerance)
@@ -753,22 +796,26 @@ impl PlanarBooleanBody {
         self.geometry.volume_mm3()
     }
 
-    /// Map source faces of labeled cells onto the exterior. The shared caps
-    /// have no exterior face and retain their `None` entries.
+    /// Resolve stored exterior ordinals to indices in this topology snapshot.
     fn labeled_cell_faces(
         &self,
         topology: &TopologySnapshot,
-        piece_count: usize,
+        exterior_faces: &[Vec<Option<usize>>],
     ) -> Vec<Vec<Option<usize>>> {
-        let faces_per_piece = (self.faces.len() - 2) / piece_count + 2;
-        let mut mapped = vec![vec![None; faces_per_piece]; piece_count];
+        let mut indices = vec![None; self.faces.len()];
         for (index, face) in topology.elements.iter().enumerate() {
             if face.key.kind == TopologyKind::Face {
-                let raw = &self.geometry.faces()[face.key.ordinal as usize];
-                mapped[raw.source][raw.source_face] = Some(index);
+                indices[face.key.ordinal as usize] = Some(index);
             }
         }
-        mapped
+        exterior_faces
+            .iter()
+            .map(|cell| {
+                cell.iter()
+                    .map(|ordinal| ordinal.and_then(|ordinal| indices[ordinal]))
+                    .collect()
+            })
+            .collect()
     }
 
     pub(super) fn solid_count(&self) -> u32 {

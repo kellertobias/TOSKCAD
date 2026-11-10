@@ -103,7 +103,7 @@ impl Solid {
             let (kind, message) = match cause {
                 Error::Invalid => (
                     GeometryErrorKind::Unsupported,
-                    "Rust miter sweep requires a convex section and a path with separated, uncollapsed segments",
+                    "Rust miter sweep requires a simple polygon section and a path with separated, uncollapsed segments",
                 ),
                 Error::Unresolved => (
                     GeometryErrorKind::InvalidResult,
@@ -113,6 +113,12 @@ impl Solid {
             };
             error(OPERATION, kind, message)
         })?;
+        let material = Material::profile_cells(
+            &geometry,
+            material
+                .into_iter()
+                .map(|cell| (cell.piece, cell.segment, cell.source_faces)),
+        );
         let count = section.len();
         let initial = geometry.vertices();
         let first_edge = normalized(subtract(initial[1], initial[0]));
@@ -140,7 +146,7 @@ impl Solid {
             geometry,
             feature,
             policy,
-            Some(Material::LabeledCells(material)),
+            Some(material),
             placement,
             |_, face, vertices| {
                 let segment = face.source;
@@ -296,5 +302,72 @@ mod tests {
         assert_eq!(mapped(1, 0), None);
         assert_eq!(mapped(1, 1), Some(end));
         assert_eq!(mapped(1, 2), Some(wall));
+    }
+
+    #[test]
+    fn subtracting_a_notch_from_a_concave_sweep_retains_the_authored_recess_wall() {
+        let policy = GeometryPolicy::default();
+        let feature = EntityId::new();
+        let section = [[0., 0.], [4., 0.], [4., 1.], [1., 1.], [1., 3.], [0., 3.]];
+        let profile = CurvedProfile {
+            frame: PlaneFrame::default(),
+            outer: (0..section.len())
+                .map(|i| CurvedEdge2d::Line {
+                    a: section[i],
+                    b: section[(i + 1) % section.len()],
+                })
+                .collect(),
+            holes: Vec::new(),
+        };
+        let origin = |role: &str| Origin {
+            source: EntityId::new(),
+            role: role.into(),
+        };
+        let curves = section.map(|_| origin("profile"));
+        let path = [origin("path"), origin("path")];
+        let stock = Solid::rust_sweep_polyline_named(
+            &profile,
+            &[[0.; 3], [0., 0., 20.], [20., 0., 20.]],
+            feature,
+            &curves,
+            &path,
+            policy,
+        )
+        .unwrap();
+        let tool = Solid::rust_box(
+            EntityId::new().uuid_bits(),
+            [1, 1, 2].map(|size| Rational::new(size, 1).unwrap()),
+            PlaneFrame {
+                origin: [0.5, 1.5, 5.],
+                ..Default::default()
+            },
+            policy,
+        )
+        .unwrap();
+        let cut_feature = EntityId::new();
+        let result = stock
+            .rust_subtract_planar_tools(&[&tool], cut_feature, policy)
+            .unwrap()
+            .unwrap();
+        assert_eq!(result.solid_count().unwrap(), 1);
+        assert!((result.volume_mm3().unwrap() - 221.).abs() < 1e-7);
+
+        let topology = result.topology_snapshot(cut_feature, 1).unwrap();
+        topology.validate().unwrap();
+        let faces = result.faces().unwrap();
+        let mut wall_area = 0.;
+        for face in topology.elements.iter().filter(|face| {
+            face.key.kind == TopologyKind::Face
+                && face.origins.contains(&curves[3])
+                && face.origins.contains(&path[0])
+        }) {
+            let physical = &faces[face.key.ordinal as usize];
+            let (point, normal) = physical.plane.unwrap();
+            assert!((point[0] - 1.).abs() < 1e-7);
+            assert!(dot(normal, [1., 0., 0.]) > 1. - 1e-10);
+            assert!(face.frames.iter().any(|frame| frame.origin == curves[3]));
+            wall_area += physical.area_mm2;
+        }
+        assert!((wall_area - 36.).abs() < 1e-7);
     }
 }

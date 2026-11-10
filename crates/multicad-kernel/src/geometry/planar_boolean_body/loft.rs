@@ -190,11 +190,22 @@ impl Solid {
                 Error::Limit => error(OPERATION, GeometryErrorKind::Limit, "Loft exceeds the planar geometry budget"),
             }
         })?;
+        let source_faces: Vec<_> = [ProfileFace::StartCap, ProfileFace::EndCap]
+            .into_iter()
+            .chain((0..count).map(ProfileFace::Edge))
+            .collect();
+        let material = Material::profile_cells(
+            &geometry,
+            material
+                .into_iter()
+                .enumerate()
+                .map(|(segment, piece)| (piece, segment, source_faces.clone())),
+        );
         PlanarBooleanBody::build_labeled(
             geometry,
             feature,
             policy,
-            Some(Material::LabeledCells(material)),
+            Some(material),
             placement,
             |_, face, _| {
                 let normal = face.normal;
