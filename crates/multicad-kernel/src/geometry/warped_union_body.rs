@@ -8,7 +8,7 @@ use multicad_rust_kernel::{
     planar_boolean::{self, ConvexPiece, Union},
     warped_union::{self, AxialCut, Band, Boss, Curve, OpenBoreSide, Shell, Support},
 };
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 mod axial_cut;
 mod crop;
@@ -445,6 +445,8 @@ impl Solid {
         frame: PlaneFrame,
         feature: EntityId,
         origins: &[Origin],
+        web_caps: [usize; 2],
+        authored_frames: &BTreeMap<usize, AnchoredFrame>,
         policy: GeometryPolicy,
     ) -> Result<Self, GeometryError> {
         policy.validate()?;
@@ -452,18 +454,67 @@ impl Solid {
         if feature.is_nil() {
             return Err(input("Formed sheet needs a source feature"));
         }
+        let mut sectors = BTreeMap::<usize, (usize, usize)>::new();
+        for face in geometry.faces() {
+            if matches!(face.support, Support::Cylinder { .. }) {
+                sectors.entry(face.source_face).or_default().0 += 1;
+            }
+        }
+        let mut anchors = vec![Vec::new(); geometry.faces().len()];
         let face_origins = geometry
             .faces()
             .iter()
-            .map(|face| {
-                origins
+            .enumerate()
+            .map(|(face_index, face)| {
+                let origin = origins
                     .get(face.source_face)
                     .filter(|origin| !origin.source.is_nil() && !origin.role.trim().is_empty())
-                    .map(|origin| vec![origin.clone()])
-                    .ok_or_else(|| input("Formed sheet needs an authored identity for each face"))
+                    .ok_or_else(|| {
+                        input("Formed sheet needs an authored identity for each face")
+                    })?;
+                let mut origins = vec![origin.clone()];
+                if let Some(anchor) = authored_frames.get(&face.source_face) {
+                    origins.push(anchor.origin.clone());
+                    anchors[face_index].push(anchor.clone());
+                }
+                if let Some(cap) = web_caps
+                    .iter()
+                    .position(|&source| source == face.source_face)
+                {
+                    let original = Origin {
+                        source: feature,
+                        role: ["cap.start", "cap.end"][cap].into(),
+                    };
+                    origins.push(original.clone());
+                    anchors[face_index] = [origin.clone(), original]
+                        .map(|origin| AnchoredFrame {
+                            origin,
+                            frame: ReferenceFrame {
+                                origin_mm: [0., 0., face.point_mm[2]],
+                                u: [1., 0., 0.],
+                                v: [0., 1., 0.],
+                            },
+                        })
+                        .into();
+                }
+                if matches!(face.support, Support::Cylinder { .. })
+                    && let Some((count, index)) = sectors.get_mut(&face.source_face)
+                    && *count > 1
+                {
+                    // The builder traverses each authored curved edge's sectors
+                    // in order. Local numbering survives edits to other cuts.
+                    let source =
+                        multicad_core::project_file::ContentHash::of(origin.role.as_bytes());
+                    origins.push(Origin {
+                        source: origin.source,
+                        role: format!("sheet.sector/{source}/{index}"),
+                    });
+                    *index += 1;
+                }
+                Ok(origins)
             })
-            .collect::<Result<Vec<_>, _>>()?;
-        Self::from_boundary_shell(geometry, frame, feature, face_origins, policy)
+            .collect::<Result<Vec<_>, GeometryError>>()?;
+        Self::from_boundary_shell(geometry, frame, feature, face_origins, anchors, policy)
     }
 
     pub(super) fn from_imported_warped_union(
@@ -480,7 +531,8 @@ impl Solid {
                 }]
             })
             .collect();
-        Self::from_boundary_shell(geometry, frame, feature, origins, policy)
+        let anchors = vec![Vec::new(); origins.len()];
+        Self::from_boundary_shell(geometry, frame, feature, origins, anchors, policy)
     }
 
     fn from_boundary_shell(
@@ -488,6 +540,7 @@ impl Solid {
         frame: PlaneFrame,
         feature: EntityId,
         origins: Vec<Vec<Origin>>,
+        anchors: Vec<Vec<AnchoredFrame>>,
         policy: GeometryPolicy,
     ) -> Result<Self, GeometryError> {
         let result = Self {
@@ -495,7 +548,7 @@ impl Solid {
                 Rc::new(WarpedUnionBody {
                     feature,
                     geometry,
-                    anchors: vec![Vec::new(); origins.len()],
+                    anchors,
                     origins,
                     chart: None,
                 }),
@@ -738,10 +791,11 @@ impl WarpedUnionBody {
             } else {
                 None
             };
+            let anchor = plane.filter(|_| self.anchors[i].is_empty());
             builder.face(
                 i,
                 plane,
-                plane,
+                anchor,
                 rings(face)
                     .flatten()
                     .flat_map(|use_| edge_faces[use_.edge].iter().copied())

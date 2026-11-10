@@ -1,12 +1,15 @@
 use multicad_core::{
-    commands::{Actor, Channel, Session},
-    document::Document,
+    commands::{Actor, Channel, Request, Session},
+    constraint_sketch::source::Source,
+    document::{Document, EntityData, EntityId},
     model::{self, Cutout, CutoutFace, CutoutShape, SheetDefinition, SheetRequest, length},
     project_file,
     references::TopologyKind,
+    sketch::{self, CreationPlane, PlaneOptions},
+    sketch_regions,
 };
 use multicad_kernel::{GeometryPolicy, Solid};
-use multicad_model::{Compiler, GeometryBackend};
+use multicad_model::{Compiler, GeometryBackend, Model};
 
 fn near(a: f64, b: f64) {
     assert!((a - b).abs() <= 1e-7 * b.abs().max(1.), "{a} != {b}");
@@ -30,6 +33,171 @@ fn assert_same_solid(actual: &Solid, expected: &Solid) {
         near(actual.min[axis], expected.min[axis]);
         near(actual.max[axis], expected.max[axis]);
     }
+}
+
+fn check_saved_step_import(path: &std::path::Path, expected: &Solid) {
+    let input =
+        multicad_model::imports::read_step_file_with_backend(path, GeometryBackend::Rust).unwrap();
+    let mut session = Session::new(Document::new("Imported folded sheet").unwrap()).unwrap();
+    let prepared = model::imports::prepare_step_import(
+        &session,
+        session.revision(),
+        Actor::local(Channel::Ui),
+        &input,
+    )
+    .unwrap();
+    let [output] = prepared.model.outputs.as_slice() else {
+        panic!("Expected one folded solid");
+    };
+    let part = output.body;
+    session.commit(prepared.model.prepared).unwrap();
+    let mut bytes = Vec::new();
+    project_file::write(
+        &project_file::ProjectFile::new(session.document().clone()).unwrap(),
+        &mut bytes,
+        Default::default(),
+    )
+    .unwrap();
+    std::fs::remove_file(path).unwrap();
+    let reopened = project_file::read(
+        &mut bytes.as_slice(),
+        Default::default(),
+        &project_file::supported_capabilities(),
+    )
+    .unwrap()
+    .project;
+    let model = Compiler {
+        omit_display: true,
+        ..Default::default()
+    }
+    .compile_with_backend(&reopened.document, 0, GeometryBackend::Rust, None)
+    .unwrap();
+    assert_same_solid(model.solid(part).unwrap(), expected);
+}
+
+fn prepare_sheet_rectangle(
+    session: &mut Session,
+    model: &Model,
+    part: EntityId,
+    cutout: CutoutFace,
+    developed: bool,
+    [x, y]: [f64; 2],
+    [width, height]: [f64; 2],
+) -> (EntityId, model::ModelPrepared) {
+    let actor = Actor::local(Channel::Ui);
+    let producer = model.snapshot().body_sources[&part];
+    let rectangle = [
+        [x, y],
+        [x + width, y],
+        [x + width, y + height],
+        [x, y + height],
+    ];
+    let new_sketch = |plane| {
+        sketch::prepare_new(
+            session,
+            session.revision(),
+            actor.clone(),
+            "Sheet opening",
+            plane,
+            PlaneOptions::default(),
+        )
+        .unwrap()
+    };
+    let (created, points) = if developed {
+        let CutoutFace::Flange { index } = cutout else {
+            panic!("This fixture uses the developed chart to target a flange");
+        };
+        let flat = model.unfold(session.document(), part).unwrap();
+        let leg = flat
+            .chart
+            .legs
+            .iter()
+            .find(|leg| leg.index == index)
+            .unwrap();
+        let [origin, end_u, _, end_v] = leg.quad;
+        let unit = |end: [f64; 2]| {
+            let delta = [end[0] - origin[0], end[1] - origin[1]];
+            let length = delta[0].hypot(delta[1]);
+            delta.map(|v| v / length)
+        };
+        let [u, v] = [unit(end_u), unit(end_v)];
+        let points =
+            rectangle.map(|[a, b]| std::array::from_fn(|i| origin[i] + a * u[i] + b * v[i]));
+        (
+            new_sketch(CreationPlane::DevelopedSheet { part, face: cutout }),
+            points,
+        )
+    } else {
+        let authored = model
+            .sheet_authoring_faces(session.document())
+            .into_iter()
+            .find(|frame| frame.part == part && frame.face == cutout)
+            .unwrap();
+        let topology = &model.snapshot().shapes[&producer].topology;
+        let role = match cutout {
+            CutoutFace::Base => "sheet.web/cap.start".into(),
+            CutoutFace::Flange { index } => format!("sheet.flange.{index}.leg.a"),
+        };
+        let selected = topology
+            .elements
+            .iter()
+            .find(|element| {
+                element.key.kind == TopologyKind::Face
+                    && element
+                        .origins
+                        .iter()
+                        .any(|origin| origin.source == authored.feature && origin.role == role)
+            })
+            .unwrap();
+        let created = new_sketch(CreationPlane::Face {
+            snapshot: topology,
+            key: selected.key,
+            anchor: Some(&selected.frames[0].origin),
+        });
+        let points = rectangle.map(|[u, v]| {
+            created.frame.coordinates(std::array::from_fn(|i| {
+                authored.origin_mm[i] + u * authored.u[i] + v * authored.v[i]
+            }))
+        });
+        (created, points)
+    };
+    let id = created.sketch;
+    session.commit(created.prepared).unwrap();
+    let EntityData::Sketch { definition, .. } = &session.document().get(id).unwrap().data else {
+        panic!("Expected a sketch");
+    };
+    let mut source = Source::from_definition(definition).unwrap();
+    let points = points.map(|point| source.add_point(point));
+    for i in 0..4 {
+        source.add_line(points[i], points[(i + 1) % 4]);
+    }
+    let region = sketch_regions::extract(&source).regions[0].intent();
+    session
+        .apply(Request {
+            expected_revision: session.revision(),
+            actor: actor.clone(),
+            label: "Draw the opening".into(),
+            edits: source.replace(session.document(), id).unwrap(),
+        })
+        .unwrap();
+    let feature = EntityId::new();
+    let prepared = model::prepare_sheet_profile_cut(
+        session,
+        session.revision(),
+        actor,
+        feature,
+        &model::SheetProfileCutDefinition {
+            input: model::BodyInput {
+                body: part,
+                producer,
+            },
+            output: model::BodyOutput { body: part },
+            profile: model::ProfileSource { sketch: id, region },
+            face: cutout,
+        },
+    )
+    .unwrap();
+    (feature, prepared)
 }
 
 fn front_panel_sheet() -> (Document, SheetDefinition) {
@@ -247,7 +415,7 @@ fn rust_builds_and_develops_a_single_full_length_bend_with_a_web_opening() {
 #[test]
 fn control_desk_reliefs_form_one_solid_and_develop_exactly() {
     use multicad_core::{
-        document::{Entity, EntityData, EntityId},
+        document::Entity,
         materials::{LibraryDefinition, Stock, StockKind, prepare_library},
         model::{
             BendDirection, BodyOutput, Flange, FlangeKind, PanelPlane, Relief, SheetBase, angle,
@@ -296,7 +464,9 @@ fn control_desk_reliefs_form_one_solid_and_develop_exactly() {
         omit_display: true,
         ..Default::default()
     };
+    let stock_document = session.document().clone();
     for reverse in [false, true] {
+        let mut session = Session::new(stock_document.clone()).unwrap();
         let sheet = SheetDefinition {
             output: BodyOutput {
                 body: EntityId::new(),
@@ -341,32 +511,35 @@ fn control_desk_reliefs_form_one_solid_and_develop_exactly() {
                         diameter: length(4.2),
                     },
                 },
+                Cutout {
+                    face: CutoutFace::Flange { index: 1 },
+                    shape: CutoutShape::Rectangle {
+                        center: [length(106.), length(15.)],
+                        size: [length(42.), length(8.)],
+                    },
+                },
             ],
             fasteners: vec![],
         };
         let request = SheetRequest::new("Relieved Control Desk panel", sheet);
+        #[cfg(feature = "occt")]
+        let mut native_source = Session::new(session.document().clone()).unwrap();
         let prepared =
             model::prepare_sheet(&session, session.revision(), actor.clone(), &request).unwrap();
         session.commit(prepared.prepared).unwrap();
-        let evaluate = |backend| {
+        let evaluate = |session: &Session, backend| {
             compiler
-                .compile_sources_with_backend(
-                    session.document(),
-                    session.revision(),
-                    &[request.body],
-                    backend,
-                    None,
-                )
+                .compile_with_backend(session.document(), session.revision(), backend, None)
                 .unwrap_or_else(|error| panic!("{backend:?}: {error}"))
         };
-        let rust = evaluate(GeometryBackend::Rust);
+        let rust = evaluate(&session, GeometryBackend::Rust);
         let solid = rust.solid(request.feature).unwrap();
         assert!(solid.uses_rust_geometry());
         assert_eq!(solid.solid_count().unwrap(), 1);
         let pi = std::f64::consts::PI;
         let web_area = 240. * 160. - 4. * 2. * 4. - 40. * 22. - 16. * pi;
         let flange_span = 240. - 2. * 14.;
-        let flange_holes = 2. * pi * 2.1_f64.powi(2);
+        let flange_holes = 2. * pi * 2.1_f64.powi(2) + 42. * 8.;
         near(
             solid.volume_mm3().unwrap(),
             1.5 * (web_area - flange_holes)
@@ -397,7 +570,7 @@ fn control_desk_reliefs_form_one_solid_and_develop_exactly() {
             .unwrap();
         assert!(!receipt.mesh.indices.is_empty());
         let developed = rust.unfold(session.document(), request.body).unwrap();
-        assert_eq!(developed.cut.loops.len(), 5);
+        assert_eq!(developed.cut.loops.len(), 6);
         assert_eq!(developed.cut.loops[0].edges.len(), 24);
         near(
             developed.area_mm2,
@@ -406,7 +579,7 @@ fn control_desk_reliefs_form_one_solid_and_develop_exactly() {
 
         #[cfg(feature = "occt")]
         {
-            let native = evaluate(GeometryBackend::OpenCascade);
+            let native = evaluate(&session, GeometryBackend::OpenCascade);
             let expected = native.solid(request.feature).unwrap();
             let bounds = |solid: &Solid| {
                 let b = solid.bounds().unwrap();
@@ -434,5 +607,170 @@ fn control_desk_reliefs_form_one_solid_and_develop_exactly() {
                 near(a, b);
             }
         }
+
+        let (flange_cut, prepared) = prepare_sheet_rectangle(
+            &mut session,
+            &rust,
+            request.body,
+            CutoutFace::Flange { index: 0 },
+            false,
+            [63., 15.],
+            [34., 10.],
+        );
+        session.commit(prepared.prepared).unwrap();
+        let flanged = evaluate(&session, GeometryBackend::Rust);
+        assert_eq!(flanged.snapshot().body_sources[&request.body], flange_cut);
+        #[cfg(feature = "occt")]
+        assert_same_solid(
+            flanged.solid(flange_cut).unwrap(),
+            evaluate(&session, GeometryBackend::OpenCascade)
+                .solid(flange_cut)
+                .unwrap(),
+        );
+        let (cut, prepared) = prepare_sheet_rectangle(
+            &mut session,
+            &flanged,
+            request.body,
+            CutoutFace::Base,
+            false,
+            [155., 105.],
+            [22., 14.],
+        );
+        session.commit(prepared.prepared).unwrap();
+        let removed_area = 34. * 10. + 22. * 14.;
+        let mut bytes = vec![];
+        project_file::write(
+            &project_file::ProjectFile::new(session.document().clone()).unwrap(),
+            &mut bytes,
+            Default::default(),
+        )
+        .unwrap();
+        let restored = project_file::read(
+            &mut bytes.as_slice(),
+            Default::default(),
+            &project_file::supported_capabilities(),
+        )
+        .unwrap()
+        .project;
+        let reopened = Session::new(restored.document).unwrap();
+        let folded = evaluate(&reopened, GeometryBackend::Rust);
+        assert_eq!(folded.snapshot().body_sources[&request.body], cut);
+        let punched = folded.solid(cut).unwrap();
+        near(
+            solid.volume_mm3().unwrap() - punched.volume_mm3().unwrap(),
+            removed_area * 1.5,
+        );
+        assert_eq!(punched.solid_count().unwrap(), 1);
+        assert_eq!(punched.bounds().unwrap(), solid.bounds().unwrap());
+        assert!(
+            punched
+                .manufacturing_mesh_with_receipt(Default::default())
+                .unwrap()
+                .edge_pairs
+                > 0
+        );
+        let flat = folded.unfold(reopened.document(), request.body).unwrap();
+        near(developed.area_mm2 - flat.area_mm2, removed_area);
+        assert_eq!(flat.cut.loops.len(), 8);
+        use multicad_model::export::{
+            Exporter,
+            sheet_dxf::{SheetDxfLayers, SheetDxfOptions},
+        };
+        let dxf = Exporter::default()
+            .developed_sheet_dxf_with_backend(
+                reopened.document(),
+                reopened.revision(),
+                request.body,
+                SheetDxfOptions {
+                    backend: GeometryBackend::Rust,
+                    units: multicad_core::exchange::LengthUnit::Millimeter,
+                    layers: &SheetDxfLayers::default(),
+                },
+                None,
+            )
+            .unwrap();
+        assert_eq!(dxf.pattern.cut, flat.cut);
+        assert!(!dxf.bytes.is_empty());
+        let folder = tempfile::tempdir().unwrap();
+        let path = folder.path().join("rectangular-aperture.step");
+        punched.write_step(&path).unwrap();
+        let verified = multicad_model::export::verify_rust_step_shape(
+            &path,
+            punched,
+            &folded.snapshot().shapes[&cut],
+            compiler.policy.linear_tolerance_mm,
+        )
+        .unwrap();
+        near(verified, punched.volume_mm3().unwrap());
+        #[cfg(feature = "occt")]
+        {
+            // Independently cut the same two rectangles in OpenCascade.
+            let mut native_request = SheetRequest::new(&request.name, request.sheet.clone());
+            native_request.sheet.cutouts.extend([
+                Cutout {
+                    face: CutoutFace::Flange { index: 0 },
+                    shape: CutoutShape::Rectangle {
+                        center: [length(80.), length(20.)],
+                        size: [length(34.), length(10.)],
+                    },
+                },
+                Cutout {
+                    face: CutoutFace::Base,
+                    shape: CutoutShape::Rectangle {
+                        center: [length(166.), length(112.)],
+                        size: [length(22.), length(14.)],
+                    },
+                },
+            ]);
+            let prepared = model::prepare_sheet(
+                &native_source,
+                native_source.revision(),
+                actor.clone(),
+                &native_request,
+            )
+            .unwrap();
+            native_source.commit(prepared.prepared).unwrap();
+            let native = evaluate(&native_source, GeometryBackend::OpenCascade);
+            let expected = native.solid(native_request.feature).unwrap();
+            assert_same_solid(punched, expected);
+            assert_same_solid(
+                &Solid::read_step(&path, GeometryPolicy::default()).unwrap(),
+                expected,
+            );
+            near(
+                native
+                    .unfold(native_source.document(), native_request.body)
+                    .unwrap()
+                    .area_mm2,
+                flat.area_mm2,
+            );
+        }
+        check_saved_step_import(&path, punched);
+
+        let current = evaluate(&session, GeometryBackend::Rust);
+        let (invalid, rejected) = prepare_sheet_rectangle(
+            &mut session,
+            &current,
+            request.body,
+            CutoutFace::Flange { index: 0 },
+            true,
+            [110., -2.],
+            [20., 7.],
+        );
+        let error = compiler
+            .compile_with_backend(
+                rejected.prepared.document(),
+                session.revision(),
+                GeometryBackend::Rust,
+                None,
+            )
+            .err()
+            .expect("An opening cannot cross the bend tangent");
+        assert_eq!(error.entity, Some(invalid));
+        assert!(
+            error.message.contains("clear of its edges, bends"),
+            "{error}"
+        );
+        assert!(session.document().get(invalid).is_none());
     }
 }

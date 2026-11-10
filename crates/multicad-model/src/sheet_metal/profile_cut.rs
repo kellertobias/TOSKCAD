@@ -1,5 +1,5 @@
 use super::{
-    SheetLayout, channel, cross, dot, flat_contours, polygon_edges, rebuild_rust_flat, scale,
+    SheetLayout, channel, cross, dot, flat_contours, inset, polygon_edges, rebuild_rust_flat, scale,
 };
 use crate::{GeometryBackend, ModelError, error, sheet_forming::FlatFrame};
 use multicad_core::{document::EntityId, model::CutoutFace, references::Origin};
@@ -124,6 +124,10 @@ pub(crate) fn build_profile_cut(
         });
         let cut = if layout.flanges.is_empty() {
             rebuild_rust_flat(&mut layout, feature, policy)?
+        } else if layout.has_inset_flanges() {
+            inset::build(&mut layout, policy).map_err(|cause| {
+                failure(format!("Keep the cut inside one flat sheet face, clear of its edges, bends and other openings. {cause}"))
+            })?
         } else {
             let (solid, developed) = channel::append_profile(
                 previous,
@@ -218,7 +222,7 @@ pub(crate) fn build_profile_cut(
     Ok((cut, layout))
 }
 
-fn transform(
+pub(super) fn transform(
     edges: &[CurvedEdge2d],
     map: impl Fn([f64; 2]) -> [f64; 2],
     reflected: bool,

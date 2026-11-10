@@ -67,6 +67,13 @@ impl SheetLayout {
     pub(crate) fn space(&self) -> SheetSpace {
         self.space_inner()
     }
+    fn has_inset_flanges(&self) -> bool {
+        self.flanges.iter().any(|flange| {
+            flange.flange.start_inset_mm > 0.
+                || flange.flange.end_inset_mm > 0.
+                || flange.flange.relief_mm.is_some()
+        })
+    }
     fn space_inner(&self) -> SheetSpace {
         SheetSpace {
             frame: self.frame,
@@ -222,11 +229,7 @@ pub(crate) fn build(
             } else {
                 length_mm
             };
-            let solid = if layout.flanges.iter().any(|flange| {
-                flange.flange.start_inset_mm > 0.
-                    || flange.flange.end_inset_mm > 0.
-                    || flange.flange.relief_mm.is_some()
-            }) {
+            let solid = if layout.has_inset_flanges() {
                 inset::build(&mut layout, policy)
             } else {
                 channel::build(&mut layout, section_width, policy)

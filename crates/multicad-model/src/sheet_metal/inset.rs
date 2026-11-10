@@ -1,12 +1,13 @@
 //! Inset flanges change the section along their span. Join their exact
 //! root boundaries to one relieved web rather than fusing display solids.
 use super::*;
-use crate::sheet_forming::section;
-use multicad_core::references::ReferenceFrame;
+use crate::sheet_forming::{FlatFrame, section, shape_edges};
+use multicad_core::references::{AnchoredFrame, ReferenceFrame};
 use multicad_kernel::rust_kernel::{
     normal_sweep::{Edge, signed_area},
-    warped_union::{AxialCut, SheetFlange, SheetWebEdge, formed_sheet},
+    warped_union::{SheetFlange, SheetFlangeOpening, SheetWebEdge, formed_sheet_with_openings},
 };
+use std::collections::BTreeMap;
 
 pub(super) fn build(layout: &mut SheetLayout, policy: GeometryPolicy) -> Result<Solid, String> {
     let thickness = layout.thickness_mm;
@@ -28,11 +29,13 @@ pub(super) fn build(layout: &mut SheetLayout, policy: GeometryPolicy) -> Result<
         return Err("Rust inset formed sheet requires one bend or two opposite bends".into());
     }
     let mut origins = Vec::new();
-    let mut source = |role| {
-        origins.push(Origin {
-            source: layout.forming_feature,
-            role,
-        });
+    let feature = layout.forming_feature;
+    let authored = |role| Origin {
+        source: feature,
+        role,
+    };
+    let mut source = |origin| {
+        origins.push(origin);
         origins.len() - 1
     };
     let mut outer = Vec::new();
@@ -49,7 +52,7 @@ pub(super) fn build(layout: &mut SheetLayout, policy: GeometryPolicy) -> Result<
         else {
             outer.push(SheetWebEdge {
                 ends: [a, b],
-                source: source(format!("sheet.base.edge.{index}")),
+                source: source(authored(format!("sheet.base.edge.{index}"))),
                 flange: None,
             });
             developed.push(PlanarEdge::Line { a, b });
@@ -60,7 +63,7 @@ pub(super) fn build(layout: &mut SheetLayout, policy: GeometryPolicy) -> Result<
         for (i, pair) in points.windows(2).enumerate() {
             outer.push(SheetWebEdge {
                 ends: [pair[0], pair[1]],
-                source: source(format!("sheet.base.edge.{index}.segment.{i}")),
+                source: source(authored(format!("sheet.base.edge.{index}.segment.{i}"))),
                 flange: (pair == root).then_some(hinge),
             });
         }
@@ -77,116 +80,156 @@ pub(super) fn build(layout: &mut SheetLayout, policy: GeometryPolicy) -> Result<
         edges: developed,
     }];
     let mut holes = Vec::new();
-    let mut flange_cuts = Vec::new();
-    let mut flange_area = 0.;
+    let mut flange_cuts: Vec<Vec<Opening>> = (0..count).map(|_| Vec::new()).collect();
+    let flange_index = |index| {
+        layout
+            .flanges
+            .iter()
+            .position(|f| f.flange.index == index as usize)
+            .ok_or_else(|| format!("Flange {} does not exist", index + 1))
+    };
     for cut in &layout.cutouts {
         let name = cut.source.id();
         let flat = flat_cutout(cut, &layout.flanges, thickness, layout.k_factor)
             .ok_or_else(|| format!("{name} names a missing flange"))?;
         loops.push(channel::developed_hole(&flat)?);
-        if cut.face != CutoutFace::Base {
-            let model::ResolvedShape::Circle {
-                center,
-                diameter_mm,
-            } = cut.shape
-            else {
-                return Err("Rust inset formed sheet requires circular flange openings".into());
-            };
-            let (frame, normal) = layout.space().face_frame(cut.face, &layout.flanges)?;
-            let center = frame.point(center);
-            let overshoot = 8. * policy.linear_tolerance_mm;
-            let local = |level| {
-                let offset =
-                    std::array::from_fn(|i| center[i] + normal[i] * level - layout.frame.origin[i]);
-                [layout.frame.u, layout.frame.v, layout.frame.normal()]
-                    .map(|axis| dot(offset, axis))
-            };
-            let [start_mm, end_mm] = [-overshoot, thickness + overshoot].map(local);
-            let origin = source(format!("sheet.{name}.edge.0"));
-            flange_cuts.push(AxialCut {
-                start_mm,
-                end_mm,
-                radius_mm: diameter_mm / 2.,
-                source: 0,
-                wall_source_face: origin,
-                cap_source_faces: [origin; 2],
-                recess: None,
-            });
-            flange_area += cut.shape.area_mm2();
-            continue;
-        }
-        let outline = crate::sheet_forming::shape_edges(&cut.shape);
-        let mut ring = outline
+        let outline = shape_edges(&cut.shape);
+        let ring = outline
             .iter()
             .enumerate()
             .map(|(i, edge)| {
                 Ok((
                     profile_edge(edge)?,
-                    source(format!("sheet.{name}.edge.{i}")),
+                    source(authored(format!("sheet.{name}.edge.{i}"))),
                 ))
             })
             .collect::<Result<Vec<_>, String>>()?;
-        let curves = ring.iter().map(|&(edge, _)| edge).collect::<Vec<_>>();
-        if signed_area(&curves) > 0. {
-            ring.reverse();
-            ring.iter_mut()
-                .for_each(|(edge, _)| *edge = edge.reversed());
+        match cut.face {
+            CutoutFace::Base => holes.push(oriented(ring, false)),
+            CutoutFace::Flange { index } => {
+                flange_cuts[flange_index(index)?].push(Opening::new(layout, cut.face, ring)?)
+            }
         }
-        holes.push(ring);
     }
+    for cut in &layout.profile_cuts {
+        let flange = match cut.face {
+            CutoutFace::Base => None,
+            CutoutFace::Flange { index } => Some(flange_index(index)?),
+        };
+        let outline = if let Some(index) = flange {
+            let f = &layout.flanges[index];
+            let flat = FlatFrame::flange(f, f.flange.leg_offset_mm(thickness, layout.k_factor));
+            super::profile_cut::transform(&cut.outline, |p| flat.coordinates(p), flat.reflected())?
+        } else {
+            cut.outline.clone()
+        };
+        if outline.len() != cut.origins.len() {
+            return Err("Inset sheet cut needs one authored origin per edge".into());
+        }
+        let ring = outline
+            .iter()
+            .zip(&cut.origins)
+            .map(|(edge, origin)| Ok((profile_edge(edge)?, source(origin.clone()))))
+            .collect::<Result<Vec<_>, String>>()?;
+        if let Some(index) = flange {
+            flange_cuts[index].push(Opening::new(layout, cut.face, ring)?);
+        } else {
+            holes.push(oriented(ring, false));
+        }
+        loops.push(channel::developed_hole(&cut.outline)?);
+    }
+    let mut authored_frames = BTreeMap::new();
+    let thickness_side = dot(layout.frame.normal(), layout.thickness_direction);
     let sections = layout
         .flanges
         .iter()
-        .map(|f| {
+        .zip(&flange_cuts)
+        .map(|(f, cuts)| {
             let profile = section(&f.flange, thickness);
             let edges = profile
                 .edges
                 .iter()
-                .zip(profile.roles)
-                .map(|(edge, role)| Ok((profile_edge(edge)?, source(role))))
+                .zip(&profile.roles)
+                .map(|(edge, role)| {
+                    let source = source(authored(role.clone()));
+                    if let CurvedEdge2d::Line { a, b } = *edge
+                        && (role.ends_with(".leg.a") || role.ends_with(".leg.b"))
+                    {
+                        let position = |[outward, height]: [f64; 2]| {
+                            [
+                                f.start[0] + f.outward[0] * outward,
+                                f.start[1] + f.outward[1] * outward,
+                                thickness_side * height,
+                            ]
+                        };
+                        let [a, b] = [position(a), position(b)];
+                        authored_frames.insert(
+                            source,
+                            AnchoredFrame {
+                                origin: authored(format!("side/{feature}/{role}")),
+                                frame: ReferenceFrame {
+                                    origin_mm: a,
+                                    u: unit(std::array::from_fn(|i| b[i] - a[i])),
+                                    v: [f.along[0], f.along[1], 0.],
+                                },
+                            },
+                        );
+                    }
+                    Ok((profile_edge(edge)?, source))
+                })
                 .collect::<Result<Vec<_>, String>>()?;
-            let caps = ["start", "end"]
-                .map(|end| source(format!("sheet.flange.{}.cap.{end}", f.flange.index)));
-            Ok((edges, caps))
+            let caps = ["start", "end"].map(|end| {
+                source(authored(format!(
+                    "sheet.flange.{}.cap.{end}",
+                    f.flange.index
+                )))
+            });
+            let mut openings = Vec::new();
+            if !cuts.is_empty() {
+                let find_wall = |side| {
+                    let role = format!("sheet.flange.{}.leg.{side}", f.flange.index);
+                    profile
+                        .roles
+                        .iter()
+                        .position(|candidate| candidate == &role)
+                        .ok_or("An inset flange opening needs two complete leg walls")
+                };
+                let walls = [find_wall("a")?, find_wall("b")?];
+                openings.extend(cuts.iter().map(|cut| cut.as_sheet_opening(walls)));
+            }
+            Ok((edges, caps, openings))
         })
         .collect::<Result<Vec<_>, String>>()?;
     let flanges = sections
         .iter()
-        .map(|(section, ends)| SheetFlange {
+        .map(|(section, ends, _)| SheetFlange {
             section,
             ends: *ends,
         })
         .collect::<Vec<_>>();
-    let shell = formed_sheet(
+    let openings: Vec<_> = sections
+        .iter()
+        .map(|(_, _, cuts)| cuts.as_slice())
+        .collect();
+    let web_caps = [channel::WEB_A, channel::WEB_B].map(|role| source(authored(role.into())));
+    let shell = formed_sheet_with_openings(
         &outer,
         &holes,
-        [channel::WEB_A, channel::WEB_B].map(|role| source(role.into())),
+        web_caps,
         &flanges,
-        thickness.copysign(dot(layout.frame.normal(), layout.thickness_direction)),
+        &openings,
+        thickness.copysign(thickness_side),
         policy.linear_tolerance_mm,
         policy.minimum_feature_mm,
     )
     .map_err(|cause| format!("The inset formed sheet boundary cannot be certified: {cause:?}"))?;
-    let shell = if flange_cuts.is_empty() {
-        shell
-    } else {
-        let drilled = shell
-            .cut_axial(&flange_cuts, policy.linear_tolerance_mm)
-            .map_err(|cause| format!("The inset flange openings cannot be certified: {cause:?}"))?;
-        let expected = flange_area * thickness;
-        let removed = shell.volume_mm3() - drilled.volume_mm3();
-        if (expected - removed).abs() > 1e-7 * expected.max(1.) {
-            return Err(
-                "An inset flange opening does not go through the full sheet thickness".into(),
-            );
-        }
-        drilled
-    };
     let solid = Solid::rust_place_formed_sheet(
         shell,
         layout.frame,
         layout.forming_feature,
         &origins,
+        web_caps,
+        &authored_frames,
         policy,
     )
     .map_err(|cause| cause.to_string())?;
@@ -201,6 +244,54 @@ pub(super) fn build(layout: &mut SheetLayout, policy: GeometryPolicy) -> Result<
     contours.validate(policy.linear_tolerance_mm)?;
     layout.developed = Some(contours);
     Ok(solid)
+}
+
+type Ring = Vec<(Edge, usize)>;
+
+fn oriented(mut ring: Ring, ccw: bool) -> Ring {
+    let edges: Vec<_> = ring.iter().map(|&(edge, _)| edge).collect();
+    if (signed_area(&edges) > 0.) != ccw {
+        ring.reverse();
+        ring.iter_mut()
+            .for_each(|(edge, _)| *edge = edge.reversed());
+    }
+    ring
+}
+
+struct Opening {
+    frame: PlaneFrame,
+    through_mm: [f64; 3],
+    outline: Ring,
+}
+
+impl Opening {
+    fn new(layout: &SheetLayout, face: CutoutFace, outline: Ring) -> Result<Self, String> {
+        let (frame, normal) = layout.space().face_frame(face, &layout.flanges)?;
+        let axes = [layout.frame.u, layout.frame.v, layout.frame.normal()];
+        let local = |vector| axes.map(|axis| dot(vector, axis));
+        Ok(Self {
+            frame: PlaneFrame {
+                origin: local(std::array::from_fn(|i| {
+                    frame.origin[i] - layout.frame.origin[i]
+                })),
+                u: local(frame.u),
+                v: local(frame.v),
+            },
+            through_mm: local(scale(normal, layout.thickness_mm)),
+            outline: oriented(outline, true),
+        })
+    }
+
+    fn as_sheet_opening(&self, walls: [usize; 2]) -> SheetFlangeOpening<'_> {
+        SheetFlangeOpening {
+            walls,
+            origin_mm: self.frame.origin,
+            u: self.frame.u,
+            v: self.frame.v,
+            through_mm: self.through_mm,
+            outline: &self.outline,
+        }
+    }
 }
 
 fn profile_edge(edge: &CurvedEdge2d) -> Result<Edge, String> {
