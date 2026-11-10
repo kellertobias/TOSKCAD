@@ -1102,11 +1102,13 @@ impl Solid {
         } else {
             (zero, height)
         };
-        if tool.bottom() >= bottom || tool.top() <= top {
+        // These endpoints are exact rationals. Cap contact opens the bore,
+        // but even a sub-tolerance shortfall leaves an uncut floor.
+        if tool.bottom() > bottom || tool.top() < top {
             return Err(error(
                 operation,
                 GeometryErrorKind::Input,
-                "The tool must extend strictly through both polygon caps",
+                "The tool must reach or pass both polygon caps",
             ));
         }
         let result = Self::with_polygon_through_holes(

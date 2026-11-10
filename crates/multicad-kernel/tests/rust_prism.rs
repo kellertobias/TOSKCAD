@@ -609,7 +609,7 @@ fn reversed_polygon_sweep_retains_authored_caps_and_outward_mesh_winding() {
 }
 
 #[test]
-fn exact_polygon_boolean_subtracts_only_strictly_through_cylinders() {
+fn exact_polygon_boolean_subtracts_cylinders_reaching_both_caps() {
     use multicad_core::references::Origin;
     use multicad_kernel::rust_kernel::{cylinder::AxialCylinder, polygon::PolygonPrism};
 
@@ -640,48 +640,47 @@ fn exact_polygon_boolean_subtracts_only_strictly_through_cylinders() {
         policy,
     )
     .unwrap();
-    let cutter = |id: EntityId, x, bottom, height| {
-        let axial = AxialCylinder::new(
-            id.uuid_bits(),
-            circle(x, 2, integer(1)),
-            integer(bottom),
-            integer(height),
-        )
-        .unwrap();
+    let exact_cutter = |id: EntityId, x, bottom: Rational, height| {
+        let axial =
+            AxialCylinder::new(id.uuid_bits(), circle(x, 2, integer(1)), bottom, height).unwrap();
         Solid::from_axial_cylinder(
             axial,
             PlaneFrame {
-                origin: [x as f64, 2., bottom as f64],
+                origin: [x as f64, 2., bottom.as_f64()],
                 ..PlaneFrame::default()
             },
             policy,
         )
         .unwrap()
     };
+    let cutter = |id, x, bottom, height| exact_cutter(id, x, integer(bottom), integer(height));
     let subtract =
         |target: &Solid, tool: &Solid| target.boolean(tool, BooleanOperation::Subtract, policy);
     let tool_id = EntityId::new();
     let tool = cutter(tool_id, 8, -1, 6);
     let cut = subtract(&target, &tool).unwrap().unwrap();
-    let native = Solid::box_solid([12., 5., 4.], policy).unwrap();
-    let native_tool = Solid::cylinder(
-        PlaneFrame {
-            origin: [8., 2., -1.],
-            ..PlaneFrame::default()
-        },
-        1.,
-        6.,
-        policy,
-    )
-    .unwrap();
-    near(
-        cut.volume_mm3().unwrap(),
-        subtract(&native, &native_tool)
-            .unwrap()
-            .unwrap()
-            .volume_mm3()
-            .unwrap(),
-    );
+    near(cut.volume_mm3().unwrap(), 240. - 4. * std::f64::consts::PI);
+    if multicad_kernel::OCCT_LINKED {
+        let native = Solid::box_solid([12., 5., 4.], policy).unwrap();
+        let native_tool = Solid::cylinder(
+            PlaneFrame {
+                origin: [8., 2., -1.],
+                ..PlaneFrame::default()
+            },
+            1.,
+            6.,
+            policy,
+        )
+        .unwrap();
+        near(
+            cut.volume_mm3().unwrap(),
+            subtract(&native, &native_tool)
+                .unwrap()
+                .unwrap()
+                .volume_mm3()
+                .unwrap(),
+        );
+    }
     let topology = cut.topology_snapshot(owner, 0).unwrap();
     assert!(
         topology
@@ -712,13 +711,28 @@ fn exact_polygon_boolean_subtracts_only_strictly_through_cylinders() {
         subtract(&negative, &tool).err().unwrap().kind,
         GeometryErrorKind::Input,
     );
-    assert_eq!(
-        subtract(&target, &cutter(EntityId::new(), 8, 0, 6))
-            .err()
+    for (stock, bottom, height) in [
+        (&target, 0, 6),
+        (&target, -1, 5),
+        (&target, 0, 4),
+        (&negative, -4, 4),
+    ] {
+        let bored = subtract(stock, &cutter(tool_id, 8, bottom, height))
             .unwrap()
-            .kind,
-        GeometryErrorKind::Input,
-    );
+            .unwrap();
+        near(bored.volume_mm3().unwrap(), cut.volume_mm3().unwrap());
+        assert_eq!(bored.bounds().unwrap(), stock.bounds().unwrap());
+    }
+    let shortfall = Rational::new(1, 100_000_000).unwrap();
+    assert!(shortfall.as_f64() < policy.linear_tolerance_mm);
+    let short = integer(4).checked_sub(shortfall).unwrap();
+    for (bottom, height) in [(shortfall, integer(4)), (integer(0), short)] {
+        let tool = exact_cutter(EntityId::new(), 8, bottom, height);
+        assert_eq!(
+            subtract(&target, &tool).err().unwrap().kind,
+            GeometryErrorKind::Input,
+        );
+    }
     assert_eq!(
         subtract(&cut, &cutter(EntityId::new(), 10, -1, 6))
             .err()
