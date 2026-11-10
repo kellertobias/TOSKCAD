@@ -551,6 +551,19 @@ fn app_bridge_relays_stdio_to_a_listening_window_and_fails_clearly_without_one()
 
 #[test]
 fn rust_stdio_exports_verified_spur_step_after_reopen() {
+    export_spur_step_after_reopen(None);
+}
+
+#[test]
+fn rust_stdio_exports_verified_spur_hub_step_after_reopen() {
+    export_spur_step_after_reopen(Some(json!({
+        "diameter": length(18.),
+        "axial_start": length(-3.),
+        "axial_end": length(13.)
+    })));
+}
+
+fn export_spur_step_after_reopen(hub: Option<Value>) {
     let directory = tempfile::tempdir().unwrap();
     let project = directory.path().join("spur.tcd");
     let exports = directory.path().join("exports");
@@ -565,15 +578,16 @@ fn rust_stdio_exports_verified_spur_step_after_reopen() {
         arguments.push("--rust-model");
     }
     let mut client = Client::start(&arguments);
-    let gear = client.ok(
-        "set_gear",
-        json!({
-            "expected_revision": 0,
-            "name": "STEP spur",
-            "family": "spur",
-            "teeth": {"value": 24, "unit": "count"}
-        }),
-    );
+    let mut recipe = json!({
+        "expected_revision": 0,
+        "name": "STEP spur",
+        "family": "spur",
+        "teeth": {"value": 24, "unit": "count"}
+    });
+    if let Some(hub) = hub {
+        recipe["hub"] = hub;
+    }
+    let gear = client.ok("set_gear", recipe);
     let volume = client.part_volume();
     client.ok("save_project", json!({"expected_revision": 1}));
     drop(client);

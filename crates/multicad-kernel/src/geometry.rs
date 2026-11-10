@@ -1895,16 +1895,12 @@ impl Solid {
             | SolidBody::Annulus(..)
             | SolidBody::Linear(..)
             | SolidBody::NormalSweep(..)
+            | SolidBody::SpurGear(..)
             | SolidBody::AxialStack(..)
             | SolidBody::RoundedSlot(..) => true,
             SolidBody::Prism(prism, _) => prism.rounded_end().is_none(),
             SolidBody::RustCompound(compound) => compound.members().all(Self::supports_step_export),
             SolidBody::Helical(..) | SolidBody::CosmeticFastener(..) => false,
-            SolidBody::SpurGear(body, _) => body
-                .profile
-                .hub_extensions()
-                .into_iter()
-                .all(|end| end.is_none()),
             SolidBody::WarpedUnion(body, _) => {
                 multicad_rust_kernel::step::supports_warped_union(&body.geometry)
             }

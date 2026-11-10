@@ -321,7 +321,17 @@ fn rust_spur_hub_extends_the_bore_and_keeps_native_face_roles() {
             1e-4,
         );
     }
-    assert!(!solid.supports_step_export());
+    assert!(solid.supports_step_export());
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("spur-hub.step");
+    solid.write_step(&path).unwrap();
+    let verified = multicad_model::export::verify_rust_step_shape(
+        &path,
+        &rust.snapshot().shapes[&feature],
+        compiler.policy.linear_tolerance_mm,
+    )
+    .unwrap();
+    near(verified, volume, 1e-4);
 }
 
 #[test]
