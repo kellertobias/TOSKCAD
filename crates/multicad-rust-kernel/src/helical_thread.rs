@@ -140,6 +140,41 @@ impl Thread {
         self.breaks
     }
 
+    /// Minimum bore radius minus external radius over one common pitch.
+    /// The bore phase is the offset plus the external phase, or the offset
+    /// minus that phase when the axes are opposed.
+    pub fn minimum_radial_clearance(
+        &self,
+        bore: &Self,
+        phase_offset_mm: f64,
+        opposed: bool,
+    ) -> Result<f64, ThreadError> {
+        let pitch = self.spec.pitch_mm;
+        if bore.spec.pitch_mm != pitch
+            || bore.spec.starts != self.spec.starts
+            || bore.spec.left_hand != self.spec.left_hand
+            || bore.root.is_some()
+            || !phase_offset_mm.is_finite()
+        {
+            return Err(ThreadError::Invalid);
+        }
+        let offset = phase_offset_mm.rem_euclid(pitch);
+        let sign = if opposed { -1. } else { 1. };
+        // Between consecutive knots of either profile, the bore is affine
+        // and the external profile is affine or convex. Their difference
+        // is concave, so an interval endpoint attains its minimum.
+        let external_knots = self
+            .breaks
+            .into_iter()
+            .map(|phase| bore.radius_at_phase(offset + sign * phase) - self.radius_at_phase(phase));
+        let bore_knots = bore.breaks.into_iter().map(|phase| {
+            bore.radius_at_phase(phase) - self.radius_at_phase(sign * (phase - offset))
+        });
+        Ok(external_knots
+            .chain(bore_knots)
+            .fold(f64::INFINITY, f64::min))
+    }
+
     /// Shared surface numbering for boundary faces and their tessellation.
     /// The phase band is a consecutive pair of profile breaks, indexed 0–4.
     pub fn face_index(&self, period: i64, band: usize) -> u32 {

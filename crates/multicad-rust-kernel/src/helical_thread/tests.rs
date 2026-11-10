@@ -273,3 +273,139 @@ fn invalid_profiles_and_exhausted_turn_budgets_are_distinct() {
         assert_eq!(Thread::new(excessive), Err(ThreadError::Limit));
     }
 }
+
+fn rounded_metric(base: Spec, [lower, upper]: [f64; 2]) -> Thread {
+    let [a, b] = [lower, upper].map(f64::to_radians);
+    let root = 0.15;
+    let sharp_depth = (base.pitch_mm - base.crest_width_mm) / (a.tan() + b.tan());
+    Thread::new(Spec {
+        depth_mm: sharp_depth - root * (((b - a) * 0.5).cos() / ((a + b) * 0.5).sin() - 1.),
+        lower_flank_deg: lower,
+        upper_flank_deg: upper,
+        root_radius_mm: Some(root),
+        ..base
+    })
+    .unwrap()
+}
+
+#[test]
+fn metric_clearance_retains_the_allowance_and_detects_half_pitch_interference() {
+    let base = metric();
+    let external = rounded_metric(base, [30., 30.]);
+    let allowance = 0.08;
+    let bore = Thread::new(Spec {
+        major_radius_mm: base.major_radius_mm + allowance,
+        length_mm: 6.8,
+        ..base
+    })
+    .unwrap();
+    for opposed in [false, true] {
+        close(
+            external
+                .minimum_radial_clearance(&bore, 0., opposed)
+                .unwrap(),
+            allowance,
+            1e-12,
+        );
+        close(
+            external
+                .minimum_radial_clearance(&bore, base.pitch_mm * 0.5, opposed)
+                .unwrap(),
+            allowance - base.depth_mm,
+            1e-12,
+        );
+        close(
+            external
+                .minimum_radial_clearance(&bore, -3. * base.pitch_mm, opposed)
+                .unwrap(),
+            allowance,
+            1e-12,
+        );
+    }
+    for offset in [f64::MAX, -f64::MAX] {
+        close(
+            external
+                .minimum_radial_clearance(&bore, offset, false)
+                .unwrap(),
+            external
+                .minimum_radial_clearance(&bore, offset.rem_euclid(base.pitch_mm), false)
+                .unwrap(),
+            1e-12,
+        );
+    }
+}
+
+#[test]
+fn asymmetric_rounded_thread_clearance_matches_an_independent_period_sample() {
+    let base = Spec {
+        starts: 2,
+        left_hand: true,
+        ..metric()
+    };
+    let external = rounded_metric(base, [3., 30.]);
+    let bore = Thread::new(Spec {
+        major_radius_mm: base.major_radius_mm + 0.1,
+        depth_mm: 0.58,
+        lower_flank_deg: 30.,
+        upper_flank_deg: 3.,
+        ..base
+    })
+    .unwrap();
+    let pitch = base.pitch_mm;
+    let aligned = external.minimum_radial_clearance(&bore, 0., false).unwrap();
+    let opposed = external.minimum_radial_clearance(&bore, 0., true).unwrap();
+    close(opposed, 0.1, 1e-12);
+    assert!(aligned < 0.);
+
+    let count = 60_000;
+    let step = pitch / f64::from(count);
+    let sampling_bound = (external.maximum_profile_slope() + bore.maximum_profile_slope()) * step;
+    for opposed in [false, true] {
+        for offset in [-0.19, 0., 0.07, 0.49, 2.3] {
+            let analytic = external
+                .minimum_radial_clearance(&bore, offset, opposed)
+                .unwrap();
+            let sampled = (0..count)
+                .map(|i| {
+                    let phase = f64::from(i) * step;
+                    let bore_phase = offset + if opposed { -phase } else { phase };
+                    bore.radius_at_phase(bore_phase) - external.radius_at_phase(phase)
+                })
+                .fold(f64::INFINITY, f64::min);
+            assert!(analytic <= sampled + 1e-12);
+            close(analytic, sampled, sampling_bound);
+        }
+    }
+}
+
+#[test]
+fn clearance_rejects_incompatible_or_nonlinear_bore_profiles() {
+    let base = metric();
+    let external = Thread::new(base).unwrap();
+    let incompatible = [
+        Thread::new(Spec {
+            pitch_mm: base.pitch_mm.next_up(),
+            ..base
+        })
+        .unwrap(),
+        Thread::new(Spec { starts: 2, ..base }).unwrap(),
+        Thread::new(Spec {
+            left_hand: true,
+            ..base
+        })
+        .unwrap(),
+        rounded_metric(base, [30., 30.]),
+    ];
+    for bore in incompatible {
+        assert_eq!(
+            external.minimum_radial_clearance(&bore, 0., false),
+            Err(ThreadError::Invalid)
+        );
+    }
+    for offset in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+        assert_eq!(
+            external.minimum_radial_clearance(&external, offset, false),
+            Err(ThreadError::Invalid)
+        );
+    }
+}
