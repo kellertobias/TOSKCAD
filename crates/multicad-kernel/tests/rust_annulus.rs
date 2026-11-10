@@ -4,8 +4,9 @@ use multicad_core::{
     references::{AnalyticGeometry, Origin, TopologyKind},
 };
 use multicad_kernel::{
-    CurvedEdge2d, CurvedProfile, GeometryPolicy, MeshOptions, PlaneFrame, Solid,
-    rust_kernel::step_read,
+    BooleanOperation, CurvedEdge2d, CurvedProfile, GeometryErrorKind, GeometryPolicy, MeshOptions,
+    PlaneFrame, Solid,
+    rust_kernel::{Circle, Rational, cylinder::AxialCylinder, step_read},
 };
 
 #[test]
@@ -70,6 +71,90 @@ fn reversed_annular_extrusion_keeps_both_analytic_sketch_rims_and_the_authored_c
             .collect::<std::collections::BTreeSet<_>>(),
         (0..4).collect()
     );
+}
+
+#[test]
+fn subtracting_a_coaxial_cylinder_preserves_the_authored_cap_basis_and_both_sources() {
+    let policy = GeometryPolicy::default();
+    let target = EntityId::new();
+    let tool = EntityId::new();
+    let curve = Origin {
+        source: EntityId::new(),
+        role: "circle".into(),
+    };
+    let exact = |n| Rational::new(n, 1).unwrap();
+    let axial = |feature: EntityId, [x, y, z]: [i64; 3], radius, height| {
+        AxialCylinder::new(
+            feature.uuid_bits(),
+            Circle::new([exact(x), exact(y)], exact(radius)).unwrap(),
+            exact(z),
+            exact(height),
+        )
+        .unwrap()
+    };
+    let frame = PlaneFrame {
+        origin: [2., 5., 7.],
+        v: [0., -1., 0.],
+        ..Default::default()
+    };
+    let outer = Solid::from_axial_cylinder_sweep(
+        axial(target, [0, 0, 0], 5, 3),
+        frame,
+        [1., 2.],
+        true,
+        curve.clone(),
+        policy,
+    )
+    .unwrap();
+    let vertical = |[x, y, z]: [i64; 3], radius, height| {
+        Solid::from_axial_cylinder(
+            axial(tool, [x, y, z], radius, height),
+            PlaneFrame {
+                origin: [x, y, z].map(|v| v as f64),
+                ..Default::default()
+            },
+            policy,
+        )
+        .unwrap()
+    };
+    let subtract = |inner: &Solid| outer.boolean(inner, BooleanOperation::Subtract, policy);
+    let ring = subtract(&vertical([2, 5, 4], 2, 3)).unwrap().unwrap();
+    assert!((ring.volume_mm3().unwrap() - 63. * std::f64::consts::PI).abs() < 1e-10);
+    assert_eq!(ring.bounds().unwrap(), outer.bounds().unwrap());
+    let topology = ring.topology_snapshot(target, 1).unwrap();
+    let face = |ordinal| {
+        topology
+            .elements
+            .iter()
+            .find(|e| e.key.kind == TopologyKind::Face && e.key.ordinal == ordinal)
+            .unwrap()
+    };
+    assert_eq!(face(0).frames[0].frame.origin_mm, [1., 3., 7.]);
+    assert_eq!(face(0).frames[0].frame.v, [0., 1., 0.]);
+    assert!(face(2).origins.contains(&curve));
+    assert!(face(3).origins.iter().any(|origin| origin.source == tool));
+    assert!(subtract(&vertical([2, 5, 4], 6, 3)).unwrap().is_none());
+    for bad in [vertical([3, 5, 4], 2, 3), vertical([2, 5, 4], 2, 2)] {
+        assert_eq!(
+            subtract(&bad).err().unwrap().kind,
+            GeometryErrorKind::Unsupported
+        );
+    }
+    let plain = vertical([2, 5, 4], 5, 3);
+    let concentric = Solid::from_axial_cylinder(
+        axial(target, [2, 5, 4], 2, 3),
+        PlaneFrame {
+            origin: [2., 5., 4.],
+            ..Default::default()
+        },
+        policy,
+    )
+    .unwrap();
+    let axial_ring = plain
+        .boolean(&concentric, BooleanOperation::Subtract, policy)
+        .unwrap()
+        .unwrap();
+    assert_eq!(ring.volume_mm3().unwrap(), axial_ring.volume_mm3().unwrap());
 }
 
 #[test]

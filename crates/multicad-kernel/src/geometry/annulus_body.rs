@@ -9,6 +9,8 @@ use multicad_core::references::{
 use multicad_rust_kernel::annulus::Annulus;
 use std::{collections::BTreeSet, f64::consts::TAU};
 
+mod boolean;
+
 pub(crate) struct AnnulusBody {
     pub(crate) geometry: Annulus,
     pub(super) feature: EntityId,
@@ -46,7 +48,7 @@ impl Solid {
     /// Sweep two concentric authored circles. Radii and origins are ordered
     /// [inner, outer]. The supplied frame is at the start plane's UV origin.
     pub fn rust_annulus_from_sketch(
-        [inner, outer]: [f64; 2],
+        radii: [f64; 2],
         signed_height_mm: f64,
         feature: EntityId,
         profile_frame: PlaneFrame,
@@ -56,6 +58,33 @@ impl Solid {
     ) -> Result<Self, GeometryError> {
         policy.validate()?;
         profile_frame.checked(policy)?;
+        let frame = PlaneFrame {
+            origin: profile_frame.point(center_uv),
+            u: profile_frame.u,
+            v: profile_frame
+                .v
+                .map(|value| if signed_height_mm < 0. { -value } else { value }),
+        };
+        Self::build_rust_annulus(
+            radii,
+            signed_height_mm,
+            feature,
+            frame,
+            center_uv,
+            origins,
+            policy,
+        )
+    }
+
+    fn build_rust_annulus(
+        [inner, outer]: [f64; 2],
+        signed_height_mm: f64,
+        feature: EntityId,
+        frame: PlaneFrame,
+        center_uv: [f64; 2],
+        origins: [Origin; 2],
+        policy: GeometryPolicy,
+    ) -> Result<Self, GeometryError> {
         policy.point([center_uv[0], center_uv[1], 0.])?;
         let height = signed_height_mm.abs();
         for length in [inner, outer, height, outer - inner] {
@@ -72,13 +101,6 @@ impl Solid {
             return Err(input("An annulus needs two distinct valid curve origins"));
         }
         let reverse = signed_height_mm < 0.;
-        let frame = PlaneFrame {
-            origin: profile_frame.point(center_uv),
-            u: profile_frame.u,
-            v: profile_frame
-                .v
-                .map(|value| if reverse { -value } else { value }),
-        };
         let geometry = Annulus::new(inner, outer, height)
             .map_err(|cause| input(format!("Invalid concentric circular solid: {cause:?}")))?;
         let body = AnnulusBody {

@@ -1010,6 +1010,14 @@ impl Solid {
         policy: GeometryPolicy,
     ) -> Result<Option<Self>, GeometryError> {
         policy.validate()?;
+        if operation == BooleanOperation::Subtract
+            && policy.boolean_fuzzy_mm == 0.
+            && policy == self.policy
+            && policy == other.policy
+            && let Some(result) = self.subtract_coaxial_cylinder(other, policy)
+        {
+            return result;
+        }
         if let Some(tool) = other.axial_cylinder()
             && operation == BooleanOperation::Subtract
             && policy.boolean_fuzzy_mm == 0.
