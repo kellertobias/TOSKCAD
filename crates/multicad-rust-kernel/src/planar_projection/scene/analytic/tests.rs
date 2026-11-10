@@ -278,6 +278,90 @@ fn finite_cylinder_clips_a_curved_candidate_at_its_angular_limit() {
     }
 }
 
+fn oblique_cylinder(center: Point, axial_depth: f64, outward: bool) -> AnalyticFace {
+    let axis = [0.8, 0., axial_depth];
+    let ellipse = Ellipse::new(center, axis, Y, [1.; 2]).unwrap();
+    let sweep = if outward { FRAC_PI_2 } else { -FRAC_PI_2 };
+    let cap = EllipseArc::new(ellipse, 0., sweep).unwrap();
+    AnalyticFace::cylinder(cap, axis, 5., outward, TOL)
+        .unwrap()
+        .unwrap()
+}
+
+#[test]
+fn oblique_cap_ellipses_bound_both_front_facing_cylinder_roots() {
+    let origin = [4., -3., 2.];
+    for axial_depth in [-0.6, 0.6] {
+        for outward in [false, true] {
+            let face = oblique_cylinder(origin, axial_depth, outward);
+            let radial_hit = if outward { 0.8 } else { -0.8 };
+            let start = origin[0] - axial_depth * radial_hit;
+            let witness = [[3., -2.4, -10.], [10., -2.4, -10.]];
+            assert_spans(
+                &line(&face, witness),
+                0,
+                &[
+                    (false, [3., start]),
+                    (true, [start, start + 4.]),
+                    (false, [start + 4., 10.]),
+                ],
+            );
+        }
+    }
+}
+
+#[test]
+fn oblique_inward_negative_root_hides_only_farther_depths() {
+    let face = oblique_cylinder([0.; 3], 0.6, false);
+    let point = |x, radial| [x, 0.6, (radial + 0.6 * x) / 0.8];
+    let witness = [point(1.08, -1.), point(3.08, -0.6)];
+    assert_spans(
+        &line(&face, witness),
+        0,
+        &[(true, [1.08, 2.08]), (false, [2.08, 3.08])],
+    );
+}
+
+#[test]
+fn an_oblique_cap_clips_a_curved_witness_at_its_exact_projected_ellipse() {
+    let (_, _, output) = project_scene_with_analytic_faces(
+        &[],
+        &[],
+        SceneExtras {
+            rims: &[RimCandidate {
+                source: 1,
+                center: [4., 0.],
+                depth: -10.,
+                radius: 0.8,
+                trim: [0., TAU],
+            }],
+            ..Default::default()
+        },
+        &[oblique_cylinder([0.; 3], 0.6, true)],
+        options(),
+    )
+    .unwrap();
+    let intersection = (-0.5625_f64).acos();
+    assert_eq!(output.len(), 3);
+    for (segment, (hidden, expected)) in output.iter().zip([
+        (false, [0., intersection]),
+        (true, [intersection, std::f64::consts::PI]),
+        (false, [std::f64::consts::PI, TAU]),
+    ]) {
+        let Curve::Ellipse(ellipse) = segment.edge.curve else {
+            panic!("Expected a curved witness")
+        };
+        assert_eq!(segment.edge.hidden, hidden);
+        assert!(
+            ellipse
+                .trim
+                .into_iter()
+                .zip(expected)
+                .all(|(a, b)| (a - b).abs() < TOL)
+        );
+    }
+}
+
 #[test]
 fn ordinary_planar_and_round_candidates_use_the_same_analytic_blockers() {
     let face = AnalyticFace::plane(
@@ -379,7 +463,7 @@ fn malformed_face_inputs_and_work_limit_fail_closed() {
     let cap = EllipseArc::new(ellipse, 0., FRAC_PI_2).unwrap();
     assert!(matches!(
         AnalyticFace::cylinder(cap, oblique, 1., true, TOL),
-        Err(ProjectionError::Invalid)
+        Ok(Some(_))
     ));
     let face = AnalyticFace::plane([0.; 3], Z, valid(), TOL)
         .unwrap()

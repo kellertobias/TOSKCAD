@@ -53,15 +53,15 @@ fn all_cardinal_views_keep_exact_trims_and_source_identity() {
 fn tangent_rails_are_optional_except_when_they_are_silhouettes() {
     let shell = fixture(1.);
     let root = [[2., 0., 0.], [8., 0., 0.]];
-    let checked = |axis, tangent| {
-        let axes = axes(axis, 1.);
+    let checked = |axes, tangent| {
         let view = View::new([0.; 3], axes, TOL).unwrap();
         let elevation = shell.elevation([0.; 3], axes, 0, TOL, tangent).unwrap();
         line_present(&elevation, root.map(|p| view.point(p)))
     };
-    assert!(!checked(2, false));
-    assert!(checked(2, true));
-    assert!(checked(1, false));
+    assert!(!checked(axes(2, 1.), false));
+    assert!(checked(axes(2, 1.), true));
+    assert!(checked(axes(1, 1.), false));
+    assert!(checked([[-0.8, 0.6, 0.], Z, [0.6, 0.8, 0.]], false));
 
     // A bore's quadrant partition is not a physical sharp or tangent edge.
     let top = shell.elevation([0.; 3], [X, Y, Z], 0, TOL, true).unwrap();
@@ -100,32 +100,68 @@ fn curved_patch_has_an_analytic_interior_silhouette() {
     let patch =
         CylinderPatch::new(&shell, face, axis_origin_mm, axis_direction, radius_mm, TOL).unwrap();
     let q = std::f64::consts::FRAC_1_SQRT_2;
-    let events = patch
-        .silhouettes(&shell, [0., -q, -q], axis_direction, TOL)
-        .unwrap();
-    let [Silhouette::Interior(points)] = events.into_iter().flatten().collect::<Vec<_>>()[..]
-    else {
-        panic!("exactly one interior generator was expected");
-    };
-    for point in points {
-        assert!((point[1] + q).abs() <= TOL);
-        assert!((point[2] + 1. - q).abs() <= TOL);
+    for toward in [[0., -q, -q], [0.8, -0.6 * q, -0.6 * q]] {
+        let events = patch
+            .silhouettes(&shell, toward, axis_direction, TOL)
+            .unwrap();
+        let [Silhouette::Interior(points)] = events.into_iter().flatten().collect::<Vec<_>>()[..]
+        else {
+            panic!("exactly one interior generator was expected");
+        };
+        for point in points {
+            assert!((point[1] + q).abs() <= TOL);
+            assert!((point[2] + 1. - q).abs() <= TOL);
+        }
+        assert!(((points[1][0] - points[0][0]).abs() - 6.).abs() <= TOL);
     }
-    assert!(((points[1][0] - points[0][0]).abs() - 6.).abs() <= TOL);
+    assert!(
+        patch
+            .silhouettes(&shell, axis_direction, axis_direction, TOL)
+            .unwrap()
+            .into_iter()
+            .all(|candidate| candidate.is_none())
+    );
 }
 
 #[test]
-fn unsupported_view_and_nonrigid_frame_are_rejected() {
-    let shell = fixture(1.);
-    let q = std::f64::consts::FRAC_1_SQRT_2;
+fn oblique_view_preserves_exact_projected_web_rim_and_depth() {
+    let n = [1., 2., 3.].map(|component| component / 14_f64.sqrt());
+    let u = [-2., 1., 0.].map(|component| component / 5_f64.sqrt());
+    for thickness in [-1., 1.] {
+        for sign in [-1., 1.] {
+            let n = n.map(|component| component * sign);
+            let axes = [u, cross(n, u), n];
+            let view = View::new([0.; 3], axes, TOL).unwrap();
+            let [x, y, depth] = view.point([5., 4., 0.]);
+            let elevation = fixture(thickness)
+                .elevation([0.; 3], axes, 17, TOL, false)
+                .unwrap();
+            let rim_sweep: f64 = elevation
+                .rims
+                .iter()
+                .filter_map(|rim| {
+                    let [cx, cy] = rim.ellipse.center;
+                    if (cx - x).hypot(cy - y) > TOL || (rim.depth - depth).abs() > TOL {
+                        return None;
+                    }
+                    assert_eq!(rim.source, 17);
+                    assert!((rim.ellipse.major - 1.).abs() <= TOL);
+                    assert!((rim.ellipse.minor - n[2].abs()).abs() <= TOL);
+                    assert!((rim.depth_sine.abs() - n[0].hypot(n[1])).abs() <= TOL);
+                    Some(rim.ellipse.trim[1] - rim.ellipse.trim[0])
+                })
+                .sum();
+            assert!((rim_sweep - TAU).abs() <= TOL);
+        }
+    }
+}
+
+#[test]
+fn nonrigid_frame_is_rejected() {
     assert_eq!(
-        shell
-            .elevation([0.; 3], [X, [0., q, -q], [0., q, q]], 0, TOL, false)
+        fixture(1.)
+            .elevation([0.; 3], [X, X, Z], 0, TOL, false)
             .err(),
-        Some(Error::Unsupported),
-    );
-    assert_eq!(
-        shell.elevation([0.; 3], [X, X, Z], 0, TOL, false).err(),
         Some(Error::Invalid),
     );
 }

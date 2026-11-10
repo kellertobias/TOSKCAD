@@ -5,7 +5,6 @@ use std::f64::consts::{FRAC_PI_2, TAU};
 
 const ANGULAR: f64 = 64. * f64::EPSILON;
 const MAX_TRIMS: usize = 8192;
-const VIEW: Point = [0., 0., 1.];
 
 /// One oriented trim in drawing coordinates (right, up, depth).
 #[derive(Clone, Copy, Debug)]
@@ -48,8 +47,11 @@ enum Boundary {
 
 struct Cylinder {
     origin: Point,
-    axis: Point,
+    screen_axis: Point,
     transverse: Point,
+    ray_radial: Point,
+    projected: f64,
+    axial_depth: f64,
     height: f64,
     radius: f64,
     radial_ends: [Point2; 2],
@@ -167,7 +169,7 @@ impl AnalyticFace {
 
     /// Prepare one circular patch with an angular span up to a quarter turn.
     /// The positive axis goes from the supplied cap to the opposite cap.
-    /// The axis must be transverse to the view or parallel to it.
+    /// A cylinder along the viewing axis has no projected wall area.
     pub fn cylinder(
         cap: EllipseArc,
         axis: Point,
@@ -188,20 +190,28 @@ impl AnalyticFace {
         {
             return Err(ProjectionError::Invalid);
         }
-        if axis[0].hypot(axis[1]) <= ANGULAR {
+        let projected = axis[0].hypot(axis[1]);
+        if projected <= ANGULAR {
             return Ok(None);
         }
-        if axis[2].abs() > ANGULAR {
-            return Err(ProjectionError::Invalid);
-        }
-        let axis = unit([axis[0], axis[1], 0.]);
-        let transverse = [-axis[1], axis[0], 0.];
+        let screen_axis = [axis[0] / projected, axis[1] / projected, 0.];
+        let (axis, projected, axial_depth) = if axis[2].abs() <= ANGULAR {
+            (screen_axis, 1., 0.)
+        } else {
+            (axis, projected, axis[2])
+        };
+        let transverse = [-screen_axis[1], screen_axis[0], 0.];
+        let ray_radial = [
+            -axial_depth * screen_axis[0],
+            -axial_depth * screen_axis[1],
+            projected,
+        ];
         let mut radial_ends = [cap.start_rad(), cap.start_rad() + cap.sweep_rad()].map(|angle| {
             let (sin, cos) = angle.sin_cos();
             let u = ellipse.major_axis();
             let v = ellipse.minor_axis();
             let radial = std::array::from_fn(|i| cos.mul_add(u[i], sin * v[i]));
-            [dot(radial, transverse), radial[2]]
+            [dot(radial, transverse), dot(radial, ray_radial)]
         });
         let turn = cross2(radial_ends[0], radial_ends[1]);
         if turn.abs() <= ANGULAR {
@@ -218,8 +228,11 @@ impl AnalyticFace {
         Ok(Some(Self {
             surface: Surface::Cylinder(Cylinder {
                 origin,
-                axis,
+                screen_axis,
                 transverse,
+                ray_radial,
+                projected,
+                axial_depth,
                 height,
                 radius,
                 radial_ends,
@@ -273,13 +286,12 @@ impl AnalyticFace {
     }
 
     fn hide(&self, path: Path, span: Span, work: &mut Work) -> Result<(), ProjectionError> {
-        let depth_gap = work
-            .tolerance
-            .max(coordinate_roundoff(self.bounds).max(path.roundoff()));
+        let roundoff = coordinate_roundoff(self.bounds).max(path.roundoff());
+        let depth_gap = work.tolerance.max(roundoff);
         work.crossings.clear();
         match &self.surface {
             Surface::Plane(plane) => plane.hide(path, span, depth_gap, work),
-            Surface::Cylinder(cylinder) => cylinder.hide(path, span, depth_gap, work),
+            Surface::Cylinder(cylinder) => cylinder.hide(path, span, depth_gap, roundoff, work),
         }
     }
 }
@@ -499,6 +511,11 @@ impl Trace {
         }
     }
 
+    fn scale(mut self, factor: f64) -> Self {
+        self.coefficients = self.coefficients.map(|value| value * factor);
+        self
+    }
+
     fn level(self, value: f64, span: Span, cuts: &mut Vec<f64>) {
         if self.harmonic {
             Harmonic(self.coefficients).level(value, span, cuts);
@@ -625,39 +642,63 @@ impl Cylinder {
         path: Path,
         span: Span,
         gap: f64,
+        roundoff: f64,
         work: &mut Work,
     ) -> Result<(), ProjectionError> {
         work.charge(if path.harmonic { 90 } else { 12 })?;
-        let axial = path.coordinate(self.origin, self.axis);
-        let transverse = path.coordinate(self.origin, self.transverse);
-        let depth = path.coordinate(self.origin, VIEW).offset(gap);
-        for cap in [0., self.height] {
-            axial.level(cap, span, &mut work.crossings);
+        let x = path.coordinate(self.origin, self.screen_axis);
+        let y = path.coordinate(self.origin, self.transverse);
+        let p = self.projected;
+        let c = self.axial_depth;
+        let depth = path
+            .coordinate(self.origin, self.ray_radial)
+            .offset((p * gap).max(roundoff));
+        if c == 0. {
+            for cap in [0., self.height] {
+                x.level(cap, span, &mut work.crossings);
+            }
+        } else {
+            work.charge(if path.harmonic { 160 } else { 16 })?;
+            for cap in [0., self.height] {
+                // The full projected cap ellipse supplies event boundaries.
+                // The ray test below restricts it to the correct arc and root.
+                x.offset(-p * cap).circle(
+                    y.scale(c),
+                    c.abs() * self.radius,
+                    span,
+                    &mut work.crossings,
+                );
+            }
         }
         for coordinate in [-self.radius, self.radius]
             .into_iter()
             .chain(self.radial_ends.map(|radial| self.radius * radial[0]))
         {
-            transverse.level(coordinate, span, &mut work.crossings);
+            y.level(coordinate, span, &mut work.crossings);
         }
-        transverse.circle(depth, self.radius, span, &mut work.crossings);
+        y.circle(depth, self.radius, span, &mut work.crossings);
         work.charge(work.crossings.len() + 1)?;
-        let roundoff = 16. * f64::EPSILON * self.radius;
+        let radial_roundoff = 16. * f64::EPSILON * self.radius;
+        let axial_limit = p * self.height;
         drawing_events::spans(
             &mut work.crossings,
             span,
             |t| {
-                if !(0. ..=self.height).contains(&axial.at(t)) {
+                let y = y.at(t);
+                let offset = y.abs();
+                if offset >= self.radius - radial_roundoff {
                     return false;
                 }
-                let w = transverse.at(t);
-                let offset = w.abs();
-                if offset >= self.radius - roundoff {
-                    return false;
-                }
-                let z = self.facing * ((self.radius - offset) * (self.radius + offset)).sqrt();
-                let radial = [w / self.radius, z / self.radius];
-                z > depth.at(t)
+                // Along a positive depth ray the radial coordinate increases
+                // by p times the travel. An inward wall uses the negative
+                // root, which can still be ahead of a farther candidate.
+                let hit = self.facing * ((self.radius - offset) * (self.radius + offset)).sqrt();
+                // Multiplying the station by p gives this expression without
+                // dividing by a potentially small projected axis length.
+                let axial = c.mul_add(hit, x.at(t));
+                let radial = [y / self.radius, hit / self.radius];
+                (0. ..=axial_limit).contains(&axial)
+                    && hit > depth.at(t)
                     && cross2(self.radial_ends[0], radial) >= -ANGULAR
                     && cross2(radial, self.radial_ends[1]) >= -ANGULAR
             },

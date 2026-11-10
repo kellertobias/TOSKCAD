@@ -11,7 +11,7 @@ use crate::{
 };
 use std::f64::consts::TAU;
 
-/// Drawing-space geometry of an axial or transverse shell elevation.
+/// Drawing-space geometry of an orthographic shell elevation.
 #[derive(Default)]
 pub struct Elevation {
     pub blockers: Vec<AnalyticFace>,
@@ -23,8 +23,8 @@ impl Shell {
     /// Prepare exact hidden-line inputs, without projecting mesh edges.
     ///
     /// The view axes are right-handed U, V and toward-viewer directions
-    /// in shell coordinates. Cylindrical walls need a view parallel or
-    /// perpendicular to their axes and the same trims as exact sections.
+    /// in shell coordinates. Cylindrical walls need the same circular
+    /// cap trims and straight generators as exact sections.
     pub fn elevation(
         &self,
         view_origin_mm: Point,
@@ -76,21 +76,15 @@ impl Shell {
                     )?;
                     let [(_, cap), (_, end)] = patch.arcs;
                     let axial = view.vector(axis_direction);
-                    let transverse = axial[2].abs() <= ANGULAR;
-                    if !transverse && axial[0].hypot(axial[1]) > ANGULAR {
-                        return Err(Error::Unsupported);
-                    }
-                    if transverse {
-                        let events =
-                            patch.silhouettes(self, view_axes[2], axis_direction, tolerance_mm)?;
-                        for event in events.into_iter().flatten() {
-                            match event {
-                                Silhouette::Rail(edge) => silhouettes[edge] = true,
-                                Silhouette::Interior(points) => result.lines.push(LineCandidate {
-                                    source,
-                                    points: points.map(|point| view.point(point)),
-                                }),
-                            }
+                    let events =
+                        patch.silhouettes(self, view_axes[2], axis_direction, tolerance_mm)?;
+                    for event in events.into_iter().flatten() {
+                        match event {
+                            Silhouette::Rail(edge) => silhouettes[edge] = true,
+                            Silhouette::Interior(points) => result.lines.push(LineCandidate {
+                                source,
+                                points: points.map(|point| view.point(point)),
+                            }),
                         }
                     }
                     let span = sub(end.ellipse().center_mm(), cap.ellipse().center_mm());
@@ -316,6 +310,13 @@ impl CylinderPatch {
         let ellipse = cap.ellipse();
         let [radius, _] = ellipse.semiaxes_mm();
         let radial = cross(toward, axis);
+        let length = length3(radial);
+        if length <= ANGULAR {
+            return Ok([None, None]);
+        }
+        // An oblique view reduces the cross product's magnitude without
+        // changing its azimuth. The silhouette remains on the true cylinder.
+        let radial = radial.map(|coordinate| coordinate / length);
         let centers = [ellipse, other.ellipse()].map(Ellipse::center_mm);
         let silhouette = |sign| {
             let radial = radial.map(|coordinate| sign * coordinate);

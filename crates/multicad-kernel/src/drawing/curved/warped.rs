@@ -22,7 +22,7 @@ pub(super) fn elevation(
             Error::Limit => planar::projection_error(planar_projection::ProjectionError::Limit),
             Error::Unsupported => err(
                 GeometryErrorKind::Unsupported,
-                "Rust trimmed-shell drawing requires supported face trims and an axial or transverse cylinder view",
+                "Rust could not resolve the drawing against the trimmed shell boundary",
             ),
         })
 }
