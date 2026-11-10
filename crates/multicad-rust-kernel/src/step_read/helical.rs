@@ -51,7 +51,7 @@ pub fn verify_helical_screw(
     verify(input, screw.thread(), closure, [origin, u, v], tolerance)
 }
 
-fn step_error(error: StepError) -> ReadError {
+pub(super) fn step_error(error: StepError) -> ReadError {
     match error {
         StepError::Limit => ReadError::Limit,
         StepError::Unsupported => ReadError::Unsupported,
@@ -284,11 +284,11 @@ fn verify(
     volumes.pop().ok_or(ReadError::Invalid)
 }
 
-fn require(condition: bool) -> Result<()> {
+pub(super) fn require(condition: bool) -> Result<()> {
     condition.then_some(()).ok_or(ReadError::Invalid)
 }
 
-fn orient(edges: &[EdgeRef], forward: bool) -> Vec<EdgeRef> {
+pub(super) fn orient(edges: &[EdgeRef], forward: bool) -> Vec<EdgeRef> {
     if forward {
         edges.to_vec()
     } else {
@@ -296,14 +296,14 @@ fn orient(edges: &[EdgeRef], forward: bool) -> Vec<EdgeRef> {
     }
 }
 
-fn face(shell: &Shell<'_, '_>, id: u32) -> Result<(u32, bool, Vec<u32>)> {
+pub(super) fn face(shell: &Shell<'_, '_>, id: u32) -> Result<(u32, bool, Vec<u32>)> {
     let [Value::String(_), bounds, surface, forward] = shell.args(id, "ADVANCED_FACE")? else {
         return Err(ReadError::Invalid);
     };
     Ok((reference(surface)?, sense(forward)?, refs(bounds)?))
 }
 
-fn ring(shell: &Shell<'_, '_>, id: u32, exterior: bool) -> Result<Vec<EdgeRef>> {
+pub(super) fn ring(shell: &Shell<'_, '_>, id: u32, exterior: bool) -> Result<Vec<EdgeRef>> {
     let (outside, wire, forward) = shell.bound(id, false)?;
     require(outside == exterior)?;
     let [Value::String(_), edges] = shell.args(wire, "EDGE_LOOP")? else {
@@ -341,7 +341,7 @@ fn knots(mult: &Value<'_>, knots: &Value<'_>, expected: &Spline) -> Result<()> {
     Ok(())
 }
 
-fn poles(
+pub(super) fn poles(
     shell: &Shell<'_, '_>,
     actual: &Value<'_>,
     expected: impl Iterator<Item = Point>,
@@ -389,7 +389,7 @@ fn spline_edge(
     Ok([a, b])
 }
 
-fn check_axis(
+pub(super) fn check_axis(
     shell: &Shell<'_, '_>,
     id: &Value<'_>,
     origin: Point,

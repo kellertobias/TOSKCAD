@@ -172,7 +172,15 @@ fn claim_topology(
 
     let mut pending = vec![solid];
     while let Some(id) = pending.pop() {
-        let entity = shell.simple(id)?;
+        let parts = shell.components(id)?;
+        let [entity] = parts else {
+            // A verified rational support is a complex geometric entity.
+            // Topology remains restricted to single, exclusively owned entities.
+            if parts.iter().any(|part| topology(part.name)) {
+                return Err(ReadError::Unsupported);
+            }
+            continue;
+        };
         if !topology(entity.name) {
             continue;
         }

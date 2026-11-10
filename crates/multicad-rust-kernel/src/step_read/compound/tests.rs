@@ -179,3 +179,22 @@ fn rejects_empty_and_excessive_representations_before_reading_their_shells() {
         Err(ReadError::Limit)
     );
 }
+
+#[test]
+fn complex_geometry_may_not_hide_topology_in_the_ownership_walk() {
+    let text = write_box([n(4); 3], [0.; 3], U, V).unwrap();
+    let mut entities = parse_entities(&text, TOLERANCE).unwrap();
+    let initial = Shell::new(&entities, TOLERANCE, true);
+    let solid = initial.represented_solids(true).unwrap()[0];
+    let face = initial.member_faces(solid).unwrap()[0];
+    let support = reference(&initial.args(face, "ADVANCED_FACE").unwrap()[2]).unwrap();
+    entities.get_mut(&support).unwrap().push(Entity {
+        name: "EDGE_CURVE",
+        args: vec![],
+    });
+    let shell = Shell::new(&entities, TOLERANCE, true);
+    assert_eq!(
+        claim_topology(&shell, solid, &mut BTreeMap::new()),
+        Err(ReadError::Unsupported),
+    );
+}

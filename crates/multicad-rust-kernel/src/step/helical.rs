@@ -531,7 +531,13 @@ fn check_shank_clearance(inward: &[Spline], radius: f64) -> Result<(), StepError
 }
 
 impl Spline {
-    fn new(a: f64, b: f64, radii: [f64; 2], sense: f64, error: f64) -> Result<Self, StepError> {
+    pub(super) fn new(
+        a: f64,
+        b: f64,
+        radii: [f64; 2],
+        sense: f64,
+        error: f64,
+    ) -> Result<Self, StepError> {
         let span = b - a;
         let slope = (radii[1] - radii[0]) / span;
         let max_derivative = radii[0].max(radii[1]) + (DEGREE + 1) as f64 * slope.abs();
@@ -586,7 +592,7 @@ impl Spline {
         Ok(Self { knots, poles })
     }
 
-    fn linear_poles(&self, height: f64) -> Vec<f64> {
+    pub(super) fn linear_poles(&self, height: f64) -> Vec<f64> {
         // Bézier controls of an affine axial coordinate. This keeps caps
         // exactly planar and does not approximate the lead.
         let end = self.knots[self.knots.len() - 1];
@@ -604,7 +610,7 @@ impl Spline {
         result
     }
 
-    fn advances_angle(&self, direction: f64) -> bool {
+    pub(super) fn advances_angle(&self, direction: f64) -> bool {
         self.poles.windows(DEGREE + 1).step_by(DEGREE).all(|poles| {
             // The numerator of d(arg(P))/dt is cross(P,P'). A Bernstein
             // polynomial stays in the hull of its coefficients. Multiplying

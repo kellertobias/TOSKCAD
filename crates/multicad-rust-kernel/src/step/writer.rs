@@ -86,6 +86,19 @@ impl Writer {
         }
     }
 
+    /// Append one bounded authored chevron solid with two continuous bands.
+    pub fn append_herringbone(
+        &mut self,
+        gear: &crate::spur_gear::herringbone::Herringbone,
+        origin: Point,
+        u: Point,
+        v: Point,
+        tolerance: f64,
+    ) -> Result<(), StepError> {
+        let placement = Placement::new(origin, u, v)?;
+        self.append(|file| herringbone::encode(file, gear, placement, tolerance))
+    }
+
     pub fn append_helical_thread(
         &mut self,
         thread: &crate::helical_thread::Thread,

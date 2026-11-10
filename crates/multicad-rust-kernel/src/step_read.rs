@@ -6,7 +6,9 @@
 mod compound;
 mod curve;
 mod helical;
+mod herringbone;
 pub use helical::{verify_helical_screw, verify_helical_thread};
+pub use herringbone::verify_herringbone;
 mod import;
 mod mixed;
 mod part21;
