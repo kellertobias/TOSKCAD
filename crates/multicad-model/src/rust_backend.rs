@@ -42,6 +42,8 @@ pub(crate) fn validate_document(
                     | (model::BOOLEAN_TYPE, model::BOOLEAN_SCHEMA)
                     | (model::TRANSFORM_TYPE, model::TRANSFORM_SCHEMA)
                     | (model::ALIGN_TYPE, model::ALIGN_SCHEMA)
+                    | (model::SLAB_TYPE, 1)
+                    | (model::WALL_TYPE, model::WALL_SCHEMA)
                     | (model::THREAD_TYPE, model::THREAD_SCHEMA)
                     | (model::MECHANICAL_PART_TYPE, model::MECHANICAL_PART_SCHEMA)
                     | (

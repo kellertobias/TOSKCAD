@@ -1067,9 +1067,13 @@ impl Compiler {
                             .map_err(|e| error(Some(id), e))?
                     }
                 }
-                (model::SLAB_TYPE, 1) => {
-                    crate::levels::build_slab(document, context.parameters(), id, self.policy)?
-                }
+                (model::SLAB_TYPE, 1) => crate::levels::build_slab(
+                    document,
+                    context.parameters(),
+                    id,
+                    self.policy,
+                    backend,
+                )?,
                 (model::COMPOUND_CUTOUT_TYPE, model::COMPOUND_CUTOUT_SCHEMA) => compound_cutouts
                     .build(
                         document,
@@ -1318,6 +1322,7 @@ impl Compiler {
                         context.parameters(),
                         id,
                         self.policy,
+                        backend,
                         &solids,
                         interrupt,
                     )?

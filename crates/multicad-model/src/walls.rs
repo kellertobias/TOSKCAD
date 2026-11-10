@@ -3,7 +3,7 @@
 //! roles. Downward drawing views draw walls as a plan cut: the solid is
 //! sectioned at a plan cut height and hatched, and receive door swings,
 //! window panes and dashed outlines of openings the cut does not pass.
-use crate::{DrawingBody, Model, ModelError, error};
+use crate::{DrawingBody, GeometryBackend, Model, ModelError, error};
 use multicad_core::{
     document::{Document, EntityData, EntityId},
     drawings::{DrawingVector, VectorCurve, VectorRole, ViewKind},
@@ -210,6 +210,7 @@ fn extrude_region(
     id: EntityId,
     policy: GeometryPolicy,
     band: Option<&model::WallLayerBand>,
+    backend: GeometryBackend,
 ) -> Result<Solid, ModelError> {
     let profile = CurvedProfile {
         frame: PlaneFrame {
@@ -245,21 +246,59 @@ fn extrude_region(
             }
             role.clone()
         });
-    Solid::extrude_curved_profile_vector_named(
+    sweep_wall_profile(
         &profile,
         [0., 0., wall.height_mm],
         id,
         &origins(id, roles),
         policy,
+        backend,
     )
-    .map_err(|e| error(Some(id), e))
 }
+
+fn sweep_wall_profile(
+    profile: &CurvedProfile,
+    vector: [f64; 3],
+    id: EntityId,
+    origins: &[Origin],
+    policy: GeometryPolicy,
+    backend: GeometryBackend,
+) -> Result<Solid, ModelError> {
+    if backend == GeometryBackend::Rust {
+        // Wall outlines and rectangular cutting tools always sweep normal to
+        // their authored planes. The orientation determines the sweep sign.
+        let normal = profile.frame.normal();
+        let height = normal.iter().zip(vector).map(|(a, b)| a * b).sum();
+        return crate::rust_backend::stock_profile(id, profile, origins, height, policy);
+    }
+    Solid::extrude_curved_profile_vector_named(profile, vector, id, origins, policy)
+        .map_err(|e| error(Some(id), e))
+}
+
 pub(crate) fn cut_tools(
     wall: &model::ResolvedWall,
     plan: &model::WallPlan,
     id: EntityId,
     policy: GeometryPolicy,
     interrupt: Option<&dyn Fn() -> bool>,
+) -> Result<Vec<Solid>, ModelError> {
+    cut_tools_with_backend(
+        wall,
+        plan,
+        id,
+        policy,
+        interrupt,
+        GeometryBackend::OpenCascade,
+    )
+}
+
+fn cut_tools_with_backend(
+    wall: &model::ResolvedWall,
+    plan: &model::WallPlan,
+    id: EntityId,
+    policy: GeometryPolicy,
+    interrupt: Option<&dyn Fn() -> bool>,
+    backend: GeometryBackend,
 ) -> Result<Vec<Solid>, ModelError> {
     let mut tools = vec![];
     let depth = plan.left_mm - plan.right_mm + 2.;
@@ -294,14 +333,14 @@ pub(crate) fn cut_tools(
         };
         let roles = ["sill", "jamb.end", "head", "jamb.start"]
             .map(|r| format!("opening.{}.{r}", opening.id));
-        let tool = Solid::extrude_curved_profile_vector_named(
+        let tool = sweep_wall_profile(
             &tool_profile,
             [seg.normal[0] * depth, seg.normal[1] * depth, 0.],
             id,
             &origins(id, roles),
             policy,
-        )
-        .map_err(|e| error(Some(id), e))?;
+            backend,
+        )?;
         tools.push(tool);
     }
     for cutout in &wall.cutouts {
@@ -341,14 +380,14 @@ pub(crate) fn cut_tools(
         };
         let roles = [back(false), "jamb.end", back(true), "jamb.start"]
             .map(|r| format!("cutout.{}.{r}", cutout.id));
-        let tool = Solid::extrude_curved_profile_vector_named(
+        let tool = sweep_wall_profile(
             &tool_profile,
             [0., 0., wall.height_mm + 2.],
             id,
             &origins(id, roles),
             policy,
-        )
-        .map_err(|e| error(Some(id), e))?;
+            backend,
+        )?;
         tools.push(tool);
     }
     Ok(tools)
@@ -360,6 +399,14 @@ fn cut_region(
     policy: GeometryPolicy,
     interrupt: Option<&dyn Fn() -> bool>,
 ) -> Result<Option<Solid>, ModelError> {
+    if solid.uses_rust_geometry() && !tools.is_empty() {
+        if interrupt.is_some_and(|f| f()) {
+            return Err(error(Some(id), "Wall evaluation superseded"));
+        }
+        return solid
+            .rust_subtract_orthogonal_tools(tools, policy)
+            .map_err(|e| error(Some(id), e));
+    }
     for tool in tools {
         if interrupt.is_some_and(|f| f()) {
             return Err(error(Some(id), "Wall evaluation superseded"));
@@ -379,6 +426,7 @@ pub(crate) fn build(
     parameters: &EvaluatedParameters,
     id: EntityId,
     policy: GeometryPolicy,
+    backend: GeometryBackend,
     host_solids: &std::collections::BTreeMap<EntityId, Solid>,
     interrupt: Option<&dyn Fn() -> bool>,
 ) -> Result<Solid, ModelError> {
@@ -387,6 +435,19 @@ pub(crate) fn build(
     let wall = model::resolve_wall(document, parameters, &source).map_err(e)?;
     let plan = wall.plan().map_err(e)?;
     wall.check_openings(&plan).map_err(e)?;
+    if backend == GeometryBackend::Rust
+        && (wall.layers.is_some()
+            || !wall.junctions.is_empty()
+            || plan
+                .segments
+                .iter()
+                .any(|segment| segment.direction[0] != 0. && segment.direction[1] != 0.))
+    {
+        return Err(error(
+            Some(id),
+            "Rust wall geometry requires an axis-aligned uniform wall without junctions",
+        ));
+    }
     if let Some(layers) = &wall.layers {
         for layer in &layers.stack.layers {
             if layer.thickness_mm > 0. && layer.thickness_mm < policy.minimum_feature_mm {
@@ -424,10 +485,10 @@ pub(crate) fn build(
             ));
         }
     }
-    let tools = cut_tools(&wall, &plan, id, policy, interrupt)?;
+    let tools = cut_tools_with_backend(&wall, &plan, id, policy, interrupt, backend)?;
     let Some(layers) = &wall.layers else {
         let solid = cut_region(
-            extrude_region(&wall, &plan, id, policy, None)?,
+            extrude_region(&wall, &plan, id, policy, None, backend)?,
             &tools,
             id,
             policy,
@@ -456,7 +517,7 @@ pub(crate) fn build(
                 band.outside_mm.min(band.inside_mm),
             )
             .map_err(e)?;
-        let solid = extrude_region(&wall, &layer_plan, id, policy, Some(band))?;
+        let solid = extrude_region(&wall, &layer_plan, id, policy, Some(band), backend)?;
         if let Some(solid) = cut_region(solid, &tools, id, policy, interrupt)? {
             members.push(
                 solid

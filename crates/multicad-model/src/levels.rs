@@ -1,6 +1,6 @@
 //! Native slabs, pedestals and stairs, service envelopes around placed
 //! equipment with model clearance checks, and their plan graphics.
-use crate::{Model, ModelError, error};
+use crate::{GeometryBackend, Model, ModelError, error};
 use multicad_core::{
     document::{Document, EntityData, EntityId},
     drawings::{DrawingVector, VectorCurve, VectorRole, ViewKind},
@@ -36,6 +36,7 @@ pub(crate) fn build_slab(
     parameters: &EvaluatedParameters,
     id: EntityId,
     policy: GeometryPolicy,
+    backend: GeometryBackend,
 ) -> Result<Solid, ModelError> {
     let e = |e: multicad_core::document::DocumentError| error(Some(id), e);
     let slab = model::resolve_slab(
@@ -58,14 +59,12 @@ pub(crate) fn build_slab(
     for hole in &slab.holes {
         roles.extend(named(id, &format!("cutout.{}.side", hole.id), 4));
     }
-    Solid::extrude_curved_profile_vector_named(
-        &profile,
-        [0., 0., slab.top_mm - slab.bottom_mm],
-        id,
-        &roles,
-        policy,
-    )
-    .map_err(|e| error(Some(id), e))
+    let height = slab.top_mm - slab.bottom_mm;
+    if backend == GeometryBackend::Rust {
+        return crate::rust_backend::stock_profile(id, &profile, &roles, height, policy);
+    }
+    Solid::extrude_curved_profile_vector_named(&profile, [0., 0., height], id, &roles, policy)
+        .map_err(|e| error(Some(id), e))
 }
 
 pub(crate) fn build_stair(
