@@ -17,6 +17,7 @@ use multicad_core::{
     parameters::{BoundExpression, EvaluatedParameters, Unit},
     sketch::Datum,
 };
+use multicad_model::GeometryBackend;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::json;
@@ -621,9 +622,16 @@ pub(super) fn parameters(
     p.validate()?;
     Ok(p)
 }
-pub(super) fn thread_profiles(_: &dyn Host, _: &Request, _: NoArgs) -> ToolResult {
+pub(super) fn thread_profiles(_: &dyn Host, call: &Request, _: NoArgs) -> ToolResult {
+    let rust = call.backend == GeometryBackend::Rust;
     let families:Vec<_> = ThreadFamily::ALL.into_iter().map(|family| {
-        let fit_classes:Vec<_> = if family.supported() && family.is_unified() {
+        let fit_classes:Vec<_> = if rust {
+            match family {
+                ThreadFamily::IsoMetric => vec![ThreadFit::NominalBasic, ThreadFit::Metric6gExternal],
+                ThreadFamily::Custom => vec![ThreadFit::NominalBasic],
+                _ => vec![],
+            }
+        } else if family.supported() && family.is_unified() {
             vec![ThreadFit::Unified2A, ThreadFit::Unified2B]
         } else if matches!(family,ThreadFamily::Bsw|ThreadFamily::Bsf) {
             vec![ThreadFit::WhitworthMediumExternal,ThreadFit::WhitworthMediumInternal]
@@ -638,7 +646,7 @@ pub(super) fn thread_profiles(_: &dyn Host, _: &Request, _: NoArgs) -> ToolResul
         } else if family.supported() {
             vec![ThreadFit::NominalBasic]
         } else {vec![]};
-        json!({"family":family,"label":family.label(),"supported":family.supported(),"source":family.source(),"fit_classes":fit_classes})
+        json!({"family":family,"label":family.label(),"supported":!fit_classes.is_empty(),"source":family.source(),"fit_classes":fit_classes})
     }).collect();
     let unified_presets:Vec<_> = model::unified_thread_presets().into_iter().map(|p|json!({
         "family":p.family,"designation":p.designation,"diameter_mm":p.diameter_mm,"pitch_mm":p.pitch_mm,
@@ -655,7 +663,7 @@ pub(super) fn thread_profiles(_: &dyn Host, _: &Request, _: NoArgs) -> ToolResul
         "engagement_limit_mm":if p.family==ThreadFamily::Bspp {None}else{Some(15.*p.pitch_mm)},
         "source":p.source,"source_url":p.source_url,"profile_source_url":p.profile_source_url,
     })).collect();
-    Ok(json!({"families":families,
+    let mut report = json!({"families":families,
         "metric_source":model::METRIC_THREAD_SOURCE_URL,
         "metric_fit_source":model::METRIC_FIT_SOURCE,"metric_fit_source_url":model::METRIC_FIT_SOURCE_URL,"metric_root_source_url":model::METRIC_ROOT_SOURCE_URL,
         "metric_fit_presets":model::metric_fit_presets(),
@@ -679,7 +687,24 @@ pub(super) fn thread_profiles(_: &dyn Host, _: &Request, _: NoArgs) -> ToolResul
         "rounded_support":{"starts":[1],"included_angle_deg":55,"crest_and_root":"tangent_circular_arcs","axial_allowance_mm":[0],"coating":"uncoated","bspp_sealing":"Parallel fastening thread; sealing is outside the thread. G labels are nominal pipe sizes, not physical inch diameters.","claim":"BSW/BSF: bounded BS 84:2007 Medium rows. BSPP: bounded Elesa+Ganter 2018 table and NBK JIS B 0202:1999 basic form; no pressure-seal, full ISO compliance or physical-fit certification."},
         "unified_support":{"starts":[1],"form":"un_flat_root","coating":"uncoated","max_length_nominal_diameters":1.5,"limits":"Null range endpoints are unspecified; an external minor reference is not an acceptance limit","claim":"Historical sourced dimensions; no current ASME, calibrated-gage or physical-fit certification"},
         "fit":"ISO metric supports nominal basic or listed historical 6g/6H fits; Custom, Trapezoidal and Acme use nominal basic dimensions; lead-screw crest/root clearance is separate from a fit class. UNC/UNF require 2A/2B; BSW/BSF require Medium external/internal; BSPP requires Class B external or the sourced internal class",
-        "runout":"flat_cut_ends","manufacturing":"Cosmetic envelopes are refused for STEP, mesh and print output; select modeled"}))
+        "runout":"flat_cut_ends","manufacturing":"Cosmetic envelopes are refused for STEP, mesh and print output; select modeled"});
+    if rust {
+        report["active_geometry_support"] = json!({
+            "modes": ["new_external"],
+            "representations": ["modeled"],
+            "end_treatments": false,
+            "radial_taper": false,
+            "step": false,
+            "manufacturing_mesh": true,
+            "reference_data_includes_other_backends": true
+        });
+        report["fit"] = json!(
+            "ISO metric supports nominal basic and listed historical external 6g fits. Straight custom profiles use nominal basic dimensions."
+        );
+        report["manufacturing"] =
+            json!("Modeled external threads support certified mesh output. STEP is unavailable.");
+    }
+    Ok(report)
 }
 pub(super) fn inspect_thread(host: &dyn Host, _: &Request, args: InspectThreadArgs) -> ToolResult {
     let (document, revision, evaluated) = snapshot(host)?;

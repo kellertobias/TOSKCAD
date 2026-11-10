@@ -1091,13 +1091,17 @@ impl Compiler {
                     let source =
                         model::read_thread(document, id).map_err(|e| error(Some(id), e))?;
                     let started = std::time::Instant::now();
-                    let solid = crate::threads::build(
-                        id,
-                        &source,
-                        context.parameters(),
-                        &solids,
-                        self.policy,
-                    )?;
+                    let solid = if backend == GeometryBackend::Rust {
+                        crate::threads::build_rust(id, &source, context.parameters(), self.policy)?
+                    } else {
+                        crate::threads::build(
+                            id,
+                            &source,
+                            context.parameters(),
+                            &solids,
+                            self.policy,
+                        )?
+                    };
                     timings.thread_construction_ms += started.elapsed().as_secs_f64() * 1000.;
                     solid
                 }

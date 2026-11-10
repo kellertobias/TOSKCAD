@@ -20,6 +20,65 @@ fn box_session() -> (Session, PrimitiveRequest) {
     session.commit(prepared.prepared).unwrap();
     (session, request)
 }
+
+#[test]
+fn rust_thread_tool_previews_real_m8_ridges_and_cancel_keeps_the_document() {
+    use multicad_ui::modeling::ModelToolController;
+
+    let mut session = Session::new(Document::new("Rust thread tool").unwrap()).unwrap();
+    let resources = ProjectResources::default();
+    let before = session.document().clone();
+    let mut tool = ModelToolController::default();
+    tool.set_backend(Backend::factory(GeometryBackend::Rust).unwrap()());
+    for cancel in [true, false] {
+        tool.begin_thread(&session, &resources, None, &Default::default(), Channel::Ui)
+            .unwrap();
+        assert!(!tool.can_apply(&session, &resources));
+        tool.preview(&session, &resources, Channel::Ui).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while tool.pending() {
+            tool.poll(&session, &resources);
+            assert!(Instant::now() < deadline, "Rust thread preview timed out");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(tool.can_apply(&session, &resources), "{:?}", tool.error());
+        let scene = tool.display_scene(&session, &resources).unwrap();
+        assert_eq!(scene.instances().len(), 1);
+        let hit = |z| {
+            scene
+                .pick_face(viewport::Ray::new([10., 0., z], [-1., 0., 0.]).unwrap())
+                .unwrap()
+        };
+        let crest = hit(2.5);
+        let root = hit(3.125);
+        assert!(crest.point_mm[0] > 3.9, "{:?}", crest.point_mm);
+        assert!(root.point_mm[0] < 3.6, "{:?}", root.point_mm);
+        assert_ne!(crest.key, root.key);
+        // A right-hand turn advances the crest by one quarter pitch from +X to +Y.
+        let y_hit = |z| {
+            scene
+                .pick_face(viewport::Ray::new([0., 10., z], [0., -1., 0.]).unwrap())
+                .unwrap()
+                .point_mm[1]
+        };
+        assert!(y_hit(2.5 + 1.25 / 4.) > 3.9);
+        assert!(y_hit(2.5 - 1.25 / 4.) < 3.6);
+        assert_eq!(session.document(), &before);
+        if cancel {
+            tool.cancel();
+            assert!(tool.display_scene(&session, &resources).is_none());
+            assert_eq!(session.revision(), 0);
+        } else {
+            let outputs = tool.apply(&mut session, &resources).unwrap();
+            assert_eq!(outputs.len(), 1);
+            assert_eq!(session.revision(), 1);
+            let source = model::read_thread(session.document(), outputs[0].feature).unwrap();
+            assert_eq!(source.output.body, outputs[0].body);
+            assert_eq!(source.parameters, model::ThreadParameters::default());
+        }
+    }
+}
+
 #[test]
 fn native_reusable_assembly_publishes_one_root_and_exact_explodable_leaf_receipts() {
     reusable_assembly_scene(GeometryBackend::OpenCascade);

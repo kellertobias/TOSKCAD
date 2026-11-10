@@ -3,7 +3,10 @@ mod end_treatments;
 use crate::{ModelError, error};
 use multicad_core::{
     document::EntityId,
-    model::{ResolvedThread, ThreadDefinition, ThreadHand, ThreadMode, ThreadRepresentation},
+    model::{
+        ResolvedThread, ThreadDefinition, ThreadFamily, ThreadHand, ThreadMode,
+        ThreadRepresentation,
+    },
     parameters::EvaluatedParameters,
     references::Origin,
 };
@@ -102,6 +105,79 @@ pub(crate) fn build(
         .transpose()?;
     build_resolved(feature, resolved, source.mode, target, policy)
 }
+
+fn helical_spec(thread: &ResolvedThread) -> HelicalThread {
+    let profile = thread.profile;
+    HelicalThread {
+        major_radius_mm: thread.major_radius_mm,
+        pitch_mm: thread.pitch_mm,
+        length_mm: thread.length_mm,
+        depth_mm: profile.depth_mm,
+        crest_width_mm: profile.crest_width_mm,
+        lower_flank_deg: profile.lower_flank_deg,
+        upper_flank_deg: profile.upper_flank_deg,
+        radial_taper: profile.radial_taper,
+        starts: thread.starts,
+        left_hand: thread.hand == ThreadHand::Left,
+    }
+}
+
+pub(crate) fn build_rust(
+    feature: EntityId,
+    source: &ThreadDefinition,
+    parameters: &EvaluatedParameters,
+    policy: GeometryPolicy,
+) -> Result<Solid, ModelError> {
+    let fail = |message| error(Some(feature), message);
+    if source.mode != ThreadMode::NewExternal {
+        return Err(fail(
+            "Rust thread geometry does not yet support receiving cuts",
+        ));
+    }
+    if !matches!(
+        source.parameters.family,
+        ThreadFamily::IsoMetric | ThreadFamily::Custom
+    ) {
+        return Err(fail(
+            "Rust thread geometry currently supports ISO metric and straight custom profiles",
+        ));
+    }
+    let thread = source
+        .parameters
+        .resolve(parameters, source.mode)
+        .map_err(|error| crate::error(Some(feature), error))?;
+    if thread.representation != ThreadRepresentation::Modeled {
+        return Err(fail(
+            "Rust thread geometry currently requires the Modeled representation",
+        ));
+    }
+    if thread.end_treatments.is_some() {
+        return Err(fail(
+            "Rust thread geometry does not yet support end treatments",
+        ));
+    }
+    if thread.profile.radial_taper != 0. || thread.profile.rounding_radius_mm.is_some() {
+        return Err(fail(
+            "Rust thread geometry requires an untapered profile without crest rounding",
+        ));
+    }
+    Solid::rust_helical_thread(
+        helical_spec(&thread),
+        thread
+            .metric_fit
+            .as_ref()
+            .and_then(|fit| fit.external_root_radius_mm),
+        feature,
+        PlaneFrame {
+            origin: thread.frame.origin,
+            u: thread.frame.u,
+            v: thread.frame.v,
+        },
+        policy,
+    )
+    .map_err(|error| crate::error(Some(feature), error))
+}
+
 /// Reuse the same native thread and receiving-wall checks inside a typed
 /// mechanical Part, without inventing a second canonical thread definition.
 pub(crate) fn build_resolved(
@@ -127,16 +203,8 @@ pub(crate) fn build_resolved(
             Solid::root_rounded_helical_thread_named(
                 RootRoundedHelicalThread {
                     profile: HelicalThread {
-                        major_radius_mm: resolved.major_radius_mm,
-                        pitch_mm: resolved.pitch_mm,
-                        length_mm: resolved.length_mm,
-                        depth_mm: profile.depth_mm,
-                        crest_width_mm: profile.crest_width_mm,
-                        lower_flank_deg: profile.lower_flank_deg,
-                        upper_flank_deg: profile.upper_flank_deg,
                         radial_taper: 0.,
-                        starts: resolved.starts,
-                        left_hand: resolved.hand == ThreadHand::Left,
+                        ..helical_spec(&resolved)
                     },
                     root_radius_mm,
                 },
@@ -146,18 +214,7 @@ pub(crate) fn build_resolved(
         } else if let Some(npt) = &resolved.npt {
             Solid::axial_flat_helical_thread_named(
                 AxialFlatHelicalThread {
-                    profile: HelicalThread {
-                        major_radius_mm: resolved.major_radius_mm,
-                        pitch_mm: resolved.pitch_mm,
-                        length_mm: resolved.length_mm,
-                        depth_mm: profile.depth_mm,
-                        crest_width_mm: profile.crest_width_mm,
-                        lower_flank_deg: profile.lower_flank_deg,
-                        upper_flank_deg: profile.upper_flank_deg,
-                        radial_taper: profile.radial_taper,
-                        starts: resolved.starts,
-                        left_hand: resolved.hand == ThreadHand::Left,
-                    },
+                    profile: helical_spec(&resolved),
                     crest_radius_limit_mm: npt.stock_crest_radius_limit_mm,
                 },
                 feature,
@@ -193,22 +250,7 @@ pub(crate) fn build_resolved(
                 policy,
             )
         } else {
-            Solid::helical_thread_named(
-                HelicalThread {
-                    major_radius_mm: resolved.major_radius_mm,
-                    pitch_mm: resolved.pitch_mm,
-                    length_mm: resolved.length_mm,
-                    depth_mm: profile.depth_mm,
-                    crest_width_mm: profile.crest_width_mm,
-                    lower_flank_deg: profile.lower_flank_deg,
-                    upper_flank_deg: profile.upper_flank_deg,
-                    radial_taper: profile.radial_taper,
-                    starts: resolved.starts,
-                    left_hand: resolved.hand == ThreadHand::Left,
-                },
-                feature,
-                policy,
-            )
+            Solid::helical_thread_named(helical_spec(&resolved), feature, policy)
         }
         .map_err(|e| error(Some(feature), e))?;
         let local = end_treatments::apply(feature, local, &resolved, mode, policy)?;

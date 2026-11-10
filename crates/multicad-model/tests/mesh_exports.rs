@@ -886,6 +886,101 @@ fn rust_export_worker_round_trips_four_certified_mesh_formats_and_assembly_place
 }
 
 #[test]
+fn rust_export_worker_writes_watertight_metric_threads_to_stl_and_3mf() {
+    use model::{ThreadHand, ThreadParameters, ThreadRequest};
+
+    let mut session = Session::new(Document::new("Thread manufacturing exports").unwrap()).unwrap();
+    let thread = ThreadRequest::new(
+        "M8 × 1.25 left",
+        ThreadParameters {
+            length: length(9.2),
+            hand: ThreadHand::Left,
+            ..Default::default()
+        },
+    );
+    let prepared = model::prepare_thread(&session, 0, actor(), &thread).unwrap();
+    session.commit(prepared.prepared).unwrap();
+    let set = EntityId::new();
+    let definition = SetDefinition {
+        recipes: [MeshFormat::Stl, MeshFormat::ThreeMf]
+            .into_iter()
+            .map(|format| mesh(format, LengthUnit::Millimeter, HierarchyMode::SeparateParts))
+            .collect(),
+        ..Default::default()
+    };
+    let prepared = prepare_set(&session, 1, actor(), set, "Manufacturing", &definition).unwrap();
+    session.commit(prepared).unwrap();
+
+    let document = session.document();
+    let revision = session.revision();
+    let worker =
+        ExportWorker::with_geometry_backend(Exporter::default(), GeometryBackend::Rust).unwrap();
+    worker.preview(document, revision, set, actor()).unwrap();
+    let ExportResult::Preview(preview) = next_reply(&worker) else {
+        panic!("expected thread mesh preview");
+    };
+    let preview = preview.unwrap();
+    assert!(preview.can_run(), "{:?}", preview.recipes);
+    assert!(preview.provider.contains("mesh-files.rust-certified.1"));
+    let directory = tempfile::tempdir().unwrap();
+    worker
+        .run(document, revision, &preview.key, directory.path(), actor())
+        .unwrap();
+    let ExportResult::Run(receipt) = next_reply(&worker) else {
+        panic!("expected thread mesh publication");
+    };
+    let receipt = receipt.unwrap();
+    assert_eq!(receipt.files.len(), 2);
+    for file in &receipt.files {
+        let artifact = &file.artifact;
+        let name = &artifact.output.filename;
+        assert_eq!(artifact.producer, thread.feature);
+        assert_eq!(artifact.solid_count, 1);
+        let evidence = artifact.mesh.as_ref().unwrap();
+        assert_eq!((evidence.objects, evidence.build_items), (1, 1));
+        assert_eq!(evidence.chord_deviation_mm, 0.05);
+
+        let bytes = std::fs::read(Path::new(&receipt.directory).join(name)).unwrap();
+        let triangles = if name.ends_with(".stl") {
+            let (header, triangles) = parse_stl(&bytes);
+            assert!(header.contains("units=millimeter"), "{header}");
+            triangles
+        } else {
+            assert!(name.ends_with(".3mf"), "unexpected artifact {name}");
+            let entries = unzip(&bytes);
+            let package = parse_3mf(&entries["3D/3dmodel.model"]);
+            assert_eq!(package.unit, "millimeter");
+            assert_eq!((package.objects.len(), package.items.len()), (1, 1));
+            package.placed(0)
+        };
+        assert_eq!(triangles.len(), evidence.triangles);
+        assert_closed_winding(&triangles);
+        assert_bounds(bounds(&triangles), [[-4., -4., 0.], [4., 4., 9.2]], 0.05);
+        near(volume(&triangles), evidence.mesh_volume_mm3, 0.001);
+        near(evidence.mesh_volume_mm3, artifact.volume_mm3, 2.);
+        // An exact cylindrical envelope would have one side radius everywhere.
+        let mut wall_radii = triangles
+            .iter()
+            .flatten()
+            .filter(|p| (1. ..8.).contains(&p[2]))
+            .map(|p| p[0].hypot(p[1]));
+        assert!(wall_radii.clone().any(|radius| radius > 3.99));
+        assert!(wall_radii.any(|radius| (3.3..3.4).contains(&radius)));
+        // For a left-hand thread the crest phase stays constant as Z falls
+        // with increasing angle, with a tolerance for its physical flat width.
+        let crest_vertices = triangles
+            .iter()
+            .flatten()
+            .filter(|p| (1. ..8.).contains(&p[2]) && p[0].hypot(p[1]) > 3.99999);
+        assert!(crest_vertices.clone().count() > 100);
+        for p in crest_vertices {
+            let phase = (p[2] + p[1].atan2(p[0]) * 1.25 / std::f64::consts::TAU).rem_euclid(1.25);
+            assert!(phase.min(1.25 - phase) < 1.25 / 16. + 1e-5);
+        }
+    }
+}
+
+#[test]
 fn rust_export_refuses_collapsed_float_positions_and_keeps_glb_resource_placements_separate() {
     let mut f = Fixture::new();
     let distant = [9_000_000., 0., 0.];

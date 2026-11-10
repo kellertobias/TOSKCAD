@@ -173,6 +173,102 @@ impl multicad_mcp::Storage for ProjectStore {
         .map_err(|e| e.to_string())
     }
 }
+
+#[test]
+fn rust_mcp_models_edits_and_reopens_a_metric_thread_without_fallback() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("thread.tcd");
+    let backend = multicad_model::GeometryBackend::Rust;
+    let open = || {
+        Headless::with_geometry_backend(
+            Workspace::project(path.clone(), Box::new(ProjectStore)).unwrap(),
+            Some(directory.path().into()),
+            false,
+            backend,
+        )
+    };
+    let h = open();
+    let profiles = run(&h, "thread_profiles", json!({}));
+    assert_eq!(
+        profiles["active_geometry_support"]["modes"],
+        json!(["new_external"])
+    );
+    assert_eq!(profiles["active_geometry_support"]["step"], false);
+    let families = profiles["families"].as_array().unwrap();
+    let metric = families
+        .iter()
+        .find(|entry| entry["family"] == "iso_metric")
+        .unwrap();
+    assert_eq!(
+        metric["fit_classes"],
+        json!(["nominal_basic", "metric_6g_external"])
+    );
+    assert!(
+        families
+            .iter()
+            .any(|entry| entry["family"] == "unc" && entry["supported"] == false)
+    );
+    let request = json!({
+        "expected_revision":0,"name":"M8 × 1.25","family":"iso_metric",
+        "major_diameter":mm(8.),"pitch":mm(1.25),"length":mm(12.5)
+    });
+    let cancelled = dispatch(&h, &call(true), "set_thread", request.clone()).unwrap_err();
+    assert_eq!(cancelled.code, "cancelled");
+    let result = run(&h, "set_thread", request);
+    let thread = feature(&result);
+    let part = result["part"].clone();
+    let shape = run(&h, "evaluate_model", json!({}))["parts"][0].clone();
+    assert_eq!(shape["solid_count"], 1);
+    assert_eq!(shape["feature"], thread.to_string());
+    let volume = shape["volume_mm3"].as_f64().unwrap();
+    assert!(volume > 400. && volume < 600.);
+    assert_eq!(shape["bounds_mm"]["max"][2], 12.5);
+    let edit = run(
+        &h,
+        "set_thread",
+        json!({"expected_revision":1,"thread":thread,"hand":"left","length":mm(10.)}),
+    );
+    assert_eq!(edit["part"], part);
+    assert_eq!(feature(&edit), thread);
+    let before_rejection = h.document();
+    let rejected = dispatch(
+        &h,
+        &call(false),
+        "set_thread",
+        json!({"expected_revision":2,"name":"Unsupported UNC","family":"unc",
+            "fit":"unified_2a","major_diameter":{"value":0.25,"unit":"in"},
+            "pitch":{"value":0.05,"unit":"in"},"length":mm(2.5)}),
+    )
+    .unwrap_err();
+    assert!(
+        rejected.message.contains("Rust thread geometry"),
+        "{rejected:?}"
+    );
+    assert_eq!(h.document(), before_rejection);
+
+    let unsupported_step = dispatch(
+        &h,
+        &call(false),
+        "export_step",
+        json!({"part":part,"file_name":"thread.step"}),
+    )
+    .unwrap_err();
+    assert_eq!(unsupported_step.code, "export_failed");
+    assert!(!directory.path().join("thread.step").exists());
+    assert!(!directory.path().join(".thread.step.partial.step").exists());
+
+    run(&h, "save_project", json!({"expected_revision":2}));
+    drop(h);
+    let reopened = open();
+    let source = run(&reopened, "inspect_thread", json!({"thread":thread}));
+    assert_eq!(source["part"], part);
+    assert_eq!(source["resolved"]["hand"], "left");
+    assert_eq!(source["resolved"]["physical_length_mm"], 10.);
+    let shape = run(&reopened, "evaluate_model", json!({}))["parts"][0].clone();
+    let edited_volume = shape["volume_mm3"].as_f64().unwrap();
+    assert!((edited_volume - volume * 0.8).abs() < 1e-7);
+}
+
 #[test]
 fn unc_and_unf_mcp_pairs_keep_fits_through_partial_edits_history_saved_reopen_and_native_step() {
     use multicad_mcp::Storage;
