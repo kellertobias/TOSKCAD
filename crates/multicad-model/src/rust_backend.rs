@@ -43,6 +43,7 @@ pub(crate) fn validate_document(
                     | (model::TRANSFORM_TYPE, model::TRANSFORM_SCHEMA)
                     | (model::ALIGN_TYPE, model::ALIGN_SCHEMA)
                     | (model::SLAB_TYPE, 1)
+                    | (model::STAIR_TYPE, 1)
                     | (
                         model::WALL_TYPE,
                         model::WALL_SCHEMA | model::LAYERED_WALL_SCHEMA

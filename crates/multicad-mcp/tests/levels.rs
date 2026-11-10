@@ -28,6 +28,48 @@ fn near(a: f64, b: f64) {
 }
 
 #[test]
+fn rust_mcp_rebuilds_the_stair_when_its_upper_level_changes() {
+    let host = Headless::with_geometry_backend(
+        Workspace::new(Document::new("Rust stairs").unwrap()).unwrap(),
+        None,
+        false,
+        multicad_model::GeometryBackend::Rust,
+    );
+    let run = |name: &str, arguments: Value| dispatch(&host, &call(), name, arguments);
+    let ground = run(
+        "set_level",
+        json!({"expected_revision":0,"name":"Ground","elevation":mm(0.),
+            "height":mm(3000.),"slab_thickness":mm(200.)}),
+    )
+    .unwrap();
+    let upper = run(
+        "set_level",
+        json!({"expected_revision":1,"name":"Upper","elevation":mm(3000.),
+            "height":mm(3000.),"slab_thickness":mm(200.)}),
+    )
+    .unwrap();
+    let stair = run(
+        "set_stair",
+        json!({"expected_revision":2,"name":"Turning stair","level":ground["level"],
+            "to_level":upper["level"],"form":"quarter_left","start_mm":[500,6000],
+            "width":mm(1000.),"risers":16,"going":mm(280.)}),
+    )
+    .unwrap();
+    assert_eq!(stair["solid_count"], 1);
+    run(
+        "set_level",
+        json!({"expected_revision":3,"level":upper["level"],"elevation":mm(3200.),
+            "height":mm(3000.),"slab_thickness":mm(200.)}),
+    )
+    .unwrap();
+    let evaluated = run("evaluate_model", json!({})).unwrap();
+    let parts = evaluated["parts"].as_array().unwrap();
+    assert_eq!(parts.len(), 1);
+    assert_eq!(parts[0]["solid_count"], 1);
+    near(parts[0]["bounds_mm"]["max"][2].as_f64().unwrap(), 3200.);
+}
+
+#[test]
 fn mcp_builds_levels_stairs_and_envelopes_and_reports_clearances() {
     let host = Headless::new(
         Workspace::new(Document::new("Levels").unwrap()).unwrap(),

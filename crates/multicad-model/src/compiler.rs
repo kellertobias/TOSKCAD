@@ -1149,9 +1149,13 @@ impl Compiler {
                     timings.gear_construction_ms += started.elapsed().as_secs_f64() * 1000.;
                     solid
                 }
-                (model::STAIR_TYPE, 1) => {
-                    crate::levels::build_stair(document, context.parameters(), id, self.policy)?
-                }
+                (model::STAIR_TYPE, 1) => crate::levels::build_stair(
+                    document,
+                    context.parameters(),
+                    id,
+                    self.policy,
+                    backend,
+                )?,
                 (model::PANEL_TYPE, model::PANEL_SCHEMA | model::RECIPE_PANEL_SCHEMA) => {
                     let (solid, frame) = crate::cabinetry::build(
                         document,

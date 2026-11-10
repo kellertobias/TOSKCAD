@@ -93,6 +93,7 @@ pub(crate) fn build_stair(
     parameters: &EvaluatedParameters,
     id: EntityId,
     policy: GeometryPolicy,
+    backend: GeometryBackend,
 ) -> Result<Solid, ModelError> {
     let e = |e: multicad_core::document::DocumentError| error(Some(id), e);
     let stair = model::resolve_stair(
@@ -101,8 +102,7 @@ pub(crate) fn build_stair(
         &model::read_stair(document, id).map_err(e)?,
     )
     .map_err(e)?;
-    let mut result: Option<Solid> = None;
-    for piece in &stair.pieces {
+    let pieces = stair.pieces.iter().map(|piece| {
         let profile = CurvedProfile {
             frame: PlaneFrame {
                 origin: [piece.origin[0], piece.origin[1], piece.base_z_mm],
@@ -117,23 +117,35 @@ pub(crate) fn build_stair(
             piece.along[0] * piece.width_mm,
             0.,
         ];
-        let solid = Solid::extrude_curved_profile_vector_named(
-            &profile,
-            left,
-            id,
-            &named(id, &format!("{}.edge", piece.role), piece.profile.len()),
-            policy,
-        )
-        .map_err(|e| error(Some(id), e))?;
-        result = Some(match result {
-            None => solid,
-            Some(r) => r
-                .boolean(&solid, BooleanOperation::Union, policy)
+        let roles = named(id, &format!("{}.edge", piece.role), piece.profile.len());
+        match backend {
+            GeometryBackend::OpenCascade => {
+                Solid::extrude_curved_profile_vector_named(&profile, left, id, &roles, policy)
+            }
+            GeometryBackend::Rust => {
+                Solid::rust_extrude_linear_named(&profile, left, 0., id, &roles, policy)
+            }
+        }
+        .map_err(|e| error(Some(id), e))
+    });
+    let solid = if backend == GeometryBackend::Rust && stair.pieces.len() > 1 {
+        let solids = pieces.collect::<Result<Vec<_>, _>>()?;
+        let operands = solids.iter().collect::<Vec<_>>();
+        Solid::union_planar_pieces(&operands, id, policy)
+            .ok_or_else(|| error(Some(id), "Stair flights have unsupported planar geometry"))?
+            .map_err(|e| error(Some(id), e))?
+    } else {
+        let mut pieces = pieces;
+        let first = pieces
+            .next()
+            .ok_or_else(|| error(Some(id), "Stair has no flights"))??;
+        pieces.try_fold(first, |stock, piece| {
+            stock
+                .boolean(&piece?, BooleanOperation::Union, policy)
                 .map_err(|e| error(Some(id), e))?
-                .ok_or_else(|| error(Some(id), "Stair pieces produced no material"))?,
-        });
-    }
-    let solid = result.ok_or_else(|| error(Some(id), "Stair has no flights"))?;
+                .ok_or_else(|| error(Some(id), "Stair pieces produced no material"))
+        })?
+    };
     if solid.solid_count().map_err(|e| error(Some(id), e))? != 1 {
         return Err(error(
             Some(id),

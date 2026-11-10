@@ -13,7 +13,9 @@ use multicad_core::{
     project_file::{self, ProjectFile},
     references::ReferenceFrame,
 };
-use multicad_model::{Compiler, DrawingProviders, Model};
+use multicad_model::{
+    Compiler, DrawingProviders, GeometryBackend, Model, export::verify_rust_step_shape,
+};
 
 fn actor() -> Actor {
     Actor::local(Channel::Ui)
@@ -73,6 +75,79 @@ fn stair(level: EntityId, top: EntityId, form: StairForm) -> StairDefinition {
 /// the last column `top` deep, all lifted by `lift`.
 fn flight_area(n: f64, riser: f64, going: f64, lift: f64, top: f64) -> f64 {
     going * ((n - 1.) * lift + riser * (n - 1.) * n / 2.) + top * (lift + n * riser)
+}
+
+#[test]
+fn rust_stairs_preserve_rotated_flights_landings_and_manufacturing_geometry() {
+    let mut session = Session::new(Document::new("Rotated stairs").unwrap()).unwrap();
+    let bottom = level(&mut session, "Ground", 100.);
+    let top = level(&mut session, "Upper", 3100.);
+    let mut features = Vec::new();
+    for (form, direction_deg) in [
+        (StairForm::Straight, 20.),
+        (StairForm::QuarterTurn { turn: Turn::Left }, 27.),
+        (StairForm::HalfTurn { turn: Turn::Right }, -31.),
+    ] {
+        let definition = StairDefinition {
+            direction_deg,
+            ..stair(bottom, top, form)
+        };
+        let prepared = model::prepare_stair(
+            &session,
+            session.revision(),
+            actor(),
+            "Stair",
+            &definition,
+            None,
+        )
+        .unwrap();
+        features.push(prepared.outputs[0].feature);
+        session.commit(prepared.prepared).unwrap();
+    }
+    let compiler = Compiler::default();
+    let [rust, native] = [GeometryBackend::Rust, GeometryBackend::OpenCascade].map(|backend| {
+        compiler
+            .compile_sources_with_backend(
+                session.document(),
+                session.revision(),
+                &features,
+                backend,
+                None,
+            )
+            .unwrap_or_else(|cause| panic!("{backend:?}: {cause}"))
+    });
+    let scratch = tempfile::tempdir().unwrap();
+    for feature in features {
+        let [actual, expected] = [&rust, &native].map(|m| m.solid(feature).unwrap());
+        assert!(actual.uses_rust_geometry());
+        assert_eq!(actual.solid_count().unwrap(), 1);
+        let volume = expected.volume_mm3().unwrap();
+        near(actual.volume_mm3().unwrap(), volume, 1e-8 * volume);
+        let [a, b] = [actual, expected].map(|solid| solid.bounds().unwrap());
+        for i in 0..3 {
+            near(a.min[i], b.min[i], 1e-7);
+            near(a.max[i], b.max[i], 1e-7);
+        }
+        assert!(
+            !actual
+                .manufacturing_mesh_with_receipt(Default::default())
+                .unwrap()
+                .mesh
+                .indices
+                .is_empty()
+        );
+        let path = scratch.path().join(format!("stair-{feature}.step"));
+        actual.write_step(&path).unwrap();
+        let reopened = multicad_kernel::Solid::read_step(&path, compiler.policy).unwrap();
+        near(reopened.volume_mm3().unwrap(), volume, 1e-8 * volume);
+        let receipt = verify_rust_step_shape(
+            &path,
+            &rust.snapshot().shapes[&feature],
+            compiler.policy.linear_tolerance_mm,
+        )
+        .unwrap();
+        near(receipt, volume, 1e-8 * volume);
+    }
 }
 
 #[test]
