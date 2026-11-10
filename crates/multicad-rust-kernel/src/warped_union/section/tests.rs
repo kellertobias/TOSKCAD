@@ -191,12 +191,146 @@ fn mixed_section_keeps_clockwise_exact_arcs_between_two_tilted_rims() {
 }
 
 #[test]
-fn mixed_section_refuses_an_authored_trim_vertex_without_rephasing() {
+fn a_planar_sweep_section_crosses_a_cap_vertex_with_exact_area() {
+    let profile = rectangle([[0., 0.], [10., 0.], [10., 8.], [0., 8.]]);
+    let sweep = crate::normal_sweep::Sweep::new(
+        vec![profile.into_iter().map(|(edge, _)| edge).collect()],
+        10.,
+        TOL,
+        1e-5,
+    )
+    .unwrap();
+    let shell = normal_sweep_shell(&sweep, false, TOL).unwrap();
+    let corner = [10., 0., 0.];
+    let normal = unit([1., 0.25, 0.3]).unwrap();
+    let loops = shell.section(corner, normal, TOL, 100).unwrap();
+    assert_eq!(loops.len(), 1);
+    assert_eq!(loops[0].len(), 4);
+    assert!(loops[0].iter().any(|edge| edge.ends_mm[0] == corner));
+    assert!((area(&loops, normal) * normal[2] - 24.).abs() < TOL);
+}
+
+#[test]
+fn mixed_section_crosses_a_planar_cap_corner_without_moving_it() {
+    let shell = mixed_miter_fixture();
+    let corner = [3., -2., 0.];
+    let normal = unit([1., 0.17, 0.3]).unwrap();
+    let loops = shell.section(corner, normal, TOL, 100).unwrap();
+    assert_eq!(loops.len(), 1);
+    let projected_area = 24. - FRAC_PI_2 - 0.5 * 4. * 0.68;
+    assert!((area(&loops, normal) * normal[2] - projected_area).abs() < TOL);
+    assert_eq!(
+        loops[0]
+            .iter()
+            .filter(|edge| edge.ends_mm[0] == corner)
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn mixed_section_joins_a_planar_wall_and_ellipse_at_the_authored_joint() {
+    let shell = mixed_miter_fixture();
+    let joint = [1., 2., 19.];
+    let normal = unit([1., 0.2, 0.3]).unwrap();
+    let loops = shell.section(joint, normal, TOL, 100).unwrap();
+    assert_eq!(loops.len(), 1);
+    let touching: Vec<_> = loops[0]
+        .iter()
+        .filter(|edge| edge.ends_mm.contains(&joint))
+        .map(|edge| edge.curve)
+        .collect();
+    let [Curve::Line, Curve::Ellipse(arc)] = touching.as_slice() else {
+        panic!("Expected one line and one exact ellipse at the joint: {touching:?}");
+    };
+    let [major, minor] = arc.ellipse().semiaxes_mm();
+    assert!((major * normal[0] - 1.).abs() < TOL);
+    assert!((minor - 1.).abs() < TOL);
+    let measured = area(&loops, normal);
+    let nearby = [-1e-4, 1e-4].map(|offset| {
+        let cut = translate(joint, normal, offset);
+        area(&shell.section(cut, normal, TOL, 100).unwrap(), normal)
+    });
+    assert!((measured - nearby[0].midpoint(nearby[1])).abs() < TOL);
+}
+
+#[test]
+fn mixed_section_refuses_a_cut_containing_an_authored_rail() {
     let shell = mixed_miter_fixture();
     // This cut contains the start-cap join between a planar flank and the
     // circular notch. The circular-only repartition cannot move that join.
     assert_eq!(
         shell.section([1., 2., 0.], X, TOL, 100),
+        Err(Error::Unsupported)
+    );
+}
+
+#[test]
+fn mixed_section_refuses_nearby_vertices_tangencies_and_pinches() {
+    let shell = mixed_miter_fixture();
+    assert!(
+        shell
+            .section([-3., -2., 0.], [1., 0.25, 0.3], TOL, 100)
+            .unwrap()
+            .is_empty()
+    );
+    let normal = unit([1., 0.17, 0.3]).unwrap();
+    let near_vertex = translate([3., -2., 0.], normal, TOL / 2.);
+    assert_eq!(
+        shell.section(near_vertex, normal, TOL, 100),
+        Err(Error::Unsupported)
+    );
+    // The section is tangent to the notch arc at the first cap.
+    assert_eq!(
+        shell.section([1., 2., 0.], [1., 0., 0.35], TOL, 100),
+        Err(Error::Unsupported)
+    );
+    // At this joint both rails leave on one side and both rims on the
+    // other. Four faces meet the same section vertex, forming a pinch.
+    let joint = [3., -2., 17.];
+    let normal = unit([1., -0.25, -0.3]).unwrap();
+    let distances: Vec<_> = shell
+        .vertices()
+        .iter()
+        .map(|&p| dot(sub(p, joint), normal))
+        .collect();
+    let contacts = VertexContacts::new(&shell, &distances, joint, normal, TOL).unwrap();
+    assert_eq!(
+        shell
+            .faces()
+            .iter()
+            .flat_map(|face| contacts.crossings(&shell, &face.boundary))
+            .filter(|hit| hit.point == joint)
+            .count(),
+        4
+    );
+    assert_eq!(
+        shell.section(joint, normal, TOL, 100),
+        Err(Error::Unsupported)
+    );
+}
+
+#[test]
+fn an_arc_endpoint_and_a_second_interior_root_are_certified_separately() {
+    let circle = Ellipse::new([0.; 3], Z, X, [1.; 2]).unwrap();
+    let phase = std::f64::consts::FRAC_PI_6;
+    let arc = EllipseArc::new(circle, phase, -FRAC_PI_2).unwrap();
+    let start = arc.endpoints()[0];
+    let plane = Plane::new(start, X).unwrap();
+    let hits = vertices::interior_arc_hits(arc, plane, [Some(start), None], TOL).unwrap();
+    assert_eq!(hits.len(), 1);
+    assert!(length3(sub(hits[0], circle.point_at(-phase))) < TOL);
+    assert_eq!(
+        vertices::interior_arc_hits(arc, plane, [Some([start[0], 2., 0.]), None], TOL),
+        Err(Error::Unsupported)
+    );
+    let tangent = Plane::new([1., 0., 0.], X).unwrap();
+    assert_eq!(
+        vertices::interior_arc_hits(arc, tangent, [Some(start), None], TOL),
+        Err(Error::Unsupported)
+    );
+    assert_eq!(
+        vertices::interior_arc_hits(arc, plane, [Some(start), None], 1.),
         Err(Error::Unsupported)
     );
 }
@@ -502,6 +636,7 @@ fn section_state(shell: &Shell, normal: Point) -> Section {
         tolerance: TOL,
         limit: 10,
         hits: vec![Vec::new(); shell.edges.len()],
+        vertices: None,
         edges: BTreeMap::new(),
     }
 }
@@ -591,7 +726,7 @@ fn inconsistent_face_intersections_fail_closed() {
 
     let mut state = section_state(&shell, X);
     state.hits[a].push(hit(a, [3.5, 2., 0.]));
-    assert_eq!(state.planar(face, Z), Err(Error::Unsupported));
+    assert_eq!(state.planar(&shell, face, Z), Err(Error::Unsupported));
     assert_eq!(
         state.add([hit(a, [0.; 3]), hit(b, [0.; 3])], Curve::Line),
         Err(Error::Unsupported)
