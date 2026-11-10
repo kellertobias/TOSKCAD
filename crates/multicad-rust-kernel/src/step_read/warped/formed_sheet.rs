@@ -10,7 +10,7 @@ use crate::{
     warped_union::{SheetFlange, SheetFlangeOpening, SheetWebEdge, formed_sheet_with_openings},
 };
 
-const MAX_BEND_WALLS: usize = 4;
+const MAX_BEND_WALLS: usize = 8;
 
 struct Wire<'a, 'reader, 'input> {
     reader: &'a Shell<'reader, 'input>,
@@ -127,6 +127,14 @@ struct Bend {
     caps: [usize; 2],
 }
 
+impl Bend {
+    fn cap_pair(&self) -> [usize; 2] {
+        let mut caps = self.caps;
+        caps.sort_unstable();
+        caps
+    }
+}
+
 fn reverse(wire: &[(u32, bool)]) -> impl Iterator<Item = (u32, bool)> + Clone + '_ {
     wire.iter().rev().map(|&(edge, forward)| (edge, !forward))
 }
@@ -141,7 +149,14 @@ pub(super) fn reconstruct(
         .filter_map(|i| wire.bend(i, &incidence).transpose())
         .take(MAX_BEND_WALLS + 1)
         .collect::<Result<Vec<_>>>()?;
-    if !matches!(bends.len(), 2 | 4) {
+    // Each regular flange has an inner and outer bend sharing the same
+    // two end caps. Adjacent flanges remain separate groups.
+    let mut groups = BTreeMap::new();
+    for bend in &bends {
+        *groups.entry(bend.cap_pair()).or_insert(0usize) += 1;
+    }
+    if bends.is_empty() || bends.len() > MAX_BEND_WALLS || groups.values().any(|&count| count != 2)
+    {
         return Ok(None);
     }
     let candidates = bends
@@ -199,12 +214,14 @@ fn replay(
 
     let mut web = Vec::with_capacity(bottom.loop_.len());
     let mut sections = Vec::new();
+    let mut matched_groups = BTreeSet::new();
     for (ordinal, usage) in reverse(&bottom.loop_).enumerate() {
         let [a, b] = wire.line(usage)?;
         let hinge = if let Some(bend) = bends
             .iter()
             .find(|bend| bend.rails.contains(&(usage.0, lower)))
         {
+            matched_groups.insert(bend.cap_pair());
             let index = sections.len();
             sections.push(flange_section(wire, incidence, bend, [a, b], up, height)?);
             Some(index)
@@ -220,7 +237,7 @@ fn replay(
             flange: hinge,
         });
     }
-    if sections.len() * 2 != bends.len() {
+    if sections.len() * 2 != bends.len() || matched_groups.len() != sections.len() {
         return Err(ReadError::Unsupported);
     }
     let flanges = sections

@@ -12,13 +12,7 @@ use std::collections::BTreeMap;
 pub(super) fn build(layout: &mut SheetLayout, policy: GeometryPolicy) -> Result<Solid, String> {
     let thickness = layout.thickness_mm;
     let count = layout.flanges.len();
-    if count > 2
-        || (count == 2
-            && layout.flanges[0]
-                .flange
-                .edge
-                .abs_diff(layout.flanges[1].flange.edge)
-                != 2)
+    if !(1..=4).contains(&count)
         || layout.flanges.iter().any(|f| {
             !matches!(
                 f.flange.segments.as_slice(),
@@ -26,7 +20,9 @@ pub(super) fn build(layout: &mut SheetLayout, policy: GeometryPolicy) -> Result<
             )
         })
     {
-        return Err("Rust inset formed sheet requires one bend or two opposite bends".into());
+        return Err(
+            "Rust inset formed sheet supports up to four flanges with one bend each".into(),
+        );
     }
     let mut origins = Vec::new();
     let feature = layout.forming_feature;

@@ -17,10 +17,10 @@ use multicad_core::{
     },
 };
 use multicad_model::{
-    Compiler, DevelopedPattern,
+    Compiler, DevelopedPattern, GeometryBackend,
     export::{
         Exporter,
-        sheet_dxf::{SheetDxfLayers, SheetFlatProvider},
+        sheet_dxf::{SheetDxf, SheetDxfLayers, SheetDxfOptions, SheetFlatProvider},
     },
 };
 use std::io::Cursor;
@@ -163,6 +163,103 @@ fn check(pattern: &DevelopedPattern, r: &Read, scale: f64) {
     }
 }
 
+fn check_rust_bracket(session: &Session, body: EntityId, native_flat: &SheetDxf) {
+    let compiler = Compiler {
+        omit_display: true,
+        ..Default::default()
+    };
+    let compile = |backend| {
+        compiler
+            .compile_with_backend(session.document(), session.revision(), backend, None)
+            .unwrap()
+    };
+    let native = compile(GeometryBackend::OpenCascade);
+    let rust = compile(GeometryBackend::Rust);
+    let [expected, actual] = [&native, &rust].map(|model| model.solid(body).unwrap());
+    assert!(actual.uses_rust_geometry());
+    assert_eq!(actual.solid_count().unwrap(), 1);
+    near(actual.volume_mm3().unwrap(), expected.volume_mm3().unwrap());
+    let directory = tempfile::tempdir().unwrap();
+    let step = directory.path().join("three-flange-bracket.step");
+    actual.write_step(&step).unwrap();
+    let feature = rust.snapshot().body_sources[&body];
+    let verified_volume = multicad_model::export::verify_rust_step_shape(
+        &step,
+        actual,
+        &rust.snapshot().shapes[&feature],
+        compiler.policy.linear_tolerance_mm,
+    )
+    .unwrap();
+    near(verified_volume, expected.volume_mm3().unwrap());
+    let native_import = multicad_kernel::Solid::read_step(&step, compiler.policy).unwrap();
+    assert_eq!(native_import.solid_count().unwrap(), 1);
+    near(
+        native_import.volume_mm3().unwrap(),
+        expected.volume_mm3().unwrap(),
+    );
+    let surface = |solid: &multicad_kernel::Solid| {
+        solid
+            .faces()
+            .unwrap()
+            .iter()
+            .map(|face| face.area_mm2)
+            .sum()
+    };
+    near(surface(actual), surface(expected));
+    near(surface(&native_import), surface(expected));
+    let [expected, actual_bounds] = [expected, actual].map(|solid| solid.bounds().unwrap());
+    for i in 0..3 {
+        near(actual_bounds.min[i], expected.min[i]);
+        near(actual_bounds.max[i], expected.max[i]);
+    }
+    assert!(
+        actual
+            .manufacturing_mesh_with_receipt(Default::default())
+            .unwrap()
+            .edge_pairs
+            > 0
+    );
+
+    let dxf = Exporter::default()
+        .developed_sheet_dxf_with_backend(
+            session.document(),
+            session.revision(),
+            body,
+            SheetDxfOptions {
+                backend: GeometryBackend::Rust,
+                units: LengthUnit::Millimeter,
+                layers: &SheetDxfLayers::default(),
+            },
+            None,
+        )
+        .unwrap();
+    dxf.check_current(session.document(), session.revision())
+        .unwrap();
+    let parsed = read(&dxf.bytes);
+    let expected = read(&native_flat.bytes);
+    check(&dxf.pattern, &parsed, 1.);
+    assert_eq!(parsed.units, expected.units);
+    assert_eq!(parsed.labels, expected.labels);
+    near(dxf.pattern.area_mm2, native_flat.pattern.area_mm2);
+    for (a, b) in dxf
+        .pattern
+        .size_mm
+        .into_iter()
+        .zip(native_flat.pattern.size_mm)
+    {
+        near(a, b);
+    }
+    let mut areas = [parsed.inner, expected.inner];
+    areas
+        .iter_mut()
+        .for_each(|areas| areas.sort_by(f64::total_cmp));
+    let [actual, expected] = areas;
+    assert_eq!(actual.len(), expected.len());
+    for (a, b) in actual.into_iter().zip(expected) {
+        near(a, b);
+    }
+}
+
 #[test]
 fn developed_sheet_dxf_reopens_with_cut_bend_and_drill_layers() {
     let mut s = Session::new(Document::new("Sheet DXF").unwrap()).unwrap();
@@ -278,6 +375,7 @@ fn developed_sheet_dxf_reopens_with_cut_bend_and_drill_layers() {
         r.outer[0],
         100. * 60. + 100. * (20. + ba) + 52. * (12. + ba) + 100. * (15. + ba) - 2. * 12.,
     );
+    check_rust_bracket(&s, request.body, &file);
 
     // The same blank in inches is scaled, not re-developed.
     let inches = exporter
@@ -322,6 +420,7 @@ fn developed_sheet_dxf_reopens_with_cut_bend_and_drill_layers() {
     let ba2 = std::f64::consts::FRAC_PI_2 * (rad + 0.33 * t);
     near(re.bend_up[0][0][1], -ba2 / 2.);
     assert!(edited.pattern.size_mm[1] < file.pattern.size_mm[1]);
+    check_rust_bracket(&s, request.body, &edited);
 
     // The developed-contour provider returns the same stamped cut loops.
     let stamped = exporter
@@ -334,6 +433,36 @@ fn developed_sheet_dxf_reopens_with_cut_bend_and_drill_layers() {
         )
         .unwrap();
     assert_eq!(stamped.contours, edited.pattern.cut);
+
+    // Two individually legal reliefs can intersect inside the web at a corner.
+    let mut overlapping = sheet.clone();
+    overlapping.flanges[0].end_inset = Some(length(4.));
+    overlapping.flanges[0].relief = Some(Relief {
+        width: length(3.),
+        depth: length(4.),
+    });
+    let candidate =
+        model::prepare_sheet_edit(&s, s.revision(), actor(), request.feature, &overlapping)
+            .unwrap();
+    let e = Compiler::default()
+        .compile_with_backend(
+            candidate.prepared.document(),
+            s.revision() + 1,
+            GeometryBackend::Rust,
+            None,
+        )
+        .err()
+        .expect("Overlapping reliefs must be rejected");
+    assert_eq!(e.entity, Some(request.feature));
+    assert!(
+        e.message
+            .contains("inset formed sheet boundary cannot be certified"),
+        "{e}"
+    );
+    assert_eq!(
+        model::read_sheet(s.document(), request.feature).unwrap(),
+        sheet
+    );
 
     // Failed unfolding exports nothing: touching flanges in a candidate,
     // a non-sheet Part, or a foreign layer set.

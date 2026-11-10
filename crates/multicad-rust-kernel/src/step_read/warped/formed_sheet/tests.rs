@@ -444,3 +444,133 @@ fn refuses_shifted_unpaired_or_reused_flange_mouths() {
         assert_eq!(failure(reader, &boundary, &section), ReadError::Unsupported);
     });
 }
+
+fn reverse_bend(mut section: Vec<(Edge, usize)>) -> Vec<(Edge, usize)> {
+    let reflect = |[out, height]: [f64; 2]| [out, 1.5 - height];
+    for (edge, _) in &mut section {
+        *edge = match *edge {
+            Edge::Line { a, b } => line(reflect(b), reflect(a)),
+            Edge::Arc {
+                center,
+                a,
+                b,
+                clockwise,
+            } => Edge::Arc {
+                center: reflect(center),
+                a: reflect(b),
+                b: reflect(a),
+                clockwise,
+            },
+            Edge::Circle { .. } => unreachable!("bends have bounded arc trims"),
+        };
+    }
+    section.reverse();
+    section.rotate_left(1);
+    section
+}
+
+#[test]
+fn adjacent_inset_flange_groups_replay_as_one_verified_step_solid() {
+    let web_outline = [
+        [0., 0.],
+        [10., 0.],
+        [90., 0.],
+        [100., 0.],
+        [100., 10.],
+        [100., 60.],
+        [100., 70.],
+        [90., 70.],
+        [10., 70.],
+        [0., 70.],
+        [0., 60.],
+        [0., 10.],
+    ];
+    let sections = [
+        section(20.),
+        reverse_bend(section(16.)),
+        section(18.),
+        reverse_bend(section(12.)),
+    ];
+    let flanges = std::array::from_fn::<_, 4, _>(|i| SheetFlange {
+        section: &sections[i],
+        ends: [30 + i * 2, 31 + i * 2],
+    });
+    let hole = ring([[-2., -1.], [2., -1.], [2., 1.], [-2., 1.]]);
+    let cut = [SheetFlangeOpening {
+        walls: [1, 3],
+        origin_mm: [50., -1.5, -10.],
+        u: [1., 0., 0.],
+        v: [0., 0., 1.],
+        through_mm: [0., -1.5, 0.],
+        outline: &hole,
+    }];
+    let openings: [&[_]; 4] = [&cut, &[], &[], &[]];
+    let web_hole = vec![(
+        Edge::Circle {
+            center: [25., 30.],
+            radius_mm: 3.,
+            clockwise: true,
+        },
+        42,
+    )];
+    for count in [3, 4] {
+        let web = std::array::from_fn::<_, 12, _>(|i| SheetWebEdge {
+            ends: [web_outline[i], web_outline[(i + 1) % web_outline.len()]],
+            source: i,
+            flange: (i % 3 == 1 && i / 3 < count).then_some(i / 3),
+        });
+        let shell = formed_sheet_with_openings(
+            &web,
+            std::slice::from_ref(&web_hole),
+            [40, 41],
+            &flanges[..count],
+            &openings[..count],
+            1.5,
+            TOL,
+            2. * TOL,
+        )
+        .unwrap();
+
+        let bend_area = (3_f64.powi(2) - 1.5_f64.powi(2)) * std::f64::consts::FRAC_PI_4;
+        let legs: f64 = [80., 50., 80., 50.][..count]
+            .iter()
+            .zip([20., 16., 18., 12.])
+            .map(|(span, leg)| span * (1.5 * leg + bend_area))
+            .sum();
+        let expected = (100. * 70. - 9. * std::f64::consts::PI - 8.) * 1.5 + legs;
+        let source = write_warped_union(&shell, ORIGIN, U, V).unwrap();
+        let (proof, imported) = read_import_solid(&source, TOL).unwrap();
+        assert_eq!(proof.solid_count, 1);
+        assert_eq!(proof.face_count, shell.faces().len());
+        near(proof.volume_mm3, expected);
+        let ImportProfile::WarpedUnion { shell: restored } = &imported.profile else {
+            panic!("expected the reconstructed inset sheet");
+        };
+        near(restored.volume_mm3(), expected);
+        let area =
+            |shell: &warped_union::Shell| shell.faces().iter().map(|face| face.area_mm2).sum();
+        near(area(restored), area(&shell));
+
+        // Keep the exact trims while reversing only one adjacent bend wall.
+        let last_bend = shell
+            .faces()
+            .iter()
+            .rposition(|face| {
+                face.source_face != 42
+                    && matches!(face.support, warped_union::Support::Cylinder { .. })
+            })
+            .unwrap();
+        let face = source
+            .lines()
+            .filter(|line| line.contains("=ADVANCED_FACE("))
+            .nth(last_bend)
+            .unwrap();
+        let altered = if face.ends_with(",.T.);") {
+            face.replace(",.T.);", ",.F.);")
+        } else {
+            face.replace(",.F.);", ",.T.);")
+        };
+        assert_ne!(altered, face);
+        assert!(read_import_solid(&source.replacen(face, &altered, 1), TOL).is_err());
+    }
+}
