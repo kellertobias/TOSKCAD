@@ -1966,7 +1966,10 @@ impl Solid {
             SolidBody::Helical(body, frame) => {
                 standalone && body.supports_step(*frame, self.policy)
             }
-            SolidBody::CosmeticFastener(..) | SolidBody::Herringbone(..) => false,
+            SolidBody::Herringbone(body, frame) => {
+                standalone && body.supports_step(*frame, self.policy)
+            }
+            SolidBody::CosmeticFastener(..) => false,
             SolidBody::WarpedUnion(body, _) => {
                 multicad_rust_kernel::step::supports_warped_union(&body.geometry)
             }
@@ -2073,7 +2076,7 @@ impl Solid {
                 frame.v,
                 self.policy.linear_tolerance_mm,
             ),
-            SolidBody::Herringbone(..) => Err(step::StepError::Unsupported),
+            SolidBody::Herringbone(body, frame) => body.append_step(writer, *frame, self.policy),
             SolidBody::SpurGear(body, frame) => writer.append_spur_gear(
                 &body.profile,
                 frame.origin,

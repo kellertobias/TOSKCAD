@@ -31,7 +31,7 @@ fn specification(teeth: u32) -> InvoluteGear {
 }
 
 #[test]
-fn herringbone_world_topology_manufacturing_and_exact_export_refusals() {
+fn herringbone_world_topology_manufacturing_and_verified_standalone_step() {
     let id = EntityId::new();
     let solid = Solid::rust_herringbone_named(specification(24), id, Default::default()).unwrap();
     let transform = RigidTransform {
@@ -91,13 +91,28 @@ fn herringbone_world_topology_manufacturing_and_exact_export_refusals() {
     );
 
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("unavailable.step");
-    assert!(!world.supports_step_export());
+    let path = dir.path().join("placed-herringbone.step");
+    assert!(world.supports_step_export());
+    world.write_step(&path).unwrap();
+    let text = std::fs::read_to_string(&path).unwrap();
+    let verified = world.verify_herringbone_step(&text).unwrap().unwrap();
+    assert!((verified - world.volume_mm3().unwrap()).abs() < 1e-5);
+    assert!(solid.verify_herringbone_step(&text).unwrap().is_err());
+    if multicad_kernel::OCCT_LINKED {
+        let read = multicad_kernel::Shape::read_step(&path).unwrap();
+        assert!(read.valid().unwrap());
+        assert_eq!(Solid::step_solids(&path).unwrap().len(), 1);
+        assert!((read.volume().unwrap() - verified).abs() < 2e-4);
+    }
+    let compound =
+        Solid::compound_named(&[&solid, &world], EntityId::new(), Default::default()).unwrap();
+    let unsupported = dir.path().join("herringbone-compound.step");
+    assert!(!compound.supports_step_export());
     assert_eq!(
-        world.write_step(&path).unwrap_err().kind,
+        compound.write_step(&unsupported).unwrap_err().kind,
         GeometryErrorKind::Unsupported
     );
-    assert!(!path.exists());
+    assert!(!unsupported.exists());
     assert_eq!(
         project_drawing(
             &[DrawingSolid {

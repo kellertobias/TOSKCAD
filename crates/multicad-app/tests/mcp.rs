@@ -1090,18 +1090,29 @@ fn rust_stdio_reopens_the_24_36_herringbone_pair_and_checks_the_current_drive() 
     drop(client);
     let mut reopened = Client::start(&arguments);
     check(&mut reopened, 12.);
-    reopened.fail(
-        "export_step",
-        json!({
-            "part":created["members"][0]["part"],
-            "file_name":"unsupported-herringbone.step"
-        }),
-    );
-    assert!(
-        !directory
-            .path()
-            .join("unsupported-herringbone.step")
-            .exists()
-    );
+    for (index, (volume, faces)) in [(7_409.916_171_753_603, 387), (17_069.514_946_062_216, 435)]
+        .into_iter()
+        .enumerate()
+    {
+        let file_name = format!("herringbone-{index}.step");
+        let exported = reopened.ok(
+            "export_step",
+            json!({"part":created["members"][index]["part"],"file_name":file_name}),
+        );
+        let measured = exported["readback_volume_mm3"].as_f64().unwrap();
+        close(exported["model_volume_mm3"].as_f64().unwrap(), volume);
+        close(measured, volume);
+        let path = directory.path().join(file_name);
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(text.matches("MANIFOLD_SOLID_BREP").count(), 1);
+        assert_eq!(text.matches("ADVANCED_FACE").count(), faces);
+        assert!(!text.contains("FACETED_BREP"));
+        if multicad_kernel::OCCT_LINKED {
+            let read = multicad_kernel::Shape::read_step(&path).unwrap();
+            assert!(read.valid().unwrap());
+            assert_eq!(multicad_kernel::Solid::step_solids(&path).unwrap().len(), 1);
+            close(read.volume().unwrap(), measured);
+        }
+    }
     assert_eq!(std::fs::read(project).unwrap(), bytes);
 }

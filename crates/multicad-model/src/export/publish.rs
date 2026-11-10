@@ -242,7 +242,10 @@ fn read_rust_step(
             format!("Rust STEP readback rejected the geometry: {e:?}"),
         )
     };
-    if let Some(proof) = solid.verify_helical_step(source) {
+    if let Some(proof) = solid
+        .verify_helical_step(source)
+        .or_else(|| solid.verify_herringbone_step(source))
+    {
         let volume = proof.map_err(readback_error)?;
         // The verified boundary gives the source bounds within its uniform
         // position error. Volume is integrated from the decoded STEP.

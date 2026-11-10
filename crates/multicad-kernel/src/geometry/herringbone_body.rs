@@ -104,9 +104,50 @@ impl Solid {
             _ => None,
         }
     }
+    /// Validate the authored herringbone shell and integrate its decoded
+    /// STEP volume in mm³.
+    pub fn verify_herringbone_step(
+        &self,
+        source: &str,
+    ) -> Option<Result<f64, multicad_rust_kernel::step_read::ReadError>> {
+        let (body, frame) = self.herringbone_body()?;
+        Some(multicad_rust_kernel::step_read::verify_herringbone(
+            source,
+            &body.geometry,
+            frame.origin,
+            frame.u,
+            frame.v,
+            self.policy.linear_tolerance_mm,
+        ))
+    }
 }
 
 impl HerringboneBody {
+    pub(super) fn supports_step(&self, frame: PlaneFrame, policy: GeometryPolicy) -> bool {
+        multicad_rust_kernel::step::supports_herringbone(
+            &self.geometry,
+            frame.origin,
+            frame.u,
+            frame.v,
+            policy.linear_tolerance_mm,
+        )
+    }
+
+    pub(super) fn append_step(
+        &self,
+        writer: &mut multicad_rust_kernel::step::Writer,
+        frame: PlaneFrame,
+        policy: GeometryPolicy,
+    ) -> Result<(), multicad_rust_kernel::step::StepError> {
+        writer.append_herringbone(
+            &self.geometry,
+            frame.origin,
+            frame.u,
+            frame.v,
+            policy.linear_tolerance_mm,
+        )
+    }
+
     pub(super) fn bounds(&self, frame: PlaneFrame) -> Bounds {
         let n = frame.normal();
         let support = |i: usize, sign: f64| {
