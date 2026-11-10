@@ -33,6 +33,9 @@ pub(super) fn read_import_members(
             if let Some(torus) = torus::read_member(shell, &face_ids)? {
                 return Ok(torus);
             }
+            if let Some(cut) = import::read_helical_cut_member(shell, &face_ids)? {
+                return Ok(cut);
+            }
             if face_ids
                 .iter()
                 .any(|&face| spline_sweep::has_extrusion_support(shell, face))
@@ -66,6 +69,9 @@ pub(super) fn read_analytic(input: &str, tolerance: f64, single: bool) -> Result
                 return Ok(proof);
             }
             if let Some((proof, _)) = torus::read_member(shell, &faces)? {
+                return Ok(proof);
+            }
+            if let Some((proof, _)) = import::read_helical_cut_member(shell, &faces)? {
                 return Ok(proof);
             }
             if faces

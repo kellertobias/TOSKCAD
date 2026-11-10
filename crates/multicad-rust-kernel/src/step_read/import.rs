@@ -17,6 +17,9 @@ mod axial_profile_stack;
 mod chamfered;
 use chamfered::{Bore, canonical_bores};
 mod cylindrical_revolution;
+#[path = "helical_cut.rs"]
+mod helical_cut;
+pub(super) use helical_cut::read_member as read_helical_cut_member;
 mod orthogonal;
 mod pierced;
 mod planar_boundary;
@@ -89,6 +92,14 @@ pub enum ImportProfile {
     },
     Sphere {
         radius_mm: f64,
+    },
+    HelicalTubeCut {
+        stock_radius_mm: f64,
+        radius_mm: f64,
+        pitch_mm: f64,
+        path_height_mm: f64,
+        start_height_mm: f64,
+        start_angle_rad: f64,
     },
     Torus {
         major_radius_mm: f64,
