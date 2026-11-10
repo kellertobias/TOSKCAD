@@ -6,7 +6,7 @@ use multicad_core::{
 };
 use multicad_model::{
     Compiler, GeometryBackend,
-    imports::{KicadOptions, read_kicad_file, read_step_file_with_backend},
+    imports::{KicadOptions, read_kicad_file_with_backend, read_step_file_with_backend},
 };
 use multicad_ui::mechanical_import::MechanicalImportBackend;
 use std::{
@@ -32,14 +32,12 @@ impl MechanicalImportBackend for Backend {
     /// are looked up wherever KiCad would find them (`${KIPRJMOD}`, the
     /// environment), not only in one folder as for MCP.
     fn read_kicad(&self, path: &Path, min_hole_mm: f64) -> Result<KicadImport, String> {
-        if self.geometry_backend == GeometryBackend::Rust {
-            return Err("KiCad import is unavailable with the Rust geometry backend".into());
-        }
         let options = KicadOptions {
             min_hole_mm,
             ..KicadOptions::default()
         };
-        read_kicad_file(path, &options).map_err(|e| e.to_string())
+        read_kicad_file_with_backend(path, &options, self.geometry_backend)
+            .map_err(|e| e.to_string())
     }
     fn verify(
         &self,
@@ -84,18 +82,27 @@ mod tests {
     }
 
     fn check_import(session: &Session, path: &Path, target: Target) -> MechanicalImport {
+        check_import_kind(session, path, target, SourceKind::Step)
+    }
+
+    fn check_import_kind(
+        session: &Session,
+        path: &Path,
+        target: Target,
+        kind: SourceKind,
+    ) -> MechanicalImport {
         let mut import = MechanicalImport::default();
         import
             .begin(
                 Arc::new(Backend::with_geometry_backend(GeometryBackend::Rust)),
-                SourceKind::Step,
+                kind,
                 path.to_owned(),
                 target,
             )
             .unwrap();
         let end = Instant::now() + Duration::from_secs(15);
         while import.pending() {
-            assert!(Instant::now() < end, "STEP import timed out");
+            assert!(Instant::now() < end, "Mechanical import timed out");
             import.poll(session);
             std::thread::sleep(Duration::from_millis(2));
         }
@@ -421,6 +428,43 @@ mod tests {
     }
 
     #[test]
+    fn rust_import_inspector_checks_and_applies_a_kicad_board() {
+        let scratch = tempfile::tempdir().unwrap();
+        let path = scratch.path().join("board.kicad_pcb");
+        let board = r#"(kicad_pcb (general (thickness 1.6))
+            (gr_rect (start 0 0) (end 80 50) (layer "Edge.Cuts"))
+            (gr_circle (center 15 20) (end 17 20) (layer "Edge.Cuts")))"#;
+        std::fs::write(&path, board).unwrap();
+        let mut session = Session::new(Document::new("KiCad board").unwrap()).unwrap();
+        let mut import = check_import_kind(&session, &path, Target::New, SourceKind::Kicad);
+        assert!(
+            matches!(import.report(), Some(Report::KicadNew { .. })),
+            "{:?}",
+            import.error()
+        );
+        assert_eq!(session.revision(), 0);
+        assert!(import.can_apply(&session));
+        assert!(matches!(
+            import.apply(&mut session),
+            Ok(Outcome::Applied { .. })
+        ));
+        assert_eq!(session.revision(), 1);
+        let model = Compiler::default()
+            .compile_with_backend(
+                session.document(),
+                session.revision(),
+                GeometryBackend::Rust,
+                None,
+            )
+            .unwrap();
+        let body = *model.snapshot().bodies.keys().next().unwrap();
+        let solid = model.solid(body).unwrap();
+        assert!(solid.uses_rust_geometry());
+        let expected = (80. * 50. - std::f64::consts::PI * 4.) * 1.6;
+        assert!((solid.volume_mm3().unwrap() - expected).abs() < 1e-8);
+    }
+
+    #[test]
     fn unsupported_step_units_do_not_fall_back_to_native_or_change_the_project() {
         let scratch = tempfile::tempdir().unwrap();
         let path = scratch.path().join("centimetres.step");
@@ -444,13 +488,5 @@ mod tests {
         assert!(!import.can_apply(&session));
         assert_eq!(session.revision(), 0);
         assert!(step_sources(session.document()).next().is_none());
-
-        let backend = Backend::with_geometry_backend(GeometryBackend::Rust);
-        assert_eq!(
-            backend
-                .read_kicad(&scratch.path().join("board.kicad_pcb"), 2.)
-                .unwrap_err(),
-            "KiCad import is unavailable with the Rust geometry backend",
-        );
     }
 }

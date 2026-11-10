@@ -83,6 +83,8 @@ pub(crate) fn validate_document(
                     | (model::PROFILE_CONNECTION_OUTPUT_TYPE, 1)
                     | (model::AID_TYPE, model::AID_SCHEMA)
                     | (model::imports::STEP_BODY_TYPE, 1)
+                    | (model::imports::BOARD_TYPE, 1)
+                    | (model::imports::COMPONENT_TYPE, 1)
             ) =>
             {
                 return Err(error(

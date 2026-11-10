@@ -16,7 +16,10 @@ use multicad_kernel::{
 };
 use multicad_model::{
     Compiler, GeometryBackend, Model,
-    imports::{KicadOptions, read_kicad_file, read_step_file, read_step_file_with_backend},
+    imports::{
+        KicadOptions, read_kicad_file, read_kicad_file_with_backend, read_step_file,
+        read_step_file_with_backend,
+    },
 };
 use std::{f64::consts::PI, path::Path};
 
@@ -27,13 +30,19 @@ fn near(a: f64, b: f64) {
     assert!((a - b).abs() <= 1e-3, "{a} != {b}");
 }
 fn compile(s: &Session) -> Model {
+    compile_with_backend(s, GeometryBackend::default())
+}
+fn compile_with_backend(s: &Session, backend: GeometryBackend) -> Model {
     Compiler::default()
-        .compile(s.document(), s.revision())
+        .compile_with_backend(s.document(), s.revision(), backend, None)
         .unwrap()
 }
 fn commit(s: &mut Session, p: ModelPrepared) {
+    commit_with_backend(s, p, GeometryBackend::default());
+}
+fn commit_with_backend(s: &mut Session, p: ModelPrepared, backend: GeometryBackend) {
     Compiler::default()
-        .compile(p.prepared.document(), s.revision() + 1)
+        .compile_with_backend(p.prepared.document(), s.revision() + 1, backend, None)
         .unwrap();
     s.commit(p.prepared).unwrap();
 }
@@ -362,15 +371,31 @@ fn board_area() -> f64 {
 }
 
 #[test]
-fn kicad_board_components_and_reimport() {
+#[cfg(feature = "occt")]
+fn native_kicad_board_components_and_reimport() {
+    kicad_board_components_and_reimport(GeometryBackend::OpenCascade);
+}
+
+#[test]
+fn rust_kicad_board_components_and_reimport() {
+    kicad_board_components_and_reimport(GeometryBackend::Rust);
+}
+
+fn kicad_board_components_and_reimport(backend: GeometryBackend) {
     let dir = tempfile::tempdir().unwrap();
-    boxes(
-        &dir.path().join("u1.step"),
-        &[([10., 8., 3.], [-5., -4., 0.])],
-    );
+    let footprint_file = dir.path().join("u1.step");
+    let step = write_box(
+        [10, 8, 3].map(|n| Rational::new(n, 1).unwrap()),
+        [-5., -4., 0.],
+        [1., 0., 0.],
+        [0., 1., 0.],
+    )
+    .unwrap();
+    std::fs::write(&footprint_file, step).unwrap();
     let board_path = dir.path().join("control.kicad_pcb");
     std::fs::write(&board_path, BOARD).unwrap();
-    let import = read_kicad_file(&board_path, &KicadOptions::default()).unwrap();
+    let import =
+        read_kicad_file_with_backend(&board_path, &KicadOptions::default(), backend).unwrap();
     assert_eq!(import.board.holes.len(), 2, "only the M3 mounting holes");
     assert_eq!(import.models.len(), 1);
     assert!(import.board.unsupported.iter().any(|u| u.contains("vias")));
@@ -385,8 +410,8 @@ fn kicad_board_components_and_reimport() {
         .map(|(r, o, m)| (r.clone(), (o.clone(), *m)))
         .collect();
     assert!(parts["U1"].1.is_some() && parts["J1"].1.is_none());
-    commit(&mut s, p.model);
-    let m = compile(&s);
+    commit_with_backend(&mut s, p.model, backend);
+    let m = compile_with_backend(&s, backend);
     near(
         solid(&m, board.body).volume_mm3().unwrap(),
         board_area() * 1.6,
@@ -418,23 +443,24 @@ fn kicad_board_components_and_reimport() {
         .replace("\"Connector:J\"", "\"Connector:Gone\"")
         .replace("\"Reference\" \"J1\"", "\"Reference\" \"J9\"");
     std::fs::write(&board_path, moved).unwrap();
-    let mut again = read_kicad_file(&board_path, &KicadOptions::default()).unwrap();
+    let mut again =
+        read_kicad_file_with_backend(&board_path, &KicadOptions::default(), backend).unwrap();
     again.components = Some(vec!["U1".into(), "H1".into(), "H2".into(), "R1".into()]);
     let (plan, p) = prepare_kicad_update(&s, s.revision(), actor(), board.feature, &again).unwrap();
     assert_eq!(plan.moved, vec!["U1".to_string()]);
     assert_eq!(plan.missing, vec!["J1".to_string()]);
     assert!(plan.added.is_empty());
     assert!(!plan.outline_changed && !plan.holes_changed);
-    commit(&mut s, p);
-    let m = compile(&s);
+    commit_with_backend(&mut s, p, backend);
+    let m = compile_with_backend(&s, backend);
     near(solid(&m, parts["U1"].0.body).bounds().unwrap().min[0], 36.);
     near(solid(&m, parts["J1"].0.body).volume_mm3().unwrap(), 120.);
 
     // A replacement model for the missing connector.
-    let file = read_step_file(&dir.path().join("u1.step")).unwrap();
+    let file = read_step_file_with_backend(&footprint_file, backend).unwrap();
     let p = prepare_step_import(&s, s.revision(), actor(), &file).unwrap();
     let replacement = p.source;
-    commit(&mut s, p.model);
+    commit_with_backend(&mut s, p.model, backend);
     let j1 = components(s.document())
         .find(|e| {
             read_component(s.document(), e.id)
@@ -447,8 +473,8 @@ fn kicad_board_components_and_reimport() {
         .id;
     let p = prepare_component_model(&s, s.revision(), actor(), j1, Some(replacement)).unwrap();
     // The replacement takes the missing model's place at J1's position.
-    commit(&mut s, p);
-    let m = compile(&s);
+    commit_with_backend(&mut s, p, backend);
+    let m = compile_with_backend(&s, backend);
     let j1 = solid(&m, parts["J1"].0.body);
     near(j1.volume_mm3().unwrap(), 240.);
     near(j1.bounds().unwrap().min[0], 65.);
@@ -470,9 +496,24 @@ fn kicad_board_components_and_reimport() {
     .unwrap()
     .project;
     assert!(opened.capabilities().contains(BOARD_CAPABILITY));
-    assert!(opened.capabilities().contains(STEP_SOURCE_CAPABILITY));
+    let step_capability = if backend == GeometryBackend::Rust {
+        RUST_STEP_SOURCE_CAPABILITY
+    } else {
+        STEP_SOURCE_CAPABILITY
+    };
+    assert!(opened.capabilities().contains(step_capability));
     assert_eq!(&opened.document, s.document());
-    let reopened = Compiler::default().compile(&opened.document, 0).unwrap();
+    std::fs::remove_file(&board_path).unwrap();
+    std::fs::remove_file(&footprint_file).unwrap();
+    let reopened = compile_with_backend(&Session::new(opened.document).unwrap(), backend);
+    assert_eq!(
+        solid(&reopened, board.body).uses_rust_geometry(),
+        backend == GeometryBackend::Rust
+    );
+    near(
+        solid(&reopened, parts["U1"].0.body).volume_mm3().unwrap(),
+        240.,
+    );
     near(
         solid(&reopened, board.body).volume_mm3().unwrap(),
         board_area() * 1.6,

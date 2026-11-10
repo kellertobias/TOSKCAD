@@ -1260,10 +1260,10 @@ impl Compiler {
                     crate::imports::build_step_body(document, id, self.policy, backend)?
                 }
                 (model::imports::BOARD_TYPE, 1) => {
-                    crate::imports::build_board(document, id, self.policy)?
+                    crate::imports::build_board(document, id, self.policy, backend)?
                 }
                 (model::imports::COMPONENT_TYPE, 1) => {
-                    crate::imports::build_component(document, id, self.policy)?
+                    crate::imports::build_component(document, id, self.policy, backend)?
                 }
                 (model::AID_TYPE, model::AID_SCHEMA) => {
                     let target = model::read_aid(document, id)

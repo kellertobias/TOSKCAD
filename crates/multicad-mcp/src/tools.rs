@@ -200,17 +200,6 @@ impl Request {
             GeometryBackend::Rust => &*RUST,
         }
     }
-
-    fn require_open_cascade(&self, workflow: &str) -> Result<(), ToolError> {
-        self.check()?;
-        if self.backend == GeometryBackend::Rust {
-            return Err(ToolError::new(
-                "unsupported",
-                format!("{workflow} is not supported by the Rust geometry backend"),
-            ));
-        }
-        Ok(())
-    }
 }
 impl std::ops::Deref for Request {
     type Target = Call;

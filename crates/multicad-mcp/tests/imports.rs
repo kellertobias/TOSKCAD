@@ -310,7 +310,7 @@ fn rust_mcp_round_trips_a_step_body_and_refuses_an_unsupported_shape() {
         json!({ "expected_revision": 2, "file_name": "board.kicad_pcb" }),
     )
     .unwrap_err();
-    assert_eq!(kicad.code, "unsupported");
+    assert!(kicad.message.contains("board.kicad_pcb"));
     assert_eq!(rust.document(), before);
 }
 

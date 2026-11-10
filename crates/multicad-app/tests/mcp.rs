@@ -663,3 +663,75 @@ fn rust_stdio_imports_and_reopens_spline_step_without_the_original_file() {
         multicad_kernel::rust_kernel::step_read::read_analytic_solid(&step, 1e-7).unwrap();
     assert_eq!(readback.splines.len(), 96);
 }
+
+#[test]
+fn rust_stdio_imports_updates_and_reopens_kicad_with_an_embedded_component() {
+    use multicad_kernel::rust_kernel::{Rational, step::write_box};
+
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("board.kicad_pcb");
+    let footprint = directory.path().join("chip.step");
+    let project = directory.path().join("board.tcd");
+    let source = r#"(kicad_pcb (general (thickness 1.6))
+        (gr_rect (start 0 0) (end 80 50) (layer "Edge.Cuts"))
+        (gr_circle (center 10 10) (end 12 10) (layer "Edge.Cuts"))
+        (footprint "Package:QFN" (layer "F.Cu") (at 30 20)
+          (property "Reference" "U1" (at 0 0) (layer "F.SilkS"))
+          (fp_rect (start -2 -3) (end 2 3) (layer "F.CrtYd"))
+          (model "${KIPRJMOD}/chip.step")))"#;
+    std::fs::write(&path, source).unwrap();
+    let step = write_box(
+        [4, 6, 2].map(|n| Rational::new(n, 1).unwrap()),
+        [-2., -3., 0.],
+        [1., 0., 0.],
+        [0., 1., 0.],
+    )
+    .unwrap();
+    // Reject a present but unsupported footprint without committing the board.
+    let invalid = step.replace("SI_UNIT(.MILLI.,.METRE.)", "SI_UNIT(.CENTI.,.METRE.)");
+    std::fs::write(&footprint, invalid).unwrap();
+    let arguments = [
+        "--rust-model",
+        "--project",
+        project.to_str().unwrap(),
+        "--export-dir",
+        directory.path().to_str().unwrap(),
+    ];
+    let mut client = Client::start(&arguments);
+    let request = json!({"expected_revision": 0, "file_name": "board.kicad_pcb"});
+    client.fail("import_kicad", request.clone());
+    assert_eq!(client.revision(), 0);
+    std::fs::write(&footprint, step).unwrap();
+    let board = client.ok("import_kicad", request);
+    let [component] = board["components"].as_array().unwrap().as_slice() else {
+        panic!("{board}");
+    };
+    assert_eq!(component["reference"], "U1");
+    assert!(component["model"].is_string());
+
+    std::fs::write(&path, source.replace("(at 30 20)", "(at 40 20)")).unwrap();
+    let update = client.ok(
+        "import_kicad",
+        json!({
+            "expected_revision": 1, "file_name": "board.kicad_pcb", "board": board["board"],
+        }),
+    );
+    assert_eq!(update["moved"], json!(["U1"]));
+    assert_eq!(update["outline_changed"], false);
+    client.ok("save_project", json!({"expected_revision": 2}));
+    drop(client);
+
+    std::fs::remove_file(&path).unwrap();
+    std::fs::remove_file(&footprint).unwrap();
+    let mut reopened = Client::start(&arguments);
+    let evaluated = reopened.ok("evaluate_model", json!({}));
+    let parts = evaluated["parts"].as_array().unwrap();
+    let part = |id: &Value| parts.iter().find(|p| &p["part"] == id).unwrap();
+    close(
+        part(&board["board_part"])["volume_mm3"].as_f64().unwrap(),
+        (4000. - 4. * PI) * 1.6,
+    );
+    let chip = part(&component["part"]);
+    close(chip["volume_mm3"].as_f64().unwrap(), 48.);
+    assert_eq!(chip["bounds_mm"]["min"], json!([38., -23., 1.6]));
+}

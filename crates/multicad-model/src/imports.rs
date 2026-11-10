@@ -156,6 +156,14 @@ fn resolve_model(board_dir: &Path, path: &str) -> Option<PathBuf> {
 }
 /// Read a board and every selected footprint model that can be found.
 pub fn read_kicad_file(path: &Path, options: &KicadOptions) -> Result<KicadImport, ModelError> {
+    read_kicad_file_with_backend(path, options, GeometryBackend::default())
+}
+
+pub fn read_kicad_file_with_backend(
+    path: &Path,
+    options: &KicadOptions,
+    backend: GeometryBackend,
+) -> Result<KicadImport, ModelError> {
     let text = std::fs::read_to_string(path)
         .map_err(|e| error(None, format!("Cannot read {}: {e}", path.display())))?;
     let mut board =
@@ -187,7 +195,10 @@ pub fn read_kicad_file(path: &Path, options: &KicadOptions) -> Result<KicadImpor
             })
         };
         if let Some(found) = resolve_model(dir, &m.path).filter(|p| inside(p)) {
-            models.push((fp.reference.clone(), read_step_file(&found)?));
+            models.push((
+                fp.reference.clone(),
+                read_step_file_with_backend(&found, backend)?,
+            ));
         }
     }
     Ok(KicadImport {
@@ -278,6 +289,7 @@ pub(crate) fn build_board(
     document: &Document,
     id: EntityId,
     policy: GeometryPolicy,
+    backend: GeometryBackend,
 ) -> Result<Solid, ModelError> {
     let board = imports::read_board(document, id).map_err(|e| error(Some(id), e))?;
     let mut holes: Vec<Vec<CurvedEdge2d>> = board
@@ -303,14 +315,34 @@ pub(crate) fn build_board(
             role: format!("board.edge.{i}"),
         })
         .collect::<Vec<_>>();
-    Solid::extrude_curved_profile_vector_named(
-        &profile,
-        [0., 0., board.thickness_mm],
-        id,
-        &roles,
-        policy,
-    )
-    .map_err(|e| error(Some(id), e))
+    extrude_kicad_profile(&profile, board.thickness_mm, id, &roles, policy, backend)
+        .map_err(|e| error(Some(id), e))
+}
+
+fn extrude_kicad_profile(
+    profile: &CurvedProfile,
+    thickness_mm: f64,
+    feature: EntityId,
+    origins: &[Origin],
+    policy: GeometryPolicy,
+    backend: GeometryBackend,
+) -> Result<Solid, multicad_kernel::GeometryError> {
+    match backend {
+        GeometryBackend::Rust => Solid::rust_extrude_normal_profile_named(
+            profile,
+            thickness_mm,
+            feature,
+            origins,
+            policy,
+        ),
+        GeometryBackend::OpenCascade => Solid::extrude_curved_profile_vector_named(
+            profile,
+            [0., 0., thickness_mm],
+            feature,
+            origins,
+            policy,
+        ),
+    }
 }
 
 fn rotate_z(deg: f64) -> [[f64; 3]; 3] {
@@ -340,6 +372,7 @@ pub(crate) fn build_component(
     document: &Document,
     id: EntityId,
     policy: GeometryPolicy,
+    backend: GeometryBackend,
 ) -> Result<Solid, ModelError> {
     let e = |e: DocumentError| error(Some(id), e);
     let c = imports::read_component(document, id).map_err(e)?;
@@ -348,6 +381,12 @@ pub(crate) fn build_component(
     let model_ref = c.footprint.models.first();
     if let (Some(model), Some(m)) = (c.model, model_ref) {
         let source = imports::read_step_source(document, model).map_err(e)?;
+        if backend == GeometryBackend::Rust && source.encoding == StepEncoding::OpenCascadeBrep {
+            return Err(error(
+                Some(id),
+                "This KiCad component contains embedded OpenCascade geometry. Link a Rust STEP import for its footprint model.",
+            ));
+        }
         let mut solid: Option<Solid> = None;
         for s in source.solids.iter().filter(|s| !s.missing) {
             let next = step_geometry(s, source.encoding, id, policy)?;
@@ -392,7 +431,7 @@ pub(crate) fn build_component(
             role: format!("component.envelope.{i}"),
         })
         .collect();
-    Solid::extrude_curved_profile_vector_named(&profile, [0., 0., c.height_mm], id, &roles, policy)
+    extrude_kicad_profile(&profile, c.height_mm, id, &roles, policy, backend)
         .and_then(|s| s.transformed(place))
         .map_err(|e| error(Some(id), e))
 }
