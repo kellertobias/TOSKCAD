@@ -24,6 +24,17 @@ fn fixture(number: &str) -> (Document, Page) {
 }
 
 fn preview(document: &Document, page: &Page, backend: GeometryBackend) -> Vec<DrawingVector> {
+    let [vectors] = preview_views(document, page, backend)
+        .try_into()
+        .expect("expected one saved drawing view");
+    vectors
+}
+
+fn preview_views(
+    document: &Document,
+    page: &Page,
+    backend: GeometryBackend,
+) -> Vec<Vec<DrawingVector>> {
     let roots = drawing_preview_sources(document, page.id).unwrap();
     let model = Compiler {
         omit_display: true,
@@ -34,13 +45,18 @@ fn preview(document: &Document, page: &Page, backend: GeometryBackend) -> Vec<Dr
     let result = model
         .drawing_page_preview(document, 0, &Default::default(), page.id)
         .unwrap();
-    let [view] = page.views.as_slice() else {
-        panic!("expected one AP-101 view");
-    };
-    let ViewEvaluation::Ready { vectors, .. } = &result.views[&view.id] else {
-        panic!("{:?}", result.views[&view.id]);
-    };
-    vectors.clone()
+    page.views
+        .iter()
+        .map(|view| {
+            let ViewEvaluation::Ready { vectors, .. } = &result.views[&view.id] else {
+                panic!(
+                    "{} / {}: {:?}",
+                    page.number, view.name, result.views[&view.id]
+                );
+            };
+            vectors.clone()
+        })
+        .collect()
 }
 
 #[test]
@@ -230,7 +246,7 @@ fn apartment_isometric_projects_workbench_apertures_with_room_occlusion() {
 
 #[cfg(feature = "occt")]
 #[test]
-fn apartment_isometric_visible_intervals_match_open_cascade() {
+fn apartment_isometric_and_workshop_visible_intervals_match_open_cascade() {
     use multicad_core::document::EntityId;
     use std::collections::BTreeMap;
 
@@ -263,6 +279,21 @@ fn apartment_isometric_visible_intervals_match_open_cascade() {
                     start_rad,
                     end_rad,
                 } => {
+                    if (major_mm - minor_mm).abs() < 1e-9
+                        && (end_rad - start_rad - TAU).abs() < 1e-9
+                    {
+                        let key = vec![
+                            2,
+                            quantize(center[0]),
+                            quantize(center[1]),
+                            quantize(major_mm),
+                        ];
+                        spans
+                            .entry((vector.source, key))
+                            .or_default()
+                            .push([0., TAU]);
+                        continue;
+                    }
                     let sign = u[0] * v[1] - u[1] * v[0];
                     let shift = if first_quadrant(u) { 0. } else { PI };
                     let u = if shift == 0. { u } else { u.map(|x| -x) };
@@ -309,4 +340,37 @@ fn apartment_isometric_visible_intervals_match_open_cascade() {
     let native = intervals(preview(&document, &page, GeometryBackend::OpenCascade));
     assert_eq!(rust.len(), 181);
     assert_eq!(rust, native);
+
+    let (document, page) = fixture("AP-103");
+    let rust = preview_views(&document, &page, GeometryBackend::Rust);
+    let native = preview_views(&document, &page, GeometryBackend::OpenCascade);
+    assert_eq!(rust.len(), 2);
+    assert_eq!(rust.len(), native.len());
+    for (rust, native) in rust.into_iter().zip(native) {
+        assert_eq!(intervals(rust), intervals(native));
+    }
+}
+
+#[test]
+fn apartment_workshop_references_publish_both_saved_views() {
+    let (document, page) = fixture("AP-103");
+    let views = preview_views(&document, &page, GeometryBackend::Rust);
+    assert_eq!(views.iter().map(Vec::len).collect::<Vec<_>>(), [119, 44]);
+    assert!(
+        views
+            .iter()
+            .flatten()
+            .all(|vector| vector.role == VectorRole::Visible)
+    );
+    assert_eq!(
+        views[0]
+            .iter()
+            .filter(|vector| matches!(
+                vector.curve,
+                VectorCurve::Ellipse { major_mm: 10., minor_mm: 10., start_rad, end_rad, .. }
+                    if (end_rad - start_rad - TAU).abs() < 1e-10
+            ))
+            .count(),
+        100
+    );
 }
