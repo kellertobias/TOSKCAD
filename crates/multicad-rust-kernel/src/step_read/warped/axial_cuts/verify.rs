@@ -2,7 +2,7 @@
 use super::*;
 use crate::warped_union::OrientedEdge;
 
-pub(super) fn replayed(
+pub(in crate::step_read::warped) fn replayed(
     reader: &Shell<'_, '_>,
     source: &Boundary,
     chart: Chart,

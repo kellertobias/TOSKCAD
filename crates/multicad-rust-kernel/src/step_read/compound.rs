@@ -81,7 +81,6 @@ fn inspect_flat_entities<'a>(
 ) -> Result<(usize, bool)> {
     let mut count = 0;
     let mut ellipse = false;
-    let mut inner_bound = false;
     let mut cylinder = false;
     for entity in entities {
         if matches!(
@@ -95,10 +94,9 @@ fn inspect_flat_entities<'a>(
         }
         count += usize::from(topology(entity.name));
         ellipse |= entity.name == "ELLIPSE";
-        inner_bound |= entity.name == "FACE_BOUND";
         cylinder |= entity.name == "CYLINDRICAL_SURFACE";
     }
-    Ok((count, ellipse || inner_bound && cylinder))
+    Ok((count, ellipse || cylinder))
 }
 
 fn topology(name: &str) -> bool {

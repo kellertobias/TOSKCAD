@@ -138,10 +138,18 @@ fn saved_rack_coupon_crops_one_blind_bore_into_an_exact_open_notch() {
     let scratch = tempfile::tempdir().unwrap();
     let path = scratch.path().join("rack-coupon.step");
     actual.write_step(&path).unwrap();
-    let independent = Solid::read_step(&path, compiler.policy).unwrap();
+    let [independent, reimported] = [
+        Solid::read_step(&path, compiler.policy).unwrap(),
+        Solid::import_rust_step(
+            &std::fs::read_to_string(&path).unwrap(),
+            feature,
+            compiler.policy,
+        )
+        .unwrap(),
+    ];
     let expected_bounds = expected.bounds().unwrap();
     near(expected_bounds.max[1], 30.);
-    for solid in [actual, &independent] {
+    for solid in [actual, &independent, &reimported] {
         assert_eq!(solid.solid_count().unwrap(), 1);
         near(solid.volume_mm3().unwrap(), expected.volume_mm3().unwrap());
         near(area(solid), area(expected));
@@ -151,4 +159,11 @@ fn saved_rack_coupon_crops_one_blind_bore_into_an_exact_open_notch() {
             near(bounds.max[i], expected_bounds.max[i]);
         }
     }
+    let receipt = verify_rust_step_shape(
+        &path,
+        &rust.snapshot().shapes[&feature],
+        compiler.policy.linear_tolerance_mm,
+    )
+    .unwrap();
+    near(receipt, actual.volume_mm3().unwrap());
 }

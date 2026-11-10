@@ -4,18 +4,18 @@ use super::*;
 use crate::warped_union::{AxialCut, ConvexRecess};
 
 mod recess;
-mod verify;
+pub(super) mod verify;
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-struct Use {
-    face: usize,
-    hole: Option<usize>,
+pub(super) struct Use {
+    pub(super) face: usize,
+    pub(super) hole: Option<usize>,
 }
 
-struct Incidence(BTreeMap<u32, Vec<Use>>);
+pub(super) struct Incidence(BTreeMap<u32, Vec<Use>>);
 
 impl Incidence {
-    fn new(source: &Boundary) -> Self {
+    pub(super) fn new(source: &Boundary) -> Self {
         let mut edges = BTreeMap::<_, Vec<_>>::new();
         for (face, boundary) in source.faces.iter().enumerate() {
             let wires = std::iter::once((None, &boundary.loop_)).chain(
@@ -34,7 +34,7 @@ impl Incidence {
         Self(edges)
     }
 
-    fn adjacent(&self, edge: u32, face: usize) -> Result<Use> {
+    pub(super) fn adjacent(&self, edge: u32, face: usize) -> Result<Use> {
         let [a, b] = self.0[&edge].as_slice() else {
             return Err(ReadError::Invalid);
         };
@@ -352,7 +352,7 @@ fn retain_widening(widening: &mut Option<ConvexRecess>, recess: ConvexRecess) ->
     Ok(())
 }
 
-fn replay_error(cause: warped_union::Error) -> ReadError {
+pub(super) fn replay_error(cause: warped_union::Error) -> ReadError {
     match cause {
         warped_union::Error::Limit => ReadError::Limit,
         _ => ReadError::Invalid,

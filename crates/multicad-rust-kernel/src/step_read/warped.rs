@@ -8,6 +8,7 @@ use std::f64::consts::FRAC_PI_2;
 
 mod axial_cuts;
 mod bosses;
+mod open_bore;
 
 #[derive(Debug)]
 pub struct ImportedWarped {
@@ -327,6 +328,8 @@ pub(super) fn read_member(
 ) -> Result<(Readback, ImportedWarped)> {
     let boundary = Boundary::parse(reader, solid)?;
     let imported = if let Some(imported) = axial_cuts::reconstruct(reader, &boundary)? {
+        imported
+    } else if let Some(imported) = open_bore::reconstruct(reader, &boundary)? {
         imported
     } else if boundary.faces.iter().any(|face| !face.holes.is_empty()) {
         bosses::reconstruct(reader, &boundary)?
