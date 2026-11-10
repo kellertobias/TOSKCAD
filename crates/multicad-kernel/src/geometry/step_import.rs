@@ -11,6 +11,7 @@ use multicad_rust_kernel::step_read::{
     self, ArcEdge, CircleEdge, ImportProfile, ImportSolid, ReadError, Readback, SemicircleEdge,
 };
 use multicad_rust_kernel::trim_curve::{Ellipse, EllipseArc};
+use multicad_rust_kernel::{Error as RationalError, polygon::PolygonError};
 use std::f64::consts::{PI, TAU};
 mod compound;
 mod involute;
@@ -343,17 +344,7 @@ impl Solid {
                 )
             }
             ImportProfile::LinearSweep { base, top } => {
-                let edges = base
-                    .iter()
-                    .flat_map(|ring| {
-                        ring.iter()
-                            .zip(ring.iter().cycle().skip(1))
-                            .map(|(&a, &b)| (straight_origin(feature, frame, a, b), false))
-                    })
-                    .collect();
-                let sweep = multicad_rust_kernel::linear_sweep::Sweep::new(base, top, height_mm)
-                    .map_err(|cause| invalid(format!("Invalid STEP linear sweep: {cause:?}")))?;
-                Self::from_linear_sweep(sweep, frame, feature, edges, [0.; 2], false, policy)
+                Self::from_imported_linear_sweep(base, top, height_mm, frame, feature, policy)
             }
             ImportProfile::TrimmedSweep {
                 rings,
@@ -425,6 +416,7 @@ impl Solid {
                 frame,
                 feature,
                 policy,
+                true,
             ),
             ImportProfile::ChamferedPolygon {
                 rings,
@@ -438,6 +430,7 @@ impl Solid {
                     frame,
                     feature,
                     policy,
+                    false,
                 )?;
                 let origins = chamfers
                     .iter()
@@ -471,6 +464,7 @@ impl Solid {
                     frame,
                     feature,
                     policy,
+                    false,
                 )?;
                 let origins = pockets
                     .iter()
@@ -565,6 +559,27 @@ impl Solid {
         )
     }
 
+    fn from_imported_linear_sweep(
+        base: Vec<Vec<[f64; 2]>>,
+        top: Vec<Vec<[f64; 2]>>,
+        height_mm: f64,
+        frame: PlaneFrame,
+        feature: EntityId,
+        policy: GeometryPolicy,
+    ) -> Result<Self, GeometryError> {
+        let edges = base
+            .iter()
+            .flat_map(|ring| {
+                ring.iter()
+                    .zip(ring.iter().cycle().skip(1))
+                    .map(|(&a, &b)| (straight_origin(feature, frame, a, b), false))
+            })
+            .collect();
+        let sweep = multicad_rust_kernel::linear_sweep::Sweep::new(base, top, height_mm)
+            .map_err(|cause| invalid(format!("Invalid STEP linear sweep: {cause:?}")))?;
+        Self::from_linear_sweep(sweep, frame, feature, edges, [0.; 2], false, policy)
+    }
+
     fn from_imported_polygon(
         rings: &[Vec<[f64; 2]>],
         circular_holes: &[([f64; 2], f64)],
@@ -572,6 +587,7 @@ impl Solid {
         frame: PlaneFrame,
         feature: EntityId,
         policy: GeometryPolicy,
+        allow_linear_fallback: bool,
     ) -> Result<Self, GeometryError> {
         let dimension = |value| convert(value, policy.linear_tolerance_mm);
         let exact_rings = rings
@@ -589,8 +605,26 @@ impl Solid {
                     .map_err(|cause| invalid(format!("Invalid STEP hole: {cause:?}")))
             })
             .collect::<Result<Vec<_>, _>>()?;
-        let prism = PolygonPrism::with_circular_holes(exact_rings, holes, dimension(height_mm)?)
-            .map_err(|cause| invalid(format!("Invalid STEP polygon: {cause:?}")))?;
+        let prism =
+            match PolygonPrism::with_circular_holes(exact_rings, holes, dimension(height_mm)?) {
+                Ok(prism) => prism,
+                Err(PolygonError::Arithmetic(RationalError::OutOfRange))
+                    if allow_linear_fallback && circular_holes.is_empty() =>
+                {
+                    // The independent reader proved a straight planar sweep.
+                    // Retain its original coordinates when rational products
+                    // overflow, and still run the full analytic readback checks.
+                    return Self::from_imported_linear_sweep(
+                        rings.to_vec(),
+                        rings.to_vec(),
+                        height_mm,
+                        frame,
+                        feature,
+                        policy,
+                    );
+                }
+                Err(cause) => return Err(invalid(format!("Invalid STEP polygon: {cause:?}"))),
+            };
         let mut origins: Vec<_> = rings
             .iter()
             .flat_map(|ring| {

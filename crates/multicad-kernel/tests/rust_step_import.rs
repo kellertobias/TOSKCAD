@@ -333,3 +333,65 @@ fn imported_spline_compound_retains_exact_geometry_and_viewport_edge_identity() 
         2. * policy.linear_tolerance_mm
     ));
 }
+
+#[test]
+fn rust_step_import_reconstructs_the_exact_trapezoid_after_rational_area_overflow() {
+    use multicad_core::references::Origin;
+    use multicad_kernel::{
+        TreatmentFace,
+        rust_kernel::step_read::{ImportProfile, read_analytic_solid, read_import_solid},
+    };
+
+    let policy = GeometryPolicy::default();
+    let stock_owner = EntityId::new();
+    let draft_owner = EntityId::new();
+    let solid = Solid::rust_box(
+        stock_owner.uuid_bits(),
+        [40, 20, 10].map(n),
+        PlaneFrame::default(),
+        policy,
+    )
+    .unwrap();
+    let topology = solid.topology_snapshot(stock_owner, 0).unwrap();
+    let side = topology.elements.iter().find(|element|
+        matches!(element.geometry, Some(AnalyticGeometry::Plane {frame}) if frame.normal() == [1.,0.,0.])
+    ).unwrap();
+    let draft = solid
+        .draft_faces_named(
+            &[TreatmentFace {
+                key: side.key,
+                origin: Origin {
+                    source: draft_owner,
+                    role: "selected draft face".into(),
+                },
+            }],
+            [0., 0., 1.],
+            PlaneFrame {
+                origin: [0., 0., 3.],
+                ..Default::default()
+            },
+            5_f64.to_radians(),
+            draft_owner,
+            policy,
+        )
+        .unwrap();
+    let encoded = text(&draft);
+    let (_, decoded) = read_import_solid(&encoded, policy.linear_tolerance_mm).unwrap();
+    assert!(
+        matches!(decoded.profile, ImportProfile::Polygon {circular_holes,..} if circular_holes.is_empty())
+    );
+    let imported_owner = EntityId::new();
+    let imported = Solid::import_rust_step(&encoded, imported_owner, policy).unwrap();
+    same_shape(&imported, &draft);
+    let topology = draft.topology_snapshot(draft_owner, 0).unwrap();
+    let open_shell = encoded.replacen("CLOSED_SHELL(", "OPEN_SHELL(", 1);
+    assert!(Solid::import_rust_step(&open_shell, EntityId::new(), policy).is_err());
+    for source in [encoded, text(&imported)] {
+        let decoded = read_analytic_solid(&source, policy.linear_tolerance_mm).unwrap();
+        assert!(Solid::step_topology_matches(
+            &topology,
+            &decoded,
+            policy.linear_tolerance_mm
+        ));
+    }
+}
