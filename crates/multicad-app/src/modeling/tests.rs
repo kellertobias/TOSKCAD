@@ -22,6 +22,91 @@ fn box_session() -> (Session, PrimitiveRequest) {
 }
 
 #[test]
+fn rust_existing_mixed_sweep_previews_a_pickable_wall_in_the_app() {
+    use multicad_core::{
+        constraint_sketch::{Curve, CurveKind, source::Source},
+        model::{AdvancedParameters, AdvancedRequest, ProfileSource, SketchPathSource},
+        sketch::Datum,
+        sketch_regions,
+    };
+    use multicad_ui::modeling::ModelToolController;
+
+    let document = Document::new("Rust miter sweep").unwrap();
+    let (sketch, edits) = Source::create(Datum::Xy, "Stadium").unwrap();
+    let document = document.edited(&edits).unwrap();
+    let mut profile = Source::read(&document, sketch).unwrap().0;
+    let [a, b, c, d] = [[-3., -1.], [3., -1.], [3., 1.], [-3., 1.]].map(|p| profile.add_point(p));
+    profile.add_line(a, b);
+    let straight = profile.add_line(c, d);
+    for (center, start, end) in [([3., 0.], b, c), ([-3., 0.], d, a)] {
+        let center = profile.add_point(center);
+        profile.sketch.curves.push(Curve {
+            id: EntityId::new(),
+            construction: false,
+            kind: CurveKind::Arc {
+                center,
+                start,
+                end,
+                clockwise: false,
+            },
+        });
+    }
+    let region = sketch_regions::extract(&profile).regions[0].intent();
+    let document = document
+        .edited(&profile.replace(&document, sketch).unwrap())
+        .unwrap();
+    let (path, edits) = Source::create(Datum::Xz, "Two legs").unwrap();
+    let document = document.edited(&edits).unwrap();
+    let mut wire = Source::read(&document, path).unwrap().0;
+    let [a, b, c] = [[0., 0.], [0., 20.], [20., 20.]].map(|p| wire.add_point(p));
+    let curves = vec![wire.add_line(a, b), wire.add_line(b, c)];
+    let middle = curves[1];
+    let document = document
+        .edited(&wire.replace(&document, path).unwrap())
+        .unwrap();
+    let mut session = Session::new(document).unwrap();
+    let request = AdvancedRequest::new_body(
+        "Sweep",
+        AdvancedParameters::Sweep(Default::default()),
+        vec![ProfileSource { sketch, region }],
+        Some(SketchPathSource {
+            sketch: path,
+            curves,
+        }),
+    );
+    let prepared =
+        model::prepare_advanced(&session, 0, Actor::local(Channel::Ui), &request).unwrap();
+    session.commit(prepared.prepared).unwrap();
+    let before = session.document().clone();
+    let resources = ProjectResources::default();
+    let mut tool = ModelToolController::default();
+    tool.set_backend(Backend::factory(GeometryBackend::Rust).unwrap()());
+    tool.begin_existing(&session, &resources, request.feature, Channel::Ui)
+        .unwrap();
+    tool.preview(&session, &resources, Channel::Ui).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while tool.pending() {
+        tool.poll(&session, &resources);
+        assert!(Instant::now() < deadline, "Rust sweep preview timed out");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert!(tool.can_apply(&session, &resources), "{:?}", tool.error());
+    let scene = tool.display_scene(&session, &resources).unwrap();
+    let hit = scene
+        .pick_face(viewport::Ray::new([10., 5., 20.], [0., -1., 0.]).unwrap())
+        .unwrap();
+    assert_eq!(hit.geometry, request.feature);
+    assert!((hit.point_mm[1] - 1.).abs() < 1e-6);
+    let intent = hit.intent.unwrap();
+    for source in [straight, middle] {
+        assert!(intent.origins.iter().any(|origin| origin.source == source));
+    }
+    tool.cancel();
+    assert_eq!(session.revision(), 1);
+    assert_eq!(session.document(), &before);
+}
+
+#[test]
 fn rust_thread_tool_previews_real_m8_ridges_and_cancel_keeps_the_document() {
     use multicad_ui::modeling::ModelToolController;
 

@@ -158,6 +158,21 @@ impl Solid {
                 policy,
             );
         }
+        if profile
+            .outer
+            .iter()
+            .any(|edge| matches!(edge, CurvedEdge2d::Arc { .. }))
+        {
+            sweep_start_height(profile.frame, path_mm[0], path_mm[1], policy)?;
+            return Self::rust_sweep_mixed_miter_named(
+                profile,
+                path_mm,
+                feature,
+                profile_origins,
+                path_origins,
+                policy,
+            );
+        }
         Self::rust_sweep_miter_named(
             profile,
             path_mm,

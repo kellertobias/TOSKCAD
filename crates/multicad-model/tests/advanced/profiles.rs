@@ -125,6 +125,28 @@ fn miter_path(session: &mut Session) -> SketchPathSource {
     });
     SketchPathSource { sketch, curves }
 }
+fn miter_chain_path(session: &mut Session) -> SketchPathSource {
+    let mut curves = vec![];
+    let (sketch, _) = add_sketch(session, Datum::Xz, "Two-corner path", 0., |s, session| {
+        let points = [[0., 0.], [0., 40.], [20., 40.], [20., 70.]].map(|p| s.add_point(p));
+        let [a, b, c, d] = points;
+        let [first, middle, last] = [s.add_line(a, b), s.add_line(b, c), s.add_line(c, d)];
+        curves.extend([first, middle, last]);
+        s.add_constraint(ConstraintKind::Fix { point: a });
+        s.add_constraint(ConstraintKind::Vertical { line: first });
+        s.add_constraint(ConstraintKind::Horizontal { line: middle });
+        s.add_constraint(ConstraintKind::Vertical { line: last });
+        for (line, dimension) in [
+            (first, bound(session, "pitch", "mm")),
+            (middle, length(20.)),
+            (last, length(30.)),
+        ] {
+            s.add_constraint(ConstraintKind::Length { line, dimension });
+        }
+    });
+    SketchPathSource { sketch, curves }
+}
+
 fn check_saved_rust_profile(
     session: &mut Session,
     request: &AdvancedRequest,
@@ -710,31 +732,7 @@ fn circular_miter_chain_rebuilds_and_keeps_both_middle_cylinder_trims() {
 
     let (mut session, _) = fixture();
     let (profile, circle_curve) = circle(&mut session, "Circular chain section", 0., 2., true);
-    let mut curves = vec![];
-    let (sketch, _) = add_sketch(
-        &mut session,
-        Datum::Xz,
-        "Two-corner path",
-        0.,
-        |s, session| {
-            let points = [[0., 0.], [0., 40.], [20., 40.], [20., 70.]].map(|p| s.add_point(p));
-            let [a, b, c, d] = points;
-            let [first, middle, last] = [s.add_line(a, b), s.add_line(b, c), s.add_line(c, d)];
-            curves.extend([first, middle, last]);
-            s.add_constraint(ConstraintKind::Fix { point: a });
-            s.add_constraint(ConstraintKind::Vertical { line: first });
-            s.add_constraint(ConstraintKind::Horizontal { line: middle });
-            s.add_constraint(ConstraintKind::Vertical { line: last });
-            for (line, dimension) in [
-                (first, bound(session, "pitch", "mm")),
-                (middle, length(20.)),
-                (last, length(30.)),
-            ] {
-                s.add_constraint(ConstraintKind::Length { line, dimension });
-            }
-        },
-    );
-    let path = SketchPathSource { sketch, curves };
+    let path = miter_chain_path(&mut session);
     let request = AdvancedRequest::new_body(
         "Two circular miters",
         AdvancedParameters::Sweep(Default::default()),
@@ -889,6 +887,172 @@ fn circular_miter_chain_rebuilds_and_keeps_both_middle_cylinder_trims() {
             3.,
             55.,
         );
+    }
+}
+
+#[test]
+fn mixed_miter_keeps_a_stadium_profile_and_its_authored_walls_after_reopen() {
+    use multicad_core::{
+        drawings::{VectorCurve, VectorRole},
+        references::{self, AnalyticGeometry, GeometryIntent, Resolution, TopologyKind},
+    };
+    use multicad_kernel::{DrawingProjection, DrawingSolid, PlaneFrame, Solid, project_drawing};
+
+    let (mut session, _) = fixture();
+    let mut straight = EntityId::nil();
+    let curved = EntityId::new();
+    let (sketch, section) = add_sketch(&mut session, Datum::Xy, "Stadium profile", 0., |s, _| {
+        let [a, b, c, d] = [[-3., -1.], [3., -1.], [3., 1.], [-3., 1.]].map(|p| s.add_point(p));
+        straight = s.add_line(a, b);
+        let right = s.add_point([3., 0.]);
+        let left = s.add_point([-3., 0.]);
+        s.sketch.curves.push(Curve {
+            id: curved,
+            construction: false,
+            kind: CurveKind::Arc {
+                center: right,
+                start: b,
+                end: c,
+                clockwise: false,
+            },
+        });
+        s.add_line(c, d);
+        s.sketch.curves.push(Curve {
+            id: EntityId::new(),
+            construction: false,
+            kind: CurveKind::Arc {
+                center: left,
+                start: d,
+                end: a,
+                clockwise: false,
+            },
+        });
+    });
+    let profile = ProfileSource {
+        sketch,
+        region: sketch_regions::extract(&section).regions[0].intent(),
+    };
+    let path = miter_chain_path(&mut session);
+    let request = AdvancedRequest::new_body(
+        "Stadium sweep through two bends",
+        AdvancedParameters::Sweep(Default::default()),
+        vec![profile],
+        Some(path.clone()),
+    );
+    let preview = commit(&mut session, &request);
+    let area = 12. + PI;
+    let perimeter = 12. + 2. * PI;
+    let check_geometry = |solid: &Solid, bend_z| {
+        let length = bend_z + 50.;
+        assert_eq!(solid.solid_count().unwrap(), 1);
+        near(solid.volume_mm3().unwrap(), area * length);
+        near(
+            solid
+                .faces()
+                .unwrap()
+                .iter()
+                .map(|face| face.area_mm2)
+                .sum(),
+            2. * area + perimeter * length,
+        );
+        let bounds = solid.bounds().unwrap();
+        for (actual, expected) in
+            bounds
+                .min
+                .into_iter()
+                .chain(bounds.max)
+                .zip([-4., -1., 0., 24., 1., bend_z + 30.])
+        {
+            near(actual, expected);
+        }
+    };
+    check_geometry(preview.solid(request.body).unwrap(), 40.);
+    let initial = check_saved_rust_profile(&mut session, &request, area * 90.);
+    let topology = &initial.snapshot().shapes[&request.feature].topology;
+    let intents: Vec<_> = topology
+        .elements
+        .iter()
+        .filter(|face| {
+            face.key.kind == TopologyKind::Face
+                && face
+                    .origins
+                    .iter()
+                    .any(|origin| [straight, curved].contains(&origin.source))
+                && face
+                    .origins
+                    .iter()
+                    .any(|origin| origin.source == path.curves[1])
+        })
+        .map(|face| GeometryIntent::capture(topology, face.key).unwrap())
+        .collect();
+    assert_eq!(intents.len(), 3);
+
+    apply_parameter(&mut session, "pitch", "55");
+    let reopened = check_saved_rust_profile(&mut session, &request, area * 105.);
+    let solid = reopened.solid(request.body).unwrap();
+    check_geometry(solid, 55.);
+    let topology = &reopened.snapshot().shapes[&request.feature].topology;
+    let resolved: std::collections::BTreeSet<_> = intents
+        .iter()
+        .map(
+            |intent| match references::resolve(intent, topology, topology.revision) {
+                Resolution::Resolved { key, .. } => key,
+                diagnostic => panic!("The stadium sweep wall did not resolve: {diagnostic:?}"),
+            },
+        )
+        .collect();
+    assert_eq!(resolved.len(), 3);
+    assert!(topology.elements.iter().any(|edge| matches!(edge.geometry,
+        Some(AnalyticGeometry::EllipticArc { semiaxes_mm: [a, b], .. })
+            if (a - 2_f64.sqrt()).abs() < 1e-7 && (b - 1.).abs() < 1e-7)));
+
+    let input = [DrawingSolid { solid, hatch: None }];
+    let section = project_drawing(
+        &input,
+        DrawingProjection {
+            frame: PlaneFrame {
+                origin: [0.; 3],
+                u: [0., 1., 0.],
+                v: [0., 0., 1.],
+            },
+            section_offset_mm: Some(10.),
+            section_only: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let mut arc_span = 0.;
+    let mut straight_span = 0.;
+    for vector in section
+        .iter()
+        .filter(|vector| vector.role == VectorRole::Section)
+    {
+        match vector.curve {
+            VectorCurve::Ellipse {
+                major_mm,
+                minor_mm,
+                start_rad,
+                end_rad,
+                ..
+            } => {
+                near(major_mm, 1.);
+                near(minor_mm, 1.);
+                arc_span += (end_rad - start_rad).abs();
+            }
+            VectorCurve::Line { a, b } => straight_span += (b[0] - a[0]).hypot(b[1] - a[1]),
+            ref other => panic!("Expected exact stadium section edges, got {other:?}"),
+        }
+    }
+    near(arc_span, 2. * PI);
+    near(straight_span, 12.);
+    #[cfg(feature = "occt")]
+    {
+        let native = compile(&session);
+        check_geometry(native.solid(request.body).unwrap(), 55.);
+        let directory = tempfile::tempdir().unwrap();
+        let step = directory.path().join("stadium-miter.step");
+        solid.write_step(&step).unwrap();
+        check_geometry(&Solid::read_step(&step, Default::default()).unwrap(), 55.);
     }
 }
 

@@ -15,6 +15,7 @@ mod circular_miter;
 mod crop;
 mod cut;
 mod flat_stock;
+mod mixed_miter;
 mod operands;
 use super::planar_boolean_body::winding;
 use operands::QuarterFillet;
