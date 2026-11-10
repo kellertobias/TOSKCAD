@@ -14,6 +14,7 @@ mod pockets;
 mod shadows;
 pub(super) mod stadium;
 mod stepped;
+mod warped;
 
 fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
     a.into_iter().zip(b).map(|(x, y)| x * y).sum()
@@ -70,6 +71,7 @@ pub(super) fn needs_curved_scene(solid: &Solid) -> bool {
         || solid.rounded_slot_body().is_some()
         || solid.revolution_body().is_some()
         || solid.normal_sweep_body().is_some()
+        || solid.drawing_warped_shell().is_some()
         || solid.cosmetic_fastener_body().is_some()
         || solid
             .rust_compound()
@@ -150,12 +152,23 @@ fn project_members(
     let mut round_sources = Vec::new();
     let mut rounds = Vec::new();
     let mut rounded = stadium::Shapes::default();
+    let mut shell_faces = Vec::new();
+    let mut shell_tolerance = 0.0_f64;
     for (index, &(source, solid)) in members.iter().enumerate() {
         if solid.rounded_slot_body().is_some() {
             rounded.add(solid, source, options)?;
             continue;
         }
         if channel::add(solid, source, options, &mut rounded)? {
+            continue;
+        }
+        if let Some((shell, placement)) = solid.drawing_warped_shell() {
+            let tolerance = solid.geometry_policy().linear_tolerance_mm;
+            let elevation = warped::elevation(shell, placement, source, tolerance, options)?;
+            shell_faces.extend(elevation.blockers);
+            rounded.lines.extend(elevation.lines);
+            rounded.rims.extend(elevation.rims);
+            shell_tolerance = shell_tolerance.max(tolerance);
             continue;
         }
         if let Some(round) = round_occluder(solid, options.frame)? {
@@ -234,7 +247,7 @@ fn project_members(
     }
     openings.extend(rounded.openings);
     intrinsic_hidden.extend(rounded.hidden);
-    let projection = planar_projection::project_scene_with_candidates(
+    let projection = planar_projection::project_scene_with_analytic_faces(
         &bodies,
         &rounds,
         planar_projection::SceneExtras {
@@ -247,8 +260,9 @@ fn project_members(
             stadium_openings: &[],
             intrinsic_hidden: &intrinsic_hidden,
         },
+        &shell_faces,
         planar_projection::Options {
-            tolerance,
+            tolerance: tolerance.max(shell_tolerance),
             hidden_lines: options.hidden_lines,
             tangent_edges: options.tangent_edges,
             detail: options.detail,

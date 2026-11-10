@@ -7,12 +7,15 @@ use std::{collections::BTreeMap, f64::consts::FRAC_PI_2};
 
 mod axial_cut;
 mod boss;
+mod cylinder_patch;
+mod elevation;
 mod mesh;
 mod metrics;
 mod section;
 mod sheet;
 pub use axial_cut::{AxialCut, ConvexRecess, OpenBoreSide};
 pub use boss::Boss;
+pub use elevation::Elevation;
 pub use section::SectionEdge;
 pub use sheet::{
     SheetFlange, SheetFlangeOpening, SheetWebEdge, formed_sheet, formed_sheet_with_openings,

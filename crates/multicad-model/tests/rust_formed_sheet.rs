@@ -74,6 +74,8 @@ fn check_saved_step_import(path: &std::path::Path, expected: &Solid) {
     .unwrap();
     assert_same_solid(model.solid(part).unwrap(), expected);
     check_inset_sections(model.solid(part).unwrap());
+    check_inset_elevations(model.solid(part).unwrap());
+    check_inset_drawing_view(&model, &reopened.document, 0, part);
 }
 
 fn check_inset_sections(solid: &Solid) {
@@ -154,6 +156,270 @@ fn check_inset_sections(solid: &Solid) {
             "Section X={x}: hatch area {hatch_area}, expected {expected_area}"
         );
     }
+}
+
+fn check_inset_elevations(sheet: &Solid) {
+    use multicad_core::drawings::{VectorCurve, VectorRole};
+    use multicad_kernel::{
+        DrawingProjection, DrawingSolid, GeometryErrorKind, PlaneFrame, project_drawing,
+        rust_kernel::Rational,
+    };
+
+    let bounds = sheet.bounds().unwrap();
+    let axes = [[1., 0., 0.], [0., 1., 0.], [0., 0., 1.]];
+    for [u, v] in [[0, 1], [1, 2], [0, 2]] {
+        for sign in [1., -1.] {
+            let options = DrawingProjection {
+                frame: PlaneFrame {
+                    origin: [0.; 3],
+                    u: axes[u].map(|component| component * sign),
+                    v: axes[v],
+                },
+                ..Default::default()
+            };
+            let output = project_drawing(
+                &[DrawingSolid {
+                    solid: sheet,
+                    hatch: None,
+                }],
+                options,
+            )
+            .unwrap_or_else(|error| panic!("Elevation {u}/{v} ({sign}): {error}"));
+            assert!(!output.is_empty());
+            assert!(
+                output
+                    .iter()
+                    .all(|vector| vector.role == VectorRole::Visible)
+            );
+            let bounds_2d = output.iter().flat_map(|v| &v.preview_mm).fold(
+                [[f64::INFINITY, f64::NEG_INFINITY]; 2],
+                |mut extents, point| {
+                    for i in 0..2 {
+                        extents[i] = [extents[i][0].min(point[i]), extents[i][1].max(point[i])];
+                    }
+                    extents
+                },
+            );
+            let x = [sign * bounds.min[u], sign * bounds.max[u]];
+            let expected = [
+                [x[0].min(x[1]), x[0].max(x[1])],
+                [bounds.min[v], bounds.max[v]],
+            ];
+            for (a, b) in bounds_2d
+                .into_iter()
+                .flatten()
+                .zip(expected.into_iter().flatten())
+            {
+                assert!(
+                    (a - b).abs() < 0.02,
+                    "Elevation {u}/{v} ({sign}): {a} != {b}"
+                );
+            }
+        }
+    }
+
+    let input = || DrawingSolid {
+        solid: sheet,
+        hatch: None,
+    };
+    assert_eq!(
+        project_drawing(
+            &[input()],
+            DrawingProjection {
+                maximum_curves: 1,
+                ..Default::default()
+            },
+        )
+        .unwrap_err()
+        .kind,
+        GeometryErrorKind::Limit
+    );
+    let diagonal = std::f64::consts::FRAC_1_SQRT_2;
+    assert_eq!(
+        project_drawing(
+            &[input()],
+            DrawingProjection {
+                frame: PlaneFrame {
+                    v: [0., diagonal, diagonal],
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        )
+        .unwrap_err()
+        .kind,
+        GeometryErrorKind::Unsupported
+    );
+
+    let witness = |origin, size: [i64; 3]| {
+        Solid::rust_box(
+            12,
+            size.map(|size| Rational::new(size, 1).unwrap()),
+            PlaneFrame {
+                origin,
+                ..Default::default()
+            },
+            GeometryPolicy::default(),
+        )
+        .unwrap()
+    };
+    let behind = witness([17., 89., bounds.min[2] - 8.], [12, 2, 1]);
+    let ahead = witness([17., 89., bounds.max[2] + 8.], [12, 2, 1]);
+    let render = |parts: &[&Solid], hidden_lines| {
+        let inputs: Vec<_> = parts
+            .iter()
+            .map(|solid| DrawingSolid { solid, hatch: None })
+            .collect();
+        project_drawing(
+            &inputs,
+            DrawingProjection {
+                hidden_lines,
+                ..Default::default()
+            },
+        )
+        .unwrap()
+    };
+    let visible = render(&[sheet, &behind], false);
+    let hidden = render(&[sheet, &behind], true);
+    let quarter_angle: f64 = visible
+        .iter()
+        .filter_map(|v| match v.curve {
+            VectorCurve::Ellipse {
+                center: [x, y],
+                major_mm,
+                minor_mm,
+                start_rad,
+                end_rad,
+                ..
+            } if (x - 23.).abs() < 1e-7 && (y - 90.).abs() < 1e-7 => {
+                near(major_mm, 4.);
+                near(minor_mm, 4.);
+                Some((end_rad - start_rad).abs())
+            }
+            _ => None,
+        })
+        .sum();
+    near(quarter_angle, std::f64::consts::TAU);
+    let witness_visible: Vec<_> = visible.iter().filter(|v| v.source_index == 1).collect();
+    assert!(!witness_visible.is_empty());
+    assert!(
+        witness_visible
+            .iter()
+            .flat_map(|v| &v.preview_mm)
+            .all(|[x, y]| (x - 23.).hypot(y - 90.) <= 4.00001),
+        "Unexpected visible edges behind the web: {witness_visible:?}"
+    );
+    let chord = 15_f64.sqrt();
+    for end in [23. - chord, 23. + chord] {
+        assert!(
+            witness_visible
+                .iter()
+                .flat_map(|v| &v.preview_mm)
+                .any(|[x, y]| (x - end).abs() < 1e-6 && (*y - 89.).abs() < 1e-6)
+        );
+    }
+    assert!(hidden.iter().any(|v| v.source_index == 1
+        && v.role == VectorRole::Hidden
+        && v.preview_mm.iter().any(|[x, _]| (*x - 17.).abs() < 1e-6)));
+    assert!(
+        !render(&[sheet, &behind, &ahead], false)
+            .iter()
+            .any(|v| v.source_index == 1)
+    );
+
+    let rectangle = witness([95., 69., bounds.min[2] - 8.], [50, 2, 1]);
+    let output = render(&[sheet, &rectangle], false);
+    let spans: Vec<_> = output
+        .iter()
+        .filter(|v| v.source_index == 1)
+        .flat_map(|v| &v.preview_mm)
+        .map(|p| p[0])
+        .collect();
+    assert!(!spans.is_empty());
+    near(spans.iter().copied().fold(f64::INFINITY, f64::min), 100.);
+    near(spans.into_iter().fold(f64::NEG_INFINITY, f64::max), 140.);
+}
+
+fn check_inset_drawing_view(model: &Model, document: &Document, revision: u64, part: EntityId) {
+    use multicad_core::{
+        drawings::{
+            DrawingView, Scale, VectorCurve, VectorRole, ViewEvaluation, ViewKind, ViewSource,
+        },
+        references::ReferenceFrame,
+    };
+    let view = DrawingView {
+        id: EntityId::new(),
+        name: "Web elevation".into(),
+        source: ViewSource::Model {
+            entities: vec![part],
+        },
+        frame: ReferenceFrame {
+            origin_mm: [0.; 3],
+            u: [1., 0., 0.],
+            v: [0., 1., 0.],
+        },
+        kind: ViewKind::Projection,
+        position_mm: [50., 50.],
+        scale: Scale {
+            numerator: 1,
+            denominator: 1,
+        },
+        hidden_lines: true,
+        tangent_edges: false,
+        paper_chord_tolerance_mm: 0.01,
+        guide: None,
+        equipment_categories: None,
+    };
+    let result = model
+        .drawing_view(document, revision, &view, &Default::default())
+        .unwrap();
+    let ViewEvaluation::Ready { vectors, .. } = result else {
+        panic!("Inset sheet elevation failed: {result:?}");
+    };
+    assert!(
+        vectors
+            .iter()
+            .all(|vector| vector.source == part && vector.material_part == part)
+    );
+    assert!(vectors.iter().any(|vector| vector.role == VectorRole::Visible
+        && matches!(vector.curve, VectorCurve::Ellipse { major_mm, .. } if (major_mm - 4.).abs() < 1e-8)));
+    assert!(
+        vectors
+            .iter()
+            .any(|vector| vector.role == VectorRole::Hidden)
+    );
+}
+
+#[cfg(feature = "occt")]
+fn check_native_web_aperture(sheet: &Solid) {
+    use multicad_core::drawings::{VectorCurve, VectorRole};
+    use multicad_kernel::{DrawingProjection, DrawingSolid, RigidTransform, project_drawing};
+
+    let witness = Solid::box_solid([12., 2., 1.], GeometryPolicy::default())
+        .unwrap()
+        .transformed(RigidTransform {
+            translation_mm: [17., 89., sheet.bounds().unwrap().min[2] - 8.],
+            ..Default::default()
+        })
+        .unwrap();
+    let input = [sheet, &witness].map(|solid| DrawingSolid { solid, hatch: None });
+    let vectors = project_drawing(&input, DrawingProjection::default()).unwrap();
+    let bounds = vectors
+        .iter()
+        .filter(|v| v.source_index == 1 && v.role == VectorRole::Visible)
+        .filter_map(|v| match v.curve {
+            VectorCurve::Line { a, b } if [a[1], b[1]].iter().all(|y| (y - 89.).abs() < 1e-6) => {
+                Some([a[0], b[0]])
+            }
+            _ => None,
+        })
+        .flatten()
+        .fold([f64::INFINITY, f64::NEG_INFINITY], |[lo, hi], x| {
+            [lo.min(x), hi.max(x)]
+        });
+    let chord = 15_f64.sqrt();
+    near(bounds[0], 23. - chord);
+    near(bounds[1], 23. + chord);
 }
 
 fn prepare_sheet_rectangle(
@@ -738,6 +1004,13 @@ fn control_desk_reliefs_form_one_solid_and_develop_exactly() {
         assert_eq!(folded.snapshot().body_sources[&request.body], cut);
         let punched = folded.solid(cut).unwrap();
         check_inset_sections(punched);
+        check_inset_elevations(punched);
+        check_inset_drawing_view(
+            &folded,
+            reopened.document(),
+            reopened.revision(),
+            request.body,
+        );
         near(
             solid.volume_mm3().unwrap() - punched.volume_mm3().unwrap(),
             removed_area * 1.5,
@@ -815,6 +1088,7 @@ fn control_desk_reliefs_form_one_solid_and_develop_exactly() {
             let native = evaluate(&native_source, GeometryBackend::OpenCascade);
             let expected = native.solid(native_request.feature).unwrap();
             assert_same_solid(punched, expected);
+            check_native_web_aperture(expected);
             assert_same_solid(
                 &Solid::read_step(&path, GeometryPolicy::default()).unwrap(),
                 expected,

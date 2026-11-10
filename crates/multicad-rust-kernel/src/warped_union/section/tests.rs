@@ -17,7 +17,7 @@ fn rectangle<const N: usize>(corners: [[f64; 2]; N]) -> [(Edge, usize); N] {
     })
 }
 
-fn fixture(up: f64) -> Shell {
+pub(in crate::warped_union) fn fixture(up: f64) -> Shell {
     let web = rectangle([[0., 0.], [2., 0.], [8., 0.], [10., 0.], [10., 8.], [0., 8.]]).map(
         |(edge, source)| SheetWebEdge {
             ends: [edge.start(), edge.end()],
