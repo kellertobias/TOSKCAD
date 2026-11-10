@@ -297,7 +297,9 @@ impl Solid {
         ruled: bool,
         policy: GeometryPolicy,
     ) -> Result<Self, GeometryError> {
-        if ruled
+        // Two sections have one interpolation interval. Matching polygon
+        // edges with planar side walls also define the default smooth loft.
+        if (ruled || profiles.len() == 2)
             && profiles.iter().all(|profile| {
                 profile
                     .outer

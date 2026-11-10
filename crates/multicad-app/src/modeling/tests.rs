@@ -107,6 +107,82 @@ fn rust_existing_mixed_sweep_previews_a_pickable_wall_in_the_app() {
 }
 
 #[test]
+fn rust_default_polygon_loft_publishes_its_taper_in_the_app() {
+    use multicad_core::{
+        constraint_sketch::source::Source,
+        document::Mutation,
+        model::{AdvancedParameters, AdvancedRequest, LoftParameters, ProfileSource},
+        sketch::Datum,
+        sketch_regions,
+    };
+
+    let mut document = Document::new("Rust default polygon loft").unwrap();
+    let mut profiles = Vec::new();
+    let mut seams = Vec::new();
+    for (name, z, origin, size) in [
+        ("Start", 0., [0., 0.], [6., 4.]),
+        ("End", 8., [2., 1.], [4., 2.]),
+    ] {
+        let (sketch, mut edits) = Source::create(Datum::Xy, name).unwrap();
+        for edit in &mut edits {
+            if let Mutation::Insert(entity) = edit
+                && let EntityData::Plane { origin_mm, .. } = &mut entity.data
+            {
+                origin_mm[2] = z;
+            }
+        }
+        document = document.edited(&edits).unwrap();
+        let mut source = Source::read(&document, sketch).unwrap().0;
+        source.add_rectangle(origin, size).unwrap();
+        seams.push(source.sketch.curves[0].id);
+        let region = sketch_regions::extract(&source).regions[0].intent();
+        profiles.push(ProfileSource { sketch, region });
+        document = document
+            .edited(&source.replace(&document, sketch).unwrap())
+            .unwrap();
+    }
+    let mut session = Session::new(document).unwrap();
+    let request = AdvancedRequest::new_body(
+        "Default polygon loft",
+        AdvancedParameters::Loft(LoftParameters {
+            seams,
+            ..Default::default()
+        }),
+        profiles,
+        None,
+    );
+    let prepared =
+        model::prepare_advanced(&session, 0, Actor::local(Channel::Ui), &request).unwrap();
+    session.commit(prepared.prepared).unwrap();
+
+    let mut backend = Backend::factory(GeometryBackend::Rust).unwrap()();
+    let stamp = SceneStamp {
+        document: session.document().id(),
+        revision: session.revision(),
+        generation: 1,
+    };
+    backend.request(session.document(), stamp).unwrap();
+    let scene = wait_for_scene(&mut *backend).result.unwrap();
+    assert_eq!(scene.stamp(), stamp);
+    assert_eq!(
+        scene.native_instance_bounds(request.body),
+        Some([[0., 0., 0.], [6., 4., 8.]])
+    );
+    let hit = scene
+        .pick_face(viewport::Ray::new([-10., 2., 4.], [1., 0., 0.]).unwrap())
+        .unwrap();
+    assert_eq!(hit.geometry, request.feature);
+    assert!((hit.point_mm[0] - 1.).abs() < 1e-6);
+    assert!(
+        hit.intent
+            .unwrap()
+            .origins
+            .iter()
+            .any(|origin| origin.role.starts_with("side/"))
+    );
+}
+
+#[test]
 fn rust_thread_tool_previews_real_m8_ridges_and_cancel_keeps_the_document() {
     use multicad_ui::modeling::ModelToolController;
 

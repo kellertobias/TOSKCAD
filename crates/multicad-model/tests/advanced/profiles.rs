@@ -1461,6 +1461,102 @@ fn ruled_polygon_loft_preserves_section_seams_after_edit_reopen_and_step() {
 }
 
 #[test]
+fn default_two_section_loft_preserves_planar_notch_after_reopen() {
+    let (mut session, _) = fixture();
+    let [bottom, top] = notched_loft_footprints();
+    let [(first, a), (last, b)] = [
+        ("Default loft start", 0., bottom),
+        ("Default loft end", 4., top),
+    ]
+    .map(|(name, z, points)| loft_polygon(&mut session, name, z, points));
+    let parameters = LoftParameters {
+        seams: vec![a[0], b[0]],
+        ..Default::default()
+    };
+    assert!(!parameters.ruled);
+    let request = AdvancedRequest::new_body(
+        "Default notched loft",
+        AdvancedParameters::Loft(parameters),
+        vec![first, last],
+        None,
+    );
+    commit(&mut session, &request);
+    let volume = 4. * (56. + 4. * 70.5 + 86.) / 6.;
+    #[cfg(feature = "occt")]
+    let native = compile(&session);
+    #[cfg(feature = "occt")]
+    near(
+        native.solid(request.body).unwrap().volume_mm3().unwrap(),
+        volume,
+    );
+    let reopened = check_saved_rust_profile(&mut session, &request, volume);
+    let solid = reopened.solid(request.body).unwrap();
+    assert_eq!(solid.faces().unwrap().len(), 10);
+    let bounds = solid.bounds().unwrap();
+    for (actual, expected) in bounds
+        .min
+        .into_iter()
+        .chain(bounds.max)
+        .zip([0., -1., 0., 12., 10., 4.])
+    {
+        near(actual, expected);
+    }
+    #[cfg(feature = "occt")]
+    {
+        let native = native.solid(request.body).unwrap();
+        let area = |solid: &multicad_kernel::Solid| {
+            solid
+                .faces()
+                .unwrap()
+                .iter()
+                .map(|face| face.area_mm2)
+                .sum()
+        };
+        near(area(native), area(solid));
+    }
+}
+
+fn loft_polygon<const N: usize>(
+    session: &mut Session,
+    name: &str,
+    z: f64,
+    outline: [[f64; 2]; N],
+) -> (ProfileSource, [EntityId; N]) {
+    let mut curves = [EntityId::nil(); N];
+    let (sketch, source) = add_sketch(session, Datum::Xy, name, z, |source, _| {
+        let points = outline.map(|p| source.add_point(p));
+        curves = std::array::from_fn(|i| source.add_line(points[i], points[(i + 1) % N]));
+    });
+    let region = sketch_regions::extract(&source).regions[0].intent();
+    (ProfileSource { sketch, region }, curves)
+}
+
+fn notched_loft_footprints() -> [[[f64; 2]; 8]; 2] {
+    [
+        [
+            [0., 0.],
+            [10., 0.],
+            [10., 8.],
+            [7., 8.],
+            [7., 2.],
+            [3., 2.],
+            [3., 8.],
+            [0., 8.],
+        ],
+        [
+            [1., -1.],
+            [12., -1.],
+            [12., 10.],
+            [9., 10.],
+            [9., 3.],
+            [4., 3.],
+            [4., 10.],
+            [1., 10.],
+        ],
+    ]
+}
+
+#[test]
 fn concave_ruled_loft_rebuilds_its_notch_and_saved_walls() {
     use multicad_core::{
         drawings::{VectorCurve, VectorRole},
@@ -1471,41 +1567,15 @@ fn concave_ruled_loft_rebuilds_its_notch_and_saved_walls() {
     };
 
     let (mut session, _) = fixture();
-    let bottom = [
-        [0., 0.],
-        [10., 0.],
-        [10., 8.],
-        [7., 8.],
-        [7., 2.],
-        [3., 2.],
-        [3., 8.],
-        [0., 8.],
-    ];
-    let middle = [
-        [1., -1.],
-        [12., -1.],
-        [12., 10.],
-        [9., 10.],
-        [9., 3.],
-        [4., 3.],
-        [4., 10.],
-        [1., 10.],
-    ];
+    let [bottom, middle] = notched_loft_footprints();
     let end = middle.map(|[x, y]| [0.75 * x + 1., 0.75 * y + 1.]);
     let sections = [
         ("Notched start", 0., bottom),
         ("Notched transition", 4., middle),
         ("Notched end", 10., end),
     ];
-    let [(first, a), (middle, b), (last, c)] = sections.map(|(name, z, outline)| {
-        let mut curves = [EntityId::nil(); 8];
-        let (sketch, source) = add_sketch(&mut session, Datum::Xy, name, z, |source, _| {
-            let points = outline.map(|p| source.add_point(p));
-            curves = std::array::from_fn(|i| source.add_line(points[i], points[(i + 1) % 8]));
-        });
-        let region = sketch_regions::extract(&source).regions[0].intent();
-        (ProfileSource { sketch, region }, curves)
-    });
+    let [(first, a), (middle, b), (last, c)] =
+        sections.map(|(name, z, outline)| loft_polygon(&mut session, name, z, outline));
     let request = AdvancedRequest::new_body(
         "Notched ruled loft",
         AdvancedParameters::Loft(LoftParameters {
