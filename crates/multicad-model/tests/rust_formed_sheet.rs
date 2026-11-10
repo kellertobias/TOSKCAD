@@ -74,6 +74,7 @@ fn check_saved_step_import(path: &std::path::Path, expected: &Solid) {
     .unwrap();
     assert_same_solid(model.solid(part).unwrap(), expected);
     check_inset_sections(model.solid(part).unwrap());
+    check_retained_section(model.solid(part).unwrap());
     check_inset_elevations(model.solid(part).unwrap());
     check_inset_drawing_view(&model, &reopened.document, 0, part);
 }
@@ -337,6 +338,109 @@ fn check_inset_elevations(sheet: &Solid) {
     near(spans.iter().copied().fold(f64::INFINITY, f64::min), 100.);
     near(spans.into_iter().fold(f64::NEG_INFINITY, f64::max), 140.);
     check_oblique_web_aperture(sheet, &witness([17., 92., -5.], [12, 2, 1]));
+}
+
+fn check_retained_section(sheet: &Solid) {
+    use multicad_core::{
+        drawings::{VectorCurve, VectorRole},
+        materials::HatchPattern,
+    };
+    use multicad_kernel::{
+        DrawingHatch, DrawingProjection, DrawingSolid, GeometryErrorKind, PlaneFrame,
+        project_drawing,
+    };
+
+    let options = DrawingProjection {
+        frame: PlaneFrame {
+            origin: [0.; 3],
+            u: [0., 1., 0.],
+            v: [0., 0., 1.],
+        },
+        section_offset_mm: Some(120.),
+        hidden_lines: true,
+        ..Default::default()
+    };
+    let render = |options| {
+        project_drawing(
+            &[DrawingSolid {
+                solid: sheet,
+                hatch: Some(DrawingHatch {
+                    angle_rad: 0.,
+                    spacing_mm: 2.,
+                    line_width_mm: 0.2,
+                    pattern: HatchPattern::Solid,
+                }),
+            }],
+            options,
+        )
+    };
+    let deep = render(DrawingProjection {
+        section_depth_mm: Some(75.5),
+        ..options
+    })
+    .unwrap();
+    let shallow = render(DrawingProjection {
+        section_depth_mm: Some(10.),
+        ..options
+    })
+    .unwrap();
+    let section = render(DrawingProjection {
+        section_only: true,
+        ..options
+    })
+    .unwrap();
+    let published_cut = |vectors: &[multicad_kernel::ProjectedVector]| {
+        vectors
+            .iter()
+            .filter(|v| matches!(v.role, VectorRole::Section | VectorRole::Hatch))
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+    assert!(!section.is_empty());
+    assert_eq!(published_cut(&deep), section);
+    assert_eq!(published_cut(&shallow), section);
+    let back_of_opening = |vectors: &[multicad_kernel::ProjectedVector]| {
+        vectors.iter().any(|v| {
+            v.role == VectorRole::Visible
+                && matches!(v.curve, VectorCurve::Line { a, b }
+            if (a[0].min(b[0]) - 59.).abs() < 1e-6
+                && (a[0].max(b[0]) - 81.).abs() < 1e-6
+                && (a[1] - b[1]).abs() < 1e-6)
+        })
+    };
+    assert!(
+        back_of_opening(&deep),
+        "The deep view must reach the rear opening edge"
+    );
+    assert!(
+        !back_of_opening(&shallow),
+        "The shallow view ends within the opening"
+    );
+    assert!(deep.iter().any(|v| v.role == VectorRole::Hidden));
+    let past = render(DrawingProjection {
+        section_offset_mm: Some(300.),
+        section_depth_mm: Some(20.),
+        ..options
+    })
+    .unwrap();
+    assert!(past.is_empty());
+    let enclosing = render(DrawingProjection {
+        section_depth_mm: Some(75.5),
+        section_u_mm: Some([-10., 175.]),
+        section_v_mm: Some([-80., 80.]),
+        ..options
+    })
+    .unwrap();
+    assert_eq!(deep, enclosing);
+    assert_eq!(
+        render(DrawingProjection {
+            section_u_mm: Some([20., 120.]),
+            ..options
+        })
+        .unwrap_err()
+        .kind,
+        GeometryErrorKind::Unsupported
+    );
 }
 
 fn check_oblique_web_aperture(sheet: &Solid, witness: &Solid) {
@@ -1074,6 +1178,7 @@ fn control_desk_reliefs_form_one_solid_and_develop_exactly() {
         assert_eq!(folded.snapshot().body_sources[&request.body], cut);
         let punched = folded.solid(cut).unwrap();
         check_inset_sections(punched);
+        check_retained_section(punched);
         check_inset_elevations(punched);
         check_inset_drawing_view(
             &folded,

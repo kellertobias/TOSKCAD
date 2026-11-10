@@ -6,6 +6,9 @@ use multicad_rust_kernel::{
 };
 use std::f64::consts::{FRAC_PI_2, TAU};
 
+mod retained;
+pub(super) use retained::project as project_retained;
+
 type Point = [f64; 3];
 type Segment = [[f64; 2]; 2];
 
@@ -19,23 +22,7 @@ pub(super) fn project(
     hatch: bool,
 ) -> Result<(Vec<ProjectedVector>, Vec<Segment>), GeometryError> {
     let frame = Frame::new(placement, options.frame);
-    let normal = frame.directions.map(|axis| axis[2]);
-    let offset = (depth - frame.origin[2]) / dot(normal, normal);
-    let origin = normal.map(|component| offset * component);
-    let tolerance = policy.linear_tolerance_mm;
-    let loops = shell
-        .section(origin, normal, tolerance, options.maximum_curves as usize)
-        .map_err(|error| match error {
-            Error::Invalid => err(
-                GeometryErrorKind::InvalidResult,
-                "Invalid trimmed shell section geometry",
-            ),
-            Error::Limit => limit(),
-            Error::Unsupported => err(
-                GeometryErrorKind::Unsupported,
-                "Rust could not resolve the section against the trimmed shell boundary",
-            ),
-        })?;
+    let loops = frame.intersection(shell, depth, options.maximum_curves, policy)?;
     let windows = [options.section_u_mm, options.section_v_mm];
     if windows.iter().any(Option::is_some) {
         let bounds = frame.bounds(&loops);
@@ -57,19 +44,7 @@ pub(super) fn project(
             ));
         }
     }
-    let edges = loops
-        .iter()
-        .flatten()
-        .flat_map(|&edge| frame.curves(edge).into_iter().flatten())
-        .map(|curve| Edge {
-            curve,
-            hidden: false,
-        })
-        .collect();
-    let mut output = curved::publish(edges, options, source)?;
-    for vector in &mut output {
-        vector.role = VectorRole::Section;
-    }
+    let output = frame.vectors(&loops, options, source)?;
     let boundary = if hatch {
         frame.hatch(
             &loops,
@@ -94,6 +69,58 @@ impl Frame {
         let directions = planar::view_axes(placement).map(|axis| screen.map(|d| dot(axis, d)));
         let origin = screen.map(|d| dot(sub(placement.origin, view.origin), d));
         Self { origin, directions }
+    }
+
+    fn intersection(
+        &self,
+        shell: &Shell,
+        depth: f64,
+        maximum_curves: u32,
+        policy: GeometryPolicy,
+    ) -> Result<Vec<Vec<SectionEdge>>, GeometryError> {
+        let normal = self.directions.map(|axis| axis[2]);
+        let offset = (depth - self.origin[2]) / dot(normal, normal);
+        let origin = normal.map(|component| offset * component);
+        shell
+            .section(
+                origin,
+                normal,
+                policy.linear_tolerance_mm,
+                maximum_curves as usize,
+            )
+            .map_err(|error| match error {
+                Error::Invalid => err(
+                    GeometryErrorKind::InvalidResult,
+                    "Invalid trimmed shell section geometry",
+                ),
+                Error::Limit => limit(),
+                Error::Unsupported => err(
+                    GeometryErrorKind::Unsupported,
+                    "Rust could not resolve the section against the trimmed shell boundary",
+                ),
+            })
+    }
+
+    fn vectors(
+        &self,
+        loops: &[Vec<SectionEdge>],
+        options: DrawingProjection,
+        source: usize,
+    ) -> Result<Vec<ProjectedVector>, GeometryError> {
+        let edges = loops
+            .iter()
+            .flatten()
+            .flat_map(|&edge| self.curves(edge).into_iter().flatten())
+            .map(|curve| Edge {
+                curve,
+                hidden: false,
+            })
+            .collect();
+        let mut output = curved::publish(edges, options, source)?;
+        for vector in &mut output {
+            vector.role = VectorRole::Section;
+        }
+        Ok(output)
     }
 
     fn point(&self, p: Point) -> [f64; 2] {

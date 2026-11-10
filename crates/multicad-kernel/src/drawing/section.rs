@@ -15,6 +15,12 @@ pub(super) fn project(
     options: DrawingProjection,
     depth: f64,
 ) -> Result<Vec<ProjectedVector>, GeometryError> {
+    if !options.section_only
+        && options.detail.is_none()
+        && let Some(result) = warped::project_retained(solids, options, depth)
+    {
+        return result;
+    }
     if options.detail.is_none()
         && solids
             .iter()
