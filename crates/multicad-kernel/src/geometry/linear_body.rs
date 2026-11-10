@@ -36,6 +36,14 @@ enum Geometry {
     },
 }
 
+enum PlaneTerminations {
+    FromSketch {
+        start: Option<PlaneFrame>,
+        end: PlaneFrame,
+    },
+    Between([PlaneFrame; 2]),
+}
+
 struct Side {
     index: usize,
     previous: usize,
@@ -117,6 +125,49 @@ impl Solid {
         origins: &[Origin],
         policy: GeometryPolicy,
     ) -> Result<Self, GeometryError> {
+        Self::rust_extrude_plane_caps(
+            profile,
+            direction,
+            PlaneTerminations::FromSketch { start, end },
+            feature,
+            origins,
+            policy,
+        )
+    }
+
+    /// Use the section as the basis of a sweep between two ordered plane
+    /// supports. The caps may lie on either side of the section frame, as
+    /// long as the end is beyond the start along every sweep generator.
+    pub fn rust_extrude_between_planes_named(
+        profile: &CurvedProfile,
+        direction: Point,
+        planes: [PlaneFrame; 2],
+        feature: EntityId,
+        origins: &[Origin],
+        policy: GeometryPolicy,
+    ) -> Result<Self, GeometryError> {
+        Self::rust_extrude_plane_caps(
+            profile,
+            direction,
+            PlaneTerminations::Between(planes),
+            feature,
+            origins,
+            policy,
+        )
+    }
+
+    fn rust_extrude_plane_caps(
+        profile: &CurvedProfile,
+        direction: Point,
+        terminations: PlaneTerminations,
+        feature: EntityId,
+        origins: &[Origin],
+        policy: GeometryPolicy,
+    ) -> Result<Self, GeometryError> {
+        let (start, end) = match terminations {
+            PlaneTerminations::FromSketch { start, end } => (start, end),
+            PlaneTerminations::Between([start, end]) => (Some(start), end),
+        };
         profile.checked(policy)?;
         let count = checked_edge_count(profile, feature, origins)?;
         let crossing = dot(direction, profile.frame.normal());
@@ -190,11 +241,13 @@ impl Solid {
                     "Plane-terminated extrusion exceeds the analytic geometry budget",
                 ),
             })?;
-        for &point in sweep.rings().iter().flatten() {
-            if start.is_some() {
-                policy.length(-sweep.travel(false, point))?;
+        if matches!(terminations, PlaneTerminations::FromSketch { .. }) {
+            for &point in sweep.rings().iter().flatten() {
+                if start.is_some() {
+                    policy.length(-sweep.travel(false, point))?;
+                }
+                policy.length(sweep.travel(true, point))?;
             }
-            policy.length(sweep.travel(true, point))?;
         }
         Self::from_trimmed_linear_sweep(sweep, frame, Some(caps), feature, edges, policy)
     }

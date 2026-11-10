@@ -53,6 +53,7 @@ pub(crate) fn validate_document(
                     | (model::PANEL_JOINT_CUT_TYPE, model::PANEL_JOINT_CUT_SCHEMA)
                     | (model::LOOSE_TENON_TYPE, model::LOOSE_TENON_SCHEMA)
                     | (model::MACHINING_CUT_TYPE, model::MACHINING_CUT_SCHEMA)
+                    | (model::MEMBER_TYPE, model::MEMBER_SCHEMA)
                     | (model::imports::STEP_BODY_TYPE, 1)
             ) =>
             {

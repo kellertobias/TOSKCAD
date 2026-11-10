@@ -1223,6 +1223,7 @@ impl Compiler {
                         context.parameters(),
                         id,
                         self.policy,
+                        backend,
                         &mut weld_paths,
                         interrupt,
                     )?;

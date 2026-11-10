@@ -1,7 +1,6 @@
 //! Weldment members: a sketched frame path producing separate tube members,
 //! path edits that keep member identities, Undo, save/reopen, section
-//! orientation, anchors and hollow walls, and explicit diagnostics. Every
-//! size is measured from the native solids.
+//! orientation, anchors and hollow walls, and explicit diagnostics.
 use multicad_core::{
     commands::{Actor, Channel, Prepared, Request, Session},
     constraint_sketch::{Dimension, source::Source},
@@ -20,7 +19,8 @@ use multicad_core::{
     references::ReferenceFrame,
     sketch::Datum,
 };
-use multicad_model::{Compiler, MemberRecord, Model};
+use multicad_kernel::{GeometryPolicy, MeshOptions, Solid};
+use multicad_model::{Compiler, GeometryBackend, MemberRecord, Model};
 
 fn actor() -> Actor {
     Actor::local(Channel::Ui)
@@ -905,6 +905,149 @@ fn long_points_tell_parallel_from_trapezoid_miters() {
             .filter(|g| g.names != ["Rail 2"])
             .all(|g| g.long_points.is_none())
     );
+}
+
+#[test]
+fn rust_short_parallel_miters_do_not_require_a_section_between_the_caps() {
+    let mut f = fixture();
+    let (sketch, ..) = path_sketch(
+        &mut f.s,
+        Datum::Xy,
+        &[[0., -100.], [0., 0.], [10., 0.], [10., 100.]],
+        false,
+    );
+    let rails =
+        model::frame_member_requests(f.s.document(), sketch, "Rail", &template(f.shs)).unwrap();
+    create(&mut f, &rails);
+    for pair in rails.windows(2) {
+        connect(
+            &mut f,
+            "Parallel miter",
+            ConnectionKind::Miter,
+            [pair[0].body, pair[1].body],
+            0.,
+        );
+    }
+    let rust = Compiler::default()
+        .compile_with_backend(f.s.document(), f.s.revision(), GeometryBackend::Rust, None)
+        .unwrap();
+    let native = compile(&f.s);
+    let middle = rails[1].body;
+    let rust_bounds = bounds(&rust, middle);
+    let native_bounds = bounds(&native, middle);
+    for i in 0..3 {
+        near(rust_bounds.min[i], native_bounds.min[i]);
+        near(rust_bounds.max[i], native_bounds.max[i]);
+    }
+    let list = rust.member_cut_list(f.s.document()).unwrap();
+    let middle = record(&list, "Rail 2");
+    near(middle.length_mm, 50.);
+    rel(middle.volume_mm3, SHS_AREA * 10.);
+    assert!(
+        middle
+            .ends
+            .iter()
+            .all(|end| end.kind == Some(ConnectionKind::Miter))
+    );
+}
+
+#[test]
+fn rust_reports_curved_miters_and_copes_at_their_connection() {
+    for (kind, diagnostic) in [
+        (ConnectionKind::Miter, "straight-sided section"),
+        (ConnectionKind::Cope, "coped ends"),
+    ] {
+        let mut f = fixture();
+        let main = MemberRequest::new("Main", points(f.chs, [0., 0., 0.], [500., 0., 0.]));
+        let branch = MemberRequest::new("Branch", points(f.chs, [500., 0., 0.], [500., 500., 0.]));
+        let members = [branch.body, main.body];
+        create(&mut f, &[main, branch]);
+        let connection = connect(&mut f, "Joint", kind, members, 0.);
+        let refusal = Compiler::default()
+            .compile_with_backend(f.s.document(), f.s.revision(), GeometryBackend::Rust, None)
+            .err()
+            .expect("unsupported Rust connection");
+        assert_eq!(refusal.entity, Some(connection));
+        assert!(refusal.message.contains(diagnostic), "{}", refusal.message);
+    }
+}
+
+#[test]
+fn rust_bundled_workbench_members_preserve_geometry_and_schedules() {
+    let project = project_file::read(
+        &mut &include_bytes!("../../../examples/welded-workbench.tcd")[..],
+        Default::default(),
+        &project_file::supported_capabilities(),
+    )
+    .unwrap()
+    .project;
+    let document = &project.document;
+    let members: Vec<_> = model::members(document).map(|member| member.id).collect();
+    let evaluate = |backend| {
+        Compiler::default()
+            .compile_sources_with_backend(document, 0, &members, backend, None)
+            .unwrap_or_else(|err| panic!("{backend:?}: {err:?}"))
+    };
+    let rust = evaluate(GeometryBackend::Rust);
+    let native = evaluate(GeometryBackend::OpenCascade);
+    let rust_cuts = rust.member_cut_list(document).unwrap();
+    let native_cuts = native.member_cut_list(document).unwrap();
+    assert_eq!(rust_cuts.len(), 19);
+    assert_eq!(rust_cuts.len(), native_cuts.len());
+    for (a, b) in rust_cuts.iter().zip(&native_cuts) {
+        assert_eq!((a.part, a.feature, &a.name), (b.part, b.feature, &b.name));
+        assert_eq!(a.ends, b.ends, "{}", a.name);
+        assert!(a.issues.is_empty(), "{}: {:?}", a.name, a.issues);
+        near(a.length_mm, b.length_mm);
+        rel(a.volume_mm3, b.volume_mm3);
+        let a_bounds = bounds(&rust, a.part);
+        let b_bounds = bounds(&native, b.part);
+        for i in 0..3 {
+            near(a_bounds.min[i], b_bounds.min[i]);
+            near(a_bounds.max[i], b_bounds.max[i]);
+        }
+        let solid = rust.solid(rust.snapshot().bodies[&a.part]).unwrap();
+        assert!(solid.uses_rust_geometry(), "{}", a.name);
+        assert_eq!(solid.solid_count().unwrap(), 1, "{}", a.name);
+        let receipt = solid
+            .manufacturing_mesh_with_receipt(MeshOptions::default())
+            .unwrap_or_else(|err| panic!("{}: {err}", a.name));
+        assert!(receipt.edge_pairs > 0 && receipt.vertex_links > 0);
+    }
+    let welds = rust.weld_schedule(document).unwrap();
+    assert_eq!(welds.len(), 22);
+    assert_eq!(welds, native.weld_schedule(document).unwrap());
+
+    let rail = rust_cuts
+        .iter()
+        .find(|row| {
+            row.ends
+                .iter()
+                .all(|end| end.kind == Some(ConnectionKind::Miter))
+        })
+        .unwrap();
+    let rail = rust.solid(rust.snapshot().bodies[&rail.part]).unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("mitered-rail.step");
+    rail.write_step(&path).unwrap();
+    let policy = GeometryPolicy::default();
+    let native_step = Solid::read_step(&path, policy).unwrap();
+    let rust_step = Solid::import_rust_step(
+        &std::fs::read_to_string(&path).unwrap(),
+        EntityId::new(),
+        policy,
+    )
+    .unwrap();
+    let original = rail.bounds().unwrap();
+    for imported in [native_step, rust_step] {
+        assert_eq!(imported.solid_count().unwrap(), 1);
+        rel(imported.volume_mm3().unwrap(), rail.volume_mm3().unwrap());
+        let readback = imported.bounds().unwrap();
+        for i in 0..3 {
+            near(readback.min[i], original.min[i]);
+            near(readback.max[i], original.max[i]);
+        }
+    }
 }
 
 #[test]

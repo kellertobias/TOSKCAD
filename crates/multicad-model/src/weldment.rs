@@ -1,13 +1,13 @@
-//! Native weldment members: the profile section swept along the member axis
+//! Weldment members: the profile section swept along the member axis
 //! as an exact prism (hollow sections keep their wall), and member cut
 //! records measured from each member Part's final solid in its member frame.
-use crate::{Model, ModelError, error};
+use crate::{GeometryBackend, Model, ModelError, error};
 use multicad_core::{
     document::{Document, DocumentError, EntityData, EntityId},
     materials::{self, ProfileShape},
     model::{
-        self, EndCut, EndTreatment, MemberDefinition, MemberFrame, MemberPath, PathSegment,
-        ResolvedConnection, ResolvedMember, SectionEdge, SectionLoop,
+        self, ConnectionKind, EndCut, EndTreatment, MemberDefinition, MemberEnd, MemberFrame,
+        MemberPath, PathSegment, ResolvedConnection, ResolvedMember, SectionEdge, SectionLoop,
     },
     parameters::EvaluatedParameters,
     references::Origin,
@@ -264,17 +264,7 @@ pub(crate) fn joints(
 fn diagonal(m: &ResolvedMember) -> f64 {
     m.section.width_mm.hypot(m.section.height_mm)
 }
-/// Remove the half-space behind a plane: material on the side `normal`
-/// points to is kept.
-fn cut_plane(
-    solid: Solid,
-    point: [f64; 3],
-    normal: [f64; 3],
-    size: f64,
-    owner: EntityId,
-    role: &str,
-    policy: GeometryPolicy,
-) -> Result<Option<Solid>, ModelError> {
+fn plane_frame(point: [f64; 3], normal: [f64; 3]) -> PlaneFrame {
     let seed = if normal[0].abs() < 0.9 {
         [1., 0., 0.]
     } else {
@@ -294,13 +284,27 @@ fn cut_plane(
         normal[2] * u[0] - normal[0] * u[2],
         normal[0] * u[1] - normal[1] * u[0],
     ];
+    PlaneFrame {
+        origin: point,
+        u,
+        v,
+    }
+}
+
+/// Remove the half-space behind a plane: material on the side `normal`
+/// points to is kept.
+fn cut_plane(
+    solid: Solid,
+    point: [f64; 3],
+    normal: [f64; 3],
+    size: f64,
+    owner: EntityId,
+    role: &str,
+    policy: GeometryPolicy,
+) -> Result<Option<Solid>, ModelError> {
     let corners = [[-size, -size], [size, -size], [size, size], [-size, size]];
     let profile = CurvedProfile {
-        frame: PlaneFrame {
-            origin: point,
-            u,
-            v,
-        },
+        frame: plane_frame(point, normal),
         outer: (0..4)
             .map(|i| CurvedEdge2d::Line {
                 a: corners[i],
@@ -328,6 +332,82 @@ fn cut_plane(
         .map_err(|e| error(Some(owner), e))
 }
 
+fn rust_member(
+    member: &ResolvedMember,
+    joints: &[Joint],
+    id: EntityId,
+    policy: GeometryPolicy,
+) -> Result<Solid, ModelError> {
+    let from = member.start_offset_mm();
+    let mut stations = [from, from + member.length_mm()];
+    let mut miters = [None; 2];
+    for joint in joints {
+        let EndCut::Plane { point, normal } = joint.treatment.cut else {
+            return Err(error(
+                Some(joint.connection),
+                "Rust weldment members do not yet support coped ends",
+            ));
+        };
+        let end = usize::from(joint.treatment.end == MemberEnd::End);
+        if joint.treatment.kind == ConnectionKind::Miter {
+            miters[end] = Some((joint.connection, plane_frame(point, normal)));
+        } else {
+            stations[end] = member.axial(point);
+        }
+    }
+    let profile = section_profile(member, stations[0], None);
+    let origins = origins(id, member, &profile, "member");
+    let straight = std::iter::once(&profile.outer)
+        .chain(&profile.holes)
+        .flatten()
+        .all(|edge| matches!(edge, CurvedEdge2d::Line { .. }));
+    let Some((connection, _)) = miters.iter().flatten().next().copied() else {
+        let height = stations[1] - stations[0];
+        if height <= 0. {
+            return Err(error(
+                Some(joints.first().map_or(id, |joint| joint.connection)),
+                "Connection cuts leave no member between the end planes",
+            ));
+        }
+        if straight {
+            return Solid::rust_extrude_linear_named(
+                &profile,
+                member.frame.axis.map(|component| component * height),
+                0.,
+                id,
+                &origins,
+                policy,
+            )
+            .map_err(|cause| error(Some(id), cause));
+        }
+        return crate::rust_backend::stock_profile(id, &profile, &origins, height, policy);
+    };
+    if !straight {
+        return Err(error(
+            Some(connection),
+            "Rust weldment miters require a straight-sided section",
+        ));
+    }
+    let planes = std::array::from_fn(|end| {
+        miters[end].map_or_else(
+            || PlaneFrame {
+                origin: member.section_origin(stations[end]),
+                ..profile.frame
+            },
+            |(_, plane)| plane,
+        )
+    });
+    Solid::rust_extrude_between_planes_named(
+        &profile,
+        member.frame.axis,
+        planes,
+        id,
+        &origins,
+        policy,
+    )
+    .map_err(|cause| error(Some(connection), cause))
+}
+
 /// Build a member solid with its connection end cuts; returns it with its
 /// resolved member.
 pub(crate) fn build(
@@ -335,6 +415,7 @@ pub(crate) fn build(
     parameters: &EvaluatedParameters,
     id: EntityId,
     policy: GeometryPolicy,
+    backend: GeometryBackend,
     paths: &mut Paths,
     interrupt: Option<&dyn Fn() -> bool>,
 ) -> Result<(Solid, ResolvedMember), ModelError> {
@@ -347,6 +428,9 @@ pub(crate) fn build(
         &member,
         &mut |feature| resolve(document, parameters, feature, paths, interrupt),
     )?;
+    if backend == GeometryBackend::Rust {
+        return Ok((rust_member(&member, &joints, id, policy)?, member));
+    }
     // Connected ends start long enough to be cut back to their joint.
     let mut from = member.start_offset_mm();
     let mut to = from + member.length_mm();
