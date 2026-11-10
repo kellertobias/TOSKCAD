@@ -38,6 +38,104 @@ fn add_box(s: &mut Session, name: &str, x: f64) {
 fn bom() -> ScheduleSpec {
     ScheduleSpec::new(ScheduleKind::Bom)
 }
+
+#[test]
+fn rust_worker_publishes_schedule_csv_in_an_export_set_and_refuses_a_stale_direct_write() {
+    use multicad_core::project_file::ContentHash;
+    use multicad_model::{GeometryBackend, export::ExportWorker};
+    use std::time::{Duration, Instant};
+
+    let mut s = Session::new(Document::new("Rust schedule outputs").unwrap()).unwrap();
+    add_box(&mut s, "Leg", 0.);
+    add_box(&mut s, "Top", 40.);
+    let set = EntityId::new();
+    let definition = SetDefinition {
+        recipes: vec![Recipe {
+            id: EntityId::new(),
+            name: "BOM".into(),
+            output: RecipeOutput::ScheduleCsv { schedule: bom() },
+        }],
+        ..Default::default()
+    };
+    s.commit(prepare_set(&s, s.revision(), actor(), set, "Shop", &definition).unwrap())
+        .unwrap();
+    let worker =
+        ExportWorker::with_geometry_backend(Exporter::default(), GeometryBackend::Rust).unwrap();
+    let wait = |id| {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if let Some(reply) = worker.poll() {
+                assert_eq!(reply.id, id);
+                break reply.result;
+            }
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    };
+    let ExportResult::Schedule(schedule) = wait(
+        worker
+            .schedule(s.document(), s.revision(), bom(), None, actor())
+            .unwrap(),
+    ) else {
+        panic!("expected the direct schedule preview");
+    };
+    let schedule = schedule.unwrap();
+    let ExportResult::Preview(preview) = wait(
+        worker
+            .preview(s.document(), s.revision(), set, actor())
+            .unwrap(),
+    ) else {
+        panic!("expected the export set preview");
+    };
+    let preview = preview.unwrap();
+    assert!(preview.can_run());
+    let [artifact] = preview.artifacts.as_slice() else {
+        panic!("expected one schedule file");
+    };
+    assert_eq!(
+        artifact.schedule.as_ref().unwrap().csv_hash,
+        schedule.csv_hash
+    );
+    let root = tempfile::tempdir().unwrap();
+    let ExportResult::Run(receipt) = wait(
+        worker
+            .run(
+                s.document(),
+                s.revision(),
+                &preview.key,
+                root.path(),
+                actor(),
+            )
+            .unwrap(),
+    ) else {
+        panic!("expected the export set publication");
+    };
+    let receipt = receipt.unwrap();
+    let path = Path::new(&receipt.directory).join(&artifact.output.filename);
+    let csv = std::fs::read_to_string(path).unwrap();
+    assert_eq!(csv, schedule.csv);
+    assert_eq!(ContentHash::of(csv.as_bytes()), schedule.csv_hash);
+    assert!(csv.contains("\n1,Leg,1,") && csv.contains("\n2,Top,1,"));
+
+    let direct = root.path().join("existing.csv");
+    std::fs::write(&direct, b"keep me").unwrap();
+    add_box(&mut s, "Shelf", 80.);
+    let ExportResult::Schedule(stale) = wait(
+        worker
+            .schedule(
+                s.document(),
+                s.revision(),
+                bom(),
+                Some((&direct, schedule.csv_hash)),
+                actor(),
+            )
+            .unwrap(),
+    ) else {
+        panic!("expected the direct write refusal");
+    };
+    assert_eq!(stale.unwrap_err().kind, ErrorKind::Stale);
+    assert_eq!(std::fs::read(direct).unwrap(), b"keep me");
+}
 fn fresh(s: &Session, spec: ScheduleSpec) -> schedules::Schedule {
     let m = Compiler::default()
         .compile(s.document(), s.revision())

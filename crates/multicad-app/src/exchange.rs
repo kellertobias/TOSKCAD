@@ -457,9 +457,17 @@ mod tests {
         assert_eq!(session.document(), &before);
         assert_eq!(session.revision(), revision);
     }
+    #[cfg(feature = "occt")]
     #[test]
     fn native_schedule_csv_writes_exactly_the_model_bom_off_the_ui_thread() {
-        let mut session = Session::new(Document::new("Native CSV").unwrap()).unwrap();
+        schedule_csv_writes_exactly_the_model_bom_off_the_ui_thread(GeometryBackend::OpenCascade);
+    }
+    #[test]
+    fn rust_schedule_csv_writes_exactly_the_model_bom_off_the_ui_thread() {
+        schedule_csv_writes_exactly_the_model_bom_off_the_ui_thread(GeometryBackend::Rust);
+    }
+    fn schedule_csv_writes_exactly_the_model_bom_off_the_ui_thread(backend: GeometryBackend) {
+        let mut session = Session::new(Document::new("Shop CSV").unwrap()).unwrap();
         let actor = Actor::local(Channel::Ui);
         for name in ["Leg", "Top"] {
             let primitive = PrimitiveRequest::new(
@@ -475,14 +483,16 @@ mod tests {
             session.commit(p.prepared).unwrap();
         }
         let mut workspace = ExportWorkspace::default();
-        workspace.set_backend(Box::new(Backend::new())).unwrap();
+        workspace
+            .set_backend(Box::new(Backend::with_geometry_backend(backend)))
+            .unwrap();
         workspace
             .execute(&mut session, ExportTool::ScheduleCsv, None, Channel::Ui)
             .unwrap();
         settle(&mut workspace, &session);
         let preview = workspace.schedule_preview(&session).unwrap().clone();
         let model = multicad_model::Compiler::default()
-            .compile(session.document(), session.revision())
+            .compile_with_backend(session.document(), session.revision(), backend, None)
             .unwrap();
         let expected = multicad_model::schedules::build(
             &model,
@@ -494,7 +504,7 @@ mod tests {
         .csv();
         assert_eq!(preview.csv, expected);
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("native_bom.csv");
+        let path = dir.path().join("shop_bom.csv");
         let before = session.document().clone();
         workspace
             .write_schedule(&session, &path, Channel::Ui)

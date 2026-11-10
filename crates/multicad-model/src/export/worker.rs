@@ -212,14 +212,8 @@ impl ExportWorker {
                     spec,
                     target,
                     ..
-                } => ExportResult::Schedule(if backend == GeometryBackend::Rust {
-                    Err(failure(
-                        ErrorKind::Unsupported,
-                        None,
-                        "This output catalog is unavailable for the Rust export backend",
-                    ))
-                } else {
-                    exporter
+                } => ExportResult::Schedule(
+                    configured
                         .schedule(
                             &document,
                             revision,
@@ -232,8 +226,8 @@ impl ExportWorker {
                                 }),
                             Some(interrupt),
                         )
-                        .map(Box::new)
-                }),
+                        .map(Box::new),
+                ),
             }
         })
     }

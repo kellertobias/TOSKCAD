@@ -644,28 +644,10 @@ impl GeometryExporter<'_> {
             ),
             GeometryBackend::Rust => {
                 format!(
-                    "step-files.rust-analytic.1;mesh-files.rust-certified.1;planar-dxf.rust-analytic.1;drawing-pdf-dxf.rust-planar.1;build:{build};policy:{policy:?}"
+                    "step-files.rust-analytic.1;mesh-files.rust-certified.1;planar-dxf.rust-analytic.1;drawing-pdf-dxf.rust-planar.1;schedule-csv.1;build:{build};policy:{policy:?}"
                 )
             }
         }
-    }
-    fn unsupported(&self, output: &RecipeOutput) -> Option<String> {
-        if self.backend == GeometryBackend::Rust
-            && !matches!(
-                output,
-                RecipeOutput::Step { .. }
-                    | RecipeOutput::Mesh { .. }
-                    | RecipeOutput::PlanarDxf { .. }
-                    | RecipeOutput::Pdf
-                    | RecipeOutput::DrawingDxf { .. }
-            )
-        {
-            return Some(
-                "The Rust export backend supports separate-part STEP, mesh, planar DXF, and planar drawing PDF/DXF recipes"
-                    .into(),
-            );
-        }
-        unsupported(output)
     }
     fn compile_geometry(
         &self,
@@ -707,7 +689,7 @@ impl GeometryExporter<'_> {
         let supported = selection
             .recipes
             .iter()
-            .any(|r| self.unsupported(&r.output).is_none());
+            .any(|r| unsupported(&r.output).is_none());
         let drawings = !selection.pages.is_empty()
             && selection.recipes.iter().any(|r| {
                 matches!(
@@ -775,7 +757,7 @@ impl GeometryExporter<'_> {
             } else {
                 (requested, vec![])
             };
-            let mut status = if let Some(reason) = self.unsupported(&recipe.output) {
+            let mut status = if let Some(reason) = unsupported(&recipe.output) {
                 RecipeStatus::Unsupported(reason)
             } else if requested.is_empty() {
                 RecipeStatus::Empty

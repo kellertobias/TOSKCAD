@@ -3,10 +3,7 @@
 //! so a changed source writes nothing.
 use super::*;
 use multicad_core::schedules::ScheduleSpec;
-use std::{
-    fs::{self, OpenOptions},
-    io::Write,
-};
+use std::{fs, io::Write};
 
 /// Where a schedule CSV is written and the CSV hash the caller accepted.
 pub struct ScheduleTarget<'a> {
@@ -51,33 +48,17 @@ fn check_target(path: &Path) -> Result<(), ExportError> {
 /// Write through a sibling partial file, flush it, then rename it over the
 /// target, so a reader never sees a half-written CSV.
 fn publish(path: &Path, bytes: &[u8]) -> Result<(), ExportError> {
-    let partial = path.with_file_name(format!(
-        ".{}.partial",
-        path.file_name()
-            .and_then(|n| n.to_str())
-            .expect("checked UTF-8 name")
-    ));
-    let result = (|| {
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(&partial)
-            .map_err(io)?;
-        file.write_all(bytes).map_err(io)?;
-        file.sync_all().map_err(io)?;
-        drop(file);
-        if fs::read(&partial).map_err(io)? != bytes {
-            return Err(io(
-                "Written schedule CSV differs from the generated schedule",
-            ));
-        }
-        fs::rename(&partial, path).map_err(io)
-    })();
-    if result.is_err() {
-        let _ = fs::remove_file(&partial);
+    let mut file =
+        tempfile::NamedTempFile::new_in(path.parent().expect("checked CSV folder")).map_err(io)?;
+    file.write_all(bytes).map_err(io)?;
+    file.as_file().sync_all().map_err(io)?;
+    if fs::read(file.path()).map_err(io)? != bytes {
+        return Err(io(
+            "Written schedule CSV differs from the generated schedule",
+        ));
     }
-    result
+    file.persist(path).map_err(io)?;
+    Ok(())
 }
 
 impl Exporter {
@@ -91,22 +72,33 @@ impl Exporter {
         target: Option<ScheduleTarget<'_>>,
         interrupt: Option<&dyn Fn() -> bool>,
     ) -> Result<ScheduleReceipt, ExportError> {
+        self.with_backend(GeometryBackend::OpenCascade, None)
+            .schedule(document, revision, spec, target, interrupt)
+    }
+}
+
+impl GeometryExporter<'_> {
+    pub(super) fn schedule(
+        &self,
+        document: &Document,
+        revision: u64,
+        spec: ScheduleSpec,
+        target: Option<ScheduleTarget<'_>>,
+        interrupt: Option<&dyn Fn() -> bool>,
+    ) -> Result<ScheduleReceipt, ExportError> {
         let spec = spec.normalized();
         let source = ExportStamp::capture(document, revision)?;
         if let Some(target) = &target {
             check_target(target.path)?;
         }
         checkpoint(interrupt)?;
-        let model = self
-            .compiler
-            .compile_interruptible(document, revision, interrupt)
-            .map_err(|e| failure(ErrorKind::Invalid, e.entity, e.message))?;
+        let model = self.compile_geometry(document, revision, interrupt)?;
         checkpoint(interrupt)?;
         if model.snapshot().stamp.source_hash != source.source_hash {
             return Err(failure(
                 ErrorKind::Stale,
                 None,
-                "Native model source differs from the schedule request",
+                "Model source differs from the schedule request",
             ));
         }
         let schedule = crate::schedules::build(&model, document, revision, spec).map_err(|e| {
