@@ -591,6 +591,138 @@ fn check_retained_section(sheet: &Solid) {
         }),
         "Side bore profile did not project onto the window edge: {through_bore:?}"
     );
+    check_oblique_retained_section(sheet, web_floor);
+}
+
+fn check_oblique_retained_section(sheet: &Solid, web_floor: f64) {
+    use multicad_core::{
+        drawings::{VectorCurve, VectorRole},
+        materials::HatchPattern,
+    };
+    use multicad_kernel::{
+        DrawingHatch, DrawingProjection, DrawingSolid, PlaneFrame, ProjectedVector, project_drawing,
+    };
+
+    let options = DrawingProjection {
+        frame: PlaneFrame {
+            origin: [0.; 3],
+            u: [0., 1., 0.],
+            v: [-0.6, 0., 0.8],
+        },
+        section_offset_mm: Some(171. * 0.8),
+        hidden_lines: true,
+        chord_tolerance_mm: 0.0001,
+        ..Default::default()
+    };
+    let render = |options| {
+        project_drawing(
+            &[DrawingSolid {
+                solid: sheet,
+                hatch: Some(DrawingHatch {
+                    angle_rad: 0.,
+                    spacing_mm: 2.,
+                    line_width_mm: 0.2,
+                    pattern: HatchPattern::Solid,
+                }),
+            }],
+            options,
+        )
+        .unwrap_or_else(|error| panic!("Oblique Control Desk section {options:?}: {error}"))
+    };
+    let section = render(DrawingProjection {
+        section_only: true,
+        ..options
+    });
+    let retained = [64.7, 8.].map(|depth| {
+        render(DrawingProjection {
+            section_depth_mm: Some(depth),
+            ..options
+        })
+    });
+    for vectors in &retained {
+        assert!(
+            vectors
+                .iter()
+                .filter(|vector| matches!(vector.role, VectorRole::Section | VectorRole::Hatch))
+                .eq(&section)
+        );
+    }
+    let mut sweep_by_radius = [0.; 2];
+    let mut hatch_area = 0.;
+    for vector in section {
+        match (vector.role, vector.curve) {
+            (
+                VectorRole::Section,
+                VectorCurve::Ellipse {
+                    major_mm,
+                    minor_mm,
+                    start_rad,
+                    end_rad,
+                    ..
+                },
+            ) => {
+                let index = usize::from(minor_mm > 2.);
+                near(minor_mm, [1.5, 3.][index]);
+                near(major_mm, minor_mm / 0.8);
+                sweep_by_radius[index] += end_rad - start_rad;
+            }
+            (VectorRole::Section, VectorCurve::Line { .. }) => {}
+            (VectorRole::Hatch, VectorCurve::HatchTriangle { points: [a, b, c] }) => {
+                hatch_area +=
+                    0.5 * ((b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])).abs();
+            }
+            other => panic!("Unexpected oblique cut output: {other:?}"),
+        }
+    }
+    for sweep in sweep_by_radius {
+        near(sweep, std::f64::consts::PI);
+    }
+    let bend_area = std::f64::consts::FRAC_PI_2 * (3_f64.powi(2) - 1.5_f64.powi(2));
+    let expected = ((160. + 50. + 30. - 14.) * 1.5 + bend_area) / 0.8;
+    assert!(
+        (hatch_area - expected).abs() < 0.02,
+        "{hatch_area} != {expected}"
+    );
+
+    // The far edge of the rectangular opening is at world X=100 and
+    // Y=59..81. Only the deeper retained region reaches it.
+    let rear_opening = |vectors: &[ProjectedVector]| {
+        vectors.iter().any(|vector| {
+            vector.role == VectorRole::Visible
+                && matches!(vector.curve, VectorCurve::Line { a, b }
+                if (a[0].min(b[0]) - 59.).abs() < 1e-6
+                    && (a[0].max(b[0]) - 81.).abs() < 1e-6
+                    && [web_floor, web_floor + 1.5].into_iter().any(|z| {
+                        let v = -0.6 * 100. + 0.8 * z;
+                        [a[1], b[1]].iter().all(|y| (y - v).abs() < 1e-6)
+                    }))
+        })
+    };
+    assert!(rear_opening(&retained[0]));
+    assert!(!rear_opening(&retained[1]));
+
+    // The side plane crosses the vertical web bore's axis at mid-thickness.
+    // Its elliptic intersection is edge-on, but reaches Y=90 ± 4 exactly.
+    let window_floor = -0.6 * 23. + 0.8 * (web_floor + 0.75);
+    let side = render(DrawingProjection {
+        section_offset_mm: Some(24.),
+        section_depth_mm: Some(12.5),
+        section_u_mm: Some([84., 96.]),
+        section_v_mm: Some([window_floor, window_floor + 4.]),
+        ..options
+    });
+    for end in [86., 94.] {
+        assert!(
+            side.iter().any(|vector| {
+                matches!(vector.role, VectorRole::Visible | VectorRole::Hidden)
+                    && matches!(vector.curve, VectorCurve::Line { a, b }
+                    if [a[1], b[1]].iter().all(|y| (*y - window_floor).abs() < 1e-6)
+                    && a[0].min(b[0]) >= 86. - 1e-6 && a[0].max(b[0]) <= 94. + 1e-6
+                    && [a[0], b[0]].iter().any(|x| (*x - end).abs() < 1e-6))
+            }),
+            "Missing projected side bore endpoint {end}"
+        );
+    }
 }
 
 fn check_oblique_web_aperture(sheet: &Solid, witness: &Solid) {

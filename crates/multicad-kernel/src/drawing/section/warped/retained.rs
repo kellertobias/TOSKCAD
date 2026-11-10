@@ -2,7 +2,8 @@
 use super::*;
 use multicad_rust_kernel::{
     planar_projection::{
-        self, AnalyticFace, DepthRange, FaceTrim, LineCandidate, SpatialRimCandidate,
+        self, AnalyticFace, DepthRange, FaceTrim, LineCandidate, SpatialEllipseCandidate,
+        SpatialRimCandidate,
     },
     section_hatch,
     trim_curve::{Ellipse as SpatialEllipse, EllipseArc},
@@ -25,6 +26,7 @@ pub(in crate::drawing::section) fn project(
             options,
             lines: Vec::new(),
             rims: Vec::new(),
+            ellipses: Vec::new(),
             blockers: Vec::new(),
             output: Vec::new(),
             hatch_budget: section_hatch::Budget::default(),
@@ -76,7 +78,7 @@ pub(in crate::drawing::section) fn project(
                     options,
                     policy,
                 )?;
-                scene.far_cut(&frame, &cut, far, source)?;
+                scene.far_cut(&frame, &cut, far, source);
             }
             for (axis, coordinates) in sides.into_iter().enumerate() {
                 for coordinate in coordinates.into_iter().flatten() {
@@ -99,6 +101,7 @@ struct Retained {
     options: DrawingProjection,
     lines: Vec<LineCandidate>,
     rims: Vec<SpatialRimCandidate>,
+    ellipses: Vec<SpatialEllipseCandidate>,
     blockers: Vec<AnalyticFace>,
     output: Vec<ProjectedVector>,
     hatch_budget: section_hatch::Budget,
@@ -158,13 +161,7 @@ impl Retained {
         Ok(())
     }
 
-    fn far_cut(
-        &mut self,
-        frame: &Frame,
-        loops: &[Vec<SectionEdge>],
-        depth: f64,
-        source: usize,
-    ) -> Result<(), GeometryError> {
+    fn far_cut(&mut self, frame: &Frame, loops: &[Vec<SectionEdge>], depth: f64, source: usize) {
         for curve in loops
             .iter()
             .flatten()
@@ -175,18 +172,15 @@ impl Retained {
                     source,
                     points: points.map(|[x, y]| [x, y, depth]),
                 }),
-                Curve::Ellipse(ellipse) if ellipse.major == ellipse.minor => {
-                    self.rims.push(SpatialRimCandidate {
-                        source,
-                        ellipse,
-                        depth,
-                        depth_sine: 0.,
-                    })
-                }
-                Curve::Ellipse(_) => return Err(non_circular()),
+                Curve::Ellipse(ellipse) => self.ellipses.push(SpatialEllipseCandidate {
+                    source,
+                    ellipse,
+                    depth,
+                    depth_cosine: 0.,
+                    depth_sine: 0.,
+                }),
             }
         }
-        Ok(())
     }
 
     fn side_cut(
@@ -199,6 +193,7 @@ impl Retained {
         source: usize,
     ) -> Result<(), GeometryError> {
         let other = 1 - axis;
+        let across = frame.directions.map(|direction| direction[other]);
         let depth_axis = frame.directions.map(|direction| direction[2]);
         let screen_point = |p| {
             let [x, y] = frame.point(p);
@@ -220,35 +215,39 @@ impl Retained {
                 ),
                 Trim::Ellipse(arc) => {
                     let ellipse = arc.ellipse();
-                    let [radius, minor] = ellipse.semiaxes_mm();
-                    if radius != minor {
-                        return Err(non_circular());
-                    }
-                    let u = ellipse.major_axis();
-                    let v = ellipse.minor_axis();
-                    let phase = frame.vector(v)[other].atan2(frame.vector(u)[other]);
+                    let [major, minor] = ellipse.semiaxes_mm();
+                    let [u, v] = [
+                        ellipse.major_axis().map(|component| component * major),
+                        ellipse.minor_axis().map(|component| component * minor),
+                    ];
+                    let [a, b] = [dot(across, u), dot(across, v)];
+                    let phase = b.atan2(a);
                     let (sin, cos) = phase.sin_cos();
-                    let depth_sine =
-                        radius * (-sin * dot(depth_axis, u) + cos * dot(depth_axis, v));
+                    let [du, dv] = [dot(depth_axis, u), dot(depth_axis, v)];
+                    // Align the projected coordinate with cosine. The depth of
+                    // an oblique ellipse retains both terms after this rotation.
+                    let depth_cosine = du.mul_add(cos, dv * sin);
+                    let depth_sine = (-du).mul_add(sin, dv * cos);
                     let [x, y, z] = screen_point(ellipse.center_mm());
                     let sweep = arc.sweep_rad();
                     let lo = (arc.start_rad() + sweep.min(0.) - phase).rem_euclid(TAU);
                     let hi = lo + sweep.abs();
                     for trim in [[lo, hi.min(TAU)], [0., hi - TAU]] {
                         if trim[1] > trim[0] {
-                            self.rims.extend(
+                            self.ellipses.extend(
                                 depth
-                                    .clip_rim(SpatialRimCandidate {
+                                    .clip_ellipse(SpatialEllipseCandidate {
                                         source,
                                         ellipse: Ellipse {
                                             center: [x, y],
                                             u: std::array::from_fn(|i| f64::from(i == other)),
                                             v: std::array::from_fn(|i| f64::from(i == axis)),
-                                            major: radius,
+                                            major: a.hypot(b),
                                             minor: 0.,
                                             trim,
                                         },
                                         depth: z,
+                                        depth_cosine,
                                         depth_sine,
                                     })
                                     .map_err(planar::projection_error)?,
@@ -281,7 +280,7 @@ impl Retained {
     }
 
     fn finish(mut self, tolerance: f64) -> Result<Vec<ProjectedVector>, GeometryError> {
-        if !self.lines.is_empty() || !self.rims.is_empty() {
+        if !self.lines.is_empty() || !self.rims.is_empty() || !self.ellipses.is_empty() {
             let segment_limit = (self.options.maximum_curves as usize)
                 .min(self.options.maximum_points as usize / 2);
             if segment_limit == 0 {
@@ -293,6 +292,7 @@ impl Retained {
                 planar_projection::SceneExtras {
                     lines: &self.lines,
                     spatial_rims: &self.rims,
+                    spatial_ellipses: &self.ellipses,
                     ..Default::default()
                 },
                 &self.blockers,
@@ -322,9 +322,6 @@ fn section_trim(frame: &Frame, edge: SectionEdge, depth: f64) -> Result<FaceTrim
         Trim::Ellipse(arc) => {
             let ellipse = arc.ellipse();
             let [major, minor] = ellipse.semiaxes_mm();
-            if major != minor {
-                return Err(non_circular());
-            }
             let [x, y] = frame.point(ellipse.center_mm());
             let [u, v] =
                 [ellipse.major_axis(), ellipse.minor_axis()].map(|axis| frame.vector(axis));
@@ -347,13 +344,6 @@ fn invalid_cap() -> GeometryError {
     err(
         GeometryErrorKind::InvalidResult,
         "Invalid retained section cap",
-    )
-}
-
-fn non_circular() -> GeometryError {
-    err(
-        GeometryErrorKind::Unsupported,
-        "Rust retained shell sections require line or circular cap edges",
     )
 }
 
