@@ -207,6 +207,10 @@ impl Solid {
 }
 
 impl NonplanarLoftBody {
+    pub(crate) fn loft_geometry(&self) -> &NonplanarLoft {
+        &self.geometry
+    }
+
     pub(crate) fn drawing_edges(
         &self,
         options: LoftProjection,

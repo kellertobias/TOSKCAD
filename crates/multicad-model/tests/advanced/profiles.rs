@@ -1808,6 +1808,11 @@ fn twisted_polygon_loft_rebuilds_and_reopens_from_embedded_step() {
         #[cfg(feature = "occt")]
         native.solid(request.body).unwrap(),
     );
+    verify_twisted_loft_scene(
+        solid,
+        #[cfg(feature = "occt")]
+        native.solid(request.body).unwrap(),
+    );
     let faces = solid.faces().unwrap();
     assert_eq!(faces.len(), 6);
     assert_eq!(faces.iter().filter(|face| face.plane.is_some()).count(), 2);
@@ -1921,6 +1926,156 @@ fn twisted_polygon_loft_rebuilds_and_reopens_from_embedded_step() {
         imported.solid(body).unwrap().volume_mm3().unwrap(),
         volume(cos),
     );
+}
+
+fn verify_twisted_loft_scene(
+    loft: &multicad_kernel::Solid,
+    #[cfg(feature = "occt")] native: &multicad_kernel::Solid,
+) {
+    use multicad_core::drawings::VectorRole;
+    use multicad_kernel::{
+        DrawingProjection, DrawingSolid, PlaneFrame, Solid, project_drawing, rust_kernel::Rational,
+    };
+
+    let placements = [([7, 1, 1], [-3., 0.4, -2.]), ([2, 2, 1], [-1., -2., 7.])];
+    let [rear, front] = placements.map(|(size, origin)| {
+        Solid::rust_box(
+            EntityId::new().uuid_bits(),
+            size.map(|n| Rational::new(n, 1).unwrap()),
+            PlaneFrame {
+                origin,
+                ..Default::default()
+            },
+            Default::default(),
+        )
+        .unwrap()
+    });
+    let project = |rear, loft, front, options| {
+        project_drawing(
+            &[rear, loft, front].map(|solid| DrawingSolid { solid, hatch: None }),
+            options,
+        )
+        .unwrap()
+    };
+    let options = DrawingProjection {
+        hidden_lines: true,
+        chord_tolerance_mm: 1e-4,
+        ..Default::default()
+    };
+    let mixed = project(&rear, loft, &front, options);
+    for source in 0..3 {
+        for role in [VectorRole::Hidden, VectorRole::Visible] {
+            assert!(
+                mixed
+                    .iter()
+                    .any(|v| v.source_index == source && v.role == role)
+            );
+        }
+    }
+    let visible = project(
+        &rear,
+        loft,
+        &front,
+        DrawingProjection {
+            hidden_lines: false,
+            ..options
+        },
+    );
+    assert_eq!(
+        visible,
+        mixed
+            .iter()
+            .filter(|v| v.role == VectorRole::Visible)
+            .cloned()
+            .collect::<Vec<_>>(),
+    );
+    let detail = project(
+        &rear,
+        loft,
+        &front,
+        DrawingProjection {
+            detail: Some(([0., 0.], 1.25)),
+            ..options
+        },
+    );
+    assert!(!detail.is_empty());
+    assert!(
+        detail
+            .iter()
+            .flat_map(|v| &v.preview_mm)
+            .all(|[u, v]| u.hypot(*v) < 1.250001)
+    );
+
+    #[cfg(feature = "occt")]
+    {
+        use multicad_kernel::RigidTransform;
+        let [native_rear, native_front] = placements.map(|(size, translation_mm)| {
+            Solid::box_solid(size.map(|n| n as f64), Default::default())
+                .unwrap()
+                .transformed(RigidTransform {
+                    translation_mm,
+                    ..Default::default()
+                })
+                .unwrap()
+        });
+        for v in [[0., 1., 0.], [0., 0.8, 0.6]] {
+            let options = DrawingProjection {
+                frame: PlaneFrame {
+                    v,
+                    ..Default::default()
+                },
+                ..options
+            };
+            let rust = project(&rear, loft, &front, options);
+            let reference = project(&native_rear, native, &native_front, options);
+            for (label, a, b) in [
+                ("Rust", &rust, &reference),
+                ("OpenCascade", &reference, &rust),
+            ] {
+                for vector in a {
+                    let segments = b
+                        .iter()
+                        .filter(|other| {
+                            other.role == vector.role && other.source_index == vector.source_index
+                        })
+                        .flat_map(|other| other.preview_mm.windows(2));
+                    for &[x, y] in &vector.preview_mm {
+                        let error = segments
+                            .clone()
+                            .map(|ends| {
+                                let [[ax, ay], [bx, by]] = [ends[0], ends[1]];
+                                let [u, v] = [bx - ax, by - ay];
+                                let t =
+                                    (((x - ax) * u + (y - ay) * v) / (u * u + v * v)).clamp(0., 1.);
+                                (x - ax - t * u).hypot(y - ay - t * v)
+                            })
+                            .fold(f64::INFINITY, f64::min);
+                        assert!(
+                            error < 3. * options.chord_tolerance_mm,
+                            "{label} {:?} from {} at [{x}, {y}] error {error}",
+                            vector.role,
+                            vector.source_index
+                        );
+                    }
+                }
+            }
+        }
+        let measure = |rear, loft, front| {
+            let mut times = [std::time::Duration::ZERO; 9];
+            for elapsed in &mut times {
+                let start = std::time::Instant::now();
+                assert!(!project(rear, loft, front, options).is_empty());
+                *elapsed = start.elapsed();
+            }
+            times.sort_unstable();
+            times[4]
+        };
+        eprintln!(
+            "Twisted loft assembly projection medians over 9 warm runs: Rust {:?}, OpenCascade {:?}",
+            measure(&rear, loft, &front),
+            measure(&native_rear, native, &native_front),
+        );
+    }
 }
 
 fn verify_twisted_loft_sections(

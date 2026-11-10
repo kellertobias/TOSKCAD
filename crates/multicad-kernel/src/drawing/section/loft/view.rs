@@ -100,10 +100,9 @@ pub(in crate::drawing) fn project_view(
             } else {
                 VectorRole::Visible
             };
-            (curve, role)
+            (0, curve, role)
         }),
         options,
-        0,
     )?;
     if let Some(depth) = section
         && !output.is_empty()

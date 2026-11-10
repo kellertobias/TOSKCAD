@@ -1,6 +1,6 @@
 use super::*;
 
-struct Wall {
+pub(super) struct Wall {
     surface: [Point; 4],
     bounds: [Paper; 2],
 }
@@ -65,7 +65,7 @@ impl Wall {
         Some(Curve::through_midpoint(p, m, q))
     }
 
-    fn blocks(&self, point: Point, near: f64, tolerance: f64) -> bool {
+    pub(super) fn blocks(&self, point: Point, near: f64, tolerance: f64) -> bool {
         let xy = paper(point);
         if !overlap(self.bounds, [xy; 2], tolerance) {
             return false;
@@ -114,6 +114,33 @@ impl Wall {
         }
         false
     }
+    pub(super) fn depth_events(
+        &self,
+        curve: Curve,
+        bounds: [Paper; 2],
+        epsilon: f64,
+        cuts: &mut Vec<f64>,
+    ) {
+        if !overlap(self.bounds, bounds, epsilon) {
+            return;
+        }
+        let [origin, u, t, mix] = self.surface;
+        let mixed_normal = cross(u, t);
+        let determinant = dot(mixed_normal, mix);
+        if determinant.abs() <= epsilon * norm(mixed_normal) {
+            curve.plane_crossings(origin, mixed_normal, cuts);
+            return;
+        }
+        // In the wall's affine basis, a point is [u, t, u*t].
+        // Substituting the rational edge gives a quartic depth-order event.
+        let first = curve.plane_coefficients(origin, cross(t, mix));
+        let second = curve.plane_coefficients(origin, cross(mix, u));
+        let product = curve.plane_coefficients(origin, scale(mixed_normal, determinant));
+        cuts.extend(roots(
+            &curve::difference_of_products(first, second, product, curve.weight_coefficients()),
+            [0., 1.],
+        ));
+    }
 }
 
 fn ray_roots([c, b, a]: [f64; 3]) -> [Option<f64>; 2] {
@@ -139,13 +166,13 @@ fn ray_roots([c, b, a]: [f64; 3]) -> [Option<f64>; 2] {
     [Some(q / a), Some(c / q)]
 }
 
-struct Cap<'a> {
+pub(super) struct Cap<'a> {
     ring: &'a [Point],
     normal: Point,
 }
 
 impl<'a> Cap<'a> {
-    fn new(ring: &'a [Point]) -> Self {
+    pub(super) fn new(ring: &'a [Point]) -> Self {
         let a = sub(ring[1], ring[0]);
         let b = sub(ring[2], ring[1]);
         let normal = cross(a, b);
@@ -153,7 +180,7 @@ impl<'a> Cap<'a> {
         Self { ring, normal }
     }
 
-    fn blocks(&self, point: Point, near: f64, tolerance: f64) -> bool {
+    pub(super) fn blocks(&self, point: Point, near: f64, tolerance: f64) -> bool {
         let n = self.normal;
         if n[2].abs() <= 1e-12 {
             return false;
@@ -171,6 +198,9 @@ impl<'a> Cap<'a> {
                     >= -tolerance * length(edge)
             })
     }
+    pub(super) fn depth_events(&self, curve: Curve, cuts: &mut Vec<f64>) {
+        curve.plane_crossings(self.ring[0], self.normal, cuts);
+    }
 }
 
 pub(super) fn project(
@@ -180,7 +210,35 @@ pub(super) fn project(
     clip: Option<clip::Clip<'_>>,
     mut curves: Vec<Curve>,
 ) -> Result<Vec<LoftDrawingEdge>, Error> {
-    let [first, last] = &rings;
+    let walls = loft_curves(&rings, epsilon, &mut curves);
+    let caps = rings.each_ref().map(|ring| Cap::new(ring));
+    let near = clip.as_ref().map_or(f64::INFINITY, clip::Clip::near);
+    let blocked = |point| {
+        clip.as_ref()
+            .is_some_and(|clip| clip.blocks(point, options.tolerance))
+            || caps
+                .iter()
+                .any(|cap| cap.blocks(point, near, options.tolerance))
+            || walls
+                .iter()
+                .any(|wall| wall.blocks(point, near, options.tolerance))
+    };
+    publish(
+        curves.into_iter().map(|curve| (0, curve, true)).collect(),
+        options,
+        epsilon,
+        clip.as_ref(),
+        &|point| Ok(blocked(point)),
+        &|_, _, _, _| Ok(()),
+    )
+    .map(|edges| edges.into_iter().map(|(_, edge)| edge).collect())
+}
+
+pub(super) fn loft_curves(
+    [first, last]: &[Vec<Point>; 2],
+    epsilon: f64,
+    curves: &mut Vec<Curve>,
+) -> Vec<Wall> {
     let n = first.len();
     curves.reserve(4 * n);
     let mut walls = Vec::with_capacity(n);
@@ -198,26 +256,31 @@ pub(super) fn project(
         }
         walls.push(wall);
     }
-    curves.retain(|curve| length(minus(paper(curve.at(0.)), paper(curve.at(1.)))) > epsilon);
-    let bounds: Vec<_> = curves.iter().map(|curve| curve.bounds()).collect();
-    let caps = [Cap::new(first), Cap::new(last)];
-    let near = clip.as_ref().map_or(f64::INFINITY, clip::Clip::near);
-    let blocked = |point| {
-        clip.as_ref()
-            .is_some_and(|clip| clip.blocks(point, options.tolerance))
-            || caps
-                .iter()
-                .any(|cap| cap.blocks(point, near, options.tolerance))
-            || walls
-                .iter()
-                .any(|wall| wall.blocks(point, near, options.tolerance))
-    };
+    walls
+}
+
+type DepthEvents<'a> = dyn Fn(usize, Curve, [Paper; 2], &mut Vec<f64>) -> Result<(), Error> + 'a;
+
+pub(super) fn publish(
+    mut curves: Vec<(usize, Curve, bool)>,
+    options: LoftProjection,
+    epsilon: f64,
+    clip: Option<&clip::Clip<'_>>,
+    blocked: &dyn Fn(Point) -> Result<bool, Error>,
+    depth_events: &DepthEvents<'_>,
+) -> Result<Vec<(usize, LoftDrawingEdge)>, Error> {
+    curves
+        .retain(|(_, curve, _)| length(minus(paper(curve.at(0.)), paper(curve.at(1.)))) > epsilon);
+    let bounds: Vec<_> = curves.iter().map(|(_, curve, _)| curve.bounds()).collect();
     let mut output = Vec::new();
     let mut cuts = Vec::new();
-    for (index, &curve) in curves.iter().enumerate() {
+    for (index, &(source, curve, emit)) in curves.iter().enumerate() {
+        if !emit {
+            continue;
+        }
         cuts.clear();
         cuts.extend([0., 1.]);
-        for (other_index, &other) in curves.iter().enumerate() {
+        for (other_index, &(_, other, _)) in curves.iter().enumerate() {
             if index != other_index && overlap(bounds[index], bounds[other_index], epsilon) {
                 curve.intersections(other, epsilon, &mut cuts);
             }
@@ -228,6 +291,7 @@ pub(super) fn project(
         if let Some(clip) = &clip {
             clip.crossings(curve, &mut cuts);
         }
+        depth_events(source, curve, bounds[index], &mut cuts)?;
         cuts.sort_unstable_by(f64::total_cmp);
         cuts.dedup_by(|a, b| (*a - *b).abs() <= 1e-12);
         let mut runs: Vec<([f64; 2], bool)> = Vec::new();
@@ -246,7 +310,7 @@ pub(super) fn project(
             {
                 continue;
             }
-            let hidden = blocked(point);
+            let hidden = blocked(point)?;
             if let Some((span, _)) = runs
                 .last_mut()
                 .filter(|(span, old)| *old == hidden && span[1] == a)
@@ -264,7 +328,7 @@ pub(super) fn project(
                 if output.len() >= options.edge_limit {
                     return Err(Error::Limit);
                 }
-                output.push(edge);
+                output.push((source, edge));
             }
         }
     }
@@ -296,5 +360,29 @@ mod tests {
         assert!(!planar.blocks([0.5, 0., 0.], f64::INFINITY, 1e-7));
         assert_eq!(ray_roots([-0.5, 1., 0.]), [Some(0.5), None]);
         assert_eq!(ray_roots([0.25, -1., 1.]), [Some(0.5), None]);
+    }
+
+    #[test]
+    fn silhouette_through_two_corners_has_one_curve() {
+        let wall = Wall::new([[0., 0., 0.], [1., 0., 0.], [1., 0., 1.], [2., 1., 1.]]);
+        let curve = wall.silhouette(1e-7).unwrap();
+        assert_eq!(curve.at(0.), [0., 0., 0.]);
+        assert_eq!(curve.at(0.5), [1., 0.25, 0.5]);
+        assert_eq!(curve.at(1.), [2., 1., 1.]);
+    }
+
+    #[test]
+    fn depth_events_find_interior_crossings_of_bilinear_and_planar_walls() {
+        let wall = Wall::new([[0., 0., 0.], [1., 0., 0.], [0., 1., 0.], [1., 1., 1.]]);
+        let curve = Curve::line([0., 0.5, 0.25], [1., 0.5, 0.25]);
+        let mut cuts = Vec::new();
+        wall.depth_events(curve, curve.bounds(), 1e-12, &mut cuts);
+        assert_eq!(cuts, [0.5]);
+
+        let plane = Wall::new([[0., 0., 0.], [1., 0., 0.], [0., 1., 0.], [1., 1., 0.]]);
+        let curve = Curve::line([0., 0.5, -1.], [1., 0.5, 1.]);
+        cuts.clear();
+        plane.depth_events(curve, curve.bounds(), 1e-12, &mut cuts);
+        assert_eq!(cuts, [0.5]);
     }
 }

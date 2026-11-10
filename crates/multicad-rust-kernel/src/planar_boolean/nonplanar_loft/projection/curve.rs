@@ -153,6 +153,18 @@ impl Curve {
             .collect()
     }
 
+    pub(super) fn weight_coefficients(self) -> [f64; 3] {
+        Self::power(self.weights)
+    }
+
+    pub(super) fn plane_coefficients(self, origin: Point, normal: Point) -> [f64; 3] {
+        self.coefficients(|point| dot(normal, sub(point, origin)))
+    }
+
+    pub(super) fn plane_crossings(self, origin: Point, normal: Point, cuts: &mut Vec<f64>) {
+        cuts.extend(roots(&self.plane_coefficients(origin, normal), [0., 1.]));
+    }
+
     pub(super) fn detail_crossings(self, center: Paper, radius: f64, cuts: &mut Vec<f64>) {
         let h = self.homogeneous(center);
         let x = h.map(|p| p[0]);
@@ -208,7 +220,12 @@ fn multiply(a: [f64; 3], b: [f64; 3]) -> [f64; 5] {
     ]
 }
 
-fn difference_of_products(a: [f64; 3], b: [f64; 3], c: [f64; 3], d: [f64; 3]) -> [f64; 5] {
+pub(super) fn difference_of_products(
+    a: [f64; 3],
+    b: [f64; 3],
+    c: [f64; 3],
+    d: [f64; 3],
+) -> [f64; 5] {
     let p = multiply(a, b);
     let q = multiply(c, d);
     std::array::from_fn(|i| p[i] - q[i])

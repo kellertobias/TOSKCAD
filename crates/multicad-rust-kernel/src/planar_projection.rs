@@ -2,8 +2,10 @@
 
 use crate::round_occlusion::RoundOccluder;
 
+mod loft_faces;
 mod profile;
 mod scene;
+pub(crate) use loft_faces::prepare_loft_faces;
 use profile::ProfileTrim;
 pub use scene::{
     AnalyticFace, CircularOpeningEnd, DepthRange, FaceOpening, FaceTrim, HiddenCandidate,
@@ -108,10 +110,10 @@ impl Bounds {
     }
 }
 
-struct TrimmedPlane {
+pub(crate) struct TrimmedPlane {
     id: usize,
-    point: Point,
-    normal: Point,
+    pub(crate) point: Point,
+    pub(crate) normal: Point,
     boundary: Vec<[Point2; 2]>,
     profiles: Vec<ProfileTrim>,
     bounds: Bounds,
@@ -591,4 +593,4 @@ fn publish_spans(
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

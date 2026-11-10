@@ -10,7 +10,7 @@ pub(super) fn options() -> Options {
     }
 }
 
-pub(super) fn prism(rings: &[&[Point2]], low: f64, high: f64) -> Body {
+pub(crate) fn prism(rings: &[&[Point2]], low: f64, high: f64) -> Body {
     let mut edges = Vec::new();
     let mut bottom = Vec::new();
     let mut top = Vec::new();
@@ -54,7 +54,7 @@ pub(super) fn prism(rings: &[&[Point2]], low: f64, high: f64) -> Body {
     Body { edges, faces }
 }
 
-pub(super) fn rect([x0, y0, x1, y1]: [f64; 4], low: f64, high: f64) -> Body {
+pub(crate) fn rect([x0, y0, x1, y1]: [f64; 4], low: f64, high: f64) -> Body {
     prism(&[&[[x0, y0], [x1, y0], [x1, y1], [x0, y1]]], low, high)
 }
 

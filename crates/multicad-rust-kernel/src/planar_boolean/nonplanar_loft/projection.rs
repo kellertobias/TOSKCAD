@@ -4,6 +4,8 @@ use crate::curved_projection::roots;
 
 mod clip;
 mod curve;
+mod scene;
+pub use scene::{LoftSceneMember, project_loft_scene};
 mod visibility;
 use curve::Curve;
 
@@ -53,6 +55,15 @@ fn overlap(a: [Paper; 2], b: [Paper; 2], tolerance: f64) -> bool {
     (0..2).all(|i| a[0][i] <= b[1][i] + tolerance && b[0][i] <= a[1][i] + tolerance)
 }
 
+fn valid_axes(axes: [Point; 3]) -> bool {
+    axes.iter().flatten().all(|x| x.is_finite())
+        && axes.iter().enumerate().all(|(i, a)| {
+            axes.iter()
+                .enumerate()
+                .all(|(j, b)| (dot(*a, *b) - f64::from(i == j)).abs() <= 1e-8)
+        })
+}
+
 impl NonplanarLoft {
     pub fn drawing_edges(&self, options: LoftProjection) -> Result<Vec<LoftDrawingEdge>, Error> {
         validate_tolerance(options.tolerance)?;
@@ -68,14 +79,7 @@ impl NonplanarLoft {
             || options.detail.is_some_and(|(center, radius)| {
                 center.into_iter().any(|p| !p.is_finite()) || !radius.is_finite() || radius <= 0.
             })
-            || options.axes.iter().flatten().any(|x| !x.is_finite())
-            || options.axes.iter().enumerate().any(|(i, a)| {
-                options
-                    .axes
-                    .iter()
-                    .enumerate()
-                    .any(|(j, b)| (dot(*a, *b) - f64::from(i == j)).abs() > 1e-8)
-            })
+            || !valid_axes(options.axes)
         {
             return Err(Error::Invalid);
         }

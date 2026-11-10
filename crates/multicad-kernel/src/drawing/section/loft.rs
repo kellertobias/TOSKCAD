@@ -3,6 +3,8 @@ use super::*;
 use multicad_rust_kernel::planar_boolean::{Error, LoftSectionCurve};
 
 mod clip;
+mod scene;
+pub(in crate::drawing) use scene::project_scene;
 mod view;
 pub(in crate::drawing) use view::project_view;
 
@@ -61,9 +63,10 @@ pub(super) fn project(
         }
     }
     publish(
-        curves.into_iter().map(|curve| (curve, VectorRole::Section)),
+        curves
+            .into_iter()
+            .map(|curve| (source, curve, VectorRole::Section)),
         options,
-        source,
     )
 }
 
@@ -109,16 +112,15 @@ fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
 }
 
 fn publish(
-    curves: impl ExactSizeIterator<Item = (Curve, VectorRole)>,
+    curves: impl ExactSizeIterator<Item = (usize, Curve, VectorRole)>,
     options: DrawingProjection,
-    source: usize,
 ) -> Result<Vec<ProjectedVector>, GeometryError> {
     if curves.len() > options.maximum_curves as usize {
         return Err(limit());
     }
     let mut points = options.maximum_points as usize;
     curves
-        .map(|(curve, role)| {
+        .map(|(source, curve, role)| {
             let vector = match curve {
                 Curve::Line(ends) => {
                     charge(&mut points, 2)?;

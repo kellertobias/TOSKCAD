@@ -94,6 +94,13 @@ fn projection_members<'a>(solids: &[DrawingSolid<'a>]) -> Vec<(usize, &'a Solid)
     members
 }
 
+fn contains_loft(solid: &Solid) -> bool {
+    solid.nonplanar_loft_body().is_some()
+        || solid
+            .rust_compound()
+            .is_some_and(|compound| compound.members().any(contains_loft))
+}
+
 fn contains_sphere(solid: &Solid) -> bool {
     solid.sphere_body().is_some()
         || solid
@@ -227,6 +234,9 @@ pub fn project_drawing(
             && input.solid.nonplanar_loft_body().is_some()
         {
             return section::project_loft_view(input, options);
+        }
+        if solids.iter().any(|input| contains_loft(input.solid)) {
+            return section::project_loft_scene(&projection_members(solids), options);
         }
         if let [input] = solids
             && let Some(projection) = panel::project(input, options)

@@ -309,3 +309,172 @@ fn oblique_window_rebuilds_visible_connectors_and_keeps_exact_clipped_curves() {
         Err(Error::Invalid)
     );
 }
+
+fn scene_options() -> crate::planar_projection::Options {
+    crate::planar_projection::Options {
+        tolerance: TOL,
+        hidden_lines: true,
+        tangent_edges: false,
+        detail: None,
+        segment_limit: 1000,
+    }
+}
+
+#[test]
+fn loft_and_planar_members_occlude_each_other_with_original_source_indices() {
+    use crate::planar_projection::tests::{prism, rect};
+    let loft = fixture();
+    let front = rect([-0.3, -2., 0.8, 0.2], 7., 8.);
+    let rear = rect([-3., 0.4, 3.5, 0.6], -2., -1.);
+    let scene = [
+        LoftSceneMember::Planar(&rear),
+        LoftSceneMember::Loft {
+            body: &loft,
+            axes: AXIAL,
+            offset: [0.; 3],
+        },
+        LoftSceneMember::Planar(&front),
+        LoftSceneMember::Loft {
+            body: &loft,
+            axes: AXIAL,
+            offset: [12., 0., 0.],
+        },
+    ];
+    let drawing = project_loft_scene(&scene, scene_options()).unwrap();
+    for source in 0..4 {
+        assert!(drawing.iter().any(|&(i, edge)| i == source && !edge.hidden));
+        assert!(drawing.iter().any(|&(i, edge)| i == source && edge.hidden));
+    }
+    // A hole in a closer planar face transmits the edge underneath it.
+    let hole = [[-1., -1.], [-1., 1.], [1., 1.], [1., -1.]];
+    let plate = prism(
+        &[&[[-4., -3.], [4., -3.], [4., 3.], [-4., 3.]], &hole],
+        9.,
+        10.,
+    );
+    let lower = rect([-2., 0., 2., 0.1], 7., 8.);
+    let drawing = project_loft_scene(
+        &[
+            LoftSceneMember::Planar(&plate),
+            LoftSceneMember::Planar(&lower),
+            LoftSceneMember::Loft {
+                body: &loft,
+                axes: AXIAL,
+                offset: [12., 0., 0.],
+            },
+        ],
+        scene_options(),
+    )
+    .unwrap();
+    assert!(drawing.iter().any(|&(source, edge)| source == 1 && !edge.hidden &&
+        matches!(edge.curve, LoftSectionCurve::Line([a,b]) if a[0] == -1. && b[0] == 1. && a[1] == 0. && b[1] == 0.)));
+}
+
+#[test]
+fn scene_validates_members_and_rejects_unbounded_work() {
+    use crate::planar_projection::{
+        Body,
+        tests::{prism, rect},
+    };
+    let loft = fixture();
+    let invalid = LoftSceneMember::Loft {
+        body: &loft,
+        axes: AXIAL,
+        offset: [f64::NAN, 0., 0.],
+    };
+    assert_eq!(
+        project_loft_scene(&[invalid], scene_options()),
+        Err(Error::Invalid)
+    );
+    let invalid = Body {
+        edges: vec![[[0.; 3], [1.; 3]]],
+        faces: vec![],
+    };
+    assert_eq!(
+        project_loft_scene(&[LoftSceneMember::Planar(&invalid)], scene_options()),
+        Err(Error::Invalid)
+    );
+    let box_body = rect([0., 0., 1., 1.], 0., 1.);
+    assert_eq!(
+        super::scene::project_with_limit(&[LoftSceneMember::Planar(&box_body)], scene_options(), 1),
+        Err(Error::Limit),
+    );
+    let before_depth_tests = box_body.edges.len().pow(2)
+        + box_body.edges.len()
+        + box_body.faces.len()
+        + box_body
+            .faces
+            .iter()
+            .map(|face| face.edges.len())
+            .sum::<usize>();
+    // The two projected cap planes consume the remaining work before the
+    // first ray when they fit, or stop at the depth event when they do not.
+    for remaining in [0, 2] {
+        assert_eq!(
+            super::scene::project_with_limit(
+                &[LoftSceneMember::Planar(&box_body)],
+                scene_options(),
+                before_depth_tests + remaining,
+            ),
+            Err(Error::Limit),
+        );
+    }
+    let crowded: Vec<_> = (0..400)
+        .map(|_| LoftSceneMember::Planar(&box_body))
+        .collect();
+    assert_eq!(
+        project_loft_scene(&crowded, scene_options()),
+        Err(Error::Limit)
+    );
+    let mut seam = prism(
+        &[&[[0., 0.], [1., 0.], [2., 0.], [2., 1.], [0., 1.]]],
+        0.,
+        1.,
+    );
+    let tilt = |[x, y, z]: Point| [(x - z) / 2_f64.sqrt(), y, (x + z) / 2_f64.sqrt()];
+    for edge in &mut seam.edges {
+        *edge = edge.map(tilt);
+    }
+    for face in &mut seam.faces {
+        face.point = tilt(face.point);
+        face.normal = tilt(face.normal);
+    }
+    let ordinary = project_loft_scene(&[LoftSceneMember::Planar(&seam)], scene_options()).unwrap();
+    let tangent = project_loft_scene(
+        &[LoftSceneMember::Planar(&seam)],
+        crate::planar_projection::Options {
+            tangent_edges: true,
+            ..scene_options()
+        },
+    )
+    .unwrap();
+    assert_eq!(tangent.len(), ordinary.len() + 1);
+}
+
+#[test]
+fn an_edge_crosses_the_wall_depth_inside_its_projected_boundary() {
+    use crate::planar_projection::tests::rect;
+    let start = [[-1., -1.], [1., -1.], [1., 1.], [-1., 1.]];
+    let box_body = rect([-0.9, 0.1, 0.2, 0.3], 1.8, 2.);
+    for (top_left, split) in [(0., -0.5), (0.5, -0.3625)] {
+        let end = [[0., -1.], [2., -1.], [2., 1.], [top_left, 1.]];
+        let loft = NonplanarLoft::new([&start, &end], 4., TOL).unwrap();
+        let members = [
+            LoftSceneMember::Loft {
+                body: &loft,
+                axes: AXIAL,
+                offset: [0.; 3],
+            },
+            LoftSceneMember::Planar(&box_body),
+        ];
+        let drawing = project_loft_scene(&members, scene_options()).unwrap();
+        for (hidden, expected) in [(false, [-0.9, split]), (true, [split, 0.2])] {
+            assert!(drawing.iter().any(|&(source, edge)| {
+                source == 1 && edge.hidden == hidden &&
+                    matches!(edge.curve, LoftSectionCurve::Line([a,b])
+                        if [a,b].into_iter().all(|p| (p[1] - 0.1).abs() < TOL && (p[2] - 2.).abs() < TOL)
+                        && (a[0] - expected[0]).abs() < TOL && (b[0] - expected[1]).abs() < TOL)
+            }), "{hidden} {expected:?}: {drawing:?}");
+        }
+    }
+}
