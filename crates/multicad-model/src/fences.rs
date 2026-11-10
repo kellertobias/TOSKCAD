@@ -1,7 +1,7 @@
 //! Exact independent fence Parts. A provider miss builds and validates the
 //! complete run before returning any member, including in source-scoped jobs.
 //! Cheap complete-source/material validation also precedes cache hits.
-use crate::{ModelError, error};
+use crate::{GeometryBackend, ModelError, error};
 use multicad_core::{
     document::{Document, EntityData, EntityId},
     materials::Resolver,
@@ -23,6 +23,7 @@ struct Run {
 pub(crate) struct Context<'a> {
     document: &'a Document,
     parameters: &'a EvaluatedParameters,
+    backend: GeometryBackend,
     materials: Option<Resolver<'a>>,
     runs: BTreeMap<EntityId, Run>,
 }
@@ -34,10 +35,15 @@ fn checkpoint(id: EntityId, interrupt: Option<&dyn Fn() -> bool>) -> Result<(), 
 }
 
 impl<'a> Context<'a> {
-    pub(crate) fn new(document: &'a Document, parameters: &'a EvaluatedParameters) -> Self {
+    pub(crate) fn new(
+        document: &'a Document,
+        parameters: &'a EvaluatedParameters,
+        backend: GeometryBackend,
+    ) -> Self {
         Self {
             document,
             parameters,
+            backend,
             materials: None,
             runs: BTreeMap::new(),
         }
@@ -136,27 +142,23 @@ impl<'a> Context<'a> {
             for post in &run.layout.posts {
                 checkpoint(source.run, interrupt)?;
                 let id = run.members[&FenceMemberKey::Post { post: post.key }].0;
-                let shape = match run.layout.construction.post {
-                    ResolvedFencePostProfile::Rectangular { width_mm, depth_mm } => rectangle(
-                        id,
-                        "fence.post",
-                        post.position_mm,
-                        post.direction,
-                        width_mm,
-                        depth_mm,
-                        run.layout.construction.height_mm,
-                        policy,
-                    )?,
-                    ResolvedFencePostProfile::Round { diameter_mm } => round_post(
-                        id,
-                        post.position_mm,
-                        post.direction,
-                        diameter_mm,
-                        run.layout.construction.height_mm,
-                        policy,
-                    )?,
+                let profile = match run.layout.construction.post {
+                    ResolvedFencePostProfile::Rectangular { width_mm, depth_mm } => {
+                        Footprint::Rectangle([width_mm, depth_mm])
+                    }
+                    ResolvedFencePostProfile::Round { diameter_mm } => {
+                        Footprint::Circle(diameter_mm)
+                    }
                 };
-                solids.insert(id, shape);
+                let section = Section::new(post.position_mm, post.direction, profile);
+                let shape = section.sweep(
+                    id,
+                    "fence.post",
+                    run.layout.construction.height_mm,
+                    policy,
+                    self.backend,
+                )?;
+                solids.insert(id, (shape, section));
             }
             for member in &run.layout.infills {
                 checkpoint(source.run, interrupt)?;
@@ -166,21 +168,29 @@ impl<'a> Context<'a> {
                     model::FenceLayoutInfillKind::Rail => "fence.rail",
                     model::FenceLayoutInfillKind::Picket => "fence.picket",
                 };
-                let shape = rectangle(
-                    id,
-                    prefix,
+                let section = Section::new(
                     member.position_mm,
                     member.direction,
-                    member.width_mm,
-                    member.depth_mm,
-                    member.height_mm,
-                    policy,
-                )?;
-                solids.insert(id, shape);
+                    Footprint::Rectangle([member.width_mm, member.depth_mm]),
+                );
+                let shape = section.sweep(id, prefix, member.height_mm, policy, self.backend)?;
+                solids.insert(id, (shape, section));
             }
-            disjoint(&solids, self.document, source.run, policy, interrupt)?;
+            disjoint(
+                &solids,
+                self.document,
+                source.run,
+                policy,
+                interrupt,
+                self.backend,
+            )?;
             checkpoint(source.run, interrupt)?;
-            run.solids = Some(solids);
+            run.solids = Some(
+                solids
+                    .into_iter()
+                    .map(|(id, (solid, _))| (id, solid))
+                    .collect(),
+            );
         }
         checkpoint(source.run, interrupt)?;
         run.solids
@@ -196,13 +206,6 @@ impl<'a> Context<'a> {
     }
 }
 
-fn frame(position: [f64; 3], direction: [f64; 2]) -> PlaneFrame {
-    PlaneFrame {
-        origin: position,
-        u: [direction[0], direction[1], 0.],
-        v: [-direction[1], direction[0], 0.],
-    }
-}
 fn dimensions(id: EntityId, values: &[f64], policy: GeometryPolicy) -> Result<(), ModelError> {
     if values
         .iter()
@@ -218,81 +221,142 @@ fn dimensions(id: EntityId, values: &[f64], policy: GeometryPolicy) -> Result<()
     }
     Ok(())
 }
-#[allow(clippy::too_many_arguments)]
-fn rectangle(
-    id: EntityId,
-    prefix: &str,
-    position: [f64; 3],
-    direction: [f64; 2],
-    width: f64,
-    depth: f64,
-    height: f64,
-    policy: GeometryPolicy,
-) -> Result<Solid, ModelError> {
-    dimensions(id, &[width, depth, height], policy)?;
-    let corners = [
-        [-width / 2., -depth / 2.],
-        [width / 2., -depth / 2.],
-        [width / 2., depth / 2.],
-        [-width / 2., depth / 2.],
-    ];
-    let profile = CurvedProfile {
-        frame: frame(position, direction),
-        outer: (0..4)
-            .map(|i| CurvedEdge2d::Line {
-                a: corners[i],
-                b: corners[(i + 1) % 4],
-            })
-            .collect(),
-        holes: Vec::new(),
-    };
-    let origins = ["back", "end", "front", "start"].map(|role| Origin {
-        source: id,
-        role: format!("{prefix}.{role}"),
-    });
-    let solid = Solid::extrude_curved_profile_vector_named(
-        &profile,
-        [0., 0., height],
-        id,
-        &origins,
-        policy,
-    )
-    .map_err(|e| error(Some(id), e))?;
-    measured(solid, id, width * depth * height)
+#[derive(Clone, Copy)]
+enum Footprint {
+    Rectangle([f64; 2]),
+    Circle(f64),
 }
-fn round_post(
-    id: EntityId,
-    position: [f64; 3],
-    direction: [f64; 2],
-    diameter: f64,
-    height: f64,
-    policy: GeometryPolicy,
-) -> Result<Solid, ModelError> {
-    dimensions(id, &[diameter, height], policy)?;
-    let profile = CurvedProfile {
-        frame: frame(position, direction),
-        outer: vec![CurvedEdge2d::Circle {
-            center: [0., 0.],
-            radius_mm: diameter / 2.,
-        }],
-        holes: Vec::new(),
-    };
-    let solid = Solid::extrude_curved_profile_vector_named(
-        &profile,
-        [0., 0., height],
-        id,
-        &[Origin {
-            source: id,
-            role: "fence.post.round".into(),
-        }],
-        policy,
-    )
-    .map_err(|e| error(Some(id), e))?;
-    measured(
-        solid,
-        id,
-        std::f64::consts::PI * (diameter / 2.).powi(2) * height,
-    )
+
+struct Section {
+    frame: PlaneFrame,
+    footprint: Footprint,
+}
+
+impl Section {
+    fn new(position: [f64; 3], [x, y]: [f64; 2], footprint: Footprint) -> Self {
+        Self {
+            frame: PlaneFrame {
+                origin: position,
+                u: [x, y, 0.],
+                v: [-y, x, 0.],
+            },
+            footprint,
+        }
+    }
+
+    fn sweep(
+        &self,
+        id: EntityId,
+        prefix: &str,
+        height: f64,
+        policy: GeometryPolicy,
+        backend: GeometryBackend,
+    ) -> Result<Solid, ModelError> {
+        let (outer, roles, area) = match self.footprint {
+            Footprint::Rectangle([width, depth]) => {
+                dimensions(id, &[width, depth, height], policy)?;
+                let (w, d) = (width / 2., depth / 2.);
+                let corners = [[-w, -d], [w, -d], [w, d], [-w, d]];
+                let edges = (0..4)
+                    .map(|i| CurvedEdge2d::Line {
+                        a: corners[i],
+                        b: corners[(i + 1) % 4],
+                    })
+                    .collect();
+                (edges, &["back", "end", "front", "start"][..], width * depth)
+            }
+            Footprint::Circle(diameter) => {
+                dimensions(id, &[diameter, height], policy)?;
+                let radius = diameter / 2.;
+                (
+                    vec![CurvedEdge2d::Circle {
+                        center: [0.; 2],
+                        radius_mm: radius,
+                    }],
+                    &["round"][..],
+                    std::f64::consts::PI * radius.powi(2),
+                )
+            }
+        };
+        let profile = CurvedProfile {
+            frame: self.frame,
+            outer,
+            holes: Vec::new(),
+        };
+        let origins = roles
+            .iter()
+            .map(|role| Origin {
+                source: id,
+                role: format!("{prefix}.{role}"),
+            })
+            .collect::<Vec<_>>();
+        let solid = match backend {
+            GeometryBackend::Rust => {
+                Solid::rust_extrude_normal_profile_named(&profile, height, id, &origins, policy)
+            }
+            GeometryBackend::OpenCascade => Solid::extrude_curved_profile_vector_named(
+                &profile,
+                [0., 0., height],
+                id,
+                &origins,
+                policy,
+            ),
+        }
+        .map_err(|e| error(Some(id), e))?;
+        measured(solid, id, area * height)
+    }
+
+    fn axes(&self) -> [[f64; 2]; 2] {
+        [
+            [self.frame.u[0], self.frame.u[1]],
+            [self.frame.v[0], self.frame.v[1]],
+        ]
+    }
+
+    /// Both members are vertical sweeps of convex sections. Once their Z
+    /// intervals overlap, open interiors overlap exactly when these sections do.
+    fn overlaps(&self, other: &Self) -> bool {
+        let offset = std::array::from_fn(|i| other.frame.origin[i] - self.frame.origin[i]);
+        let dot = |a: [f64; 2], b: [f64; 2]| a[0].mul_add(b[0], a[1] * b[1]);
+        // Account for roundoff at authored contacts when section frames are rotated.
+        let guard = 16.
+            * f64::EPSILON
+            * [self, other]
+                .into_iter()
+                .flat_map(|section| {
+                    let [x, y, _] = section.frame.origin;
+                    let width = match section.footprint {
+                        Footprint::Rectangle([w, d]) => w.max(d),
+                        Footprint::Circle(d) => d,
+                    };
+                    [x.abs(), y.abs(), width]
+                })
+                .fold(0., f64::max);
+        let rectangle_circle = |rectangle: &Self, size: [f64; 2], diameter, offset| {
+            let [u, v] = rectangle.axes();
+            let outside = |axis, extent: f64| (dot(offset, axis).abs() - extent).max(0.);
+            outside(u, size[0] / 2.).hypot(outside(v, size[1] / 2.)) + guard < diameter / 2.
+        };
+        match (self.footprint, other.footprint) {
+            (Footprint::Rectangle(a), Footprint::Rectangle(b)) => {
+                let [a_axes, b_axes] = [self.axes(), other.axes()];
+                let radius = |size: [f64; 2], [u, v]: [[f64; 2]; 2], axis| {
+                    (size[0] * dot(u, axis).abs() + size[1] * dot(v, axis).abs()) / 2.
+                };
+                a_axes.into_iter().chain(b_axes).all(|axis| {
+                    dot(offset, axis).abs() + guard
+                        < radius(a, a_axes, axis) + radius(b, b_axes, axis)
+                })
+            }
+            (Footprint::Circle(a), Footprint::Circle(b)) => {
+                offset[0].hypot(offset[1]) + guard < (a + b) / 2.
+            }
+            (Footprint::Rectangle(a), Footprint::Circle(b)) => rectangle_circle(self, a, b, offset),
+            (Footprint::Circle(a), Footprint::Rectangle(b)) => {
+                rectangle_circle(other, b, a, offset.map(|value| -value))
+            }
+        }
+    }
 }
 fn measured(solid: Solid, id: EntityId, expected: f64) -> Result<Solid, ModelError> {
     let volume = solid.volume_mm3().map_err(|e| error(Some(id), e))?;
@@ -310,23 +374,23 @@ fn measured(solid: Solid, id: EntityId, expected: f64) -> Result<Solid, ModelErr
 }
 
 fn disjoint(
-    solids: &BTreeMap<EntityId, Solid>,
+    solids: &BTreeMap<EntityId, (Solid, Section)>,
     document: &Document,
     run: EntityId,
     policy: GeometryPolicy,
     interrupt: Option<&dyn Fn() -> bool>,
+    backend: GeometryBackend,
 ) -> Result<(), ModelError> {
     let mut bounds: Vec<(EntityId, Bounds)> = solids
         .iter()
-        .map(|(id, solid)| {
+        .map(|(id, (solid, _))| {
             solid
                 .bounds()
                 .map(|b| (*id, b))
                 .map_err(|e| error(Some(*id), e))
         })
         .collect::<Result<_, _>>()?;
-    // Sweep the longest world extent; bounds only prune candidates. Native
-    // COMMON with no extra fuzzy gap closing decides occupied material overlap.
+    // Sweep the longest world extent. Bounds only prune candidates.
     let span = |axis| {
         bounds
             .iter()
@@ -352,24 +416,25 @@ fn disjoint(
                 continue;
             }
             checkpoint(run, interrupt)?;
-            let common = solids[&a]
-                .boolean(
-                    &solids[&b],
-                    BooleanOperation::Intersect,
-                    GeometryPolicy {
-                        boolean_fuzzy_mm: 0.,
-                        ..policy
-                    },
-                )
-                .map_err(|e| error(Some(run), e))?;
+            let (a_solid, a_section) = &solids[&a];
+            let (b_solid, b_section) = &solids[&b];
+            let overlap = match backend {
+                GeometryBackend::Rust => a_section.overlaps(b_section),
+                GeometryBackend::OpenCascade => a_solid
+                    .boolean(
+                        b_solid,
+                        BooleanOperation::Intersect,
+                        GeometryPolicy {
+                            boolean_fuzzy_mm: 0.,
+                            ..policy
+                        },
+                    )
+                    .and_then(|common| common.as_ref().map(Solid::volume_mm3).transpose())
+                    .map_err(|e| error(Some(run), e))?
+                    .is_some_and(|volume| volume > 0.),
+            };
             checkpoint(run, interrupt)?;
-            if common
-                .as_ref()
-                .map(Solid::volume_mm3)
-                .transpose()
-                .map_err(|e| error(Some(run), e))?
-                .is_some_and(|volume| volume > 0.)
-            {
+            if overlap {
                 let name = |id| {
                     model::read_fence_member(document, id)
                         .ok()
@@ -379,7 +444,7 @@ fn disjoint(
                 return Err(error(
                     Some(run),
                     format!(
-                        "{} and {} overlap in native material; repair post positions or infill dimensions/offsets",
+                        "{} and {} overlap in material; repair post positions or infill dimensions/offsets",
                         name(a),
                         name(b)
                     ),
@@ -399,6 +464,36 @@ mod tests {
         model::*,
     };
     use std::cell::Cell;
+
+    #[test]
+    fn vertical_section_overlap_distinguishes_rotated_contact_and_round_gaps() {
+        let d = std::f64::consts::FRAC_1_SQRT_2;
+        let rectangle = |offset: f64| {
+            Section::new(
+                [-offset * d, offset * d, 0.],
+                [d, d],
+                Footprint::Rectangle([4., 2.]),
+            )
+        };
+        assert!(!rectangle(0.).overlaps(&rectangle(2.)));
+        assert!(rectangle(0.).overlaps(&rectangle(1.999)));
+        assert!(!rectangle(0.).overlaps(&rectangle(2.001)));
+
+        let box_section = Section::new([0.; 3], [1., 0.], Footprint::Rectangle([4., 2.]));
+        let circle = |x, y| Section::new([x, y, 0.], [1., 0.], Footprint::Circle(2.));
+        for (x, y, overlaps) in [
+            (3., 0., false),
+            (2.999, 0., true),
+            (2.8, 1.8, false),
+            (2.6, 1.6, true),
+        ] {
+            let circle = circle(x, y);
+            assert_eq!(box_section.overlaps(&circle), overlaps);
+            assert_eq!(circle.overlaps(&box_section), overlaps);
+        }
+        assert!(!circle(0., 0.).overlaps(&circle(2., 0.)));
+        assert!(circle(0., 0.).overlaps(&circle(1.999, 0.)));
+    }
 
     #[test]
     fn interrupted_run_generation_returns_no_partial_member_and_retries_completely() {
@@ -465,7 +560,11 @@ mod tests {
         .unwrap();
         session.commit(prepared.model.prepared).unwrap();
         let members = fence_members(session.document(), run.id).unwrap();
-        let mut context = Context::new(session.document(), session.parameters());
+        let mut context = Context::new(
+            session.document(),
+            session.parameters(),
+            GeometryBackend::default(),
+        );
         let source = context.prepare(members[0].1, None).unwrap();
         let checkpoints = Cell::new(0);
         let cancel = || {

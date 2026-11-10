@@ -778,7 +778,7 @@ impl Compiler {
         let mut member_paths = BTreeMap::new();
         let mut weld_paths = crate::weldment::Paths::new(&context);
         let mut sheet_layouts = BTreeMap::new();
-        let mut fences = crate::fences::Context::new(document, context.parameters());
+        let mut fences = crate::fences::Context::new(document, context.parameters(), backend);
         let mut compound_cutouts = crate::compound_cutouts::Context::default();
         let mut leaves = crate::assemblies::LeafStore::default();
         let mut topologies: BTreeMap<EntityId, TopologySnapshot> = BTreeMap::new();

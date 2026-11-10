@@ -6,7 +6,7 @@ use multicad_core::{
     project_file,
 };
 use multicad_kernel::{GeometryPolicy, Solid};
-use multicad_model::{Compiler, EvaluationCache, Model, ModelError};
+use multicad_model::{Compiler, EvaluationCache, GeometryBackend, Model, ModelError};
 fn actor() -> Actor {
     Actor::local(Channel::Ui)
 }
@@ -112,12 +112,11 @@ fn volume(s: &Session, m: &Model, run: EntityId) -> f64 {
                     .iter()
                     .all(|e| e.origins.iter().any(|o| o.source == f))
             );
-            assert!(
-                topology
-                    .elements
+            assert!(topology.elements.iter().any(|e| {
+                e.origins
                     .iter()
-                    .any(|e| e.origins.iter().any(|o| o.role.starts_with("fence.")))
-            );
+                    .any(|o| o.role.starts_with("fence.") || o.role.contains("/fence."))
+            }));
             solid.volume_mm3().unwrap()
         })
         .sum()
@@ -125,8 +124,19 @@ fn volume(s: &Session, m: &Model, run: EntityId) -> f64 {
 
 #[test]
 fn panel_run_has_separate_material_parts_true_dimensions_and_independent_step_readback() {
+    checks_panel_run(GeometryBackend::Rust);
+    #[cfg(feature = "occt")]
+    checks_panel_run(GeometryBackend::OpenCascade);
+}
+
+fn checks_panel_run(backend: GeometryBackend) {
     let (mut s, ty, run, metal) = fixture(&[[0., 0.], [4500., 0.]], false);
     apply(&mut s, &ty, &run);
+    let compile = |s: &Session| {
+        Compiler::default()
+            .compile_with_backend(s.document(), s.revision(), backend, None)
+            .unwrap()
+    };
     let m = compile(&s);
     assert_eq!(m.snapshot().bodies.len(), 7);
     near(volume(&s, &m, run.id), 180_144_000., 0.01);
@@ -159,9 +169,25 @@ fn panel_run_has_separate_material_parts_true_dimensions_and_independent_step_re
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("fence.step");
     compound.write_step(&path).unwrap();
-    let back = Solid::read_step(&path, GeometryPolicy::default()).unwrap();
-    assert_eq!(back.solid_count().unwrap(), 7);
-    near(back.volume_mm3().unwrap(), 180_144_000., 0.01);
+    if backend == GeometryBackend::Rust {
+        let members = multicad_kernel::rust_kernel::step_read::read_analytic_compound(
+            &std::fs::read_to_string(&path).unwrap(),
+            GeometryPolicy::default().linear_tolerance_mm,
+        )
+        .unwrap();
+        assert_eq!(members.len(), 7);
+        near(
+            members.iter().map(|solid| solid.volume_mm3).sum(),
+            180_144_000.,
+            0.01,
+        );
+    }
+    #[cfg(feature = "occt")]
+    {
+        let back = Solid::read_step(&path, GeometryPolicy::default()).unwrap();
+        assert_eq!(back.solid_count().unwrap(), 7);
+        near(back.volume_mm3().unwrap(), 180_144_000., 0.01);
+    }
     let project = project_file::ProjectFile::new(s.document().clone()).unwrap();
     let mut bytes = Vec::new();
     project_file::write(&project, &mut bytes, Default::default()).unwrap();

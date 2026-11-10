@@ -52,6 +52,7 @@ pub(crate) fn validate_document(
                     | (model::ALIGN_TYPE, model::ALIGN_SCHEMA)
                     | (model::SLAB_TYPE, 1)
                     | (model::STAIR_TYPE, 1)
+                    | (model::FENCE_MEMBER_TYPE, model::FENCE_SCHEMA)
                     | (model::COMPOUND_CUTOUT_TYPE, model::COMPOUND_CUTOUT_SCHEMA)
                     | (
                         model::COMPOUND_CUTOUT_RECEIVER_TYPE,
