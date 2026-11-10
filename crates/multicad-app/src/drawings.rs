@@ -1103,7 +1103,8 @@ mod tests {
 
     #[test]
     fn rust_worker_matches_native_geometry_of_saved_cabinet_joint_views() {
-        use drawings::{VectorRole, ViewEvaluation};
+        use drawings::{VectorCurve, VectorRole, ViewEvaluation};
+        use std::f64::consts::TAU;
 
         let session = open_example("cabinet.tcd");
         let document = session.document();
@@ -1128,6 +1129,11 @@ mod tests {
             .views
             .iter()
             .find(|view| view.name == "Section A-A: lower divider with Domino tenons")
+            .unwrap();
+        let side_section = page
+            .views
+            .iter()
+            .find(|view| view.name.starts_with("Section B-B:"))
             .unwrap();
         let [drawer] = drawer_view.source.entities().try_into().unwrap();
         assert_eq!(document.get(drawer).unwrap().name, "Drawer 1");
@@ -1171,7 +1177,51 @@ mod tests {
                     |vector| (vector.source, vector.material_part),
                 )
             });
-            (drawer_lines, tenon_lines, section_lines)
+            let side_vectors = ready(side_section.id);
+            assert!(side_vectors.iter().all(|vector| {
+                matches!(vector.role, VectorRole::Section | VectorRole::Visible)
+            }));
+            let (side_lines, side_circles): (Vec<_>, Vec<_>) = side_vectors
+                .iter()
+                .partition(|vector| matches!(vector.curve, VectorCurve::Line { .. }));
+            let side_lines = [VectorRole::Section, VectorRole::Visible].map(|role| {
+                cardinal_drawing_lines(
+                    side_lines
+                        .iter()
+                        .copied()
+                        .filter(|vector| vector.role == role),
+                    |vector| (vector.source, vector.material_part),
+                )
+            });
+            let micrometers = |coordinate: f64| (coordinate * 1000.).round() as i64;
+            let mut side_circles = side_circles
+                .into_iter()
+                .map(|vector| {
+                    let VectorCurve::Ellipse {
+                        center,
+                        major_mm,
+                        minor_mm,
+                        start_rad,
+                        end_rad,
+                        ..
+                    } = vector.curve
+                    else {
+                        panic!("Unexpected saved cutaway curve {:?}", vector.curve);
+                    };
+                    assert_eq!(vector.role, VectorRole::Visible);
+                    assert!((major_mm - 2.5).abs() < 1e-8 && (minor_mm - major_mm).abs() < 1e-8);
+                    assert!(((end_rad - start_rad).abs() - TAU).abs() < 1e-8);
+                    (vector.source, vector.material_part, center.map(micrometers))
+                })
+                .collect::<Vec<_>>();
+            side_circles.sort_unstable();
+            (
+                drawer_lines,
+                tenon_lines,
+                section_lines,
+                side_lines,
+                side_circles,
+            )
         };
         let native = coverage(GeometryBackend::OpenCascade);
         assert_eq!(native.0[&((), 1, -243_000)], [[-398_000, 398_000]]);
@@ -1189,6 +1239,7 @@ mod tests {
         );
         assert!(native.2[0].keys().all(|key| native.2[1].contains_key(key)));
         assert!(native.2[1].len() > native.2[0].len());
+        assert_eq!(native.4.len(), 54);
         assert_eq!(coverage(GeometryBackend::Rust), native);
     }
 
