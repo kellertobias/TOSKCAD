@@ -11,6 +11,7 @@ use multicad_rust_kernel::{
 use std::collections::BTreeSet;
 
 mod axial_cut;
+mod crop;
 mod cut;
 mod operands;
 use super::planar_boolean_body::winding;
@@ -79,9 +80,6 @@ impl Chart {
             Err(cause) => return Some(Err(cause)),
         };
         let [center, radius] = [self.band.center_z_mm, self.band.radius_mm];
-        let floor = center - radius;
-        let limit = policy.maximum_coordinate_mm;
-        let levels = [-limit, floor, center, limit];
         let operand = self.topologies.len();
         if let Some(fillet) = fillet {
             let fillet_pieces = match fillet.pieces(center, radius, tolerance) {
@@ -97,33 +95,51 @@ impl Chart {
             }
         } else {
             for (piece, ancestry) in solid.planar_convex_parts(&topology, policy)? {
-                for (i, pair) in levels.windows(2).enumerate() {
-                    let slab = match piece.clip_z_band([pair[0], pair[1]], tolerance) {
-                        Ok(Some(slab)) => slab,
-                        Ok(None) => continue,
-                        Err(cause) => return Some(Err(source_error(cause))),
-                    };
-                    let placed = match i {
-                        0 => slab.translate_z(floor, 0., tolerance),
-                        1 => slab.remap_quarter_circle(floor, radius, tolerance),
-                        _ => slab.translate_z(center, radius, tolerance),
-                    };
-                    let placed = match placed {
-                        Ok(placed) => placed,
-                        Err(planar_boolean::Error::Unresolved) if i == 1 => return None,
-                        Err(cause) => return Some(Err(source_error(cause))),
-                    };
-                    let faces = placed
-                        .source_faces
-                        .into_iter()
-                        .map(|i| i.and_then(|i| ancestry.get(i)).copied().flatten())
-                        .collect();
-                    self.pieces.push(placed.piece);
-                    self.sources.push(SourcePart { operand, faces });
+                if let Err(cause) = self.append_piece(piece, &ancestry, operand, policy)? {
+                    return Some(Err(cause));
                 }
             }
         }
         self.topologies.push(Rc::new(topology));
+        Some(Ok(()))
+    }
+
+    fn append_piece(
+        &mut self,
+        piece: ConvexPiece,
+        ancestry: &[Option<usize>],
+        operand: usize,
+        policy: GeometryPolicy,
+    ) -> Option<Result<(), GeometryError>> {
+        let tolerance = policy.linear_tolerance_mm;
+        let [center, radius] = [self.band.center_z_mm, self.band.radius_mm];
+        let floor = center - radius;
+        let limit = policy.maximum_coordinate_mm;
+        let levels = [-limit, floor, center, limit];
+        for (i, pair) in levels.windows(2).enumerate() {
+            let slab = match piece.clip_z_band([pair[0], pair[1]], tolerance) {
+                Ok(Some(slab)) => slab,
+                Ok(None) => continue,
+                Err(cause) => return Some(Err(source_error(cause))),
+            };
+            let placed = match i {
+                0 => slab.translate_z(floor, 0., tolerance),
+                1 => slab.remap_quarter_circle(floor, radius, tolerance),
+                _ => slab.translate_z(center, radius, tolerance),
+            };
+            let placed = match placed {
+                Ok(placed) => placed,
+                Err(planar_boolean::Error::Unresolved) if i == 1 => return None,
+                Err(cause) => return Some(Err(source_error(cause))),
+            };
+            let faces = placed
+                .source_faces
+                .into_iter()
+                .map(|i| i.and_then(|i| ancestry.get(i)).copied().flatten())
+                .collect();
+            self.pieces.push(placed.piece);
+            self.sources.push(SourcePart { operand, faces });
+        }
         Some(Ok(()))
     }
 

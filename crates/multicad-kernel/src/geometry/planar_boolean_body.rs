@@ -58,7 +58,7 @@ pub(super) fn winding(points: &[Point], normal: Point) -> f64 {
         .sum()
 }
 
-fn cell_faces(cell: Box3, frame: PlaneFrame) -> Vec<Vec<Point>> {
+pub(super) fn cell_faces(cell: Box3, frame: PlaneFrame) -> Vec<Vec<Point>> {
     (0..3)
         .flat_map(|axis| {
             [false, true].map(move |end| {

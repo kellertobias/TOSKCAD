@@ -1554,7 +1554,9 @@ impl Compiler {
                             multicad_kernel::BooleanOperation::Subtract => {
                                 target.subtract_warped_tools(&operands[1..], id, self.policy)
                             }
-                            multicad_kernel::BooleanOperation::Intersect => None,
+                            multicad_kernel::BooleanOperation::Intersect => {
+                                Solid::intersect_warped_box(&operands, id, self.policy)
+                            }
                         }
                     } else {
                         None
