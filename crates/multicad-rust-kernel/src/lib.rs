@@ -12,6 +12,7 @@ mod drawing_events;
 pub mod headed_screw;
 pub mod helical_thread;
 pub mod helical_thread_mesh;
+pub mod helical_tube_cut;
 pub mod hex_nut;
 pub mod linear_sweep;
 pub mod linear_sweep_mesh;
