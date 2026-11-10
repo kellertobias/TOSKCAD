@@ -10,6 +10,7 @@ use multicad_core::references::{
 use multicad_rust_kernel::normal_sweep::{self, Edge, Sweep};
 use std::{collections::BTreeSet, f64::consts::TAU};
 
+mod fillet;
 mod piercing;
 pub use piercing::SweepOpening;
 
@@ -22,6 +23,7 @@ pub(crate) struct NormalSweepBody {
     rings: Vec<std::ops::Range<usize>>,
     openings: Option<Rc<piercing::Openings>>,
     path_origin: Option<Origin>,
+    stock_history: Option<Rc<fillet::StockHistory>>,
 }
 
 #[derive(Clone)]
@@ -143,6 +145,7 @@ impl Solid {
             rings: ranges,
             openings: None,
             path_origin,
+            stock_history: None,
         };
         let bounds = body.bounds(profile.frame);
         policy.point(bounds.min)?;
@@ -385,7 +388,7 @@ impl NormalSweepBody {
             ]
         };
         let path_origins = self.path_origin.as_ref().map(side_origins);
-        let origins = ["cap.start", "cap.end"]
+        let mut origins: Vec<Vec<Origin>> = ["cap.start", "cap.end"]
             .into_iter()
             .map(|role| {
                 vec![Origin {
@@ -401,6 +404,9 @@ impl NormalSweepBody {
             }))
             .chain(self.cut_face_origins())
             .collect();
+        if let Some(history) = &self.stock_history {
+            history.add_face_origins(&mut origins);
+        }
         let mut build = Builder::new(origins);
         for (cap, end) in [false, true].into_iter().enumerate() {
             build.face(
@@ -459,6 +465,9 @@ impl NormalSweepBody {
                     );
                 }
             }
+        }
+        if let Some(history) = &self.stock_history {
+            history.restore(frame, &mut elements);
         }
         TopologySnapshot {
             owner,

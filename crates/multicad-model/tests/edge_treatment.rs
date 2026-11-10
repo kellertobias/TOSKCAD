@@ -553,3 +553,268 @@ fn preserved_bevel_ancestry_survives_two_exact_cuts() {
         })
     );
 }
+
+#[test]
+fn rust_box_fillet_preserves_planar_references_and_analytic_step_after_edit() {
+    use multicad_core::references::{self, Resolution};
+    use multicad_model::GeometryBackend;
+
+    let (mut session, input, edge) = fixture();
+    let compile_rust = |session: &Session| {
+        Compiler::default()
+            .compile_with_backend(
+                session.document(),
+                session.revision(),
+                GeometryBackend::Rust,
+                None,
+            )
+            .unwrap()
+    };
+    let base = compile_rust(&session);
+    let stock = &base.snapshot().shapes[&input.producer].topology;
+    let original_faces: Vec<_> = stock
+        .elements
+        .iter()
+        .filter(|element| element.key.kind == TopologyKind::Face)
+        .map(|element| GeometryIntent::capture(stock, element.key).unwrap())
+        .collect();
+    let mut fillet =
+        EdgeTreatmentRequest::new(input.clone(), parameters(&session), vec![edge.clone()]);
+    let original = session.document().clone();
+    fillet.parameters.size = length(20.);
+    let oversized =
+        model::prepare_edge_treatment(&session, session.revision(), actor(), &fillet).unwrap();
+    assert!(
+        Compiler::default()
+            .compile_with_backend(
+                oversized.prepared.document(),
+                session.revision() + 1,
+                GeometryBackend::Rust,
+                None,
+            )
+            .is_err()
+    );
+    assert_eq!(session.document(), &original);
+    fillet.parameters = parameters(&session);
+    let valid =
+        model::prepare_edge_treatment(&session, session.revision(), actor(), &fillet).unwrap();
+    session.commit(valid.prepared).unwrap();
+
+    let mut bytes = Vec::new();
+    project_file::write(
+        &ProjectFile::new(session.document().clone()).unwrap(),
+        &mut bytes,
+        Default::default(),
+    )
+    .unwrap();
+    let opened = project_file::read(
+        &mut std::io::Cursor::new(bytes),
+        Default::default(),
+        &project_file::supported_capabilities(),
+    )
+    .unwrap();
+    session = Session::new(opened.project.document).unwrap();
+    let generated = Origin {
+        source: fillet.feature,
+        role: format!("edge/{}", edge.id),
+    };
+    let temporary = tempfile::tempdir().unwrap();
+    for (width, radius) in [(30., 2.), (40., 3.)] {
+        if radius == 3. {
+            let edits = [("width", "40"), ("radius", "3")].map(|(name, value)| {
+                let mut parameter = session
+                    .document()
+                    .entities()
+                    .find(|entity| entity.name == name)
+                    .unwrap()
+                    .clone();
+                let EntityData::Parameter { expression, .. } = &mut parameter.data else {
+                    unreachable!();
+                };
+                *expression = value.into();
+                Mutation::Replace(parameter)
+            });
+            session
+                .apply(Request {
+                    expected_revision: session.revision(),
+                    actor: actor(),
+                    label: "Change stock and blend radius".into(),
+                    edits: edits.into(),
+                })
+                .unwrap();
+        }
+        let model = compile_rust(&session);
+        assert_eq!(model.snapshot().bodies[&input.body], fillet.feature);
+        assert!(model.snapshot().references.all_resolved());
+        let shape = &model.snapshot().shapes[&fillet.feature];
+        let expected = width * 200. - (1. - std::f64::consts::FRAC_PI_4) * radius * radius * 10.;
+        near(shape.volume_mm3, expected);
+        assert_eq!(shape.solid_count, 1);
+        assert_eq!(shape.bounds.min, [0.; 3]);
+        assert_eq!(shape.bounds.max, [width, 20., 10.]);
+        for occurrence in model.snapshot().occurrences.keys() {
+            near(
+                model.solid(*occurrence).unwrap().volume_mm3().unwrap(),
+                expected,
+            );
+        }
+        let current_stock = &model.snapshot().shapes[&input.producer].topology;
+        for intent in &original_faces {
+            let Resolution::Resolved { key, .. } =
+                references::resolve(intent, &shape.topology, session.revision())
+            else {
+                panic!("missing stock face {intent:?}");
+            };
+            let source = current_stock
+                .elements
+                .iter()
+                .find(|face| face.key.kind == TopologyKind::Face && face.origins == intent.origins)
+                .unwrap();
+            let treated = shape
+                .topology
+                .elements
+                .iter()
+                .find(|face| face.key == key)
+                .unwrap();
+            assert!(!source.frames.is_empty());
+            assert!(
+                source
+                    .frames
+                    .iter()
+                    .all(|frame| treated.frames.contains(frame))
+            );
+        }
+        let blends: Vec<_> = shape
+            .topology
+            .elements
+            .iter()
+            .filter(|face| face.key.kind == TopologyKind::Face && face.origins.contains(&generated))
+            .collect();
+        assert_eq!(blends.len(), 1);
+        assert!(blends[0].geometry.is_none());
+        assert!(blends[0].frames.is_empty());
+        let solid = model.solid(fillet.feature).unwrap();
+        let faces = solid.faces().unwrap();
+        near(
+            faces[blends[0].key.ordinal as usize].area_mm2,
+            std::f64::consts::FRAC_PI_2 * radius * 10.,
+        );
+        let path = temporary.path().join(format!("box-fillet-{radius}.step"));
+        solid.write_step(&path).unwrap();
+        assert!(
+            std::fs::read_to_string(&path)
+                .unwrap()
+                .contains("CYLINDRICAL_SURFACE")
+        );
+        #[cfg(feature = "occt")]
+        {
+            let native = Compiler::default()
+                .compile_with_backend(
+                    session.document(),
+                    session.revision(),
+                    GeometryBackend::OpenCascade,
+                    None,
+                )
+                .unwrap();
+            let native_solid = native.solid(fillet.feature).unwrap();
+            near(native_solid.volume_mm3().unwrap(), expected);
+            let area: f64 = faces.iter().map(|face| face.area_mm2).sum();
+            near(
+                native_solid
+                    .faces()
+                    .unwrap()
+                    .iter()
+                    .map(|face| face.area_mm2)
+                    .sum(),
+                area,
+            );
+            let readback = multicad_kernel::Solid::read_step(&path, Default::default()).unwrap();
+            near(readback.volume_mm3().unwrap(), expected);
+            near(
+                readback
+                    .faces()
+                    .unwrap()
+                    .iter()
+                    .map(|face| face.area_mm2)
+                    .sum(),
+                area,
+            );
+        }
+    }
+}
+
+#[test]
+fn rust_box_fillet_accepts_each_complete_edge_and_preserves_the_other_edges() {
+    use multicad_core::references::{self, Resolution};
+    use multicad_model::GeometryBackend;
+
+    let (session, input, _) = fixture();
+    let compile = |document: &Document, revision| {
+        Compiler::default()
+            .compile_with_backend(document, revision, GeometryBackend::Rust, None)
+            .unwrap()
+    };
+    let base = compile(session.document(), session.revision());
+    let stock = &base.snapshot().shapes[&input.producer].topology;
+    let edges: Vec<_> = stock
+        .elements
+        .iter()
+        .filter_map(|element| {
+            if let Some(AnalyticGeometry::Line { a_mm, b_mm }) = element.geometry {
+                Some((
+                    GeometryIntent::capture(stock, element.key).unwrap(),
+                    a_mm,
+                    b_mm,
+                ))
+            } else {
+                None
+            }
+        })
+        .collect();
+    assert_eq!(edges.len(), 12);
+    for (edge, a, b) in &edges {
+        let length = (0..3).map(|axis| (a[axis] - b[axis]).abs()).sum::<f64>();
+        let request =
+            EdgeTreatmentRequest::new(input.clone(), parameters(&session), vec![edge.clone()]);
+        let prepared =
+            model::prepare_edge_treatment(&session, session.revision(), actor(), &request).unwrap();
+        let revision = session.revision() + 1;
+        let result = compile(prepared.prepared.document(), revision);
+        let shape = &result.snapshot().shapes[&request.feature];
+        near(
+            shape.volume_mm3,
+            6000. - (4. - std::f64::consts::PI) * length,
+        );
+        for (candidate, ..) in &edges {
+            assert_eq!(
+                matches!(
+                    references::resolve(candidate, &shape.topology, revision),
+                    Resolution::Resolved { .. }
+                ),
+                candidate.id != edge.id,
+                "edge {edge:?}, candidate {candidate:?}",
+            );
+        }
+    }
+    let multiple = EdgeTreatmentRequest::new(
+        input,
+        parameters(&session),
+        edges
+            .iter()
+            .take(2)
+            .map(|(edge, ..)| edge.clone())
+            .collect(),
+    );
+    let prepared =
+        model::prepare_edge_treatment(&session, session.revision(), actor(), &multiple).unwrap();
+    let result = Compiler::default().compile_with_backend(
+        prepared.prepared.document(),
+        session.revision() + 1,
+        GeometryBackend::Rust,
+        None,
+    );
+    let failure = result
+        .err()
+        .expect("simultaneous blends remain outside this scope");
+    assert!(failure.to_string().contains("one complete straight edge"));
+}
