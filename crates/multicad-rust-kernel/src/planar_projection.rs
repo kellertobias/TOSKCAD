@@ -7,9 +7,9 @@ mod scene;
 use profile::ProfileTrim;
 pub use scene::{
     AnalyticFace, CircularOpeningEnd, DepthRange, FaceOpening, FaceTrim, HiddenCandidate,
-    LineCandidate, RimCandidate, RoundSegment, SceneExtras, SceneProjection, SpatialRimCandidate,
-    StadiumOpening, project_scene, project_scene_with_analytic_faces,
-    project_scene_with_candidates,
+    LineCandidate, RimCandidate, RoundSegment, SceneExtras, SceneProjection,
+    SpatialEllipseCandidate, SpatialRimCandidate, StadiumOpening, project_scene,
+    project_scene_with_analytic_faces, project_scene_with_candidates,
 };
 
 type Point = [f64; 3];

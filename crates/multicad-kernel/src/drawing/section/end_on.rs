@@ -412,7 +412,7 @@ impl<'a> Scene<'a> {
                 blocker_rounds: &self.rounded.rounds,
                 openings: &circles,
                 stadium_openings: &slots,
-                intrinsic_hidden: &[],
+                ..Default::default()
             },
             planar_projection::Options {
                 tolerance,

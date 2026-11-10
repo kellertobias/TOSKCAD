@@ -24,6 +24,18 @@ pub struct SpatialRimCandidate {
     pub depth_sine: f64,
 }
 
+/// Exact spatial ellipse in drawing coordinates. At parameter `t`, its
+/// depth is `depth + depth_cosine*cos(t) + depth_sine*sin(t)`. The projected
+/// axes are orthonormal, with zero minor radius for an edge-on ellipse.
+#[derive(Clone, Copy, Debug)]
+pub struct SpatialEllipseCandidate {
+    pub source: usize,
+    pub ellipse: Ellipse,
+    pub depth: f64,
+    pub depth_cosine: f64,
+    pub depth_sine: f64,
+}
+
 /// Exact drawing-space line with depth at both endpoints.
 #[derive(Clone, Copy, Debug)]
 pub struct LineCandidate {
@@ -77,6 +89,7 @@ pub struct StadiumOpening {
 pub struct SceneExtras<'a> {
     pub rims: &'a [RimCandidate],
     pub spatial_rims: &'a [SpatialRimCandidate],
+    pub spatial_ellipses: &'a [SpatialEllipseCandidate],
     pub lines: &'a [LineCandidate],
     pub intrinsic_hidden: &'a [HiddenCandidate],
     pub blocker_bodies: &'a [Body],
@@ -124,17 +137,33 @@ impl RimCandidate {
 impl SpatialRimCandidate {
     pub(super) fn spatial(self) -> Result<Rim, ProjectionError> {
         let ellipse = self.ellipse;
+        if (ellipse.minor.hypot(self.depth_sine) - ellipse.major).abs() > 1e-9 * ellipse.major {
+            return Err(ProjectionError::Invalid);
+        }
+        SpatialEllipseCandidate {
+            source: self.source,
+            ellipse,
+            depth: self.depth,
+            depth_cosine: 0.,
+            depth_sine: self.depth_sine,
+        }
+        .spatial()
+    }
+}
+
+impl SpatialEllipseCandidate {
+    pub(super) fn spatial(self) -> Result<Rim, ProjectionError> {
+        let ellipse = self.ellipse;
         let [lo, hi] = ellipse.trim;
-        if !bounded(
-            ellipse
-                .center
-                .into_iter()
-                .chain([self.depth, self.depth_sine]),
-        ) || !radius(ellipse.major)
+        if !bounded(ellipse.center.into_iter().chain([
+            self.depth,
+            self.depth_cosine,
+            self.depth_sine,
+        ])) || !radius(ellipse.major)
             || !(0. ..=ellipse.major).contains(&ellipse.minor)
+            || (ellipse.minor == 0. && self.depth_sine == 0.)
             || !(0. ..hi).contains(&lo)
             || hi > TAU
-            || (ellipse.minor.hypot(self.depth_sine) - ellipse.major).abs() > 1e-9 * ellipse.major
             || !(1. - 1e-9..=1. + 1e-9).contains(&dot(ellipse.u, ellipse.u))
             || !(1. - 1e-9..=1. + 1e-9).contains(&dot(ellipse.v, ellipse.v))
             || dot(ellipse.u, ellipse.v).abs() > 1e-9
@@ -144,6 +173,7 @@ impl SpatialRimCandidate {
         Ok(Rim {
             ellipse,
             depth: self.depth,
+            depth_cosine: self.depth_cosine,
             depth_sine: self.depth_sine,
         })
     }

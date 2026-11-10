@@ -114,6 +114,138 @@ fn sheet_material_hides_a_line_except_through_its_rectangle_and_circle() {
 }
 
 #[test]
+fn an_oblique_plane_preserves_the_exact_rotated_elliptic_opening() {
+    let s = std::f64::consts::FRAC_1_SQRT_2;
+    let normal = [s, 0., s];
+    let slope = [s, 0., -s];
+    let origin = [0., 0., 2.];
+    let corners = [[-4., -4.], [4., -4.], [4., 4.], [-4., 4.]]
+        .map(|[u, v]| std::array::from_fn(|i| origin[i] + u * slope[i] + v * Y[i]));
+    let outer = (0..4)
+        .map(|i| FaceTrim::Line([corners[i], corners[(i + 1) % 4]]))
+        .collect();
+    let major = std::array::from_fn(|i| s * (slope[i] + Y[i]));
+    let ellipse = Ellipse::new(origin, normal.map(|v| -v), major, [3., 1.]).unwrap();
+    let hole = FaceTrim::Arc(EllipseArc::new(ellipse, 0.3, -TAU).unwrap());
+    let face = AnalyticFace::plane(origin, normal, vec![outer, vec![hole]], TOL)
+        .unwrap()
+        .unwrap();
+    let plate = 4. * s;
+    let half_chord = 0.9_f64.sqrt();
+    assert_spans(
+        &line(&face, [[-4., 0., -5.], [4., 0., -5.]]),
+        0,
+        &[
+            (false, [-4., -plate]),
+            (true, [-plate, -half_chord]),
+            (false, [-half_chord, half_chord]),
+            (true, [half_chord, plate]),
+            (false, [plate, 4.]),
+        ],
+    );
+}
+
+#[test]
+fn a_circular_witness_crosses_an_elliptic_hole_at_exact_harmonic_events() {
+    let origin = [0., 0., 2.];
+    let ellipse = Ellipse::new(origin, Z, X, [2.5, 1.]).unwrap();
+    let hole = FaceTrim::Arc(EllipseArc::new(ellipse, 0., TAU).unwrap());
+    let face = AnalyticFace::plane(
+        origin,
+        Z,
+        vec![rectangle([-4., 4.], [-4., 4.], 2.), vec![hole]],
+        TOL,
+    )
+    .unwrap()
+    .unwrap();
+    let witness = [RimCandidate {
+        source: 9,
+        center: [0.; 2],
+        depth: 0.,
+        radius: 1.5,
+        trim: [0., TAU],
+    }];
+    let (_, _, output) = project_scene_with_analytic_faces(
+        &[],
+        &[],
+        SceneExtras {
+            rims: &witness,
+            ..Default::default()
+        },
+        &[face],
+        options(),
+    )
+    .unwrap();
+    let angle = (64_f64 / 189.).sqrt().asin();
+    let a = std::f64::consts::PI;
+    assert_eq!(output.len(), 5);
+    for (segment, (hidden, expected)) in output.iter().zip([
+        (false, [0., angle]),
+        (true, [angle, a - angle]),
+        (false, [a - angle, a + angle]),
+        (true, [a + angle, TAU - angle]),
+        (false, [TAU - angle, TAU]),
+    ]) {
+        let Curve::Ellipse(ellipse) = segment.edge.curve else {
+            panic!("Expected a curved witness")
+        };
+        assert_eq!(segment.source, 9);
+        assert_eq!(segment.edge.hidden, hidden);
+        assert!(
+            ellipse
+                .trim
+                .into_iter()
+                .zip(expected)
+                .all(|(a, b)| (a - b).abs() < TOL)
+        );
+    }
+}
+
+#[test]
+fn a_partial_elliptic_outline_preserves_its_trim_and_boundary_contact() {
+    let origin = [0., 0., 2.];
+    let ellipse = Ellipse::new(origin, Z, X, [3., 1.5]).unwrap();
+    let arc = EllipseArc::new(ellipse, 0., std::f64::consts::PI).unwrap();
+    let mut endpoints = arc.endpoints();
+    endpoints.reverse();
+    let face = AnalyticFace::plane(
+        origin,
+        Z,
+        vec![vec![FaceTrim::Arc(arc), FaceTrim::Line(endpoints)]],
+        TOL,
+    )
+    .unwrap()
+    .unwrap();
+    let half_chord = 3. * 0.75_f64.sqrt();
+    assert_spans(
+        &line(&face, [[-4., 0.75, 0.], [4., 0.75, 0.]]),
+        0,
+        &[
+            (false, [-4., -half_chord]),
+            (true, [-half_chord, half_chord]),
+            (false, [half_chord, 4.]),
+        ],
+    );
+    assert_spans(
+        &line(&face, [[-4., 1.5, 0.], [4., 1.5, 0.]]),
+        0,
+        &[(false, [-4., 4.])],
+    );
+    let Surface::Plane(plane) = &face.surface else {
+        panic!("Expected a plane")
+    };
+    let curve = plane
+        .boundary
+        .iter()
+        .find(|edge| matches!(edge, Boundary::Ellipse { .. }))
+        .unwrap();
+    assert!(matches!(
+        curve.ray([-1.5, 0.], plane.roundoff),
+        Ray::Boundary
+    ));
+}
+
+#[test]
 fn finite_tilted_plane_splits_at_depth_and_preserves_closed_silhouettes() {
     let normal = unit([1., 0., 1.]);
     let slope = unit([1., 0., -1.]);
@@ -434,9 +566,13 @@ fn malformed_face_inputs_and_work_limit_fail_closed() {
         Ok(None)
     ));
     let invalid_line = FaceTrim::Line([[f64::NAN, 0., 0.], X]);
-    let noncircular = Ellipse::new([0.; 3], Z, X, [2., 1.]).unwrap();
-    let invalid_arc = FaceTrim::Arc(EllipseArc::new(noncircular, 0., TAU).unwrap());
-    for trim in [invalid_line, invalid_arc] {
+    let noncoplanar = Ellipse::new([0., 0., 1.], Z, X, [2., 1.]).unwrap();
+    let wrong_normal = Ellipse::new([0.; 3], X, Y, [2., 1.]).unwrap();
+    let too_narrow = Ellipse::new([0.; 3], Z, X, [2., TOL / 2.]).unwrap();
+    for trim in std::iter::once(invalid_line).chain(
+        [noncoplanar, wrong_normal, too_narrow]
+            .map(|ellipse| FaceTrim::Arc(EllipseArc::new(ellipse, 0., TAU).unwrap())),
+    ) {
         assert!(matches!(
             AnalyticFace::plane([0.; 3], Z, vec![vec![trim]], TOL),
             Err(ProjectionError::Invalid)

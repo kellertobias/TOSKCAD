@@ -47,13 +47,18 @@ pub struct Edge {
 pub(crate) struct Rim {
     pub ellipse: Ellipse,
     pub depth: f64,
+    pub depth_cosine: f64,
     pub depth_sine: f64,
 }
 
 impl Rim {
     pub(crate) fn point(self, angle: f64) -> Point3 {
-        let [u, v] = self.ellipse.point(angle);
-        [u, v, self.depth_sine.mul_add(angle.sin(), self.depth)]
+        let (sin, cos) = angle.sin_cos();
+        let [u, v] = self.ellipse.point_with_trig(sin, cos);
+        let depth = self
+            .depth_cosine
+            .mul_add(cos, self.depth_sine.mul_add(sin, self.depth));
+        [u, v, depth]
     }
 
     pub(crate) fn basis(self) -> [Point3; 3] {
@@ -67,7 +72,7 @@ impl Rim {
         } = self.ellipse;
         [
             [center[0], center[1], self.depth],
-            [u[0] * major, u[1] * major, 0.],
+            [u[0] * major, u[1] * major, self.depth_cosine],
             [v[0] * minor, v[1] * minor, self.depth_sine],
         ]
     }
@@ -240,6 +245,7 @@ pub(crate) fn project_in_depth(
         SpatialCurve::Rim(Rim {
             ellipse,
             depth,
+            depth_cosine: 0.,
             depth_sine: -ellipse.major * projected,
         })
     };
@@ -402,6 +408,10 @@ fn line_in_detail(line: [Point; 2], detail: Detail) -> Option<[Point; 2]> {
 impl Ellipse {
     pub fn point(self, angle: f64) -> Point {
         let (sin, cos) = angle.sin_cos();
+        self.point_with_trig(sin, cos)
+    }
+
+    fn point_with_trig(self, sin: f64, cos: f64) -> Point {
         shift(
             shift(self.center, self.u, self.major * cos),
             self.v,

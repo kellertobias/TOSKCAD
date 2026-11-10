@@ -161,6 +161,32 @@ fn two_depth_planes_split_one_spatial_rim_into_three_exact_intervals() {
 }
 
 #[test]
+fn ellipse_depth_clipping_retains_both_harmonics_and_the_original_parameter() {
+    let rim = spatial_rim(0., 0.5);
+    let ellipse = SpatialEllipseCandidate {
+        source: rim.source,
+        ellipse: rim.ellipse,
+        depth: 0.,
+        depth_cosine: 1.,
+        depth_sine: 1.,
+    };
+    let limit = 2_f64.sqrt() / 2.;
+    let parts = DepthRange::new(limit, Some(-limit))
+        .unwrap()
+        .clip_ellipse(ellipse)
+        .unwrap();
+    assert_eq!(parts.len(), 2);
+    for (part, expected) in parts.into_iter().zip([[7., 11.], [19., 23.]]) {
+        assert_eq!(part.source, ellipse.source);
+        assert_eq!(part.depth_cosine, 1.);
+        assert_eq!(part.depth_sine, 1.);
+        for (actual, numerator) in part.ellipse.trim.into_iter().zip(expected) {
+            assert!((actual - numerator * PI / 12.).abs() < TOL);
+        }
+    }
+}
+
+#[test]
 fn tilted_plane_blocks_only_where_the_hit_is_inside_both_depth_limits() {
     let s = std::f64::consts::FRAC_1_SQRT_2;
     let normal = [s, 0., s];

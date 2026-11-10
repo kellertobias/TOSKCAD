@@ -278,8 +278,8 @@ fn project_members(
             blocker_rounds: &rounded.rounds,
             lines: &rounded.lines,
             spatial_rims: &rounded.rims,
-            stadium_openings: &[],
             intrinsic_hidden: &intrinsic_hidden,
+            ..Default::default()
         },
         &shell_faces,
         planar_projection::Options {

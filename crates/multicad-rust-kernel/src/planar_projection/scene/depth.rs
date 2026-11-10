@@ -112,7 +112,43 @@ impl DepthRange {
         self,
         candidate: SpatialRimCandidate,
     ) -> Result<Vec<SpatialRimCandidate>, ProjectionError> {
-        let rim = candidate.spatial()?;
+        Ok(
+            self.clip_curve(candidate.spatial()?, candidate, |candidate, trim| {
+                SpatialRimCandidate {
+                    ellipse: crate::curved_projection::Ellipse {
+                        trim,
+                        ..candidate.ellipse
+                    },
+                    ..candidate
+                }
+            }),
+        )
+    }
+
+    /// Clip an exact spatial ellipse by the retained depth and lateral bounds.
+    pub fn clip_ellipse(
+        self,
+        candidate: SpatialEllipseCandidate,
+    ) -> Result<Vec<SpatialEllipseCandidate>, ProjectionError> {
+        Ok(
+            self.clip_curve(candidate.spatial()?, candidate, |candidate, trim| {
+                SpatialEllipseCandidate {
+                    ellipse: crate::curved_projection::Ellipse {
+                        trim,
+                        ..candidate.ellipse
+                    },
+                    ..candidate
+                }
+            }),
+        )
+    }
+
+    fn clip_curve<C: Copy>(
+        self,
+        rim: Rim,
+        candidate: C,
+        with_trim: impl Fn(C, Span) -> C,
+    ) -> Vec<C> {
         let [origin, cosine, sine] = rim.basis();
         let trim = rim.ellipse.trim;
         let mut cuts = Vec::new();
@@ -125,7 +161,7 @@ impl DepthRange {
             let amplitude = a.hypot(b);
             let [min, max] = [center - amplitude, center + amplitude];
             if lo > max || hi < min {
-                return Ok(Vec::new());
+                return Vec::new();
             }
             if lo <= min && hi >= max {
                 continue;
@@ -140,7 +176,7 @@ impl DepthRange {
             }
         }
         if active.iter().all(Option::is_none) {
-            return Ok(vec![candidate]);
+            return vec![candidate];
         }
         let inside = |t: f64| {
             let (sin, cos) = t.sin_cos();
@@ -150,22 +186,16 @@ impl DepthRange {
             })
         };
         if cuts.is_empty() {
-            return Ok(inside(trim[0].midpoint(trim[1]))
+            return inside(trim[0].midpoint(trim[1]))
                 .then_some(candidate)
                 .into_iter()
-                .collect());
+                .collect();
         }
         let mut output = Vec::new();
         drawing_events::spans(&mut cuts, trim, inside, |trim| {
-            output.push(SpatialRimCandidate {
-                ellipse: crate::curved_projection::Ellipse {
-                    trim,
-                    ..candidate.ellipse
-                },
-                ..candidate
-            })
+            output.push(with_trim(candidate, trim))
         });
-        Ok(output)
+        output
     }
 
     fn bounds(self) -> [Span; 3] {

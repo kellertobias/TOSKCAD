@@ -337,6 +337,112 @@ fn supplied_lines(edges: &[RoundSegment], source: usize, hidden: bool) -> Vec<Sp
         .collect()
 }
 
+fn spatial_ellipse(minor: f64) -> SpatialEllipseCandidate {
+    SpatialEllipseCandidate {
+        source: 46,
+        ellipse: Ellipse {
+            center: [0.; 2],
+            u: [1., 0.],
+            v: [0., 1.],
+            major: 2.,
+            minor,
+            trim: [0., TAU],
+        },
+        depth: 0.,
+        depth_cosine: 1.,
+        depth_sine: 1.,
+    }
+}
+
+#[test]
+fn true_spatial_ellipse_depth_events_work_against_planar_and_round_stock() {
+    let ellipse = spatial_ellipse(1.);
+    let plate = rect([-4., -4., 4., 4.], -3., 0.);
+    let round = RoundOccluder::new([0., 0., -3.], [0., 0., 1.], 3., 3., None).unwrap();
+    for (plates, rounds) in [
+        (std::slice::from_ref(&plate), &[][..]),
+        (&[][..], std::slice::from_ref(&round)),
+    ] {
+        let edges = project_scene_with_candidates(
+            &[],
+            &[],
+            SceneExtras {
+                spatial_ellipses: &[ellipse],
+                blocker_bodies: plates,
+                blocker_rounds: rounds,
+                ..Default::default()
+            },
+            options(),
+        )
+        .unwrap()
+        .2;
+        intervals(
+            &circles(&edges, ellipse.source, ellipse.ellipse.center),
+            &[
+                (false, [0., 3. * PI / 4.]),
+                (true, [3. * PI / 4., 7. * PI / 4.]),
+                (false, [7. * PI / 4., TAU]),
+            ],
+        );
+    }
+
+    // Matching screen radii alone do not prove a spatially coincident rim.
+    let tilted = SpatialEllipseCandidate {
+        ellipse: Ellipse {
+            major: 3.,
+            minor: 3.,
+            ..ellipse.ellipse
+        },
+        depth: -0.5,
+        depth_sine: 0.,
+        ..ellipse
+    };
+    assert!(!round.covers_coincident_rim(tilted.spatial().unwrap(), options().tolerance));
+}
+
+#[test]
+fn edge_on_true_ellipse_keeps_two_depth_traces_and_rejects_rank_one_input() {
+    let ellipse = spatial_ellipse(0.);
+    let plate = rect([-4., -4., 4., 4.], -3., 0.);
+    let project = |candidate| {
+        project_scene_with_candidates(
+            &[],
+            &[],
+            SceneExtras {
+                spatial_ellipses: &[candidate],
+                blocker_bodies: std::slice::from_ref(&plate),
+                ..Default::default()
+            },
+            options(),
+        )
+        .map(|(_, _, supplied)| supplied)
+    };
+    let edges = project(ellipse).unwrap();
+    for (hidden, expected) in [
+        (false, [[-2_f64.sqrt(), 2.], [2_f64.sqrt(), 2.]]),
+        (true, [[-2., -2_f64.sqrt()], [-2., 2_f64.sqrt()]]),
+    ] {
+        let spans = supplied_lines(&edges, ellipse.source, hidden);
+        assert_eq!(spans.len(), expected.len());
+        for ([a, b], [lo, hi]) in spans.into_iter().zip(expected) {
+            close(a, lo);
+            close(b, hi);
+        }
+    }
+    for candidate in [
+        SpatialEllipseCandidate {
+            depth_sine: 0.,
+            ..ellipse
+        },
+        SpatialEllipseCandidate {
+            depth_cosine: f64::NAN,
+            ..ellipse
+        },
+    ] {
+        assert_eq!(project(candidate), Err(ProjectionError::Invalid));
+    }
+}
+
 #[test]
 fn external_edges_use_blockers_without_publishing_their_own_edges() {
     let panel = rect([0., -7., 7., 7.], 2., 3.);

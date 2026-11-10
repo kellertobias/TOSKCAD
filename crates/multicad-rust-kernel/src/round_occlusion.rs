@@ -149,7 +149,8 @@ impl RoundOccluder {
     pub(crate) fn covers_coincident_rim(&self, rim: Rim, tolerance: f64) -> bool {
         if self.bore.is_some()
             || self.projected > curved_projection::ANGULAR_ROUNDOFF
-            || rim.depth_sine.abs() > curved_projection::ANGULAR_ROUNDOFF * rim.ellipse.major
+            || rim.depth_cosine.hypot(rim.depth_sine)
+                > curved_projection::ANGULAR_ROUNDOFF * rim.ellipse.major
         {
             return false;
         }

@@ -45,6 +45,18 @@ enum Boundary {
         radius: f64,
         side: f64,
     },
+    Ellipse {
+        ends: [Point2; 2],
+        trim: EllipseTrim,
+    },
+}
+
+#[derive(Clone, Copy)]
+struct EllipseTrim {
+    center: Point2,
+    inverse: [Point2; 2],
+    height: f64,
+    horizontal: Point2,
 }
 
 struct Cylinder {
@@ -124,21 +136,26 @@ impl AnalyticFace {
                     }
                     FaceTrim::Arc(arc) => {
                         let ellipse = arc.ellipse();
-                        let [radius, minor] = ellipse.semiaxes_mm();
-                        if radius != minor
-                            || radius <= tolerance
-                            || length(cross(ellipse.normal(), normal)) > ANGULAR
-                        {
+                        let [major, minor] = ellipse.semiaxes_mm();
+                        if minor <= tolerance || length(cross(ellipse.normal(), normal)) > ANGULAR {
                             return Err(ProjectionError::Invalid);
                         }
                         let center = local(ellipse.center_mm())?;
                         let [a, b] = arc.endpoints();
                         let ends = [local(a)?, local(b)?];
-                        let [x, y] = sub(ends[0], center);
-                        let start = y.atan2(x);
-                        let sweep = arc.sweep_rad() * dot(ellipse.normal(), normal).signum();
-                        let radius = radius * normal[2];
-                        arc_pieces(center, radius, start, sweep, ends, &mut trims);
+                        if major == minor {
+                            let [x, y] = sub(ends[0], center);
+                            let start = y.atan2(x);
+                            let sweep = arc.sweep_rad() * dot(ellipse.normal(), normal).signum();
+                            arc_pieces(center, major * normal[2], start, sweep, ends, &mut trims);
+                        } else {
+                            let basis = [ellipse.major_axis(), ellipse.minor_axis()];
+                            let radii = [major, minor];
+                            let axes = std::array::from_fn(|i| {
+                                [u, v].map(|axis| dot(axis, basis[i]) * (radii[i] * normal[2]))
+                            });
+                            ellipse_pieces(center, axes, arc, ends, &mut trims);
+                        }
                         extend(arc_bounds(arc));
                     }
                 }
@@ -380,15 +397,8 @@ fn arc_pieces(
     [mut a, b]: [Point2; 2],
     output: &mut Vec<Boundary>,
 ) {
-    let mut cuts =
-        [FRAC_PI_2, 3. * FRAC_PI_2].map(|angle| ((angle - start) * sweep.signum()).rem_euclid(TAU));
-    cuts.sort_unstable_by(f64::total_cmp);
     let mut previous: f64 = 0.;
-    for travel in cuts
-        .into_iter()
-        .filter(|&t| t > ANGULAR && t < sweep.abs() - ANGULAR)
-        .chain([sweep.abs()])
-    {
+    for travel in monotone_steps(start, sweep, [FRAC_PI_2, 3. * FRAC_PI_2]) {
         let angle = start + sweep.signum() * travel;
         let next = if travel == sweep.abs() {
             b
@@ -411,16 +421,69 @@ fn arc_pieces(
     }
 }
 
+fn monotone_steps(start: f64, sweep: f64, extrema: [f64; 2]) -> impl Iterator<Item = f64> {
+    let mut cuts = extrema.map(|angle| ((angle - start) * sweep.signum()).rem_euclid(TAU));
+    cuts.sort_unstable_by(f64::total_cmp);
+    cuts.into_iter()
+        .filter(move |&t| t > ANGULAR && t < sweep.abs() - ANGULAR)
+        .chain([sweep.abs()])
+}
+
+fn ellipse_pieces(
+    center: Point2,
+    [a, b]: [Point2; 2],
+    arc: EllipseArc,
+    [mut first, last]: [Point2; 2],
+    output: &mut Vec<Boundary>,
+) {
+    // Invert the two scaled support vectors for quadratic or quartic
+    // intersection events. In a y-monotone piece only one sign of the
+    // ellipse's horizontal root is possible.
+    let det = cross2(a, b);
+    let inverse = [[b[1] / det, -b[0] / det], [-a[1] / det, a[0] / det]];
+    let height = a[1].hypot(b[1]);
+    let phase = b[1].atan2(a[1]);
+    let (sin, cos) = phase.sin_cos();
+    let horizontal = [
+        a[0].mul_add(cos, b[0] * sin),
+        (-a[0]).mul_add(sin, b[0] * cos),
+    ];
+    let start = arc.start_rad();
+    let sweep = arc.sweep_rad();
+    let mut previous: f64 = 0.;
+    for travel in monotone_steps(start, sweep, [phase, phase + 2. * FRAC_PI_2]) {
+        let next = if travel == sweep.abs() {
+            last
+        } else {
+            let (sin, cos) = (start + sweep.signum() * travel).sin_cos();
+            std::array::from_fn(|i| a[i].mul_add(cos, b[i].mul_add(sin, center[i])))
+        };
+        let midpoint = start + sweep.signum() * previous.midpoint(travel);
+        let side = (midpoint - phase).sin().signum();
+        output.push(Boundary::Ellipse {
+            ends: [first, next],
+            trim: EllipseTrim {
+                center,
+                inverse,
+                height,
+                horizontal: [horizontal[0], side * horizontal[1]],
+            },
+        });
+        first = next;
+        previous = travel;
+    }
+}
+
 impl Boundary {
     fn ends(&self) -> [Point2; 2] {
         match *self {
-            Self::Line(ends) | Self::Arc { ends, .. } => ends,
+            Self::Line(ends) | Self::Arc { ends, .. } | Self::Ellipse { ends, .. } => ends,
         }
     }
 
     fn ends_mut(&mut self) -> &mut [Point2; 2] {
         match self {
-            Self::Line(ends) | Self::Arc { ends, .. } => ends,
+            Self::Line(ends) | Self::Arc { ends, .. } | Self::Ellipse { ends, .. } => ends,
         }
     }
 
@@ -456,6 +519,23 @@ impl Boundary {
                 }
                 let width = ((radius - offset).max(0.) * (radius + offset)).sqrt();
                 let hit = side.mul_add(width, center[0]);
+                if (hit - x).abs() <= roundoff {
+                    Ray::Boundary
+                } else if crosses && x < hit {
+                    Ray::Crossing
+                } else {
+                    Ray::None
+                }
+            }
+            Self::Ellipse { trim, .. } => {
+                if y < a[1].min(b[1]) - roundoff || y > a[1].max(b[1]) + roundoff {
+                    return Ray::None;
+                }
+                let cosine = ((y - trim.center[1]) / trim.height).clamp(-1., 1.);
+                let abs = cosine.abs();
+                let sine = ((1. - abs) * (1. + abs)).sqrt();
+                let [p, q] = trim.horizontal;
+                let hit = p.mul_add(cosine, q.mul_add(sine, trim.center[0]));
                 if (hit - x).abs() <= roundoff {
                     Ray::Boundary
                 } else if crosses && x < hit {
@@ -644,6 +724,15 @@ impl Plane {
                         span,
                         &mut work.crossings,
                     );
+                    for end in ends {
+                        v.level(end[1], span, &mut work.crossings);
+                    }
+                }
+                Boundary::Ellipse { ends, trim } => {
+                    work.charge(if path.harmonic { 80 } else { 8 })?;
+                    let [u, vertical] = [u.offset(-trim.center[0]), v.offset(-trim.center[1])];
+                    let [x, y] = trim.inverse.map(|[a, b]| u.combine(a, vertical, b));
+                    x.circle(y, 1., span, &mut work.crossings);
                     for end in ends {
                         v.level(end[1], span, &mut work.crossings);
                     }

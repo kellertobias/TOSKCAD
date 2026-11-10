@@ -13,7 +13,7 @@ pub use analytic::{AnalyticFace, FaceTrim};
 use candidates::apply_openings;
 pub use candidates::{
     CircularOpeningEnd, FaceOpening, HiddenCandidate, LineCandidate, RimCandidate, SceneExtras,
-    SpatialRimCandidate, StadiumOpening,
+    SpatialEllipseCandidate, SpatialRimCandidate, StadiumOpening,
 };
 pub use depth::DepthRange;
 use std::f64::consts::{PI, TAU};
@@ -121,6 +121,7 @@ fn project_with_extras(
             && extras.lines.is_empty()
             && extras.rims.is_empty()
             && extras.spatial_rims.is_empty()
+            && extras.spatial_ellipses.is_empty()
             && extras.intrinsic_hidden.is_empty() =>
         {
             return Err(ProjectionError::Invalid);
@@ -179,15 +180,25 @@ fn project_with_extras(
         };
         scene.supplied_rim(candidate.spatial()?, false, detail, &mut output, &mut work)?;
     }
-    for &candidate in extras.spatial_rims {
+    let spatial_rims = extras
+        .spatial_rims
+        .iter()
+        .map(|&rim| (rim.source, rim.spatial()))
+        .chain(
+            extras
+                .spatial_ellipses
+                .iter()
+                .map(|&ellipse| (ellipse.source, ellipse.spatial())),
+        );
+    for (source, rim) in spatial_rims {
         work.charge(1)?;
         let mut output = Output {
-            source: candidate.source,
+            source,
             own_round: None,
             limit,
             edges: &mut supplied,
         };
-        scene.supplied_rim(candidate.spatial()?, false, detail, &mut output, &mut work)?;
+        scene.supplied_rim(rim?, false, detail, &mut output, &mut work)?;
     }
     if options.hidden_lines {
         for &candidate in extras.intrinsic_hidden {
