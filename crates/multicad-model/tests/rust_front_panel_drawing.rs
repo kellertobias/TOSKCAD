@@ -25,10 +25,11 @@ fn fixture() -> (Document, Page) {
     (document, page)
 }
 
-fn buttons(
+fn project_members(
     document: &Document,
     page: &Page,
     backend: GeometryBackend,
+    selection: (&str, usize),
 ) -> Vec<Vec<ProjectedVector>> {
     let roots = drawing_preview_sources(document, page.id).unwrap();
     let model = Compiler {
@@ -47,14 +48,18 @@ fn buttons(
                 .iter()
                 .filter(|(path, leaf)| {
                     roots.contains(&path.root)
-                        && document.get(leaf.producer).unwrap().name == "Button union"
+                        && document
+                            .get(leaf.producer)
+                            .unwrap()
+                            .name
+                            .ends_with(selection.0)
                 })
                 .map(|(path, _)| DrawingSolid {
                     solid: model.leaf_solid(path).unwrap(),
                     hatch: None,
                 })
                 .collect();
-            assert_eq!(input.len(), 6);
+            assert_eq!(input.len(), selection.1);
             project_drawing(
                 &input,
                 DrawingProjection {
@@ -76,7 +81,7 @@ fn buttons(
 #[test]
 fn saved_front_panel_buttons_project_in_all_three_authored_directions() {
     let (document, page) = fixture();
-    let views = buttons(&document, &page, GeometryBackend::Rust);
+    let views = project_members(&document, &page, GeometryBackend::Rust, ("Button union", 6));
     let counts: Vec<_> = views
         .iter()
         .map(|view| {
@@ -103,9 +108,32 @@ fn saved_front_panel_buttons_project_in_all_three_authored_directions() {
     );
 }
 
+#[test]
+fn saved_socket_cap_envelopes_publish_authored_views_without_rear_rim_overdraw() {
+    let (document, page) = fixture();
+    let views = project_members(
+        &document,
+        &page,
+        GeometryBackend::Rust,
+        ("ISO 4762 M3 × 8 feature", 2),
+    );
+    assert_eq!(views.iter().map(Vec::len).collect::<Vec<_>>(), [48, 16, 48]);
+    let top = &views[1];
+    assert!(
+        top.iter()
+            .all(|edge| matches!(edge.curve, VectorCurve::Ellipse { .. }))
+    );
+    assert_eq!(
+        top.iter()
+            .filter(|edge| edge.role == VectorRole::Visible)
+            .count(),
+        2
+    );
+}
+
 #[cfg(feature = "occt")]
 #[test]
-fn saved_front_panel_button_intervals_match_open_cascade() {
+fn saved_front_panel_button_and_screw_intervals_match_open_cascade() {
     use std::collections::BTreeMap;
     type Intervals = BTreeMap<(usize, bool, [i64; 4]), Vec<[i64; 2]>>;
 
@@ -191,9 +219,11 @@ fn saved_front_panel_button_intervals_match_open_cascade() {
     }
 
     let (document, page) = fixture();
-    let rust = buttons(&document, &page, GeometryBackend::Rust);
-    let native = buttons(&document, &page, GeometryBackend::OpenCascade);
-    for (rust, native) in rust.into_iter().zip(native) {
-        assert_eq!(intervals(rust), intervals(native));
+    for selection in [("Button union", 6), ("ISO 4762 M3 × 8 feature", 2)] {
+        let rust = project_members(&document, &page, GeometryBackend::Rust, selection);
+        let native = project_members(&document, &page, GeometryBackend::OpenCascade, selection);
+        for (rust, native) in rust.into_iter().zip(native) {
+            assert_eq!(intervals(rust), intervals(native));
+        }
     }
 }

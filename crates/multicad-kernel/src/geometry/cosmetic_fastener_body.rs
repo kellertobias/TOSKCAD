@@ -139,6 +139,21 @@ fn reference_frame(surface: &Surface, facet: usize, frame: PlaneFrame) -> Option
 }
 
 impl CosmeticFastenerBody {
+    pub(crate) fn circular_meridian(&self) -> Option<Vec<[f64; 2]>> {
+        self.geometry
+            .surfaces()
+            .map(|surface| {
+                let ring = surface.rings[0];
+                let radius = match ring.section {
+                    Section::Pole => 0.,
+                    Section::Circle(radius) => radius,
+                    Section::Hexagon(_) => return None,
+                };
+                Some([radius, ring.z])
+            })
+            .collect()
+    }
+
     pub(super) fn bounds(&self, frame: PlaneFrame) -> Bounds {
         let normal = frame.normal();
         let support = |i: usize, sign| {

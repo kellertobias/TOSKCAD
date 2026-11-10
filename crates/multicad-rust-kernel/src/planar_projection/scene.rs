@@ -304,12 +304,13 @@ fn hide_rim(
         work.charge(1)?;
         let [min, max] = round.bounds();
         if Some(id) != source && (Bounds { min, max }).overlaps(bounds, work.tolerance) {
-            if source.is_none()
-                && id < published_rounds
+            let candidate = source.map(|id| &rounds[id]);
+            if id < published_rounds
+                && (source.is_none() || round.distinct_contour_owner(candidate))
                 && round.covers_coincident_rim(rim, work.tolerance)
             {
-                // A published opaque cap owns the coincident silhouette at
-                // its nearer depth. Helper disks never claim supplied rims.
+                // A published opaque cap owns its nearer coincident
+                // silhouette. Bands of the same solid retain their roles.
                 work.hidden.clear();
                 work.hidden.push(rim.ellipse.trim);
                 return Ok(());
@@ -317,7 +318,7 @@ fn hide_rim(
             // Charge the bounded conic and cap root work even when no
             // resulting interval covers the candidate rim.
             work.charge(160)?;
-            let contour = round.closes_contour_of(source.map(|id| &rounds[id]));
+            let contour = round.closes_contour_of(candidate);
             round.hide_rim(rim, work.tolerance, &mut work.crossings, contour, |span| {
                 work.hidden.push(span)
             });

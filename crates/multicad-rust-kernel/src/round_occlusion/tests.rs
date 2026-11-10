@@ -226,3 +226,39 @@ fn separate_certified_side_on_occurrences_hide_coincident_closed_contours() {
         6
     );
 }
+
+#[test]
+fn distinct_certified_axial_occurrences_hide_a_farther_coincident_rim() {
+    use crate::planar_projection::{Options, project_scene};
+
+    let near = RoundOccluder::new([0., 0., 10.], [0., 0., 1.], 3., 2., None)
+        .unwrap()
+        .with_contour_owner(7);
+    let far = view_cylinder(None);
+    let rounded_placement = RoundOccluder::new([0.; 3], [1e-16, 0., 1.], 3., 2., None)
+        .unwrap()
+        .with_contour_owner(8);
+    let options = || Options {
+        hidden_lines: true,
+        tolerance: TOLERANCE,
+        tangent_edges: false,
+        detail: None,
+        segment_limit: 100,
+    };
+    for (far, expected) in [
+        (far.with_contour_owner(8), 0),
+        (rounded_placement, 0),
+        (far.with_contour_owner(7), 1),
+        (far, 1),
+    ] {
+        let (_, edges) = project_scene(&[], &[near, far], options()).unwrap();
+        assert_eq!(edges.len(), 4);
+        assert_eq!(
+            edges
+                .iter()
+                .filter(|edge| edge.source == 1 && !edge.edge.hidden)
+                .count(),
+            expected
+        );
+    }
+}

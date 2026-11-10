@@ -67,6 +67,7 @@ pub(super) fn needs_curved_scene(solid: &Solid) -> bool {
         || apertures::has_through_bores(solid)
         || solid.rounded_slot_body().is_some()
         || solid.revolution_body().is_some()
+        || solid.cosmetic_fastener_body().is_some()
         || solid
             .rust_compound()
             .is_some_and(|compound| compound.members().any(needs_curved_scene))

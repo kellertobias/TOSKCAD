@@ -75,7 +75,7 @@ impl RoundOccluder {
     }
 
     /// Identify the solid occurrence that owns this analytic axial band.
-    /// Distinct side-on occurrences can cover one another's coincident
+    /// Distinct occurrences can cover one another's coincident
     /// contours at strictly different view depths.
     pub fn with_contour_owner(mut self, owner: usize) -> Self {
         self.contour_owner = Some(owner);
@@ -83,13 +83,15 @@ impl RoundOccluder {
     }
 
     pub(crate) fn closes_contour_of(&self, candidate: Option<&Self>) -> bool {
-        self.axis[2] == 0.
-            && self.bore.is_none()
-            && self.contour_owner.is_some_and(|owner| {
-                candidate
-                    .and_then(|round| round.contour_owner)
-                    .is_some_and(|other| owner != other)
-            })
+        self.axis[2] == 0. && self.bore.is_none() && self.distinct_contour_owner(candidate)
+    }
+
+    pub(crate) fn distinct_contour_owner(&self, candidate: Option<&Self>) -> bool {
+        self.contour_owner.is_some_and(|owner| {
+            candidate
+                .and_then(|round| round.contour_owner)
+                .is_some_and(|other| owner != other)
+        })
     }
 
     pub fn bounds(&self) -> [Point; 2] {
@@ -99,7 +101,7 @@ impl RoundOccluder {
     pub(crate) fn covers_coincident_rim(&self, rim: Rim, tolerance: f64) -> bool {
         if self.bore.is_some()
             || self.projected > curved_projection::ANGULAR_ROUNDOFF
-            || rim.depth_sine != 0.
+            || rim.depth_sine.abs() > curved_projection::ANGULAR_ROUNDOFF * rim.ellipse.major
         {
             return false;
         }
