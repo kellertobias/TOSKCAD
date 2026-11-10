@@ -229,6 +229,56 @@ fn selected_planar_pcurve_must_match_the_trimmed_3d_line() {
     let first = wrapped.replace(".PCURVE_S2.", ".PCURVE_S1.");
     assert_eq!(read_import_solid(&first, TOLERANCE).unwrap(), expected);
 
+    let clamped = wrapped
+        .replace(
+            "#999004=LINE('',#999005,#999006);",
+            "#999004=B_SPLINE_CURVE_WITH_KNOTS('',1,(#999005,#999010),.UNSPECIFIED.,.F.,.F.,(2,2),(-10.,100000.),.PIECEWISE_BEZIER_KNOTS.);\n\
+             #999010=CARTESIAN_POINT('',(0.,-8.));",
+        )
+        .replace("(100000.,-8.)", "(100010.,-8.)");
+    assert_eq!(read_import_solid(&clamped, TOLERANCE).unwrap(), expected);
+    for (invalid, error) in [
+        (
+            clamped.replace("'',1,(#999005", "'',2,(#999005"),
+            ReadError::Unsupported,
+        ),
+        (clamped.replace("(2,2)", "(1,2)"), ReadError::Unsupported),
+        (
+            clamped.replace("(-10.,100000.)", "(100000.,100000.)"),
+            ReadError::Invalid,
+        ),
+        (
+            clamped.replace("(-10.,100000.)", "(0.,5.E-324)"),
+            ReadError::Invalid,
+        ),
+        (
+            clamped.replace("(100010.,-8.)", "(100010.,-7.)"),
+            ReadError::Invalid,
+        ),
+        (
+            clamped.replace("#999005,#999010", "#999010,#999005"),
+            ReadError::Invalid,
+        ),
+        (
+            clamped.replace(&format!("PCURVE('',{plane},"), "PCURVE('',#999006,"),
+            ReadError::Unsupported,
+        ),
+        (
+            clamped
+                .replace("(-10.,100000.)", "(10.,100000.)")
+                .replace("(100010.,-8.)", "(99990.,-8.)"),
+            ReadError::Invalid,
+        ),
+        (
+            clamped
+                .replace("(-10.,100000.)", "(-10.,99990.)")
+                .replace("(0.,-8.)", "(10.,-8.)"),
+            ReadError::Invalid,
+        ),
+    ] {
+        assert_eq!(read_import_solid(&invalid, TOLERANCE), Err(error));
+    }
+
     for (from, to, error) in [
         (".PCURVE_S2.", ".UNKNOWN.", ReadError::Unsupported),
         ("#999002,#999002", "#999002", ReadError::Invalid),
