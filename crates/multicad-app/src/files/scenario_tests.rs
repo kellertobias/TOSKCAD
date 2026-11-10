@@ -221,6 +221,117 @@ fn tool_case_project_round_trips_recovers_and_rejects_damage() {
     check_scenario(tool_case::build().unwrap().session.document());
 }
 #[test]
+fn tool_case_slide_pattern_reopens_and_rebuilds_exact_cutter_members() {
+    use multicad_core::{
+        commands::Session,
+        document::{EntityData, Mutation},
+        model,
+        references::Origin,
+    };
+    use multicad_model::{Compiler, GeometryBackend};
+
+    let parameters = tool_case::rail_parameters();
+    let pitch = parameters[0].id;
+    let document = Document::new("Slide pattern")
+        .unwrap()
+        .edited(&parameters.map(Mutation::Insert))
+        .unwrap();
+    let mut session = Session::new(document).unwrap();
+    let (_, slide) =
+        tool_case::slide_member(&mut session, "Tool case slide", tool_case::PLY).unwrap();
+    check_scenario(session.document());
+
+    let compiler = Compiler {
+        omit_display: true,
+        ..Default::default()
+    };
+    let edit_pitch = |value: &str| {
+        let mut parameter = session.document().get(pitch).unwrap().clone();
+        let EntityData::Parameter { expression, .. } = &mut parameter.data else {
+            unreachable!("slide pitch is a project parameter");
+        };
+        *expression = value.into();
+        session
+            .document()
+            .edited(&[Mutation::Replace(parameter)])
+            .unwrap()
+    };
+    for (pitch, expected) in [("96", [29., 125., 221.]), ("80", [29., 109., 189.])] {
+        let project = encode(&ProjectFile::new(edit_pitch(pitch)).unwrap());
+        let document = decode(&project, &project_file::supported_capabilities())
+            .unwrap()
+            .document;
+        let pattern = model::read_boolean(&document, slide).unwrap().tools[0].producer;
+        let compiled = compiler
+            .compile_with_backend(&document, session.revision(), GeometryBackend::Rust, None)
+            .unwrap();
+        let rail = compiled.solid(slide).unwrap();
+        assert!(rail.uses_rust_geometry());
+        assert_eq!(rail.solid_count().unwrap(), 1);
+        assert_eq!(compiled.solid(pattern).unwrap().solid_count().unwrap(), 3);
+        for index in 0..3 {
+            assert!(
+                compiled.snapshot().shapes[&pattern]
+                    .topology
+                    .elements
+                    .iter()
+                    .any(|element| {
+                        element.origins.contains(&Origin {
+                            source: pattern,
+                            role: format!("member/{index}"),
+                        })
+                    })
+            );
+        }
+        let [thickness, length, height] = tool_case::SLIDE;
+        let radius = tool_case::RAIL_HOLE_R;
+        let volume = thickness * (length * height - 3. * std::f64::consts::PI * radius * radius);
+        assert!((rail.volume_mm3().unwrap() - volume).abs() < 1e-7);
+        for x in [tool_case::PLY, tool_case::PLY + thickness] {
+            assert_eq!(
+                tool_case::hole_centers(&compiled, slide, x, radius),
+                expected.map(|y| [y, tool_case::HOLE_Z]),
+            );
+        }
+        #[cfg(feature = "occt")]
+        {
+            let native = compiler
+                .compile_with_backend(
+                    &document,
+                    session.revision(),
+                    GeometryBackend::OpenCascade,
+                    None,
+                )
+                .unwrap();
+            let native_rail = native.solid(slide).unwrap();
+            assert!((native_rail.volume_mm3().unwrap() - volume).abs() < 1e-7);
+            for x in [tool_case::PLY, tool_case::PLY + thickness] {
+                assert_eq!(
+                    tool_case::hole_centers(&native, slide, x, radius),
+                    tool_case::hole_centers(&compiled, slide, x, radius),
+                );
+            }
+        }
+    }
+    let overlapping = edit_pitch("2");
+    let error = compiler
+        .compile_with_backend(
+            &overlapping,
+            session.revision(),
+            GeometryBackend::Rust,
+            None,
+        )
+        .err()
+        .expect("overlapping tools need general curved Boolean support");
+    assert_eq!(error.entity, Some(slide));
+    assert!(
+        error
+            .message
+            .contains("touches stock boundaries or other cuts")
+    );
+}
+
+#[test]
 fn control_desk_project_round_trips_recovers_and_rejects_damage() {
     let sources = tempfile::tempdir().unwrap();
     check_scenario(

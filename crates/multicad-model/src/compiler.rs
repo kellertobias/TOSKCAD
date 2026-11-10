@@ -1507,6 +1507,19 @@ impl Compiler {
                 (model::ADVANCED_TYPE, model::ADVANCED_SCHEMA) => {
                     let (source, captures) =
                         model::read_advanced(document, id).map_err(|e| error(Some(id), e))?;
+                    if backend == GeometryBackend::Rust
+                        && !matches!(
+                            source.parameters,
+                            model::AdvancedParameters::LinearPattern(
+                                model::LinearPatternParameters { merge: false, .. }
+                            )
+                        )
+                    {
+                        return Err(error(
+                            Some(id),
+                            "Rust advanced operations currently require a separate-member linear pattern",
+                        ));
+                    }
                     let selected =
                         profiles.advanced(&source, id, &solids, &topologies, interrupt)?;
                     crate::advanced::build(
@@ -1614,9 +1627,14 @@ impl Compiler {
                                         Solid::union_planar_pieces(&operands, id, self.policy)
                                     })
                             }
-                            multicad_kernel::BooleanOperation::Subtract => {
-                                target.subtract_warped_tools(&operands[1..], id, self.policy)
-                            }
+                            multicad_kernel::BooleanOperation::Subtract => target
+                                .subtract_warped_tools(&operands[1..], id, self.policy)
+                                .or_else(|| {
+                                    target.subtract_cylindrical_compound_tools(
+                                        &operands[1..],
+                                        self.policy,
+                                    )
+                                }),
                             multicad_kernel::BooleanOperation::Intersect => {
                                 Solid::intersect_warped_box(&operands, id, self.policy)
                             }

@@ -57,6 +57,43 @@ fn include_bounds(
     Ok(())
 }
 
+impl Solid {
+    /// Subtract an independent compound of disjoint through-cut cylinders
+    /// from exact polygonal or orthogonal stock. Certifying the tools as a
+    /// batch preserves their separate, ordered identities on the cut walls.
+    pub fn subtract_cylindrical_compound_tools(
+        &self,
+        tools: &[&Solid],
+        policy: GeometryPolicy,
+    ) -> Option<Result<Self, GeometryError>> {
+        let [tool] = tools else {
+            return None;
+        };
+        let compound = tool.rust_compound()?;
+        if self.policy != policy || tool.policy != policy || policy.boolean_fuzzy_mm != 0. {
+            return None;
+        }
+        let cutters = compound
+            .members()
+            .enumerate()
+            .map(|(index, member)| {
+                let (cylinder, frame) = member.axial_cylinder_frame()?;
+                Some(CircularPocketTool {
+                    frame,
+                    center_uv: [0.; 2],
+                    radius_mm: cylinder.circle().radius().as_f64(),
+                    displacement_mm: frame.normal().map(|n| n * cylinder.height().as_f64()),
+                    origin: Origin {
+                        source: compound.feature,
+                        role: format!("member/{index}"),
+                    },
+                })
+            })
+            .collect::<Option<Vec<_>>>()?;
+        Some(self.rust_drill_circular_machining(&cutters, &vec![true; cutters.len()], policy))
+    }
+}
+
 impl RustCompound {
     pub(super) fn assemble(
         solids: &[&Solid],

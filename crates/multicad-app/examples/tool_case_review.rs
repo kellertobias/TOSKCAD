@@ -580,15 +580,21 @@ fn transfer(
     Ok(request)
 }
 
+pub fn rail_parameters() -> [Entity; 3] {
+    [
+        parameter("rail_pitch", "96", "mm", "Slide screw hole pitch"),
+        parameter("rail_holes", "3", "count", "Slide screw holes per member"),
+        parameter(
+            "rail_offset",
+            "29",
+            "mm",
+            "First slide screw hole behind the front edge",
+        ),
+    ]
+}
+
 pub fn build() -> Result<Scenario, Error> {
-    let rail_pitch = parameter("rail_pitch", "96", "mm", "Slide screw hole pitch");
-    let rail_holes = parameter("rail_holes", "3", "count", "Slide screw holes per member");
-    let rail_offset = parameter(
-        "rail_offset",
-        "29",
-        "mm",
-        "First slide screw hole behind the front edge",
-    );
+    let [rail_pitch, rail_holes, rail_offset] = rail_parameters();
     let drawer_height = parameter("drawer_height", "80", "mm", "Printed drawer height");
     let ids = (
         rail_pitch.id,
