@@ -85,12 +85,6 @@ impl ExplicitSplit<'_> {
                 }
             }
             SplitTool::Plane { source: plane } => {
-                if target.uses_rust_geometry() {
-                    return Err(error(
-                        Some(feature),
-                        "Rust Split currently requires a closed tool body",
-                    ));
-                }
                 let report = multicad_core::references::inspect(
                     self.document,
                     self.revision,

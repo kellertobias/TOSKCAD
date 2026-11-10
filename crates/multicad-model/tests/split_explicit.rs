@@ -337,3 +337,252 @@ fn canonical_and_parameter_bound_planes_rebuild_saved_sides_without_swapping_out
         }
     }
 }
+
+#[test]
+fn saved_face_offset_plane_keeps_authored_side_frames_after_edit() {
+    use multicad_core::{
+        constraint_sketch::Dimension,
+        document::Link,
+        parameters::BoundExpression,
+        references::{AnalyticGeometry, Attachment, GeometryIntent, Origin},
+        sketch::OFFSET_PLANE_ROLE,
+    };
+
+    let mut f = fixture();
+    let compiler = Compiler {
+        omit_display: true,
+        ..Default::default()
+    };
+    let stock = compiler
+        .compile_with_backend(
+            f.session.document(),
+            f.session.revision(),
+            GeometryBackend::Rust,
+            None,
+        )
+        .unwrap();
+    let target = f.targets[0].clone();
+    let topology = &stock.snapshot().shapes[&target.producer].topology;
+    let anchor = Origin {
+        source: target.producer,
+        role: "cap.end".into(),
+    };
+    let cap = topology
+        .elements
+        .iter()
+        .find(|element| {
+            element.origins.contains(&anchor)
+                && matches!(element.geometry, Some(AnalyticGeometry::Plane { .. }))
+        })
+        .unwrap();
+    let mut intent = GeometryIntent::capture(topology, cap.key).unwrap();
+    intent.attachment = Some(Attachment {
+        anchor,
+        offset_mm: [0.; 3],
+        angle_rad: 0.,
+    });
+    let face = Entity::new(
+        "Top face datum",
+        EntityData::Plane {
+            origin_mm: [0., 0., 10.],
+            normal: [0., 0., 1.],
+            anchor: Some(Link {
+                target: target.producer,
+                role: "face_attachment".into(),
+                geometry: Some(intent),
+            }),
+        },
+    );
+    let offset = Entity::new(
+        "Two millimetres inside the top",
+        EntityData::Plane {
+            origin_mm: [0., 0., -2.],
+            normal: [0., 0., 1.],
+            anchor: Some(Link::new(face.id, OFFSET_PLANE_ROLE)),
+        },
+    );
+    let plane = offset.id;
+    let parameter = Entity::new(
+        "cut_depth",
+        EntityData::Parameter {
+            expression: "-2".into(),
+            unit: "mm".into(),
+            exposed: true,
+            inputs: vec![],
+        },
+    );
+    let depth = parameter.id;
+    add(
+        &mut f.session,
+        vec![face, offset, parameter]
+            .into_iter()
+            .map(Mutation::Insert)
+            .collect(),
+    );
+    let request = SplitOperationRequest::new(
+        vec![target.clone()],
+        SplitTool::Plane {
+            source: SplitPlane::Existing {
+                plane,
+                offset: Dimension::Expression {
+                    expression: BoundExpression::bind(
+                        f.session.document(),
+                        "=$cut_depth",
+                        "mm",
+                        None,
+                    )
+                    .unwrap(),
+                },
+            },
+        },
+        false,
+    );
+    let prepared =
+        model::prepare_split_operation(&f.session, f.session.revision(), actor(), &request)
+            .unwrap();
+    f.session.commit(prepared.prepared).unwrap();
+
+    for (value, split_z) in [("-2", 6.), ("-4", 4.)] {
+        let mut parameter = f.session.document().get(depth).unwrap().clone();
+        let EntityData::Parameter { expression, .. } = &mut parameter.data else {
+            unreachable!("cut depth is a parameter");
+        };
+        *expression = value.into();
+        add(&mut f.session, vec![Mutation::Replace(parameter)]);
+        let mut bytes = vec![];
+        project_file::write(
+            &ProjectFile::new(f.session.document().clone()).unwrap(),
+            &mut bytes,
+            Default::default(),
+        )
+        .unwrap();
+        let reopened = project_file::read(
+            &mut bytes.as_slice(),
+            Default::default(),
+            &project_file::supported_capabilities(),
+        )
+        .unwrap()
+        .project;
+        for backend in [
+            GeometryBackend::Rust,
+            #[cfg(feature = "occt")]
+            GeometryBackend::OpenCascade,
+        ] {
+            let rebuilt = compiler
+                .compile_with_backend(&reopened.document, 0, backend, None)
+                .unwrap();
+            assert!(rebuilt.snapshot().references.all_resolved());
+            let mut sum = 0.;
+            for output in &request.targets[0].outputs {
+                let result = rebuilt.solid(output.body).unwrap();
+                let positive = output.side == SplitSideV2::PositivePlane;
+                let volume = result.volume_mm3().unwrap();
+                sum += volume;
+                near(
+                    volume,
+                    if positive {
+                        (10. - split_z) * 100.
+                    } else {
+                        split_z * 100.
+                    },
+                );
+                let topology = &rebuilt.snapshot().shapes[&output.feature].topology;
+                let role = if positive {
+                    "split/plane/positive"
+                } else {
+                    "split/plane/negative"
+                };
+                let frames: Vec<_> = topology
+                    .elements
+                    .iter()
+                    .flat_map(|element| &element.frames)
+                    .filter(|anchored| {
+                        anchored.origin.source == output.feature && anchored.origin.role == role
+                    })
+                    .map(|anchored| anchored.frame)
+                    .collect();
+                assert_eq!(frames.len(), 1);
+                near(frames[0].origin_mm[2], split_z);
+                assert_eq!(
+                    frames[0].normal(),
+                    [0., 0., if positive { -1. } else { 1. }]
+                );
+                assert_eq!(rebuilt.snapshot().bodies[&output.body], output.feature);
+            }
+            near(sum, 1000.);
+        }
+    }
+}
+
+#[test]
+fn rust_plane_split_obeys_reversed_axes_and_rejects_ambiguous_cuts() {
+    let f = fixture();
+    let mut reversed = PrimitiveFrame {
+        origin: [0., 0., 4.].map(length),
+        u: [0.6, 0.8, 0.],
+        v: [0.8, -0.6, 0.],
+    };
+    let build = |frame| {
+        let request = SplitOperationRequest::new(
+            vec![f.targets[0].clone()],
+            SplitTool::Plane {
+                source: SplitPlane::Authored {
+                    frame: Box::new(frame),
+                },
+            },
+            false,
+        );
+        let prepared =
+            model::prepare_split_operation(&f.session, f.session.revision(), actor(), &request)
+                .unwrap();
+        let result = Compiler::default().compile_with_backend(
+            prepared.prepared.document(),
+            f.session.revision() + 1,
+            GeometryBackend::Rust,
+            None,
+        );
+        (request, result)
+    };
+    let (request, result) = build(reversed.clone());
+    let result = result.unwrap();
+    for output in &request.targets[0].outputs {
+        let positive = output.side == SplitSideV2::PositivePlane;
+        let solid = result.solid(output.body).unwrap();
+        near(
+            solid.volume_mm3().unwrap(),
+            if positive { 400. } else { 600. },
+        );
+        let bounds = solid.bounds().unwrap();
+        near(
+            if positive {
+                bounds.max[2]
+            } else {
+                bounds.min[2]
+            },
+            4.,
+        );
+    }
+
+    reversed.origin[2] = length(1e-8);
+    assert!(
+        build(reversed)
+            .1
+            .err()
+            .unwrap()
+            .message
+            .contains("too close")
+    );
+    let tilted = PrimitiveFrame {
+        origin: [0., 0., 4.].map(length),
+        v: [0., 0.6, 0.8],
+        ..Default::default()
+    };
+    assert!(
+        build(tilted)
+            .1
+            .err()
+            .unwrap()
+            .message
+            .contains("world-axis normal")
+    );
+}

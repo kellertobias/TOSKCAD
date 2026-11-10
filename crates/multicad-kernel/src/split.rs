@@ -14,7 +14,7 @@ fn failure(kind: GeometryErrorKind, message: impl Into<String>) -> GeometryError
         message: message.into(),
     }
 }
-fn checkpoint(interrupt: Option<&dyn Fn() -> bool>) -> Result<(), GeometryError> {
+pub(crate) fn checkpoint(interrupt: Option<&dyn Fn() -> bool>) -> Result<(), GeometryError> {
     if interrupt.is_some_and(|f| f()) {
         Err(failure(
             GeometryErrorKind::Cancelled,
@@ -99,6 +99,15 @@ impl Solid {
         policy: GeometryPolicy,
         interrupt: Option<&dyn Fn() -> bool>,
     ) -> Result<PlaneSplit, GeometryError> {
+        self.split_by_plane_impl(plane, None, policy, interrupt)
+    }
+    fn split_by_plane_impl(
+        &self,
+        plane: crate::PlaneFrame,
+        feature: Option<multicad_core::document::EntityId>,
+        policy: GeometryPolicy,
+        interrupt: Option<&dyn Fn() -> bool>,
+    ) -> Result<PlaneSplit, GeometryError> {
         policy.validate()?;
         let frame = plane.checked(policy)?;
         checkpoint(interrupt)?;
@@ -126,9 +135,13 @@ impl Solid {
             solid.inherit_provenance(&[self], None)?;
             Ok(solid)
         };
-        let positive = clip(true)?;
-        checkpoint(interrupt)?;
-        let negative = clip(false)?;
+        let [positive, negative] = if self.uses_rust_geometry() {
+            self.split_by_cardinal_plane(plane, feature, policy, interrupt)?
+        } else {
+            let positive = clip(true)?;
+            checkpoint(interrupt)?;
+            [positive, clip(false)?]
+        };
         for solid in [&positive, &negative] {
             if solid.solid_count()? != 1 {
                 return Err(failure(
@@ -165,7 +178,10 @@ impl Solid {
                 "Named plane Split requires a producing feature identity",
             ));
         }
-        let mut split = self.split_by_plane_interruptible(plane, policy, interrupt)?;
+        let mut split = self.split_by_plane_impl(plane, Some(feature), policy, interrupt)?;
+        if self.uses_rust_geometry() {
+            return Ok(split);
+        }
         split.positive.seed_split_plane(
             feature,
             "split/plane/positive",

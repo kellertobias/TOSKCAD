@@ -151,7 +151,7 @@ impl Solid {
         )
         .map_err(operation_error)?
         .ok_or_else(|| unsupported_slot("Orthogonal stock has no material"))?;
-        let body = Rc::new(OrthogonalBody::build(feature, geometry, Some(sources))?);
+        let body = Rc::new(OrthogonalBody::build(feature, geometry, Some(&sources))?);
         let result = Self {
             body: SolidBody::Orthogonal(Rc::clone(&body), frame),
             policy: self.policy,

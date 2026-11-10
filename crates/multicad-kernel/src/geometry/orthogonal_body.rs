@@ -13,6 +13,7 @@ use multicad_rust_kernel::{
 };
 use std::collections::{BTreeMap, BTreeSet};
 
+mod plane_split;
 mod pockets;
 pub(in crate::geometry) mod slots;
 
@@ -774,7 +775,7 @@ impl Solid {
         else {
             return Ok(None);
         };
-        let body = OrthogonalBody::build(feature, geometry, Some(sources))?;
+        let body = OrthogonalBody::build(feature, geometry, Some(&sources))?;
         Ok(Some(Self {
             body: SolidBody::Orthogonal(Rc::new(body), PlaneFrame::default()),
             policy,
@@ -1063,7 +1064,7 @@ impl OrthogonalBody {
     fn build(
         feature: EntityId,
         geometry: OrthogonalSolid,
-        sources: Option<Sources>,
+        sources: Option<&Sources>,
     ) -> Result<Self, GeometryError> {
         let boundary =
             orthogonal_boundary::build(geometry.quads()).map_err(|cause| match cause {
@@ -1094,7 +1095,7 @@ impl OrthogonalBody {
                 u,
                 v: cross(face.normal, u),
             };
-            let (origins, frames) = if let Some(sources) = &sources {
+            let (origins, frames) = if let Some(sources) = sources {
                 let face_sources = sources
                     .faces
                     .get(&plane_key(face.normal, origin))
@@ -1180,7 +1181,7 @@ impl OrthogonalBody {
                 AnalyticGeometry::Line { a_mm, b_mm },
             );
             item.boundary = adjacent_origins(&adjacent);
-            if let Some(sources) = &sources {
+            if let Some(sources) = sources {
                 inherit_lower_origins(&mut item, sources, &mut budget)?;
                 name_intersection(&mut item, feature, &adjacent, &signatures, 2, "edge");
             } else {
@@ -1200,7 +1201,7 @@ impl OrthogonalBody {
             );
             let adjacent: Vec<_> = adjacent.into_iter().collect();
             item.boundary = adjacent_origins(&adjacent);
-            if let Some(sources) = &sources {
+            if let Some(sources) = sources {
                 inherit_lower_origins(&mut item, sources, &mut budget)?;
                 name_intersection(&mut item, feature, &adjacent, &signatures, 3, "vertex");
             } else {
