@@ -6,6 +6,8 @@ use crate::{
     step_read::MAX_STEP_ENTITIES,
 };
 
+mod rounded;
+
 pub(crate) const DEGREE: usize = 11;
 const JETS: usize = DEGREE.div_ceil(2);
 const FACTORIAL: f64 = 479_001_600.;
@@ -293,7 +295,7 @@ pub(crate) fn prepare(
     tolerance_mm: f64,
 ) -> Result<ThreadSplines, StepError> {
     let spec = thread.spec();
-    if spec.starts != 1 || spec.root_radius_mm.is_some() {
+    if spec.starts != 1 {
         return Err(StepError::Unsupported);
     }
     if !tolerance_mm.is_finite()
@@ -334,12 +336,29 @@ pub(crate) fn prepare(
     let knots = thread.profile_breaks();
     let [_, start, upper, lower, crest, _] = knots;
     let phase = [start, upper, lower, crest, start + spec.pitch_mm];
-    let root = thread.root_radius_mm();
-    let radius = [major, root, root, major, major];
+    let circle = thread.root_circle();
+    let root_radii = circle.map_or_else(
+        || [thread.root_radius_mm(); 2],
+        |_| [upper, lower].map(|phase| thread.radius_at_phase(phase)),
+    );
+    let radii = [major, root_radii[0], root_radii[1], major, major];
     let mut bands = phase
         .windows(2)
-        .zip(radius.windows(2))
-        .map(|(p, r)| {
+        .zip(radii.windows(2))
+        .enumerate()
+        .map(|(band, (p, r))| {
+            if band == 1
+                && let Some(circle) = circle
+            {
+                return Spline::rounded_root(
+                    circle,
+                    [p[0], p[1]],
+                    [r[0], r[1]],
+                    rate.abs(),
+                    -hand,
+                    tolerance / 8.,
+                );
+            }
             Spline::new(
                 p[0] / rate.abs(),
                 p[1] / rate.abs(),
@@ -383,7 +402,27 @@ impl Spline {
         // The two-end Hermite remainder is f^(12)(ξ)(t-a)^6(t-b)^6 / 12!.
         // Applying the scalar bound to a projection along the error vector
         // bounds the complex norm without a component-wise penalty.
-        let segments = (span / (2. * (error * FACTORIAL / max_derivative).powf(1. / 12.))).ceil();
+        let span_limit = 2. * (error * FACTORIAL / max_derivative).powf(1. / 12.);
+        Self::with_jets(a, b, span_limit, |t| {
+            let r = if t == a {
+                radii[0]
+            } else if t == b {
+                radii[1]
+            } else {
+                radii[0] + slope * (t - a)
+            };
+            affine_jet(t, r, slope, sense)
+        })
+    }
+
+    fn with_jets(
+        a: f64,
+        b: f64,
+        span_limit: f64,
+        jet: impl Fn(f64) -> [Complex; JETS],
+    ) -> Result<Self, StepError> {
+        let span = b - a;
+        let segments = (span / span_limit).ceil();
         if !(1. ..=1024.).contains(&segments) {
             return Err(StepError::Limit);
         }
@@ -401,22 +440,12 @@ impl Spline {
         for pair in knots.windows(2) {
             let [start, end] = [pair[0], pair[1]];
             let length = end - start;
-            let jets = |t, h| {
-                let r = if t == a {
-                    radii[0]
-                } else if t == b {
-                    radii[1]
-                } else {
-                    radii[0] + slope * (t - a)
-                };
-                control_half(t, r, slope, sense, h)
-            };
             if poles.is_empty() {
-                poles.extend(jets(start, length));
+                poles.extend(control_half(jet(start), length));
             } else {
-                poles.extend(jets(start, length).into_iter().skip(1));
+                poles.extend(control_half(jet(start), length).into_iter().skip(1));
             }
-            poles.extend(jets(end, -length).into_iter().rev());
+            poles.extend(control_half(jet(end), -length).into_iter().rev());
         }
         Ok(Self { knots, poles })
     }
@@ -488,7 +517,7 @@ pub(crate) fn product([ax, ay]: Complex, [bx, by]: Complex) -> Complex {
     [ax * bx - ay * by, ax * by + ay * bx]
 }
 
-fn control_half(t: f64, radius: f64, slope: f64, sense: f64, length: f64) -> [Complex; JETS] {
+fn affine_jet(t: f64, radius: f64, slope: f64, sense: f64) -> [Complex; JETS] {
     let (sin, cos) = (sense * t).sin_cos();
     let rotation = [cos, sin];
     let imaginary = [0., sense];
@@ -499,6 +528,10 @@ fn control_half(t: f64, radius: f64, slope: f64, sense: f64, length: f64) -> [Co
         *derivative = product(product(rotation, power), radial);
         power = product(power, imaginary);
     }
+    jet
+}
+
+fn control_half(jet: [Complex; JETS], length: f64) -> [Complex; JETS] {
     std::array::from_fn(|i| {
         let mut point = jet[0];
         let mut weight = 1.;

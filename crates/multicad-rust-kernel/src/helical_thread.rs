@@ -26,10 +26,10 @@ pub enum ThreadError {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-struct RootCircle {
-    phase: f64,
-    center_radius: f64,
-    radius: f64,
+pub(crate) struct RootCircle {
+    pub(crate) phase: f64,
+    pub(crate) center_radius: f64,
+    pub(crate) radius: f64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -134,6 +134,10 @@ impl Thread {
 
     pub fn root_radius_mm(&self) -> f64 {
         self.spec.major_radius_mm - self.spec.depth_mm
+    }
+
+    pub(crate) fn root_circle(&self) -> Option<RootCircle> {
+        self.root
     }
 
     pub fn profile_breaks(&self) -> [f64; 6] {

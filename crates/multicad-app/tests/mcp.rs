@@ -635,6 +635,15 @@ fn rust_stdio_exports_verified_metric_shaft_and_receiving_thread_after_reopen() 
 
 #[test]
 fn rust_stdio_exports_verified_m6_hex_screw_after_reopen() {
+    export_m6_hex_screw("nominal_basic");
+}
+
+#[test]
+fn rust_stdio_exports_verified_rounded_root_m6_hex_screw_after_reopen() {
+    export_m6_hex_screw("metric_6g_external");
+}
+
+fn export_m6_hex_screw(fit: &str) {
     let directory = tempfile::tempdir().unwrap();
     let project = directory.path().join("m6-hex.tcd");
     let exports = directory.path().join("exports");
@@ -647,22 +656,26 @@ fn rust_stdio_exports_verified_m6_hex_screw_after_reopen() {
         exports.to_str().unwrap(),
     ];
     let mut client = Client::start(&arguments);
-    let screw = client.ok("set_mechanical_part", json!({
-        "expected_revision": 0, "name": "Fully threaded M6 hex screw",
-        "recipe": {
-            "kind": "machine_screw", "underhead_length": length(8.),
-            "shank_diameter": length(6.),
-            "head": {"kind": "external_hex", "across_flats": length(10.), "height": length(4.)},
-            "drive": {"kind": "external_hex"},
-            "thread": {"family": "iso_metric", "fit": "nominal_basic", "major_diameter": length(6.),
-                "pitch": length(1.), "length": length(8.), "representation": "modeled"}
-        }
-    }));
+    let screw = client.ok(
+        "set_mechanical_part",
+        json!({
+            "expected_revision": 0, "name": "Fully threaded M6 hex screw",
+            "recipe": {
+                "kind": "machine_screw", "underhead_length": length(8.),
+                "shank_diameter": length(6.),
+                "head": {"kind": "external_hex", "across_flats": length(10.), "height": length(4.)},
+                "drive": {"kind": "external_hex"},
+                "thread": {"family": "iso_metric", "fit": fit, "major_diameter": length(6.),
+                    "pitch": length(1.), "length": length(8.), "representation": "modeled"}
+            }
+        }),
+    );
     let source = client.ok(
         "inspect_mechanical_part",
         json!({"feature": screw["feature"]}),
     );
     assert_eq!(source["resolved"]["fully_threaded"], true);
+    assert_eq!(source["source"]["parameters"]["thread"]["fit"], fit);
     let authored_volume = client.part_volume();
     client.ok("save_project", json!({"expected_revision": 1}));
     drop(client);
