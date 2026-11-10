@@ -199,10 +199,19 @@ enum Face {
         seam: u32,
         flux: f64,
     },
+    Conical(round::ConicalWall),
     HalfCylinder(HalfCylinder),
 }
 
 impl Face {
+    fn seam(&self) -> Option<u32> {
+        match self {
+            Self::Cylindrical { seam, .. } => Some(*seam),
+            Self::Conical(wall) => Some(wall.seam),
+            Self::Planar { .. } | Self::HalfCylinder(_) => None,
+        }
+    }
+
     fn flux(&self, anchor: Point) -> f64 {
         match self {
             Self::Planar {
@@ -211,6 +220,7 @@ impl Face {
                 area,
             } => area * dot(sub(*origin, anchor), *normal),
             Self::Cylindrical { flux, .. } => *flux,
+            Self::Conical(wall) => wall.flux(anchor),
             Self::HalfCylinder(wall) => wall.flux(anchor),
         }
     }
@@ -296,13 +306,7 @@ impl<'a, 'input> Shell<'a, 'input> {
         for &point in self.points.values() {
             include_point(&mut bounds_mm, point);
         }
-        let seams: BTreeSet<_> = faces
-            .iter()
-            .filter_map(|face| match face {
-                Face::Cylindrical { seam, .. } => Some(*seam),
-                Face::Planar { .. } | Face::HalfCylinder(_) => None,
-            })
-            .collect();
+        let seams: BTreeSet<_> = faces.iter().filter_map(Face::seam).collect();
         let mut circles = Vec::new();
         let mut semicircles = Vec::new();
         let mut edges_mm = Vec::new();
@@ -421,7 +425,12 @@ impl<'a, 'input> Shell<'a, 'input> {
         let [units] = component("GLOBAL_UNIT_ASSIGNED_CONTEXT")? else {
             return Err(ReadError::Invalid);
         };
+        let needs_radians = self.allow_circles
+            && self.entities.values().any(|components| {
+                matches!(components.as_slice(), [entity] if entity.name == "CONICAL_SURFACE")
+            });
         let mut length_units = 0;
+        let mut angle_units = 0;
         for id in refs(units)? {
             let unit = self.components(id)?;
             if unit.iter().any(|entity| entity.name == "LENGTH_UNIT") {
@@ -436,8 +445,20 @@ impl<'a, 'input> Shell<'a, 'input> {
                     return Err(ReadError::Unsupported);
                 }
             }
+            if needs_radians && unit.iter().any(|entity| entity.name == "PLANE_ANGLE_UNIT") {
+                angle_units += 1;
+                if !unit.iter().any(|entity| {
+                    entity.name == "SI_UNIT"
+                        && matches!(
+                            entity.args.as_slice(),
+                            [Value::Omitted, Value::Enum("RADIAN")]
+                        )
+                }) {
+                    return Err(ReadError::Unsupported);
+                }
+            }
         }
-        if length_units != 1 {
+        if length_units != 1 || (needs_radians && angle_units != 1) {
             return Err(ReadError::Unsupported);
         }
         Ok(())
@@ -539,8 +560,16 @@ impl<'a, 'input> Shell<'a, 'input> {
         };
         let bounds = refs(bounds)?;
         let surface = reference(surface)?;
-        if self.allow_circles && self.simple(surface)?.name == "CYLINDRICAL_SURFACE" {
-            return self.cylindrical_face(surface, &bounds, sense(forward)?, face);
+        if self.allow_circles {
+            match self.simple(surface)?.name {
+                "CYLINDRICAL_SURFACE" => {
+                    return self.cylindrical_face(surface, &bounds, sense(forward)?, face);
+                }
+                "CONICAL_SURFACE" => {
+                    return self.conical_face(surface, &bounds, sense(forward)?, face);
+                }
+                _ => {}
+            }
         }
         let [Value::String(_), placement] = self.args(surface, "PLANE")? else {
             return Err(ReadError::Invalid);
@@ -682,7 +711,7 @@ impl<'a, 'input> Shell<'a, 'input> {
                 return Err(ReadError::Invalid);
             }
             if first.face == second.face {
-                if matches!(faces[first.face], Face::Cylindrical { seam, .. } if seam == id) {
+                if faces[first.face].seam() == Some(id) {
                     continue;
                 }
                 return Err(ReadError::Invalid);
@@ -694,6 +723,14 @@ impl<'a, 'input> Shell<'a, 'input> {
                     supports,
                     (Face::Planar { .. }, Face::Cylindrical { .. })
                         | (Face::Cylindrical { .. }, Face::Planar { .. })
+                        | (
+                            Face::Conical(_),
+                            Face::Planar { .. } | Face::Cylindrical { .. } | Face::Conical(_)
+                        )
+                        | (
+                            Face::Planar { .. } | Face::Cylindrical { .. },
+                            Face::Conical(_)
+                        )
                 ),
                 Curve::Semicircle(_) => !matches!(
                     supports,

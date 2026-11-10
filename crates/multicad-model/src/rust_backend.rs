@@ -49,6 +49,7 @@ pub(crate) fn validate_document(
                     )
                     | (model::THREAD_TYPE, model::THREAD_SCHEMA)
                     | (model::MECHANICAL_PART_TYPE, model::MECHANICAL_PART_SCHEMA)
+                    | (model::EDGE_TREATMENT_TYPE, model::EDGE_TREATMENT_SCHEMA)
                     | (
                         model::PANEL_TYPE,
                         model::PANEL_SCHEMA | model::RECIPE_PANEL_SCHEMA

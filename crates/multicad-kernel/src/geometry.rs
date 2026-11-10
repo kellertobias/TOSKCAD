@@ -11,6 +11,7 @@ use multicad_rust_kernel::{
 use std::path::Path;
 use std::rc::Rc;
 mod annulus_body;
+pub(crate) mod bore_treatment;
 pub(crate) mod circular_pocket_body;
 mod cosmetic_fastener_body;
 mod helical_body;
@@ -617,6 +618,7 @@ impl Solid {
                 .collect(),
             pockets: Rc::default(),
             pocket_origins: Rc::default(),
+            bore_treatments: None,
         };
         for length in placed.side_lengths() {
             policy.length(length)?;
@@ -1200,6 +1202,9 @@ impl Solid {
             return Ok(compound.volume_mm3());
         }
         if let Some(placed) = self.polygon_prism() {
+            if let Some(treatments) = &placed.bore_treatments {
+                return Ok(treatments.geometry.volume_mm3());
+            }
             return Ok(multicad_rust_kernel::circular_pockets::volume_mm3(
                 &placed.prism,
                 &placed.pockets,
@@ -1421,7 +1426,13 @@ impl Solid {
                 false,
             ),
             SolidBody::PolygonPrism(placed) => {
-                let mesh = if placed.pockets.is_empty() {
+                let mesh = if let Some(treatments) = &placed.bore_treatments {
+                    multicad_rust_kernel::display::chamfered_polygon_prism(
+                        &placed.prism,
+                        &treatments.geometry,
+                        rust_options,
+                    )
+                } else if placed.pockets.is_empty() {
                     multicad_rust_kernel::display::polygon_prism(&placed.prism, rust_options)
                 } else {
                     multicad_rust_kernel::display::pocketed_polygon_prism(
@@ -1839,7 +1850,16 @@ impl Solid {
         use multicad_rust_kernel::step;
         match &self.body {
             SolidBody::PolygonPrism(placed) => {
-                if placed.pockets.is_empty() {
+                if let Some(treatments) = &placed.bore_treatments {
+                    writer.append_chamfered_polygon_prism(
+                        &placed.prism,
+                        treatments.geometry.chamfers(),
+                        placed.frame.origin,
+                        placed.frame.u,
+                        placed.frame.v,
+                        placed.reverse_sweep,
+                    )
+                } else if placed.pockets.is_empty() {
                     writer.append_polygon_prism(
                         &placed.prism,
                         placed.frame.origin,

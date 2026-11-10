@@ -1,12 +1,14 @@
 //! Recognize swept solids by their complete, already validated boundaries.
 use super::*;
 use crate::{
-    circular_pockets::CircularPocket, linear_sweep::Sweep, orthogonal::OrthogonalSolid,
-    orthogonal_pockets::OrthogonalPocket, orthogonal_slots::OrthogonalSlot, stadium::Stadium,
-    trimmed_sweep::TrimmedSweep,
+    chamfered_bores::BoreChamfer, circular_pockets::CircularPocket, linear_sweep::Sweep,
+    orthogonal::OrthogonalSolid, orthogonal_pockets::OrthogonalPocket,
+    orthogonal_slots::OrthogonalSlot, stadium::Stadium, trimmed_sweep::TrimmedSweep,
 };
 use std::cmp::Ordering;
 
+mod chamfered;
+use chamfered::{Bore, canonical_bores};
 mod orthogonal;
 mod pocketed;
 use pocketed::{PocketRim, canonical_pockets};
@@ -23,6 +25,12 @@ pub enum ImportProfile {
         rings: Vec<Vec<[f64; 2]>>,
         circular_holes: Vec<([f64; 2], f64)>,
         pockets: Vec<CircularPocket>,
+    },
+    ChamferedPolygon {
+        /// Exterior counterclockwise, followed by clockwise straight holes.
+        rings: Vec<Vec<[f64; 2]>>,
+        circular_holes: Vec<([f64; 2], f64)>,
+        chamfers: Vec<BoreChamfer>,
     },
     LinearSweep {
         /// Counterclockwise exterior and clockwise holes, paired with `top`.
@@ -95,6 +103,12 @@ pub fn read_import_compound(
 
 fn recognize_member(shell: &Shell<'_, '_>, faces: &[Face]) -> Result<(Readback, ImportSolid)> {
     let readback = shell.readback(faces)?;
+    if faces.iter().any(|face| matches!(face, Face::Conical(_))) {
+        let solid = shell
+            .chamfered_polygon(faces)
+            .ok_or(ReadError::Unsupported)?;
+        return Ok((readback, solid));
+    }
     let solid = match shell
         .recognize(faces)
         .or_else(|| shell.pocketed_polygon(faces))
@@ -147,6 +161,7 @@ struct Wall {
 
 enum PlanarMatch<'a> {
     Straight(f64, &'a [PocketRim]),
+    Chamfered(f64, &'a [Bore]),
     Ruled(f64, &'a BTreeMap<u32, u32>),
     Trimmed {
         direction: Point,
@@ -651,6 +666,17 @@ impl Shell<'_, '_> {
                 let (base, top): (Vec<_>, Vec<_>) = rings.unzip();
                 Sweep::new(base.clone(), top.clone(), height_mm).ok()?;
                 (height_mm, ImportProfile::LinearSweep { base, top })
+            }
+            PlanarMatch::Chamfered(height_mm, bores) => {
+                let (circular_holes, chamfers) = canonical_bores(bores, project);
+                (
+                    height_mm,
+                    ImportProfile::ChamferedPolygon {
+                        rings: rings.map(|(ring, _)| ring).collect(),
+                        circular_holes,
+                        chamfers,
+                    },
+                )
             }
             PlanarMatch::Trimmed {
                 direction: generator,

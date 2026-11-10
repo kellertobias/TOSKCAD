@@ -3,6 +3,30 @@ use crate::stadium::{Stadium, segments_distance};
 use stadium::{distance_to_spine, polygon_clear_of_stadium};
 use std::f64::consts::PI;
 
+pub(super) struct ConicalWall {
+    pub(super) seam: u32,
+    centers: [Point; 2],
+    radii: [f64; 2],
+    axis: Point,
+    height: f64,
+    pub(super) outward: bool,
+}
+
+impl ConicalWall {
+    pub(super) fn flux(&self, anchor: Point) -> f64 {
+        let [a, b] = self.radii;
+        let [start, end] = self
+            .centers
+            .map(|center| dot(sub(center, anchor), self.axis));
+        // The closed frustum contributes three times its volume. Subtract
+        // both temporary cap fluxes, leaving only the conical wall.
+        let closed = self.height * (a * a + a * b + b * b);
+        let caps = b * b * end - a * a * start;
+        let sign = if self.outward { 1. } else { -1. };
+        sign * PI * (closed - caps)
+    }
+}
+
 impl CircleEdge {
     pub(super) fn bounds(self) -> [Point; 2] {
         std::array::from_fn(|side| {
@@ -116,19 +140,7 @@ impl Shell<'_, '_> {
         };
         let radius = *radius;
         let surface = self.placement(reference(axis)?)?;
-        let [bound] = bounds else {
-            return Err(ReadError::Unsupported);
-        };
-        let (_, wire, forward) = self.bound(*bound, true)?;
-        let mut wire = self.traversals(wire, forward, face, MAX_VERTICES)?;
-        let first = wire
-            .iter()
-            .position(|edge| !matches!(self.edges[&edge.edge].curve, Curve::Line))
-            .ok_or(ReadError::Invalid)?;
-        wire.rotate_left(first);
-        let [a, seam_out, b, seam_back] = wire.as_slice() else {
-            return Err(ReadError::Unsupported);
-        };
+        let [a, seam_out, b, seam_back] = &self.periodic_round_loop(bounds, face)?;
         if matches!(self.edges[&a.edge].curve, Curve::Semicircle(_)) {
             return self.half_cylindrical_face(
                 &surface,
@@ -179,6 +191,99 @@ impl Shell<'_, '_> {
             seam: seam_out.edge,
             flux: sign * 2. * PI * radius.powi(2) * height.abs(),
         })
+    }
+
+    pub(super) fn conical_face(
+        &mut self,
+        surface: u32,
+        bounds: &[u32],
+        outward: bool,
+        face: usize,
+    ) -> Result<Face> {
+        let [
+            Value::String(_),
+            axis,
+            Value::Number(radius),
+            Value::Number(angle),
+        ] = self.args(surface, "CONICAL_SURFACE")?
+        else {
+            return Err(ReadError::Invalid);
+        };
+        if *radius < 0.
+            || !radius.is_finite()
+            || !(0. ..PI / 2.).contains(&angle.abs())
+            || *angle == 0.
+        {
+            return Err(ReadError::Invalid);
+        }
+        let radius = *radius;
+        let slope = angle.tan();
+        let surface = self.placement(reference(axis)?)?;
+        let [a, seam_out, b, seam_back] = &self.periodic_round_loop(bounds, face)?;
+        let [Curve::Circle(circle_a), Curve::Circle(circle_b)] =
+            [a, b].map(|edge| self.edges[&edge.edge].curve)
+        else {
+            return Err(ReadError::Unsupported);
+        };
+        if a.edge == b.edge
+            || seam_out.edge != seam_back.edge
+            || seam_out.forward == seam_back.forward
+            || !matches!(self.edges[&seam_out.edge].curve, Curve::Line)
+        {
+            return Err(ReadError::Invalid);
+        }
+        for circle in [circle_a, circle_b] {
+            let delta = sub(circle.center_mm, surface.origin);
+            let deviation = length(cross(delta, surface.normal));
+            let tilt = circle.radius_mm * length(cross(circle.normal, surface.normal));
+            let expected = radius + dot(delta, surface.normal) * slope;
+            if deviation > self.tolerance
+                || tilt > self.tolerance
+                || (circle.radius_mm - expected).abs() > self.tolerance
+            {
+                return Err(ReadError::Invalid);
+            }
+        }
+        let centers = [circle_a.center_mm, circle_b.center_mm];
+        let radii = [circle_a.radius_mm, circle_b.radius_mm];
+        let travel = dot(sub(centers[1], centers[0]), surface.normal);
+        let a_follows_axis = (dot(circle_a.normal, surface.normal) > 0.) == a.forward;
+        let b_follows_axis = (dot(circle_b.normal, surface.normal) > 0.) == b.forward;
+        let seam_vertices = [seam_out.start, seam_out.end];
+        let rays = std::array::from_fn(|i| {
+            sub(self.points[&seam_vertices[i]], centers[i]).map(|v| v / radii[i])
+        });
+        let [ray_a, ray_b] = rays;
+        if travel.abs() <= self.tolerance
+            || (radii[1] - radii[0]).abs() <= self.tolerance
+            || a_follows_axis == b_follows_axis
+            || a_follows_axis != (outward == (travel > 0.))
+            || length(sub(ray_a, ray_b)) * radii[0].max(radii[1]) > self.tolerance
+        {
+            return Err(ReadError::Invalid);
+        }
+        Ok(Face::Conical(ConicalWall {
+            seam: seam_out.edge,
+            centers,
+            radii,
+            axis: surface.normal.map(|v| v * travel.signum()),
+            height: travel.abs(),
+            outward,
+        }))
+    }
+
+    fn periodic_round_loop(&mut self, bounds: &[u32], face: usize) -> Result<[Traversal; 4]> {
+        let [bound] = bounds else {
+            return Err(ReadError::Unsupported);
+        };
+        let (_, wire, forward) = self.bound(*bound, true)?;
+        let mut wire = self.traversals(wire, forward, face, MAX_VERTICES)?;
+        let first = wire
+            .iter()
+            .position(|edge| !matches!(self.edges[&edge.edge].curve, Curve::Line))
+            .ok_or(ReadError::Invalid)?;
+        wire.rotate_left(first);
+        wire.try_into().map_err(|_| ReadError::Unsupported)
     }
 }
 

@@ -1,7 +1,7 @@
 //! Publish topology and finite face descriptors from the analytic Rust body.
 use crate::{
     Bounds, Face, PlaneFrame,
-    geometry::{CylinderSketch, circular_pocket_body},
+    geometry::{CylinderSketch, bore_treatment::BoreTreatments, circular_pocket_body},
 };
 use multicad_core::{
     document::EntityId,
@@ -12,6 +12,7 @@ use multicad_core::{
 };
 use multicad_rust_kernel::{
     Circle, Rational,
+    chamfered_bores::{BoreLayer, BoreStack},
     circular_pockets::{self, CircularPocket},
     cylinder::AxialCylinder,
     polygon::PolygonPrism,
@@ -314,6 +315,7 @@ pub(crate) struct PlacedPolygon {
     pub(crate) edges: Rc<[(Origin, bool)]>,
     pub(crate) pockets: Rc<[CircularPocket]>,
     pub(crate) pocket_origins: Rc<[Origin]>,
+    pub(crate) bore_treatments: Option<Rc<BoreTreatments>>,
 }
 
 struct PolygonSide {
@@ -429,8 +431,10 @@ impl PlacedPolygon {
         let h = self.prism.height().as_f64();
         let caps = [0., h].into_iter().enumerate().map(|(i, z)| {
             let support = self.cap_support(z, true);
-            let (area, [x, y]) =
-                circular_pockets::cap_properties(&self.prism, &self.pockets, i == 1);
+            let (area, [x, y]) = self.bore_treatments.as_ref().map_or_else(
+                || circular_pockets::cap_properties(&self.prism, &self.pockets, i == 1),
+                |treatments| treatments.geometry.cap_properties(i == 1),
+            );
             Face {
                 index: i as u32,
                 plane: Some((support.origin_mm, support.normal())),
@@ -438,50 +442,95 @@ impl PlacedPolygon {
                 area_mm2: area,
             }
         });
-        caps.chain(self.sides().map(|side| {
-            let (support, length) = self.side_support(side.a, side.b);
-            let a = self.point(side.a, 0.);
-            let b = self.point(side.b, h);
-            Face {
-                index: side.index as u32 + 2,
-                plane: Some((support.origin_mm, support.normal())),
-                center_mm: std::array::from_fn(|j| (a[j] + b[j]) * 0.5),
-                area_mm2: length * h,
+        let mut faces: Vec<_> = caps
+            .chain(self.sides().map(|side| {
+                let (support, length) = self.side_support(side.a, side.b);
+                let a = self.point(side.a, 0.);
+                let b = self.point(side.b, h);
+                Face {
+                    index: side.index as u32 + 2,
+                    plane: Some((support.origin_mm, support.normal())),
+                    center_mm: std::array::from_fn(|j| (a[j] + b[j]) * 0.5),
+                    area_mm2: length * h,
+                }
+            }))
+            .chain(self.circular_sides().map(|(i, circle)| Face {
+                index: i as u32 + 2,
+                plane: None,
+                center_mm: self.point(circle.center(), h * 0.5),
+                area_mm2: TAU * circle.radius().as_f64() * h,
+            }))
+            .chain(
+                self.pockets
+                    .iter()
+                    .copied()
+                    .enumerate()
+                    .flat_map(|(i, pocket)| {
+                        let [wall, floor] = self.pocket_face_pair(i);
+                        let [x, y] = pocket.center_mm;
+                        let z = pocket.floor_z_mm(h).midpoint(pocket.mouth_z_mm(h));
+                        let support = self.pocket_floor(pocket, h);
+                        [
+                            Face {
+                                index: wall as u32,
+                                plane: None,
+                                center_mm: self.position([x, y, z]),
+                                area_mm2: TAU * pocket.radius_mm * pocket.depth_mm,
+                            },
+                            Face {
+                                index: floor as u32,
+                                plane: Some((support.origin_mm, support.normal())),
+                                center_mm: support.origin_mm,
+                                area_mm2: pocket.area_mm2(),
+                            },
+                        ]
+                    }),
+            )
+            .collect();
+        if let Some(treatments) = &self.bore_treatments {
+            let base_faces = faces.len();
+            for stack in treatments.geometry.stacks() {
+                for (&index, pair) in stack.face_indices.iter().zip(stack.layers.windows(2)) {
+                    let [a, b] = [pair[0], pair[1]];
+                    let dz = b.z_mm - a.z_mm;
+                    let [r, s] = [a.radius_mm, b.radius_mm];
+                    let slant = (s - r).hypot(dz);
+                    let z = a.z_mm + dz * (r + 2. * s) / (3. * (r + s));
+                    let [x, y] = stack.center_mm;
+                    let face = Face {
+                        index,
+                        plane: None,
+                        center_mm: self.position([x, y, z]),
+                        area_mm2: PI * (r + s) * slant,
+                    };
+                    if (index as usize) < base_faces {
+                        faces[index as usize] = face;
+                    } else {
+                        faces.push(face);
+                    }
+                }
             }
-        }))
-        .chain(self.circular_sides().map(|(i, circle)| Face {
-            index: i as u32 + 2,
-            plane: None,
-            center_mm: self.point(circle.center(), h * 0.5),
-            area_mm2: TAU * circle.radius().as_f64() * h,
-        }))
-        .chain(
-            self.pockets
-                .iter()
-                .copied()
-                .enumerate()
-                .flat_map(|(i, pocket)| {
-                    let [wall, floor] = self.pocket_face_pair(i);
-                    let [x, y] = pocket.center_mm;
-                    let z = pocket.floor_z_mm(h).midpoint(pocket.mouth_z_mm(h));
-                    let support = self.pocket_floor(pocket, h);
-                    [
-                        Face {
-                            index: wall as u32,
-                            plane: None,
-                            center_mm: self.position([x, y, z]),
-                            area_mm2: TAU * pocket.radius_mm * pocket.depth_mm,
-                        },
-                        Face {
-                            index: floor as u32,
-                            plane: Some((support.origin_mm, support.normal())),
-                            center_mm: support.origin_mm,
-                            area_mm2: pocket.area_mm2(),
-                        },
-                    ]
-                }),
+            faces[base_faces..].sort_unstable_by_key(|face| face.index);
+        }
+        faces
+    }
+
+    fn bore_crease(&self, center: [f64; 2], z: f64, radius_mm: f64) -> AnalyticGeometry {
+        let [x, y] = center;
+        AnalyticGeometry::CircularArc {
+            frame: frame(self.position([x, y, z]), self.frame.u, self.frame.v),
+            radius_mm,
+            start_rad: 0.,
+            sweep_rad: TAU,
+        }
+    }
+
+    fn bore_cap(stack: &BoreStack, end: bool) -> (BoreLayer, usize) {
+        let index = if end { stack.face_indices.len() - 1 } else { 0 };
+        (
+            stack.layers[index + usize::from(end)],
+            stack.face_indices[index] as usize,
         )
-        .collect()
     }
 
     pub(crate) fn snapshot(
@@ -515,6 +564,25 @@ impl PlacedPolygon {
                     ]
                 })
             }))
+            .chain(self.bore_treatments.iter().flat_map(|treatments| {
+                treatments.origins.iter().map(|(&(hole, end), origin)| {
+                    let circle_index = count - self.prism.circular_holes().len() + hole;
+                    let curve = &self.edges[circle_index].0;
+                    vec![
+                        Origin {
+                            source: origin.source,
+                            role: if end {
+                                "bore.chamfer.end"
+                            } else {
+                                "bore.chamfer.start"
+                            }
+                            .into(),
+                        },
+                        origin.clone(),
+                        curve.clone(),
+                    ]
+                })
+            }))
             .collect();
         let mut build = Builder {
             face_origins,
@@ -530,11 +598,21 @@ impl PlacedPolygon {
                 .enumerate()
                 .filter(|(_, pocket)| usize::from(pocket.end) == cap)
                 .map(|(i, _)| self.pocket_face_pair(i)[0]);
+            let first_bore = count - self.prism.circular_holes().len();
+            let stacks = self
+                .bore_treatments
+                .as_ref()
+                .map(|treatments| treatments.geometry.stacks());
+            let walls = (first_bore..count).map(|i| {
+                stacks.map_or(i + 2, |stacks| {
+                    Self::bore_cap(&stacks[i - first_bore], cap != 0).1
+                })
+            });
             build.face(
                 cap,
                 Some(self.cap_support(z, true)),
                 Some(self.cap_support(z, false)),
-                (2..count + 2).chain(pockets),
+                (2..first_bore + 2).chain(walls).chain(pockets),
             );
             for side in self.sides() {
                 let a = self.point(side.a, z);
@@ -549,15 +627,18 @@ impl PlacedPolygon {
                 );
             }
             for (index, circle) in self.circular_sides() {
-                build.non_face(
-                    AnalyticGeometry::CircularArc {
-                        frame: frame(self.point(circle.center(), z), self.frame.u, self.frame.v),
-                        radius_mm: circle.radius().as_f64(),
-                        start_rad: 0.,
-                        sweep_rad: TAU,
-                    },
-                    &[cap, index + 2],
-                );
+                let (center, radius, face) = if let Some(stacks) = stacks {
+                    let stack = &stacks[index - first_bore];
+                    let (layer, face) = Self::bore_cap(stack, cap != 0);
+                    (stack.center_mm, layer.radius_mm, face)
+                } else {
+                    (
+                        circle.center().map(Rational::as_f64),
+                        circle.radius().as_f64(),
+                        index + 2,
+                    )
+                };
+                build.non_face(self.bore_crease(center, z, radius), &[cap, face]);
             }
         }
         for side in self.sides() {
@@ -584,8 +665,26 @@ impl PlacedPolygon {
                 &[side.previous + 2, side.index + 2],
             );
         }
-        for (index, _) in self.circular_sides() {
-            build.face(index + 2, None, None, [0, 1]);
+        if let Some(treatments) = &self.bore_treatments {
+            for stack in treatments.geometry.stacks() {
+                let faces = std::iter::once(0)
+                    .chain(stack.face_indices.iter().map(|&face| face as usize))
+                    .chain(std::iter::once(1))
+                    .collect::<Vec<_>>();
+                for group in faces.windows(3) {
+                    build.face(group[1], None, None, [group[0], group[2]]);
+                }
+                for (pair, layer) in stack.face_indices.windows(2).zip(&stack.layers[1..]) {
+                    build.non_face(
+                        self.bore_crease(stack.center_mm, layer.z_mm, layer.radius_mm),
+                        &[pair[0] as usize, pair[1] as usize],
+                    );
+                }
+            }
+        } else {
+            for (index, _) in self.circular_sides() {
+                build.face(index + 2, None, None, [0, 1]);
+            }
         }
         for (index, pocket) in self.pockets.iter().copied().enumerate() {
             let cap = usize::from(pocket.end);

@@ -3,6 +3,7 @@
 use crate::{
     Circle, Rational,
     annulus::Annulus,
+    chamfered_bores::{BoreChamfer, BoreLayer, BoreStack},
     circular_pockets::{CircularPocket, validate},
     cylinder::AxialCylinder,
     linear_sweep::Sweep,
@@ -224,6 +225,20 @@ pub fn write_pocketed_polygon_prism(
     })
 }
 
+/// Write a polygonal prism with analytic conical chamfers at through-bore rims.
+pub fn write_chamfered_polygon_prism(
+    prism: &PolygonPrism,
+    chamfers: &[BoreChamfer],
+    origin: Point,
+    u: Point,
+    v: Point,
+    reverse_sweep: bool,
+) -> Result<String, StepError> {
+    write_one(|writer| {
+        writer.append_chamfered_polygon_prism(prism, chamfers, origin, u, v, reverse_sweep)
+    })
+}
+
 /// Write a planar sweep with a common boundary graph for its ruled faces.
 pub fn write_linear_sweep(
     sweep: &Sweep,
@@ -422,6 +437,7 @@ fn encode_rectangle(
         &mut [ring.as_slice()].into_iter(),
         holes,
         &[],
+        &[],
         placement,
         height.as_f64(),
     )
@@ -486,6 +502,7 @@ fn encode_prism(
     rings: &mut dyn Iterator<Item = &[[Rational; 2]]>,
     circular_holes: &[Circle],
     pockets: &[CircularPocket],
+    bore_stacks: &[BoreStack],
     placement: Placement,
     end: f64,
 ) -> Result<Entity, StepError> {
@@ -505,14 +522,27 @@ fn encode_prism(
     let normal = placement.normal.map(|n| if reverse { -n } else { n });
     let round_trims = circular_holes
         .iter()
-        .map(|circle| {
-            CylindricalTrim::new(
-                brep.file,
-                [0., end].map(|z| placement.point(circle.center(), z)),
-                normal,
-                placement.u,
-                circle.radius().as_f64(),
-            )
+        .enumerate()
+        .map(|(index, circle)| {
+            let radius_mm = circle.radius().as_f64();
+            let plain = [0., end.abs()].map(|z_mm| BoreLayer { z_mm, radius_mm });
+            let (center, layers) = bore_stacks.get(index).map_or_else(
+                || (circle.center().map(Rational::as_f64), plain.as_slice()),
+                |bore| (bore.center_mm, bore.layers.as_slice()),
+            );
+            layers
+                .iter()
+                .map(|layer| {
+                    CircularRim::new(
+                        brep.file,
+                        placement.point_f64(center, layer.z_mm * end.signum()),
+                        normal,
+                        placement.u,
+                        layer.radius_mm,
+                    )
+                    .map(|rim| (layer.z_mm, rim))
+                })
+                .collect::<Result<Vec<_>, _>>()
         })
         .collect::<Result<Vec<_>, _>>()?;
     let blind_trims = pockets
@@ -533,30 +563,24 @@ fn encode_prism(
             .map(|trim| (pocket.end, trim))
         })
         .collect::<Result<Vec<_>, _>>()?;
-    let cap_trims = |end| {
-        round_trims.iter().chain(
-            blind_trims
-                .iter()
-                .filter_map(move |(mouth, trim)| (*mouth == end).then_some(trim)),
-        )
+    let cap_rims = |end| {
+        round_trims
+            .iter()
+            .map(move |rings| rings[if end { rings.len() - 1 } else { 0 }].1.edge)
+            .chain(blind_trims.iter().filter_map(move |(mouth, trim)| {
+                (*mouth == end).then_some(trim.rims[usize::from(end)])
+            }))
     };
     let mut faces = vec![
         brep.cap(
             &ranges,
-            cap_trims(false),
+            cap_rims(false),
             0,
             normal.map(|n| -n),
             placement.u,
             !reverse,
         )?,
-        brep.cap(
-            &ranges,
-            cap_trims(true),
-            count,
-            normal,
-            placement.u,
-            reverse,
-        )?,
+        brep.cap(&ranges, cap_rims(true), count, normal, placement.u, reverse)?,
     ];
     for range in ranges {
         for a in range.clone() {
@@ -576,7 +600,19 @@ fn encode_prism(
             faces.push(brep.file.face(&[boundary], point, normal, tangent));
         }
     }
-    faces.extend(round_trims.iter().map(|trim| trim.wall(brep.file, false)));
+    for rings in round_trims {
+        for pair in rings.windows(2) {
+            let [(low, from), (high, to)] = [&pair[0], &pair[1]];
+            faces.push(bore_wall(
+                brep.file,
+                from,
+                to,
+                high - low,
+                normal,
+                placement.u,
+            )?);
+        }
+    }
     for (mouth, trim) in blind_trims {
         faces.extend(trim.blind_faces(brep.file, mouth, normal, placement.u));
     }
@@ -803,10 +839,10 @@ impl<'a> BRep<'a> {
         Ok(self.file.bound(&edges, outer))
     }
 
-    fn cap<'trim>(
+    fn cap(
         &mut self,
         ranges: &[Range<usize>],
-        round_trims: impl Iterator<Item = &'trim CylindricalTrim>,
+        circular_rims: impl Iterator<Item = Entity>,
         offset: usize,
         normal: Point,
         reference: Point,
@@ -823,7 +859,7 @@ impl<'a> BRep<'a> {
                 self.bound(&ring, i == 0)
             })
             .collect::<Result<Vec<_>, _>>()?;
-        bounds.extend(round_trims.map(|trim| trim.cap_bound(self.file, offset != 0, false)));
+        bounds.extend(circular_rims.map(|rim| circular_bound(self.file, rim, offset == 0, false)));
         let point = self.vertices[offset].cartesian;
         Ok(self.file.face(&bounds, point, normal, reference))
     }
@@ -845,6 +881,105 @@ struct CylindricalTrim {
     surface: Entity,
 }
 
+struct CircularRim {
+    center: Entity,
+    axis: Entity,
+    edge: Entity,
+    vertex: Vertex,
+    radius: f64,
+}
+
+impl CircularRim {
+    fn new(
+        file: &mut StepFile,
+        center: Point,
+        normal: Point,
+        reference: Point,
+        radius: f64,
+    ) -> Result<Self, StepError> {
+        let point = std::array::from_fn(|i| center[i] + radius * reference[i]);
+        if point == center || point.iter().any(|x| !x.is_finite()) {
+            return Err(StepError::InvalidGeometry);
+        }
+        let seam_vertex = file.vertex(point);
+        let vertex = seam_vertex.vertex;
+        let center = file.point(center);
+        let axis = file.axis(center, normal, reference);
+        let circle = file.entity(format_args!("CIRCLE('',{axis},{radius:.16E})"));
+        let edge = file.entity(format_args!(
+            "EDGE_CURVE('',{vertex},{vertex},{circle},.T.)"
+        ));
+        Ok(Self {
+            center,
+            axis,
+            edge,
+            vertex: seam_vertex,
+            radius,
+        })
+    }
+}
+
+fn circular_bound(file: &mut StepFile, rim: Entity, forward: bool, outer: bool) -> Entity {
+    let edge = file.oriented_edge(rim, forward);
+    file.bound(&[edge], outer)
+}
+
+fn periodic_wall(
+    file: &mut StepFile,
+    [start, end]: [Entity; 2],
+    seam: Entity,
+    surface: Entity,
+    outward: bool,
+) -> Entity {
+    // One seam edge bounds both sides of the periodic surface.
+    let edges = [
+        file.oriented_edge(start, outward),
+        file.oriented_edge(seam, true),
+        file.oriented_edge(end, !outward),
+        file.oriented_edge(seam, false),
+    ];
+    let bound = file.bound(&edges, true);
+    file.face_on(&[bound], surface, outward)
+}
+
+fn bore_wall(
+    file: &mut StepFile,
+    from: &CircularRim,
+    to: &CircularRim,
+    height: f64,
+    normal: Point,
+    reference: Point,
+) -> Result<Entity, StepError> {
+    let rise = to.radius - from.radius;
+    let surface = if rise == 0. {
+        let CircularRim { axis, radius, .. } = from;
+        file.entity(format_args!("CYLINDRICAL_SURFACE('',{axis},{radius:.16E})"))
+    } else {
+        // A cone's semi-angle is positive. Point its axis toward the wider
+        // rim, keeping both shared edge curves aligned to the stock sweep.
+        let (axis, radius) = if rise > 0. {
+            (from.axis, from.radius)
+        } else {
+            (
+                file.axis(to.center, normal.map(|n| -n), reference),
+                to.radius,
+            )
+        };
+        let semi_angle = rise.abs().atan2(height);
+        file.entity(format_args!(
+            "CONICAL_SURFACE('',{axis},{radius:.16E},{semi_angle:.16E})"
+        ))
+    };
+    let seam = line_edge(file, from.vertex, to.vertex)?;
+    Ok(periodic_wall(
+        file,
+        [from.edge, to.edge],
+        seam,
+        surface,
+        false,
+    ))
+}
+
 impl CylindricalTrim {
     fn new(
         file: &mut StepFile,
@@ -853,28 +988,14 @@ impl CylindricalTrim {
         reference: Point,
         radius: f64,
     ) -> Result<Self, StepError> {
-        let mut rim = |center: Point| {
-            let point = std::array::from_fn(|i| center[i] + radius * reference[i]);
-            if point == center || point.iter().any(|x| !x.is_finite()) {
-                return Err(StepError::InvalidGeometry);
-            }
-            let seam_vertex = file.vertex(point);
-            let vertex = seam_vertex.vertex;
-            let center = file.point(center);
-            let axis = file.axis(center, normal, reference);
-            let circle = file.entity(format_args!("CIRCLE('',{axis},{radius:.16E})"));
-            let edge = file.entity(format_args!(
-                "EDGE_CURVE('',{vertex},{vertex},{circle},.T.)"
-            ));
-            Ok((center, axis, edge, seam_vertex))
-        };
-        let (bottom, axis, bottom_rim, from) = rim(centers[0])?;
-        let (top, _, top_rim, to) = rim(centers[1])?;
+        let bottom = CircularRim::new(file, centers[0], normal, reference, radius)?;
+        let top = CircularRim::new(file, centers[1], normal, reference, radius)?;
+        let axis = bottom.axis;
         let surface = file.entity(format_args!("CYLINDRICAL_SURFACE('',{axis},{radius:.16E})"));
-        let seam = line_edge(file, from, to)?;
+        let seam = line_edge(file, bottom.vertex, top.vertex)?;
         Ok(Self {
-            centers: [bottom, top],
-            rims: [bottom_rim, top_rim],
+            centers: [bottom.center, top.center],
+            rims: [bottom.edge, top.edge],
             seam,
             surface,
         })
@@ -882,20 +1003,11 @@ impl CylindricalTrim {
 
     fn cap_bound(&self, file: &mut StepFile, top: bool, outer: bool) -> Entity {
         // Circle curves follow the sweep axis. The bottom plane opposes it.
-        let edge = file.oriented_edge(self.rims[usize::from(top)], top == outer);
-        file.bound(&[edge], outer)
+        circular_bound(file, self.rims[usize::from(top)], top == outer, outer)
     }
 
     fn wall(&self, file: &mut StepFile, outward: bool) -> Entity {
-        // A periodic wall uses one seam edge twice with opposite orientations.
-        let edges = [
-            file.oriented_edge(self.rims[0], outward),
-            file.oriented_edge(self.seam, true),
-            file.oriented_edge(self.rims[1], !outward),
-            file.oriented_edge(self.seam, false),
-        ];
-        let bound = file.bound(&edges, true);
-        file.face_on(&[bound], self.surface, outward)
+        periodic_wall(file, self.rims, self.seam, self.surface, outward)
     }
 
     fn blind_faces(

@@ -1,5 +1,6 @@
 use super::*;
 use crate::{
+    chamfered_bores::ChamferedBores,
     stadium::Stadium,
     step_read::{MAX_PLANAR_STEP_BYTES, MAX_STEP_ENTITIES},
 };
@@ -130,7 +131,13 @@ impl Writer {
         v: Point,
         reverse_sweep: bool,
     ) -> Result<(), StepError> {
-        self.append_polygon(prism, &[], Placement::new(origin, u, v)?, reverse_sweep)
+        self.append_polygon(
+            prism,
+            &[],
+            &[],
+            Placement::new(origin, u, v)?,
+            reverse_sweep,
+        )
     }
 
     pub fn append_pocketed_polygon_prism(
@@ -143,13 +150,40 @@ impl Writer {
         reverse_sweep: bool,
     ) -> Result<(), StepError> {
         validate(prism, pockets, 1e-7, 1e-7).map_err(|_| StepError::InvalidGeometry)?;
-        self.append_polygon(prism, pockets, Placement::new(origin, u, v)?, reverse_sweep)
+        self.append_polygon(
+            prism,
+            pockets,
+            &[],
+            Placement::new(origin, u, v)?,
+            reverse_sweep,
+        )
+    }
+
+    pub fn append_chamfered_polygon_prism(
+        &mut self,
+        prism: &PolygonPrism,
+        chamfers: &[BoreChamfer],
+        origin: Point,
+        u: Point,
+        v: Point,
+        reverse_sweep: bool,
+    ) -> Result<(), StepError> {
+        let bores = ChamferedBores::new(prism, chamfers, 1e-7, 1e-7)
+            .map_err(|_| StepError::InvalidGeometry)?;
+        self.append_polygon(
+            prism,
+            &[],
+            bores.stacks(),
+            Placement::new(origin, u, v)?,
+            reverse_sweep,
+        )
     }
 
     fn append_polygon(
         &mut self,
         prism: &PolygonPrism,
         pockets: &[CircularPocket],
+        bore_stacks: &[BoreStack],
         placement: Placement,
         reverse_sweep: bool,
     ) -> Result<(), StepError> {
@@ -160,6 +194,7 @@ impl Writer {
                 &mut prism.rings().iter().map(Vec::as_slice),
                 prism.circular_holes(),
                 pockets,
+                bore_stacks,
                 placement,
                 if reverse_sweep { -height } else { height },
             )

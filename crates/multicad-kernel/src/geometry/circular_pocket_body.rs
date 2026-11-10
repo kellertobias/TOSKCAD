@@ -162,6 +162,9 @@ impl Solid {
                 "Rust blind drilling requires polygonal or orthogonal stock",
             ));
         };
+        if stock.bore_treatments.is_some() {
+            return Err(chamfered_stock());
+        }
         let normal = stock.frame.normal();
         if tools
             .iter()
@@ -259,6 +262,9 @@ impl Solid {
         holes: impl IntoIterator<Item = (Circle, Origin)>,
         policy: GeometryPolicy,
     ) -> Result<Self, GeometryError> {
+        if stock.bore_treatments.is_some() {
+            return Err(chamfered_stock());
+        }
         let mut circles = stock.prism.circular_holes().to_vec();
         let (mut origins, mut reversed): (Vec<_>, Vec<_>) = stock.edges.iter().cloned().unzip();
         for (circle, origin) in holes {
@@ -297,6 +303,9 @@ impl Solid {
         let SolidBody::PolygonPrism(placed) = &mut self.body else {
             return Err(input_error("Circular pockets require polygon stock"));
         };
+        if placed.bore_treatments.is_some() {
+            return Err(chamfered_stock());
+        }
         check_origins(pockets.len(), &origins)?;
         circular_pockets::validate(
             &placed.prism,
@@ -310,4 +319,12 @@ impl Solid {
         placed.pocket_origins = origins.into();
         Ok(self)
     }
+}
+
+fn chamfered_stock() -> GeometryError {
+    error(
+        OPERATION,
+        GeometryErrorKind::Unsupported,
+        "Rust drilling after a circular bore chamfer is not yet supported",
+    )
 }

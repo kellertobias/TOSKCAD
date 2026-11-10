@@ -13,6 +13,13 @@ pub(super) struct PocketRim {
     end: bool,
 }
 
+pub(super) struct PolygonCaps {
+    pub(super) upper: usize,
+    pub(super) height: f64,
+    pub(super) covered: BTreeSet<usize>,
+    pub(super) profile: Vec<u32>,
+}
+
 impl Shell<'_, '_> {
     pub(super) fn pocketed_polygon(&self, faces: &[Face]) -> Option<ImportSolid> {
         if !faces
@@ -37,7 +44,7 @@ impl Shell<'_, '_> {
         None
     }
 
-    fn adjacent_face(&self, edge: u32, face: usize) -> Option<usize> {
+    pub(super) fn adjacent_face(&self, edge: u32, face: usize) -> Option<usize> {
         self.edges[&edge]
             .uses
             .iter()
@@ -56,14 +63,14 @@ impl Shell<'_, '_> {
         opposed.next().is_none().then_some(far)
     }
 
-    fn match_pocketed_polygon(
+    pub(super) fn polygon_caps(
         &self,
         faces: &[Face],
         face_edges: &[Vec<u32>],
         lower: usize,
         bottom: Point,
         direction: Point,
-    ) -> Option<ImportSolid> {
+    ) -> Option<PolygonCaps> {
         let lines = |face: usize| {
             face_edges[face]
                 .iter()
@@ -88,7 +95,7 @@ impl Shell<'_, '_> {
         }
         let mut covered = BTreeSet::from([lower, upper]);
         let sweep = direction.map(|n| n * height);
-        let mut profile: Vec<_> = lines(lower).collect();
+        let profile: Vec<_> = lines(lower).collect();
         if profile.len() != lines(upper).count() {
             return None;
         }
@@ -100,6 +107,29 @@ impl Shell<'_, '_> {
             }
             self.wall_matches(&faces[wall], &face_edges[wall], edge, far, sweep)?;
         }
+        Some(PolygonCaps {
+            upper,
+            height,
+            covered,
+            profile,
+        })
+    }
+
+    fn match_pocketed_polygon(
+        &self,
+        faces: &[Face],
+        face_edges: &[Vec<u32>],
+        lower: usize,
+        bottom: Point,
+        direction: Point,
+    ) -> Option<ImportSolid> {
+        let PolygonCaps {
+            upper,
+            height,
+            mut covered,
+            mut profile,
+        } = self.polygon_caps(faces, face_edges, lower, bottom, direction)?;
+        let sweep = direction.map(|n| n * height);
         let mut rims = Vec::new();
         for (end, cap, opposite) in [(false, lower, upper), (true, upper, lower)] {
             for &edge in &face_edges[cap] {

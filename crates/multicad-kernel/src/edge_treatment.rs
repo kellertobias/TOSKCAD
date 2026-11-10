@@ -126,6 +126,17 @@ impl Solid {
         };
         policy.length(size)?;
         let indices = self.validate_treatment_edges(edges, feature)?;
+        if self.uses_rust_geometry() {
+            return match treatment {
+                EdgeTreatment::Chamfer { distance_mm } => {
+                    self.chamfer_polygon_bores(edges, distance_mm, policy)
+                }
+                EdgeTreatment::Fillet { .. } => Err(failure(
+                    GeometryErrorKind::Unsupported,
+                    "Rust does not yet support fillets on existing solid edges",
+                )),
+            };
+        }
         let handle = ffi::treat_edges(self.occt()?, &indices, mode, size)
             .map_err(|e| failure(GeometryErrorKind::Native, e.to_string()))?;
         let mut result = Self::adopt(handle, policy, "edge treatment")?;

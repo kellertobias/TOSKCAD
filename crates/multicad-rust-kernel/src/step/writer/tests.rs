@@ -8,6 +8,159 @@ fn size() -> [Rational; 3] {
     [5, 7, 9].map(|value| Rational::new(value, 1).unwrap())
 }
 
+fn split_cone_seam_identity(source: &str, cone_face: &str) -> String {
+    let record = |id: &str| {
+        source
+            .lines()
+            .find(|line| line.split_once('=').unwrap_or(("", "")).0 == id)
+            .unwrap()
+    };
+    let (_, args) = cone_face.split_once(",(").unwrap();
+    let bound_id = args.split_once(')').unwrap().0;
+    let loop_id = record(bound_id).split(',').nth(1).unwrap();
+    let oriented_id = record(loop_id)
+        .trim_end_matches("));")
+        .rsplit(',')
+        .next()
+        .unwrap();
+    let oriented = record(oriented_id);
+    let seam_id = oriented.split(',').nth(3).unwrap();
+    let duplicate = record(seam_id).replacen(seam_id, "#999999", 1);
+    source
+        .replacen(oriented, &oriented.replacen(seam_id, "#999999", 1), 1)
+        .replace(
+            "ENDSEC;\nEND-ISO",
+            &format!("{duplicate}\nENDSEC;\nEND-ISO"),
+        )
+}
+
+#[test]
+fn chamfered_through_bores_share_rims_with_analytic_cones_and_caps() {
+    use crate::step_read::{ImportProfile, ReadError, read_analytic_solid, read_import_solid};
+    let exact = |value| Rational::new(value, 1).unwrap();
+    let prism = PolygonPrism::with_circular_holes(
+        vec![
+            [[0, 0], [24, 0], [24, 18], [0, 18]]
+                .map(|uv| uv.map(exact))
+                .to_vec(),
+        ],
+        vec![
+            Circle::new([6, 9].map(exact), exact(2)).unwrap(),
+            Circle::new([18, 9].map(exact), exact(1)).unwrap(),
+        ],
+        exact(8),
+    )
+    .unwrap();
+    let chamfers = [
+        BoreChamfer {
+            hole: 0,
+            end: false,
+            size_mm: 1.,
+        },
+        BoreChamfer {
+            hole: 0,
+            end: true,
+            size_mm: 2.,
+        },
+    ];
+    let bores = ChamferedBores::new(&prism, &chamfers, 1e-7, 1e-7).unwrap();
+    let u = [0.8, 0.6, 0.];
+    let v = [-0.36, 0.48, 0.8];
+    for reverse in [false, true] {
+        let source =
+            write_chamfered_polygon_prism(&prism, &chamfers, [900., -200., 500.], u, v, reverse)
+                .unwrap();
+        let readback = read_analytic_solid(&source, 1e-7).unwrap();
+        assert_eq!(readback.face_count, 10);
+        assert_eq!(readback.circles.len(), 6);
+        assert_eq!(readback.edges_mm.len(), 12);
+        assert!((readback.volume_mm3 - bores.volume_mm3()).abs() < 1e-7);
+        assert_eq!(source.matches("=CONICAL_SURFACE(").count(), 2);
+        assert_eq!(source.matches("=CYLINDRICAL_SURFACE(").count(), 2);
+        let (_, imported) = read_import_solid(&source, 1e-7).unwrap();
+        let ImportProfile::ChamferedPolygon {
+            rings,
+            circular_holes,
+            chamfers,
+        } = imported.profile
+        else {
+            panic!("expected a polygon with countersunk bores");
+        };
+        assert_eq!(rings.len(), 1);
+        assert_eq!(circular_holes.len(), 2);
+        assert_eq!(chamfers.len(), 2);
+        assert!((imported.height_mm - 8.).abs() < 1e-7);
+        let sizes = if reverse { [1., 2.] } else { [2., 1.] };
+        for (i, chamfer) in chamfers.iter().enumerate() {
+            assert_eq!(chamfer.end, i == 1);
+            assert!((chamfer.size_mm - sizes[i]).abs() < 1e-7);
+            assert!((circular_holes[chamfer.hole].1 - 2.).abs() < 1e-7);
+        }
+
+        let cone = source
+            .lines()
+            .find(|line| line.contains("=CONICAL_SURFACE("))
+            .unwrap();
+        let (parameters, _) = cone.rsplit_once(',').unwrap();
+        let bad_angle = source.replacen(cone, &format!("{parameters},0.3);"), 1);
+        let (id, _) = cone.split_once('=').unwrap();
+        let cone_face = source
+            .lines()
+            .find(|line| line.ends_with(&format!(",{id},.F.);")))
+            .unwrap();
+        let bad_sense = source.replacen(cone_face, &cone_face.replace(".F.", ".T."), 1);
+        let missing_angle = source.replacen(cone, &format!("{parameters});"), 1);
+        let zero_angle = source.replacen(cone, &format!("{parameters},0.);"), 1);
+        let split_seam = split_cone_seam_identity(&source, cone_face);
+        for invalid in [bad_angle, bad_sense, missing_angle, zero_angle, split_seam] {
+            assert_eq!(read_analytic_solid(&invalid, 1e-7), Err(ReadError::Invalid));
+        }
+        let bad_units = source.replace("SI_UNIT($,.RADIAN.)", "SI_UNIT($,.DEGREE.)");
+        assert_eq!(
+            read_analytic_solid(&bad_units, 1e-7),
+            Err(ReadError::Unsupported)
+        );
+    }
+
+    // The stock is well-defined at its placement, but the nearly coincident
+    // cylinder rim vertices collapse after adding the large world offset.
+    let nearly_merged = [
+        BoreChamfer {
+            size_mm: 3.,
+            ..chamfers[0]
+        },
+        BoreChamfer {
+            size_mm: 2.999999,
+            ..chamfers[1]
+        },
+    ];
+    let thinner = PolygonPrism::with_circular_holes(
+        prism.rings().to_vec(),
+        prism.circular_holes().to_vec(),
+        exact(6),
+    )
+    .unwrap();
+    assert_eq!(
+        write_chamfered_polygon_prism(&thinner, &nearly_merged, [0., 0., 1e15], X, Y, false),
+        Err(StepError::InvalidGeometry),
+    );
+
+    let stadium = Stadium::new([[0., 0.], [4., 0.]], 1.).unwrap();
+    let source = write_stadium_prism(&stadium, 8., ORIGIN, X, Y, false).unwrap();
+    let cylinder = source
+        .lines()
+        .find(|line| line.contains("=CYLINDRICAL_SURFACE("))
+        .unwrap();
+    let cone = cylinder
+        .trim_end_matches(");")
+        .replace("CYLINDRICAL_SURFACE(", "CONICAL_SURFACE(");
+    let source = source.replacen(cylinder, &format!("{cone},0.5);"), 1);
+    assert_eq!(
+        read_analytic_solid(&source, 1e-7),
+        Err(ReadError::Unsupported)
+    );
+}
+
 #[test]
 fn rejected_member_rolls_back_geometry_and_entity_ids() {
     let mut writer = Writer::default();

@@ -301,6 +301,39 @@ impl Solid {
                 feature,
                 policy,
             ),
+            ImportProfile::ChamferedPolygon {
+                rings,
+                circular_holes,
+                chamfers,
+            } => {
+                let stock = Self::from_imported_polygon(
+                    &rings,
+                    &circular_holes,
+                    height_mm,
+                    frame,
+                    feature,
+                    policy,
+                )?;
+                let origins = chamfers
+                    .iter()
+                    .map(|chamfer| {
+                        let (center, radius) = circular_holes[chamfer.hole];
+                        (
+                            (chamfer.hole, chamfer.end),
+                            feature_origin(
+                                feature,
+                                "bore-chamfer",
+                                frame.point(center).into_iter().chain([
+                                    radius,
+                                    chamfer.size_mm,
+                                    f64::from(chamfer.end),
+                                ]),
+                            ),
+                        )
+                    })
+                    .collect();
+                stock.with_polygon_bore_treatments(&chamfers, origins, policy)
+            }
             ImportProfile::PocketedPolygon {
                 rings,
                 circular_holes,
