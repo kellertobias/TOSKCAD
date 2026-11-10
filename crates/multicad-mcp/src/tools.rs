@@ -1938,7 +1938,14 @@ fn extrude_faces(
 
 fn evaluate_model(host: &dyn Host, call: &Request, _: NoArgs) -> ToolResult {
     let (document, revision, _) = snapshot(host)?;
-    let model = compile(&document, revision, call)?;
+    let interrupt = || call.cancelled();
+    let model = call.finish(
+        Compiler {
+            omit_display: true,
+            ..Default::default()
+        }
+        .compile_with_backend(&document, revision, call.backend, Some(&interrupt)),
+    )?;
     let snapshot = model.snapshot();
     let parts: Vec<_> = snapshot
         .bodies

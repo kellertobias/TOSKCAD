@@ -6,14 +6,25 @@ use multicad_core::{
 use serde_json::{Value, json};
 use std::{path::Path, process::Command};
 fn invoke(project: &Path, request: &Path, flags: &[&str]) -> (bool, Value) {
-    let output = Command::new(env!("CARGO_BIN_EXE_multicad"))
+    invoke_with_model_timings(project, request, flags, None)
+}
+fn invoke_with_model_timings(
+    project: &Path,
+    request: &Path,
+    flags: &[&str],
+    timings: Option<&Path>,
+) -> (bool, Value) {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_multicad"));
+    command
         .arg("--command")
         .arg(request)
         .arg("--project")
         .arg(project)
-        .args(flags)
-        .output()
-        .unwrap();
+        .args(flags);
+    if let Some(timings) = timings {
+        command.env("MULTICAD_MODEL_TIMINGS_JSONL", timings);
+    }
+    let output = command.output().unwrap();
     let receipt = serde_json::from_slice(&output.stdout).unwrap_or_else(|e| {
         panic!(
             "{e}: stdout={} stderr={}",
@@ -41,8 +52,16 @@ fn built_rust_backend_rebuilds_the_complete_saved_toolcase() {
     } else {
         &["--read-only"]
     };
-    let (ok, receipt) = invoke(&project, &request, flags);
+    let timings = dir.path().join("model-timings.jsonl");
+    let (ok, receipt) = invoke_with_model_timings(&project, &request, flags, Some(&timings));
     assert!(ok, "{receipt}");
+    let log = std::fs::read_to_string(timings).unwrap();
+    let entries: Vec<Value> = log
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0]["omit_display"], true);
     let model = &receipt["result"];
     assert_eq!(model["scope"], "full");
     assert_eq!(model["physical_leaves"].as_array().unwrap().len(), 169);
