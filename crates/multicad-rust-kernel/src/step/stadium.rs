@@ -1,5 +1,6 @@
 use super::{
     Entity, Placement, Point, StepError, StepFile, Vertex, cross, direction, dot, line_edge,
+    write_one,
 };
 use crate::{
     orthogonal_boundary::BoundaryFace, orthogonal_pockets::FacePlane,
@@ -15,6 +16,18 @@ pub fn write_stadium_prism(
     v: Point,
     reverse_sweep: bool,
 ) -> Result<String, StepError> {
+    write_one(|writer| writer.append_stadium_prism(profile, height, origin, u, v, reverse_sweep))
+}
+
+pub(super) fn encode_stadium_prism(
+    file: &mut StepFile,
+    profile: &Stadium,
+    height: f64,
+    origin: Point,
+    u: Point,
+    v: Point,
+    reverse_sweep: bool,
+) -> Result<Entity, StepError> {
     if !height.is_finite() || height <= 0. {
         return Err(StepError::InvalidGeometry);
     }
@@ -24,20 +37,11 @@ pub fn write_stadium_prism(
     } else {
         [0., height]
     };
-    let mut file = StepFile::new();
     let [low, high] = levels.map(|z| StadiumLevel::new(*profile, |xy| placement.point_f64(xy, z)));
-    let trim = StadiumTrim::new(
-        &mut file,
-        [low, high],
-        placement.normal,
-        profile.radius_mm(),
-    )?;
-    let mut faces = vec![
-        trim.cap(&mut file, 0, false, u),
-        trim.cap(&mut file, 1, true, u),
-    ];
-    faces.extend(trim.walls(&mut file, true));
-    Ok(file.finish_solid(&faces))
+    let trim = StadiumTrim::new(file, [low, high], placement.normal, profile.radius_mm())?;
+    let mut faces = vec![trim.cap(file, 0, false, u), trim.cap(file, 1, true, u)];
+    faces.extend(trim.walls(file, true));
+    Ok(file.solid(&faces))
 }
 
 struct StadiumLevel {

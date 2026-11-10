@@ -17,14 +17,18 @@ use crate::{
 use std::{collections::BTreeMap, fmt, fmt::Write, ops::Range};
 
 mod stadium;
+mod writer;
 use stadium::StadiumTrim;
 pub use stadium::write_stadium_prism;
+use writer::write_one;
+pub use writer::{MAX_COMPOUND_SOLIDS, Writer};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StepError {
     Unsupported,
     InvalidPlacement,
     InvalidGeometry,
+    Limit,
 }
 
 type Point = [f64; 3];
@@ -34,10 +38,7 @@ pub fn write_orthogonal(
     boundary: &Boundary,
     transform: impl Fn(Point) -> Point,
 ) -> Result<String, StepError> {
-    if !boundary.supports_step() {
-        return Err(StepError::Unsupported);
-    }
-    write_orthogonal_placed(boundary, &[], &[], &transform)
+    write_one(|writer| writer.append_orthogonal(boundary, transform))
 }
 
 /// Whether certified recesses and the stock fit STEP's topology budget.
@@ -72,7 +73,7 @@ pub fn write_pocketed_orthogonal(
     pockets: &[OrthogonalPocket],
     transform: &dyn Fn(Point) -> Point,
 ) -> Result<String, StepError> {
-    write_slotted_orthogonal(geometry, boundary, pockets, &[], transform)
+    write_one(|writer| writer.append_pocketed_orthogonal(geometry, boundary, pockets, transform))
 }
 
 /// Write machined orthogonal stock with exact circular pockets and blind rounded slots.
@@ -83,20 +84,18 @@ pub fn write_slotted_orthogonal(
     slots: &[OrthogonalSlot],
     transform: &dyn Fn(Point) -> Point,
 ) -> Result<String, StepError> {
-    if !supports_slotted_orthogonal(boundary, pockets, slots) {
-        return Err(StepError::Unsupported);
-    }
-    orthogonal_slots::validate(geometry, boundary, slots, pockets, 1e-7, 1e-7)
-        .map_err(|_| StepError::InvalidGeometry)?;
-    write_orthogonal_placed(boundary, pockets, slots, transform)
+    write_one(|writer| {
+        writer.append_slotted_orthogonal(geometry, boundary, pockets, slots, transform)
+    })
 }
 
-fn write_orthogonal_placed(
+fn encode_orthogonal(
+    file: &mut StepFile,
     boundary: &Boundary,
     pockets: &[OrthogonalPocket],
     slots: &[OrthogonalSlot],
     transform: &dyn Fn(Point) -> Point,
-) -> Result<String, StepError> {
+) -> Result<Entity, StepError> {
     let mut points = Vec::new();
     let mut indices = BTreeMap::new();
     for point in boundary.faces.iter().flat_map(|face| &face.rings).flatten() {
@@ -113,7 +112,7 @@ fn write_orthogonal_placed(
             points.push(placed);
         }
     }
-    let mut brep = BRep::new(points);
+    let mut brep = BRep::new(file, points);
     let cavity_face_count = 2 * pockets.len() + 5 * slots.len();
     let mut faces = Vec::with_capacity(boundary.faces.len() + cavity_face_count);
     let mut pocket_faces = Vec::with_capacity(cavity_face_count);
@@ -142,25 +141,25 @@ fn write_orthogonal_placed(
         for pocket in pockets.iter().filter(|pocket| pocket.face == index) {
             let floor = pocket.floor_center_mm(face.normal);
             let trim = CylindricalTrim::new(
-                &mut brep.file,
+                brep.file,
                 [floor, pocket.center_mm].map(transform),
                 normal,
                 reference,
                 pocket.radius_mm,
             )?;
-            bounds.push(trim.cap_bound(&mut brep.file, true, false));
-            pocket_faces.extend(trim.blind_faces(&mut brep.file, true, normal, reference));
+            bounds.push(trim.cap_bound(brep.file, true, false));
+            pocket_faces.extend(trim.blind_faces(brep.file, true, normal, reference));
         }
         for slot in slots.iter().filter(|slot| slot.face == index) {
-            let trim = StadiumTrim::blind(&mut brep.file, *slot, face, normal, transform)?;
-            bounds.push(trim.bound(&mut brep.file, 1, false, false));
-            pocket_faces.extend(trim.walls(&mut brep.file, false));
-            pocket_faces.push(trim.cap(&mut brep.file, 0, true, reference));
+            let trim = StadiumTrim::blind(brep.file, *slot, face, normal, transform)?;
+            bounds.push(trim.bound(brep.file, 1, false, false));
+            pocket_faces.extend(trim.walls(brep.file, false));
+            pocket_faces.push(trim.cap(brep.file, 0, true, reference));
         }
         faces.push(brep.file.face(&bounds, point, normal, reference));
     }
     faces.extend(pocket_faces);
-    Ok(brep.file.finish_solid(&faces))
+    Ok(brep.file.solid(&faces))
 }
 
 fn orthogonal_support(
@@ -206,14 +205,7 @@ pub fn write_polygon_prism(
     v: Point,
     reverse_sweep: bool,
 ) -> Result<String, StepError> {
-    let height = prism.height().as_f64();
-    write_prism(
-        &mut prism.rings().iter().map(Vec::as_slice),
-        prism.circular_holes(),
-        &[],
-        Placement::new(origin, u, v)?,
-        if reverse_sweep { -height } else { height },
-    )
+    write_one(|writer| writer.append_polygon_prism(prism, origin, u, v, reverse_sweep))
 }
 
 /// Write an analytic polygonal prism with cylindrical blind pockets on
@@ -227,15 +219,9 @@ pub fn write_pocketed_polygon_prism(
     v: Point,
     reverse_sweep: bool,
 ) -> Result<String, StepError> {
-    validate(prism, pockets, 1e-7, 1e-7).map_err(|_| StepError::InvalidGeometry)?;
-    let height = prism.height().as_f64();
-    write_prism(
-        &mut prism.rings().iter().map(Vec::as_slice),
-        prism.circular_holes(),
-        pockets,
-        Placement::new(origin, u, v)?,
-        if reverse_sweep { -height } else { height },
-    )
+    write_one(|writer| {
+        writer.append_pocketed_polygon_prism(prism, pockets, origin, u, v, reverse_sweep)
+    })
 }
 
 /// Write a planar sweep with a common boundary graph for its ruled faces.
@@ -245,27 +231,7 @@ pub fn write_linear_sweep(
     u: Point,
     v: Point,
 ) -> Result<String, StepError> {
-    let placement = Placement::new(origin, u, v)?;
-    let height = sweep.height_mm();
-    write_planar_sweep(
-        &placement,
-        sweep.base(),
-        [([0., 0., -1.], [1., 0., 0.]), ([0., 0., 1.], [1., 0., 0.])],
-        |end, ring, vertex| {
-            if end {
-                let [x, y] = sweep.top()[ring][vertex];
-                [x, y, height]
-            } else {
-                let [x, y] = sweep.base()[ring][vertex];
-                [x, y, 0.]
-            }
-        },
-        |ring, vertex| {
-            let [x, y] = sweep.base()[ring][vertex];
-            let [top_x, top_y] = sweep.top()[ring][vertex];
-            direction([0.; 3], [top_x - x, top_y - y, height])
-        },
-    )
+    write_one(|writer| writer.append_linear_sweep(sweep, origin, u, v))
 }
 
 /// Write a straight prism clipped between planar caps in a rigid world frame.
@@ -275,33 +241,17 @@ pub fn write_trimmed_sweep(
     u: Point,
     v: Point,
 ) -> Result<String, StepError> {
-    let placement = Placement::new(origin, u, v)?;
-    let supports = [false, true].map(|end| {
-        let normal = sweep.cap_normal(end);
-        // Pick a basis axis well away from parallel to the face normal.
-        let mut indices = [0, 1, 2];
-        indices.sort_unstable_by(|&a, &b| normal[a].abs().total_cmp(&normal[b].abs()));
-        let mut axis = [0.; 3];
-        axis[indices[0]] = 1.;
-        let reference = cross(cross(normal, axis), normal);
-        (normal, reference)
-    });
-    write_planar_sweep(
-        &placement,
-        sweep.rings(),
-        supports,
-        |end, ring, vertex| sweep.point(end, sweep.rings()[ring][vertex]),
-        |_, _| Ok(sweep.direction()),
-    )
+    write_one(|writer| writer.append_trimmed_sweep(sweep, origin, u, v))
 }
 
-fn write_planar_sweep(
+fn encode_planar_sweep(
+    file: &mut StepFile,
     placement: &Placement,
     rings: &[Vec<[f64; 2]>],
     cap_supports: [(Point, Point); 2],
     point: impl Fn(bool, usize, usize) -> Point,
     generator: impl Fn(usize, usize) -> Result<Point, StepError>,
-) -> Result<String, StepError> {
+) -> Result<Entity, StepError> {
     let mut ranges = Vec::with_capacity(rings.len());
     let mut count = 0;
     for ring in rings {
@@ -317,7 +267,7 @@ fn write_planar_sweep(
             }));
         }
     }
-    let mut brep = BRep::new(points);
+    let mut brep = BRep::new(file, points);
     let mut faces = Vec::with_capacity(count + 2);
     for (cap, (normal, reference)) in cap_supports.into_iter().enumerate() {
         faces.push(brep.cap(
@@ -348,7 +298,7 @@ fn write_planar_sweep(
             );
         }
     }
-    Ok(brep.file.finish_solid(&faces))
+    Ok(brep.file.solid(&faces))
 }
 
 /// Write the exact +Z cylinder, using a horizontal unit vector for the seam.
@@ -356,15 +306,7 @@ pub fn write_axial_cylinder(
     cylinder: &AxialCylinder,
     reference: Point,
 ) -> Result<String, StepError> {
-    let axis = [0., 0., 1.];
-    if reference[2] != 0. {
-        return Err(StepError::InvalidPlacement);
-    }
-    let [x, y] = cylinder.circle().center().map(Rational::as_f64);
-    let bottom = [x, y, cylinder.bottom().as_f64()];
-    let placement = Placement::new(bottom, reference, cross(axis, reference))?;
-    let top = [x, y, cylinder.top().as_f64()];
-    write_circular_between(placement, top, cylinder.circle().radius().as_f64(), None)
+    write_one(|writer| writer.append_axial_cylinder(cylinder, reference))
 }
 
 /// Write the same exact cylinder in a rigid world frame at its bottom center.
@@ -374,14 +316,7 @@ pub fn write_placed_cylinder(
     reference: Point,
     side: Point,
 ) -> Result<String, StepError> {
-    write_placed_circular_sweep(
-        cylinder.circle().radius().as_f64(),
-        None,
-        cylinder.height().as_f64(),
-        bottom,
-        reference,
-        side,
-    )
+    write_one(|writer| writer.append_placed_cylinder(cylinder, bottom, reference, side))
 }
 
 /// Write a coaxial annulus as two trimmed planar caps and two analytic
@@ -392,14 +327,7 @@ pub fn write_placed_annulus(
     reference: Point,
     side: Point,
 ) -> Result<String, StepError> {
-    write_placed_circular_sweep(
-        annulus.outer_radius_mm(),
-        Some(annulus.inner_radius_mm()),
-        annulus.height_mm(),
-        bottom,
-        reference,
-        side,
-    )
+    write_one(|writer| writer.append_placed_annulus(annulus, bottom, reference, side))
 }
 
 /// Encode an exact full circular sweep with an optional concentric bore.
@@ -411,50 +339,49 @@ pub fn write_placed_circular_sweep(
     reference: Point,
     side: Point,
 ) -> Result<String, StepError> {
-    if ![outer_radius, height]
-        .into_iter()
-        .chain(inner_radius)
-        .all(|v| v.is_finite() && v > 0.)
-        || inner_radius.is_some_and(|inner| inner >= outer_radius)
-    {
-        return Err(StepError::InvalidGeometry);
-    }
-    let placement = Placement::new(bottom, reference, side)?;
-    let top = std::array::from_fn(|i| bottom[i] + placement.normal[i] * height);
-    write_circular_between(placement, top, outer_radius, inner_radius)
+    write_one(|writer| {
+        writer.append_placed_circular_sweep(
+            outer_radius,
+            inner_radius,
+            height,
+            bottom,
+            reference,
+            side,
+        )
+    })
 }
 
-fn write_circular_between(
+fn encode_circular_between(
+    file: &mut StepFile,
     placement: Placement,
     top: Point,
     outer_radius: f64,
     inner_radius: Option<f64>,
-) -> Result<String, StepError> {
+) -> Result<Entity, StepError> {
     let Placement {
         origin: bottom,
         u: reference,
         normal: axis,
         ..
     } = placement;
-    let mut file = StepFile::new();
-    let outer = CylindricalTrim::new(&mut file, [bottom, top], axis, reference, outer_radius)?;
+    let outer = CylindricalTrim::new(file, [bottom, top], axis, reference, outer_radius)?;
     let inner = inner_radius
-        .map(|radius| CylindricalTrim::new(&mut file, [bottom, top], axis, reference, radius))
+        .map(|radius| CylindricalTrim::new(file, [bottom, top], axis, reference, radius))
         .transpose()?;
     let mut cap = |top: bool, normal| {
-        let mut bounds = vec![outer.cap_bound(&mut file, top, true)];
+        let mut bounds = vec![outer.cap_bound(file, top, true)];
         if let Some(inner) = &inner {
-            bounds.push(inner.cap_bound(&mut file, top, false));
+            bounds.push(inner.cap_bound(file, top, false));
         }
         file.face(&bounds, outer.centers[usize::from(top)], normal, reference)
     };
     let bottom_face = cap(false, axis.map(|x| -x));
     let top_face = cap(true, axis);
-    let mut faces = vec![bottom_face, top_face, outer.wall(&mut file, true)];
+    let mut faces = vec![bottom_face, top_face, outer.wall(file, true)];
     if let Some(inner) = &inner {
-        faces.push(inner.wall(&mut file, false));
+        faces.push(inner.wall(file, false));
     }
-    Ok(file.finish_solid(&faces))
+    Ok(file.solid(&faces))
 }
 
 pub fn write_box(
@@ -463,7 +390,7 @@ pub fn write_box(
     u: Point,
     v: Point,
 ) -> Result<String, StepError> {
-    write_rectangle(size, &[], Placement::new(origin, u, v)?)
+    write_one(|writer| writer.append_box(size, origin, u, v))
 }
 
 pub fn write_rectangular_prism(
@@ -472,18 +399,15 @@ pub fn write_rectangular_prism(
     u: Point,
     v: Point,
 ) -> Result<String, StepError> {
-    if prism.rounded_end().is_some() {
-        return Err(StepError::Unsupported);
-    }
-    let holes: Vec<_> = prism.inner_loops().map(|(_, circle)| circle).collect();
-    write_rectangle(prism.dimensions(), &holes, Placement::new(origin, u, v)?)
+    write_one(|writer| writer.append_rectangular_prism(prism, origin, u, v))
 }
 
-fn write_rectangle(
+fn encode_rectangle(
+    file: &mut StepFile,
     size: [Rational; 3],
     holes: &[Circle],
     placement: Placement,
-) -> Result<String, StepError> {
+) -> Result<Entity, StepError> {
     let [length, width, height] = size;
     if size.iter().any(|extent| extent.numerator <= 0) {
         return Err(StepError::InvalidGeometry);
@@ -493,7 +417,8 @@ fn write_rectangle(
         denominator: 1,
     };
     let ring = [[zero, zero], [length, zero], [length, width], [zero, width]];
-    write_prism(
+    encode_prism(
+        file,
         &mut [ring.as_slice()].into_iter(),
         holes,
         &[],
@@ -556,13 +481,14 @@ impl Placement {
     }
 }
 
-fn write_prism(
+fn encode_prism(
+    file: &mut StepFile,
     rings: &mut dyn Iterator<Item = &[[Rational; 2]]>,
     circular_holes: &[Circle],
     pockets: &[CircularPocket],
     placement: Placement,
     end: f64,
-) -> Result<String, StepError> {
+) -> Result<Entity, StepError> {
     let mut base = Vec::new();
     let mut far = Vec::new();
     let mut ranges = Vec::new();
@@ -574,14 +500,14 @@ fn write_prism(
     }
     let count = base.len();
     base.extend(far);
-    let mut brep = BRep::new(base);
+    let mut brep = BRep::new(file, base);
     let reverse = end < 0.;
     let normal = placement.normal.map(|n| if reverse { -n } else { n });
     let round_trims = circular_holes
         .iter()
         .map(|circle| {
             CylindricalTrim::new(
-                &mut brep.file,
+                brep.file,
                 [0., end].map(|z| placement.point(circle.center(), z)),
                 normal,
                 placement.u,
@@ -598,7 +524,7 @@ fn write_prism(
                 levels.reverse();
             }
             CylindricalTrim::new(
-                &mut brep.file,
+                brep.file,
                 levels.map(|z| placement.point_f64(pocket.center_mm, z * end.signum())),
                 normal,
                 placement.u,
@@ -650,15 +576,11 @@ fn write_prism(
             faces.push(brep.file.face(&[boundary], point, normal, tangent));
         }
     }
-    faces.extend(
-        round_trims
-            .iter()
-            .map(|trim| trim.wall(&mut brep.file, false)),
-    );
+    faces.extend(round_trims.iter().map(|trim| trim.wall(brep.file, false)));
     for (mouth, trim) in blind_trims {
-        faces.extend(trim.blind_faces(&mut brep.file, mouth, normal, placement.u));
+        faces.extend(trim.blind_faces(brep.file, mouth, normal, placement.u));
     }
-    Ok(brep.file.finish_solid(&faces))
+    Ok(brep.file.solid(&faces))
 }
 
 #[derive(Clone, Copy)]
@@ -782,13 +704,12 @@ impl StepFile {
         self.entity(format_args!("{entity}('',{wire},.T.)"))
     }
 
-    fn finish_solid(mut self, faces: &[Entity]) -> String {
+    fn solid(&mut self, faces: &[Entity]) -> Entity {
         let shell = self.entity(format_args!("CLOSED_SHELL('',{})", Entities(faces)));
-        let solid = self.entity(format_args!("MANIFOLD_SOLID_BREP('',{shell})"));
-        self.finish(solid)
+        self.entity(format_args!("MANIFOLD_SOLID_BREP('',{shell})"))
     }
 
-    fn finish(mut self, solid: Entity) -> String {
+    fn finish(&mut self, solids: Vec<Entity>) {
         let context = self.entity(format_args!(
             "APPLICATION_CONTEXT('core data for automotive mechanical design processes')"
         ));
@@ -821,8 +742,12 @@ impl StepFile {
         let spatial_context = self.entity(format_args!("(GEOMETRIC_REPRESENTATION_CONTEXT(3) GLOBAL_UNCERTAINTY_ASSIGNED_CONTEXT(({uncertainty})) GLOBAL_UNIT_ASSIGNED_CONTEXT(({length},{angle},{solid_angle})) REPRESENTATION_CONTEXT('',''))"));
         let origin = self.point([0.; 3]);
         let axis = self.axis(origin, [0., 0., 1.], [1., 0., 0.]);
+        let mut items = Vec::with_capacity(solids.len() + 1);
+        items.push(axis);
+        items.extend(solids);
         let representation = self.entity(format_args!(
-            "ADVANCED_BREP_SHAPE_REPRESENTATION('',({axis},{solid}),{spatial_context})"
+            "ADVANCED_BREP_SHAPE_REPRESENTATION('',{},{spatial_context})",
+            Entities(&items),
         ));
         self.entity(format_args!(
             "SHAPE_DEFINITION_REPRESENTATION({shape},{representation})"
@@ -831,7 +756,6 @@ impl StepFile {
             "PRODUCT_RELATED_PRODUCT_CATEGORY('part',$,({product}))"
         ));
         self.data.push_str("ENDSEC;\nEND-ISO-10303-21;\n");
-        self.data
     }
 }
 
@@ -842,15 +766,14 @@ struct Vertex {
     vertex: Entity,
 }
 
-struct BRep {
-    file: StepFile,
+struct BRep<'a> {
+    file: &'a mut StepFile,
     vertices: Vec<Vertex>,
     edges: BTreeMap<[usize; 2], Entity>,
 }
 
-impl BRep {
-    fn new(points: Vec<Point>) -> Self {
-        let mut file = StepFile::new();
+impl<'a> BRep<'a> {
+    fn new(file: &'a mut StepFile, points: Vec<Point>) -> Self {
         let vertices = points.into_iter().map(|point| file.vertex(point)).collect();
         Self {
             file,
@@ -865,7 +788,7 @@ impl BRep {
             std::collections::btree_map::Entry::Occupied(entry) => *entry.get(),
             std::collections::btree_map::Entry::Vacant(entry) => {
                 let [from, to] = indices.map(|i| self.vertices[i]);
-                *entry.insert(line_edge(&mut self.file, from, to)?)
+                *entry.insert(line_edge(self.file, from, to)?)
             }
         };
         Ok(self.file.oriented_edge(edge, a < b))
@@ -880,10 +803,10 @@ impl BRep {
         Ok(self.file.bound(&edges, outer))
     }
 
-    fn cap<'a>(
+    fn cap<'trim>(
         &mut self,
         ranges: &[Range<usize>],
-        round_trims: impl Iterator<Item = &'a CylindricalTrim>,
+        round_trims: impl Iterator<Item = &'trim CylindricalTrim>,
         offset: usize,
         normal: Point,
         reference: Point,
@@ -900,7 +823,7 @@ impl BRep {
                 self.bound(&ring, i == 0)
             })
             .collect::<Result<Vec<_>, _>>()?;
-        bounds.extend(round_trims.map(|trim| trim.cap_bound(&mut self.file, offset != 0, false)));
+        bounds.extend(round_trims.map(|trim| trim.cap_bound(self.file, offset != 0, false)));
         let point = self.vertices[offset].cartesian;
         Ok(self.file.face(&bounds, point, normal, reference))
     }

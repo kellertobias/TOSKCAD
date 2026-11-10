@@ -1,7 +1,8 @@
-//! Readback for a single millimetre STEP advanced solid bounded by planes and
-//! full or half cylindrical walls. The reader follows the shared topology in the
-//! file and integrates the analytic boundary without tessellating it.
+//! Readback for millimetre STEP advanced solids bounded by planes and full or
+//! half cylindrical walls. The reader verifies each shell and integrates its
+//! analytic boundary without tessellating it.
 
+mod compound;
 mod curve;
 mod import;
 mod part21;
@@ -9,7 +10,7 @@ mod round;
 mod stadium;
 
 use crate::polygon::MAX_VERTICES;
-pub use import::{ImportProfile, ImportSolid, read_import_solid};
+pub use import::{ImportProfile, ImportSolid, read_import_compound, read_import_solid};
 use part21::{Entity, Value};
 use round::Trim;
 use stadium::{HalfCylinder, StadiumLoop};
@@ -17,6 +18,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 /// Maximum size of a Part 21 file accepted by either reader.
 pub const MAX_PLANAR_STEP_BYTES: usize = part21::MAX_BYTES;
+pub(crate) const MAX_STEP_ENTITIES: usize = part21::MAX_ENTITIES;
 
 type Point = [f64; 3];
 type Point2 = [f64; 2];
@@ -71,11 +73,20 @@ pub fn read_analytic_solid(input: &str, tolerance_mm: f64) -> Result<Readback> {
     read(input, tolerance_mm, true)
 }
 
+/// Verify the independent members of one flat advanced BREP representation.
+/// Each readback describes one member, in the order listed in the STEP file.
+pub fn read_analytic_compound(input: &str, tolerance_mm: f64) -> Result<Vec<Readback>> {
+    compound::read_members(input, tolerance_mm, true, false, readback_member)
+}
+
 fn read(input: &str, tolerance_mm: f64, allow_circles: bool) -> Result<Readback> {
-    let entities = parse_entities(input, tolerance_mm)?;
-    let mut shell = Shell::new(&entities, tolerance_mm, allow_circles);
-    let faces = shell.validated_faces()?;
-    shell.readback(&faces)
+    compound::read_members(input, tolerance_mm, allow_circles, true, readback_member)?
+        .pop()
+        .ok_or(ReadError::Invalid)
+}
+
+fn readback_member(shell: &Shell<'_, '_>, faces: &[Face]) -> Result<Readback> {
+    shell.readback(faces)
 }
 
 fn parse_entities(input: &str, tolerance_mm: f64) -> Result<BTreeMap<u32, Vec<Entity<'_>>>> {
@@ -259,8 +270,12 @@ impl<'a, 'input> Shell<'a, 'input> {
         Ok(&entity.args)
     }
 
+    #[cfg(test)]
     fn validated_faces(&mut self) -> Result<Vec<Face>> {
-        let face_ids = self.shell_faces()?;
+        self.validate_faces(self.shell_faces()?)
+    }
+
+    fn validate_faces(&mut self, face_ids: Vec<u32>) -> Result<Vec<Face>> {
         let distinct: BTreeSet<_> = face_ids.iter().collect();
         let minimum_faces = if self.allow_circles { 3 } else { 4 };
         if face_ids.len() < minimum_faces || distinct.len() != face_ids.len() {
@@ -326,7 +341,7 @@ impl<'a, 'input> Shell<'a, 'input> {
         })
     }
 
-    fn shell_faces(&self) -> Result<Vec<u32>> {
+    fn represented_solids(&self, single: bool) -> Result<Vec<u32>> {
         let mut representations = self.entities.iter().filter_map(|(&id, components)| {
             let [entity] = components.as_slice() else {
                 return None;
@@ -350,19 +365,36 @@ impl<'a, 'input> Shell<'a, 'input> {
             return Err(ReadError::Invalid);
         }
         self.check_units(reference(context)?)?;
-        let mut solid = None;
+        let mut solids = Vec::new();
+        let mut seen = BTreeSet::new();
         for id in refs(items)? {
+            if !seen.insert(id) {
+                return Err(ReadError::Invalid);
+            }
             match self.simple(id)?.name {
                 "AXIS2_PLACEMENT_3D" => {
                     self.placement(id)?;
                 }
-                "MANIFOLD_SOLID_BREP" if solid.is_none() => solid = Some(id),
+                "MANIFOLD_SOLID_BREP" => solids.push(id),
                 _ => return Err(ReadError::Unsupported),
             }
         }
-        let [Value::String(_), shell] =
-            self.args(solid.ok_or(ReadError::Unsupported)?, "MANIFOLD_SOLID_BREP")?
-        else {
+        if solids.is_empty() || (single && solids.len() != 1) {
+            return Err(ReadError::Unsupported);
+        }
+        if solids.len() > crate::step::MAX_COMPOUND_SOLIDS {
+            return Err(ReadError::Limit);
+        }
+        Ok(solids)
+    }
+
+    #[cfg(test)]
+    fn shell_faces(&self) -> Result<Vec<u32>> {
+        self.member_faces(self.represented_solids(true)?[0])
+    }
+
+    fn member_faces(&self, solid: u32) -> Result<Vec<u32>> {
+        let [Value::String(_), shell] = self.args(solid, "MANIFOLD_SOLID_BREP")? else {
             return Err(ReadError::Invalid);
         };
         let [Value::String(_), faces] = self.args(reference(shell)?, "CLOSED_SHELL")? else {

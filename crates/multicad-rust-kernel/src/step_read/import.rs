@@ -80,16 +80,27 @@ pub struct ImportSolid {
 /// Decode a single analytic extrusion or rectilinear solid from a verified
 /// STEP shell. Orthogonal solids can contain blind and through pockets.
 pub fn read_import_solid(input: &str, tolerance_mm: f64) -> Result<(Readback, ImportSolid)> {
-    let entities = parse_entities(input, tolerance_mm)?;
-    let mut shell = Shell::new(&entities, tolerance_mm, true);
-    let faces = shell.validated_faces()?;
-    let readback = shell.readback(&faces)?;
+    compound::read_members(input, tolerance_mm, true, true, recognize_member)?
+        .pop()
+        .ok_or(ReadError::Invalid)
+}
+
+/// Decode the independent analytic members of one flat advanced BREP representation.
+pub fn read_import_compound(
+    input: &str,
+    tolerance_mm: f64,
+) -> Result<Vec<(Readback, ImportSolid)>> {
+    compound::read_members(input, tolerance_mm, true, false, recognize_member)
+}
+
+fn recognize_member(shell: &Shell<'_, '_>, faces: &[Face]) -> Result<(Readback, ImportSolid)> {
+    let readback = shell.readback(faces)?;
     let solid = match shell
-        .recognize(&faces)
-        .or_else(|| shell.pocketed_polygon(&faces))
+        .recognize(faces)
+        .or_else(|| shell.pocketed_polygon(faces))
     {
         Some(solid) => solid,
-        None => shell.orthogonal(&faces)?,
+        None => shell.orthogonal(faces)?,
     };
     Ok((readback, solid))
 }

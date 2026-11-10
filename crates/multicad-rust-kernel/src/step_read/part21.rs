@@ -4,7 +4,7 @@ use super::ReadError;
 use std::collections::BTreeMap;
 
 pub(super) const MAX_BYTES: usize = 16 * 1024 * 1024;
-const MAX_ENTITIES: usize = 131_072;
+pub(super) const MAX_ENTITIES: usize = 131_072;
 const MAX_VALUES: usize = 1_048_576;
 const MAX_DEPTH: usize = 24;
 const MAX_TOKEN_BYTES: usize = 64 * 1024;
