@@ -187,6 +187,7 @@ pub fn project_drawing(
         }
         if let [input] = solids
             && let Some(projection) = panel::project(input, options)
+                .or_else(|| panel::project_chamfered_bores(input, options))
                 .or_else(|| panel::project_normal_sweep(input, options))
                 .or_else(|| panel::project_spur_gear(input, options))
         {
