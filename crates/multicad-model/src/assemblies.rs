@@ -51,17 +51,26 @@ impl CachedLeaves {
     }
 }
 impl LeafStore {
+    fn paths<T>(
+        map: &BTreeMap<OccurrencePath, T>,
+        root: EntityId,
+    ) -> impl Iterator<Item = (&OccurrencePath, &T)> {
+        // OccurrencePath orders by root first, then member sequence. An empty
+        // member sequence starts the contiguous range for this root.
+        map.range(
+            OccurrencePath {
+                root,
+                members: vec![],
+            }..,
+        )
+        .take_while(move |(path, _)| path.root == root)
+    }
+
     pub(crate) fn capture(&self, root: EntityId) -> Option<CachedLeaves> {
-        let snapshots = self
-            .snapshots
-            .iter()
-            .filter(|(path, _)| path.root == root)
+        let snapshots = Self::paths(&self.snapshots, root)
             .map(|(path, leaf)| (path.clone(), leaf.clone()))
             .collect();
-        let solids = self
-            .solids
-            .iter()
-            .filter(|(path, _)| path.root == root)
+        let solids = Self::paths(&self.solids, root)
             .map(|(path, solid)| Some((path.clone(), solid.share().ok()?)))
             .collect::<Option<_>>()?;
         Some(CachedLeaves { snapshots, solids })
@@ -167,11 +176,8 @@ impl LeafStore {
                 occurrence.topology.clone(),
             );
         }
-        let source = self
-            .snapshots
-            .values()
-            .filter(|leaf| leaf.path.root == occurrence.component)
-            .cloned()
+        let source = Self::paths(&self.snapshots, occurrence.component)
+            .map(|(_, leaf)| leaf.clone())
             .collect::<Vec<_>>();
         if source.is_empty() {
             return Err(error(
@@ -300,49 +306,43 @@ pub(crate) fn component(
             };
             leaves.push((leaf, solid.share().map_err(|e| error(Some(id), e))?));
         } else {
-            let source = store
-                .snapshots
-                .values()
-                .filter(|leaf| leaf.path.root == occurrence.component)
-                .cloned()
-                .collect::<Vec<_>>();
-            if source.is_empty() {
-                return Err(error(
-                    Some(id),
-                    "Nested Assembly has no compiled leaf geometry",
-                ));
-            }
-            for leaf in source {
+            let source = LeafStore::paths(&store.snapshots, *member);
+            let mut found = false;
+            for (path, leaf) in source {
+                found = true;
                 checkpoint(interrupt)?;
+                // The member Instance has already placed each canonical leaf
+                // in this Assembly's frame. Attach only this parent origin.
                 let world = store
                     .solids
-                    .get(&leaf.path)
-                    .ok_or_else(|| {
-                        error(Some(id), "Nested Assembly leaf native geometry is missing")
-                    })?
-                    .transformed(rigid(occurrence.pose))
+                    .get(path)
+                    .ok_or_else(|| error(Some(id), "Nested Assembly leaf geometry is missing"))?
+                    .share()
                     .and_then(|s| s.with_occurrence_origin(id, *member))
                     .map_err(|e| error(Some(id), e))?;
                 let path = OccurrencePath {
                     root: id,
                     members: std::iter::once(*member)
-                        .chain(leaf.path.members.iter().copied())
+                        .chain(path.members.iter().copied())
                         .collect(),
                 };
                 let snapshot = LeafOccurrenceSnapshot {
                     path,
                     component: leaf.component,
                     producer: leaf.producer,
-                    pose: leaf
-                        .pose
-                        .then(occurrence.pose)
-                        .map_err(|e| error(Some(id), e))?,
-                    bounds: world.bounds().map_err(|e| error(Some(id), e))?,
+                    pose: leaf.pose,
+                    bounds: leaf.bounds,
                     topology: world
                         .topology_snapshot(id, revision)
                         .map_err(|e| error(Some(id), e))?,
                 };
                 leaves.push((snapshot, world));
+            }
+            if !found {
+                return Err(error(
+                    Some(id),
+                    "Nested Assembly member has no compiled leaf geometry",
+                ));
             }
         }
         members.push(solid);

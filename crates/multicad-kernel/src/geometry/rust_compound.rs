@@ -1,7 +1,8 @@
 //! Exact topology for independently placed Rust assembly members.
 
 use super::*;
-use multicad_core::references::{TopologyKind, TopologySnapshot};
+use multicad_core::references::{TopologyElement, TopologyKind, TopologySnapshot};
+use std::cell::Cell;
 
 // Match the core snapshot budget before allocating aggregate topology.
 const MAX_TOPOLOGY_ELEMENTS: u32 = 100_000;
@@ -18,6 +19,9 @@ pub(crate) struct RustCompound {
     bounds: Bounds,
     volume_mm3: f64,
     solid_count: u32,
+    /// Transfer the descriptors collected during construction to the first
+    /// publisher without holding a second topology for the life of the solid.
+    pending_topology: Cell<Option<Vec<TopologyElement>>>,
 }
 
 fn kind_index(kind: TopologyKind) -> usize {
@@ -92,6 +96,7 @@ impl RustCompound {
         };
         checkpoint()?;
         let mut members = Vec::new();
+        let mut elements = Vec::new();
         let mut bounds = empty_bounds();
         let mut volume_mm3 = 0.;
         let mut solid_count = 0u32;
@@ -130,6 +135,7 @@ impl RustCompound {
             include_bounds(&mut bounds, solid.bounds()?, policy)?;
             volume_mm3 += solid.volume_mm3()?;
             solid_count += solid.solid_count()?;
+            append_topology(&mut elements, topology, offset);
             members.push(Member {
                 solid,
                 offset,
@@ -150,6 +156,7 @@ impl RustCompound {
             bounds,
             volume_mm3,
             solid_count,
+            pending_topology: Cell::new(Some(elements)),
         })
     }
 
@@ -174,14 +181,25 @@ impl RustCompound {
         owner: EntityId,
         revision: u64,
     ) -> Result<TopologySnapshot, GeometryError> {
-        let mut elements = Vec::new();
-        for member in &self.members {
-            let topology = member.solid.topology_snapshot(owner, revision)?;
-            elements.extend(topology.elements.into_iter().map(|mut element| {
-                element.key.ordinal += member.offset[kind_index(element.key.kind)];
-                element
-            }));
+        if owner.is_nil() {
+            return Err(compound_error(
+                GeometryErrorKind::InvalidResult,
+                "Invalid compound topology owner",
+            ));
         }
+        let elements = if let Some(elements) = self.pending_topology.take() {
+            elements
+        } else {
+            let mut elements = Vec::new();
+            for member in &self.members {
+                append_topology(
+                    &mut elements,
+                    member.solid.topology_snapshot(owner, revision)?,
+                    member.offset,
+                );
+            }
+            elements
+        };
         Ok(TopologySnapshot {
             owner,
             revision,
@@ -283,8 +301,20 @@ impl RustCompound {
             feature: self.feature,
             volume_mm3: self.volume_mm3,
             solid_count: self.solid_count,
+            pending_topology: Cell::new(None),
         }))
     }
+}
+
+fn append_topology(
+    elements: &mut Vec<TopologyElement>,
+    snapshot: TopologySnapshot,
+    offset: [u32; 3],
+) {
+    elements.extend(snapshot.elements.into_iter().map(|mut element| {
+        element.key.ordinal += offset[kind_index(element.key.kind)];
+        element
+    }));
 }
 
 #[cfg(test)]
@@ -347,6 +377,38 @@ mod tests {
                 .kind,
             GeometryErrorKind::Limit
         );
+    }
+
+    #[test]
+    fn compound_topology_republishes_stamps_and_tracks_exact_placement() {
+        let policy = GeometryPolicy::default();
+        let assembly = EntityId::new();
+        let member = EntityId::new();
+        let source = stock(policy)
+            .with_occurrence_origin(assembly, member)
+            .unwrap();
+        let compound = RustCompound::assemble(&[&source], assembly, policy, None).unwrap();
+        let first = compound.topology_snapshot(assembly, 1).unwrap();
+        let other = EntityId::new();
+        let restamped = compound.topology_snapshot(other, 4).unwrap();
+        assert_eq!((restamped.owner, restamped.revision), (other, 4));
+        assert_eq!(first.elements, restamped.elements);
+        assert!(compound.topology_snapshot(EntityId::nil(), 4).is_err());
+
+        let placement = RigidTransform {
+            translation_mm: [7., -3., 11.],
+            ..RigidTransform::default()
+        };
+        let placed = compound.transformed(placement).unwrap();
+        let expected = source
+            .transformed(placement)
+            .unwrap()
+            .topology_snapshot(assembly, 5)
+            .unwrap();
+        assert_ne!(first.elements, expected.elements);
+        assert_eq!(placed.topology_snapshot(assembly, 5).unwrap(), expected);
+        assert_eq!(placed.topology_snapshot(assembly, 5).unwrap(), expected);
+        assert_eq!(compound.topology_snapshot(assembly, 1).unwrap(), first);
     }
 
     #[test]

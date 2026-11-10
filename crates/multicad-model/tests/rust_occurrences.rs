@@ -392,6 +392,59 @@ fn verify(fixture: &Fixture, session: &Session, translation: Point) -> Model {
 }
 
 #[test]
+fn nested_component_reuses_placed_leaf_geometry_and_adds_only_its_parent_origin() {
+    let fixture = fixture();
+    let model = compile(&fixture.session, GeometryBackend::Rust);
+    for copy in fixture.copies {
+        let added = Origin {
+            source: fixture.wrapper.assembly,
+            role: format!("assembly/member/{copy}"),
+        };
+        for member in fixture.members {
+            let placed = model
+                .leaf_snapshot(&OccurrencePath {
+                    root: copy,
+                    members: vec![member],
+                })
+                .unwrap();
+            let nested_path = OccurrencePath {
+                root: fixture.wrapper.assembly,
+                members: vec![copy, member],
+            };
+            let nested = model.leaf_snapshot(&nested_path).unwrap();
+            assert_eq!(nested.pose, placed.pose);
+            assert_eq!(nested.bounds, placed.bounds);
+            assert_eq!(nested.topology.owner, fixture.wrapper.assembly);
+            assert_eq!(
+                nested.topology.elements.len(),
+                placed.topology.elements.len()
+            );
+            for (old, new) in placed
+                .topology
+                .elements
+                .iter()
+                .zip(&nested.topology.elements)
+            {
+                assert_eq!(new.key, old.key);
+                assert_eq!(new.geometry, old.geometry);
+                assert!(!old.origins.contains(&added));
+                let mut expected = old.origins.clone();
+                expected.insert(added.clone());
+                assert_eq!(new.origins, expected);
+            }
+            assert_eq!(
+                model
+                    .leaf_solid(&nested_path)
+                    .unwrap()
+                    .topology_snapshot(fixture.wrapper.assembly, fixture.session.revision())
+                    .unwrap(),
+                nested.topology,
+            );
+        }
+    }
+}
+
+#[test]
 fn rust_nested_occurrences_rebuild_and_reopen_with_exact_world_geometry() {
     let mut fixture = fixture();
     let model = verify(&fixture, &fixture.session, INITIAL);
