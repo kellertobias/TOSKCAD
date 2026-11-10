@@ -94,7 +94,9 @@ pub fn drawing_preview_sources(document: &Document, page: EntityId) -> Option<Ve
         let ViewSource::Model { entities } = &view.source else {
             return None;
         };
-        if view.guide.is_some() || view.kind != ViewKind::Projection || entities.is_empty() {
+        // Unguided section and detail regions clip the listed geometry
+        // in the saved frame. They have the same source closure as a projection.
+        if view.guide.is_some() || entities.is_empty() {
             return None;
         }
         for &id in entities {

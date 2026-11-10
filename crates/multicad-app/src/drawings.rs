@@ -622,7 +622,21 @@ mod tests {
             .edited(&[Mutation::Insert(unrelated)])
             .unwrap();
         let mut session = Session::new(document).unwrap();
-        let page = projection_page(source.body);
+        let mut page = projection_page(source.body);
+        let cut_id = EntityId::new();
+        page.views.push(drawings::DrawingView {
+            id: cut_id,
+            name: "Bounded section".into(),
+            kind: drawings::ViewKind::Section {
+                offset_mm: 4.,
+                range: drawings::SectionRange::Depth { depth_mm: 3. },
+                window: drawings::SectionWindow {
+                    u_mm: Some([3., 13.]),
+                    v_mm: Some([1., 9.]),
+                },
+            },
+            ..page.views[0].clone()
+        });
         let (_, prepared) = drawings::prepare_create(
             &session,
             session.revision(),
@@ -655,6 +669,19 @@ mod tests {
                 && matches!(vector.curve, VectorCurve::Line { a, b }
                     if [a, b].into_iter().all(|[x, y]| [0., 20.].contains(&x) && [0., 10.].contains(&y)))
         }));
+        let ViewEvaluation::Ready { vectors, .. } = &original.views[&cut_id] else {
+            panic!("{:?}", original.views[&cut_id]);
+        };
+        let section: Vec<_> = vectors
+            .iter()
+            .filter(|vector| vector.role == VectorRole::Section)
+            .collect();
+        assert_eq!(section.len(), 4);
+        assert!(section.iter().all(|vector| {
+            vector.source == source.body
+                && matches!(vector.curve, VectorCurve::Line { a, b }
+                    if [a, b].into_iter().all(|[x, y]| [3., 13.].contains(&x) && [1., 9.].contains(&y)))
+        }));
         assert_eq!(
             first
                 .runtime
@@ -674,6 +701,98 @@ mod tests {
                 .unwrap()
                 .last_compile_stats()
                 .is_none()
+        );
+    }
+
+    #[test]
+    fn rust_drawing_worker_publishes_curved_projection_and_detail_together() {
+        use drawings::{VectorCurve, VectorRole, ViewEvaluation};
+
+        let mut session = Session::new(Document::new("Rust curved drawing").unwrap()).unwrap();
+        let actor = Actor::local(Channel::Ui);
+        let cylinder = PrimitiveRequest::new(
+            "Round stock",
+            PrimitiveParameters::Cylinder {
+                radius: length(5.),
+                height: length(12.),
+                frame: PrimitiveFrame::default(),
+            },
+        );
+        let prepared =
+            model::prepare_primitive(&session, session.revision(), actor.clone(), &cylinder)
+                .unwrap();
+        session.commit(prepared.prepared).unwrap();
+        let mut page = projection_page(cylinder.body);
+        let projection = &mut page.views[0];
+        projection.frame.v = [0., 0.8, 0.6];
+        projection.hidden_lines = true;
+        let projection_id = projection.id;
+        let detail_id = EntityId::new();
+        let detail = drawings::DrawingView {
+            id: detail_id,
+            name: "Rim detail".into(),
+            kind: drawings::ViewKind::Detail {
+                center_mm: [4., 2.],
+                radius_mm: 2.5,
+            },
+            ..projection.clone()
+        };
+        page.views.push(detail);
+        let (_, prepared) = drawings::prepare_create(
+            &session,
+            session.revision(),
+            actor,
+            "Drawing",
+            Some(page.clone()),
+        )
+        .unwrap();
+        session.commit(prepared).unwrap();
+        let mut worker = Backend::with_cache_and_backend(None, GeometryBackend::Rust);
+        let result = preview(&mut worker, &session, page.id);
+        let view = |id| {
+            let ViewEvaluation::Ready { vectors, .. } = &result.views[&id] else {
+                panic!("{:?}", result.views[&id]);
+            };
+            assert!(vectors.iter().all(|v| v.source == cylinder.body));
+            vectors
+        };
+        let projected = view(projection_id);
+        assert_eq!(projected.len(), 5);
+        assert_eq!(
+            projected
+                .iter()
+                .filter(|v| v.role == VectorRole::Hidden)
+                .count(),
+            1,
+        );
+        assert!(
+            projected
+                .iter()
+                .any(|v| matches!(v.curve, VectorCurve::Ellipse {
+            major_mm, minor_mm, ..
+        } if (major_mm - 5.).abs() < 1e-9 && (minor_mm - 4.).abs() < 1e-9))
+        );
+        let detail = view(detail_id);
+        assert!(
+            detail
+                .iter()
+                .any(|v| matches!(v.curve, VectorCurve::Ellipse { .. }))
+        );
+        assert!(
+            detail
+                .iter()
+                .flat_map(|v| &v.preview_mm)
+                .all(|[x, y]| { (x - 4.).hypot(y - 2.) <= 2.5 + 1e-9 })
+        );
+        assert_eq!(
+            worker
+                .runtime
+                .as_ref()
+                .unwrap()
+                .last_compile_stats()
+                .unwrap()
+                .evaluated,
+            [cylinder.feature].into(),
         );
     }
 

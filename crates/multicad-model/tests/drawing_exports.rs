@@ -411,6 +411,17 @@ fn rust_worker_publishes_pdf_and_exact_dxf_from_the_same_planar_drawing() {
     );
     front.hidden_lines = false;
     sheet.views.push(front);
+    sheet.views.push(view(
+        "Cut",
+        vec![block.body],
+        [80., 40.],
+        1,
+        ViewKind::Section {
+            offset_mm: -10.,
+            range: SectionRange::SectionOnly,
+            window: SectionWindow::default(),
+        },
+    ));
     let page = sheet.id;
     let (book, prepared) =
         prepare_create(&s, s.revision(), actor(), "Sheets", Some(sheet)).unwrap();
@@ -485,6 +496,9 @@ fn rust_worker_publishes_pdf_and_exact_dxf_from_the_same_planar_drawing() {
             let visible = lines_on(&dxf, "VIEW_VISIBLE");
             assert_eq!(visible.len(), 4);
             assert_eq!(extent(&visible), [30., 170., 50., 185.]);
+            let section = lines_on(&dxf, "VIEW_SECTION");
+            assert_eq!(section.len(), 4);
+            assert_eq!(extent(&section), [80., 170., 120., 200.]);
         }
     }
 }
