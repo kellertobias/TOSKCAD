@@ -23,6 +23,35 @@ fn invoke(project: &Path, request: &Path, flags: &[&str]) -> (bool, Value) {
     });
     (output.status.success(), receipt)
 }
+
+#[test]
+fn built_rust_backend_rebuilds_the_complete_saved_toolcase() {
+    let dir = tempfile::tempdir().unwrap();
+    let project = dir.path().join("toolcase.tcd");
+    let request = dir.path().join("evaluate.json");
+    let source = include_bytes!("../../../examples/toolcase.tcd");
+    std::fs::write(&project, source).unwrap();
+    std::fs::write(
+        &request,
+        serde_json::to_vec(&json!({"tool": "evaluate_model", "arguments": {}})).unwrap(),
+    )
+    .unwrap();
+    let (ok, receipt) = invoke(&project, &request, &["--read-only", "--rust-model"]);
+    assert!(ok, "{receipt}");
+    let model = &receipt["result"];
+    assert_eq!(model["scope"], "full");
+    assert_eq!(model["physical_leaves"].as_array().unwrap().len(), 169);
+    let parts = model["parts"].as_array().unwrap();
+    assert_eq!(parts.len(), 122);
+    let rack_coupon = parts
+        .iter()
+        .find(|part| part["feature"] == "f7bf396b-be67-4d17-9bb3-f4e5e7d5ca29")
+        .unwrap();
+    assert_eq!(rack_coupon["solid_count"], 1);
+    assert!((rack_coupon["volume_mm3"].as_f64().unwrap() - 17189.326264468).abs() < 1e-6);
+    assert_eq!(std::fs::read(&project).unwrap().as_slice(), source);
+}
+
 #[test]
 fn command_dispatch_is_memory_only_unless_explicitly_saved_and_reopens_canonical_parameters() {
     let dir = tempfile::tempdir().unwrap();
