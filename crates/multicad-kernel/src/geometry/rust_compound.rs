@@ -165,6 +165,10 @@ impl RustCompound {
         self.solid_count
     }
 
+    pub(crate) fn members(&self) -> impl Iterator<Item = &Solid> {
+        self.members.iter().map(|member| &member.solid)
+    }
+
     pub(crate) fn topology(
         &self,
         owner: EntityId,

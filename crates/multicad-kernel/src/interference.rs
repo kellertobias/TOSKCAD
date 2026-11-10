@@ -1,9 +1,10 @@
-//! Read-only finite solid-pair inspection. Boolean COMMON determines occupied
-//! overlap; extrema determine clearance. Display meshes and AABBs are unused.
+//! Read-only finite solid-pair inspection. Exact occupied material determines
+//! overlap and extrema determine clearance. No display meshes are involved.
 use crate::{
     BRepSelection, BooleanOperation, GeometryError, GeometryErrorKind, GeometryPolicy,
     MinimumDistance, Solid,
 };
+use multicad_rust_kernel::orthogonal::{self, BooleanError};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SolidPairRelation {
@@ -33,18 +34,34 @@ impl Solid {
         policy: GeometryPolicy,
     ) -> Result<SolidPairInspection, GeometryError> {
         policy.validate()?;
-        let native_tolerance = policy
+        let geometry_tolerance = policy
             .linear_tolerance_mm
             .max(self.geometry_policy().linear_tolerance_mm)
             .max(other.geometry_policy().linear_tolerance_mm);
         if !contact_tolerance_mm.is_finite()
-            || contact_tolerance_mm < native_tolerance
+            || contact_tolerance_mm < geometry_tolerance
             || contact_tolerance_mm > 1e-3
         {
             return Err(failure(
                 GeometryErrorKind::Input,
-                "Contact tolerance must cover the native model precision and be at most 0.001 mm",
+                "Contact tolerance must cover the model precision and be at most 0.001 mm",
             ));
+        }
+        if self.uses_rust_geometry() != other.uses_rust_geometry() {
+            return Err(failure(
+                GeometryErrorKind::Unsupported,
+                "Solid interference requires both solids to use the same geometry backend",
+            ));
+        }
+        if self.uses_rust_geometry() {
+            let distance = self.minimum_distance(BRepSelection::Whole, other, BRepSelection::Whole)?;
+            let volume = if distance.distance_mm > contact_tolerance_mm {
+                // The finite material distance already proves separation.
+                0.
+            } else {
+                rust_common_volume(self, other)?
+            };
+            return classify(volume, distance, contact_tolerance_mm);
         }
         let left = (self.solid_count()? > 1)
             .then(|| self.inspection_occupied_space(policy))
@@ -68,25 +85,7 @@ impl Solid {
             .map(Solid::volume_mm3)
             .transpose()?
             .unwrap_or(0.);
-        let relation = if common_volume_mm3 > 0. {
-            if minimum_distance.distance_mm > contact_tolerance_mm {
-                return Err(failure(
-                    GeometryErrorKind::InvalidResult,
-                    "Native COMMON overlap and whole-solid clearance disagree",
-                ));
-            }
-            SolidPairRelation::Overlapping
-        } else if minimum_distance.distance_mm <= contact_tolerance_mm {
-            SolidPairRelation::ContactWithinTolerance
-        } else {
-            SolidPairRelation::Separated
-        };
-        Ok(SolidPairInspection {
-            relation,
-            common_volume_mm3,
-            minimum_distance,
-            contact_tolerance_mm,
-        })
+        classify(common_volume_mm3, minimum_distance, contact_tolerance_mm)
     }
     fn inspection_occupied_space(&self, policy: GeometryPolicy) -> Result<Solid, GeometryError> {
         Self::adopt(
@@ -96,4 +95,54 @@ impl Solid {
             "inspection occupied space",
         )
     }
+}
+
+fn rust_common_volume(a: &Solid, b: &Solid) -> Result<f64, GeometryError> {
+    let left = a.bounds()?;
+    let right = b.bounds()?;
+    // Disjoint interiors of the envelopes prove zero overlap even for rotated
+    // geometry. Overlapping envelopes are never evidence of occupied material.
+    if (0..3).any(|i| left.min[i] >= right.max[i] || right.min[i] >= left.max[i]) {
+        return Ok(0.);
+    }
+    let mut left = Vec::new();
+    let mut right = Vec::new();
+    a.append_rust_occupied_cells(&mut left)?;
+    b.append_rust_occupied_cells(&mut right)?;
+    orthogonal::intersection_volume(&left, &right).map_err(|cause| match cause {
+        BooleanError::Limit => failure(
+            GeometryErrorKind::Limit,
+            "Rust interference exceeds the exact occupied grid budget",
+        ),
+        BooleanError::Invalid | BooleanError::Unresolved => failure(
+            GeometryErrorKind::InvalidResult,
+            "Rust interference could not verify occupied volume",
+        ),
+    })
+}
+
+fn classify(
+    common_volume_mm3: f64,
+    minimum_distance: MinimumDistance,
+    contact_tolerance_mm: f64,
+) -> Result<SolidPairInspection, GeometryError> {
+    let relation = if common_volume_mm3 > 0. {
+        if minimum_distance.distance_mm > contact_tolerance_mm {
+            return Err(failure(
+                GeometryErrorKind::InvalidResult,
+                "Occupied overlap and whole-solid clearance disagree",
+            ));
+        }
+        SolidPairRelation::Overlapping
+    } else if minimum_distance.distance_mm <= contact_tolerance_mm {
+        SolidPairRelation::ContactWithinTolerance
+    } else {
+        SolidPairRelation::Separated
+    };
+    Ok(SolidPairInspection {
+        relation,
+        common_volume_mm3,
+        minimum_distance,
+        contact_tolerance_mm,
+    })
 }

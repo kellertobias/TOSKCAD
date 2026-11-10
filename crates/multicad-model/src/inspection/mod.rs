@@ -5,7 +5,7 @@ use multicad_core::{
     inspection::*,
     references::{self, AnalyticGeometry, Resolution, TopologyKey, TopologyKind, TopologySnapshot},
 };
-use multicad_kernel::{BRepSelection, Solid};
+use multicad_kernel::{BRepSelection, GeometryErrorKind, Solid};
 fn fail(
     kind: MeasurementFailureKind,
     reference: Option<multicad_core::document::EntityId>,
@@ -172,7 +172,17 @@ pub(crate) fn measure_geometry(
         let (b, key_b, geometry_b) = resolved(model, &query.b)?;
         let distance = a
             .minimum_distance(selector(key_a), b, selector(key_b))
-            .map_err(|e| fail(MeasurementFailureKind::Invalid, None, e))?;
+            .map_err(|error| {
+                let kind = match error.kind {
+                    GeometryErrorKind::Unsupported | GeometryErrorKind::Limit => {
+                        MeasurementFailureKind::Unsupported
+                    }
+                    GeometryErrorKind::Cancelled => MeasurementFailureKind::Cancelled,
+                    GeometryErrorKind::Stale => MeasurementFailureKind::Stale,
+                    _ => MeasurementFailureKind::Invalid,
+                };
+                fail(kind, None, error)
+            })?;
         let witnesses: Vec<_> = distance
             .witnesses
             .into_iter()

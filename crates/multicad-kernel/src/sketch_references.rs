@@ -5,13 +5,9 @@ use crate::{
     BRepSelection, BSpline2d, CurvedEdge2d, GeometryError, GeometryErrorKind, GeometryPolicy,
     PlaneFrame, Solid, ffi,
 };
-use multicad_core::references::{TopologyKey, TopologyKind};
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SketchReferenceMethod {
-    Coplanar,
-    Project,
-    Intersect,
-}
+use multicad_core::references::{AnalyticGeometry, TopologyKey, TopologyKind};
+pub use multicad_rust_kernel::sketch_reference::Method as SketchReferenceMethod;
+use multicad_rust_kernel::sketch_reference::{self, Geometry, Outcome};
 #[derive(Clone, Debug, PartialEq)]
 pub enum SketchReferenceGeometry {
     Point([f64; 2]),
@@ -55,6 +51,9 @@ impl Solid {
     ) -> Result<SketchReferenceCatalog, GeometryError> {
         policy.validate()?;
         let native_frame = frame.checked(policy)?;
+        if self.uses_rust_geometry() {
+            return self.rust_sketch_reference(selection, frame, method, policy);
+        }
         let (kind, index) = match selection {
             BRepSelection::Whole => (0, 0),
             BRepSelection::Face(i) => (1, i),
@@ -163,6 +162,79 @@ impl Solid {
         Ok(SketchReferenceCatalog {
             results,
             coincident: out.coincident,
+        })
+    }
+
+    fn rust_sketch_reference(
+        &self,
+        selection: BRepSelection,
+        frame: PlaneFrame,
+        method: SketchReferenceMethod,
+        policy: GeometryPolicy,
+    ) -> Result<SketchReferenceCatalog, GeometryError> {
+        let unsupported = || GeometryError {
+            operation: "sketch reference",
+            kind: GeometryErrorKind::Unsupported,
+            message: "Rust sketch references support finite vertices and straight edges".into(),
+        };
+        let (kind, ordinal) = match selection {
+            BRepSelection::Vertex(index) => (TopologyKind::Vertex, index),
+            BRepSelection::Edge(index) => (TopologyKind::Edge, index),
+            _ => return Err(unsupported()),
+        };
+        let key = TopologyKey { kind, ordinal };
+        let topology = self.rust_topology().ok_or_else(unsupported)??;
+        let element = topology
+            .elements
+            .into_iter()
+            .find(|element| element.key == key)
+            .ok_or_else(|| error("Selected Rust reference topology is missing"))?;
+        let axes = [frame.u, frame.v, frame.normal()];
+        let local = |point: [f64; 3]| {
+            let delta = std::array::from_fn::<_, 3, _>(|i| point[i] - frame.origin[i]);
+            axes.map(|axis| delta.into_iter().zip(axis).map(|(a, b)| a * b).sum())
+        };
+        let tolerance = policy.linear_tolerance_mm;
+        let outcome = match (kind, element.geometry) {
+            (TopologyKind::Vertex, Some(AnalyticGeometry::Point { position_mm })) => {
+                sketch_reference::vertex(local(position_mm), method, tolerance)
+            }
+            (TopologyKind::Edge, Some(AnalyticGeometry::Line { a_mm, b_mm })) => {
+                sketch_reference::edge([a_mm, b_mm].map(local), method, tolerance)
+            }
+            _ => return Err(unsupported()),
+        }
+        .map_err(|cause| match cause {
+            sketch_reference::Error::Invalid => error("Invalid finite Rust sketch reference"),
+            sketch_reference::Error::OffPlane => {
+                error("Selected finite Rust reference is not coplanar with the sketch plane")
+            }
+        })?;
+        let mut results = Vec::new();
+        if let Outcome::Hit { geometry, contact } = outcome {
+            let geometry = match geometry {
+                Geometry::Point(point) => {
+                    policy.point([point[0], point[1], 0.])?;
+                    SketchReferenceGeometry::Point(point)
+                }
+                Geometry::Line([a, b]) => {
+                    let curve = CurvedEdge2d::Line { a, b };
+                    curve.data(policy, 0)?;
+                    SketchReferenceGeometry::Curve(curve)
+                }
+            };
+            results.push(SketchReferenceResult {
+                geometry,
+                support: vec![key],
+                source_parameter: contact.map(|contact| contact.parameter),
+                source_interval: (kind == TopologyKind::Edge).then_some([0., 1.]),
+                tangent: contact.is_some_and(|contact| contact.crossing.is_none()),
+                crossing: contact.and_then(|contact| contact.crossing),
+            });
+        }
+        Ok(SketchReferenceCatalog {
+            results,
+            coincident: outcome == Outcome::Coincident,
         })
     }
 }

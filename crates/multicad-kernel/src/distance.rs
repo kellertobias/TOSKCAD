@@ -1,6 +1,7 @@
 //! Exact finite B-rep distance. Selection ordinals are evaluation-local and must
 //! be obtained by resolving a persistent reference against the current solid.
 use crate::{GeometryError, GeometryErrorKind, Solid, ffi};
+mod planar;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BRepSelection {
     Whole,
@@ -47,6 +48,15 @@ pub(crate) fn measure(
     selection_b: BRepSelection,
     tolerance: f64,
 ) -> Result<MinimumDistance, GeometryError> {
+    if a.uses_rust_geometry() || b.uses_rust_geometry() {
+        if !a.uses_rust_geometry() || !b.uses_rust_geometry() {
+            return Err(error(
+                GeometryErrorKind::Unsupported,
+                "Exact distance requires both selections to use the same geometry backend",
+            ));
+        }
+        return planar::measure(a, selection_a, b, selection_b, tolerance);
+    }
     let (ak, ai) = selection_a.native();
     let (bk, bi) = selection_b.native();
     let result = ffi::minimum_distance(

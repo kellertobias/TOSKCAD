@@ -9,7 +9,7 @@ use multicad_core::{
     project_file::{self, ProjectFile},
     references::{AnalyticGeometry, GeometryIntent, TopologyKind, TopologySnapshot},
 };
-use multicad_model::{Compiler, Model, inspection::measure_model};
+use multicad_model::{Compiler, GeometryBackend, Model, inspection::measure_model};
 fn actor() -> Actor {
     Actor::local(Channel::Ui)
 }
@@ -277,24 +277,35 @@ fn concentric_circular_edges_keep_exact_scalar_and_do_not_invent_unique_axis_com
         .unwrap();
         outputs.push(r.body);
     }
+    let query = |model: &Model| {
+        let edge = |source| {
+            selected(
+                model,
+                source,
+                TopologyKind::Edge,
+                |g| matches!(g,Some(AnalyticGeometry::CircularArc{frame,..})if(frame.origin_mm[2]-10.).abs()<1e-8),
+            )
+        };
+        MeasurementQuery {
+            a: edge(outputs[0]),
+            b: edge(outputs[1]),
+        }
+    };
     let m = compile(&s);
-    let edge = |source| {
-        selected(
-            &m,
-            source,
-            TopologyKind::Edge,
-            |g| matches!(g,Some(AnalyticGeometry::CircularArc{frame,..})if(frame.origin_mm[2]-10.).abs()<1e-8),
-        )
-    };
-    let q = MeasurementQuery {
-        a: edge(outputs[0]),
-        b: edge(outputs[1]),
-    };
-    let value = measure_model(&m, &q).result.unwrap();
+    let value = measure_model(&m, &query(&m)).result.unwrap();
     near(value.minimum_mm, 5.);
     assert!(value.axis_components_mm.is_none());
     assert!(value.axis_warning.is_some());
     assert!(matches!(value.angle, ScalarMetric::Unsupported { .. }));
+
+    let rust = Compiler::default()
+        .compile_with_backend(s.document(), s.revision(), GeometryBackend::Rust, None)
+        .unwrap();
+    let evaluation = measure_model(&rust, &query(&rust));
+    evaluation.stamp.check(s.document(), s.revision()).unwrap();
+    let failure = evaluation.result.unwrap_err();
+    assert_eq!(failure.kind, MeasurementFailureKind::Unsupported);
+    assert!(failure.message.contains("straight edges"));
 }
 #[test]
 fn native_worker_reuses_current_source_queries_and_updates_and_removes_pins_without_stale_values() {

@@ -147,31 +147,71 @@ fn operation_error(cause: BooleanError) -> GeometryError {
 }
 
 impl Solid {
+    fn orthogonal_cells(&self) -> Result<Option<Vec<Box3>>, GeometryError> {
+        if let Some((body, frame)) = self.orthogonal_body()
+            && cardinal(frame)
+        {
+            return Ok(Some(
+                body.geometry
+                    .cells()
+                    .iter()
+                    .map(|&cell| transform_box(frame, cell))
+                    .collect(),
+            ));
+        }
+        if let Some(placed) = self.polygon_prism()
+            && cardinal(placed.frame)
+        {
+            return Ok(orthogonal::prism_cells(&placed.prism, placed.reverse_sweep)
+                .map_err(operation_error)?
+                .map(|cells| cells
+                    .into_iter()
+                    .map(|cell| transform_box(placed.frame, cell))
+                    .collect()));
+        }
+        if let Some((prism, frame)) = self.rust_prism_frame()
+            && cardinal(frame)
+            && prism.rounded_end().is_none()
+            && prism.inner_loops().len() == 0
+        {
+            let Bounds { min, max } = self.bounds()?;
+            return Ok(Some(vec![Box3 { min, max }]));
+        }
+        Ok(None)
+    }
+
+    pub(crate) fn append_rust_occupied_cells(
+        &self,
+        output: &mut Vec<Box3>,
+    ) -> Result<(), GeometryError> {
+        if let Some(compound) = self.rust_compound() {
+            for solid in compound.members() {
+                solid.append_rust_occupied_cells(output)?;
+            }
+            return Ok(());
+        }
+        let cells = self.orthogonal_cells()?.ok_or_else(|| {
+            unsupported("Rust interference volume requires axis-aligned rectilinear material")
+        })?;
+        if cells.len() + output.len() > orthogonal::MAX_CELLS {
+            return Err(limit("Rust interference exceeds the occupied cell budget"));
+        }
+        output.extend(cells);
+        Ok(())
+    }
+
     fn orthogonal_operand(
         &self,
         reversed: bool,
         sources: &mut Sources,
     ) -> Result<Option<(EntityId, Vec<Box3>)>, GeometryError> {
         let sign = if reversed { -1. } else { 1. };
-        if self.orthogonal_body().is_none()
-            && self.rust_prism_frame().is_none()
-            && self.polygon_prism().is_none()
-        {
+        let Some(cells) = self.orthogonal_cells()? else {
             return Ok(None);
-        }
+        };
         let snapshot = self.rust_topology().expect("orthogonal Rust body")?;
-        let (cells, patches) = if let Some((body, frame)) = self.orthogonal_body() {
-            if !cardinal(frame) {
-                return Ok(None);
-            }
-            let cells = body
-                .geometry
-                .cells()
-                .iter()
-                .map(|&cell| transform_box(frame, cell))
-                .collect();
-            let patches = body
-                .boundary
+        let patches = if let Some((body, frame)) = self.orthogonal_body() {
+            body.boundary
                 .faces
                 .iter()
                 .map(|face| {
@@ -189,21 +229,8 @@ impl Solid {
                         .collect::<Vec<_>>();
                     (plane_key(normal, quads[0].min), quads)
                 })
-                .collect::<Vec<_>>();
-            (cells, patches)
+                .collect::<Vec<_>>()
         } else if let Some(placed) = self.polygon_prism() {
-            if !cardinal(placed.frame) {
-                return Ok(None);
-            }
-            let Some(cells) = orthogonal::prism_cells(&placed.prism, placed.reverse_sweep)
-                .map_err(operation_error)?
-            else {
-                return Ok(None);
-            };
-            let cells: Vec<_> = cells
-                .into_iter()
-                .map(|cell| transform_box(placed.frame, cell))
-                .collect();
             let edges: BTreeMap<_, _> = snapshot
                 .elements
                 .iter()
@@ -214,8 +241,7 @@ impl Solid {
                     Some((edge.key.ordinal, [a_mm, b_mm]))
                 })
                 .collect();
-            let patches = self
-                .faces()?
+            self.faces()?
                 .into_iter()
                 .map(|face| {
                     let (_, normal) = face.plane.expect("rectilinear prism faces are planar");
@@ -235,30 +261,17 @@ impl Solid {
                     };
                     (plane_key(normal.map(|x| x * sign), patches[0].min), patches)
                 })
-                .collect();
-            (cells, patches)
-        } else if let Some((prism, frame)) = self.rust_prism_frame()
-            && cardinal(frame)
-            && prism.rounded_end().is_none()
-            && prism.inner_loops().len() == 0
-        {
-            let bounds = self.bounds()?;
-            let cell = Box3 {
-                min: bounds.min,
-                max: bounds.max,
-            };
-            let patches = self
-                .faces()?
+                .collect()
+        } else {
+            let cell = cells[0];
+            self.faces()?
                 .into_iter()
                 .map(|face| {
                     let (_, normal) = face.plane.expect("box faces are planar");
                     let patch = box_face(cell, normal);
                     (plane_key(normal.map(|x| x * sign), patch.min), vec![patch])
                 })
-                .collect();
-            (vec![cell], patches)
-        } else {
-            return Ok(None);
+                .collect()
         };
         let mut patches = patches.into_iter();
         for element in snapshot.elements {
