@@ -121,6 +121,19 @@ impl Writer {
         self.append(|file| super::torus::encode(file, torus, &placement))
     }
 
+    /// Append a complete five-face regular helical cylinder cut.
+    pub fn append_helical_tube_cut(
+        &mut self,
+        cut: crate::helical_tube_cut::Cut,
+        origin: Point,
+        u: Point,
+        v: Point,
+        tolerance_mm: f64,
+    ) -> Result<(), StepError> {
+        let placement = Placement::new(origin, u, v)?;
+        self.append(|file| super::helical_tube_cut::encode(file, cut, &placement, tolerance_mm))
+    }
+
     /// Append one bounded authored chevron solid with two continuous bands.
     pub fn append_herringbone(
         &mut self,
