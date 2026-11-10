@@ -66,6 +66,24 @@ impl Boundary {
     pub(super) fn split_edges(&mut self, budget: &mut usize) -> Result<(), Error> {
         let incidences = MAX_INCIDENCES - self.remaining_incidences;
         charge(budget, incidences.saturating_mul(self.vertices.len()))?;
+        let index = (self.vertices.len() >= 32).then(|| {
+            std::array::from_fn::<_, 3, _>(|axis| {
+                let mut ids: Vec<_> = (0..self.vertices.len()).collect();
+                ids.sort_unstable_by(|&a, &b| {
+                    self.vertices[a][axis].total_cmp(&self.vertices[b][axis])
+                });
+                ids
+            })
+        });
+        let magnitude = self
+            .vertices
+            .iter()
+            .flatten()
+            .map(|value| value.abs())
+            .fold(1., f64::max);
+        // Any accepted point projects between the endpoints and lies within
+        // the edge tolerance. Leave room for rounding in both computations.
+        let padding = self.tolerance + 8. * f64::EPSILON * magnitude;
         let mut remaining_incidences = MAX_INCIDENCES;
         for face in &mut self.faces {
             let mut ring = Vec::new();
@@ -79,14 +97,38 @@ impl Boundary {
                 let length_squared = dot(direction, direction);
                 let margin = self.tolerance / length_squared.sqrt();
                 let mut splits = Vec::new();
-                for (vertex, &point) in self.vertices.iter().enumerate() {
-                    let relative = sub(point, start);
+                let mut test = |vertex| {
+                    let relative = sub(self.vertices[vertex], start);
                     let fraction = dot(relative, direction) / length_squared;
                     if fraction > margin
                         && fraction < 1. - margin
                         && norm(sub(relative, scale(direction, fraction))) <= self.tolerance
                     {
                         splits.push((fraction, vertex));
+                    }
+                };
+                if let Some(index) = &index {
+                    let end = self.vertices[b];
+                    let candidates = index
+                        .iter()
+                        .enumerate()
+                        .map(|(axis, ids)| {
+                            let low = start[axis].min(end[axis]) - padding;
+                            let high = start[axis].max(end[axis]) + padding;
+                            let first = ids.partition_point(|&i| self.vertices[i][axis] < low);
+                            let last = ids.partition_point(|&i| self.vertices[i][axis] <= high);
+                            &ids[first..last]
+                        })
+                        .min_by_key(|ids| ids.len())
+                        .expect("three coordinate ranges");
+                    for &vertex in candidates {
+                        test(vertex);
+                    }
+                    // Preserve the full scan's input order for equal fractions.
+                    splits.sort_unstable_by_key(|&(_, vertex)| vertex);
+                } else {
+                    for vertex in 0..self.vertices.len() {
+                        test(vertex);
                     }
                 }
                 splits.sort_unstable_by(|a, b| a.0.total_cmp(&b.0));

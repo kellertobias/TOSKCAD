@@ -12,6 +12,56 @@ const U_SECTION: [[f64; 2]; 8] = [
 ];
 
 #[test]
+fn indexed_edge_splits_match_full_scan_on_translated_and_oblique_edges() {
+    let tolerance = 1e-6;
+    let origin = [1e7, -1e7, 1e7];
+    let corners = [[0., 0., 0.], [4., 2., 0.], [4., 6., 1.], [0., 4., 1.]];
+    let mut boundary = Boundary::new(tolerance);
+    boundary
+        .add(&corners.map(|point| add(point, origin)), [0., 0., 1.], 0, 0)
+        .unwrap();
+    for step in (1..=45).rev() {
+        let along = f64::from(step) / 46.;
+        boundary
+            .vertices
+            .push(add(origin, [4. * along, 2. * along, tolerance * 0.9]));
+        boundary
+            .vertices
+            .push(add(origin, [4. * along, 2. * along, tolerance * 1.1]));
+    }
+    boundary.vertices.push(add(origin, [4., 4., 0.5]));
+    let mut expected = Vec::new();
+    for (&a, &b) in boundary.faces[0]
+        .vertices
+        .iter()
+        .zip(boundary.faces[0].vertices.iter().cycle().skip(1))
+    {
+        let start = boundary.vertices[a];
+        let direction = sub(boundary.vertices[b], start);
+        let length_squared = dot(direction, direction);
+        let margin = tolerance / length_squared.sqrt();
+        let mut splits = Vec::new();
+        for (index, &point) in boundary.vertices.iter().enumerate() {
+            let relative = sub(point, start);
+            let fraction = dot(relative, direction) / length_squared;
+            if fraction > margin
+                && fraction < 1. - margin
+                && norm(sub(relative, scale(direction, fraction))) <= tolerance
+            {
+                splits.push((fraction, index));
+            }
+        }
+        splits.sort_unstable_by(|a, b| a.0.total_cmp(&b.0));
+        expected.push(a);
+        expected.extend(splits.into_iter().map(|(_, index)| index));
+    }
+    assert_eq!(expected.len(), 50);
+    let mut budget = MAX_WORK;
+    boundary.split_edges(&mut budget).unwrap();
+    assert_eq!(boundary.faces[0].vertices, expected);
+}
+
+#[test]
 fn concave_caps_tessellate_the_actual_region_and_share_boundary_edges() {
     let vertices: Vec<_> = [0., 2.]
         .into_iter()
