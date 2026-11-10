@@ -5,6 +5,7 @@ use crate::revolution::{Sum, cross};
 use std::f64::consts::{FRAC_PI_2, PI, TAU};
 
 mod involute;
+mod sweep;
 pub use involute::{CubicSpline, Involute};
 
 type Point = [f64; 2];
@@ -60,6 +61,7 @@ pub struct Profile {
     outline: Vec<ToothEdge>,
     bore: Option<normal_sweep::Edge>,
     height_mm: f64,
+    root_radius_mm: f64,
     area_mm2: f64,
 }
 
@@ -96,6 +98,7 @@ impl Profile {
             outline,
             bore,
             height_mm: spec.face_width_mm,
+            root_radius_mm: spec.root_radius_mm,
             area_mm2: area.value(),
         })
     }
@@ -140,7 +143,8 @@ fn check_dimensions(spec: Spec, minimum: f64, maximum: f64) -> Result<(), Error>
         .into_iter()
         .any(|value| !(minimum..=maximum).contains(&value))
         || (spec.bore_radius_mm != 0.
-            && !(minimum..=spec.root_radius_mm - minimum).contains(&spec.bore_radius_mm))
+            && (!(minimum..=maximum).contains(&spec.bore_radius_mm)
+                || spec.root_radius_mm - spec.bore_radius_mm < minimum))
         || spec.base_radius_mm > spec.pitch_radius_mm
         || spec.root_radius_mm >= spec.pitch_radius_mm
         || spec.tip_radius_mm <= spec.pitch_radius_mm

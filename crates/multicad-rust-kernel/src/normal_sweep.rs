@@ -213,7 +213,7 @@ impl Edge {
         )
     }
 
-    fn support(self, direction: Point) -> f64 {
+    pub(crate) fn support(self, direction: Point) -> f64 {
         let endpoints = dot(direction, self.start()).max(dot(direction, self.end()));
         if let Some(round) = self.round()
             && round.contains_direction(direction, 0.)

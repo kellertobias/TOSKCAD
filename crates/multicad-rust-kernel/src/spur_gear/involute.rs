@@ -1,4 +1,5 @@
-use super::{Error, Point, add, rotate, scale, sub};
+use super::{Error, FRAC_PI_2, Point, TAU, add, rotate, scale, sub};
+use crate::revolution::dot;
 
 const MAX_SPANS: usize = 127;
 
@@ -63,6 +64,53 @@ impl Involute {
 
     pub fn interval(self) -> [f64; 2] {
         self.interval
+    }
+
+    pub fn base_radius_mm(self) -> f64 {
+        self.base_radius_mm
+    }
+
+    /// Unit X and Y vectors of the involute frame, including reflection.
+    pub fn basis(self) -> [Point; 2] {
+        [self.map([1., 0.]), self.map([0., 1.])]
+    }
+
+    pub fn support(self, direction: Point) -> f64 {
+        let [a, b] = self.interval;
+        let [x, y] = self.basis().map(|axis| dot(direction, axis));
+        let mut maximum = dot(direction, self.at(a)).max(dot(direction, self.at(b)));
+        // The projected derivative is proportional to cos(t - angle).
+        // Only its positive-to-negative zero can increase the support.
+        let stationary = (y.atan2(x) + FRAC_PI_2).rem_euclid(TAU);
+        if (a.min(b)..=a.max(b)).contains(&stationary) {
+            maximum = maximum.max(dot(direction, self.at(stationary)));
+        }
+        maximum
+    }
+
+    /// The arc-length-weighted center, independent of travel direction.
+    pub fn centroid(self) -> Point {
+        let [a, b] = self.interval;
+        let mid = a.midpoint(b);
+        let h = (b - a).abs() / 2.;
+        let h2 = h * h;
+        // Integrate t(1 - it)e^(it) around the interval midpoint, then
+        // divide by the integral of t. Series keep the small differences
+        // sinc(h)-cos(h) and 3(sinc(h)-cos(h))-h²sinc(h) well conditioned.
+        let (sinc, extra, transverse) = if h < 0.01 {
+            let sinc = 1. + h2 * (-1. / 6. + h2 * (1. / 120. - h2 / 5040.));
+            let extra = h2 * (1. / 3. + h2 * (-1. / 30. + h2 / 840.));
+            let transverse =
+                ((b - a).abs() / (a + b)) * h.powi(3) * (1. / 15. + h2 * (-1. / 210. + h2 / 7560.));
+            (sinc, extra, transverse)
+        } else {
+            let (sin, cos) = h.sin_cos();
+            let sinc = sin / h;
+            let extra = sinc - cos;
+            (sinc, extra, (3. * extra - h2 * sinc) / mid)
+        };
+        let local = [sinc + 2. * extra, transverse - mid * sinc];
+        self.map(rotate(scale(local, self.base_radius_mm), mid))
     }
 
     /// Evaluate at a fraction in 0..=1 along the oriented flank.

@@ -80,7 +80,7 @@ impl Tessellation {
 }
 
 #[derive(Clone, Default)]
-struct Footprint {
+pub(crate) struct Footprint {
     points: Vec<Point2<f64>>,
     edges: Vec<[usize; 2]>,
     side_faces: Vec<u32>,
@@ -88,7 +88,7 @@ struct Footprint {
 }
 
 impl Footprint {
-    fn ring(
+    pub(crate) fn ring(
         &mut self,
         samples: impl ExactSizeIterator<Item = ([f64; 2], u32)>,
         options: Tessellation,
@@ -109,7 +109,7 @@ impl Footprint {
         Ok(())
     }
 
-    fn circle(
+    pub(crate) fn circle(
         &mut self,
         [x, y]: [f64; 2],
         radius: f64,
@@ -141,7 +141,7 @@ impl Footprint {
         )
     }
 
-    fn tessellate(self, bottom: f64, top: f64) -> Result<DisplayMesh, MeshError> {
+    pub(crate) fn tessellate(self, bottom: f64, top: f64) -> Result<DisplayMesh, MeshError> {
         let count = self.points.len();
         let RegionTriangulation {
             cdt,

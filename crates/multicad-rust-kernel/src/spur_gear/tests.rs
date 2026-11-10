@@ -336,3 +336,223 @@ fn rejects_invalid_or_unresolvable_geometry() {
     assert_eq!(curve.cubic_spline(0.), Err(Error::InvalidDimensions));
     assert_eq!(curve.cubic_spline(1e-13), Err(Error::Limit));
 }
+
+#[test]
+fn sweep_mesh_preserves_bore_caps_face_ordinals_and_volume() {
+    use crate::{display::Tessellation, manufacturing::certify};
+
+    let options = Tessellation {
+        deflection: 0.005,
+        angle: 0.15,
+        triangle_limit: 200_000,
+    };
+    let specimen = spec(20, 20.);
+    // A second bore nearly touches the root circle, so the outer chords
+    // need tighter sampling even though the requested tessellation is coarse.
+    for radius in [0., 2., specimen.root_radius_mm - 1e-3] {
+        let spec = Spec {
+            bore_radius_mm: radius,
+            ..specimen
+        };
+        let profile = Profile::new(spec, MINIMUM, MAX_COORDINATE_MM).unwrap();
+        let mesh = profile.mesh(options).unwrap();
+        let proof = certify(&mesh).unwrap();
+        let lateral_area = profile.surface_area_mm2() - 2. * profile.area_mm2();
+        close(
+            proof.signed_volume_mm3,
+            profile.volume_mm3(),
+            lateral_area * options.deflection,
+        );
+
+        let total_faces = profile.outline().len() + 2 + usize::from(radius > 0.);
+        let vertex = |i: u32| {
+            let offset = i as usize * 3;
+            let values = &mesh.vertices[offset..offset + 3];
+            ([values[0], values[1]], values[2])
+        };
+        let mut by_face = vec![0; total_faces];
+        for (indices, &face) in mesh
+            .indices
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .zip(&mesh.face_indices)
+        {
+            by_face[face as usize] += 1;
+            let [(a, za), (b, zb), (c, zc)] = [indices[0], indices[1], indices[2]].map(vertex);
+            if face < 2 {
+                let z = f64::from(face) * spec.face_width_mm;
+                assert_eq!([za, zb, zc], [z; 3]);
+                assert_eq!(cross(sub(b, a), sub(c, a)).is_sign_positive(), face == 1);
+            } else {
+                let z = [za, zb, zc];
+                assert!(z.contains(&0.) && z.contains(&spec.face_width_mm));
+                let planar_edge = if za == zb { [a, b] } else { [c, b] };
+                if radius > 0. && face as usize == total_faces - 1 {
+                    for p in [a, b, c] {
+                        close(norm(p), radius, 1e-12);
+                    }
+                    assert!(cross(planar_edge[0], planar_edge[1]) < 0.);
+                }
+            }
+        }
+        assert!(by_face.iter().all(|&n| n > 0));
+        if radius == 0. {
+            let reference_area = 2. * profile.area_mm2()
+                + spec.face_width_mm
+                    * profile
+                        .outline()
+                        .iter()
+                        .map(|entry| entry.edge.length_mm())
+                        .sum::<f64>();
+            close(profile.surface_area_mm2(), reference_area, 1e-10);
+        }
+    }
+
+    let direct = Profile::new(spec(64, 20.), MINIMUM, MAX_COORDINATE_MM).unwrap();
+    assert!(certify(&direct.mesh(options).unwrap()).is_ok());
+}
+
+#[test]
+fn support_and_arc_length_centroid_use_the_analytic_flank() {
+    use crate::revolution::dot;
+
+    let curve = Involute::new(21., [0.2, 0.8], 0.).unwrap();
+    let direction = polar(1., 0.5 - FRAC_PI_2);
+    let expected = dot(direction, curve.point(0.5));
+    assert!(expected > dot(direction, curve.point(0.)));
+    assert!(expected > dot(direction, curve.point(1.)));
+    close(Edge::Involute(curve).support(direction), expected, 1e-12);
+
+    for curve in [
+        curve,
+        curve.reversed().reflected().rotated(2.).unwrap(),
+        Involute::new(20., [0.08, 0.08001], 0.2).unwrap(),
+    ] {
+        let edge = Edge::Involute(curve);
+        let mut sum = [0.; 2];
+        let mut weight = 0.;
+        let [a, b] = curve.interval();
+        let [u, v] = curve.basis();
+        close(
+            curve.base_radius_mm(),
+            norm(curve.point(0.)) / a.hypot(1.),
+            1e-12,
+        );
+        close(dot(u, v), 0., 1e-12);
+        close(norm(u), 1., 1e-12);
+        close(norm(v), 1., 1e-12);
+        for i in 0..10_000 {
+            let f = (f64::from(i) + 0.5) / 10_000.;
+            let t = a + f * (b - a);
+            sum = add(sum, scale(edge.point(f), t));
+            weight += t;
+        }
+        let approximate_center = scale(sum, 1. / weight);
+        close(norm(sub(edge.centroid(), approximate_center)), 0., 1e-7);
+    }
+
+    let profile = Profile::new(spec(20, 20.), MINIMUM, MAX_COORDINATE_MM).unwrap();
+    let [min, max] = profile.bounds();
+    assert_eq!(min[2], 0.);
+    assert_eq!(max[2], profile.height_mm());
+    // A tooth lies on each cardinal axis for a 20-tooth centered profile.
+    for value in [min[0], min[1], max[0], max[1]] {
+        close(value.abs(), 22., 1e-12);
+    }
+    let direction = [1.3, -0.9, 0.4];
+    let support = profile.support(direction);
+    let mut sampled = f64::NEG_INFINITY;
+    for entry in profile.outline() {
+        for i in 0..=1024 {
+            let p = entry.edge.point(f64::from(i) / 1024.);
+            sampled = sampled.max(dot([direction[0], direction[1]], p));
+        }
+    }
+    close(support, sampled + direction[2] * profile.height_mm(), 1e-5);
+    assert_eq!(profile.support([0.; 3]), 0.);
+    assert!(profile.support([f64::NAN, 1., 0.]).is_nan());
+
+    let line = Edge::Planar(normal_sweep::Edge::Line {
+        a: [1., 1.],
+        b: [1., 3.],
+    });
+    assert_eq!(line.centroid(), [1., 2.]);
+    assert_eq!(line.tangent(0.5), [0., 1.]);
+    let bore = Edge::Planar(profile.bore().unwrap());
+    assert_eq!(bore.tangent(0.), [0., -1.]);
+    let involute = Edge::Involute(curve);
+    assert_eq!(involute.tangent(0.5), curve.tangent(0.5));
+}
+
+#[test]
+fn detached_samples_respect_chord_and_angle_and_refuse_excess_work() {
+    use crate::display::{MeshError, Tessellation};
+
+    let profile = Profile::new(spec(20, 20.), MINIMUM, MAX_COORDINATE_MM).unwrap();
+    let deflection = 0.003;
+    let angular = 0.11;
+    for entry in &profile.outline()[..8] {
+        let edge = entry.edge;
+        let sampled = edge.sample(deflection, angular).unwrap();
+        assert_eq!(sampled.first(), Some(&edge.point(0.)));
+        assert_eq!(sampled.last(), Some(&edge.point(1.)));
+        let count = sampled.len() - 1;
+        for (i, pair) in sampled.windows(2).enumerate() {
+            let a = i as f64 / count as f64;
+            let b = (i + 1) as f64 / count as f64;
+            let d = edge.point(a.midpoint(b));
+            let chord_mid = scale(add(pair[0], pair[1]), 0.5);
+            assert!(norm(sub(d, chord_mid)) <= deflection + 1e-12);
+            let [p, q] = [edge.tangent(a), edge.tangent(b)];
+            assert!(cross(p, q).atan2(crate::revolution::dot(p, q)).abs() <= angular + 1e-12);
+        }
+    }
+    let curve = Edge::Involute(Involute::new(20., [0., 0.7], 0.).unwrap());
+    assert_eq!(curve.sample(0., angular), Err(MeshError::InvalidOptions));
+    assert_eq!(curve.sample(1e-25, angular), Err(MeshError::BudgetExceeded));
+    let arc = profile.outline()[0].edge;
+    assert_eq!(arc.sample(1e-25, angular), Err(MeshError::BudgetExceeded));
+    let options = Tessellation {
+        deflection,
+        angle: angular,
+        triangle_limit: 1,
+    };
+    assert_eq!(profile.mesh(options), Err(MeshError::BudgetExceeded));
+    assert_eq!(
+        profile.mesh(Tessellation {
+            triangle_limit: 100,
+            ..options
+        }),
+        Err(MeshError::BudgetExceeded)
+    );
+    let unbored = Profile::new(
+        Spec {
+            bore_radius_mm: 0.,
+            ..spec(20, 20.)
+        },
+        MINIMUM,
+        MAX_COORDINATE_MM,
+    )
+    .unwrap();
+    let mesh = unbored
+        .mesh(Tessellation {
+            triangle_limit: 20_000,
+            ..options
+        })
+        .unwrap();
+    assert_eq!(
+        profile.mesh(Tessellation {
+            triangle_limit: mesh.face_indices.len(),
+            ..options
+        }),
+        Err(MeshError::BudgetExceeded)
+    );
+    assert_eq!(
+        profile.mesh(Tessellation {
+            angle: f64::NAN,
+            ..options
+        }),
+        Err(MeshError::InvalidOptions)
+    );
+}
