@@ -1,7 +1,9 @@
 //! Exact planar Boolean operands, placement and surviving source faces.
 use super::*;
 use crate::rust_prism_topology::{Builder, position};
-use multicad_core::references::{AnalyticGeometry, AnchoredFrame, ReferenceFrame, TopologyKind};
+use multicad_core::references::{
+    AnalyticGeometry, AnchoredFrame, MAX_GEOMETRY_ORIGINS, ReferenceFrame, TopologyKind,
+};
 use multicad_rust_kernel::{
     display::Tessellation,
     orthogonal::Box3,
@@ -921,16 +923,27 @@ impl PlanarBooleanBody {
                 .iter()
                 .any(|anchor| anchor.origin == boundary.origins[0]))
             .then_some(plane);
-            builder.face(
-                i,
-                Some(plane),
-                anchor,
-                boundary
-                    .edges
-                    .iter()
-                    .flat_map(|&(edge, _)| self.edges[edge as usize].1.iter().copied())
-                    .filter(|&other| other != i),
-            );
+            let neighbors = boundary
+                .edges
+                .iter()
+                .flat_map(|&(edge, _)| self.edges[edge as usize].1.iter().copied())
+                .filter(|&other| other != i);
+            let aliases = neighbors
+                .clone()
+                .flat_map(|i| self.faces[i].origins.iter().cloned());
+            let mut signature = BTreeSet::new();
+            for origin in aliases {
+                signature.insert(origin);
+                if signature.len() > MAX_GEOMETRY_ORIGINS {
+                    // Keep one identity per neighbor for oversized signatures.
+                    // Each neighbor still publishes all its origins and frames.
+                    signature = neighbors
+                        .filter_map(|i| self.faces[i].origins.first().cloned())
+                        .collect();
+                    break;
+                }
+            }
+            builder.face_with_boundary(i, Some(plane), anchor, signature);
         }
         let mut elements = builder.into_elements();
         if let Some(ancestry) = &self.scaled_ancestry {

@@ -181,6 +181,20 @@ impl Builder {
         anchor: Option<ReferenceFrame>,
         neighbors: impl IntoIterator<Item = usize>,
     ) {
+        let boundary = neighbors
+            .into_iter()
+            .flat_map(|i| self.face_origins[i].iter().cloned())
+            .collect();
+        self.face_with_boundary(ordinal, plane, anchor, boundary);
+    }
+
+    pub(crate) fn face_with_boundary(
+        &mut self,
+        ordinal: usize,
+        plane: Option<ReferenceFrame>,
+        anchor: Option<ReferenceFrame>,
+        boundary: std::collections::BTreeSet<Origin>,
+    ) {
         let origins = &self.face_origins[ordinal];
         self.elements.push(TopologyElement {
             key: TopologyKey {
@@ -188,10 +202,7 @@ impl Builder {
                 ordinal: ordinal as u32,
             },
             origins: origins.iter().cloned().collect(),
-            boundary: neighbors
-                .into_iter()
-                .flat_map(|i| self.face_origins[i].iter().cloned())
-                .collect(),
+            boundary,
             frames: anchor
                 .map(|frame| AnchoredFrame {
                     origin: origins[0].clone(),

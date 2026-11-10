@@ -277,7 +277,7 @@ impl Solid {
                         .flat_map(|(station, edges)| {
                             let origin = &edges[edge];
                             let frame = side_frame(station);
-                            [origin.clone(), side_origin(feature, origin)]
+                            [side_origin(feature, origin), origin.clone()]
                                 .map(|origin| AnchoredFrame { origin, frame })
                         })
                         .collect();
@@ -308,6 +308,75 @@ impl Solid {
 mod tests {
     use super::*;
     use multicad_core::references::{Attachment, Resolution, resolve};
+
+    #[test]
+    fn smooth_loft_at_the_input_limit_keeps_caps_and_station_references() {
+        let points: [[f64; 2]; 64] = std::array::from_fn(|i| {
+            let (sin, cos) = (std::f64::consts::TAU * i as f64 / 64.).sin_cos();
+            [30. * cos, 30. * sin]
+        });
+        let outer: Vec<_> = (0..points.len())
+            .map(|i| CurvedEdge2d::Line {
+                a: points[i],
+                b: points[(i + 1) % points.len()],
+            })
+            .collect();
+        let profiles: Vec<_> = (0..16)
+            .map(|z| CurvedProfile {
+                frame: PlaneFrame {
+                    origin: [0., 0., f64::from(z)],
+                    ..Default::default()
+                },
+                outer: outer.clone(),
+                holes: vec![],
+            })
+            .collect();
+        let origins: Vec<_> = profiles
+            .iter()
+            .map(|_| {
+                (0..64)
+                    .map(|_| Origin {
+                        source: EntityId::new(),
+                        role: "profile".into(),
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        let feature = EntityId::new();
+        let solid = Solid::rust_loft_profiles_named(
+            &profiles,
+            feature,
+            &origins,
+            false,
+            GeometryPolicy::default(),
+        )
+        .unwrap();
+        let topology = solid.topology_snapshot(feature, 0).unwrap();
+        topology.validate().unwrap();
+        let faces: Vec<_> = topology
+            .elements
+            .iter()
+            .filter(|e| e.key.kind == TopologyKind::Face)
+            .collect();
+        assert_eq!(faces.len(), 66);
+        for face in faces {
+            let intent = GeometryIntent::capture(&topology, face.key).unwrap();
+            assert!(matches!(
+                resolve(&intent, &topology, 0),
+                Resolution::Resolved { .. }
+            ));
+            if face
+                .origins
+                .iter()
+                .any(|origin| origin.role.starts_with("cap."))
+            {
+                assert_eq!(face.boundary.len(), 64);
+            } else {
+                assert_eq!(face.origins.len(), 32);
+                assert_eq!(face.frames.len(), 32);
+            }
+        }
+    }
 
     fn rectangle(x: f64, width: f64) -> CurvedProfile {
         let points = [[0., 0.], [width, 0.], [width, 3.], [0., 3.]];

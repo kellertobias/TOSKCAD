@@ -49,8 +49,11 @@ pub struct GeometryIntent {
     pub boundary: Option<BTreeSet<Origin>>,
     pub attachment: Option<Attachment>,
 }
+/// Maximum source aliases in one topology or intent set.
+pub const MAX_GEOMETRY_ORIGINS: usize = 1024;
+
 fn origins_valid(origins: &BTreeSet<Origin>) -> Result<(), String> {
-    if origins.len() > 1024 {
+    if origins.len() > MAX_GEOMETRY_ORIGINS {
         return Err("Geometry provenance budget exceeded".into());
     }
     for origin in origins {
