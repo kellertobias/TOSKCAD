@@ -1663,29 +1663,135 @@ fn a_tangent_bore_is_rejected_without_native_fallback() {
 }
 
 #[test]
-fn sphere_refuses_unsupported_exact_exchange_and_drawings() {
-    use multicad_kernel::{DrawingProjection, DrawingSolid, GeometryErrorKind, project_drawing};
+fn sphere_round_trips_analytic_step_and_reports_unsupported_drawings() {
+    use multicad_core::exchange::{self, ExportResult, SetDefinition};
+    use multicad_kernel::{
+        DrawingProjection, DrawingSolid, GeometryErrorKind, GeometryPolicy, Solid, project_drawing,
+        rust_kernel::step_read::read_analytic_solid,
+    };
+    use multicad_model::export::{ExportWorker, Exporter};
+    use std::{
+        path::Path,
+        time::{Duration, Instant},
+    };
 
     let mut session = Session::new(Document::new("Sphere exchange").unwrap()).unwrap();
     let stock = PrimitiveRequest::new(
         "Sphere",
         PrimitiveParameters::Sphere {
-            radius: length(1.),
-            frame: PrimitiveFrame::default(),
+            radius: length(4.5),
+            frame: PrimitiveFrame {
+                origin: [17., 4., -12.].map(length),
+                u: [0.8, 0., -0.6],
+                v: [0., 1., 0.],
+            },
         },
     );
     let prepared = model::prepare_primitive(&session, session.revision(), actor(), &stock).unwrap();
     session.commit(prepared.prepared).unwrap();
     let rust = compile(&session, GeometryBackend::Rust);
     let solid = rust.solid(stock.feature).unwrap();
-    assert!(!solid.supports_step_export());
+    assert!(solid.supports_step_export());
+    let set = EntityId::new();
+    let saved = exchange::prepare_set(
+        &session,
+        session.revision(),
+        actor(),
+        set,
+        "Sphere STEP",
+        &SetDefinition::default(),
+    )
+    .unwrap();
+    session.commit(saved).unwrap();
+    let worker =
+        ExportWorker::with_geometry_backend(Exporter::default(), GeometryBackend::Rust).unwrap();
+    let wait = || {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            if let Some(reply) = worker.poll() {
+                break reply.result;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "Sphere STEP worker did not finish"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    };
+    worker
+        .preview(session.document(), session.revision(), set, actor())
+        .unwrap();
+    let ExportResult::Preview(preview) = wait() else {
+        panic!("expected STEP preview");
+    };
+    let preview = preview.unwrap();
+    assert!(preview.can_run());
     let directory = tempfile::tempdir().unwrap();
-    let destination = directory.path().join("sphere.step");
-    assert_eq!(
-        solid.write_step(&destination).unwrap_err().kind,
-        GeometryErrorKind::Unsupported
+    worker
+        .run(
+            session.document(),
+            session.revision(),
+            &preview.key,
+            directory.path(),
+            actor(),
+        )
+        .unwrap();
+    let ExportResult::Run(receipt) = wait() else {
+        panic!("expected verified STEP publication");
+    };
+    let receipt = receipt.unwrap();
+    let [file] = receipt.files.as_slice() else {
+        panic!("expected one published sphere");
+    };
+    let destination = Path::new(&receipt.directory).join(&file.artifact.output.filename);
+    let source = std::fs::read_to_string(&destination).unwrap();
+    let policy = GeometryPolicy::default();
+    let decoded = read_analytic_solid(&source, policy.linear_tolerance_mm).unwrap();
+    assert!(Solid::step_topology_matches(
+        &rust.snapshot().shapes[&stock.feature].topology,
+        &decoded,
+        policy.linear_tolerance_mm,
+    ));
+    let imported = Solid::import_rust_step(&source, stock.feature, policy).unwrap();
+    assert_eq!(imported.solid_count().unwrap(), 1);
+    assert_eq!(imported.bounds().unwrap(), solid.bounds().unwrap());
+    near(imported.volume_mm3().unwrap(), solid.volume_mm3().unwrap());
+    near(
+        imported.faces().unwrap()[0].area_mm2,
+        solid.faces().unwrap()[0].area_mm2,
     );
-    assert!(!destination.exists());
+    assert_eq!(
+        imported.display_vertices().unwrap(),
+        solid.display_vertices().unwrap()
+    );
+
+    #[cfg(feature = "occt")]
+    {
+        let native = Solid::read_step(&destination, policy).unwrap();
+        assert_eq!(native.solid_count().unwrap(), 1);
+        let bounds = native.bounds().unwrap();
+        for (actual, expected) in bounds
+            .min
+            .into_iter()
+            .chain(bounds.max)
+            .zip(decoded.bounds_mm.into_iter().flatten())
+        {
+            near(actual, expected);
+        }
+        near(native.volume_mm3().unwrap(), decoded.volume_mm3);
+        near(
+            native.faces().unwrap()[0].area_mm2,
+            solid.faces().unwrap()[0].area_mm2,
+        );
+        let oracle = compile(&session, GeometryBackend::OpenCascade);
+        let oracle = oracle.solid(stock.feature).unwrap();
+        let oracle_path = directory.path().join("native-sphere.step");
+        oracle.write_step(&oracle_path).unwrap();
+        let independent = std::fs::read_to_string(oracle_path).unwrap();
+        let imported = Solid::import_rust_step(&independent, stock.feature, policy).unwrap();
+        near(imported.volume_mm3().unwrap(), solid.volume_mm3().unwrap());
+        assert_eq!(imported.bounds().unwrap(), solid.bounds().unwrap());
+    }
     let input = DrawingSolid { solid, hatch: None };
     let error = project_drawing(&[input], DrawingProjection::default()).unwrap_err();
     assert_eq!(error.kind, GeometryErrorKind::Unsupported);

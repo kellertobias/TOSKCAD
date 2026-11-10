@@ -122,7 +122,7 @@ impl Solid {
                 ),
                 ReadError::Unsupported => (
                     GeometryErrorKind::Unsupported,
-                    "Rust STEP import requires certified swept or orthogonal solids in millimeters",
+                    "Rust STEP import requires a supported analytic solid in millimeters",
                 ),
             };
             error(IMPORT, kind, message)
@@ -177,6 +177,9 @@ impl Solid {
         frame.checked(policy)?;
         let dimension = |value| convert(value, policy.linear_tolerance_mm);
         match profile {
+            ImportProfile::Sphere { radius_mm } => {
+                Self::rust_sphere_named(radius_mm, frame, feature, policy)
+            }
             ImportProfile::SplineSweep { sweep } => {
                 let body = SplineSweepBody::new(feature, sweep, frame, policy.linear_tolerance_mm)?;
                 Ok(Self {

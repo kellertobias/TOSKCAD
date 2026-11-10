@@ -1,5 +1,5 @@
 //! Readback for millimetre STEP advanced solids bounded by planes and full or
-//! half cylindrical walls, bounded quarter-round patches with elliptic trims,
+//! half cylindrical walls, complete spheres, bounded quarter-round patches with elliptic trims,
 //! and normal sweeps with clamped cubic trims. The reader verifies each shell
 //! and integrates its boundary without tessellating it.
 
@@ -13,6 +13,7 @@ mod import;
 mod mixed;
 mod part21;
 mod round;
+mod sphere;
 mod spline;
 mod spline_sweep;
 pub use spline::SplineEdge;
@@ -76,6 +77,7 @@ pub struct Readback {
     /// Straight model edges. Periodic surface seams are excluded.
     pub edges_mm: Vec<[Point; 2]>,
     pub circles: Vec<CircleEdge>,
+    /// Explicit semicircular edges and the canonical meridian of a complete sphere.
     pub semicircles: Vec<SemicircleEdge>,
     pub arcs: Vec<ArcEdge>,
     pub ellipses: Vec<EllipseArc>,
@@ -93,7 +95,7 @@ pub fn read_planar_solid(input: &str, tolerance_mm: f64) -> Result<Readback> {
 }
 
 /// Verify a planar solid or a solid containing full circles and semicircles
-/// with cylindrical walls between planar caps, or a certified quarter-round
+/// with cylindrical walls between planar caps, a complete sphere, or a certified quarter-round
 /// shell with elliptic trims or a bounded normal sweep with cubic trims.
 pub fn read_analytic_solid(input: &str, tolerance_mm: f64) -> Result<Readback> {
     read(input, tolerance_mm, true)

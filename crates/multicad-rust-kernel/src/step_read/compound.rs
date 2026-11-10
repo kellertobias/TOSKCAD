@@ -15,14 +15,11 @@ pub(super) fn read_members<T>(
     })
 }
 
-pub(super) fn read_members_with_warped<T>(
+pub(super) fn read_import_members(
     input: &str,
     tolerance: f64,
     single: bool,
-    member: impl Fn(&Shell<'_, '_>, &[Face]) -> Result<T>,
-    warped_member: impl Fn(Readback, ImportedWarped) -> T,
-    spline_member: impl Fn(Readback, spline_sweep::DecodedSplineSweep) -> T,
-) -> Result<Vec<T>> {
+) -> Result<Vec<(Readback, ImportSolid)>> {
     read_members_by(
         input,
         tolerance,
@@ -30,20 +27,23 @@ pub(super) fn read_members_with_warped<T>(
         single,
         |shell, id, may_be_warped| {
             let face_ids = shell.member_faces(id)?;
+            if let Some(sphere) = sphere::read_member(shell, &face_ids)? {
+                return Ok(sphere);
+            }
             if face_ids
                 .iter()
                 .any(|&face| spline_sweep::has_extrusion_support(shell, face))
             {
                 return spline_sweep::import_member(shell, face_ids)
-                    .map(|(proof, body)| spline_member(proof, body));
+                    .map(|(proof, body)| import::recognize_spline(proof, body));
             }
             let regular = shell
                 .validate_faces(face_ids)
-                .and_then(|faces| member(shell, &faces));
+                .and_then(|faces| import::recognize_member(shell, &faces));
             match regular {
                 Err(error @ (ReadError::Invalid | ReadError::Unsupported)) if may_be_warped => {
                     fallback_warped(shell, id, error)
-                        .map(|(readback, import)| warped_member(readback, import))
+                        .map(|(readback, import)| import::recognize_warped(readback, import))
                 }
                 _ => regular,
             }
@@ -59,6 +59,9 @@ pub(super) fn read_analytic(input: &str, tolerance: f64, single: bool) -> Result
         single,
         |shell, id, may_be_warped| {
             let faces = shell.member_faces(id)?;
+            if let Some((proof, _)) = sphere::read_member(shell, &faces)? {
+                return Ok(proof);
+            }
             if faces
                 .iter()
                 .any(|&face| spline_sweep::has_extrusion_support(shell, face))

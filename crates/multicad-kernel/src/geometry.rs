@@ -1978,6 +1978,7 @@ impl Solid {
             | SolidBody::SplineSweep(..)
             | SolidBody::SpurGear(..)
             | SolidBody::AxialStack(..)
+            | SolidBody::Sphere(..)
             | SolidBody::RoundedSlot(..) => true,
             SolidBody::Prism(prism, _) => prism.rounded_end().is_none(),
             SolidBody::RustCompound(compound) => compound
@@ -1989,7 +1990,7 @@ impl Solid {
             SolidBody::Herringbone(body, frame) => {
                 standalone && body.supports_step(*frame, self.policy)
             }
-            SolidBody::CosmeticFastener(..) | SolidBody::Sphere(..) => false,
+            SolidBody::CosmeticFastener(..) => false,
             SolidBody::WarpedUnion(body, _) => {
                 multicad_rust_kernel::step::supports_warped_union(&body.geometry)
             }
@@ -2148,9 +2149,10 @@ impl Solid {
                 Ok(())
             }
             SolidBody::Helical(body, frame) => body.append_step(writer, *frame, self.policy),
-            SolidBody::CosmeticFastener(..) | SolidBody::Sphere(..) => {
-                Err(step::StepError::Unsupported)
+            SolidBody::Sphere(body, frame) => {
+                writer.append_sphere(body.geometry, frame.origin, frame.u, frame.v)
             }
+            SolidBody::CosmeticFastener(..) => Err(step::StepError::Unsupported),
             SolidBody::Orthogonal(body, frame) => body.append_step(writer, *frame),
             SolidBody::Occt(_) => unreachable!("native STEP dispatched above"),
         }

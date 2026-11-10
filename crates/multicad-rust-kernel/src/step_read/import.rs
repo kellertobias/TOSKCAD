@@ -87,6 +87,9 @@ pub enum ImportProfile {
     Stadium {
         profile: Stadium,
     },
+    Sphere {
+        radius_mm: f64,
+    },
     Cylinder {
         radius_mm: f64,
     },
@@ -122,7 +125,7 @@ pub struct ImportSolid {
     pub origin_mm: [f64; 3],
     pub u: [f64; 3],
     pub v: [f64; 3],
-    /// Height at the origin of the lower cap frame.
+    /// Height at the lower cap origin for swept solids.
     pub height_mm: f64,
     pub profile: ImportProfile,
 }
@@ -130,16 +133,9 @@ pub struct ImportSolid {
 /// Decode a single analytic extrusion or rectilinear solid from a verified
 /// STEP shell. Orthogonal solids can contain blind and through pockets.
 pub fn read_import_solid(input: &str, tolerance_mm: f64) -> Result<(Readback, ImportSolid)> {
-    compound::read_members_with_warped(
-        input,
-        tolerance_mm,
-        true,
-        recognize_member,
-        recognize_warped,
-        recognize_spline,
-    )?
-    .pop()
-    .ok_or(ReadError::Invalid)
+    compound::read_import_members(input, tolerance_mm, true)?
+        .pop()
+        .ok_or(ReadError::Invalid)
 }
 
 /// Decode the independent analytic members of one flat advanced BREP representation.
@@ -147,17 +143,10 @@ pub fn read_import_compound(
     input: &str,
     tolerance_mm: f64,
 ) -> Result<Vec<(Readback, ImportSolid)>> {
-    compound::read_members_with_warped(
-        input,
-        tolerance_mm,
-        false,
-        recognize_member,
-        recognize_warped,
-        recognize_spline,
-    )
+    compound::read_import_members(input, tolerance_mm, false)
 }
 
-fn recognize_spline(
+pub(super) fn recognize_spline(
     readback: Readback,
     body: spline_sweep::DecodedSplineSweep,
 ) -> (Readback, ImportSolid) {
@@ -179,7 +168,10 @@ fn recognize_spline(
     )
 }
 
-fn recognize_warped(readback: Readback, imported: ImportedWarped) -> (Readback, ImportSolid) {
+pub(super) fn recognize_warped(
+    readback: Readback,
+    imported: ImportedWarped,
+) -> (Readback, ImportSolid) {
     let ImportedWarped {
         shell,
         origin_mm,
@@ -199,7 +191,10 @@ fn recognize_warped(readback: Readback, imported: ImportedWarped) -> (Readback, 
     )
 }
 
-fn recognize_member(shell: &Shell<'_, '_>, faces: &[Face]) -> Result<(Readback, ImportSolid)> {
+pub(super) fn recognize_member(
+    shell: &Shell<'_, '_>,
+    faces: &[Face],
+) -> Result<(Readback, ImportSolid)> {
     let readback = shell.readback(faces)?;
     if faces.iter().any(|face| matches!(face, Face::Conical(_))) {
         let solid = shell

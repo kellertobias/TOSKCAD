@@ -86,6 +86,29 @@ impl Writer {
         }
     }
 
+    /// Append a complete spherical face. The vertex loop denotes its
+    /// collapsed south pole, while the surface chart supplies the seam.
+    pub fn append_sphere(
+        &mut self,
+        sphere: crate::sphere::Sphere,
+        origin: Point,
+        u: Point,
+        v: Point,
+    ) -> Result<(), StepError> {
+        let placement = Placement::new(origin, u, v)?;
+        self.append(|file| {
+            let radius = sphere.radius_mm();
+            let center = file.point(placement.origin);
+            let axis = file.axis(center, placement.normal, placement.u);
+            let surface = file.entity(format_args!("SPHERICAL_SURFACE('',{axis},{radius:.16E})"));
+            let pole = file.vertex(placement.point_f64([0.; 2], -radius)).vertex;
+            let loop_id = file.entity(format_args!("VERTEX_LOOP('',{pole})"));
+            let bound = file.entity(format_args!("FACE_BOUND('',{loop_id},.T.)"));
+            let face = file.face_on(&[bound], surface, true);
+            Ok(file.solid(&[face]))
+        })
+    }
+
     /// Append one bounded authored chevron solid with two continuous bands.
     pub fn append_herringbone(
         &mut self,
