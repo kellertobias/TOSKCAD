@@ -5,7 +5,7 @@ impl Union {
         validate_tolerance(tolerance)?;
         let mut boundary = shell::Boundary::new(tolerance);
         let mut budget = MAX_WORK;
-        let mut bounds_mm = Vec::new();
+        let mut charts = Vec::new();
         for (ordinal, ring) in rings.iter().enumerate() {
             if ring.len() > crate::polygon::MAX_VERTICES
                 || ring.iter().flatten().any(|v| v.abs() > MAX_COORDINATE)
@@ -16,40 +16,52 @@ impl Union {
                 return Err(Error::Invalid);
             }
             charge(&mut budget, ring.len() * ring.len())?;
-            let plane = supporting_plane(ring, tolerance)?;
+            let (plane, convex) = planar_ring(ring, tolerance)?;
             boundary.add(ring, plane.normal, 0, ordinal)?;
-            bounds_mm.push((bounds(ring.iter().copied()), plane));
+            let face = &boundary.faces[ordinal];
+            let triangles = if convex {
+                Vec::new()
+            } else {
+                shell::triangulate_face(&boundary.vertices, face).map_err(|_| Error::Invalid)?
+            };
+            charts.push((bounds(ring.iter().copied()), plane, triangles));
         }
         let proof = boundary.prove()?;
         if proof.solid_count != 1 || proof.shells.len() != 1 {
             return Err(Error::Invalid);
         }
-        // Two convex faces meet only at the vertices/edge already shared by
-        // the certified topology, or they are disjoint. This tests the actual
-        // planar chart before any curved patch is admitted.
+        // Check intersections on convex charts while retaining the original
+        // face loops. A partition only introduces diagonals between existing
+        // vertices and cannot hide a contact absent from the shared topology.
         for (index, face) in boundary.faces.iter().enumerate() {
             charge(&mut budget, index)?;
             for (other_index, other) in boundary.faces[..index].iter().enumerate() {
-                let (aabb, plane) = bounds_mm[index];
-                let (other_aabb, other_plane) = bounds_mm[other_index];
+                let (aabb, plane, triangles) = &charts[index];
+                let (other_aabb, other_plane, other_triangles) = &charts[other_index];
                 if (0..3).any(|i| {
                     aabb[0][i] > other_aabb[1][i] + tolerance
                         || other_aabb[0][i] > aabb[1][i] + tolerance
                 }) {
                     continue;
                 }
-                charge(&mut budget, face.vertices.len() * other.vertices.len() * 2)?;
-                let a = Polygon {
-                    plane,
-                    ring: &face.vertices,
-                    points: &boundary.vertices,
-                };
-                let b = Polygon {
-                    plane: other_plane,
-                    ring: &other.vertices,
-                    points: &boundary.vertices,
-                };
-                verify_pair(a, b, tolerance)?;
+                for ring in convex_charts(face, triangles) {
+                    for other_ring in convex_charts(other, other_triangles) {
+                        charge(&mut budget, ring.len() * other_ring.len() * 2)?;
+                        let a = Polygon {
+                            plane: *plane,
+                            ring,
+                            authored_ring: &face.vertices,
+                            points: &boundary.vertices,
+                        };
+                        let b = Polygon {
+                            plane: *other_plane,
+                            ring: other_ring,
+                            authored_ring: &other.vertices,
+                            points: &boundary.vertices,
+                        };
+                        verify_pair(a, b, tolerance)?;
+                    }
+                }
             }
         }
         let bounds_mm = bounds(boundary.vertices.iter().copied());
@@ -64,10 +76,21 @@ impl Union {
     }
 }
 
+fn convex_charts<'a>(
+    face: &'a Face,
+    triangles: &'a [[usize; 3]],
+) -> impl Iterator<Item = &'a [usize]> {
+    triangles
+        .iter()
+        .map(<[usize; 3]>::as_slice)
+        .chain(triangles.is_empty().then_some(face.vertices.as_slice()))
+}
+
 #[derive(Clone, Copy)]
 struct Polygon<'a> {
     plane: Plane,
     ring: &'a [usize],
+    authored_ring: &'a [usize],
     points: &'a [Point],
 }
 
@@ -181,12 +204,29 @@ fn verify_overlap(
     };
     // Every end of the intersection must be a shared vertex. A nonzero
     // overlap must also follow the same subdivision in both face loops.
-    for end in [lo, hi] {
-        if !a.ring.iter().filter(|id| b.ring.contains(id)).any(|&id| {
-            let point = a.points[id];
-            on_line(point) && (position(point) - end).abs() <= tolerance
-        }) {
-            return Err(Error::Invalid);
+    let common_vertex = |end: f64| {
+        a.ring
+            .iter()
+            .copied()
+            .filter(|id| b.ring.contains(id))
+            .find(|&id| {
+                let point = a.points[id];
+                on_line(point) && (position(point) - end).abs() <= tolerance
+            })
+            .ok_or(Error::Invalid)
+    };
+    let ends = [common_vertex(lo)?, common_vertex(hi)?];
+    if hi - lo > tolerance && (a.ring != a.authored_ring || b.ring != b.authored_ring) {
+        // A triangle edge on the cut line must be a shared boundary edge,
+        // rather than a triangulation diagonal inside either source face.
+        for ring in [a.authored_ring, b.authored_ring] {
+            if !ring
+                .iter()
+                .zip(ring.iter().cycle().skip(1))
+                .any(|(&first, &last)| [first, last] == ends || [last, first] == ends)
+            {
+                return Err(Error::Invalid);
+            }
         }
     }
     for (one, other) in [(a, b), (b, a)] {

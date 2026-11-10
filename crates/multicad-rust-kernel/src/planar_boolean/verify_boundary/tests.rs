@@ -8,8 +8,74 @@ fn face<'a>(ring: &'a [usize], points: &'a [Point]) -> Polygon<'a> {
     Polygon {
         plane,
         ring,
+        authored_ring: ring,
         points,
     }
+}
+
+#[test]
+fn a_partition_diagonal_does_not_authorize_an_intersection() {
+    let points = [
+        [0., 0., 0.],
+        [4., 0., 0.],
+        [4., 4., 0.],
+        [2., 2., 0.],
+        [0., 4., 0.],
+        [4., 0., 2.],
+    ];
+    let chart = face(&[0, 1, 3], &points);
+    let source = Polygon {
+        authored_ring: &[0, 1, 2, 3, 4],
+        ..chart
+    };
+    let invading = face(&[1, 3, 5], &points);
+    assert_eq!(verify_pair(chart, invading, TOL), Ok(()));
+    assert_eq!(verify_pair(source, invading, TOL), Err(Error::Invalid));
+}
+
+#[test]
+fn preserves_concave_end_faces_in_a_certified_planar_step_shell() {
+    let lower = [
+        [-3., -2., 0.],
+        [3., -2., 0.],
+        [3., 2., 0.],
+        [1., 2., 0.],
+        [1., 0., 0.],
+        [-1., 0., 0.],
+        [-1., 2., 0.],
+        [-3., 2., 0.],
+    ];
+    let upper = lower.map(|[x, y, _]| [x, y, 5.]);
+    let mut rings = vec![lower.into_iter().rev().collect(), upper.to_vec()];
+    for i in 0..lower.len() {
+        let j = (i + 1) % lower.len();
+        rings.push(vec![lower[i], lower[j], upper[j], upper[i]]);
+    }
+    let union = Union::verify_boundary(&rings, TOL).unwrap();
+    assert_eq!(union.solid_count(), 1);
+    assert_eq!(union.faces()[0].vertices.len(), 8);
+    assert_eq!(union.faces()[1].vertices.len(), 8);
+    assert!((union.volume_mm3() - 100.).abs() < TOL);
+    let step =
+        crate::step::write_planar_union(&union, [0.; 3], [1., 0., 0.], [0., 1., 0.]).unwrap();
+    let readback = crate::step_read::read_analytic_solid(&step, TOL).unwrap();
+    assert_eq!(readback.solid_count, 1);
+    assert!((readback.volume_mm3 - 100.).abs() < TOL);
+}
+
+#[test]
+fn rejects_a_concave_chart_with_crossed_constraints() {
+    let crossing = vec![
+        [0., 0., 0.],
+        [3., 3., 0.],
+        [0., 3., 0.],
+        [3., 0., 0.],
+        [4., 2., 0.],
+    ];
+    assert_eq!(
+        Union::verify_boundary(&[crossing], TOL),
+        Err(Error::Invalid)
+    );
 }
 
 #[test]

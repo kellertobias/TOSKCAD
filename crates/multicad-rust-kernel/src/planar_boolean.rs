@@ -20,7 +20,7 @@ mod verify_boundary;
 mod vertical_profile;
 pub use loft::ruled_loft;
 pub use material::CutMaterial;
-pub use miter_sweep::miter_sweep;
+pub use miter_sweep::{MiterCell, miter_sweep};
 pub use slab::Slab;
 pub use vertical_profile::{ProfileFace, ProfilePiece};
 
@@ -255,6 +255,11 @@ fn bounds(points: impl Iterator<Item = Point>) -> [Point; 2] {
 }
 
 fn supporting_plane(face: &[Point], tolerance: f64) -> Result<Plane, Error> {
+    let (plane, convex) = planar_ring(face, tolerance)?;
+    convex.then_some(plane).ok_or(Error::Invalid)
+}
+
+fn planar_ring(face: &[Point], tolerance: f64) -> Result<(Plane, bool), Error> {
     let point = face[0];
     let area = face.windows(2).fold([0.; 3], |sum, pair| {
         add(sum, cross(sub(pair[0], point), sub(pair[1], point)))
@@ -268,6 +273,7 @@ fn supporting_plane(face: &[Point], tolerance: f64) -> Result<Plane, Error> {
     if face.iter().any(|&p| plane.distance(p).abs() > tolerance) {
         return Err(Error::Invalid);
     }
+    let mut convex = true;
     for (&start, &end) in face.iter().zip(face.iter().cycle().skip(1)) {
         let tangent = sub(end, start);
         let length = norm(tangent);
@@ -275,14 +281,11 @@ fn supporting_plane(face: &[Point], tolerance: f64) -> Result<Plane, Error> {
             return Err(Error::Invalid);
         }
         let inward = scale(cross(normal, tangent), 1. / length);
-        if face
+        convex &= !face
             .iter()
-            .any(|&p| dot(inward, sub(p, start)) < -tolerance)
-        {
-            return Err(Error::Invalid);
-        }
+            .any(|&p| dot(inward, sub(p, start)) < -tolerance);
     }
-    Ok(plane)
+    Ok((plane, convex))
 }
 
 fn add(a: Point, b: Point) -> Point {

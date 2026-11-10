@@ -1,4 +1,6 @@
 use super::*;
+use crate::display::triangulate_region;
+use spade::Point2;
 
 pub(super) struct Boundary {
     pub(super) vertices: Vec<Point>,
@@ -109,7 +111,10 @@ pub(super) struct Proof {
 }
 
 pub(super) fn prove(vertices: &[Point], faces: &[Face]) -> Result<Proof, Error> {
-    let mesh = mesh(vertices, faces, MAX_INCIDENCES).map_err(|_| Error::Limit)?;
+    let mesh = mesh(vertices, faces, MAX_INCIDENCES).map_err(|error| match error {
+        MeshError::BudgetExceeded => Error::Limit,
+        _ => Error::Unresolved,
+    })?;
     let proof = manufacturing::certify(&mesh).map_err(|_| Error::Unresolved)?;
 
     // Count outward shells only. A disconnected inward shell bounds a cavity
@@ -178,7 +183,15 @@ pub(super) fn mesh(
     faces: &[Face],
     triangle_limit: usize,
 ) -> Result<DisplayMesh, MeshError> {
-    let triangles = faces.iter().map(|f| f.vertices.len()).sum::<usize>();
+    let concave: Vec<_> = faces
+        .iter()
+        .map(|face| is_concave(vertices, face))
+        .collect();
+    let triangles = faces
+        .iter()
+        .zip(&concave)
+        .map(|(face, &concave)| face.vertices.len() - 2 * usize::from(concave))
+        .sum::<usize>();
     if triangles > triangle_limit {
         return Err(MeshError::BudgetExceeded);
     }
@@ -187,7 +200,13 @@ pub(super) fn mesh(
         indices: Vec::with_capacity(triangles * 3),
         face_indices: Vec::with_capacity(triangles),
     };
-    for (ordinal, face) in faces.iter().enumerate() {
+    for (ordinal, (face, concave)) in faces.iter().zip(concave).enumerate() {
+        if concave {
+            for triangle in triangulate_face(vertices, face)? {
+                mesh.triangle(triangle, ordinal as u32);
+            }
+            continue;
+        }
         let origin = vertices[face.vertices[0]];
         let center = add(
             origin,
@@ -210,3 +229,55 @@ pub(super) fn mesh(
     }
     Ok(mesh)
 }
+
+fn is_concave(vertices: &[Point], face: &Face) -> bool {
+    let points = || face.vertices.iter().map(|&id| vertices[id]);
+    points()
+        .zip(points().cycle().skip(1))
+        .zip(points().cycle().skip(2))
+        .any(|((a, b), c)| {
+            let first = sub(b, a);
+            let second = sub(c, b);
+            let turn = dot(cross(first, second), face.normal);
+            turn < 0. && -turn > 64. * f64::EPSILON * norm(first) * norm(second)
+        })
+}
+
+/// Triangulate the physical boundary without inserting boundary samples.
+/// Return indices in the original shell chart so adjacent faces share edges.
+pub(super) fn triangulate_face(
+    vertices: &[Point],
+    face: &Face,
+) -> Result<Vec<[usize; 3]>, MeshError> {
+    let axis = (0..3)
+        .max_by(|&a, &b| face.normal[a].abs().total_cmp(&face.normal[b].abs()))
+        .expect("three coordinates");
+    // Drop the dominant axis, preserving orientation with respect to the
+    // outward normal. Projection is one-to-one in this planar chart.
+    let mut chart = [(axis + 1) % 3, (axis + 2) % 3];
+    if face.normal[axis] < 0. {
+        chart.swap(0, 1);
+    }
+    let [u, v] = chart;
+    let origin = vertices[face.vertices[0]];
+    let points = face
+        .vertices
+        .iter()
+        .map(|&index| {
+            let point = sub(vertices[index], origin);
+            Point2::new(point[u], point[v])
+        })
+        .collect();
+    let count = face.vertices.len();
+    let edges: Vec<_> = (0..count).map(|i| [i, (i + 1) % count]).collect();
+    triangulate_region(points, &edges, 0).map(|region| {
+        region
+            .triangles
+            .into_iter()
+            .map(|triangle| triangle.map(|index| face.vertices[index]))
+            .collect()
+    })
+}
+
+#[cfg(test)]
+mod tests;
