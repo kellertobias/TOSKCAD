@@ -1320,7 +1320,11 @@ impl Compiler {
                                 + profile.frame.v[i] * resolved.axis_direction[1]
                         }),
                     };
-                    Solid::revolve_curved_profile_named(
+                    let revolve = match backend {
+                        GeometryBackend::OpenCascade => Solid::revolve_curved_profile_named,
+                        GeometryBackend::Rust => Solid::rust_revolve_curved_profile_named,
+                    };
+                    revolve(
                         &profile,
                         axis,
                         resolved.angle_rad,

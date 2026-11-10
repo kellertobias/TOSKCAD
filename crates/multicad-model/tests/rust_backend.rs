@@ -57,6 +57,249 @@ fn reopen(session: &Session) -> Session {
 }
 
 #[test]
+fn rust_revolve_rebuilds_signed_and_full_sketch_sweeps_with_holes_and_native_face_intents() {
+    let (sketch, edits) = Source::create(sketch::Datum::Xz, "Meridian with a hole").unwrap();
+    let document = Document::new("Offset meridian revolution")
+        .unwrap()
+        .edited(&edits)
+        .unwrap();
+    let mut source = Source::read(&document, sketch).unwrap().0;
+    source.add_rectangle([3., 2.], [6., 8.]).unwrap();
+    source.add_rectangle([4., 4.], [5., 6.]).unwrap();
+    let region = multicad_core::sketch_regions::extract(&source)
+        .regions
+        .into_iter()
+        .find(|region| region.holes.len() == 1)
+        .unwrap()
+        .intent();
+    let document = document
+        .edited(&source.replace(&document, sketch).unwrap())
+        .unwrap();
+    let mut session = Session::new(document).unwrap();
+    let mut parameters = model::RevolveParameters {
+        axis_origin: [length(1.), length(2.)],
+        angle: model::angle(90.),
+        ..Default::default()
+    };
+    let request = model::RevolveRequest::new(sketch, vec![region], parameters.clone());
+    let feature = request.outputs[0].feature;
+    let body = request.outputs[0].body;
+    let draft = model::prepare_revolve(&session, 0, actor(), &request).unwrap();
+    assert!(session.document().get(feature).is_none());
+    session.commit(draft.prepared).unwrap();
+    let mut end_intent = None;
+    for degrees in [90_f64, -90., 360., -360.] {
+        if degrees != 90. {
+            parameters.angle = model::angle(degrees);
+            let edit = model::prepare_revolve_edit(
+                &session,
+                session.revision(),
+                actor(),
+                feature,
+                &parameters,
+            )
+            .unwrap();
+            session.commit(edit.prepared).unwrap();
+        }
+        let native_model = compile(&session, GeometryBackend::OpenCascade);
+        let rust = compile(&session, GeometryBackend::Rust);
+        let native_solid = native_model.solid(feature).unwrap();
+        let native = &native_model.snapshot().shapes[&feature];
+        let actual = &rust.snapshot().shapes[&feature];
+        let solid = rust.solid(feature).unwrap();
+        assert!(solid.uses_rust_geometry());
+        assert_eq!(solid.solid_count().unwrap(), 1);
+        near(actual.volume_mm3, 56. * degrees.to_radians().abs());
+        near(actual.volume_mm3, native.volume_mm3);
+        let (sin, cos) = (degrees.signum() * std::f64::consts::FRAC_PI_4).sin_cos();
+        let occupied = |r, z| {
+            solid
+                .rust_revolution_contains([1. + r * cos, r * sin, z])
+                .unwrap()
+        };
+        assert!(occupied(4.5, 5.));
+        assert!(occupied(3.5, 3.));
+        assert!(
+            !occupied(3.5, 5.),
+            "The swept internal cavity must be empty"
+        );
+        let [lo, hi] = if degrees.abs() == 360. {
+            [[-4., -5., 2.], [6., 5., 8.]]
+        } else if degrees > 0. {
+            [[1., 0., 2.], [6., 5., 8.]]
+        } else {
+            [[1., -5., 2.], [6., 0., 8.]]
+        };
+        for (actual, expected) in actual
+            .bounds
+            .min
+            .into_iter()
+            .chain(actual.bounds.max)
+            .zip(lo.into_iter().chain(hi))
+        {
+            near(actual, expected);
+        }
+        let faces = solid.faces().unwrap();
+        let native_faces = native_solid.faces().unwrap();
+        assert_eq!(faces.len(), native_faces.len());
+        for face in native
+            .topology
+            .elements
+            .iter()
+            .filter(|e| e.key.kind == TopologyKind::Face)
+        {
+            let intent = GeometryIntent::capture(&native.topology, face.key).unwrap();
+            let Resolution::Resolved { key, .. } =
+                references::resolve(&intent, &actual.topology, session.revision())
+            else {
+                panic!("Lost a native revolved face intent at {degrees}°: {intent:?}");
+            };
+            let face_at = |faces: &[multicad_kernel::Face], ordinal| {
+                let face = faces.iter().find(|face| face.index == ordinal).unwrap();
+                (face.area_mm2, face.plane.is_some())
+            };
+            let (area, planar) = face_at(&faces, key.ordinal);
+            let (expected, native_planar) = face_at(&native_faces, face.key.ordinal);
+            near(area, expected);
+            assert_eq!(planar, native_planar);
+        }
+        if degrees == 90. {
+            let cap = native
+                .topology
+                .elements
+                .iter()
+                .find(|e| {
+                    e.key.kind == TopologyKind::Face
+                        && e.origins.iter().any(|o| o.role == "cap.end")
+                })
+                .unwrap();
+            let mut intent = GeometryIntent::capture(&native.topology, cap.key).unwrap();
+            intent.attachment = Some(references::Attachment {
+                anchor: cap
+                    .origins
+                    .iter()
+                    .find(|o| o.role == "cap.end")
+                    .unwrap()
+                    .clone(),
+                offset_mm: [2., 0., 0.],
+                angle_rad: 0.,
+            });
+            end_intent = Some(intent);
+        }
+        let resolved = references::resolve(
+            end_intent.as_ref().unwrap(),
+            &actual.topology,
+            session.revision(),
+        );
+        if degrees.abs() == 360. {
+            assert_eq!(resolved, Resolution::Missing);
+        } else {
+            let Resolution::Resolved {
+                frame: Some(frame), ..
+            } = resolved
+            else {
+                panic!("End cap attachment did not survive a signed-angle edit: {resolved:?}");
+            };
+            let expected = references::resolve(
+                end_intent.as_ref().unwrap(),
+                &native.topology,
+                session.revision(),
+            );
+            let Resolution::Resolved {
+                frame: Some(expected),
+                ..
+            } = expected
+            else {
+                panic!("The OpenCascade control did not resolve its own end cap");
+            };
+            for (a, b) in frame
+                .origin_mm
+                .into_iter()
+                .chain(frame.u)
+                .chain(frame.v)
+                .zip(
+                    expected
+                        .origin_mm
+                        .into_iter()
+                        .chain(expected.u)
+                        .chain(expected.v),
+                )
+            {
+                near(a, b);
+            }
+        }
+        let receipt = solid
+            .manufacturing_mesh_with_receipt(multicad_kernel::MeshOptions::default())
+            .unwrap();
+        assert_eq!(receipt.edge_pairs as usize * 2, receipt.mesh.indices.len());
+        assert_eq!(
+            model::read_revolve(session.document(), feature)
+                .unwrap()
+                .output
+                .body,
+            body
+        );
+    }
+    let reopened = reopen(&session);
+    assert_eq!(
+        model::read_revolve(reopened.document(), feature)
+            .unwrap()
+            .parameters,
+        parameters
+    );
+    near(
+        compile(&reopened, GeometryBackend::Rust)
+            .solid(feature)
+            .unwrap()
+            .volume_mm3()
+            .unwrap(),
+        112. * PI,
+    );
+}
+
+#[test]
+fn rust_revolve_reports_a_curved_profile_as_unsupported_without_falling_back() {
+    let (sketch, edits) = Source::create(sketch::Datum::Xz, "Torus section").unwrap();
+    let document = Document::new("Torus backend boundary")
+        .unwrap()
+        .edited(&edits)
+        .unwrap();
+    let mut source = Source::read(&document, sketch).unwrap().0;
+    let center = source.add_point([5., 0.]);
+    source.sketch.curves.push(Curve {
+        id: EntityId::new(),
+        construction: false,
+        kind: CurveKind::Circle {
+            center,
+            radius_mm: 1.,
+        },
+    });
+    let region = multicad_core::sketch_regions::extract(&source).regions[0].intent();
+    let document = document
+        .edited(&source.replace(&document, sketch).unwrap())
+        .unwrap();
+    let mut session = Session::new(document).unwrap();
+    let request = model::RevolveRequest::new(sketch, vec![region], Default::default());
+    let draft = model::prepare_revolve(&session, 0, actor(), &request).unwrap();
+    session.commit(draft.prepared).unwrap();
+    assert!(
+        compile(&session, GeometryBackend::OpenCascade)
+            .solid(request.outputs[0].feature)
+            .is_some()
+    );
+    let Err(error) = compiler().compile_with_backend(
+        session.document(),
+        session.revision(),
+        GeometryBackend::Rust,
+        None,
+    ) else {
+        panic!("Rust accepted an unsupported curved meridian");
+    };
+    assert_eq!(error.entity, Some(request.outputs[0].feature));
+    assert!(error.message.contains("straight"), "{error}");
+}
+
+#[test]
 fn rust_annular_sketch_extrusion_preserves_both_circles_and_reverse_cap_frames() {
     let (sketch, edits) = Source::create(sketch::Datum::Xz, "Concentric circles").unwrap();
     let document = Document::new("Reverse annular sweep")

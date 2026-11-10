@@ -982,6 +982,60 @@ fn rust_export_worker_writes_a_closed_bearing_envelope_with_open_axis() {
     });
 }
 
+#[test]
+fn rust_export_worker_writes_a_signed_revolve_with_its_internal_cavity() {
+    use multicad_core::{constraint_sketch::source::Source, sketch::Datum, sketch_regions};
+
+    let (sketch, edits) = Source::create(Datum::Xz, "Tapered meridian").unwrap();
+    let document = Document::new("Revolved mesh exports")
+        .unwrap()
+        .edited(&edits)
+        .unwrap();
+    let mut source = Source::read(&document, sketch).unwrap().0;
+    let corners = [[2., 0.], [6., 0.], [5., 4.], [2., 4.]].map(|p| source.add_point(p));
+    for (&a, &b) in corners.iter().zip(corners.iter().cycle().skip(1)) {
+        source.add_line(a, b);
+    }
+    source.add_rectangle([3., 1.], [4., 3.]).unwrap();
+    let profile = sketch_regions::extract(&source)
+        .regions
+        .into_iter()
+        .find(|r| r.holes.len() == 1)
+        .unwrap()
+        .intent();
+    let document = document
+        .edited(&source.replace(&document, sketch).unwrap())
+        .unwrap();
+    let mut session = Session::new(document).unwrap();
+    let request = model::RevolveRequest::new(
+        sketch,
+        vec![profile],
+        model::RevolveParameters {
+            angle: model::angle(-90.),
+            ..Default::default()
+        },
+    );
+    let prepared = model::prepare_revolve(&session, 0, actor(), &request).unwrap();
+    session.commit(prepared.prepared).unwrap();
+    rust_export_model_mesh(session, request.outputs[0].feature, |triangles| {
+        assert_bounds(bounds(triangles), [[0., -6., 0.], [6., 0., 4.]], 1e-6);
+        let vertices = || triangles.iter().flatten();
+        for (z, radius) in [(1., 3.), (1., 4.), (3., 3.), (3., 4.), (4., 5.)] {
+            assert!(vertices().any(|p| {
+                (p[2] - z).abs() < 1e-6
+                    && (p[0].hypot(p[1]) - radius).abs() < 1e-6
+                    && p[0] > 0.5
+                    && p[1] < -0.5
+            }));
+        }
+        near(
+            volume(triangles),
+            137. / 3. * std::f64::consts::FRAC_PI_2,
+            0.5,
+        );
+    });
+}
+
 fn rust_export_hardware_mesh(
     parameters: model::MechanicalPartParameters,
     verify: impl Fn(&Triangles),
@@ -990,6 +1044,10 @@ fn rust_export_hardware_mesh(
     let request = model::MechanicalPartRequest::new("Hardware", parameters);
     let prepared = model::prepare_mechanical_part(&session, 0, actor(), &request).unwrap();
     session.commit(prepared.prepared).unwrap();
+    rust_export_model_mesh(session, request.feature, verify);
+}
+
+fn rust_export_model_mesh(mut session: Session, feature: EntityId, verify: impl Fn(&Triangles)) {
     let set = EntityId::new();
     let definition = SetDefinition {
         recipes: [MeshFormat::Stl, MeshFormat::ThreeMf]
@@ -1014,7 +1072,7 @@ fn rust_export_hardware_mesh(
         ExportWorker::with_geometry_backend(Exporter::default(), GeometryBackend::Rust).unwrap();
     worker.preview(document, revision, set, actor()).unwrap();
     let ExportResult::Preview(preview) = next_reply(&worker) else {
-        panic!("Expected hardware mesh preview");
+        panic!("Expected mesh preview");
     };
     let preview = preview.unwrap();
     assert!(preview.can_run(), "{:?}", preview.recipes);
@@ -1023,13 +1081,13 @@ fn rust_export_hardware_mesh(
         .run(document, revision, &preview.key, directory.path(), actor())
         .unwrap();
     let ExportResult::Run(receipt) = next_reply(&worker) else {
-        panic!("Expected hardware mesh export");
+        panic!("Expected mesh export");
     };
     let receipt = receipt.unwrap();
     assert_eq!(receipt.files.len(), 2);
     for file in &receipt.files {
         let artifact = &file.artifact;
-        assert_eq!(artifact.producer, request.feature);
+        assert_eq!(artifact.producer, feature);
         assert_eq!(artifact.solid_count, 1);
         let evidence = artifact.mesh.as_ref().unwrap();
         assert_eq!((evidence.objects, evidence.build_items), (1, 1));

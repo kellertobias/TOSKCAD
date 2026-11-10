@@ -1587,7 +1587,7 @@ mod painted_default_screw {
                                 })
                         })
                 })
-                .unwrap_or_else(|| panic!("Missing painted hardware control {label}"));
+                .unwrap_or_else(|| panic!("Missing painted model control {label}"));
             output.drop_without_applying_deltas();
             for pressed in [true, false] {
                 self.frame(vec![
@@ -1622,7 +1622,7 @@ mod painted_default_screw {
                 }
                 assert!(
                     Instant::now() < deadline,
-                    "Painted default screw timed out: canonical={} controller={:?} scene={:?}",
+                    "Painted model tool timed out: canonical={} controller={:?} scene={:?}",
                     canonical,
                     self.controller.error(),
                     self.canonical.error()
@@ -1630,6 +1630,70 @@ mod painted_default_screw {
                 std::thread::sleep(Duration::from_millis(1));
             }
         }
+    }
+
+    #[test]
+    fn painted_rust_revolve_uses_the_sketch_axis_and_applies_an_open_annular_solid() {
+        use multicad_core::{constraint_sketch::source::Source, sketch::Datum, sketch_regions};
+
+        let (sketch, edits) = Source::create(Datum::Xz, "Meridian rectangle").unwrap();
+        let document = Document::new("Painted Rust revolution")
+            .unwrap()
+            .edited(&edits)
+            .unwrap();
+        let mut source = Source::read(&document, sketch).unwrap().0;
+        source.add_rectangle([2., 1.], [5., 6.]).unwrap();
+        let profile = sketch_regions::extract(&source).regions[0].intent();
+        let document = document
+            .edited(&source.replace(&document, sketch).unwrap())
+            .unwrap();
+        let before = document.clone();
+        let session = Session::new(document).unwrap();
+        let factory = Backend::factory(GeometryBackend::Rust).unwrap();
+        let mut controller = ModelToolController::default();
+        controller.set_backend(factory());
+        let mut canonical = SceneFeed::default();
+        canonical.set_backend(factory());
+        let mut painted = Painted {
+            ctx: egui::Context::default(),
+            controller,
+            canonical,
+            session,
+            applied: Vec::new(),
+            clock: Instant::now(),
+        };
+        painted.wait(true);
+        painted
+            .controller
+            .begin_revolve(
+                &painted.session,
+                &Default::default(),
+                sketch,
+                vec![profile],
+                Channel::Ui,
+            )
+            .unwrap();
+        painted.click("Sketch V axis");
+        painted.click("Preview");
+        painted.wait(false);
+        assert_eq!(painted.session.document(), &before);
+        painted.click("Apply");
+        painted.wait(true);
+        let [created] = painted.applied.as_slice() else {
+            panic!("Revolve did not produce one canonical body");
+        };
+        let resolved = model::read_revolve(painted.session.document(), created.feature).unwrap();
+        assert_eq!(resolved.output.body, created.body);
+        assert_eq!(resolved.profile.sketch_id(), Some(sketch));
+        assert_eq!(painted.session.document().get(sketch), before.get(sketch));
+        let scene = painted.canonical.visible().unwrap();
+        let pick = |x| scene.pick_face(viewport::Ray::new([x, 0., 12.], [0., 0., -1.]).unwrap());
+        assert!(
+            pick(0.).is_none(),
+            "Revolved bore should be open along the axis"
+        );
+        let cap = pick(3.).unwrap();
+        assert_eq!(cap.point_mm, [3., 0., 6.]);
     }
 
     #[test]

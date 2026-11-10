@@ -36,6 +36,7 @@ pub(crate) fn validate_document(
             } if !matches!(
                 (definition.type_id.as_str(), definition.schema_version),
                 (model::EXTRUDE_TYPE, model::EXTRUDE_SCHEMA)
+                    | (model::REVOLVE_TYPE, model::REVOLVE_SCHEMA)
                     | (model::PRIMITIVE_TYPE, model::PRIMITIVE_SCHEMA)
                     | (model::BOOLEAN_TYPE, model::BOOLEAN_SCHEMA)
                     | (model::TRANSFORM_TYPE, model::TRANSFORM_SCHEMA)
