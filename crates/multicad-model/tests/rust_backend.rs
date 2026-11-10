@@ -1663,10 +1663,11 @@ fn a_tangent_bore_is_rejected_without_native_fallback() {
 }
 
 #[test]
-fn sphere_round_trips_analytic_step_and_reports_unsupported_drawings() {
+fn sphere_round_trips_analytic_step_and_projects_exact_outline() {
+    use multicad_core::drawings::{VectorCurve, VectorRole};
     use multicad_core::exchange::{self, ExportResult, SetDefinition};
     use multicad_kernel::{
-        DrawingProjection, DrawingSolid, GeometryErrorKind, GeometryPolicy, Solid, project_drawing,
+        DrawingProjection, DrawingSolid, GeometryPolicy, Solid, project_drawing,
         rust_kernel::step_read::read_analytic_solid,
     };
     use multicad_model::export::{ExportWorker, Exporter};
@@ -1793,9 +1794,20 @@ fn sphere_round_trips_analytic_step_and_reports_unsupported_drawings() {
         assert_eq!(imported.bounds().unwrap(), solid.bounds().unwrap());
     }
     let input = DrawingSolid { solid, hatch: None };
-    let error = project_drawing(&[input], DrawingProjection::default()).unwrap_err();
-    assert_eq!(error.kind, GeometryErrorKind::Unsupported);
-    assert!(error.message.contains("sphere"));
+    let outlines = project_drawing(&[input], DrawingProjection::default()).unwrap();
+    let [outline] = outlines.as_slice() else {
+        panic!("expected the sphere's single exact silhouette");
+    };
+    assert_eq!(outline.role, VectorRole::Visible);
+    assert!(matches!(
+        outline.curve,
+        VectorCurve::Ellipse {
+            center: [17., 4.],
+            major_mm: 4.5,
+            minor_mm: 4.5,
+            ..
+        }
+    ));
 }
 
 #[test]
