@@ -1,5 +1,8 @@
 //! Exact native feature evaluation. Native solids stay on the constructing
 //! thread; immutable display and reference snapshots may cross to the UI.
+#[cfg(test)]
+extern crate self as multicad_model;
+
 mod screw_connections;
 pub use screw_connections::ScrewConnectionCheck;
 mod advanced;

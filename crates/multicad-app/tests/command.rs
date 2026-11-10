@@ -126,6 +126,44 @@ fn command_dispatch_is_memory_only_unless_explicitly_saved_and_reopens_canonical
 
 #[path = "../../multicad-mcp/tests/support/screw_connection.rs"]
 mod connection_fixture;
+
+#[test]
+fn built_rust_backend_saves_and_revalidates_a_metric_through_connection() {
+    let (document, connection, _) = connection_fixture::fixture();
+    let dir = tempfile::tempdir().unwrap();
+    let project = dir.path().join("metric-through.tcd");
+    let request = dir.path().join("request.json");
+    project_file::write(
+        &ProjectFile::new(document).unwrap(),
+        &mut std::fs::File::create(&project).unwrap(),
+        Default::default(),
+    )
+    .unwrap();
+    std::fs::write(
+        &request,
+        serde_json::to_vec(&json!({
+            "tool": "set_screw_connection",
+            "arguments": {"expected_revision": 0, "request": connection}
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let (ok, applied) = invoke(&project, &request, &["--save", "--rust-model"]);
+    assert!(ok, "{applied}");
+    assert_eq!(applied["persistence"], "saved");
+    let checks = &applied["result"]["checks"];
+    assert_eq!(checks.as_array().unwrap().len(), 1);
+    assert_eq!(checks[0]["connection"], connection.connection.to_string());
+    std::fs::write(
+        &request,
+        serde_json::to_vec(&json!({"tool": "evaluate_model", "arguments": {}})).unwrap(),
+    )
+    .unwrap();
+    let (ok, reopened) = invoke(&project, &request, &["--read-only", "--rust-model"]);
+    assert!(ok, "{reopened}");
+    assert_eq!(&reopened["result"]["screw_connections"], checks);
+}
+
 #[test]
 fn real_cli_connection_full_request_native_lifecycle_reopens_and_matches_direct_mcp() {
     use multicad_core::model::*;

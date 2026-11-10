@@ -84,6 +84,21 @@ impl BoreStock {
 }
 
 impl Solid {
+    /// The exact placed helical profiles retained by a modeled screw and nut.
+    pub fn rust_screw_nut_threads(&self, nut: &Self) -> Option<[(Thread, PlaneFrame); 2]> {
+        let SolidBody::Helical(screw, screw_frame) = &self.body else {
+            return None;
+        };
+        let SolidBody::Helical(nut, nut_frame) = &nut.body else {
+            return None;
+        };
+        if !matches!(screw.form, HelicalForm::Screw(_)) || !matches!(nut.form, HelicalForm::Nut(_))
+        {
+            return None;
+        }
+        Some([(screw.geometry, *screw_frame), (nut.geometry, *nut_frame)])
+    }
+
     /// Build a real thread with finite planar ends and a periodic analytic wall.
     pub fn rust_helical_thread(
         spec: HelicalThread,

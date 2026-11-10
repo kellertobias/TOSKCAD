@@ -68,6 +68,14 @@ pub(super) fn set_screw_connection(
     })??;
     let native = compile(prepared.document(), expected, call)?;
     let checks = native.snapshot().screw_connection_checks.clone();
+    if !checks.iter().any(|check| check.connection == connection) {
+        return Err(ToolError {
+            code: "model_failed",
+            message: "The requested screw connection has no geometry validation receipt".into(),
+            involved: vec![connection],
+            current_revision: None,
+        });
+    }
     let owned = call.clone();
     let revision = with(host, move |target| commit(target, &owned, prepared))??;
     Ok(

@@ -80,6 +80,52 @@ fn canonical_connection_tools_are_discoverable_and_fail_without_partial_writes()
 
 #[path = "support/screw_connection.rs"]
 mod fixture;
+
+#[test]
+fn rust_metric_through_connection_checks_clearance_before_committing() {
+    let (document, request, stock) = fixture::fixture();
+    let host = Headless::with_geometry_backend(
+        Workspace::new(document.clone()).unwrap(),
+        None,
+        false,
+        multicad_model::GeometryBackend::Rust,
+    );
+    let run = |name: &str, arguments| dispatch(&host, &call(false), name, arguments);
+    let created = run(
+        "set_screw_connection",
+        json!({"expected_revision":0,"request":request}),
+    )
+    .unwrap();
+    assert_eq!(created["revision"], 1);
+    let checks = created["checks"].as_array().unwrap();
+    assert_eq!(checks.len(), 1);
+    assert_eq!(checks[0]["connection"], request.connection.to_string());
+    assert_eq!(checks[0]["native_component_collision_checked"], true);
+    assert!((checks[0]["actual_engagement_mm"].as_f64().unwrap() - 2.4).abs() < 1e-8);
+    assert_eq!(host.document().get(stock), document.get(stock));
+
+    let committed = host.document();
+    let evaluated = run("evaluate_model", json!({})).unwrap();
+    assert_eq!(evaluated["screw_connections"], created["checks"]);
+    let mut too_small = request.clone();
+    too_small.receivers[0].source.cut = multicad_core::model::ConnectionReceiverCut::Round {
+        diameter: multicad_core::model::length(2.7),
+    };
+    let rejected = run(
+        "set_screw_connection",
+        json!({"expected_revision":1,"request":too_small}),
+    )
+    .unwrap_err();
+    assert!(rejected.message.contains("clearance"), "{rejected:?}");
+    assert_eq!(host.document(), committed);
+    run(
+        "remove_screw_connection",
+        json!({"expected_revision":1,"connection":request.connection}),
+    )
+    .unwrap();
+    assert_eq!(host.document(), document);
+}
+
 #[test]
 fn canonical_native_connection_create_edit_inspect_remove_is_atomic_and_preserves_stock() {
     for (document, mut request, stock) in [fixture::fixture(), fixture::tapped_fixture()] {

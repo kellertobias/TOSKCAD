@@ -109,6 +109,54 @@ impl Solid {
         }))
     }
 
+    /// Cut an exact through bore and certify the surrounding material along
+    /// its complete swept axis. Returned mouth centers are in the solid's
+    /// current placement, in tool direction order.
+    pub fn rust_connection_through_bore(
+        &self,
+        tool: &CircularPocketTool,
+        minimum_wall_mm: f64,
+        policy: GeometryPolicy,
+    ) -> Result<(Self, [Point; 2]), GeometryError> {
+        policy.validate()?;
+        if policy != self.policy || policy.boolean_fuzzy_mm != 0. {
+            return Err(invalid(
+                "A receiving bore requires the stock's exact geometry policy",
+            ));
+        }
+        policy.length(minimum_wall_mm)?;
+        let protected_radius_mm = tool.radius_mm + minimum_wall_mm;
+        policy.length(protected_radius_mm)?;
+        let start = circular_pocket_body::tool_start(tool, policy)?;
+        let finish = std::array::from_fn(|i| start[i] + tool.displacement_mm[i]);
+        let stock = self.orthogonal_stock()?;
+        let (body, frame) = stock.orthogonal_body().expect("orthogonal stock");
+        if body.geometry.solid_count() != 1 || body.has_curved_cuts() {
+            return Err(unsupported(
+                "A receiving bore requires one connected orthogonal stock solid without existing curved cuts",
+            ));
+        }
+        let axes = [frame.u, frame.v, frame.normal()];
+        let local = |point| axes.map(|axis| dot(subtract(point, frame.origin), axis));
+        let witness = body
+            .identify_through(local(start), local(finish), protected_radius_mm, policy)
+            .map_err(circular_pocket_body::pocket_error)?;
+        let mouths = witness
+            .centers_mm
+            .map(|point| transform_point(frame, point));
+        let bore = OrthogonalThroughBore {
+            radius_mm: tool.radius_mm,
+            ..witness
+        };
+        let cut = stock.with_orthogonal_round_cuts(
+            Vec::new(),
+            Vec::new(),
+            vec![bore],
+            vec![tool.origin.clone()],
+        )?;
+        Ok((cut, mouths))
+    }
+
     pub(in crate::geometry) fn drill_orthogonal_stock(
         &self,
         tools: &[CircularPocketTool],

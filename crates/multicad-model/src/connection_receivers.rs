@@ -11,6 +11,8 @@ use multicad_kernel::{
     Solid,
 };
 use std::{collections::BTreeMap, f64::consts::TAU};
+pub(crate) mod rust_through;
+
 fn native<T>(
     id: EntityId,
     result: Result<T, multicad_kernel::GeometryError>,

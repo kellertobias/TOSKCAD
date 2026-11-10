@@ -1090,18 +1090,22 @@ impl Compiler {
                     let source = model::read_connection_receiver(document, id)
                         .map_err(|e| error(Some(id), e))?;
                     let started = std::time::Instant::now();
-                    let solid = crate::connection_receivers::build(
-                        crate::connection_receivers::Inputs {
-                            document,
-                            parameters: context.parameters(),
-                            revision,
-                            snapshots: &topologies,
-                            solids: &solids,
-                            policy: self.policy,
-                        },
-                        id,
-                        &source,
-                    )?;
+                    let inputs = crate::connection_receivers::Inputs {
+                        document,
+                        parameters: context.parameters(),
+                        revision,
+                        snapshots: &topologies,
+                        solids: &solids,
+                        policy: self.policy,
+                    };
+                    let solid = match backend {
+                        GeometryBackend::OpenCascade => {
+                            crate::connection_receivers::build(inputs, id, &source)?
+                        }
+                        GeometryBackend::Rust => {
+                            crate::connection_receivers::rust_through::build(inputs, id, &source)?.0
+                        }
+                    };
                     timings.receiving_cut_ms += started.elapsed().as_secs_f64() * 1000.;
                     solid
                 }
@@ -1805,17 +1809,18 @@ impl Compiler {
                 fdm_aids: Ok(vec![]),
             },
         };
-        if full && backend == GeometryBackend::OpenCascade {
+        if full {
             let connection_started = std::time::Instant::now();
-            model.snapshot.screw_connection_checks = crate::screw_connections::validate(
-                document,
-                revision,
-                context.parameters(),
-                &model,
-                interrupt,
-            )?;
+            let validate = match backend {
+                GeometryBackend::OpenCascade => crate::screw_connections::validate,
+                GeometryBackend::Rust => crate::screw_connections::validate_rust,
+            };
+            model.snapshot.screw_connection_checks =
+                validate(document, revision, context.parameters(), &model, interrupt)?;
             model.timings.connection_validation_ms =
                 connection_started.elapsed().as_secs_f64() * 1000.;
+        }
+        if full && backend == GeometryBackend::OpenCascade {
             model.snapshot.envelope_boxes = model.envelope_boxes(document);
             model.snapshot.guide_outlines = model.guide_outlines(document);
             if model::aids(document).next().is_some() {
