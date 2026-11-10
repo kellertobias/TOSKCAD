@@ -57,6 +57,76 @@ impl Solid {
         Ok(self)
     }
 
+    pub(crate) fn rust_transfer_rectilinear_cut(
+        &self,
+        tool: &Solid,
+        policy: GeometryPolicy,
+    ) -> Result<Option<Self>, GeometryError> {
+        let Some((body, frame)) = self
+            .orthogonal_body()
+            .filter(|(body, _)| !body.through_bores.is_empty())
+        else {
+            return self.rust_subtract_orthogonal_tools(std::slice::from_ref(tool), policy);
+        };
+        if !body.pockets.is_empty() || !body.slots.is_empty() {
+            return Err(unsupported(
+                "Rectilinear transfer cannot preserve combined through-bores and blind cuts",
+            ));
+        }
+        let mut stock = body.clone();
+        stock.through_bores = Rc::from([]);
+        stock.through_origins = Rc::from([]);
+        let uncut = Solid {
+            body: SolidBody::Orthogonal(Rc::new(stock), frame),
+            policy: self.policy,
+            provenance: vec![],
+            rust_origins: self.rust_origins.clone(),
+        };
+        let Some(result) =
+            uncut.rust_subtract_orthogonal_tools(std::slice::from_ref(tool), policy)?
+        else {
+            return Ok(None);
+        };
+        let (cut, cut_frame) = result
+            .orthogonal_body()
+            .expect("rectilinear Boolean result");
+        debug_assert_eq!(cut_frame, PlaneFrame::default());
+        let overshoot = policy
+            .minimum_feature_mm
+            .max(8. * policy.linear_tolerance_mm);
+        let mut bores = Vec::with_capacity(body.through_bores.len());
+        for bore in body.through_bores.iter() {
+            let centers = bore.centers_mm.map(|p| transform_point(frame, p));
+            let travel = subtract(centers[1], centers[0]);
+            let length = dot(travel, travel).sqrt();
+            let delta = travel.map(|x| overshoot * x / length);
+            let start = subtract(centers[0], delta);
+            let end = std::array::from_fn(|i| centers[1][i] + delta[i]);
+            let restored = cut
+                .identify_through(start, end, bore.radius_mm, policy)
+                .map_err(circular_pocket_body::pocket_error)?;
+            if restored
+                .centers_mm
+                .iter()
+                .zip(centers)
+                .any(|(actual, expected)| {
+                    actual
+                        .iter()
+                        .zip(expected)
+                        .any(|(a, b)| (a - b).abs() > policy.linear_tolerance_mm)
+                })
+            {
+                return Err(unsupported(
+                    "Rectilinear transfer changes the ends of an existing bore",
+                ));
+            }
+            bores.push(restored);
+        }
+        result
+            .with_orthogonal_round_cuts(vec![], vec![], bores, body.through_origins.to_vec())
+            .map(Some)
+    }
+
     pub(in crate::geometry) fn subtract_orthogonal_cylinder(
         &self,
         tool: &Solid,

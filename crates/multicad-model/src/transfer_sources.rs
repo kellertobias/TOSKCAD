@@ -27,6 +27,7 @@ pub(super) struct Inputs<'a> {
     pub plane: PlaneFrame,
     pub revision: u64,
     pub policy: GeometryPolicy,
+    pub rust_receiver: bool,
 }
 pub(super) struct Cut {
     pub profile: CurvedProfile,
@@ -136,6 +137,15 @@ impl Inputs<'_> {
         let bytes = serde_json::to_vec(&origins).map_err(|e| self.fail(e))?;
         Ok(ContentHash::of(&bytes))
     }
+    fn offset(&self, profile: CurvedProfile) -> Result<CurvedProfile, ModelError> {
+        if self.rust_receiver {
+            profile.offset_rust_transfer_boundary(self.settings.clearance_mm, self.policy)
+        } else {
+            profile.offset_closed_boundary(self.settings.clearance_mm, self.policy)
+        }
+        .map_err(|e| self.fail(e))
+    }
+
     fn hole(
         &self,
         capture: EntityId,
@@ -144,16 +154,14 @@ impl Inputs<'_> {
         radius: f64,
     ) -> Result<Cut, ModelError> {
         let radius = self.settings.diameter_mm.map_or(radius, |d| d * 0.5);
-        let profile = CurvedProfile {
+        let profile = self.offset(CurvedProfile {
             frame: self.plane,
             outer: vec![CurvedEdge2d::Circle {
                 center,
                 radius_mm: radius,
             }],
             holes: vec![],
-        }
-        .offset_closed_boundary(self.settings.clearance_mm, self.policy)
-        .map_err(|e| self.fail(e))?;
+        })?;
         Ok(Cut {
             profile,
             origins: vec![self.origin(capture, identity)],
@@ -340,7 +348,7 @@ pub(super) fn profiles(input: Inputs<'_>) -> Result<Vec<Cut>, ModelError> {
                 }
                 origins.push(input.origin(*face, &format!("edge/{signature}")));
             }
-            let profile = CurvedProfile {
+            let profile = input.offset(CurvedProfile {
                 frame: input.plane,
                 outer: wire
                     .edges
@@ -348,9 +356,7 @@ pub(super) fn profiles(input: Inputs<'_>) -> Result<Vec<Cut>, ModelError> {
                     .map(|edge| input.edge(edge, frame, parity))
                     .collect(),
                 holes: vec![],
-            }
-            .offset_closed_boundary(input.settings.clearance_mm, input.policy)
-            .map_err(|e| input.fail(e))?;
+            })?;
             cuts.push(Cut {
                 profile,
                 origins,
@@ -474,6 +480,7 @@ mod tests {
             plane,
             revision: 0,
             policy: Default::default(),
+            rust_receiver: false,
         };
         let cuts = profiles(input(Default::default())).unwrap();
         assert_eq!(cuts.len(), 1);

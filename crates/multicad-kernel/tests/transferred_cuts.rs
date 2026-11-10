@@ -589,3 +589,80 @@ fn captured_source_face_survives_pattern_count_edits_and_removed_hole_is_missing
         }
     }
 }
+
+#[test]
+fn rust_transfer_preserves_disjoint_through_bores_and_rejects_a_cut_into_their_wall() {
+    use multicad_kernel::rust_kernel::Rational;
+
+    let stock_id = EntityId::new();
+    let stock = Solid::rust_box(
+        stock_id.uuid_bits(),
+        [12, 8, 3].map(|n| Rational::new(n, 1).unwrap()),
+        PlaneFrame::default(),
+        p(),
+    )
+    .unwrap();
+    let round_id = EntityId::new();
+    let entry = xy(3.);
+    let through = stock.transfer_through_depth(entry, true, p()).unwrap();
+    let bored = stock
+        .rust_cut_transfer_profile(
+            &circle(entry, [3., 4.], 1.),
+            through,
+            true,
+            round_id,
+            &[origin(round_id, "mounting-bore")],
+            p(),
+        )
+        .unwrap();
+    let before = 288. - std::f64::consts::PI * 3.;
+    near(bored.volume_mm3().unwrap(), before);
+
+    let slot_id = EntityId::new();
+    let edges = names(4);
+    let result = bored
+        .rust_cut_transfer_profile(
+            &rect(entry, [7., 3.], [9., 5.]),
+            through,
+            true,
+            slot_id,
+            &edges,
+            p(),
+        )
+        .unwrap();
+    near(result.volume_mm3().unwrap(), before - 12.);
+    let key_origin = |solid: &Solid| {
+        solid
+            .topology_snapshot(stock_id, 1)
+            .unwrap()
+            .elements
+            .into_iter()
+            .filter(|element| element.key.kind == TopologyKind::Edge)
+            .filter(|element| {
+                element
+                    .origins
+                    .iter()
+                    .any(|origin| origin.source == round_id)
+            })
+            .filter_map(|element| element.geometry)
+            .filter(|geometry| matches!(geometry, AnalyticGeometry::CircularArc { .. }))
+            .count()
+    };
+    assert_eq!(key_origin(&bored), 2);
+    assert_eq!(key_origin(&result), 2);
+
+    assert!(
+        bored
+            .rust_cut_transfer_profile(
+                &rect(entry, [3., 3.], [5., 5.]),
+                through,
+                true,
+                slot_id,
+                &edges,
+                p(),
+            )
+            .is_err()
+    );
+    near(bored.volume_mm3().unwrap(), before);
+    near(stock.volume_mm3().unwrap(), 288.);
+}

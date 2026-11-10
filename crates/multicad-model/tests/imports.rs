@@ -17,8 +17,7 @@ use multicad_kernel::{
 use multicad_model::{
     Compiler, GeometryBackend, Model,
     imports::{
-        KicadOptions, read_kicad_file, read_kicad_file_with_backend, read_step_file,
-        read_step_file_with_backend,
+        KicadOptions, read_kicad_file_with_backend, read_step_file, read_step_file_with_backend,
     },
 };
 use std::{f64::consts::PI, path::Path};
@@ -544,23 +543,34 @@ fn malformed_boards_are_refused_with_reasons() {
 /// The board's mounting holes drive a panel cutout through the transfer
 /// engine.
 #[test]
-fn board_mounting_holes_transfer_into_a_mounting_panel() {
+#[cfg(feature = "occt")]
+fn native_kicad_mounting_holes_transfer_into_a_panel() {
+    board_mounting_holes_transfer_into_a_mounting_panel(GeometryBackend::OpenCascade);
+}
+
+#[test]
+fn rust_kicad_mounting_holes_transfer_into_a_panel() {
+    board_mounting_holes_transfer_into_a_mounting_panel(GeometryBackend::Rust);
+}
+
+fn board_mounting_holes_transfer_into_a_mounting_panel(backend: GeometryBackend) {
     let dir = tempfile::tempdir().unwrap();
     let board_path = dir.path().join("control.kicad_pcb");
     std::fs::write(&board_path, BOARD).unwrap();
-    let import = read_kicad_file(
+    let import = read_kicad_file_with_backend(
         &board_path,
         &KicadOptions {
             components: Some(vec!["J1".into()]),
             ..Default::default()
         },
+        backend,
     )
     .unwrap();
     let mut s = Session::new(Document::new("Mounting").unwrap()).unwrap();
     let p = prepare_kicad_import(&s, 0, actor(), &import).unwrap();
     let board = p.board.clone();
     let j1 = p.components[0].1.clone();
-    commit(&mut s, p.model);
+    commit_with_backend(&mut s, p.model, backend);
     let plate = PrimitiveRequest::new(
         "Mounting plate",
         PrimitiveParameters::Box {
@@ -572,7 +582,7 @@ fn board_mounting_holes_transfer_into_a_mounting_panel() {
         },
     );
     let p = prepare_primitive(&s, s.revision(), actor(), &plate).unwrap();
-    commit(&mut s, p);
+    commit_with_backend(&mut s, p, backend);
     let mut members = vec![];
     for (body, z) in [(board.body, 10.), (plate.body, 0.), (j1.body, 10.)] {
         let member = ComponentPlacementRequest::new(
@@ -608,7 +618,7 @@ fn board_mounting_holes_transfer_into_a_mounting_panel() {
             .prepared,
     )
     .unwrap();
-    let m = compile(&s);
+    let m = compile_with_backend(&s, backend);
     let source = top(&m, board.feature, board.body, 1.6);
     let mut request = TransferRequest::new(
         "Board standoffs",
@@ -639,8 +649,8 @@ fn board_mounting_holes_transfer_into_a_mounting_panel() {
     ));
     request.references.push(face);
     let p = prepare_transfer(&s, s.revision(), actor(), &request).unwrap();
-    commit(&mut s, p);
-    let m = compile(&s);
+    commit_with_backend(&mut s, p, backend);
+    let m = compile_with_backend(&s, backend);
     // The board's 50 mm-diameter cutout is also a hole in its top face, so it
     // transfers with the two M3 holes.
     let removed = (PI * 1.6 * 1.6 * 2. + PI * 25.) * 3.;
@@ -681,8 +691,8 @@ fn board_mounting_holes_transfer_into_a_mounting_panel() {
     ));
     request.references.push(face);
     let p = prepare_transfer(&s, s.revision(), actor(), &request).unwrap();
-    commit(&mut s, p);
-    let m = compile(&s);
+    commit_with_backend(&mut s, p, backend);
+    let m = compile_with_backend(&s, backend);
     near(
         solid(&m, plate.body).volume_mm3().unwrap(),
         120. * 80. * 3. - removed - 6. * 4. * 3.,

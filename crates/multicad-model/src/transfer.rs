@@ -138,6 +138,7 @@ pub(crate) fn build(
         plane,
         revision: inputs.revision,
         policy: inputs.policy,
+        rust_receiver: receiver.uses_rust_geometry(),
     })?;
     let count = cuts.len();
     if count > model::MAX_TRANSFER_SOURCES {
@@ -169,17 +170,28 @@ pub(crate) fn build(
     let mut result = None;
     for cut in cuts {
         let prior = result.as_ref().unwrap_or(receiver);
-        result = Some(
-            prior
-                .cut_transfer_profile_named(
-                    &cut.profile,
-                    depth,
-                    feature,
-                    &cut.origins,
-                    inputs.policy,
-                )
-                .map_err(|e| error(Some(feature), format!("Transfer source {}: {e}", cut.label)))?,
-        );
+        let cut_solid = if prior.uses_rust_geometry() {
+            prior.rust_cut_transfer_profile(
+                &cut.profile,
+                depth,
+                settings.blind_depth_mm.is_none(),
+                feature,
+                &cut.origins,
+                inputs.policy,
+            )
+        } else {
+            prior.cut_transfer_profile_named(
+                &cut.profile,
+                depth,
+                feature,
+                &cut.origins,
+                inputs.policy,
+            )
+        };
+        result =
+            Some(cut_solid.map_err(|e| {
+                error(Some(feature), format!("Transfer source {}: {e}", cut.label))
+            })?);
     }
     Ok(Build {
         solid: result.expect("nonempty checked cuts"),
