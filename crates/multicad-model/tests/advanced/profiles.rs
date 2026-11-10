@@ -1045,13 +1045,75 @@ fn mixed_miter_keeps_a_stadium_profile_and_its_authored_walls_after_reopen() {
     }
     near(arc_span, 2. * PI);
     near(straight_span, 12.);
+    let joint = [3., -1., 52.];
+    let u = [-0.2, 1., 0.].map(|v| v / 1.04_f64.sqrt());
+    let normal = [1., 0.2, 0.3].map(|v| v / 1.13_f64.sqrt());
+    let v = [
+        -normal[2] * u[1],
+        normal[2] * u[0],
+        normal[0] * u[1] - normal[1] * u[0],
+    ];
+    let joint_view = DrawingProjection {
+        frame: PlaneFrame {
+            origin: joint,
+            u,
+            v,
+        },
+        section_offset_mm: Some(0.),
+        section_only: true,
+        ..Default::default()
+    };
+    let check_joint = |solid: &Solid| {
+        let exact = project_drawing(&[DrawingSolid { solid, hatch: None }], joint_view).unwrap();
+        let at_joint = |p: [f64; 2]| p[0].hypot(p[1]) < 1e-7;
+        let mut touching = [0; 2];
+        for vector in exact
+            .iter()
+            .filter(|vector| vector.role == VectorRole::Section)
+        {
+            match vector.curve {
+                VectorCurve::Line { a, b } if [a, b].into_iter().any(at_joint) => touching[0] += 1,
+                VectorCurve::Ellipse {
+                    center,
+                    u,
+                    v,
+                    major_mm,
+                    minor_mm,
+                    start_rad,
+                    end_rad,
+                } => {
+                    let ends = [start_rad, end_rad].map(|angle| {
+                        let (sin, cos) = angle.sin_cos();
+                        std::array::from_fn(|i| {
+                            center[i] + major_mm * cos * u[i] + minor_mm * sin * v[i]
+                        })
+                    });
+                    if ends.into_iter().any(at_joint) {
+                        near(major_mm * normal[2], 1.);
+                        near(minor_mm, 1.);
+                        touching[1] += 1;
+                    }
+                }
+                _ => {}
+            }
+        }
+        assert_eq!(touching, [1, 1]);
+    };
+    check_joint(solid);
+    let directory = tempfile::tempdir().unwrap();
+    let step = directory.path().join("stadium-miter.step");
+    solid.write_step(&step).unwrap();
+    let imported = Solid::import_rust_step(
+        &std::fs::read_to_string(&step).unwrap(),
+        request.feature,
+        Default::default(),
+    )
+    .unwrap();
+    check_joint(&imported);
     #[cfg(feature = "occt")]
     {
         let native = compile(&session);
         check_geometry(native.solid(request.body).unwrap(), 55.);
-        let directory = tempfile::tempdir().unwrap();
-        let step = directory.path().join("stadium-miter.step");
-        solid.write_step(&step).unwrap();
         check_geometry(&Solid::read_step(&step, Default::default()).unwrap(), 55.);
     }
 }
