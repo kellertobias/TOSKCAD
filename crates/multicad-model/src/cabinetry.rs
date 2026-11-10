@@ -12,8 +12,8 @@ use multicad_core::{
     sketch_regions::RegionIntent,
 };
 use multicad_kernel::{
-    BooleanOperation, CurvedEdge2d, CurvedProfile, GeometryPolicy, MAX_CABINET_PANEL_EDGES,
-    MAX_CABINET_PANEL_HOLES, PlaneFrame, RigidTransform, Solid,
+    BooleanOperation, CircularPocketTool, CurvedEdge2d, CurvedProfile, GeometryPolicy,
+    MAX_CABINET_PANEL_EDGES, MAX_CABINET_PANEL_HOLES, PlaneFrame, RigidTransform, Solid,
 };
 use std::collections::BTreeMap;
 
@@ -122,14 +122,45 @@ fn subtract(
     what: &str,
     backend: GeometryBackend,
 ) -> Result<Solid, ModelError> {
+    if backend == GeometryBackend::Rust && prisms.iter().any(|prism| prism.circle.is_some()) {
+        let tools = prisms
+            .iter()
+            .enumerate()
+            .map(|(k, prism)| {
+                let (Some((center_uv, radius_mm)), None) = (prism.circle, prism.slot) else {
+                    return Err(error(
+                        Some(id),
+                        "Rust circular drilling requires a batch of circular tools",
+                    ));
+                };
+                Ok(CircularPocketTool {
+                    frame: PlaneFrame {
+                        origin: prism.origin,
+                        u: prism.u,
+                        v: prism.v,
+                    },
+                    center_uv,
+                    radius_mm,
+                    displacement_mm: prism.sweep,
+                    origin: Origin {
+                        source: id,
+                        role: format!("{role}.{k}.0"),
+                    },
+                })
+            })
+            .collect::<Result<Vec<_>, ModelError>>()?;
+        return base
+            .rust_drill_circular_pockets(&tools, policy)
+            .map_err(|e| error(Some(id), e));
+    }
     let batch_circles = prisms.len() > 1 && prisms.iter().all(|p| p.circle.is_some());
     let mut tools = Vec::with_capacity(prisms.len());
     let mut current: Option<Solid> = None;
     for (k, prism) in prisms.iter().enumerate() {
-        if backend == GeometryBackend::Rust && (prism.circle.is_some() || prism.slot.is_some()) {
+        if backend == GeometryBackend::Rust && prism.slot.is_some() {
             return Err(error(
                 Some(id),
-                "Rust panel cuts currently require rectilinear tools; round drilling and slots need curved tool support",
+                "Rust panel cuts do not yet support rounded slots",
             ));
         }
         let outer: Vec<_> = match (prism.circle, prism.slot) {

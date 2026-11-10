@@ -1258,6 +1258,124 @@ fn rust_rebuilds_the_bundled_cabinet_panels_finger_joints_and_drawer_grooves() {
 }
 
 #[test]
+fn rust_rebuilds_both_hinge_boring_groups_on_each_bundled_cabinet_door() {
+    let project = read_bundled_project(include_bytes!("../../../examples/cabinet.tcd"));
+    let document = &project.document;
+    let parameters = multicad_core::parameters::evaluate(document).unwrap();
+    let operations: Vec<_> = model::machining_cuts(document)
+        .filter_map(|entity| {
+            let cut = model::read_machining_cut(document, entity.id).unwrap();
+            document
+                .get(cut.operation)
+                .unwrap()
+                .name
+                .contains("door hinge boring")
+                .then_some((entity, cut))
+        })
+        .collect();
+    assert_eq!(operations.len(), 4);
+    let roots: Vec<_> = operations.iter().map(|(entity, _)| entity.id).collect();
+    let rust = compile_stock_sources(document, &roots, GeometryBackend::Rust);
+    let native = compile_stock_sources(document, &roots, GeometryBackend::OpenCascade);
+    let mut surviving_floors = 0;
+    for (entity, cut) in operations {
+        let id = entity.id;
+        compare_stock_source(&entity.name, id, &rust, &native);
+        let definition = model::read_machining(document, cut.operation).unwrap();
+        let resolved =
+            model::resolve_machining(document, &parameters, &definition, cut.output.body).unwrap();
+        assert_eq!(resolved.holes.len(), 3);
+        let removed: f64 = resolved
+            .holes
+            .iter()
+            .map(|hole| {
+                assert!(!hole.through);
+                std::f64::consts::PI * (hole.diameter_mm / 2.).powi(2) * hole.depth_mm
+            })
+            .sum();
+        let solid = rust.solid(id).unwrap();
+        near(
+            rust.solid(cut.input.producer)
+                .unwrap()
+                .volume_mm3()
+                .unwrap()
+                - solid.volume_mm3().unwrap(),
+            removed,
+        );
+        let snapshot = &rust.snapshot().shapes[&id].topology;
+        let first_hole = resolved.holes[0];
+        let expected: [f64; 3] = std::array::from_fn(|i| {
+            first_hole.center[i] + first_hole.axis[i] * first_hole.depth_mm
+        });
+        let floor = solid
+            .faces()
+            .unwrap()
+            .into_iter()
+            .find(|face| {
+                face.plane.is_some()
+                    && face
+                        .center_mm
+                        .into_iter()
+                        .zip(expected)
+                        .all(|(a, b)| (a - b).abs() < 1e-6)
+            })
+            .expect("hinge cup has a planar floor at its resolved center");
+        near(
+            floor.area_mm2,
+            std::f64::consts::PI * (first_hole.diameter_mm / 2.).powi(2),
+        );
+        near(
+            floor
+                .plane
+                .unwrap()
+                .1
+                .into_iter()
+                .zip(first_hole.axis)
+                .map(|(a, b)| a * b)
+                .sum(),
+            -1.,
+        );
+        let entry = snapshot
+            .elements
+            .iter()
+            .find(|item| {
+                matches!(item.geometry, Some(AnalyticGeometry::Plane { .. }))
+                    && item.key.ordinal == floor.index
+            })
+            .unwrap();
+        let anchor = entry
+            .frames
+            .iter()
+            .find(|frame| frame.origin.source == id)
+            .unwrap();
+        let mut intent = GeometryIntent::capture(snapshot, entry.key).unwrap();
+        intent.attachment = Some(Attachment {
+            anchor: anchor.origin.clone(),
+            offset_mm: [0.; 3],
+            angle_rad: 0.,
+        });
+        if let Some(next) = roots.iter().copied().find(|next| {
+            model::read_machining_cut(document, *next)
+                .unwrap()
+                .input
+                .producer
+                == id
+        }) {
+            let terminal = &rust.snapshot().shapes[&next].topology;
+            let Resolution::Resolved {
+                frame: Some(frame), ..
+            } = references::resolve(&intent, terminal, 0)
+            else {
+                panic!("the second hinge group lost the first floor attachment");
+            };
+            assert_eq!(frame, anchor.frame);
+            surviving_floors += 1;
+        }
+    }
+    assert_eq!(surviving_floors, 2);
+}
+
+#[test]
 fn rust_rebuilds_the_bundled_toolcase_stock_panels_with_exact_hole_outlines() {
     let project = read_bundled_project(include_bytes!("../../../examples/toolcase.tcd"));
     let document = &project.document;

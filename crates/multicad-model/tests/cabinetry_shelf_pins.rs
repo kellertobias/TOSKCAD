@@ -11,7 +11,7 @@ use multicad_core::{
     model::*,
     project_file::{self, ProjectFile},
 };
-use multicad_model::{Compiler, Model};
+use multicad_model::{Compiler, GeometryBackend, Model};
 use std::f64::consts::PI;
 
 fn actor() -> Actor {
@@ -319,11 +319,20 @@ fn refused_rows_leave_the_document_unchanged() {
 #[test]
 fn rows_edit_suppress_delete_undo_and_reopen_with_their_targets() {
     let mut f = fixture();
+    let rust = |s: &Session| {
+        Compiler::default()
+            .compile_with_backend(s.document(), s.revision(), GeometryBackend::Rust, None)
+            .unwrap()
+    };
     let def = pins(vec![f.left, f.right]);
     let p = prepare_machining(&f.s, f.s.revision(), actor(), "Pins", &def).unwrap();
     let op = p.operation;
     checked(&mut f.s, p.model.prepared);
     let side = 18. * 400. * 720.;
+    let original = rust(&f.s);
+    for target in [f.left, f.right] {
+        near(volume(&original, target), side - hole(34));
+    }
 
     // A fixed count of five holes per row.
     let mut five = def.clone();
@@ -333,6 +342,7 @@ fn rows_edit_suppress_delete_undo_and_reopen_with_their_targets() {
     let p = prepare_machining_edit(&f.s, f.s.revision(), actor(), op, &five).unwrap();
     checked(&mut f.s, p.model.prepared);
     near(volume(&compile(&f.s), f.left), side - hole(10));
+    near(volume(&rust(&f.s), f.left), side - hole(10));
     // Targets stay fixed.
     let mut other = five.clone();
     other.targets.pop();
@@ -345,6 +355,7 @@ fn rows_edit_suppress_delete_undo_and_reopen_with_their_targets() {
     checked(&mut f.s, p.model.prepared);
     let m = compile(&f.s);
     near(volume(&m, f.left), side);
+    near(volume(&rust(&f.s), f.left), side);
     let parameters = multicad_core::parameters::evaluate(f.s.document()).unwrap();
     assert!(
         shelf_support_offsets(f.s.document(), &parameters, f.carcass)
@@ -356,8 +367,10 @@ fn rows_edit_suppress_delete_undo_and_reopen_with_their_targets() {
     // Undo restores the five-hole rows; Redo suppresses again.
     f.s.undo(f.s.revision(), actor()).unwrap();
     near(volume(&compile(&f.s), f.left), side - hole(10));
+    near(volume(&rust(&f.s), f.left), side - hole(10));
     f.s.redo(f.s.revision(), actor()).unwrap();
     near(volume(&compile(&f.s), f.left), side);
+    near(volume(&rust(&f.s), f.left), side);
     f.s.undo(f.s.revision(), actor()).unwrap();
 
     // Save and reopen keep the pattern, its targets and solids.
@@ -392,6 +405,10 @@ fn rows_edit_suppress_delete_undo_and_reopen_with_their_targets() {
     assert_eq!(read_machining(&opened.document, op).unwrap(), five);
     let reopened = Compiler::default().compile(&opened.document, 0).unwrap();
     near(volume(&reopened, f.right), side - hole(10));
+    let rust_reopened = Compiler::default()
+        .compile_with_backend(&opened.document, 0, GeometryBackend::Rust, None)
+        .unwrap();
+    near(volume(&rust_reopened, f.right), side - hole(10));
 
     // Delete restores both sides.
     let p = prepare_machining_delete(&f.s, f.s.revision(), actor(), op).unwrap();
@@ -399,5 +416,8 @@ fn rows_edit_suppress_delete_undo_and_reopen_with_their_targets() {
     let m = compile(&f.s);
     near(volume(&m, f.left), side);
     near(volume(&m, f.right), side);
+    let rebuilt = rust(&f.s);
+    near(volume(&rebuilt, f.left), side);
+    near(volume(&rebuilt, f.right), side);
     assert!(m.machining(f.s.document()).unwrap().is_empty());
 }
