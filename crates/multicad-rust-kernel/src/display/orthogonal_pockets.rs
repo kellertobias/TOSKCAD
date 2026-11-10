@@ -3,6 +3,8 @@
 use super::stadium::StadiumRing;
 use super::*;
 use crate::{
+    helical_thread::Thread,
+    helical_thread_mesh::open_blind_cavity,
     orthogonal_boundary::{Boundary, BoundaryFace, point_key},
     orthogonal_pockets::{FacePlane, MAX_POCKETS, OrthogonalPocket, OrthogonalThroughBore},
     orthogonal_slots::OrthogonalSlot,
@@ -43,6 +45,113 @@ pub fn bored_orthogonal(
     options: Tessellation,
 ) -> Result<DisplayMesh, MeshError> {
     machined_orthogonal(boundary, pockets, &[], through, options)
+}
+
+/// Stock ordinals in a blind tap shell. The mouth keeps face zero so the
+/// helical band and blind floor ordinals match the original thread envelope.
+pub fn blind_tap_stock_face(face: usize, mouth: usize, thread_faces: usize) -> u32 {
+    if face == mouth {
+        0
+    } else {
+        (thread_faces + face - usize::from(face > mouth)) as u32
+    }
+}
+
+/// Close an open exact helical cavity against a certified orthogonal stock
+/// face. Both sides of the mouth reuse the same indexed helical rim.
+pub fn tapped_orthogonal(
+    boundary: &Boundary,
+    thread: &Thread,
+    pocket: OrthogonalPocket,
+    [u, v]: [Point; 2],
+    options: Tessellation,
+) -> Result<DisplayMesh, MeshError> {
+    let invalid = MeshError::UnresolvedBoundary;
+    let mouth = boundary.faces.get(pocket.face).ok_or(invalid)?;
+    let mouth_plane = FacePlane::from_face(mouth).ok_or(invalid)?;
+    let spec = thread.spec();
+    let dot = |a: Point, b: Point| a.into_iter().zip(b).map(|(a, b)| a * b).sum::<f64>();
+    let inward = [
+        u[1] * v[2] - u[2] * v[1],
+        u[2] * v[0] - u[0] * v[2],
+        u[0] * v[1] - u[1] * v[0],
+    ];
+    if spec.length_mm != pocket.depth_mm
+        || pocket.center_mm[mouth_plane.axis] != mouth_plane.level
+        || u[mouth_plane.axis] != 0.
+        || v[mouth_plane.axis] != 0.
+        || ![
+            dot(u, u) - 1.,
+            dot(v, v) - 1.,
+            dot(u, v),
+            1. + dot(inward, mouth.normal),
+        ]
+        .into_iter()
+        .all(|v| v.abs() <= 1e-10)
+        || !mouth_plane.contains_disk(mouth, pocket.center_mm, spec.major_radius_mm)
+    {
+        return Err(invalid);
+    }
+    let mut normal = mouth.normal;
+    normal[mouth_plane.axis] *= -1.;
+    let (mut mesh, rim) = open_blind_cavity(thread, options)?;
+    for point in mesh.vertices.as_chunks_mut::<3>().0 {
+        let [x, y, z] = *point;
+        *point = std::array::from_fn(|i| pocket.center_mm[i] + u[i] * x + v[i] * y + normal[i] * z);
+    }
+    let mut corners = BTreeMap::new();
+    let thread_faces = 2 + 4 * spec.starts as usize;
+    for (i, face) in boundary.faces.iter().enumerate() {
+        let plane = FacePlane::from_face(face).ok_or(invalid)?;
+        let mut region = stock_region(&mut mesh, &mut corners, face, plane)?;
+        let is_mouth = i == pocket.face;
+        if is_mouth {
+            region.ring(rim.iter().map(|&index| {
+                let index = index as usize;
+                let point = mesh.vertices.as_chunks::<3>().0[index];
+                (plane.project(point), index)
+            }));
+        }
+        let holes = face.rings.len() - 1 + usize::from(is_mouth);
+        let triangulation = triangulate_region(region.points, &region.edges, holes)?;
+        if mesh
+            .face_indices
+            .len()
+            .saturating_add(triangulation.triangles.len())
+            > options.triangle_limit
+        {
+            return Err(MeshError::BudgetExceeded);
+        }
+        for triangle in triangulation.triangles {
+            mesh.triangle(
+                triangle.map(|vertex| region.indices[vertex]),
+                blind_tap_stock_face(i, pocket.face, thread_faces),
+            );
+        }
+    }
+    Ok(mesh)
+}
+
+fn stock_region(
+    mesh: &mut DisplayMesh,
+    corners: &mut SharedCorners,
+    face: &BoundaryFace,
+    plane: FacePlane,
+) -> Result<FaceRegion, MeshError> {
+    let mut region = FaceRegion::default();
+    for ring in &face.rings {
+        let mut projected = Vec::with_capacity(ring.len());
+        for &point in ring {
+            let uv = plane.project(point);
+            if !point.iter().all(|x| x.is_finite()) || plane.lift(uv) != point {
+                return Err(MeshError::UnresolvedBoundary);
+            }
+            let index = stock_corner(mesh, corners, face, point);
+            projected.push((uv, index));
+        }
+        region.ring(projected.into_iter());
+    }
+    Ok(region)
 }
 
 fn machined_orthogonal(
@@ -145,19 +254,7 @@ fn machined_orthogonal(
     let mut bore_mouths = vec![[0..0, 0..0]; through.len()];
     for (face_index, face) in boundary.faces.iter().enumerate() {
         let plane = FacePlane::from_face(face).ok_or(MeshError::UnresolvedBoundary)?;
-        let mut region = FaceRegion::default();
-        for ring in &face.rings {
-            let mut projected = Vec::with_capacity(ring.len());
-            for &point in ring {
-                let uv = plane.project(point);
-                if !point.iter().all(|x| x.is_finite()) || plane.lift(uv) != point {
-                    return Err(MeshError::UnresolvedBoundary);
-                }
-                let index = stock_corner(&mut mesh, &mut corners, face, point);
-                projected.push((uv, index));
-            }
-            region.ring(projected.into_iter());
-        }
+        let mut region = stock_region(&mut mesh, &mut corners, face, plane)?;
         let opening = &openings[face_index];
         for &index in &opening.circles {
             let pocket = pockets[index];

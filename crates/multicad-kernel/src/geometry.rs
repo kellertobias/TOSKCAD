@@ -31,6 +31,7 @@ use axial_stack_body::AxialStackBody;
 pub use circular_pocket_body::CircularPocketTool;
 use cosmetic_fastener_body::CosmeticFastenerBody;
 use helical_body::HelicalBody;
+pub use helical_body::{BlindThreadCut, BlindThreadMating};
 use linear_body::LinearBody;
 use normal_sweep_body::NormalSweepBody;
 pub use normal_sweep_body::SweepOpening;

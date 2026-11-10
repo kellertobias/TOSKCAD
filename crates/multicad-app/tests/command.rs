@@ -176,40 +176,48 @@ fn command_dispatch_is_memory_only_unless_explicitly_saved_and_reopens_canonical
 mod connection_fixture;
 
 #[test]
-fn built_rust_backend_saves_and_revalidates_a_metric_through_connection() {
-    let (document, connection, _) = connection_fixture::fixture();
-    let dir = tempfile::tempdir().unwrap();
-    let project = dir.path().join("metric-through.tcd");
-    let request = dir.path().join("request.json");
-    project_file::write(
-        &ProjectFile::new(document).unwrap(),
-        &mut std::fs::File::create(&project).unwrap(),
-        Default::default(),
-    )
-    .unwrap();
-    std::fs::write(
-        &request,
-        serde_json::to_vec(&json!({
-            "tool": "set_screw_connection",
-            "arguments": {"expected_revision": 0, "request": connection}
-        }))
-        .unwrap(),
-    )
-    .unwrap();
-    let (ok, applied) = invoke(&project, &request, &["--save", "--rust-model"]);
-    assert!(ok, "{applied}");
-    assert_eq!(applied["persistence"], "saved");
-    let checks = &applied["result"]["checks"];
-    assert_eq!(checks.as_array().unwrap().len(), 1);
-    assert_eq!(checks[0]["connection"], connection.connection.to_string());
-    std::fs::write(
-        &request,
-        serde_json::to_vec(&json!({"tool": "evaluate_model", "arguments": {}})).unwrap(),
-    )
-    .unwrap();
-    let (ok, reopened) = invoke(&project, &request, &["--read-only", "--rust-model"]);
-    assert!(ok, "{reopened}");
-    assert_eq!(&reopened["result"]["screw_connections"], checks);
+fn built_rust_backend_saves_and_revalidates_metric_through_and_blind_connections() {
+    for (document, connection, _) in [
+        connection_fixture::fixture(),
+        connection_fixture::tapped_fixture(),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().join("metric-connection.tcd");
+        let request = dir.path().join("request.json");
+        project_file::write(
+            &ProjectFile::new(document).unwrap(),
+            &mut std::fs::File::create(&project).unwrap(),
+            Default::default(),
+        )
+        .unwrap();
+        std::fs::write(
+            &request,
+            serde_json::to_vec(&json!({
+                "tool": "set_screw_connection",
+                "arguments": {"expected_revision": 0, "request": connection}
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let (ok, applied) = invoke(&project, &request, &["--save", "--rust-model"]);
+        assert!(ok, "{applied}");
+        assert_eq!(applied["persistence"], "saved");
+        let checks = &applied["result"]["checks"];
+        assert_eq!(checks.as_array().unwrap().len(), 1);
+        assert_eq!(checks[0]["connection"], connection.connection.to_string());
+        std::fs::write(
+            &request,
+            serde_json::to_vec(&json!({"tool": "evaluate_model", "arguments": {}})).unwrap(),
+        )
+        .unwrap();
+        let (ok, reopened) = invoke(&project, &request, &["--read-only", "--rust-model"]);
+        assert!(ok, "{reopened}");
+        assert_eq!(&reopened["result"]["screw_connections"], checks);
+        if connection.mode == multicad_core::model::ScrewConnectionMode::TappedReceiver {
+            assert_eq!(checks[0]["actual_engagement_mm"], 3.);
+            assert_eq!(checks[0]["blind_tip_clearance_mm"], 0.5);
+        }
+    }
 }
 
 #[test]
@@ -326,8 +334,13 @@ fn real_cli_connection_lifecycle_reopens_and_matches_direct_mcp() {
 
 #[cfg(not(feature = "occt"))]
 #[test]
-fn rust_only_refuses_an_unavailable_tapped_receiver_before_saving() {
-    let (document, request, _) = connection_fixture::tapped_fixture();
+fn rust_only_refuses_a_blind_tap_without_enough_floor_before_saving() {
+    use multicad_core::model::{ConnectionReceiverExtent, length};
+    let (document, mut request, _) = connection_fixture::tapped_fixture();
+    request.receivers[0].source.extent = ConnectionReceiverExtent::Blind {
+        depth: length(3.5),
+        floor: length(0.8),
+    };
     let dir = tempfile::tempdir().unwrap();
     let project = dir.path().join("connection.tcd");
     let command = dir.path().join("request.json");
@@ -354,7 +367,7 @@ fn rust_only_refuses_an_unavailable_tapped_receiver_before_saving() {
         receipt["error"]["message"]
             .as_str()
             .unwrap()
-            .contains("unseated round through bore"),
+            .contains("touches stock boundaries"),
         "{receipt}"
     );
     assert_eq!(std::fs::read(&project).unwrap(), original);

@@ -59,6 +59,32 @@ fn tessellate_envelope(
     exterior: Option<BoreExterior<'_>>,
     options: Tessellation,
 ) -> Result<DisplayMesh, MeshError> {
+    envelope_builder(thread, exterior, options)?.build(exterior)
+}
+
+pub(crate) fn open_blind_cavity(
+    thread: &Thread,
+    options: Tessellation,
+) -> Result<(DisplayMesh, Vec<u32>), MeshError> {
+    let mut builder = envelope_builder(thread, None, options)?;
+    builder.build_wall()?;
+    let [mut mouth, floor] = std::mem::take(&mut builder.caps);
+    Builder::sort_ring(&mut mouth)?;
+    builder.add_cap(1, floor)?;
+    for triangle in builder.mesh.indices.as_chunks_mut::<3>().0 {
+        triangle.swap(1, 2);
+    }
+    Ok((
+        builder.mesh,
+        mouth.into_iter().map(|(_, vertex)| vertex).collect(),
+    ))
+}
+
+fn envelope_builder<'a>(
+    thread: &'a Thread,
+    exterior: Option<BoreExterior<'_>>,
+    options: Tessellation,
+) -> Result<Builder<'a>, MeshError> {
     check_options(options)?;
     let major = thread.spec().major_radius_mm;
     let (radius, deflection, stride) = match exterior {
@@ -79,7 +105,7 @@ fn tessellate_envelope(
     }
     let angular_steps = angular_steps as usize;
     let strips = phase_strips(thread, TAU / angular_steps as f64, options)?;
-    Builder::new(thread, angular_steps, strips, options).build(exterior)
+    Ok(Builder::new(thread, angular_steps, strips, options))
 }
 
 fn check_options(options: Tessellation) -> Result<(), MeshError> {

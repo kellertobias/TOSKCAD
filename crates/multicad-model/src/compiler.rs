@@ -1147,7 +1147,7 @@ impl Compiler {
                             crate::connection_receivers::build(inputs, id, &source)?
                         }
                         GeometryBackend::Rust => {
-                            crate::connection_receivers::rust_through::build(inputs, id, &source)?.0
+                            crate::connection_receivers::build_rust(inputs, id, &source)?
                         }
                     };
                     timings.receiving_cut_ms += started.elapsed().as_secs_f64() * 1000.;

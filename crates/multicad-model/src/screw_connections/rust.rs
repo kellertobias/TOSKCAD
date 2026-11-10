@@ -1,7 +1,9 @@
-//! Exact through-nut checks for generated metric hardware and one clear bore.
+//! Exact checks for generated metric hardware and one receiving bore.
 use super::*;
 use crate::connection_receivers::{self, rust_through};
 use multicad_core::model::{ResolvedScrewHead, ScrewConnectionHardwareSource};
+use multicad_kernel::rust_kernel::helical_thread::Thread;
+mod blind;
 
 pub(crate) fn validate(
     document: &Document,
@@ -37,7 +39,11 @@ pub(crate) fn validate(
         }
         let source = model::read_screw_connection_request(document, entity.id)
             .map_err(|e| error(Some(entity.id), e))?;
-        checks.push(through_nut(&input, &source, evaluated, interrupt)?);
+        checks.push(if source.mode == Mode::TappedReceiver {
+            blind::check(&input, &source, evaluated, interrupt)?
+        } else {
+            through_nut(&input, &source, evaluated, interrupt)?
+        });
     }
     Ok(checks)
 }
@@ -244,35 +250,13 @@ fn through_nut(
     .map_err(|e| error(Some(id), e))?;
     no_phase_correction(&mating, id)?;
 
-    let q = nut_frame.normal();
-    let tilt = cross(n, q);
-    let tilt = dot(tilt, tilt).sqrt();
-    if tilt > 1e-10 || dot(n, q) < 0. {
-        return Err(fail(
-            "This Rust connection requires the screw and nut axes to have the same direction",
-        ));
-    }
-    let alpha = dot(nut_frame.u, screw_frame.v).atan2(dot(nut_frame.u, screw_frame.u));
-    let rate = screw_thread.helical_rate();
-    let offset = rate * alpha - mating.phase.axial_station_mm;
-    let clearance = screw_thread
-        .minimum_radial_clearance(&nut_thread, offset, false)
-        .map_err(|e| {
-            error(
-                Some(id),
-                format!("Unsupported analytic metric profile clearance: {e:?}"),
-            )
-        })?;
-    let extents = screw_thread.spec().length_mm + nut_thread.spec().length_mm + shaft;
-    // Reserve clearance for axis drift and the corresponding angular and axial
-    // shift in the bore profile. Evaluate the ideal profiles over a full period.
-    let drift = 4. * tolerance + 4. * tilt * extents;
-    let phase_drift = drift * (1. + 4. * rate.abs() / nut_thread.root_radius_mm());
-    if clearance <= drift + nut_thread.maximum_profile_slope() * phase_drift {
-        return Err(fail(
-            "The placed modeled metric thread profiles interfere or have insufficient clearance",
-        ));
-    }
+    check_radial_clearance(
+        id,
+        [(screw_thread, screw_frame), (nut_thread, nut_frame)],
+        mating.phase.axial_station_mm,
+        shaft,
+        tolerance,
+    )?;
 
     for leaf in evaluated.snapshot().leaf_occurrences.values() {
         checkpoint(interrupt)?;
@@ -308,6 +292,48 @@ fn through_nut(
         native_component_collision_checked: true,
         scope: "Exact placed metric profiles, through-bore clearance and flat seating with separation from other components".into(),
     })
+}
+
+fn check_radial_clearance(
+    id: EntityId,
+    [(screw_thread, screw_frame), (nut_thread, nut_frame)]: [(Thread, ReferenceFrame); 2],
+    axial_station_mm: f64,
+    shaft: f64,
+    tolerance: f64,
+) -> Result<(), ModelError> {
+    let fail = |message: &str| error(Some(id), message);
+    let n = screw_frame.normal();
+    let q = nut_frame.normal();
+    let tilt = cross(n, q);
+    let tilt = dot(tilt, tilt).sqrt();
+    if tilt > 1e-10 || dot(n, q) < 0. {
+        return Err(fail(
+            "This Rust connection requires the screw and receiving thread axes to have the same direction",
+        ));
+    }
+    let alpha = dot(nut_frame.u, screw_frame.v).atan2(dot(nut_frame.u, screw_frame.u));
+    let rate = screw_thread.helical_rate();
+    let offset = rate * alpha - axial_station_mm;
+    let clearance = screw_thread
+        .minimum_radial_clearance(&nut_thread, offset, false)
+        .map_err(|e| {
+            error(
+                Some(id),
+                format!("Unsupported analytic metric profile clearance: {e:?}"),
+            )
+        })?;
+    let extents = screw_thread.spec().length_mm + nut_thread.spec().length_mm + shaft;
+    // Reserve clearance for axis drift and the corresponding angular and axial
+    // shift in the bore profile. Evaluate the ideal profiles over a full period.
+    let drift = 4. * tolerance + 4. * tilt * extents;
+    let phase_drift = drift * (1. + 4. * rate.abs() / nut_thread.root_radius_mm());
+    if clearance <= drift + nut_thread.maximum_profile_slope() * phase_drift {
+        return Err(fail(
+            "The placed modeled metric thread profiles interfere or have insufficient clearance",
+        ));
+    }
+
+    Ok(())
 }
 
 fn cross([x, y, z]: [f64; 3], [u, v, w]: [f64; 3]) -> [f64; 3] {

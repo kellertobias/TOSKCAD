@@ -11,6 +11,7 @@ use multicad_kernel::{
     Solid,
 };
 use std::{collections::BTreeMap, f64::consts::TAU};
+mod rust_blind;
 pub(crate) mod rust_through;
 
 fn native<T>(
@@ -151,6 +152,20 @@ pub(crate) struct Inputs<'a> {
     pub snapshots: &'a BTreeMap<EntityId, TopologySnapshot>,
     pub solids: &'a BTreeMap<EntityId, Solid>,
     pub policy: GeometryPolicy,
+}
+pub(crate) fn build_rust(
+    inputs: Inputs<'_>,
+    id: EntityId,
+    source: &ConnectionReceiverDefinition,
+) -> Result<Solid, ModelError> {
+    match source.cut {
+        multicad_core::model::ConnectionReceiverCut::Tapped { .. } => {
+            rust_blind::build(inputs, id, source)
+        }
+        multicad_core::model::ConnectionReceiverCut::Round { .. } => {
+            rust_through::build(inputs, id, source).map(|(solid, _)| solid)
+        }
+    }
 }
 pub(crate) fn build(
     inputs: Inputs<'_>,

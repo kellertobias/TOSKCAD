@@ -470,3 +470,99 @@ fn orthogonal_mesh_keeps_corner_touching_components_independently_manifold() {
             < TAU * 3. * options().deflection
     );
 }
+
+#[test]
+fn blind_tap_reuses_indexed_mouth_and_closes_the_exact_helical_floor() {
+    use crate::{
+        helical_thread::{Spec, Thread},
+        orthogonal::{Box3, Operation, boolean},
+        orthogonal_boundary::build,
+    };
+    let stock = boolean(
+        &[Box3 {
+            min: [0.; 3],
+            max: [20., 16., 10.],
+        }],
+        &[],
+        Operation::Union,
+        1e-7,
+    )
+    .unwrap()
+    .unwrap();
+    let boundary = build(stock.quads()).unwrap();
+    let thread = Thread::new(Spec {
+        major_radius_mm: 1.5,
+        pitch_mm: 0.5,
+        length_mm: 3.5,
+        depth_mm: 0.27,
+        crest_width_mm: 0.08,
+        lower_flank_deg: 30.,
+        upper_flank_deg: 30.,
+        starts: 1,
+        left_hand: false,
+        root_radius_mm: None,
+    })
+    .unwrap();
+    let pocket = identify_pocket(
+        &stock,
+        &boundary,
+        [6., 7., 11.],
+        [6., 7., 6.5],
+        1.5,
+        1e-7,
+        1e-5,
+    )
+    .unwrap();
+    let axes = [[0.8, 0.6, 0.], [0.6, -0.8, 0.]];
+    let detailed = Tessellation {
+        triangle_limit: 200_000,
+        ..options()
+    };
+    let mesh = tapped_orthogonal(&boundary, &thread, pocket, axes, detailed).unwrap();
+    let proof = certify(&mesh).unwrap();
+    let expected = stock.volume_mm3() - thread.volume_mm3();
+    assert!((proof.signed_volume_mm3 - expected).abs() < 0.1);
+    let floor = mesh
+        .indices
+        .as_chunks::<3>()
+        .0
+        .iter()
+        .zip(&mesh.face_indices)
+        .filter(|(_, face)| **face == 1)
+        .flat_map(|(t, _)| t);
+    assert!(floor.clone().count() >= 3);
+    assert!(
+        floor
+            .into_iter()
+            .all(|&vertex| mesh.vertices[3 * vertex as usize + 2] == 6.5)
+    );
+    assert_eq!(proof.edge_pairs as usize * 2, mesh.indices.len());
+    assert_eq!(
+        mesh.face_indices.iter().copied().max(),
+        Some((boundary.faces.len() + 4) as u32)
+    );
+    let bad = OrthogonalPocket {
+        depth_mm: 3.,
+        ..pocket
+    };
+    assert_eq!(
+        tapped_orthogonal(&boundary, &thread, bad, axes, options()).unwrap_err(),
+        MeshError::UnresolvedBoundary
+    );
+    let bad = OrthogonalPocket {
+        face: boundary.faces.len(),
+        ..pocket
+    };
+    assert_eq!(
+        tapped_orthogonal(&boundary, &thread, bad, axes, options()).unwrap_err(),
+        MeshError::UnresolvedBoundary
+    );
+    let budget = Tessellation {
+        triangle_limit: mesh.face_indices.len() - 1,
+        ..options()
+    };
+    assert_eq!(
+        tapped_orthogonal(&boundary, &thread, pocket, axes, budget).unwrap_err(),
+        MeshError::BudgetExceeded
+    );
+}
