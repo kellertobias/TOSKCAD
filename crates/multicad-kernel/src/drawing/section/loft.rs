@@ -4,7 +4,7 @@ use multicad_rust_kernel::planar_boolean::{Error, LoftSectionCurve};
 
 mod clip;
 mod scene;
-pub(in crate::drawing) use scene::project_scene;
+pub(in crate::drawing) use scene::{project_retained_scene, project_scene};
 mod view;
 pub(in crate::drawing) use view::project_view;
 

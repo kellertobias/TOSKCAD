@@ -3,7 +3,10 @@ use super::*;
 
 mod area;
 mod projection;
-pub use projection::{LoftDrawingEdge, LoftProjection, LoftSceneMember, project_loft_scene};
+pub use projection::{
+    LoftDrawingEdge, LoftProjection, LoftSceneCut, LoftSceneMember, LoftSceneSection,
+    project_loft_scene, project_loft_scene_section,
+};
 mod section;
 pub use section::LoftSectionCurve;
 

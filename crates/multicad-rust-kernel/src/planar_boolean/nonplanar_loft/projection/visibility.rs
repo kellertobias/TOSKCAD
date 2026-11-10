@@ -227,7 +227,7 @@ pub(super) fn project(
         curves.into_iter().map(|curve| (0, curve, true)).collect(),
         options,
         epsilon,
-        clip.as_ref(),
+        clip.as_ref().map(|clip| clip.planes),
         &|point| Ok(blocked(point)),
         &|_, _, _, _| Ok(()),
     )
@@ -265,7 +265,7 @@ pub(super) fn publish(
     mut curves: Vec<(usize, Curve, bool)>,
     options: LoftProjection,
     epsilon: f64,
-    clip: Option<&clip::Clip<'_>>,
+    planes: Option<clip::Limits>,
     blocked: &dyn Fn(Point) -> Result<bool, Error>,
     depth_events: &DepthEvents<'_>,
 ) -> Result<Vec<(usize, LoftDrawingEdge)>, Error> {
@@ -288,8 +288,8 @@ pub(super) fn publish(
         if let Some((center, radius)) = options.detail {
             curve.detail_crossings(center, radius, &mut cuts);
         }
-        if let Some(clip) = &clip {
-            clip.crossings(curve, &mut cuts);
+        if let Some(planes) = planes {
+            clip::crossings(planes, curve, &mut cuts);
         }
         depth_events(source, curve, bounds[index], &mut cuts)?;
         cuts.sort_unstable_by(f64::total_cmp);
@@ -304,10 +304,7 @@ pub(super) fn publish(
             {
                 continue;
             }
-            if clip
-                .as_ref()
-                .is_some_and(|clip| !clip.includes(point, epsilon))
-            {
+            if planes.is_some_and(|planes| !clip::includes(planes, point, epsilon)) {
                 continue;
             }
             let hidden = blocked(point)?;

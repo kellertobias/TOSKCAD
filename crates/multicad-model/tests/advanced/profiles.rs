@@ -1813,6 +1813,11 @@ fn twisted_polygon_loft_rebuilds_and_reopens_from_embedded_step() {
         #[cfg(feature = "occt")]
         native.solid(request.body).unwrap(),
     );
+    verify_twisted_loft_assembly_sections(
+        solid,
+        #[cfg(feature = "occt")]
+        native.solid(request.body).unwrap(),
+    );
     let faces = solid.faces().unwrap();
     assert_eq!(faces.len(), 6);
     assert_eq!(faces.iter().filter(|face| face.plane.is_some()).count(), 2);
@@ -1926,6 +1931,207 @@ fn twisted_polygon_loft_rebuilds_and_reopens_from_embedded_step() {
         imported.solid(body).unwrap().volume_mm3().unwrap(),
         volume(cos),
     );
+}
+
+fn verify_twisted_loft_assembly_sections(
+    loft: &multicad_kernel::Solid,
+    #[cfg(feature = "occt")] native: &multicad_kernel::Solid,
+) {
+    use multicad_core::{
+        drawings::{VectorCurve, VectorRole},
+        materials::HatchPattern,
+    };
+    use multicad_kernel::{
+        DrawingHatch, DrawingProjection, DrawingSolid, PlaneFrame, Solid, project_drawing,
+        rust_kernel::Rational,
+    };
+
+    let stock = [
+        ([7, 1, 1], [-3., 0.4, -2.]),
+        ([3, 2, 6], [-3., 0., 0.]),
+        ([2, 2, 1], [-1., -2., 7.]),
+    ];
+    let [rear, middle, front] = stock.map(|(size, origin)| {
+        Solid::rust_box(
+            EntityId::new().uuid_bits(),
+            size.map(|n| Rational::new(n, 1).unwrap()),
+            PlaneFrame {
+                origin,
+                ..Default::default()
+            },
+            Default::default(),
+        )
+        .unwrap()
+    });
+    let project = |rear, loft, middle, front, options, hatch| {
+        project_drawing(
+            &[rear, loft, middle, front].map(|solid| DrawingSolid { solid, hatch }),
+            options,
+        )
+        .unwrap()
+    };
+    let axial = DrawingProjection {
+        section_offset_mm: Some(3.),
+        section_depth_mm: Some(2.5),
+        section_u_mm: Some([-2.3, 1.5]),
+        section_v_mm: Some([-0.2, 1.6]),
+        hidden_lines: true,
+        chord_tolerance_mm: 1e-4,
+        ..Default::default()
+    };
+    let oblique = DrawingProjection {
+        frame: PlaneFrame {
+            v: [0., 0.8, 0.6],
+            ..Default::default()
+        },
+        section_depth_mm: Some(1.8),
+        section_v_mm: Some([1., 3.3]),
+        ..axial
+    };
+    let through = DrawingProjection {
+        section_depth_mm: None,
+        section_v_mm: Some([-1., 3.3]),
+        ..oblique
+    };
+    let hatch = DrawingHatch {
+        angle_rad: 0.4,
+        spacing_mm: 0.25,
+        line_width_mm: 0.1,
+        pattern: HatchPattern::Lines,
+    };
+    for options in [axial, oblique, through] {
+        let vectors = project(&rear, loft, &middle, &front, options, Some(hatch));
+        for source in [1, 2] {
+            for role in [VectorRole::Section, VectorRole::Visible, VectorRole::Hatch] {
+                assert!(
+                    vectors
+                        .iter()
+                        .any(|v| v.source_index == source && v.role == role),
+                    "{source}: {role:?}"
+                );
+            }
+        }
+        assert!(vectors.iter().all(|v| v.source_index < 3));
+        if options.section_depth_mm.is_some() {
+            assert!(vectors.iter().all(|v| v.source_index != 0));
+        } else {
+            assert!(
+                vectors
+                    .iter()
+                    .any(|v| v.source_index == 0 && v.role == VectorRole::Visible)
+            );
+        }
+        if options.frame.v[2] != 0. {
+            assert!(vectors.iter().any(|v| v.source_index == 1
+                && v.role == VectorRole::Section
+                && matches!(v.curve, VectorCurve::BSpline { degree: 2, .. })));
+        }
+    }
+
+    // At the lower side of the oblique window the ray lies at v = 1.
+    // It meets the stock's y = 0 plane at depth 4/3 and the loft's left
+    // wall at the station obtained by converting that point back to model Z.
+    let station = (0.6 + 0.8 * (4. / 3.)) / 6.;
+    let (sin, cos) = std::f64::consts::FRAC_PI_6.sin_cos();
+    let wall = [[-2., -1.], [-2., 1.]].map(|[x, y]| {
+        let top = [cos * x - sin * y + 1., sin * x + cos * y + 0.5];
+        [x + station * (top[0] - x), y + station * (top[1] - y)]
+    });
+    let [a, b] = wall;
+    let crossing = a[0] + (b[0] - a[0]) * (-a[1] / (b[1] - a[1]));
+    let bounded = project(&rear, loft, &middle, &front, oblique, None);
+    let meets_crossing = |source, role, is_start: bool| {
+        bounded.iter().any(|v| {
+            v.source_index == source && v.role == role &&
+                matches!(v.curve, VectorCurve::Line { a, b } if
+                    [a, b].into_iter().all(|p| (p[1] - 1.).abs() < 1e-7) &&
+                    (if is_start { a[0].min(b[0]) } else { a[0].max(b[0]) } - crossing).abs() < 1e-7)
+        })
+    };
+    assert!(meets_crossing(1, VectorRole::Hidden, false));
+    assert!(meets_crossing(1, VectorRole::Visible, true));
+    assert!(meets_crossing(2, VectorRole::Visible, false));
+    assert!(meets_crossing(2, VectorRole::Hidden, true));
+
+    #[cfg(feature = "occt")]
+    {
+        use multicad_kernel::RigidTransform;
+        let [native_rear, native_middle, native_front] = stock.map(|(size, translation_mm)| {
+            Solid::box_solid(size.map(|n| n as f64), Default::default())
+                .unwrap()
+                .transformed(RigidTransform {
+                    translation_mm,
+                    ..Default::default()
+                })
+                .unwrap()
+        });
+        for options in [axial, oblique, through] {
+            let rust = project(&rear, loft, &middle, &front, options, None);
+            let reference = project(
+                &native_rear,
+                native,
+                &native_middle,
+                &native_front,
+                options,
+                None,
+            );
+            for (label, a, b) in [
+                ("Rust", &rust, &reference),
+                ("OpenCascade", &reference, &rust),
+            ] {
+                for vector in a {
+                    for &[x, y] in &vector.preview_mm {
+                        // OpenCascade keeps portions of both edges visible
+                        // along this grazing ray. Compare the geometry there
+                        // and check the Rust role transition analytically above.
+                        let grazing = options.section_depth_mm == Some(1.8)
+                            && (y - 1.).abs() < 1e-7
+                            && (1..=2).contains(&vector.source_index)
+                            && vector.role != VectorRole::Section;
+                        let segments = b
+                            .iter()
+                            .filter(|other| {
+                                other.source_index == vector.source_index
+                                    && (other.role == vector.role
+                                        || (grazing && other.role != VectorRole::Section))
+                            })
+                            .flat_map(|other| other.preview_mm.windows(2));
+                        let error = segments
+                            .clone()
+                            .map(|ends| {
+                                let [[ax, ay], [bx, by]] = [ends[0], ends[1]];
+                                let [u, v] = [bx - ax, by - ay];
+                                let t =
+                                    (((x - ax) * u + (y - ay) * v) / (u * u + v * v)).clamp(0., 1.);
+                                (x - ax - t * u).hypot(y - ay - t * v)
+                            })
+                            .fold(f64::INFINITY, f64::min);
+                        assert!(
+                            error < 3. * options.chord_tolerance_mm,
+                            "{label} {:?} from {} at [{x}, {y}] error {error} in {options:?}",
+                            vector.role,
+                            vector.source_index
+                        );
+                    }
+                }
+            }
+        }
+        let measure = |rear, loft, middle, front| {
+            let mut samples = [std::time::Duration::ZERO; 9];
+            for sample in &mut samples {
+                let start = std::time::Instant::now();
+                assert!(!project(rear, loft, middle, front, oblique, None).is_empty());
+                *sample = start.elapsed();
+            }
+            samples.sort_unstable();
+            samples[4]
+        };
+        eprintln!(
+            "Twisted loft assembly depth medians over 9 warm projections: Rust {:?}, OpenCascade {:?}",
+            measure(&rear, loft, &middle, &front),
+            measure(&native_rear, native, &native_middle, &native_front),
+        );
+    }
 }
 
 fn verify_twisted_loft_scene(

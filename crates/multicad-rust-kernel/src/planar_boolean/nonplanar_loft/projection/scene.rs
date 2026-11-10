@@ -13,26 +13,72 @@ pub enum LoftSceneMember<'a> {
     Planar(&'a Body),
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct LoftSceneCut {
+    pub near: f64,
+    pub far: Option<f64>,
+    pub windows: [Option<[f64; 2]>; 2],
+}
+
+#[derive(Debug, PartialEq)]
+pub struct LoftSceneSection {
+    pub edges: Vec<(usize, LoftDrawingEdge)>,
+    /// Indices of loft members with retained geometry changed by a cut.
+    pub clipped_lofts: Vec<usize>,
+}
+
 const MAX_WORK: usize = 20_000_000;
 
-struct ProjectedLoft {
+struct ProjectedLoft<'a> {
     source: usize,
     rings: [Vec<Point>; 2],
     walls: Vec<Wall>,
+    clip: Option<clip::Clip<'a>>,
 }
 
 pub fn project_loft_scene(
     members: &[LoftSceneMember<'_>],
     options: Options,
 ) -> Result<Vec<(usize, LoftDrawingEdge)>, Error> {
-    project_with_limit(members, options, MAX_WORK)
+    project_with_limit(members, options, None, MAX_WORK).map(|result| result.edges)
+}
+
+/// The planar members must already be clipped to the same cut. Their
+/// retained planar faces and the exact loft trims then share visibility.
+pub fn project_loft_scene_section(
+    members: &[LoftSceneMember<'_>],
+    options: Options,
+    cut: LoftSceneCut,
+) -> Result<LoftSceneSection, Error> {
+    project_with_limit(members, options, Some(cut), MAX_WORK)
 }
 
 pub(super) fn project_with_limit(
     members: &[LoftSceneMember<'_>],
     options: Options,
+    cut: Option<LoftSceneCut>,
     limit: usize,
-) -> Result<Vec<(usize, LoftDrawingEdge)>, Error> {
+) -> Result<LoftSceneSection, Error> {
+    if cut.is_some_and(|cut| {
+        !cut.near.is_finite()
+            || cut
+                .far
+                .is_some_and(|far| !far.is_finite() || cut.near - far <= options.tolerance)
+            || cut
+                .windows
+                .into_iter()
+                .flatten()
+                .any(|[lo, hi]| !lo.is_finite() || !hi.is_finite() || hi - lo <= options.tolerance)
+    }) {
+        return Err(Error::Invalid);
+    }
+    let planes = cut.map(|cut| {
+        [
+            cut.windows[0],
+            cut.windows[1],
+            Some([cut.far.unwrap_or(f64::NEG_INFINITY), cut.near]),
+        ]
+    });
     let planar: Vec<_> = members
         .iter()
         .filter_map(|member| match member {
@@ -44,7 +90,7 @@ pub(super) fn project_with_limit(
         ProjectionError::Invalid => Error::Invalid,
         ProjectionError::Limit => Error::Limit,
     })?;
-    let planes = prepared.faces;
+    let planar_faces = prepared.faces;
     let mut lofts = Vec::new();
     let mut curves = Vec::new();
     let mut coordinate_scale = 1_f64;
@@ -72,12 +118,27 @@ pub(super) fn project_with_limit(
                     .fold(1., f64::max);
                 let epsilon = (64. * f64::EPSILON * scale).min(options.tolerance);
                 coordinate_scale = coordinate_scale.max(scale);
-                let mut edges = Vec::new();
+                let (clip, mut edges) = if let Some(planes) = planes {
+                    let Some((clip, edges)) = clip::prepare(
+                        body,
+                        &rings,
+                        (axes, offset),
+                        planes,
+                        options.tolerance,
+                        epsilon,
+                    ) else {
+                        continue;
+                    };
+                    (Some(clip), edges)
+                } else {
+                    (None, Vec::new())
+                };
                 let walls = visibility::loft_curves(&rings, epsilon, &mut edges);
                 lofts.push(ProjectedLoft {
                     source,
                     rings,
                     walls,
+                    clip,
                 });
                 curves.extend(edges.into_iter().map(|edge| (source, edge, true)));
             }
@@ -106,25 +167,30 @@ pub(super) fn project_with_limit(
     };
     charge(curves.len().saturating_mul(curves.len()))?;
     let wall_count: usize = lofts.iter().map(|loft| loft.walls.len()).sum();
-    let ray_cost = 3 * wall_count + planes.iter().map(|p| p.boundary_len()).sum::<usize>();
+    let ray_cost = 4 * wall_count + planar_faces.iter().map(|p| p.boundary_len()).sum::<usize>();
+    let near = cut.map_or(f64::INFINITY, |cut| cut.near);
     let blocked = |point| {
         charge(ray_cost)?;
-        Ok(planes
+        Ok(planar_faces
             .iter()
             .any(|face| face.covers(point, options.tolerance))
             || caps
                 .iter()
                 .flatten()
-                .any(|cap| cap.blocks(point, f64::INFINITY, options.tolerance))
+                .any(|cap| cap.blocks(point, near, options.tolerance))
             || lofts
                 .iter()
                 .flat_map(|loft| &loft.walls)
-                .any(|wall| wall.blocks(point, f64::INFINITY, options.tolerance)))
+                .any(|wall| wall.blocks(point, near, options.tolerance))
+            || lofts
+                .iter()
+                .filter_map(|loft| loft.clip.as_ref())
+                .any(|clip| clip.blocks(point, options.tolerance)))
     };
     let epsilon = (64. * f64::EPSILON * coordinate_scale).min(options.tolerance);
     let depth_events = |source, curve: Curve, bounds, cuts: &mut Vec<f64>| {
-        charge(planes.len() + 4 * wall_count)?;
-        for face in &planes {
+        charge(planar_faces.len() + 4 * wall_count)?;
+        for face in &planar_faces {
             curve.plane_crossings(face.point, face.normal, cuts);
         }
         for (loft, caps) in lofts
@@ -141,7 +207,7 @@ pub(super) fn project_with_limit(
         }
         Ok(())
     };
-    visibility::publish(
+    let edges = visibility::publish(
         curves,
         LoftProjection {
             axes: [[1., 0., 0.], [0., 1., 0.], [0., 0., 1.]],
@@ -154,8 +220,21 @@ pub(super) fn project_with_limit(
             edge_limit: options.segment_limit,
         },
         epsilon,
-        None,
+        planes,
         &blocked,
         &depth_events,
-    )
+    )?;
+    let mut visible = vec![false; members.len()];
+    for &(source, edge) in &edges {
+        visible[source] |= !edge.hidden;
+    }
+    let clipped_lofts = lofts
+        .iter()
+        .filter(|loft| visible[loft.source] && loft.clip.as_ref().is_some_and(|clip| clip.changed))
+        .map(|loft| loft.source)
+        .collect();
+    Ok(LoftSceneSection {
+        edges,
+        clipped_lofts,
+    })
 }

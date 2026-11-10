@@ -5,7 +5,9 @@ use crate::curved_projection::roots;
 mod clip;
 mod curve;
 mod scene;
-pub use scene::{LoftSceneMember, project_loft_scene};
+pub use scene::{
+    LoftSceneCut, LoftSceneMember, LoftSceneSection, project_loft_scene, project_loft_scene_section,
+};
 mod visibility;
 use curve::Curve;
 
@@ -106,7 +108,14 @@ impl NonplanarLoft {
         let planes = [options.windows[0], options.windows[1], options.depth];
         let mut cut_edges = Vec::new();
         let clip = if planes.iter().any(Option::is_some) {
-            let Some((clip, edges)) = clip::prepare(self, &rings, options, planes, epsilon) else {
+            let Some((clip, edges)) = clip::prepare(
+                self,
+                &rings,
+                (options.axes, [0.; 3]),
+                planes,
+                options.tolerance,
+                epsilon,
+            ) else {
                 return Ok(Vec::new());
             };
             cut_edges = edges;

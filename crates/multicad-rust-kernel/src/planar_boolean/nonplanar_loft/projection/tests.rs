@@ -396,7 +396,12 @@ fn scene_validates_members_and_rejects_unbounded_work() {
     );
     let box_body = rect([0., 0., 1., 1.], 0., 1.);
     assert_eq!(
-        super::scene::project_with_limit(&[LoftSceneMember::Planar(&box_body)], scene_options(), 1),
+        super::scene::project_with_limit(
+            &[LoftSceneMember::Planar(&box_body)],
+            scene_options(),
+            None,
+            1
+        ),
         Err(Error::Limit),
     );
     let before_depth_tests = box_body.edges.len().pow(2)
@@ -414,6 +419,7 @@ fn scene_validates_members_and_rejects_unbounded_work() {
             super::scene::project_with_limit(
                 &[LoftSceneMember::Planar(&box_body)],
                 scene_options(),
+                None,
                 before_depth_tests + remaining,
             ),
             Err(Error::Limit),
@@ -477,4 +483,81 @@ fn an_edge_crosses_the_wall_depth_inside_its_projected_boundary() {
             }), "{hidden} {expected:?}: {drawing:?}");
         }
     }
+}
+
+#[test]
+fn assembly_section_uses_one_cut_for_placed_lofts_and_clipped_planar_faces() {
+    use crate::planar_projection::tests::rect;
+    let loft = fixture();
+    let axes = [[1., 0., 0.], [0., 0.8, 0.6], [0., -0.6, 0.8]];
+    let u = [3.35, 5.5];
+    let v = [-2., 0.3];
+    let cut = LoftSceneCut {
+        near: 10.,
+        far: Some(8.2),
+        windows: [Some(u), Some(v)],
+    };
+    let stock = rect([3.35, -2., 4., 0.3], 8.2, 10.);
+    let members = [
+        LoftSceneMember::Loft {
+            body: &loft,
+            axes,
+            offset: [0., 0., 100.],
+        },
+        LoftSceneMember::Planar(&stock),
+        LoftSceneMember::Loft {
+            body: &loft,
+            axes,
+            offset: [4., -3., 7.],
+        },
+    ];
+    let section = project_loft_scene_section(&members, scene_options(), cut).unwrap();
+    assert_eq!(section.clipped_lofts, [2]);
+    assert!(
+        section
+            .edges
+            .iter()
+            .all(|&(source, _)| source == 1 || source == 2)
+    );
+    assert!(section.edges.iter().any(|&(source, edge)| source == 2
+        && !edge.hidden
+        && matches!(edge.curve, LoftSectionCurve::Quadratic { .. })));
+    assert!(
+        section
+            .edges
+            .iter()
+            .any(|&(source, edge)| source == 1 && !edge.hidden)
+    );
+    assert!(section.edges.iter().any(|&(_, edge)| edge.hidden));
+    for (_, edge) in section.edges {
+        for t in [0., 0.5, 1.] {
+            assert!(
+                point(edge.curve, t)
+                    .into_iter()
+                    .zip([u, v, [8.2, 10.]])
+                    .all(|(x, [lo, hi])| (lo - TOL..=hi + TOL).contains(&x))
+            );
+        }
+    }
+    let through =
+        project_loft_scene_section(&members, scene_options(), LoftSceneCut { far: None, ..cut })
+            .unwrap();
+    assert_eq!(through.clipped_lofts, [2]);
+    assert!(
+        through
+            .edges
+            .iter()
+            .any(|&(source, edge)| source == 2 && point(edge.curve, 0.)[2] < 8.2)
+    );
+    assert_eq!(
+        project_loft_scene_section(
+            &members,
+            scene_options(),
+            LoftSceneCut {
+                far: Some(11.),
+                ..cut
+            }
+        ),
+        Err(Error::Invalid)
+    );
 }

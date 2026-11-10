@@ -1,12 +1,14 @@
 //! Exact trim curves of an orthographic depth and window intersection.
 use super::*;
 
-type Limits = [Option<[f64; 2]>; 3];
+pub(super) type Limits = [Option<[f64; 2]>; 3];
 
 pub(super) struct Clip<'a> {
     loft: &'a NonplanarLoft,
     inverse: [Point; 3],
-    planes: Limits,
+    offset: Point,
+    pub(super) planes: Limits,
+    pub(super) changed: bool,
     front: Option<f64>,
 }
 
@@ -15,7 +17,9 @@ impl<'a> Clip<'a> {
         loft: &'a NonplanarLoft,
         [u, v, n]: [Point; 3],
         planes: Limits,
+        offset: Point,
         front: Option<f64>,
+        changed: bool,
     ) -> Self {
         let w = cross(u, v);
         let determinant = dot(w, n);
@@ -24,27 +28,15 @@ impl<'a> Clip<'a> {
         Self {
             loft,
             inverse,
+            offset,
             planes,
             front,
+            changed,
         }
     }
 
     pub(super) fn near(&self) -> f64 {
         self.planes[2].map_or(f64::INFINITY, |plane| plane[1])
-    }
-
-    pub(super) fn includes(&self, point: Point, epsilon: f64) -> bool {
-        self.planes.iter().zip(point).all(|(limit, coordinate)| {
-            limit.is_none_or(|[lo, hi]| (lo - epsilon..=hi + epsilon).contains(&coordinate))
-        })
-    }
-
-    pub(super) fn crossings(&self, curve: Curve, cuts: &mut Vec<f64>) {
-        for (axis, limits) in self.planes.iter().enumerate() {
-            for plane in limits.iter().flatten() {
-                cuts.extend(curve.crossings(axis, *plane));
-            }
-        }
     }
 
     pub(super) fn blocks(&self, point: Point, tolerance: f64) -> bool {
@@ -53,7 +45,8 @@ impl<'a> Clip<'a> {
         })
     }
 
-    fn inside_loft(&self, [u, v, z]: Point, tolerance: f64) -> bool {
+    fn inside_loft(&self, point: Point, tolerance: f64) -> bool {
+        let [u, v, z] = sub(point, self.offset);
         let [a, b, c] = self.inverse;
         let p = add(add(scale(a, u), scale(b, v)), scale(c, z));
         let [lower, upper] = self.loft.rings();
@@ -123,11 +116,28 @@ impl<'a> Clip<'a> {
     }
 }
 
+pub(super) fn includes(planes: Limits, point: Point, epsilon: f64) -> bool {
+    planes.iter().zip(point).all(|(limit, coordinate)| {
+        limit.is_none_or(|[lo, hi]| (lo - epsilon..=hi + epsilon).contains(&coordinate))
+    })
+}
+
+pub(super) fn crossings(planes: Limits, curve: Curve, cuts: &mut Vec<f64>) {
+    for (axis, limits) in planes.iter().enumerate() {
+        for &plane in limits.iter().flatten() {
+            if plane.is_finite() {
+                cuts.extend(curve.crossings(axis, plane));
+            }
+        }
+    }
+}
+
 pub(super) fn prepare<'a>(
     loft: &'a NonplanarLoft,
     rings: &[Vec<Point>; 2],
-    options: LoftProjection,
+    (axes, offset): ([Point; 3], Point),
     planes: Limits,
+    tolerance: f64,
     epsilon: f64,
 ) -> Option<(Clip<'a>, Vec<Curve>)> {
     let mut active = [None; 6];
@@ -147,22 +157,29 @@ pub(super) fn prepare<'a>(
             active[2 * axis + 1] = (hi < max - epsilon).then_some(hi);
         }
     }
-    let clip = Clip::new(loft, options.axes, planes, active[5]);
+    let clip = Clip::new(
+        loft,
+        axes,
+        planes,
+        offset,
+        active[5],
+        active.iter().any(Option::is_some),
+    );
     let mut edges = Vec::new();
     for (i, plane) in active.into_iter().enumerate() {
         let Some(value) = plane else { continue };
         let axis = i / 2;
-        let normal = options.axes[axis];
+        let normal = axes[axis];
         let magnitude = norm(normal);
         let project = |p| {
-            let mut p = options.axes.map(|axis| dot(axis, p));
+            let mut p = add(axes.map(|axis| dot(axis, p)), offset);
             p[axis] = value;
             p
         };
         let rim = loft.section_in_frame(
-            scale(normal, value / (magnitude * magnitude)),
+            scale(normal, (value - offset[axis]) / (magnitude * magnitude)),
             scale(normal, magnitude.recip()),
-            options.tolerance,
+            tolerance,
         );
         let rim = rim.into_iter().map(|curve| match curve {
             LoftSectionCurve::Line(ends) => {
@@ -197,7 +214,14 @@ mod tests {
         let square = [[-1., -1.], [1., -1.], [1., 1.], [-1., 1.]];
         let loft = NonplanarLoft::new([&square, &square], 6., 1e-7).unwrap();
         let axes = [[1., 0., 0.], [0., 0.8, 0.6], [0., -0.6, 0.8]];
-        let clip = Clip::new(&loft, axes, [None, None, Some([1.2, 3.])], Some(3.));
+        let clip = Clip::new(
+            &loft,
+            axes,
+            [None, None, Some([1.2, 3.])],
+            [0.; 3],
+            Some(3.),
+            true,
+        );
         assert!(clip.blocks([0., 2., 1.2], 1e-7));
         assert!(!clip.blocks([0., 7., 1.2], 1e-7));
     }
@@ -212,7 +236,9 @@ mod tests {
             &loft,
             axes,
             [Some([-0.8, 0.5]), None, Some([1., 3.])],
+            [0.; 3],
             Some(3.),
+            true,
         );
         let near = square.map(|[x, y]| [x + 0.2, y, 3.]);
         let rim = std::array::from_fn::<_, 4, _>(|i| Curve::line(near[i], near[(i + 1) % 4]));
