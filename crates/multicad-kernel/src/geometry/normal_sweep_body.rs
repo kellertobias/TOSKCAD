@@ -4,7 +4,9 @@ use crate::{
     CurvedEdge2d, CurvedProfile,
     rust_prism_topology::{Builder, position},
 };
-use multicad_core::references::{AnalyticGeometry, ReferenceFrame, TopologySnapshot};
+use multicad_core::references::{
+    AnalyticGeometry, AnchoredFrame, ReferenceFrame, TopologySnapshot,
+};
 use multicad_rust_kernel::normal_sweep::{self, Edge, Sweep};
 use std::{collections::BTreeSet, f64::consts::TAU};
 
@@ -19,6 +21,7 @@ pub(crate) struct NormalSweepBody {
     sides: Vec<Side>,
     rings: Vec<std::ops::Range<usize>>,
     openings: Option<Rc<piercing::Openings>>,
+    path_origin: Option<Origin>,
 }
 
 #[derive(Clone)]
@@ -38,6 +41,24 @@ impl Solid {
         signed_height_mm: f64,
         feature: EntityId,
         origins: &[Origin],
+        policy: GeometryPolicy,
+    ) -> Result<Self, GeometryError> {
+        Self::rust_extrude_normal_profile_with_path(
+            profile,
+            signed_height_mm,
+            feature,
+            origins,
+            None,
+            policy,
+        )
+    }
+
+    pub(crate) fn rust_extrude_normal_profile_with_path(
+        profile: &CurvedProfile,
+        signed_height_mm: f64,
+        feature: EntityId,
+        origins: &[Origin],
+        path_origin: Option<Origin>,
         policy: GeometryPolicy,
     ) -> Result<Self, GeometryError> {
         policy.validate()?;
@@ -121,6 +142,7 @@ impl Solid {
             sides,
             rings: ranges,
             openings: None,
+            path_origin,
         };
         let bounds = body.bounds(profile.frame);
         policy.point(bounds.min)?;
@@ -353,6 +375,16 @@ impl NormalSweepBody {
         owner: EntityId,
         revision: u64,
     ) -> TopologySnapshot {
+        let side_origins = |origin: &Origin| {
+            [
+                Origin {
+                    source: self.feature,
+                    role: format!("side/{}/{}", origin.source, origin.role),
+                },
+                origin.clone(),
+            ]
+        };
+        let path_origins = self.path_origin.as_ref().map(side_origins);
         let origins = ["cap.start", "cap.end"]
             .into_iter()
             .map(|role| {
@@ -362,13 +394,10 @@ impl NormalSweepBody {
                 }]
             })
             .chain(self.sides.iter().map(|side| {
-                vec![
-                    Origin {
-                        source: self.feature,
-                        role: format!("side/{}/{}", side.origin.source, side.origin.role),
-                    },
-                    side.origin.clone(),
-                ]
+                side_origins(&side.origin)
+                    .into_iter()
+                    .chain(path_origins.iter().flatten().cloned())
+                    .collect()
             }))
             .chain(self.cut_face_origins())
             .collect();
@@ -416,10 +445,25 @@ impl NormalSweepBody {
             );
         }
         self.append_cut_topology(frame, &mut build);
+        let mut elements = build.into_elements();
+        if let Some(origins) = path_origins {
+            for element in &mut elements {
+                if element.origins.contains(&origins[0])
+                    && let Some(AnalyticGeometry::Plane { frame }) = element.geometry
+                {
+                    element.frames.extend(
+                        origins
+                            .iter()
+                            .cloned()
+                            .map(|origin| AnchoredFrame { origin, frame }),
+                    );
+                }
+            }
+        }
         TopologySnapshot {
             owner,
             revision,
-            elements: build.into_elements(),
+            elements,
         }
     }
 }

@@ -1,5 +1,5 @@
 //! Exact advanced geometry from canonical selection and bound source parameters.
-use crate::{ModelError, error};
+use crate::{GeometryBackend, ModelError, error};
 use multicad_core::{
     document::EntityId,
     model::{self, AdvancedDefinition, ResolvedAdvanced},
@@ -19,6 +19,7 @@ pub(crate) struct ProfileInputs {
     pub path: Option<Path>,
 }
 pub(crate) struct Inputs<'a> {
+    pub backend: GeometryBackend,
     pub revision: u64,
     pub parameters: &'a EvaluatedParameters,
     pub solids: &'a BTreeMap<EntityId, Solid>,
@@ -53,7 +54,11 @@ pub(crate) fn build(
             .path
             .as_ref()
             .ok_or_else(|| error(Some(feature), "Sweep path is unavailable"))?;
-        return Solid::sweep_polyline_named(
+        let sweep = match inputs.backend {
+            GeometryBackend::Rust => Solid::rust_sweep_straight_named,
+            GeometryBackend::OpenCascade => Solid::sweep_polyline_named,
+        };
+        return sweep(
             profile,
             points,
             feature,

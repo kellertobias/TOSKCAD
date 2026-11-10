@@ -4,6 +4,7 @@ use multicad_core::{
     constraint_sketch::{ConstraintKind, Curve, CurveKind, source::Source},
     document::{EntityData, EntityId, Mutation},
     model::{self, *},
+    project_file::{self, ProjectFile},
     sketch::Datum,
     sketch_regions,
 };
@@ -100,6 +101,74 @@ fn path(session: &mut Session) -> SketchPathSource {
         curves: vec![line],
     }
 }
+fn check_saved_rust_sweep(session: &mut Session, request: &AdvancedRequest, volume: f64) {
+    use multicad_model::{Compiler, GeometryBackend};
+    let compiler = Compiler {
+        omit_display: true,
+        ..Default::default()
+    };
+    let evaluate = |document, revision| {
+        compiler
+            .compile_sources_with_backend(
+                document,
+                revision,
+                &[request.body],
+                GeometryBackend::Rust,
+                None,
+            )
+            .unwrap()
+    };
+    let revision = session.revision();
+    let before = session.document().clone();
+    let model = evaluate(&before, revision);
+    let solid = model.solid(request.body).unwrap();
+    assert!(solid.uses_rust_geometry());
+    near(solid.volume_mm3().unwrap(), volume);
+    assert_eq!(solid.solid_count().unwrap(), 1);
+    assert!(
+        !solid
+            .manufacturing_mesh_with_receipt(Default::default())
+            .unwrap()
+            .mesh
+            .indices
+            .is_empty()
+    );
+    let folder = tempfile::tempdir().unwrap();
+    let step = folder.path().join("swept.step");
+    solid.write_step(&step).unwrap();
+    let imported = multicad_kernel::Solid::import_rust_step(
+        &std::fs::read_to_string(step).unwrap(),
+        request.feature,
+        Default::default(),
+    )
+    .unwrap();
+    near(imported.volume_mm3().unwrap(), volume);
+
+    let mut bytes = Vec::new();
+    project_file::write(
+        &ProjectFile::new(before.clone()).unwrap(),
+        &mut bytes,
+        Default::default(),
+    )
+    .unwrap();
+    let opened = project_file::read(
+        &mut bytes.as_slice(),
+        Default::default(),
+        &project_file::supported_capabilities(),
+    )
+    .unwrap();
+    assert_eq!(opened.project.document, before);
+    let restored = evaluate(&opened.project.document, revision);
+    near(
+        restored.solid(request.body).unwrap().volume_mm3().unwrap(),
+        volume,
+    );
+    assert!(restored.snapshot().references.all_resolved());
+    session.undo(revision, actor()).unwrap();
+    session.redo(session.revision(), actor()).unwrap();
+    assert_eq!(session.document(), &before);
+}
+
 #[test]
 fn sweep_rebuilds_solved_profile_and_ordered_path_without_display_geometry() {
     let (mut session, _) = fixture();
@@ -112,10 +181,10 @@ fn sweep_rebuilds_solved_profile_and_ordered_path_without_display_geometry() {
         Some(path),
     );
     commit(&mut session, &request);
-    persist_and_check(&mut session, request.body, PI * 4. * 40., 1);
+    check_saved_rust_sweep(&mut session, &request, PI * 4. * 40.);
     apply_parameter(&mut session, "pitch", "50");
     apply_parameter(&mut session, "wall", "3");
-    persist_and_check(&mut session, request.body, PI * 9. * 50., 1);
+    check_saved_rust_sweep(&mut session, &request, PI * 9. * 50.);
     let source = model::read_advanced(session.document(), request.feature)
         .unwrap()
         .0;
@@ -162,7 +231,13 @@ fn an_existing_sweep_rejects_a_path_changed_to_construction_without_source_mutat
         Some(path)
     );
     let failure = multicad_model::Compiler::default()
-        .compile(&candidate, revision)
+        .compile_sources_with_backend(
+            &candidate,
+            revision,
+            &[request.body],
+            multicad_model::GeometryBackend::Rust,
+            None,
+        )
         .err()
         .unwrap();
     assert_eq!(failure.entity, Some(request.feature));

@@ -1510,7 +1510,8 @@ impl Compiler {
                     if backend == GeometryBackend::Rust
                         && !matches!(
                             source.parameters,
-                            model::AdvancedParameters::LinearPattern(_)
+                            model::AdvancedParameters::Sweep(_)
+                                | model::AdvancedParameters::LinearPattern(_)
                                 | model::AdvancedParameters::CircularPattern(
                                     model::CircularPatternParameters { merge: false, .. }
                                 )
@@ -1518,13 +1519,14 @@ impl Compiler {
                     {
                         return Err(error(
                             Some(id),
-                            "Rust advanced operations currently require a linear pattern or a separate-member circular pattern",
+                            "Rust advanced operations currently support straight sweeps, linear patterns and separate-member circular patterns",
                         ));
                     }
                     let selected =
                         profiles.advanced(&source, id, &solids, &topologies, interrupt)?;
                     crate::advanced::build(
                         crate::advanced::Inputs {
+                            backend,
                             revision,
                             parameters: context.parameters(),
                             solids: &solids,
