@@ -380,25 +380,26 @@ impl Builder {
                     let (bottom, top) = (bottom?, top?);
                     end_loops[0].push(bottom);
                     end_loops[1].push(top);
-                    if !omit {
-                        let rail = |p| [0., height].map(|level| frame.point(p, level));
-                        let end = self.edge(rail(b), Curve::Line)?;
-                        let start = self.edge(rail(a), Curve::Line)?;
-                        let mut boundary = vec![bottom, end, reverse(top), reverse(start)];
-                        if reversed {
-                            reverse_loop(&mut boundary);
-                            boundary.rotate_right(1);
-                        }
-                        self.faces.push(Face {
-                            boundary,
-                            holes: vec![],
-                            support: side_support(arc, frame, reversed),
-                            point_mm: frame.point(a, 0.),
-                            area_mm2: arc.length_mm() * height / parts as f64,
-                            source: 0,
-                            source_face: source,
-                        });
+                    if omit {
+                        continue;
                     }
+                    let rail = |p| [0., height].map(|level| frame.point(p, level));
+                    let end = self.edge(rail(b), Curve::Line)?;
+                    let start = self.edge(rail(a), Curve::Line)?;
+                    let mut boundary = vec![bottom, end, reverse(top), reverse(start)];
+                    if reversed {
+                        reverse_loop(&mut boundary);
+                        boundary.rotate_right(1);
+                    }
+                    self.faces.push(Face {
+                        boundary,
+                        holes: vec![],
+                        support: side_support(arc, frame, reversed),
+                        point_mm: frame.point(a, 0.),
+                        area_mm2: arc.length_mm() * height / parts as f64,
+                        source: 0,
+                        source_face: source,
+                    });
                 }
             }
         }
@@ -541,16 +542,14 @@ fn segments(edge: ProfileEdge) -> impl Iterator<Item = ProfileEdge> {
         clockwise,
     } = edge
     {
-        let mut points =
+        let points =
             [[r, 0.], [0., r], [-r, 0.], [0., -r]].map(|[x, y]| [center[0] + x, center[1] + y]);
-        if clockwise {
-            points[1..].reverse();
-        }
+        let step = if clockwise { 3 } else { 1 };
         std::array::from_fn(|i| {
             Some(ProfileEdge::Arc {
                 center,
-                a: points[i],
-                b: points[(i + 1) % 4],
+                a: points[(i * step) % 4],
+                b: points[((i + 1) * step) % 4],
                 clockwise,
             })
         })
@@ -627,6 +626,55 @@ mod tests {
 
     fn line(a: [f64; 2], b: [f64; 2]) -> ProfileEdge {
         ProfileEdge::Line { a, b }
+    }
+
+    #[test]
+    fn circular_trim_outside_the_coordinate_envelope_refuses_the_sweep() {
+        let frame = SweepFrame {
+            origin: [0., 0., 1e12],
+            u: [1., 0., 0.],
+            v: [0., 1., 0.],
+            direction: [0., 0., 1.],
+        };
+        let arc = ProfileEdge::Arc {
+            center: [0.; 2],
+            a: [1., 0.],
+            b: [0., 1.],
+            clockwise: false,
+        };
+        let mut builder = Builder::new(TOL);
+        assert_eq!(
+            builder.sweep_ring(std::iter::once((arc, 0, false)), frame, 1.),
+            Err(Error::Invalid)
+        );
+    }
+
+    #[test]
+    fn sweep_ring_keeps_both_caps_when_a_join_consumes_the_side() {
+        let arc = ProfileEdge::Arc {
+            center: [0.; 2],
+            a: [2., 0.],
+            b: [-2., 0.],
+            clockwise: false,
+        };
+        for direction in [-1., 1.] {
+            let frame = SweepFrame {
+                origin: [0.; 3],
+                u: [1., 0., 0.],
+                v: [0., 1., 0.],
+                direction: [0., 0., direction],
+            };
+            for (split, omit, count) in [(false, false, 1), (true, false, 2), (true, true, 2)] {
+                let mut builder = Builder::new(TOL);
+                builder.split_long_arcs = split;
+                let caps = builder
+                    .sweep_ring(std::iter::once((arc, 17, omit)), frame, 1.)
+                    .unwrap();
+                assert_eq!(caps.map(|cap| cap.len()), [count; 2]);
+                assert_eq!(builder.faces.len(), if omit { 0 } else { count });
+                assert!(builder.faces.iter().all(|face| face.source_face == 17));
+            }
+        }
     }
 
     fn web() -> Vec<SheetWebEdge> {
