@@ -398,3 +398,79 @@ fn oblique_bore_accepts_a_seated_pin_and_rejects_a_gap_or_offset() {
         assert!(error.message.contains("another body may enter the cavity"));
     }
 }
+
+#[test]
+fn hidden_polygon_stock_keeps_a_through_aperture_transparent() {
+    use multicad_rust_kernel::polygon::PolygonPrism;
+
+    let policy = GeometryPolicy::default();
+    let rational = |n| Rational::new(n, 1).unwrap();
+    let ring = [[0, 0], [20, 0], [18, 20], [2, 20]].map(|p| p.map(rational));
+    let bore = Circle::new([rational(10); 2], rational(2)).unwrap();
+    let origins = [0; 5].map(|_| Origin {
+        source: EntityId::new(),
+        role: "profile edge".into(),
+    });
+    let plate = |reverse| {
+        Solid::from_polygon_prism_sweep(
+            PolygonPrism::with_circular_holes(vec![ring.to_vec()], vec![bore], rational(4))
+                .unwrap(),
+            PlaneFrame {
+                origin: [0., 0., if reverse { 4. } else { 0. }],
+                ..Default::default()
+            },
+            reverse,
+            EntityId::new(),
+            &origins,
+            &[false; 5],
+            policy,
+        )
+        .unwrap()
+    };
+    let rear = block([9.5, 9.5, -2.], [1; 3]);
+    let cover = block([7., 7., 7.], [6; 3]);
+    let options = DrawingProjection {
+        hidden_lines: true,
+        ..Default::default()
+    };
+    let draw = |solids: &[&Solid], options| {
+        let inputs: Vec<_> = solids
+            .iter()
+            .map(|&solid| DrawingSolid { solid, hatch: None })
+            .collect();
+        project_drawing(&inputs, options)
+    };
+    for reverse in [false, true] {
+        let plate = plate(reverse);
+        let visible = draw(&[&plate, &rear], options).unwrap();
+        assert_eq!(
+            visible
+                .iter()
+                .filter(|v| v.source_index == 1 && v.role == VectorRole::Visible)
+                .count(),
+            4
+        );
+        assert!(visible.iter().any(|v| v.source_index == 0
+            && v.role == VectorRole::Hidden
+            && matches!(v.curve, VectorCurve::Ellipse { major_mm: 2., .. })));
+
+        let obscured = draw(&[&plate, &rear, &cover], options).unwrap();
+        assert!(
+            obscured
+                .iter()
+                .all(|v| v.source_index != 1 || v.role == VectorRole::Hidden)
+        );
+
+        let a = std::f64::consts::FRAC_1_SQRT_2;
+        let oblique = DrawingProjection {
+            frame: PlaneFrame {
+                v: [0., a, a],
+                ..Default::default()
+            },
+            ..options
+        };
+        let error = draw(&[&plate], oblique).unwrap_err();
+        assert_eq!(error.kind, GeometryErrorKind::Unsupported);
+        assert!(error.message.contains("face-on or edge-on cuts"));
+    }
+}

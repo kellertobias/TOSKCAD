@@ -31,7 +31,23 @@ pub struct LineCandidate {
     pub points: [Point; 2],
 }
 
-/// A certified blind circular cavity aligned with the viewing direction.
+/// A certified physical edge already hidden by the owning solid.
+#[derive(Clone, Copy, Debug)]
+pub enum HiddenCandidate {
+    Line(LineCandidate),
+    Rim(RimCandidate),
+}
+
+/// End condition of a certified circular cut.
+#[derive(Clone, Copy, Debug)]
+pub enum CircularOpeningEnd {
+    /// Depth of the blind floor.
+    Floor(f64),
+    /// Opposing face ordinal of a through bore on the same stock.
+    OppositeFace(usize),
+}
+
+/// A certified circular aperture aligned with the viewing direction.
 #[derive(Clone, Copy, Debug)]
 pub struct FaceOpening {
     /// Index in the drawing bodies followed by the blocker-only bodies.
@@ -40,7 +56,7 @@ pub struct FaceOpening {
     pub face: usize,
     pub center: Point2,
     pub radius: f64,
-    pub floor_depth: f64,
+    pub end: CircularOpeningEnd,
 }
 
 /// A certified blind rounded-slot cavity aligned with the viewing direction.
@@ -61,6 +77,7 @@ pub struct SceneExtras<'a> {
     pub rims: &'a [RimCandidate],
     pub spatial_rims: &'a [SpatialRimCandidate],
     pub lines: &'a [LineCandidate],
+    pub intrinsic_hidden: &'a [HiddenCandidate],
     pub blocker_bodies: &'a [Body],
     pub blocker_rounds: &'a [RoundOccluder],
     pub openings: &'a [FaceOpening],
@@ -156,7 +173,7 @@ pub(super) fn apply_openings(
         Ok((
             opening.body,
             opening.face,
-            opening.floor_depth,
+            opening.end,
             ProfileTrim::Circle {
                 center: opening.center,
                 radius: opening.radius,
@@ -169,13 +186,13 @@ pub(super) fn apply_openings(
         Ok((
             opening.body,
             opening.face,
-            opening.floor_depth,
+            CircularOpeningEnd::Floor(opening.floor_depth),
             ProfileTrim::Stadium(profile),
         ))
     });
     let mut floors = Vec::with_capacity(count);
     for opening in circles.chain(stadiums) {
-        let (body, face_index, depth, profile) = opening?;
+        let (body, face_index, end, profile) = opening?;
         let centers = profile.centers();
         let r = profile.radius();
         let &(stock, offset) = stocks.get(body).ok_or(ProjectionError::Invalid)?;
@@ -185,47 +202,75 @@ pub(super) fn apply_openings(
             .ok_or(ProjectionError::Invalid)?;
         if face.normal[2] <= 0.
             || face.normal[0].hypot(face.normal[1]) > 32. * f64::EPSILON
-            || !bounded(centers.into_iter().flatten().chain([depth]))
+            || !bounded(centers.into_iter().flatten())
             || !radius(r)
-            || depth >= face.point[2] - work.tolerance
         {
             return Err(ProjectionError::Invalid);
         }
-        let id = offset + face_index;
-        let index = planes
-            .binary_search_by_key(&id, |plane| plane.id)
-            .map_err(|_| ProjectionError::Invalid)?;
-        let plane = &mut planes[index];
-        work.charge(plane.boundary.len() + plane.profiles.len() + stock.edges.len())?;
-        let stock_back = stock
-            .edges
-            .iter()
-            .flatten()
-            .map(|point| point[2])
-            .fold(f64::INFINITY, f64::min);
-        if depth <= stock_back + work.tolerance
-            || !plane.contains(centers[0], work.tolerance)
-            || plane
-                .boundary
-                .iter()
-                .any(|&edge| segments_distance(centers, edge) <= r + work.tolerance)
-            || plane.profiles.iter().any(|&other| {
-                segments_distance(centers, other.centers()) <= other.radius() + r + work.tolerance
-            })
-        {
-            return Err(ProjectionError::Invalid);
+        trim_plane(planes, offset + face_index, profile, work)?;
+        let near = face.point[2] - work.tolerance;
+        match end {
+            CircularOpeningEnd::Floor(depth) => {
+                work.charge(stock.edges.len())?;
+                let stock_back = stock
+                    .edges
+                    .iter()
+                    .flatten()
+                    .map(|point| point[2])
+                    .fold(f64::INFINITY, f64::min);
+                if !bounded([depth]) || depth >= near || depth <= stock_back + work.tolerance {
+                    return Err(ProjectionError::Invalid);
+                }
+                let [u, v] = centers[0];
+                floors.push(TrimmedPlane {
+                    id: 0,
+                    point: [u, v, depth],
+                    normal: [0., 0., 1.],
+                    boundary: Vec::new(),
+                    profiles: vec![profile],
+                    bounds: profile.bounds(depth),
+                });
+            }
+            CircularOpeningEnd::OppositeFace(rear) => {
+                let face = stock.faces.get(rear).ok_or(ProjectionError::Invalid)?;
+                if face.normal[2] >= 0.
+                    || face.normal[0].hypot(face.normal[1]) > 32. * f64::EPSILON
+                    || face.point[2] >= near
+                {
+                    return Err(ProjectionError::Invalid);
+                }
+                trim_plane(planes, offset + rear, profile, work)?;
+            }
         }
-        plane.profiles.push(profile);
-        let [u, v] = centers[0];
-        floors.push(TrimmedPlane {
-            id: 0,
-            point: [u, v, depth],
-            normal: [0., 0., 1.],
-            boundary: Vec::new(),
-            profiles: vec![profile],
-            bounds: profile.bounds(depth),
-        });
     }
     planes.extend(floors);
+    Ok(())
+}
+
+fn trim_plane(
+    planes: &mut [TrimmedPlane],
+    id: usize,
+    profile: ProfileTrim,
+    work: &mut Work,
+) -> Result<(), ProjectionError> {
+    let index = planes
+        .binary_search_by_key(&id, |plane| plane.id)
+        .map_err(|_| ProjectionError::Invalid)?;
+    let plane = &mut planes[index];
+    work.charge(plane.boundary.len() + plane.profiles.len())?;
+    let centers = profile.centers();
+    let radius = profile.radius();
+    if !plane.contains(centers[0], work.tolerance)
+        || plane
+            .boundary
+            .iter()
+            .any(|&edge| segments_distance(centers, edge) <= radius + work.tolerance)
+        || plane.profiles.iter().any(|&other| {
+            segments_distance(centers, other.centers()) <= other.radius() + radius + work.tolerance
+        })
+    {
+        return Err(ProjectionError::Invalid);
+    }
+    plane.profiles.push(profile);
     Ok(())
 }

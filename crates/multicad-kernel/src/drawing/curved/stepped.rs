@@ -7,23 +7,16 @@ pub(super) fn rounds(
     owner: usize,
     options: DrawingProjection,
 ) -> Result<Option<Vec<RoundOccluder>>, GeometryError> {
-    let (bands, placement) = if let Some((body, placement)) = solid.revolution_body() {
-        let [ring] = body.geometry.rings() else {
-            return Ok(None);
-        };
-        if !body.geometry.is_full() {
-            return Ok(None);
-        }
-        (axial_bands(ring, options.tangent_edges), placement)
-    } else if let Some((body, placement)) = solid.cosmetic_fastener_body() {
-        let bands = body
-            .circular_meridian()
-            .and_then(|ring| axial_bands(&ring, options.tangent_edges));
-        (bands, placement)
-    } else {
+    let Some((body, placement)) = solid.revolution_body() else {
         return Ok(None);
     };
-    let Some(bands) = bands else {
+    let [ring] = body.geometry.rings() else {
+        return Ok(None);
+    };
+    if !body.geometry.is_full() {
+        return Ok(None);
+    }
+    let Some(bands) = axial_bands(ring, options.tangent_edges) else {
         return Ok(None);
     };
     let screen = planar::view_axes(options.frame);

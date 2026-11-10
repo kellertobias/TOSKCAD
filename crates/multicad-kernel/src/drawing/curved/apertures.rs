@@ -235,6 +235,7 @@ impl<'a> Scene<'a> {
             rims,
             spatial_rims,
             openings: Vec::new(),
+            intrinsic_hidden: Vec::new(),
         })
     }
 

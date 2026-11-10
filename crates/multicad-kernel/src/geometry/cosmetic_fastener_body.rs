@@ -139,19 +139,39 @@ fn reference_frame(surface: &Surface, facet: usize, frame: PlaneFrame) -> Option
 }
 
 impl CosmeticFastenerBody {
-    pub(crate) fn circular_meridian(&self) -> Option<Vec<[f64; 2]>> {
-        self.geometry
+    pub(crate) fn straight_hex_bore(&self) -> Option<[f64; 4]> {
+        let rings: Vec<_> = self
+            .geometry
             .surfaces()
-            .map(|surface| {
-                let ring = surface.rings[0];
-                let radius = match ring.section {
-                    Section::Pole => 0.,
-                    Section::Circle(radius) => radius,
-                    Section::Hexagon(_) => return None,
-                };
-                Some([radius, ring.z])
-            })
-            .collect()
+            .map(|surface| surface.rings[0])
+            .collect();
+        let [
+            Ring {
+                section: Section::Circle(bore),
+                z: low,
+            },
+            Ring {
+                section: Section::Hexagon(width),
+                z: lower,
+            },
+            Ring {
+                section: Section::Hexagon(upper_width),
+                z: upper,
+            },
+            Ring {
+                section: Section::Circle(end_bore),
+                z: high,
+            },
+        ] = rings.as_slice()
+        else {
+            return None;
+        };
+        (*low == *lower
+            && *high == *upper
+            && *high > *low
+            && width == upper_width
+            && bore == end_bore)
+            .then_some([*width, *bore, *low, *high])
     }
 
     pub(super) fn bounds(&self, frame: PlaneFrame) -> Bounds {

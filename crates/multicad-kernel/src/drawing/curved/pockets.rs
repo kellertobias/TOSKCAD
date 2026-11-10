@@ -1,15 +1,18 @@
 //! Transfer exact circular blind opening trims and visible floors into the drawing scene.
 use super::*;
-use multicad_rust_kernel::planar_projection::{FaceOpening, RimCandidate, SpatialRimCandidate};
+use multicad_rust_kernel::planar_projection::{
+    CircularOpeningEnd, FaceOpening, HiddenCandidate, RimCandidate, SpatialRimCandidate,
+};
 use std::f64::consts::TAU;
 
 const DIRECTION_TOLERANCE: f64 = 32. * f64::EPSILON;
 
-pub(super) struct Stock {
-    pub solid: Solid,
+pub(super) struct Stock<T = Solid> {
+    pub solid: T,
     pub rims: Vec<RimCandidate>,
     pub spatial_rims: Vec<SpatialRimCandidate>,
     pub openings: Vec<FaceOpening>,
+    pub intrinsic_hidden: Vec<HiddenCandidate>,
 }
 
 pub(super) fn has_machined_stock(solid: &Solid) -> bool {
@@ -34,6 +37,7 @@ pub(super) fn stock(
             rims: Vec::new(),
             spatial_rims: Vec::new(),
             openings: Vec::new(),
+            intrinsic_hidden: Vec::new(),
         }));
     }
     let Some((solid, openings, slots)) = solid.drawing_machined_stock() else {
@@ -44,6 +48,7 @@ pub(super) fn stock(
         rims: Vec::with_capacity(openings.len()),
         spatial_rims: Vec::new(),
         openings: Vec::with_capacity(openings.len()),
+        intrinsic_hidden: Vec::new(),
     };
     for slot in slots {
         if dot(view[2], slot.normal) > DIRECTION_TOLERANCE
@@ -94,7 +99,7 @@ pub(super) fn stock(
             face: opening.face,
             center,
             radius: opening.radius,
-            floor_depth: depth - opening.depth,
+            end: CircularOpeningEnd::Floor(depth - opening.depth),
         });
         result.rims.push(RimCandidate {
             source,

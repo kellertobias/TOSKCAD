@@ -346,7 +346,7 @@ impl<'a> Scene<'a> {
                         face,
                         center,
                         radius,
-                        floor_depth,
+                        end: planar_projection::CircularOpeningEnd::Floor(floor_depth),
                     });
                     rims.push(RimCandidate {
                         source,
@@ -412,6 +412,7 @@ impl<'a> Scene<'a> {
                 blocker_rounds: &self.rounded.rounds,
                 openings: &circles,
                 stadium_openings: &slots,
+                intrinsic_hidden: &[],
             },
             planar_projection::Options {
                 tolerance,

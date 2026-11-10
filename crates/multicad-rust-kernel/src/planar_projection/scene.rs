@@ -9,7 +9,8 @@ use crate::{
 mod candidates;
 use candidates::apply_openings;
 pub use candidates::{
-    FaceOpening, LineCandidate, RimCandidate, SceneExtras, SpatialRimCandidate, StadiumOpening,
+    CircularOpeningEnd, FaceOpening, HiddenCandidate, LineCandidate, RimCandidate, SceneExtras,
+    SpatialRimCandidate, StadiumOpening,
 };
 use std::f64::consts::PI;
 
@@ -83,7 +84,8 @@ fn project_with_extras(
         None if rounds.is_empty()
             && extras.lines.is_empty()
             && extras.rims.is_empty()
-            && extras.spatial_rims.is_empty() =>
+            && extras.spatial_rims.is_empty()
+            && extras.intrinsic_hidden.is_empty() =>
         {
             return Err(ProjectionError::Invalid);
         }
@@ -140,7 +142,7 @@ fn project_with_extras(
             limit,
             edges: &mut supplied,
         };
-        scene.supplied_rim(candidate.spatial()?, detail, &mut output, &mut work)?;
+        scene.supplied_rim(candidate.spatial()?, false, detail, &mut output, &mut work)?;
     }
     for &candidate in extras.spatial_rims {
         work.charge(1)?;
@@ -150,7 +152,36 @@ fn project_with_extras(
             limit,
             edges: &mut supplied,
         };
-        scene.supplied_rim(candidate.spatial()?, detail, &mut output, &mut work)?;
+        scene.supplied_rim(candidate.spatial()?, false, detail, &mut output, &mut work)?;
+    }
+    if options.hidden_lines {
+        for &candidate in extras.intrinsic_hidden {
+            work.charge(1)?;
+            let source = match candidate {
+                HiddenCandidate::Line(line) => line.source,
+                HiddenCandidate::Rim(rim) => rim.source,
+            };
+            let mut output = Output {
+                source,
+                own_round: None,
+                limit,
+                edges: &mut supplied,
+            };
+            match candidate {
+                HiddenCandidate::Line(line) => scene.edge(
+                    SpatialEdge {
+                        hidden: true,
+                        curve: line.spatial()?,
+                    },
+                    options.detail,
+                    &mut output,
+                    &mut work,
+                )?,
+                HiddenCandidate::Rim(rim) => {
+                    scene.supplied_rim(rim.spatial()?, true, detail, &mut output, &mut work)?;
+                }
+            }
+        }
     }
     Ok((straight, curved, supplied))
 }
@@ -173,6 +204,7 @@ impl Scene<'_> {
     fn supplied_rim(
         &self,
         mut rim: Rim,
+        hidden: bool,
         detail: Option<Detail>,
         output: &mut Output<'_>,
         work: &mut Work,
@@ -191,7 +223,7 @@ impl Scene<'_> {
                 rim.ellipse.trim = trim;
                 self.edge(
                     SpatialEdge {
-                        hidden: false,
+                        hidden,
                         curve: SpatialCurve::Rim(rim),
                     },
                     None,

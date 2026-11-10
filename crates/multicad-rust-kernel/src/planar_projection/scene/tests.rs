@@ -388,7 +388,7 @@ fn exact_cavity_removes_the_mouth_disk_but_its_floor_still_occludes() {
         face: 5,
         center: [0.; 2],
         radius: 2.,
-        floor_depth: 2.,
+        end: CircularOpeningEnd::Floor(2.),
     };
     let rims = [
         supplied_rim(20, [0.; 2], 1., 3.),
@@ -446,7 +446,7 @@ fn separate_foreground_hinge_arm_can_cover_a_certified_cavity_rim() {
         face: 5,
         center: [0.; 2],
         radius: 2.,
-        floor_depth: 2.,
+        end: CircularOpeningEnd::Floor(2.),
     };
     let rims = [
         supplied_rim(20, [0.; 2], 2., 5.),
@@ -601,7 +601,7 @@ fn cavity_openings_must_fit_the_selected_face_and_leave_a_floor() {
         face: 5,
         center: [0.; 2],
         radius: 2.,
-        floor_depth: 2.,
+        end: CircularOpeningEnd::Floor(2.),
     };
     let project = |openings: &[FaceOpening]| {
         project_scene_with_candidates(
@@ -619,11 +619,19 @@ fn cavity_openings_must_fit_the_selected_face_and_leave_a_floor() {
         FaceOpening { face: 6, ..opening },
         FaceOpening { face: 0, ..opening },
         FaceOpening {
-            floor_depth: 5.,
+            end: CircularOpeningEnd::OppositeFace(5),
             ..opening
         },
         FaceOpening {
-            floor_depth: 0.,
+            end: CircularOpeningEnd::OppositeFace(6),
+            ..opening
+        },
+        FaceOpening {
+            end: CircularOpeningEnd::Floor(5.),
+            ..opening
+        },
+        FaceOpening {
+            end: CircularOpeningEnd::Floor(0.),
             ..opening
         },
         FaceOpening {
@@ -772,7 +780,7 @@ fn rotated_stadium_and_circle_clearance_is_proved_against_every_face_boundary() 
         face: 5,
         center: [5., 0.],
         radius: 0.5,
-        floor_depth: 2.,
+        end: CircularOpeningEnd::Floor(2.),
     };
     let slot = StadiumOpening {
         centers: [[-1.2, -1.6], [1.2, 1.6]],
@@ -918,4 +926,86 @@ fn only_a_published_nearer_end_on_solid_claims_a_coincident_supplied_rim() {
     };
     let (_, _, supplied) = scene(&[larger], &[ahead], &[], false);
     intervals(&circles(&supplied, 40, center), &[(false, [0., TAU])]);
+}
+
+#[test]
+fn transparent_aperture_preserves_rear_geometry_and_hidden_sources() {
+    let stock = rect([-5., -5., 5., 5.], 0., 5.);
+    let blocker = rect([0., -3., 3., 3.], 6., 7.);
+    let opening = FaceOpening {
+        body: 0,
+        face: 5,
+        center: [0.; 2],
+        radius: 2.,
+        end: CircularOpeningEnd::OppositeFace(4),
+    };
+    let lines = [supplied_line(10, -1., 0.)];
+    let rims = [supplied_rim(11, [0.; 2], 1., -1.)];
+    let hidden = [
+        HiddenCandidate::Line(supplied_line(12, 0., 0.)),
+        HiddenCandidate::Rim(supplied_rim(13, [0.; 2], 2., 0.)),
+    ];
+    let project = |blockers: &[Body], opts| {
+        project_scene_with_candidates(
+            &[],
+            &[],
+            SceneExtras {
+                lines: &lines,
+                rims: &rims,
+                blocker_bodies: blockers,
+                openings: &[opening],
+                intrinsic_hidden: &hidden,
+                ..SceneExtras::default()
+            },
+            opts,
+        )
+        .unwrap()
+        .2
+    };
+    let shown = project(std::slice::from_ref(&stock), options());
+    assert_eq!(supplied_lines(&shown, 10, false), [[-2., 2.]]);
+    assert_eq!(supplied_lines(&shown, 12, true), [[-4., 4.]]);
+    intervals(&circles(&shown, 11, [0.; 2]), &[(false, [0., TAU])]);
+    intervals(&circles(&shown, 13, [0.; 2]), &[(true, [0., TAU])]);
+
+    let blocker = project(&[rect([-5., -5., 5., 5.], 0., 5.), blocker], options());
+    assert_eq!(supplied_lines(&blocker, 10, false), [[-2., 0.]]);
+    let detail = project(
+        std::slice::from_ref(&stock),
+        Options {
+            detail: Some(([0.; 2], 1.5)),
+            ..options()
+        },
+    );
+    assert_eq!(supplied_lines(&detail, 12, true), [[-1.5, 1.5]]);
+    assert!(circles(&detail, 13, [0.; 2]).is_empty());
+
+    let visible = project(
+        &[stock],
+        Options {
+            hidden_lines: false,
+            ..options()
+        },
+    );
+    assert!(
+        visible
+            .iter()
+            .all(|segment| segment.source < 12 && !segment.edge.hidden)
+    );
+
+    assert_eq!(
+        project_scene_with_candidates(
+            &[],
+            &[],
+            SceneExtras {
+                intrinsic_hidden: &[hidden[0]; 2],
+                ..SceneExtras::default()
+            },
+            Options {
+                segment_limit: 1,
+                ..options()
+            },
+        ),
+        Err(ProjectionError::Limit),
+    );
 }

@@ -38,6 +38,27 @@ pub(crate) struct BlindOpening {
     pub(crate) depth: f64,
 }
 
+pub(crate) struct DrawingCircularCut {
+    pub(crate) faces: [Option<usize>; 2],
+    pub(crate) centers: [Point; 2],
+    pub(crate) outward: Point,
+    pub(crate) radius: f64,
+}
+
+impl DrawingCircularCut {
+    fn blind(face: usize, center: Point, outward: Point, radius: f64, depth: f64) -> Self {
+        Self {
+            faces: [Some(face), None],
+            centers: [
+                center,
+                std::array::from_fn(|i| center[i] - outward[i] * depth),
+            ],
+            outward,
+            radius,
+        }
+    }
+}
+
 pub(crate) struct BlindSlot {
     pub(crate) centers: [Point; 2],
     pub(crate) normal: Point,
@@ -245,6 +266,99 @@ impl Solid {
             provenance: vec![],
             rust_origins: vec![],
         })
+    }
+
+    /// Drawing-only planar stock and its certified circular cavity supports.
+    pub(crate) fn drawing_circular_cuts(&self) -> Option<(Self, Vec<DrawingCircularCut>)> {
+        let (body, cuts) = match &self.body {
+            SolidBody::Orthogonal(stock, frame)
+                if stock.slots.is_empty() && stock.has_curved_cuts() =>
+            {
+                let cuts = stock
+                    .pockets
+                    .iter()
+                    .map(|pocket| {
+                        DrawingCircularCut::blind(
+                            pocket.face,
+                            transform_point(*frame, pocket.center_mm),
+                            transform_vector(*frame, stock.boundary.faces[pocket.face].normal),
+                            pocket.radius_mm,
+                            pocket.depth_mm,
+                        )
+                    })
+                    .chain(stock.through_bores.iter().map(|bore| {
+                        DrawingCircularCut {
+                            faces: bore.faces.map(Some),
+                            centers: bore
+                                .centers_mm
+                                .map(|center| transform_point(*frame, center)),
+                            outward: transform_vector(
+                                *frame,
+                                stock.boundary.faces[bore.faces[0]].normal,
+                            ),
+                            radius: bore.radius_mm,
+                        }
+                    }))
+                    .collect();
+                let mut stock = (**stock).clone();
+                stock.pockets = Rc::from([]);
+                stock.pocket_origins = Rc::from([]);
+                stock.through_bores = Rc::from([]);
+                stock.through_origins = Rc::from([]);
+                (SolidBody::Orthogonal(Rc::new(stock), *frame), cuts)
+            }
+            SolidBody::PolygonPrism(stock)
+                if stock.bore_treatments.is_none()
+                    && (!stock.prism.circular_holes().is_empty() || !stock.pockets.is_empty()) =>
+            {
+                let sign = if stock.reverse_sweep { -1. } else { 1. };
+                let height = stock.prism.height().as_f64();
+                let normal = |side: f64| stock.frame.normal().map(|x| x * sign * side);
+                let point =
+                    |[x, y]: [f64; 2], z: f64| transform_point(stock.frame, [x, y, sign * z]);
+                let cuts = stock
+                    .pockets
+                    .iter()
+                    .map(|pocket| {
+                        DrawingCircularCut::blind(
+                            usize::from(pocket.end),
+                            point(pocket.center_mm, pocket.mouth_z_mm(height)),
+                            normal(if pocket.end { 1. } else { -1. }),
+                            pocket.radius_mm,
+                            pocket.depth_mm,
+                        )
+                    })
+                    .chain(stock.prism.circular_holes().iter().map(|bore| {
+                        let center = bore.center().map(Rational::as_f64);
+                        DrawingCircularCut {
+                            faces: [Some(0), Some(1)],
+                            centers: [0., height].map(|z| point(center, z)),
+                            outward: normal(-1.),
+                            radius: bore.radius().as_f64(),
+                        }
+                    }))
+                    .collect();
+                let mut stock = (**stock).clone();
+                let lines = stock.edges.len() - stock.prism.circular_holes().len();
+                stock.edges = Rc::from(&stock.edges[..lines]);
+                stock.prism = Rc::new(
+                    PolygonPrism::new(stock.prism.rings().to_vec(), stock.prism.height()).ok()?,
+                );
+                stock.pockets = Rc::from([]);
+                stock.pocket_origins = Rc::from([]);
+                (SolidBody::PolygonPrism(Rc::new(stock)), cuts)
+            }
+            _ => return None,
+        };
+        Some((
+            Self {
+                body,
+                policy: self.policy,
+                provenance: vec![],
+                rust_origins: vec![],
+            },
+            cuts,
+        ))
     }
 
     pub(crate) fn drawing_machined_stock(

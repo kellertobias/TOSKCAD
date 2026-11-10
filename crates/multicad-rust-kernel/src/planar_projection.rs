@@ -6,8 +6,9 @@ mod profile;
 mod scene;
 use profile::ProfileTrim;
 pub use scene::{
-    FaceOpening, LineCandidate, RimCandidate, RoundSegment, SceneExtras, SceneProjection,
-    SpatialRimCandidate, StadiumOpening, project_scene, project_scene_with_candidates,
+    CircularOpeningEnd, FaceOpening, HiddenCandidate, LineCandidate, RimCandidate, RoundSegment,
+    SceneExtras, SceneProjection, SpatialRimCandidate, StadiumOpening, project_scene,
+    project_scene_with_candidates,
 };
 
 type Point = [f64; 3];

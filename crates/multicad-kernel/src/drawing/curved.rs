@@ -7,6 +7,7 @@ use multicad_rust_kernel::{
 };
 
 mod apertures;
+mod machined;
 mod opaque;
 mod pockets;
 mod shadows;
@@ -143,6 +144,7 @@ fn project_members(
     let mut apertures = None;
     let mut shadows = None;
     let mut planar_members = Vec::new();
+    let mut analytic_stocks = Vec::new();
     let mut round_sources = Vec::new();
     let mut rounds = Vec::new();
     let mut rounded = stadium::Shapes::default();
@@ -155,9 +157,13 @@ fn project_members(
         } else if let Some(bands) = stepped::rounds(solid, index, options)? {
             round_sources.extend(std::iter::repeat_n(source, bands.len()));
             rounds.extend(bands);
+        } else if options.hidden_lines
+            && let Some(stock) = machined::hex_stock(solid, source, analytic_stocks.len(), options)?
+        {
+            analytic_stocks.push((source, stock, solid.geometry_policy().linear_tolerance_mm));
         } else {
             let proxy = if options.hidden_lines {
-                None
+                machined::stock(solid, source, planar_members.len(), options)?
             } else if apertures::has_through_bores(solid) {
                 let scene = apertures::Scene::get(&mut apertures, members, options.frame)?;
                 Some(scene.stock(solid, index, source)?)
@@ -188,10 +194,12 @@ fn project_members(
             hatch: None,
         })
         .collect();
-    let (bodies, tolerance) = planar::prepare(&inputs, options.frame)?;
+    let (mut bodies, mut tolerance) = planar::prepare(&inputs, options.frame)?;
+    let analytic_offset = bodies.len();
     let mut rims = Vec::new();
     let mut openings = Vec::new();
-    let planar_sources: Vec<_> = planar_members
+    let mut intrinsic_hidden = Vec::new();
+    let mut planar_sources: Vec<_> = planar_members
         .iter()
         .map(|(source, _, _)| *source)
         .collect();
@@ -200,7 +208,19 @@ fn project_members(
             rims.extend(proxy.rims);
             rounded.rims.extend(proxy.spatial_rims);
             openings.extend(proxy.openings);
+            intrinsic_hidden.extend(proxy.intrinsic_hidden);
         }
+    }
+    for (source, mut stock, linear_tolerance) in analytic_stocks {
+        tolerance = tolerance.max(linear_tolerance);
+        bodies.push(stock.solid);
+        planar_sources.push(source);
+        rims.extend(stock.rims);
+        intrinsic_hidden.extend(stock.intrinsic_hidden);
+        for opening in &mut stock.openings {
+            opening.body += analytic_offset;
+        }
+        openings.extend(stock.openings);
     }
     let projection = planar_projection::project_scene_with_candidates(
         &bodies,
@@ -213,6 +233,7 @@ fn project_members(
             lines: &rounded.lines,
             spatial_rims: &rounded.rims,
             stadium_openings: &[],
+            intrinsic_hidden: &intrinsic_hidden,
         },
         planar_projection::Options {
             tolerance,
