@@ -1,5 +1,4 @@
 use super::*;
-use miter_sweep::{certify_section, triangulate_section};
 
 mod partition;
 
@@ -50,20 +49,23 @@ pub fn ruled_loft(
         .map(|edge| cross(sub(edge[0], origin), sub(edge[1], origin))[2])
         .sum::<f64>()
         < 0.;
-    let triangles = if vertices
+    let convex = vertices
         .chunks_exact(count)
-        .all(|ring| prove_convex_ring(ring, clockwise).is_ok())
-    {
-        Vec::new()
-    } else {
-        for section in &sections[1..] {
-            certify_section(section, clockwise, tolerance_mm)?;
+        .all(|ring| prove_convex_ring(ring, clockwise).is_ok());
+    let rings = vertices.chunks_exact(count);
+    for (bottom, top) in rings.clone().zip(rings.skip(1)) {
+        for i in 0..count {
+            let j = (i + 1) % count;
+            prove_side(bottom[i], bottom[j], top[i], top[j])?;
         }
-        triangulate_section(&sections[0], clockwise, tolerance_mm)?
-    };
+    }
 
     let slab_count = heights.len() - 1;
-    let mut material = Vec::with_capacity(slab_count);
+    let mut material = if convex {
+        Vec::with_capacity(slab_count)
+    } else {
+        partition::loft(sections, &vertices, clockwise, tolerance_mm)?
+    };
     let mut faces = Vec::with_capacity(2 + slab_count * count);
     for source in 0..slab_count {
         let low = source * count;
@@ -74,7 +76,6 @@ pub fn ruled_loft(
         for i in 0..count {
             let j = (i + 1) % count;
             let [a, b, c, d] = [low + i, low + j, high + j, high + i];
-            prove_side(vertices[a], vertices[b], vertices[d], vertices[c])?;
             rings.push(vec![a, b, c, d]);
         }
         if clockwise {
@@ -82,8 +83,7 @@ pub fn ruled_loft(
                 ring.reverse();
             }
         }
-        let cell_start = material.len();
-        if triangles.is_empty() {
+        if convex {
             let piece = ConvexPiece::new(
                 rings
                     .iter()
@@ -100,15 +100,6 @@ pub fn ruled_loft(
                 segment: source,
                 source_faces,
             });
-        } else {
-            material.extend(partition::slab(
-                &vertices,
-                source,
-                count,
-                &triangles,
-                tolerance_mm,
-                MAX_PIECES - cell_start,
-            )?);
         }
         // Slabs occupy distinct height intervals. Keep only the exterior caps
         // and the original ruled walls in the published boundary.
@@ -116,8 +107,8 @@ pub fn ruled_loft(
             if (source_face == 0 && source != 0) || (source_face == 1 && source != slab_count - 1) {
                 continue;
             }
-            let normal = if triangles.is_empty() {
-                material[cell_start].piece.planes[source_face].normal
+            let normal = if convex {
+                material[source].piece.planes[source_face].normal
             } else {
                 let points: Vec<_> = ring.iter().map(|&vertex| vertices[vertex]).collect();
                 planar_ring(&points, tolerance_mm)?.0.normal

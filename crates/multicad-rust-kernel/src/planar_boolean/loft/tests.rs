@@ -1,4 +1,5 @@
 use super::*;
+use miter_sweep::certify_section;
 
 const TOL: f64 = 1e-7;
 
@@ -239,5 +240,68 @@ fn rejects_two_simple_profiles_whose_side_walls_cross_between_stations() {
     assert_eq!(
         ruled_loft(&[a, b], &[0., 4.], TOL).unwrap_err(),
         Error::Invalid
+    );
+}
+
+#[test]
+fn a_second_station_can_supply_the_common_loft_partition() {
+    let profile = |[a, b, c, d, e, h, p, q]: [f64; 8]| {
+        let [u, v, w, x, width] = [a, a + b, a + b + c, a + b + c + d, a + b + c + d + e];
+        let y = h + p.max(q);
+        vec![
+            [0., 0.],
+            [width, 0.],
+            [width, y],
+            [x, y],
+            [x, p],
+            [w, p],
+            [w, y],
+            [v, y],
+            [v, q],
+            [u, q],
+            [u, y],
+            [0., y],
+        ]
+    };
+    let sections = [
+        profile([8., 9., 12., 21., 28., 3., 25., 12.]),
+        profile([21., 26., 20., 4., 21., 24., 18., 20.]),
+    ];
+    let (shell, cells) = ruled_loft(&sections, &[0., 10.], TOL).unwrap();
+    let volume = 10. * (1977. + 4. * 2528.75 + 3320.) / 6.;
+    assert!((shell.volume_mm3() - volume).abs() < TOL);
+    assert_eq!(shell.faces().len(), 14);
+    assert_eq!(shell.solid_count(), 1);
+    let pieces: Vec<_> = cells.into_iter().map(|cell| cell.piece).collect();
+    assert!((Union::new(&pieces, TOL).unwrap().volume_mm3() - volume).abs() < TOL);
+}
+
+#[test]
+fn loft_reports_the_material_limit_after_trying_the_station_partitions() {
+    let a = vec![
+        [0., 0.],
+        [10., 0.],
+        [10., 8.],
+        [7., 8.],
+        [7., 2.],
+        [3., 2.],
+        [3., 8.],
+        [0., 8.],
+    ];
+    let b = vec![
+        [1., -1.],
+        [12., -1.],
+        [12., 10.],
+        [9., 10.],
+        [9., 3.],
+        [4., 3.],
+        [4., 10.],
+        [1., 10.],
+    ];
+    let stations: Vec<_> = [a, b].into_iter().cycle().take(16).collect();
+    let heights: Vec<_> = (0..16).map(|i| f64::from(i) * 4.).collect();
+    assert_eq!(
+        ruled_loft(&stations, &heights, TOL).unwrap_err(),
+        Error::Limit
     );
 }

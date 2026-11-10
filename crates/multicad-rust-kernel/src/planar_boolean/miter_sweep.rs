@@ -234,15 +234,14 @@ fn partition_section(
         return Ok(Vec::new());
     }
 
-    triangulate_section(section, clockwise, tolerance_mm)
+    certify_section(section, clockwise, tolerance_mm)?;
+    triangulate_certified_section(section, clockwise)
 }
 
-pub(super) fn triangulate_section(
+pub(super) fn triangulate_certified_section(
     section: &[[f64; 2]],
     clockwise: bool,
-    tolerance_mm: f64,
 ) -> Result<Vec<[usize; 3]>, Error> {
-    certify_section(section, clockwise, tolerance_mm)?;
     let ring: Vec<_> = (0..section.len())
         .map(|i| {
             let edge = [i, (i + 1) % section.len()];

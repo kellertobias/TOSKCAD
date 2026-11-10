@@ -1,7 +1,60 @@
 use super::*;
-use miter_sweep::{triangle_rings, triangle_sources};
+use miter_sweep::{
+    certify_section, triangle_rings, triangle_sources, triangulate_certified_section,
+};
 
-pub(super) fn slab(
+pub(super) fn loft(
+    sections: &[Vec<[f64; 2]>],
+    vertices: &[Point],
+    clockwise: bool,
+    tolerance: f64,
+) -> Result<Vec<ProfileCell>, Error> {
+    for section in sections {
+        certify_section(section, clockwise, tolerance)?;
+    }
+    let count = sections[0].len();
+    let rings = vertices.chunks_exact(count);
+    for (bottom, top) in rings.clone().zip(rings.skip(1)) {
+        prove_boundary(bottom, top, tolerance)?;
+    }
+    // One triangulation has to serve every cap of the material partition.
+    // A diagonal valid at one station can run outside another section.
+    let mut failure = Error::Unresolved;
+    for section in sections {
+        let material = triangulate_certified_section(section, clockwise).and_then(|triangles| {
+            candidate(vertices, sections.len() - 1, count, &triangles, tolerance)
+        });
+        match material {
+            Ok(cells) => return Ok(cells),
+            Err(Error::Limit) => failure = Error::Limit,
+            Err(Error::Invalid | Error::Unresolved) => {}
+        }
+    }
+    Err(failure)
+}
+
+fn candidate(
+    vertices: &[Point],
+    slabs: usize,
+    count: usize,
+    triangles: &[[usize; 3]],
+    tolerance: f64,
+) -> Result<Vec<ProfileCell>, Error> {
+    let mut cells = Vec::with_capacity((slabs * triangles.len()).min(MAX_PIECES));
+    for segment in 0..slabs {
+        cells.extend(slab(
+            vertices,
+            segment,
+            count,
+            triangles,
+            tolerance,
+            MAX_PIECES - cells.len(),
+        )?);
+    }
+    Ok(cells)
+}
+
+fn slab(
     vertices: &[Point],
     segment: usize,
     count: usize,
@@ -13,7 +66,6 @@ pub(super) fn slab(
     let high = low + count;
     let bottom = &vertices[low..high];
     let top = &vertices[high..high + count];
-    prove_boundary(bottom, top, tolerance)?;
 
     let parallel_partitions = triangles.iter().all(|&triangle| {
         let [a, b, c] = triangle;
