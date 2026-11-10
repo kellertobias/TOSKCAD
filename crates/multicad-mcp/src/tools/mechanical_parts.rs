@@ -934,7 +934,9 @@ pub(super) fn mechanical_part_profiles(_: &dyn Host, call: &Request, _: NoArgs) 
                 "thread_families": ["iso_metric", "custom"],
                 "metric_fits": ["nominal_basic", "metric_6g_external"],
                 "hex_nut_metric_fits": ["nominal_basic", "metric_6h_internal"],
-                "representations": ["modeled"],
+                "representations": ["modeled", "cosmetic_envelope"],
+                "cosmetic_head_drive_pairs": [["socket_cap", "hex_socket"], ["external_hex", "external_hex"], ["countersunk", "hex_socket"]],
+                "cosmetic_shank": "The shank and resolved thread envelope diameters must match. The envelope is for display and placement.",
                 "plain_shank": "If present, its diameter must be at least the modeled thread crest diameter.",
                 "end_treatments": false,
                 "radial_taper": false,
@@ -943,7 +945,7 @@ pub(super) fn mechanical_part_profiles(_: &dyn Host, call: &Request, _: NoArgs) 
                 "step_geometry": ["washer", "bearing_envelope"]
             },
             "machine_screw": "The underhead length runs from the head seat to the tip. Overall length adds the head height. The thread length is its extent ending at the tip, and its frame locates the underhead datum.",
-            "nut_thread": "Rust requires the modeled representation for hex nuts. The thread length sets the nut height.",
+            "nut_thread": "Rust supports modeled hex nuts and cosmetic cylindrical thread envelopes. The thread length sets the nut height.",
             "bearing": "External mounting envelope only; races, rolling elements and seals are not modeled"
         }));
     }

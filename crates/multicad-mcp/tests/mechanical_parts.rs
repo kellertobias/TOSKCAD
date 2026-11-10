@@ -159,6 +159,10 @@ fn rust_mcp_edits_and_reopens_a_modeled_m6_socket_screw() {
             ["external_hex", "external_hex"]
         ])
     );
+    assert_eq!(
+        profiles["active_geometry_support"]["representations"],
+        json!(["modeled", "cosmetic_envelope"])
+    );
     let create = json!({
         "expected_revision":0,"name":"M6 × 1 socket screw",
         "recipe":{"kind":"machine_screw","underhead_length":mm(10.),"shank_diameter":mm(6.),
@@ -176,7 +180,9 @@ fn rust_mcp_edits_and_reopens_a_modeled_m6_socket_screw() {
     assert!(
         rejected
             .message
-            .contains("requires the Modeled representation")
+            .contains("matching shank and thread envelope diameters"),
+        "{}",
+        rejected.message
     );
     assert_eq!(h.document(), before);
     let created = run(&h, "set_mechanical_part", create);
