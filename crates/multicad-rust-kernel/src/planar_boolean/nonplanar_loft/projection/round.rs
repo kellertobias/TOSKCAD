@@ -181,16 +181,7 @@ pub(super) fn trim_rim(rim: Rim, ends: [Point; 2]) -> crate::curved_projection::
     ellipse
 }
 
-pub(super) fn depth_events(
-    body: &RoundOccluder,
-    curve: Curve,
-    bounds: [Paper; 2],
-    epsilon: f64,
-    cuts: &mut Vec<f64>,
-) {
-    if !overlap(bounds, body.bounds().map(paper), epsilon) {
-        return;
-    }
+pub(super) fn depth_events(body: &RoundOccluder, curve: Curve, cuts: &mut Vec<f64>) {
     let (base, axis, height, radii) = body.circular_boundary();
     for cap in [base, add(base, scale(axis, height))] {
         curve.plane_crossings(cap, axis, cuts);

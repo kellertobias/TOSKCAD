@@ -108,6 +108,12 @@ impl Bounds {
                 self.max[i] + tolerance >= line.min[i] && self.min[i] - tolerance <= line.max[i]
             })
     }
+
+    fn overlaps_paper(self, other: Self, tolerance: f64) -> bool {
+        (0..2).all(|i| {
+            self.max[i] + tolerance >= other.min[i] && self.min[i] <= other.max[i] + tolerance
+        })
+    }
 }
 
 pub(crate) struct TrimmedPlane {
@@ -118,6 +124,15 @@ pub(crate) struct TrimmedPlane {
     profiles: Vec<ProfileTrim>,
     bounds: Bounds,
 }
+
+impl TrimmedPlane {
+    pub(crate) fn paper_bounds(&self) -> [Point2; 2] {
+        [self.bounds.min, self.bounds.max].map(planar)
+    }
+}
+
+mod paper_index;
+pub(crate) use paper_index::PaperIndex;
 
 struct Line {
     start: Point,

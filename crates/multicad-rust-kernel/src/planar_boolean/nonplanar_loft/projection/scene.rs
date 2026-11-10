@@ -1,6 +1,8 @@
 //! Shared orthographic visibility for planar, round and bilinear bodies.
 use super::*;
-use crate::planar_projection::{Body, Options, ProjectionError, prepare_loft_faces};
+use crate::planar_projection::{
+    Body, Options, PaperIndex, ProjectionError, TrimmedPlane, prepare_loft_faces,
+};
 use crate::{curved_projection, round_occlusion::RoundOccluder};
 use std::cell::Cell;
 use visibility::{Candidate, Cap, Wall};
@@ -55,6 +57,124 @@ struct ProjectedLoft<'a> {
     rings: [Vec<Point>; 2],
     walls: Vec<Wall>,
     clip: Option<clip::Clip<'a>>,
+}
+
+enum Blocker<'a> {
+    Plane(&'a TrimmedPlane),
+    Loft(&'a ProjectedLoft<'a>, [Cap<'a>; 2]),
+    Round(usize, &'a RoundOccluder, bool),
+    Sphere(&'a sphere::Sphere),
+}
+
+#[derive(Clone, Copy)]
+struct VisibilityRay {
+    source: usize,
+    rim: Option<curved_projection::Rim>,
+    point: Point,
+}
+
+impl Blocker<'_> {
+    fn bounds(&self) -> [Paper; 2] {
+        match self {
+            Self::Plane(face) => face.paper_bounds(),
+            Self::Loft(loft, _) => loft.rings.iter().flatten().copied().map(paper).fold(
+                [[f64::INFINITY; 2], [f64::NEG_INFINITY; 2]],
+                |[min, max], point| {
+                    [
+                        std::array::from_fn(|i| min[i].min(point[i])),
+                        std::array::from_fn(|i| max[i].max(point[i])),
+                    ]
+                },
+            ),
+            Self::Round(_, round, _) => round.bounds().map(paper),
+            Self::Sphere(sphere) => sphere.bounds.map(paper),
+        }
+    }
+
+    fn blocks(
+        &self,
+        VisibilityRay { source, rim, point }: VisibilityRay,
+        near: f64,
+        tolerance: f64,
+        epsilon: f64,
+        charge: &impl Fn(usize) -> Result<(), Error>,
+    ) -> Result<bool, Error> {
+        match self {
+            Self::Plane(face) => {
+                charge(face.boundary_len())?;
+                Ok(face.covers(point, tolerance))
+            }
+            Self::Loft(loft, caps) => {
+                charge(4 * loft.walls.len())?;
+                Ok(caps.iter().any(|cap| cap.blocks(point, near, tolerance))
+                    || loft
+                        .walls
+                        .iter()
+                        .any(|wall| wall.blocks(point, near, tolerance))
+                    || loft
+                        .clip
+                        .as_ref()
+                        .is_some_and(|clip| clip.blocks(point, tolerance)))
+            }
+            Self::Round(owner, round, retained) => {
+                charge(1)?;
+                let contour = |rim| {
+                    if *retained {
+                        source == *owner && round.covers_axial_contour(rim, near, tolerance)
+                    } else {
+                        round.covers_coincident_rim(rim, tolerance)
+                    }
+                };
+                Ok((source != *owner || *retained)
+                    && (rim.is_some_and(contour)
+                        || round.blocks_point(
+                            point,
+                            if *retained { near } else { f64::INFINITY },
+                            tolerance,
+                        )))
+            }
+            Self::Sphere(sphere) => {
+                charge(1)?;
+                Ok(sphere.blocks(point, rim, tolerance, epsilon))
+            }
+        }
+    }
+
+    fn depth_events(
+        &self,
+        source: usize,
+        curve: Curve,
+        bounds: [Paper; 2],
+        epsilon: f64,
+        cuts: &mut Vec<f64>,
+        charge: &impl Fn(usize) -> Result<(), Error>,
+    ) -> Result<(), Error> {
+        match self {
+            Self::Plane(face) => {
+                charge(1)?;
+                curve.plane_crossings(face.point, face.normal, cuts);
+            }
+            Self::Loft(loft, caps) if loft.source != source => {
+                charge(4 * loft.walls.len())?;
+                for cap in caps {
+                    cap.depth_events(curve, cuts);
+                }
+                for wall in &loft.walls {
+                    wall.depth_events(curve, bounds, epsilon, cuts);
+                }
+            }
+            Self::Round(owner, round, _) if *owner != source => {
+                charge(4)?;
+                round::depth_events(round, curve, cuts);
+            }
+            Self::Sphere(sphere) if sphere.source != source => {
+                charge(4)?;
+                sphere.depth_events(curve, cuts);
+            }
+            _ => {}
+        }
+        Ok(())
+    }
 }
 
 pub fn project_loft_scene(
@@ -260,85 +380,41 @@ pub(super) fn project_with_limit(
             }
         }
     }
-    let caps: Vec<_> = lofts
-        .iter()
-        .map(|loft| loft.rings.each_ref().map(|ring| Cap::new(ring)))
-        .collect();
     let work = Cell::new(prepared.remaining);
     let charge = |cost| {
         let remaining = work.get().checked_sub(cost).ok_or(Error::Limit)?;
         work.set(remaining);
         Ok(())
     };
-    charge(curves.len().saturating_mul(curves.len()))?;
-    let wall_count: usize = lofts.iter().map(|loft| loft.walls.len()).sum();
-    let ray_cost = 4 * wall_count + planar_faces.iter().map(|p| p.boundary_len()).sum::<usize>();
+    let blockers: Vec<_> = planar_faces
+        .iter()
+        .map(Blocker::Plane)
+        .chain(
+            lofts
+                .iter()
+                .map(|loft| Blocker::Loft(loft, loft.rings.each_ref().map(|ring| Cap::new(ring)))),
+        )
+        .chain(
+            rounds
+                .iter()
+                .map(|&(source, body, retained)| Blocker::Round(source, body, retained)),
+        )
+        .chain(spheres.iter().map(Blocker::Sphere))
+        .collect();
+    let index = PaperIndex::build(blockers.iter().map(Blocker::bounds), &charge)?;
     let near = cut.map_or(f64::INFINITY, |cut| cut.near);
     let epsilon = (64. * f64::EPSILON * coordinate_scale).min(options.tolerance);
-    let blocked = |source, rim: Option<_>, point| {
-        charge(ray_cost + rounds.len() + spheres.len())?;
-        Ok(planar_faces
-            .iter()
-            .any(|face| face.covers(point, options.tolerance))
-            || caps
-                .iter()
-                .flatten()
-                .any(|cap| cap.blocks(point, near, options.tolerance))
-            || lofts
-                .iter()
-                .flat_map(|loft| &loft.walls)
-                .any(|wall| wall.blocks(point, near, options.tolerance))
-            || lofts
-                .iter()
-                .filter_map(|loft| loft.clip.as_ref())
-                .any(|clip| clip.blocks(point, options.tolerance))
-            || rounds.iter().any(|&(owner, round, retained)| {
-                let contour = |rim| {
-                    if retained {
-                        source == owner && round.covers_axial_contour(rim, near, options.tolerance)
-                    } else {
-                        round.covers_coincident_rim(rim, options.tolerance)
-                    }
-                };
-                (source != owner || retained)
-                    && (rim.is_some_and(contour)
-                        || round.blocks_point(
-                            point,
-                            if retained { near } else { f64::INFINITY },
-                            options.tolerance,
-                        ))
-            })
-            || spheres
-                .iter()
-                .any(|sphere| sphere.blocks(point, rim, options.tolerance, epsilon)))
+    let blocked = |source, rim, point| {
+        let ray = VisibilityRay { source, rim, point };
+        index.any([paper(point); 2], options.tolerance, &charge, |entry| {
+            blockers[entry].blocks(ray, near, options.tolerance, epsilon, &charge)
+        })
     };
     let depth_events = |source, curve: Curve, bounds, cuts: &mut Vec<f64>| {
-        charge(planar_faces.len() + 4 * (wall_count + rounds.len() + spheres.len()))?;
-        for face in &planar_faces {
-            curve.plane_crossings(face.point, face.normal, cuts);
-        }
-        for (loft, caps) in lofts
-            .iter()
-            .zip(&caps)
-            .filter(|(loft, _)| loft.source != source)
-        {
-            for cap in caps {
-                cap.depth_events(curve, cuts);
-            }
-            for wall in &loft.walls {
-                wall.depth_events(curve, bounds, epsilon, cuts);
-            }
-        }
-        for &(owner, round, _) in &rounds {
-            if owner != source {
-                round::depth_events(round, curve, bounds, epsilon, cuts);
-            }
-        }
-        for sphere in &spheres {
-            if sphere.source != source {
-                sphere.depth_events(curve, bounds, epsilon, cuts);
-            }
-        }
+        index.any(bounds, epsilon, &charge, |entry| {
+            blockers[entry].depth_events(source, curve, bounds, epsilon, cuts, &charge)?;
+            Ok(false)
+        })?;
         Ok(())
     };
     let edges = visibility::publish(
@@ -357,6 +433,7 @@ pub(super) fn project_with_limit(
         planes,
         &blocked,
         &depth_events,
+        &charge,
     )?;
     let mut visible = vec![false; members.len()];
     for &(source, edge) in &edges {

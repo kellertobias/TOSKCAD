@@ -970,3 +970,57 @@ fn a_sphere_slab_preserves_the_equator_and_hides_the_far_cap() {
                 if poles.into_iter().all(|p| p[2] == depth))));
     }
 }
+
+#[test]
+fn sparse_loft_assembly_projects_all_parts_and_localizes_the_detail() {
+    let loft = fixture();
+    let members: Vec<_> = (0..450)
+        .map(|i| LoftSceneMember::Loft {
+            body: &loft,
+            axes: AXIAL,
+            offset: [f64::from(i % 30) * 14., f64::from(i / 30) * 14., 0.],
+        })
+        .collect();
+    let full = project_loft_scene(
+        &members,
+        crate::planar_projection::Options {
+            segment_limit: 20_000,
+            ..scene_options()
+        },
+    )
+    .unwrap();
+    let mut visible_sources = vec![false; members.len()];
+    for &(source, edge) in &full {
+        visible_sources[source] |= !edge.hidden;
+    }
+    assert!(visible_sources.into_iter().all(|visible| visible));
+
+    let detail_options = || crate::planar_projection::Options {
+        detail: Some(([0., 0.], 3.)),
+        ..scene_options()
+    };
+    let detail = project_loft_scene(&members, detail_options()).unwrap();
+    let isolated = project_loft_scene(&members[..1], detail_options()).unwrap();
+    assert!(!detail.is_empty());
+    assert_eq!(detail, isolated);
+}
+
+#[test]
+fn overlapping_curve_candidates_still_obey_the_scene_work_limit() {
+    let loft = fixture();
+    let members = |spacing| {
+        (0..20)
+            .map(|i| LoftSceneMember::Loft {
+                body: &loft,
+                axes: AXIAL,
+                offset: [f64::from(i) * spacing, 0., 0.],
+            })
+            .collect::<Vec<_>>()
+    };
+    let limit = 40_000;
+    assert!(scene::project_with_limit(&members(14.), scene_options(), None, limit).is_ok());
+    assert_eq!(
+        scene::project_with_limit(&members(0.), scene_options(), None, limit),
+        Err(Error::Limit)
+    );
+}

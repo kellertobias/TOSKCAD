@@ -233,6 +233,7 @@ pub(super) fn project(
         clip.as_ref().map(|clip| clip.planes),
         &|_, _, point| Ok(blocked(point)),
         &|_, _, _, _| Ok(()),
+        &|_| Ok(()),
     )
     .map(|edges| edges.into_iter().map(|(_, edge)| edge).collect())
 }
@@ -293,6 +294,7 @@ pub(super) fn publish(
     planes: Option<clip::Limits>,
     blocked: &Blocked<'_>,
     depth_events: &DepthEvents<'_>,
+    charge: &impl Fn(usize) -> Result<(), Error>,
 ) -> Result<Vec<(usize, LoftDrawingEdge)>, Error> {
     curves.retain(|candidate| {
         let curve = candidate.curve;
@@ -302,9 +304,10 @@ pub(super) fn publish(
         .iter()
         .map(|candidate| candidate.curve.bounds())
         .collect();
+    let index = crate::planar_projection::PaperIndex::build(bounds.iter().copied(), charge)?;
     let mut output = Vec::new();
     let mut cuts = Vec::new();
-    for (index, candidate) in curves.iter().enumerate() {
+    for (ordinal, candidate) in curves.iter().enumerate() {
         let Candidate {
             source,
             curve,
@@ -312,25 +315,34 @@ pub(super) fn publish(
             rim,
             hidden,
         } = *candidate;
-        if !emit {
+        let bounds = bounds[ordinal];
+        if !emit
+            || options.detail.is_some_and(|(center, radius)| {
+                let window = [-radius, radius].map(|delta| center.map(|value| value + delta));
+                !overlap(bounds, window, epsilon)
+            })
+        {
             continue;
         }
         cuts.clear();
         cuts.extend([0., 1.]);
-        for (other_index, other) in curves.iter().enumerate() {
-            if index != other_index && overlap(bounds[index], bounds[other_index], epsilon) {
-                curve.intersections(other.curve, epsilon, &mut cuts);
+        index.any(bounds, epsilon, charge, |other| {
+            if ordinal != other {
+                charge(1)?;
+                curve.intersections(curves[other].curve, epsilon, &mut cuts);
             }
-        }
+            Ok(false)
+        })?;
         if let Some((center, radius)) = options.detail {
             curve.detail_crossings(center, radius, &mut cuts);
         }
         if let Some(planes) = planes {
             clip::crossings(planes, curve, &mut cuts);
         }
-        depth_events(source, curve, bounds[index], &mut cuts)?;
+        depth_events(source, curve, bounds, &mut cuts)?;
         cuts.sort_unstable_by(f64::total_cmp);
         cuts.dedup_by(|a, b| (*a - *b).abs() <= 1e-12);
+        charge(cuts.len())?;
         let mut runs: Vec<([f64; 2], bool)> = Vec::new();
         for pair in cuts.windows(2) {
             let [a, b] = [pair[0], pair[1]];

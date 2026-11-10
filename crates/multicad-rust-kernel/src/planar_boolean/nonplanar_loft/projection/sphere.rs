@@ -137,16 +137,8 @@ impl Sphere {
         })
     }
 
-    pub(super) fn depth_events(
-        &self,
-        curve: Curve,
-        bounds: [Paper; 2],
-        epsilon: f64,
-        cuts: &mut Vec<f64>,
-    ) {
-        if overlap(bounds, self.bounds.map(paper), epsilon) {
-            curve.sphere_crossings(self.center, self.radius, cuts);
-        }
+    pub(super) fn depth_events(&self, curve: Curve, cuts: &mut Vec<f64>) {
+        curve.sphere_crossings(self.center, self.radius, cuts);
     }
 }
 
