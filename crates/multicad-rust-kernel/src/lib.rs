@@ -35,6 +35,7 @@ pub mod round_occlusion;
 pub mod section_hatch;
 pub mod sketch_reference;
 pub mod sphere;
+pub mod spline_intersection;
 pub mod spline_sweep;
 pub mod spur_gear;
 pub mod stadium;
