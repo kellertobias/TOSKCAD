@@ -109,6 +109,23 @@ impl Solid {
         let dimension = |value| convert(value, policy.linear_tolerance_mm);
         let height = dimension(height_mm)?;
         match profile {
+            ImportProfile::Annulus {
+                inner_radius_mm,
+                outer_radius_mm,
+            } => {
+                let rims = [("hole", inner_radius_mm), ("edge", outer_radius_mm)];
+                Self::rust_annulus_from_sketch(
+                    [inner_radius_mm, outer_radius_mm],
+                    height_mm,
+                    feature,
+                    frame,
+                    [0.; 2],
+                    rims.map(|(kind, radius)| {
+                        feature_origin(feature, kind, frame.origin.into_iter().chain([radius]))
+                    }),
+                    policy,
+                )
+            }
             ImportProfile::Cylinder { radius_mm } => {
                 let zero = Rational::new(0, 1).expect("zero is representable");
                 let circle = Circle::new([zero; 2], dimension(radius_mm)?)

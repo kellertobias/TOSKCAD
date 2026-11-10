@@ -904,6 +904,8 @@ impl Solid {
         if self.uses_rust_geometry() {
             let mut snapshot = if let Some((body, frame)) = self.helical_body() {
                 body.topology(frame, owner, revision)?
+            } else if let Some((body, frame)) = self.annulus_body() {
+                body.topology(frame, owner, revision)
             } else if let Some(placed) = self.polygon_prism() {
                 placed.snapshot(owner, revision).map_err(failure)?
             } else if let Some((cylinder, frame)) = self.axial_cylinder_frame() {

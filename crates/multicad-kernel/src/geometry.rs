@@ -7,10 +7,12 @@ use multicad_rust_kernel::{
 };
 use std::path::Path;
 use std::rc::Rc;
+mod annulus_body;
 mod helical_body;
 mod orthogonal_body;
 mod rust_compound;
 mod step_import;
+use annulus_body::AnnulusBody;
 use helical_body::HelicalBody;
 use orthogonal_body::OrthogonalBody;
 use rust_compound::RustCompound;
@@ -485,6 +487,7 @@ enum SolidBody {
     Prism(Rc<Prism>, PlaneFrame),
     PolygonPrism(Rc<PlacedPolygon>),
     AxialCylinder(Rc<AxialCylinder>, PlaneFrame, Option<Rc<CylinderSketch>>),
+    Annulus(Rc<AnnulusBody>, PlaneFrame),
     Helical(Rc<HelicalBody>, PlaneFrame),
     RustCompound(Rc<RustCompound>),
     Orthogonal(Rc<OrthogonalBody>, PlaneFrame),
@@ -829,6 +832,7 @@ impl Solid {
             SolidBody::AxialCylinder(cylinder, frame, sketch) => {
                 SolidBody::AxialCylinder(Rc::clone(cylinder), *frame, sketch.clone())
             }
+            SolidBody::Annulus(body, frame) => SolidBody::Annulus(Rc::clone(body), *frame),
             SolidBody::Helical(body, frame) => SolidBody::Helical(Rc::clone(body), *frame),
             SolidBody::RustCompound(compound) => SolidBody::RustCompound(Rc::clone(compound)),
             SolidBody::Orthogonal(body, frame) => SolidBody::Orthogonal(Rc::clone(body), *frame),
@@ -1071,6 +1075,9 @@ impl Solid {
                     transform.frame(*frame),
                     sketch.clone(),
                 ),
+                SolidBody::Annulus(body, frame) => {
+                    SolidBody::Annulus(Rc::clone(body), transform.frame(*frame))
+                }
                 SolidBody::Helical(body, frame) => {
                     SolidBody::Helical(Rc::clone(body), transform.frame(*frame))
                 }
@@ -1104,6 +1111,9 @@ impl Solid {
         Ok(result)
     }
     pub fn volume_mm3(&self) -> Result<f64, GeometryError> {
+        if let Some((body, _)) = self.annulus_body() {
+            return Ok(body.geometry.volume_mm3());
+        }
         if let Some((body, _)) = self.helical_body() {
             return Ok(body.volume_mm3());
         }
@@ -1137,6 +1147,9 @@ impl Solid {
         ffi::solid_count(self.occt()?).map_err(|e| native("solid count", e))
     }
     pub fn bounds(&self) -> Result<Bounds, GeometryError> {
+        if let Some((body, frame)) = self.annulus_body() {
+            return Ok(body.bounds(frame));
+        }
         if let Some((body, frame)) = self.helical_body() {
             return Ok(body.bounds(frame));
         }
@@ -1228,6 +1241,9 @@ impl Solid {
         crate::planar_contours::extract(self, face, frame, self.policy)
     }
     pub fn faces(&self) -> Result<Vec<Face>, GeometryError> {
+        if let Some((body, frame)) = self.annulus_body() {
+            return Ok(body.faces(frame));
+        }
         if let Some((body, frame)) = self.helical_body() {
             return Ok(body.faces(frame));
         }
@@ -1320,6 +1336,11 @@ impl Solid {
                 }
                 Ok(mesh)
             }
+            SolidBody::Annulus(body, frame) => crate::rust_display::placed_mesh(
+                multicad_rust_kernel::annulus::tessellate(&body.geometry, rust_options),
+                *frame,
+                false,
+            ),
             SolidBody::Helical(body, frame) => body.mesh(*frame, rust_options),
             SolidBody::RustCompound(compound) => compound.mesh(options, usage),
             SolidBody::Orthogonal(body, frame) => {
@@ -1464,6 +1485,11 @@ impl Solid {
         }
         let chord_error = if let Some((body, _)) = self.helical_body() {
             body.volume_error_bound(Self::rust_mesh_options(options))
+        } else if let Some((body, _)) = self.annulus_body() {
+            multicad_rust_kernel::annulus::volume_error_bound(
+                &body.geometry,
+                Self::rust_mesh_options(options),
+            )
         } else {
             // Arc/chord area loss is bounded by sagitta times arc length.
             // Extruding this loss bounds volume by the curved wall area.
@@ -1579,6 +1605,7 @@ impl Solid {
             SolidBody::PolygonPrism(placed) => placed.feature,
             SolidBody::Prism(prism, _) => EntityId::from_uuid_bits(prism.feature()),
             SolidBody::AxialCylinder(cylinder, ..) => EntityId::from_uuid_bits(cylinder.feature()),
+            SolidBody::Annulus(body, _) => body.feature,
             SolidBody::Helical(body, _) => body.feature,
             SolidBody::RustCompound(compound) => compound.feature,
             SolidBody::Orthogonal(body, _) => body.feature,
@@ -1589,7 +1616,10 @@ impl Solid {
     /// Whether the active backend can encode this exact solid in STEP.
     pub fn supports_step_export(&self) -> bool {
         match &self.body {
-            SolidBody::Occt(_) | SolidBody::PolygonPrism(_) | SolidBody::AxialCylinder(..) => true,
+            SolidBody::Occt(_)
+            | SolidBody::PolygonPrism(_)
+            | SolidBody::AxialCylinder(..)
+            | SolidBody::Annulus(..) => true,
             SolidBody::Prism(prism, _) => prism.rounded_end().is_none(),
             SolidBody::RustCompound(_) | SolidBody::Helical(..) => false,
             SolidBody::Orthogonal(body, _) => body.boundary.supports_step(),
@@ -1635,6 +1665,9 @@ impl Solid {
                 } else {
                     step::write_placed_cylinder(cylinder, frame.origin, frame.u, frame.v)
                 }
+            }
+            SolidBody::Annulus(body, frame) => {
+                step::write_placed_annulus(&body.geometry, frame.origin, frame.u, frame.v)
             }
             SolidBody::RustCompound(_) | SolidBody::Helical(..) => {
                 unreachable!("STEP support checked above")
