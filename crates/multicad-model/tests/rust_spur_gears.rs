@@ -225,6 +225,21 @@ fn rust_spur_reports_unavailable_geometry_before_recipe_commit() {
     let draft = model::prepare_gear(&session, 0, actor(), &request).unwrap();
     session.commit(draft.prepared).unwrap();
     let baseline = session.document().clone();
+    let compiler = Compiler {
+        omit_display: true,
+        ..Default::default()
+    };
+    let committed = || {
+        compiler
+            .compile_with_backend(
+                session.document(),
+                session.revision(),
+                GeometryBackend::Rust,
+                None,
+            )
+            .unwrap()
+    };
+    let before = committed();
     let parameters = GearParameters {
         family: GearFamily::Helical,
         hand: GearHand::Right,
@@ -233,17 +248,26 @@ fn rust_spur_reports_unavailable_geometry_before_recipe_commit() {
     };
     let draft =
         model::prepare_gear_edit(&session, 1, actor(), request.feature, &parameters).unwrap();
-    let error = Compiler::default()
+    let error = compiler
         .compile_with_backend(draft.prepared.document(), 2, GeometryBackend::Rust, None)
         .err()
         .unwrap();
+    assert_eq!(error.entity, Some(request.feature));
     assert!(
         error
-            .to_string()
-            .contains("external spur gear or a straight rack"),
+            .message
+            .starts_with("Rust gear geometry currently requires"),
         "{error}"
     );
+    assert_eq!(session.revision(), 1);
     assert_eq!(session.document(), &baseline);
+    let retained = committed();
+    assert_eq!(retained.snapshot().bodies[&request.body], request.feature);
+    let a = before.solid(request.feature).unwrap();
+    let b = retained.solid(request.feature).unwrap();
+    assert_eq!(b.solid_count().unwrap(), 1);
+    assert_eq!(b.bounds().unwrap(), a.bounds().unwrap());
+    near(b.volume_mm3().unwrap(), a.volume_mm3().unwrap(), 1e-9);
 }
 
 #[test]

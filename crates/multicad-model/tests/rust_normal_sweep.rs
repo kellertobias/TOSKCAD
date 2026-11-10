@@ -5,8 +5,8 @@ use multicad_core::{
     references::{AnalyticGeometry, TopologyKind},
 };
 use multicad_kernel::{
-    DrawingProjection, DrawingSolid, GeometryPolicy, MeshOptions, PlaneFrame, Solid,
-    project_drawing,
+    DrawingProjection, DrawingSolid, GeometryPolicy, MeshOptions, PlaneFrame, ProjectedVector,
+    Solid, project_drawing,
 };
 use multicad_model::{Compiler, GeometryBackend};
 use std::f64::consts::FRAC_PI_2;
@@ -20,6 +20,37 @@ fn toolcase() -> multicad_core::document::Document {
     .unwrap()
     .project
     .document
+}
+
+fn same_projected_edge(actual: &ProjectedVector, expected: &ProjectedVector) -> bool {
+    let near = |a: f64, b: f64| (a - b).abs() < 1e-6;
+    let same_point = |a: [f64; 2], b: [f64; 2]| near(a[0], b[0]) && near(a[1], b[1]);
+    let ends =
+        |vector: &ProjectedVector| [vector.preview_mm[0], *vector.preview_mm.last().unwrap()];
+    let [a, b] = ends(actual);
+    let [c, d] = ends(expected);
+    if !(same_point(a, c) && same_point(b, d) || same_point(a, d) && same_point(b, c)) {
+        return false;
+    }
+    let quarter_arc = |curve: &VectorCurve| match curve {
+        VectorCurve::Ellipse {
+            center: [x, y],
+            major_mm,
+            minor_mm,
+            start_rad,
+            end_rad,
+            ..
+        } => Some([*x, *y, *major_mm, *minor_mm, end_rad - start_rad]),
+        _ => None,
+    };
+    match (quarter_arc(&actual.curve), quarter_arc(&expected.curve)) {
+        (Some(a), Some(b)) => a.into_iter().zip(b).all(|(a, b)| near(a, b)),
+        (None, None) => matches!(
+            (&actual.curve, &expected.curve),
+            (VectorCurve::Line { .. }, VectorCurve::Line { .. })
+        ),
+        _ => false,
+    }
 }
 
 #[test]
@@ -86,21 +117,43 @@ fn saved_toolcase_floor_profiles_rebuild_and_round_trip_with_analytic_quarter_ar
                 hidden_lines: true,
                 ..DrawingProjection::default()
             };
-            let vectors = project_drawing(
-                &[DrawingSolid {
-                    solid: actual,
-                    hatch: None,
-                }],
-                options,
-            )
-            .unwrap();
-            assert_eq!(vectors.len(), 5);
-            assert!(
+            let project = |solid, options| {
+                project_drawing(&[DrawingSolid { solid, hatch: None }], options).unwrap()
+            };
+            let vectors = project(actual, options);
+            let native_vectors = project(reference, options);
+            for role in [VectorRole::Visible, VectorRole::Hidden] {
+                let actual_layer: Vec<_> = vectors.iter().filter(|v| v.role == role).collect();
+                let native_layer: Vec<_> =
+                    native_vectors.iter().filter(|v| v.role == role).collect();
+                assert_eq!([actual_layer.len(), native_layer.len()], [5, 5]);
+                for vector in native_layer {
+                    assert_eq!(
+                        actual_layer
+                            .iter()
+                            .filter(|target| same_projected_edge(target, vector))
+                            .count(),
+                        1,
+                        "{role:?} native curve {:?} must match one Rust edge",
+                        vector.curve
+                    );
+                }
+            }
+            let visible_only = project(
+                actual,
+                DrawingProjection {
+                    hidden_lines: false,
+                    ..options
+                },
+            );
+            assert_eq!(
+                visible_only.iter().collect::<Vec<_>>(),
                 vectors
                     .iter()
-                    .all(|vector| vector.role == VectorRole::Visible)
+                    .filter(|v| v.role == VectorRole::Visible)
+                    .collect::<Vec<_>>()
             );
-            let ellipse = vectors
+            let ellipse = visible_only
                 .iter()
                 .find_map(|vector| match vector.curve {
                     VectorCurve::Ellipse {
