@@ -1,7 +1,6 @@
 use multicad_core::{document::EntityId, references::AnalyticGeometry};
 use multicad_kernel::{
-    BooleanOperation, CurvedEdge2d, CurvedProfile, GeometryErrorKind, GeometryPolicy, PlaneFrame,
-    RevolutionAxis, RigidTransform, Solid,
+    BooleanOperation, GeometryPolicy, PlaneFrame, RigidTransform, Solid,
     rust_kernel::{Circle, Rational, cylinder::AxialCylinder, polygon::PolygonPrism},
 };
 
@@ -40,6 +39,7 @@ fn text(source: &Solid) -> String {
     std::fs::read_to_string(path).unwrap()
 }
 
+#[cfg(feature = "occt")]
 #[test]
 fn rust_import_reconstructs_an_independently_written_open_cascade_box() {
     let policy = GeometryPolicy::default();
@@ -167,8 +167,11 @@ fn rust_import_reconstructs_a_rectilinear_blind_pocket() {
     near(imported.volume_mm3().unwrap(), 980.);
 }
 
+#[cfg(feature = "occt")]
 #[test]
-fn rust_import_refuses_a_valid_conical_step_surface() {
+fn rust_import_refuses_external_cone_outside_certified_layout() {
+    use multicad_kernel::{CurvedEdge2d, CurvedProfile, GeometryErrorKind, RevolutionAxis};
+
     let policy = GeometryPolicy::default();
     let points = [[0., 0.], [3., 0.], [1., 7.], [0., 7.]];
     let profile = CurvedProfile {
