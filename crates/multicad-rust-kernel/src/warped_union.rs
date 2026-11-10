@@ -19,6 +19,7 @@ pub use elevation::Elevation;
 pub use section::SectionEdge;
 pub use sheet::{
     SheetFlange, SheetFlangeOpening, SheetWebEdge, formed_sheet, formed_sheet_with_openings,
+    normal_sweep_shell, pierced_sweep_shell,
 };
 
 type Point = [f64; 3];

@@ -1,9 +1,12 @@
 use super::{Curve, Edge, Error, Face, OrientedEdge, Point, Shell, Support, cross, dot, sub};
 use crate::{
-    normal_sweep::{Edge as ProfileEdge, PiercedSweep, Piercing, Sweep},
+    normal_sweep::{CertifiedPiercing, Edge as ProfileEdge, PiercedSweep, Piercing, Sweep},
     trim_curve::{Ellipse, EllipseArc},
 };
 use std::collections::BTreeMap;
+
+mod sweep_shell;
+pub use sweep_shell::{normal_sweep_shell, pierced_sweep_shell};
 
 #[derive(Clone, Copy)]
 pub struct SheetWebEdge {
@@ -422,30 +425,47 @@ impl Builder {
             if (height - thickness).abs() > self.tolerance {
                 return Err(Error::Unsupported);
             }
-            let spec = checked.spec();
-            let [u, v, axial] = spec.origin;
-            let frame = SweepFrame {
-                origin: flange.point([u, v], axial),
-                u: flange.vector(spec.u),
-                v: flange.vector(spec.v),
-                direction: flange.vector(scale(spec.through, height.recip())),
-            };
-            // The inward wall of a hole uses the opposite winding to a
-            // positive extrusion. The resulting end loops face into the cut.
-            let edges = spec
-                .outline
-                .iter()
-                .zip(authored.outline)
-                .rev()
-                .map(|(&edge, &(_, source))| (edge.reversed(), source, false));
-            let loops = self.sweep_ring(edges, frame, height)?;
-            for (side, ring) in spec.sides.into_iter().zip(loops) {
-                let wall = &mut self.faces[first_wall + side];
-                wall.holes.push(ring);
-                wall.area_mm2 -= checked.area_mm2();
-            }
+            self.pierce(
+                checked,
+                flange,
+                checked.spec().sides.map(|side| first_wall + side),
+                authored.outline.iter().map(|&(_, source)| source),
+            )?;
         }
         Ok(pierced.volume_mm3())
+    }
+
+    fn pierce(
+        &mut self,
+        opening: &CertifiedPiercing,
+        sweep: SweepFrame,
+        mouths: [usize; 2],
+        sources: impl DoubleEndedIterator<Item = usize> + ExactSizeIterator,
+    ) -> Result<(), Error> {
+        let spec = opening.spec();
+        let height = opening.thickness_mm();
+        let [u, v, axial] = spec.origin;
+        let frame = SweepFrame {
+            origin: sweep.point([u, v], axial),
+            u: sweep.vector(spec.u),
+            v: sweep.vector(spec.v),
+            direction: sweep.vector(scale(spec.through, height.recip())),
+        };
+        // The inward wall of a hole uses the opposite winding to a
+        // positive extrusion. The resulting end loops face into the cut.
+        let edges = spec
+            .outline
+            .iter()
+            .zip(sources)
+            .rev()
+            .map(|(&edge, source)| (edge.reversed(), source, false));
+        let loops = self.sweep_ring(edges, frame, height)?;
+        for (mouth, ring) in mouths.into_iter().zip(loops) {
+            let wall = &mut self.faces[mouth];
+            wall.holes.push(ring);
+            wall.area_mm2 -= opening.area_mm2();
+        }
+        Ok(())
     }
 
     fn finish(self, bounds_mm: [Point; 2], volume_mm3: f64) -> Result<Shell, Error> {
@@ -830,6 +850,45 @@ mod tests {
             aperture_fixture(&thick, &[&[hole], &[]], 1.),
             Err(Error::Unsupported)
         );
+    }
+
+    #[test]
+    fn flange_aperture_cannot_reuse_an_existing_circular_trim() {
+        let outline = section();
+        let sweep = checked_sweep(&[&outline], 6., TOL, MIN).unwrap();
+        let frame = SweepFrame {
+            origin: [2., 0., 0.],
+            u: [0., -1., 0.],
+            v: [0., 0., 1.],
+            direction: [1., 0., 0.],
+        };
+        let ring = [(
+            ProfileEdge::Circle {
+                center: [0.; 2],
+                radius_mm: 0.3,
+                clockwise: false,
+            },
+            70,
+        )];
+        let openings = [aperture([5., -1., -2.], 1., &ring)];
+        let mut builder = Builder::new(TOL);
+        builder
+            .sweep(&[&outline], &sweep, frame, [20, 21], std::iter::empty())
+            .unwrap();
+        builder
+            .pierce_flange(&sweep, &openings, frame, 0, 1., MIN)
+            .unwrap();
+
+        // The opening can certify in isolation but cannot be appended a
+        // second time because its circular trim already belongs to the shell.
+        let face_count = builder.faces.len();
+        assert_eq!(
+            builder.pierce_flange(&sweep, &openings, frame, 0, 1., MIN),
+            Err(Error::Invalid),
+        );
+        assert_eq!(builder.faces.len(), face_count);
+        assert_eq!(builder.faces[1].holes.len(), 1);
+        assert_eq!(builder.faces[3].holes.len(), 1);
     }
 
     fn web_from_corners(corners: &[[f64; 2]], roots: &[(usize, usize)]) -> Vec<SheetWebEdge> {
