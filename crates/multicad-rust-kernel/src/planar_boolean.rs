@@ -23,8 +23,9 @@ pub use loft::ruled_loft;
 pub use material::CutMaterial;
 pub use miter_sweep::{ProfileCell, miter_sweep};
 pub use nonplanar_loft::{
-    LoftDrawingEdge, LoftProjection, LoftSceneCut, LoftSceneMember, LoftSceneSection,
-    LoftSectionCurve, LoftWall, NonplanarLoft, project_loft_scene, project_loft_scene_section,
+    LoftDrawingEdge, LoftProjection, LoftRoundCutEdge, LoftSceneCut, LoftSceneMember,
+    LoftSceneSection, LoftSectionCurve, LoftWall, NonplanarLoft, project_loft_scene,
+    project_loft_scene_section,
 };
 pub type MiterCell = ProfileCell;
 pub use slab::Slab;

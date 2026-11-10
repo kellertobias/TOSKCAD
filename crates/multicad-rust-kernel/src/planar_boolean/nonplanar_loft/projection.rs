@@ -7,7 +7,8 @@ mod curve;
 mod round;
 mod scene;
 pub use scene::{
-    LoftSceneCut, LoftSceneMember, LoftSceneSection, project_loft_scene, project_loft_scene_section,
+    LoftRoundCutEdge, LoftSceneCut, LoftSceneMember, LoftSceneSection, project_loft_scene,
+    project_loft_scene_section,
 };
 mod visibility;
 use curve::Curve;

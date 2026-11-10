@@ -147,8 +147,11 @@ impl RoundOccluder {
     }
 
     pub(crate) fn covers_coincident_rim(&self, rim: Rim, tolerance: f64) -> bool {
-        if self.bore.is_some()
-            || self.projected > curved_projection::ANGULAR_ROUNDOFF
+        self.bore.is_none() && self.covers_axial_contour(rim, f64::INFINITY, tolerance)
+    }
+
+    pub(crate) fn covers_axial_contour(&self, rim: Rim, ceiling: f64, tolerance: f64) -> bool {
+        if self.projected > curved_projection::ANGULAR_ROUNDOFF
             || rim.depth_cosine.hypot(rim.depth_sine)
                 > curved_projection::ANGULAR_ROUNDOFF * rim.ellipse.major
         {
@@ -157,9 +160,11 @@ impl RoundOccluder {
         let same_coordinate = |a: f64, b: f64, scale: f64| {
             (a - b).abs() <= 8. * f64::EPSILON * a.abs().max(b.abs()).max(scale)
         };
-        if !same_coordinate(rim.ellipse.major, self.radius, 0.)
-            || !same_coordinate(rim.ellipse.minor, self.radius, 0.)
-        {
+        let matches_radius = |radius| {
+            same_coordinate(rim.ellipse.major, radius, 0.)
+                && same_coordinate(rim.ellipse.minor, radius, 0.)
+        };
+        if !matches_radius(self.radius) && !self.bore.is_some_and(matches_radius) {
             return false;
         }
         let near = if self.axis[2] > 0. {
@@ -167,8 +172,9 @@ impl RoundOccluder {
         } else {
             self.base
         };
-        let depth_guard = tolerance.max(16. * f64::EPSILON * near[2].abs().max(rim.depth.abs()));
-        near[2] - rim.depth > depth_guard
+        let depth = near[2].min(ceiling);
+        let depth_guard = tolerance.max(16. * f64::EPSILON * depth.abs().max(rim.depth.abs()));
+        depth - rim.depth > depth_guard
             && (0..2).all(|i| same_coordinate(rim.ellipse.center[i], near[i], self.radius))
     }
 
@@ -181,8 +187,9 @@ impl RoundOccluder {
         )
     }
 
-    pub(crate) fn blocks_point(&self, point: Point, tolerance: f64) -> bool {
-        if !self.may_hide([point; 2], tolerance) {
+    pub(crate) fn blocks_point(&self, point: Point, near: f64, tolerance: f64) -> bool {
+        let front = near - point[2] - tolerance;
+        if front <= 0. || !self.may_hide([point; 2], tolerance) {
             return false;
         }
         let [x, y, z]: Point = std::array::from_fn(|i| point[i] - self.base[i]);
@@ -193,11 +200,11 @@ impl RoundOccluder {
         let p = self.projected;
         let z = z + tolerance;
         self.ray_hits(
-            p.mul_add(along, c * z),
-            c.mul_add(along, -p * z),
-            across,
+            [p.mul_add(along, c * z), c.mul_add(along, -p * z), across],
             self.radius,
             self.bore,
+            front,
+            near.is_finite().then_some(tolerance),
         )
     }
 
@@ -430,7 +437,7 @@ impl RoundOccluder {
         contour: bool,
     ) -> bool {
         if !contour {
-            return self.ray_hits(axial, radial, y, outer, bore);
+            return self.ray_hits([axial, radial, y], outer, bore, f64::INFINITY, None);
         }
         // This branch is certified only for an opaque, side-on cylinder.
         // Its closed disk projects to the interval between the two tangents,
@@ -444,22 +451,32 @@ impl RoundOccluder {
         radial + front > 0.
     }
 
-    fn ray_hits(&self, axial: f64, radial: f64, y: f64, outer: f64, bore: Option<f64>) -> bool {
+    fn ray_hits(
+        &self,
+        [axial, radial, y]: Point,
+        outer: f64,
+        bore: Option<f64>,
+        maximum_depth: f64,
+        cap_tolerance: Option<f64>,
+    ) -> bool {
         let c = self.axis[2];
         let p = self.projected;
-        let mut front = [0., f64::INFINITY];
+        let mut front = [0., maximum_depth];
         if c == 0. {
-            if self.quarter.is_some() {
+            let inside_cap = if let Some(tolerance) = cap_tolerance {
+                axial >= -tolerance && axial <= self.height + tolerance
+            } else if self.quarter.is_some() {
                 let guard = 16. * f64::EPSILON * self.height;
-                if axial < -guard || axial > self.height + guard {
-                    return false;
-                }
-            } else if axial <= 0. || axial >= self.height {
+                axial >= -guard && axial <= self.height + guard
+            } else {
+                axial > 0. && axial < self.height
+            };
+            if !inside_cap {
                 return false;
             }
         } else {
             let [a, b] = [-axial / c, (self.height - axial) / c];
-            front = [a.min(b).max(0.), a.max(b)];
+            front = [a.min(b).max(0.), a.max(b).min(maximum_depth)];
             if front[1] <= front[0] {
                 return false;
             }

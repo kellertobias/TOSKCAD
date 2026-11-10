@@ -2366,6 +2366,69 @@ fn verify_twisted_loft_round_scene(
             .all(|[x, y]| { (x - 1.).hypot(y - 4.8) <= 0.750001 })
     );
 
+    let retained = |loft, ring, options| {
+        let hatch = multicad_kernel::DrawingHatch {
+            angle_rad: 0.3,
+            spacing_mm: 0.2,
+            line_width_mm: 0.1,
+            pattern: multicad_core::materials::HatchPattern::Lines,
+        };
+        project_drawing(
+            &[
+                DrawingSolid {
+                    solid: loft,
+                    hatch: None,
+                },
+                DrawingSolid {
+                    solid: ring,
+                    hatch: Some(hatch),
+                },
+            ],
+            options,
+        )
+        .unwrap_or_else(|error| panic!("{options:?}: {error:?}"))
+    };
+    let axial_cut = DrawingProjection {
+        section_offset_mm: Some(7.8),
+        section_depth_mm: Some(4.),
+        ..options
+    };
+    let windowed_cut = DrawingProjection {
+        section_offset_mm: Some(6.5),
+        section_depth_mm: Some(3.),
+        section_u_mm: Some([-0.15, 2.2]),
+        section_v_mm: Some([3.8, 5.4]),
+        ..oblique
+    };
+    let through = DrawingProjection {
+        section_depth_mm: None,
+        ..windowed_cut
+    };
+    for cut in [axial_cut, windowed_cut, through] {
+        let vectors = retained(loft, &ring, cut);
+        for role in [VectorRole::Visible, VectorRole::Section, VectorRole::Hatch] {
+            assert!(
+                vectors
+                    .iter()
+                    .any(|v| v.source_index == 1 && v.role == role),
+                "{cut:?} {role:?}"
+            );
+        }
+        assert!(
+            vectors
+                .iter()
+                .any(|v| v.source_index == 0 && v.role == VectorRole::Visible)
+        );
+        assert!(vectors.iter().any(|v| v.source_index == 1
+            && v.role == VectorRole::Section
+            && matches!(v.curve, VectorCurve::Ellipse { .. })));
+        for point in vectors.iter().flat_map(|v| &v.preview_mm) {
+            for (coordinate, range) in point.iter().zip([cut.section_u_mm, cut.section_v_mm]) {
+                assert!(range.is_none_or(|[lo, hi]| *coordinate >= lo - 1e-6 && *coordinate <= hi + 1e-6));
+            }
+        }
+    }
+
     #[cfg(feature = "occt")]
     {
         let policy = Default::default();
@@ -2416,6 +2479,46 @@ fn verify_twisted_loft_round_scene(
                 }
             }
         }
+        for cut in [axial_cut, windowed_cut, through] {
+            let rust = retained(loft, &ring, cut);
+            let reference = retained(native, &native_ring, cut);
+            for (a, b) in [(&rust, &reference), (&reference, &rust)] {
+                let rim = |v: &&multicad_kernel::ProjectedVector| {
+                    v.source_index == 1 && v.role == VectorRole::Section
+                };
+                let segments = b.iter().filter(rim).flat_map(|v| v.preview_mm.windows(2));
+                for &[x, y] in a.iter().filter(rim).flat_map(|v| &v.preview_mm) {
+                    let error = segments
+                        .clone()
+                        .map(|ends| {
+                            let [[ax, ay], [bx, by]] = [ends[0], ends[1]];
+                            let [u, v] = [bx - ax, by - ay];
+                            let t = (((x - ax) * u + (y - ay) * v) / (u * u + v * v)).clamp(0., 1.);
+                            (x - ax - t * u).hypot(y - ay - t * v)
+                        })
+                        .fold(f64::INFINITY, f64::min);
+                    assert!(
+                        error < 3. * options.chord_tolerance_mm,
+                        "{cut:?} [{x}, {y}]: {error}"
+                    );
+                }
+            }
+        }
+        let measure_section = |loft, ring| {
+            let mut times = [std::time::Duration::ZERO; 9];
+            for elapsed in &mut times {
+                let start = std::time::Instant::now();
+                assert!(!retained(loft, ring, windowed_cut).is_empty());
+                *elapsed = start.elapsed();
+            }
+            times.sort_unstable();
+            times[4]
+        };
+        eprintln!(
+            "Twisted loft and annulus windowed depth section, 9 warm runs: Rust {:?}, OpenCascade {:?}",
+            measure_section(loft, &ring),
+            measure_section(native, &native_ring),
+        );
         let measure = |loft, ring| {
             let mut times = [std::time::Duration::ZERO; 9];
             for elapsed in &mut times {

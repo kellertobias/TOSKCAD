@@ -1,7 +1,7 @@
 //! Plane cuts of a finite circular annulus. The section curves stay analytic.
 //! Hatching uses a conservative chord approximation of the cut material.
 use super::*;
-use multicad_rust_kernel::curved_projection::{Curve, Ellipse, Error as CurveError};
+use multicad_rust_kernel::curved_projection::{Curve, Ellipse};
 use std::f64::consts::TAU;
 
 type Point = [f64; 2];
@@ -98,13 +98,62 @@ pub(in crate::drawing) fn project_circular(
             "Rust circular sections require a section-only view without a detail crop",
         ));
     }
-    let (placement, outer, h, bore) =
-        curved::circular_dimensions(input.solid).ok_or_else(|| {
-            err(
-                GeometryErrorKind::Unsupported,
-                "Rust circular section requires a circular cylinder or annulus",
-            )
-        })?;
+    let Some((edges, chart)) = circular_cut(input.solid, options, depth)? else {
+        return Ok(Vec::new());
+    };
+    let hatch = input
+        .hatch
+        .filter(|hatch| hatch.pattern != HatchPattern::None);
+    let tolerance = input.solid.geometry_policy().linear_tolerance_mm;
+    let output = publish_edges(edges, options)?;
+    let (frame, boundary) = match chart {
+        CutHatch::Polygon(frame, boundary) => (frame, boundary),
+        CutHatch::Ellipse {
+            frame,
+            outer,
+            inner,
+            planes,
+        } => {
+            let boundary = if hatch.is_some() && !output.is_empty() {
+                hatch_boundary(outer, inner, &planes, options.chord_tolerance_mm, tolerance)?
+            } else {
+                Vec::new()
+            };
+            (frame, boundary)
+        }
+    };
+    finish_section(frame, output, boundary, hatch, options, tolerance)
+}
+
+enum CutHatch {
+    Polygon(Frame2, Vec<Segment>),
+    Ellipse {
+        frame: Frame2,
+        outer: Point,
+        inner: Point,
+        planes: Vec<Halfspace>,
+    },
+}
+
+pub(super) fn circular_edges(
+    solid: &Solid,
+    options: DrawingProjection,
+    depth: f64,
+) -> Result<Vec<Curve>, GeometryError> {
+    circular_cut(solid, options, depth).map(|cut| cut.map_or_else(Vec::new, |(edges, _)| edges))
+}
+
+fn circular_cut(
+    solid: &Solid,
+    options: DrawingProjection,
+    depth: f64,
+) -> Result<Option<(Vec<Curve>, CutHatch)>, GeometryError> {
+    let (placement, outer, h, bore) = curved::circular_dimensions(solid).ok_or_else(|| {
+        err(
+            GeometryErrorKind::Unsupported,
+            "Rust circular section requires a circular cylinder or annulus",
+        )
+    })?;
     let axes = planar::view_axes(options.frame);
     let local = |point: [f64; 3]| {
         axes.map(|axis| axis.into_iter().zip(point).map(|(a, b)| a * b).sum::<f64>())
@@ -125,24 +174,20 @@ pub(in crate::drawing) fn project_circular(
     let origin = [base[0], base[1]];
     let delta_depth = depth - base[2];
     let inner = bore.unwrap_or(0.);
-    let tolerance = input.solid.geometry_policy().linear_tolerance_mm;
+    let tolerance = solid.geometry_policy().linear_tolerance_mm;
     let radial_depth = s * outer;
     if delta_depth < (c * h).min(0.) - radial_depth - tolerance
         || delta_depth > (c * h).max(0.) + radial_depth + tolerance
     {
-        return Ok(Vec::new());
+        return Ok(None);
     }
     let windows = [options.section_u_mm, options.section_v_mm];
-    let hatch = input
-        .hatch
-        .filter(|hatch| hatch.pattern != HatchPattern::None);
-
-    let (frame, output, boundary) = if c.abs() <= ANGULAR_ROUNDOFF {
+    if c.abs() <= ANGULAR_ROUNDOFF {
         // The plane meets the cylinders along generators, or misses them
         // entirely. A tangent generator has no material area.
         let distance = delta_depth.abs();
         let Some(outer) = half_width(outer, distance) else {
-            return Ok(Vec::new());
+            return Ok(None);
         };
         let inner = half_width(inner, distance).unwrap_or(0.);
         let frame = Frame2 { origin, u, v };
@@ -158,11 +203,11 @@ pub(in crate::drawing) fn project_circular(
             let ring = clip_polygon(corners, &planes, tolerance);
             boundary.extend(polygon_edges(&ring).map(|(ends, _)| ends));
         }
-        let output = boundary
+        let edges = boundary
             .iter()
-            .map(|ends| planar::line(0, VectorRole::Section, ends.map(|p| frame.point(p))))
+            .map(|ends| Curve::Line(ends.map(|p| frame.point(p))))
             .collect();
-        (frame, output, boundary)
+        Ok(Some((edges, CutHatch::Polygon(frame, boundary))))
     } else {
         // At axial coordinate z0 the section plane crosses the stock axis.
         // In section coordinates along and across the projected axis, the
@@ -176,7 +221,7 @@ pub(in crate::drawing) fn project_circular(
         let mut planes = frame.window(windows);
         if s <= ANGULAR_ROUNDOFF {
             if z0 < -tolerance || z0 > h + tolerance {
-                return Ok(Vec::new());
+                return Ok(None);
             }
         } else {
             planes.extend([
@@ -196,23 +241,24 @@ pub(in crate::drawing) fn project_circular(
                     && plane.max + previous.max <= tolerance
             })
         }) {
-            return Ok(Vec::new());
+            return Ok(None);
         }
         let outer = [outer / c.abs(), outer];
         let inner = [inner / c.abs(), inner];
         if frame.origin.iter().any(|coordinate| coordinate.abs() > 1e7) || outer[0] > 1e7 {
             return Err(limit());
         }
-        let output = elliptical_section(frame, outer, inner, &planes, options, tolerance)?;
-        let boundary = if hatch.is_some() && !output.is_empty() {
-            hatch_boundary(outer, inner, &planes, options.chord_tolerance_mm, tolerance)?
-        } else {
-            Vec::new()
-        };
-        (frame, output, boundary)
-    };
-
-    finish_section(frame, output, boundary, hatch, options, tolerance)
+        let edges = ellipse_edges(frame, outer, inner, &planes, tolerance);
+        Ok(Some((
+            edges,
+            CutHatch::Ellipse {
+                frame,
+                outer,
+                inner,
+                planes,
+            },
+        )))
+    }
 }
 
 pub(in crate::drawing) fn project_concentric(
@@ -230,7 +276,10 @@ pub(in crate::drawing) fn project_concentric(
     let inner = [inner; 2];
     let planes = frame.window([options.section_u_mm, options.section_v_mm]);
     let tolerance = input.solid.geometry_policy().linear_tolerance_mm;
-    let output = elliptical_section(frame, outer, inner, &planes, options, tolerance)?;
+    let output = publish_edges(
+        ellipse_edges(frame, outer, inner, &planes, tolerance),
+        options,
+    )?;
     let hatch = input
         .hatch
         .filter(|hatch| hatch.pattern != HatchPattern::None);
@@ -274,15 +323,13 @@ fn finish_section(
     Ok(output)
 }
 
-fn elliptical_section(
+fn ellipse_edges(
     frame: Frame2,
     outer: Point,
     inner: Point,
     planes: &[Halfspace],
-    options: DrawingProjection,
     tolerance: f64,
-) -> Result<Vec<ProjectedVector>, GeometryError> {
-    let mut points = options.maximum_points as usize;
+) -> Vec<Curve> {
     let mut output = Vec::new();
     for [major, minor] in [outer, inner] {
         if minor == 0. {
@@ -297,30 +344,7 @@ fn elliptical_section(
                 minor,
                 trim,
             };
-            let preview_mm = Curve::Ellipse(ellipse)
-                .preview(options.chord_tolerance_mm, points)
-                .map_err(|error| match error {
-                    CurveError::Limit => limit(),
-                    CurveError::Invalid => err(
-                        GeometryErrorKind::InvalidResult,
-                        "Invalid Rust annulus section ellipse",
-                    ),
-                })?;
-            points -= preview_mm.len();
-            output.push(ProjectedVector {
-                source_index: 0,
-                role: VectorRole::Section,
-                curve: VectorCurve::Ellipse {
-                    center: ellipse.center,
-                    u: ellipse.u,
-                    v: ellipse.v,
-                    major_mm: major,
-                    minor_mm: minor,
-                    start_rad: trim[0],
-                    end_rad: trim[1],
-                },
-                preview_mm,
-            });
+            output.push(Curve::Ellipse(ellipse));
         }
     }
     for (i, plane) in planes.iter().enumerate() {
@@ -335,14 +359,33 @@ fn elliptical_section(
             .then(|| ellipse_interval(inner, origin, direction))
             .flatten();
         for span in subtract_span(span, hole, tolerance) {
-            output.push(planar::line(
-                0,
-                VectorRole::Section,
+            output.push(Curve::Line(
                 span.map(|distance| frame.point(at(origin, direction, distance))),
             ));
         }
     }
-    Ok(output)
+    output
+}
+
+fn publish_edges(
+    edges: Vec<Curve>,
+    options: DrawingProjection,
+) -> Result<Vec<ProjectedVector>, GeometryError> {
+    let mut vectors = curved::publish(
+        edges
+            .into_iter()
+            .map(|curve| multicad_rust_kernel::curved_projection::Edge {
+                hidden: false,
+                curve,
+            })
+            .collect(),
+        options,
+        0,
+    )?;
+    for vector in &mut vectors {
+        vector.role = VectorRole::Section;
+    }
+    Ok(vectors)
 }
 
 fn ellipse_trims(radii: Point, planes: &[Halfspace]) -> Vec<Span> {

@@ -1,7 +1,7 @@
 //! Shared orthographic visibility for planar, round and bilinear bodies.
 use super::*;
 use crate::planar_projection::{Body, Options, ProjectionError, prepare_loft_faces};
-use crate::round_occlusion::RoundOccluder;
+use crate::{curved_projection, round_occlusion::RoundOccluder};
 use std::cell::Cell;
 use visibility::{Candidate, Cap, Wall};
 
@@ -13,6 +13,21 @@ pub enum LoftSceneMember<'a> {
     },
     Planar(&'a Body),
     Round(&'a RoundOccluder),
+    RetainedRound {
+        body: &'a RoundOccluder,
+        edges: &'a [LoftRoundCutEdge],
+        near_trimmed: bool,
+    },
+}
+
+/// An exact cut curve in the cyclic coordinate chart of a clipping plane.
+#[derive(Clone, Copy, Debug)]
+pub struct LoftRoundCutEdge {
+    /// Coordinate fixed by the clipping plane, from paper U, V and depth.
+    pub axis: usize,
+    pub level: f64,
+    /// Coordinates along the next two cyclic axes.
+    pub curve: curved_projection::Curve,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -25,8 +40,8 @@ pub struct LoftSceneCut {
 #[derive(Debug, PartialEq)]
 pub struct LoftSceneSection {
     pub edges: Vec<(usize, LoftDrawingEdge)>,
-    /// Indices of loft members with retained geometry changed by a cut.
-    pub clipped_lofts: Vec<usize>,
+    /// Indices of retained loft and round members that have section geometry.
+    pub clipped_members: Vec<usize>,
 }
 
 const MAX_WORK: usize = 20_000_000;
@@ -85,7 +100,9 @@ pub(super) fn project_with_limit(
         .iter()
         .filter_map(|member| match member {
             LoftSceneMember::Planar(body) => Some(*body),
-            LoftSceneMember::Loft { .. } | LoftSceneMember::Round(_) => None,
+            LoftSceneMember::Loft { .. }
+            | LoftSceneMember::Round(_)
+            | LoftSceneMember::RetainedRound { .. } => None,
         })
         .collect();
     let prepared = prepare_loft_faces(&planar, &options, limit).map_err(|cause| match cause {
@@ -95,6 +112,7 @@ pub(super) fn project_with_limit(
     let planar_faces = prepared.faces;
     let mut lofts = Vec::new();
     let mut rounds = Vec::new();
+    let mut clipped_rounds = Vec::new();
     let mut curves = Vec::new();
     let mut coordinate_scale = 1_f64;
     let mut tangent = prepared.tangent.into_iter();
@@ -150,7 +168,11 @@ pub(super) fn project_with_limit(
                 );
             }
             LoftSceneMember::Round(body) => {
-                if cut.is_some() {
+                if planes.is_some_and(|planes| {
+                    body.bounds()
+                        .into_iter()
+                        .any(|point| !clip::includes(planes, point, options.tolerance))
+                }) {
                     return Err(Error::Unresolved);
                 }
                 coordinate_scale = body
@@ -159,8 +181,43 @@ pub(super) fn project_with_limit(
                     .flatten()
                     .map(f64::abs)
                     .fold(coordinate_scale, f64::max);
-                rounds.push((source, body));
-                curves.extend(round::candidates(source, body, options.hidden_lines)?);
+                rounds.push((source, body, false));
+                curves.extend(round::candidates(
+                    source,
+                    body,
+                    options.hidden_lines,
+                    false,
+                )?);
+            }
+            LoftSceneMember::RetainedRound {
+                body,
+                edges,
+                near_trimmed,
+            } => {
+                let Some(planes) = planes else {
+                    return Err(Error::Invalid);
+                };
+                let [min, max] = body.bounds();
+                if planes.into_iter().enumerate().any(|(axis, window)| {
+                    window.is_some_and(|[lo, hi]| {
+                        max[axis] <= lo + options.tolerance || min[axis] >= hi - options.tolerance
+                    })
+                }) {
+                    continue;
+                }
+                coordinate_scale = min
+                    .into_iter()
+                    .chain(max)
+                    .map(f64::abs)
+                    .fold(coordinate_scale, f64::max);
+                rounds.push((source, body, true));
+                if near_trimmed {
+                    clipped_rounds.push(source);
+                }
+                curves.extend(round::candidates(source, body, options.hidden_lines, true)?);
+                for &edge in edges {
+                    round::add_cut_candidates(source, edge, planes, &mut curves)?;
+                }
             }
             LoftSceneMember::Planar(body) => {
                 let tags = tangent.next().expect("tangent flags for every planar body");
@@ -210,10 +267,21 @@ pub(super) fn project_with_limit(
                 .iter()
                 .filter_map(|loft| loft.clip.as_ref())
                 .any(|clip| clip.blocks(point, options.tolerance))
-            || rounds.iter().any(|&(owner, round)| {
-                source != owner
-                    && (rim.is_some_and(|rim| round.covers_coincident_rim(rim, options.tolerance))
-                        || round.blocks_point(point, options.tolerance))
+            || rounds.iter().any(|&(owner, round, retained)| {
+                let contour = |rim| {
+                    if retained {
+                        source == owner && round.covers_axial_contour(rim, near, options.tolerance)
+                    } else {
+                        round.covers_coincident_rim(rim, options.tolerance)
+                    }
+                };
+                (source != owner || retained)
+                    && (rim.is_some_and(contour)
+                        || round.blocks_point(
+                            point,
+                            if retained { near } else { f64::INFINITY },
+                            options.tolerance,
+                        ))
             }))
     };
     let epsilon = (64. * f64::EPSILON * coordinate_scale).min(options.tolerance);
@@ -234,7 +302,7 @@ pub(super) fn project_with_limit(
                 wall.depth_events(curve, bounds, epsilon, cuts);
             }
         }
-        for &(owner, round) in &rounds {
+        for &(owner, round, _) in &rounds {
             if owner != source {
                 round::depth_events(round, curve, bounds, epsilon, cuts);
             }
@@ -262,13 +330,15 @@ pub(super) fn project_with_limit(
     for &(source, edge) in &edges {
         visible[source] |= !edge.hidden;
     }
-    let clipped_lofts = lofts
+    let mut clipped_members: Vec<_> = lofts
         .iter()
         .filter(|loft| visible[loft.source] && loft.clip.as_ref().is_some_and(|clip| clip.changed))
         .map(|loft| loft.source)
+        .chain(clipped_rounds.into_iter().filter(|&source| visible[source]))
         .collect();
+    clipped_members.sort_unstable();
     Ok(LoftSceneSection {
         edges,
-        clipped_lofts,
+        clipped_members,
     })
 }

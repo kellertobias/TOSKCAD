@@ -512,7 +512,7 @@ fn assembly_section_uses_one_cut_for_placed_lofts_and_clipped_planar_faces() {
         },
     ];
     let section = project_loft_scene_section(&members, scene_options(), cut).unwrap();
-    assert_eq!(section.clipped_lofts, [2]);
+    assert_eq!(section.clipped_members, [2]);
     assert!(
         section
             .edges
@@ -542,7 +542,7 @@ fn assembly_section_uses_one_cut_for_placed_lofts_and_clipped_planar_faces() {
     let through =
         project_loft_scene_section(&members, scene_options(), LoftSceneCut { far: None, ..cut })
             .unwrap();
-    assert_eq!(through.clipped_lofts, [2]);
+    assert_eq!(through.clipped_members, [2]);
     assert!(
         through
             .edges
@@ -700,4 +700,148 @@ fn an_almost_edge_on_rim_keeps_its_ellipse_when_the_polynomial_is_flat_on_paper(
                 ellipse.minor > 0. && ellipse.minor < 1e-12 && ellipse.trim[1] > ellipse.trim[0]
             })
     }));
+}
+
+fn cut_circle(axis: usize, level: f64, radius: f64) -> LoftRoundCutEdge {
+    use crate::curved_projection::{Curve, Ellipse};
+
+    LoftRoundCutEdge {
+        axis,
+        level,
+        curve: Curve::Ellipse(Ellipse {
+            center: [0.; 2],
+            u: [1., 0.],
+            v: [0., 1.],
+            major: radius,
+            minor: radius,
+            trim: [0., std::f64::consts::TAU],
+        }),
+    }
+}
+
+#[test]
+fn retained_annulus_hides_stock_only_where_a_retained_wall_is_in_front() {
+    use crate::{planar_projection::tests::rect, round_occlusion::RoundOccluder};
+
+    let ring = RoundOccluder::new([0.; 3], [0., 0., 1.], 3., 6., Some(1.)).unwrap();
+    let stock = rect([-4., 0., 4., 0.5], 2.5, 3.);
+    let edges = [
+        cut_circle(2, 4., 3.),
+        cut_circle(2, 4., 1.),
+        cut_circle(2, 2., 3.),
+        cut_circle(2, 2., 1.),
+    ];
+    let retained = LoftSceneMember::RetainedRound {
+        body: &ring,
+        edges: &edges,
+        near_trimmed: true,
+    };
+    let cut = LoftSceneCut {
+        near: 4.,
+        far: Some(2.),
+        windows: [None; 2],
+    };
+    assert_eq!(
+        project_loft_scene(std::slice::from_ref(&retained), scene_options()),
+        Err(Error::Invalid)
+    );
+    let scene = project_loft_scene_section(
+        &[LoftSceneMember::Planar(&stock), retained],
+        scene_options(),
+        cut,
+    )
+    .unwrap();
+    assert_eq!(scene.clipped_members, [1]);
+    for (hidden, x) in [(false, [-1., 1.]), (true, [1., 3.])] {
+        assert!(scene.edges.iter().any(|&(source, edge)| {
+            source == 0
+                && edge.hidden == hidden
+                && matches!(edge.curve, LoftSectionCurve::Line([a, b])
+                    if [a,b].into_iter().all(|p| p[1] == 0. && p[2] == 3.)
+                        && (a[0] - x[0]).abs() < TOL && (b[0] - x[1]).abs() < TOL)
+        }));
+    }
+    assert!(scene.edges.iter().any(|&(source, edge)| source == 1
+        && edge.ellipse.is_some()
+        && !edge.hidden
+        && matches!(edge.curve, LoftSectionCurve::Quadratic { poles, .. }
+            if poles.into_iter().all(|p| (p[2] - 4.).abs() < TOL))));
+    assert!(scene.edges.iter().any(|&(source, edge)| source == 1
+        && edge.ellipse.is_some()
+        && edge.hidden
+        && matches!(edge.curve, LoftSectionCurve::Quadratic { poles, .. }
+            if poles.into_iter().all(|p| (p[2] - 2.).abs() < TOL))));
+    assert!(!scene.edges.iter().any(|&(source, edge)| source == 1
+        && edge.ellipse.is_some()
+        && !edge.hidden
+        && matches!(edge.curve, LoftSectionCurve::Quadratic { poles, .. }
+            if poles.into_iter().all(|p| (p[2] - 2.).abs() < TOL))));
+    let excluded = project_loft_scene_section(
+        &[LoftSceneMember::RetainedRound {
+            body: &ring,
+            edges: &[],
+            near_trimmed: false,
+        }],
+        scene_options(),
+        LoftSceneCut {
+            near: -1.,
+            far: None,
+            ..cut
+        },
+    )
+    .unwrap();
+    assert!(excluded.edges.is_empty());
+}
+
+#[test]
+fn a_side_cut_flattens_its_round_rim_in_paper_without_losing_depth() {
+    use crate::{curved_projection::Curve, round_occlusion::RoundOccluder};
+
+    let cylinder = RoundOccluder::new([0.; 3], [1., 0., 0.], 2., 4., None).unwrap();
+    let cut = LoftSceneCut {
+        near: 0.5,
+        far: Some(-1.5),
+        windows: [Some([1., 3.]), None],
+    };
+    let edges = [
+        cut_circle(0, 1., 2.),
+        cut_circle(0, 3., 2.),
+        LoftRoundCutEdge {
+            axis: 2,
+            level: 0.5,
+            curve: Curve::Line([[1., 1.5], [3., 1.5]]),
+        },
+    ];
+    let project = |edges: &[LoftRoundCutEdge]| {
+        project_loft_scene_section(
+            &[LoftSceneMember::RetainedRound {
+                body: &cylinder,
+                edges,
+                near_trimmed: true,
+            }],
+            scene_options(),
+            cut,
+        )
+    };
+    let section = project(&edges).unwrap();
+    assert!(section.edges.iter().any(|(_, edge)| {
+        edge.hidden
+            && edge.ellipse.is_none()
+            && matches!(edge.curve, LoftSectionCurve::Line([a,b])
+                if (a[0] - 1.).abs() < TOL && (b[0] - 1.).abs() < TOL)
+    }));
+    assert!(section.edges.iter().any(|(_, edge)| {
+        !edge.hidden
+            && matches!(edge.curve, LoftSectionCurve::Line([a,b])
+            if [a,b].into_iter().all(|p| p[1] == 1.5 && p[2] == 0.5))
+    }));
+    assert_eq!(project(&[cut_circle(3, 0.5, 2.)]), Err(Error::Invalid));
+    assert_eq!(project(&[cut_circle(0, 1., -2.)]), Err(Error::Invalid));
+    assert_eq!(
+        project(&[LoftRoundCutEdge {
+            curve: Curve::Line([[f64::NAN, 1.5], [3., 1.5]]),
+            ..edges[2]
+        }]),
+        Err(Error::Invalid)
+    );
 }
