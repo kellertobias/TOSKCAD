@@ -107,6 +107,7 @@ mod tests {
             .unwrap();
         settle(workspace, session);
     }
+    #[cfg(feature = "occt")]
     #[test]
     fn native_workspace_runs_production_adapter_and_exact_step_without_mutating_source() {
         let mut session = Session::new(Document::new("Native workspace fixture").unwrap()).unwrap();
@@ -179,7 +180,12 @@ mod tests {
         let before = session.document().clone();
         let revision = session.revision();
         let dir = tempfile::tempdir().unwrap();
-        for backend in [GeometryBackend::OpenCascade, GeometryBackend::Rust] {
+        let backends = [
+            GeometryBackend::Rust,
+            #[cfg(feature = "occt")]
+            GeometryBackend::OpenCascade,
+        ];
+        for &backend in &backends {
             workspace
                 .set_backend(Box::new(Backend::with_geometry_backend(backend)))
                 .unwrap();
@@ -202,7 +208,7 @@ mod tests {
             .map(|e| e.unwrap().path())
             .filter(|p| p.is_dir())
             .collect();
-        assert_eq!(bundles.len(), 2);
+        assert_eq!(bundles.len(), backends.len());
         let mut rust_outputs = 0;
         for bundle in bundles {
             let manifest = std::fs::read(bundle.join("multicad-export.json")).unwrap();
@@ -220,26 +226,35 @@ mod tests {
                 assert!(text.contains("MANIFOLD_SOLID_BREP"));
                 assert!(text.contains("MultiCAD analytic solid"));
                 assert!(!text.contains("Open CASCADE STEP processor"));
+                let readback =
+                    multicad_kernel::rust_kernel::step_read::read_analytic_solid(&text, 1e-7)
+                        .unwrap();
+                assert_eq!(readback.solid_count, 1);
+                assert_eq!(readback.bounds_mm, [[5., -7., 2.], [8., 5., 10.]]);
+                assert!((readback.volume_mm3 - 288.).abs() < 1e-7);
             } else {
                 assert!(provider.starts_with("step-files.1;"));
                 assert!(text.contains("Open CASCADE STEP processor"));
             }
-            let solid = multicad_kernel::Solid::read_step(
-                &step,
-                multicad_kernel::GeometryPolicy::default(),
-            )
-            .unwrap();
-            let bounds = solid.bounds().unwrap();
-            assert_eq!(solid.solid_count().unwrap(), 1);
-            for (actual, expected) in bounds
-                .min
-                .into_iter()
-                .chain(bounds.max)
-                .zip([5., -7., 2., 8., 5., 10.])
+            #[cfg(feature = "occt")]
             {
-                assert!((actual - expected).abs() < 1e-7);
+                let solid = multicad_kernel::Solid::read_step(
+                    &step,
+                    multicad_kernel::GeometryPolicy::default(),
+                )
+                .unwrap();
+                let bounds = solid.bounds().unwrap();
+                assert_eq!(solid.solid_count().unwrap(), 1);
+                for (actual, expected) in bounds
+                    .min
+                    .into_iter()
+                    .chain(bounds.max)
+                    .zip([5., -7., 2., 8., 5., 10.])
+                {
+                    assert!((actual - expected).abs() < 1e-7);
+                }
+                assert!((solid.volume_mm3().unwrap() - 288.).abs() < 1e-7);
             }
-            assert!((solid.volume_mm3().unwrap() - 288.).abs() < 1e-7);
         }
         assert_eq!(rust_outputs, 1);
         assert_eq!(session.document(), &before);
@@ -294,10 +309,15 @@ mod tests {
         let step = std::fs::read_to_string(&path).unwrap();
         assert_eq!(step.matches("=CYLINDRICAL_SURFACE(").count(), 1);
         assert_eq!(step.matches("=CIRCLE(").count(), 2);
-        let solid =
-            multicad_kernel::Solid::read_step(&path, multicad_kernel::GeometryPolicy::default())
-                .unwrap();
-        assert!((solid.volume_mm3().unwrap() - 150. * std::f64::consts::PI).abs() < 1e-6);
+        let readback =
+            multicad_kernel::rust_kernel::step_read::read_analytic_solid(&step, 1e-7).unwrap();
+        assert_eq!(readback.solid_count, 1);
+        assert!((readback.volume_mm3 - 150. * std::f64::consts::PI).abs() < 1e-6);
+        #[cfg(feature = "occt")]
+        {
+            let independent = multicad_kernel::Solid::read_step(&path, Default::default()).unwrap();
+            assert!((independent.volume_mm3().unwrap() - readback.volume_mm3).abs() < 1e-6);
+        }
         assert_eq!(session.document(), &before);
     }
     #[test]
@@ -395,8 +415,12 @@ mod tests {
         let readback = step_read::read_analytic_solid(&text, policy.linear_tolerance_mm).unwrap();
         assert_eq!(readback.semicircles.len(), 4);
         assert_eq!(readback.circles.len(), 2);
-        let independent = Solid::read_step(&published, policy).unwrap();
-        assert!((independent.volume_mm3().unwrap() - stock.volume_mm3().unwrap()).abs() < 1e-6);
+        assert!((readback.volume_mm3 - stock.volume_mm3().unwrap()).abs() < 1e-6);
+        #[cfg(feature = "occt")]
+        {
+            let independent = Solid::read_step(&published, policy).unwrap();
+            assert!((independent.volume_mm3().unwrap() - readback.volume_mm3).abs() < 1e-6);
+        }
     }
 
     #[test]

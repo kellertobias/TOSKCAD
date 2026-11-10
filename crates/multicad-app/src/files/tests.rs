@@ -1,8 +1,8 @@
 use super::*;
 use multicad_core::{document::*, project_file::*};
-use multicad_kernel::Solid;
+use multicad_kernel::rust_kernel::{Rational, step::write_box, step_read::read_analytic_solid};
 use std::{collections::BTreeSet, sync::Arc};
-fn project(directory: &Path) -> ProjectFile {
+fn project() -> ProjectFile {
     let material = Entity::new(
         "Steel",
         EntityData::Material {
@@ -40,16 +40,18 @@ fn project(directory: &Path) -> ProjectFile {
         ])
         .unwrap();
     let mut project = ProjectFile::new(doc).unwrap();
-    let step = directory.join("real-solid.step");
-    Solid::box_named([20., 30., 8.], feature.id, Default::default())
-        .unwrap()
-        .write_step(&step)
-        .unwrap();
+    let step = write_box(
+        [20, 30, 8].map(|dimension| Rational::new(dimension, 1).unwrap()),
+        [0.; 3],
+        [1., 0., 0.],
+        [0., 1., 0.],
+    )
+    .unwrap();
     let payload = Payload::new(
         "kernel.source.step",
         "model/step",
         Some(feature.id),
-        std::fs::read(step).unwrap(),
+        step.into_bytes(),
     );
     project
         .resources
@@ -68,7 +70,7 @@ fn project(directory: &Path) -> ProjectFile {
 fn native_roundtrip_preserves_actual_step_and_pinned_symbol_bytes_across_source_edits() {
     let dir = tempfile::tempdir().unwrap();
     let mut store = ProjectStore::new(dir.path().join("recovery"));
-    let mut project = project(dir.path());
+    let mut project = project();
     let path = dir.path().join("native.multicad");
     let saved = store
         .save_project(&path, &project, SaveMode::Create)
@@ -92,17 +94,18 @@ fn native_roundtrip_preserves_actual_step_and_pinned_symbol_bytes_across_source_
         .values()
         .find(|p| p.descriptor.kind == "kernel.source.step")
         .unwrap();
-    let exact = dir.path().join("reopened.step");
-    std::fs::write(&exact, &raw.bytes).unwrap();
-    assert!(
-        (Solid::read_step(&exact, Default::default())
-            .unwrap()
-            .volume_mm3()
-            .unwrap()
-            - 4800.)
-            .abs()
-            < 1e-7
-    );
+    let step = std::str::from_utf8(&raw.bytes).unwrap();
+    let readback = read_analytic_solid(step, 1e-7).unwrap();
+    assert_eq!(readback.solid_count, 1);
+    assert_eq!(readback.bounds_mm, [[0.; 3], [20., 30., 8.]]);
+    assert!((readback.volume_mm3 - 4800.).abs() < 1e-7);
+    #[cfg(feature = "occt")]
+    {
+        let exact = dir.path().join("reopened.step");
+        std::fs::write(&exact, &raw.bytes).unwrap();
+        let independent = multicad_kernel::Solid::read_step(&exact, Default::default()).unwrap();
+        assert!((independent.volume_mm3().unwrap() - readback.volume_mm3).abs() < 1e-7);
+    }
     assert_eq!(
         reopened
             .file
@@ -124,7 +127,7 @@ fn failed_and_conflicting_saves_preserve_the_last_valid_project() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("native.multicad");
     let mut store = ProjectStore::new(dir.path().join("recovery"));
-    let mut project = project(dir.path());
+    let mut project = project();
     let original = store
         .save_project(&path, &project, SaveMode::Create)
         .unwrap();
@@ -178,7 +181,7 @@ fn recovery_is_discoverable_and_restoration_cannot_replace_the_original_silently
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("native.multicad");
     let mut store = ProjectStore::new(dir.path().join("recovery"));
-    let mut project = project(dir.path());
+    let mut project = project();
     store
         .save_project(&path, &project, SaveMode::Create)
         .unwrap();
@@ -218,7 +221,7 @@ fn recovery_is_discoverable_and_restoration_cannot_replace_the_original_silently
 fn native_open_and_explicit_source_import_are_distinct() {
     let dir = tempfile::tempdir().unwrap();
     let mut store = ProjectStore::new(dir.path().join("recovery"));
-    let project = project(dir.path());
+    let project = project();
     let json = dir.path().join("legacy.multicad.json");
     std::fs::write(&json, serde_json::to_vec(&project.document).unwrap()).unwrap();
     assert!(
@@ -253,7 +256,7 @@ fn cooperating_writers_lock_and_interrupted_process_do_not_destroy_existing_sour
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("native.multicad");
     let mut store = ProjectStore::new(dir.path().join("recovery"));
-    let project = project(dir.path());
+    let project = project();
     let saved = store
         .save_project(&path, &project, SaveMode::Create)
         .unwrap();
@@ -306,8 +309,7 @@ fn interrupted_writer_child() {
 }
 #[test]
 fn shared_payload_ownership_does_not_copy_bytes_for_a_save_snapshot() {
-    let dir = tempfile::tempdir().unwrap();
-    let project = project(dir.path());
+    let project = project();
     let snapshot = project.clone();
     for (id, payload) in project.resources.payloads {
         assert!(Arc::ptr_eq(
@@ -322,7 +324,7 @@ fn external_replacement_during_serialization_is_preserved_and_cannot_be_acknowle
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("external-race.multicad");
     let mut store = ProjectStore::new(dir.path().join("recovery"));
-    let mut ours = project(dir.path());
+    let mut ours = project();
     let original = store.save_project(&path, &ours, SaveMode::Create).unwrap();
     ours.document.rename("Our pending edit").unwrap();
     let mut external = ours.clone();
@@ -534,7 +536,7 @@ fn discovery_retains_the_newest_512_checked_summaries_independently_of_directory
 fn tcd_is_the_native_extension_and_legacy_multicad_projects_reopen_unrenamed() {
     let dir = tempfile::tempdir().unwrap();
     let mut store = ProjectStore::new(dir.path().join("recovery"));
-    let project = project(dir.path());
+    let project = project();
     // An existing legacy project keeps opening and saving in place.
     let legacy = dir.path().join("existing.multicad");
     let legacy_saved = store

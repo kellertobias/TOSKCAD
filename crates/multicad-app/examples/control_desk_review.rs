@@ -30,11 +30,13 @@ use multicad_core::{
     project_file::{self, ProjectFile},
     references::{AnalyticGeometry, GeometryIntent, ReferenceFrame, TopologyKind},
 };
-use multicad_kernel::{BooleanOperation, GeometryPolicy, RigidTransform, Solid};
+use multicad_kernel::{
+    BooleanOperation, GeometryPolicy, RigidTransform, Solid, rust_kernel::parse_length_mm,
+};
 use multicad_model::{
-    Compiler, Model,
+    Compiler, GeometryBackend, Model,
     export::{Exporter, sheet_dxf::SheetDxfLayers},
-    imports::{KicadOptions, read_kicad_file, read_step_file},
+    imports::{KicadOptions, read_kicad_file_with_backend, read_step_file_with_backend},
     schedules::{BomOptions, Schedule, bend_schedule, bom_schedule},
 };
 use std::{
@@ -123,11 +125,30 @@ fn offset(name: &str, value: f64) -> String {
 // Source files: the board text and its generated STEP models.
 
 /// A STEP file holding the union of axis-aligned boxes (size, minimum corner).
-fn boxes(path: &Path, parts: &[([f64; 3], [f64; 3])]) -> Result<(), Error> {
+fn boxes(
+    path: &Path,
+    parts: &[([f64; 3], [f64; 3])],
+    backend: GeometryBackend,
+) -> Result<(), Error> {
     let policy = GeometryPolicy::default();
     let mut all: Option<Solid> = None;
     for (size, at) in parts {
-        let b = Solid::box_solid(*size, policy)?.transformed(RigidTransform {
+        let b = match backend {
+            GeometryBackend::OpenCascade => Solid::box_solid(*size, policy)?,
+            GeometryBackend::Rust => {
+                let [x, y, z] = size.map(|value| {
+                    parse_length_mm(&format!("{value} mm"))
+                        .map_err(|e| format!("Fixture dimension is invalid: {e:?}"))
+                });
+                Solid::rust_box(
+                    EntityId::new().uuid_bits(),
+                    [x?, y?, z?],
+                    Default::default(),
+                    policy,
+                )?
+            }
+        }
+        .transformed(RigidTransform {
             translation_mm: *at,
             ..Default::default()
         })?;
@@ -144,6 +165,13 @@ fn boxes(path: &Path, parts: &[([f64; 3], [f64; 3])]) -> Result<(), Error> {
 /// Write the board revision and every STEP model except the encoder's into
 /// `dir` (`models/` beside the board, as `${KIPRJMOD}` resolves it).
 pub fn write_sources(dir: &Path, board: &str) -> Result<PathBuf, Error> {
+    write_sources_for(dir, board, GeometryBackend::default())
+}
+pub(crate) fn write_sources_for(
+    dir: &Path,
+    board: &str,
+    backend: GeometryBackend,
+) -> Result<PathBuf, Error> {
     std::fs::create_dir_all(dir)?;
     let dir = &dir.canonicalize()?;
     let models = dir.join("models");
@@ -152,6 +180,7 @@ pub fn write_sources(dir: &Path, board: &str) -> Result<PathBuf, Error> {
     boxes(
         &models.join("oled_module.step"),
         &[([40., 26., 4.], [-20., -13., 0.])],
+        backend,
     )?;
     // 12 mm push button: a 12 × 12 × 3.5 body and an 8 × 8 cap to 13 mm.
     boxes(
@@ -160,11 +189,13 @@ pub fn write_sources(dir: &Path, board: &str) -> Result<PathBuf, Error> {
             ([12., 12., 3.5], [-6., -6., 0.]),
             ([8., 8., 9.5], [-4., -4., 3.5]),
         ],
+        backend,
     )?;
     // 5 mm LED with its collar: 5 × 5 × 8.6 mm.
     boxes(
         &models.join("led_5mm.step"),
         &[([5., 5., 8.6], [-2.5, -2.5, 0.])],
+        backend,
     )?;
     let path = dir.join(BOARD_FILE);
     std::fs::write(&path, board)?;
@@ -835,12 +866,13 @@ pub fn build(sources: &Path) -> Result<Scenario, Error> {
 
     // The board revision A and its components.
     let board_path = write_sources(sources, BOARD_A)?;
-    let import = read_kicad_file(
+    let import = read_kicad_file_with_backend(
         &board_path,
         &KicadOptions {
             components: Some(COMPONENTS_A.map(String::from).to_vec()),
             ..Default::default()
         },
+        GeometryBackend::default(),
     )?;
     let prepared = imports::prepare_kicad_import(&session, session.revision(), actor(), &import)?;
     let board = prepared.board.clone();
@@ -1102,12 +1134,13 @@ pub fn build(sources: &Path) -> Result<Scenario, Error> {
 /// Board revision B: reimport with the same Parts, then report.
 pub fn reimport(s: &mut Scenario, sources: &Path) -> Result<imports::KicadUpdatePlan, Error> {
     let path = write_sources(sources, BOARD_B)?;
-    let import = read_kicad_file(
+    let import = read_kicad_file_with_backend(
         &path,
         &KicadOptions {
             components: Some(COMPONENTS_B.map(String::from).to_vec()),
             ..Default::default()
         },
+        GeometryBackend::default(),
     )?;
     let (plan, prepared) = imports::prepare_kicad_update(
         &s.session,
@@ -1170,7 +1203,10 @@ pub fn link_model(s: &mut Scenario, sources: &Path, reference: &str) -> Result<(
         .and_then(|m| m.path.rsplit('/').next())
         .ok_or("The footprint names no model")?
         .to_owned();
-    let file = read_step_file(&sources.canonicalize()?.join("models").join(name))?;
+    let file = read_step_file_with_backend(
+        &sources.canonicalize()?.join("models").join(name),
+        GeometryBackend::default(),
+    )?;
     let prepared = imports::prepare_step_import(&s.session, s.session.revision(), actor(), &file)?;
     let source = prepared.source;
     let loose = prepared.model.outputs.clone();

@@ -341,3 +341,98 @@ fn control_desk_project_round_trips_recovers_and_rejects_damage() {
             .document(),
     );
 }
+
+#[test]
+fn control_desk_rust_board_and_linked_step_reopen_without_the_source_files() {
+    use multicad_core::{
+        commands::{Actor, Channel, Session},
+        model::imports::prepare_kicad_import,
+    };
+    use multicad_model::{
+        Compiler, GeometryBackend,
+        imports::{KicadOptions, read_kicad_file_with_backend},
+    };
+
+    let backend = GeometryBackend::Rust;
+    let sources = tempfile::tempdir().unwrap();
+    let board_path =
+        control_desk::write_sources_for(sources.path(), control_desk::BOARD_A, backend).unwrap();
+    let imported = read_kicad_file_with_backend(
+        &board_path,
+        &KicadOptions {
+            components: Some(control_desk::COMPONENTS_A.map(String::from).to_vec()),
+            ..Default::default()
+        },
+        backend,
+    )
+    .unwrap();
+    let mut session = Session::new(Document::new("Control Desk board sources").unwrap()).unwrap();
+    let prepared = prepare_kicad_import(&session, 0, Actor::local(Channel::Ui), &imported).unwrap();
+    assert!(
+        prepared
+            .unsupported
+            .iter()
+            .any(|item| item.contains("2 vias"))
+    );
+    assert!(
+        prepared
+            .unsupported
+            .iter()
+            .any(|item| item.contains("oval drill"))
+    );
+    assert_eq!(prepared.components.len(), 5);
+    assert_eq!(
+        prepared
+            .components
+            .iter()
+            .filter(|(_, _, model)| model.is_some())
+            .count(),
+        4
+    );
+    assert_eq!(prepared.missing_models.len(), 1);
+    assert_eq!(prepared.missing_models[0].0, "ENC1");
+    let parts = prepared
+        .model
+        .outputs
+        .iter()
+        .map(|part| part.feature)
+        .collect::<Vec<_>>();
+    session.commit(prepared.model.prepared).unwrap();
+    let snapshot = |document, revision| {
+        let model = Compiler {
+            omit_display: true,
+            ..Default::default()
+        }
+        .compile_with_backend(document, revision, backend, None)
+        .unwrap();
+        parts
+            .iter()
+            .map(|&id| {
+                let solid = model.solid(id).unwrap();
+                (
+                    solid.solid_count().unwrap(),
+                    solid.volume_mm3().unwrap(),
+                    solid.bounds().unwrap(),
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    let before = snapshot(session.document(), session.revision());
+    assert_eq!(before.len(), 6);
+    assert!(
+        before
+            .iter()
+            .all(|(count, volume, _)| *count == 1 && *volume > 0.)
+    );
+    let scratch = tempfile::tempdir().unwrap();
+    let path = scratch.path().join("control-desk-board.tcd");
+    let mut store = ProjectStore::new(scratch.path().join("recovery"));
+    let project = ProjectFile::new(session.document().clone()).unwrap();
+    store
+        .save_project(&path, &project, SaveMode::Create)
+        .unwrap();
+    sources.close().unwrap();
+    let reopened = store.open_project(&path).unwrap();
+    assert_eq!(reopened.file.document, project.document);
+    assert_eq!(snapshot(&reopened.file.document, 0), before);
+}

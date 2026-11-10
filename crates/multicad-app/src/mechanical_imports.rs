@@ -385,6 +385,7 @@ mod tests {
                 .iter()
                 .all(|member| member.solid_count == 1 && member.semicircles.len() == 4)
         );
+        #[cfg(feature = "occt")]
         check(&Solid::read_step(&path, policy).unwrap());
 
         let mut target = Session::new(Document::new("Imported cabinet tenons").unwrap()).unwrap();
@@ -470,6 +471,7 @@ mod tests {
         let path = scratch.path().join("centimetres.step");
         let step = step_box(12).replace("SI_UNIT(.MILLI.,.METRE.)", "SI_UNIT(.CENTI.,.METRE.)");
         std::fs::write(&path, step).unwrap();
+        #[cfg(feature = "occt")]
         assert!(
             Backend::with_geometry_backend(GeometryBackend::OpenCascade)
                 .read_step(&path)
