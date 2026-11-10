@@ -173,7 +173,7 @@ fn near_interiors(a: Edge, b: Edge, clearance: f64) -> bool {
     }
 }
 
-fn clear_pair(a: Edge, b: Edge, joins: &[Point], slack: f64, roundoff: f64) -> bool {
+pub(super) fn clear_pair(a: Edge, b: Edge, joins: &[Point], slack: f64, roundoff: f64) -> bool {
     let hits = match (a.round(), b.round()) {
         (None, None) => line_hits(Line::of(a), Line::of(b), slack),
         (None, Some(round)) => line_round_hits(Line::of(a), round, slack, roundoff),

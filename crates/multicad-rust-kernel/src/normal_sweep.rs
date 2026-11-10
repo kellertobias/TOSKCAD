@@ -5,7 +5,9 @@ use crate::{
 };
 use std::f64::consts::{FRAC_PI_2, TAU};
 
+mod piercing;
 mod validation;
+pub use piercing::{CertifiedPiercing, PiercedSweep, Piercing};
 
 type Point = [f64; 2];
 const MAX_DIMENSION_MM: f64 = 1e7;

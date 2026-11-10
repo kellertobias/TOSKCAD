@@ -15,10 +15,12 @@ use std::{
 mod chamfered_bores;
 mod normal_sweep;
 mod orthogonal_pockets;
+mod pierced_sweep;
 mod stadium;
 pub use chamfered_bores::chamfered_polygon_prism;
 pub use normal_sweep::normal_sweep;
 pub use orthogonal_pockets::{pocketed_orthogonal, slotted_orthogonal};
+pub use pierced_sweep::pierced_normal_sweep;
 pub use stadium::stadium_prism;
 
 #[derive(Clone, Copy, Debug)]
