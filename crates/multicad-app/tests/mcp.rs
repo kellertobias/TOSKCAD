@@ -24,7 +24,14 @@ struct Client {
 }
 impl Client {
     fn start(arguments: &[&str]) -> Self {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_multicad"))
+        Self::start_with_model_timings(arguments, None)
+    }
+    fn start_with_model_timings(arguments: &[&str], timings: Option<&Path>) -> Self {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_multicad"));
+        if let Some(path) = timings {
+            command.env("MULTICAD_MODEL_TIMINGS_JSONL", path);
+        }
+        let mut child = command
             .arg("--mcp")
             .args(arguments)
             .stdin(Stdio::piped())
@@ -1049,7 +1056,8 @@ fn export_m6_hex_screw(fit: &str) {
         "--export-dir",
         exports.to_str().unwrap(),
     ];
-    let mut client = Client::start(&arguments);
+    let timings = directory.path().join("model-timings.jsonl");
+    let mut client = Client::start_with_model_timings(&arguments, Some(&timings));
     let screw = client.ok(
         "set_mechanical_part",
         json!({
@@ -1064,6 +1072,26 @@ fn export_m6_hex_screw(fit: &str) {
             }
         }),
     );
+    assert_eq!(screw["revision"], 1);
+    let records = std::fs::read_to_string(&timings).unwrap();
+    let mut lines = records.lines();
+    let validation: Value =
+        serde_json::from_str(lines.next().expect("M6 validation trace")).unwrap();
+    assert!(
+        lines.next().is_none(),
+        "Expected one geometry validation: {records}"
+    );
+    assert_eq!(validation["omit_display"], true);
+    assert_eq!(validation["scope"], "Full");
+    let failed = client.fail(
+        "set_mechanical_part",
+        json!({
+            "expected_revision": 1, "name": "Unsupported wood screw",
+            "recipe": {"kind": "wood_screw"}
+        }),
+    );
+    assert_eq!(failed["code"], "model_failed");
+    assert_eq!(client.revision(), 1);
     let source = client.ok(
         "inspect_mechanical_part",
         json!({"feature": screw["feature"]}),

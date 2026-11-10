@@ -1,6 +1,7 @@
 //! Native-checked generic hardware geometry; catalog placement remains separate.
 use super::{
-    NoArgs, Plane, Quantity, Request, ToolResult, commit, compile, id, revision_guard, snapshot,
+    NoArgs, Plane, Quantity, Request, ToolResult, commit, compile_without_display, id,
+    revision_guard, snapshot,
     threads::{ThreadRecipeArgs, parameters as thread_parameters},
 };
 use crate::{
@@ -1242,7 +1243,7 @@ pub(super) fn set_mechanical_part(
         let output = p.outputs[0].clone();
         Ok::<_, ToolError>((p.prepared, output.feature, output.body))
     })??;
-    compile(prepared.document(), revision, call)?;
+    compile_without_display(prepared.document(), revision, call)?;
     let owned = call.clone();
     let committed = with(host, move |target| commit(target, &owned, prepared))??;
     Ok(json!({"revision":committed,"feature":feature,"part":part}))
