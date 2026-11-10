@@ -1036,10 +1036,51 @@ mod tests {
         assert_eq!(bounds, [[-250., -1000.], [250., 1000.]]);
     }
 
+    type CardinalDrawingLines<K> = std::collections::BTreeMap<(K, usize, i64), Vec<[i64; 2]>>;
+
+    fn cardinal_drawing_lines<'a, K: Ord>(
+        vectors: impl Iterator<Item = &'a drawings::DrawingVector>,
+        identity: impl Fn(&drawings::DrawingVector) -> K,
+    ) -> CardinalDrawingLines<K> {
+        // Compare geometric coverage even when one provider splits an edge
+        // where it meets an adjacent coplanar panel.
+        let mut lines = CardinalDrawingLines::new();
+        let micrometers = |point: [f64; 2]| point.map(|value| (value * 1000.).round() as i64);
+        for vector in vectors {
+            let drawings::VectorCurve::Line { a, b } = vector.curve else {
+                panic!("Expected a straight drawing edge, got {:?}", vector.curve);
+            };
+            let [a, b] = [a, b].map(micrometers);
+            let axis = usize::from(a[0] != b[0]);
+            assert_eq!(a[axis], b[axis]);
+            let [lo, hi] = [a[1 - axis].min(b[1 - axis]), a[1 - axis].max(b[1 - axis])];
+            if lo != hi {
+                lines
+                    .entry((identity(vector), axis, a[axis]))
+                    .or_default()
+                    .push([lo, hi]);
+            }
+        }
+        for spans in lines.values_mut() {
+            spans.sort_unstable();
+            let mut merged: Vec<[i64; 2]> = Vec::new();
+            for [lo, hi] in spans.drain(..) {
+                if let Some(last) = merged.last_mut()
+                    && lo <= last[1]
+                {
+                    last[1] = last[1].max(hi);
+                } else {
+                    merged.push([lo, hi]);
+                }
+            }
+            *spans = merged;
+        }
+        lines
+    }
+
     #[test]
-    fn rust_worker_matches_native_geometry_of_the_saved_cabinet_drawer_detail() {
-        use drawings::{VectorCurve, VectorRole, ViewEvaluation};
-        use std::collections::BTreeMap;
+    fn rust_worker_matches_native_geometry_of_both_saved_cabinet_joint_details() {
+        use drawings::{VectorRole, ViewEvaluation};
 
         let session = open_example("cabinet.tcd");
         let document = session.document();
@@ -1050,63 +1091,207 @@ mod tests {
             .iter()
             .find(|page| page.number == "C-102")
             .unwrap();
-        let saved = page
+        let drawer_view = page
             .views
             .iter()
             .find(|view| view.name == "Detail D: drawer 1 box, finger joints (top)")
             .unwrap();
-        let [drawer] = saved.source.entities().try_into().unwrap();
+        let tenon_view = page
+            .views
+            .iter()
+            .find(|view| view.name == "Detail C: Domino joint, left side to lower divider")
+            .unwrap();
+        let [drawer] = drawer_view.source.entities().try_into().unwrap();
         assert_eq!(document.get(drawer).unwrap().name, "Drawer 1");
 
         let coverage = |backend| {
             let mut worker = Backend::with_cache_and_backend(None, backend);
             let published = preview(&mut worker, &session, page.id);
-            let ViewEvaluation::Ready { vectors, .. } = &published.views[&saved.id] else {
-                panic!(
-                    "{backend:?} failed the saved drawer detail: {:?}",
-                    published.views[&saved.id]
-                );
-            };
-            // Both backends must show the same geometry, even when one
-            // splits an edge where it meets an adjacent coplanar panel.
-            let mut lines = BTreeMap::<(usize, i64), Vec<[i64; 2]>>::new();
-            let micrometers = |point: [f64; 2]| point.map(|value| (value * 1000.).round() as i64);
-            for vector in vectors {
-                assert_eq!((vector.source, vector.role), (drawer, VectorRole::Visible));
-                let VectorCurve::Line { a, b } = vector.curve else {
+            let ready = |id| {
+                let ViewEvaluation::Ready { vectors, .. } = &published.views[&id] else {
                     panic!(
-                        "The top detail contains a non-straight visible edge: {:?}",
-                        vector.curve
+                        "{backend:?} failed saved detail {id}: {:?}",
+                        published.views[&id]
                     );
                 };
-                let [a, b] = [a, b].map(micrometers);
-                let axis = usize::from(a[0] != b[0]);
-                assert_eq!(a[axis], b[axis]);
-                let [lo, hi] = [a[1 - axis].min(b[1 - axis]), a[1 - axis].max(b[1 - axis])];
-                if lo != hi {
-                    lines.entry((axis, a[axis])).or_default().push([lo, hi]);
-                }
+                vectors
+            };
+            let drawer_vectors = ready(drawer_view.id);
+            for vector in drawer_vectors {
+                assert_eq!((vector.source, vector.role), (drawer, VectorRole::Visible));
             }
-            for spans in lines.values_mut() {
-                spans.sort_unstable();
-                let mut merged: Vec<[i64; 2]> = Vec::new();
-                for [lo, hi] in spans.drain(..) {
-                    if let Some(last) = merged.last_mut()
-                        && lo <= last[1]
-                    {
-                        last[1] = last[1].max(hi);
-                    } else {
-                        merged.push([lo, hi]);
-                    }
-                }
-                *spans = merged;
-            }
-            lines
+            let drawer_lines = cardinal_drawing_lines(drawer_vectors.iter(), |_| ());
+
+            let tenon_vectors = ready(tenon_view.id);
+            assert!(tenon_vectors.iter().all(|vector| {
+                vector.source == vector.material_part
+                    && matches!(vector.role, VectorRole::Section | VectorRole::Visible)
+            }));
+            let tenon_lines = [VectorRole::Section, VectorRole::Visible].map(|role| {
+                cardinal_drawing_lines(
+                    tenon_vectors.iter().filter(|vector| vector.role == role),
+                    |vector| vector.source,
+                )
+            });
+            (drawer_lines, tenon_lines)
         };
         let native = coverage(GeometryBackend::OpenCascade);
-        assert_eq!(native[&(1, -243_000)], [[-398_000, 398_000]]);
-        assert_eq!(native[&(0, -357_300)], [[-213_000, 213_000]]);
+        assert_eq!(native.0[&((), 1, -243_000)], [[-398_000, 398_000]]);
+        assert_eq!(native.0[&((), 0, -357_300)], [[-213_000, 213_000]]);
+        assert_eq!(native.1[0], native.1[1]);
+        let tenons = tenon_view
+            .source
+            .entities()
+            .into_iter()
+            .find(|&id| document.get(id).unwrap().name == "Carcass Dominos tenons 5")
+            .unwrap();
+        assert_eq!(
+            native.1[0][&(tenons, 0, -4_500)],
+            [[-201_000, -179_000], [-20_000, 2_000], [161_000, 183_000]]
+        );
         assert_eq!(coverage(GeometryBackend::Rust), native);
+    }
+
+    #[test]
+    fn rust_worker_matches_native_hardware_in_the_saved_cabinet_drilling_page() {
+        use drawings::{VectorCurve, VectorRole, ViewEvaluation};
+        use std::{collections::BTreeMap, f64::consts::TAU};
+
+        let session = open_example("cabinet.tcd");
+        let document = session.document();
+        let book = drawings::books(document).next().unwrap();
+        let drawing = drawings::read(document, book).unwrap();
+        let page = drawing
+            .pages
+            .iter()
+            .find(|page| page.number == "C-103")
+            .unwrap();
+        let door_view = page
+            .views
+            .iter()
+            .find(|view| view.name == "Left door with hinges, inner face")
+            .unwrap();
+        let runner_view = page
+            .views
+            .iter()
+            .find(|view| view.name == "Drawer 1 box left side, outer face (runner cut away)")
+            .unwrap();
+        let [door] = door_view.source.entities().try_into().unwrap();
+        let [drawer] = runner_view.source.entities().try_into().unwrap();
+        assert_eq!(document.get(door).unwrap().name, "Left door");
+        assert_eq!(document.get(drawer).unwrap().name, "Drawer 1");
+
+        let coverage = |published: &DrawingEvaluation, backend| {
+            let ready = |id| {
+                let ViewEvaluation::Ready { vectors, .. } = &published.views[&id] else {
+                    panic!(
+                        "{backend:?} failed saved drilling view {id}: {:?}",
+                        published.views[&id]
+                    );
+                };
+                vectors
+            };
+            let door_vectors = ready(door_view.id);
+            let mut circles = BTreeMap::<[i64; 3], Vec<[f64; 2]>>::new();
+            for vector in door_vectors {
+                assert_eq!((vector.source, vector.role), (door, VectorRole::Visible));
+                match vector.curve {
+                    VectorCurve::Line { .. } => {}
+                    VectorCurve::Ellipse {
+                        center,
+                        u,
+                        v,
+                        major_mm,
+                        minor_mm,
+                        start_rad,
+                        end_rad,
+                    } => {
+                        assert!((major_mm - minor_mm).abs() <= 1e-8);
+                        let key =
+                            [center[0], center[1], major_mm].map(|mm| (mm * 1000.).round() as i64);
+                        let direction = (u[0] * v[1] - u[1] * v[0]).signum();
+                        let base = u[1].atan2(u[0]);
+                        let [a, b] = [start_rad, end_rad]
+                            .map(|parameter| direction.mul_add(parameter, base));
+                        let start = a.min(b).rem_euclid(TAU);
+                        let end = start + (b - a).abs();
+                        let spans = circles.entry(key).or_default();
+                        spans.push([start, end.min(TAU)]);
+                        if end > TAU {
+                            spans.push([0., end - TAU]);
+                        }
+                    }
+                    _ => panic!("Unexpected exact door edge: {:?}", vector.curve),
+                }
+            }
+            for spans in circles.values_mut() {
+                spans.sort_by(|a, b| a[0].total_cmp(&b[0]));
+                let mut covered: f64 = 0.;
+                for [a, b] in spans {
+                    assert!(*a <= covered + 1e-8);
+                    covered = covered.max(*b);
+                }
+                assert!((covered - TAU).abs() <= 1e-8);
+            }
+            let door_lines = cardinal_drawing_lines(
+                door_vectors
+                    .iter()
+                    .filter(|vector| matches!(vector.curve, VectorCurve::Line { .. })),
+                |_| (),
+            );
+            let runner_vectors = ready(runner_view.id);
+            assert!(runner_vectors.iter().all(|vector| vector.source == drawer
+                && matches!(vector.role, VectorRole::Visible | VectorRole::Section)));
+            let runner_lines = [VectorRole::Section, VectorRole::Visible].map(|role| {
+                cardinal_drawing_lines(
+                    runner_vectors.iter().filter(|vector| vector.role == role),
+                    |_| (),
+                )
+            });
+            (
+                door_lines,
+                circles.into_keys().collect::<Vec<_>>(),
+                runner_lines,
+            )
+        };
+
+        let mut native = Backend::with_cache_and_backend(None, GeometryBackend::OpenCascade);
+        let expected = coverage(
+            &preview(&mut native, &session, page.id),
+            GeometryBackend::OpenCascade,
+        );
+        assert_eq!(
+            expected.1,
+            [
+                [166_000, -334_500, 1_250],
+                [166_000, -289_500, 1_250],
+                [166_000, 289_000, 1_250],
+                [166_000, 334_000, 1_250],
+                [175_500, -312_000, 17_500],
+                [175_500, 311_500, 17_500],
+            ]
+        );
+        assert_eq!(expected.2[0][&((), 1, 22_500)], [[-225_000, 225_000]]);
+        let directory = tempfile::tempdir().unwrap();
+        let cache = cache::Cache::isolated(directory.path().to_owned());
+        let mut cold = Backend::with_cache_and_backend(Some(cache.clone()), GeometryBackend::Rust);
+        let published = preview(&mut cold, &session, page.id);
+        assert_eq!(coverage(&published, GeometryBackend::Rust), expected);
+        published
+            .checked_page(document, session.revision(), book, page.id)
+            .unwrap();
+        drop(cold);
+
+        let mut warm = Backend::with_cache_and_backend(Some(cache), GeometryBackend::Rust);
+        let cached = preview(&mut warm, &session, page.id);
+        assert_eq!(cached.views, published.views);
+        assert!(
+            warm.runtime
+                .as_ref()
+                .unwrap()
+                .last_compile_stats()
+                .is_none()
+        );
     }
 
     #[test]
