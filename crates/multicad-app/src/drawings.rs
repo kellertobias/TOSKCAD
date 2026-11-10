@@ -298,6 +298,64 @@ mod tests {
     }
 
     #[test]
+    fn rust_worker_opens_and_restores_both_toolcase_side_views() {
+        let directory = tempfile::tempdir().unwrap();
+        let cache = cache::Cache::isolated(directory.path().to_owned());
+        let session = open_example("toolcase.tcd");
+        let document = session.document();
+        let book = drawings::books(document).next().unwrap();
+        let drawing = drawings::read(document, book).unwrap();
+        let page = drawing
+            .pages
+            .iter()
+            .find(|page| page.number == "WK-101")
+            .unwrap();
+
+        let mut cold = Backend::with_cache_and_backend(Some(cache.clone()), GeometryBackend::Rust);
+        let start = Instant::now();
+        let original = preview(&mut cold, &session, page.id);
+        let cold_elapsed = start.elapsed();
+        assert_eq!(
+            original
+                .checked_page(document, session.revision(), book, page.id)
+                .unwrap()
+                .len(),
+            2
+        );
+        for view in &page.views {
+            let drawings::ViewEvaluation::Ready { vectors, .. } = &original.views[&view.id] else {
+                panic!("{:?}", original.views[&view.id]);
+            };
+            assert_eq!(vectors.len(), 96);
+        }
+        assert!(
+            cold.runtime
+                .as_ref()
+                .unwrap()
+                .last_compile_stats()
+                .is_some()
+        );
+        drop(cold);
+
+        let mut reopened = Backend::with_cache_and_backend(Some(cache), GeometryBackend::Rust);
+        let start = Instant::now();
+        let restored = preview(&mut reopened, &session, page.id);
+        let warm_elapsed = start.elapsed();
+        assert_eq!(restored.views, original.views);
+        assert!(
+            reopened
+                .runtime
+                .as_ref()
+                .unwrap()
+                .last_compile_stats()
+                .is_none()
+        );
+        eprintln!(
+            "WK-101 Rust drawing worker cold={cold_elapsed:.3?}, restored={warm_elapsed:.3?}"
+        );
+    }
+
+    #[test]
     fn cold_apartment_plan_preview_keeps_its_native_dimensions() {
         let mut session = open_example("apartment.tcd");
         let document = session.document();
