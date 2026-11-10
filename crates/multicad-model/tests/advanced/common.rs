@@ -136,9 +136,26 @@ pub fn persist_and_check(session: &mut Session, body: EntityId, volume: f64, cou
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("advanced.step");
     solid.write_step(&path).unwrap();
-    let imported = multicad_kernel::Solid::read_step(&path, Default::default()).unwrap();
-    near(imported.volume_mm3().unwrap(), volume);
-    assert_eq!(imported.solid_count().unwrap(), count);
+    if cfg!(feature = "occt") {
+        let imported = multicad_kernel::Solid::read_step(&path, Default::default()).unwrap();
+        near(imported.volume_mm3().unwrap(), volume);
+        assert_eq!(imported.solid_count().unwrap(), count);
+    } else {
+        use multicad_kernel::rust_kernel::step_read::{
+            read_analytic_compound, read_analytic_solid,
+        };
+        let source = std::fs::read_to_string(&path).unwrap();
+        let imported = if count == 1 {
+            vec![read_analytic_solid(&source, 1e-7).unwrap()]
+        } else {
+            read_analytic_compound(&source, 1e-7).unwrap()
+        };
+        near(imported.iter().map(|solid| solid.volume_mm3).sum(), volume);
+        assert_eq!(
+            imported.iter().map(|solid| solid.solid_count).sum::<u32>(),
+            count
+        );
+    }
     let before = session.document().clone();
     let mut bytes = vec![];
     project_file::write(
