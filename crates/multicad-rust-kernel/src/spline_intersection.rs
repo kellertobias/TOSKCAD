@@ -3,6 +3,9 @@
 use crate::Rational;
 use std::cmp::Ordering;
 
+mod trace;
+pub use trace::{Branch, Branches, Endpoint, Trace};
+
 type Uv = [Rational; 2];
 type Heights = [[Rational; 3]; 3];
 
@@ -25,6 +28,8 @@ pub enum Error {
     NonQuadratic,
     NonDefinite,
     TrimContact,
+    /// Distinct ordered crossings are too close for a reliable f64 interval.
+    EvaluationPrecision,
     Arithmetic(crate::Error),
 }
 
@@ -100,10 +105,17 @@ impl Patch {
     /// A curve clipped by the trims, a trim-boundary contact, or a difference
     /// other than a definite conic needs a different intersection provider.
     pub fn intersect(&self, other: &Self) -> Result<Intersection, Error> {
+        match self.classify(other)? {
+            Classified::Unclipped(result) => Ok(result),
+            Classified::Crossing(_) => Err(Error::TrimContact),
+        }
+    }
+
+    fn classify(&self, other: &Self) -> Result<Classified, Error> {
         let min: Uv = std::array::from_fn(|i| self.trim[0][i].max(other.trim[0][i]));
         let max: Uv = std::array::from_fn(|i| self.trim[1][i].min(other.trim[1][i]));
         if (0..2).any(|axis| min[axis] > max[axis]) {
-            return Ok(Intersection::Disjoint);
+            return Ok(Classified::Unclipped(Intersection::Disjoint));
         }
         let trim = [min, max];
         let quadratic = Quadratic::difference(&self.heights, &other.heights)?;
@@ -111,38 +123,71 @@ impl Patch {
         let center = quadratic.center(determinant)?;
         let minimum = quadratic.value_at_center(center)?;
         match minimum.cmp(&ZERO) {
-            Ordering::Greater => Ok(Intersection::Disjoint),
+            Ordering::Greater => Ok(Classified::Unclipped(Intersection::Disjoint)),
             Ordering::Equal => {
                 if (0..2).any(|axis| center[axis] < min[axis] || center[axis] > max[axis]) {
-                    Ok(Intersection::Disjoint)
+                    Ok(Classified::Unclipped(Intersection::Disjoint))
                 } else if (0..2).all(|axis| center[axis] > min[axis] && center[axis] < max[axis]) {
-                    Ok(Intersection::Tangent { uv: center })
+                    Ok(Classified::Unclipped(Intersection::Tangent { uv: center }))
                 } else {
                     Err(Error::TrimContact)
                 }
             }
             Ordering::Less => {
                 let rise = ZERO.checked_sub(minimum)?;
-                if quadratic.strictly_inside(center, rise, determinant, trim)? {
-                    Ok(Intersection::Closed(ClosedLoop {
-                        center,
-                        radii_squared: [
-                            rise.checked_div(quadratic.diagonal[0])?,
-                            quadratic.extent_squared(1, rise, determinant)?,
-                        ],
-                        shear: quadratic.cross.checked_div(quadratic.diagonal[0])?,
-                        heights: self.heights,
-                    }))
+                let crossing = Conic {
+                    quadratic,
+                    determinant,
+                    center,
+                    rise,
+                    trim,
+                };
+                if crossing
+                    .quadratic
+                    .strictly_inside(center, rise, determinant, trim)?
+                {
+                    Ok(Classified::Unclipped(Intersection::Closed(
+                        crossing.lift(self.heights)?,
+                    )))
                 } else {
-                    let [min_value, max_value] = quadratic.range(center, minimum, trim)?;
+                    let [min_value, max_value] = crossing.quadratic.range(center, minimum, trim)?;
                     if min_value > ZERO || max_value < ZERO {
-                        Ok(Intersection::Disjoint)
+                        Ok(Classified::Unclipped(Intersection::Disjoint))
                     } else {
-                        Err(Error::TrimContact)
+                        Ok(Classified::Crossing(crossing))
                     }
                 }
             }
         }
+    }
+}
+
+enum Classified {
+    Unclipped(Intersection),
+    Crossing(Conic),
+}
+
+struct Conic {
+    quadratic: Quadratic,
+    determinant: Rational,
+    center: Uv,
+    rise: Rational,
+    trim: [Uv; 2],
+}
+
+impl Conic {
+    fn lift(&self, heights: Heights) -> Result<ClosedLoop, crate::Error> {
+        let a = self.quadratic.diagonal[0];
+        Ok(ClosedLoop {
+            center: self.center,
+            radii_squared: [
+                self.rise.checked_div(a)?,
+                self.quadratic
+                    .extent_squared(1, self.rise, self.determinant)?,
+            ],
+            shear: self.quadratic.cross.checked_div(a)?,
+            heights,
+        })
     }
 }
 

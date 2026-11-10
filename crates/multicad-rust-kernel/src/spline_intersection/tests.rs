@@ -179,3 +179,26 @@ fn a_planar_patch_cuts_a_circle_and_trim_tangency_is_refused() {
     let tangent_trim = Patch::new(heights, [[quarter, ZERO], [ONE; 2]]).unwrap();
     assert_eq!(bowl.intersect(&tangent_trim), Err(Error::TrimContact));
 }
+
+#[test]
+fn clipped_tilted_loop_is_lifted_to_both_independent_surfaces() {
+    let midpoint = rational(1, 2);
+    let left_trim = [[midpoint, ZERO], [ONE; 2]];
+    let right_trim = [[ZERO, midpoint], [ONE; 2]];
+    let [left, right] = fixture(rational(1, 8), [left_trim, right_trim]);
+    let Trace::Clipped(result) = left.trace(&right).unwrap() else {
+        panic!("expected one branch bounded by both input surfaces");
+    };
+    let [branch] = result.branches() else {
+        panic!("expected one branch");
+    };
+    let [start, end] = branch.endpoints();
+    assert_eq!(start.trim_coordinate(), (1, midpoint));
+    assert_eq!(end.trim_coordinate(), (0, midpoint));
+    for i in 0..=64 {
+        let [u, v, z] = result.point_at(0, f64::from(i) / 64.).unwrap();
+        assert!(u >= 0.5 - 1e-13 && v >= 0.5 - 1e-13);
+        close(z, u * v);
+        close(z, right.point_at([u, v])[2]);
+    }
+}
