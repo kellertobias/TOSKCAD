@@ -158,6 +158,38 @@ impl Solid {
             ImportProfile::NormalSweep { sweep } => {
                 Self::from_imported_normal_sweep(&sweep, frame, feature, policy)
             }
+            ImportProfile::CylindricalRevolution { meridian } => {
+                let axis = frame.normal();
+                let profile_frame = PlaneFrame { v: axis, ..frame };
+                let mut outer = Vec::with_capacity(meridian.len());
+                let mut origins = Vec::with_capacity(meridian.len());
+                for (&a, &b) in meridian.iter().zip(meridian.iter().cycle().skip(1)) {
+                    outer.push(CurvedEdge2d::Line { a, b });
+                    origins.push(straight_origin(feature, profile_frame, a, b));
+                }
+                Self::rust_revolve_curved_profile_named(
+                    &CurvedProfile {
+                        frame: PlaneFrame {
+                            v: [0., 0., 1.],
+                            ..PlaneFrame::default()
+                        },
+                        outer,
+                        holes: vec![],
+                    },
+                    crate::RevolutionAxis {
+                        origin_mm: [0.; 3],
+                        direction: [0., 0., 1.],
+                    },
+                    TAU,
+                    feature,
+                    &origins,
+                    policy,
+                )?
+                .transformed(RigidTransform {
+                    rotation: std::array::from_fn(|i| [frame.u[i], frame.v[i], axis[i]]),
+                    translation_mm: frame.origin,
+                })
+            }
             ImportProfile::PiercedNormalSweep { sweep } => {
                 let stock =
                     Self::from_imported_normal_sweep(sweep.sweep(), frame, feature, policy)?;

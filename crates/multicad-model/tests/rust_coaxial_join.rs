@@ -1,5 +1,5 @@
 use multicad_core::project_file;
-use multicad_kernel::MeshOptions;
+use multicad_kernel::{MeshOptions, RigidTransform, Solid};
 use multicad_model::{Compiler, GeometryBackend};
 use std::f64::consts::PI;
 
@@ -18,8 +18,9 @@ fn saved_front_panel_button_union_matches_the_native_solid() {
         .find(|entity| entity.name == "Button union")
         .unwrap()
         .id;
+    let compiler = Compiler::default();
     let compile = |backend| {
-        Compiler::default()
+        compiler
             .compile_sources_with_backend(&document, 0, &[feature], backend, None)
             .unwrap()
     };
@@ -42,5 +43,44 @@ fn saved_front_panel_button_union_matches_the_native_solid() {
         .manufacturing_mesh_with_receipt(MeshOptions::default())
         .unwrap();
     assert!(!mesh.mesh.indices.is_empty());
-    assert!(!actual.supports_step_export());
+    assert!(actual.supports_step_export());
+    let scratch = tempfile::tempdir().unwrap();
+    let path = scratch.path().join("button.step");
+    actual.write_step(&path).unwrap();
+    let independent = Solid::read_step(&path, compiler.policy).unwrap();
+    assert_eq!(independent.solid_count().unwrap(), 1);
+    assert_eq!(independent.faces().unwrap().len(), 9);
+    assert!((independent.volume_mm3().unwrap() - expected.volume_mm3().unwrap()).abs() < 1e-7);
+    let area = |solid: &Solid| {
+        solid
+            .faces()
+            .unwrap()
+            .iter()
+            .map(|face| face.area_mm2)
+            .sum::<f64>()
+    };
+    assert!((area(&independent) - area(expected)).abs() < 1e-7);
+    let independent_bounds = independent.bounds().unwrap();
+    for axis in 0..3 {
+        assert!((independent_bounds.min[axis] - expected_bounds.min[axis]).abs() < 1e-6);
+        assert!((independent_bounds.max[axis] - expected_bounds.max[axis]).abs() < 1e-6);
+    }
+    let (sin, cos) = 0.57_f64.sin_cos();
+    let oblique = actual
+        .transformed(RigidTransform {
+            rotation: [[cos, -sin, 0.], [sin, cos, 0.], [0., 0., 1.]],
+            translation_mm: [12., -3., 5.],
+        })
+        .unwrap();
+    let path = scratch.path().join("placed-button.step");
+    oblique.write_step(&path).unwrap();
+    let imported = Solid::import_rust_step(
+        &std::fs::read_to_string(path).unwrap(),
+        feature,
+        compiler.policy,
+    )
+    .unwrap();
+    assert_eq!(imported.faces().unwrap().len(), 9);
+    assert!((imported.volume_mm3().unwrap() - volume).abs() < 1e-7);
+    assert!((area(&imported) - area(&oblique)).abs() < 1e-7);
 }

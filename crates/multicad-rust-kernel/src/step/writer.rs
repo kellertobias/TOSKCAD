@@ -401,6 +401,18 @@ impl Writer {
         })
     }
 
+    pub fn append_cylindrical_revolution(
+        &mut self,
+        revolution: &crate::revolution::Revolution,
+        origin: Point,
+        u: Point,
+        v: Point,
+    ) -> Result<(), StepError> {
+        let ring = cylindrical_revolution::meridian(revolution).ok_or(StepError::Unsupported)?;
+        let placement = Placement::new(origin, u, v)?;
+        self.append(|file| cylindrical_revolution::encode(file, placement, ring))
+    }
+
     pub fn append_box(
         &mut self,
         size: [Rational; 3],

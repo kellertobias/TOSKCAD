@@ -15,6 +15,7 @@ use std::cmp::Ordering;
 
 mod chamfered;
 use chamfered::{Bore, canonical_bores};
+mod cylindrical_revolution;
 mod orthogonal;
 mod pierced;
 mod pocketed;
@@ -88,6 +89,10 @@ pub enum ImportProfile {
         inner_radius_mm: f64,
         outer_radius_mm: f64,
     },
+    CylindricalRevolution {
+        /// Counterclockwise rectilinear boundary in [radius, axial] coordinates.
+        meridian: Vec<[f64; 2]>,
+    },
 }
 
 #[cfg(test)]
@@ -131,6 +136,7 @@ fn recognize_member(shell: &Shell<'_, '_>, faces: &[Face]) -> Result<(Readback, 
         .recognize(faces)
         .or_else(|| shell.pocketed_polygon(faces))
         .or_else(|| shell.pierced_normal_sweep(faces))
+        .or_else(|| shell.cylindrical_revolution(faces, &readback))
     {
         Some(solid) => solid,
         None => shell.orthogonal(faces)?,

@@ -17,10 +17,12 @@ use crate::{
 };
 use std::{collections::BTreeMap, fmt, fmt::Write, ops::Range};
 
+mod cylindrical_revolution;
 mod normal_sweep;
 mod pierced_sweep;
 mod stadium;
 mod writer;
+pub use cylindrical_revolution::{supports_cylindrical_revolution, write_cylindrical_revolution};
 pub use normal_sweep::write_normal_sweep;
 pub use pierced_sweep::write_pierced_normal_sweep;
 use stadium::StadiumTrim;
@@ -1056,7 +1058,15 @@ impl CylindricalTrim {
     ) -> Result<Self, StepError> {
         let bottom = CircularRim::new(file, centers[0], normal, reference, radius)?;
         let top = CircularRim::new(file, centers[1], normal, reference, radius)?;
-        let axis = bottom.axis;
+        Self::from_rims(file, &bottom, &top)
+    }
+
+    fn from_rims(
+        file: &mut StepFile,
+        bottom: &CircularRim,
+        top: &CircularRim,
+    ) -> Result<Self, StepError> {
+        let CircularRim { axis, radius, .. } = bottom;
         let surface = file.entity(format_args!("CYLINDRICAL_SURFACE('',{axis},{radius:.16E})"));
         let seam = line_edge(file, bottom.vertex, top.vertex)?;
         Ok(Self {

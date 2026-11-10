@@ -397,6 +397,7 @@ fn rust_flat_sheet_builds_nominal_purchased_pieces_and_the_same_hardware_records
         rust_records,
         native.sheet_hardware(session.document()).unwrap()
     );
+    let scratch = tempfile::tempdir().unwrap();
     for (item, count) in [
         (HardwareItem::Screw, 2),
         (HardwareItem::Washer, 4),
@@ -427,8 +428,18 @@ fn rust_flat_sheet_builds_nominal_purchased_pieces_and_the_same_hardware_records
         }
         assert_eq!(
             r.supports_step_export(),
-            matches!(item, HardwareItem::Washer | HardwareItem::Insert)
+            matches!(
+                item,
+                HardwareItem::Screw | HardwareItem::Washer | HardwareItem::Insert
+            )
         );
+        if item == HardwareItem::Screw {
+            let path = scratch.path().join("sheet-screws.step");
+            r.write_step(&path).unwrap();
+            let readback = multicad_kernel::Solid::read_step(&path, compiler.policy).unwrap();
+            assert_eq!(readback.solid_count().unwrap() as usize, count);
+            near(readback.volume_mm3().unwrap(), n.volume_mm3().unwrap());
+        }
         let [a, b] = [r.bounds().unwrap(), n.bounds().unwrap()];
         for (x, y) in a
             .min

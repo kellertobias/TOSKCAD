@@ -75,7 +75,7 @@ fn joins_touching_cylinders_along_both_axial_directions_and_keeps_cap_attachment
                 role: "authored circle".into(),
             }))
     );
-    assert!(!result.supports_step_export());
+    assert!(result.supports_step_export());
 }
 
 #[test]

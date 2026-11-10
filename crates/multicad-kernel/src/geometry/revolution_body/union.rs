@@ -108,8 +108,7 @@ impl Operand {
 impl Solid {
     /// Recognize an unfuzzed union of cylinders on one exact line, in either
     /// axial direction. Other shapes remain eligible for their own providers.
-    /// A stepped result is analytic and supports mesh and references. STEP
-    /// currently handles only the uniform-radius result of this family.
+    /// A stepped result is analytic and supports meshes, references and STEP.
     pub fn union_coaxial_cylinders(
         solids: &[&Self],
         feature: EntityId,

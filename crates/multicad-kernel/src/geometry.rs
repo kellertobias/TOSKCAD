@@ -1847,7 +1847,9 @@ impl Solid {
             SolidBody::Helical(..)
             | SolidBody::CosmeticFastener(..)
             | SolidBody::AxialStack(..) => false,
-            SolidBody::Revolved(body, frame) => body.circular_sweep(*frame).is_some(),
+            SolidBody::Revolved(body, _) => {
+                multicad_rust_kernel::step::supports_cylindrical_revolution(&body.geometry)
+            }
             SolidBody::Orthogonal(body, _) => body.supports_step(),
         }
     }
@@ -1942,17 +1944,23 @@ impl Solid {
             SolidBody::RoundedSlot(body, frame) => body.append_step(writer, *frame),
             SolidBody::NormalSweep(body, frame) => body.append_step(writer, *frame),
             SolidBody::Revolved(body, frame) => {
-                let (base, radius, height, bore) = body
-                    .circular_sweep(*frame)
-                    .expect("checked round revolution");
-                writer.append_placed_circular_sweep(
-                    radius,
-                    bore,
-                    height,
-                    base.origin,
-                    base.u,
-                    base.v,
-                )
+                if let Some((base, radius, height, bore)) = body.circular_sweep(*frame) {
+                    writer.append_placed_circular_sweep(
+                        radius,
+                        bore,
+                        height,
+                        base.origin,
+                        base.u,
+                        base.v,
+                    )
+                } else {
+                    writer.append_cylindrical_revolution(
+                        &body.geometry,
+                        frame.origin,
+                        frame.u,
+                        frame.v,
+                    )
+                }
             }
             SolidBody::RustCompound(compound) => {
                 for member in compound.members() {
