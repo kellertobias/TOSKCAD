@@ -184,17 +184,13 @@ pub fn project_drawing(
         }
         if let [input] = solids
             && let Some((sphere, frame)) = input.solid.sphere_body()
+            && (options.section_offset_mm.is_none()
+                || options.section_only
+                || (options.section_depth_mm.is_none()
+                    && options.section_u_mm.is_none()
+                    && options.section_v_mm.is_none()))
         {
             return sphere::project(input, frame.origin, sphere.radius_mm(), options);
-        }
-        if options.section_offset_mm.is_some()
-            && !options.section_only
-            && solids.iter().any(|input| contains_sphere(input.solid))
-        {
-            return Err(err(
-                GeometryErrorKind::Unsupported,
-                "Rust retained sections with a sphere currently require an isolated sphere",
-            ));
         }
         if let [input] = solids
             && let Some((torus, frame)) = input.solid.torus_body()

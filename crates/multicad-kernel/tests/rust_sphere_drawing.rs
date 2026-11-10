@@ -326,3 +326,126 @@ fn sphere_and_planar_stock_publish_independent_section_loops_and_hatches() {
         );
     }
 }
+
+#[test]
+fn retained_sphere_and_stock_clip_visibility_to_depth_and_windows() {
+    let sphere = sphere();
+    let stock = stock([0., -2., 3.], [14, 2, 1]);
+    let hatch = DrawingHatch {
+        angle_rad: 0.2,
+        spacing_mm: 0.5,
+        line_width_mm: 0.18,
+        pattern: HatchPattern::Lines,
+    };
+    let options = DrawingProjection {
+        section_offset_mm: Some(14.),
+        section_depth_mm: Some(11.),
+        section_u_mm: Some([3., 12.5]),
+        section_v_mm: Some([-4., 1.]),
+        hidden_lines: true,
+        chord_tolerance_mm: 1e-4,
+        ..Default::default()
+    };
+    let project = |sphere: &Solid, stock: &Solid, options| {
+        project_drawing(
+            &[
+                DrawingSolid {
+                    solid: sphere,
+                    hatch: Some(hatch),
+                },
+                DrawingSolid {
+                    solid: stock,
+                    hatch: None,
+                },
+            ],
+            options,
+        )
+        .unwrap()
+    };
+    let actual = project(&sphere, &stock, options);
+    assert!(actual.iter().any(|v| v.source_index == 0
+        && v.role == VectorRole::Section
+        && matches!(v.curve, VectorCurve::Ellipse { major_mm: 4., .. })));
+    assert!(actual.iter().any(|v| v.source_index == 0
+        && v.role == VectorRole::Section
+        && matches!(v.curve, VectorCurve::Line { .. })));
+    assert!(
+        actual
+            .iter()
+            .any(|v| v.source_index == 0 && v.role == VectorRole::Hatch)
+    );
+    assert!(
+        actual
+            .iter()
+            .any(|v| v.source_index == 1 && v.role == VectorRole::Hidden)
+    );
+    assert!(actual.iter().any(|v| v.source_index == 1
+        && v.role == VectorRole::Visible
+        && matches!(v.curve, VectorCurve::Line { a,b }
+            if [a,b].into_iter().all(|p| (p[1]+2.).abs() < 1e-8)
+                && (a[0].min(b[0])-12.).abs() < 1e-6 && (a[0].max(b[0])-12.5).abs() < 1e-6)));
+    assert!(actual.iter().flat_map(|v| &v.preview_mm).all(|[x, y]| {
+        (3. - 1e-7..=12.5 + 1e-7).contains(x) && (-4. - 1e-7..=1. + 1e-7).contains(y)
+    }));
+
+    #[cfg(feature = "occt")]
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let native = |solid: &Solid, name: &str| {
+            let path = dir.path().join(name);
+            solid.write_step(&path).unwrap();
+            Solid::read_step(&path, Default::default()).unwrap()
+        };
+        let reference = project(
+            &native(&sphere, "sphere.step"),
+            &native(&stock, "stock.step"),
+            options,
+        );
+        let sections = |edge: &&multicad_kernel::ProjectedVector| {
+            edge.source_index == 0 && edge.role == VectorRole::Section
+        };
+        assert!(reference.iter().any(|edge| sections(&edge)));
+        for (from, to) in [(&actual, &reference), (&reference, &actual)] {
+            let spans = to
+                .iter()
+                .filter(sections)
+                .flat_map(|v| v.preview_mm.windows(2));
+            for &[x, y] in from.iter().filter(sections).flat_map(|v| &v.preview_mm) {
+                let error = spans
+                    .clone()
+                    .map(|span| {
+                        let [[a, b], [c, d]] = [span[0], span[1]];
+                        let [u, v] = [c - a, d - b];
+                        let t = (((x - a) * u + (y - b) * v) / (u * u + v * v)).clamp(0., 1.);
+                        (x - a - t * u).hypot(y - b - t * v)
+                    })
+                    .fold(f64::INFINITY, f64::min);
+                assert!(
+                    error < 3. * options.chord_tolerance_mm,
+                    "[{x}, {y}]: {error}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn isolated_finite_sphere_section_keeps_a_far_cap_ahead_of_the_equator() {
+    let solid = sphere();
+    let vectors = project_drawing(
+        &[DrawingSolid {
+            solid: &solid,
+            hatch: None,
+        }],
+        DrawingProjection {
+            section_offset_mm: Some(17.),
+            section_depth_mm: Some(4.),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert!(!vectors.is_empty());
+    assert!(vectors.iter().all(|v| v.role == VectorRole::Visible
+        && matches!(v.curve, VectorCurve::Ellipse { center: [7., -2.], major_mm, .. }
+            if (major_mm - 21_f64.sqrt()).abs() < 1e-8)));
+}

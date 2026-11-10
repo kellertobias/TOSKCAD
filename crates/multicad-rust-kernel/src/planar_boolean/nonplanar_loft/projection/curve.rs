@@ -184,6 +184,16 @@ impl Curve {
         cuts.extend(roots(&radial, [0., 1.]));
     }
 
+    pub(super) fn sphere_crossings(self, center: Point, radius: f64, cuts: &mut Vec<f64>) {
+        let [x, y, z] = std::array::from_fn(|i| self.coefficients(|point| point[i] - center[i]));
+        let w = self.weight_coefficients().map(|value| value * radius);
+        let x2_minus_r2 = difference_of_products(x, x, w, w);
+        let y2 = multiply(y, y);
+        let z2 = multiply(z, z);
+        let equation = std::array::from_fn::<_, 5, _>(|i| x2_minus_r2[i] + y2[i] + z2[i]);
+        cuts.extend(roots(&equation, [0., 1.]));
+    }
+
     pub(super) fn intersections(self, other: Self, epsilon: f64, cuts: &mut Vec<f64>) {
         let [a, m, b] = other.poles.map(paper);
         let chord = minus(b, a);

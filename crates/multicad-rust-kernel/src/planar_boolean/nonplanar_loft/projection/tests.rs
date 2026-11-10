@@ -845,3 +845,128 @@ fn a_side_cut_flattens_its_round_rim_in_paper_without_losing_depth() {
         Err(Error::Invalid)
     );
 }
+
+#[test]
+fn spherical_depth_events_split_stock_inside_the_silhouette() {
+    use crate::planar_projection::tests::rect;
+
+    let stock = rect([-6., 0., 6., 0.5], 2., 3.);
+    let front = LoftSceneMember::Sphere {
+        center: [0.; 3],
+        radius: 5.,
+    };
+    let rear = LoftSceneMember::Sphere {
+        center: [0., 0., -12.],
+        radius: 5.,
+    };
+    let vectors = project_loft_scene(
+        &[LoftSceneMember::Planar(&stock), front, rear],
+        scene_options(),
+    )
+    .unwrap();
+    assert!(vectors.iter().any(|&(source, edge)| source == 0
+        && edge.hidden
+        && matches!(edge.curve, LoftSectionCurve::Line([a,b])
+            if [a,b].into_iter().all(|p| p[1] == 0. && p[2] == 3.)
+                && (a[0] + 4.).abs() < TOL && (b[0] - 4.).abs() < TOL)));
+    assert!(
+        vectors
+            .iter()
+            .any(|&(source, edge)| source == 1 && !edge.hidden && edge.ellipse.is_some())
+    );
+    assert!(
+        vectors
+            .iter()
+            .any(|&(source, edge)| source == 2 && edge.hidden && edge.ellipse.is_some())
+    );
+    assert!(
+        !vectors
+            .iter()
+            .any(|&(source, edge)| source == 2 && !edge.hidden)
+    );
+    assert_eq!(
+        project_loft_scene(
+            &[LoftSceneMember::Sphere {
+                center: [0.; 3],
+                radius: f64::NAN
+            }],
+            scene_options()
+        ),
+        Err(Error::Invalid)
+    );
+}
+
+#[test]
+fn spherical_caps_and_window_edges_are_exact_and_the_removed_cap_does_not_hide_stock() {
+    use crate::planar_projection::tests::rect;
+
+    let sphere = LoftSceneMember::Sphere {
+        center: [0., 0., 4.],
+        radius: 2.,
+    };
+    let stock = rect([-1.8, 0., 1.8, 0.5], 1., 2.);
+    let cut = LoftSceneCut {
+        near: 3.,
+        far: Some(0.),
+        windows: [Some([-1.8, 1.8]), Some([-1., 1.])],
+    };
+    let result = project_loft_scene_section(
+        &[LoftSceneMember::Planar(&stock), sphere],
+        scene_options(),
+        cut,
+    )
+    .unwrap();
+    assert_eq!(result.clipped_members, [1]);
+    let extent = 3_f64.sqrt();
+    assert!(result.edges.iter().any(|&(source, edge)| source == 0
+        && edge.hidden
+        && matches!(edge.curve, LoftSectionCurve::Line([a,b])
+            if [a,b].into_iter().all(|p| p[1] == 0. && p[2] == 2.)
+                && (a[0] + extent).abs() < TOL && (b[0] - extent).abs() < TOL)));
+    assert!(result.edges.iter().any(|&(source, edge)| {
+        source == 1
+            && !edge.hidden
+            && edge
+                .ellipse
+                .is_some_and(|ellipse| (ellipse.major - extent).abs() < TOL)
+    }));
+    assert!(result.edges.iter().any(|&(source, edge)| source == 1
+        && !edge.hidden
+        && matches!(edge.curve, LoftSectionCurve::Line([a,b])
+            if [a,b].into_iter().all(|p| p[1] == 1. && p[2] == 3.))));
+    let empty = project_loft_scene_section(
+        &[LoftSceneMember::Sphere {
+            center: [0., 0., 5.],
+            radius: 2.,
+        }],
+        scene_options(),
+        cut,
+    )
+    .unwrap();
+    assert!(empty.edges.is_empty());
+}
+
+#[test]
+fn a_sphere_slab_preserves_the_equator_and_hides_the_far_cap() {
+    let sphere = LoftSceneMember::Sphere {
+        center: [0.; 3],
+        radius: 5.,
+    };
+    let drawing = project_loft_scene_section(
+        &[sphere],
+        scene_options(),
+        LoftSceneCut {
+            near: 3.,
+            far: Some(-3.),
+            windows: [None; 2],
+        },
+    )
+    .unwrap();
+    assert_eq!(drawing.clipped_members, [0]);
+    for (radius, depth, hidden) in [(5., 0., false), (4., 3., false), (4., -3., true)] {
+        assert!(drawing.edges.iter().any(|&(_, edge)| edge.hidden == hidden
+            && edge.ellipse.is_some_and(|ellipse| ellipse.major == radius)
+            && matches!(edge.curve, LoftSectionCurve::Quadratic { poles, .. }
+                if poles.into_iter().all(|p| p[2] == depth))));
+    }
+}

@@ -12,6 +12,10 @@ pub enum LoftSceneMember<'a> {
         offset: Point,
     },
     Planar(&'a Body),
+    Sphere {
+        center: Point,
+        radius: f64,
+    },
     Round(&'a RoundOccluder),
     RetainedRound {
         body: &'a RoundOccluder,
@@ -40,7 +44,7 @@ pub struct LoftSceneCut {
 #[derive(Debug, PartialEq)]
 pub struct LoftSceneSection {
     pub edges: Vec<(usize, LoftDrawingEdge)>,
-    /// Indices of retained loft and round members that have section geometry.
+    /// Indices of retained analytic members that have section geometry.
     pub clipped_members: Vec<usize>,
 }
 
@@ -101,6 +105,7 @@ pub(super) fn project_with_limit(
         .filter_map(|member| match member {
             LoftSceneMember::Planar(body) => Some(*body),
             LoftSceneMember::Loft { .. }
+            | LoftSceneMember::Sphere { .. }
             | LoftSceneMember::Round(_)
             | LoftSceneMember::RetainedRound { .. } => None,
         })
@@ -113,6 +118,7 @@ pub(super) fn project_with_limit(
     let mut lofts = Vec::new();
     let mut rounds = Vec::new();
     let mut clipped_rounds = Vec::new();
+    let mut spheres = Vec::new();
     let mut curves = Vec::new();
     let mut coordinate_scale = 1_f64;
     let mut tangent = prepared.tangent.into_iter();
@@ -166,6 +172,24 @@ pub(super) fn project_with_limit(
                         .into_iter()
                         .map(|edge| Candidate::new(source, edge, true)),
                 );
+            }
+            LoftSceneMember::Sphere { center, radius } => {
+                if let Some(sphere) = sphere::Sphere::prepare(
+                    source,
+                    center,
+                    radius,
+                    planes,
+                    options.tolerance,
+                    &mut curves,
+                )? {
+                    coordinate_scale = sphere
+                        .bounds
+                        .into_iter()
+                        .flatten()
+                        .map(f64::abs)
+                        .fold(coordinate_scale, f64::max);
+                    spheres.push(sphere);
+                }
             }
             LoftSceneMember::Round(body) => {
                 if planes.is_some_and(|planes| {
@@ -250,8 +274,9 @@ pub(super) fn project_with_limit(
     let wall_count: usize = lofts.iter().map(|loft| loft.walls.len()).sum();
     let ray_cost = 4 * wall_count + planar_faces.iter().map(|p| p.boundary_len()).sum::<usize>();
     let near = cut.map_or(f64::INFINITY, |cut| cut.near);
+    let epsilon = (64. * f64::EPSILON * coordinate_scale).min(options.tolerance);
     let blocked = |source, rim: Option<_>, point| {
-        charge(ray_cost + rounds.len())?;
+        charge(ray_cost + rounds.len() + spheres.len())?;
         Ok(planar_faces
             .iter()
             .any(|face| face.covers(point, options.tolerance))
@@ -282,11 +307,13 @@ pub(super) fn project_with_limit(
                             if retained { near } else { f64::INFINITY },
                             options.tolerance,
                         ))
-            }))
+            })
+            || spheres
+                .iter()
+                .any(|sphere| sphere.blocks(point, rim, options.tolerance, epsilon)))
     };
-    let epsilon = (64. * f64::EPSILON * coordinate_scale).min(options.tolerance);
     let depth_events = |source, curve: Curve, bounds, cuts: &mut Vec<f64>| {
-        charge(planar_faces.len() + 4 * (wall_count + rounds.len()))?;
+        charge(planar_faces.len() + 4 * (wall_count + rounds.len() + spheres.len()))?;
         for face in &planar_faces {
             curve.plane_crossings(face.point, face.normal, cuts);
         }
@@ -305,6 +332,11 @@ pub(super) fn project_with_limit(
         for &(owner, round, _) in &rounds {
             if owner != source {
                 round::depth_events(round, curve, bounds, epsilon, cuts);
+            }
+        }
+        for sphere in &spheres {
+            if sphere.source != source {
+                sphere.depth_events(curve, bounds, epsilon, cuts);
             }
         }
         Ok(())
@@ -335,6 +367,12 @@ pub(super) fn project_with_limit(
         .filter(|loft| visible[loft.source] && loft.clip.as_ref().is_some_and(|clip| clip.changed))
         .map(|loft| loft.source)
         .chain(clipped_rounds.into_iter().filter(|&source| visible[source]))
+        .chain(
+            spheres
+                .into_iter()
+                .filter(|sphere| sphere.near_trimmed && visible[sphere.source])
+                .map(|sphere| sphere.source),
+        )
         .collect();
     clipped_members.sort_unstable();
     Ok(LoftSceneSection {

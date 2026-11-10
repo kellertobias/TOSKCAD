@@ -6,6 +6,7 @@ mod clip;
 mod curve;
 mod round;
 mod scene;
+mod sphere;
 pub use scene::{
     LoftRoundCutEdge, LoftSceneCut, LoftSceneMember, LoftSceneSection, project_loft_scene,
     project_loft_scene_section,

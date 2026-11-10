@@ -118,36 +118,52 @@ pub(super) fn add_cut_candidates(
             {
                 return Err(Error::Invalid);
             }
-            for trim in arc_spans(ellipse.trim) {
-                if axis == 2 {
-                    let rim = Rim {
-                        ellipse: curved_projection::Ellipse { trim, ..ellipse },
-                        depth: level,
-                        depth_cosine: 0.,
-                        depth_sine: 0.,
-                    };
-                    output.push(Candidate {
-                        rim: Some(rim),
-                        ..Candidate::new(source, arc(rim, trim), true)
-                    });
-                } else {
-                    let curve = spatial_arc(
-                        lift(ellipse.center),
-                        |angle| lift(ellipse.point(angle)),
-                        trim,
-                    );
-                    let paper_axis = 1 - axis;
-                    output.extend(
-                        curve
-                            .monotone_spans(paper_axis)
-                            .into_iter()
-                            .map(|curve| Candidate::new(source, curve, true)),
-                    );
-                }
-            }
+            add_ellipse_candidates(source, axis, level, ellipse, output);
         }
     }
     Ok(())
+}
+
+pub(super) fn add_ellipse_candidates(
+    source: usize,
+    axis: usize,
+    level: f64,
+    ellipse: curved_projection::Ellipse,
+    output: &mut Vec<Candidate>,
+) {
+    let lift = |point: Paper| {
+        let mut result = [level; 3];
+        result[(axis + 1) % 3] = point[0];
+        result[(axis + 2) % 3] = point[1];
+        result
+    };
+    for trim in arc_spans(ellipse.trim) {
+        if axis == 2 {
+            let rim = Rim {
+                ellipse: curved_projection::Ellipse { trim, ..ellipse },
+                depth: level,
+                depth_cosine: 0.,
+                depth_sine: 0.,
+            };
+            output.push(Candidate {
+                rim: Some(rim),
+                ..Candidate::new(source, arc(rim, trim), true)
+            });
+        } else {
+            let curve = spatial_arc(
+                lift(ellipse.center),
+                |angle| lift(ellipse.point(angle)),
+                trim,
+            );
+            let paper_axis = 1 - axis;
+            output.extend(
+                curve
+                    .monotone_spans(paper_axis)
+                    .into_iter()
+                    .map(|curve| Candidate::new(source, curve, true)),
+            );
+        }
+    }
 }
 
 pub(super) fn trim_rim(rim: Rim, ends: [Point; 2]) -> crate::curved_projection::Ellipse {

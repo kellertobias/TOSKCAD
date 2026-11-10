@@ -25,7 +25,7 @@ pub(in crate::drawing) fn project_retained_scene(
     if options.detail.is_some() {
         return Err(err(
             GeometryErrorKind::Unsupported,
-            "Rust retained loft assemblies do not support a combined detail window",
+            "Rust retained analytic assembly views do not support a combined detail window",
         ));
     }
     let members = projection_members(solids);
@@ -90,10 +90,12 @@ fn project(
             Ok(Some((body, retained)))
         })
         .collect::<Result<_, _>>()?;
+    let is_planar =
+        |solid: &Solid| solid.nonplanar_loft_body().is_none() && solid.sphere_body().is_none();
     let planar_inputs: Vec<_> = members
         .iter()
         .zip(&rounds)
-        .filter(|((_, solid), round)| round.is_none() && solid.nonplanar_loft_body().is_none())
+        .filter(|((_, solid), round)| round.is_none() && is_planar(solid))
         .map(|((_, solid), _)| DrawingSolid { solid, hatch: None })
         .collect();
     let (planar_bodies, tolerance) = planar::prepare(&planar_inputs, options.frame)?;
@@ -118,9 +120,7 @@ fn project(
             .iter()
             .enumerate()
             .zip(&rounds)
-            .filter(|((_, (_, solid)), round)| {
-                round.is_none() && solid.nonplanar_loft_body().is_none()
-            })
+            .filter(|((_, (_, solid)), round)| round.is_none() && is_planar(solid))
             .map(|(member, _)| member)
             .zip(retained.bodies.iter().zip(retained.trimmed))
         {
@@ -141,6 +141,11 @@ fn project(
                     body: body.loft_geometry(),
                     axes,
                     offset,
+                }
+            } else if let Some((body, placement)) = solid.sphere_body() {
+                LoftSceneMember::Sphere {
+                    center: sphere::drawing_center(placement.origin, options.frame),
+                    radius: body.radius_mm(),
                 }
             } else if let Some((body, retained)) = round {
                 if let Some(retained) = retained {

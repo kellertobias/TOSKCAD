@@ -23,7 +23,11 @@ pub(super) fn project(
     {
         return project_loft_view(input, options);
     }
-    if !options.section_only && solids.iter().any(|input| contains_loft(input.solid)) {
+    if !options.section_only
+        && solids
+            .iter()
+            .any(|input| contains_loft(input.solid) || contains_sphere(input.solid))
+    {
         return loft::project_retained_scene(solids, options, depth);
     }
     if !options.section_only

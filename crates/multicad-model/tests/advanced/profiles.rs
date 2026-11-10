@@ -2326,6 +2326,44 @@ fn verify_twisted_loft_round_scene(
                     if major_mm == radius && minor_mm == radius)
         }));
     }
+    let sphere = Solid::rust_sphere_named(
+        2.,
+        PlaneFrame {
+            origin: [1., -0.5, 8.5],
+            ..Default::default()
+        },
+        EntityId::new(),
+        Default::default(),
+    )
+    .unwrap();
+    let loft_and_sphere = project(loft, &sphere, options);
+    assert!(
+        loft_and_sphere
+            .iter()
+            .any(|v| v.source_index == 0 && v.role == VectorRole::Hidden)
+    );
+    assert!(loft_and_sphere.iter().any(|v| v.source_index == 1
+        && v.role == VectorRole::Visible
+        && matches!(v.curve, VectorCurve::Ellipse { major_mm: 2., .. })));
+    let sphere_cut = project(
+        loft,
+        &sphere,
+        DrawingProjection {
+            section_offset_mm: Some(8.2),
+            section_depth_mm: Some(6.),
+            ..options
+        },
+    );
+    assert!(sphere_cut.iter().any(|v| v.source_index == 1
+        && v.role == VectorRole::Section
+        && matches!(v.curve, VectorCurve::Ellipse { major_mm, .. }
+            if (major_mm - 3.91_f64.sqrt()).abs() < 1e-8)));
+    assert!(
+        sphere_cut
+            .iter()
+            .any(|v| v.source_index == 0 && v.role == VectorRole::Visible)
+    );
+
     let oblique = DrawingProjection {
         frame: PlaneFrame {
             v: [0., 0.8, 0.6],

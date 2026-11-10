@@ -50,7 +50,7 @@ pub(super) fn project(
     Ok(output)
 }
 
-fn drawing_center(origin: [f64; 3], frame: PlaneFrame) -> [f64; 3] {
+pub(super) fn drawing_center(origin: [f64; 3], frame: PlaneFrame) -> [f64; 3] {
     let offset: [f64; 3] = std::array::from_fn(|i| origin[i] - frame.origin[i]);
     planar::view_axes(frame).map(|axis| {
         axis.into_iter()
