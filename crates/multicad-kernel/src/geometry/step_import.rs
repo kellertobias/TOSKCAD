@@ -165,6 +165,9 @@ impl Solid {
             ImportProfile::WarpedUnion { shell } => {
                 Self::from_imported_warped_union(shell, frame, feature, policy)
             }
+            ImportProfile::PlanarBoundary { shell } => {
+                Self::from_imported_planar_boundary(shell, feature, policy)
+            }
             ImportProfile::CylindricalRevolution { meridian } => {
                 let axis = frame.normal();
                 let profile_frame = PlaneFrame { v: axis, ..frame };

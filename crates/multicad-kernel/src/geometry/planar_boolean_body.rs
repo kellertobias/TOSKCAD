@@ -303,6 +303,14 @@ impl Solid {
             _ => None,
         }
     }
+
+    pub(super) fn from_imported_planar_boundary(
+        geometry: Union,
+        feature: EntityId,
+        policy: GeometryPolicy,
+    ) -> Result<Self, GeometryError> {
+        PlanarBooleanBody::build(geometry, Vec::new(), &[], feature, policy)
+    }
 }
 
 fn face_metrics(points: &[Point], normal: Point) -> (f64, Point) {
@@ -344,28 +352,28 @@ impl PlanarBooleanBody {
                 .map(|&v| geometry.vertices()[v])
                 .collect();
             let (area_mm2, center_mm) = face_metrics(&points, raw.normal);
-            let part = &sources[raw.source];
             let mut origins = vec![Origin {
                 source: feature,
                 role: format!("planar-boolean.face.{i}"),
             }];
-            let topology = &topologies[part.operand];
-            let source = part
-                .faces
-                .get(raw.source_face)
-                .copied()
-                .flatten()
-                .map(|i| &topology.elements[i])
-                .or_else(|| {
-                    let mut matching = topology.elements.iter().filter(|element| {
-                        matches!(element.geometry, Some(AnalyticGeometry::Plane { frame })
+            let source = sources.get(raw.source).and_then(|part| {
+                let topology = &topologies[part.operand];
+                part.faces
+                    .get(raw.source_face)
+                    .copied()
+                    .flatten()
+                    .map(|i| &topology.elements[i])
+                    .or_else(|| {
+                        let mut matching = topology.elements.iter().filter(|element| {
+                            matches!(element.geometry, Some(AnalyticGeometry::Plane { frame })
                         if dot(frame.normal(), raw.normal) > 1. - 1e-10
                             && dot(raw.normal, subtract(points[0], frame.origin_mm)).abs()
                                 <= policy.linear_tolerance_mm)
-                    });
-                    let face = matching.next()?;
-                    matching.next().is_none().then_some(face)
-                });
+                        });
+                        let face = matching.next()?;
+                        matching.next().is_none().then_some(face)
+                    })
+            });
             let mut anchors = Vec::new();
             if let Some(source) = source {
                 origins.extend(source.origins.iter().cloned());

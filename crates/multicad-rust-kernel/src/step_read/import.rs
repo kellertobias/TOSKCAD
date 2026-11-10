@@ -19,6 +19,7 @@ use chamfered::{Bore, canonical_bores};
 mod cylindrical_revolution;
 mod orthogonal;
 mod pierced;
+mod planar_boundary;
 mod pocketed;
 use pocketed::{PocketRim, canonical_pockets};
 
@@ -89,6 +90,10 @@ pub enum ImportProfile {
     Annulus {
         inner_radius_mm: f64,
         outer_radius_mm: f64,
+    },
+    PlanarBoundary {
+        /// Certified planar shell in the STEP world frame.
+        shell: crate::planar_boolean::Union,
     },
     WarpedUnion {
         shell: crate::warped_union::Shell,
@@ -179,7 +184,10 @@ fn recognize_member(shell: &Shell<'_, '_>, faces: &[Face]) -> Result<(Readback, 
         .or_else(|| shell.axial_profile_stack(faces, &readback))
     {
         Some(solid) => solid,
-        None => shell.orthogonal(faces)?,
+        None => match shell.orthogonal(faces) {
+            Err(ReadError::Unsupported) => shell.planar_boundary(faces)?,
+            other => other?,
+        },
     };
     Ok((readback, solid))
 }

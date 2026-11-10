@@ -6,7 +6,7 @@ use multicad_core::{
     references::TopologyKind,
 };
 use multicad_kernel::Solid;
-use multicad_model::{Compiler, GeometryBackend};
+use multicad_model::{Compiler, GeometryBackend, export::verify_rust_step_shape};
 
 #[test]
 fn saved_toolcase_drawer_reinforcements_join_when_all_operands_are_planar() {
@@ -91,11 +91,25 @@ fn saved_toolcase_drawer_reinforcements_join_when_all_operands_are_planar() {
     let temporary = tempfile::tempdir().unwrap();
     let step = temporary.path().join("drawer-reinforcement.step");
     actual.write_step(&step).unwrap();
-    let independent = Solid::read_step(&step, compiler.policy).unwrap();
-    assert_eq!(independent.solid_count().unwrap(), 1);
+    let content = std::fs::read_to_string(&step).unwrap();
+    for independent in [
+        Solid::read_step(&step, compiler.policy).unwrap(),
+        Solid::import_rust_step(&content, feature, compiler.policy).unwrap(),
+    ] {
+        assert_eq!(independent.solid_count().unwrap(), 1);
+        near(
+            independent.volume_mm3().unwrap(),
+            expected.volume_mm3().unwrap(),
+        );
+        near(area(&independent), area(expected));
+    }
     near(
-        independent.volume_mm3().unwrap(),
+        verify_rust_step_shape(
+            &step,
+            &rust.snapshot().shapes[&feature],
+            compiler.policy.linear_tolerance_mm,
+        )
+        .unwrap(),
         expected.volume_mm3().unwrap(),
     );
-    near(area(&independent), area(expected));
 }

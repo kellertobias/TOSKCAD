@@ -119,7 +119,7 @@ impl ConvexPiece {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Face {
     pub vertices: Vec<usize>,
     pub normal: Point,
@@ -127,7 +127,7 @@ pub struct Face {
     pub source_face: usize,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Union {
     vertices: Vec<Point>,
     faces: Vec<Face>,
