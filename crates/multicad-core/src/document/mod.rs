@@ -19,6 +19,24 @@ pub struct Document {
     #[serde(default, skip_serializing_if = "Hierarchy::is_empty")]
     hierarchy: Hierarchy,
 }
+
+/// A checked source borrow and its canonical dependency order. Holding the
+/// borrow keeps both valid for the duration of an evaluation.
+pub struct ValidatedDocument<'a> {
+    document: &'a Document,
+    order: Vec<EntityId>,
+}
+
+impl<'a> ValidatedDocument<'a> {
+    pub fn document(&self) -> &'a Document {
+        self.document
+    }
+
+    pub fn topological_order(&self) -> &[EntityId] {
+        &self.order
+    }
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct WireDocument {
@@ -201,6 +219,10 @@ impl Document {
     /// Validate structure and acyclicity. Missing/wrong-kind links intentionally
     /// remain repairable; evaluators must also check reference_diagnostics().
     pub fn validate(&self) -> Result<(), DocumentError> {
+        self.validated().map(drop)
+    }
+
+    pub fn validated(&self) -> Result<ValidatedDocument<'_>, DocumentError> {
         if self.id.is_nil() {
             return Err(DocumentError::Invalid(
                 "Document identity cannot be nil".into(),
@@ -223,7 +245,7 @@ impl Document {
                 .validate()
                 .map_err(|message| DocumentError::Invalid(format!("Entity {id}: {message}")))?;
         }
-        self.topological_order()?;
+        let order = self.topological_order()?;
         crate::hierarchy::validate(self)
             .map_err(|error| DocumentError::Invalid(error.to_string()))?;
         crate::sketch::validate(self)?;
@@ -239,7 +261,10 @@ impl Document {
         crate::equipment::validate(self)?;
         crate::sketch_import::provenance::validate(self)?;
         crate::project_file::info::validate(self)?;
-        Ok(())
+        Ok(ValidatedDocument {
+            document: self,
+            order,
+        })
     }
 }
 fn valid_name(name: &str) -> Result<(), DocumentError> {

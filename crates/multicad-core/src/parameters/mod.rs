@@ -5,8 +5,9 @@ mod length_display;
 pub use bound::*;
 pub use length_display::*;
 mod units;
-use crate::document::{Document, DocumentError, EntityData, EntityId, Link};
+use crate::document::{Document, DocumentError, EntityData, EntityId, Link, ValidatedDocument};
 use serde::Serialize;
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 pub use units::*;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -141,6 +142,21 @@ fn valid_name(name: &str) -> bool {
 /// Normalize name bindings to stable IDs and evaluate in source dependency order.
 /// The caller receives a candidate document; the original is never mutated.
 pub fn evaluate(document: &Document) -> Result<EvaluatedParameters, ParameterError> {
+    evaluate_impl(document, None)
+}
+
+/// Reuse source validation and ordering when bindings are already normalized.
+/// New or reordered bindings still pass through the full candidate validation.
+pub fn evaluate_validated(
+    source: &ValidatedDocument<'_>,
+) -> Result<EvaluatedParameters, ParameterError> {
+    evaluate_impl(source.document(), Some(source.topological_order()))
+}
+
+fn evaluate_impl(
+    document: &Document,
+    validated_order: Option<&[EntityId]>,
+) -> Result<EvaluatedParameters, ParameterError> {
     let mut names = BTreeMap::new();
     let mut expressions = BTreeMap::new();
     let mut normalized_entities = Vec::new();
@@ -217,19 +233,28 @@ pub fn evaluate(document: &Document) -> Result<EvaluatedParameters, ParameterErr
             }
             links.push(Link::new(target, name));
         }
-        let mut normalized = entity.clone();
-        if let EntityData::Parameter { inputs, .. } = &mut normalized.data {
-            *inputs = links;
+        if &links != inputs {
+            let mut normalized = entity.clone();
+            if let EntityData::Parameter { inputs, .. } = &mut normalized.data {
+                *inputs = links;
+            }
+            normalized_entities.push(crate::document::Mutation::Replace(normalized));
         }
-        normalized_entities.push(crate::document::Mutation::Replace(normalized));
         expressions.insert(
             entity.id,
             (expr, unit, expression.trim_start().starts_with('=')),
         );
     }
-    let bound = document.edited(&normalized_entities)?;
+    let (bound, order) = match validated_order {
+        Some(order) if normalized_entities.is_empty() => (document.clone(), Cow::Borrowed(order)),
+        _ => {
+            let bound = document.edited(&normalized_entities)?;
+            let order = bound.topological_order()?;
+            (bound, Cow::Owned(order))
+        }
+    };
     let mut values: BTreeMap<EntityId, ParameterValue> = BTreeMap::new();
-    for id in bound.topological_order()? {
+    for &id in order.iter() {
         let Some((expression, unit, explicit)) = expressions.get(&id) else {
             continue;
         };

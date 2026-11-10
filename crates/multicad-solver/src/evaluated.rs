@@ -3,7 +3,7 @@
 use crate::{Evaluation, InputError, Measurement, evaluate_with_parameters};
 use multicad_core::{
     constraint_sketch::{CurveKind, Sketch, source::Source},
-    document::{Document, EntityData, EntityId},
+    document::{Document, EntityData, EntityId, ValidatedDocument},
     parameters::{self, EvaluatedParameters, Unit},
     project_file::ContentHash,
     references::ReferenceReport,
@@ -77,7 +77,26 @@ impl<'a> SketchEvaluationContext<'a> {
     /// Parameter name normalization is an internal derived view only. Canonical
     /// source, output source and the shared hash remain exactly the input doc.
     pub fn new(document: &'a Document, revision: u64) -> Result<Self, InputError> {
-        let parameters = parameters::evaluate(document).map_err(|e| InputError {
+        Self::with_evaluation(document, revision, parameters::evaluate(document))
+    }
+
+    pub fn from_validated(
+        source: &ValidatedDocument<'a>,
+        revision: u64,
+    ) -> Result<Self, InputError> {
+        Self::with_evaluation(
+            source.document(),
+            revision,
+            parameters::evaluate_validated(source),
+        )
+    }
+
+    fn with_evaluation(
+        document: &'a Document,
+        revision: u64,
+        parameters: Result<EvaluatedParameters, parameters::ParameterError>,
+    ) -> Result<Self, InputError> {
+        let parameters = parameters.map_err(|e| InputError {
             source: e.entity,
             message: e.to_string(),
         })?;

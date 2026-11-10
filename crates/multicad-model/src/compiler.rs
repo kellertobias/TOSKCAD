@@ -599,7 +599,7 @@ impl Compiler {
         let EvaluationMode { roots, backend } = mode;
         let mut timings = ModelTimings::default();
         checkpoint(interrupt)?;
-        document.validate().map_err(|e| error(None, e))?;
+        let source = document.validated().map_err(|e| error(None, e))?;
         self.policy.validate().map_err(|e| error(None, e))?;
         if backend == GeometryBackend::Rust && roots.is_none() {
             crate::rust_backend::validate_document(document, None)?;
@@ -612,8 +612,8 @@ impl Compiler {
                 cache.as_deref_mut(),
             )?;
         }
-        let context =
-            SketchEvaluationContext::new(document, revision).map_err(|e| error(e.source, e))?;
+        let context = SketchEvaluationContext::from_validated(&source, revision)
+            .map_err(|e| error(e.source, e))?;
         if roots.is_none() {
             crate::gear_pairs::validate_parameters(document, context.parameters())?;
             for entity in model::carcasses(document) {
@@ -740,7 +740,7 @@ impl Compiler {
         let mut leaves = crate::assemblies::LeafStore::default();
         let mut topologies: BTreeMap<EntityId, TopologySnapshot> = BTreeMap::new();
         let mut triangles = 0usize;
-        for id in document.topological_order().map_err(|e| error(None, e))? {
+        for &id in source.topological_order() {
             checkpoint(interrupt)?;
             let entity = document
                 .get(id)

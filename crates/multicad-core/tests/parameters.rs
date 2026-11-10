@@ -14,6 +14,34 @@ fn parameter(name: &str, expression: &str, unit: &str) -> Entity {
 fn add(doc: &mut Document, e: &Entity) {
     doc.insert(e.clone()).unwrap();
 }
+
+#[test]
+fn checked_parameter_evaluation_reuses_order_and_validates_new_bindings() {
+    let mut source = Document::new("Derived order").unwrap();
+    let width = parameter("width", "100", "mm");
+    let doubled = parameter("doubled", "2 * width", "mm");
+    add(&mut source, &width);
+    add(&mut source, &doubled);
+
+    let legacy = evaluate(&source).unwrap();
+    let normalized = evaluate_validated(&source.validated().unwrap()).unwrap();
+    assert_eq!(normalized.values, legacy.values);
+    assert_eq!(normalized.document, legacy.document);
+    let checked = normalized.document.validated().unwrap();
+    let reused = evaluate_validated(&checked).unwrap();
+    assert_eq!(reused.values, normalized.values);
+    assert_eq!(&reused.document, checked.document());
+
+    let mut changed = normalized.document;
+    let mut width_edit = width;
+    if let EntityData::Parameter { expression, .. } = &mut width_edit.data {
+        *expression = "doubled".into();
+    }
+    changed.replace(width_edit).unwrap();
+    let cause = evaluate_validated(&changed.validated().unwrap()).unwrap_err();
+    assert_eq!(cause.code, ParameterErrorCode::Cycle);
+}
+
 #[test]
 fn units_expressions_roundtrip_and_materialize_feature_inputs_from_source() {
     let mut d = Document::new("Cabinet").unwrap();
