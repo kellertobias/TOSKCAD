@@ -1,7 +1,10 @@
 //! Exact end planes, recess and shoulder topology for a headed screw.
 
-use super::*;
-use multicad_rust_kernel::headed_screw::{ScrewFace, ScrewHead, ScrewSpec, hex_vertices};
+use super::{
+    boundary::{Boundary, edge_midpoint, hex_wall_plane, placed_frame},
+    *,
+};
+use multicad_rust_kernel::headed_screw::{ScrewFace, ScrewHead, ScrewSpec};
 
 impl Solid {
     /// Build a screw in its canonical underhead mounting frame. The thread,
@@ -78,23 +81,6 @@ fn circle_area(radius: f64) -> f64 {
     PI * radius.powi(2)
 }
 
-fn at_z([x, y]: [f64; 2], z: f64) -> Point {
-    [x, y, z]
-}
-
-fn hex_edge(across_flats: f64, side: u32) -> [[f64; 2]; 2] {
-    let corners = hex_vertices(across_flats);
-    [
-        corners[side as usize],
-        corners[(side as usize + 1) % corners.len()],
-    ]
-}
-
-fn edge_midpoint(across_flats: f64, side: u32, z: f64) -> Point {
-    let [[ax, ay], [bx, by]] = hex_edge(across_flats, side);
-    [ax.midpoint(bx), ay.midpoint(by), z]
-}
-
 pub(super) fn extend_face_properties(screw: &Screw, faces: &mut Vec<(Point, f64)>) {
     let spec = screw.spec();
     let outer = spec.head.cross_section_area_mm2();
@@ -143,37 +129,17 @@ pub(super) fn extend_face_properties(screw: &Screw, faces: &mut Vec<(Point, f64)
     }
 }
 
-fn placed_frame(frame: PlaneFrame, origin: Point, u: Point, v: Point) -> ReferenceFrame {
-    let axes = [frame.u, frame.v, frame.normal()];
-    let direction = |local: Point| std::array::from_fn(|i| dot(local, axes.map(|axis| axis[i])));
-    ReferenceFrame {
-        origin_mm: position(frame, origin),
-        u: direction(u),
-        v: direction(v),
-    }
-}
-
 pub(super) fn plane(screw: &Screw, role: ScrewFace, frame: PlaneFrame) -> Option<ReferenceFrame> {
     let seat = screw.head_seat_z();
     let top = screw.head_top_z();
     let axial = |z, sign| placed_frame(frame, [0., 0., z], [1., 0., 0.], [0., sign, 0.]);
-    let hex_wall = |af, i, z, sign| {
-        let [[ax, ay], [bx, by]] = hex_edge(af, i);
-        let length = (bx - ax).hypot(by - ay);
-        placed_frame(
-            frame,
-            [ax, ay, z],
-            [sign * (bx - ax) / length, sign * (by - ay) / length, 0.],
-            [0., 0., 1.],
-        )
-    };
     match role {
         ScrewFace::HeadSeat => Some(axial(seat, 1.)),
         ScrewFace::HeadTop => Some(axial(top, -1.)),
         ScrewFace::HeadWall(i) => match screw.spec().head {
             ScrewHead::ExternalHex {
                 across_flats_mm, ..
-            } => Some(hex_wall(across_flats_mm, i, top, 1.)),
+            } => Some(hex_wall_plane(frame, across_flats_mm, i, top, 1.)),
             ScrewHead::SocketCap { .. } => None,
         },
         ScrewFace::SocketFloor => screw
@@ -185,7 +151,7 @@ pub(super) fn plane(screw: &Screw, role: ScrewFace, frame: PlaneFrame) -> Option
             .spec()
             .head
             .socket()
-            .map(|(af, _)| hex_wall(af, i, top, -1.)),
+            .map(|(af, _)| hex_wall_plane(frame, af, i, top, -1.)),
         _ => None,
     }
 }
@@ -202,109 +168,6 @@ fn face_name(role: ScrewFace) -> String {
     }
 }
 
-struct Boundary<'a> {
-    body: &'a HelicalBody,
-    frame: PlaneFrame,
-    roles: &'a [ScrewFace],
-    elements: &'a mut Vec<TopologyElement>,
-    face_indices: Vec<usize>,
-    next_edge: u32,
-    next_vertex: u32,
-}
-
-impl Boundary<'_> {
-    fn face(&mut self, role: ScrewFace) -> &mut TopologyElement {
-        let ordinal = self
-            .roles
-            .iter()
-            .position(|candidate| *candidate == role)
-            .unwrap();
-        &mut self.elements[self.face_indices[ordinal]]
-    }
-
-    fn geometry(&mut self, name: String, geometry: AnalyticGeometry, faces: &[ScrewFace]) {
-        let origin = self.body.origin(name);
-        for &role in faces {
-            self.face(role).boundary.insert(origin.clone());
-        }
-        let kind = geometry.topology_kind();
-        let next = if kind == TopologyKind::Edge {
-            &mut self.next_edge
-        } else {
-            &mut self.next_vertex
-        };
-        self.elements.push(TopologyElement {
-            key: TopologyKey {
-                kind,
-                ordinal: *next,
-            },
-            origins: BTreeSet::from([origin]),
-            boundary: BTreeSet::new(),
-            frames: vec![],
-            geometry: Some(geometry),
-        });
-        *next += 1;
-    }
-
-    fn arc(&mut self, name: String, z: f64, radius_mm: f64, angles: [f64; 2], faces: &[ScrewFace]) {
-        self.geometry(
-            name,
-            AnalyticGeometry::CircularArc {
-                frame: placed_frame(self.frame, [0., 0., z], [1., 0., 0.], [0., 1., 0.]),
-                radius_mm,
-                start_rad: angles[0],
-                sweep_rad: angles[1],
-            },
-            faces,
-        );
-    }
-
-    fn line(&mut self, name: String, a: Point, b: Point, faces: &[ScrewFace]) {
-        self.geometry(
-            name,
-            AnalyticGeometry::Line {
-                a_mm: position(self.frame, a),
-                b_mm: position(self.frame, b),
-            },
-            faces,
-        );
-    }
-
-    fn hex_prism(
-        &mut self,
-        name: &str,
-        across_flats: f64,
-        depths: [f64; 2],
-        caps: [ScrewFace; 2],
-        wall: impl Fn(u32) -> ScrewFace,
-    ) {
-        let corners = hex_vertices(across_flats);
-        for (i, &p) in corners.iter().enumerate() {
-            let j = (i + 1) % corners.len();
-            let previous = (i + corners.len() - 1) % corners.len();
-            let side = wall(i as u32);
-            let adjacent = wall(previous as u32);
-            let [a, b] = depths.map(|z| at_z(p, z));
-            self.line(format!("{name}/post/{i}"), a, b, &[adjacent, side]);
-            for (cap, z) in depths.into_iter().enumerate() {
-                self.line(
-                    format!("{name}/rim/{cap}/{i}"),
-                    at_z(p, z),
-                    at_z(corners[j], z),
-                    &[caps[cap], side],
-                );
-                self.geometry(
-                    format!("{name}/corner/{cap}/{i}"),
-                    AnalyticGeometry::Point {
-                        position_mm: position(self.frame, at_z(p, z)),
-                    },
-                    &[],
-                );
-            }
-        }
-    }
-}
-
 pub(super) fn extend_topology(
     body: &HelicalBody,
     screw: &Screw,
@@ -313,11 +176,9 @@ pub(super) fn extend_topology(
 ) {
     let roles = screw.faces();
     let wall_count = body.rails.len();
-    let mut face_indices: Vec<_> = (0..2 + wall_count).collect();
-    for (ordinal, &role) in roles.iter().enumerate().skip(face_indices.len()) {
+    for (ordinal, &role) in roles.iter().enumerate().skip(2 + wall_count) {
         let origin = body.origin(face_name(role));
         let plane = plane(screw, role, frame);
-        face_indices.push(elements.len());
         elements.push(TopologyElement {
             key: TopologyKey {
                 kind: TopologyKind::Face,
@@ -335,15 +196,7 @@ pub(super) fn extend_topology(
             geometry: plane.map(|frame| AnalyticGeometry::Plane { frame }),
         });
     }
-    let mut add = Boundary {
-        body,
-        frame,
-        roles: &roles,
-        elements,
-        face_indices,
-        next_edge: (3 * wall_count) as u32,
-        next_vertex: (2 * wall_count) as u32,
-    };
+    let mut add = Boundary::new(body, frame, &roles, elements, false);
     let spec = screw.spec();
     let seat = screw.head_seat_z();
     let top = screw.head_top_z();

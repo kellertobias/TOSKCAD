@@ -418,3 +418,80 @@ fn fully_threaded_hex_screw_preserves_head_seat_and_six_planar_wrench_faces() {
         .unwrap();
     assert_eq!(receipt.edge_pairs as usize * 2, receipt.mesh.indices.len());
 }
+
+#[test]
+fn rotated_hex_nut_keeps_the_exact_flats_and_authored_end_attachment() {
+    let policy = GeometryPolicy::default();
+    let owner = EntityId::new();
+    let mut thread = metric(false, 1);
+    thread.length_mm = 6.5;
+    let frame = PlaneFrame {
+        origin: [10., 20., 30.],
+        u: [0., 0., 1.],
+        v: [1., 0., 0.],
+    };
+    let nut = Solid::rust_hex_nut(thread, 13., 1., owner, frame, policy).unwrap();
+    let tool = Solid::rust_helical_thread(thread, None, owner, frame, policy).unwrap();
+    let expected = 3_f64.sqrt() * 13_f64.powi(2) * 6.5 / 2. - tool.volume_mm3().unwrap();
+    assert!((nut.volume_mm3().unwrap() - expected).abs() < 1e-9);
+    let bounds = nut.bounds().unwrap();
+    let corner = 13. / 3_f64.sqrt();
+    assert_eq!(bounds.min, [10. - corner, 20., 23.5]);
+    assert_eq!(bounds.max, [10. + corner, 26.5, 36.5]);
+    assert!(!nut.rust_thread_contains([10., 22.5, 33.8]).unwrap());
+    assert!(nut.rust_thread_contains([10., 23.125, 33.8]).unwrap());
+    assert!(!nut.rust_thread_contains([10., 23., 36.51]).unwrap());
+    assert!(nut.rust_thread_contains([17., 23., 30.]).unwrap());
+    assert!(!nut.rust_thread_contains([10., 23., 30.]).unwrap());
+    assert_eq!(nut.solid_count().unwrap(), 1);
+    let faces = nut.faces().unwrap();
+    assert_eq!(faces.len(), 12);
+    assert_eq!(faces.iter().filter(|face| face.plane.is_some()).count(), 8);
+    let snapshot = nut.topology_snapshot(owner, 1).unwrap();
+    let cap = snapshot
+        .elements
+        .iter()
+        .find(|element| {
+            element.key
+                == TopologyKey {
+                    kind: TopologyKind::Face,
+                    ordinal: 0,
+                }
+        })
+        .unwrap();
+    assert_eq!(cap.boundary.len(), 10);
+    assert_eq!(cap.frames[0].frame.normal(), frame.normal());
+    assert!(matches!(
+        cap.geometry,
+        Some(AnalyticGeometry::Plane { frame }) if frame.normal() == [0., -1., 0.]
+    ));
+    let side = snapshot
+        .elements
+        .iter()
+        .find(|element| {
+            element.key
+                == TopologyKey {
+                    kind: TopologyKind::Face,
+                    ordinal: 6,
+                }
+        })
+        .unwrap();
+    assert_eq!(side.boundary.len(), 4);
+    assert!(
+        side.origins
+            .iter()
+            .any(|origin| origin.role == "hardware.outer/0")
+    );
+    assert_eq!(nut.display_edges(0.05).unwrap().len(), 30);
+    assert_eq!(nut.display_vertices().unwrap().len(), 20);
+    let receipt = nut
+        .manufacturing_mesh_with_receipt(MeshOptions::default())
+        .unwrap();
+    assert_eq!(receipt.edge_pairs as usize * 2, receipt.mesh.indices.len());
+    let labels: std::collections::BTreeSet<_> = receipt.mesh.face_indices.into_iter().collect();
+    assert_eq!(labels, (0..12).collect());
+    let Err(error) = Solid::rust_hex_nut(thread, 9., 1., owner, frame, policy) else {
+        panic!("Nut accepted stock below the minimum wall");
+    };
+    assert_eq!(error.kind, GeometryErrorKind::Input);
+}

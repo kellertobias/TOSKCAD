@@ -12,12 +12,15 @@ use multicad_rust_kernel::{
     headed_screw::Screw,
     helical_thread::{Spec, Thread, ThreadError},
     helical_thread_mesh,
+    hex_nut::Nut,
 };
 use std::{
     collections::BTreeSet,
     f64::consts::{PI, TAU},
 };
 
+mod boundary;
+mod nut;
 mod screw;
 
 type Point = [f64; 3];
@@ -39,6 +42,7 @@ pub(crate) struct HelicalBody {
 enum HelicalForm {
     Shaft,
     Bore(BoreStock),
+    Nut(Nut),
     Screw(Screw),
 }
 
@@ -326,6 +330,7 @@ impl HelicalBody {
         let hole_area = geometry.volume_mm3() / height;
         let cap_area = match &form {
             HelicalForm::Bore(stock) => PI * stock.radius().powi(2) - hole_area,
+            HelicalForm::Nut(nut) => nut.outer_area_mm2() - hole_area,
             _ => hole_area,
         };
         let half_twist = height / (2. * rate);
@@ -356,7 +361,7 @@ impl HelicalBody {
             }
         }
         let cap_center = |z: f64| {
-            let sign = if matches!(&form, HelicalForm::Bore(_)) {
+            let sign = if matches!(&form, HelicalForm::Bore(_) | HelicalForm::Nut(_)) {
                 -1.
             } else {
                 1.
@@ -376,6 +381,7 @@ impl HelicalBody {
             HelicalForm::Bore(stock) => {
                 local_faces.push(([0., 0., height / 2.], TAU * stock.radius() * height));
             }
+            HelicalForm::Nut(nut) => nut::extend_face_properties(nut, &mut local_faces),
             HelicalForm::Screw(screw) => screw::extend_face_properties(screw, &mut local_faces),
             HelicalForm::Shaft => {}
         }
@@ -401,6 +407,7 @@ impl HelicalBody {
             HelicalForm::Bore(stock) => {
                 PI * stock.cylinder.volume_factor().as_f64() - self.geometry.volume_mm3()
             }
+            HelicalForm::Nut(nut) => nut.volume_mm3(),
             HelicalForm::Screw(screw) => screw.volume_mm3(),
         }
     }
@@ -409,6 +416,7 @@ impl HelicalBody {
         let stock = match &self.form {
             HelicalForm::Shaft => return self.geometry.contains(local, tolerance),
             HelicalForm::Screw(screw) => return screw.contains(local, tolerance),
+            HelicalForm::Nut(nut) => return nut.contains(local, tolerance),
             HelicalForm::Bore(stock) => stock,
         };
         let [x, y, z] = local;
@@ -431,6 +439,7 @@ impl HelicalBody {
                         + (sign * normal[i] * self.geometry.spec().length_mm).max(0.)
                 }
                 HelicalForm::Screw(screw) => screw.support(direction),
+                HelicalForm::Nut(nut) => nut.support(direction),
             }
         };
         Bounds {
@@ -465,6 +474,8 @@ impl HelicalBody {
                     Some(self.cap_frame(frame, index))
                 } else if let HelicalForm::Screw(screw) = &self.form {
                     screw::plane(screw, screw_roles[index], frame)
+                } else if let HelicalForm::Nut(nut) = &self.form {
+                    nut::plane(nut, index.checked_sub(2 + self.rails.len()), frame)
                 } else {
                     None
                 };
@@ -574,12 +585,19 @@ impl HelicalBody {
                 let band = index - 2;
                 format!("thread/start/{}/{}", band / 4, BAND_NAMES[band % 4])
             });
-            let frame = (index < 2).then(|| self.cap_frame(frame, index));
-            let frames = frame
+            let plane = (index < 2).then(|| self.cap_frame(frame, index));
+            let frames = plane
                 .into_iter()
-                .map(|frame| AnchoredFrame {
-                    origin: origin.clone(),
-                    frame,
+                .map(|mut anchor| {
+                    if matches!(&self.form, HelicalForm::Nut(_)) {
+                        // Stock cap attachment coordinates stay in the
+                        // authored extrusion frame even on the outward -Z face.
+                        anchor.v = frame.v;
+                    }
+                    AnchoredFrame {
+                        origin: origin.clone(),
+                        frame: anchor,
+                    }
                 })
                 .collect();
             let mut origins = BTreeSet::from([origin]);
@@ -594,7 +612,7 @@ impl HelicalBody {
                 origins,
                 boundary,
                 frames,
-                geometry: frame.map(|frame| AnalyticGeometry::Plane { frame }),
+                geometry: plane.map(|frame| AnalyticGeometry::Plane { frame }),
             });
         }
         // Rails and variable-radius rims are exact curves of the body.
@@ -679,6 +697,9 @@ impl HelicalBody {
         if let HelicalForm::Screw(screw) = &self.form {
             screw::extend_topology(self, screw, frame, &mut elements);
         }
+        if let HelicalForm::Nut(nut) = &self.form {
+            nut::extend_topology(self, nut, frame, &mut elements);
+        }
         let snapshot = TopologySnapshot {
             owner,
             revision,
@@ -758,7 +779,7 @@ impl HelicalBody {
                     edge
                 }));
             }
-            HelicalForm::Screw(_) => {
+            HelicalForm::Screw(_) | HelicalForm::Nut(_) => {
                 let mut topology = self.topology(frame, self.feature, 0)?;
                 topology.elements.retain(|element| {
                     element.key.kind == TopologyKind::Edge
@@ -776,7 +797,9 @@ impl HelicalBody {
         options: multicad_rust_kernel::display::Tessellation,
     ) -> f64 {
         match &self.form {
-            HelicalForm::Shaft => helical_thread_mesh::volume_error_bound(&self.geometry, options),
+            HelicalForm::Shaft | HelicalForm::Nut(_) => {
+                helical_thread_mesh::volume_error_bound(&self.geometry, options)
+            }
             HelicalForm::Bore(stock) => helical_thread_mesh::bore_volume_error_bound(
                 &self.geometry,
                 stock.radius(),
@@ -799,6 +822,7 @@ impl HelicalBody {
                 helical_thread_mesh::tessellate_bore(&self.geometry, stock.radius(), options)
             }
             HelicalForm::Screw(screw) => helical_thread_mesh::tessellate_screw(screw, options),
+            HelicalForm::Nut(nut) => helical_thread_mesh::tessellate_nut(nut, options),
         };
         crate::rust_display::placed_mesh(mesh, frame, false)
     }
