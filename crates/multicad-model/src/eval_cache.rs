@@ -148,6 +148,8 @@ pub struct CompileStats {
     pub evaluated: BTreeSet<EntityId>,
     /// Features reused from an earlier compile.
     pub reused: BTreeSet<EntityId>,
+    /// The identical full Rust model was reused without scheduling features.
+    pub reused_full_model: bool,
     /// Evaluated features that are not cacheable (see the module docs).
     pub uncacheable: BTreeSet<EntityId>,
     /// Same-owner audited literal symbol nodes restored this compile.
@@ -303,7 +305,14 @@ fn literal_symbols(document: &Document) -> BTreeMap<EntityId, LiteralSymbol> {
     output
 }
 
-/// Exact feature results reused across compiles of one model worker.
+struct FullRustModel {
+    compiler: Compiler,
+    model: crate::Model,
+    features: BTreeSet<EntityId>,
+    bytes: usize,
+}
+
+/// Exact results reused across compiles on one model worker.
 pub struct EvaluationCache {
     entries: BTreeMap<CacheKey, Entry>,
     clock: u64,
@@ -318,6 +327,7 @@ pub struct EvaluationCache {
     symbol_native_checks: usize,
     symbol_nodes: BTreeMap<CacheKey, SymbolEntry>,
     pending_symbol_nodes: BTreeMap<CacheKey, SymbolEntry>,
+    full_rust: Option<FullRustModel>,
 }
 impl Default for EvaluationCache {
     fn default() -> Self {
@@ -343,6 +353,7 @@ impl EvaluationCache {
             symbol_native_checks: 0,
             symbol_nodes: BTreeMap::new(),
             pending_symbol_nodes: BTreeMap::new(),
+            full_rust: None,
         }
     }
     /// Statistics of the most recent cached compile (also when it failed or
@@ -364,10 +375,15 @@ impl EvaluationCache {
         self.entries.is_empty()
     }
     pub fn estimated_bytes(&self) -> usize {
-        self.entries.values().map(|e| e.bytes).sum()
+        self.entries
+            .values()
+            .map(|e| e.bytes)
+            .sum::<usize>()
+            .saturating_add(self.full_rust.as_ref().map_or(0, |full| full.bytes))
     }
     pub fn clear(&mut self) {
         self.entries.clear();
+        self.full_rust = None;
         self.gear_pairs.clear();
         self.native_intersections.clear();
         self.symbol_proofs.clear();
@@ -375,6 +391,67 @@ impl EvaluationCache {
         self.symbol_nodes.clear();
         self.pending_symbol_nodes.clear();
         self.last = CompileStats::default();
+    }
+
+    pub(crate) fn reuse_full_rust(
+        &mut self,
+        compiler: &Compiler,
+        document: &Document,
+        revision: u64,
+    ) -> Option<crate::Model> {
+        let full = self.full_rust.as_ref()?;
+        let stamp = full.model.snapshot().stamp;
+        if full.compiler != *compiler
+            || stamp.document != document.id()
+            || stamp.revision != revision
+            || !ContentHash::document(document).is_ok_and(|hash| hash == stamp.source_hash)
+        {
+            self.full_rust = None;
+            return None;
+        }
+        let model = full.model.share_completed()?;
+        self.last.reused.clone_from(&full.features);
+        self.last.reused_full_model = true;
+        Some(model)
+    }
+
+    pub(crate) fn store_full_rust(&mut self, compiler: &Compiler, model: &crate::Model) {
+        if self.max_entries == 0 {
+            return;
+        }
+        let snapshot = model.snapshot();
+        // Conservatively charge shared display data against both caches.
+        let shapes = snapshot.shapes.values().map(|shape| estimate(shape));
+        let occurrences = snapshot
+            .occurrences
+            .values()
+            .map(|occurrence| occurrence.topology.elements.len().saturating_mul(1280));
+        let leaves = snapshot
+            .leaf_occurrences
+            .values()
+            .map(|leaf| leaf.topology.elements.len().saturating_mul(1280));
+        let bytes = shapes
+            .chain(occurrences)
+            .chain(leaves)
+            .fold(0, usize::saturating_add);
+        if bytes > self.retained_bytes.saturating_sub(self.estimated_bytes()) {
+            return;
+        }
+        let Some(model) = model.share_completed() else {
+            return;
+        };
+        self.full_rust = Some(FullRustModel {
+            compiler: *compiler,
+            model,
+            features: self
+                .last
+                .evaluated
+                .union(&self.last.reused)
+                .copied()
+                .collect(),
+            bytes,
+        });
+        self.last.estimated_bytes = self.estimated_bytes();
     }
     /// Same-owner, exact native Intersect(None) receipts. These never replace
     /// current source, phase, engagement, leaf enumeration or budget checks.
@@ -773,6 +850,11 @@ impl Drop for Session<'_> {
     fn drop(&mut self) {
         let mut stats = std::mem::take(&mut self.stats);
         stats.evicted = self.cache.evict();
+        if self.cache.full_rust.is_some()
+            && self.cache.estimated_bytes() > self.cache.retained_bytes
+        {
+            self.cache.full_rust = None;
+        }
         stats.entries = self.cache.entries.len();
         stats.estimated_bytes = self.cache.estimated_bytes();
         self.cache.last = stats;

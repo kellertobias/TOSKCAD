@@ -527,6 +527,66 @@ fn an_owner_cache_keeps_native_and_rust_solids_and_topology_separate() {
 }
 
 #[test]
+fn completed_rust_model_reuse_requires_identical_source_revision_and_settings() {
+    let (session, height, _, _, _, cut) = fixture(false, 28.);
+    let document = session.document();
+    let revision = session.revision();
+    let compiler = compiler();
+    let mut cache = EvaluationCache::default();
+    let build = |cache: &mut EvaluationCache, compiler: Compiler, document, revision| {
+        compiler
+            .compile_cached_with_backend(cache, document, revision, GeometryBackend::Rust, None)
+            .unwrap()
+    };
+    let cold = build(&mut cache, compiler, document, revision);
+    assert!(!cache.last_compile().reused_full_model);
+    let warm = build(&mut cache, compiler, document, revision);
+    assert!(cache.last_compile().reused_full_model);
+    assert!(Arc::ptr_eq(
+        &cold.snapshot().shapes[&cut],
+        &warm.snapshot().shapes[&cut]
+    ));
+    assert!(
+        compiler
+            .compile_cached_with_backend(
+                &mut cache,
+                document,
+                revision,
+                GeometryBackend::Rust,
+                Some(&|| true),
+            )
+            .is_err()
+    );
+    assert!(!cache.last_compile().reused_full_model);
+
+    let next = build(&mut cache, compiler, document, revision + 1);
+    assert!(!cache.last_compile().reused_full_model);
+    assert_eq!(next.snapshot().stamp.revision, revision + 1);
+    let changed_settings = Compiler {
+        omit_display: !compiler.omit_display,
+        ..compiler
+    };
+    let _ = build(&mut cache, changed_settings, document, revision + 1);
+    assert!(!cache.last_compile().reused_full_model);
+    let mut parameter = document.get(height).unwrap().clone();
+    let EntityData::Parameter { expression, .. } = &mut parameter.data else {
+        unreachable!()
+    };
+    *expression = "=10 mm / 3".into();
+    let edited = document.edited(&[Mutation::Replace(parameter)]).unwrap();
+    let fresh = build(&mut cache, changed_settings, &edited, revision + 1);
+    assert!(!cache.last_compile().reused_full_model);
+    assert_ne!(
+        fresh.snapshot().stamp.source_hash,
+        next.snapshot().stamp.source_hash
+    );
+    assert_ne!(
+        fresh.solid(cut).unwrap().volume_mm3().unwrap(),
+        next.solid(cut).unwrap().volume_mm3().unwrap()
+    );
+}
+
+#[test]
 fn cached_batch_cuts_each_retain_their_shared_tool_consumption() {
     let mut session = Session::new(Document::new("Two targets, one cutter").unwrap()).unwrap();
     let boxes = std::array::from_fn::<_, 2, _>(|_| {

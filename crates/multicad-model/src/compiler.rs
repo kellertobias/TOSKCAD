@@ -268,6 +268,29 @@ pub struct Model {
     timings: ModelTimings,
 }
 impl Model {
+    pub(crate) fn share_completed(&self) -> Option<Self> {
+        Some(Self {
+            policy: self.policy,
+            solids: self
+                .solids
+                .iter()
+                .map(|(&id, solid)| Some((id, solid.share().ok()?)))
+                .collect::<Option<_>>()?,
+            snapshot: self.snapshot.clone(),
+            leaves: crate::assemblies::LeafStore {
+                snapshots: self.leaves.snapshots.clone(),
+                solids: self
+                    .leaves
+                    .solids
+                    .iter()
+                    .map(|(path, solid)| Some((path.clone(), solid.share().ok()?)))
+                    .collect::<Option<_>>()?,
+            },
+            gear_pair_checks: self.gear_pair_checks.clone(),
+            timings: ModelTimings::default(),
+        })
+    }
+
     pub fn timings(&self) -> &ModelTimings {
         &self.timings
     }
@@ -317,7 +340,7 @@ impl Model {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Compiler {
     pub policy: GeometryPolicy,
     pub mesh: MeshOptions,
@@ -513,6 +536,16 @@ impl Compiler {
         let started = std::time::Instant::now();
         let native_backend = mode.backend == GeometryBackend::OpenCascade;
         let full_evaluation = mode.roots.is_none() && native_backend;
+        let full_rust = mode.roots.is_none() && !native_backend;
+        if full_rust && let Some(cache) = cache.as_deref_mut() {
+            cache.reset_compile_stats();
+            checkpoint(interrupt)?;
+            if let Some(mut model) = cache.reuse_full_rust(self, document, revision) {
+                checkpoint(interrupt)?;
+                self.report_timings(&mut model, started);
+                return Ok(model);
+            }
+        }
         let publication = crate::pair_cycle_proofs::PublicationScope::begin();
         let native_publication =
             crate::native_intersection_proofs::PublicationScope::begin(if full_evaluation {
@@ -557,35 +590,43 @@ impl Compiler {
                     e
                 }
             });
-        if native_backend && let Some(cache) = cache {
+        if native_backend && let Some(cache) = cache.as_deref_mut() {
             cache.finish_symbol_proofs(result.is_ok());
         }
         native_publication.finish(result.is_ok() && full_evaluation);
         publication.finish(result.is_ok() && full_evaluation);
         if let Ok(model) = &mut result {
-            model.timings.total_ms = started.elapsed().as_secs_f64() * 1000.;
-            // Opt-in local diagnostics for controlled operator-path measurements.
-            // No model source, native handle or manufacturing payload is logged.
-            if let Some(path) = std::env::var_os("MULTICAD_MODEL_TIMINGS_JSONL") {
-                use std::io::Write;
-                if let Ok(mut output) = std::fs::OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(path)
-                    && let Ok(mut line) = serde_json::to_vec(&serde_json::json!({
-                        "document":document.id(), "revision":revision,
-                        "source_hash":model.snapshot.stamp.source_hash,
-                        "owner":std::thread::current().name(), "omit_display":self.omit_display,
-                        "scope":format!("{:?}",model.snapshot.scope),
-                        "timings":model.timings, "gear_pairs":model.gear_pair_checks,
-                    }))
-                {
-                    line.push(b'\n');
-                    let _ = output.write_all(&line);
-                }
+            if full_rust && let Some(cache) = cache {
+                cache.store_full_rust(self, model);
             }
+            self.report_timings(model, started);
         }
         result
+    }
+
+    fn report_timings(&self, model: &mut Model, started: std::time::Instant) {
+        model.timings.total_ms = started.elapsed().as_secs_f64() * 1000.;
+        // Opt-in local diagnostics for controlled operator-path measurements.
+        // No model source, native handle or manufacturing payload is logged.
+        if let Some(path) = std::env::var_os("MULTICAD_MODEL_TIMINGS_JSONL") {
+            use std::io::Write;
+            let stamp = model.snapshot.stamp;
+            if let Ok(mut output) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+                && let Ok(mut line) = serde_json::to_vec(&serde_json::json!({
+                    "document":stamp.document, "revision":stamp.revision,
+                    "source_hash":stamp.source_hash,
+                    "owner":std::thread::current().name(), "omit_display":self.omit_display,
+                    "scope":format!("{:?}",model.snapshot.scope),
+                    "timings":model.timings, "gear_pairs":model.gear_pair_checks,
+                }))
+            {
+                line.push(b'\n');
+                let _ = output.write_all(&line);
+            }
+        }
     }
     fn compile_scoped_unchecked(
         &self,
