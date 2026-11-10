@@ -3,6 +3,7 @@
 use crate::{
     Circle, Rational,
     annulus::Annulus,
+    circular_pockets::{CircularPocket, validate},
     cylinder::AxialCylinder,
     linear_sweep::Sweep,
     orthogonal_boundary::{Boundary, BoundaryFace, point_key},
@@ -128,6 +129,29 @@ pub fn write_polygon_prism(
     write_prism(
         &mut prism.rings().iter().map(Vec::as_slice),
         prism.circular_holes(),
+        &[],
+        Placement::new(origin, u, v)?,
+        if reverse_sweep { -height } else { height },
+    )
+}
+
+/// Write an analytic polygonal prism with cylindrical blind pockets on
+/// either cap. The planar floors and the original caps share exact rims with
+/// their cylindrical walls.
+pub fn write_pocketed_polygon_prism(
+    prism: &PolygonPrism,
+    pockets: &[CircularPocket],
+    origin: Point,
+    u: Point,
+    v: Point,
+    reverse_sweep: bool,
+) -> Result<String, StepError> {
+    validate(prism, pockets, 1e-7, 1e-7).map_err(|_| StepError::InvalidGeometry)?;
+    let height = prism.height().as_f64();
+    write_prism(
+        &mut prism.rings().iter().map(Vec::as_slice),
+        prism.circular_holes(),
+        pockets,
         Placement::new(origin, u, v)?,
         if reverse_sweep { -height } else { height },
     )
@@ -217,7 +241,7 @@ fn write_planar_sweep(
     for (cap, (normal, reference)) in cap_supports.into_iter().enumerate() {
         faces.push(brep.cap(
             &ranges,
-            &[],
+            std::iter::empty(),
             cap * count,
             placement.vector(normal),
             placement.vector(reference),
@@ -391,6 +415,7 @@ fn write_rectangle(
     write_prism(
         &mut [ring.as_slice()].into_iter(),
         holes,
+        &[],
         placement,
         height.as_f64(),
     )
@@ -453,6 +478,7 @@ impl Placement {
 fn write_prism(
     rings: &mut dyn Iterator<Item = &[[Rational; 2]]>,
     circular_holes: &[Circle],
+    pockets: &[CircularPocket],
     placement: Placement,
     end: f64,
 ) -> Result<String, StepError> {
@@ -482,16 +508,48 @@ fn write_prism(
             )
         })
         .collect::<Result<Vec<_>, _>>()?;
+    let blind_trims = pockets
+        .iter()
+        .map(|pocket| {
+            let height = end.abs();
+            let mut levels = [pocket.mouth_z_mm(height), pocket.floor_z_mm(height)];
+            if pocket.end {
+                levels.reverse();
+            }
+            CylindricalTrim::new(
+                &mut brep.file,
+                levels.map(|z| placement.point_f64(pocket.center_mm, z * end.signum())),
+                normal,
+                placement.u,
+                pocket.radius_mm,
+            )
+            .map(|trim| (pocket.end, trim))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let cap_trims = |end| {
+        round_trims.iter().chain(
+            blind_trims
+                .iter()
+                .filter_map(move |(mouth, trim)| (*mouth == end).then_some(trim)),
+        )
+    };
     let mut faces = vec![
         brep.cap(
             &ranges,
-            &round_trims,
+            cap_trims(false),
             0,
             normal.map(|n| -n),
             placement.u,
             !reverse,
         )?,
-        brep.cap(&ranges, &round_trims, count, normal, placement.u, reverse)?,
+        brep.cap(
+            &ranges,
+            cap_trims(true),
+            count,
+            normal,
+            placement.u,
+            reverse,
+        )?,
     ];
     for range in ranges {
         for a in range.clone() {
@@ -516,6 +574,21 @@ fn write_prism(
             .iter()
             .map(|trim| trim.wall(&mut brep.file, false)),
     );
+    for (mouth, trim) in blind_trims {
+        let floor = !mouth;
+        faces.push(trim.wall(&mut brep.file, false));
+        let edge = brep
+            .file
+            .oriented_edge(trim.rims[usize::from(floor)], mouth);
+        let bound = brep.file.bound(&[edge], true);
+        let normal = normal.map(|n| if mouth { n } else { -n });
+        faces.push(brep.file.face(
+            &[bound],
+            trim.centers[usize::from(floor)],
+            normal,
+            placement.u,
+        ));
+    }
     Ok(brep.file.finish_solid(&faces))
 }
 
@@ -738,10 +811,10 @@ impl BRep {
         Ok(self.file.bound(&edges, outer))
     }
 
-    fn cap(
+    fn cap<'a>(
         &mut self,
         ranges: &[Range<usize>],
-        round_trims: &[CylindricalTrim],
+        round_trims: impl Iterator<Item = &'a CylindricalTrim>,
         offset: usize,
         normal: Point,
         reference: Point,
@@ -758,11 +831,7 @@ impl BRep {
                 self.bound(&ring, i == 0)
             })
             .collect::<Result<Vec<_>, _>>()?;
-        bounds.extend(
-            round_trims
-                .iter()
-                .map(|trim| trim.cap_bound(&mut self.file, offset != 0, false)),
-        );
+        bounds.extend(round_trims.map(|trim| trim.cap_bound(&mut self.file, offset != 0, false)));
         let point = self.vertices[offset].cartesian;
         Ok(self.file.face(&bounds, point, normal, reference))
     }

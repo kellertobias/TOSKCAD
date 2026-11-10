@@ -451,6 +451,36 @@ fn read_cylinder_extrema_away_from_the_seam_and_measure_volume() {
 }
 
 #[test]
+fn selected_planar_circle_pcurve_must_match_the_full_master_rim() {
+    let source = cylinder_step();
+    let circle = id(entity(&source, "CIRCLE", 1));
+    let plane = id(entity(&source, "PLANE", 1));
+    let wrapped = replace(&source, "EDGE_CURVE", 1, |edge| {
+        edge.replace(&format!(",{circle},"), ",#999001,")
+    });
+    let step = before_end(
+        &wrapped,
+        &format!(
+            "#999001=SURFACE_CURVE('',{circle},(#999002),.PCURVE_S1.);\n\
+             #999002=PCURVE('',{plane},#999003);\n\
+             #999003=DEFINITIONAL_REPRESENTATION('',(#999004),#999005);\n\
+             #999004=CIRCLE('',#999006,1.);\n\
+             #999005=(GEOMETRIC_REPRESENTATION_CONTEXT(2) PARAMETRIC_REPRESENTATION_CONTEXT() REPRESENTATION_CONTEXT('2D SPACE',''));\n\
+             #999006=AXIS2_PLACEMENT_2D('',#999007,$);\n\
+             #999007=CARTESIAN_POINT('',(0.,0.));"
+        ),
+    );
+    assert_eq!(
+        read_import_solid(&step, TOLERANCE),
+        read_import_solid(&source, TOLERANCE)
+    );
+    assert_eq!(
+        read_import_solid(&step.replace("#999006,1.", "#999006,1.1"), TOLERANCE),
+        Err(ReadError::Invalid)
+    );
+}
+
+#[test]
 fn annulus_round_trip_preserves_analytic_bore_and_tilted_extrema() {
     let annulus = Annulus::new(2.5, 6., 1.75).unwrap();
     let diagonal = 0.5_f64.sqrt();

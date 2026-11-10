@@ -145,10 +145,23 @@ fn rust_mcp_round_trips_a_step_body_and_refuses_an_unsupported_shape() {
         policy,
     )
     .unwrap();
+    let round_path = dir.path().join("round-blind-pocket.step");
+    write_pocket(&stock, &round_tool, &round_path, policy);
+    let oblique_tool = Solid::cylinder(
+        PlaneFrame {
+            origin: [4., 4., 3.],
+            u: [0.8, 0., -0.6],
+            ..Default::default()
+        },
+        2.,
+        5.,
+        policy,
+    )
+    .unwrap();
     write_pocket(
         &stock,
-        &round_tool,
-        &dir.path().join("round-blind-pocket.step"),
+        &oblique_tool,
+        &dir.path().join("oblique-blind-pocket.step"),
         policy,
     );
     let workspace = || Workspace::new(Document::new("STEP backend").unwrap()).unwrap();
@@ -194,12 +207,43 @@ fn rust_mcp_round_trips_a_step_body_and_refuses_an_unsupported_shape() {
         &rust,
         &call(),
         "import_step",
-        json!({ "expected_revision": 0, "file_name": "round-blind-pocket.step" }),
+        json!({ "expected_revision": 0, "file_name": "oblique-blind-pocket.step" }),
     )
     .unwrap_err();
     assert_eq!(refused.code, "model_failed");
     assert!(refused.message.contains("Rust STEP import"), "{refused}");
     assert_eq!(rust.document(), before);
+
+    let rust_round = Headless::with_geometry_backend(
+        workspace(),
+        Some(dir.path().to_path_buf()),
+        false,
+        GeometryBackend::Rust,
+    );
+    let round = dispatch(
+        &rust_round,
+        &call(),
+        "import_step",
+        json!({ "expected_revision": 0, "file_name": "round-blind-pocket.step" }),
+    )
+    .unwrap();
+    assert_eq!(round["revision"], 1);
+    std::fs::remove_file(round_path).unwrap();
+    let source = EntityId::parse(round["source"].as_str().unwrap()).unwrap();
+    let round_document = rust_round.document();
+    assert_eq!(
+        read_step_source(&round_document, source).unwrap().encoding,
+        StepEncoding::RustStep
+    );
+    let reopened = Headless::with_geometry_backend(
+        Workspace::new(round_document).unwrap(),
+        None,
+        false,
+        GeometryBackend::Rust,
+    );
+    let rebuilt = dispatch(&reopened, &call(), "evaluate_model", json!({})).unwrap();
+    let expected = 480. - 12. * std::f64::consts::PI;
+    assert!((rebuilt["parts"][0]["volume_mm3"].as_f64().unwrap() - expected).abs() < 1e-7);
 
     let imported = dispatch(
         &rust,

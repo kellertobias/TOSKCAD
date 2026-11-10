@@ -199,44 +199,89 @@ impl Solid {
             ImportProfile::Polygon {
                 rings,
                 circular_holes,
+            } => Self::from_imported_polygon(
+                &rings,
+                &circular_holes,
+                height_mm,
+                frame,
+                feature,
+                policy,
+            ),
+            ImportProfile::PocketedPolygon {
+                rings,
+                circular_holes,
+                pockets,
             } => {
-                let height = dimension(height_mm)?;
-                let exact_rings = rings
+                let stock = Self::from_imported_polygon(
+                    &rings,
+                    &circular_holes,
+                    height_mm,
+                    frame,
+                    feature,
+                    policy,
+                )?;
+                let origins = pockets
                     .iter()
-                    .map(|ring| {
-                        ring.iter()
-                            .map(|&[x, y]| Ok([dimension(x)?, dimension(y)?]))
-                            .collect()
-                    })
-                    .collect::<Result<Vec<_>, GeometryError>>()?;
-                let holes = circular_holes
-                    .iter()
-                    .map(|&([x, y], radius)| {
-                        Circle::new([dimension(x)?, dimension(y)?], dimension(radius)?)
-                            .map_err(|cause| invalid(format!("Invalid STEP hole: {cause:?}")))
-                    })
-                    .collect::<Result<Vec<_>, _>>()?;
-                let prism = PolygonPrism::with_circular_holes(exact_rings, holes, height)
-                    .map_err(|cause| invalid(format!("Invalid STEP polygon: {cause:?}")))?;
-                let mut origins: Vec<_> = rings
-                    .iter()
-                    .flat_map(|ring| {
-                        ring.iter()
-                            .zip(ring.iter().cycle().skip(1))
-                            .map(|(&a, &b)| straight_origin(feature, frame, a, b))
+                    .map(|pocket| {
+                        feature_origin(
+                            feature,
+                            "pocket",
+                            frame.point(pocket.center_mm).into_iter().chain([
+                                pocket.radius_mm,
+                                pocket.depth_mm,
+                                f64::from(pocket.end),
+                            ]),
+                        )
                     })
                     .collect();
-                origins.extend(circular_holes.iter().map(|&(center, radius)| {
-                    feature_origin(
-                        feature,
-                        "hole",
-                        frame.point(center).into_iter().chain([radius]),
-                    )
-                }));
-                let reversed = vec![false; origins.len()];
-                Self::from_polygon_prism(prism, frame, feature, &origins, &reversed, policy)
+                stock.with_polygon_pockets(pockets, origins)
             }
         }
+    }
+
+    fn from_imported_polygon(
+        rings: &[Vec<[f64; 2]>],
+        circular_holes: &[([f64; 2], f64)],
+        height_mm: f64,
+        frame: PlaneFrame,
+        feature: EntityId,
+        policy: GeometryPolicy,
+    ) -> Result<Self, GeometryError> {
+        let dimension = |value| convert(value, policy.linear_tolerance_mm);
+        let exact_rings = rings
+            .iter()
+            .map(|ring| {
+                ring.iter()
+                    .map(|&[x, y]| Ok([dimension(x)?, dimension(y)?]))
+                    .collect()
+            })
+            .collect::<Result<Vec<_>, GeometryError>>()?;
+        let holes = circular_holes
+            .iter()
+            .map(|&([x, y], radius)| {
+                Circle::new([dimension(x)?, dimension(y)?], dimension(radius)?)
+                    .map_err(|cause| invalid(format!("Invalid STEP hole: {cause:?}")))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let prism = PolygonPrism::with_circular_holes(exact_rings, holes, dimension(height_mm)?)
+            .map_err(|cause| invalid(format!("Invalid STEP polygon: {cause:?}")))?;
+        let mut origins: Vec<_> = rings
+            .iter()
+            .flat_map(|ring| {
+                ring.iter()
+                    .zip(ring.iter().cycle().skip(1))
+                    .map(|(&a, &b)| straight_origin(feature, frame, a, b))
+            })
+            .collect();
+        origins.extend(circular_holes.iter().map(|&(center, radius)| {
+            feature_origin(
+                feature,
+                "hole",
+                frame.point(center).into_iter().chain([radius]),
+            )
+        }));
+        let reversed = vec![false; origins.len()];
+        Self::from_polygon_prism(prism, frame, feature, &origins, &reversed, policy)
     }
 }
 

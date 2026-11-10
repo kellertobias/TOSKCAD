@@ -1,6 +1,8 @@
 use super::*;
 use std::f64::consts::TAU;
 
+mod planar_circle;
+
 struct LinePcurve {
     surface: u32,
     origin: Point,
@@ -58,12 +60,21 @@ impl Shell<'_, '_> {
             }
         } else if let Some(selected) = selected {
             let &pcurve = associated.get(selected).ok_or(ReadError::Invalid)?;
-            let pcurve = self.line_pcurve(pcurve)?;
-            match self.simple(pcurve.surface)?.name {
-                "PLANE" => self.verify_planar_line_master(curve_3d, pcurve, vertices)?,
-                "CYLINDRICAL_SURFACE" => {
-                    self.verify_cylindrical_master(curve_3d, pcurve, vertices)?
+            let (surface, curve) = self.pcurve_definition(pcurve)?;
+            match self.simple(surface)?.name {
+                "PLANE" if self.simple(curve_3d)?.name == "CIRCLE" => {
+                    self.verify_planar_circle_master(curve_3d, surface, curve)?
                 }
+                "PLANE" => self.verify_planar_line_master(
+                    curve_3d,
+                    self.line_pcurve_geometry(surface, curve)?,
+                    vertices,
+                )?,
+                "CYLINDRICAL_SURFACE" => self.verify_cylindrical_master(
+                    curve_3d,
+                    self.line_pcurve_geometry(surface, curve)?,
+                    vertices,
+                )?,
                 _ => return Err(ReadError::Unsupported),
             }
         }
@@ -71,6 +82,11 @@ impl Shell<'_, '_> {
     }
 
     fn line_pcurve(&self, pcurve: u32) -> Result<LinePcurve> {
+        let (surface, curve) = self.pcurve_definition(pcurve)?;
+        self.line_pcurve_geometry(surface, curve)
+    }
+
+    fn pcurve_definition(&self, pcurve: u32) -> Result<(u32, u32)> {
         let [Value::String(_), surface, definition] = self.args(pcurve, "PCURVE")? else {
             return Err(ReadError::Invalid);
         };
@@ -87,9 +103,13 @@ impl Shell<'_, '_> {
         }) {
             return Err(ReadError::Unsupported);
         }
-        let [line] = refs(items)?
+        let [curve] = refs(items)?
             .try_into()
             .map_err(|_| ReadError::Unsupported)?;
+        Ok((surface, curve))
+    }
+
+    fn line_pcurve_geometry(&self, surface: u32, line: u32) -> Result<LinePcurve> {
         if self.simple(line)?.name == "B_SPLINE_CURVE_WITH_KNOTS"
             && self.simple(surface)?.name == "PLANE"
         {

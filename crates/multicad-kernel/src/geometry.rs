@@ -8,6 +8,7 @@ use multicad_rust_kernel::{
 use std::path::Path;
 use std::rc::Rc;
 mod annulus_body;
+mod circular_pocket_body;
 mod helical_body;
 mod linear_body;
 mod orthogonal_body;
@@ -15,6 +16,7 @@ mod revolution_body;
 mod rust_compound;
 mod step_import;
 use annulus_body::AnnulusBody;
+pub use circular_pocket_body::CircularPocketTool;
 use helical_body::HelicalBody;
 use linear_body::LinearBody;
 use orthogonal_body::OrthogonalBody;
@@ -570,6 +572,8 @@ impl Solid {
                 .cloned()
                 .zip(reversed.iter().copied())
                 .collect(),
+            pockets: Rc::default(),
+            pocket_origins: Rc::default(),
         };
         for length in placed.side_lengths() {
             policy.length(length)?;
@@ -1035,7 +1039,7 @@ impl Solid {
             role: "side.cylinder".into(),
         });
         reversed.push(false);
-        Self::from_polygon_prism_sweep(
+        let result = Self::from_polygon_prism_sweep(
             prism,
             target.frame,
             target.reverse_sweep,
@@ -1043,7 +1047,12 @@ impl Solid {
             &origins,
             &reversed,
             policy,
-        )
+        )?;
+        if target.pockets.is_empty() {
+            Ok(result)
+        } else {
+            result.with_polygon_pockets(target.pockets.to_vec(), target.pocket_origins.to_vec())
+        }
     }
     /// Native COMMON query using OCCT's internal worker pool. Rust handles stay
     /// on their owner thread; the non-destructive operation owns its workers.
@@ -1144,7 +1153,10 @@ impl Solid {
             return Ok(compound.volume_mm3());
         }
         if let Some(placed) = self.polygon_prism() {
-            return Ok(placed.prism.volume().as_f64());
+            return Ok(multicad_rust_kernel::circular_pockets::volume_mm3(
+                &placed.prism,
+                &placed.pockets,
+            ));
         }
         if let Some((cylinder, _)) = self.axial_cylinder_frame() {
             return Ok(std::f64::consts::PI * cylinder.volume_factor().as_f64());
@@ -1349,11 +1361,18 @@ impl Solid {
                 *frame,
                 false,
             ),
-            SolidBody::PolygonPrism(placed) => crate::rust_display::placed_mesh(
-                multicad_rust_kernel::display::polygon_prism(&placed.prism, rust_options),
-                placed.frame,
-                placed.reverse_sweep,
-            ),
+            SolidBody::PolygonPrism(placed) => {
+                let mesh = if placed.pockets.is_empty() {
+                    multicad_rust_kernel::display::polygon_prism(&placed.prism, rust_options)
+                } else {
+                    multicad_rust_kernel::display::pocketed_polygon_prism(
+                        &placed.prism,
+                        &placed.pockets,
+                        rust_options,
+                    )
+                };
+                crate::rust_display::placed_mesh(mesh, placed.frame, placed.reverse_sweep)
+            }
             SolidBody::AxialCylinder(cylinder, frame, _) => {
                 let mut mesh = crate::rust_display::mesh(
                     multicad_rust_kernel::display::axial_cylinder(cylinder, rust_options),
@@ -1694,13 +1713,26 @@ impl Solid {
             ));
         }
         let encoded = match &self.body {
-            SolidBody::PolygonPrism(placed) => step::write_polygon_prism(
-                &placed.prism,
-                placed.frame.origin,
-                placed.frame.u,
-                placed.frame.v,
-                placed.reverse_sweep,
-            ),
+            SolidBody::PolygonPrism(placed) => {
+                if placed.pockets.is_empty() {
+                    step::write_polygon_prism(
+                        &placed.prism,
+                        placed.frame.origin,
+                        placed.frame.u,
+                        placed.frame.v,
+                        placed.reverse_sweep,
+                    )
+                } else {
+                    step::write_pocketed_polygon_prism(
+                        &placed.prism,
+                        &placed.pockets,
+                        placed.frame.origin,
+                        placed.frame.u,
+                        placed.frame.v,
+                        placed.reverse_sweep,
+                    )
+                }
+            }
             SolidBody::Prism(prism, frame) => {
                 step::write_rectangular_prism(prism, frame.origin, frame.u, frame.v)
             }

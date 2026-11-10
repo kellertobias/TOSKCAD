@@ -8,7 +8,11 @@ use multicad_core::{
     },
 };
 use multicad_rust_kernel::{
-    Circle, Rational, cylinder::AxialCylinder, polygon::PolygonPrism, prism::Prism,
+    Circle, Rational,
+    circular_pockets::{self, CircularPocket},
+    cylinder::AxialCylinder,
+    polygon::PolygonPrism,
+    prism::Prism,
 };
 use std::f64::consts::{FRAC_PI_2, PI, TAU};
 use std::rc::Rc;
@@ -305,6 +309,8 @@ pub(crate) struct PlacedPolygon {
     pub(crate) reverse_sweep: bool,
     pub(crate) feature: EntityId,
     pub(crate) edges: Rc<[(Origin, bool)]>,
+    pub(crate) pockets: Rc<[CircularPocket]>,
+    pub(crate) pocket_origins: Rc<[Origin]>,
 }
 
 struct PolygonSide {
@@ -397,16 +403,35 @@ impl PlacedPolygon {
         frame(origin, self.frame.u, v)
     }
 
+    fn pocket_floor(&self, pocket: CircularPocket, height: f64) -> ReferenceFrame {
+        let [x, y] = pocket.center_mm;
+        let v = if pocket.end != self.reverse_sweep {
+            self.frame.v
+        } else {
+            self.frame.v.map(|x| -x)
+        };
+        frame(
+            self.position([x, y, pocket.floor_z_mm(height)]),
+            self.frame.u,
+            v,
+        )
+    }
+
+    fn pocket_face_pair(&self, index: usize) -> [usize; 2] {
+        let wall = self.edges.len() + 2 + index * 2;
+        [wall, wall + 1]
+    }
+
     pub(crate) fn faces(&self) -> Vec<Face> {
         let h = self.prism.height().as_f64();
-        let area = self.prism.area().as_f64();
-        let center = self.prism.centroid();
         let caps = [0., h].into_iter().enumerate().map(|(i, z)| {
             let support = self.cap_support(z, true);
+            let (area, [x, y]) =
+                circular_pockets::cap_properties(&self.prism, &self.pockets, i == 1);
             Face {
                 index: i as u32,
                 plane: Some((support.origin_mm, support.normal())),
-                center_mm: self.position([center[0], center[1], z]),
+                center_mm: self.position([x, y, z]),
                 area_mm2: area,
             }
         });
@@ -427,6 +452,32 @@ impl PlacedPolygon {
             center_mm: self.point(circle.center(), h * 0.5),
             area_mm2: TAU * circle.radius().as_f64() * h,
         }))
+        .chain(
+            self.pockets
+                .iter()
+                .copied()
+                .enumerate()
+                .flat_map(|(i, pocket)| {
+                    let [wall, floor] = self.pocket_face_pair(i);
+                    let [x, y] = pocket.center_mm;
+                    let z = pocket.floor_z_mm(h).midpoint(pocket.mouth_z_mm(h));
+                    let support = self.pocket_floor(pocket, h);
+                    [
+                        Face {
+                            index: wall as u32,
+                            plane: None,
+                            center_mm: self.position([x, y, z]),
+                            area_mm2: TAU * pocket.radius_mm * pocket.depth_mm,
+                        },
+                        Face {
+                            index: floor as u32,
+                            plane: Some((support.origin_mm, support.normal())),
+                            center_mm: support.origin_mm,
+                            area_mm2: pocket.area_mm2(),
+                        },
+                    ]
+                }),
+        )
         .collect()
     }
 
@@ -453,6 +504,17 @@ impl PlacedPolygon {
                     curve.clone(),
                 ]
             }))
+            .chain(self.pocket_origins.iter().flat_map(|origin| {
+                ["wall", "floor"].map(|role| {
+                    vec![
+                        Origin {
+                            source: origin.source,
+                            role: format!("pocket.{role}/{}/{}", origin.source, origin.role),
+                        },
+                        origin.clone(),
+                    ]
+                })
+            }))
             .collect();
         let mut build = Builder {
             face_origins,
@@ -462,11 +524,17 @@ impl PlacedPolygon {
         };
         let h = self.prism.height().as_f64();
         for (cap, z) in [0., h].into_iter().enumerate() {
+            let pockets = self
+                .pockets
+                .iter()
+                .enumerate()
+                .filter(|(_, pocket)| usize::from(pocket.end) == cap)
+                .map(|(i, _)| self.pocket_face_pair(i)[0]);
             build.face(
                 cap,
                 Some(self.cap_support(z, true)),
                 Some(self.cap_support(z, false)),
-                2..count + 2,
+                (2..count + 2).chain(pockets),
             );
             for side in self.sides() {
                 let a = self.point(side.a, z);
@@ -519,6 +587,25 @@ impl PlacedPolygon {
         for (index, _) in self.circular_sides() {
             build.face(index + 2, None, None, [0, 1]);
         }
+        for (index, pocket) in self.pockets.iter().copied().enumerate() {
+            let cap = usize::from(pocket.end);
+            let [wall, floor] = self.pocket_face_pair(index);
+            let support = self.pocket_floor(pocket, h);
+            build.face(wall, None, None, [cap, floor]);
+            build.face(floor, Some(support), Some(support), [wall]);
+            let [x, y] = pocket.center_mm;
+            for (adjacent, z) in [(cap, pocket.mouth_z_mm(h)), (floor, pocket.floor_z_mm(h))] {
+                build.non_face(
+                    AnalyticGeometry::CircularArc {
+                        frame: frame(self.position([x, y, z]), self.frame.u, self.frame.v),
+                        radius_mm: pocket.radius_mm,
+                        start_rad: 0.,
+                        sweep_rad: TAU,
+                    },
+                    &[adjacent, wall],
+                );
+            }
+        }
         let snapshot = TopologySnapshot {
             owner,
             revision,
@@ -529,7 +616,25 @@ impl PlacedPolygon {
     }
 
     pub(crate) fn planar_loops(&self, face: u32) -> Vec<Vec<(u32, bool)>> {
-        polygon_planar_loops(self.prism.rings(), self.prism.circular_holes().len(), face)
+        let base_faces = self.edges.len() + 2;
+        let base_edges = (self.edges.len() * 3 - self.prism.circular_holes().len()) as u32;
+        let face_index = face as usize;
+        if face_index >= base_faces {
+            let pocket_face = face_index - base_faces;
+            return vec![vec![(base_edges + pocket_face as u32, false)]];
+        }
+        let mut loops =
+            polygon_planar_loops(self.prism.rings(), self.prism.circular_holes().len(), face);
+        if face < 2 {
+            loops.extend(
+                self.pockets
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, pocket)| u32::from(pocket.end) == face)
+                    .map(|(index, _)| vec![(base_edges + 2 * index as u32, false)]),
+            );
+        }
+        loops
     }
 }
 

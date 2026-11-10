@@ -1,13 +1,16 @@
 use multicad_rust_kernel::{
     Circle, Rational,
+    circular_pockets::CircularPocket,
     cylinder::AxialCylinder,
+    orthogonal::{Box3, Operation, boolean},
+    orthogonal_boundary,
     polygon::PolygonPrism,
     prism::Prism,
     step::{
-        StepError, write_axial_cylinder, write_box, write_placed_cylinder, write_polygon_prism,
-        write_rectangular_prism,
+        StepError, write_axial_cylinder, write_box, write_orthogonal, write_placed_cylinder,
+        write_pocketed_polygon_prism, write_polygon_prism, write_rectangular_prism,
     },
-    step_read::read_analytic_solid,
+    step_read::{ImportProfile, ReadError, read_analytic_solid, read_import_solid},
 };
 use std::collections::BTreeMap;
 
@@ -68,6 +71,164 @@ fn cartesian_points(step: &str) -> impl Iterator<Item = [f64; 3]> {
             .collect();
         Some(coords.try_into().unwrap())
     })
+}
+
+#[test]
+fn blind_pockets_reimport_with_exact_rims_on_both_sides_of_a_placed_panel() {
+    let through = Circle::new([n(8), n(5)], n(1)).unwrap();
+    let prism = PolygonPrism::with_circular_holes(
+        vec![ring(&[[0, 0], [12, 0], [12, 10], [0, 10]])],
+        vec![through],
+        n(6),
+    )
+    .unwrap();
+    let pockets = [
+        CircularPocket {
+            center_mm: [3., 5.],
+            radius_mm: 2.,
+            depth_mm: 1.,
+            end: false,
+        },
+        CircularPocket {
+            center_mm: [3., 5.],
+            radius_mm: 1.5,
+            depth_mm: 2.,
+            end: true,
+        },
+    ];
+    let (s, c) = 0.731_f64.sin_cos();
+    let u = [c, s, 0.];
+    let v = [0., 0., 1.];
+    let origin = [-810., 10., 55.];
+    for reverse in [false, true] {
+        let step = write_pocketed_polygon_prism(&prism, &pockets, origin, u, v, reverse).unwrap();
+        assert_eq!(count(&step, "CYLINDRICAL_SURFACE"), 3);
+        assert_eq!(count(&step, "CIRCLE"), 6);
+        assert_eq!(count(&step, "PLANE"), 8);
+        closed_edges(&step, 21);
+        let verified = read_analytic_solid(&step, 1e-7).unwrap();
+        assert_eq!(verified.face_count, 11);
+        assert_eq!(verified.circles.len(), 6);
+        assert!((verified.volume_mm3 - (720. - 14.5 * std::f64::consts::PI)).abs() < 1e-9);
+        let (readback, imported) = read_import_solid(&step, 1e-7).unwrap();
+        assert_eq!(verified, readback);
+        let ImportProfile::PocketedPolygon {
+            rings,
+            circular_holes,
+            pockets,
+        } = imported.profile
+        else {
+            panic!("blind pockets were not imported");
+        };
+        assert!((imported.height_mm - 6.).abs() < 1e-10);
+        assert_eq!(rings.len(), 1);
+        assert_eq!(circular_holes.len(), 1);
+        assert_eq!(pockets.len(), 2);
+        assert_ne!(pockets[0].end, pockets[1].end);
+        for (radius, depth) in [(2., 1.), (1.5, 2.)] {
+            let pocket = pockets
+                .iter()
+                .find(|p| (p.radius_mm - radius).abs() < 1e-10)
+                .unwrap();
+            assert!((pocket.depth_mm - depth).abs() < 1e-10);
+        }
+    }
+    let invalid = [CircularPocket {
+        depth_mm: 6.,
+        ..pockets[0]
+    }];
+    assert_eq!(
+        write_pocketed_polygon_prism(&prism, &invalid, origin, u, v, false),
+        Err(StepError::InvalidGeometry)
+    );
+}
+
+#[test]
+fn blind_pocket_import_rejects_opposite_floors_with_intersecting_volumes() {
+    let prism = PolygonPrism::with_circular_holes(
+        vec![ring(&[[0, 0], [12, 0], [12, 10], [0, 10]])],
+        vec![Circle::new([n(8), n(5)], n(1)).unwrap()],
+        n(6),
+    )
+    .unwrap();
+    let pocket = CircularPocket {
+        center_mm: [3., 5.],
+        radius_mm: 2.,
+        depth_mm: 1.,
+        end: false,
+    };
+    let step = write_pocketed_polygon_prism(
+        &prism,
+        &[
+            pocket,
+            CircularPocket {
+                radius_mm: 1.,
+                depth_mm: 2.,
+                end: true,
+                ..pocket
+            },
+        ],
+        ORIGIN,
+        X,
+        Y,
+        false,
+    )
+    .unwrap();
+    let intersecting = step
+        .lines()
+        .map(|line| {
+            if line.contains("=CARTESIAN_POINT(") {
+                line.replace(",1.0000000000000000E0));", ",5.0000000000000000E0));")
+            } else {
+                line.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert_ne!(step.trim(), intersecting);
+    assert!(read_analytic_solid(&intersecting, 1e-7).is_ok());
+    assert_eq!(
+        read_import_solid(&intersecting, 1e-7),
+        Err(ReadError::Unsupported)
+    );
+}
+
+#[test]
+fn planar_pocket_import_retains_orthogonal_recognition() {
+    let body = boolean(
+        &[Box3 {
+            min: ORIGIN,
+            max: [12., 10., 6.],
+        }],
+        &[Box3 {
+            min: [2., 2., 4.],
+            max: [8., 6., 7.],
+        }],
+        Operation::Subtract,
+        0.,
+    )
+    .unwrap()
+    .unwrap();
+    let boundary = orthogonal_boundary::build(body.quads()).unwrap();
+    let step = write_orthogonal(&boundary, |point| point).unwrap();
+    let (readback, solid) = read_import_solid(&step, 1e-7).unwrap();
+    assert_eq!(readback.volume_mm3, 672.);
+    assert!(matches!(solid.profile, ImportProfile::Orthogonal { .. }));
+}
+
+#[test]
+fn polygon_step_refuses_a_far_cap_whose_edges_collapse_after_placement() {
+    let prism = PolygonPrism::new(
+        vec![ring(&[[0, 0], [1, 0], [1, 1], [0, 1]])],
+        n(100_000_000_000_000_000),
+    )
+    .unwrap();
+    let a = (0.5_f64).sqrt();
+    let b = (1. / 6_f64).sqrt();
+    assert_eq!(
+        write_polygon_prism(&prism, ORIGIN, [a, -a, 0.], [b, b, -2. * b], false),
+        Err(StepError::InvalidGeometry)
+    );
 }
 
 #[test]

@@ -161,6 +161,7 @@ impl Solid {
         }
         if let Some(placed) = self.polygon_prism()
             && cardinal(placed.frame)
+            && placed.pockets.is_empty()
         {
             return Ok(orthogonal::prism_cells(&placed.prism, placed.reverse_sweep)
                 .map_err(operation_error)?

@@ -1,9 +1,14 @@
 //! Recognize swept solids by their complete, already validated boundaries.
 use super::*;
-use crate::{linear_sweep::Sweep, orthogonal::OrthogonalSolid, trimmed_sweep::TrimmedSweep};
+use crate::{
+    circular_pockets::CircularPocket, linear_sweep::Sweep, orthogonal::OrthogonalSolid,
+    trimmed_sweep::TrimmedSweep,
+};
 use std::cmp::Ordering;
 
 mod orthogonal;
+mod pocketed;
+use pocketed::{PocketRim, canonical_pockets};
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum ImportProfile {
@@ -11,6 +16,12 @@ pub enum ImportProfile {
         /// Exterior counterclockwise, followed by clockwise straight holes.
         rings: Vec<Vec<[f64; 2]>>,
         circular_holes: Vec<([f64; 2], f64)>,
+    },
+    PocketedPolygon {
+        /// Exterior counterclockwise, followed by clockwise straight holes.
+        rings: Vec<Vec<[f64; 2]>>,
+        circular_holes: Vec<([f64; 2], f64)>,
+        pockets: Vec<CircularPocket>,
     },
     LinearSweep {
         /// Counterclockwise exterior and clockwise holes, paired with `top`.
@@ -59,7 +70,10 @@ pub fn read_import_solid(input: &str, tolerance_mm: f64) -> Result<(Readback, Im
     let mut shell = Shell::new(&entities, tolerance_mm, true);
     let faces = shell.validated_faces()?;
     let readback = shell.readback(&faces)?;
-    let solid = match shell.recognize(&faces) {
+    let solid = match shell
+        .recognize(&faces)
+        .or_else(|| shell.pocketed_polygon(&faces))
+    {
         Some(solid) => solid,
         None => shell.orthogonal(&faces)?,
     };
@@ -107,7 +121,7 @@ struct Wall {
 }
 
 enum PlanarMatch<'a> {
-    Straight(f64),
+    Straight(f64, &'a [PocketRim]),
     Ruled(f64, &'a BTreeMap<u32, u32>),
     Trimmed {
         direction: Point,
@@ -442,7 +456,7 @@ impl Shell<'_, '_> {
                 },
             });
         }
-        let kind = correspondence.map_or(PlanarMatch::Straight(height_mm), |correspondence| {
+        let kind = correspondence.map_or(PlanarMatch::Straight(height_mm, &[]), |correspondence| {
             PlanarMatch::Ruled(height_mm, correspondence)
         });
         self.planar_profile(edges, lower, direction, kind)
@@ -541,19 +555,32 @@ impl Shell<'_, '_> {
         holes.sort_unstable_by(|a, b| compare(a.0[0], b.0[0]));
         let rings = std::iter::once(outer?).chain(holes);
         let (height_mm, profile) = match kind {
-            PlanarMatch::Straight(height_mm) => {
+            PlanarMatch::Straight(height_mm, pocket_rims) => {
                 let mut circular_holes: Vec<_> = circles
                     .into_iter()
                     .map(|circle| (project(circle.center_mm), circle.radius_mm))
                     .collect();
                 circular_holes.sort_unstable_by(|a, b| compare(a.0, b.0).then(a.1.total_cmp(&b.1)));
-                (
-                    height_mm,
+                let rings = rings.map(|(ring, _)| ring).collect();
+                let profile = if pocket_rims.is_empty() {
                     ImportProfile::Polygon {
-                        rings: rings.map(|(ring, _)| ring).collect(),
+                        rings,
                         circular_holes,
-                    },
-                )
+                    }
+                } else {
+                    ImportProfile::PocketedPolygon {
+                        rings,
+                        circular_holes,
+                        pockets: canonical_pockets(
+                            pocket_rims,
+                            origin_mm,
+                            [u, v],
+                            height_mm,
+                            self.tolerance,
+                        )?,
+                    }
+                };
+                (height_mm, profile)
             }
             PlanarMatch::Ruled(height_mm, _) => {
                 let (base, top): (Vec<_>, Vec<_>) = rings.unzip();
