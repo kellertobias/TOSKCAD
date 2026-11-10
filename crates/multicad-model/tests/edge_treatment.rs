@@ -811,14 +811,16 @@ fn rust_box_fillet_accepts_each_complete_edge_and_preserves_the_other_edges() {
             );
         }
     }
+    let (first, a, b) = &edges[0];
+    let across = (0..3).find(|&axis| a[axis] != b[axis]).unwrap();
+    let (perpendicular, ..) = edges
+        .iter()
+        .find(|(_, a, b)| a[across] == b[across])
+        .unwrap();
     let multiple = EdgeTreatmentRequest::new(
         input,
         parameters(&session),
-        edges
-            .iter()
-            .take(2)
-            .map(|(edge, ..)| edge.clone())
-            .collect(),
+        vec![first.clone(), perpendicular.clone()],
     );
     let prepared =
         model::prepare_edge_treatment(&session, session.revision(), actor(), &multiple).unwrap();
@@ -830,6 +832,178 @@ fn rust_box_fillet_accepts_each_complete_edge_and_preserves_the_other_edges() {
     );
     let failure = result
         .err()
-        .expect("simultaneous blends remain outside this scope");
-    assert!(failure.to_string().contains("one complete straight edge"));
+        .expect("perpendicular blends require shared corner surfaces");
+    assert!(
+        failure
+            .to_string()
+            .contains("complete parallel straight edges")
+    );
+}
+
+#[test]
+fn rust_box_fillet_keeps_parallel_corner_origins_and_round_trips_step() {
+    use multicad_core::references::{self, Resolution};
+    use multicad_model::GeometryBackend;
+
+    let (session, input, _) = fixture();
+    let compile = |document: &Document, revision| {
+        Compiler::default().compile_with_backend(document, revision, GeometryBackend::Rust, None)
+    };
+    let base = compile(session.document(), session.revision()).unwrap();
+    let stock = &base.snapshot().shapes[&input.producer].topology;
+    let corner = |x, y| {
+        let edge = stock
+            .elements
+            .iter()
+            .find(|element| {
+                matches!(element.geometry, Some(AnalyticGeometry::Line { a_mm, b_mm })
+                if a_mm[..2] == [x, y] && b_mm[..2] == [x, y])
+            })
+            .unwrap();
+        GeometryIntent::capture(stock, edge.key).unwrap()
+    };
+    let corners = [
+        corner(0., 0.),
+        corner(0., 20.),
+        corner(30., 20.),
+        corner(30., 0.),
+    ];
+    let revision = session.revision() + 1;
+    let prepare = |request: &EdgeTreatmentRequest| {
+        model::prepare_edge_treatment(&session, session.revision(), actor(), request)
+            .unwrap()
+            .prepared
+    };
+
+    let temporary = tempfile::tempdir().unwrap();
+    for (case, (selection, radius)) in [
+        (&[0, 1][..], 2.),
+        (&[0, 2][..], 15.),
+        (&[1, 2, 3][..], 2.),
+        (&[0, 1, 2, 3][..], 2.),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut request = EdgeTreatmentRequest::new(
+            input.clone(),
+            parameters(&session),
+            selection.iter().map(|&i| corners[i].clone()).collect(),
+        );
+        request.parameters.size = length(radius);
+        let prepared = prepare(&request);
+        let model = compile(prepared.document(), revision).unwrap();
+        let shape = &model.snapshot().shapes[&request.feature];
+        let expected = 6000.
+            - selection.len() as f64 * (1. - std::f64::consts::FRAC_PI_4) * radius * radius * 10.;
+        near(shape.volume_mm3, expected);
+        assert_eq!(shape.solid_count, 1);
+        assert_eq!(shape.bounds.min, [0.; 3]);
+        assert_eq!(shape.bounds.max, [30., 20., 10.]);
+
+        for element in &stock.elements {
+            let intent = GeometryIntent::capture(stock, element.key).unwrap();
+            let removed = match element.geometry {
+                Some(AnalyticGeometry::Point { position_mm }) => {
+                    let corner_index = match (position_mm[0] == 0., position_mm[1] == 0.) {
+                        (true, true) => 0,
+                        (true, false) => 1,
+                        (false, false) => 2,
+                        (false, true) => 3,
+                    };
+                    selection.contains(&corner_index)
+                }
+                _ => request
+                    .edges
+                    .iter()
+                    .any(|edge| edge.origins == intent.origins),
+            };
+            assert_eq!(
+                matches!(
+                    references::resolve(&intent, &shape.topology, revision),
+                    Resolution::Resolved { .. }
+                ),
+                !removed,
+                "case {case}, stock element {:?}",
+                element.key,
+            );
+        }
+        let solid = model.solid(request.feature).unwrap();
+        let faces = solid.faces().unwrap();
+        assert_eq!(faces.len(), 6 + selection.len());
+        for edge in &request.edges {
+            let origin = Origin {
+                source: request.feature,
+                role: format!("edge/{}", edge.id),
+            };
+            let [rounded] = shape
+                .topology
+                .elements
+                .iter()
+                .filter(|element| {
+                    element.key.kind == TopologyKind::Face && element.origins.contains(&origin)
+                })
+                .collect::<Vec<_>>()[..]
+            else {
+                panic!("one fillet face expected for {origin:?}");
+            };
+            near(
+                faces[rounded.key.ordinal as usize].area_mm2,
+                std::f64::consts::FRAC_PI_2 * radius * 10.,
+            );
+        }
+        solid
+            .manufacturing_mesh_with_receipt(Default::default())
+            .unwrap();
+        let path = temporary
+            .path()
+            .join(format!("parallel-box-fillet-{case}.step"));
+        solid.write_step(&path).unwrap();
+        let step = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(step.matches("CYLINDRICAL_SURFACE").count(), selection.len());
+        let readback =
+            multicad_kernel::Solid::import_rust_step(&step, request.feature, Default::default())
+                .unwrap();
+        near(readback.volume_mm3().unwrap(), expected);
+        assert_eq!(readback.bounds().unwrap(), shape.bounds);
+        assert_eq!(readback.solid_count().unwrap(), 1);
+
+        if selection.len() == 4 {
+            let mut bytes = Vec::new();
+            project_file::write(
+                &ProjectFile::new(prepared.document().clone()).unwrap(),
+                &mut bytes,
+                Default::default(),
+            )
+            .unwrap();
+            let opened = project_file::read(
+                &mut std::io::Cursor::new(bytes),
+                Default::default(),
+                &project_file::supported_capabilities(),
+            )
+            .unwrap();
+            let reopened = compile(&opened.project.document, revision).unwrap();
+            assert_eq!(
+                reopened.snapshot().shapes[&request.feature].topology,
+                shape.topology
+            );
+            request.edges.reverse();
+            let reordered = compile(prepare(&request).document(), revision).unwrap();
+            assert_eq!(
+                reordered.snapshot().shapes[&request.feature].topology,
+                shape.topology
+            );
+        }
+    }
+
+    let mut touching =
+        EdgeTreatmentRequest::new(input, parameters(&session), corners[..2].to_vec());
+    touching.parameters.size = length(10.);
+    let original = session.document().clone();
+    let failure = compile(prepare(&touching).document(), revision)
+        .err()
+        .expect("a shared side cannot collapse");
+    assert!(failure.to_string().contains("minimum feature size"));
+    assert_eq!(session.document(), &original);
+    assert_eq!(session.revision() + 1, revision);
 }

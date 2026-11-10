@@ -164,15 +164,9 @@ impl Solid {
                     }
                     _ => self.chamfer_polygon_bores(edges, distance_mm, policy),
                 },
-                EdgeTreatment::Fillet { radius_mm } => match edges {
-                    [edge] => {
-                        self.rust_fillet_box_edge(edge, radius_mm, feature, policy, &topology)
-                    }
-                    _ => Err(failure(
-                        GeometryErrorKind::Unsupported,
-                        "Rust fillet requires one complete straight edge of a world-aligned box",
-                    )),
-                },
+                EdgeTreatment::Fillet { radius_mm } => {
+                    self.rust_fillet_box_edges(edges, radius_mm, feature, policy, &topology)
+                }
             };
         }
         let handle = ffi::treat_edges(self.occt()?, &indices, mode, size)

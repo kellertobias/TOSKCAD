@@ -1,4 +1,4 @@
-//! One full-length convex box-edge blend as an exact circular normal sweep.
+//! Full-length parallel box-edge blends as one exact circular normal sweep.
 use super::*;
 use crate::TreatmentEdge;
 use multicad_core::references::{TopologyElement, TopologyKey, TopologyKind};
@@ -7,57 +7,73 @@ fn unsupported() -> GeometryError {
     error(
         "fillet",
         GeometryErrorKind::Unsupported,
-        "Rust fillet requires one complete straight edge of a world-aligned box",
+        "Rust fillet requires complete parallel straight edges of a world-aligned box",
     )
 }
 
 impl Solid {
-    pub(crate) fn rust_fillet_box_edge(
+    pub(crate) fn rust_fillet_box_edges(
         &self,
-        edge: &TreatmentEdge,
+        edges: &[TreatmentEdge],
         radius: f64,
         feature: EntityId,
         policy: GeometryPolicy,
         topology: &TopologySnapshot,
     ) -> Result<Self, GeometryError> {
-        if self.policy != policy || policy.boolean_fuzzy_mm != 0. {
+        if self.policy != policy || policy.boolean_fuzzy_mm != 0. || edges.len() > 4 {
             return Err(unsupported());
         }
         let cells = self.orthogonal_cells()?.ok_or_else(unsupported)?;
         let [stock] = cells.as_slice() else {
             return Err(unsupported());
         };
-        let Some(AnalyticGeometry::Line { a_mm, b_mm }) = topology
-            .elements
+        let corner = |edge: &TreatmentEdge| {
+            let Some(AnalyticGeometry::Line { a_mm, b_mm }) = topology
+                .elements
+                .iter()
+                .find(|element| element.key == edge.key)
+                .and_then(|element| element.geometry)
+            else {
+                return Err(unsupported());
+            };
+            let mut differing = (0..3).filter(|&axis| a_mm[axis] != b_mm[axis]);
+            let along = differing.next().ok_or_else(unsupported)?;
+            if differing.next().is_some()
+                || a_mm[along].min(b_mm[along]) != stock.min[along]
+                || a_mm[along].max(b_mm[along]) != stock.max[along]
+                || (0..3).any(|axis| {
+                    axis != along && a_mm[axis] != stock.min[axis] && a_mm[axis] != stock.max[axis]
+                })
+            {
+                return Err(unsupported());
+            }
+            let mut point = a_mm;
+            point[along] = stock.min[along];
+            Ok((along, point))
+        };
+        let mut selected = edges
             .iter()
-            .find(|element| element.key == edge.key)
-            .and_then(|element| element.geometry)
-        else {
+            .map(|edge| corner(edge).map(|(along, point)| (along, point, &edge.origin)))
+            .collect::<Result<Vec<_>, _>>()?;
+        selected.sort_unstable_by(|(_, a, _), (_, b, _)| {
+            a[0].total_cmp(&b[0])
+                .then_with(|| a[1].total_cmp(&b[1]))
+                .then_with(|| a[2].total_cmp(&b[2]))
+        });
+        let Some(&(along, anchor, _)) = selected.first() else {
             return Err(unsupported());
         };
-        let axes: Vec<_> = (0..3).filter(|&axis| a_mm[axis] != b_mm[axis]).collect();
-        let [along] = axes.as_slice() else {
-            return Err(unsupported());
-        };
-        let along = *along;
-        if a_mm[along].min(b_mm[along]) != stock.min[along]
-            || a_mm[along].max(b_mm[along]) != stock.max[along]
-        {
-            return Err(unsupported());
-        }
         let [across, up] = [(along + 1) % 3, (along + 2) % 3];
-        let inward = |axis| {
-            if a_mm[axis] == stock.min[axis] {
-                Ok(1.)
-            } else if a_mm[axis] == stock.max[axis] {
-                Ok(-1.)
+        let inward = |axis: usize| {
+            if anchor[axis] == stock.min[axis] {
+                1.
             } else {
-                Err(unsupported())
+                -1.
             }
         };
-        let (across_sign, up_sign) = (inward(across)?, inward(up)?);
+        let (across_sign, up_sign) = (inward(across), inward(up));
         let mut frame = PlaneFrame {
-            origin: a_mm,
+            origin: anchor,
             u: [0.; 3],
             v: [0.; 3],
         };
@@ -71,35 +87,55 @@ impl Solid {
         let width = stock.max[across] - stock.min[across];
         let depth = stock.max[up] - stock.min[up];
         let height = stock.max[along] - stock.min[along];
-        policy.length(width - radius)?;
-        policy.length(depth - radius)?;
-        let points = [
-            [radius, 0.],
-            [width, 0.],
-            [width, depth],
-            [0., depth],
-            [0., radius],
-        ];
-        let mut outer: Vec<_> = points
-            .windows(2)
-            .map(|ends| CurvedEdge2d::Line {
-                a: ends[0],
-                b: ends[1],
-            })
-            .collect();
-        outer.push(CurvedEdge2d::Arc {
-            center: [radius; 2],
-            a: points[4],
-            b: points[0],
-            clockwise: false,
-        });
-        let mut origins: Vec<_> = (0..4)
-            .map(|i| Origin {
+
+        // Traverse the rectangle counterclockwise from the selected anchor.
+        // This retains the side numbering and frame of single-edge fillets.
+        let mut rounds = [None; 4];
+        for (axis, point, origin) in selected {
+            if axis != along {
+                return Err(unsupported());
+            }
+            let index = match (point[across] != anchor[across], point[up] != anchor[up]) {
+                (false, false) => 0,
+                (true, false) => 1,
+                (true, true) => 2,
+                (false, true) => 3,
+            };
+            if rounds[index].replace(origin).is_some() {
+                return Err(unsupported());
+            }
+        }
+        let corners = [[0., 0.], [width, 0.], [width, depth], [0., depth]];
+        let directions = [[1., 0.], [0., 1.], [-1., 0.], [0., -1.]];
+        let clip = rounds.map(|round| if round.is_some() { radius } else { 0. });
+        let shift = |point: [f64; 2], direction: [f64; 2], distance| {
+            std::array::from_fn(|i| point[i] + direction[i] * distance)
+        };
+        let mut outer = Vec::with_capacity(4 + edges.len());
+        let mut origins = Vec::with_capacity(outer.capacity());
+        for (i, side) in [width, depth, width, depth].into_iter().enumerate() {
+            let next = (i + 1) % 4;
+            // Adjacent rounds must leave a positive straight face. Opposite
+            // corner removals lie inside disjoint corner triangles since
+            // each radius is smaller than both rectangle side lengths.
+            policy.length(side - clip[i] - clip[next])?;
+            let a = shift(corners[i], directions[i], clip[i]);
+            let b = shift(corners[next], directions[i], -clip[next]);
+            outer.push(CurvedEdge2d::Line { a, b });
+            origins.push(Origin {
                 source: feature,
                 role: format!("fillet.side.{i}"),
-            })
-            .collect();
-        origins.push(edge.origin.clone());
+            });
+            if let Some(origin) = rounds[next] {
+                outer.push(CurvedEdge2d::Arc {
+                    center: shift(b, directions[next], radius),
+                    a: b,
+                    b: shift(corners[next], directions[next], radius),
+                    clockwise: false,
+                });
+                origins.push(origin.clone());
+            }
+        }
         let profile = CurvedProfile {
             frame,
             outer,
