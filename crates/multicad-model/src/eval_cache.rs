@@ -107,6 +107,7 @@ pub fn cacheable_type(type_id: &str) -> bool {
         // checks the full member/material set before accepting a cache hit.
         model::FENCE_MEMBER_TYPE,
         model::PANEL_JOINT_CUT_TYPE,
+        model::LOOSE_TENON_TYPE,
         model::MACHINING_CUT_TYPE,
         model::SHEET_TYPE,
         model::SHEET_PROFILE_CUT_TYPE,
@@ -781,6 +782,17 @@ impl Drop for Session<'_> {
 /// Entities a provider finds by scanning the document rather than through
 /// its own source. None when they cannot be determined.
 fn hidden_inputs(document: &Document, feature: EntityId, type_id: &str) -> Option<Vec<EntityId>> {
+    if type_id == model::LOOSE_TENON_TYPE {
+        let source = model::read_loose_tenon(document, feature).ok()?;
+        let joint = model::read_panel_joint(document, source.joint).ok()?;
+        let pair = joint.pairs.get(source.pair as usize)?;
+        // The provider resolves each Part's current base panel from its
+        // feature list. Include those definitions even for older joint links.
+        return Some(vec![
+            model::panel_feature(document, pair.a)?,
+            model::panel_feature(document, pair.b)?,
+        ]);
+    }
     if type_id != model::MEMBER_TYPE {
         return Some(vec![]);
     }

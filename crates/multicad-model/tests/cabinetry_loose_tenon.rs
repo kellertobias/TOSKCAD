@@ -10,7 +10,7 @@ use multicad_core::{
     model::*,
     project_file::{self, ProjectFile},
 };
-use multicad_model::{Compiler, GeometryBackend, Model};
+use multicad_model::{Compiler, EvaluationCache, GeometryBackend, Model};
 use std::f64::consts::PI;
 
 fn actor() -> Actor {
@@ -432,7 +432,25 @@ fn domino_edit_undo_reopen_and_delete_keep_paired_references() {
     .unwrap();
     let id = p.joint;
     checked(&mut f.s, p.model.prepared);
-    let tenon = joint_tenons(f.s.document(), id)[0].2;
+    let (_, feature, tenon) = joint_tenons(f.s.document(), id)[0];
+    let compiler = Compiler::default();
+    let mut cache = EvaluationCache::default();
+    let build = |cache: &mut EvaluationCache, session: &Session| {
+        compiler
+            .compile_cached_with_backend(
+                cache,
+                session.document(),
+                session.revision(),
+                GeometryBackend::Rust,
+                None,
+            )
+            .unwrap()
+    };
+    let original = build(&mut cache, &f.s);
+    assert!(cache.last_compile().evaluated.contains(&feature));
+    let repeated = build(&mut cache, &f.s);
+    assert!(cache.last_compile().reused.contains(&feature));
+    near(volume(&repeated, tenon), volume(&original, tenon));
 
     // Three tenons; the tenon Part keeps its identity.
     let mut three = domino();
@@ -446,6 +464,9 @@ fn domino_edit_undo_reopen_and_delete_keep_paired_references() {
     )
     .unwrap();
     checked(&mut f.s, p.model.prepared);
+    let edited = build(&mut cache, &f.s);
+    assert!(cache.last_compile().evaluated.contains(&feature));
+    near(volume(&edited, tenon), 3. * slot(22., 8.) * 40.);
     let m = compile(&f.s);
     near(volume(&m, tenon), 3. * slot(22., 8.) * 40.);
     assert_eq!(joint_tenons(f.s.document(), id)[0].2, tenon);
@@ -456,6 +477,9 @@ fn domino_edit_undo_reopen_and_delete_keep_paired_references() {
     );
 
     f.s.undo(f.s.revision(), actor()).unwrap();
+    let undone = build(&mut cache, &f.s);
+    assert!(cache.last_compile().reused.contains(&feature));
+    near(volume(&undone, tenon), volume(&original, tenon));
     near(volume(&compile(&f.s), tenon), 2. * slot(22., 8.) * 40.);
     f.s.redo(f.s.revision(), actor()).unwrap();
     near(volume(&compile(&f.s), tenon), 3. * slot(22., 8.) * 40.);
