@@ -593,17 +593,27 @@ pub(crate) fn primitive(
             u: frame.u,
             v: frame.v,
         };
-        return Solid::rust_box(
-            id.uuid_bits(),
-            [
-                length.map_err(fail)?,
-                width.map_err(fail)?,
-                height.map_err(fail)?,
-            ],
-            placement,
-            policy,
-        )
-        .map_err(|e| error(Some(id), e));
+        let exact = [
+            length.map_err(fail)?,
+            width.map_err(fail)?,
+            height.map_err(fail)?,
+        ];
+        let build = |size| Solid::rust_box(id.uuid_bits(), size, placement, policy);
+        return build(exact)
+            .or_else(|cause| {
+                let compact = std::array::from_fn(|i| {
+                    if matches!(size[i], Dimension::Literal { .. }) {
+                        compact_literal_mm(exact[i])
+                    } else {
+                        exact[i]
+                    }
+                });
+                if compact == exact {
+                    return Err(cause);
+                }
+                build(compact).map_err(|_| cause)
+            })
+            .map_err(|e| error(Some(id), e));
     }
     let PrimitiveParameters::Cylinder {
         radius,
@@ -657,6 +667,17 @@ pub(crate) fn primitive(
             translation_mm: placement.origin,
         })
         .map_err(|e| error(Some(id), e))
+}
+
+fn compact_literal_mm(exact: Rational) -> Rational {
+    // A generated floating-point literal can have a long decimal tail.
+    // Bound the retry to roundoff rather than the coarser modeling tolerance.
+    let value = exact.as_f64();
+    let budget = 2. * f64::EPSILON * value.abs();
+    (0..=15)
+        .filter_map(|digits| parse_length_mm(&format!("{value:.digits$} mm")).ok())
+        .find(|candidate| (candidate.as_f64() - value).abs() <= budget)
+        .unwrap_or(exact)
 }
 
 #[cfg(test)]

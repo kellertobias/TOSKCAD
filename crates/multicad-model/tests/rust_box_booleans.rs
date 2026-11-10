@@ -117,6 +117,32 @@ fn compare_backends(
     rust
 }
 
+#[test]
+fn box_literal_roundoff_keeps_the_authored_size_and_can_cut_other_stock() {
+    let mut session = Session::new(Document::new("Generated box dimensions").unwrap()).unwrap();
+    let stock = box_at(&mut session, "Stock", [10., 10., 30.], [0.; 3]);
+    let tool = box_at(
+        &mut session,
+        "Magnet slot",
+        [5.2, 3.3, 27.900000000000002],
+        [1., 1., 1.],
+    );
+    let result = combine(&mut session, Operation::Cut, stock, tool.clone());
+    let rebuilt = compare_backends(
+        &session,
+        result.producer,
+        3000. - 5.2 * 3.3 * 27.9,
+        [[0.; 3], [10., 10., 30.]],
+    );
+    let cutter = rebuilt.solid(tool.producer).unwrap();
+    near(cutter.bounds().unwrap().max[2], 28.9);
+    assert!(
+        serde_json::to_string(session.document().get(tool.producer).unwrap())
+            .unwrap()
+            .contains("27.900000000000002")
+    );
+}
+
 fn planar_key(topology: &TopologySnapshot, axis: usize, coordinate: f64) -> TopologyKey {
     let mut faces = topology.elements.iter().filter_map(|element| {
         let Some(AnalyticGeometry::Plane { frame }) = element.geometry else {
