@@ -542,9 +542,10 @@ fn completed_rust_model_reuse_requires_identical_source_revision_and_settings() 
     assert!(!cache.last_compile().reused_full_model);
     let warm = build(&mut cache, compiler, document, revision);
     assert!(cache.last_compile().reused_full_model);
-    assert!(Arc::ptr_eq(
-        &cold.snapshot().shapes[&cut],
-        &warm.snapshot().shapes[&cut]
+    assert!(std::ptr::eq(cold.snapshot(), warm.snapshot()));
+    assert!(std::ptr::eq(
+        cold.solid(cut).unwrap(),
+        warm.solid(cut).unwrap()
     ));
     assert!(
         compiler

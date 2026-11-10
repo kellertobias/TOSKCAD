@@ -409,7 +409,7 @@ impl EvaluationCache {
             self.full_rust = None;
             return None;
         }
-        let model = full.model.share_completed()?;
+        let model = full.model.share_completed();
         self.last.reused.clone_from(&full.features);
         self.last.reused_full_model = true;
         Some(model)
@@ -437,12 +437,9 @@ impl EvaluationCache {
         if bytes > self.retained_bytes.saturating_sub(self.estimated_bytes()) {
             return;
         }
-        let Some(model) = model.share_completed() else {
-            return;
-        };
         self.full_rust = Some(FullRustModel {
             compiler: *compiler,
-            model,
+            model: model.share_completed(),
             features: self
                 .last
                 .evaluated

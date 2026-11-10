@@ -14,6 +14,7 @@ use multicad_solver::SketchEvaluationContext;
 use std::{
     collections::{BTreeMap, BTreeSet},
     fmt,
+    rc::Rc,
     sync::Arc,
 };
 #[path = "advanced_profiles.rs"]
@@ -261,34 +262,22 @@ pub struct ModelTimings {
 /// The kernel's !Send/!Sync ownership also applies to this container.
 pub struct Model {
     pub(crate) policy: GeometryPolicy,
-    pub(crate) solids: BTreeMap<EntityId, Solid>,
-    snapshot: ModelSnapshot,
-    leaves: crate::assemblies::LeafStore,
-    gear_pair_checks: BTreeMap<EntityId, crate::GearPairCheck>,
+    pub(crate) solids: Rc<BTreeMap<EntityId, Solid>>,
+    snapshot: Arc<ModelSnapshot>,
+    leaves: Rc<crate::assemblies::LeafStore>,
+    gear_pair_checks: Rc<BTreeMap<EntityId, crate::GearPairCheck>>,
     timings: ModelTimings,
 }
 impl Model {
-    pub(crate) fn share_completed(&self) -> Option<Self> {
-        Some(Self {
+    pub(crate) fn share_completed(&self) -> Self {
+        Self {
             policy: self.policy,
-            solids: self
-                .solids
-                .iter()
-                .map(|(&id, solid)| Some((id, solid.share().ok()?)))
-                .collect::<Option<_>>()?,
+            solids: self.solids.clone(),
             snapshot: self.snapshot.clone(),
-            leaves: crate::assemblies::LeafStore {
-                snapshots: self.leaves.snapshots.clone(),
-                solids: self
-                    .leaves
-                    .solids
-                    .iter()
-                    .map(|(path, solid)| Some((path.clone(), solid.share().ok()?)))
-                    .collect::<Option<_>>()?,
-            },
+            leaves: self.leaves.clone(),
             gear_pair_checks: self.gear_pair_checks.clone(),
             timings: ModelTimings::default(),
-        })
+        }
     }
 
     pub fn timings(&self) -> &ModelTimings {
@@ -620,7 +609,7 @@ impl Compiler {
                     "source_hash":stamp.source_hash,
                     "owner":std::thread::current().name(), "omit_display":self.omit_display,
                     "scope":format!("{:?}",model.snapshot.scope),
-                    "timings":model.timings, "gear_pairs":model.gear_pair_checks,
+                    "timings":model.timings, "gear_pairs":model.gear_pair_checks(),
                 }))
             {
                 line.push(b'\n');
@@ -1829,11 +1818,11 @@ impl Compiler {
         let full = roots.is_none();
         let mut model = Model {
             policy: self.policy,
-            solids,
-            leaves,
-            gear_pair_checks,
+            solids: Rc::new(solids),
+            leaves: Rc::new(leaves),
+            gear_pair_checks: Rc::new(gear_pair_checks),
             timings,
-            snapshot: ModelSnapshot {
+            snapshot: Arc::new(ModelSnapshot {
                 screw_connection_checks: vec![],
                 scope: roots.map_or(EvaluationScope::Full, EvaluationScope::Sources),
                 stamp,
@@ -1852,7 +1841,7 @@ impl Compiler {
                 member_paths,
                 sheet_layouts,
                 fdm_aids: Ok(vec![]),
-            },
+            }),
         };
         if full {
             let connection_started = std::time::Instant::now();
@@ -1860,16 +1849,22 @@ impl Compiler {
                 GeometryBackend::OpenCascade => crate::screw_connections::validate,
                 GeometryBackend::Rust => crate::screw_connections::validate_rust,
             };
-            model.snapshot.screw_connection_checks =
+            Arc::make_mut(&mut model.snapshot).screw_connection_checks =
                 validate(document, revision, context.parameters(), &model, interrupt)?;
             model.timings.connection_validation_ms =
                 connection_started.elapsed().as_secs_f64() * 1000.;
         }
         if full {
-            model.snapshot.envelope_boxes = model.envelope_boxes(document, context.parameters());
-            model.snapshot.guide_outlines = model.guide_outlines(document, context.parameters());
-            if backend == GeometryBackend::OpenCascade && model::aids(document).next().is_some() {
-                model.snapshot.fdm_aids = model.fdm_aids(document).map_err(|e| e.to_string());
+            let envelopes = model.envelope_boxes(document, context.parameters());
+            let guides = model.guide_outlines(document, context.parameters());
+            let aids = (backend == GeometryBackend::OpenCascade
+                && model::aids(document).next().is_some())
+            .then(|| model.fdm_aids(document).map_err(|e| e.to_string()));
+            let snapshot = Arc::make_mut(&mut model.snapshot);
+            snapshot.envelope_boxes = envelopes;
+            snapshot.guide_outlines = guides;
+            if let Some(aids) = aids {
+                snapshot.fdm_aids = aids;
             }
         }
         Ok(model)
