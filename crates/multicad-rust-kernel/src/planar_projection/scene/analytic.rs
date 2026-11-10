@@ -1,0 +1,671 @@
+//! Finite plane and circular cylinder faces in drawing coordinates.
+use super::*;
+use crate::{curved_projection::roots, trim_curve::EllipseArc};
+use std::f64::consts::{FRAC_PI_2, TAU};
+
+const ANGULAR: f64 = 64. * f64::EPSILON;
+const MAX_TRIMS: usize = 8192;
+const VIEW: Point = [0., 0., 1.];
+
+/// One oriented trim in drawing coordinates (right, up, depth).
+#[derive(Clone, Copy, Debug)]
+pub enum FaceTrim {
+    Line([Point; 2]),
+    Arc(EllipseArc),
+}
+
+/// A bounded outward face. Circular walls of an aperture have inward
+/// radial normals, so their opposite branch supplies the first material hit.
+pub struct AnalyticFace {
+    surface: Surface,
+    bounds: Bounds,
+}
+
+enum Surface {
+    Plane(Plane),
+    Cylinder(Cylinder),
+}
+
+struct Plane {
+    origin: Point,
+    normal: Point,
+    // Project a ray hit onto the face without dividing by normal.z.
+    chart: [Point; 2],
+    boundary: Vec<Boundary>,
+    roundoff: f64,
+}
+
+#[derive(Clone, Copy)]
+enum Boundary {
+    Line([Point2; 2]),
+    Arc {
+        ends: [Point2; 2],
+        center: Point2,
+        radius: f64,
+        side: f64,
+    },
+}
+
+struct Cylinder {
+    origin: Point,
+    axis: Point,
+    transverse: Point,
+    height: f64,
+    radius: f64,
+    radial_ends: [Point2; 2],
+    facing: f64,
+}
+
+impl AnalyticFace {
+    /// Prepare a plane with one outer loop and any number of inner loops.
+    /// The input loops may have either winding; finite coverage uses parity.
+    /// Back-facing and edge-on faces do not obscure material.
+    pub fn plane(
+        origin: Point,
+        outward_normal: Point,
+        rings: Vec<Vec<FaceTrim>>,
+        tolerance: f64,
+    ) -> Result<Option<Self>, ProjectionError> {
+        validate(origin, outward_normal, tolerance)?;
+        if rings.is_empty() || rings.iter().any(Vec::is_empty) {
+            return Err(ProjectionError::Invalid);
+        }
+        if rings.iter().map(Vec::len).sum::<usize>() > MAX_TRIMS {
+            return Err(ProjectionError::Limit);
+        }
+        let normal = unit(outward_normal);
+        if normal[2] <= ANGULAR {
+            return Ok(None);
+        }
+        let reference = if normal[0].abs() <= normal[1].abs() {
+            [1., 0., 0.]
+        } else {
+            [0., 1., 0.]
+        };
+        let u = unit(cross(reference, normal));
+        let v = cross(normal, u);
+        let chart = [u, v].map(|basis| {
+            std::array::from_fn(|i| {
+                if i == 2 {
+                    0.
+                } else {
+                    normal[2].mul_add(basis[i], -basis[2] * normal[i])
+                }
+            })
+        });
+        let mut bounds = None::<Bounds>;
+        let mut boundary = Vec::new();
+        let local = |point| {
+            if !bounded(point) {
+                return Err(ProjectionError::Invalid);
+            }
+            let delta = sub(point, origin);
+            if dot(delta, normal).abs() > tolerance {
+                return Err(ProjectionError::Invalid);
+            }
+            Ok([u, v].map(|axis| dot(axis, delta) * normal[2]))
+        };
+        let mut extend = |b: Bounds| bounds = Some(bounds.map_or(b, |previous| previous.union(b)));
+        for ring in rings {
+            let mut trims = Vec::new();
+            for trim in ring {
+                match trim {
+                    FaceTrim::Line([a, b]) => {
+                        let ends = [local(a)?, local(b)?];
+                        if length(sub(b, a)) <= tolerance {
+                            return Err(ProjectionError::Invalid);
+                        }
+                        extend(Bounds::point(a).union(Bounds::point(b)));
+                        trims.push(Boundary::Line(ends));
+                    }
+                    FaceTrim::Arc(arc) => {
+                        let ellipse = arc.ellipse();
+                        let [radius, minor] = ellipse.semiaxes_mm();
+                        if radius != minor
+                            || radius <= tolerance
+                            || length(cross(ellipse.normal(), normal)) > ANGULAR
+                        {
+                            return Err(ProjectionError::Invalid);
+                        }
+                        let center = local(ellipse.center_mm())?;
+                        let [a, b] = arc.endpoints();
+                        let ends = [local(a)?, local(b)?];
+                        let [x, y] = sub(ends[0], center);
+                        let start = y.atan2(x);
+                        let sweep = arc.sweep_rad() * dot(ellipse.normal(), normal).signum();
+                        let radius = radius * normal[2];
+                        arc_pieces(center, radius, start, sweep, ends, &mut trims);
+                        extend(arc_bounds(arc));
+                    }
+                }
+            }
+            let count = trims.len();
+            for i in 0..count {
+                let next = trims[(i + 1) % count].ends()[0];
+                let end = trims[i].ends()[1];
+                let [x, y] = sub(next, end);
+                if x.hypot(y) > tolerance * normal[2] {
+                    return Err(ProjectionError::Invalid);
+                }
+                trims[i].ends_mut()[1] = next;
+            }
+            boundary.extend(trims);
+        }
+        let bounds = bounds.ok_or(ProjectionError::Invalid)?;
+        let roundoff = coordinate_roundoff(bounds) * normal[2];
+        Ok(Some(Self {
+            surface: Surface::Plane(Plane {
+                origin,
+                normal,
+                chart,
+                boundary,
+                roundoff,
+            }),
+            bounds,
+        }))
+    }
+
+    /// Prepare one circular patch with an angular span up to a quarter turn.
+    /// The positive axis goes from the supplied cap to the opposite cap.
+    /// The axis must be transverse to the view or parallel to it.
+    pub fn cylinder(
+        cap: EllipseArc,
+        axis: Point,
+        height: f64,
+        outward: bool,
+        tolerance: f64,
+    ) -> Result<Option<Self>, ProjectionError> {
+        let ellipse = cap.ellipse();
+        let origin = ellipse.center_mm();
+        validate(origin, axis, tolerance)?;
+        let axis = unit(axis);
+        let [radius, minor] = ellipse.semiaxes_mm();
+        if radius != minor
+            || !(tolerance..=1e7).contains(&radius)
+            || !(tolerance..=1e7).contains(&height)
+            || cap.sweep_rad().abs() > FRAC_PI_2 + ANGULAR
+            || length(cross(axis, ellipse.normal())) > ANGULAR
+        {
+            return Err(ProjectionError::Invalid);
+        }
+        if axis[0].hypot(axis[1]) <= ANGULAR {
+            return Ok(None);
+        }
+        if axis[2].abs() > ANGULAR {
+            return Err(ProjectionError::Invalid);
+        }
+        let axis = unit([axis[0], axis[1], 0.]);
+        let transverse = [-axis[1], axis[0], 0.];
+        let mut radial_ends = [cap.start_rad(), cap.start_rad() + cap.sweep_rad()].map(|angle| {
+            let (sin, cos) = angle.sin_cos();
+            let u = ellipse.major_axis();
+            let v = ellipse.minor_axis();
+            let radial = std::array::from_fn(|i| cos.mul_add(u[i], sin * v[i]));
+            [dot(radial, transverse), radial[2]]
+        });
+        let turn = cross2(radial_ends[0], radial_ends[1]);
+        if turn.abs() <= ANGULAR {
+            return Err(ProjectionError::Invalid);
+        }
+        if turn < 0. {
+            radial_ends.reverse();
+        }
+        let a = arc_bounds(cap);
+        let b = Bounds {
+            min: std::array::from_fn(|i| axis[i].mul_add(height, a.min[i])),
+            max: std::array::from_fn(|i| axis[i].mul_add(height, a.max[i])),
+        };
+        Ok(Some(Self {
+            surface: Surface::Cylinder(Cylinder {
+                origin,
+                axis,
+                transverse,
+                height,
+                radius,
+                radial_ends,
+                facing: if outward { 1. } else { -1. },
+            }),
+            bounds: a.union(b),
+        }))
+    }
+
+    pub(super) fn bounds(&self) -> Bounds {
+        self.bounds
+    }
+
+    pub(super) fn build_work(&self) -> usize {
+        match &self.surface {
+            Surface::Plane(plane) => plane.boundary.len(),
+            Surface::Cylinder(_) => 1,
+        }
+    }
+
+    pub(in crate::planar_projection) fn hide_line(
+        &self,
+        line: &Line,
+        span: Span,
+        work: &mut Work,
+    ) -> Result<(), ProjectionError> {
+        self.hide(
+            Path {
+                origin: line.start,
+                b: line.delta.map(|value| value / line.length),
+                c: [0.; 3],
+                harmonic: false,
+            },
+            span,
+            work,
+        )
+    }
+
+    pub(super) fn hide_rim(&self, rim: Rim, work: &mut Work) -> Result<(), ProjectionError> {
+        let [origin, b, c] = rim.basis();
+        self.hide(
+            Path {
+                origin,
+                b,
+                c,
+                harmonic: true,
+            },
+            rim.ellipse.trim,
+            work,
+        )
+    }
+
+    fn hide(&self, path: Path, span: Span, work: &mut Work) -> Result<(), ProjectionError> {
+        let depth_gap = work
+            .tolerance
+            .max(coordinate_roundoff(self.bounds).max(path.roundoff()));
+        work.crossings.clear();
+        match &self.surface {
+            Surface::Plane(plane) => plane.hide(path, span, depth_gap, work),
+            Surface::Cylinder(cylinder) => cylinder.hide(path, span, depth_gap, work),
+        }
+    }
+}
+
+fn validate(point: Point, direction: Point, tolerance: f64) -> Result<(), ProjectionError> {
+    if !bounded(point)
+        || !(1. - 1e-9..=1. + 1e-9).contains(&dot(direction, direction))
+        || !(1e-7..=1e-3).contains(&tolerance)
+    {
+        return Err(ProjectionError::Invalid);
+    }
+    Ok(())
+}
+
+fn bounded(point: Point) -> bool {
+    point.into_iter().all(|v| v.is_finite() && v.abs() <= 1e8)
+}
+
+fn length([x, y, z]: Point) -> f64 {
+    x.hypot(y).hypot(z)
+}
+
+fn unit(vector: Point) -> Point {
+    let length = length(vector);
+    vector.map(|v| v / length)
+}
+
+fn cross(a: Point, b: Point) -> Point {
+    std::array::from_fn(|i| a[(i + 1) % 3] * b[(i + 2) % 3] - a[(i + 2) % 3] * b[(i + 1) % 3])
+}
+
+fn cross2(a: Point2, b: Point2) -> f64 {
+    a[0].mul_add(b[1], -a[1] * b[0])
+}
+
+fn coordinate_roundoff(bounds: Bounds) -> f64 {
+    16. * f64::EPSILON
+        * bounds
+            .min
+            .into_iter()
+            .chain(bounds.max)
+            .map(f64::abs)
+            .fold(1., f64::max)
+}
+
+fn arc_bounds(arc: EllipseArc) -> Bounds {
+    let ranges = std::array::from_fn::<_, 3, _>(|i| {
+        let axis = std::array::from_fn(|j| f64::from(i == j));
+        arc.range_along(axis)
+    });
+    Bounds {
+        min: ranges.map(|range| range[0]),
+        max: ranges.map(|range| range[1]),
+    }
+}
+
+fn arc_pieces(
+    center: Point2,
+    radius: f64,
+    start: f64,
+    sweep: f64,
+    [mut a, b]: [Point2; 2],
+    output: &mut Vec<Boundary>,
+) {
+    let mut cuts =
+        [FRAC_PI_2, 3. * FRAC_PI_2].map(|angle| ((angle - start) * sweep.signum()).rem_euclid(TAU));
+    cuts.sort_unstable_by(f64::total_cmp);
+    let mut previous: f64 = 0.;
+    for travel in cuts
+        .into_iter()
+        .filter(|&t| t > ANGULAR && t < sweep.abs() - ANGULAR)
+        .chain([sweep.abs()])
+    {
+        let angle = start + sweep.signum() * travel;
+        let next = if travel == sweep.abs() {
+            b
+        } else {
+            let (sin, cos) = angle.sin_cos();
+            [
+                radius.mul_add(cos, center[0]),
+                radius.mul_add(sin, center[1]),
+            ]
+        };
+        let middle = start + sweep.signum() * previous.midpoint(travel);
+        output.push(Boundary::Arc {
+            ends: [a, next],
+            center,
+            radius,
+            side: middle.cos().signum(),
+        });
+        a = next;
+        previous = travel;
+    }
+}
+
+impl Boundary {
+    fn ends(&self) -> [Point2; 2] {
+        match *self {
+            Self::Line(ends) | Self::Arc { ends, .. } => ends,
+        }
+    }
+
+    fn ends_mut(&mut self) -> &mut [Point2; 2] {
+        match self {
+            Self::Line(ends) | Self::Arc { ends, .. } => ends,
+        }
+    }
+
+    fn ray(self, point: Point2, roundoff: f64) -> Ray {
+        let [a, b] = self.ends();
+        let [x, y] = point;
+        let crosses = (a[1] > y) != (b[1] > y);
+        match self {
+            Self::Line(_) => {
+                let edge = sub(b, a);
+                let delta = sub(point, a);
+                let length = edge[0].hypot(edge[1]);
+                let cross = cross2(edge, delta);
+                let along = dot(edge, delta);
+                let margin = roundoff * length;
+                if cross.abs() <= margin && (-margin..=length * length + margin).contains(&along) {
+                    Ray::Boundary
+                } else if crosses && (cross > 0.) == (edge[1] > 0.) {
+                    Ray::Crossing
+                } else {
+                    Ray::None
+                }
+            }
+            Self::Arc {
+                center,
+                radius,
+                side,
+                ..
+            } => {
+                let offset = (y - center[1]).abs();
+                if y < a[1].min(b[1]) - roundoff || y > a[1].max(b[1]) + roundoff {
+                    return Ray::None;
+                }
+                let width = ((radius - offset).max(0.) * (radius + offset)).sqrt();
+                let hit = side.mul_add(width, center[0]);
+                if (hit - x).abs() <= roundoff {
+                    Ray::Boundary
+                } else if crosses && x < hit {
+                    Ray::Crossing
+                } else {
+                    Ray::None
+                }
+            }
+        }
+    }
+}
+
+enum Ray {
+    None,
+    Crossing,
+    Boundary,
+}
+
+#[derive(Clone, Copy)]
+struct Path {
+    origin: Point,
+    b: Point,
+    c: Point,
+    harmonic: bool,
+}
+
+impl Path {
+    fn coordinate(self, origin: Point, axis: Point) -> Trace {
+        Trace {
+            coefficients: [
+                dot(sub(self.origin, origin), axis),
+                dot(self.b, axis),
+                dot(self.c, axis),
+            ],
+            harmonic: self.harmonic,
+        }
+    }
+
+    fn roundoff(self) -> f64 {
+        16. * f64::EPSILON
+            * self
+                .origin
+                .into_iter()
+                .chain(self.b)
+                .chain(self.c)
+                .map(f64::abs)
+                .fold(1., f64::max)
+    }
+}
+
+#[derive(Clone, Copy)]
+struct Trace {
+    coefficients: [f64; 3],
+    harmonic: bool,
+}
+
+impl Trace {
+    fn at(self, t: f64) -> f64 {
+        if self.harmonic {
+            Harmonic(self.coefficients).at(t)
+        } else {
+            self.coefficients[1].mul_add(t, self.coefficients[0])
+        }
+    }
+
+    fn offset(mut self, offset: f64) -> Self {
+        self.coefficients[0] += offset;
+        self
+    }
+
+    fn combine(self, a: f64, other: Self, b: f64) -> Self {
+        Self {
+            coefficients: std::array::from_fn(|i| {
+                a.mul_add(self.coefficients[i], b * other.coefficients[i])
+            }),
+            harmonic: self.harmonic,
+        }
+    }
+
+    fn level(self, value: f64, span: Span, cuts: &mut Vec<f64>) {
+        if self.harmonic {
+            Harmonic(self.coefficients).level(value, span, cuts);
+        } else {
+            let [a, b, _] = self.coefficients;
+            if b != 0. {
+                let at = (value - a) / b;
+                if at > span[0] && at < span[1] {
+                    cuts.push(at);
+                }
+            }
+        }
+    }
+
+    fn circle(self, other: Self, radius: f64, span: Span, cuts: &mut Vec<f64>) {
+        if self.harmonic {
+            drawing_events::circle(
+                Harmonic(self.coefficients),
+                Harmonic(other.coefficients),
+                radius,
+                span,
+                cuts,
+            );
+        } else {
+            // Normalize the parameter to the candidate span before solving,
+            // so a long edge cannot lose its quadratic terms to root scaling.
+            let scale = span[1] - span[0];
+            let start = [self.at(span[0]), other.at(span[0])];
+            let delta = [self.coefficients[1] * scale, other.coefficients[1] * scale];
+            let polynomial = [
+                dot(start, start) - radius * radius,
+                2. * dot(start, delta),
+                dot(delta, delta),
+            ];
+            let extremum = -polynomial[1] / (2. * polynomial[2]);
+            cuts.extend(
+                roots(&polynomial, [0., 1.])
+                    .into_iter()
+                    .chain([extremum])
+                    .filter(|&t| t > 0. && t < 1.)
+                    .map(|t| scale.mul_add(t, span[0])),
+            );
+        }
+    }
+}
+
+impl Plane {
+    fn hide(
+        &self,
+        path: Path,
+        span: Span,
+        gap: f64,
+        work: &mut Work,
+    ) -> Result<(), ProjectionError> {
+        let depth = path.coordinate(self.origin, self.normal);
+        let threshold = -gap * self.normal[2];
+        let [u, v] = self.chart.map(|axis| path.coordinate(self.origin, axis));
+        depth.level(threshold, span, &mut work.crossings);
+        for &boundary in &self.boundary {
+            match boundary {
+                Boundary::Line([a, b]) => {
+                    work.charge(1)?;
+                    let [x, y] = sub(b, a);
+                    u.offset(-a[0]).combine(-y, v.offset(-a[1]), x).level(
+                        0.,
+                        span,
+                        &mut work.crossings,
+                    );
+                    // A candidate may coincide with a straight boundary;
+                    // the end events still limit its covered interval.
+                    let axis = usize::from(y.abs() > x.abs());
+                    let coordinate = [u, v][axis];
+                    for end in [a, b] {
+                        coordinate.level(end[axis], span, &mut work.crossings);
+                    }
+                }
+                Boundary::Arc {
+                    ends,
+                    center,
+                    radius,
+                    ..
+                } => {
+                    work.charge(if path.harmonic { 80 } else { 8 })?;
+                    u.offset(-center[0]).circle(
+                        v.offset(-center[1]),
+                        radius,
+                        span,
+                        &mut work.crossings,
+                    );
+                    for end in ends {
+                        v.level(end[1], span, &mut work.crossings);
+                    }
+                }
+            }
+        }
+        work.charge((work.crossings.len() + 1).saturating_mul(self.boundary.len()))?;
+        drawing_events::spans(
+            &mut work.crossings,
+            span,
+            |t| {
+                if depth.at(t) >= threshold {
+                    return false;
+                }
+                let point = [u.at(t), v.at(t)];
+                let mut inside = false;
+                for &boundary in &self.boundary {
+                    match boundary.ray(point, self.roundoff) {
+                        Ray::Boundary => return true,
+                        Ray::Crossing => inside = !inside,
+                        Ray::None => {}
+                    }
+                }
+                inside
+            },
+            |interval| work.hidden.push(interval),
+        );
+        Ok(())
+    }
+}
+
+impl Cylinder {
+    fn hide(
+        &self,
+        path: Path,
+        span: Span,
+        gap: f64,
+        work: &mut Work,
+    ) -> Result<(), ProjectionError> {
+        work.charge(if path.harmonic { 90 } else { 12 })?;
+        let axial = path.coordinate(self.origin, self.axis);
+        let transverse = path.coordinate(self.origin, self.transverse);
+        let depth = path.coordinate(self.origin, VIEW).offset(gap);
+        for cap in [0., self.height] {
+            axial.level(cap, span, &mut work.crossings);
+        }
+        for coordinate in [-self.radius, self.radius]
+            .into_iter()
+            .chain(self.radial_ends.map(|radial| self.radius * radial[0]))
+        {
+            transverse.level(coordinate, span, &mut work.crossings);
+        }
+        transverse.circle(depth, self.radius, span, &mut work.crossings);
+        work.charge(work.crossings.len() + 1)?;
+        let roundoff = 16. * f64::EPSILON * self.radius;
+        drawing_events::spans(
+            &mut work.crossings,
+            span,
+            |t| {
+                if !(0. ..=self.height).contains(&axial.at(t)) {
+                    return false;
+                }
+                let w = transverse.at(t);
+                let offset = w.abs();
+                if offset >= self.radius - roundoff {
+                    return false;
+                }
+                let z = self.facing * ((self.radius - offset) * (self.radius + offset)).sqrt();
+                let radial = [w / self.radius, z / self.radius];
+                z > depth.at(t)
+                    && cross2(self.radial_ends[0], radial) >= -ANGULAR
+                    && cross2(radial, self.radial_ends[1]) >= -ANGULAR
+            },
+            |interval| work.hidden.push(interval),
+        );
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests;

@@ -6,9 +6,9 @@ mod profile;
 mod scene;
 use profile::ProfileTrim;
 pub use scene::{
-    CircularOpeningEnd, FaceOpening, HiddenCandidate, LineCandidate, RimCandidate, RoundSegment,
-    SceneExtras, SceneProjection, SpatialRimCandidate, StadiumOpening, project_scene,
-    project_scene_with_candidates,
+    AnalyticFace, CircularOpeningEnd, FaceOpening, FaceTrim, HiddenCandidate, LineCandidate,
+    RimCandidate, RoundSegment, SceneExtras, SceneProjection, SpatialRimCandidate, StadiumOpening,
+    project_scene, project_scene_with_analytic_faces, project_scene_with_candidates,
 };
 
 type Point = [f64; 3];
@@ -226,19 +226,32 @@ impl TrimmedPlane {
     }
 }
 
-enum Children {
-    Leaves(Vec<TrimmedPlane>),
-    Branches([Box<Node>; 2]),
+trait BoundedFace {
+    fn bounds(&self) -> Bounds;
 }
 
-struct Node {
+impl BoundedFace for TrimmedPlane {
+    fn bounds(&self) -> Bounds {
+        self.bounds
+    }
+}
+
+enum Children<T> {
+    Leaves(Vec<T>),
+    Branches([Box<Node<T>>; 2]),
+}
+
+struct Node<T = TrimmedPlane> {
     bounds: Bounds,
-    children: Children,
+    children: Children<T>,
 }
 
-impl Node {
-    fn build(mut faces: Vec<TrimmedPlane>) -> Option<Self> {
-        let bounds = faces.iter().map(|face| face.bounds).reduce(Bounds::union)?;
+impl<T: BoundedFace> Node<T> {
+    fn build(mut faces: Vec<T>) -> Option<Self> {
+        let bounds = faces
+            .iter()
+            .map(BoundedFace::bounds)
+            .reduce(Bounds::union)?;
         if faces.len() <= 8 {
             return Some(Self {
                 bounds,
@@ -247,7 +260,10 @@ impl Node {
         }
         let extent = sub(bounds.max, bounds.min);
         let axis = usize::from(extent[1] > extent[0]);
-        let center = |face: &TrimmedPlane| face.bounds.min[axis] + face.bounds.max[axis];
+        let center = |face: &T| {
+            let bounds = face.bounds();
+            bounds.min[axis] + bounds.max[axis]
+        };
         let mid = faces.len() / 2;
         faces.select_nth_unstable_by(mid, |a, b| center(a).total_cmp(&center(b)));
         let right = faces.split_off(mid);
@@ -257,6 +273,36 @@ impl Node {
         Some(Self { bounds, children })
     }
 
+    fn visit(
+        &self,
+        bounds: Bounds,
+        work: &mut Work,
+        face_visitor: &mut impl FnMut(&T, &mut Work) -> Result<(), ProjectionError>,
+    ) -> Result<(), ProjectionError> {
+        work.charge(1)?;
+        if !self.bounds.overlaps(bounds, work.tolerance) {
+            return Ok(());
+        }
+        match &self.children {
+            Children::Leaves(faces) => {
+                work.charge(faces.len())?;
+                for face in faces {
+                    if face.bounds().overlaps(bounds, work.tolerance) {
+                        face_visitor(face, work)?;
+                    }
+                }
+            }
+            Children::Branches(nodes) => {
+                for node in nodes {
+                    node.visit(bounds, work, face_visitor)?;
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+impl Node {
     fn hide(
         &self,
         line: &Line,
@@ -270,34 +316,6 @@ impl Node {
             }
             Ok(())
         })
-    }
-
-    fn visit(
-        &self,
-        bounds: Bounds,
-        work: &mut Work,
-        face_visitor: &mut impl FnMut(&TrimmedPlane, &mut Work) -> Result<(), ProjectionError>,
-    ) -> Result<(), ProjectionError> {
-        work.charge(1)?;
-        if !self.bounds.overlaps(bounds, work.tolerance) {
-            return Ok(());
-        }
-        match &self.children {
-            Children::Leaves(faces) => {
-                work.charge(faces.len())?;
-                for face in faces {
-                    if face.bounds.overlaps(bounds, work.tolerance) {
-                        face_visitor(face, work)?;
-                    }
-                }
-            }
-            Children::Branches(nodes) => {
-                for node in nodes {
-                    node.visit(bounds, work, face_visitor)?;
-                }
-            }
-        }
-        Ok(())
     }
 }
 
@@ -430,7 +448,17 @@ fn project_bounded(
     let mut work = projection_work(&options, limit)?;
     let (planes, edge_uses) = prepare(bodies, &mut work)?;
     let index = Node::build(planes).ok_or(ProjectionError::Invalid)?;
-    project_straight(bodies, &edge_uses, &index, rounds, &options, &mut work)
+    project_straight(
+        bodies,
+        &edge_uses,
+        Blockers {
+            planes: Some(&index),
+            analytic: None,
+            rounds,
+        },
+        &options,
+        &mut work,
+    )
 }
 
 fn projection_work(options: &Options, limit: usize) -> Result<Work, ProjectionError> {
@@ -453,8 +481,7 @@ fn projection_work(options: &Options, limit: usize) -> Result<Work, ProjectionEr
 fn project_straight(
     bodies: &[Body],
     edge_uses: &[Vec<EdgeUse>],
-    index: &Node,
-    rounds: &[RoundOccluder],
+    blockers: Blockers<'_>,
     options: &Options,
     work: &mut Work,
 ) -> Result<Vec<Segment>, ProjectionError> {
@@ -471,7 +498,7 @@ fn project_straight(
             if span[1] - span[0] <= options.tolerance {
                 continue;
             }
-            hide_line(&line, span, Some(index), rounds, None, work)?;
+            hide_line(&line, span, blockers, None, work)?;
             publish_spans(
                 &mut work.hidden,
                 span,
@@ -495,25 +522,37 @@ fn project_straight(
     Ok(output)
 }
 
+#[derive(Clone, Copy)]
+struct Blockers<'a> {
+    planes: Option<&'a Node>,
+    analytic: Option<&'a scene::AnalyticIndex<'a>>,
+    rounds: &'a [RoundOccluder],
+}
+
 fn hide_line(
     line: &Line,
     span: Span,
-    index: Option<&Node>,
-    rounds: &[RoundOccluder],
+    blockers: Blockers<'_>,
     source: Option<usize>,
     work: &mut Work,
 ) -> Result<(), ProjectionError> {
     work.hidden.clear();
     let points = span.map(|s| line.point(s));
-    if let Some(index) = index {
-        let [a, b] = points.map(Bounds::point);
-        index.hide(line, span, a.union(b), work)?;
+    let [a, b] = points.map(Bounds::point);
+    let bounds = a.union(b);
+    if let Some(index) = blockers.planes {
+        index.hide(line, span, bounds, work)?;
     }
-    for (round_id, round) in rounds.iter().enumerate() {
+    if let Some(index) = blockers.analytic {
+        index.visit(bounds, work, &mut |face, work| {
+            face.hide_line(line, span, work)
+        })?;
+    }
+    for (round_id, round) in blockers.rounds.iter().enumerate() {
         work.charge(1)?;
         if Some(round_id) != source && round.may_hide(points, work.tolerance) {
             work.charge(20)?;
-            let contour = round.closes_contour_of(source.map(|id| &rounds[id]));
+            let contour = round.closes_contour_of(source.map(|id| &blockers.rounds[id]));
             round.hide(points, work.tolerance, contour, |interval| {
                 let along = interval.map(|t| (span[1] - span[0]).mul_add(t, span[0]));
                 work.hidden.push(along);

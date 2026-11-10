@@ -6,7 +6,9 @@ use crate::{
     drawing_events::{self, Harmonic},
 };
 
+mod analytic;
 mod candidates;
+pub use analytic::{AnalyticFace, FaceTrim};
 use candidates::apply_openings;
 pub use candidates::{
     CircularOpeningEnd, FaceOpening, HiddenCandidate, LineCandidate, RimCandidate, SceneExtras,
@@ -42,7 +44,28 @@ pub fn project_scene_with_candidates(
     extras: SceneExtras<'_>,
     options: Options,
 ) -> Result<SceneProjection, ProjectionError> {
-    project_with_extras(bodies, rounds, extras, options, WORK_LIMIT)
+    project_scene_with_analytic_faces(bodies, rounds, extras, &[], options)
+}
+
+/// Project normal scene candidates against additional finite analytic faces.
+/// The faces are blockers only; supply their physical edges and silhouettes
+/// as scene candidates to publish their geometry.
+pub fn project_scene_with_analytic_faces(
+    bodies: &[Body],
+    rounds: &[RoundOccluder],
+    extras: SceneExtras<'_>,
+    analytic_faces: &[AnalyticFace],
+    options: Options,
+) -> Result<SceneProjection, ProjectionError> {
+    project_with_extras(bodies, rounds, extras, analytic_faces, options, WORK_LIMIT)
+}
+
+pub(super) type AnalyticIndex<'a> = Node<&'a AnalyticFace>;
+
+impl BoundedFace for &AnalyticFace {
+    fn bounds(&self) -> Bounds {
+        AnalyticFace::bounds(self)
+    }
 }
 
 fn project_scene_bounded(
@@ -52,7 +75,7 @@ fn project_scene_bounded(
     limit: usize,
 ) -> Result<(Vec<Segment>, Vec<RoundSegment>), ProjectionError> {
     let (straight, round, _) =
-        project_with_extras(bodies, rounds, SceneExtras::default(), options, limit)?;
+        project_with_extras(bodies, rounds, SceneExtras::default(), &[], options, limit)?;
     Ok((straight, round))
 }
 
@@ -60,6 +83,7 @@ fn project_with_extras(
     bodies: &[Body],
     rounds: &[RoundOccluder],
     extras: SceneExtras<'_>,
+    analytic_faces: &[AnalyticFace],
     options: Options,
     limit: usize,
 ) -> Result<SceneProjection, ProjectionError> {
@@ -67,8 +91,12 @@ fn project_with_extras(
     let (mut planes, uses) = prepare(bodies.iter().chain(extras.blocker_bodies), &mut work)?;
     apply_openings(bodies, &extras, &mut planes, &mut work)?;
     let index = Node::build(planes);
+    for face in analytic_faces {
+        work.charge(1 + face.build_work())?;
+    }
+    let analytic = AnalyticIndex::build(analytic_faces.iter().collect());
     let all_rounds;
-    let blockers = if extras.blocker_rounds.is_empty() {
+    let all_scene_rounds = if extras.blocker_rounds.is_empty() {
         rounds
     } else {
         work.charge(extras.blocker_rounds.len())?;
@@ -79,9 +107,15 @@ fn project_with_extras(
             .collect::<Vec<_>>();
         &all_rounds
     };
+    let blockers = Blockers {
+        planes: index.as_ref(),
+        analytic: analytic.as_ref(),
+        rounds: all_scene_rounds,
+    };
     let straight = match &index {
-        Some(index) => project_straight(bodies, &uses, index, blockers, &options, &mut work)?,
-        None if rounds.is_empty()
+        Some(_) => project_straight(bodies, &uses, blockers, &options, &mut work)?,
+        None if analytic.is_none()
+            && rounds.is_empty()
             && extras.lines.is_empty()
             && extras.rims.is_empty()
             && extras.spatial_rims.is_empty()
@@ -95,8 +129,7 @@ fn project_with_extras(
         .detail
         .map(|(center, radius)| Detail { center, radius });
     let scene = Scene {
-        index: index.as_ref(),
-        rounds: blockers,
+        blockers,
         published_rounds: rounds.len(),
         options: &options,
     };
@@ -191,8 +224,7 @@ fn project_with_extras(
 }
 
 struct Scene<'a> {
-    index: Option<&'a Node>,
-    rounds: &'a [RoundOccluder],
+    blockers: Blockers<'a>,
     published_rounds: usize,
     options: &'a Options,
 }
@@ -285,7 +317,7 @@ impl Scene<'_> {
                 if edge.hidden {
                     emit(true, curve(span))
                 } else {
-                    hide_line(&line, span, self.index, self.rounds, source, work)?;
+                    hide_line(&line, span, self.blockers, source, work)?;
                     publish_spans(&mut work.hidden, span, tolerance, |hidden, trim| {
                         emit(hidden, curve(trim))
                     })
@@ -296,14 +328,7 @@ impl Scene<'_> {
                 if edge.hidden {
                     emit(true, rim.trimmed(span))
                 } else {
-                    hide_rim(
-                        rim,
-                        self.index,
-                        self.rounds,
-                        self.published_rounds,
-                        source,
-                        work,
-                    )?;
+                    hide_rim(rim, self.blockers, self.published_rounds, source, work)?;
                     publish_spans(
                         &mut work.hidden,
                         span,
@@ -318,8 +343,7 @@ impl Scene<'_> {
 
 fn hide_rim(
     rim: Rim,
-    index: Option<&Node>,
-    rounds: &[RoundOccluder],
+    blockers: Blockers<'_>,
     published_rounds: usize,
     source: Option<usize>,
     work: &mut Work,
@@ -331,16 +355,19 @@ fn hide_rim(
         min: std::array::from_fn(|i| origin[i] - extent[i]),
         max: std::array::from_fn(|i| origin[i] + extent[i]),
     };
-    if let Some(index) = index {
+    if let Some(index) = blockers.planes {
         index.visit(bounds, work, &mut |face, work| {
             face.hide_rim(rim, bounds, work)
         })?;
     }
-    for (id, round) in rounds.iter().enumerate() {
+    if let Some(index) = blockers.analytic {
+        index.visit(bounds, work, &mut |face, work| face.hide_rim(rim, work))?;
+    }
+    for (id, round) in blockers.rounds.iter().enumerate() {
         work.charge(1)?;
         let [min, max] = round.bounds();
         if Some(id) != source && (Bounds { min, max }).overlaps(bounds, work.tolerance) {
-            let candidate = source.map(|id| &rounds[id]);
+            let candidate = source.map(|id| &blockers.rounds[id]);
             if id < published_rounds
                 && (source.is_none() || round.distinct_contour_owner(candidate))
                 && round.covers_coincident_rim(rim, work.tolerance)
