@@ -302,9 +302,14 @@ fn rust_revolve_rebuilds_signed_and_full_sketch_sweeps_with_holes_and_native_fac
 }
 
 #[test]
-fn rust_revolve_reports_a_curved_profile_as_unsupported_without_falling_back() {
+fn rust_full_circle_revolution_preserves_exact_torus_geometry_and_saved_face_identity() {
+    use multicad_core::drawings::{VectorCurve, VectorRole};
+    use multicad_kernel::{
+        DrawingProjection, DrawingSolid, GeometryPolicy, MeshOptions, Solid, project_drawing,
+        rust_kernel::{manufacturing, step_read::read_analytic_solid},
+    };
     let (sketch, edits) = Source::create(sketch::Datum::Xz, "Torus section").unwrap();
-    let document = Document::new("Torus backend boundary")
+    let document = Document::new("Exact torus")
         .unwrap()
         .edited(&edits)
         .unwrap();
@@ -323,23 +328,157 @@ fn rust_revolve_reports_a_curved_profile_as_unsupported_without_falling_back() {
         .edited(&source.replace(&document, sketch).unwrap())
         .unwrap();
     let mut session = Session::new(document).unwrap();
-    let request = model::RevolveRequest::new(sketch, vec![region], Default::default());
+    let mut parameters = model::RevolveParameters::default();
+    let request = model::RevolveRequest::new(sketch, vec![region], parameters.clone());
+    let feature = request.outputs[0].feature;
+    let part = request.outputs[0].body;
     let draft = model::prepare_revolve(&session, 0, actor(), &request).unwrap();
     session.commit(draft.prepared).unwrap();
-    assert!(
-        compile(&session, GeometryBackend::OpenCascade)
-            .solid(request.outputs[0].feature)
-            .is_some()
+    let first = compile(&session, GeometryBackend::Rust);
+    let topology = &first.snapshot().shapes[&feature].topology;
+    let face = topology
+        .elements
+        .iter()
+        .find(|element| element.key.kind == TopologyKind::Face)
+        .unwrap();
+    let intent = GeometryIntent::capture(topology, face.key).unwrap();
+    let stock = first.solid(part).unwrap();
+    near(stock.volume_mm3().unwrap(), 10. * PI.powi(2));
+    assert!(!stock.rust_revolution_contains([0.; 3]).unwrap());
+    assert!(stock.rust_revolution_contains([5., 0., 0.]).unwrap());
+    assert_eq!(stock.display_edges(0.1).unwrap().len(), 2);
+    assert_eq!(stock.display_vertices().unwrap().len(), 1);
+    let inputs = [DrawingSolid {
+        solid: stock,
+        hatch: None,
+    }];
+    let axial = project_drawing(&inputs, DrawingProjection::default()).unwrap();
+    assert_eq!(axial.len(), 2);
+    for (outline, radius) in axial.iter().zip([6., 4.]) {
+        assert_eq!(outline.role, VectorRole::Visible);
+        assert!(
+            matches!(outline.curve, VectorCurve::Ellipse { major_mm, minor_mm, .. } if major_mm == radius && minor_mm == radius)
+        );
+    }
+    let side = project_drawing(
+        &inputs,
+        DrawingProjection {
+            frame: PlaneFrame {
+                u: [0., 1., 0.],
+                v: [0., 0., 1.],
+                ..PlaneFrame::default()
+            },
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(side.len(), 4);
+    assert_eq!(
+        side.iter()
+            .filter(|edge| matches!(edge.curve, VectorCurve::Line { .. }))
+            .count(),
+        2
     );
+    let section = project_drawing(
+        &inputs,
+        DrawingProjection {
+            section_offset_mm: Some(0.6),
+            section_only: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(section.len(), 2);
+    for (boundary, radius) in section.iter().zip([5.8, 4.2]) {
+        assert_eq!(boundary.role, VectorRole::Section);
+        let VectorCurve::Ellipse {
+            major_mm, minor_mm, ..
+        } = boundary.curve
+        else {
+            panic!("expected analytic circle")
+        };
+        near(major_mm, radius);
+        near(minor_mm, radius);
+    }
+
+    parameters.axis_origin[0] = length(1.);
+    parameters.angle = model::angle(-360.);
+    let edit =
+        model::prepare_revolve_edit(&session, session.revision(), actor(), feature, &parameters)
+            .unwrap();
+    session.commit(edit.prepared).unwrap();
+    let reopened = reopen(&session);
+    let rust = compile(&reopened, GeometryBackend::Rust);
+    let shape = &rust.snapshot().shapes[&feature];
+    let solid = rust.solid(part).unwrap();
+    assert!(matches!(
+        references::resolve(&intent, &shape.topology, reopened.revision()),
+        Resolution::Resolved { .. }
+    ));
+    near(shape.volume_mm3, 8. * PI.powi(2));
+    near(solid.faces().unwrap()[0].area_mm2, 16. * PI.powi(2));
+    for (actual, expected) in shape
+        .bounds
+        .min
+        .into_iter()
+        .chain(shape.bounds.max)
+        .zip([-4., -5., -1., 6., 5., 1.])
+    {
+        near(actual, expected);
+    }
+    let mesh = solid.manufacturing_mesh(MeshOptions::default()).unwrap();
+    let mesh = multicad_kernel::rust_kernel::display::DisplayMesh {
+        vertices: mesh.vertices,
+        indices: mesh.indices,
+        face_indices: mesh.face_indices,
+    };
+    assert!(manufacturing::certify(&mesh).unwrap().signed_volume_mm3 > 0.);
+    let exchange = tempfile::tempdir().unwrap();
+    let exported = exchange.path().join("torus.step");
+    solid.write_step(&exported).unwrap();
+    let text = std::fs::read_to_string(&exported).unwrap();
+    let policy = GeometryPolicy::default();
+    let proof = read_analytic_solid(&text, policy.linear_tolerance_mm).unwrap();
+    assert!(Solid::step_topology_matches(
+        &shape.topology,
+        &proof,
+        policy.linear_tolerance_mm
+    ));
+    let imported = Solid::import_rust_step(&text, feature, policy).unwrap();
+    near(imported.volume_mm3().unwrap(), shape.volume_mm3);
+    assert!(!imported.rust_revolution_contains([1., 0., 0.]).unwrap());
+
+    #[cfg(feature = "occt")]
+    {
+        let native = compile(&reopened, GeometryBackend::OpenCascade);
+        let native = native.solid(part).unwrap();
+        near(native.volume_mm3().unwrap(), solid.volume_mm3().unwrap());
+        near(
+            native.faces().unwrap()[0].area_mm2,
+            solid.faces().unwrap()[0].area_mm2,
+        );
+        let roundtrip = Solid::read_step(&exported, policy).unwrap();
+        assert_eq!(roundtrip.solid_count().unwrap(), 1);
+        near(roundtrip.volume_mm3().unwrap(), shape.volume_mm3);
+        near(
+            roundtrip.faces().unwrap()[0].area_mm2,
+            solid.faces().unwrap()[0].area_mm2,
+        );
+    }
+
+    parameters.angle = model::angle(90.);
+    let partial =
+        model::prepare_revolve_edit(&session, session.revision(), actor(), feature, &parameters)
+            .unwrap();
     let Err(error) = compiler().compile_with_backend(
-        session.document(),
+        partial.prepared.document(),
         session.revision(),
         GeometryBackend::Rust,
         None,
     ) else {
-        panic!("Rust accepted an unsupported curved meridian");
+        panic!("Rust accepted an unsupported partial torus");
     };
-    assert_eq!(error.entity, Some(request.outputs[0].feature));
+    assert_eq!(error.entity, Some(feature));
     assert!(error.message.contains("straight"), "{error}");
 }
 

@@ -7,6 +7,7 @@ mod panel;
 mod planar;
 mod section;
 mod sphere;
+mod torus;
 
 #[derive(Clone, Copy, Debug)]
 pub struct DrawingProjection {
@@ -184,6 +185,11 @@ pub fn project_drawing(
                 GeometryErrorKind::Unsupported,
                 "Rust sphere projection currently requires an isolated sphere",
             ));
+        }
+        if let [input] = solids
+            && let Some((torus, frame)) = input.solid.torus_body()
+        {
+            return torus::project(input, frame, torus.radii_mm(), options);
         }
         if solids.iter().any(|input| contains_herringbone(input.solid)) {
             return Err(err(

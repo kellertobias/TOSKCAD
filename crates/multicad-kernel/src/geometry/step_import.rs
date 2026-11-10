@@ -180,6 +180,19 @@ impl Solid {
             ImportProfile::Sphere { radius_mm } => {
                 Self::rust_sphere_named(radius_mm, frame, feature, policy)
             }
+            ImportProfile::Torus {
+                major_radius_mm,
+                minor_radius_mm,
+            } => Self::rust_torus_named(
+                [major_radius_mm, minor_radius_mm],
+                frame,
+                feature,
+                Origin {
+                    source: feature,
+                    role: "import.torus.profile".into(),
+                },
+                policy,
+            ),
             ImportProfile::SplineSweep { sweep } => {
                 let body = SplineSweepBody::new(feature, sweep, frame, policy.linear_tolerance_mm)?;
                 Ok(Self {

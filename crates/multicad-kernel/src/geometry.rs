@@ -28,6 +28,7 @@ mod sphere_body;
 mod spline_sweep_body;
 mod spur_gear_body;
 mod step_import;
+mod torus_body;
 mod warped_union_body;
 use annulus_body::AnnulusBody;
 use axial_stack_body::AxialStackBody;
@@ -48,6 +49,7 @@ use rust_compound::RustCompound;
 use sphere_body::SphereBody;
 use spline_sweep_body::SplineSweepBody;
 use spur_gear_body::SpurGearBody;
+use torus_body::TorusBody;
 use warped_union_body::WarpedUnionBody;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -564,6 +566,7 @@ enum SolidBody {
     SpurGear(Rc<SpurGearBody>, PlaneFrame),
     Herringbone(Rc<HerringboneBody>, PlaneFrame),
     Sphere(Rc<SphereBody>, PlaneFrame),
+    Torus(Rc<TorusBody>, PlaneFrame),
     AxialStack(Rc<AxialStackBody>, PlaneFrame),
     RustCompound(Rc<RustCompound>),
     Orthogonal(Rc<OrthogonalBody>, PlaneFrame),
@@ -926,6 +929,7 @@ impl Solid {
             SolidBody::SpurGear(body, frame) => SolidBody::SpurGear(Rc::clone(body), *frame),
             SolidBody::Herringbone(body, frame) => SolidBody::Herringbone(Rc::clone(body), *frame),
             SolidBody::Sphere(body, frame) => SolidBody::Sphere(Rc::clone(body), *frame),
+            SolidBody::Torus(body, frame) => SolidBody::Torus(Rc::clone(body), *frame),
             SolidBody::AxialStack(body, frame) => SolidBody::AxialStack(Rc::clone(body), *frame),
             SolidBody::PlanarBoolean(body, frame) => {
                 SolidBody::PlanarBoolean(Rc::clone(body), *frame)
@@ -1207,6 +1211,9 @@ impl Solid {
                 SolidBody::Sphere(body, frame) => {
                     SolidBody::Sphere(Rc::clone(body), transform.frame(*frame))
                 }
+                SolidBody::Torus(body, frame) => {
+                    SolidBody::Torus(Rc::clone(body), transform.frame(*frame))
+                }
                 SolidBody::AxialStack(body, frame) => {
                     SolidBody::AxialStack(Rc::clone(body), transform.frame(*frame))
                 }
@@ -1246,6 +1253,9 @@ impl Solid {
         Ok(result)
     }
     pub fn volume_mm3(&self) -> Result<f64, GeometryError> {
+        if let Some((body, _)) = self.torus_body() {
+            return Ok(body.geometry.volume_mm3());
+        }
         if let Some((body, _)) = self.sphere_body() {
             return Ok(body.geometry.volume_mm3());
         }
@@ -1330,6 +1340,9 @@ impl Solid {
         ffi::solid_count(self.occt()?).map_err(|e| native("solid count", e))
     }
     pub fn bounds(&self) -> Result<Bounds, GeometryError> {
+        if let Some((body, frame)) = self.torus_body() {
+            return Ok(body.bounds(frame));
+        }
         if let Some((body, frame)) = self.sphere_body() {
             return Ok(body.bounds(frame));
         }
@@ -1460,6 +1473,9 @@ impl Solid {
         crate::planar_contours::extract(self, face, frame, self.policy)
     }
     pub fn faces(&self) -> Result<Vec<Face>, GeometryError> {
+        if let Some((body, frame)) = self.torus_body() {
+            return Ok(vec![body.face(frame)]);
+        }
         if let Some((body, frame)) = self.sphere_body() {
             return Ok(vec![body.face(frame)]);
         }
@@ -1632,6 +1648,9 @@ impl Solid {
                 crate::rust_display::placed_mesh(body.geometry.mesh(rust_options), *frame, false)
             }
             SolidBody::Sphere(body, frame) => {
+                crate::rust_display::placed_mesh(body.geometry.mesh(rust_options), *frame, false)
+            }
+            SolidBody::Torus(body, frame) => {
                 crate::rust_display::placed_mesh(body.geometry.mesh(rust_options), *frame, false)
             }
             SolidBody::AxialStack(body, frame) => body.mesh(*frame, rust_options),
@@ -1953,6 +1972,7 @@ impl Solid {
             SolidBody::SpurGear(body, _) => body.feature,
             SolidBody::Herringbone(body, _) => body.feature,
             SolidBody::Sphere(body, _) => body.feature,
+            SolidBody::Torus(body, _) => body.feature,
             SolidBody::AxialStack(body, _) => body.feature,
             SolidBody::PlanarBoolean(body, _) => body.feature,
             SolidBody::WarpedUnion(body, _) => body.feature,
@@ -1979,6 +1999,7 @@ impl Solid {
             | SolidBody::SpurGear(..)
             | SolidBody::AxialStack(..)
             | SolidBody::Sphere(..)
+            | SolidBody::Torus(..)
             | SolidBody::RoundedSlot(..) => true,
             SolidBody::Prism(prism, _) => prism.rounded_end().is_none(),
             SolidBody::RustCompound(compound) => compound
@@ -2151,6 +2172,9 @@ impl Solid {
             SolidBody::Helical(body, frame) => body.append_step(writer, *frame, self.policy),
             SolidBody::Sphere(body, frame) => {
                 writer.append_sphere(body.geometry, frame.origin, frame.u, frame.v)
+            }
+            SolidBody::Torus(body, frame) => {
+                writer.append_torus(body.geometry, frame.origin, frame.u, frame.v)
             }
             SolidBody::CosmeticFastener(..) => Err(step::StepError::Unsupported),
             SolidBody::Orthogonal(body, frame) => body.append_step(writer, *frame),

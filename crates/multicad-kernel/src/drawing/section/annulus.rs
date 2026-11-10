@@ -215,9 +215,9 @@ pub(in crate::drawing) fn project_circular(
     finish_section(frame, output, boundary, hatch, options, tolerance)
 }
 
-pub(in crate::drawing) fn project_disk(
+pub(in crate::drawing) fn project_concentric(
     origin: Point,
-    radius: f64,
+    [outer, inner]: [f64; 2],
     input: &DrawingSolid<'_>,
     options: DrawingProjection,
 ) -> Result<Vec<ProjectedVector>, GeometryError> {
@@ -226,21 +226,16 @@ pub(in crate::drawing) fn project_disk(
         u: [1., 0.],
         v: [0., 1.],
     };
-    let outer = [radius; 2];
+    let outer = [outer; 2];
+    let inner = [inner; 2];
     let planes = frame.window([options.section_u_mm, options.section_v_mm]);
     let tolerance = input.solid.geometry_policy().linear_tolerance_mm;
-    let output = elliptical_section(frame, outer, [0.; 2], &planes, options, tolerance)?;
+    let output = elliptical_section(frame, outer, inner, &planes, options, tolerance)?;
     let hatch = input
         .hatch
         .filter(|hatch| hatch.pattern != HatchPattern::None);
     let boundary = if hatch.is_some() && !output.is_empty() {
-        hatch_boundary(
-            outer,
-            [0.; 2],
-            &planes,
-            options.chord_tolerance_mm,
-            tolerance,
-        )?
+        hatch_boundary(outer, inner, &planes, options.chord_tolerance_mm, tolerance)?
     } else {
         Vec::new()
     };

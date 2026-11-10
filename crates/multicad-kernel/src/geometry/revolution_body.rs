@@ -87,6 +87,29 @@ impl Solid {
 
         let n = unit(axis.direction);
         let mut u = unit(cross(n, profile.frame.normal()));
+        if angle_rad.abs() == std::f64::consts::TAU
+            && profile.holes.is_empty()
+            && let [CurvedEdge2d::Circle { center, radius_mm }] = profile.outer.as_slice()
+        {
+            let offset = difference(profile.frame.point(*center), axis.origin_mm);
+            let radial = dot(offset, u);
+            if radial < 0. {
+                u = u.map(|coordinate| -coordinate);
+            }
+            let z = dot(offset, n);
+            let frame = PlaneFrame {
+                origin: std::array::from_fn(|i| n[i].mul_add(z, axis.origin_mm[i])),
+                u,
+                v: cross(n, u),
+            };
+            return Self::rust_torus_named(
+                [radial.abs(), *radius_mm],
+                frame,
+                feature,
+                origins[0].clone(),
+                policy,
+            );
+        }
         let radial = |uv| dot(difference(profile.frame.point(uv), axis.origin_mm), u);
         let mut rings = Vec::with_capacity(profile.holes.len() + 1);
         let mut farthest = 0_f64;
@@ -270,6 +293,10 @@ impl Solid {
 
     pub fn rust_revolution_contains(&self, point_mm: Point) -> Result<bool, GeometryError> {
         self.policy.point(point_mm)?;
+        if let Some((body, frame)) = self.torus_body() {
+            return Ok(body.geometry.signed_distance_mm(local(frame, point_mm))
+                <= self.policy.linear_tolerance_mm);
+        }
         let (body, frame) = self.revolution_body().ok_or_else(|| {
             error(
                 OPERATION,

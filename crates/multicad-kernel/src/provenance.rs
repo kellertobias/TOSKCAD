@@ -920,6 +920,8 @@ impl Solid {
                 body.topology(frame, owner, revision)
             } else if let Some((body, frame)) = self.sphere_body() {
                 body.topology(frame, owner, revision)
+            } else if let Some((body, frame)) = self.torus_body() {
+                body.topology(frame, owner, revision)
             } else if let Some((body, frame)) = self.herringbone_body() {
                 body.topology(frame, owner, revision)
             } else if let Some((body, frame)) = self.axial_stack_body() {

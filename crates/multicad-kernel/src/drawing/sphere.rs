@@ -40,7 +40,7 @@ pub(super) fn project(
     }
     let absolute = distance.abs();
     let cut_radius = ((radius - absolute) * (radius + absolute)).sqrt();
-    let mut output = section::project_disk(center, cut_radius, input, options)?;
+    let mut output = section::project_concentric(center, [cut_radius, 0.], input, options)?;
     if !options.section_only && distance > 0. {
         // The retained sphere contains its equator behind the cut disk.
         options.maximum_curves -= output.len() as u32;
