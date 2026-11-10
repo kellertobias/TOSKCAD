@@ -200,6 +200,53 @@ impl Solid {
             .is_some_and(|body| !body.pockets.is_empty())
     }
 
+    /// Uncut stock for the drawing adapter's separately verified visibility proof.
+    pub(crate) fn drawing_through_box(&self) -> Option<Self> {
+        let body = match &self.body {
+            SolidBody::Orthogonal(stock, frame)
+                if stock.geometry.cells().len() == 1
+                    && !stock.through_bores.is_empty()
+                    && stock.slots.is_empty() =>
+            {
+                let mut stock = (**stock).clone();
+                stock.pockets = Rc::from([]);
+                stock.pocket_origins = Rc::from([]);
+                stock.through_bores = Rc::from([]);
+                stock.through_origins = Rc::from([]);
+                SolidBody::Orthogonal(Rc::new(stock), *frame)
+            }
+            SolidBody::PolygonPrism(stock)
+                if !stock.prism.circular_holes().is_empty() && stock.bore_treatments.is_none() =>
+            {
+                let [ring] = stock.prism.rings() else {
+                    return None;
+                };
+                if ring.len() != 4
+                    || !ring
+                        .iter()
+                        .zip(ring.iter().cycle().skip(1))
+                        .all(|(a, b)| (a[0] == b[0]) != (a[1] == b[1]))
+                {
+                    return None;
+                }
+                let prism = PolygonPrism::new(vec![ring.clone()], stock.prism.height()).ok()?;
+                let mut stock = (**stock).clone();
+                stock.prism = Rc::new(prism);
+                stock.edges = Rc::from(&stock.edges[..ring.len()]);
+                stock.pockets = Rc::from([]);
+                stock.pocket_origins = Rc::from([]);
+                SolidBody::PolygonPrism(Rc::new(stock))
+            }
+            _ => return None,
+        };
+        Some(Self {
+            body,
+            policy: self.policy,
+            provenance: vec![],
+            rust_origins: vec![],
+        })
+    }
+
     /// Pair each certified blind opening with its uncut stock face.
     pub(crate) fn drawing_circular_stock(&self) -> Option<(Self, Vec<BlindOpening>)> {
         if !self.has_circular_drawing_stock() {

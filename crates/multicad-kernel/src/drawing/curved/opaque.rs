@@ -89,7 +89,7 @@ fn offset(origin: Point, view: Point, axes: [Point; 3]) -> Point {
     axes.map(|axis| dot(delta, axis))
 }
 
-fn projected_bounds(cell: Box3, axes: [Point; 3], origin: Point) -> Box3 {
+pub(super) fn projected_bounds(cell: Box3, axes: [Point; 3], origin: Point) -> Box3 {
     let [min, max] = [false, true].map(|upper| {
         std::array::from_fn(|i| {
             axes.iter().enumerate().fold(origin[i], |sum, (j, axis)| {

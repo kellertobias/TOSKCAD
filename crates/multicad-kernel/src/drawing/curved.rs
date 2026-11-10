@@ -6,6 +6,7 @@ use multicad_rust_kernel::{
     round_occlusion::RoundOccluder,
 };
 
+mod apertures;
 mod opaque;
 mod pockets;
 pub(super) mod stadium;
@@ -61,6 +62,7 @@ pub(super) fn is_round(solid: &Solid) -> bool {
 pub(super) fn needs_curved_scene(solid: &Solid) -> bool {
     is_round(solid)
         || solid.has_circular_drawing_stock()
+        || apertures::has_through_bores(solid)
         || solid.rounded_slot_body().is_some()
         || solid
             .rust_compound()
@@ -134,21 +136,29 @@ fn project_members(
     members: &[(usize, &Solid)],
     options: DrawingProjection,
 ) -> Result<Vec<ProjectedVector>, GeometryError> {
+    let mut apertures = (!options.hidden_lines
+        && members
+            .iter()
+            .any(|(_, solid)| apertures::has_through_bores(solid)))
+    .then(|| apertures::Scene::new(members, options.frame))
+    .transpose()?;
     let mut planar_members = Vec::new();
     let mut round_sources = Vec::new();
     let mut rounds = Vec::new();
     let mut rounded = stadium::Shapes::default();
-    for &(source, solid) in members {
+    for (index, &(source, solid)) in members.iter().enumerate() {
         if solid.rounded_slot_body().is_some() {
             rounded.add(solid, source, options)?;
         } else if let Some(round) = round_occluder(solid, options.frame)? {
             round_sources.push(source);
             rounds.push(round);
         } else {
-            let proxy = if options.hidden_lines {
-                None
-            } else {
-                pockets::stock(solid, source, planar_members.len(), options)?
+            let proxy = match &mut apertures {
+                Some(scene) if apertures::has_through_bores(solid) => {
+                    Some(scene.stock(solid, index, source)?)
+                }
+                _ if options.hidden_lines => None,
+                _ => pockets::stock(solid, source, planar_members.len(), options)?,
             };
             planar_members.push((source, solid, proxy));
         }
