@@ -625,12 +625,8 @@ pub(super) fn parameters(
 pub(super) fn thread_profiles(_: &dyn Host, call: &Request, _: NoArgs) -> ToolResult {
     let rust = call.backend == GeometryBackend::Rust;
     let families:Vec<_> = ThreadFamily::ALL.into_iter().map(|family| {
-        let fit_classes:Vec<_> = if rust {
-            match family {
-                ThreadFamily::IsoMetric => vec![ThreadFit::NominalBasic, ThreadFit::Metric6gExternal],
-                ThreadFamily::Custom => vec![ThreadFit::NominalBasic],
-                _ => vec![],
-            }
+        let fit_classes:Vec<_> = if rust && !matches!(family,ThreadFamily::IsoMetric|ThreadFamily::Custom) {
+            vec![]
         } else if family.supported() && family.is_unified() {
             vec![ThreadFit::Unified2A, ThreadFit::Unified2B]
         } else if matches!(family,ThreadFamily::Bsw|ThreadFamily::Bsf) {
@@ -690,7 +686,8 @@ pub(super) fn thread_profiles(_: &dyn Host, call: &Request, _: NoArgs) -> ToolRe
         "runout":"flat_cut_ends","manufacturing":"Cosmetic envelopes are refused for STEP, mesh and print output; select modeled"});
     if rust {
         report["active_geometry_support"] = json!({
-            "modes": ["new_external"],
+            "modes": ["new_external", "cut_internal"],
+            "internal_receiving_stock": "coaxial solid cylinder over the full thread length",
             "representations": ["modeled"],
             "end_treatments": false,
             "radial_taper": false,
@@ -699,10 +696,11 @@ pub(super) fn thread_profiles(_: &dyn Host, call: &Request, _: NoArgs) -> ToolRe
             "reference_data_includes_other_backends": true
         });
         report["fit"] = json!(
-            "ISO metric supports nominal basic and listed historical external 6g fits. Straight custom profiles use nominal basic dimensions."
+            "ISO metric supports nominal basic and listed historical 6g external and 6H internal fits. Straight custom profiles use nominal basic dimensions."
         );
-        report["manufacturing"] =
-            json!("Modeled external threads support certified mesh output. STEP is unavailable.");
+        report["manufacturing"] = json!(
+            "Modeled external shafts and internal through bores support certified mesh output. STEP is unavailable."
+        );
     }
     Ok(report)
 }

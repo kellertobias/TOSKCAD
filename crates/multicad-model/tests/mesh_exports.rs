@@ -887,18 +887,48 @@ fn rust_export_worker_round_trips_four_certified_mesh_formats_and_assembly_place
 
 #[test]
 fn rust_export_worker_writes_watertight_metric_threads_to_stl_and_3mf() {
-    use model::{ThreadHand, ThreadParameters, ThreadRequest};
+    rust_export_metric_thread(false);
+}
+
+#[test]
+fn rust_export_worker_writes_watertight_metric_receivers_to_stl_and_3mf() {
+    rust_export_metric_thread(true);
+}
+
+fn rust_export_metric_thread(internal: bool) {
+    use model::{BodyInput, ThreadHand, ThreadMode, ThreadParameters, ThreadRequest};
 
     let mut session = Session::new(Document::new("Thread manufacturing exports").unwrap()).unwrap();
-    let thread = ThreadRequest::new(
-        "M8 × 1.25 left",
-        ThreadParameters {
-            length: length(9.2),
-            hand: ThreadHand::Left,
-            ..Default::default()
-        },
-    );
-    let prepared = model::prepare_thread(&session, 0, actor(), &thread).unwrap();
+    let parameters = ThreadParameters {
+        length: length(9.2),
+        hand: ThreadHand::Left,
+        ..Default::default()
+    };
+    let thread = if internal {
+        let stock = PrimitiveRequest::new(
+            "Round stock",
+            PrimitiveParameters::Cylinder {
+                radius: length(6.),
+                height: length(9.2),
+                frame: Default::default(),
+            },
+        );
+        let prepared = model::prepare_primitive(&session, 0, actor(), &stock).unwrap();
+        session.commit(prepared.prepared).unwrap();
+        ThreadRequest::receiving(
+            "M8 × 1.25 left bore",
+            ThreadMode::CutInternal,
+            BodyInput {
+                body: stock.body,
+                producer: stock.feature,
+            },
+            parameters,
+        )
+        .unwrap()
+    } else {
+        ThreadRequest::new("M8 × 1.25 left shaft", parameters)
+    };
+    let prepared = model::prepare_thread(&session, session.revision(), actor(), &thread).unwrap();
     session.commit(prepared.prepared).unwrap();
     let set = EntityId::new();
     let definition = SetDefinition {
@@ -908,7 +938,15 @@ fn rust_export_worker_writes_watertight_metric_threads_to_stl_and_3mf() {
             .collect(),
         ..Default::default()
     };
-    let prepared = prepare_set(&session, 1, actor(), set, "Manufacturing", &definition).unwrap();
+    let prepared = prepare_set(
+        &session,
+        session.revision(),
+        actor(),
+        set,
+        "Manufacturing",
+        &definition,
+    )
+    .unwrap();
     session.commit(prepared).unwrap();
 
     let document = session.document();
@@ -955,23 +993,37 @@ fn rust_export_worker_writes_watertight_metric_threads_to_stl_and_3mf() {
         };
         assert_eq!(triangles.len(), evidence.triangles);
         assert_closed_winding(&triangles);
-        assert_bounds(bounds(&triangles), [[-4., -4., 0.], [4., 4., 9.2]], 0.05);
+        let radius = if internal { 6. } else { 4. };
+        assert_bounds(
+            bounds(&triangles),
+            [[-radius, -radius, 0.], [radius, radius, 9.2]],
+            0.05,
+        );
         near(volume(&triangles), evidence.mesh_volume_mm3, 0.001);
-        near(evidence.mesh_volume_mm3, artifact.volume_mm3, 2.);
-        // An exact cylindrical envelope would have one side radius everywhere.
+        near(
+            evidence.mesh_volume_mm3,
+            artifact.volume_mm3,
+            if internal { 5. } else { 2. },
+        );
+        // The threaded boundary has a distinct crest and root even in the
+        // receiver, which also has a constant-radius outer wall.
         let mut wall_radii = triangles
             .iter()
             .flatten()
             .filter(|p| (1. ..8.).contains(&p[2]))
             .map(|p| p[0].hypot(p[1]));
-        assert!(wall_radii.clone().any(|radius| radius > 3.99));
+        assert!(
+            wall_radii
+                .clone()
+                .any(|radius| (3.99..4.01).contains(&radius))
+        );
         assert!(wall_radii.any(|radius| (3.3..3.4).contains(&radius)));
         // For a left-hand thread the crest phase stays constant as Z falls
         // with increasing angle, with a tolerance for its physical flat width.
         let crest_vertices = triangles
             .iter()
             .flatten()
-            .filter(|p| (1. ..8.).contains(&p[2]) && p[0].hypot(p[1]) > 3.99999);
+            .filter(|p| (1. ..8.).contains(&p[2]) && (p[0].hypot(p[1]) - 4.).abs() < 1e-5);
         assert!(crest_vertices.clone().count() > 100);
         for p in crest_vertices {
             let phase = (p[2] + p[1].atan2(p[0]) * 1.25 / std::f64::consts::TAU).rem_euclid(1.25);

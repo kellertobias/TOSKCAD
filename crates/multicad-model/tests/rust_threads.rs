@@ -2,8 +2,8 @@ use multicad_core::{
     commands::{Actor, Channel, Session},
     document::Document,
     model::{
-        self, CustomThreadProfile, ThreadFamily, ThreadFit, ThreadHand, ThreadParameters,
-        ThreadRequest, angle, length,
+        self, BodyInput, CustomThreadProfile, PrimitiveParameters, PrimitiveRequest, ThreadFamily,
+        ThreadFit, ThreadHand, ThreadMode, ThreadParameters, ThreadRequest, angle, length,
     },
     project_file::{self, ProjectFile},
     references::{self, GeometryIntent, Resolution, TopologyKind},
@@ -188,12 +188,135 @@ fn rust_6g_m6_matches_native_fitted_profile_mass_and_major_extent() {
 }
 
 #[test]
+fn rust_internal_6h_matches_native_cut_and_keeps_the_cylinder_face_intents() {
+    let mut session = Session::new(Document::new("Rust 6H receiver").unwrap()).unwrap();
+    let stock = PrimitiveRequest::new(
+        "Stock",
+        PrimitiveParameters::Cylinder {
+            radius: length(5.),
+            height: length(6.6),
+            frame: Default::default(),
+        },
+    );
+    let prepared = model::prepare_primitive(&session, 0, actor(), &stock).unwrap();
+    session.commit(prepared.prepared).unwrap();
+    let original = rust(session.document(), 1);
+    let original = &original.snapshot().shapes[&stock.feature];
+    let surviving: Vec<_> = original
+        .topology
+        .elements
+        .iter()
+        .filter(|element| element.key.kind == TopologyKind::Face)
+        .map(|element| GeometryIntent::capture(&original.topology, element.key).unwrap())
+        .collect();
+    assert_eq!(surviving.len(), 3);
+    let target = BodyInput {
+        body: stock.body,
+        producer: stock.feature,
+    };
+    let parameters = ThreadParameters {
+        major_diameter: length(6.),
+        pitch: length(1.),
+        length: length(6.6),
+        minimum_wall: length(1.),
+        fit: ThreadFit::Metric6HInternal,
+        ..Default::default()
+    };
+    let request = ThreadRequest::receiving(
+        "M6 × 1 6H",
+        ThreadMode::CutInternal,
+        target.clone(),
+        parameters.clone(),
+    )
+    .unwrap();
+    let candidate = model::prepare_thread(&session, 1, actor(), &request).unwrap();
+    let before = session.document().clone();
+    let document = candidate.prepared.document();
+    let start = std::time::Instant::now();
+    let actual = rust(document, 2);
+    let rust_elapsed = start.elapsed();
+    let start = std::time::Instant::now();
+    let native = Compiler {
+        omit_display: true,
+        ..Default::default()
+    }
+    .compile(document, 2)
+    .unwrap();
+    eprintln!(
+        "M6 × 1 6H through-cut source-to-exact model (without display): Rust {rust_elapsed:?}, OpenCascade {:?}",
+        start.elapsed()
+    );
+    let native = native.solid(request.feature).unwrap();
+    assert!(!native.uses_rust_geometry());
+    let shape = &actual.snapshot().shapes[&request.feature];
+    let solid = actual.solid(request.feature).unwrap();
+    assert!(solid.uses_rust_geometry());
+    assert_eq!(actual.snapshot().bodies[&stock.body], request.feature);
+    assert_eq!(shape.solid_count, 1);
+    assert_eq!(shape.bounds, original.bounds);
+    let native_volume = native.volume_mm3().unwrap();
+    let uncertainty = multicad_kernel::GeometryPolicy::default().linear_tolerance_mm
+        * native
+            .faces()
+            .unwrap()
+            .iter()
+            .map(|face| face.area_mm2)
+            .sum::<f64>()
+        + 1e-7 * native_volume;
+    assert!(
+        (shape.volume_mm3 - native_volume).abs() <= uncertainty,
+        "6H volume Rust {} vs OpenCascade {native_volume}, tolerance {uncertainty}",
+        shape.volume_mm3
+    );
+    for z in [0., 0.25, 3.3, 6.35, 6.6] {
+        assert!(!solid.rust_thread_contains([0., 0., z]).unwrap());
+        assert!(solid.rust_thread_contains([4., 0., z]).unwrap());
+    }
+    assert!(!solid.rust_thread_contains([2.75, 0., 2.]).unwrap());
+    assert!(solid.rust_thread_contains([2.75, 0., 2.5]).unwrap());
+    let retained: Vec<_> = surviving
+        .iter()
+        .map(|intent| references::resolve(intent, &shape.topology, 2))
+        .collect();
+    assert!(
+        retained
+            .iter()
+            .all(|result| matches!(result, Resolution::Resolved { .. }))
+    );
+    assert_eq!(session.document(), &before);
+    session.commit(candidate.prepared).unwrap();
+
+    let changed = ThreadParameters {
+        hand: ThreadHand::Left,
+        ..parameters
+    };
+    let edited =
+        model::prepare_thread_edit(&session, 2, actor(), request.feature, &changed).unwrap();
+    let checked = rust(edited.prepared.document(), 3);
+    let shape = &checked.snapshot().shapes[&request.feature];
+    let solid = checked.solid(request.feature).unwrap();
+    assert!(!solid.rust_thread_contains([0., 2.75, 1.75]).unwrap());
+    assert!(solid.rust_thread_contains([0., 2.75, 2.25]).unwrap());
+    assert!(
+        surviving.iter().zip(retained).all(|(intent, previous)| {
+            references::resolve(intent, &shape.topology, 3) == previous
+        })
+    );
+    session.commit(edited.prepared).unwrap();
+    assert_eq!(
+        model::read_thread(session.document(), request.feature)
+            .unwrap()
+            .target,
+        Some(target)
+    );
+}
+
+#[test]
 fn rust_thread_compiler_refuses_unimplemented_variants_without_changing_source() {
     use multicad_core::{
         constraint_sketch::Dimension,
         model::{
-            BodyInput, PrimitiveParameters, PrimitiveRequest, ThreadEndTreatment,
-            ThreadEndTreatments, ThreadMode, ThreadRepresentation, ThreadStartTreatment,
+            ThreadEndTreatment, ThreadEndTreatments, ThreadRepresentation, ThreadStartTreatment,
         },
     };
 
@@ -212,7 +335,7 @@ fn rust_thread_compiler_refuses_unimplemented_variants_without_changing_source()
     let before = session.document().clone();
     let receiving = ThreadRequest::receiving(
         "Receiving cut",
-        ThreadMode::CutInternal,
+        ThreadMode::CutExternal,
         BodyInput {
             body: stock.body,
             producer: stock.feature,

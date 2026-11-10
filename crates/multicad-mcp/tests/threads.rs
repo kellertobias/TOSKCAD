@@ -191,7 +191,7 @@ fn rust_mcp_models_edits_and_reopens_a_metric_thread_without_fallback() {
     let profiles = run(&h, "thread_profiles", json!({}));
     assert_eq!(
         profiles["active_geometry_support"]["modes"],
-        json!(["new_external"])
+        json!(["new_external", "cut_internal"])
     );
     assert_eq!(profiles["active_geometry_support"]["step"], false);
     let families = profiles["families"].as_array().unwrap();
@@ -201,7 +201,7 @@ fn rust_mcp_models_edits_and_reopens_a_metric_thread_without_fallback() {
         .unwrap();
     assert_eq!(
         metric["fit_classes"],
-        json!(["nominal_basic", "metric_6g_external"])
+        json!(["nominal_basic", "metric_6g_external", "metric_6h_internal"])
     );
     assert!(
         families
@@ -267,6 +267,91 @@ fn rust_mcp_models_edits_and_reopens_a_metric_thread_without_fallback() {
     let shape = run(&reopened, "evaluate_model", json!({}))["parts"][0].clone();
     let edited_volume = shape["volume_mm3"].as_f64().unwrap();
     assert!((edited_volume - volume * 0.8).abs() < 1e-7);
+}
+
+#[test]
+fn rust_mcp_cuts_and_reopens_a_metric_receiver_and_refuses_invalid_stock() {
+    use multicad_mcp::Storage;
+
+    let mut session = Session::new(Document::new("Rust metric receiver").unwrap()).unwrap();
+    let stock = PrimitiveRequest::new(
+        "Receiver stock",
+        PrimitiveParameters::Cylinder {
+            radius: length(5.),
+            height: length(6.6),
+            frame: Default::default(),
+        },
+    );
+    let prepared = model::prepare_primitive(&session, 0, call(false).actor, &stock).unwrap();
+    session.commit(prepared.prepared).unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("receiver.tcd");
+    ProjectStore
+        .save(
+            &path,
+            &multicad_core::project_file::ProjectFile::new(session.document().clone()).unwrap(),
+        )
+        .unwrap();
+    let open = || {
+        Headless::with_geometry_backend(
+            Workspace::project(path.clone(), Box::new(ProjectStore)).unwrap(),
+            Some(directory.path().into()),
+            false,
+            multicad_model::GeometryBackend::Rust,
+        )
+    };
+    let h = open();
+    let before = h.document();
+    let request = json!({
+        "expected_revision":0,"name":"M6 × 1 6H","mode":"cut_internal","target_part":stock.body,
+        "major_diameter":mm(6.),"pitch":mm(1.),"length":mm(6.6),"fit":"metric_6h_internal",
+        "minimum_wall":mm(1.)
+    });
+    for (field, value) in [("length", mm(5.)), ("minimum_wall", mm(2.1))] {
+        let mut invalid = request.clone();
+        invalid[field] = value;
+        let rejected = dispatch(&h, &call(false), "set_thread", invalid).unwrap_err();
+        assert_eq!(rejected.code, "model_failed", "{rejected:?}");
+        assert_eq!(h.document(), before);
+    }
+    assert_eq!(
+        dispatch(&h, &call(true), "set_thread", request.clone())
+            .unwrap_err()
+            .code,
+        "cancelled"
+    );
+    assert_eq!(h.document(), before);
+    let result = run(&h, "set_thread", request);
+    let thread = feature(&result);
+    assert_eq!(result["part"], stock.body.to_string());
+    let shape = run(&h, "evaluate_model", json!({}))["parts"][0].clone();
+    assert_eq!(shape["solid_count"], 1);
+    assert_eq!(shape["bounds_mm"]["min"], json!([-5., -5., 0.]));
+    assert_eq!(shape["bounds_mm"]["max"], json!([5., 5., 6.6]));
+    let volume = shape["volume_mm3"].as_f64().unwrap();
+    assert!((320. ..390.).contains(&volume), "receiver volume {volume}");
+    assert_eq!(
+        run(
+            &h,
+            "set_thread",
+            json!({"expected_revision":1,"thread":thread,"hand":"left"})
+        )["thread"],
+        thread.to_string()
+    );
+    run(&h, "save_project", json!({"expected_revision":2}));
+    drop(h);
+    let reopened = open();
+    let source = run(&reopened, "inspect_thread", json!({"thread":thread}));
+    assert_eq!(source["part"], stock.body.to_string());
+    assert_eq!(
+        source["source"]["target"]["producer"],
+        stock.feature.to_string()
+    );
+    assert_eq!(source["resolved"]["fit"]["class"], "metric_6h_internal");
+    assert_eq!(source["resolved"]["hand"], "left");
+    let rebuilt = run(&reopened, "evaluate_model", json!({}))["parts"][0].clone();
+    assert_eq!(rebuilt["feature"], thread.to_string());
+    assert!((rebuilt["volume_mm3"].as_f64().unwrap() - volume).abs() < 1e-7);
 }
 
 #[test]

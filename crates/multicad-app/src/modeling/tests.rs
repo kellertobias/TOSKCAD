@@ -80,6 +80,75 @@ fn rust_thread_tool_previews_real_m8_ridges_and_cancel_keeps_the_document() {
 }
 
 #[test]
+fn rust_existing_internal_thread_previews_the_open_bore_and_its_helical_wall() {
+    use multicad_core::model::{BodyInput, ThreadFit, ThreadMode, ThreadParameters, ThreadRequest};
+    use multicad_ui::modeling::ModelToolController;
+
+    let mut session = Session::new(Document::new("Rust threaded receiver").unwrap()).unwrap();
+    let stock = PrimitiveRequest::new(
+        "Receiver",
+        PrimitiveParameters::Cylinder {
+            radius: length(5.),
+            height: length(6.6),
+            frame: Default::default(),
+        },
+    );
+    let prepared =
+        model::prepare_primitive(&session, 0, Actor::local(Channel::Ui), &stock).unwrap();
+    session.commit(prepared.prepared).unwrap();
+    let cut = ThreadRequest::receiving(
+        "M6 × 1 6H",
+        ThreadMode::CutInternal,
+        BodyInput {
+            body: stock.body,
+            producer: stock.feature,
+        },
+        ThreadParameters {
+            major_diameter: length(6.),
+            pitch: length(1.),
+            length: length(6.6),
+            minimum_wall: length(1.),
+            fit: ThreadFit::Metric6HInternal,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let prepared = model::prepare_thread(&session, 1, Actor::local(Channel::Ui), &cut).unwrap();
+    session.commit(prepared.prepared).unwrap();
+    let before = session.document().clone();
+    let resources = ProjectResources::default();
+    let mut tool = ModelToolController::default();
+    tool.set_backend(Backend::factory(GeometryBackend::Rust).unwrap()());
+    tool.begin_existing(&session, &resources, cut.feature, Channel::Ui)
+        .unwrap();
+    tool.preview(&session, &resources, Channel::Ui).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while tool.pending() {
+        tool.poll(&session, &resources);
+        assert!(
+            Instant::now() < deadline,
+            "Rust threaded receiver preview timed out"
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert!(tool.can_apply(&session, &resources), "{:?}", tool.error());
+    let scene = tool.display_scene(&session, &resources).unwrap();
+    assert_eq!(scene.instances().len(), 1);
+    let pick = |origin, direction| scene.pick_face(viewport::Ray::new(origin, direction).unwrap());
+    assert!(pick([0., 0., 10.], [0., 0., -1.]).is_none());
+    let cap = pick([4., 0., 10.], [0., 0., -1.]).unwrap();
+    assert!((cap.point_mm[2] - 6.6).abs() < 1e-6);
+    let deep = pick([0., 0., 2.], [1., 0., 0.]).unwrap();
+    let shallow = pick([0., 0., 2.5], [1., 0., 0.]).unwrap();
+    assert!(deep.point_mm[0] > 2.95, "{:?}", deep.point_mm);
+    assert!(shallow.point_mm[0] < 2.6, "{:?}", shallow.point_mm);
+    assert_ne!(deep.key, shallow.key);
+    tool.cancel();
+    assert_eq!(session.revision(), 2);
+    assert_eq!(session.document(), &before);
+}
+
+#[test]
 fn native_reusable_assembly_publishes_one_root_and_exact_explodable_leaf_receipts() {
     reusable_assembly_scene(GeometryBackend::OpenCascade);
 }
@@ -1561,6 +1630,70 @@ mod painted_default_screw {
                 std::thread::sleep(Duration::from_millis(1));
             }
         }
+    }
+
+    #[test]
+    fn painted_rust_thread_controls_create_and_apply_an_internal_bore() {
+        let factory = Backend::factory(GeometryBackend::Rust).unwrap();
+        let mut controller = ModelToolController::default();
+        controller.set_backend(factory());
+        let mut canonical = SceneFeed::default();
+        canonical.set_backend(factory());
+        let mut session = Session::new(Document::new("Painted Rust receiver").unwrap()).unwrap();
+        let stock = PrimitiveRequest::new(
+            "Cylindrical receiver",
+            PrimitiveParameters::Cylinder {
+                radius: length(6.),
+                height: model::ThreadParameters::default().length,
+                frame: Default::default(),
+            },
+        );
+        let prepared =
+            model::prepare_primitive(&session, 0, Actor::local(Channel::Ui), &stock).unwrap();
+        session.commit(prepared.prepared).unwrap();
+        let before = session.document().clone();
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        let mut painted = Painted {
+            ctx,
+            controller,
+            canonical,
+            session,
+            applied: vec![],
+            clock: Instant::now(),
+        };
+        painted.wait(true);
+        painted
+            .controller
+            .begin_thread(
+                &painted.session,
+                &Default::default(),
+                painted.canonical.visible().map(Arc::as_ref),
+                &[stock.body].into(),
+                Channel::Ui,
+            )
+            .unwrap();
+        painted.click("New threaded shaft");
+        painted.click("Cut internal thread");
+        painted.click("Preview");
+        painted.wait(false);
+        assert_eq!(painted.session.document(), &before);
+        painted.click("Apply");
+        assert_eq!(painted.session.revision(), 2);
+        painted.wait(true);
+        let [created] = painted.applied.as_slice() else {
+            panic!("Expected one applied receiving feature");
+        };
+        assert_eq!(created.body, stock.body);
+        let source = model::read_thread(painted.session.document(), created.feature).unwrap();
+        assert_eq!(source.mode, model::ThreadMode::CutInternal);
+        assert_eq!(source.target.unwrap().producer, stock.feature);
+        let scene = painted.canonical.visible().unwrap();
+        assert_eq!(scene.instances().len(), 1);
+        let axis = viewport::Ray::new([0., 0., 20.], [0., 0., -1.]).unwrap();
+        assert!(scene.pick_face(axis).is_none());
+        let inside = viewport::Ray::new([0., 0., 2.5], [1., 0., 0.]).unwrap();
+        assert!(scene.pick_face(inside).unwrap().point_mm[0] > 3.9);
     }
 
     #[test]

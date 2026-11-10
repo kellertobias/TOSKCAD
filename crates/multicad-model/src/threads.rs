@@ -91,7 +91,16 @@ pub(crate) fn build(
         .parameters
         .resolve(parameters, source.mode)
         .map_err(|e| error(Some(feature), e))?;
-    let target = source
+    let target = receiving_target(feature, source, solids)?;
+    build_resolved(feature, resolved, source.mode, target, policy)
+}
+
+fn receiving_target<'a>(
+    feature: EntityId,
+    source: &ThreadDefinition,
+    solids: &'a BTreeMap<EntityId, Solid>,
+) -> Result<Option<&'a Solid>, ModelError> {
+    source
         .target
         .as_ref()
         .map(|input| {
@@ -102,8 +111,7 @@ pub(crate) fn build(
                 )
             })
         })
-        .transpose()?;
-    build_resolved(feature, resolved, source.mode, target, policy)
+        .transpose()
 }
 
 fn helical_spec(thread: &ResolvedThread) -> HelicalThread {
@@ -126,12 +134,13 @@ pub(crate) fn build_rust(
     feature: EntityId,
     source: &ThreadDefinition,
     parameters: &EvaluatedParameters,
+    solids: &BTreeMap<EntityId, Solid>,
     policy: GeometryPolicy,
 ) -> Result<Solid, ModelError> {
     let fail = |message| error(Some(feature), message);
-    if source.mode != ThreadMode::NewExternal {
+    if source.mode == ThreadMode::CutExternal {
         return Err(fail(
-            "Rust thread geometry does not yet support receiving cuts",
+            "Rust thread geometry does not yet support external receiving cuts",
         ));
     }
     if !matches!(
@@ -161,21 +170,29 @@ pub(crate) fn build_rust(
             "Rust thread geometry requires an untapered profile without crest rounding",
         ));
     }
-    Solid::rust_helical_thread(
-        helical_spec(&thread),
-        thread
-            .metric_fit
-            .as_ref()
-            .and_then(|fit| fit.external_root_radius_mm),
-        feature,
-        PlaneFrame {
-            origin: thread.frame.origin,
-            u: thread.frame.u,
-            v: thread.frame.v,
-        },
-        policy,
-    )
-    .map_err(|error| crate::error(Some(feature), error))
+    let spec = helical_spec(&thread);
+    let frame = PlaneFrame {
+        origin: thread.frame.origin,
+        u: thread.frame.u,
+        v: thread.frame.v,
+    };
+    let solid = if source.mode == ThreadMode::CutInternal {
+        let target = receiving_target(feature, source, solids)?
+            .ok_or_else(|| fail("Receiving thread has no target predecessor"))?;
+        target.rust_cut_internal_thread(spec, thread.minimum_wall_mm, feature, frame, policy)
+    } else {
+        Solid::rust_helical_thread(
+            spec,
+            thread
+                .metric_fit
+                .as_ref()
+                .and_then(|fit| fit.external_root_radius_mm),
+            feature,
+            frame,
+            policy,
+        )
+    };
+    solid.map_err(|cause| error(Some(feature), cause))
 }
 
 /// Reuse the same native thread and receiving-wall checks inside a typed
