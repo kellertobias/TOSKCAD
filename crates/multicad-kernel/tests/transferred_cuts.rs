@@ -1,7 +1,11 @@
 use multicad_core::{
     document::EntityId,
+    references::{AnalyticGeometry, Origin, TopologyKind},
+};
+#[cfg(feature = "occt")]
+use multicad_core::{
     manufacturing::PlanarEdge,
-    references::{AnalyticGeometry, GeometryIntent, Origin, Resolution, TopologyKind, resolve},
+    references::{GeometryIntent, Resolution, resolve},
 };
 use multicad_kernel::*;
 fn p() -> GeometryPolicy {
@@ -50,6 +54,7 @@ fn xy(z: f64) -> PlaneFrame {
         ..Default::default()
     }
 }
+#[cfg(feature = "occt")]
 fn face_at(s: &Solid, axis: usize, position: f64) -> u32 {
     s.faces()
         .unwrap()
@@ -61,11 +66,13 @@ fn face_at(s: &Solid, axis: usize, position: f64) -> u32 {
         .unwrap()
         .index
 }
+#[cfg(feature = "occt")]
 fn rail(pitch: f64, base: EntityId, bore: EntityId, names: &[Origin]) -> Solid {
     let rail = Solid::box_named([120., 20., 2.], base, p()).unwrap();
     rail.cut_transfer_profile_named(&circle(xy(2.), [pitch, 10.], 2.), -3., bore, names, p())
         .unwrap()
 }
+#[cfg(feature = "occt")]
 #[test]
 fn source_face_keys_follow_exact_circle_and_line_wires_through_winding_and_world_frames() {
     let base = EntityId::new();
@@ -178,6 +185,7 @@ fn source_face_keys_follow_exact_circle_and_line_wires_through_winding_and_world
     near(center[1], 10.);
     assert_eq!(source.topology_snapshot(base, 0).unwrap(), before);
 }
+#[cfg(feature = "occt")]
 #[test]
 fn blind_through_and_rotated_receiving_cuts_preserve_real_history_and_step_geometry() {
     let base = EntityId::new();
@@ -265,6 +273,7 @@ fn blind_through_and_rotated_receiving_cuts_preserve_real_history_and_step_geome
     near(center[1], 20.);
     assert_eq!(target.topology_snapshot(base, 0).unwrap(), original);
 }
+#[cfg(feature = "occt")]
 #[test]
 fn exact_clearance_support_is_bounded_and_rejects_collapse_or_uninstalled_offsets() {
     let circle = circle(xy(0.), [5., 6.], 2.);
@@ -334,6 +343,7 @@ fn exact_clearance_support_is_bounded_and_rejects_collapse_or_uninstalled_offset
         assert!(polygon.offset_closed_boundary(clearance, p()).is_err());
     }
 }
+#[cfg(feature = "occt")]
 #[test]
 fn invalid_direction_no_material_complete_removal_split_and_bad_origins_fail_without_mutation() {
     let owner = EntityId::new();
@@ -400,6 +410,7 @@ fn invalid_direction_no_material_complete_removal_split_and_bad_origins_fail_wit
     }
     assert_eq!(target.topology_snapshot(owner, 0).unwrap(), before);
 }
+#[cfg(feature = "occt")]
 #[test]
 fn selected_full_rim_and_cylindrical_face_return_actual_native_axis_in_each_frame() {
     let base = EntityId::new();
@@ -455,6 +466,7 @@ fn selected_full_rim_and_cylindrical_face_return_actual_native_axis_in_each_fram
     near(axis.radius_mm, 2.);
     assert_eq!(source.topology_snapshot(base, 0).unwrap(), snapshot);
 }
+#[cfg(feature = "occt")]
 #[test]
 fn source_axis_rejects_partial_arcs_partial_cylinders_wrong_kinds_and_missing_topology() {
     use multicad_core::references::TopologyKey;
@@ -519,6 +531,7 @@ fn source_axis_rejects_partial_arcs_partial_cylinders_wrong_kinds_and_missing_to
         );
     }
 }
+#[cfg(feature = "occt")]
 #[test]
 fn captured_source_face_survives_pattern_count_edits_and_removed_hole_is_missing() {
     use multicad_core::references::TopologyKey;

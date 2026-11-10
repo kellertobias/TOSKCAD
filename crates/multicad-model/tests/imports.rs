@@ -10,17 +10,21 @@ use multicad_core::{
     project_file::{self, ProjectFile},
     references::{AnalyticGeometry, GeometryIntent},
 };
+#[cfg(feature = "occt")]
+use multicad_kernel::{BooleanOperation, GeometryPolicy, RigidTransform};
 use multicad_kernel::{
-    BooleanOperation, GeometryPolicy, RigidTransform, Solid,
+    Solid,
     rust_kernel::{Rational, step::write_box},
 };
+#[cfg(feature = "occt")]
+use multicad_model::imports::read_step_file;
 use multicad_model::{
     Compiler, GeometryBackend, Model,
-    imports::{
-        KicadOptions, read_kicad_file_with_backend, read_step_file, read_step_file_with_backend,
-    },
+    imports::{KicadOptions, read_kicad_file_with_backend, read_step_file_with_backend},
 };
-use std::{f64::consts::PI, path::Path};
+use std::f64::consts::PI;
+#[cfg(feature = "occt")]
+use std::path::Path;
 
 fn actor() -> Actor {
     Actor::local(Channel::Ui)
@@ -28,6 +32,7 @@ fn actor() -> Actor {
 fn near(a: f64, b: f64) {
     assert!((a - b).abs() <= 1e-3, "{a} != {b}");
 }
+#[cfg(feature = "occt")]
 fn compile(s: &Session) -> Model {
     compile_with_backend(s, GeometryBackend::default())
 }
@@ -36,6 +41,7 @@ fn compile_with_backend(s: &Session, backend: GeometryBackend) -> Model {
         .compile_with_backend(s.document(), s.revision(), backend, None)
         .unwrap()
 }
+#[cfg(feature = "occt")]
 fn commit(s: &mut Session, p: ModelPrepared) {
     commit_with_backend(s, p, GeometryBackend::default());
 }
@@ -75,6 +81,7 @@ fn transfer_head(m: &Model, part: EntityId) -> EntityId {
         .or_else(|| s.body_sources.get(&part))
         .unwrap()
 }
+#[cfg(feature = "occt")]
 fn boxes(path: &Path, parts: &[([f64; 3], [f64; 3])]) {
     let policy = GeometryPolicy::default();
     let mut all: Option<Solid> = None;
@@ -97,6 +104,7 @@ fn boxes(path: &Path, parts: &[([f64; 3], [f64; 3])]) {
     all.unwrap().write_step(path).unwrap();
 }
 
+#[cfg(feature = "occt")]
 #[test]
 fn step_solids_import_as_parts_and_reimport_keeps_matching_parts() {
     let dir = tempfile::tempdir().unwrap();
@@ -211,11 +219,14 @@ fn rust_step_reimport_and_reopen_preserve_the_part_and_exact_geometry() {
     let part = prepared.model.outputs[0].body;
     session.commit(prepared.model.prepared).unwrap();
 
-    let native = read_step_file(&path).unwrap();
-    let refused = prepare_step_update(&session, session.revision(), actor(), source, &native)
-        .expect_err("changing encodings needs a separate import");
-    assert!(refused.to_string().contains("encoding"), "{refused}");
-    assert_eq!(session.revision(), 1);
+    #[cfg(feature = "occt")]
+    {
+        let native = read_step_file(&path).unwrap();
+        let refused = prepare_step_update(&session, session.revision(), actor(), source, &native)
+            .expect_err("changing encodings needs a separate import");
+        assert!(refused.to_string().contains("encoding"), "{refused}");
+        assert_eq!(session.revision(), 1);
+    }
 
     let changed = rust_box_step(15);
     std::fs::write(&path, &changed).unwrap();
@@ -255,7 +266,11 @@ fn rust_step_reimport_and_reopen_preserve_the_part_and_exact_geometry() {
     assert_eq!(saved.encoding, StepEncoding::RustStep);
     assert_eq!(saved.solids[0].brep, changed);
 
-    for backend in [GeometryBackend::Rust, GeometryBackend::OpenCascade] {
+    for backend in [
+        GeometryBackend::Rust,
+        #[cfg(feature = "occt")]
+        GeometryBackend::OpenCascade,
+    ] {
         let model = Compiler::default()
             .compile_with_backend(&opened.document, 0, backend, None)
             .unwrap();
@@ -267,7 +282,7 @@ fn rust_step_reimport_and_reopen_preserve_the_part_and_exact_geometry() {
 }
 
 #[test]
-fn rust_step_rejects_malformed_text_and_legacy_brep() {
+fn rust_step_rejects_malformed_text() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("solid.step");
     std::fs::write(&path, b"bad STEP data").unwrap();
@@ -275,7 +290,13 @@ fn rust_step_rejects_malformed_text_and_legacy_brep() {
     std::fs::write(&path, [0xff]).unwrap();
     let invalid_text = read_step_file_with_backend(&path, GeometryBackend::Rust).unwrap_err();
     assert!(invalid_text.to_string().contains("UTF-8"));
+}
 
+#[cfg(feature = "occt")]
+#[test]
+fn rust_step_rejects_legacy_brep() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("solid.step");
     boxes(&path, &[([10., 20., 30.], [0., 0., 0.])]);
     let native = read_step_file(&path).unwrap();
     let mut session = Session::new(Document::new("Native STEP").unwrap()).unwrap();
