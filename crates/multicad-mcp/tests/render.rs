@@ -10,6 +10,7 @@ use multicad_mcp::{
     Headless, Workspace,
     tools::{Call, dispatch},
 };
+use multicad_model::GeometryBackend;
 use serde_json::{Value, json};
 use std::sync::{Arc, atomic::AtomicBool};
 
@@ -28,11 +29,21 @@ fn mm(v: f64) -> Value {
 
 #[test]
 fn mcp_sets_appearance_and_scene_and_writes_the_blender_handoff() {
+    render_handoff(GeometryBackend::OpenCascade);
+}
+
+#[test]
+fn rust_mcp_sets_appearance_and_scene_and_writes_the_blender_handoff() {
+    render_handoff(GeometryBackend::Rust);
+}
+
+fn render_handoff(backend: GeometryBackend) {
     let folder = tempfile::tempdir().unwrap();
-    let host = Headless::new(
+    let host = Headless::with_geometry_backend(
         Workspace::new(Document::new("Render").unwrap()).unwrap(),
         Some(folder.path().to_path_buf()),
         false,
+        backend,
     );
     let run = |name: &str, arguments: Value| dispatch(&host, &call(), name, arguments);
     let sketch = run(

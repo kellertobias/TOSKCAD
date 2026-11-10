@@ -1,7 +1,7 @@
 //! Create Engraving: a sketch attached to a current planar face of a source
 //! feature, through the same face-attached `prepare_new` as the window.
 //! Only the sketch is defined; no depth, material removal or toolpath.
-use super::{Request, ToolResult, commit, editable, id, revision_guard};
+use super::{Request, ToolResult, commit, compile_sources, editable, id, revision_guard};
 use crate::{
     error::ToolError,
     host::{Host, with},
@@ -11,7 +11,6 @@ use multicad_core::{
     references::{TopologyKey, TopologyKind},
     sketch::{self, CreationPlane},
 };
-use multicad_model::Compiler;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::json;
@@ -56,13 +55,7 @@ pub(super) fn create_engraving_sketch(
             ToolError::invalid(format!("{source} is not a source feature")).involving(source),
         );
     }
-    let interrupt = || call.cancelled();
-    let model = call.finish(Compiler::default().compile_sources_interruptible(
-        &document,
-        revision,
-        &[source],
-        Some(&interrupt),
-    ))?;
+    let model = compile_sources(&document, revision, &[source], call)?;
     let topology = model
         .snapshot()
         .shapes

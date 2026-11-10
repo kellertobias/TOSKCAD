@@ -11,7 +11,7 @@ use multicad_mcp::{
     Headless, Workspace,
     tools::{Call, dispatch},
 };
-use multicad_model::Compiler;
+use multicad_model::{Compiler, GeometryBackend};
 use serde_json::{Value, json};
 use std::sync::{Arc, atomic::AtomicBool};
 
@@ -55,6 +55,15 @@ fn element(host: &Headless, source: &str, x: f64) -> Value {
 
 #[test]
 fn mcp_previews_blocks_and_applies_a_staged_repair_set() {
+    staged_repair_set(GeometryBackend::OpenCascade);
+}
+
+#[test]
+fn rust_mcp_previews_blocks_and_applies_a_staged_repair_set() {
+    staged_repair_set(GeometryBackend::Rust);
+}
+
+fn staged_repair_set(backend: GeometryBackend) {
     let Fixture {
         session,
         a,
@@ -66,7 +75,12 @@ fn mcp_previews_blocks_and_applies_a_staged_repair_set() {
     let base = session.revision();
     let original = session.document().clone();
     // A fresh headless owner starts at revision 0 over the broken project.
-    let host = Headless::new(Workspace::new(original.clone()).unwrap(), None, false);
+    let host = Headless::with_geometry_backend(
+        Workspace::new(original.clone()).unwrap(),
+        None,
+        false,
+        backend,
+    );
     let run = |name: &str, arguments: Value| dispatch(&host, &call(), name, arguments);
     let element_a = element(&host, &replacement_a.feature.to_string(), 40.);
     let element_b = element(&host, &replacement_b.feature.to_string(), 50.);
@@ -133,7 +147,9 @@ fn mcp_previews_blocks_and_applies_a_staged_repair_set() {
             source
         );
     }
-    let model = Compiler::default().compile(&document, 1).unwrap();
+    let model = Compiler::default()
+        .compile_with_backend(&document, 1, backend, None)
+        .unwrap();
     for (part, x) in [(a.part, 40.), (b.part, 50.)] {
         let shape = &model.snapshot().shapes[&part];
         assert!((shape.volume_mm3 - 70.).abs() < 1e-6);

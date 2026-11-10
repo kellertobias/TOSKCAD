@@ -247,7 +247,14 @@ pub(super) fn blender_handoff(host: &dyn Host, call: &Request, args: HandoffArgs
     let (document, revision, _) = snapshot(host)?;
     let interrupt = || call.cancelled();
     let package = Exporter::default()
-        .render_handoff(&document, revision, scene, &args.name, Some(&interrupt))
+        .render_handoff_with_backend(
+            &document,
+            revision,
+            scene,
+            &args.name,
+            call.backend,
+            Some(&interrupt),
+        )
         .map_err(|e| ToolError::new("export_failed", e.message))?;
     let files = [
         (format!("{}.glb", args.name), package.glb.clone()),

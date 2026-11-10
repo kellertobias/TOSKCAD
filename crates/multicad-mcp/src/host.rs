@@ -2,6 +2,7 @@
 //! headless host owns its Session; the desktop host runs the same jobs on the
 //! UI thread against the open project, so both produce identical documents.
 use crate::error::ToolError;
+use multicad_model::GeometryBackend;
 use serde::Serialize;
 use std::path::PathBuf;
 
@@ -26,6 +27,10 @@ pub struct Scope {
 }
 
 pub trait Host: Send + Sync + 'static {
+    /// Use the same solid backend for the document owner and its tool workers.
+    fn geometry_backend(&self) -> GeometryBackend {
+        GeometryBackend::OpenCascade
+    }
     /// Detached evidence owned by this application or headless host.
     fn pair_cycle_proofs(&self) -> Option<multicad_model::PairCycleProofStore> {
         None

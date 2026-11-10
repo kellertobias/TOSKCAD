@@ -22,7 +22,6 @@ use multicad_core::{
     },
     parameters::EvaluatedParameters,
 };
-use multicad_kernel::NativeRegionQueries;
 use multicad_model::export::{Exporter, sheet_dxf::SheetDxfLayers};
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -210,10 +209,10 @@ fn base(
                 evaluated,
             )?;
             let interrupt = || call.cancelled();
-            let extraction = call.finish(evaluated_sketch.regions_with_queries_and_interrupt(
-                &NativeRegionQueries::default(),
-                Some(&interrupt),
-            ))?;
+            let extraction = call.finish(
+                evaluated_sketch
+                    .regions_with_queries_and_interrupt(call.region_queries(), Some(&interrupt)),
+            )?;
             let region = extraction.regions.get(index).ok_or_else(|| {
                 ToolError::invalid(format!(
                     "Region {index} does not exist; the sketch has {} regions",
@@ -789,6 +788,7 @@ pub(super) fn export_sheet_dxf(host: &dyn Host, call: &Request, args: SheetDxfAr
             "file_name must be a bare name ending in .dxf",
         ));
     }
+    call.require_open_cascade("Developed sheet DXF export")?;
     let part = id(&args.part)?;
     let units = match args.units {
         Some(DxfUnitArg::Cm) => LengthUnit::Centimeter,

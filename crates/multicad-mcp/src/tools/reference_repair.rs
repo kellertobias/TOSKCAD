@@ -1,7 +1,7 @@
 //! Staged multi-reference repair over the shared repair-set API. Preview and
 //! Apply stage the same rows on the current source; Apply commits only when
 //! the complete native candidate passes, as one attributable transaction.
-use super::{Request, ToolResult, commit, editable, id, revision_guard};
+use super::{Request, ToolResult, commit, compile_sources, editable, id, revision_guard};
 use crate::{
     error::ToolError,
     host::{Host, with},
@@ -193,11 +193,12 @@ fn check(
         steps,
     };
     let interrupt = || call.cancelled();
-    let checked = call.finish(Compiler::default().prepare_repair_set(
+    let checked = call.finish(Compiler::default().prepare_repair_set_with_backend(
         &snapshot,
         call.actor.clone(),
         &set,
         Some(&resources),
+        call.backend,
         Some(&interrupt),
     ))?;
     Ok((checked, expected, resources))
@@ -233,13 +234,7 @@ pub(super) fn reference_candidates(
             ToolError::invalid(format!("{source} is not a source feature")).involving(source),
         );
     }
-    let interrupt = || call.cancelled();
-    let model = call.finish(Compiler::default().compile_sources_interruptible(
-        &document,
-        revision,
-        &[source],
-        Some(&interrupt),
-    ))?;
+    let model = compile_sources(&document, revision, &[source], call)?;
     let shape = model.snapshot().shapes.get(&source).ok_or_else(|| {
         ToolError::new(
             "model_failed",

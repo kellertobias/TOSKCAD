@@ -82,6 +82,25 @@ impl Exporter {
         stem: &str,
         interrupt: Option<&dyn Fn() -> bool>,
     ) -> Result<RenderPackage, ExportError> {
+        self.render_handoff_with_backend(
+            document,
+            revision,
+            scene_id,
+            stem,
+            GeometryBackend::OpenCascade,
+            interrupt,
+        )
+    }
+
+    pub fn render_handoff_with_backend(
+        &self,
+        document: &Document,
+        revision: u64,
+        scene_id: EntityId,
+        stem: &str,
+        backend: GeometryBackend,
+        interrupt: Option<&dyn Fn() -> bool>,
+    ) -> Result<RenderPackage, ExportError> {
         let invalid = |e: multicad_core::document::DocumentError| {
             failure(ErrorKind::Invalid, Some(scene_id), e.to_string())
         };
@@ -122,9 +141,12 @@ impl Exporter {
             });
         }
         checkpoint(interrupt)?;
-        let compiled = self
-            .compiler
-            .compile_interruptible(document, revision, interrupt)
+        let compiler = Compiler {
+            omit_display: self.compiler.omit_display || backend == GeometryBackend::Rust,
+            ..self.compiler
+        };
+        let compiled = compiler
+            .compile_with_backend(document, revision, backend, interrupt)
             .map_err(|e| failure(ErrorKind::Invalid, e.entity, e.message))?;
         if compiled.snapshot().stamp.source_hash != stamp.source_hash {
             return Err(failure(

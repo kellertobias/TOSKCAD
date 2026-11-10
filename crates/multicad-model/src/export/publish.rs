@@ -3,7 +3,7 @@ use multicad_core::{
     commands::Actor,
     exchange::{WrittenFile, filename_token},
     project_file::ContentHash,
-    references::{AnalyticGeometry, TopologyKind},
+    references::{AnalyticGeometry, TopologyKind, TopologySnapshot},
 };
 use multicad_kernel::{Solid, rust_kernel::step_read};
 use serde::{Deserialize, Serialize};
@@ -92,13 +92,14 @@ fn verify(
         return dxf::verify(&fs::read(path).map_err(io)?, expected).map_err(io);
     }
     let tolerance = exporter.compiler.policy.linear_tolerance_mm;
-    let (count, volume, bounds) = if built.backend == GeometryBackend::Rust {
-        let readback = verify_rust_step(built, artifact, path, tolerance)?;
-        (
-            readback.solid_count,
-            readback.volume_mm3,
-            readback.bounds_mm,
-        )
+    let actual = if built.backend == GeometryBackend::Rust {
+        let topology = rust_step_topology(built, artifact)?;
+        step_metrics(&read_rust_step(
+            path,
+            topology,
+            artifact.producer,
+            tolerance,
+        )?)
     } else {
         let read = Solid::read_step(path, exporter.compiler.policy).map_err(io)?;
         let bounds = read.bounds().map_err(io)?;
@@ -108,12 +109,34 @@ fn verify(
             [bounds.min, bounds.max],
         )
     };
-    let [a, b] = artifact.bounds_mm;
+    verify_step_dimensions(
+        artifact.producer,
+        (
+            artifact.solid_count,
+            artifact.volume_mm3,
+            artifact.bounds_mm,
+        ),
+        actual,
+        tolerance,
+    )
+}
+
+type StepMetrics = (u32, f64, [[f64; 3]; 2]);
+
+fn step_metrics(read: &step_read::Readback) -> StepMetrics {
+    (read.solid_count, read.volume_mm3, read.bounds_mm)
+}
+
+fn verify_step_dimensions(
+    producer: EntityId,
+    (expected_count, expected_volume, [a, b]): StepMetrics,
+    (count, volume, bounds): StepMetrics,
+    tolerance: f64,
+) -> Result<(), ExportError> {
     let [x, y, z] = std::array::from_fn::<_, 3, _>(|i| b[i] - a[i]);
-    let volume_tolerance =
-        (artifact.volume_mm3 * 1e-8).max(tolerance * 2. * (x * y + y * z + z * x));
-    if count != artifact.solid_count
-        || (volume - artifact.volume_mm3).abs() > volume_tolerance
+    let volume_tolerance = (expected_volume * 1e-8).max(tolerance * 2. * (x * y + y * z + z * x));
+    if count != expected_count
+        || (volume - expected_volume).abs() > volume_tolerance
         || bounds
             .into_iter()
             .flatten()
@@ -122,7 +145,7 @@ fn verify(
     {
         return Err(failure(
             ErrorKind::Invalid,
-            Some(artifact.producer),
+            Some(producer),
             "STEP readback differs from the current solid's count, volume or world bounds",
         ));
     }
@@ -131,39 +154,32 @@ fn verify(
 
 type Segment = [[f64; 3]; 2];
 
-fn verify_rust_step(
-    built: &Built,
-    artifact: &ExportArtifact,
+/// Check one Rust-authored STEP against the same analytic edges, bounds,
+/// volume and solid count required for an export set.
+pub fn verify_rust_step_shape(
     path: &Path,
+    shape: &crate::ShapeSnapshot,
     tolerance: f64,
-) -> Result<step_read::Readback, ExportError> {
-    let invalid = |message: String| failure(ErrorKind::Invalid, Some(artifact.producer), message);
-    let mut bytes = Vec::new();
-    fs::File::open(path)
-        .map_err(io)?
-        .take(step_read::MAX_PLANAR_STEP_BYTES as u64 + 1)
-        .read_to_end(&mut bytes)
-        .map_err(io)?;
-    if bytes.len() > step_read::MAX_PLANAR_STEP_BYTES {
-        return Err(failure(
-            ErrorKind::Budget,
-            Some(artifact.producer),
-            "STEP readback exceeds the file budget",
-        ));
-    }
-    let source = std::str::from_utf8(&bytes).map_err(|e| invalid(e.to_string()))?;
-    let readback = step_read::read_analytic_solid(source, tolerance).map_err(|e| {
-        let kind = match e {
-            step_read::ReadError::Limit => ErrorKind::Budget,
-            _ => ErrorKind::Invalid,
-        };
-        failure(
-            kind,
-            Some(artifact.producer),
-            format!("Rust STEP readback rejected the solid: {e:?}"),
-        )
-    })?;
-    let topology = built
+) -> Result<f64, ExportError> {
+    let readback = read_rust_step(path, &shape.topology, shape.producer, tolerance)?;
+    verify_step_dimensions(
+        shape.producer,
+        (
+            shape.solid_count,
+            shape.volume_mm3,
+            [shape.bounds.min, shape.bounds.max],
+        ),
+        step_metrics(&readback),
+        tolerance,
+    )?;
+    Ok(readback.volume_mm3)
+}
+
+fn rust_step_topology<'a>(
+    built: &'a Built,
+    artifact: &ExportArtifact,
+) -> Result<&'a TopologySnapshot, ExportError> {
+    built
         .model
         .as_ref()
         .and_then(|model| {
@@ -188,8 +204,46 @@ fn verify_rust_step(
             }
         })
         .ok_or_else(|| {
-            invalid("Rust STEP verification requires the exact source topology".into())
-        })?;
+            failure(
+                ErrorKind::Invalid,
+                Some(artifact.producer),
+                "Rust STEP verification requires the exact source topology",
+            )
+        })
+}
+
+fn read_rust_step(
+    path: &Path,
+    topology: &TopologySnapshot,
+    producer: EntityId,
+    tolerance: f64,
+) -> Result<step_read::Readback, ExportError> {
+    let invalid = |message: String| failure(ErrorKind::Invalid, Some(producer), message);
+    let mut bytes = Vec::new();
+    fs::File::open(path)
+        .map_err(io)?
+        .take(step_read::MAX_PLANAR_STEP_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(io)?;
+    if bytes.len() > step_read::MAX_PLANAR_STEP_BYTES {
+        return Err(failure(
+            ErrorKind::Budget,
+            Some(producer),
+            "STEP readback exceeds the file budget",
+        ));
+    }
+    let source = std::str::from_utf8(&bytes).map_err(|e| invalid(e.to_string()))?;
+    let readback = step_read::read_analytic_solid(source, tolerance).map_err(|e| {
+        let kind = match e {
+            step_read::ReadError::Limit => ErrorKind::Budget,
+            _ => ErrorKind::Invalid,
+        };
+        failure(
+            kind,
+            Some(producer),
+            format!("Rust STEP readback rejected the solid: {e:?}"),
+        )
+    })?;
     let mut faces = 0;
     let mut edges = Vec::new();
     let mut circles = Vec::new();

@@ -6,6 +6,7 @@ use multicad_core::{
     document::Document,
     project_file::{ProjectFile, ProjectResources},
 };
+use multicad_model::GeometryBackend;
 use std::{
     path::{Path, PathBuf},
     sync::Mutex,
@@ -101,11 +102,25 @@ impl Target for Workspace {
 
 pub struct Headless {
     pair_cycle_proofs: multicad_model::PairCycleProofStore,
+    geometry_backend: GeometryBackend,
     workspace: Mutex<Workspace>,
     scope: Scope,
 }
 impl Headless {
     pub fn new(workspace: Workspace, export_directory: Option<PathBuf>, read_only: bool) -> Self {
+        Self::with_geometry_backend(
+            workspace,
+            export_directory,
+            read_only,
+            GeometryBackend::OpenCascade,
+        )
+    }
+    pub fn with_geometry_backend(
+        workspace: Workspace,
+        export_directory: Option<PathBuf>,
+        read_only: bool,
+        geometry_backend: GeometryBackend,
+    ) -> Self {
         let scope = Scope {
             mode: "headless",
             transport: "stdio",
@@ -115,6 +130,7 @@ impl Headless {
         };
         Self {
             pair_cycle_proofs: Default::default(),
+            geometry_backend,
             workspace: Mutex::new(workspace),
             scope,
         }
@@ -130,6 +146,9 @@ impl Headless {
     }
 }
 impl Host for Headless {
+    fn geometry_backend(&self) -> GeometryBackend {
+        self.geometry_backend
+    }
     fn pair_cycle_proofs(&self) -> Option<multicad_model::PairCycleProofStore> {
         Some(self.pair_cycle_proofs.clone())
     }

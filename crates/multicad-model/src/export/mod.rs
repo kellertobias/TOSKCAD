@@ -10,6 +10,7 @@ pub use planar::DevelopedContourProvider;
 pub mod print;
 pub use print::PrintWorker;
 mod publish;
+pub use publish::verify_rust_step_shape;
 mod schedule;
 pub use schedule::ScheduleTarget;
 pub mod sheet_dxf;

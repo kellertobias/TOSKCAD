@@ -21,9 +21,10 @@ use multicad_core::{
     parameters::{self, BoundExpression, Unit},
     sketch::Datum,
     sketch_import::{self, Format, ImportOptions, SourceUnit, UnitChoice},
+    sketch_regions::RegionQueries,
 };
 use multicad_kernel::NativeRegionQueries;
-use multicad_model::Compiler;
+use multicad_model::{Compiler, GeometryBackend};
 use schemars::JsonSchema;
 use serde::{Deserialize, de::DeserializeOwned};
 use serde_json::{Value, json};
@@ -181,9 +182,35 @@ pub struct Call {
 #[derive(Clone)]
 struct Request {
     call: Call,
+    backend: GeometryBackend,
     tool: &'static str,
     arguments: Value,
     review: Arc<std::sync::Mutex<Option<u64>>>,
+}
+impl Request {
+    fn region_queries(&self) -> &'static dyn RegionQueries {
+        static NATIVE: std::sync::LazyLock<NativeRegionQueries> =
+            std::sync::LazyLock::new(NativeRegionQueries::default);
+        static RUST: std::sync::LazyLock<NativeRegionQueries> = std::sync::LazyLock::new(|| {
+            NativeRegionQueries::analytic(Default::default())
+                .expect("valid default geometry policy")
+        });
+        match self.backend {
+            GeometryBackend::OpenCascade => &*NATIVE,
+            GeometryBackend::Rust => &*RUST,
+        }
+    }
+
+    fn require_open_cascade(&self, workflow: &str) -> Result<(), ToolError> {
+        self.check()?;
+        if self.backend == GeometryBackend::Rust {
+            return Err(ToolError::new(
+                "unsupported",
+                format!("{workflow} is not supported by the Rust geometry backend"),
+            ));
+        }
+        Ok(())
+    }
 }
 impl std::ops::Deref for Request {
     type Target = Call;
@@ -239,6 +266,7 @@ macro_rules! tools {
             };
             let request = Request {
                 call: call.clone(),
+                backend: host.geometry_backend(),
                 tool,
                 arguments: arguments.clone(),
                 review: Arc::default(),
@@ -260,7 +288,13 @@ macro_rules! tools {
                 $($name => ($name, $read_only),)*
                 _ => return Err(ToolError::new("unknown_tool", format!("Unknown tool '{name}'"))),
             };
-            let request = Request { call: call.clone(), tool, arguments, review: Arc::default() };
+            let request = Request {
+                call: call.clone(),
+                backend: host.geometry_backend(),
+                tool,
+                arguments,
+                review: Arc::default(),
+            };
             finish(host, &request, read_only, Err(error))
         }
     };
@@ -268,7 +302,7 @@ macro_rules! tools {
 
 tools! {
     "document_info" => NoArgs, "Document information", true,
-        "Name, identity and current revision of the controlled document, undo/redo availability, entity counts and the access scope (project file, export folder, read-only, transport).",
+        "Name, identity and current revision of the controlled document, undo/redo availability, entity counts, geometry backend and access scope (project file, export folder, read-only, transport).",
         document_info;
     "list_entities" => ListEntities, "List entities", true,
         "Canonical entities with persistent IDs, names, kinds and references. Optionally filter by kind (parameter, plane, sketch, feature, part, assembly, instance, material, drawing, export_set, extension, group).",
@@ -1166,8 +1200,12 @@ fn diagnostics_json(d: &multicad_solver::Diagnostics) -> Value {
 
 // ---- Tools ----------------------------------------------------------------
 
-fn document_info(host: &dyn Host, _: &Request, _: NoArgs) -> ToolResult {
+fn document_info(host: &dyn Host, call: &Request, _: NoArgs) -> ToolResult {
     let scope = host.scope();
+    let geometry_backend = match call.backend {
+        GeometryBackend::OpenCascade => "opencascade",
+        GeometryBackend::Rust => "rust",
+    };
     with(host, move |target| {
         let session = target.session();
         let document = session.document();
@@ -1186,6 +1224,7 @@ fn document_info(host: &dyn Host, _: &Request, _: NoArgs) -> ToolResult {
             "can_redo": session.can_redo(),
             "entity_counts": counts,
             "units": { "length": "mm", "angle": "deg", "area": "mm2", "volume": "mm3" },
+            "geometry_backend": geometry_backend,
             "project_path": target.project_path(),
             "scope": scope,
         })
@@ -1554,10 +1593,9 @@ fn inspect_sketch(host: &dyn Host, call: &Request, args: SketchArgs) -> ToolResu
     let interrupt = || call.cancelled();
     let regions = match result.solved() {
         Some(_) => {
-            let extraction = call.finish(result.regions_with_queries_and_interrupt(
-                &NativeRegionQueries::default(),
-                Some(&interrupt),
-            ))?;
+            let extraction = call.finish(
+                result.regions_with_queries_and_interrupt(call.region_queries(), Some(&interrupt)),
+            )?;
             json!({
                 "regions": extraction.regions.iter().enumerate().map(|(index, r)| json!({
                     "index": index,
@@ -1629,26 +1667,55 @@ fn current_producer(
 fn compile(
     document: &multicad_core::document::Document,
     revision: u64,
-    call: &Call,
+    call: &Request,
 ) -> Result<multicad_model::Model, ToolError> {
     let interrupt = || call.cancelled();
-    call.finish(Compiler::default().compile_interruptible(document, revision, Some(&interrupt)))
+    call.finish(Compiler::default().compile_with_backend(
+        document,
+        revision,
+        call.backend,
+        Some(&interrupt),
+    ))
+}
+
+fn compile_sources(
+    document: &multicad_core::document::Document,
+    revision: u64,
+    roots: &[EntityId],
+    call: &Request,
+) -> Result<multicad_model::Model, ToolError> {
+    let interrupt = || call.cancelled();
+    call.finish(Compiler::default().compile_sources_with_backend(
+        document,
+        revision,
+        roots,
+        call.backend,
+        Some(&interrupt),
+    ))
 }
 
 fn sketch_support_report(
     document: &multicad_core::document::Document,
     revision: u64,
     sketch: EntityId,
-    call: &Call,
+    call: &Request,
 ) -> Result<Option<multicad_core::references::ReferenceReport>, ToolError> {
-    if multicad_core::sketch_regions::supporting_face(document, sketch).is_none() {
+    let has_external_inputs = matches!(
+        document.get(sketch).map(|entity| &entity.data),
+        Some(EntityData::Sketch { inputs, .. })
+            if inputs.iter().any(|link| link.role == multicad_core::sketch_external::ROLE)
+    );
+    if multicad_core::sketch_regions::supporting_face(document, sketch).is_none()
+        && !has_external_inputs
+    {
         return Ok(None);
     }
     let interrupt = || call.cancelled();
-    call.finish(Compiler::default().sketch_reference_report(
+    call.finish(Compiler::default().sketch_reference_report_with_backend(
         document,
         revision,
         sketch,
+        call.backend,
         Some(&interrupt),
     ))
     .map(Some)
@@ -1695,10 +1762,10 @@ fn extrude(host: &dyn Host, call: &Request, args: Extrude) -> ToolResult {
             &evaluated,
         )?;
         let interrupt = || call.cancelled();
-        let extraction = call.finish(evaluated_sketch.regions_with_queries_and_interrupt(
-            &NativeRegionQueries::default(),
-            Some(&interrupt),
-        ))?;
+        let extraction = call.finish(
+            evaluated_sketch
+                .regions_with_queries_and_interrupt(call.region_queries(), Some(&interrupt)),
+        )?;
         for index in &args.regions {
             let region = extraction.regions.get(*index).ok_or_else(|| {
                 ToolError::invalid(format!(
@@ -1822,13 +1889,7 @@ fn extrude_faces(
                     .involving(source),
             );
         }
-        let interrupt = || call.cancelled();
-        let model = call.finish(Compiler::default().compile_sources_interruptible(
-            document,
-            revision,
-            &[source],
-            Some(&interrupt),
-        ))?;
+        let model = compile_sources(document, revision, &[source], call)?;
         let topology = model
             .snapshot()
             .shapes
@@ -2071,14 +2132,29 @@ fn export_step(host: &dyn Host, call: &Request, args: ExportStep) -> ToolResult 
     })?;
     let path: PathBuf = directory.join(name);
     let partial = directory.join(format!(".{name}.partial.step"));
+    let verify = || -> Result<f64, ToolError> {
+        let policy = solid.geometry_policy();
+        if call.backend == GeometryBackend::Rust {
+            let shape = model.snapshot().shapes.get(&feature).ok_or_else(|| {
+                ToolError::new("export_failed", "The Rust solid has no evaluated topology")
+                    .involving(feature)
+            })?;
+            multicad_model::export::verify_rust_step_shape(
+                &partial,
+                shape,
+                policy.linear_tolerance_mm,
+            )
+            .map_err(|e| ToolError::new("export_failed", format!("STEP readback failed: {e}")))
+        } else {
+            multicad_kernel::Solid::read_step(&partial, policy)
+                .and_then(|s| s.volume_mm3())
+                .map_err(|e| ToolError::new("export_failed", format!("STEP readback failed: {e}")))
+        }
+    };
     let written = solid
         .write_step(&partial)
         .map_err(|e| ToolError::new("export_failed", e.to_string()))
-        .and_then(|()| {
-            multicad_kernel::Solid::read_step(&partial, multicad_kernel::GeometryPolicy::default())
-                .and_then(|s| s.volume_mm3())
-                .map_err(|e| ToolError::new("export_failed", format!("STEP readback failed: {e}")))
-        })
+        .and_then(|()| verify())
         .and_then(|volume| {
             call.check()?;
             std::fs::rename(&partial, &path)

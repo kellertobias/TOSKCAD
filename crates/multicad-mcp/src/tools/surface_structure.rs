@@ -1,5 +1,5 @@
 //! Native relief uses the same request, face references and transaction as Model.
-use super::{Request, ToolResult, commit, compile, id, revision_guard, snapshot};
+use super::{Request, ToolResult, commit, compile, compile_sources, id, revision_guard, snapshot};
 use crate::{
     error::ToolError,
     host::{Host, with},
@@ -9,7 +9,6 @@ use multicad_core::{
     model::{self, BodyInput, MAX_SURFACE_STRUCTURE_FACES, SurfaceStructureRequest},
     references::{AnalyticGeometry, TopologyKey, TopologyKind},
 };
-use multicad_model::Compiler;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
@@ -64,13 +63,7 @@ pub(super) fn capture_surface_structure_faces(
         Ok::<_, ToolError>(target.session().document().clone())
     })??;
     input.resolve_producer(&document)?;
-    let interrupt = || call.cancelled();
-    let native = call.finish(Compiler::default().compile_sources_interruptible(
-        &document,
-        revision,
-        &[input.producer],
-        Some(&interrupt),
-    ))?;
+    let native = compile_sources(&document, revision, &[input.producer], call)?;
     let topology = &native
         .snapshot()
         .shapes
