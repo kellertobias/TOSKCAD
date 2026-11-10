@@ -41,6 +41,7 @@ pub mod stadium;
 pub mod step;
 pub mod step_read;
 pub mod straight_rack;
+pub mod torus;
 pub mod trim_curve;
 pub mod trimmed_sweep;
 pub mod warped_union;
