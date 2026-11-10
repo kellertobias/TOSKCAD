@@ -1568,6 +1568,72 @@ mod tests {
     }
 
     #[test]
+    fn rust_worker_publishes_all_saved_front_panel_views_and_restores_the_disk_cache() {
+        use drawings::{VectorRole, ViewEvaluation};
+
+        let directory = tempfile::tempdir().unwrap();
+        let cache = cache::Cache::isolated(directory.path().to_owned());
+        let session = open_example("front-panel.tcd");
+        let document = session.document();
+        let (book, page) = drawings::books(document)
+            .find_map(|id| {
+                drawings::read(document, id)
+                    .unwrap()
+                    .pages
+                    .into_iter()
+                    .find(|page| page.number == "FP-101")
+                    .map(|page| (id, page))
+            })
+            .unwrap();
+        assert_eq!(page.views.len(), 3);
+
+        let mut cold = Backend::with_cache_and_backend(Some(cache.clone()), GeometryBackend::Rust);
+        let published = preview(&mut cold, &session, page.id);
+        published
+            .checked_page(document, session.revision(), book, page.id)
+            .unwrap();
+        for name in ["Front", "Top", "Left end"] {
+            let view = page.views.iter().find(|view| view.name == name).unwrap();
+            let ViewEvaluation::Ready { vectors, .. } = &published.views[&view.id] else {
+                panic!("{name}: {:?}", published.views[&view.id]);
+            };
+            assert!(
+                vectors
+                    .iter()
+                    .any(|vector| vector.role == VectorRole::Visible)
+            );
+            assert!(
+                vectors
+                    .iter()
+                    .any(|vector| vector.role == VectorRole::Hidden)
+            );
+        }
+        assert_eq!(
+            cold.runtime
+                .as_ref()
+                .unwrap()
+                .last_compile_stats()
+                .unwrap()
+                .evaluated
+                .len(),
+            29
+        );
+        drop(cold);
+
+        let mut reopened = Backend::with_cache_and_backend(Some(cache), GeometryBackend::Rust);
+        let restored = preview(&mut reopened, &open_example("front-panel.tcd"), page.id);
+        assert_eq!(restored.views, published.views);
+        assert!(
+            reopened
+                .runtime
+                .as_ref()
+                .unwrap()
+                .last_compile_stats()
+                .is_none()
+        );
+    }
+
+    #[test]
     fn rust_worker_draws_the_shipped_cabinet_panel_and_reuses_the_cached_page() {
         use drawings::{VectorRole, ViewEvaluation};
 
