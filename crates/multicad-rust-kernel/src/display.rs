@@ -12,11 +12,13 @@ use std::{
     ops::Range,
 };
 
+mod axial_profile_stack;
 mod chamfered_bores;
 mod normal_sweep;
 mod orthogonal_pockets;
 mod pierced_sweep;
 mod stadium;
+pub use axial_profile_stack::axial_profile_stack;
 pub use chamfered_bores::chamfered_polygon_prism;
 pub use normal_sweep::normal_sweep;
 pub use orthogonal_pockets::{bored_orthogonal, pocketed_orthogonal, slotted_orthogonal};

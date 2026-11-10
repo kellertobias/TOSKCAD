@@ -1533,12 +1533,16 @@ impl Compiler {
                         })?;
                         operands.push(tool);
                     }
-                    let coaxial = (backend == GeometryBackend::Rust
+                    let analytic = (backend == GeometryBackend::Rust
                         && operation == multicad_kernel::BooleanOperation::Union)
-                        .then(|| Solid::union_coaxial_cylinders(&operands, id, self.policy))
+                        .then(|| {
+                            Solid::union_coaxial_cylinders(&operands, id, self.policy).or_else(
+                                || Solid::union_round_rectangular_stack(&operands, id, self.policy),
+                            )
+                        })
                         .flatten();
-                    let solid = if let Some(coaxial) = coaxial {
-                        coaxial.map_err(|e| error(Some(id), e))?
+                    let solid = if let Some(analytic) = analytic {
+                        analytic.map_err(|e| error(Some(id), e))?
                     } else {
                         let mut result: Option<Solid> = None;
                         for &tool in &operands[1..] {

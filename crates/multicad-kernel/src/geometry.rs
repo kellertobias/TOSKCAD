@@ -11,6 +11,7 @@ use multicad_rust_kernel::{
 use std::path::Path;
 use std::rc::Rc;
 mod annulus_body;
+mod axial_stack_body;
 pub(crate) mod bore_treatment;
 pub(crate) mod circular_pocket_body;
 mod cosmetic_fastener_body;
@@ -23,6 +24,7 @@ mod rounded_slot_body;
 mod rust_compound;
 mod step_import;
 use annulus_body::AnnulusBody;
+use axial_stack_body::AxialStackBody;
 pub use circular_pocket_body::CircularPocketTool;
 use cosmetic_fastener_body::CosmeticFastenerBody;
 use helical_body::HelicalBody;
@@ -545,6 +547,7 @@ enum SolidBody {
     Revolved(Rc<RevolutionBody>, PlaneFrame),
     RoundedSlot(Rc<RoundedSlotBody>, PlaneFrame),
     NormalSweep(Rc<NormalSweepBody>, PlaneFrame),
+    AxialStack(Rc<AxialStackBody>, PlaneFrame),
     RustCompound(Rc<RustCompound>),
     Orthogonal(Rc<OrthogonalBody>, PlaneFrame),
 }
@@ -900,6 +903,7 @@ impl Solid {
             SolidBody::Revolved(body, frame) => SolidBody::Revolved(Rc::clone(body), *frame),
             SolidBody::RoundedSlot(body, frame) => SolidBody::RoundedSlot(Rc::clone(body), *frame),
             SolidBody::NormalSweep(body, frame) => SolidBody::NormalSweep(Rc::clone(body), *frame),
+            SolidBody::AxialStack(body, frame) => SolidBody::AxialStack(Rc::clone(body), *frame),
             SolidBody::RustCompound(compound) => SolidBody::RustCompound(Rc::clone(compound)),
             SolidBody::Orthogonal(body, frame) => SolidBody::Orthogonal(Rc::clone(body), *frame),
             SolidBody::Occt(shape) => {
@@ -1162,6 +1166,9 @@ impl Solid {
                 SolidBody::NormalSweep(body, frame) => {
                     SolidBody::NormalSweep(Rc::clone(body), transform.frame(*frame))
                 }
+                SolidBody::AxialStack(body, frame) => {
+                    SolidBody::AxialStack(Rc::clone(body), transform.frame(*frame))
+                }
                 SolidBody::RustCompound(compound) => {
                     SolidBody::RustCompound(compound.transformed(transform, self.policy)?)
                 }
@@ -1192,6 +1199,9 @@ impl Solid {
         Ok(result)
     }
     pub fn volume_mm3(&self) -> Result<f64, GeometryError> {
+        if let Some((body, _)) = self.axial_stack_body() {
+            return Ok(body.volume_mm3());
+        }
         if let Some((body, _)) = self.normal_sweep_body() {
             return Ok(body.volume_mm3());
         }
@@ -1249,6 +1259,9 @@ impl Solid {
         ffi::solid_count(self.occt()?).map_err(|e| native("solid count", e))
     }
     pub fn bounds(&self) -> Result<Bounds, GeometryError> {
+        if let Some((body, frame)) = self.axial_stack_body() {
+            return Ok(body.bounds(frame));
+        }
         if let Some((body, frame)) = self.normal_sweep_body() {
             return Ok(body.bounds(frame));
         }
@@ -1358,6 +1371,9 @@ impl Solid {
         crate::planar_contours::extract(self, face, frame, self.policy)
     }
     pub fn faces(&self) -> Result<Vec<Face>, GeometryError> {
+        if let Some((body, frame)) = self.axial_stack_body() {
+            return Ok(body.faces(frame));
+        }
         if let Some((body, frame)) = self.normal_sweep_body() {
             return Ok(body.faces(frame));
         }
@@ -1501,6 +1517,7 @@ impl Solid {
             SolidBody::Revolved(body, frame) => body.mesh(*frame, rust_options),
             SolidBody::RoundedSlot(body, frame) => body.mesh(*frame, rust_options),
             SolidBody::NormalSweep(body, frame) => body.mesh(*frame, rust_options),
+            SolidBody::AxialStack(body, frame) => body.mesh(*frame, rust_options),
             SolidBody::RustCompound(compound) => compound.mesh(options, usage),
             SolidBody::Orthogonal(body, frame) => body.mesh(*frame, rust_options, usage),
             SolidBody::Occt(_) => unreachable!("Rust-only tessellation"),
@@ -1808,6 +1825,7 @@ impl Solid {
             SolidBody::Revolved(body, _) => body.feature,
             SolidBody::RoundedSlot(body, _) => body.feature,
             SolidBody::NormalSweep(body, _) => body.feature,
+            SolidBody::AxialStack(body, _) => body.feature,
             SolidBody::RustCompound(compound) => compound.feature,
             SolidBody::Orthogonal(body, _) => body.feature,
             SolidBody::Occt(_) => return None,
@@ -1826,7 +1844,9 @@ impl Solid {
             | SolidBody::RoundedSlot(..) => true,
             SolidBody::Prism(prism, _) => prism.rounded_end().is_none(),
             SolidBody::RustCompound(compound) => compound.members().all(Self::supports_step_export),
-            SolidBody::Helical(..) | SolidBody::CosmeticFastener(..) => false,
+            SolidBody::Helical(..)
+            | SolidBody::CosmeticFastener(..)
+            | SolidBody::AxialStack(..) => false,
             SolidBody::Revolved(body, frame) => body.circular_sweep(*frame).is_some(),
             SolidBody::Orthogonal(body, _) => body.supports_step(),
         }
@@ -1940,9 +1960,9 @@ impl Solid {
                 }
                 Ok(())
             }
-            SolidBody::Helical(..) | SolidBody::CosmeticFastener(..) => {
-                Err(step::StepError::Unsupported)
-            }
+            SolidBody::Helical(..)
+            | SolidBody::CosmeticFastener(..)
+            | SolidBody::AxialStack(..) => Err(step::StepError::Unsupported),
             SolidBody::Orthogonal(body, frame) => body.append_step(writer, *frame),
             SolidBody::Occt(_) => unreachable!("native STEP dispatched above"),
         }
