@@ -721,3 +721,181 @@ fn rust_scale_refuses_curved_stock_without_changing_the_source() {
     );
     assert_eq!(session.document(), &original);
 }
+
+#[test]
+fn saved_axis_aligned_scale_keeps_exact_rectangular_and_round_cut_providers() {
+    use multicad_core::{
+        constraint_sketch::{Curve, CurveKind, source::Source},
+        references::{self, Attachment, GeometryIntent, Origin, Resolution},
+        sketch::Datum,
+        sketch_regions,
+    };
+    use std::f64::consts::PI;
+
+    let compiler = Compiler {
+        omit_display: true,
+        ..Default::default()
+    };
+    for (factors, round) in [([2., 2., 2.], true), ([2., 3., 2.], false)] {
+        let (mut session, part, _, instance, _) = fixture();
+        let request = ScaleBatchRequest::new(
+            session.document(),
+            vec![ScaleTarget::Part {
+                input: BodyInput {
+                    body: part.body,
+                    producer: part.feature,
+                },
+            }],
+            ScaleParameters {
+                factors: factors.map(ratio),
+                pivot: [1., 1., -1.].map(length),
+                ..Default::default()
+            },
+            false,
+        )
+        .unwrap();
+        let scale = prepare_scale_batch(&session, session.revision(), actor(), &request).unwrap();
+        let target = scale.outputs[0].clone();
+        session.commit(scale.prepared).unwrap();
+        let mut session = reopen(&session);
+        let (sketch, edits) = Source::create(Datum::Xy, "Through cut").unwrap();
+        session
+            .apply(Request {
+                expected_revision: session.revision(),
+                actor: actor(),
+                label: "Create cut sketch".into(),
+                edits,
+            })
+            .unwrap();
+        let mut source = Source::read(session.document(), sketch).unwrap().0;
+        let removed = if round {
+            let center = source.add_point([1., 1.]);
+            source.sketch.curves.push(Curve {
+                id: EntityId::new(),
+                construction: false,
+                kind: CurveKind::Circle {
+                    center,
+                    radius_mm: 0.5,
+                },
+            });
+            2. * PI
+        } else {
+            source.add_rectangle([0.5, 0.5], [1.5, 1.5]).unwrap();
+            8.
+        };
+        let region = sketch_regions::extract(&source).regions[0].intent();
+        session
+            .apply(Request {
+                expected_revision: session.revision(),
+                actor: actor(),
+                label: "Edit cut sketch".into(),
+                edits: source.replace(session.document(), sketch).unwrap(),
+            })
+            .unwrap();
+        let compile_rust = |session: &Session| {
+            compiler
+                .compile_with_backend(
+                    session.document(),
+                    session.revision(),
+                    GeometryBackend::Rust,
+                    None,
+                )
+                .unwrap()
+        };
+        let scaled = compile_rust(&session);
+        let topology = &scaled.snapshot().shapes[&target.feature].topology;
+        let cap = Origin {
+            source: part.feature,
+            role: "cap.end".into(),
+        };
+        let element = topology
+            .elements
+            .iter()
+            .find(|element| element.frames.iter().any(|frame| frame.origin == cap))
+            .unwrap();
+        let mut anchor = GeometryIntent::capture(topology, element.key).unwrap();
+        anchor.attachment = Some(Attachment {
+            anchor: cap,
+            offset_mm: [0.; 3],
+            angle_rad: 0.,
+        });
+        let Resolution::Resolved {
+            frame: Some(expected_frame),
+            ..
+        } = references::resolve(&anchor, topology, session.revision())
+        else {
+            panic!("Scale lost its cap frame")
+        };
+        let cut = ExtrudeBooleanRequest::new(
+            ExtrudeRequest::new(
+                sketch,
+                vec![region],
+                ExtrudeParameters {
+                    extent: Extent::OneSided {
+                        end: Termination::Distance {
+                            distance: length(10.),
+                        },
+                    },
+                    ..Default::default()
+                },
+            ),
+            Operation::Cut,
+            vec![BodyInput {
+                body: target.body,
+                producer: target.feature,
+            }],
+            false,
+        );
+        let cut_id = cut.booleans[0].feature;
+        let before_cut = session.document().clone();
+        let draft = prepare_extrude_boolean(&session, session.revision(), actor(), &cut).unwrap();
+        session.commit(draft.prepared).unwrap();
+        let opened = reopen(&session);
+        let rust = compile_rust(&opened);
+        let shape = &rust.snapshot().shapes[&cut_id];
+        let expected = 24. * factors.into_iter().product::<f64>() - removed;
+        let expected_bounds = Bounds {
+            min: [1. - factors[0], 1. - factors[1], 1.],
+            max: [1. + factors[0], 1. + 2. * factors[1], 9.],
+        };
+        bounds(shape.bounds, expected_bounds.min, expected_bounds.max);
+        near(shape.volume_mm3, expected);
+        assert_eq!(shape.solid_count, 1);
+        near(
+            rust.solid(instance).unwrap().volume_mm3().unwrap(),
+            expected,
+        );
+        let Resolution::Resolved {
+            frame: Some(actual_frame),
+            ..
+        } = references::resolve(&anchor, &shape.topology, 0)
+        else {
+            panic!("Cut lost the named Scale cap")
+        };
+        assert_eq!(actual_frame, expected_frame);
+        if round {
+            assert!(shape.topology.elements.iter().any(|element| matches!(
+                element.geometry,
+                Some(references::AnalyticGeometry::CircularArc { radius_mm: 0.5, .. })
+            )));
+        }
+        #[cfg(feature = "occt")]
+        {
+            let native = compiler
+                .compile_with_backend(opened.document(), 0, GeometryBackend::OpenCascade, None)
+                .unwrap();
+            let reference = &native.snapshot().shapes[&cut_id];
+            bounds(reference.bounds, shape.bounds.min, shape.bounds.max);
+            near(reference.volume_mm3, shape.volume_mm3);
+            assert_eq!(reference.solid_count, shape.solid_count);
+        }
+        session.undo(session.revision(), actor()).unwrap();
+        assert_eq!(session.document(), &before_cut);
+        assert_eq!(
+            compile_rust(&session).snapshot().shapes[&target.feature]
+                .topology
+                .elements,
+            topology.elements
+        );
+    }
+}

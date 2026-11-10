@@ -137,6 +137,7 @@ impl Solid {
             && self.rust_prism().is_none()
             && self.polygon_prism().is_none()
             && self.linear_body().is_none()
+            && self.scaled_orthogonal_cell().is_none()
         {
             return None;
         }

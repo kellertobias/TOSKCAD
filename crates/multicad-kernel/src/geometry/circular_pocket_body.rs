@@ -143,7 +143,10 @@ impl Solid {
         if self.orthogonal_body().is_some() {
             return self.drill_orthogonal_stock(tools, through, policy);
         }
-        if self.rust_prism().is_some() || self.linear_body().is_some() {
+        if self.rust_prism().is_some()
+            || self.linear_body().is_some()
+            || self.scaled_orthogonal_cell().is_some()
+        {
             return self
                 .orthogonal_stock()?
                 .drill_orthogonal_stock(tools, through, policy);

@@ -95,6 +95,54 @@ impl Ancestry {
 }
 
 impl Solid {
+    /// A scaled convex shell with exactly the six box supports has the
+    /// corresponding single occupied cell. Keep its published Scale names
+    /// and let the orthogonal providers consume the cell only when needed.
+    pub(in crate::geometry) fn scaled_orthogonal_cell(&self) -> Option<Box3> {
+        let (body, frame) = self.planar_boolean_body()?;
+        if body.scaled_ancestry.is_none() || body.geometry.faces().len() != 6 {
+            return None;
+        }
+        let corners: &[Point; 8] = body.geometry.vertices().try_into().ok()?;
+        let corners = corners.map(|point| position(frame, point));
+        let mut bounds = Box3 {
+            min: corners[0],
+            max: corners[0],
+        };
+        for corner in corners {
+            for (i, coordinate) in corner.into_iter().enumerate() {
+                bounds.min[i] = bounds.min[i].min(coordinate);
+                bounds.max[i] = bounds.max[i].max(coordinate);
+            }
+        }
+        if (0..3).any(|i| bounds.min[i] >= bounds.max[i])
+            || body.geometry.faces().iter().any(|face| {
+                vector(frame, face.normal)
+                    .into_iter()
+                    .filter(|&n| n != 0.)
+                    .count()
+                    != 1
+            })
+        {
+            return None;
+        }
+        let mut octants = 0u8;
+        for corner in corners {
+            let mut index = 0;
+            for (i, coordinate) in corner.into_iter().enumerate() {
+                if coordinate == bounds.max[i] {
+                    index |= 1 << i;
+                } else if coordinate != bounds.min[i] {
+                    return None;
+                }
+            }
+            octants |= 1 << index;
+        }
+        // A closed convex shell occupies the hull of its vertices. Each
+        // corner must survive placement distinctly and without snapping.
+        (octants == u8::MAX).then_some(bounds)
+    }
+
     pub(crate) fn rust_scale_planar(
         &self,
         transform: AffineTransform,

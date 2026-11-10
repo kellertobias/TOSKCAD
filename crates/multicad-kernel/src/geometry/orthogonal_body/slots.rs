@@ -131,6 +131,10 @@ impl Solid {
                 SolidBody::Linear(Rc::clone(body), PlaneFrame::default()),
                 *frame,
             ),
+            SolidBody::PlanarBoolean(body, frame) if self.scaled_orthogonal_cell().is_some() => (
+                SolidBody::PlanarBoolean(Rc::clone(body), *frame),
+                PlaneFrame::default(),
+            ),
             _ => {
                 return Err(unsupported_slot(
                     "Blind edge cuts require rectilinear stock",
