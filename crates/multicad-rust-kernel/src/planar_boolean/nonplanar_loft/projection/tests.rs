@@ -13,6 +13,7 @@ fn options(axes: [Point; 3]) -> LoftProjection {
     LoftProjection {
         axes,
         stations: [0., 1.],
+        depth: None,
         tolerance: TOL,
         hidden_lines: true,
         detail: None,
@@ -29,8 +30,12 @@ fn point(curve: LoftSectionCurve, t: f64) -> Point {
             poles: [a, m, b],
             weights,
         } => {
-            assert_eq!(weights, [1.; 3]);
-            interpolate(interpolate(a, m, t), interpolate(m, b, t), t)
+            let [p, q, r] = [(1. - t).powi(2), 2. * t * (1. - t), t * t];
+            let [p, q, r] = [p * weights[0], q * weights[1], r * weights[2]];
+            scale(
+                add(add(scale(a, p), scale(m, q)), scale(b, r)),
+                (p + q + r).recip(),
+            )
         }
     }
 }
@@ -106,7 +111,7 @@ fn axial_subloft_keeps_exact_new_rims_and_honors_limit_and_detail() {
                 && (point(edge.curve, 1.)[2] - 3.6).abs() < TOL
         })
         .collect();
-    assert_eq!(cap.len(), 4);
+    assert_eq!(cap.len(), 4, "{cap:?}");
     let center = paper(point(cap[0].curve, 0.5));
     let detail = loft
         .drawing_edges(LoftProjection {
@@ -152,4 +157,99 @@ fn a_sub_tolerance_detail_does_not_emit_degenerate_edges() {
         })
         .unwrap();
     assert!(drawing.is_empty());
+}
+
+#[test]
+fn oblique_retained_slab_uses_rational_rims_and_only_remaining_material_blocks() {
+    let loft = fixture();
+    let axes = [[1., 0., 0.], [0., 0.8, 0.6], [0., -0.6, 0.8]];
+    let [far, near] = [1.2, 3.];
+    let projection = LoftProjection {
+        depth: Some([far, near]),
+        ..options(axes)
+    };
+    let drawing = loft.drawing_edges(projection).unwrap();
+    assert!(drawing.iter().any(|edge| edge.hidden));
+    let front: Vec<_> = drawing
+        .iter()
+        .filter(|edge| {
+            [0., 0.5, 1.]
+                .into_iter()
+                .all(|t| (point(edge.curve, t)[2] - near).abs() < TOL)
+        })
+        .collect();
+    assert_eq!(front.len(), 4);
+    assert!(front.iter().all(|edge| !edge.hidden
+        && matches!(edge.curve,
+        LoftSectionCurve::Quadratic { weights, .. } if weights[0] != weights[2])));
+    let [bottom, top] = loft.rings();
+    for edge in drawing {
+        let p = point(edge.curve, 0.5);
+        assert!((far - TOL..=near + TOL).contains(&p[2]));
+        let probe = (1..2000).any(|i| {
+            let depth = p[2] + i as f64 * 0.001;
+            if depth > near {
+                return false;
+            }
+            let local = std::array::from_fn::<_, 3, _>(|j| {
+                axes[0][j] * p[0] + axes[1][j] * p[1] + axes[2][j] * depth
+            });
+            let t = local[2] / 6.;
+            if !(0. ..=1.).contains(&t) {
+                return false;
+            }
+            (0..bottom.len()).all(|i| {
+                let j = (i + 1) % bottom.len();
+                let a = paper(interpolate(bottom[i], top[i], t));
+                let b = paper(interpolate(bottom[j], top[j], t));
+                determinant(minus(b, a), minus(paper(local), a)) > 1e-7
+            })
+        });
+        assert_eq!(edge.hidden, probe, "{edge:?}");
+    }
+    assert!(
+        loft.drawing_edges(LoftProjection {
+            depth: Some([-5., -4.]),
+            ..projection
+        })
+        .unwrap()
+        .is_empty()
+    );
+    assert_eq!(
+        loft.drawing_edges(LoftProjection {
+            depth: Some([3., 1.]),
+            ..projection
+        }),
+        Err(Error::Invalid)
+    );
+}
+
+#[test]
+fn depth_with_edge_on_caps_publishes_straight_and_curved_rim_edges() {
+    let loft = fixture();
+    let axes = [[1., 0., 0.], [0., 0., 1.], [0., -1., 0.]];
+    let projection = LoftProjection {
+        depth: Some([-0.2, 0.5]),
+        ..options(axes)
+    };
+    let drawing = loft.drawing_edges(projection).unwrap();
+    let front: Vec<_> = drawing
+        .iter()
+        .filter(|edge| {
+            [0., 0.5, 1.]
+                .into_iter()
+                .all(|t| (point(edge.curve, t)[2] - 0.5).abs() < TOL)
+        })
+        .collect();
+    assert!(
+        front
+            .iter()
+            .any(|e| matches!(e.curve, LoftSectionCurve::Line(_)))
+    );
+    assert!(
+        front
+            .iter()
+            .any(|e| matches!(e.curve, LoftSectionCurve::Quadratic { .. }))
+    );
+    assert!(front.iter().all(|e| !e.hidden));
 }

@@ -214,6 +214,17 @@ impl NonplanarLoftBody {
         self.geometry.drawing_edges(options)
     }
 
+    pub(crate) fn drawing_depth_span(&self, axis: Point) -> [f64; 2] {
+        self.geometry
+            .rings()
+            .iter()
+            .flatten()
+            .map(|&point| dot(axis, point))
+            .fold([f64::INFINITY, f64::NEG_INFINITY], |[min, max], z| {
+                [min.min(z), max.max(z)]
+            })
+    }
+
     pub(crate) fn drawing_height(&self) -> f64 {
         self.geometry.rings()[1][0][2]
     }

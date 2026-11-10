@@ -16,37 +16,40 @@ pub(in crate::drawing) fn project_view(
     );
     let tolerance = input.solid.geometry_policy().linear_tolerance_mm;
     let mut stations = [0., 1.];
+    let mut depth_clip = None;
     let mut section = None;
     if let Some(depth) = options.section_offset_mm {
         if options.section_u_mm.is_some()
             || options.section_v_mm.is_some()
             || options.detail.is_some()
-            || frame.axes[2][0].hypot(frame.axes[2][1]) > 64. * f64::EPSILON
         {
             return Err(err(
                 GeometryErrorKind::Unsupported,
-                "Rust retained twisted loft drawings currently require an axial section without lateral clipping",
+                "Rust retained twisted loft drawings do not support a lateral or detail window",
             ));
         }
-        let height = body.drawing_height() * frame.axes[2][2];
-        let near = (depth - frame.offset[2]) / height;
+        let n = frame.axes[2];
+        let near = depth - frame.offset[2];
+        let [min, max] = body.drawing_depth_span(n);
         let far = options
             .section_depth_mm
-            .map_or(if height > 0. { 0. } else { 1. }, |distance| {
-                (depth - distance - frame.offset[2]) / height
-            });
-        stations = if height > 0. {
-            [far, near]
-        } else {
-            [near, far]
-        };
-        stations = [stations[0].max(0.), stations[1].min(1.)];
-        let t = tolerance / height.abs();
-        if stations[1] - stations[0] <= t {
+            .map_or(min, |distance| near - distance);
+        if near.min(max) - far.max(min) <= tolerance {
             return Ok(Vec::new());
         }
-        if (t..1. - t).contains(&near) {
+        if near < max - tolerance {
             section = Some(depth);
+        }
+        if n[0].hypot(n[1]) <= 64. * f64::EPSILON {
+            let height = body.drawing_height() * n[2];
+            stations = if height > 0. {
+                [far / height, near / height]
+            } else {
+                [near / height, far / height]
+            };
+            stations = [stations[0].max(0.), stations[1].min(1.)];
+        } else if near < max - tolerance || far > min + tolerance {
+            depth_clip = Some([far.max(min), near.min(max)]);
         }
     }
     let detail = options
@@ -56,6 +59,7 @@ pub(in crate::drawing) fn project_view(
         .drawing_edges(LoftProjection {
             axes: frame.axes,
             stations,
+            depth: depth_clip,
             tolerance,
             hidden_lines: options.hidden_lines,
             detail,

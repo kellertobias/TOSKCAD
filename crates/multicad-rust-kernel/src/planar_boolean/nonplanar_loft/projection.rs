@@ -2,7 +2,9 @@
 use super::*;
 use crate::curved_projection::roots;
 
+mod curve;
 mod visibility;
+use curve::Curve;
 
 #[derive(Clone, Copy, Debug)]
 pub struct LoftProjection {
@@ -10,6 +12,8 @@ pub struct LoftProjection {
     pub axes: [Point; 3],
     /// Restrict the loft to this fraction of its station interval.
     pub stations: [f64; 2],
+    /// Optional far and near planes in paper-depth coordinates.
+    pub depth: Option<[f64; 2]>,
     pub tolerance: f64,
     pub hidden_lines: bool,
     /// Optional circular detail region in paper coordinates.
@@ -42,130 +46,6 @@ fn length([x, y]: Paper) -> f64 {
     x.hypot(y)
 }
 
-#[derive(Clone, Copy)]
-struct Curve {
-    // Coefficients in ascending order, relative to the start.
-    power: [Point; 3],
-}
-
-impl Curve {
-    fn line(a: Point, b: Point) -> Self {
-        Self {
-            power: [a, sub(b, a), [0.; 3]],
-        }
-    }
-
-    fn at(self, t: f64) -> Point {
-        let [a, b, c] = self.power;
-        std::array::from_fn(|i| c[i].mul_add(t, b[i]).mul_add(t, a[i]))
-    }
-
-    fn slice(self, [a, b]: [f64; 2]) -> Self {
-        let span = b - a;
-        Self {
-            power: [
-                self.at(a),
-                scale(add(self.power[1], scale(self.power[2], 2. * a)), span),
-                scale(self.power[2], span * span),
-            ],
-        }
-    }
-
-    fn controls(self) -> [Point; 3] {
-        [
-            self.power[0],
-            add(self.power[0], scale(self.power[1], 0.5)),
-            self.at(1.),
-        ]
-    }
-
-    fn publish(self, hidden: bool, epsilon: f64) -> Option<LoftDrawingEdge> {
-        let [a, m, b] = self.controls();
-        let chord = minus(paper(b), paper(a));
-        let span = length(chord);
-        if span <= epsilon {
-            return None;
-        }
-        let curve = if determinant(chord, minus(paper(m), paper(a))).abs() <= epsilon * span {
-            LoftSectionCurve::Line([a, b])
-        } else {
-            LoftSectionCurve::Quadratic {
-                poles: [a, m, b],
-                weights: [1.; 3],
-            }
-        };
-        Some(LoftDrawingEdge { curve, hidden })
-    }
-
-    fn bounds(self) -> [Paper; 2] {
-        let points = self.controls().map(paper);
-        [false, true].map(|upper| {
-            std::array::from_fn(|axis| {
-                points
-                    .iter()
-                    .map(|p| p[axis])
-                    .reduce(if upper { f64::max } else { f64::min })
-                    .unwrap()
-            })
-        })
-    }
-
-    fn detail_crossings(self, center: Paper, radius: f64, cuts: &mut Vec<f64>) {
-        let [p, q, r] = self.power.map(paper);
-        let p = minus(p, center);
-        let dot2 = |a: Paper, b: Paper| a[0].mul_add(b[0], a[1] * b[1]);
-        cuts.extend(roots(
-            &[
-                dot2(p, p) - radius * radius,
-                2. * dot2(p, q),
-                dot2(q, q) + 2. * dot2(p, r),
-                2. * dot2(q, r),
-                dot2(r, r),
-            ],
-            [0., 1.],
-        ));
-    }
-
-    fn intersections(self, other: Self, epsilon: f64, cuts: &mut Vec<f64>) {
-        let [a, b, c] = other.power.map(paper);
-        let [p, q, r] = self.power.map(paper);
-        let delta = minus(p, a);
-        let det = determinant(b, c);
-        if det.abs() <= epsilon * length(b).max(length(c)) {
-            let chord = minus(paper(other.at(1.)), a);
-            // In a coincident projection, finite edge endpoints still split
-            // the interval even though the implicit equation vanishes.
-            let polynomial = [delta, q, r].map(|v| determinant(chord, v));
-            cuts.extend(roots(&polynomial, [0., 1.]));
-        } else {
-            // Cross products recover the parameter and its square on the
-            // second curve. Substitute the first curve into that equation.
-            let [x, y, z] = [delta, q, r].map(|v| determinant(v, c));
-            let [j, k, l] = [delta, q, r].map(|v| determinant(b, v));
-            cuts.extend(roots(
-                &[
-                    j * det - x * x,
-                    k * det - 2. * x * y,
-                    l * det - 2. * x * z - y * y,
-                    -2. * y * z,
-                    -z * z,
-                ],
-                [0., 1.],
-            ));
-        }
-        // Split at projected endpoints as well. This covers overlaps,
-        // tangencies at shared vertices and endpoints of trimmed silhouettes.
-        let axis = usize::from(q[1].abs().max(r[1].abs()) > q[0].abs().max(r[0].abs()));
-        for point in [a, paper(other.at(1.))] {
-            for t in roots(&[p[axis] - point[axis], q[axis], r[axis]], [0., 1.]) {
-                if length(minus(paper(self.at(t)), point)) <= epsilon {
-                    cuts.push(t);
-                }
-            }
-        }
-    }
-}
-
 fn overlap(a: [Paper; 2], b: [Paper; 2], tolerance: f64) -> bool {
     (0..2).all(|i| a[0][i] <= b[1][i] + tolerance && b[0][i] <= a[1][i] + tolerance)
 }
@@ -176,6 +56,9 @@ impl NonplanarLoft {
         let [start, end] = options.stations;
         if !(0. ..end).contains(&start)
             || !(0. ..=1.).contains(&end)
+            || options.depth.is_some_and(|[far, near]| {
+                options.stations != [0., 1.] || !far.is_finite() || !near.is_finite() || far >= near
+            })
             || options.detail.is_some_and(|(center, radius)| {
                 center.into_iter().any(|p| !p.is_finite()) || !radius.is_finite() || radius <= 0.
             })
@@ -210,7 +93,52 @@ impl NonplanarLoft {
                 .map(|x| x.abs())
                 .fold(1., f64::max))
         .min(options.tolerance);
-        visibility::project(rings, options, epsilon)
+        let mut cut_edges = Vec::new();
+        let depth = if let Some([far, near]) = options.depth {
+            let [min, max] = rings
+                .iter()
+                .flatten()
+                .map(|p| p[2])
+                .fold([f64::INFINITY, f64::NEG_INFINITY], |[min, max], z| {
+                    [min.min(z), max.max(z)]
+                });
+            if near.min(max) - far.max(min) <= epsilon {
+                return Ok(Vec::new());
+            }
+            let normal = options.axes[2];
+            let magnitude = norm(normal);
+            for z in [far, near]
+                .into_iter()
+                .filter(|&z| z > min + epsilon && z < max - epsilon)
+            {
+                let curves = self.section_in_frame(
+                    scale(normal, z / (magnitude * magnitude)),
+                    scale(normal, magnitude.recip()),
+                    options.tolerance,
+                );
+                for curve in curves {
+                    let to_plane = |p| [dot(options.axes[0], p), dot(options.axes[1], p), z];
+                    cut_edges.push(match curve {
+                        LoftSectionCurve::Line(ends) => {
+                            let [a, b] = ends.map(to_plane);
+                            Curve::line(a, b)
+                        }
+                        LoftSectionCurve::Quadratic { poles, weights } => {
+                            Curve::new(poles.map(to_plane), weights)
+                        }
+                    });
+                }
+            }
+            Some(visibility::Depth::new(
+                self,
+                options.axes,
+                [far, near],
+                near < max - epsilon,
+            ))
+        } else {
+            None
+        };
+        visibility::project(rings, options, epsilon, depth, cut_edges)
     }
 }
 

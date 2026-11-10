@@ -1973,6 +1973,29 @@ fn verify_twisted_loft_sections(
         4
     );
     assert!(retained.iter().any(|v| v.role == VectorRole::Hidden));
+    let oblique_depth = DrawingProjection {
+        section_offset_mm: Some(0.6),
+        section_depth_mm: Some(1.8),
+        ..view
+    };
+    let oblique_retained = project(solid, oblique_depth, None).unwrap();
+    assert_eq!(
+        oblique_retained.iter().filter(|v| v.role == VectorRole::Section &&
+            matches!(&v.curve, VectorCurve::BSpline { degree: 2, weights, .. } if weights[0] != weights[2]))
+            .count(),
+        4,
+    );
+    assert!(
+        oblique_retained
+            .iter()
+            .any(|v| v.role == VectorRole::Hidden)
+    );
+    let oblique_through = DrawingProjection {
+        section_depth_mm: None,
+        ..oblique_depth
+    };
+    let through = project(solid, oblique_through, None).unwrap();
+    assert!(through.iter().any(|v| v.role == VectorRole::Hidden));
     let reverse = project(
         solid,
         DrawingProjection {
@@ -2062,6 +2085,12 @@ fn verify_twisted_loft_sections(
     };
     assert!(
         project(solid, retained_options, Some(hatch))
+            .unwrap()
+            .iter()
+            .any(|vector| vector.role == VectorRole::Hatch)
+    );
+    assert!(
+        project(solid, oblique_depth, Some(hatch))
             .unwrap()
             .iter()
             .any(|vector| vector.role == VectorRole::Hatch)
@@ -2228,6 +2257,8 @@ fn verify_twisted_loft_sections(
             ("oblique projection", &ordinary, view),
             ("edge-on cap projection", &side, side_options),
             ("axial depth section", &retained, retained_options),
+            ("oblique depth section", &oblique_retained, oblique_depth),
+            ("oblique through section", &through, oblique_through),
         ] {
             let reference = project(native, options, None).unwrap();
             for (label, a, b) in [
@@ -2264,6 +2295,11 @@ fn verify_twisted_loft_sections(
             "Twisted loft hidden-line view medians over 9 warm projections: Rust {:?}, OpenCascade {:?}",
             measure(solid, view),
             measure(native, view),
+        );
+        eprintln!(
+            "Twisted loft oblique depth medians over 9 warm projections: Rust {:?}, OpenCascade {:?}",
+            measure(solid, oblique_depth),
+            measure(native, oblique_depth),
         );
     }
 }

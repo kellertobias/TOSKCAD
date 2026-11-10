@@ -62,13 +62,10 @@ impl Wall {
             return None;
         }
         let [p, m, q] = [*a, mid, *b].map(|uv| self.at(uv));
-        let twist = scale(sub(sub(q, m), sub(m, p)), 2.);
-        Some(Curve {
-            power: [p, sub(sub(q, p), twist), twist],
-        })
+        Some(Curve::through_midpoint(p, m, q))
     }
 
-    fn blocks(&self, point: Point, tolerance: f64) -> bool {
+    fn blocks(&self, point: Point, near: f64, tolerance: f64) -> bool {
         let xy = paper(point);
         if !overlap(self.bounds, [xy; 2], tolerance) {
             return false;
@@ -107,7 +104,9 @@ impl Wall {
                 }
                 u.clamp(0., 1.)
             };
-            if edge[2].mul_add(u, origin[2]) > point[2] + tolerance
+            let depth = edge[2].mul_add(u, origin[2]);
+            if depth > point[2] + tolerance
+                && depth <= near + tolerance
                 && length(minus(distance, along.map(|value| value * u))) <= tolerance
             {
                 return true;
@@ -154,9 +153,13 @@ impl<'a> Cap<'a> {
         Self { ring, normal }
     }
 
-    fn blocks(&self, point: Point, tolerance: f64) -> bool {
+    fn blocks(&self, point: Point, near: f64, tolerance: f64) -> bool {
         let n = self.normal;
-        if n[2].abs() <= 1e-12 || -dot(n, sub(point, self.ring[0])) / n[2] <= tolerance {
+        if n[2].abs() <= 1e-12 {
+            return false;
+        }
+        let height = -dot(n, sub(point, self.ring[0])) / n[2];
+        if height <= tolerance || height + point[2] > near + tolerance {
             return false;
         }
         self.ring
@@ -170,14 +173,66 @@ impl<'a> Cap<'a> {
     }
 }
 
+pub(super) struct Depth<'a> {
+    loft: &'a NonplanarLoft,
+    inverse: [Point; 3],
+    planes: [f64; 2],
+    has_front_cap: bool,
+}
+
+impl<'a> Depth<'a> {
+    pub(super) fn new(
+        loft: &'a NonplanarLoft,
+        [u, v, n]: [Point; 3],
+        planes: [f64; 2],
+        has_front_cap: bool,
+    ) -> Self {
+        let w = cross(u, v);
+        let determinant = dot(w, n);
+        let inverse =
+            [cross(v, n), cross(n, u), w].map(|column| scale(column, determinant.recip()));
+        Self {
+            loft,
+            inverse,
+            planes,
+            has_front_cap,
+        }
+    }
+
+    fn blocks(&self, point: Point, tolerance: f64) -> bool {
+        let near = self.planes[1];
+        if !self.has_front_cap || near <= point[2] + tolerance {
+            return false;
+        }
+        let [u, v, _] = point;
+        let [a, b, c] = self.inverse;
+        let p = add(add(scale(a, u), scale(b, v)), scale(c, near));
+        let [lower, upper] = self.loft.rings();
+        let t = p[2] / upper[0][2];
+        if !(0. ..=1.).contains(&t) {
+            return false;
+        }
+        let side = if self.loft.clockwise() { -1. } else { 1. };
+        (0..lower.len()).all(|i| {
+            let j = (i + 1) % lower.len();
+            let a = paper(interpolate(lower[i], upper[i], t));
+            let b = paper(interpolate(lower[j], upper[j], t));
+            let edge = minus(b, a);
+            side * determinant(edge, minus(paper(p), a)) >= -tolerance * length(edge)
+        })
+    }
+}
+
 pub(super) fn project(
     rings: [Vec<Point>; 2],
     options: LoftProjection,
     epsilon: f64,
+    depth: Option<Depth<'_>>,
+    mut curves: Vec<Curve>,
 ) -> Result<Vec<LoftDrawingEdge>, Error> {
     let [first, last] = &rings;
     let n = first.len();
-    let mut curves = Vec::with_capacity(4 * n);
+    curves.reserve(4 * n);
     let mut walls = Vec::with_capacity(n);
     for i in 0..n {
         let j = (i + 1) % n;
@@ -196,11 +251,17 @@ pub(super) fn project(
     curves.retain(|curve| length(minus(paper(curve.at(0.)), paper(curve.at(1.)))) > epsilon);
     let bounds: Vec<_> = curves.iter().map(|curve| curve.bounds()).collect();
     let caps = [Cap::new(first), Cap::new(last)];
+    let near = depth.as_ref().map_or(f64::INFINITY, |clip| clip.planes[1]);
     let blocked = |point| {
-        caps.iter().any(|cap| cap.blocks(point, options.tolerance))
+        depth
+            .as_ref()
+            .is_some_and(|clip| clip.blocks(point, options.tolerance))
+            || caps
+                .iter()
+                .any(|cap| cap.blocks(point, near, options.tolerance))
             || walls
                 .iter()
-                .any(|wall| wall.blocks(point, options.tolerance))
+                .any(|wall| wall.blocks(point, near, options.tolerance))
     };
     let mut output = Vec::new();
     let mut cuts = Vec::new();
@@ -215,6 +276,9 @@ pub(super) fn project(
         if let Some((center, radius)) = options.detail {
             curve.detail_crossings(center, radius, &mut cuts);
         }
+        if let Some(clip) = &depth {
+            curve.depth_crossings(clip.planes, &mut cuts);
+        }
         cuts.sort_unstable_by(f64::total_cmp);
         cuts.dedup_by(|a, b| (*a - *b).abs() <= 1e-12);
         let mut runs: Vec<([f64; 2], bool)> = Vec::new();
@@ -225,6 +289,11 @@ pub(super) fn project(
                 .detail
                 .is_some_and(|(center, radius)| length(minus(paper(point), center)) > radius)
             {
+                continue;
+            }
+            if depth.as_ref().is_some_and(|clip| {
+                point[2] < clip.planes[0] - epsilon || point[2] > clip.planes[1] + epsilon
+            }) {
                 continue;
             }
             let hidden = blocked(point);
@@ -238,7 +307,10 @@ pub(super) fn project(
             }
         }
         for (span, hidden) in runs {
-            if let Some(edge) = curve.slice(span).publish(hidden, epsilon) {
+            if let Some(edge) = curve
+                .slice(span)
+                .publish(hidden, epsilon, options.tolerance)
+            {
                 if output.len() >= options.edge_limit {
                     return Err(Error::Limit);
                 }
@@ -257,12 +329,12 @@ mod tests {
     fn ray_through_a_collapsed_ruling_uses_its_front_end_and_checks_the_hit() {
         let wall = Wall::new([[0., 0., 0.], [1., 0., 1.], [0., 1., 0.], [-1., 1., 1.]]);
         let tolerance = 1e-7;
-        assert!(wall.blocks([0., 0.5, 0.2], tolerance));
-        assert!(!wall.blocks([0.25, 0.5, 0.2], tolerance));
+        assert!(wall.blocks([0., 0.5, 0.2], f64::INFINITY, tolerance));
+        assert!(!wall.blocks([0.25, 0.5, 0.2], f64::INFINITY, tolerance));
         let fold = wall.silhouette(tolerance).unwrap();
         assert_eq!(paper(fold.at(0.)), [0., 0.5]);
         assert_eq!(paper(fold.at(1.)), [0., 0.5]);
-        assert!(fold.publish(false, tolerance).is_none());
+        assert!(fold.publish(false, tolerance, tolerance).is_none());
     }
 
     #[test]
@@ -271,8 +343,18 @@ mod tests {
         assert!(boundary.silhouette(1e-7).is_none());
         let planar = Wall::new([[0., 0., 0.], [1., 0., 0.], [0., 0., 1.], [1., 0., 1.]]);
         assert!(planar.silhouette(1e-7).is_none());
-        assert!(!planar.blocks([0.5, 0., 0.], 1e-7));
+        assert!(!planar.blocks([0.5, 0., 0.], f64::INFINITY, 1e-7));
         assert_eq!(ray_roots([-0.5, 1., 0.]), [Some(0.5), None]);
         assert_eq!(ray_roots([0.25, -1., 1.]), [Some(0.5), None]);
+    }
+
+    #[test]
+    fn near_cap_ray_rejects_points_above_the_authored_stations() {
+        let square = [[-1., -1.], [1., -1.], [1., 1.], [-1., 1.]];
+        let loft = NonplanarLoft::new([&square, &square], 6., 1e-7).unwrap();
+        let axes = [[1., 0., 0.], [0., 0.8, 0.6], [0., -0.6, 0.8]];
+        let depth = Depth::new(&loft, axes, [1.2, 3.], true);
+        assert!(depth.blocks([0., 2., 1.2], 1e-7));
+        assert!(!depth.blocks([0., 7., 1.2], 1e-7));
     }
 }

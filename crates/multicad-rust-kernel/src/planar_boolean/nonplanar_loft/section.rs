@@ -30,6 +30,15 @@ impl NonplanarLoft {
         {
             return Err(Error::Invalid);
         }
+        Ok(self.section_in_frame(origin, normal, tolerance))
+    }
+
+    pub(super) fn section_in_frame(
+        &self,
+        origin: Point,
+        normal: Point,
+        tolerance: f64,
+    ) -> Vec<LoftSectionCurve> {
         let epsilon = (32.
             * f64::EPSILON
             * origin
@@ -49,7 +58,7 @@ impl NonplanarLoft {
             |[minimum, maximum], &distance| [minimum.min(distance), maximum.max(distance)],
         );
         if minimum > 0. || maximum < 0. {
-            return Ok(Vec::new());
+            return Vec::new();
         }
         let separates = minimum < 0. && maximum > 0.;
         let mut curves = Vec::new();
@@ -66,7 +75,7 @@ impl NonplanarLoft {
                 wall.section(rails, epsilon, &mut curves);
             }
         }
-        Ok(curves)
+        curves
     }
 }
 
