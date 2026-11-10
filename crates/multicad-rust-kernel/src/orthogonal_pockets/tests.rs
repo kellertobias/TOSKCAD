@@ -268,8 +268,23 @@ fn a_through_tool_must_clear_both_mouths_and_never_cross_a_void() {
     };
     let good = bore([10., 6.5, 11.], [10., 6.5, -1.], 1.).unwrap();
     assert_eq!(good.centers_mm, [[10., 6.5, 7.], [10., 6.5, 0.]]);
+    for (start, finish) in [
+        ([10., 6.5, 7.], [10., 6.5, -1.]),
+        ([10., 6.5, 11.], [10., 6.5, 0.]),
+        ([10., 6.5, 7.], [10., 6.5, 0.]),
+    ] {
+        assert_eq!(bore(start, finish, 1.), Ok(good));
+        let reversed = bore(finish, start, 1.).unwrap();
+        assert_eq!(
+            reversed.centers_mm,
+            [good.centers_mm[1], good.centers_mm[0]]
+        );
+        assert_eq!(reversed.faces, [good.faces[1], good.faces[0]]);
+    }
     for (start, finish, radius) in [
-        ([10., 6.5, 11.], [10., 6.5, 0.], 1.),
+        ([10., 6.5, 7_f64.next_down()], [10., 6.5, -1.], 1.),
+        ([10., 6.5, 11.], [10., 6.5, 1e-9], 1.),
+        ([10., 6.5, 11.], [10., 6.5, -1e-9], 1.),
         ([10., 6.5, 11.], [10., 6.5, 5.], 1.),
         ([10., 4.2, 11.], [10., 4.2, -1.], 1.),
         ([13., 11., 11.], [13., 11., -1.], 1.),
@@ -280,6 +295,10 @@ fn a_through_tool_must_clear_both_mouths_and_never_cross_a_void() {
             Err(PocketError::UnresolvedBoundary)
         );
     }
+    assert_eq!(
+        tool(&stock, &boundary, [10., 6.5, 7.], [10., 6.5, 5.], 1.),
+        Err(PocketError::UnresolvedBoundary)
+    );
     let validate = |candidate| {
         validate_with_through_bores(&stock, &boundary, &[], &[candidate], CLEARANCE, MINIMUM)
     };

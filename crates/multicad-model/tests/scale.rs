@@ -736,7 +736,11 @@ fn saved_axis_aligned_scale_keeps_exact_rectangular_and_round_cut_providers() {
         omit_display: true,
         ..Default::default()
     };
-    for (factors, round) in [([2., 2., 2.], true), ([2., 3., 2.], false)] {
+    for (factors, round, pivot_z) in [
+        ([2., 2., 2.], true, -1.),
+        ([2., 2., 2.], true, 0.),
+        ([2., 3., 2.], false, -1.),
+    ] {
         let (mut session, part, _, instance, _) = fixture();
         let request = ScaleBatchRequest::new(
             session.document(),
@@ -748,7 +752,7 @@ fn saved_axis_aligned_scale_keeps_exact_rectangular_and_round_cut_providers() {
             }],
             ScaleParameters {
                 factors: factors.map(ratio),
-                pivot: [1., 1., -1.].map(length),
+                pivot: [1., 1., pivot_z].map(length),
                 ..Default::default()
             },
             false,
@@ -855,8 +859,8 @@ fn saved_axis_aligned_scale_keeps_exact_rectangular_and_round_cut_providers() {
         let shape = &rust.snapshot().shapes[&cut_id];
         let expected = 24. * factors.into_iter().product::<f64>() - removed;
         let expected_bounds = Bounds {
-            min: [1. - factors[0], 1. - factors[1], 1.],
-            max: [1. + factors[0], 1. + 2. * factors[1], 9.],
+            min: [1. - factors[0], 1. - factors[1], -pivot_z],
+            max: [1. + factors[0], 1. + 2. * factors[1], 8. - pivot_z],
         };
         bounds(shape.bounds, expected_bounds.min, expected_bounds.max);
         near(shape.volume_mm3, expected);

@@ -265,6 +265,13 @@ struct Drill {
     outward: f64,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum MouthSearch {
+    Blind,
+    ThroughEntry,
+    ThroughExit,
+}
+
 struct Mouth<'a> {
     face: &'a BoundaryFace,
     index: usize,
@@ -313,10 +320,10 @@ impl Drill {
         boundary: &Boundary,
         guard: f64,
         minimum: f64,
-        exit: bool,
+        search: MouthSearch,
     ) -> Result<Mouth<'_>, PocketError> {
         let [start, finish] = [self.start[self.axis], self.finish[self.axis]];
-        let (from, to, outward) = if exit {
+        let (from, to, outward) = if search == MouthSearch::ThroughExit {
             (finish, start, -self.outward)
         } else {
             (start, finish, self.outward)
@@ -327,10 +334,13 @@ impl Drill {
             let plane = FacePlane::from_face(face).ok_or(PocketError::InvalidInput)?;
             let depth = outward * (plane.level - to);
             let approach = outward * (from - plane.level);
+            // A through tool can have an exactly coincident cap. Preserve
+            // the exterior guard otherwise, including for nearly flush tools.
+            let reaches = approach > guard || (search != MouthSearch::Blind && from == plane.level);
             if plane.axis != self.axis
                 || plane.sign != outward
                 || depth < minimum
-                || approach <= guard
+                || !reaches
                 || nearest <= approach
             {
                 continue;
@@ -367,7 +377,7 @@ pub fn identify_pocket(
     let guard = clearance + numeric;
     let axial_guard = minimum_feature.max(guard);
     let drill = Drill::new(start, finish, radius, numeric, minimum_feature)?;
-    let mouth = drill.mouth(boundary, guard, minimum_feature, false)?;
+    let mouth = drill.mouth(boundary, guard, minimum_feature, MouthSearch::Blind)?;
     let pocket = OrthogonalPocket {
         face: mouth.index,
         center_mm: mouth.center,
@@ -435,6 +445,7 @@ fn through_cylinder(
 
 /// Identify a single uninterrupted through cut. The tool must enter and
 /// leave through complete opposing disks, with no other stock encountered.
+/// Exact cap coincidence is allowed at either disk.
 pub fn identify_through_bore(
     stock: &OrthogonalSolid,
     boundary: &Boundary,
@@ -448,8 +459,8 @@ pub fn identify_through_bore(
     let numeric = roundoff(stock.bounds());
     let guard = clearance + numeric;
     let drill = Drill::new(start, finish, radius, numeric, minimum)?;
-    let entry = drill.mouth(boundary, guard, minimum, false)?;
-    let exit = drill.mouth(boundary, guard, minimum, true)?;
+    let entry = drill.mouth(boundary, guard, minimum, MouthSearch::ThroughEntry)?;
+    let exit = drill.mouth(boundary, guard, minimum, MouthSearch::ThroughExit)?;
     let bore = OrthogonalThroughBore {
         faces: [entry.index, exit.index],
         centers_mm: [entry.center, exit.center],
