@@ -1865,10 +1865,10 @@ impl Compiler {
             model.timings.connection_validation_ms =
                 connection_started.elapsed().as_secs_f64() * 1000.;
         }
-        if full && backend == GeometryBackend::OpenCascade {
-            model.snapshot.envelope_boxes = model.envelope_boxes(document);
-            model.snapshot.guide_outlines = model.guide_outlines(document);
-            if model::aids(document).next().is_some() {
+        if full {
+            model.snapshot.envelope_boxes = model.envelope_boxes(document, context.parameters());
+            model.snapshot.guide_outlines = model.guide_outlines(document, context.parameters());
+            if backend == GeometryBackend::OpenCascade && model::aids(document).next().is_some() {
                 model.snapshot.fdm_aids = model.fdm_aids(document).map_err(|e| e.to_string());
             }
         }

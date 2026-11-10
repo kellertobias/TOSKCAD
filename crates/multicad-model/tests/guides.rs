@@ -225,6 +225,15 @@ fn plan_guides_generate_linked_views_per_level_and_update_without_duplicates() {
     assert_eq!(outlines.len(), 2);
     near(outlines[0][0][2], 1000., 1e-9);
     near(outlines[1][0][2], 4000., 1e-9);
+    let rust = Compiler::default()
+        .compile_with_backend(
+            f.s.document(),
+            f.s.revision(),
+            multicad_model::GeometryBackend::Rust,
+            None,
+        )
+        .unwrap();
+    assert_eq!(&rust.snapshot().guide_outlines[&guide], outlines);
 
     // A level edit moves the linked cut without regenerating.
     let p = model::prepare_level_edit(

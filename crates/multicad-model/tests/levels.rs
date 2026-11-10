@@ -397,6 +397,17 @@ fn levels_host_slabs_pedestals_stairs_and_walls_that_follow_level_edits() {
 
 #[test]
 fn service_envelopes_report_model_clearance_and_show_in_plan() {
+    for backend in [GeometryBackend::OpenCascade, GeometryBackend::Rust] {
+        service_envelope_workflow(backend);
+    }
+}
+
+fn service_envelope_workflow(backend: GeometryBackend) {
+    let compile = |session: &Session| {
+        Compiler::default()
+            .compile_with_backend(session.document(), session.revision(), backend, None)
+            .unwrap()
+    };
     let mut s = Session::new(Document::new("Envelopes").unwrap()).unwrap();
     let machine = PrimitiveRequest::new(
         "Machine",

@@ -9,8 +9,8 @@ use multicad_core::{
     references::Origin,
 };
 use multicad_kernel::{
-    BooleanOperation, CurvedEdge2d, CurvedProfile, GeometryPolicy, PlaneFrame, RigidTransform,
-    Solid,
+    BooleanOperation, Bounds, CurvedEdge2d, CurvedProfile, GeometryPolicy, PlaneFrame,
+    RigidTransform, Solid,
 };
 
 fn closed(points: &[[f64; 2]]) -> Vec<CurvedEdge2d> {
@@ -172,6 +172,67 @@ fn transform(pose: RigidPose) -> RigidTransform {
         translation_mm: pose.translation_mm,
     }
 }
+
+struct EnvelopeBox {
+    source: model::EnvelopeDefinition,
+    pose: RigidPose,
+    bounds: Bounds,
+    rust: bool,
+}
+
+impl EnvelopeBox {
+    fn corners(&self) -> [[f64; 3]; 8] {
+        let Bounds { min, max } = self.bounds;
+        std::array::from_fn(|i| {
+            self.pose.point([
+                if matches!(i % 4, 1 | 2) {
+                    max[0]
+                } else {
+                    min[0]
+                },
+                if matches!(i % 4, 2 | 3) {
+                    max[1]
+                } else {
+                    min[1]
+                },
+                if i < 4 { min[2] } else { max[2] },
+            ])
+        })
+    }
+
+    fn solid(&self, id: EntityId, policy: GeometryPolicy) -> Result<Solid, ModelError> {
+        let Bounds { min, max } = self.bounds;
+        let height = max[2] - min[2];
+        let profile = CurvedProfile {
+            frame: PlaneFrame {
+                origin: [0., 0., min[2]],
+                ..Default::default()
+            },
+            outer: closed(&[
+                [min[0], min[1]],
+                [max[0], min[1]],
+                [max[0], max[1]],
+                [min[0], max[1]],
+            ]),
+            holes: vec![],
+        };
+        let result = if self.rust {
+            Solid::rust_extrude_linear_named(
+                &profile,
+                [0., 0., height],
+                0.,
+                id,
+                &named(id, "envelope.edge", 4),
+                policy,
+            )
+        } else {
+            Solid::extrude_curved_profile(&profile, height, policy)
+                .and_then(|solid| solid.transformed(transform(self.pose)))
+        };
+        result.map_err(|cause| error(Some(id), cause))
+    }
+}
+
 impl Model {
     fn target_pose_and_solid(&self, target: EntityId) -> Option<(RigidPose, &Solid)> {
         if let Some(o) = self.snapshot().occurrences.get(&target) {
@@ -180,15 +241,13 @@ impl Model {
         let producer = *self.snapshot().bodies.get(&target)?;
         Some((RigidPose::default(), self.solid(producer)?))
     }
-    /// One envelope's box solid and world corners. The box is the target's
-    /// own bounds in its local frame plus the clearances; it rotates and
-    /// moves with the target.
+    /// Expand the target's own local bounds by its declared clearances.
     fn envelope_box(
         &self,
         document: &Document,
         parameters: &EvaluatedParameters,
         id: EntityId,
-    ) -> Result<(model::EnvelopeDefinition, Solid, [[f64; 3]; 8]), ModelError> {
+    ) -> Result<EnvelopeBox, ModelError> {
         let mm = |d: &multicad_core::constraint_sketch::Dimension| {
             d.value_in(
                 multicad_core::parameters::Unit::Millimeter,
@@ -218,47 +277,23 @@ impl Model {
         if (0..3).any(|i| max[i] - min[i] <= 1e-3) {
             return Err(error(Some(id), "Service envelope has no volume"));
         }
-        let profile = CurvedProfile {
-            frame: PlaneFrame {
-                origin: [0., 0., min[2]],
-                u: [1., 0., 0.],
-                v: [0., 1., 0.],
-            },
-            outer: closed(&[
-                [min[0], min[1]],
-                [max[0], min[1]],
-                [max[0], max[1]],
-                [min[0], max[1]],
-            ]),
-            holes: vec![],
-        };
-        let boxed = Solid::extrude_curved_profile(&profile, max[2] - min[2], self.policy)
-            .and_then(|s| s.transformed(transform(pose)))
-            .map_err(|e| error(Some(id), e))?;
-        let mut corners = [[0.; 3]; 8];
-        for (k, c) in corners.iter_mut().enumerate() {
-            let p = [
-                if matches!(k % 4, 1 | 2) {
-                    max[0]
-                } else {
-                    min[0]
-                },
-                if matches!(k % 4, 2 | 3) {
-                    max[1]
-                } else {
-                    min[1]
-                },
-                if k < 4 { min[2] } else { max[2] },
-            ];
-            *c = pose.point(p);
-        }
-        Ok((env, boxed, corners))
+        Ok(EnvelopeBox {
+            source: env,
+            pose,
+            bounds: Bounds { min, max },
+            rust: solid.uses_rust_geometry(),
+        })
     }
     /// Viewport outlines of every drawing guide, sized to the final model.
     pub(crate) fn guide_outlines(
         &self,
         document: &Document,
+        parameters: &EvaluatedParameters,
     ) -> std::collections::BTreeMap<EntityId, Vec<[[f64; 3]; 4]>> {
+        let mut guides = multicad_core::drawings::guides(document).peekable();
+        if guides.peek().is_none() {
+            return Default::default();
+        }
         let snapshot = self.snapshot();
         let mut bounds: Option<[[f64; 3]; 2]> = None;
         let finals = snapshot
@@ -274,16 +309,14 @@ impl Model {
                 std::array::from_fn(|i| hi[i].max(b.max[i])),
             ]);
         }
-        let (Some(bounds), Ok(parameters)) =
-            (bounds, multicad_core::parameters::evaluate(document))
-        else {
+        let Some(bounds) = bounds else {
             return Default::default();
         };
-        multicad_core::drawings::guides(document)
+        guides
             .filter_map(|e| {
                 let guide = multicad_core::drawings::read_guide(document, e.id).ok()?;
                 let loops =
-                    multicad_core::drawings::guide_outlines(document, &parameters, &guide, bounds);
+                    multicad_core::drawings::guide_outlines(document, parameters, &guide, bounds);
                 (!loops.is_empty()).then_some((e.id, loops))
             })
             .collect()
@@ -292,17 +325,15 @@ impl Model {
     pub(crate) fn envelope_boxes(
         &self,
         document: &Document,
+        parameters: &EvaluatedParameters,
     ) -> std::collections::BTreeMap<EntityId, [[f64; 3]; 8]> {
-        let Ok(parameters) = multicad_core::parameters::evaluate(document) else {
-            return Default::default();
-        };
         let hidden = multicad_core::equipment::hidden_envelopes(document).unwrap_or_default();
         model::envelopes(document)
             .filter(|e| !hidden.contains(&e.id))
             .filter_map(|e| {
-                self.envelope_box(document, &parameters, e.id)
+                self.envelope_box(document, parameters, e.id)
                     .ok()
-                    .map(|(_, _, c)| (e.id, c))
+                    .map(|envelope| (e.id, envelope.corners()))
             })
             .collect()
     }
@@ -314,7 +345,14 @@ impl Model {
         let mut out = vec![];
         for entity in model::envelopes(document) {
             let id = entity.id;
-            let (env, boxed, corners) = self.envelope_box(document, &parameters, id)?;
+            let env = self.envelope_box(document, &parameters, id)?;
+            let boxed = env.solid(id, self.policy)?;
+            let inverse = env
+                .rust
+                .then(|| env.pose.inverse())
+                .transpose()
+                .map_err(|cause| error(Some(id), cause))?
+                .map(transform);
             let mut conflicts = vec![];
             let others = self
                 .snapshot()
@@ -324,27 +362,30 @@ impl Model {
                 .map(|(part, producer)| (*part, *producer))
                 .chain(self.snapshot().occurrences.keys().map(|i| (*i, *i)));
             for (subject, producer) in others {
-                if subject == env.target {
+                if subject == env.source.target {
                     continue;
                 }
                 let Some(other) = self.solid(producer) else {
                     continue;
                 };
-                let overlap = boxed
-                    .boolean(other, BooleanOperation::Intersect, self.policy)
-                    .map_err(|e| error(Some(id), e))?
-                    .map(|s| s.volume_mm3())
-                    .transpose()
-                    .map_err(|e| error(Some(id), e))?
-                    .unwrap_or(0.);
+                let overlap = match inverse {
+                    Some(inverse) => other
+                        .transformed(inverse)
+                        .and_then(|other| boxed.rust_occupied_overlap_volume(&other)),
+                    None => boxed
+                        .boolean(other, BooleanOperation::Intersect, self.policy)
+                        .and_then(|common| common.map(|solid| solid.volume_mm3()).transpose())
+                        .map(|volume| volume.unwrap_or(0.)),
+                }
+                .map_err(|cause| error(Some(id), cause))?;
                 if overlap > 1. {
                     conflicts.push((subject, overlap));
                 }
             }
             out.push(EnvelopeEvaluation {
                 envelope: id,
-                target: env.target,
-                corners,
+                target: env.source.target,
+                corners: env.corners(),
                 volume_mm3: boxed.volume_mm3().map_err(|e| error(Some(id), e))?,
                 conflicts,
             });
@@ -441,10 +482,16 @@ pub(crate) fn plan_vectors(
             continue;
         }
         // Rendering needs the box, not every clearance boolean intersection.
-        let (env, _, corners) = model.envelope_box(document, &parameters, entity.id)?;
+        let envelope = model.envelope_box(document, &parameters, entity.id)?;
+        let corners = envelope.corners();
         for k in 0..4 {
             let (a, b) = (corners[k], corners[(k + 1) % 4]);
-            line(env.target, [a[0], a[1]], [b[0], b[1]], VectorRole::Hidden);
+            line(
+                envelope.source.target,
+                [a[0], a[1]],
+                [b[0], b[1]],
+                VectorRole::Hidden,
+            );
         }
     }
     Ok(())

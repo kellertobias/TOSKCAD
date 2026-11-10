@@ -60,7 +60,7 @@ impl Solid {
                 // The finite material distance already proves separation.
                 0.
             } else {
-                rust_common_volume(self, other)?
+                self.rust_occupied_overlap_volume(other)?
             };
             return classify(volume, distance, contact_tolerance_mm);
         }
@@ -96,30 +96,36 @@ impl Solid {
             "inspection occupied space",
         )
     }
-}
 
-fn rust_common_volume(a: &Solid, b: &Solid) -> Result<f64, GeometryError> {
-    let left = a.bounds()?;
-    let right = b.bounds()?;
-    // Disjoint interiors of the envelopes prove zero overlap even for rotated
-    // geometry. Overlapping envelopes are never evidence of occupied material.
-    if (0..3).any(|i| left.min[i] >= right.max[i] || right.min[i] >= left.max[i]) {
-        return Ok(0.);
+    /// Exact common volume of rectilinear Rust material in a shared frame.
+    /// Disjoint bounds also certify zero for other Rust geometry.
+    pub fn rust_occupied_overlap_volume(&self, other: &Self) -> Result<f64, GeometryError> {
+        if !self.uses_rust_geometry() || !other.uses_rust_geometry() {
+            return Err(failure(
+                GeometryErrorKind::Unsupported,
+                "Rust occupied overlap requires two Rust solids",
+            ));
+        }
+        let left = self.bounds()?;
+        let right = other.bounds()?;
+        if (0..3).any(|i| left.min[i] >= right.max[i] || right.min[i] >= left.max[i]) {
+            return Ok(0.);
+        }
+        let mut left = Vec::new();
+        let mut right = Vec::new();
+        self.append_rust_occupied_cells(&mut left)?;
+        other.append_rust_occupied_cells(&mut right)?;
+        orthogonal::intersection_volume(&left, &right).map_err(|cause| match cause {
+            BooleanError::Limit => failure(
+                GeometryErrorKind::Limit,
+                "Rust interference exceeds the exact occupied grid budget",
+            ),
+            BooleanError::Invalid | BooleanError::Unresolved => failure(
+                GeometryErrorKind::InvalidResult,
+                "Rust interference could not verify occupied volume",
+            ),
+        })
     }
-    let mut left = Vec::new();
-    let mut right = Vec::new();
-    a.append_rust_occupied_cells(&mut left)?;
-    b.append_rust_occupied_cells(&mut right)?;
-    orthogonal::intersection_volume(&left, &right).map_err(|cause| match cause {
-        BooleanError::Limit => failure(
-            GeometryErrorKind::Limit,
-            "Rust interference exceeds the exact occupied grid budget",
-        ),
-        BooleanError::Invalid | BooleanError::Unresolved => failure(
-            GeometryErrorKind::InvalidResult,
-            "Rust interference could not verify occupied volume",
-        ),
-    })
 }
 
 fn classify(
