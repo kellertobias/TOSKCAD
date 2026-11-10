@@ -135,6 +135,40 @@ fn formula(expression: &str) -> Value {
 }
 
 #[test]
+fn rust_stdio_rebuilds_and_reopens_geometry_through_the_real_cli() {
+    let directory = tempfile::tempdir().unwrap();
+    let project = directory.path().join("rust.tcd");
+    let arguments = ["--rust-model", "--project", project.to_str().unwrap()];
+    let mut client = Client::start(&arguments);
+    assert_eq!(
+        client.ok("document_info", json!({}))["geometry_backend"],
+        "rust"
+    );
+    let sketch = client.ok(
+        "create_sketch",
+        json!({"expected_revision":0,"plane":"xy","name":"Stock profile"}),
+    )["sketch"]
+        .clone();
+    client.ok(
+        "sketch_add_rectangle",
+        json!({"expected_revision":1,"sketch":sketch,"origin_mm":[0,0],
+            "width":length(12.),"height":length(8.)}),
+    );
+    client.ok(
+        "extrude",
+        json!({"expected_revision":2,"sketch":sketch,"regions":[0],
+            "distance":length(3.),"operation":"new_body"}),
+    );
+    close(client.part_volume(), 288.);
+    client.ok("save_project", json!({"expected_revision":3}));
+    drop(client);
+
+    let mut reopened = Client::start(&arguments);
+    assert_eq!(reopened.revision(), 0);
+    close(reopened.part_volume(), 288.);
+}
+
+#[test]
 fn tool_discovery_is_complete_and_schemas_are_objects() {
     let mut client = Client::start(&[]);
     let tools = client.request("tools/list", json!({}));

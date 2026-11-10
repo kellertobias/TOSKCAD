@@ -1,6 +1,7 @@
 //! `multicad --mcp`: a headless MCP server over stdio for one scoped project.
 use multicad_core::project_file::ProjectFile;
 use multicad_mcp::{Headless, Storage, Workspace};
+use multicad_model::GeometryBackend;
 use multicad_ui::{
     application::DocumentStorage,
     storage::{FileStamp, SaveMode},
@@ -16,6 +17,7 @@ pub struct Options {
     pub project: Option<PathBuf>,
     pub export_directory: Option<PathBuf>,
     pub read_only: bool,
+    pub rust_model: bool,
     /// Bridge to the open desktop window instead of a headless document.
     pub app: bool,
     pub socket: Option<PathBuf>,
@@ -37,6 +39,7 @@ pub fn parse(arguments: &[OsString]) -> Result<Options, String> {
                 options.export_directory = Some(value("--export-dir")?)
             }
             Some("--read-only") if !options.read_only => options.read_only = true,
+            Some("--rust-model") if !options.rust_model => options.rust_model = true,
             Some("--app") if !options.app => options.app = true,
             Some("--socket") if options.socket.is_none() => {
                 options.socket = Some(value("--socket")?)
@@ -50,9 +53,12 @@ pub fn parse(arguments: &[OsString]) -> Result<Options, String> {
         }
     }
     if options.app
-        && (options.project.is_some() || options.export_directory.is_some() || options.read_only)
+        && (options.project.is_some()
+            || options.export_directory.is_some()
+            || options.read_only
+            || options.rust_model)
     {
-        return Err("--app controls the open window; --project, --export-dir and --read-only apply to headless documents".into());
+        return Err("--app follows the open window; --project, --export-dir, --read-only and --rust-model apply to headless documents".into());
     }
     if options.socket.is_some() && !options.app {
         return Err("--socket requires --app".into());
@@ -113,7 +119,12 @@ pub fn run(options: Options) -> Result<(), String> {
 /// Shared native storage/scope construction for stdio and one-shot commands.
 pub(crate) fn headless(options: Options, save_enabled: bool) -> Result<Headless, String> {
     // stdout carries machine-readable replies, never native diagnostics.
-    multicad_kernel::route_native_output_to_stderr();
+    let geometry_backend = if options.rust_model {
+        GeometryBackend::Rust
+    } else {
+        multicad_kernel::route_native_output_to_stderr();
+        GeometryBackend::OpenCascade
+    };
     let export_directory = options
         .export_directory
         .map(|d| {
@@ -136,10 +147,11 @@ pub(crate) fn headless(options: Options, save_enabled: bool) -> Result<Headless,
             multicad_core::document::Document::new("Untitled").map_err(|e| e.to_string())?,
         )?,
     };
-    Ok(Headless::new(
+    Ok(Headless::with_geometry_backend(
         workspace,
         export_directory,
         options.read_only,
+        geometry_backend,
     ))
 }
 
@@ -158,11 +170,13 @@ mod tests {
             "--export-dir",
             "out",
             "--read-only",
+            "--rust-model",
         ]))
         .unwrap();
         assert_eq!(parsed.project, Some(PathBuf::from("a.multicad")));
         assert_eq!(parsed.export_directory, Some(PathBuf::from("out")));
         assert!(parsed.read_only);
+        assert!(parsed.rust_model);
         assert!(parse(&args(&["--project"])).is_err());
         assert!(parse(&args(&["--project", "a.json"])).is_err());
         assert!(
@@ -178,6 +192,8 @@ mod tests {
         let app = parse(&args(&["--app", "--socket", "/tmp/s"])).unwrap();
         assert!(app.app && app.socket == Some(PathBuf::from("/tmp/s")));
         assert!(parse(&args(&["--app", "--project", "a.multicad"])).is_err());
+        assert!(parse(&args(&["--app", "--rust-model"])).is_err());
+        assert!(parse(&args(&["--rust-model", "--rust-model"])).is_err());
         assert!(parse(&args(&["--socket", "/tmp/s"])).is_err());
     }
     #[test]

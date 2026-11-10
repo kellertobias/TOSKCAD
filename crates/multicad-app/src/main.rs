@@ -92,7 +92,7 @@ fn main() -> ExitCode {
             .inspect_err(|error| record_startup_error(error)),
         Action::Help => {
             println!(
-                "{} {}\n\nUsage: multicad [PROJECT.tcd | --help | --version | --diagnostics | --self-test OUTPUT_DIRECTORY]\n       multicad --rust-model [PROJECT.tcd]\n       multicad --mcp [--project FILE.tcd] [--export-dir DIRECTORY] [--read-only]\n       multicad --mcp --app [--socket PATH]\n       multicad --command REQUEST.json --project FILE.tcd [--read-only] [--save]\n\nLaunches the native application host with no arguments, or opens PROJECT.tcd in it.\nIncludes Project, constrained Sketch and initial New body extrusion. Native .tcd project containers include atomic saves, embedded payloads, explicit JSON import and recovery copies; existing .multicad projects still open and save in place. Advanced modeling and manufacturing exports remain under development.\n\n--rust-model selects the experimental Rust backend for supported Model and Export workflows. STEP import supports a single millimeter prism or cylinder and embeds the source in the project.\n\n--mcp serves the Model Context Protocol on stdin/stdout for a local client that launches this process. It controls one headless document: the --project file (opened, or created on first save), else an unsaved document. Exports write only into --export-dir. --mcp --app instead bridges to the open window once \"Allow local MCP connections\" is on (macOS and Linux; same-user local socket). No network port is opened.\n\n--command dispatches one JSON {{tool,arguments}} through the same canonical MCP/native validation path. It prints one JSON receipt and exits. Changes remain memory-only unless --save is present; failed commands never save. --read-only refuses mutations.",
+                "{} {}\n\nUsage: multicad [PROJECT.tcd | --help | --version | --diagnostics | --self-test OUTPUT_DIRECTORY]\n       multicad --rust-model [PROJECT.tcd]\n       multicad --mcp [--project FILE.tcd] [--export-dir DIRECTORY] [--read-only] [--rust-model]\n       multicad --mcp --app [--socket PATH]\n       multicad --command REQUEST.json --project FILE.tcd [--read-only] [--save] [--rust-model]\n\nLaunches the native application host with no arguments, or opens PROJECT.tcd in it.\nIncludes Project, constrained Sketch and initial New body extrusion. Native .tcd project containers include atomic saves, embedded payloads, explicit JSON import and recovery copies; existing .multicad projects still open and save in place. Advanced modeling and manufacturing exports remain under development.\n\n--rust-model selects the experimental Rust geometry backend for the window or headless commands. STEP import supports a single millimeter prism or cylinder and embeds the source in the project.\n\n--mcp serves the Model Context Protocol on stdin/stdout for a local client that launches this process. It controls one headless document: the --project file (opened, or created on first save), else an unsaved document. Exports write only into --export-dir. --mcp --app instead bridges to the open window once \"Allow local MCP connections\" is on (macOS and Linux; same-user local socket). The bridge follows the window’s selected geometry backend. No network port is opened.\n\n--command dispatches one JSON {{tool,arguments}} through the same canonical MCP/native validation path. It prints one JSON receipt and exits. Changes remain memory-only unless --save is present; failed commands never save. --read-only refuses mutations.",
                 build.product, build.version
             );
             Ok(())
@@ -146,8 +146,15 @@ fn run_application(project: Option<PathBuf>, model_backend: GeometryBackend) -> 
     app.set_library_store(Box::new(library::LibraryFileStore::default()));
     app.set_example_library(bundled_examples::library());
     app.set_preference_store(Box::new(preferences::PreferenceFileStore::default()));
-    app.set_sketch_queries(std::sync::Arc::new(|| {
-        Ok(Box::new(multicad_kernel::NativeRegionQueries::default()))
+    app.set_sketch_queries(std::sync::Arc::new(move || {
+        let queries = match model_backend {
+            GeometryBackend::OpenCascade => multicad_kernel::NativeRegionQueries::default(),
+            GeometryBackend::Rust => {
+                multicad_kernel::NativeRegionQueries::analytic(Default::default())
+                    .map_err(|error| error.to_string())?
+            }
+        };
+        Ok(Box::new(queries))
     }));
     // One detached store survives project/editor/connection changes in this app.
     let pair_proofs = multicad_model::PairCycleProofStore::default();
@@ -158,20 +165,37 @@ fn run_application(project: Option<PathBuf>, model_backend: GeometryBackend) -> 
     // Preview and canonical lanes share a model worker while their request
     // stamps, cancellation and authoritative publications stay separate.
     app.set_model_backends(models);
-    app.set_external_query_backends(std::sync::Arc::new(|| {
-        Ok(Box::new(external_queries::Backend::new()))
+    app.set_external_query_backends(std::sync::Arc::new(move || {
+        Ok(Box::new(match model_backend {
+            GeometryBackend::OpenCascade => external_queries::Backend::new(),
+            GeometryBackend::Rust => {
+                external_queries::Backend::with_geometry_backend(model_backend)
+            }
+        }))
     }))?;
-    app.set_repair_set_checker(std::sync::Arc::new(reference_repairs::check));
+    app.set_repair_set_checker(std::sync::Arc::new(
+        move |snapshot, set, resources, cancel| {
+            reference_repairs::check_with_geometry_backend(
+                model_backend,
+                snapshot,
+                set,
+                resources,
+                cancel,
+            )
+        },
+    ));
     let proofs = pair_proofs.clone();
     app.set_measurement_backends(std::sync::Arc::new(move || {
         multicad_model::with_pair_cycle_proofs(proofs.clone(), || {
-            Box::new(inspection::Backend::new())
+            Box::new(inspection::Backend::with_geometry_backend(model_backend))
         })
     }));
     let proofs = pair_proofs.clone();
     app.set_assembly_query_backends(std::sync::Arc::new(move || {
         multicad_model::with_pair_cycle_proofs(proofs.clone(), || {
-            Box::new(assembly_inspection::Backend::new())
+            Box::new(assembly_inspection::Backend::with_geometry_backend(
+                model_backend,
+            ))
         })
     }));
     let proofs = pair_proofs.clone();
@@ -206,7 +230,7 @@ fn run_application(project: Option<PathBuf>, model_backend: GeometryBackend) -> 
     }))?;
     let proofs = pair_proofs.clone();
     app.set_sheet_pattern_backends(std::sync::Arc::new(move || {
-        Box::new(sheet_pattern::Backend::new(proofs.clone()))
+        Box::new(sheet_pattern::Backend::new(proofs.clone(), model_backend))
     }));
     multicad_ui::launch_with(Box::new(move |context| {
         app.set_file_picker(Box::new(file_picker::NativePicker::new(context)));
@@ -216,6 +240,7 @@ fn run_application(project: Option<PathBuf>, model_backend: GeometryBackend) -> 
                 app_control::WindowControl::new(
                     context.egui_ctx.clone(),
                     app_control::default_endpoint(),
+                    model_backend,
                 )
             },
         )));

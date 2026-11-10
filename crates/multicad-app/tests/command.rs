@@ -80,6 +80,19 @@ fn command_dispatch_is_memory_only_unless_explicitly_saved_and_reopens_canonical
     let (ok, result) = invoke(&project, &request, &[]);
     assert!(!ok, "{result}");
     assert_eq!(std::fs::read(&project).unwrap(), saved);
+    std::fs::write(
+        &request,
+        serde_json::to_vec(&json!({"tool":"document_info","arguments":{}})).unwrap(),
+    )
+    .unwrap();
+    for (flags, backend) in [
+        (&["--read-only"][..], "opencascade"),
+        (&["--read-only", "--rust-model"][..], "rust"),
+    ] {
+        let (ok, receipt) = invoke(&project, &request, flags);
+        assert!(ok, "{receipt}");
+        assert_eq!(receipt["result"]["geometry_backend"], backend);
+    }
 }
 
 #[path = "../../multicad-mcp/tests/support/screw_connection.rs"]

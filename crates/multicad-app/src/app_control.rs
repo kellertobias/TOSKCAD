@@ -1,6 +1,7 @@
 //! MCP control of the open desktop window. Tool jobs are queued for the UI
 //! thread, which runs them against the project bound to each connection.
 use multicad_mcp::{Host, Job, Scope};
+use multicad_model::GeometryBackend;
 use multicad_ui::{
     application::external_control::{
         ControlClient, ControlRequest, ControlStatus, ExternalControl,
@@ -17,12 +18,16 @@ use std::{
 };
 
 struct WindowHost {
+    geometry_backend: GeometryBackend,
     pair_cycle_proofs: Option<multicad_model::PairCycleProofStore>,
     connection: u64,
     jobs: Mutex<Sender<ControlRequest>>,
     wake: egui::Context,
 }
 impl Host for WindowHost {
+    fn geometry_backend(&self) -> GeometryBackend {
+        self.geometry_backend
+    }
     fn pair_cycle_proofs(&self) -> Option<multicad_model::PairCycleProofStore> {
         self.pair_cycle_proofs.clone()
     }
@@ -58,6 +63,7 @@ pub fn default_endpoint() -> Result<PathBuf, String> {
 }
 
 pub struct WindowControl {
+    geometry_backend: GeometryBackend,
     pair_cycle_proofs: Option<multicad_model::PairCycleProofStore>,
     endpoint: Result<PathBuf, String>,
     wake: egui::Context,
@@ -69,9 +75,14 @@ pub struct WindowControl {
     error: Option<String>,
 }
 impl WindowControl {
-    pub fn new(wake: egui::Context, endpoint: Result<PathBuf, String>) -> Self {
+    pub fn new(
+        wake: egui::Context,
+        endpoint: Result<PathBuf, String>,
+        geometry_backend: GeometryBackend,
+    ) -> Self {
         let (sender, receiver) = mpsc::channel();
         Self {
+            geometry_backend,
             pair_cycle_proofs: multicad_model::current_pair_cycle_proofs(),
             endpoint,
             wake,
@@ -90,11 +101,13 @@ impl WindowControl {
         let wake = self.wake.clone();
         let clients = Arc::clone(&self.clients);
         let pair_cycle_proofs = self.pair_cycle_proofs.clone();
+        let geometry_backend = self.geometry_backend;
         let events_wake = self.wake.clone();
         self.listener = Some(multicad_mcp::local_socket::Listener::bind(
             path,
             move |connection| {
                 Arc::new(WindowHost {
+                    geometry_backend,
                     pair_cycle_proofs: pair_cycle_proofs.clone(),
                     connection,
                     jobs: Mutex::new(sender.clone()),
@@ -335,10 +348,34 @@ mod tests {
     }
 
     #[test]
+    fn a_local_socket_follows_the_open_windows_geometry_backend() {
+        let directory = tempfile::tempdir().unwrap();
+        let socket = directory.path().join("private").join("app.sock");
+        let mut control = WindowControl::new(
+            egui::Context::default(),
+            Ok(socket.clone()),
+            GeometryBackend::Rust,
+        );
+        control.set_enabled(true).unwrap();
+        let mut app = Application::new(Box::new(crate::files::SnapshotStore)).unwrap();
+        app.set_external_control(Box::new(control));
+        let info = pump(&mut app, move || {
+            connect(&socket).call("document_info", json!({}))
+        });
+        assert_eq!(info["geometry_backend"], "rust");
+        assert_eq!(info["scope"]["mode"], "application");
+        assert!(info["scope"]["export_directory"].is_null());
+    }
+
+    #[test]
     fn window_and_headless_control_produce_equivalent_documents() {
         let directory = tempfile::tempdir().unwrap();
         let socket = directory.path().join("private").join("app.sock");
-        let mut control = WindowControl::new(egui::Context::default(), Ok(socket.clone()));
+        let mut control = WindowControl::new(
+            egui::Context::default(),
+            Ok(socket.clone()),
+            GeometryBackend::OpenCascade,
+        );
         control.set_enabled(true).unwrap();
         use std::os::unix::fs::PermissionsExt;
         let mode = |p: &std::path::Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
@@ -403,7 +440,11 @@ mod tests {
     fn reviewed_window_changes_preview_natively_and_apply_only_when_accepted() {
         let directory = tempfile::tempdir().unwrap();
         let socket = directory.path().join("private").join("app.sock");
-        let mut control = WindowControl::new(egui::Context::default(), Ok(socket.clone()));
+        let mut control = WindowControl::new(
+            egui::Context::default(),
+            Ok(socket.clone()),
+            GeometryBackend::OpenCascade,
+        );
         control.set_enabled(true).unwrap();
         let mut app = Application::new(Box::new(crate::files::SnapshotStore)).unwrap();
         app.set_external_control(Box::new(control));
@@ -567,13 +608,21 @@ mod tests {
     fn window_drafts_block_external_edits_and_disabling_rejects_queued_calls() {
         let directory = tempfile::tempdir().unwrap();
         let socket = directory.path().join("private").join("app.sock");
-        let mut control = WindowControl::new(egui::Context::default(), Ok(socket.clone()));
+        let mut control = WindowControl::new(
+            egui::Context::default(),
+            Ok(socket.clone()),
+            GeometryBackend::OpenCascade,
+        );
         control.set_enabled(true).unwrap();
         assert!(
-            WindowControl::new(egui::Context::default(), Ok(socket.clone()))
-                .set_enabled(true)
-                .unwrap_err()
-                .contains("already accepts")
+            WindowControl::new(
+                egui::Context::default(),
+                Ok(socket.clone()),
+                GeometryBackend::OpenCascade
+            )
+            .set_enabled(true)
+            .unwrap_err()
+            .contains("already accepts")
         );
         let mut app = Application::new(Box::new(crate::files::SnapshotStore)).unwrap();
         app.set_external_control(Box::new(control));
@@ -596,7 +645,11 @@ mod tests {
         assert_eq!(app.current().session.revision(), 0);
 
         // A job still queued when connections are turned off is refused.
-        let mut control = WindowControl::new(egui::Context::default(), Ok(socket.clone()));
+        let mut control = WindowControl::new(
+            egui::Context::default(),
+            Ok(socket.clone()),
+            GeometryBackend::OpenCascade,
+        );
         control.set_enabled(true).unwrap_err();
         let (sender, receiver) = mpsc::sync_channel(1);
         control

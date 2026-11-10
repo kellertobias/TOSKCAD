@@ -14,6 +14,7 @@ pub(crate) struct Options {
     request: PathBuf,
     project: PathBuf,
     read_only: bool,
+    rust_model: bool,
     save: bool,
 }
 #[derive(Deserialize)]
@@ -31,6 +32,7 @@ pub(crate) fn parse(arguments: &[OsString]) -> Result<Options, String> {
     }
     let mut project = None;
     let mut read_only = false;
+    let mut rust_model = false;
     let mut save = false;
     let mut rest = arguments.iter();
     while let Some(arg) = rest.next() {
@@ -39,6 +41,7 @@ pub(crate) fn parse(arguments: &[OsString]) -> Result<Options, String> {
                 project = Some(PathBuf::from(rest.next().ok_or("--project needs a path")?));
             }
             Some("--read-only") if !read_only => read_only = true,
+            Some("--rust-model") if !rust_model => rust_model = true,
             Some("--save") if !save => save = true,
             _ => {
                 return Err(format!(
@@ -59,6 +62,7 @@ pub(crate) fn parse(arguments: &[OsString]) -> Result<Options, String> {
         request: request.into(),
         project,
         read_only,
+        rust_model,
         save,
     })
 }
@@ -94,6 +98,7 @@ fn execute(options: Options) -> Result<Value, Value> {
         crate::mcp::Options {
             project: Some(options.project),
             read_only: options.read_only,
+            rust_model: options.rust_model,
             ..Default::default()
         },
         options.save,
@@ -137,6 +142,17 @@ mod tests {
     fn persistence_and_scope_are_explicit() {
         let options = parse(&args(&["request.json", "--project", "owned.tcd"])).unwrap();
         assert!(!options.save && !options.read_only);
+        assert!(!options.rust_model);
+        assert!(
+            parse(&args(&[
+                "request.json",
+                "--project",
+                "owned.tcd",
+                "--rust-model"
+            ]))
+            .unwrap()
+            .rust_model
+        );
         for invalid in [
             vec![],
             vec!["request.json"],
@@ -151,6 +167,13 @@ mod tests {
             vec!["request.json", "--project", "owned.tcd", "--save", "--save"],
             vec!["request.json", "--project", "owned.step"],
             vec!["request.json", "--project", "owned.tcd", "--app"],
+            vec![
+                "request.json",
+                "--project",
+                "owned.tcd",
+                "--rust-model",
+                "--rust-model",
+            ],
         ] {
             assert!(parse(&args(&invalid)).is_err(), "{invalid:?}");
         }
