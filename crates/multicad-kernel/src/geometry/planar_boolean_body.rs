@@ -760,6 +760,25 @@ impl PlanarBooleanBody {
             .collect()
     }
 
+    pub(super) fn step_shell_segments(
+        &self,
+        frame: PlaneFrame,
+        faces: &[usize],
+    ) -> Vec<[[f64; 3]; 2]> {
+        let edges: BTreeSet<_> = faces
+            .iter()
+            .flat_map(|&face| self.faces[face].edges.iter().map(|&(edge, _)| edge))
+            .collect();
+        edges
+            .into_iter()
+            .map(|edge| {
+                self.edges[edge as usize]
+                    .0
+                    .map(|vertex| position(frame, self.geometry.vertices()[vertex]))
+            })
+            .collect()
+    }
+
     pub(crate) fn topology(
         &self,
         frame: PlaneFrame,

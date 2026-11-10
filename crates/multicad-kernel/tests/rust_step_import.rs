@@ -318,17 +318,18 @@ fn imported_spline_compound_retains_exact_geometry_and_viewport_edge_identity() 
         .manufacturing_mesh_with_receipt(MeshOptions::default())
         .unwrap();
     assert!(mesh.edge_pairs > 0 && mesh.vertex_links > 0);
-    let mut written = multicad_kernel::rust_kernel::step_read::read_analytic_compound(
-        &text(&moved),
-        policy.linear_tolerance_mm,
-    )
-    .unwrap();
+    let mut written =
+        multicad_kernel::rust_kernel::step_read::read_analytic_compound_with_helical_cuts(
+            &text(&moved),
+            policy.linear_tolerance_mm,
+        )
+        .unwrap();
     assert!(moved.step_readback_matches(
         &after.topology,
         &written,
         2. * policy.linear_tolerance_mm
     ));
-    let splines = &mut written[1].splines;
+    let splines = &mut written[1].0.splines;
     splines[0] = splines[1].clone();
     assert!(!moved.step_readback_matches(
         &after.topology,

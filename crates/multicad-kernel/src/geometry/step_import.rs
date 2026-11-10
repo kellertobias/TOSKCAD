@@ -858,12 +858,21 @@ fn verify_step_metrics(
     let bounds = solid.bounds()?;
     solid.policy.point(bounds.min)?;
     solid.policy.point(bounds.max)?;
+    verify_shell_metrics(bounds, solid.volume_mm3()?, readback, tolerance)
+}
+
+fn verify_shell_metrics(
+    bounds: Bounds,
+    volume: f64,
+    readback: &Readback,
+    tolerance: f64,
+) -> Result<(), GeometryError> {
     let [x, y, z] = std::array::from_fn(|i| bounds.max[i] - bounds.min[i]);
     let volume_tolerance =
         (readback.volume_mm3 * 1e-8).max(tolerance * 2. * (x * y + y * z + z * x));
     if max_error(bounds.min, readback.bounds_mm[0]) > tolerance * 2.
         || max_error(bounds.max, readback.bounds_mm[1]) > tolerance * 2.
-        || (solid.volume_mm3()? - readback.volume_mm3).abs() > volume_tolerance
+        || (volume - readback.volume_mm3).abs() > volume_tolerance
     {
         return Err(invalid(
             "Rebuilt STEP solid differs from the imported bounds or volume",

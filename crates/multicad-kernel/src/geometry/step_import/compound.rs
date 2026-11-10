@@ -171,7 +171,8 @@ impl Solid {
         readbacks: &[Readback],
         tolerance: f64,
     ) -> bool {
-        match_compound(topology, readbacks, tolerance, None)
+        let readbacks: Vec<_> = readbacks.iter().collect();
+        match_compound(topology, &readbacks, tolerance, None)
     }
 
     /// Compare exported member shells with the retained solid, including
@@ -179,23 +180,6 @@ impl Solid {
     pub fn step_readback_matches(
         &self,
         topology: &TopologySnapshot,
-        readbacks: &[Readback],
-        tolerance: f64,
-    ) -> bool {
-        let mut leaves = Vec::with_capacity(readbacks.len());
-        self.step_leaf_members(&mut leaves);
-        let bodies: Vec<_> = leaves
-            .iter()
-            .map(|solid| solid.spline_sweep_body())
-            .collect();
-        match_compound(topology, readbacks, tolerance, Some(&bodies))
-    }
-
-    /// Match a mixed STEP representation containing independently certified
-    /// helical tube cuts. The serialization can split an edge or add a seam,
-    /// so ordinals from the STEP loops are not source topology ordinals.
-    pub fn step_helical_members_match(
-        &self,
         readbacks: &[(Readback, Option<ImportSolid>)],
         tolerance: f64,
     ) -> bool {
@@ -204,31 +188,34 @@ impl Solid {
         }
         let mut leaves = Vec::with_capacity(readbacks.len());
         self.step_leaf_members(&mut leaves);
-        leaves.len() == readbacks.len()
-            && leaves
-                .into_iter()
-                .zip(readbacks)
-                .all(|(leaf, (readback, profile))| {
-                    if readback.solid_count != 1
-                        || verify_step_metrics(leaf, readback, tolerance).is_err()
-                    {
-                        return false;
-                    }
-                    if let Some(profile) = profile {
-                        return leaf.matches_helical_cut_profile(profile);
-                    }
-                    leaf.rust_topology().is_some_and(|topology| {
-                        topology.is_ok_and(|topology| {
-                            compare_topology(
-                                &topology.elements,
-                                readback,
-                                tolerance,
-                                false,
-                                leaf.spline_sweep_body(),
-                            )
-                        })
-                    })
-                })
+        let planar_shells = |leaf: &Solid| {
+            leaf.planar_boolean_body()
+                .map_or(1, |(body, _)| body.geometry.shell_count())
+        };
+        if readbacks.iter().all(|(_, profile)| profile.is_none())
+            && leaves.iter().all(|leaf| planar_shells(leaf) == 1)
+        {
+            let bodies: Vec<_> = leaves
+                .iter()
+                .map(|solid| solid.spline_sweep_body())
+                .collect();
+            let readbacks: Vec<_> = readbacks.iter().map(|(readback, _)| readback).collect();
+            return match_compound(topology, &readbacks, tolerance, Some(&bodies));
+        }
+
+        // A planar leaf can contribute several disconnected shells. A
+        // helical cut can add a STEP seam and split its exact source edges.
+        let mut remaining = readbacks;
+        for leaf in leaves {
+            let Some((members, rest)) = remaining.split_at_checked(planar_shells(leaf)) else {
+                return false;
+            };
+            if !match_leaf(leaf, members, tolerance) {
+                return false;
+            }
+            remaining = rest;
+        }
+        remaining.is_empty()
     }
 
     fn step_leaf_members<'a>(&'a self, leaves: &mut Vec<&'a Solid>) {
@@ -242,9 +229,75 @@ impl Solid {
     }
 }
 
+fn match_leaf(leaf: &Solid, members: &[(Readback, Option<ImportSolid>)], tolerance: f64) -> bool {
+    let [(readback, profile)] = members else {
+        let Some((body, frame)) = leaf.planar_boolean_body() else {
+            return false;
+        };
+        return body.geometry.shell_count() == body.geometry.solid_count()
+            && body
+                .geometry
+                .shells()
+                .iter()
+                .zip(members)
+                .all(|(shell, (readback, profile))| {
+                    profile.is_none() && match_planar_shell(body, frame, shell, readback, tolerance)
+                });
+    };
+    if readback.solid_count != 1 || verify_step_metrics(leaf, readback, tolerance).is_err() {
+        return false;
+    }
+    if let Some(profile) = profile {
+        return leaf.matches_helical_cut_profile(profile);
+    }
+    leaf.rust_topology().is_some_and(|topology| {
+        topology.is_ok_and(|topology| {
+            compare_topology(
+                &topology.elements,
+                readback,
+                tolerance,
+                false,
+                leaf.spline_sweep_body(),
+            )
+        })
+    })
+}
+
+fn match_planar_shell(
+    body: &PlanarBooleanBody,
+    frame: PlaneFrame,
+    shell: &multicad_rust_kernel::planar_boolean::Shell,
+    readback: &Readback,
+    tolerance: f64,
+) -> bool {
+    if readback.solid_count != 1
+        || readback.face_count != shell.faces.len()
+        || !readback.circles.is_empty()
+        || !readback.semicircles.is_empty()
+        || !readback.arcs.is_empty()
+        || !readback.ellipses.is_empty()
+        || !readback.splines.is_empty()
+    {
+        return false;
+    }
+    let segments = body.step_shell_segments(frame, &shell.faces);
+    let mut bounds = Bounds {
+        min: [f64::INFINITY; 3],
+        max: [f64::NEG_INFINITY; 3],
+    };
+    for point in segments.iter().flatten() {
+        for (axis, &value) in point.iter().enumerate() {
+            bounds.min[axis] = bounds.min[axis].min(value);
+            bounds.max[axis] = bounds.max[axis].max(value);
+        }
+    }
+    verify_shell_metrics(bounds, shell.signed_volume_mm3, readback, tolerance).is_ok()
+        && same_segments(&readback.edges_mm, &segments, readback.bounds_mm, tolerance)
+}
+
 fn match_compound(
     topology: &TopologySnapshot,
-    readbacks: &[Readback],
+    readbacks: &[&Readback],
     tolerance: f64,
     spline_bodies: Option<&[Option<(&SplineSweepBody, PlaneFrame)>]>,
 ) -> bool {

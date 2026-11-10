@@ -240,7 +240,8 @@ fn mixed_step_publication_matches_the_source_geometry_of_each_member() {
     let text = std::fs::read_to_string(&path).unwrap();
     let tolerance = policy.linear_tolerance_mm;
     let mut readbacks = read_analytic_compound_with_helical_cuts(&text, tolerance).unwrap();
-    assert!(compound.step_helical_members_match(&readbacks, tolerance * 2.));
+    let topology = compound.topology_snapshot(feature, 1).unwrap();
+    assert!(compound.step_readback_matches(&topology, &readbacks, tolerance * 2.));
     #[cfg(feature = "occt")]
     {
         let native = Solid::read_step(&path, policy).unwrap();
@@ -248,13 +249,14 @@ fn mixed_step_publication_matches_the_source_geometry_of_each_member() {
         assert!((native.volume_mm3().unwrap() - compound.volume_mm3().unwrap()).abs() < 1e-6);
     }
     readbacks.swap(0, 2);
-    assert!(!compound.step_helical_members_match(&readbacks, tolerance * 2.));
+    assert!(!compound.step_readback_matches(&topology, &readbacks, tolerance * 2.));
     readbacks.swap(0, 2);
     let wrong = Solid::compound_named(&[&alternate, &other, &placed], feature, policy).unwrap();
     assert_eq!(compound.volume_mm3().unwrap(), wrong.volume_mm3().unwrap());
-    assert!(!wrong.step_helical_members_match(&readbacks, tolerance * 2.));
+    let wrong_topology = wrong.topology_snapshot(feature, 1).unwrap();
+    assert!(!wrong.step_readback_matches(&wrong_topology, &readbacks, tolerance * 2.));
     readbacks[0].1 = None;
-    assert!(!compound.step_helical_members_match(&readbacks, tolerance * 2.));
+    assert!(!compound.step_readback_matches(&topology, &readbacks, tolerance * 2.));
 }
 
 #[test]
