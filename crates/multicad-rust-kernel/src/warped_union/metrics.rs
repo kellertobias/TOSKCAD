@@ -97,7 +97,7 @@ fn moments(band: Band, region: Region, lo: f64, hi: f64) -> Moments {
     }
 }
 
-fn polygon_area(ring: &[Point], normal: Point) -> f64 {
+pub(super) fn polygon_area(ring: &[Point], normal: Point) -> f64 {
     let origin = ring[0];
     let mut area = Sum::default();
     for edge in ring[1..].windows(2) {

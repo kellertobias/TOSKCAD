@@ -52,6 +52,37 @@ fn double_wedge() -> ConvexPiece {
 }
 
 #[test]
+fn planar_boolean_boundary_keeps_coordinates_and_accepts_an_exact_blind_bore() {
+    let piece = ConvexPiece::from_box([-4., -4., -3.], [4., 4., 2.], TOL).unwrap();
+    let union = Union::new(&[piece], TOL).unwrap();
+    let solid = from_planar_union(&union, TOL).unwrap();
+    assert_eq!(solid.bounds_mm(), union.bounds());
+    assert_eq!(solid.vertices(), union.vertices());
+    assert_eq!(solid.volume_mm3(), union.volume_mm3());
+    let bore = AxialCut {
+        start_mm: [0., 0., 3.],
+        end_mm: [0., 0., 0.],
+        radius_mm: 1.,
+        source: 1,
+        wall_source_face: 2,
+        cap_source_faces: [0, 1],
+        recess: None,
+    };
+    let cut = solid.cut_axial(&[bore], TOL).unwrap();
+    near(cut.volume_mm3(), 320. - 2. * PI);
+    assert_eq!(cut.bounds_mm(), solid.bounds_mm());
+    assert_eq!(cut.solid_count(), 1);
+    let mesh = cut
+        .mesh(Tessellation {
+            deflection: 0.01,
+            angle: 0.1,
+            triangle_limit: 2000,
+        })
+        .unwrap();
+    certify(&mesh).unwrap();
+}
+
+#[test]
 fn recovers_plane_and_cylinder_faces_with_exact_metrics() {
     let shell = remap(&Union::new(&[prism()], TOL).unwrap(), BAND, TOL).unwrap();
     assert_eq!(shell.vertices().len(), 6);

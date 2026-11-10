@@ -82,7 +82,7 @@ pub struct Shell {
     volume_mm3: f64,
     solid_count: usize,
     shell_count: usize,
-    band: Band,
+    band: Option<Band>,
     chart_w: Vec<f64>,
     chart_edges: usize,
 }
@@ -163,18 +163,29 @@ impl Band {
 /// Map the middle band using w = sqrt(r² − (z − c)²). Below and above it
 /// the mapping is a translation. The input must be split at the two seams.
 pub fn remap(union: &Union, band: Band, tolerance_mm: f64) -> Result<Shell, Error> {
+    boundary(union, Some(band), tolerance_mm)
+}
+
+/// Reuse a certified planar Boolean boundary without altering its coordinates.
+pub fn from_planar_union(union: &Union, tolerance_mm: f64) -> Result<Shell, Error> {
+    boundary(union, None, tolerance_mm)
+}
+
+fn boundary(union: &Union, band: Option<Band>, tolerance_mm: f64) -> Result<Shell, Error> {
     if !(1e-10..=1e-3).contains(&tolerance_mm)
-        || !band.center_z_mm.is_finite()
-        || !band.radius_mm.is_finite()
-        || band.radius_mm <= tolerance_mm
+        || band.is_some_and(|band| {
+            !band.center_z_mm.is_finite()
+                || !band.radius_mm.is_finite()
+                || band.radius_mm <= tolerance_mm
+        })
     {
         return Err(Error::Invalid);
     }
-    if band.center_z_mm.abs().max(band.radius_mm) > 1e8 {
+    if band.is_some_and(|band| band.center_z_mm.abs().max(band.radius_mm) > 1e8) {
         return Err(Error::Limit);
     }
-
-    let vertices: Vec<_> = union.vertices().iter().map(|&p| band.point(p)).collect();
+    let model_point = |p| band.map_or(p, |band| band.point(p));
+    let vertices: Vec<_> = union.vertices().iter().copied().map(model_point).collect();
     let mut faces = Vec::with_capacity(union.faces().len());
     let mut edges = Vec::new();
     let mut edge_indices = BTreeMap::new();
@@ -192,13 +203,21 @@ pub fn remap(union: &Union, band: Band, tolerance_mm: f64) -> Result<Shell, Erro
             .map(|&i| union.vertices()[i])
             .collect();
         work = metric_work(work, ring.len())?;
-        let [lo, hi] = axial_extent(&ring);
-        let region = band.region(lo, hi)?;
         let normal = source.normal;
-        let support = support(band, region, &ring, normal, tolerance_mm)?;
-        let metrics = metrics::face_metrics(band, region, support, normal, &ring, anchor)?;
-        volume.add(metrics.volume_mm3);
-        let point_mm = band.point(std::array::from_fn(|i| {
+        let (support, area_mm2) = if let Some(band) = band {
+            let [lo, hi] = axial_extent(&ring);
+            let region = band.region(lo, hi)?;
+            let support = support(band, region, &ring, normal, tolerance_mm)?;
+            let metrics = metrics::face_metrics(band, region, support, normal, &ring, anchor)?;
+            volume.add(metrics.volume_mm3);
+            (support, metrics.area_mm2)
+        } else {
+            (
+                Support::Plane { normal },
+                metrics::polygon_area(&ring, normal),
+            )
+        };
+        let point_mm = model_point(std::array::from_fn(|i| {
             ring[0][i] + ring.iter().map(|p| p[i] - ring[0][i]).sum::<f64>() / ring.len() as f64
         }));
         let mut boundary = Vec::with_capacity(ring.len());
@@ -212,7 +231,10 @@ pub fn remap(union: &Union, band: Band, tolerance_mm: f64) -> Result<Shell, Erro
                 index
             } else {
                 let model = [lo, hi].map(|i| union.vertices()[i]);
-                let curve = edge_curve(band, model, tolerance_mm)?;
+                let curve = match band {
+                    Some(band) => edge_curve(band, model, tolerance_mm)?,
+                    None => Curve::Line,
+                };
                 let index = edges.len();
                 edges.push(Edge {
                     vertices: [lo, hi],
@@ -231,18 +253,22 @@ pub fn remap(union: &Union, band: Band, tolerance_mm: f64) -> Result<Shell, Erro
             holes: Vec::new(),
             support,
             point_mm,
-            area_mm2: metrics.area_mm2,
+            area_mm2,
             source: source.source,
             source_face: source.source_face,
         });
     }
-    let volume_mm3 = positive_volume(volume.value())?;
+    let volume_mm3 = if band.is_some() {
+        positive_volume(volume.value())?
+    } else {
+        union.volume_mm3()
+    };
     // X and Y are unchanged and the axial mapping is monotone, so no
     // interior point can extend these bounds beyond the chart vertices.
-    let bounds_mm = center.map(|point| band.point(point));
+    let bounds_mm = center.map(model_point);
     Ok(Shell {
         vertices,
-        chart_edges: edges.len(),
+        chart_edges: if band.is_some() { edges.len() } else { 0 },
         edges,
         faces,
         bounds_mm,
@@ -250,7 +276,9 @@ pub fn remap(union: &Union, band: Band, tolerance_mm: f64) -> Result<Shell, Erro
         solid_count: union.solid_count(),
         shell_count: union.shell_count(),
         band,
-        chart_w: union.vertices().iter().map(|p| p[2]).collect(),
+        chart_w: band.map_or_else(Vec::new, |_| {
+            union.vertices().iter().map(|p| p[2]).collect()
+        }),
     })
 }
 

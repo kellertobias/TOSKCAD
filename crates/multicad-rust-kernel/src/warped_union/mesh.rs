@@ -21,11 +21,12 @@ impl Shell {
             .map(|radius| options.arc_segments(radius, FRAC_PI_2))
             .transpose()?
             .unwrap_or(0);
-        let source_angles: Vec<_> = self
-            .chart_w
-            .iter()
-            .map(|&w| self.band.theta(w.clamp(0., self.band.radius_mm)))
-            .collect();
+        let source_angles: Vec<_> = self.band.map_or_else(Vec::new, |band| {
+            self.chart_w
+                .iter()
+                .map(|&w| band.theta(w.clamp(0., band.radius_mm)))
+                .collect()
+        });
         let (mut angle_levels, grid) = sample_angles(&source_angles, steps);
 
         let mut boundary_intervals = 0;
