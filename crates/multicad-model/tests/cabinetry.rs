@@ -20,6 +20,7 @@ use multicad_core::{
     sketch::Datum,
     sketch_regions,
 };
+use multicad_kernel::{MeshOptions, PlaneFrame};
 use multicad_model::{Compiler, CutRecord, GeometryBackend, Model};
 
 fn actor() -> Actor {
@@ -1373,6 +1374,183 @@ fn rust_rebuilds_both_hinge_boring_groups_on_each_bundled_cabinet_door() {
         }
     }
     assert_eq!(surviving_floors, 2);
+}
+
+#[test]
+fn rust_drills_bundled_drawer_runner_holes_after_finger_joints_and_grooves() {
+    let project = read_bundled_project(include_bytes!("../../../examples/cabinet.tcd"));
+    let document = &project.document;
+    let parameters = multicad_core::parameters::evaluate(document).unwrap();
+    let operations: Vec<_> = model::machining_cuts(document)
+        .filter_map(|entity| {
+            let cut = model::read_machining_cut(document, entity.id).unwrap();
+            let name = &document.get(cut.operation).unwrap().name;
+            (name.contains("runner screws") && name.ends_with("box side")).then_some((entity, cut))
+        })
+        .collect();
+    assert_eq!(operations.len(), 4);
+    let roots: Vec<_> = operations.iter().map(|(entity, _)| entity.id).collect();
+    let rust = compile_stock_sources(document, &roots, GeometryBackend::Rust);
+    let native = compile_stock_sources(document, &roots, GeometryBackend::OpenCascade);
+    let mut saved_floor_intents = Vec::new();
+    let dot = |a: [f64; 3], b: [f64; 3]| a.into_iter().zip(b).map(|(x, y)| x * y).sum::<f64>();
+    let same_point =
+        |a: [f64; 3], b: [f64; 3]| a.into_iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-6);
+    let attach = |topology: &references::TopologySnapshot, face: u32, source: EntityId| {
+        let entry = topology
+            .elements
+            .iter()
+            .find(|e| {
+                e.key.ordinal == face && matches!(e.geometry, Some(AnalyticGeometry::Plane { .. }))
+            })
+            .unwrap();
+        let anchor = entry
+            .frames
+            .iter()
+            .find(|a| a.origin.source == source)
+            .unwrap();
+        let mut intent = GeometryIntent::capture(topology, entry.key).unwrap();
+        intent.attachment = Some(Attachment {
+            anchor: anchor.origin.clone(),
+            offset_mm: [0.; 3],
+            angle_rad: 0.,
+        });
+        (intent, anchor.frame)
+    };
+    for (entity, cut) in operations {
+        let id = entity.id;
+        let groove_id = cut.input.producer;
+        let groove_cut = model::read_machining_cut(document, groove_id).unwrap();
+        let groove_definition = model::read_machining(document, groove_cut.operation).unwrap();
+        assert!(matches!(
+            groove_definition.kind,
+            MachiningKind::Groove { .. }
+        ));
+        let last_joint = model::read_panel_joint_cut(document, groove_cut.input.producer).unwrap();
+        let joint = model::read_panel_joint(document, last_joint.joint).unwrap();
+        assert!(matches!(joint.kind, PanelJointKind::Finger { .. }));
+        compare_stock_source(&entity.name, id, &rust, &native);
+        compare_stock_source("grooved runner stock", groove_id, &rust, &native);
+
+        let definition = model::read_machining(document, cut.operation).unwrap();
+        let resolved =
+            model::resolve_machining(document, &parameters, &definition, cut.output.body).unwrap();
+        assert_eq!(resolved.holes.len(), 4);
+        let solid = rust.solid(id).unwrap();
+        let grooved = rust.solid(groove_id).unwrap();
+        let faces = solid.faces().unwrap();
+        let native_faces = native.solid(id).unwrap().faces().unwrap();
+        let groove_faces = grooved.faces().unwrap();
+        assert_eq!(faces.len(), groove_faces.len() + 8);
+        assert_eq!(faces.len(), native_faces.len(), "{}", entity.name);
+        for face in &faces {
+            assert!(
+                native_faces.iter().any(|native_face| {
+                    face.plane.is_some() == native_face.plane.is_some()
+                        && same_point(face.center_mm, native_face.center_mm)
+                        && (face.area_mm2 - native_face.area_mm2).abs() < 1e-6
+                }),
+                "{}: no native face matches {face:?}",
+                entity.name
+            );
+        }
+
+        let topology = &rust.snapshot().shapes[&id].topology;
+        let groove_topology = &rust.snapshot().shapes[&groove_id].topology;
+        let groove = model::resolve_machining(
+            document,
+            &parameters,
+            &groove_definition,
+            groove_cut.output.body,
+        )
+        .unwrap();
+        let depth = groove.recesses[0].depth_mm;
+        let groove_floor = groove_faces
+            .iter()
+            .find(|face| {
+                face.plane.is_some_and(|(point, normal)| {
+                    let delta = std::array::from_fn(|i| point[i] - groove.frame.origin[i]);
+                    (dot(delta, groove.frame.inward) - depth).abs() < 1e-6
+                        && (dot(normal, groove.frame.inward) + 1.).abs() < 1e-6
+                })
+            })
+            .expect("the rectangular groove leaves a planar floor");
+        let (groove_intent, groove_frame) = attach(groove_topology, groove_floor.index, groove_id);
+        let Resolution::Resolved {
+            key,
+            frame: Some(frame),
+            ..
+        } = references::resolve(&groove_intent, topology, 0)
+        else {
+            panic!("runner drilling lost the earlier groove floor attachment");
+        };
+        assert_eq!(frame, groove_frame);
+        let preserved_floor = faces.iter().find(|face| face.index == key.ordinal).unwrap();
+        near(preserved_floor.area_mm2, groove_floor.area_mm2);
+        saved_floor_intents.push((id, groove_intent, groove_frame));
+
+        let receipt = solid
+            .manufacturing_mesh_with_receipt(MeshOptions::default())
+            .unwrap();
+        assert!(receipt.edge_pairs > 0 && receipt.vertex_links > 0);
+        assert_eq!(receipt.maximum_displacement_mm, 0.);
+        let mut removed = 0.;
+        for hole in resolved.holes {
+            assert!(!hole.through);
+            near(hole.diameter_mm, 2.5);
+            near(hole.depth_mm, 8.);
+            let area = std::f64::consts::PI * (hole.diameter_mm / 2.).powi(2);
+            removed += area * hole.depth_mm;
+            let center = std::array::from_fn(|i| hole.center[i] + hole.depth_mm * hole.axis[i]);
+            let floor = faces
+                .iter()
+                .find(|face| face.plane.is_some() && same_point(face.center_mm, center))
+                .expect("runner screw bore retains a floor at its authored depth");
+            near(floor.area_mm2, area);
+            near(dot(floor.plane.unwrap().1, hole.axis), -1.);
+            assert!(receipt.mesh.face_indices.contains(&floor.index));
+            let (intent, frame) = attach(topology, floor.index, id);
+            let contour = solid
+                .planar_face_contours(
+                    floor.index,
+                    PlaneFrame {
+                        origin: frame.origin_mm,
+                        u: frame.u,
+                        v: frame.v,
+                    },
+                )
+                .unwrap();
+            assert_eq!(contour.loops.len(), 1);
+            assert!(matches!(
+                contour.loops[0].edges.as_slice(),
+                [PlanarEdge::Arc { sweep_rad, .. }]
+                    if (sweep_rad.abs() - std::f64::consts::TAU).abs() < 1e-7
+            ));
+            near(contour.area_mm2(), area);
+            saved_floor_intents.push((id, intent, frame));
+        }
+        near(
+            grooved.volume_mm3().unwrap() - solid.volume_mm3().unwrap(),
+            removed,
+        );
+    }
+    assert_eq!(compare_stock_cut_lists(document, &rust, &native), 4);
+
+    let mut saved = Vec::new();
+    project_file::write(&project, &mut saved, Default::default()).unwrap();
+    let reopened = read_bundled_project(&saved);
+    let rebuilt = compile_stock_sources(&reopened.document, &roots, GeometryBackend::Rust);
+    for (feature, intent, expected) in saved_floor_intents {
+        let topology = &rebuilt.snapshot().shapes[&feature].topology;
+        let Resolution::Resolved {
+            frame: Some(frame), ..
+        } = references::resolve(&intent, topology, 0)
+        else {
+            panic!("runner or groove floor attachment did not survive reopen");
+        };
+        assert_eq!(frame, expected);
+    }
+    assert_eq!(compare_stock_cut_lists(document, &rust, &rebuilt), 4);
 }
 
 #[test]
