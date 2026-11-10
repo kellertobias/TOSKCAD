@@ -10,8 +10,10 @@ const FACTORIAL_12: f64 = 479_001_600.;
 const HALF_SPAN_POWER: f64 = 4096.;
 type Point = [f64; 3];
 
+mod cavity_cap_pcurve;
 mod cavity_surface;
 mod top_cavity;
+pub use cavity_cap_pcurve::{CavityCapPcurve, UvSpline};
 pub use cavity_surface::{CavitySurface, Surface, SurfaceAxis};
 pub use top_cavity::TopCavity;
 
