@@ -1047,18 +1047,41 @@ mod tests {
         let mut lines = CardinalDrawingLines::new();
         let micrometers = |point: [f64; 2]| point.map(|value| (value * 1000.).round() as i64);
         for vector in vectors {
-            let drawings::VectorCurve::Line { a, b } = vector.curve else {
-                panic!("Expected a straight drawing edge, got {:?}", vector.curve);
+            let mut add = |a: [i64; 2], b: [i64; 2]| {
+                let axis = usize::from(a[0] != b[0]);
+                assert_eq!(a[axis], b[axis]);
+                let [lo, hi] = [a[1 - axis].min(b[1 - axis]), a[1 - axis].max(b[1 - axis])];
+                if lo != hi {
+                    lines
+                        .entry((identity(vector), axis, a[axis]))
+                        .or_default()
+                        .push([lo, hi]);
+                }
             };
-            let [a, b] = [a, b].map(micrometers);
-            let axis = usize::from(a[0] != b[0]);
-            assert_eq!(a[axis], b[axis]);
-            let [lo, hi] = [a[1 - axis].min(b[1 - axis]), a[1 - axis].max(b[1 - axis])];
-            if lo != hi {
-                lines
-                    .entry((identity(vector), axis, a[axis]))
-                    .or_default()
-                    .push([lo, hi]);
+            match &vector.curve {
+                drawings::VectorCurve::Line { a, b } => add(micrometers(*a), micrometers(*b)),
+                // The native projector can encode a side-on circle as a
+                // nonperiodic degree-one spline. Its collinear projected
+                // poles describe the same straight span without arc sampling.
+                drawings::VectorCurve::BSpline {
+                    degree: 1,
+                    periodic: false,
+                    poles,
+                    knots,
+                    first,
+                    last,
+                    ..
+                } if knots.first() == Some(first) && knots.last() == Some(last) => {
+                    let base = micrometers(poles[0]);
+                    assert!(
+                        (0..2)
+                            .any(|axis| poles.iter().all(|p| micrometers(*p)[axis] == base[axis]))
+                    );
+                    for pair in poles.windows(2) {
+                        add(micrometers(pair[0]), micrometers(pair[1]));
+                    }
+                }
+                _ => panic!("Expected a straight drawing edge, got {:?}", vector.curve),
             }
         }
         for spans in lines.values_mut() {
@@ -1079,7 +1102,7 @@ mod tests {
     }
 
     #[test]
-    fn rust_worker_matches_native_geometry_of_both_saved_cabinet_joint_details() {
+    fn rust_worker_matches_native_geometry_of_saved_cabinet_joint_views() {
         use drawings::{VectorRole, ViewEvaluation};
 
         let session = open_example("cabinet.tcd");
@@ -1100,6 +1123,11 @@ mod tests {
             .views
             .iter()
             .find(|view| view.name == "Detail C: Domino joint, left side to lower divider")
+            .unwrap();
+        let section_view = page
+            .views
+            .iter()
+            .find(|view| view.name == "Section A-A: lower divider with Domino tenons")
             .unwrap();
         let [drawer] = drawer_view.source.entities().try_into().unwrap();
         assert_eq!(document.get(drawer).unwrap().name, "Drawer 1");
@@ -1133,7 +1161,17 @@ mod tests {
                     |vector| vector.source,
                 )
             });
-            (drawer_lines, tenon_lines)
+            let section_vectors = ready(section_view.id);
+            assert!(section_vectors.iter().all(|vector| {
+                matches!(vector.role, VectorRole::Section | VectorRole::Visible)
+            }));
+            let section_lines = [VectorRole::Section, VectorRole::Visible].map(|role| {
+                cardinal_drawing_lines(
+                    section_vectors.iter().filter(|vector| vector.role == role),
+                    |vector| (vector.source, vector.material_part),
+                )
+            });
+            (drawer_lines, tenon_lines, section_lines)
         };
         let native = coverage(GeometryBackend::OpenCascade);
         assert_eq!(native.0[&((), 1, -243_000)], [[-398_000, 398_000]]);
@@ -1149,6 +1187,71 @@ mod tests {
             native.1[0][&(tenons, 0, -4_500)],
             [[-201_000, -179_000], [-20_000, 2_000], [161_000, 183_000]]
         );
+        assert!(native.2[0].keys().all(|key| native.2[1].contains_key(key)));
+        assert!(native.2[1].len() > native.2[0].len());
+        assert_eq!(coverage(GeometryBackend::Rust), native);
+    }
+
+    #[test]
+    fn rust_worker_matches_native_saved_cabinet_assembly_views() {
+        use drawings::{AnnotationEvaluation, VectorRole, ViewEvaluation};
+
+        let session = open_example("cabinet.tcd");
+        let document = session.document();
+        let book = drawings::books(document).next().unwrap();
+        let drawing = drawings::read(document, book).unwrap();
+        let page = drawing
+            .pages
+            .iter()
+            .find(|page| page.number == "C-101")
+            .unwrap();
+        let coverage = |backend| {
+            let mut worker = Backend::with_cache_and_backend(None, backend);
+            let published = preview(&mut worker, &session, page.id);
+            published
+                .checked_page(document, session.revision(), book, page.id)
+                .unwrap();
+            let mut dimensions = published
+                .annotations
+                .values()
+                .map(|annotation| {
+                    let AnnotationEvaluation::Ready { graphic } = annotation else {
+                        panic!("{backend:?} lost a saved cabinet dimension: {annotation:?}");
+                    };
+                    graphic.text.parse::<u32>().unwrap()
+                })
+                .collect::<Vec<_>>();
+            dimensions.sort_unstable();
+            assert_eq!(dimensions, [500, 800, 2000]);
+            let ready = |name| {
+                let saved = page.views.iter().find(|view| view.name == name).unwrap();
+                let ViewEvaluation::Ready { vectors, .. } = &published.views[&saved.id] else {
+                    panic!(
+                        "{backend:?} failed saved {name}: {:?}",
+                        published.views[&saved.id]
+                    );
+                };
+                assert!(
+                    vectors
+                        .iter()
+                        .all(|vector| vector.role == VectorRole::Visible)
+                );
+                vectors
+            };
+            // Near and far shelf pins can share the same front-view span.
+            // Compare geometric coverage independently of their source labels.
+            (
+                cardinal_drawing_lines(ready("Front").iter(), |_| ()),
+                cardinal_drawing_lines(ready("Top").iter(), |vector| {
+                    (vector.source, vector.material_part)
+                }),
+                cardinal_drawing_lines(ready("Right side").iter(), |vector| {
+                    (vector.source, vector.material_part)
+                }),
+            )
+        };
+        let native = coverage(GeometryBackend::OpenCascade);
+        assert_eq!(native.0[&((), 1, 1_000_000)], [[-400_000, 400_000]]);
         assert_eq!(coverage(GeometryBackend::Rust), native);
     }
 
