@@ -1,7 +1,10 @@
-use multicad_core::document::EntityId;
+use multicad_core::{
+    document::EntityId,
+    references::{AnalyticGeometry, GeometryIntent, Origin, Resolution, TopologyKind, resolve},
+};
 use multicad_kernel::{
-    BooleanOperation, GeometryErrorKind, GeometryPolicy, MeshOptions, PlaneFrame, RigidTransform,
-    Solid,
+    BooleanOperation, CurvedEdge2d, CurvedProfile, GeometryErrorKind, GeometryPolicy, MeshOptions,
+    PlaneFrame, RigidTransform, Solid,
     rust_kernel::{
         Circle, Rational, cylinder::AxialCylinder, display::DisplayMesh, manufacturing::certify,
     },
@@ -142,6 +145,217 @@ fn rust_orthogonal_cavity_keeps_shared_indices_and_inward_inner_walls() {
             .len(),
         12
     );
+}
+
+#[test]
+fn rust_batched_cuts_match_native_material_and_keep_each_tool_ancestry() {
+    let policy = GeometryPolicy::default();
+    let owner = EntityId::new();
+    let rust_box = |id: EntityId, size: [i64; 3], origin| {
+        Solid::rust_box(
+            id.uuid_bits(),
+            size.map(n),
+            PlaneFrame {
+                origin,
+                ..Default::default()
+            },
+            policy,
+        )
+        .unwrap()
+    };
+    let native_box = |size: [i64; 3], translation_mm| {
+        Solid::box_solid(size.map(|axis| axis as f64), policy)
+            .unwrap()
+            .transformed(RigidTransform {
+                translation_mm,
+                ..Default::default()
+            })
+            .unwrap()
+    };
+    let source = rust_box(owner, [10; 3], [0.; 3]);
+    let source_topology = source.topology_snapshot(owner, 0).unwrap();
+    let source_top = source_topology
+        .elements
+        .iter()
+        .find(|face| {
+            matches!(face.geometry, Some(AnalyticGeometry::Plane { frame }) if frame.normal() == [0., 0., 1.])
+        })
+        .unwrap();
+    let source_intent = GeometryIntent::capture(&source_topology, source_top.key).unwrap();
+    let inputs = [
+        ([3, 3, 12], [1., 1., -1.]),
+        ([3, 3, 12], [3., 2., -1.]),
+        ([2, 3, 4], [7., 6., 8.]),
+    ];
+    let ids = inputs.map(|_| EntityId::new());
+    let mut cutters =
+        std::array::from_fn::<_, 3, _>(|i| rust_box(ids[i], inputs[i].0, inputs[i].1));
+    let result = source
+        .rust_subtract_orthogonal_tools(&cutters, policy)
+        .unwrap()
+        .unwrap();
+    let native =
+        inputs
+            .into_iter()
+            .fold(native_box([10; 3], [0.; 3]), |current, (size, origin)| {
+                current
+                    .boolean(
+                        &native_box(size, origin),
+                        BooleanOperation::Subtract,
+                        policy,
+                    )
+                    .unwrap()
+                    .unwrap()
+            });
+    assert_eq!(result.solid_count().unwrap(), 1);
+    assert_eq!(native.solid_count().unwrap(), 1);
+    assert_eq!(result.volume_mm3().unwrap(), 828.);
+    assert!((result.volume_mm3().unwrap() - native.volume_mm3().unwrap()).abs() < 1e-8);
+    assert_eq!(result.faces().unwrap().len(), native.faces().unwrap().len());
+    assert_eq!(
+        mesh_proof(
+            &result
+                .manufacturing_mesh_with_receipt(options(0.03))
+                .unwrap()
+        )
+        .signed_volume_mm3,
+        828.
+    );
+
+    let topology = result.topology_snapshot(owner, 1).unwrap();
+    assert!(matches!(
+        resolve(&source_intent, &topology, 1),
+        Resolution::Resolved { .. }
+    ));
+    for cutter in ids {
+        assert!(topology.elements.iter().any(|face| {
+            face.key.kind == TopologyKind::Face
+                && face.origins.iter().any(|origin| origin.source == cutter)
+                && face
+                    .frames
+                    .iter()
+                    .any(|anchor| anchor.origin.source == cutter)
+        }));
+    }
+    let pocket_floor = topology
+        .elements
+        .iter()
+        .find(|face| {
+            matches!(face.geometry, Some(AnalyticGeometry::Plane { frame }) if frame.origin_mm[2] == 8. && frame.normal() == [0., 0., 1.])
+        })
+        .unwrap();
+    assert!(
+        pocket_floor.frames.iter().any(|anchor| {
+            anchor.origin.source == ids[2] && anchor.frame.normal() == [0., 0., 1.]
+        })
+    );
+    cutters.reverse();
+    let reordered = source
+        .rust_subtract_orthogonal_tools(&cutters, policy)
+        .unwrap()
+        .unwrap();
+    assert_eq!(reordered.topology_snapshot(owner, 1).unwrap(), topology);
+}
+
+#[test]
+fn rust_batched_cuts_keep_empty_and_refused_outcomes_distinct() {
+    let policy = GeometryPolicy::default();
+    let source = stock(6, [0.; 3]);
+    assert_eq!(
+        source
+            .rust_subtract_orthogonal_tools(&[], policy)
+            .unwrap()
+            .unwrap()
+            .volume_mm3()
+            .unwrap(),
+        216.
+    );
+    assert!(
+        source
+            .rust_subtract_orthogonal_tools(&[stock(8, [-1.; 3])], policy)
+            .unwrap()
+            .is_none()
+    );
+
+    let invalid_tools = [
+        (
+            Solid::box_solid([2.; 3], policy).unwrap(),
+            GeometryErrorKind::Unsupported,
+        ),
+        (
+            stock(2, [0.5 * policy.linear_tolerance_mm, 2., 2.]),
+            GeometryErrorKind::InvalidResult,
+        ),
+    ];
+    for (tool, kind) in invalid_tools {
+        let result = source.rust_subtract_orthogonal_tools(&[stock(1, [2.; 3]), tool], policy);
+        assert!(matches!(result, Err(error) if error.kind == kind));
+    }
+    let fuzzy = GeometryPolicy {
+        boolean_fuzzy_mm: policy.linear_tolerance_mm,
+        ..policy
+    };
+    let result = source.rust_subtract_orthogonal_tools(&[], fuzzy);
+    assert!(matches!(result, Err(error) if error.kind == GeometryErrorKind::Unsupported));
+    assert_eq!(source.volume_mm3().unwrap(), 216.);
+}
+
+#[test]
+fn rust_batched_cuts_accept_exact_float_rectangles_without_rational_products() {
+    let policy = GeometryPolicy::default();
+    let source = stock(8, [0.; 3]);
+    let frame = PlaneFrame {
+        origin: [3., 2., -1.],
+        u: [0., 1., 0.],
+        v: [1., 0., 0.],
+    };
+    let [x0, x1] = [0.123_456_789_012_345_6, 2.987_654_321_098_765];
+    let [y0, y1] = [0.567_890_123_456_789, 3.876_543_210_987_654];
+    let rectangle = [[x0, y0], [x1, y0], [x1, y1], [x0, y1]];
+    let prism = |points: [[f64; 2]; 4], displacement, taper| {
+        let profile = CurvedProfile {
+            frame,
+            outer: (0..4)
+                .map(|i| CurvedEdge2d::Line {
+                    a: points[i],
+                    b: points[(i + 1) % 4],
+                })
+                .collect(),
+            holes: vec![],
+        };
+        let feature = EntityId::new();
+        let origins = std::array::from_fn::<_, 4, _>(|i| Origin {
+            source: feature,
+            role: format!("cutter.{i}"),
+        });
+        Solid::rust_extrude_linear_named(&profile, displacement, taper, feature, &origins, policy)
+            .unwrap()
+    };
+    let exact = prism(rectangle, [0., 0., 10.], 0.);
+    let output = source
+        .rust_subtract_orthogonal_tools(&[exact], policy)
+        .unwrap()
+        .unwrap();
+    let expected = 512. - 8. * (x1 - x0) * (y1 - y0);
+    assert!((output.volume_mm3().unwrap() - expected).abs() < 1e-10);
+    let mesh = output
+        .manufacturing_mesh_with_receipt(options(0.03))
+        .unwrap();
+    assert!((mesh_proof(&mesh).signed_volume_mm3 - expected).abs() < 1e-10);
+    assert_eq!(output.faces().unwrap().len(), 10);
+
+    let mut trapezoid = rectangle;
+    trapezoid[3][0] += 0.1;
+    for tool in [
+        prism(trapezoid, [0., 0., 10.], 0.),
+        prism(rectangle, [0.1, 0., 10.], 0.),
+        prism(rectangle, [0., 0., 10.], 0.1),
+    ] {
+        assert!(matches!(
+            source.rust_subtract_orthogonal_tools(&[tool], policy),
+            Err(error) if error.kind == GeometryErrorKind::Unsupported
+        ));
+    }
 }
 
 #[test]

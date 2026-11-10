@@ -179,6 +179,12 @@ impl Solid {
             let Bounds { min, max } = self.bounds()?;
             return Ok(Some(vec![Box3 { min, max }]));
         }
+        if let Some((body, frame)) = self.linear_body()
+            && cardinal(frame)
+            && let Some(Bounds { min, max }) = body.orthogonal_box(frame)
+        {
+            return Ok(Some(vec![Box3 { min, max }]));
+        }
         Ok(None)
     }
 
@@ -311,24 +317,62 @@ impl Solid {
         operation: BooleanOperation,
         policy: GeometryPolicy,
     ) -> Result<Option<Self>, GeometryError> {
-        if policy.boolean_fuzzy_mm != 0. || self.policy != policy || other.policy != policy {
+        self.orthogonal_boolean_with_tools(std::slice::from_ref(other), operation, policy)
+    }
+
+    /// Cut the union of axis-aligned rectilinear tools in one exact grid
+    /// evaluation. A cut with no tools retains the original solid and names.
+    pub fn rust_subtract_orthogonal_tools(
+        &self,
+        tools: &[Self],
+        policy: GeometryPolicy,
+    ) -> Result<Option<Self>, GeometryError> {
+        policy.validate()?;
+        self.orthogonal_boolean_with_tools(tools, BooleanOperation::Subtract, policy)
+    }
+
+    fn orthogonal_boolean_with_tools(
+        &self,
+        tools: &[Self],
+        operation: BooleanOperation,
+        policy: GeometryPolicy,
+    ) -> Result<Option<Self>, GeometryError> {
+        if policy.boolean_fuzzy_mm != 0.
+            || self.policy != policy
+            || tools.iter().any(|tool| tool.policy != policy)
+        {
             return Err(unsupported(
                 "Rust orthogonal Boolean requires identical exact geometry policies",
             ));
         }
+        if tools.len() > orthogonal::MAX_CELLS {
+            return Err(limit("Orthogonal tools exceed the occupied cell budget"));
+        }
+        let unsupported_operand = || {
+            unsupported(
+                "Rust orthogonal Boolean requires a rectilinear prism or result aligned to world axes",
+            )
+        };
         let mut sources = Sources::default();
-        let Some((feature, left)) = self.orthogonal_operand(false, &mut sources)? else {
-            return Err(unsupported(
-                "Rust orthogonal Boolean requires a rectilinear prism or result aligned to world axes",
-            ));
+        let (feature, left) = self
+            .orthogonal_operand(false, &mut sources)?
+            .ok_or_else(unsupported_operand)?;
+        let Some((first, rest)) = tools.split_first() else {
+            return self.share().map(Some);
         };
-        let Some((_, right)) =
-            other.orthogonal_operand(operation == BooleanOperation::Subtract, &mut sources)?
-        else {
-            return Err(unsupported(
-                "Rust orthogonal Boolean requires a rectilinear prism or result aligned to world axes",
-            ));
+        let mut cells = |tool: &Self| {
+            tool.orthogonal_operand(operation == BooleanOperation::Subtract, &mut sources)?
+                .map(|(_, cells)| cells)
+                .ok_or_else(unsupported_operand)
         };
+        let mut right = cells(first)?;
+        for tool in rest {
+            let tool_cells = cells(tool)?;
+            if right.len() + tool_cells.len() > orthogonal::MAX_CELLS {
+                return Err(limit("Orthogonal tools exceed the occupied cell budget"));
+            }
+            right.extend(tool_cells);
+        }
         let operation = match operation {
             BooleanOperation::Union => Operation::Union,
             BooleanOperation::Subtract => Operation::Subtract,

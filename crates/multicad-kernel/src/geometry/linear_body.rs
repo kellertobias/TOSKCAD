@@ -464,6 +464,34 @@ impl LinearBody {
         }
     }
 
+    /// Exact local rectangle with an unchanged section. The caller must
+    /// establish a cardinal placement before treating these bounds as stock.
+    pub(super) fn orthogonal_box(&self, frame: PlaneFrame) -> Option<Bounds> {
+        let Geometry::Ruled(sweep) = &self.geometry else {
+            return None;
+        };
+        let [ring] = sweep.base() else {
+            return None;
+        };
+        if ring.len() != 4 || sweep.base() != sweep.top() {
+            return None;
+        }
+        let [x0, x1] = ring
+            .iter()
+            .fold([f64::INFINITY, f64::NEG_INFINITY], |[min, max], p| {
+                [min.min(p[0]), max.max(p[0])]
+            });
+        let [y0, y1] = ring
+            .iter()
+            .fold([f64::INFINITY, f64::NEG_INFINITY], |[min, max], p| {
+                [min.min(p[1]), max.max(p[1])]
+            });
+        [[x0, y0], [x1, y0], [x1, y1], [x0, y1]]
+            .iter()
+            .all(|corner| ring.contains(corner))
+            .then(|| self.bounds(frame))
+    }
+
     fn cap_frame(&self, frame: PlaneFrame, end: bool, authored: bool) -> ReferenceFrame {
         let sweep = match &self.geometry {
             Geometry::Ruled(sweep) => sweep,
