@@ -10,12 +10,19 @@ mod machined;
 mod retained;
 mod warped;
 pub(super) use annulus::{project_circular, project_concentric};
+pub(super) use loft::project_view as project_loft_view;
 
 pub(super) fn project(
     solids: &[DrawingSolid<'_>],
     options: DrawingProjection,
     depth: f64,
 ) -> Result<Vec<ProjectedVector>, GeometryError> {
+    if !options.section_only
+        && let [input] = solids
+        && input.solid.nonplanar_loft_body().is_some()
+    {
+        return project_loft_view(input, options);
+    }
     if !options.section_only
         && options.detail.is_none()
         && let Some(result) = warped::project_retained(solids, options, depth)

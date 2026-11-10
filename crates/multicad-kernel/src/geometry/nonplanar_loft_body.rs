@@ -2,7 +2,9 @@
 use super::*;
 use crate::rust_prism_topology::{Builder, place_frame, polygon_planar_loops, position};
 use multicad_core::references::{AnalyticGeometry, AnchoredFrame};
-use multicad_rust_kernel::planar_boolean::{self, LoftSectionCurve, NonplanarLoft};
+use multicad_rust_kernel::planar_boolean::{
+    self, LoftDrawingEdge, LoftProjection, LoftSectionCurve, NonplanarLoft,
+};
 
 type Point = [f64; 3];
 
@@ -205,6 +207,17 @@ impl Solid {
 }
 
 impl NonplanarLoftBody {
+    pub(crate) fn drawing_edges(
+        &self,
+        options: LoftProjection,
+    ) -> Result<Vec<LoftDrawingEdge>, planar_boolean::Error> {
+        self.geometry.drawing_edges(options)
+    }
+
+    pub(crate) fn drawing_height(&self) -> f64 {
+        self.geometry.rings()[1][0][2]
+    }
+
     pub(crate) fn section(
         &self,
         placement: PlaneFrame,

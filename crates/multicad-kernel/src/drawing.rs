@@ -224,6 +224,11 @@ pub fn project_drawing(
             return section::project(solids, options, depth);
         }
         if let [input] = solids
+            && input.solid.nonplanar_loft_body().is_some()
+        {
+            return section::project_loft_view(input, options);
+        }
+        if let [input] = solids
             && let Some(projection) = panel::project(input, options)
                 .or_else(|| panel::project_chamfered_bores(input, options))
                 .or_else(|| panel::project_normal_sweep(input, options))

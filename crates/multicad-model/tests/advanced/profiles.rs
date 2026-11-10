@@ -1949,6 +1949,76 @@ fn verify_twisted_loft_sections(
     };
     let project =
         |solid, options, hatch| project_drawing(&[DrawingSolid { solid, hatch }], options);
+    let view = DrawingProjection {
+        frame: options.frame,
+        hidden_lines: true,
+        chord_tolerance_mm: options.chord_tolerance_mm,
+        ..Default::default()
+    };
+    let ordinary = project(solid, view, None).unwrap();
+    assert!(ordinary.iter().any(|v| v.role == VectorRole::Visible));
+    assert!(ordinary.iter().any(|v| v.role == VectorRole::Hidden));
+    let retained_options = DrawingProjection {
+        frame: PlaneFrame::default(),
+        section_offset_mm: Some(4.),
+        section_depth_mm: Some(2.5),
+        ..view
+    };
+    let retained = project(solid, retained_options, None).unwrap();
+    assert_eq!(
+        retained
+            .iter()
+            .filter(|v| v.role == VectorRole::Section)
+            .count(),
+        4
+    );
+    assert!(retained.iter().any(|v| v.role == VectorRole::Hidden));
+    let reverse = project(
+        solid,
+        DrawingProjection {
+            frame: PlaneFrame {
+                v: [0., -1., 0.],
+                ..PlaneFrame::default()
+            },
+            section_offset_mm: Some(-2.),
+            section_depth_mm: Some(2.5),
+            ..retained_options
+        },
+        None,
+    )
+    .unwrap();
+    assert_eq!(
+        reverse
+            .iter()
+            .filter(|v| v.role == VectorRole::Section)
+            .count(),
+        4
+    );
+    assert!(
+        project(
+            solid,
+            DrawingProjection {
+                section_offset_mm: Some(-1.),
+                ..retained_options
+            },
+            None
+        )
+        .unwrap()
+        .is_empty()
+    );
+    let detail_options = DrawingProjection {
+        detail: Some((ordinary[0].preview_mm[0], 0.35)),
+        ..view
+    };
+    let detail = project(solid, detail_options, None).unwrap();
+    assert!(!detail.is_empty());
+    let (center, radius) = detail_options.detail.unwrap();
+    assert!(
+        detail
+            .iter()
+            .flat_map(|v| &v.preview_mm)
+            .all(|p| { (p[0] - center[0]).hypot(p[1] - center[1]) <= radius + 1e-7 })
+    );
     let rust = project(solid, options, None).unwrap();
     assert_eq!(rust.len(), 4);
     assert!(rust.iter().all(|vector| vector.role == VectorRole::Section
@@ -1990,6 +2060,12 @@ fn verify_twisted_loft_sections(
         line_width_mm: 0.1,
         pattern: HatchPattern::Lines,
     };
+    assert!(
+        project(solid, retained_options, Some(hatch))
+            .unwrap()
+            .iter()
+            .any(|vector| vector.role == VectorRole::Hatch)
+    );
     let hatched = project(solid, options, Some(hatch)).unwrap();
     assert_eq!(&hatched[..4], &rust);
     assert!(
@@ -2105,11 +2181,11 @@ fn verify_twisted_loft_sections(
     #[cfg(feature = "occt")]
     {
         use std::time::Instant;
-        let measure = |source| {
+        let measure = |source, options| {
             let mut samples = [std::time::Duration::ZERO; 9];
             for elapsed in &mut samples {
                 let start = Instant::now();
-                assert_eq!(project(source, options, None).unwrap().len(), 4);
+                assert!(!project(source, options, None).unwrap().is_empty());
                 *elapsed = start.elapsed();
             }
             samples.sort_unstable();
@@ -2140,10 +2216,54 @@ fn verify_twisted_loft_sections(
                 }
             }
         }
+        let side_options = DrawingProjection {
+            frame: PlaneFrame {
+                v: [0., 0., 1.],
+                ..PlaneFrame::default()
+            },
+            ..view
+        };
+        let side = project(solid, side_options, None).unwrap();
+        for (mode, vectors, options) in [
+            ("oblique projection", &ordinary, view),
+            ("edge-on cap projection", &side, side_options),
+            ("axial depth section", &retained, retained_options),
+        ] {
+            let reference = project(native, options, None).unwrap();
+            for (label, a, b) in [
+                ("Rust", vectors, &reference),
+                ("OpenCascade", &reference, vectors),
+            ] {
+                for vector in a {
+                    let segments = b
+                        .iter()
+                        .filter(|v| v.role == vector.role)
+                        .flat_map(|v| v.preview_mm.windows(2))
+                        .collect::<Vec<_>>();
+                    assert!(!segments.is_empty(), "{mode} {label} {:?}", vector.role);
+                    for &point in &vector.preview_mm {
+                        let error = segments
+                            .iter()
+                            .map(|ends| point_distance(point, [ends[0], ends[1]]))
+                            .fold(f64::INFINITY, f64::min);
+                        assert!(
+                            error < 3. * options.chord_tolerance_mm,
+                            "{mode} {label} {:?} {point:?}: {error}",
+                            vector.role
+                        );
+                    }
+                }
+            }
+        }
         eprintln!(
             "Twisted loft section medians over 9 warm projections: Rust {:?}, OpenCascade {:?}",
-            measure(solid),
-            measure(native),
+            measure(solid, options),
+            measure(native, options),
+        );
+        eprintln!(
+            "Twisted loft hidden-line view medians over 9 warm projections: Rust {:?}, OpenCascade {:?}",
+            measure(solid, view),
+            measure(native, view),
         );
     }
 }

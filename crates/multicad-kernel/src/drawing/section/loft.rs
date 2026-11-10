@@ -3,6 +3,8 @@ use super::*;
 use multicad_rust_kernel::planar_boolean::{Error, LoftSectionCurve};
 
 mod clip;
+mod view;
+pub(in crate::drawing) use view::project_view;
 
 type Point = [f64; 2];
 
@@ -44,24 +46,10 @@ pub(super) fn project(
                 format!("Rust loft section failed: {cause:?}"),
             )
         })?;
-    let origin_delta = std::array::from_fn(|i| placement.origin[i] - frame.origin[i]);
-    let dot = |a: [f64; 3], b: [f64; 3]| a.into_iter().zip(b).map(|(a, b)| a * b).sum::<f64>();
-    let [u, v] = [axes[0], axes[1]];
-    let origin = [dot(u, origin_delta), dot(v, origin_delta)];
-    let directions = [placement.u, placement.v, placement.normal()];
-    let [u, v] = [u, v].map(|axis| directions.map(|direction| dot(axis, direction)));
-    let project = |point| [dot(u, point) + origin[0], dot(v, point) + origin[1]];
+    let projection = Frame::new(placement, frame.origin, axes);
     let mut curves: Vec<_> = curves
         .into_iter()
-        .map(|curve| match curve {
-            LoftSectionCurve::Line(ends) => Curve::Line(ends.map(project)),
-            LoftSectionCurve::Quadratic { poles, weights } => {
-                Curve::Quadratic(std::array::from_fn(|i| Control {
-                    point: project(poles[i]),
-                    weight: weights[i],
-                }))
-            }
-        })
+        .map(|curve| projection.curve(curve))
         .collect();
     for (axis, window) in [options.section_u_mm, options.section_v_mm]
         .into_iter()
@@ -72,17 +60,69 @@ pub(super) fn project(
             curves = clip::half_plane(curves, axis, upper, -1., tolerance)?;
         }
     }
+    publish(
+        curves.into_iter().map(|curve| (curve, VectorRole::Section)),
+        options,
+        source,
+    )
+}
+
+struct Frame {
+    axes: [[f64; 3]; 3],
+    offset: [f64; 3],
+}
+
+impl Frame {
+    fn new(placement: PlaneFrame, origin: [f64; 3], screen: [[f64; 3]; 3]) -> Self {
+        let delta = std::array::from_fn(|i| placement.origin[i] - origin[i]);
+        let directions = [placement.u, placement.v, placement.normal()];
+        Self {
+            axes: screen.map(|axis| directions.map(|direction| dot(axis, direction))),
+            offset: screen.map(|axis| dot(axis, delta)),
+        }
+    }
+
+    fn curve(&self, curve: LoftSectionCurve) -> Curve {
+        map_curve(curve, |point| {
+            [
+                dot(self.axes[0], point) + self.offset[0],
+                dot(self.axes[1], point) + self.offset[1],
+            ]
+        })
+    }
+}
+
+fn map_curve(curve: LoftSectionCurve, project: impl Fn([f64; 3]) -> Point) -> Curve {
+    match curve {
+        LoftSectionCurve::Line(ends) => Curve::Line(ends.map(project)),
+        LoftSectionCurve::Quadratic { poles, weights } => {
+            Curve::Quadratic(std::array::from_fn(|i| Control {
+                point: project(poles[i]),
+                weight: weights[i],
+            }))
+        }
+    }
+}
+
+fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
+    a.into_iter().zip(b).map(|(a, b)| a * b).sum()
+}
+
+fn publish(
+    curves: impl ExactSizeIterator<Item = (Curve, VectorRole)>,
+    options: DrawingProjection,
+    source: usize,
+) -> Result<Vec<ProjectedVector>, GeometryError> {
     if curves.len() > options.maximum_curves as usize {
         return Err(limit());
     }
     let mut points = options.maximum_points as usize;
     curves
-        .into_iter()
-        .map(|curve| {
+        .map(|(curve, role)| {
             let vector = match curve {
                 Curve::Line(ends) => {
                     charge(&mut points, 2)?;
-                    planar::line(source, VectorRole::Section, ends)
+                    planar::line(source, role, ends)
                 }
                 Curve::Quadratic(controls) => {
                     let mut preview = vec![controls[0].point];
@@ -96,7 +136,7 @@ pub(super) fn project(
                     )?;
                     ProjectedVector {
                         source_index: source,
-                        role: VectorRole::Section,
+                        role,
                         curve: VectorCurve::BSpline {
                             degree: 2,
                             periodic: false,

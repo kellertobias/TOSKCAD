@@ -2,6 +2,8 @@
 use super::*;
 
 mod area;
+mod projection;
+pub use projection::{LoftDrawingEdge, LoftProjection};
 mod section;
 pub use section::LoftSectionCurve;
 
