@@ -1713,19 +1713,22 @@ impl Compiler {
         }
         drop(cached);
         let pair_started = std::time::Instant::now();
-        let gear_pair_checks = if roots.is_none() && backend == GeometryBackend::OpenCascade {
-            crate::gear_pairs::validate(
-                crate::gear_pairs::ValidationInputs {
-                    document,
-                    evaluated: context.parameters(),
-                    solids: &solids,
-                    occurrences: &occurrences,
-                    revision,
-                    policy: self.policy,
-                    interrupt,
-                },
-                Some(pair_proofs),
-            )?
+        let gear_pair_checks = if roots.is_none() {
+            let inputs = crate::gear_pairs::ValidationInputs {
+                document,
+                evaluated: context.parameters(),
+                solids: &solids,
+                occurrences: &occurrences,
+                revision,
+                policy: self.policy,
+                interrupt,
+            };
+            match backend {
+                GeometryBackend::OpenCascade => {
+                    crate::gear_pairs::validate(inputs, Some(pair_proofs))?
+                }
+                GeometryBackend::Rust => crate::gear_pairs::validate_rust(inputs)?,
+            }
         } else {
             BTreeMap::new()
         };

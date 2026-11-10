@@ -11,6 +11,8 @@ use multicad_rust_kernel::{
 };
 use std::f64::consts::{PI, TAU};
 
+mod clearance;
+
 pub(crate) struct SpurGearBody {
     pub(super) profile: Profile,
     pub(super) feature: EntityId,

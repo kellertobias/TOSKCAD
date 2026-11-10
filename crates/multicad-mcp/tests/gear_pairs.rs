@@ -197,3 +197,64 @@ fn rack_pair_roles_derived_motion_and_finite_end_refusal_are_canonical() {
         assert_eq!(h.document(), before);
     }
 }
+
+#[test]
+fn rust_worker_applies_and_drives_only_certified_spur_pairs() {
+    let host = Headless::with_geometry_backend(
+        Workspace::new(Document::new("Rust spur pairs").unwrap()).unwrap(),
+        None,
+        false,
+        multicad_model::GeometryBackend::Rust,
+    );
+    let created = run(
+        &host,
+        "set_gear_pair",
+        json!({
+            "expected_revision": 0,
+            "name": "Rust Spur Pair",
+            "first": {"teeth": scalar(24., "count"), "face_width": scalar(5., "mm")},
+            "second": {"teeth": scalar(36., "count"), "face_width": scalar(5., "mm")},
+            "origin": [scalar(10., "mm"), scalar(20., "mm"), scalar(30., "mm")],
+            "plane": "yz"
+        }),
+    );
+    let pair = &created["pair"];
+    let evaluated = run(&host, "evaluate_model", json!({}));
+    let check = &evaluated["gear_pairs"][0];
+    assert_eq!(check["pair"], *pair);
+    assert_eq!(check["cycle_drive_angles_rad"].as_array().unwrap().len(), 9);
+    assert_eq!(check["current_pose_checked"], true);
+    assert!(
+        check["scope"]
+            .as_str()
+            .unwrap()
+            .starts_with("Rust positive-clearance")
+    );
+    assert_eq!(evaluated["physical_leaves"].as_array().unwrap().len(), 2);
+
+    let before = host.document();
+    let rejected = dispatch(
+        &host,
+        &call(false),
+        "set_gear_pair",
+        json!({
+            "expected_revision": 1, "pair": pair,
+            "first": {"backlash": scalar(0., "mm")},
+            "second": {"backlash": scalar(0., "mm")}
+        }),
+    );
+    let failure = rejected.unwrap_err().to_string();
+    assert!(failure.contains("Rust gear pair"), "{failure}");
+    assert_eq!(host.document(), before);
+    let driven = run(
+        &host,
+        "set_gear_pair",
+        json!({"expected_revision": 1, "pair": pair, "drive_angle": scalar(4., "deg")}),
+    );
+    assert_eq!(driven["revision"], 2);
+    let after = run(&host, "evaluate_model", json!({}));
+    let radians = after["gear_pairs"][0]["current_drive_angle_rad"]
+        .as_f64()
+        .unwrap();
+    assert!((radians - 4_f64.to_radians()).abs() < 1e-12);
+}

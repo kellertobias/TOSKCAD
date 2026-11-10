@@ -1,0 +1,126 @@
+//! Positive-clearance certificates for bounded unshifted spur pairs.
+use super::*;
+use multicad_core::model::GearFamily;
+use multicad_kernel::rust_kernel::spur_gear::clearance::ResultKind;
+
+fn check(
+    pair: EntityId,
+    [a, b]: [&Solid; 2],
+    drive: f64,
+    policy: GeometryPolicy,
+    interrupt: Option<&dyn Fn() -> bool>,
+) -> Result<(), ModelError> {
+    let result = a
+        .certify_rust_spur_pair(b, policy, interrupt)
+        .map_err(|cause| error(Some(pair), cause))?;
+    let reason = match result {
+        ResultKind::Clear => return Ok(()),
+        ResultKind::CommonInterior => "overlaps with a certified common-interior point",
+        ResultKind::Unresolved => "does not have certified positive clearance",
+    };
+    Err(error(
+        Some(pair),
+        format!(
+            "Rust gear pair {reason} at tested drive {:.6} degrees; repair its phase or clearance",
+            drive.to_degrees()
+        ),
+    ))
+}
+
+pub(crate) fn validate(
+    inputs: ValidationInputs<'_>,
+) -> Result<BTreeMap<EntityId, GearPairCheck>, ModelError> {
+    let ValidationInputs {
+        document,
+        evaluated,
+        solids,
+        policy,
+        interrupt,
+        ..
+    } = inputs;
+    let mut reports = BTreeMap::new();
+    for entity in document.entities() {
+        if !matches!(&entity.data, EntityData::Extension { definition, .. } if definition.type_id == model::GEAR_PAIR_TYPE)
+        {
+            continue;
+        }
+        checkpoint(interrupt)?;
+        let pair = entity.id;
+        let source = model::read_gear_pair(document, pair).map_err(|e| error(Some(pair), e))?;
+        let resolved = model::resolve_gear_pair_parameters(document, evaluated, &source.parameters)
+            .map_err(|e| error(Some(pair), e))?;
+        if shifted_engagement(document, source.parameters.gears)
+            || resolved.gears.iter().any(|gear| {
+                !gear.rotary().is_some_and(|rotary| {
+                    rotary.family == GearFamily::Spur
+                        && rotary.profile_shift_coefficient == 0.
+                        && rotary.hub.is_none()
+                })
+            })
+        {
+            return Err(error(
+                Some(pair),
+                "Rust gear-pair interference is available only for unshifted external spur members without hubs",
+            ));
+        }
+        let [a, b] = source.parameters.gears;
+        let local = [solids.get(&a), solids.get(&b)];
+        let [Some(a), Some(b)] = local else {
+            return Err(error(
+                Some(pair),
+                "Rust gear-pair interference requires both exact member solids",
+            ));
+        };
+        let phases: Vec<_> = (0..SAMPLES)
+            .map(|i| TAU / f64::from(resolved.gears[0].teeth()) * i as f64 / (SAMPLES - 1) as f64)
+            .collect();
+        let start = std::time::Instant::now();
+        for &drive in &phases {
+            checkpoint(interrupt)?;
+            let sample = sample_document(document, pair, &source, drive)?;
+            let poses = source.outputs.instances.map(|instance| {
+                model::resolve_instance_pose(&sample, instance, evaluated)
+                    .map_err(|e| error(Some(pair), e))
+            });
+            let [pa, pb] = poses;
+            let placed_a = placed(a, pa?, pair)?;
+            let placed_b = placed(b, pb?, pair)?;
+            check(pair, [&placed_a, &placed_b], drive, policy, interrupt)?;
+        }
+        let sampled_cycle_ms = start.elapsed().as_secs_f64() * 1000.;
+        checkpoint(interrupt)?;
+        let current = source
+            .parameters
+            .drive_angle
+            .value_in(multicad_core::parameters::Unit::Radian, Some(evaluated))
+            .map_err(|e| error(Some(pair), e))?;
+        let start = std::time::Instant::now();
+        check(
+            pair,
+            [
+                inputs.current_member(pair, &source, 0)?,
+                inputs.current_member(pair, &source, 1)?,
+            ],
+            current,
+            policy,
+            interrupt,
+        )?;
+        let current_pose_ms = start.elapsed().as_secs_f64() * 1000.;
+        reports.insert(pair, GearPairCheck {
+            pair,
+            center_distance_mm: resolved.center_distance_mm,
+            bevel: None,
+            worm: None,
+            current_engagement: None,
+            cycle_drive_angles_rad: phases,
+            cycle_reused: false,
+            sampled_cycle_ms,
+            current_pose_ms,
+            current_drive_angle_rad: current,
+            current_pose_checked: true,
+            maximum_overlap_volume_mm3: 0.,
+            scope: "Rust positive-clearance certificates for the current pose and nine sampled phases over one unshifted external spur tooth cycle. Continuous motion, strength and manufacturing fit are outside this check.",
+        });
+    }
+    Ok(reports)
+}

@@ -4,6 +4,7 @@ use crate::normal_sweep;
 use crate::revolution::{Sum, cross};
 use std::f64::consts::{FRAC_PI_2, PI, TAU};
 
+pub mod clearance;
 mod hub;
 mod involute;
 mod sweep;

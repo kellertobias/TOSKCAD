@@ -13,6 +13,10 @@ use std::{
     collections::BTreeMap,
     f64::consts::{PI, TAU},
 };
+mod rust_spur;
+
+pub(crate) use rust_spur::validate as validate_rust;
+
 const SAMPLES: usize = 9;
 const MAX_PAIRS: usize = 64;
 pub(crate) fn validate_parameters(
@@ -59,7 +63,7 @@ pub struct GearPairCheck {
     pub current_engagement: Option<GearEngagementWitness>,
     pub cycle_drive_angles_rad: Vec<f64>,
     pub cycle_reused: bool,
-    /// Wall time in native sampled checks; zero when a completed cycle is reused.
+    /// Wall time in sampled interference checks; zero when a completed cycle is reused.
     pub sampled_cycle_ms: f64,
     pub current_pose_ms: f64,
     pub current_drive_angle_rad: f64,
@@ -610,7 +614,7 @@ impl ValidationInputs<'_> {
         let invalid = || {
             error(
                 Some(pair),
-                "Current chevron occurrence does not match its checked Part, producer, pose or revision",
+                "Current gear occurrence does not match its checked Part, producer, pose or revision",
             )
         };
         let occurrence = self.occurrences.get(&instance).ok_or_else(invalid)?;

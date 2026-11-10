@@ -336,8 +336,13 @@ fn rust_spur_hub_extends_the_bore_and_keeps_native_face_roles() {
 }
 
 #[test]
-fn rust_spur_pairs_require_exact_interference_proof_before_commit() {
-    let (session, pinion) = fixture();
+fn rust_spur_pair_certifies_authored_motion_and_reopens_with_the_same_proof() {
+    use multicad_core::project_file::{self, FileLimits, ProjectFile};
+    use multicad_kernel::{
+        BooleanOperation, RigidTransform, rust_kernel::spur_gear::clearance::ResultKind,
+    };
+
+    let (mut session, pinion) = fixture();
     let wheel = GearRequest::new(
         "Spur wheel",
         GearParameters {
@@ -352,20 +357,106 @@ fn rust_spur_pairs_require_exact_interference_proof_before_commit() {
     let baseline = session.document().clone();
     let request = GearPairRequest::new("Spur gear pair", [pinion, wheel]);
     let draft = model::prepare_gear_pair(&session, 0, actor(), &request).unwrap();
-    let compiler = Compiler::default();
+    let compiler = Compiler {
+        omit_display: true,
+        ..Compiler::default()
+    };
     let document = draft.prepared.document();
     let scoped = compiler
         .compile_sources_with_backend(document, 1, &[pinion_feature], GeometryBackend::Rust, None)
         .unwrap();
     assert!(scoped.solid(pinion_feature).unwrap().uses_rust_geometry());
-    let error = compiler
+    assert!(scoped.gear_pair_checks().is_empty());
+
+    let rust = compiler
         .compile_with_backend(document, 1, GeometryBackend::Rust, None)
-        .err()
         .unwrap();
-    assert!(
-        error.to_string().contains("exact interference validation"),
-        "{error}"
-    );
+    let report = &rust.gear_pair_checks()[&request.pair];
+    assert_eq!(report.center_distance_mm, 60.);
+    assert_eq!(report.cycle_drive_angles_rad.len(), 9);
+    assert!(report.current_pose_checked);
+    assert_eq!(report.maximum_overlap_volume_mm3, 0.);
     assert_eq!(session.document(), &baseline);
     assert_eq!(session.revision(), 0);
+
+    let [a, b] = request.outputs.instances;
+    let phase = -std::f64::consts::PI / 36.;
+    let (sin, cos) = phase.sin_cos();
+    let wrong = RigidTransform {
+        rotation: [[cos, -sin, 0.], [sin, cos, 0.], [0., 0., 1.]],
+        translation_mm: [60. * (1. - cos), -60. * sin, 0.],
+    };
+    let wrong_rust = rust.solid(b).unwrap().transformed(wrong).unwrap();
+    assert_eq!(
+        rust.solid(a)
+            .unwrap()
+            .certify_rust_spur_pair(&wrong_rust, compiler.policy, None)
+            .unwrap(),
+        ResultKind::CommonInterior
+    );
+    if multicad_kernel::OCCT_LINKED {
+        let native = compiler
+            .compile_with_backend(document, 1, GeometryBackend::OpenCascade, None)
+            .unwrap();
+        let oracle = &native.gear_pair_checks()[&request.pair];
+        assert_eq!(oracle.cycle_drive_angles_rad, report.cycle_drive_angles_rad);
+        assert_eq!(oracle.maximum_overlap_volume_mm3, 0.);
+        let wrong_native = native.solid(b).unwrap().transformed(wrong).unwrap();
+        let overlap = native
+            .solid(a)
+            .unwrap()
+            .boolean(&wrong_native, BooleanOperation::Intersect, compiler.policy)
+            .unwrap()
+            .unwrap()
+            .volume_mm3()
+            .unwrap();
+        assert!(overlap > 1., "{overlap}");
+    }
+
+    session.commit(draft.prepared).unwrap();
+    let mut parameters = request.parameters;
+    parameters.drive_angle = angle(4.);
+    let edited = model::prepare_gear_pair_edit(
+        &session,
+        session.revision(),
+        actor(),
+        request.pair,
+        &parameters,
+    )
+    .unwrap();
+    let moved = compiler
+        .compile_with_backend(
+            edited.prepared.document(),
+            session.revision(),
+            GeometryBackend::Rust,
+            None,
+        )
+        .unwrap();
+    near(
+        moved.gear_pair_checks()[&request.pair].current_drive_angle_rad,
+        4_f64.to_radians(),
+        1e-12,
+    );
+    session.commit(edited.prepared).unwrap();
+
+    let mut bytes = Vec::new();
+    project_file::write(
+        &ProjectFile::new(session.document().clone()).unwrap(),
+        &mut bytes,
+        FileLimits::default(),
+    )
+    .unwrap();
+    let reopened = project_file::read(
+        &mut bytes.as_slice(),
+        FileLimits::default(),
+        &project_file::supported_capabilities(),
+    )
+    .unwrap();
+    let readback = compiler
+        .compile_with_backend(&reopened.project.document, 0, GeometryBackend::Rust, None)
+        .unwrap();
+    let proof = &readback.gear_pair_checks()[&request.pair];
+    assert_eq!(proof.cycle_drive_angles_rad, report.cycle_drive_angles_rad);
+    near(proof.current_drive_angle_rad, 4_f64.to_radians(), 1e-12);
+    assert!(proof.current_pose_checked);
 }
