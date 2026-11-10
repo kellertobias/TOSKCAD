@@ -1,7 +1,16 @@
 //! Detached tessellation of analytic axial solids using shared boundary indices.
-use crate::{Rational, cylinder::AxialCylinder, polygon::PolygonPrism, prism::Prism};
+use crate::{
+    Rational,
+    circular_pockets::CircularPocket,
+    cylinder::AxialCylinder,
+    polygon::{MAX_VERTICES, PolygonPrism},
+    prism::Prism,
+};
 use spade::{ConstrainedDelaunayTriangulation, Point2, Triangulation, handles::FixedVertexHandle};
-use std::f64::consts::{FRAC_PI_2, PI, TAU};
+use std::{
+    f64::consts::{FRAC_PI_2, PI, TAU},
+    ops::Range,
+};
 
 #[derive(Clone, Copy, Debug)]
 pub struct Tessellation {
@@ -57,7 +66,7 @@ impl Tessellation {
     }
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct Footprint {
     points: Vec<Point2<f64>>,
     edges: Vec<[usize; 2]>,
@@ -257,6 +266,10 @@ pub fn polygon_prism(
     options: Tessellation,
 ) -> Result<DisplayMesh, MeshError> {
     options.check()?;
+    polygon_footprint(prism, options)?.tessellate(0., prism.height().as_f64())
+}
+
+fn polygon_footprint(prism: &PolygonPrism, options: Tessellation) -> Result<Footprint, MeshError> {
     let mut footprint = Footprint::default();
     let mut first_side = 2;
     for (index, ring) in prism.rings().iter().enumerate() {
@@ -278,7 +291,153 @@ pub fn polygon_prism(
             options,
         )?;
     }
-    footprint.tessellate(0., prism.height().as_f64())
+    Ok(footprint)
+}
+
+/// Tessellate a polygonal prism with previously certified blind pockets.
+/// Each mouth reuses the cap's indexed ring and each floor reuses the wall rim.
+pub fn pocketed_polygon_prism(
+    prism: &PolygonPrism,
+    pockets: &[CircularPocket],
+    options: Tessellation,
+) -> Result<DisplayMesh, MeshError> {
+    options.check()?;
+    let height = prism.height().as_f64();
+    let footprint = polygon_footprint(prism, options)?;
+    if pockets.is_empty() {
+        return footprint.tessellate(0., height);
+    }
+    if pockets.len() > MAX_VERTICES {
+        return Err(MeshError::BudgetExceeded);
+    }
+    let mut triangle_count = 4 * (footprint.points.len() + footprint.holes) - 4;
+    for &pocket in pockets {
+        if !pocket.valid_dimensions(height, 0.) {
+            return Err(MeshError::UnresolvedBoundary);
+        }
+        let samples = options.arc_segments(pocket.radius_mm, TAU)?;
+        triangle_count += 4 * samples + 2;
+        if triangle_count > options.triangle_limit {
+            return Err(MeshError::BudgetExceeded);
+        }
+    }
+    let mut mesh = DisplayMesh {
+        vertices: Vec::new(),
+        indices: Vec::with_capacity(3 * triangle_count),
+        face_indices: Vec::with_capacity(triangle_count),
+    };
+    let mut mouths = vec![0..0; pockets.len()];
+    // Footprint applies a closed through-hole budget, which has two extra
+    // cap triangles per hole. The exact pocket total was checked above.
+    let cap_options = Tessellation {
+        triangle_limit: options.triangle_limit + 2 * pockets.len(),
+        ..options
+    };
+    let cap_offsets = [
+        pocketed_cap(
+            &mut mesh,
+            footprint.clone(),
+            pockets,
+            &mut mouths,
+            0.,
+            false,
+            cap_options,
+        )?,
+        pocketed_cap(
+            &mut mesh,
+            footprint.clone(),
+            pockets,
+            &mut mouths,
+            height,
+            true,
+            cap_options,
+        )?,
+    ];
+    for ([a, b], face) in footprint.edges.into_iter().zip(footprint.side_faces) {
+        let [bottom, top] = cap_offsets;
+        wall(
+            &mut mesh,
+            [a + bottom, b + bottom],
+            [a + top, b + top],
+            face,
+        );
+    }
+    let first_pocket_face =
+        2 + prism.rings().iter().map(Vec::len).sum::<usize>() + prism.circular_holes().len();
+    for (index, (&pocket, mouth)) in pockets.iter().zip(mouths).enumerate() {
+        let face = (first_pocket_face + 2 * index) as u32;
+        pocket_surfaces(&mut mesh, pocket, mouth, height, face);
+    }
+    Ok(mesh)
+}
+
+fn pocketed_cap(
+    mesh: &mut DisplayMesh,
+    mut footprint: Footprint,
+    pockets: &[CircularPocket],
+    mouths: &mut [Range<usize>],
+    z: f64,
+    end: bool,
+    options: Tessellation,
+) -> Result<usize, MeshError> {
+    let offset = mesh.vertices.len() / 3;
+    for (pocket, mouth) in pockets
+        .iter()
+        .zip(mouths)
+        .filter(|(pocket, _)| pocket.end == end)
+    {
+        let start = footprint.points.len();
+        // Pocket wall triangles are emitted separately from the cap boundary.
+        footprint.circle(pocket.center_mm, pocket.radius_mm, 0, true, options)?;
+        *mouth = (offset + start)..(offset + footprint.points.len());
+    }
+    let region = triangulate_region(footprint.points, &footprint.edges, footprint.holes)?;
+    mesh.vertices
+        .extend(region.cdt.vertices().flat_map(|vertex| {
+            let point = vertex.position();
+            [point.x, point.y, z]
+        }));
+    for [a, b, c] in region.triangles {
+        let triangle = if end { [a, b, c] } else { [c, b, a] };
+        mesh.triangle(triangle.map(|index| index + offset), u32::from(end));
+    }
+    Ok(offset)
+}
+
+fn wall(mesh: &mut DisplayMesh, [a, b]: [usize; 2], [c, d]: [usize; 2], face: u32) {
+    mesh.triangle([a, b, d], face);
+    mesh.triangle([a, d, c], face);
+}
+
+fn pocket_surfaces(
+    mesh: &mut DisplayMesh,
+    pocket: CircularPocket,
+    mouth: Range<usize>,
+    height: f64,
+    wall_face: u32,
+) {
+    let count = mouth.len();
+    let floor_start = mesh.vertices.len() / 3;
+    let z = pocket.floor_z_mm(height);
+    for index in mouth.clone() {
+        let [x, y] = [mesh.vertices[3 * index], mesh.vertices[3 * index + 1]];
+        mesh.vertices.extend([x, y, z]);
+    }
+    let [x, y] = pocket.center_mm;
+    let center = mesh.vertices.len() / 3;
+    mesh.vertices.extend([x, y, z]);
+    for i in 0..count {
+        let next = (i + 1) % count;
+        let mouth = [mouth.start + i, mouth.start + next];
+        let floor @ [a, b] = [floor_start + i, floor_start + next];
+        let (bottom, top, disk) = if pocket.end {
+            (floor, mouth, [center, b, a])
+        } else {
+            (mouth, floor, [center, a, b])
+        };
+        wall(mesh, bottom, top, wall_face);
+        mesh.triangle(disk, wall_face + 1);
+    }
 }
 
 pub fn rust_prism(prism: &Prism, mut options: Tessellation) -> Result<DisplayMesh, MeshError> {
