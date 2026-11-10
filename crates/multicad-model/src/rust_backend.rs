@@ -21,6 +21,9 @@ use multicad_kernel::{
     },
 };
 
+mod exact_length;
+use exact_length::exact_length;
+
 pub(crate) fn validate_document(
     document: &Document,
     scope: Option<&std::collections::BTreeSet<EntityId>>,
@@ -103,57 +106,6 @@ pub(crate) fn validate_document(
         }
     }
     Ok(())
-}
-
-// Preserve decimal or simple fraction source, including one bound parameter.
-// Do not reconstruct a fractional authored dimension from its f64 result.
-fn exact_length(
-    dimension: &Dimension,
-    parameters: &EvaluatedParameters,
-) -> Result<Rational, String> {
-    fn expression(text: &str, unit: &str) -> Result<Rational, String> {
-        let text = text.trim().strip_prefix('=').unwrap_or(text.trim()).trim();
-        parse_length_mm(text)
-            .or_else(|_| parse_length_mm(&format!("{text} {unit}")))
-            .map_err(|e| {
-                format!("Rust backend needs an exact decimal or simple fractional length: {e:?}")
-            })
-    }
-    match dimension {
-        Dimension::Literal { value, unit } => expression(&value.to_string(), unit),
-        Dimension::Expression { expression: source } => match source.bindings.as_slice() {
-            [] => expression(&source.text, &source.unit),
-            [binding]
-                if source
-                    .text
-                    .trim()
-                    .trim_start_matches('=')
-                    .trim()
-                    .strip_prefix('$')
-                    == Some(binding.alias.as_str()) =>
-            {
-                let Some(EntityData::Parameter {
-                    expression: text,
-                    unit,
-                    inputs,
-                    ..
-                }) = parameters
-                    .document
-                    .get(binding.target)
-                    .map(|entry| &entry.data)
-                else {
-                    return Err("Rust backend could not resolve the bound length parameter".into());
-                };
-                if !inputs.is_empty() {
-                    return Err(
-                        "Rust backend requires a direct decimal or fractional parameter".into(),
-                    );
-                }
-                expression(text, unit)
-            }
-            _ => Err("Rust backend does not yet evaluate compound length formulas".into()),
-        },
-    }
 }
 
 fn coordinate(value: f64) -> Result<Rational, String> {

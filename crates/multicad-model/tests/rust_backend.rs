@@ -101,6 +101,134 @@ fn saved_front_panel_primitives_use_their_bound_placement_and_size_formulas() {
 }
 
 #[test]
+fn compound_fractional_lengths_drive_extrusion_and_primitive_through_rename_and_reopen() {
+    use multicad_core::{
+        constraint_sketch::Dimension, document::Entity, parameters::BoundExpression,
+    };
+
+    let (mut session, height, extrusion, _) = rust_polygon::fixture_with_height("=1 cm / 3");
+    let parameter = |name, text: &str| {
+        Entity::new(
+            name,
+            EntityData::Parameter {
+                expression: text.into(),
+                unit: "mm".into(),
+                exposed: true,
+                inputs: vec![],
+            },
+        )
+    };
+    let span = parameter("span", "=$height * 2 + 1 mm / 6");
+    let finish = parameter("finish", "=($span - 0.5 mm) / 3");
+    let finish_id = finish.id;
+    session
+        .apply(Request {
+            expected_revision: session.revision(),
+            actor: actor(),
+            label: "Set derived model dimensions".into(),
+            edits: vec![Mutation::Insert(span), Mutation::Insert(finish)],
+        })
+        .unwrap();
+
+    let formula = |text| Dimension::Expression {
+        expression: BoundExpression::bind(session.document(), text, "mm", None).unwrap(),
+    };
+    let mut parameters = model::read_extrude(session.document(), extrusion)
+        .unwrap()
+        .parameters;
+    parameters.extent = Extent::OneSided {
+        end: Termination::Distance {
+            distance: formula("=($finish + $height) / 2"),
+        },
+    };
+    let box_request = PrimitiveRequest::new(
+        "Formula box",
+        PrimitiveParameters::Box {
+            size: [
+                formula("=(1 / 3)"),
+                formula("=$finish * 2"),
+                formula("=(10 mm - 1 mm) / 4"),
+            ],
+            frame: PrimitiveFrame {
+                origin: [formula("=1 mm / 9"), length(20.), length(4.)],
+                ..Default::default()
+            },
+        },
+    );
+    let prepared = model::prepare_extrude_edit(
+        &session,
+        session.revision(),
+        actor(),
+        extrusion,
+        &parameters,
+    )
+    .unwrap();
+    session.commit(prepared.prepared).unwrap();
+    let prepared =
+        model::prepare_primitive(&session, session.revision(), actor(), &box_request).unwrap();
+    session.commit(prepared.prepared).unwrap();
+
+    let verify = |session: &Session, depth: f64, width: f64| {
+        let rust = compile(session, GeometryBackend::Rust);
+        let extruded = rust.solid(extrusion).unwrap();
+        assert!(extruded.uses_rust_geometry());
+        let bounds = extruded.bounds().unwrap();
+        near(bounds.min[1], -2. - depth);
+        near(bounds.max[1], -2.);
+        near(extruded.volume_mm3().unwrap(), 92. * depth);
+
+        let primitive = rust.solid(box_request.feature).unwrap();
+        assert!(primitive.uses_rust_geometry());
+        let bounds = primitive.bounds().unwrap();
+        let origin = [1. / 9., 20., 4.];
+        let size = [1. / 3., width, 9. / 4.];
+        for i in 0..3 {
+            near(bounds.min[i], origin[i]);
+            near(bounds.max[i], origin[i] + size[i]);
+        }
+        near(primitive.volume_mm3().unwrap(), size.iter().product());
+    };
+    verify(&session, 49. / 18., 38. / 9.);
+
+    let renamed = |id, name: &str| {
+        let mut parameter = session.document().get(id).unwrap().clone();
+        parameter.name = name.into();
+        Mutation::Replace(parameter)
+    };
+    let rename_edits = vec![
+        renamed(height, "stock_height"),
+        renamed(finish_id, "finish_width"),
+        Mutation::Insert(parameter("height", "90")),
+        Mutation::Insert(parameter("finish", "900")),
+    ];
+    session
+        .apply(Request {
+            expected_revision: session.revision(),
+            actor: actor(),
+            label: "Rename bound parameters and reuse their old names".into(),
+            edits: rename_edits,
+        })
+        .unwrap();
+    let mut session = reopen(&session);
+    verify(&session, 49. / 18., 38. / 9.);
+
+    let mut source = session.document().get(height).unwrap().clone();
+    let EntityData::Parameter { expression, .. } = &mut source.data else {
+        panic!("Expected the original height parameter");
+    };
+    *expression = "=17 mm / 3".into();
+    session
+        .apply(Request {
+            expected_revision: session.revision(),
+            actor: actor(),
+            label: "Change original renamed height".into(),
+            edits: vec![Mutation::Replace(source)],
+        })
+        .unwrap();
+    verify(&session, 14. / 3., 22. / 3.);
+}
+
+#[test]
 fn rust_revolve_rebuilds_signed_and_full_sketch_sweeps_with_holes_and_native_face_intents() {
     let (sketch, edits) = Source::create(sketch::Datum::Xz, "Meridian with a hole").unwrap();
     let document = Document::new("Offset meridian revolution")

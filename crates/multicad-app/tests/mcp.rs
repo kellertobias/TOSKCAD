@@ -176,6 +176,87 @@ fn rust_stdio_rebuilds_and_reopens_geometry_through_the_real_cli() {
 }
 
 #[test]
+fn rust_stdio_reopens_and_rebuilds_a_compound_fractional_extrusion() {
+    let directory = tempfile::tempdir().unwrap();
+    let project = directory.path().join("fractional-extrusion.tcd");
+    let arguments = ["--rust-model", "--project", project.to_str().unwrap()];
+    let mut client = Client::start(&arguments);
+    assert_eq!(
+        client.ok("document_info", json!({}))["geometry_backend"],
+        "rust"
+    );
+    let stock = client.ok(
+        "set_parameter",
+        json!({"expected_revision":0,"name":"stock","expression":"=1 cm / 3","unit":"mm"}),
+    )["parameter"]
+        .clone();
+    let allowance = client.ok(
+        "set_parameter",
+        json!({"expected_revision":1,"name":"allowance","expression":"=$stock - 1 mm / 3","unit":"mm"}),
+    )["parameter"]
+        .clone();
+    let sketch = client.ok(
+        "create_sketch",
+        json!({"expected_revision":2,"plane":"xy","name":"Stock profile"}),
+    )["sketch"]
+        .clone();
+    client.ok(
+        "sketch_add_rectangle",
+        json!({"expected_revision":3,"sketch":sketch,"origin_mm":[0,0],
+            "width":length(12.),"height":length(8.)}),
+    );
+    let expression = "=($stock + $allowance) / 2";
+    let extruded = client.ok(
+        "extrude",
+        json!({"expected_revision":4,"sketch":sketch,"regions":[0],
+            "distance":formula(expression),"operation":"new_body"}),
+    );
+    assert_eq!(extruded["revision"], 5);
+    let part = &extruded["created"][0]["part"];
+    let feature = &extruded["created"][0]["feature"];
+    let verify = |client: &mut Client, depth| {
+        let model = client.ok("evaluate_model", json!({}));
+        let [body] = model["parts"].as_array().unwrap().as_slice() else {
+            panic!("expected one extruded body: {model}");
+        };
+        assert_eq!(body["part"], *part);
+        assert_eq!(body["feature"], *feature);
+        assert_eq!(body["solid_count"], 1);
+        assert_eq!(body["bounds_mm"]["min"], json!([0., 0., 0.]));
+        for (axis, expected) in [12., 8., depth].into_iter().enumerate() {
+            close(body["bounds_mm"]["max"][axis].as_f64().unwrap(), expected);
+        }
+        close(body["volume_mm3"].as_f64().unwrap(), 96. * depth);
+    };
+    verify(&mut client, 19. / 6.);
+    let source = client.ok("get_entity", json!({"id":feature}))["entity"].clone();
+    assert_eq!(
+        source.pointer("/data/definition/data/parameters/extent/end/distance/expression"),
+        Some(&json!({"text":expression,"unit":"mm","bindings":[
+            {"alias":"allowance","target":allowance},
+            {"alias":"stock","target":stock},
+        ]}))
+    );
+    client.ok("save_project", json!({"expected_revision":5}));
+    drop(client);
+
+    let mut reopened = Client::start(&arguments);
+    assert_eq!(reopened.revision(), 0);
+    assert_eq!(
+        reopened.ok("get_entity", json!({"id":feature}))["entity"],
+        source
+    );
+    verify(&mut reopened, 19. / 6.);
+    let edit = reopened.ok(
+        "set_parameter",
+        json!({"expected_revision":0,"name":"stock","expression":"=16 mm / 3","unit":"mm"}),
+    );
+    assert_eq!(edit["parameter"], stock);
+    assert_eq!(edit["created"], false);
+    verify(&mut reopened, 31. / 6.);
+}
+
+#[test]
 fn rust_stdio_helical_tube_cut_preserves_material_history_and_reopens() {
     let directory = tempfile::tempdir().unwrap();
     let project = directory.path().join("helical-tube-cut.tcd");
