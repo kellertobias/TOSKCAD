@@ -13,7 +13,9 @@ use std::{
 };
 
 mod orthogonal_pockets;
-pub use orthogonal_pockets::pocketed_orthogonal;
+mod stadium;
+pub use orthogonal_pockets::{pocketed_orthogonal, slotted_orthogonal};
+pub use stadium::stadium_prism;
 
 #[derive(Clone, Copy, Debug)]
 pub struct Tessellation {

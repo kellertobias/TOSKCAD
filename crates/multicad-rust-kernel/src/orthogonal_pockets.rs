@@ -35,8 +35,8 @@ impl OrthogonalPocket {
 #[derive(Clone, Copy)]
 pub(crate) struct FacePlane {
     pub(crate) axis: usize,
-    sign: f64,
-    level: f64,
+    pub(crate) sign: f64,
+    pub(crate) level: f64,
 }
 
 impl FacePlane {
@@ -94,7 +94,7 @@ fn distance(value: f64, [lo, hi]: [f64; 2]) -> f64 {
     (lo - value).max(value - hi).max(0.)
 }
 
-fn interval_gap([a, b]: [f64; 2], [c, d]: [f64; 2]) -> f64 {
+pub(crate) fn interval_gap([a, b]: [f64; 2], [c, d]: [f64; 2]) -> f64 {
     (c - b).max(a - d)
 }
 
@@ -135,7 +135,7 @@ impl Cylinder {
     }
 }
 
-fn limits(clearance: f64, minimum: f64) -> Result<(), PocketError> {
+pub(crate) fn limits(clearance: f64, minimum: f64) -> Result<(), PocketError> {
     if clearance.is_finite() && clearance >= 0. && minimum.is_finite() && minimum > 0. {
         Ok(())
     } else {
@@ -143,7 +143,7 @@ fn limits(clearance: f64, minimum: f64) -> Result<(), PocketError> {
     }
 }
 
-fn roundoff(bounds: Box3) -> f64 {
+pub(crate) fn roundoff(bounds: Box3) -> f64 {
     let scale = bounds
         .min
         .into_iter()

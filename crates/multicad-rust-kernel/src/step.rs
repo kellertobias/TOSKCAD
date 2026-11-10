@@ -8,12 +8,17 @@ use crate::{
     linear_sweep::Sweep,
     orthogonal::OrthogonalSolid,
     orthogonal_boundary::{Boundary, BoundaryFace, point_key},
-    orthogonal_pockets::{self, OrthogonalPocket},
+    orthogonal_pockets::OrthogonalPocket,
+    orthogonal_slots::{self, OrthogonalSlot},
     polygon::{MAX_VERTICES, PolygonPrism},
     prism::Prism,
     trimmed_sweep::TrimmedSweep,
 };
 use std::{collections::BTreeMap, fmt, fmt::Write, ops::Range};
+
+mod stadium;
+use stadium::StadiumTrim;
+pub use stadium::write_stadium_prism;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StepError {
@@ -32,18 +37,29 @@ pub fn write_orthogonal(
     if !boundary.supports_step() {
         return Err(StepError::Unsupported);
     }
-    write_orthogonal_placed(boundary, &[], &transform)
+    write_orthogonal_placed(boundary, &[], &[], &transform)
 }
 
 /// Whether certified recesses and the stock fit STEP's topology budget.
 pub fn supports_pocketed_orthogonal(boundary: &Boundary, pockets: &[OrthogonalPocket]) -> bool {
+    supports_slotted_orthogonal(boundary, pockets, &[])
+}
+
+/// Whether the stock, round pocket openings and slot openings fit the STEP topology budget.
+pub fn supports_slotted_orthogonal(
+    boundary: &Boundary,
+    pockets: &[OrthogonalPocket],
+    slots: &[OrthogonalSlot],
+) -> bool {
     boundary.supports_step()
         && pockets
             .iter()
             .all(|pocket| pocket.face < boundary.faces.len())
+        && slots.iter().all(|slot| slot.face < boundary.faces.len())
         && boundary.faces.iter().enumerate().all(|(index, face)| {
-            // Each circular opening adds one oriented edge to the planar face.
-            let openings = pockets.iter().filter(|pocket| pocket.face == index).count();
+            let circular_openings = pockets.iter().filter(|pocket| pocket.face == index).count();
+            let slot_openings = slots.iter().filter(|slot| slot.face == index).count();
+            let openings = circular_openings + 4 * slot_openings;
             face.rings.iter().map(Vec::len).sum::<usize>() + openings <= MAX_VERTICES
         })
 }
@@ -56,17 +72,29 @@ pub fn write_pocketed_orthogonal(
     pockets: &[OrthogonalPocket],
     transform: &dyn Fn(Point) -> Point,
 ) -> Result<String, StepError> {
-    if !supports_pocketed_orthogonal(boundary, pockets) {
+    write_slotted_orthogonal(geometry, boundary, pockets, &[], transform)
+}
+
+/// Write machined orthogonal stock with exact circular pockets and blind rounded slots.
+pub fn write_slotted_orthogonal(
+    geometry: &OrthogonalSolid,
+    boundary: &Boundary,
+    pockets: &[OrthogonalPocket],
+    slots: &[OrthogonalSlot],
+    transform: &dyn Fn(Point) -> Point,
+) -> Result<String, StepError> {
+    if !supports_slotted_orthogonal(boundary, pockets, slots) {
         return Err(StepError::Unsupported);
     }
-    orthogonal_pockets::validate(geometry, boundary, pockets, 1e-7, 1e-7)
+    orthogonal_slots::validate(geometry, boundary, slots, pockets, 1e-7, 1e-7)
         .map_err(|_| StepError::InvalidGeometry)?;
-    write_orthogonal_placed(boundary, pockets, transform)
+    write_orthogonal_placed(boundary, pockets, slots, transform)
 }
 
 fn write_orthogonal_placed(
     boundary: &Boundary,
     pockets: &[OrthogonalPocket],
+    slots: &[OrthogonalSlot],
     transform: &dyn Fn(Point) -> Point,
 ) -> Result<String, StepError> {
     let mut points = Vec::new();
@@ -86,8 +114,9 @@ fn write_orthogonal_placed(
         }
     }
     let mut brep = BRep::new(points);
-    let mut faces = Vec::with_capacity(boundary.faces.len() + 2 * pockets.len());
-    let mut pocket_faces = Vec::with_capacity(2 * pockets.len());
+    let cavity_face_count = 2 * pockets.len() + 5 * slots.len();
+    let mut faces = Vec::with_capacity(boundary.faces.len() + cavity_face_count);
+    let mut pocket_faces = Vec::with_capacity(cavity_face_count);
     for (index, face) in boundary.faces.iter().enumerate() {
         let [outer, ..] = face.rings.as_slice() else {
             return Err(StepError::InvalidGeometry);
@@ -121,6 +150,12 @@ fn write_orthogonal_placed(
             )?;
             bounds.push(trim.cap_bound(&mut brep.file, true, false));
             pocket_faces.extend(trim.blind_faces(&mut brep.file, true, normal, reference));
+        }
+        for slot in slots.iter().filter(|slot| slot.face == index) {
+            let trim = StadiumTrim::blind(&mut brep.file, *slot, face, normal, transform)?;
+            bounds.push(trim.bound(&mut brep.file, 1, false, false));
+            pocket_faces.extend(trim.walls(&mut brep.file, false));
+            pocket_faces.push(trim.cap(&mut brep.file, 0, true, reference));
         }
         faces.push(brep.file.face(&bounds, point, normal, reference));
     }

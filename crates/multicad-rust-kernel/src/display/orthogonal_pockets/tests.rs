@@ -162,6 +162,145 @@ fn orthogonal_mesh_checks_options_and_input_bounds() {
 }
 
 #[test]
+fn mixed_recess_mesh_preserves_round_pocket_and_slot_faces() {
+    use crate::{
+        orthogonal::{Box3, Operation, boolean},
+        orthogonal_boundary::build,
+        orthogonal_slots::{removed_volume_mm3, validate},
+    };
+    let stock = boolean(
+        &[Box3 {
+            min: [0.; 3],
+            max: [20., 16., 10.],
+        }],
+        &[],
+        Operation::Subtract,
+        1e-7,
+    )
+    .unwrap()
+    .unwrap();
+    let boundary = build(stock.quads()).unwrap();
+    let top = boundary
+        .faces
+        .iter()
+        .position(|face| face.normal == [0., 0., 1.])
+        .unwrap();
+    let side = boundary
+        .faces
+        .iter()
+        .position(|face| face.normal == [-1., 0., 0.])
+        .unwrap();
+    let pocket = OrthogonalPocket {
+        face: top,
+        center_mm: [16., 7., 10.],
+        radius_mm: 1.,
+        depth_mm: 2.,
+    };
+    let slot = OrthogonalSlot {
+        face: top,
+        centers_mm: [[4., 7., 10.], [9., 7., 10.]],
+        radius_mm: 1.5,
+        depth_mm: 3.,
+    };
+    let side_slot = OrthogonalSlot {
+        face: side,
+        centers_mm: [[0., 4., 4.], [0., 8., 5.]],
+        radius_mm: 1.,
+        depth_mm: 2.,
+    };
+    let slots = [slot, side_slot];
+    validate(&stock, &boundary, &slots, &[pocket], 1e-7, 1e-7).unwrap();
+    let mesh = slotted_orthogonal(&boundary, &[pocket], &slots, options()).unwrap();
+    let proof = certify(&mesh).unwrap();
+    assert!(
+        (proof.signed_volume_mm3 - (volume_mm3(&stock, &[pocket]) - removed_volume_mm3(&slots)))
+            .abs()
+            < 0.06
+    );
+
+    let first_slot = boundary.faces.len() as u32 + 2;
+    for (i, &slot) in slots.iter().enumerate() {
+        let first = first_slot + 5 * i as u32;
+        let counts = std::array::from_fn::<_, 5, _>(|side| {
+            mesh.face_indices
+                .iter()
+                .filter(|&&face| face == first + side as u32)
+                .count()
+        });
+        assert_eq!(counts[0], 2);
+        assert_eq!(counts[2], 2);
+        assert_eq!(counts[1], counts[3]);
+        assert_eq!(counts[4], counts[1] + 2);
+        let normal = boundary.faces[slot.face].normal;
+        let axis = normal.iter().position(|&v| v != 0.).unwrap();
+        let floor = slot.floor_centers_mm(normal)[0][axis];
+        for triangle in mesh
+            .indices
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .zip(&mesh.face_indices)
+        {
+            if *triangle.1 == first + 4 {
+                assert!(
+                    triangle
+                        .0
+                        .iter()
+                        .all(|&vertex| mesh.vertices[3 * vertex as usize + axis] == floor)
+                );
+            }
+        }
+    }
+    assert_eq!(
+        slotted_orthogonal(
+            &boundary,
+            &[pocket],
+            &slots,
+            Tessellation {
+                triangle_limit: mesh.face_indices.len(),
+                ..options()
+            },
+        ),
+        Ok(mesh),
+    );
+    for broken in [
+        OrthogonalSlot {
+            face: boundary.faces.len(),
+            ..slot
+        },
+        OrthogonalSlot {
+            radius_mm: f64::NAN,
+            ..slot
+        },
+        OrthogonalSlot {
+            depth_mm: -1.,
+            ..slot
+        },
+        OrthogonalSlot {
+            depth_mm: f64::MIN_POSITIVE,
+            ..slot
+        },
+    ] {
+        assert_eq!(
+            slotted_orthogonal(&boundary, &[], &[broken], options()),
+            Err(MeshError::UnresolvedBoundary)
+        );
+    }
+    assert_eq!(
+        slotted_orthogonal(
+            &boundary,
+            &[],
+            &[slot],
+            Tessellation {
+                triangle_limit: 100,
+                ..options()
+            }
+        ),
+        Err(MeshError::BudgetExceeded),
+    );
+}
+
+#[test]
 fn orthogonal_mesh_keeps_corner_touching_components_independently_manifold() {
     use crate::{
         orthogonal::{Box3, Operation, boolean},

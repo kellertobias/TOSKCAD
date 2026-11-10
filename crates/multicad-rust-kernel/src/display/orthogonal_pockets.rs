@@ -1,9 +1,11 @@
 //! Tessellate consolidated stock faces and preserve both rims of each drill.
 
+use super::stadium::StadiumRing;
 use super::*;
 use crate::{
     orthogonal_boundary::{Boundary, BoundaryFace, point_key},
     orthogonal_pockets::{FacePlane, MAX_POCKETS, OrthogonalPocket},
+    orthogonal_slots::OrthogonalSlot,
 };
 use std::collections::BTreeMap;
 
@@ -18,15 +20,28 @@ pub fn pocketed_orthogonal(
     pockets: &[OrthogonalPocket],
     options: Tessellation,
 ) -> Result<DisplayMesh, MeshError> {
+    slotted_orthogonal(boundary, pockets, &[], options)
+}
+
+/// Tessellate orthogonal stock with both circular and rounded-slot recesses.
+/// Slots append four profile walls followed by the blind floor.
+pub fn slotted_orthogonal(
+    boundary: &Boundary,
+    pockets: &[OrthogonalPocket],
+    slots: &[OrthogonalSlot],
+    options: Tessellation,
+) -> Result<DisplayMesh, MeshError> {
     options.check()?;
     if boundary.faces.is_empty() {
         return Err(MeshError::UnresolvedBoundary);
     }
-    if pockets.len() > MAX_POCKETS || boundary.faces.len() > options.triangle_limit {
+    if pockets.len().saturating_add(slots.len()) > MAX_POCKETS
+        || boundary.faces.len() > options.triangle_limit
+    {
         return Err(MeshError::BudgetExceeded);
     }
 
-    let mut openings = vec![Vec::new(); boundary.faces.len()];
+    let mut openings = vec![FaceOpenings::default(); boundary.faces.len()];
     let mut counts = Vec::with_capacity(pockets.len());
     let mut pocket_triangles = 0;
     for (index, pocket) in pockets.iter().enumerate() {
@@ -42,7 +57,7 @@ pub fn pocketed_orthogonal(
         let face = openings
             .get_mut(pocket.face)
             .ok_or(MeshError::UnresolvedBoundary)?;
-        face.push(index);
+        face.circles.push(index);
         counts.push(count);
         // The mouth contributes count + 2 triangles on its parent face.
         // The floor and wall contribute another 3 * count.
@@ -50,6 +65,26 @@ pub fn pocketed_orthogonal(
         if pocket_triangles > options.triangle_limit {
             return Err(MeshError::BudgetExceeded);
         }
+    }
+    let mut slot_rings = Vec::with_capacity(slots.len());
+    for (index, slot) in slots.iter().enumerate() {
+        let face = boundary
+            .faces
+            .get(slot.face)
+            .ok_or(MeshError::UnresolvedBoundary)?;
+        let profile = slot
+            .profile(face)
+            .map_err(|_| MeshError::UnresolvedBoundary)?;
+        let ring = StadiumRing::new(&profile, options)?;
+        if !slot.depth_mm.is_finite() || slot.depth_mm <= 0. {
+            return Err(MeshError::UnresolvedBoundary);
+        }
+        pocket_triangles += 4 * ring.points.len() + 2;
+        if pocket_triangles > options.triangle_limit {
+            return Err(MeshError::BudgetExceeded);
+        }
+        openings[slot.face].slots.push(index);
+        slot_rings.push(ring);
     }
     let mut total = pocket_triangles;
     for face in &boundary.faces {
@@ -68,6 +103,7 @@ pub fn pocketed_orthogonal(
     };
     let mut corners = BTreeMap::new();
     let mut mouths = vec![0..0; pockets.len()];
+    let mut slot_mouths = vec![0..0; slots.len()];
     for (face_index, face) in boundary.faces.iter().enumerate() {
         let plane = FacePlane::from_face(face).ok_or(MeshError::UnresolvedBoundary)?;
         let mut region = FaceRegion::default();
@@ -83,7 +119,8 @@ pub fn pocketed_orthogonal(
             }
             region.ring(projected.into_iter());
         }
-        for &index in &openings[face_index] {
+        let opening = &openings[face_index];
+        for &index in &opening.circles {
             let pocket = pockets[index];
             let center = plane.project(pocket.center_mm);
             if plane.lift(center) != pocket.center_mm {
@@ -102,7 +139,16 @@ pub fn pocketed_orthogonal(
             }));
             mouths[index] = start..start + count;
         }
-        let holes = face.rings.len() + openings[face_index].len() - 1;
+        for &index in &opening.slots {
+            let ring = &slot_rings[index];
+            let start = mesh.vertices.len() / 3;
+            region.ring(ring.points.iter().rev().enumerate().map(|(i, &uv)| {
+                mesh.vertices.extend(plane.lift(uv));
+                (uv, start + i)
+            }));
+            slot_mouths[index] = start..start + ring.points.len();
+        }
+        let holes = face.rings.len() + opening.circles.len() + opening.slots.len() - 1;
         for triangle in triangulate_region(region.points, &region.edges, holes)?.triangles {
             mesh.triangle(
                 triangle.map(|index| region.indices[index]),
@@ -113,9 +159,48 @@ pub fn pocketed_orthogonal(
     for (index, (pocket, mouth)) in pockets.iter().zip(mouths).enumerate() {
         let normal = boundary.faces[pocket.face].normal;
         let wall_face = (boundary.faces.len() + 2 * index) as u32;
-        add_pocket_surfaces(&mut mesh, *pocket, mouth, normal, wall_face)?;
+        add_recess_surfaces(
+            &mut mesh,
+            mouth,
+            normal,
+            pocket.depth_mm,
+            pocket.center_mm,
+            std::iter::repeat(wall_face),
+            wall_face + 1,
+        )?;
+    }
+    let first_slot_face = boundary.faces.len() + 2 * pockets.len();
+    for (index, ((slot, ring), mouth)) in slots.iter().zip(slot_rings).zip(slot_mouths).enumerate()
+    {
+        let face = &boundary.faces[slot.face];
+        let [a, b] = slot.centers_mm;
+        let center = std::array::from_fn(|i| a[i].midpoint(b[i]));
+        let first_wall = (first_slot_face + 5 * index) as u32;
+        // The mouth ring winds clockwise around the stock face.
+        let walls = ring
+            .sides
+            .iter()
+            .rev()
+            .cycle()
+            .skip(1)
+            .map(|&side| first_wall + side);
+        add_recess_surfaces(
+            &mut mesh,
+            mouth,
+            face.normal,
+            slot.depth_mm,
+            center,
+            walls,
+            first_wall + 4,
+        )?;
     }
     Ok(mesh)
+}
+
+#[derive(Clone, Default)]
+struct FaceOpenings {
+    circles: Vec<usize>,
+    slots: Vec<usize>,
 }
 
 #[derive(Default)]
@@ -153,26 +238,28 @@ fn stock_corner(
         })
 }
 
-fn add_pocket_surfaces(
+fn add_recess_surfaces(
     mesh: &mut DisplayMesh,
-    pocket: OrthogonalPocket,
     mouth: Range<usize>,
     normal: Point,
-    wall_face: u32,
+    depth: f64,
+    center: Point,
+    wall_faces: impl Iterator<Item = u32>,
+    floor_face: u32,
 ) -> Result<(), MeshError> {
     let count = mouth.len();
     let floor = mesh.vertices.len() / 3;
-    let center = pocket.floor_center_mm(normal);
-    if !center.iter().all(|x| x.is_finite()) || center == pocket.center_mm {
+    let floor_center = std::array::from_fn(|i| center[i] - normal[i] * depth);
+    if !floor_center.iter().all(|x| x.is_finite()) || floor_center == center {
         return Err(MeshError::UnresolvedBoundary);
     }
     for vertex in mouth.clone() {
         let point: Point = std::array::from_fn(|i| mesh.vertices[3 * vertex + i]);
         mesh.vertices
-            .extend((0..3).map(|i| point[i] - normal[i] * pocket.depth_mm));
+            .extend((0..3).map(|i| point[i] - normal[i] * depth));
     }
-    mesh.vertices.extend(center);
-    for i in 0..count {
+    mesh.vertices.extend(floor_center);
+    for (i, wall_face) in (0..count).zip(wall_faces) {
         let next = (i + 1) % count;
         let bottom @ [a, b] = [floor + i, floor + next];
         wall(
@@ -181,7 +268,7 @@ fn add_pocket_surfaces(
             [mouth.start + i, mouth.start + next],
             wall_face,
         );
-        mesh.triangle([floor + count, b, a], wall_face + 1);
+        mesh.triangle([floor + count, b, a], floor_face);
     }
     Ok(())
 }
