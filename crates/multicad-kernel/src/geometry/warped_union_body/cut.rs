@@ -35,7 +35,6 @@ impl Solid {
         feature: EntityId,
         policy: GeometryPolicy,
     ) -> Option<Result<Solid, GeometryError>> {
-        let (body, frame) = self.warped_union_body()?;
         if tools.is_empty()
             || policy.boolean_fuzzy_mm != 0.
             || self.policy != policy
@@ -45,12 +44,43 @@ impl Solid {
         {
             return None;
         }
+        let (frame, existing, cells) = if let Some((body, frame)) = self.warped_union_body() {
+            (frame, Some(body.chart.clone()?), None)
+        } else {
+            let (body, frame) = self.orthogonal_body()?;
+            if body.has_curved_cuts()
+                || !tools
+                    .iter()
+                    .any(|tool| tool.axial_cylinder_frame().is_some())
+                || !tools.iter().any(|tool| {
+                    tool.axial_cylinder_frame().is_none()
+                        && tool.orthogonal_cells().is_ok_and(|cells| cells.is_none())
+                })
+            {
+                return None;
+            }
+            (frame, None, Some(body.geometry.cells()))
+        };
         let axes = [frame.u, frame.v, frame.normal()];
         let inverse = RigidTransform {
             rotation: axes,
             translation_mm: axes.map(|axis| -dot(axis, frame.origin)),
         };
-        let mut chart = body.chart.clone()?;
+        let mut chart = if let Some(chart) = existing {
+            chart
+        } else {
+            let cells = cells?;
+            let result = self.transformed(inverse).and_then(|stock| {
+                let topology = stock.rust_topology().ok_or_else(|| {
+                    warped_error("planar stock topology", warped_union::Error::Invalid)
+                })??;
+                flat_stock::chart(cells, topology, policy)
+            });
+            match result {
+                Ok(chart) => chart,
+                Err(cause) => return Some(Err(cause)),
+            }
+        };
         let tolerance = policy.linear_tolerance_mm;
         let local = match tools
             .iter()

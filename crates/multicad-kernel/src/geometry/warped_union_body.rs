@@ -13,6 +13,7 @@ use std::collections::BTreeSet;
 mod axial_cut;
 mod crop;
 mod cut;
+mod flat_stock;
 mod operands;
 use super::planar_boolean_body::winding;
 use operands::QuarterFillet;
@@ -35,7 +36,7 @@ struct SourcePart {
 
 #[derive(Clone)]
 struct Chart {
-    band: Band,
+    band: Option<Band>,
     stock_count: usize,
     pieces: Vec<ConvexPiece>,
     sources: Vec<SourcePart>,
@@ -54,7 +55,7 @@ struct AuthoredBoss {
 }
 
 impl Chart {
-    fn new(band: Band) -> Self {
+    fn new(band: Option<Band>) -> Self {
         Self {
             band,
             stock_count: 0,
@@ -79,9 +80,12 @@ impl Chart {
             Ok(topology) => topology,
             Err(cause) => return Some(Err(cause)),
         };
-        let [center, radius] = [self.band.center_z_mm, self.band.radius_mm];
         let operand = self.topologies.len();
         if let Some(fillet) = fillet {
+            let Band {
+                center_z_mm: center,
+                radius_mm: radius,
+            } = self.band?;
             let fillet_pieces = match fillet.pieces(center, radius, tolerance) {
                 Ok(fillet_pieces) => fillet_pieces,
                 Err(cause) => return Some(Err(source_error(cause))),
@@ -111,8 +115,19 @@ impl Chart {
         operand: usize,
         policy: GeometryPolicy,
     ) -> Option<Result<(), GeometryError>> {
+        let Some(Band {
+            center_z_mm: center,
+            radius_mm: radius,
+        }) = self.band
+        else {
+            self.pieces.push(piece);
+            self.sources.push(SourcePart {
+                operand,
+                faces: ancestry.to_vec(),
+            });
+            return Some(Ok(()));
+        };
         let tolerance = policy.linear_tolerance_mm;
-        let [center, radius] = [self.band.center_z_mm, self.band.radius_mm];
         let floor = center - radius;
         let limit = policy.maximum_coordinate_mm;
         let levels = [-limit, floor, center, limit];
@@ -177,8 +192,11 @@ impl Chart {
         policy: GeometryPolicy,
     ) -> Result<Solid, GeometryError> {
         let tolerance = policy.linear_tolerance_mm;
-        let mut geometry = warped_union::remap(&union, self.band, tolerance)
-            .map_err(|cause| warped_error("curved boundary", cause))?;
+        let mut geometry = match self.band {
+            Some(band) => warped_union::remap(&union, band, tolerance),
+            None => warped_union::from_planar_union(&union, tolerance),
+        }
+        .map_err(|cause| warped_error("curved boundary", cause))?;
         if !self.bosses.is_empty() {
             let bosses = self
                 .bosses
@@ -366,7 +384,7 @@ impl Solid {
         }) {
             return None;
         }
-        let mut chart = Chart::new(band);
+        let mut chart = Chart::new(Some(band));
         for (&solid, fillet) in solids.iter().zip(fillets) {
             if let Err(cause) = chart
                 .append_boss(solid)
