@@ -1,4 +1,4 @@
-//! Positive-clearance certificates for bounded unshifted spur pairs.
+//! Positive-clearance certificates for unshifted external rotary pairs.
 use super::*;
 use multicad_core::model::GearFamily;
 use multicad_kernel::rust_kernel::spur_gear::clearance::ResultKind;
@@ -7,12 +7,16 @@ fn check(
     pair: EntityId,
     [a, b]: [&Solid; 2],
     drive: f64,
+    family: GearFamily,
     policy: GeometryPolicy,
     interrupt: Option<&dyn Fn() -> bool>,
 ) -> Result<(), ModelError> {
-    let result = a
-        .certify_rust_spur_pair(b, policy, interrupt)
-        .map_err(|cause| error(Some(pair), cause))?;
+    let result = if family == GearFamily::Herringbone {
+        a.certify_rust_herringbone_pair(b, policy, interrupt)
+    } else {
+        a.certify_rust_spur_pair(b, policy, interrupt)
+    }
+    .map_err(|cause| error(Some(pair), cause))?;
     let reason = match result {
         ResultKind::Clear => return Ok(()),
         ResultKind::CommonInterior => "overlaps with a certified common-interior point",
@@ -49,10 +53,12 @@ pub(crate) fn validate(
         let source = model::read_gear_pair(document, pair).map_err(|e| error(Some(pair), e))?;
         let resolved = model::resolve_gear_pair_parameters(document, evaluated, &source.parameters)
             .map_err(|e| error(Some(pair), e))?;
+        let family = resolved.gears[0].family();
         if shifted_engagement(document, source.parameters.gears)
+            || !matches!(family, GearFamily::Spur | GearFamily::Herringbone)
             || resolved.gears.iter().any(|gear| {
                 !gear.rotary().is_some_and(|rotary| {
-                    rotary.family == GearFamily::Spur
+                    rotary.family == family
                         && rotary.profile_shift_coefficient == 0.
                         && rotary.hub.is_none()
                 })
@@ -60,7 +66,7 @@ pub(crate) fn validate(
         {
             return Err(error(
                 Some(pair),
-                "Rust gear-pair interference is available only for unshifted external spur members without hubs",
+                "Rust gear-pair interference requires unshifted external spur or continuous herringbone members without hubs",
             ));
         }
         let [a, b] = source.parameters.gears;
@@ -85,7 +91,14 @@ pub(crate) fn validate(
             let [pa, pb] = poses;
             let placed_a = placed(a, pa?, pair)?;
             let placed_b = placed(b, pb?, pair)?;
-            check(pair, [&placed_a, &placed_b], drive, policy, interrupt)?;
+            check(
+                pair,
+                [&placed_a, &placed_b],
+                drive,
+                family,
+                policy,
+                interrupt,
+            )?;
         }
         let sampled_cycle_ms = start.elapsed().as_secs_f64() * 1000.;
         checkpoint(interrupt)?;
@@ -102,6 +115,7 @@ pub(crate) fn validate(
                 inputs.current_member(pair, &source, 1)?,
             ],
             current,
+            family,
             policy,
             interrupt,
         )?;
@@ -119,7 +133,11 @@ pub(crate) fn validate(
             current_drive_angle_rad: current,
             current_pose_checked: true,
             maximum_overlap_volume_mm3: 0.,
-            scope: "Rust positive-clearance certificates for the current pose and nine sampled phases over one unshifted external spur tooth cycle. Continuous motion, strength and manufacturing fit are outside this check.",
+            scope: if family == GearFamily::Herringbone {
+                "Rust full-axial positive-clearance certificates for the current pose and nine sampled phases of one unshifted continuous herringbone tooth cycle. Continuous motion, strength and manufacturing fit are outside this check."
+            } else {
+                "Rust positive-clearance certificates for the current pose and nine sampled phases over one unshifted external spur tooth cycle. Continuous motion, strength and manufacturing fit are outside this check."
+            },
         });
     }
     Ok(reports)

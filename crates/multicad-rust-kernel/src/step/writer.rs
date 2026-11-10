@@ -473,6 +473,20 @@ impl Writer {
         self.append(|file| cylindrical_revolution::encode(file, placement, ring))
     }
 
+    pub fn append_conical_frustum(
+        &mut self,
+        revolution: &crate::revolution::Revolution,
+        origin: Point,
+        u: Point,
+        v: Point,
+        tolerance: f64,
+    ) -> Result<(), StepError> {
+        let ring = cylindrical_revolution::conical_meridian(revolution, tolerance)
+            .ok_or(StepError::Unsupported)?;
+        let placement = Placement::new(origin, u, v)?;
+        self.append(|file| cylindrical_revolution::encode(file, placement, ring))
+    }
+
     pub fn append_axial_profile_stack(
         &mut self,
         stack: &crate::axial_profile_stack::ProfileStack,

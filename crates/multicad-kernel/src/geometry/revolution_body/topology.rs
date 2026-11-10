@@ -127,16 +127,20 @@ impl RevolutionBody {
                     continue;
                 };
                 let segment = &self.segments[ring][edge];
-                let side = Origin {
-                    source: self.feature,
-                    role: format!("side/{}/{}", segment.origin.source, segment.origin.role),
+                let primary = if segment.cap_identity {
+                    segment.origin.clone()
+                } else {
+                    Origin {
+                        source: self.feature,
+                        role: format!("side/{}/{}", segment.origin.source, segment.origin.role),
+                    }
                 };
                 let plane = self.planar_wall(frame, ring, edge);
                 let mut face = element(
                     TopologyKind::Face,
                     ordinal,
-                    [side.clone(), segment.origin.clone()]
-                        .into_iter()
+                    std::iter::once(primary.clone())
+                        .chain((!segment.cap_identity).then(|| segment.origin.clone()))
                         .chain(segment.inherited.iter().cloned())
                         .collect(),
                     plane.map(|frame| AnalyticGeometry::Plane { frame }),
@@ -149,7 +153,7 @@ impl RevolutionBody {
                     }
                     let u = unit(u);
                     face.frames.push(AnchoredFrame {
-                        origin: side,
+                        origin: primary,
                         frame: ReferenceFrame {
                             origin_mm: position(frame, spun(segment.authored_start, 0.)),
                             u: world_direction(frame, u),

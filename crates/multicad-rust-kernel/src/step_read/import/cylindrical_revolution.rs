@@ -17,6 +17,32 @@ impl Shell<'_, '_> {
         faces: &[Face],
         readback: &Readback,
     ) -> Option<ImportSolid> {
+        self.revolution(faces, readback, false)
+    }
+
+    pub(super) fn conical_frustum(
+        &self,
+        faces: &[Face],
+        readback: &Readback,
+    ) -> Option<ImportSolid> {
+        if faces.len() != 3
+            || faces
+                .iter()
+                .filter(|face| matches!(face, Face::Conical(wall) if wall.outward))
+                .count()
+                != 1
+        {
+            return None;
+        }
+        self.revolution(faces, readback, true)
+    }
+
+    fn revolution(
+        &self,
+        faces: &[Face],
+        readback: &Readback,
+        conical: bool,
+    ) -> Option<ImportSolid> {
         if faces.len() > MAX_VERTICES {
             return None;
         }
@@ -57,7 +83,7 @@ impl Shell<'_, '_> {
             let rims = trims.into_iter().map(Node::Rim);
             let rim_point = |rim| points.get(&rim).copied();
             let [from, to] = match face {
-                Face::Cylindrical { seam, flux } => {
+                Face::Cylindrical { seam, flux } if !conical => {
                     let rims: Vec<_> = rims.filter(|node| *node != Node::Rim(*seam)).collect();
                     let [a, b] = *rims.as_slice() else {
                         return None;
@@ -72,6 +98,14 @@ impl Shell<'_, '_> {
                         [b, a]
                     }
                 }
+                Face::Conical(wall) if conical && wall.outward => {
+                    let rims: Vec<_> = rims.filter(|node| *node != Node::Rim(wall.seam)).collect();
+                    let [a, b] = *rims.as_slice() else {
+                        return None;
+                    };
+                    let [[_, za], [_, zb]] = [rim_point(a)?, rim_point(b)?];
+                    if za < zb { [a, b] } else { [b, a] }
+                }
                 Face::Planar { normal, .. } => {
                     let rings: Vec<_> = rims.collect();
                     let (outer, inner) = match *rings.as_slice() {
@@ -82,7 +116,7 @@ impl Shell<'_, '_> {
                             axis_nodes.push(inner);
                             (outer, inner)
                         }
-                        [a, b] => {
+                        [a, b] if !conical => {
                             let [[ra, za], [rb, zb]] = [rim_point(a)?, rim_point(b)?];
                             if za != zb || (ra - rb).abs() <= self.tolerance {
                                 return None;
@@ -127,7 +161,11 @@ impl Shell<'_, '_> {
             u,
             v,
             height_mm,
-            profile: ImportProfile::CylindricalRevolution { meridian },
+            profile: if conical {
+                ImportProfile::ConicalRevolution { meridian }
+            } else {
+                ImportProfile::CylindricalRevolution { meridian }
+            },
         })
     }
 }

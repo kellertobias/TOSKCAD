@@ -398,3 +398,144 @@ fn rust_sweep_refuses_unsupported_transitions_and_invalid_placement() {
         "{error}"
     );
 }
+
+#[test]
+fn rust_same_phase_circle_loft_has_exact_geometry_and_both_section_origins() {
+    let feature = EntityId::new();
+    let frame = PlaneFrame {
+        origin: [11., -7., 23.],
+        u: [1., 0., 0.],
+        v: [0., 0.6, 0.8],
+    };
+    let section_origins = [origins(1), origins(1)];
+    for height in [-20_f64, 20.] {
+        for radii in [[2., 4.], [4., 2.], [2., 2.]] {
+            let [start, end] = [0., height].map(|level| PlaneFrame {
+                origin: std::array::from_fn(|i| frame.origin[i] + frame.normal()[i] * level),
+                ..frame
+            });
+            let profiles = [start, end]
+                .into_iter()
+                .zip(radii)
+                .map(|(frame, radius_mm)| CurvedProfile {
+                    frame,
+                    outer: vec![CurvedEdge2d::Circle {
+                        center: [3., 2.],
+                        radius_mm,
+                    }],
+                    holes: vec![],
+                })
+                .collect::<Vec<_>>();
+            let rust =
+                Solid::rust_loft_coaxial_circles_named(&profiles, feature, &section_origins, p())
+                    .unwrap();
+            assert!(rust.uses_rust_geometry());
+            assert_eq!(rust.solid_count().unwrap(), 1);
+            let [a, b] = radii;
+            let volume = std::f64::consts::PI * height.abs() / 3. * (a * a + a * b + b * b);
+            near(rust.volume_mm3().unwrap(), volume);
+            let check_ancestry = |topology: &TopologySnapshot| {
+                for face in topology
+                    .elements
+                    .iter()
+                    .filter(|element| element.key.kind == TopologyKind::Face)
+                {
+                    let is_cap = ["cap.start", "cap.end"].into_iter().any(|role| {
+                        face.origins.contains(&Origin {
+                            source: feature,
+                            role: role.into(),
+                        })
+                    });
+                    for origin in section_origins.iter().flatten() {
+                        assert_eq!(face.origins.contains(origin), !is_cap);
+                        assert_eq!(
+                            face.origins.contains(&Origin {
+                                source: feature,
+                                role: format!("side/{}/{}", origin.source, origin.role)
+                            }),
+                            !is_cap
+                        );
+                    }
+                }
+            };
+            check_ancestry(&rust.topology_snapshot(feature, 0).unwrap());
+            let receipt = rust
+                .manufacturing_mesh_with_receipt(Default::default())
+                .unwrap();
+            assert!(!receipt.mesh.indices.is_empty());
+
+            #[cfg(feature = "occt")]
+            for ruled in [false, true] {
+                let native =
+                    Solid::loft_profiles_named(&profiles, feature, &section_origins, ruled, p())
+                        .unwrap();
+                near(native.volume_mm3().unwrap(), volume);
+                assert_eq!(rust.faces().unwrap().len(), native.faces().unwrap().len());
+                let area = |solid: &Solid| {
+                    solid
+                        .faces()
+                        .unwrap()
+                        .iter()
+                        .map(|face| face.area_mm2)
+                        .sum()
+                };
+                near(area(&rust), area(&native));
+                let bounds = |solid: &Solid| {
+                    let bounds = solid.bounds().unwrap();
+                    bounds.min.into_iter().chain(bounds.max)
+                };
+                for (actual, expected) in bounds(&rust).zip(bounds(&native)) {
+                    near(actual, expected);
+                }
+                check_ancestry(&native.topology_snapshot(feature, 0).unwrap());
+            }
+
+            let folder = tempfile::tempdir().unwrap();
+            let step = folder.path().join("circle-loft.step");
+            rust.write_step(&step).unwrap();
+            let imported =
+                Solid::import_rust_step(&std::fs::read_to_string(&step).unwrap(), feature, p())
+                    .unwrap();
+            near(imported.volume_mm3().unwrap(), volume);
+            #[cfg(feature = "occt")]
+            near(
+                Solid::read_step(&step, p()).unwrap().volume_mm3().unwrap(),
+                volume,
+            );
+        }
+    }
+}
+
+#[test]
+fn rust_circle_loft_refuses_phase_change_and_offset_axis() {
+    let feature = EntityId::new();
+    let sections = [origins(1), origins(1)];
+    let circle = |z| CurvedProfile {
+        frame: PlaneFrame {
+            origin: [0., 0., z],
+            ..Default::default()
+        },
+        outer: vec![CurvedEdge2d::Circle {
+            center: [0.; 2],
+            radius_mm: 2.,
+        }],
+        holes: vec![],
+    };
+    let a = circle(0.);
+    let mut b = circle(20.);
+    b.frame.u = [0., 1., 0.];
+    b.frame.v = [-1., 0., 0.];
+    let error = Solid::rust_loft_coaxial_circles_named(&[a.clone(), b], feature, &sections, p())
+        .err()
+        .unwrap();
+    assert_eq!(error.kind, GeometryErrorKind::Unsupported);
+    assert!(error.message.contains("seam directions"), "{error}");
+
+    let mut b = circle(20.);
+    b.frame.origin[0] = 1.;
+    let error = Solid::rust_loft_coaxial_circles_named(&[a, b], feature, &sections, p())
+        .err()
+        .unwrap();
+    assert_eq!(error.kind, GeometryErrorKind::Unsupported);
+    assert!(error.message.contains("coaxial"), "{error}");
+}

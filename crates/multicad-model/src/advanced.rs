@@ -79,8 +79,15 @@ pub(crate) fn build(
             .iter()
             .map(|s| s.1.clone())
             .collect::<Vec<_>>();
-        return Solid::loft_profiles_named(&profiles, feature, &origins, ruled, inputs.policy)
-            .map_err(|e| error(Some(feature), e));
+        let solid = match inputs.backend {
+            GeometryBackend::Rust => {
+                Solid::rust_loft_coaxial_circles_named(&profiles, feature, &origins, inputs.policy)
+            }
+            GeometryBackend::OpenCascade => {
+                Solid::loft_profiles_named(&profiles, feature, &origins, ruled, inputs.policy)
+            }
+        };
+        return solid.map_err(|e| error(Some(feature), e));
     }
     let input = source
         .input

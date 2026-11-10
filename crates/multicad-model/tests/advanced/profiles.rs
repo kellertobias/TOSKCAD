@@ -101,7 +101,7 @@ fn path(session: &mut Session) -> SketchPathSource {
         curves: vec![line],
     }
 }
-fn check_saved_rust_sweep(session: &mut Session, request: &AdvancedRequest, volume: f64) {
+fn check_saved_rust_profile(session: &mut Session, request: &AdvancedRequest, volume: f64) {
     use multicad_model::{Compiler, GeometryBackend};
     let compiler = Compiler {
         omit_display: true,
@@ -135,7 +135,18 @@ fn check_saved_rust_sweep(session: &mut Session, request: &AdvancedRequest, volu
     );
     let folder = tempfile::tempdir().unwrap();
     let step = folder.path().join("swept.step");
+    assert!(solid.supports_step_export());
     solid.write_step(&step).unwrap();
+    near(
+        multicad_model::export::verify_rust_step_shape(
+            &step,
+            solid,
+            &model.snapshot().shapes[&request.feature],
+            1e-7,
+        )
+        .unwrap(),
+        volume,
+    );
     let imported = multicad_kernel::Solid::import_rust_step(
         &std::fs::read_to_string(step).unwrap(),
         request.feature,
@@ -181,10 +192,10 @@ fn sweep_rebuilds_solved_profile_and_ordered_path_without_display_geometry() {
         Some(path),
     );
     commit(&mut session, &request);
-    check_saved_rust_sweep(&mut session, &request, PI * 4. * 40.);
+    check_saved_rust_profile(&mut session, &request, PI * 4. * 40.);
     apply_parameter(&mut session, "pitch", "50");
     apply_parameter(&mut session, "wall", "3");
-    check_saved_rust_sweep(&mut session, &request, PI * 9. * 50.);
+    check_saved_rust_profile(&mut session, &request, PI * 9. * 50.);
     let source = model::read_advanced(session.document(), request.feature)
         .unwrap()
         .0;
@@ -268,19 +279,9 @@ fn loft_uses_explicit_section_seams_and_current_bound_section_geometry() {
         None,
     );
     commit(&mut session, &request);
-    persist_and_check(
-        &mut session,
-        request.body,
-        PI * 20. / 3. * (4. + 8. + 16.),
-        1,
-    );
+    check_saved_rust_profile(&mut session, &request, PI * 20. / 3. * (4. + 8. + 16.));
     apply_parameter(&mut session, "wall", "3");
-    persist_and_check(
-        &mut session,
-        request.body,
-        PI * 20. / 3. * (9. + 12. + 16.),
-        1,
-    );
+    check_saved_rust_profile(&mut session, &request, PI * 20. / 3. * (9. + 12. + 16.));
     let mut edit = AdvancedRequest::existing(session.document(), request.feature).unwrap();
     let AdvancedParameters::Loft(p) = &mut edit.parameters else {
         panic!()
@@ -289,12 +290,7 @@ fn loft_uses_explicit_section_seams_and_current_bound_section_geometry() {
     let prepared =
         model::prepare_advanced_edit(&session, session.revision(), actor(), &edit).unwrap();
     session.commit(prepared.prepared).unwrap();
-    persist_and_check(
-        &mut session,
-        request.body,
-        PI * 20. / 3. * (9. + 12. + 16.),
-        1,
-    );
+    check_saved_rust_profile(&mut session, &request, PI * 20. / 3. * (9. + 12. + 16.));
 }
 #[test]
 fn missing_seam_and_unsupported_curved_path_fail_without_committing_source() {

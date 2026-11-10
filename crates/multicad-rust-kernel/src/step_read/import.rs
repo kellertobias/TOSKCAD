@@ -108,6 +108,10 @@ pub enum ImportProfile {
         /// Counterclockwise rectilinear boundary in [radius, axial] coordinates.
         meridian: Vec<[f64; 2]>,
     },
+    ConicalRevolution {
+        /// Counterclockwise disk-to-disk meridian in [radius, axial] coordinates.
+        meridian: Vec<[f64; 2]>,
+    },
 }
 
 #[cfg(test)]
@@ -200,6 +204,7 @@ fn recognize_member(shell: &Shell<'_, '_>, faces: &[Face]) -> Result<(Readback, 
     if faces.iter().any(|face| matches!(face, Face::Conical(_))) {
         let solid = shell
             .chamfered_polygon(faces)
+            .or_else(|| shell.conical_frustum(faces, &readback))
             .ok_or(ReadError::Unsupported)?;
         return Ok((readback, solid));
     }

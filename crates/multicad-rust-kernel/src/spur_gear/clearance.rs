@@ -28,7 +28,7 @@ impl Default for Placement {
 }
 
 impl Placement {
-    fn valid(self) -> bool {
+    fn valid(self, maximum_uncertainty: f64) -> bool {
         self.center_mm
             .into_iter()
             .all(|v| v.abs() <= super::MAX_COORDINATE_MM)
@@ -36,7 +36,7 @@ impl Placement {
             && (length(self.axes[1]) - 1.).abs() <= 1e-12
             && (cross(self.axes[0], self.axes[1]) - 1.).abs() <= 1e-12
             && dot(self.axes[0], self.axes[1]).abs() <= 1e-12
-            && (0. ..=1e-3).contains(&self.uncertainty_mm)
+            && (0. ..=maximum_uncertainty).contains(&self.uncertainty_mm)
     }
 
     fn point(self, [u, v]: Point) -> Point {
@@ -330,8 +330,20 @@ pub fn certify(
     tolerance_mm: f64,
     interrupt: Option<&dyn Fn() -> bool>,
 ) -> Result<ResultKind, Error> {
+    certify_with_uncertainty([a, b], placements, tolerance_mm, 1e-3, interrupt)
+}
+
+fn certify_with_uncertainty(
+    [a, b]: [&Profile; 2],
+    placements: [Placement; 2],
+    tolerance_mm: f64,
+    maximum_uncertainty: f64,
+    interrupt: Option<&dyn Fn() -> bool>,
+) -> Result<ResultKind, Error> {
     if !(1e-7..=1e-3).contains(&tolerance_mm)
-        || placements.into_iter().any(|p| !p.valid())
+        || placements
+            .into_iter()
+            .any(|p| !p.valid(maximum_uncertainty))
         || length(sub(placements[0].center_mm, placements[1].center_mm)) <= tolerance_mm
     {
         return Err(Error::Invalid);
@@ -352,6 +364,9 @@ pub fn certify(
     }
     Ok(ResultKind::Unresolved)
 }
+
+mod chevron;
+pub use chevron::certify_herringbone;
 
 #[cfg(test)]
 mod tests;

@@ -377,7 +377,7 @@ fn hub_circle(frame: ReferenceFrame, radius_mm: f64) -> AnalyticGeometry {
     }
 }
 
-fn rim(edge: Edge, frame: ReferenceFrame) -> AnalyticGeometry {
+pub(super) fn rim(edge: Edge, frame: ReferenceFrame) -> AnalyticGeometry {
     match edge {
         Edge::Planar(edge) => super::normal_sweep_body::rim_in_frame(edge, frame),
         Edge::Involute(curve) => {

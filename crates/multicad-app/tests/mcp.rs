@@ -1022,3 +1022,86 @@ fn rust_stdio_imports_updates_and_reopens_kicad_with_an_embedded_component() {
     close(chip["volume_mm3"].as_f64().unwrap(), 48.);
     assert_eq!(chip["bounds_mm"]["min"], json!([38., -23., 1.6]));
 }
+
+#[test]
+fn rust_stdio_reopens_the_24_36_herringbone_pair_and_checks_the_current_drive() {
+    let directory = tempfile::tempdir().unwrap();
+    let project = directory.path().join("continuous-herringbone.tcd");
+    let arguments = [
+        "--rust-model",
+        "--project",
+        project.to_str().unwrap(),
+        "--export-dir",
+        directory.path().to_str().unwrap(),
+    ];
+    let scalar = |value: f64, unit: &str| json!({"value":value,"unit":unit});
+    let recipe = |teeth, hand| {
+        json!({
+            "family":"herringbone",
+            "teeth":scalar(teeth,"count"),
+            "hand":hand,
+            "module":length(2.),
+            "helix_angle":scalar(15.,"deg"),
+            "face_width":length(4.),
+            "bore_diameter":length(8.),
+            "backlash":length(0.05)
+        })
+    };
+    let mut client = Client::start(&arguments);
+    let created = client.ok(
+        "set_gear_pair",
+        json!({
+            "expected_revision":0,
+            "name":"Continuous 24/36 herringbone pair",
+            "first":recipe(24.,"right"),
+            "second":recipe(36.,"left")
+        }),
+    );
+    let pair = &created["pair"];
+    let check = |client: &mut Client, degrees: f64| {
+        let result = client.ok("evaluate_model", json!({}));
+        let receipt = &result["gear_pairs"][0];
+        assert_eq!(receipt["pair"], *pair);
+        assert_eq!(receipt["current_pose_checked"], true);
+        assert_eq!(receipt["maximum_overlap_volume_mm3"], 0.);
+        assert_eq!(result["physical_leaves"].as_array().unwrap().len(), 2);
+        let phases = receipt["cycle_drive_angles_rad"].as_array().unwrap();
+        assert_eq!(phases.len(), 9);
+        for (i, phase) in phases.iter().enumerate() {
+            close(phase.as_f64().unwrap(), (1.875 * i as f64).to_radians());
+        }
+        close(
+            receipt["current_drive_angle_rad"].as_f64().unwrap(),
+            degrees.to_radians(),
+        );
+        assert!(receipt["scope"].as_str().unwrap().contains("full-axial"));
+    };
+    check(&mut client, 0.);
+    let driven = client.ok(
+        "set_gear_pair",
+        json!({
+            "expected_revision":1,"pair":pair,"drive_angle":scalar(12.,"deg")
+        }),
+    );
+    assert_eq!(driven["members"], created["members"]);
+    check(&mut client, 12.);
+    client.ok("save_project", json!({"expected_revision":2}));
+    let bytes = std::fs::read(&project).unwrap();
+    drop(client);
+    let mut reopened = Client::start(&arguments);
+    check(&mut reopened, 12.);
+    reopened.fail(
+        "export_step",
+        json!({
+            "part":created["members"][0]["part"],
+            "file_name":"unsupported-herringbone.step"
+        }),
+    );
+    assert!(
+        !directory
+            .path()
+            .join("unsupported-herringbone.step")
+            .exists()
+    );
+    assert_eq!(std::fs::read(project).unwrap(), bytes);
+}

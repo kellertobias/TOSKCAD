@@ -30,7 +30,9 @@ mod stadium;
 mod warped_union;
 mod writer;
 pub use axial_stack::write_axial_profile_stack;
-pub use cylindrical_revolution::{supports_cylindrical_revolution, write_cylindrical_revolution};
+pub use cylindrical_revolution::{
+    supports_conical_frustum, supports_cylindrical_revolution, write_cylindrical_revolution,
+};
 pub use helical::{
     supports_helical_screw, supports_helical_thread, write_helical_screw, write_helical_thread,
 };
@@ -686,13 +688,14 @@ fn encode_prism(
     for rings in round_trims {
         for pair in rings.windows(2) {
             let [(low, from), (high, to)] = [&pair[0], &pair[1]];
-            faces.push(bore_wall(
+            faces.push(round_wall(
                 brep.file,
                 from,
                 to,
                 high - low,
                 normal,
                 placement.u,
+                false,
             )?);
         }
     }
@@ -1053,13 +1056,14 @@ fn periodic_wall(
     file.face_on(&[bound], surface, outward)
 }
 
-fn bore_wall(
+fn round_wall(
     file: &mut StepFile,
     from: &CircularRim,
     to: &CircularRim,
     height: f64,
     normal: Point,
     reference: Point,
+    outward: bool,
 ) -> Result<Entity, StepError> {
     let rise = to.radius - from.radius;
     let surface = if rise == 0. {
@@ -1087,7 +1091,7 @@ fn bore_wall(
         [from.edge, to.edge],
         seam,
         surface,
-        false,
+        outward,
     ))
 }
 

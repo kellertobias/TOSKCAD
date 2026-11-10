@@ -319,3 +319,30 @@ fn the_rim_graph_must_be_one_complete_cycle() {
     assert!(cycle(&BTreeMap::new(), &BTreeMap::new()).is_none());
     assert!(cycle(&points, &BTreeMap::from([(a, b), (b, c), (c, d), (d, a)])).is_some());
 }
+
+#[test]
+fn conical_frustum_requires_one_outward_wall_and_its_two_shared_rims() {
+    let cone = revolved(&[[0., 0.], [2., 0.], [4., 20.], [0., 20.]]);
+    let mut writer = Writer::new();
+    writer
+        .append_conical_frustum(&cone, [0.; 3], [1., 0., 0.], [0., 1., 0.], TOLERANCE)
+        .unwrap();
+    let text = writer.finish().unwrap();
+    let entities = parse_entities(&text, TOLERANCE).unwrap();
+    let mut shell = Shell::new(&entities, TOLERANCE, true);
+    let mut faces = shell.validated_faces().unwrap();
+    let readback = shell.readback(&faces).unwrap();
+    assert!(shell.conical_frustum(&faces[..2], &readback).is_none());
+    let wall = faces
+        .iter_mut()
+        .find_map(|face| {
+            if let Face::Conical(wall) = face {
+                Some(wall)
+            } else {
+                None
+            }
+        })
+        .unwrap();
+    wall.seam = 0;
+    assert!(shell.conical_frustum(&faces, &readback).is_none());
+}

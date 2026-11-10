@@ -14,7 +14,7 @@ const OPTIONS: Tessellation = Tessellation {
     triangle_limit: 100_000,
 };
 
-fn fixture(teeth: u32) -> (Spec, f64) {
+pub(in crate::spur_gear) fn fixture(teeth: u32) -> (Spec, f64) {
     // Recipe of the saved 24/36 continuous pair. These transverse
     // equations are also checked against a direct native STEP readback.
     let beta = 15_f64.to_radians();

@@ -16,6 +16,7 @@ pub(crate) mod bore_treatment;
 pub(crate) mod circular_pocket_body;
 mod cosmetic_fastener_body;
 mod helical_body;
+mod herringbone_body;
 mod linear_body;
 mod normal_sweep_body;
 mod orthogonal_body;
@@ -33,6 +34,7 @@ pub use circular_pocket_body::CircularPocketTool;
 use cosmetic_fastener_body::CosmeticFastenerBody;
 use helical_body::HelicalBody;
 pub use helical_body::{BlindThreadCut, BlindThreadMating};
+use herringbone_body::HerringboneBody;
 use linear_body::LinearBody;
 use normal_sweep_body::NormalSweepBody;
 pub use normal_sweep_body::SweepOpening;
@@ -558,6 +560,7 @@ enum SolidBody {
     NormalSweep(Rc<NormalSweepBody>, PlaneFrame),
     SplineSweep(Rc<SplineSweepBody>, PlaneFrame),
     SpurGear(Rc<SpurGearBody>, PlaneFrame),
+    Herringbone(Rc<HerringboneBody>, PlaneFrame),
     AxialStack(Rc<AxialStackBody>, PlaneFrame),
     RustCompound(Rc<RustCompound>),
     Orthogonal(Rc<OrthogonalBody>, PlaneFrame),
@@ -918,6 +921,7 @@ impl Solid {
             SolidBody::NormalSweep(body, frame) => SolidBody::NormalSweep(Rc::clone(body), *frame),
             SolidBody::SplineSweep(body, frame) => SolidBody::SplineSweep(Rc::clone(body), *frame),
             SolidBody::SpurGear(body, frame) => SolidBody::SpurGear(Rc::clone(body), *frame),
+            SolidBody::Herringbone(body, frame) => SolidBody::Herringbone(Rc::clone(body), *frame),
             SolidBody::AxialStack(body, frame) => SolidBody::AxialStack(Rc::clone(body), *frame),
             SolidBody::PlanarBoolean(body, frame) => {
                 SolidBody::PlanarBoolean(Rc::clone(body), *frame)
@@ -1193,6 +1197,9 @@ impl Solid {
                 SolidBody::SpurGear(body, frame) => {
                     SolidBody::SpurGear(Rc::clone(body), transform.frame(*frame))
                 }
+                SolidBody::Herringbone(body, frame) => {
+                    SolidBody::Herringbone(Rc::clone(body), transform.frame(*frame))
+                }
                 SolidBody::AxialStack(body, frame) => {
                     SolidBody::AxialStack(Rc::clone(body), transform.frame(*frame))
                 }
@@ -1234,6 +1241,9 @@ impl Solid {
     pub fn volume_mm3(&self) -> Result<f64, GeometryError> {
         if let Some((body, _)) = self.spur_gear_body() {
             return Ok(body.profile.volume_mm3());
+        }
+        if let Some((body, _)) = self.herringbone_body() {
+            return Ok(body.geometry.volume_mm3());
         }
         if let Some((body, _)) = self.warped_union_body() {
             return Ok(body.volume_mm3());
@@ -1311,6 +1321,9 @@ impl Solid {
     }
     pub fn bounds(&self) -> Result<Bounds, GeometryError> {
         if let Some((body, frame)) = self.spur_gear_body() {
+            return Ok(body.bounds(frame));
+        }
+        if let Some((body, frame)) = self.herringbone_body() {
             return Ok(body.bounds(frame));
         }
         if let Some((body, frame)) = self.warped_union_body() {
@@ -1435,6 +1448,9 @@ impl Solid {
     }
     pub fn faces(&self) -> Result<Vec<Face>, GeometryError> {
         if let Some((body, frame)) = self.spur_gear_body() {
+            return Ok(body.faces(frame));
+        }
+        if let Some((body, frame)) = self.herringbone_body() {
             return Ok(body.faces(frame));
         }
         if let Some((body, frame)) = self.warped_union_body() {
@@ -1595,6 +1611,9 @@ impl Solid {
             SolidBody::SplineSweep(body, frame) => body.mesh(*frame, rust_options),
             SolidBody::SpurGear(body, frame) => {
                 crate::rust_display::placed_mesh(body.profile.mesh(rust_options), *frame, false)
+            }
+            SolidBody::Herringbone(body, frame) => {
+                crate::rust_display::placed_mesh(body.geometry.mesh(rust_options), *frame, false)
             }
             SolidBody::AxialStack(body, frame) => body.mesh(*frame, rust_options),
             SolidBody::PlanarBoolean(body, frame) => body.mesh(*frame, rust_options),
@@ -1873,6 +1892,9 @@ impl Solid {
         if let Some((body, frame)) = self.spline_sweep_body() {
             return body.sample_rim(frame, ordinal, options);
         }
+        if let Some((body, frame)) = self.herringbone_body() {
+            return body.sample_rail(frame, ordinal, options);
+        }
         let (member, local) = self.rust_compound()?.edge_source(ordinal)?;
         member.sample_non_analytic_edge(local, options)
     }
@@ -1910,6 +1932,7 @@ impl Solid {
             SolidBody::NormalSweep(body, _) => body.feature,
             SolidBody::SplineSweep(body, _) => body.feature,
             SolidBody::SpurGear(body, _) => body.feature,
+            SolidBody::Herringbone(body, _) => body.feature,
             SolidBody::AxialStack(body, _) => body.feature,
             SolidBody::PlanarBoolean(body, _) => body.feature,
             SolidBody::WarpedUnion(body, _) => body.feature,
@@ -1943,7 +1966,7 @@ impl Solid {
             SolidBody::Helical(body, frame) => {
                 standalone && body.supports_step(*frame, self.policy)
             }
-            SolidBody::CosmeticFastener(..) => false,
+            SolidBody::CosmeticFastener(..) | SolidBody::Herringbone(..) => false,
             SolidBody::WarpedUnion(body, _) => {
                 multicad_rust_kernel::step::supports_warped_union(&body.geometry)
             }
@@ -1952,6 +1975,10 @@ impl Solid {
             }
             SolidBody::Revolved(body, _) => {
                 multicad_rust_kernel::step::supports_cylindrical_revolution(&body.geometry)
+                    || multicad_rust_kernel::step::supports_conical_frustum(
+                        &body.geometry,
+                        self.policy.linear_tolerance_mm,
+                    )
             }
             SolidBody::Orthogonal(body, _) => body.supports_step(),
         }
@@ -2046,6 +2073,7 @@ impl Solid {
                 frame.v,
                 self.policy.linear_tolerance_mm,
             ),
+            SolidBody::Herringbone(..) => Err(step::StepError::Unsupported),
             SolidBody::SpurGear(body, frame) => writer.append_spur_gear(
                 &body.profile,
                 frame.origin,
@@ -2069,6 +2097,17 @@ impl Solid {
                         base.origin,
                         base.u,
                         base.v,
+                    )
+                } else if step::supports_conical_frustum(
+                    &body.geometry,
+                    self.policy.linear_tolerance_mm,
+                ) {
+                    writer.append_conical_frustum(
+                        &body.geometry,
+                        frame.origin,
+                        frame.u,
+                        frame.v,
+                        self.policy.linear_tolerance_mm,
                     )
                 } else {
                     writer.append_cylindrical_revolution(

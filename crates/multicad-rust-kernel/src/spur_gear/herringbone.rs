@@ -44,6 +44,10 @@ impl Herringbone {
         &self.profile
     }
 
+    pub fn tip_radius_mm(&self) -> f64 {
+        self.tip_radius_mm
+    }
+
     pub fn twist_rad_per_mm(&self) -> f64 {
         self.twist_rad_per_mm
     }
@@ -76,4 +80,4 @@ impl Herringbone {
 }
 
 #[cfg(test)]
-mod tests;
+pub(super) mod tests;

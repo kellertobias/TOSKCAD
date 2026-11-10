@@ -26,6 +26,7 @@ pub(crate) struct RevolutionBody {
 
 struct MeridianSegment {
     origin: Origin,
+    cap_identity: bool,
     inherited: Vec<Origin>,
     inherited_frames: Vec<AnchoredFrame>,
     authored_start: MeridianPoint,
@@ -141,6 +142,7 @@ impl Solid {
                 .iter()
                 .map(|&authored_start| MeridianSegment {
                     authored_start,
+                    cap_identity: false,
                     inherited: vec![],
                     inherited_frames: vec![],
                     origin: next_origin
@@ -182,6 +184,70 @@ impl Solid {
             feature,
             sketch,
             segments,
+            rings,
+        };
+        let bounds = body.bounds(frame);
+        policy.point(bounds.min)?;
+        policy.point(bounds.max)?;
+        Ok(Self {
+            body: SolidBody::Revolved(Rc::new(body), frame),
+            policy,
+            provenance: vec![],
+            rust_origins: vec![],
+        })
+    }
+
+    pub(crate) fn rust_revolve_circle_loft(
+        frame: PlaneFrame,
+        height: f64,
+        [r0, r1]: [f64; 2],
+        feature: EntityId,
+        [first, second]: [Origin; 2],
+        policy: GeometryPolicy,
+    ) -> Result<Self, GeometryError> {
+        let meridian = vec![[0., 0.], [r0, 0.], [r1, height], [0., height]];
+        let geometry = Revolution::new(vec![meridian], std::f64::consts::TAU).map_err(|cause| {
+            error(
+                "Rust circular loft",
+                GeometryErrorKind::Input,
+                format!("Invalid circular loft meridian: {cause:?}"),
+            )
+        })?;
+        let generated = |role: &str| Origin {
+            source: feature,
+            role: role.into(),
+        };
+        let cap = |role, level| MeridianSegment {
+            origin: generated(role),
+            cap_identity: true,
+            inherited: vec![],
+            inherited_frames: vec![],
+            authored_start: [0., level],
+        };
+        let side = MeridianSegment {
+            origin: first,
+            cap_identity: false,
+            inherited: vec![
+                generated(&format!("side/{}/{}", second.source, second.role)),
+                second,
+            ],
+            inherited_frames: vec![],
+            authored_start: [r0, 0.],
+        };
+        let rings = topology::ring_edges(&geometry);
+        let body = RevolutionBody {
+            geometry,
+            feature,
+            sketch: PlaneFrame {
+                v: [0., 0., 1.],
+                ..Default::default()
+            },
+            segments: vec![vec![
+                cap("cap.start", 0.),
+                side,
+                cap("cap.end", height),
+                cap("loft.axis", 0.),
+            ]],
             rings,
         };
         let bounds = body.bounds(frame);

@@ -33,6 +33,32 @@ pub(super) fn meridian(revolution: &Revolution) -> Option<&[[f64; 2]]> {
         .then_some(ring)
 }
 
+/// Whether this revolution is a single disk-to-disk conical frustum.
+pub fn supports_conical_frustum(revolution: &Revolution, tolerance: f64) -> bool {
+    conical_meridian(revolution, tolerance).is_some()
+}
+
+pub(super) fn conical_meridian(revolution: &Revolution, tolerance: f64) -> Option<&[[f64; 2]]> {
+    let [ring] = revolution.rings() else {
+        return None;
+    };
+    if !revolution.is_full() || ring.len() != 4 || !tolerance.is_finite() || tolerance < 0. {
+        return None;
+    }
+    let mut points = [ring[0], ring[1], ring[2], ring[3]];
+    points.sort_unstable_by(|a, b| a[1].total_cmp(&b[1]).then(a[0].total_cmp(&b[0])));
+    let [[a0, z0], [r0, z1], [a1, z2], [r1, z3]] = points;
+    (a0 == 0.
+        && a1 == 0.
+        && z0 == z1
+        && z2 == z3
+        && z2 - z0 > tolerance
+        && r0 > tolerance
+        && r1 > tolerance
+        && (r0 - r1).abs() > tolerance)
+        .then_some(ring)
+}
+
 pub(super) fn encode(
     file: &mut StepFile,
     placement: Placement,
@@ -62,7 +88,7 @@ pub(super) fn encode(
         let b = ring[j];
         let [first, last] = [i, j].map(|index| rims[index].as_ref());
         if let (Some(first), Some(last)) = (first, last)
-            && a[0] == b[0]
+            && a[1] != b[1]
         {
             let outward = a[1] < b[1];
             let [bottom, top] = if outward {
@@ -70,8 +96,20 @@ pub(super) fn encode(
             } else {
                 [last, first]
             };
-            let trim = CylindricalTrim::from_rims(file, bottom, top)?;
-            faces.push(trim.wall(file, outward));
+            if a[0] == b[0] {
+                let trim = CylindricalTrim::from_rims(file, bottom, top)?;
+                faces.push(trim.wall(file, outward));
+            } else {
+                faces.push(round_wall(
+                    file,
+                    bottom,
+                    top,
+                    (a[1] - b[1]).abs(),
+                    axis,
+                    reference,
+                    outward,
+                )?);
+            }
         } else if first.is_some() || last.is_some() {
             let up = a[0] > b[0];
             let (outer, inner) = if up { (first, last) } else { (last, first) };
@@ -191,5 +229,74 @@ mod tests {
             writer.finish().unwrap(),
             write_cylindrical_revolution(&solid, ORIGIN, U, V).unwrap()
         );
+    }
+}
+
+#[cfg(test)]
+mod conical_tests {
+    use super::*;
+    use crate::step_read::{ImportProfile, read_import_solid};
+    use std::f64::consts::{PI, TAU};
+
+    #[test]
+    fn conical_writer_rejects_unsupported_or_collapsed_boundaries() {
+        let cone = |dr, h, angle| {
+            Revolution::new(vec![vec![[0., 0.], [2., 0.], [2. + dr, h], [0., h]]], angle).unwrap()
+        };
+        let hollow = Revolution::new(
+            vec![
+                vec![[1., 0.], [6., 0.], [6., 8.], [1., 8.]],
+                vec![[2., 2.], [2., 4.], [3., 4.], [3., 2.]],
+            ],
+            TAU,
+        )
+        .unwrap();
+        assert!(!supports_conical_frustum(&hollow, 1e-7));
+        assert!(!supports_conical_frustum(&cone(2., 20., PI), 1e-7));
+        assert!(!supports_conical_frustum(&cone(2., 20., TAU), -1.));
+        let mut writer = Writer::new();
+        let placement = [[1e8, 0., 1e8], [1., 0., 0.], [0., 1., 0.]];
+        assert_eq!(
+            writer.append_conical_frustum(
+                &cone(1e-9, 1e-9, TAU),
+                placement[0],
+                placement[1],
+                placement[2],
+                1e-12
+            ),
+            Err(StepError::InvalidGeometry)
+        );
+    }
+
+    #[test]
+    fn placed_conical_frusta_preserve_disk_caps_and_exact_metrics() {
+        let origin = [13., -7., 20.];
+        let u = [1., 0., 0.];
+        let v = [0., 0.6, 0.8];
+        for (r0, r1) in [(2., 4.), (4., 2.)] {
+            let ring = vec![[0., 0.], [r0, 0.], [r1, 20.], [0., 20.]];
+            let cone = Revolution::new(vec![ring], TAU).unwrap();
+            assert!(supports_conical_frustum(&cone, 1e-7));
+            assert!(!supports_cylindrical_revolution(&cone));
+            assert!(!supports_conical_frustum(&cone, 3.));
+            let mut writer = Writer::new();
+            assert_eq!(
+                writer.append_conical_frustum(&cone, origin, u, v, 3.),
+                Err(StepError::Unsupported)
+            );
+            writer
+                .append_conical_frustum(&cone, origin, u, v, 1e-7)
+                .unwrap();
+            let text = writer.finish().unwrap();
+            assert_eq!(text.matches("=CONICAL_SURFACE(").count(), 1);
+            let (readback, solid) = read_import_solid(&text, 1e-7).unwrap();
+            assert!(matches!(
+                solid.profile,
+                ImportProfile::ConicalRevolution { .. }
+            ));
+            assert_eq!(readback.face_count, 3);
+            let expected = 20. * PI / 3. * (r0 * r0 + r0 * r1 + r1 * r1);
+            assert!((readback.volume_mm3 - expected).abs() < 1e-7);
+        }
     }
 }

@@ -197,7 +197,8 @@ impl Solid {
             ImportProfile::PlanarBoundary { shell } => {
                 Self::from_imported_planar_boundary(shell, feature, policy)
             }
-            ImportProfile::CylindricalRevolution { meridian } => {
+            ImportProfile::CylindricalRevolution { meridian }
+            | ImportProfile::ConicalRevolution { meridian } => {
                 let axis = frame.normal();
                 let profile_frame = PlaneFrame { v: axis, ..frame };
                 let mut outer = Vec::with_capacity(meridian.len());
