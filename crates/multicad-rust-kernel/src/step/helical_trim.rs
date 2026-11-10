@@ -10,7 +10,9 @@ const FACTORIAL_12: f64 = 479_001_600.;
 const HALF_SPAN_POWER: f64 = 4096.;
 type Point = [f64; 3];
 
+mod cavity_surface;
 mod top_cavity;
+pub use cavity_surface::{CavitySurface, Surface, SurfaceAxis};
 pub use top_cavity::TopCavity;
 
 /// The finite affine line in cylindrical [azimuth, height] parameters.
@@ -141,21 +143,10 @@ impl Rail {
     }
 
     fn ideal_pole(self, endpoint: f64, span: f64, index: usize) -> Point {
-        let (sin, cos) = endpoint.sin_cos();
-        let mut point = [cos, sin];
-        let mut weight = 1.;
-        // The j-th control at an endpoint is a weighted sum of its
-        // Taylor jet. Each k-th term has C(j,k)/(d)_k times span^k.
-        // This calculation is independent of the writer's jet conversion.
-        let mut derivative = point;
-        for k in 1..=index {
-            derivative = [-derivative[1], derivative[0]];
-            weight *= span * (index + 1 - k) as f64 / (k * (DEGREE + 1 - k)) as f64;
-            point = std::array::from_fn(|i| weight.mul_add(derivative[i], point[i]));
-        }
+        let [x, y] = circular_pole(endpoint, span, index);
         [
-            point[0] * self.radius,
-            point[1] * self.radius,
+            x * self.radius,
+            y * self.radius,
             self.height(knot(endpoint, endpoint + span, index)),
         ]
     }
@@ -176,9 +167,7 @@ impl Spline {
             .zip(heights)
             .map(|([x, y], z)| [x, y, z])
             .collect();
-        let multiplicities = (0..spline.knots.len())
-            .map(|i| DEGREE + usize::from(i == 0 || i + 1 == spline.knots.len()))
-            .collect();
+        let multiplicities = multiplicities(spline.knots.len());
         Self {
             degree: DEGREE,
             knots: spline.knots,
@@ -188,20 +177,8 @@ impl Spline {
     }
 
     fn validate_domain(&self, domain: [f64; 2]) -> Result<(), StepError> {
-        let knots = &self.knots;
-        if !(2..=MAX_SPANS + 1).contains(&knots.len())
-            || self.degree != DEGREE
-            || self.multiplicities.len() != knots.len()
-            || self.poles_mm.len() != (knots.len() - 1) * DEGREE + 1
-            || [knots[0], knots[knots.len() - 1]] != domain
-            || self
-                .multiplicities
-                .iter()
-                .enumerate()
-                .any(|(i, &m)| m != DEGREE + usize::from(i == 0 || i + 1 == knots.len()))
-            || knots
-                .windows(2)
-                .any(|span| !span[0].is_finite() || span[0] >= span[1])
+        if self.poles_mm.len()
+            != bezier_pole_count(self.degree, &self.knots, &self.multiplicities, domain)?
             || self.poles_mm.iter().flatten().any(|x| !x.is_finite())
         {
             return Err(StepError::InvalidGeometry);
@@ -249,6 +226,51 @@ impl Spline {
         }
         Ok(bound)
     }
+}
+
+fn multiplicities(count: usize) -> Vec<usize> {
+    (0..count)
+        .map(|i| DEGREE + usize::from(i == 0 || i + 1 == count))
+        .collect()
+}
+
+fn bezier_pole_count(
+    degree: usize,
+    knots: &[f64],
+    multiplicities: &[usize],
+    domain: [f64; 2],
+) -> Result<usize, StepError> {
+    if !(2..=MAX_SPANS + 1).contains(&knots.len())
+        || degree != DEGREE
+        || multiplicities.len() != knots.len()
+        || [knots[0], knots[knots.len() - 1]] != domain
+        || multiplicities
+            .iter()
+            .enumerate()
+            .any(|(i, &m)| m != DEGREE + usize::from(i == 0 || i + 1 == knots.len()))
+        || knots
+            .windows(2)
+            .any(|span| !span[0].is_finite() || span[0] >= span[1])
+    {
+        return Err(StepError::InvalidGeometry);
+    }
+    Ok((knots.len() - 1) * DEGREE + 1)
+}
+
+fn circular_pole(endpoint: f64, span: f64, index: usize) -> [f64; 2] {
+    let (sin, cos) = endpoint.sin_cos();
+    let mut point = [cos, sin];
+    let mut weight = 1.;
+    // The j-th control at an endpoint is a weighted sum of its
+    // Taylor jet. Each k-th term has C(j,k)/(d)_k times span^k.
+    // This calculation is independent of the writer's jet conversion.
+    let mut derivative = point;
+    for k in 1..=index {
+        derivative = [-derivative[1], derivative[0]];
+        weight *= span * (index + 1 - k) as f64 / (k * (DEGREE + 1 - k)) as f64;
+        point = std::array::from_fn(|i| weight.mul_add(derivative[i], point[i]));
+    }
+    point
 }
 
 fn knot(a: f64, b: f64, i: usize) -> f64 {

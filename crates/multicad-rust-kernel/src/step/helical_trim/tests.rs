@@ -93,6 +93,9 @@ fn decoded_geometry_cannot_hide_a_shifted_phase_changed_lead_or_bad_spline() {
     malformed.poles_mm[5][0] += 3. * TOLERANCE;
     assert_eq!(rail.certify(pcurve, &malformed), invalid);
     let mut malformed = source.clone();
+    malformed.poles_mm.pop();
+    assert_eq!(rail.certify(pcurve, &malformed), invalid);
+    let mut malformed = source.clone();
     malformed.poles_mm[5][2] = malformed.poles_mm[4][2];
     assert_eq!(rail.certify(pcurve, &malformed), invalid);
     let mut malformed = source.clone();
@@ -229,4 +232,160 @@ fn top_cavity_refuses_ambiguous_accuracy_and_tampered_decoded_trims() {
     let mut tampered = valid;
     tampered.knots[0] += 0.01;
     assert_eq!(cap.certify(&tampered), invalid);
+}
+
+fn eval_surface(surface: &Surface, [profile, sweep]: [f64; 2]) -> Point {
+    let find_span = |axis: &SurfaceAxis, parameter| {
+        axis.knots
+            .windows(2)
+            .enumerate()
+            .find_map(|(i, pair)| {
+                (pair[0]..=pair[1])
+                    .contains(&parameter)
+                    .then(|| (i * DEGREE, (parameter - pair[0]) / (pair[1] - pair[0])))
+            })
+            .unwrap()
+    };
+    let [p, t] = &surface.axes;
+    let (first_row, up) = find_span(p, profile);
+    let (first_column, ut) = find_span(t, sweep);
+    let columns = (t.knots.len() - 1) * DEGREE + 1;
+    let rows = std::array::from_fn(|i| {
+        let start = (first_row + i) * columns + first_column;
+        eval(
+            surface.poles_mm[start..=start + DEGREE].try_into().unwrap(),
+            ut,
+        )
+    });
+    eval(rows, up)
+}
+
+#[test]
+fn cavity_surface_covers_the_cap_floor_and_rails_on_the_same_support() {
+    use crate::helical_tube_cut::BoundaryEdge;
+
+    for (phase, pitch) in [(-TAU, 2.), (-0.1, 1.3), (0., 2.), (0.1, 8.), (TAU, 32.)] {
+        let cut = Cut::new(
+            Spec {
+                pitch_mm: pitch,
+                ..cut(phase).spec()
+            },
+            TOLERANCE,
+        )
+        .unwrap();
+        let cavity = CavitySurface::new(cut, TOLERANCE).unwrap();
+        let surface = cavity.surface().unwrap();
+        let tolerance = cavity.certify(&surface).unwrap();
+        assert!(tolerance > 0. && tolerance < TOLERANCE * 0.25);
+        let [[lo, hi], [start, end]] = cavity.domains();
+        assert_eq!([lo, hi], cut.edge_domain(BoundaryEdge::TopCavity));
+        assert_eq!(start, 0.);
+        assert_eq!(end, cavity.top_parameter(lo).unwrap());
+        assert_eq!(cavity.top_parameter(hi + 0.01), None);
+        assert!(cavity.top_parameter(hi).unwrap() < end);
+        let [first, last] = cut.cylinder_trims();
+        for (parameter, rail, positive) in [(lo, last, true), (hi, first, false)] {
+            let upper = cavity.top_parameter(parameter).unwrap();
+            for fraction in [0., 0.25, 0.5, 0.75, 1.] {
+                let t = fraction * upper;
+                let exact =
+                    cut.edge_point(BoundaryEdge::Rail { positive }, rail.azimuth_rad[0] + t);
+                assert!(distance(eval_surface(&surface, [parameter, t]), exact) <= tolerance);
+            }
+        }
+        for i in 0..=24 {
+            let phi = if i == 24 {
+                hi
+            } else {
+                lo + (hi - lo) * i as f64 / 24.
+            };
+            for (edge, t) in [
+                (BoundaryEdge::FloorRim, 0.),
+                (BoundaryEdge::TopCavity, cavity.top_parameter(phi).unwrap()),
+            ] {
+                assert!(
+                    distance(eval_surface(&surface, [phi, t]), cut.edge_point(edge, phi))
+                        <= tolerance
+                );
+            }
+            // Interior test independent of the tensor-product formulation:
+            // recover the polar offset of the normal-profile point.
+            let spec = cut.spec();
+            let rise = spec.pitch_mm / TAU;
+            let norm = spec.stock_radius_mm.hypot(rise);
+            let radial = spec.stock_radius_mm + spec.tube_radius_mm * phi.cos();
+            let transverse = rise / norm * spec.tube_radius_mm * phi.sin();
+            let t = end * 0.37;
+            let azimuth = t + phase + transverse.atan2(radial);
+            let rho = radial.hypot(transverse);
+            let exact = [
+                rho * azimuth.cos(),
+                rho * azimuth.sin(),
+                spec.start_height_mm + rise * t
+                    - spec.stock_radius_mm / norm * spec.tube_radius_mm * phi.sin(),
+            ];
+            assert!(distance(eval_surface(&surface, [phi, t]), exact) <= tolerance);
+        }
+    }
+}
+
+#[test]
+fn cavity_surface_rejects_changed_axial_profile_geometry_and_overbudget_nets() {
+    let cut = cut(0.);
+    assert_eq!(
+        CavitySurface::new(cut, 0.).unwrap_err(),
+        StepError::InvalidGeometry
+    );
+    assert_eq!(
+        CavitySurface::new(self::cut(TAU), 1e-10).unwrap_err(),
+        StepError::Limit
+    );
+    let long_cut = Cut::new(
+        Spec {
+            stock_height_mm: 520.,
+            path_height_mm: 510.,
+            ..cut.spec()
+        },
+        TOLERANCE,
+    )
+    .unwrap();
+    assert_eq!(
+        CavitySurface::new(long_cut, 5e-9).unwrap().surface(),
+        Err(StepError::Limit)
+    );
+    let cavity = CavitySurface::new(cut, TOLERANCE).unwrap();
+    let valid = cavity.surface().unwrap();
+    let invalid = Err(StepError::InvalidGeometry);
+    let mut tampered = valid.clone();
+    tampered.axes.swap(0, 1);
+    assert_eq!(cavity.certify(&tampered), invalid);
+    let mut tampered = valid.clone();
+    tampered.poles_mm.pop();
+    assert_eq!(cavity.certify(&tampered), invalid);
+    let mut tampered = valid.clone();
+    tampered.poles_mm[5][2] += TOLERANCE * 0.5;
+    assert_eq!(cavity.certify(&tampered), invalid);
+    let mut tampered = valid.clone();
+    tampered.poles_mm[5][0] += TOLERANCE * 0.05;
+    assert!(cavity.certify(&tampered).unwrap() > cavity.certify(&valid).unwrap());
+    tampered.poles_mm[5][0] += 3. * TOLERANCE;
+    assert_eq!(cavity.certify(&tampered), invalid);
+    let axes = cavity.domains().map(|[a, b]| {
+        let mut knots = (0..MAX_SPANS)
+            .map(|i| a + (b - a) * i as f64 / MAX_SPANS as f64)
+            .collect::<Vec<_>>();
+        knots.push(b);
+        SurfaceAxis {
+            degree: DEGREE,
+            multiplicities: multiplicities(knots.len()),
+            knots,
+        }
+    });
+    assert_eq!(
+        cavity.certify(&Surface {
+            axes,
+            poles_mm: vec![]
+        }),
+        Err(StepError::Limit)
+    );
 }
