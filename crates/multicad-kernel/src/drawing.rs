@@ -2,7 +2,9 @@
 //! caller's geometry worker; only owned immutable curve records leave it.
 use crate::{GeometryError, GeometryErrorKind, GeometryPolicy, PlaneFrame, Solid, ffi};
 use multicad_core::drawings::{VectorCurve, VectorRole};
+mod curved;
 mod planar;
+mod section;
 
 #[derive(Clone, Copy, Debug)]
 pub struct DrawingProjection {
@@ -133,13 +135,19 @@ pub fn project_drawing(
         }
     }
     if solids.iter().any(|input| input.solid.uses_rust_geometry()) {
-        if options.section_offset_mm.is_some()
-            || solids.iter().any(|input| !input.solid.uses_rust_geometry())
-        {
+        if solids.iter().any(|input| !input.solid.uses_rust_geometry()) {
             return Err(err(
                 GeometryErrorKind::Unsupported,
-                "Rust drawing projection requires Rust solids and a view without a section cut",
+                "Rust drawing projection requires all sources to use Rust geometry",
             ));
+        }
+        if let Some(depth) = options.section_offset_mm {
+            return section::project(solids, options, depth);
+        }
+        if let [input] = solids
+            && input.solid.axial_cylinder_frame().is_some()
+        {
+            return curved::project(input, options);
         }
         return planar::project(solids, options);
     }

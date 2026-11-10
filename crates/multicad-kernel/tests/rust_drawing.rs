@@ -201,15 +201,8 @@ fn unsupported_geometry_and_over_budget_output_fail_atomically() {
         Solid::from_axial_cylinder(body, PlaneFrame::default(), Default::default()).unwrap();
     let native = Solid::box_solid([5., 5., 3.], GeometryPolicy::default()).unwrap();
     for (inputs, options) in [
-        (sources(&[&cylinder]), DrawingProjection::default()),
+        (sources(&[&cylinder, &box_]), DrawingProjection::default()),
         (sources(&[&box_, &native]), DrawingProjection::default()),
-        (
-            sources(&[&box_]),
-            DrawingProjection {
-                section_offset_mm: Some(2.),
-                ..Default::default()
-            },
-        ),
     ] {
         assert_eq!(
             project_drawing(&inputs, options).unwrap_err().kind,

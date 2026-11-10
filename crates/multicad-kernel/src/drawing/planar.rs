@@ -13,16 +13,89 @@ fn unit(vector: [f64; 3]) -> [f64; 3] {
     vector.map(|v| v / length)
 }
 
+pub(super) fn view_axes(frame: PlaneFrame) -> [[f64; 3]; 3] {
+    // Match the native projector's normalized X and constructed Y axes.
+    let u = unit(frame.u);
+    let n = unit(cross(u, frame.v));
+    [u, cross(n, u), n]
+}
+
 pub(super) fn project(
     solids: &[DrawingSolid<'_>],
     options: DrawingProjection,
 ) -> Result<Vec<ProjectedVector>, GeometryError> {
-    let frame = options.frame;
-    // The checked axes may differ from exact orthonormality by roundoff.
-    // Match the native projector's normalized X and constructed Y axes.
-    let u = unit(frame.u);
-    let n = unit(cross(u, frame.v));
-    let axes = [u, cross(n, u), n];
+    let (bodies, tolerance) = prepare(solids, options.frame)?;
+    project_bodies(&bodies, options, tolerance)
+}
+
+pub(super) fn project_bodies(
+    bodies: &[Body],
+    options: DrawingProjection,
+    tolerance: f64,
+) -> Result<Vec<ProjectedVector>, GeometryError> {
+    let projected = planar_projection::project(
+        bodies,
+        Options {
+            tolerance,
+            hidden_lines: options.hidden_lines,
+            tangent_edges: options.tangent_edges,
+            detail: options.detail,
+            segment_limit: (options.maximum_curves as usize)
+                .min(options.maximum_points as usize / 2),
+        },
+    )
+    .map_err(projection_error)?;
+    Ok(projected
+        .into_iter()
+        .map(|segment| {
+            line(
+                segment.source,
+                if segment.hidden {
+                    VectorRole::Hidden
+                } else {
+                    VectorRole::Visible
+                },
+                segment.ends,
+            )
+        })
+        .collect())
+}
+
+pub(super) fn line(
+    source_index: usize,
+    role: VectorRole,
+    [a, b]: [[f64; 2]; 2],
+) -> ProjectedVector {
+    ProjectedVector {
+        source_index,
+        role,
+        curve: VectorCurve::Line { a, b },
+        preview_mm: vec![a, b],
+    }
+}
+
+pub(super) fn projection_error(cause: ProjectionError) -> GeometryError {
+    match cause {
+        ProjectionError::Invalid => invalid_boundary(),
+        ProjectionError::Limit => err(
+            GeometryErrorKind::Limit,
+            "Rust drawing projection exceeded its work or output budget",
+        ),
+    }
+}
+
+fn invalid_boundary() -> GeometryError {
+    err(
+        GeometryErrorKind::InvalidResult,
+        "Rust drawing source has an invalid exact boundary",
+    )
+}
+
+pub(super) fn prepare(
+    solids: &[DrawingSolid<'_>],
+    frame: PlaneFrame,
+) -> Result<(Vec<Body>, f64), GeometryError> {
+    let axes = view_axes(frame);
     let local_vector =
         |vector: [f64; 3]| axes.map(|axis| vector.into_iter().zip(axis).map(|(a, b)| a * b).sum());
     let local_point =
@@ -31,12 +104,6 @@ pub(super) fn project(
         err(
             GeometryErrorKind::Unsupported,
             "Rust planar drawing projection requires straight edges and planar faces",
-        )
-    };
-    let invalid = || {
-        err(
-            GeometryErrorKind::InvalidResult,
-            "Rust drawing source has an invalid exact boundary",
         )
     };
     let tolerance = solids
@@ -68,7 +135,7 @@ pub(super) fn project(
                 let edges = crate::rust_display::planar_loops(solid, face.index)
                     .into_iter()
                     .flatten()
-                    .map(|(edge, _)| indices.get(&edge).copied().ok_or_else(invalid))
+                    .map(|(edge, _)| indices.get(&edge).copied().ok_or_else(invalid_boundary))
                     .collect::<Result<Vec<_>, _>>()?;
                 Ok(Face {
                     point: local_point(point),
@@ -79,38 +146,5 @@ pub(super) fn project(
             .collect::<Result<Vec<_>, GeometryError>>()?;
         bodies.push(Body { faces, edges });
     }
-    let projected = planar_projection::project(
-        &bodies,
-        Options {
-            tolerance,
-            hidden_lines: options.hidden_lines,
-            tangent_edges: options.tangent_edges,
-            detail: options.detail,
-            segment_limit: (options.maximum_curves as usize)
-                .min(options.maximum_points as usize / 2),
-        },
-    )
-    .map_err(|cause| match cause {
-        ProjectionError::Invalid => invalid(),
-        ProjectionError::Limit => err(
-            GeometryErrorKind::Limit,
-            "Rust drawing projection exceeded its work or output budget",
-        ),
-    })?;
-    Ok(projected
-        .into_iter()
-        .map(|segment| {
-            let [a, b] = segment.ends;
-            ProjectedVector {
-                source_index: segment.source,
-                role: if segment.hidden {
-                    VectorRole::Hidden
-                } else {
-                    VectorRole::Visible
-                },
-                curve: VectorCurve::Line { a, b },
-                preview_mm: vec![a, b],
-            }
-        })
-        .collect())
+    Ok((bodies, tolerance))
 }
