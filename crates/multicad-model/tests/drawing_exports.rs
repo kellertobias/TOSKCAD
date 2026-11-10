@@ -504,6 +504,255 @@ fn rust_worker_publishes_pdf_and_exact_dxf_from_the_same_planar_drawing() {
 }
 
 #[test]
+fn rust_worker_exports_both_annular_rims_with_bounded_paper_chords() {
+    use multicad_model::DrawingProviders;
+
+    let mut s = Session::new(Document::new("Annular drawing export").unwrap()).unwrap();
+    let washer = model::MechanicalPartRequest::new(
+        "M6 washer",
+        model::MechanicalPartParameters::Washer {
+            bore_diameter: length(6.4),
+            outside_diameter: length(12.),
+            thickness: length(1.6),
+            frame: PrimitiveFrame::default(),
+        },
+    );
+    s.commit(
+        model::prepare_mechanical_part(&s, 0, actor(), &washer)
+            .unwrap()
+            .prepared,
+    )
+    .unwrap();
+    let panel = PrimitiveRequest::new(
+        "Separated panel",
+        PrimitiveParameters::Box {
+            size: [length(6.), length(4.), length(3.)],
+            frame: PrimitiveFrame {
+                origin: [length(30.), length(0.), length(0.)],
+                ..Default::default()
+            },
+        },
+    );
+    s.commit(
+        model::prepare_primitive(&s, s.revision(), actor(), &panel)
+            .unwrap()
+            .prepared,
+    )
+    .unwrap();
+
+    let center = [45., 40.];
+    let mut sheet = Page::new("W-101");
+    let mut end = view(
+        "Washer and panel end view",
+        vec![washer.body, panel.body],
+        center,
+        1,
+        ViewKind::Projection,
+    );
+    end.frame.v = [0., 1., 0.];
+    end.hidden_lines = false;
+    let view_id = end.id;
+    sheet.views.push(end);
+    let page = sheet.id;
+    let (book, prepared) =
+        prepare_create(&s, s.revision(), actor(), "Washer sheet", Some(sheet)).unwrap();
+    s.commit(prepared).unwrap();
+    let set = EntityId::new();
+    let definition = SetDefinition {
+        pages: Pages::Selected {
+            pages: vec![PageRef { book, page }],
+        },
+        recipes: vec![
+            Recipe {
+                id: EntityId::new(),
+                name: "PDF".into(),
+                output: RecipeOutput::Pdf,
+            },
+            Recipe {
+                id: EntityId::new(),
+                name: "DXF".into(),
+                output: RecipeOutput::DrawingDxf {
+                    units: LengthUnit::Millimeter,
+                    layers: Layers::default(),
+                },
+            },
+        ],
+        ..Default::default()
+    };
+    s.commit(prepare_set(&s, s.revision(), actor(), set, "Washer sheet", &definition).unwrap())
+        .unwrap();
+
+    let model = Compiler {
+        omit_display: true,
+        ..Default::default()
+    }
+    .compile_with_backend(s.document(), s.revision(), GeometryBackend::Rust, None)
+    .unwrap();
+    let evaluation = model
+        .drawing_page(
+            s.document(),
+            s.revision(),
+            &DrawingProviders::default(),
+            page,
+        )
+        .unwrap();
+    let ViewEvaluation::Ready { vectors, .. } = &evaluation.views[&view_id] else {
+        panic!(
+            "Mixed projection was not ready: {:?}",
+            evaluation.views[&view_id]
+        );
+    };
+    let mut exact_radii: Vec<_> = vectors
+        .iter()
+        .filter(|vector| vector.source == washer.body)
+        .map(|vector| {
+            assert_eq!(vector.role, VectorRole::Visible);
+            match vector.curve {
+                VectorCurve::Ellipse {
+                    major_mm, minor_mm, ..
+                } if major_mm == minor_mm => major_mm,
+                _ => panic!("Washer edge lost its analytic circle: {:?}", vector.curve),
+            }
+        })
+        .collect();
+    exact_radii.sort_by(f64::total_cmp);
+    assert_eq!(exact_radii, [3.2, 6.]);
+    assert_eq!(vectors.iter().filter(|v| v.source == panel.body).count(), 4);
+
+    // Page serializers consume the same bounded preview chords.
+    let check_chord = |[a, b]: [[f64; 2]; 2]| {
+        let radial = |p: [f64; 2]| (p[0] - center[0]).hypot(p[1] - center[1]);
+        let index = exact_radii
+            .iter()
+            .position(|r| (radial(a) - r).abs() < 0.0002)
+            .unwrap_or_else(|| panic!("Unexpected annular chord endpoint {a:?}"));
+        let radius = exact_radii[index];
+        near(radial(b), radius, 0.0002);
+        let midpoint = std::array::from_fn(|i| (a[i] + b[i]) * 0.5);
+        near(radial(midpoint), radius, 0.0102);
+        index
+    };
+    let svg = svg::page_svg(s.document(), s.revision(), book, page, &evaluation).unwrap();
+    let mut svg_rims = [0; 2];
+    for line in svg
+        .lines()
+        .filter(|line| line.starts_with("<polyline class=\"visible\""))
+    {
+        let points: Vec<[f64; 2]> = line
+            .split_once(" points=\"")
+            .unwrap()
+            .1
+            .split_once('"')
+            .unwrap()
+            .0
+            .split_whitespace()
+            .map(|point| {
+                let (x, y) = point.split_once(',').unwrap();
+                [x.parse().unwrap(), y.parse().unwrap()]
+            })
+            .collect();
+        if points[0][0] < 60. {
+            for &[a, b] in points.array_windows() {
+                svg_rims[check_chord([a, b])] += 1;
+            }
+        }
+    }
+    assert!(svg_rims.iter().all(|&count| count > 20));
+
+    let worker =
+        ExportWorker::with_geometry_backend(Exporter::default(), GeometryBackend::Rust).unwrap();
+    let wait = || {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            if let Some(reply) = worker.poll() {
+                return reply.result;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "Annular drawing export did not reply"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    };
+    worker
+        .preview(s.document(), s.revision(), set, actor())
+        .unwrap();
+    let ExportResult::Preview(Ok(preview)) = wait() else {
+        panic!("Annular drawing export preview failed");
+    };
+    assert!(preview.can_run(), "{:?}", preview.recipes);
+    let root = tempfile::tempdir().unwrap();
+    worker
+        .run(
+            s.document(),
+            s.revision(),
+            &preview.key,
+            root.path(),
+            actor(),
+        )
+        .unwrap();
+    let ExportResult::Run(Ok(receipt)) = wait() else {
+        panic!("Annular drawing export failed");
+    };
+    assert_eq!(receipt.files.len(), 2);
+    for file in &receipt.files {
+        let evidence = file.artifact.drawing.as_ref().unwrap();
+        assert_eq!(evidence.pages, [PageRef { book, page }]);
+        let path = Path::new(&receipt.directory).join(&file.artifact.output.filename);
+        if path.extension().unwrap() == "pdf" {
+            let bytes = std::fs::read(&path).unwrap();
+            assert!(bytes.starts_with(b"%PDF-1.4"));
+            let content = String::from_utf8_lossy(&bytes);
+            assert!(content.contains("W-101"));
+            let starts: Vec<_> = content
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .array_windows()
+                .filter_map(|&[x, y, op]| {
+                    if op != "m" {
+                        return None;
+                    }
+                    Some([x.parse::<f64>().ok()?, y.parse().ok()?])
+                })
+                .collect();
+            for &radius in &exact_radii {
+                let expected = [center[0] + radius, evidence.page_sizes_mm[0][1] - center[1]]
+                    .map(|value| value * pdf::PT_PER_MM);
+                assert!(starts.iter().any(|&point| {
+                    point
+                        .into_iter()
+                        .zip(expected)
+                        .all(|(a, b)| (a - b).abs() < 0.001)
+                }));
+            }
+            if let Some(info) = tool("pdfinfo", &[path.to_str().unwrap()]) {
+                assert!(
+                    info.split_whitespace()
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                        .contains("Pages: 1")
+                );
+            }
+        } else {
+            let dxf = Drawing::load_file(path).unwrap();
+            let height = evidence.page_sizes_mm[0][1];
+            let mut dxf_rims = [0; 2];
+            let mut panel_edges = vec![];
+            for (a, b) in lines_on(&dxf, "VIEW_VISIBLE") {
+                if a[0] < 60. {
+                    dxf_rims[check_chord([a, b].map(|[x, y]| [x, height - y]))] += 1;
+                } else {
+                    panel_edges.push((a, b));
+                }
+            }
+            assert_eq!(dxf_rims, svg_rims);
+            assert_eq!(panel_edges.len(), 4);
+            assert_eq!(extent(&panel_edges), [75., 170., 81., 174.]);
+        }
+    }
+}
+
+#[test]
 fn two_page_pdf_and_page_dxfs_keep_sizes_titles_scales_dimensions_and_section_semantics() {
     let f = Fixture::new();
     let preview = f.preview();

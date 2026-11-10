@@ -796,6 +796,162 @@ mod tests {
         );
     }
 
+    #[test]
+    fn rust_drawing_worker_restores_annular_views_from_the_saved_project_and_cache() {
+        use drawings::{VectorCurve, VectorRole, ViewEvaluation};
+        use multicad_core::project_file::ProjectFile;
+        use multicad_ui::{application::DocumentStorage, storage::SaveMode};
+
+        let directory = tempfile::tempdir().unwrap();
+        let cache = cache::Cache::isolated(directory.path().join("drawing-cache"));
+        let mut session = Session::new(Document::new("Annular drawing").unwrap()).unwrap();
+        let actor = Actor::local(Channel::Ui);
+        let washer = model::MechanicalPartRequest::new(
+            "M6 washer",
+            model::MechanicalPartParameters::Washer {
+                bore_diameter: length(6.4),
+                outside_diameter: length(12.),
+                thickness: length(1.6),
+                frame: Default::default(),
+            },
+        );
+        let prepared =
+            model::prepare_mechanical_part(&session, session.revision(), actor.clone(), &washer)
+                .unwrap();
+        session.commit(prepared.prepared).unwrap();
+        let mut page = projection_page(washer.body);
+        let end = page.views[0].id;
+        let section = EntityId::new();
+        let oblique = EntityId::new();
+        let detail = EntityId::new();
+        page.views.push(drawings::DrawingView {
+            id: section,
+            name: "Mid-thickness section".into(),
+            kind: drawings::ViewKind::Section {
+                offset_mm: 0.8,
+                range: drawings::SectionRange::SectionOnly,
+                window: drawings::SectionWindow::default(),
+            },
+            position_mm: [50., 80.],
+            ..page.views[0].clone()
+        });
+        let mut angled = page.views[0].clone();
+        angled.id = oblique;
+        angled.name = "Oblique".into();
+        angled.frame.v = [0., 0.8, 0.6];
+        angled.position_mm = [90., 50.];
+        angled.hidden_lines = true;
+        page.views.push(angled.clone());
+        let detail_center = [3.2, 0.96];
+        page.views.push(drawings::DrawingView {
+            id: detail,
+            name: "Bore detail".into(),
+            kind: drawings::ViewKind::Detail {
+                center_mm: detail_center,
+                radius_mm: 1.,
+            },
+            position_mm: [130., 50.],
+            ..angled
+        });
+        let (_, prepared) = drawings::prepare_create(
+            &session,
+            session.revision(),
+            actor,
+            "Washer drawing",
+            Some(page.clone()),
+        )
+        .unwrap();
+        session.commit(prepared).unwrap();
+
+        let mut worker =
+            Backend::with_cache_and_backend(Some(cache.clone()), GeometryBackend::Rust);
+        let original = preview(&mut worker, &session, page.id);
+        let view = |id| {
+            let ViewEvaluation::Ready { vectors, .. } = &original.views[&id] else {
+                panic!("{:?}", original.views[&id]);
+            };
+            assert!(vectors.iter().all(|v| v.source == washer.body));
+            vectors
+        };
+        for (id, role) in [(end, VectorRole::Visible), (section, VectorRole::Section)] {
+            let mut radii: Vec<_> = view(id)
+                .iter()
+                .map(|vector| {
+                    assert_eq!(vector.role, role);
+                    let VectorCurve::Ellipse {
+                        major_mm,
+                        minor_mm,
+                        start_rad,
+                        end_rad,
+                        ..
+                    } = vector.curve
+                    else {
+                        panic!("View lost its circular geometry: {:?}", vector.curve);
+                    };
+                    assert_eq!(major_mm, minor_mm);
+                    assert!((end_rad - start_rad - std::f64::consts::TAU).abs() < 1e-9);
+                    major_mm
+                })
+                .collect();
+            radii.sort_by(f64::total_cmp);
+            assert_eq!(radii, [3.2, 6.]);
+        }
+        let is_bore = |curve: &VectorCurve| {
+            matches!(curve, VectorCurve::Ellipse { major_mm, minor_mm, .. }
+                if (major_mm - 3.2).abs() < 1e-9 && (minor_mm - 2.56).abs() < 1e-9)
+        };
+        for role in [VectorRole::Visible, VectorRole::Hidden] {
+            assert!(
+                view(oblique)
+                    .iter()
+                    .any(|vector| vector.role == role && is_bore(&vector.curve))
+            );
+        }
+        assert!(view(detail).iter().any(|vector| is_bore(&vector.curve)));
+        assert!(
+            view(detail)
+                .iter()
+                .flat_map(|v| &v.preview_mm)
+                .all(|p| { (p[0] - detail_center[0]).hypot(p[1] - detail_center[1]) <= 1. + 1e-9 })
+        );
+        assert_eq!(
+            worker
+                .runtime
+                .as_ref()
+                .unwrap()
+                .last_compile_stats()
+                .unwrap()
+                .evaluated,
+            [washer.feature].into(),
+        );
+        drop(worker);
+
+        let path = directory.path().join("washer.tcd");
+        let mut store = crate::files::ProjectStore::default();
+        store
+            .save_project(
+                &path,
+                &ProjectFile::new(session.document().clone()).unwrap(),
+                SaveMode::Create,
+            )
+            .unwrap();
+        let reopened = Session::new(store.open_project(&path).unwrap().file.document).unwrap();
+        assert_eq!(reopened.document(), session.document());
+        let mut cached = Backend::with_cache_and_backend(Some(cache), GeometryBackend::Rust);
+        let restored = preview(&mut cached, &reopened, page.id);
+        assert_eq!(restored.stamp.revision, reopened.revision());
+        assert_eq!(restored.stamp.source_hash, original.stamp.source_hash);
+        assert_eq!(restored.views, original.views);
+        assert!(
+            cached
+                .runtime
+                .as_ref()
+                .unwrap()
+                .last_compile_stats()
+                .is_none()
+        );
+    }
+
     fn add_box(session: &mut Session, name: &str, x: f64) -> model::BodyInput {
         let request = PrimitiveRequest::new(
             name,
