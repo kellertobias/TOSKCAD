@@ -217,108 +217,138 @@ impl Solid {
         result.name_advanced_profile(feature, &origins)?;
         Ok(result)
     }
+    /// Loft ordered authored sections with exact planar or round walls.
+    pub fn rust_loft_profiles_named(
+        profiles: &[CurvedProfile],
+        feature: EntityId,
+        section_origins: &[Vec<Origin>],
+        ruled: bool,
+        policy: GeometryPolicy,
+    ) -> Result<Self, GeometryError> {
+        if ruled
+            && profiles.iter().all(|profile| {
+                profile
+                    .outer
+                    .iter()
+                    .all(|edge| matches!(edge, CurvedEdge2d::Line { .. }))
+            })
+        {
+            return Self::rust_loft_ruled_polygons_named(
+                profiles,
+                feature,
+                section_origins,
+                policy,
+            );
+        }
+        if !ruled && profiles.len() != 2 {
+            return Err(failure(
+                GeometryErrorKind::Unsupported,
+                "Rust loft needs ruled construction for more than two sections",
+            ));
+        }
+        Self::rust_loft_round_sections(profiles, feature, section_origins, policy)
+    }
+
     /// Loft two full circles on one axis with the same authored seam phase.
-    /// Both ruled and smooth two-section constructions then have a straight radial meridian.
     pub fn rust_loft_coaxial_circles_named(
         profiles: &[CurvedProfile],
         feature: EntityId,
         section_origins: &[Vec<Origin>],
         policy: GeometryPolicy,
     ) -> Result<Self, GeometryError> {
-        policy.validate()?;
-        let ([start, end], [start_origins, end_origins]) = (profiles, section_origins) else {
+        if profiles.len() != 2 {
             return Err(failure(
                 GeometryErrorKind::Unsupported,
                 "Rust loft requires two ordered circular sections",
             ));
-        };
-        let (
-            [
-                CurvedEdge2d::Circle {
-                    center: a,
-                    radius_mm: r0,
-                },
-            ],
-            [
-                CurvedEdge2d::Circle {
-                    center: b,
-                    radius_mm: r1,
-                },
-            ],
-            [origin0],
-            [origin1],
-            [],
-            [],
-        ) = (
-            start.outer.as_slice(),
-            end.outer.as_slice(),
-            start_origins.as_slice(),
-            end_origins.as_slice(),
-            start.holes.as_slice(),
-            end.holes.as_slice(),
-        )
-        else {
+        }
+        Self::rust_loft_round_sections(profiles, feature, section_origins, policy)
+    }
+
+    fn rust_loft_round_sections(
+        profiles: &[CurvedProfile],
+        feature: EntityId,
+        section_origins: &[Vec<Origin>],
+        policy: GeometryPolicy,
+    ) -> Result<Self, GeometryError> {
+        policy.validate()?;
+        if !(2..=16).contains(&profiles.len()) || section_origins.len() != profiles.len() {
             return Err(failure(
-                GeometryErrorKind::Unsupported,
-                "Rust loft requires one full authored circle without holes in each section",
+                GeometryErrorKind::Input,
+                "Rust loft needs 2 to 16 ordered sections with authored identities",
             ));
-        };
-        let section_origins = [origin0.clone(), origin1.clone()];
-        origins_valid(feature, &section_origins)?;
-        start.frame.checked(policy)?;
-        end.frame.checked(policy)?;
-        let centers = [start.frame.point(*a), end.frame.point(*b)];
-        for center in centers {
-            policy.point(center)?;
         }
-        for radius in [*r0, *r1] {
-            policy.length(radius)?;
-        }
+        let start = profiles[0].frame;
+        let normal = start.normal();
         let distance = |a: [f64; 3], b: [f64; 3]| {
             let [x, y, z] = std::array::from_fn(|i| a[i] - b[i]);
             x.hypot(y).hypot(z)
         };
-        let angle_eps = 64. * f64::EPSILON;
-        if distance(start.frame.u, end.frame.u) > angle_eps
-            || distance(start.frame.v, end.frame.v) > angle_eps
-        {
-            return Err(failure(
-                GeometryErrorKind::Unsupported,
-                "Rust loft requires matching circle seam directions",
-            ));
-        }
-        let normal = start.frame.normal();
         let dot = |a: [f64; 3], b: [f64; 3]| a.into_iter().zip(b).map(|(a, b)| a * b).sum::<f64>();
-        let delta = std::array::from_fn(|i| centers[1][i] - centers[0][i]);
-        let height = dot(delta, normal) / dot(normal, normal);
-        policy.length(height.abs())?;
-        let roundoff = centers
-            .into_iter()
-            .flatten()
-            .map(f64::abs)
-            .fold(height.abs().max(1.), f64::max)
-            * angle_eps;
-        if distance(delta, normal.map(|component| component * height))
-            > roundoff.min(policy.linear_tolerance_mm)
+        let angle_eps = 64. * f64::EPSILON;
+        let mut sections: Vec<[f64; 2]> = Vec::with_capacity(profiles.len());
+        let mut origins = Vec::with_capacity(profiles.len());
+        let mut axis_origin = [0.; 3];
+        let mut sign = 1.;
+        for (index, (profile, section_origins)) in profiles.iter().zip(section_origins).enumerate()
         {
-            return Err(failure(
-                GeometryErrorKind::Unsupported,
-                "Rust loft requires coaxial circle centers",
-            ));
+            let ([CurvedEdge2d::Circle { center, radius_mm }], [origin], []) = (
+                profile.outer.as_slice(),
+                section_origins.as_slice(),
+                profile.holes.as_slice(),
+            ) else {
+                return Err(failure(
+                    GeometryErrorKind::Unsupported,
+                    "Rust round loft needs one full authored circle without holes in each section",
+                ));
+            };
+            profile.frame.checked(policy)?;
+            let center = profile.frame.point(*center);
+            policy.point(center)?;
+            policy.length(*radius_mm)?;
+            if distance(start.u, profile.frame.u) > angle_eps
+                || distance(start.v, profile.frame.v) > angle_eps
+            {
+                return Err(failure(
+                    GeometryErrorKind::Unsupported,
+                    "Rust loft requires matching circle seam directions",
+                ));
+            }
+            if index == 0 {
+                axis_origin = center;
+            }
+            let delta = std::array::from_fn(|i| center[i] - axis_origin[i]);
+            let height = dot(delta, normal) / dot(normal, normal);
+            if index == 1 {
+                sign = height.signum();
+            }
+            if let Some(&[_, previous]) = sections.last() {
+                policy.length(height * sign - previous)?;
+            }
+            let roundoff = axis_origin
+                .into_iter()
+                .chain(center)
+                .map(f64::abs)
+                .fold(height.abs().max(1.), f64::max)
+                * angle_eps;
+            if distance(delta, normal.map(|component| component * height))
+                > roundoff.min(policy.linear_tolerance_mm)
+            {
+                return Err(failure(
+                    GeometryErrorKind::Unsupported,
+                    "Rust loft requires coaxial circle centers",
+                ));
+            }
+            sections.push([*radius_mm, height * sign]);
+            origins.push(origin.clone());
         }
+        origins_valid(feature, &origins)?;
         let frame = PlaneFrame {
-            origin: centers[0],
-            u: start.frame.u,
-            v: start.frame.v.map(|component| component * height.signum()),
+            origin: axis_origin,
+            u: start.u,
+            v: start.v.map(|component| component * sign),
         };
-        Self::rust_revolve_circle_loft(
-            frame,
-            height.abs(),
-            [*r0, *r1],
-            feature,
-            section_origins,
-            policy,
-        )
+        Self::rust_revolve_circle_loft(frame, &sections, feature, &origins, policy)
     }
 
     /// Loft 2..16 closed sections in supplied order, keeping their edge order

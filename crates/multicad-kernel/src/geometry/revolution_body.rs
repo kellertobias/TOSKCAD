@@ -222,13 +222,16 @@ impl Solid {
 
     pub(crate) fn rust_revolve_circle_loft(
         frame: PlaneFrame,
-        height: f64,
-        [r0, r1]: [f64; 2],
+        sections: &[[f64; 2]],
         feature: EntityId,
-        [first, second]: [Origin; 2],
+        origins: &[Origin],
         policy: GeometryPolicy,
     ) -> Result<Self, GeometryError> {
-        let meridian = vec![[0., 0.], [r0, 0.], [r1, height], [0., height]];
+        let height = sections.last().expect("validated loft sections")[1];
+        let meridian = std::iter::once([0., 0.])
+            .chain(sections.iter().copied())
+            .chain([[0., height]])
+            .collect();
         let geometry = Revolution::new(vec![meridian], std::f64::consts::TAU).map_err(|cause| {
             error(
                 "Rust circular loft",
@@ -247,16 +250,25 @@ impl Solid {
             inherited_frames: vec![],
             authored_start: [0., level],
         };
-        let side = MeridianSegment {
-            origin: first,
-            cap_identity: false,
-            inherited: vec![
-                generated(&format!("side/{}/{}", second.source, second.role)),
-                second,
-            ],
-            inherited_frames: vec![],
-            authored_start: [r0, 0.],
-        };
+        let mut segments = vec![cap("cap.start", 0.)];
+        for (i, pair) in origins.windows(2).enumerate() {
+            let [lower, upper] = [&pair[0], &pair[1]];
+            let mut inherited = vec![upper.clone()];
+            // Each section's generated side identity names only one band.
+            // The final section has no following band, so attach it here.
+            if i + 2 == origins.len() {
+                inherited.push(generated(&format!("side/{}/{}", upper.source, upper.role)));
+            }
+            segments.push(MeridianSegment {
+                origin: lower.clone(),
+                cap_identity: false,
+                inherited,
+                inherited_frames: vec![],
+                authored_start: sections[i],
+            });
+        }
+        segments.push(cap("cap.end", height));
+        segments.push(cap("loft.axis", 0.));
         let rings = topology::ring_edges(&geometry);
         let body = RevolutionBody {
             geometry,
@@ -265,12 +277,7 @@ impl Solid {
                 v: [0., 0., 1.],
                 ..Default::default()
             },
-            segments: vec![vec![
-                cap("cap.start", 0.),
-                side,
-                cap("cap.end", height),
-                cap("loft.axis", 0.),
-            ]],
+            segments: vec![segments],
             rings,
         };
         let bounds = body.bounds(frame);

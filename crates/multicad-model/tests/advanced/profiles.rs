@@ -101,7 +101,11 @@ fn path(session: &mut Session) -> SketchPathSource {
         curves: vec![line],
     }
 }
-fn check_saved_rust_profile(session: &mut Session, request: &AdvancedRequest, volume: f64) {
+fn check_saved_rust_profile(
+    session: &mut Session,
+    request: &AdvancedRequest,
+    volume: f64,
+) -> multicad_model::Model {
     use multicad_model::{Compiler, GeometryBackend};
     let compiler = Compiler {
         omit_display: true,
@@ -154,6 +158,16 @@ fn check_saved_rust_profile(session: &mut Session, request: &AdvancedRequest, vo
     )
     .unwrap();
     near(imported.volume_mm3().unwrap(), volume);
+    let bounds = solid.bounds().unwrap();
+    let imported_bounds = imported.bounds().unwrap();
+    for (actual, expected) in imported_bounds
+        .min
+        .into_iter()
+        .chain(imported_bounds.max)
+        .zip(bounds.min.into_iter().chain(bounds.max))
+    {
+        near(actual, expected);
+    }
 
     let mut bytes = Vec::new();
     project_file::write(
@@ -178,6 +192,7 @@ fn check_saved_rust_profile(session: &mut Session, request: &AdvancedRequest, vo
     session.undo(revision, actor()).unwrap();
     session.redo(session.revision(), actor()).unwrap();
     assert_eq!(session.document(), &before);
+    restored
 }
 
 #[test]
@@ -292,6 +307,259 @@ fn loft_uses_explicit_section_seams_and_current_bound_section_geometry() {
     session.commit(prepared.prepared).unwrap();
     check_saved_rust_profile(&mut session, &request, PI * 20. / 3. * (9. + 12. + 16.));
 }
+
+#[test]
+fn ruled_circular_loft_rebuilds_every_band_and_preserves_step_geometry() {
+    use multicad_model::Model;
+
+    let (mut session, _) = fixture();
+    let (first, a) = circle(&mut session, "Loft start", 0., 2., false);
+    let (middle, b) = circle(&mut session, "Loft transition", 7., 2., true);
+    let (last, c) = circle(&mut session, "Loft end", 20., 5., false);
+    let request = AdvancedRequest::new_body(
+        "Ruled circular loft",
+        AdvancedParameters::Loft(LoftParameters {
+            ruled: true,
+            seams: vec![a, b, c],
+        }),
+        vec![first, middle, last],
+        None,
+    );
+    commit(&mut session, &request);
+    let check_bands = |model: &Model, radius: f64| {
+        let solid = model.solid(request.body).unwrap();
+        let bounds = solid.bounds().unwrap();
+        for (actual, expected) in bounds
+            .min
+            .into_iter()
+            .chain(bounds.max)
+            .zip([-5., -5., 0., 5., 5., 20.])
+        {
+            near(actual, expected);
+        }
+        let mut actual: Vec<_> = solid
+            .faces()
+            .unwrap()
+            .into_iter()
+            .filter_map(|face| face.plane.is_none().then_some(face.area_mm2))
+            .collect();
+        let mut expected = [
+            PI * (2. + radius) * 7_f64.hypot(radius - 2.),
+            PI * (radius + 5.) * 13_f64.hypot(5. - radius),
+        ];
+        actual.sort_unstable_by(f64::total_cmp);
+        expected.sort_unstable_by(f64::total_cmp);
+        assert_eq!(actual.len(), expected.len());
+        for (actual, expected) in actual.into_iter().zip(expected) {
+            near(actual, expected);
+        }
+    };
+    for radius in [2., 4.] {
+        if radius > 2. {
+            apply_parameter(&mut session, "wall", "4");
+        }
+        let frustum = |a, b, h| PI * h * (a * a + a * b + b * b) / 3.;
+        let volume = frustum(2., radius, 7.) + frustum(radius, 5., 13.);
+        #[cfg(feature = "occt")]
+        {
+            let native = compile(&session);
+            near(
+                native.solid(request.body).unwrap().volume_mm3().unwrap(),
+                volume,
+            );
+            check_bands(&native, radius);
+        }
+        let reopened = check_saved_rust_profile(&mut session, &request, volume);
+        check_bands(&reopened, radius);
+        let (source, _) = model::read_advanced(session.document(), request.feature).unwrap();
+        assert_eq!(source.profiles, request.profiles);
+        assert_eq!(source.parameters, request.parameters);
+    }
+}
+
+#[test]
+fn ruled_polygon_loft_preserves_section_seams_after_edit_reopen_and_step() {
+    use multicad_core::references::{
+        self, AnalyticGeometry, GeometryIntent, Resolution, TopologyKind,
+    };
+    use multicad_model::{Compiler, GeometryBackend, Model};
+
+    let (mut session, _) = fixture();
+    let corners =
+        |[x, y]: [f64; 2], [w, h]: [f64; 2]| [[x, y], [x + w, y], [x + w, y + h], [x, y + h]];
+    let sections = [
+        ("Rectangular loft start", 0., [0., 0.], [6., 4.]),
+        ("Rectangular loft middle", 12., [1., -1.], [10., 8.]),
+        ("Rectangular loft end", 26., [-2., 2.], [4., 5.]),
+    ];
+    let [(first, a), (middle, b), (last, c)] = sections.map(|(name, z, origin, size)| {
+        let mut seam = EntityId::nil();
+        let (sketch, source) = add_sketch(&mut session, Datum::Xy, name, z, |source, _| {
+            let points = corners(origin, size).map(|point| source.add_point(point));
+            for (i, (a, b)) in points
+                .into_iter()
+                .zip(points.into_iter().cycle().skip(1))
+                .enumerate()
+            {
+                let edge = source.add_line(a, b);
+                if i == 0 {
+                    seam = edge;
+                }
+            }
+        });
+        let region = sketch_regions::extract(&source).regions[0].intent();
+        (ProfileSource { sketch, region }, seam)
+    });
+    let request = AdvancedRequest::new_body(
+        "Ruled rectangular loft",
+        AdvancedParameters::Loft(LoftParameters {
+            ruled: true,
+            seams: vec![a, b, c],
+        }),
+        vec![first, middle.clone(), last],
+        None,
+    );
+    commit(&mut session, &request);
+    let compiler = Compiler {
+        omit_display: true,
+        ..Default::default()
+    };
+    let evaluate = |session: &Session, backend| {
+        compiler
+            .compile_sources_with_backend(
+                session.document(),
+                session.revision(),
+                &[request.body],
+                backend,
+                None,
+            )
+            .unwrap()
+    };
+    let volume = |z, [w, h]: [f64; 2]| {
+        // Each width and height varies linearly in its own band. The
+        // product is quadratic, so Simpson's rule gives the exact volume.
+        let band = |height, [a, b]: [f64; 2], [c, d]: [f64; 2]| {
+            height * (2. * a * b + a * d + b * c + 2. * c * d) / 6.
+        };
+        band(z, [6., 4.], [w, h]) + band(26. - z, [w, h], [4., 5.])
+    };
+    let check_geometry = |model: &Model, volume, [min, max]: [[f64; 3]; 2]| {
+        let solid = model.solid(request.body).unwrap();
+        assert_eq!(solid.solid_count().unwrap(), 1);
+        near(solid.volume_mm3().unwrap(), volume);
+        let bounds = solid.bounds().unwrap();
+        for i in 0..3 {
+            near(bounds.min[i], min[i]);
+            near(bounds.max[i], max[i]);
+        }
+    };
+
+    let initial = evaluate(&session, GeometryBackend::Rust);
+    let initial_bounds = [[-2., -1., 0.], [11., 7., 26.]];
+    let initial_volume = volume(12., [10., 8.]);
+    check_geometry(&initial, initial_volume, initial_bounds);
+    #[cfg(feature = "occt")]
+    check_geometry(
+        &evaluate(&session, GeometryBackend::OpenCascade),
+        initial_volume,
+        initial_bounds,
+    );
+    let topology = &initial.snapshot().shapes[&request.feature].topology;
+    let face = |test: &dyn Fn(&references::TopologyElement) -> bool| {
+        topology
+            .elements
+            .iter()
+            .find(|element| element.key.kind == TopologyKind::Face && test(element))
+            .unwrap()
+    };
+    let sides = [[a, b], [b, c]].map(|[start, end]| {
+        let side = face(&|e| {
+            e.origins.iter().any(|origin| origin.source == start)
+                && e.origins.iter().any(|origin| origin.source == end)
+        });
+        assert!(side.origins.iter().any(|origin| {
+            origin.source == request.feature && origin.role.starts_with(&format!("side/{start}/"))
+        }));
+        GeometryIntent::capture(topology, side.key).unwrap()
+    });
+    let caps = ["cap.start", "cap.end"].map(|role| {
+        let cap = face(&|e| {
+            e.origins
+                .iter()
+                .any(|origin| origin.source == request.feature && origin.role == role)
+        });
+        GeometryIntent::capture(topology, cap.key).unwrap()
+    });
+
+    let mut source = Source::read(session.document(), middle.sketch).unwrap().0;
+    for (point, position) in source
+        .sketch
+        .points
+        .iter_mut()
+        .zip(corners([2., -2.], [11., 7.]))
+    {
+        point.position_mm = position;
+    }
+    let EntityData::Sketch { plane, .. } = session.document().get(middle.sketch).unwrap().data
+    else {
+        panic!("expected a sketch plane");
+    };
+    let mut plane = session.document().get(plane).unwrap().clone();
+    let EntityData::Plane { origin_mm, .. } = &mut plane.data else {
+        panic!("expected a datum plane");
+    };
+    origin_mm[2] = 14.;
+    let mut edits = source.replace(session.document(), middle.sketch).unwrap();
+    edits.push(Mutation::Replace(plane));
+    session
+        .apply(Request {
+            expected_revision: session.revision(),
+            actor: actor(),
+            label: "Move and resize the middle loft section".into(),
+            edits,
+        })
+        .unwrap();
+    assert_eq!(
+        model::read_advanced(session.document(), request.feature)
+            .unwrap()
+            .0
+            .profiles,
+        request.profiles
+    );
+    let edited_volume = volume(14., [11., 7.]);
+    let edited_bounds = [[-2., -2., 0.], [13., 7., 26.]];
+    #[cfg(feature = "occt")]
+    check_geometry(
+        &evaluate(&session, GeometryBackend::OpenCascade),
+        edited_volume,
+        edited_bounds,
+    );
+    let reopened = check_saved_rust_profile(&mut session, &request, edited_volume);
+    check_geometry(&reopened, edited_volume, edited_bounds);
+    let topology = &reopened.snapshot().shapes[&request.feature].topology;
+    let resolved = |intent| match references::resolve(intent, topology, topology.revision) {
+        Resolution::Resolved {
+            key,
+            geometry: Some(AnalyticGeometry::Plane { frame }),
+            ..
+        } => (key, frame),
+        other => panic!("loft face did not resolve after the saved section edit: {other:?}"),
+    };
+    let faces = reopened.solid(request.body).unwrap().faces().unwrap();
+    for (intent, area) in sides
+        .iter()
+        .zip([8.5 * 200_f64.sqrt(), 7.5 * 160_f64.sqrt()])
+    {
+        let (key, _) = resolved(intent);
+        near(faces[key.ordinal as usize].area_mm2, area);
+    }
+    for (intent, [z, sign]) in caps.iter().zip([[0., -1.], [26., 1.]]) {
+        let (_, frame) = resolved(intent);
+        near(frame.origin_mm[2], z);
+        near(frame.normal()[2], sign);
+    }
+}
+
 #[test]
 fn missing_seam_and_unsupported_curved_path_fail_without_committing_source() {
     let (mut session, _) = fixture();

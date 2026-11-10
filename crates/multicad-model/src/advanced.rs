@@ -81,7 +81,7 @@ pub(crate) fn build(
             .collect::<Vec<_>>();
         let solid = match inputs.backend {
             GeometryBackend::Rust => {
-                Solid::rust_loft_coaxial_circles_named(&profiles, feature, &origins, inputs.policy)
+                Solid::rust_loft_profiles_named(&profiles, feature, &origins, ruled, inputs.policy)
             }
             GeometryBackend::OpenCascade => {
                 Solid::loft_profiles_named(&profiles, feature, &origins, ruled, inputs.policy)

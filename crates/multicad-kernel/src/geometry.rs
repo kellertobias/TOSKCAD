@@ -2056,7 +2056,7 @@ impl Solid {
             }
             SolidBody::Revolved(body, _) => {
                 multicad_rust_kernel::step::supports_cylindrical_revolution(&body.geometry)
-                    || multicad_rust_kernel::step::supports_conical_frustum(
+                    || multicad_rust_kernel::step::supports_conical_revolution(
                         &body.geometry,
                         self.policy.linear_tolerance_mm,
                     )
@@ -2179,11 +2179,11 @@ impl Solid {
                         base.u,
                         base.v,
                     )
-                } else if step::supports_conical_frustum(
+                } else if step::supports_conical_revolution(
                     &body.geometry,
                     self.policy.linear_tolerance_mm,
                 ) {
-                    writer.append_conical_frustum(
+                    writer.append_conical_revolution(
                         &body.geometry,
                         frame.origin,
                         frame.u,

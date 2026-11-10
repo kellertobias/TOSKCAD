@@ -5,7 +5,7 @@ use multicad_core::references::{AnalyticGeometry, AnchoredFrame, ReferenceFrame,
 use multicad_rust_kernel::{
     display::Tessellation,
     orthogonal::Box3,
-    planar_boolean::{ConvexPiece, CutMaterial, Error, ProfileFace, Union},
+    planar_boolean::{ConvexPiece, CutMaterial, Error, Face as PureFace, ProfileFace, Union},
 };
 use std::{
     cell::OnceCell,
@@ -13,11 +13,13 @@ use std::{
 };
 
 mod chamfer;
+mod loft;
 mod scale;
 
 type Point = [f64; 3];
 type Key = [usize; 2];
 type ConvexPart = (ConvexPiece, Vec<Option<usize>>);
+type FaceLabels = (Vec<Origin>, Vec<AnchoredFrame>);
 
 pub(crate) struct PlanarBooleanBody {
     pub(super) feature: EntityId,
@@ -30,6 +32,7 @@ pub(crate) struct PlanarBooleanBody {
 
 enum Material {
     Positive(Vec<ConvexPiece>),
+    RuledLoft(Vec<ConvexPiece>),
     Cut(Box<CutRecipe>),
 }
 
@@ -284,16 +287,23 @@ impl Solid {
     ) -> Option<Vec<ConvexPart>> {
         let tolerance = policy.linear_tolerance_mm;
         if let Some((body, frame)) = self.planar_boolean_body() {
-            let Some(Material::Positive(pieces)) = &body.material else {
-                return None;
+            let (pieces, named) = match body.material.as_ref()? {
+                Material::Positive(pieces) => (pieces, false),
+                Material::RuledLoft(pieces) => (pieces, true),
+                Material::Cut(_) => return None,
             };
-            return Some(
-                PlanarBooleanBody::placed_pieces(pieces, frame, tolerance)
-                    .ok()?
+            let placed = PlanarBooleanBody::placed_pieces(pieces, frame, tolerance).ok()?;
+            return Some(if named {
+                placed
+                    .into_iter()
+                    .zip(body.loft_material_faces(topology, pieces.len()))
+                    .collect()
+            } else {
+                placed
                     .into_iter()
                     .map(|piece| (piece, Vec::new()))
-                    .collect(),
-            );
+                    .collect()
+            });
         }
         if let Some((body, frame)) = self.orthogonal_body() {
             if body.has_curved_cuts() {
@@ -588,7 +598,7 @@ impl PlanarBooleanBody {
         tolerance: f64,
     ) -> Result<Vec<ConvexPiece>, GeometryError> {
         let pieces = match self.material.as_ref().ok_or_else(planar_unsupported)? {
-            Material::Positive(pieces) => pieces,
+            Material::Positive(pieces) | Material::RuledLoft(pieces) => pieces,
             Material::Cut(recipe) => recipe.certify(&self.geometry, tolerance)?.pieces(),
         };
         Self::placed_pieces(pieces, frame, tolerance)
@@ -620,10 +630,60 @@ impl PlanarBooleanBody {
         policy: GeometryPolicy,
         material: Option<Material>,
     ) -> Result<Solid, GeometryError> {
+        let component_origins: Vec<_> = topologies.iter().map(component_origins).collect();
+        Self::build_labeled(
+            geometry,
+            feature,
+            policy,
+            material,
+            PlaneFrame::default(),
+            |i, raw, point| {
+                let mut origins = vec![Origin {
+                    source: feature,
+                    role: format!("planar-boolean.face.{i}"),
+                }];
+                let part = sources.get(raw.source);
+                let source = part.and_then(|part| {
+                    let topology = &topologies[part.operand];
+                    part.faces
+                        .get(raw.source_face)
+                        .copied()
+                        .flatten()
+                        .map(|i| &topology.elements[i])
+                        .or_else(|| {
+                            let mut matching = topology.elements.iter().filter(|element| {
+                                matches!(element.geometry, Some(AnalyticGeometry::Plane { frame })
+                        if dot(frame.normal(), raw.normal) * part.normal_sign > 1. - 1e-10
+                            && dot(raw.normal, subtract(point, frame.origin_mm)).abs()
+                                <= policy.linear_tolerance_mm)
+                            });
+                            let face = matching.next()?;
+                            matching.next().is_none().then_some(face)
+                        })
+                });
+                let mut anchors = Vec::new();
+                if let Some(source) = source {
+                    origins.extend(source.origins.iter().cloned());
+                    anchors.clone_from(&source.frames);
+                } else if let Some(part) = part {
+                    origins.extend(component_origins[part.operand].iter().cloned());
+                }
+                (origins, anchors)
+            },
+        )
+    }
+
+    fn build_labeled(
+        geometry: Union,
+        feature: EntityId,
+        policy: GeometryPolicy,
+        material: Option<Material>,
+        placement: PlaneFrame,
+        mut labels: impl FnMut(usize, &PureFace, Point) -> FaceLabels,
+    ) -> Result<Solid, GeometryError> {
         if feature.is_nil() {
             return Err(input("Planar Boolean needs a source feature"));
         }
-        let component_origins: Vec<_> = topologies.iter().map(component_origins).collect();
         let mut faces = Vec::with_capacity(geometry.faces().len());
         let mut edges = Vec::<(Key, Vec<usize>)>::new();
         let mut ordinals = BTreeMap::new();
@@ -634,37 +694,7 @@ impl PlanarBooleanBody {
                 .map(|&v| geometry.vertices()[v])
                 .collect();
             let (area_mm2, center_mm) = face_metrics(&points, raw.normal);
-            let mut origins = vec![Origin {
-                source: feature,
-                role: format!("planar-boolean.face.{i}"),
-            }];
-            let part = sources.get(raw.source);
-            let source = part.and_then(|part| {
-                let topology = &topologies[part.operand];
-                part.faces
-                    .get(raw.source_face)
-                    .copied()
-                    .flatten()
-                    .map(|i| &topology.elements[i])
-                    .or_else(|| {
-                        let mut matching = topology.elements.iter().filter(|element| {
-                            matches!(element.geometry, Some(AnalyticGeometry::Plane { frame })
-                        if dot(frame.normal(), raw.normal) * part.normal_sign > 1. - 1e-10
-                            && dot(raw.normal, subtract(points[0], frame.origin_mm)).abs()
-                                <= policy.linear_tolerance_mm)
-                        });
-                        let face = matching.next()?;
-                        matching.next().is_none().then_some(face)
-                    })
-            });
-            let mut anchors = Vec::new();
-            if let Some(source) = source {
-                origins.extend(source.origins.iter().cloned());
-                anchors.clone_from(&source.frames);
-            } else if let Some(part) = part {
-                origins.extend(component_origins[part.operand].iter().cloned());
-            }
-
+            let (origins, anchors) = labels(i, raw, points[0]);
             let uses = raw
                 .vertices
                 .iter()
@@ -693,21 +723,24 @@ impl PlanarBooleanBody {
                 edges: uses,
             });
         }
-        let [min, max] = geometry.bounds();
+        let body = Self {
+            feature,
+            geometry,
+            material,
+            scaled_ancestry: None,
+            faces,
+            edges,
+        };
+        let [min, max] = if placement == PlaneFrame::default() {
+            body.geometry.bounds()
+        } else {
+            let bounds = body.bounds(placement);
+            [bounds.min, bounds.max]
+        };
         policy.point(min)?;
         policy.point(max)?;
         Ok(Solid {
-            body: SolidBody::PlanarBoolean(
-                Rc::new(Self {
-                    feature,
-                    geometry,
-                    material,
-                    scaled_ancestry: None,
-                    faces,
-                    edges,
-                }),
-                PlaneFrame::default(),
-            ),
+            body: SolidBody::PlanarBoolean(Rc::new(body), placement),
             policy,
             provenance: vec![],
             rust_origins: vec![],
@@ -816,10 +849,15 @@ impl PlanarBooleanBody {
                 u: vector(frame, u),
                 v: vector(frame, cross(normal, u)),
             };
+            let anchor = (!boundary
+                .anchors
+                .iter()
+                .any(|anchor| anchor.origin == boundary.origins[0]))
+            .then_some(plane);
             builder.face(
                 i,
                 Some(plane),
-                Some(plane),
+                anchor,
                 boundary
                     .edges
                     .iter()
