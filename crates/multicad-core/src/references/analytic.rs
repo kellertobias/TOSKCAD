@@ -25,6 +25,11 @@ pub enum AnalyticGeometry {
         start_rad: f64,
         sweep_rad: f64,
     },
+    InvoluteArc {
+        frame: ReferenceFrame,
+        base_radius_mm: f64,
+        parameters: [f64; 2],
+    },
     Plane {
         frame: ReferenceFrame,
     },
@@ -45,9 +50,10 @@ impl AnalyticGeometry {
     pub fn topology_kind(self) -> TopologyKind {
         match self {
             Self::Point { .. } => TopologyKind::Vertex,
-            Self::Line { .. } | Self::CircularArc { .. } | Self::EllipticArc { .. } => {
-                TopologyKind::Edge
-            }
+            Self::Line { .. }
+            | Self::CircularArc { .. }
+            | Self::EllipticArc { .. }
+            | Self::InvoluteArc { .. } => TopologyKind::Edge,
             Self::Plane { .. } => TopologyKind::Face,
         }
     }
@@ -80,6 +86,18 @@ impl AnalyticGeometry {
                     && (1e-9..=1e9).contains(&minor)
                     && (1e-9..=1e9).contains(&major)
                     && valid_arc(frame, start_rad, sweep_rad)
+            }
+            Self::InvoluteArc {
+                frame,
+                base_radius_mm,
+                parameters: [a, b],
+            } => {
+                frame.validate().is_ok()
+                    && (1e-9..=1e7).contains(&base_radius_mm)
+                    && [a, b]
+                        .into_iter()
+                        .all(|v| (0.0..=std::f64::consts::PI).contains(&v))
+                    && a != b
             }
             Self::Plane { frame } => frame.validate().is_ok(),
         };
@@ -129,6 +147,15 @@ impl AnalyticGeometry {
                 semiaxes_mm,
                 start_rad,
                 sweep_rad,
+            },
+            Self::InvoluteArc {
+                frame: f,
+                base_radius_mm,
+                parameters,
+            } => Self::InvoluteArc {
+                frame: frame(f),
+                base_radius_mm,
+                parameters,
             },
             Self::Plane { frame: f } => Self::Plane { frame: frame(f) },
         }

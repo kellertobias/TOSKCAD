@@ -423,7 +423,7 @@ impl NormalSweepBody {
     }
 }
 
-fn rim_in_frame(edge: Edge, frame: ReferenceFrame) -> AnalyticGeometry {
+pub(super) fn rim_in_frame(edge: Edge, frame: ReferenceFrame) -> AnalyticGeometry {
     let at = |p| super::rounded_slot_body::point(frame, p);
     match edge {
         Edge::Line { a, b } => AnalyticGeometry::Line {

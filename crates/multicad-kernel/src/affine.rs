@@ -127,7 +127,9 @@ impl AffineTransform {
             AnalyticGeometry::Plane { frame } => AnalyticGeometry::Plane {
                 frame: self.frame(frame)?,
             },
-            AnalyticGeometry::CircularArc { .. } | AnalyticGeometry::EllipticArc { .. } => {
+            AnalyticGeometry::CircularArc { .. }
+            | AnalyticGeometry::EllipticArc { .. }
+            | AnalyticGeometry::InvoluteArc { .. } => {
                 return Ok(None);
             }
         };

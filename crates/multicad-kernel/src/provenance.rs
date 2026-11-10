@@ -914,6 +914,8 @@ impl Solid {
                 body.topology(frame, owner, revision)
             } else if let Some((body, frame)) = self.normal_sweep_body() {
                 body.topology(frame, owner, revision)
+            } else if let Some((body, frame)) = self.spur_gear_body() {
+                body.topology(frame, owner, revision)
             } else if let Some((body, frame)) = self.axial_stack_body() {
                 body.topology(frame, owner, revision)
             } else if let Some((body, frame)) = self.planar_boolean_body() {

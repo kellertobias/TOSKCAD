@@ -36,6 +36,82 @@ fn build(spec: InvoluteGear) -> Solid {
 }
 
 #[test]
+fn rust_spur_axial_drawing_preserves_visible_flanks_and_bore() {
+    use multicad_core::drawings::{VectorCurve, VectorRole};
+    use multicad_kernel::{
+        DrawingProjection, DrawingSolid, GeometryErrorKind, PlaneFrame, project_drawing,
+    };
+
+    let solid = Solid::rust_spur_gear_named(
+        normal(24, 0., GearSweep::Spur),
+        EntityId::new(),
+        GeometryPolicy::default(),
+    )
+    .unwrap();
+    let inputs = [DrawingSolid {
+        solid: &solid,
+        hatch: None,
+    }];
+    let options = DrawingProjection {
+        hidden_lines: true,
+        ..Default::default()
+    };
+    for frame in [
+        PlaneFrame::default(),
+        PlaneFrame {
+            v: [0., -1., 0.],
+            ..Default::default()
+        },
+    ] {
+        let vectors = project_drawing(&inputs, DrawingProjection { frame, ..options }).unwrap();
+        assert!(
+            vectors
+                .iter()
+                .all(|vector| vector.role == VectorRole::Visible && vector.source_index == 0)
+        );
+        assert_eq!(
+            vectors
+                .iter()
+                .filter(|vector| matches!(vector.curve, VectorCurve::BSpline { degree: 3, .. }))
+                .count(),
+            48
+        );
+        assert_eq!(
+            vectors.iter().filter(|vector| matches!(vector.curve,
+                VectorCurve::Ellipse { center: [0., 0.], major_mm: 2., minor_mm: 2., start_rad: 0., end_rad, .. }
+                    if end_rad == TAU)).count(),
+            1
+        );
+    }
+    for limited in [
+        DrawingProjection {
+            maximum_curves: 48,
+            ..options
+        },
+        DrawingProjection {
+            maximum_points: 8,
+            ..options
+        },
+    ] {
+        assert_eq!(
+            project_drawing(&inputs, limited).unwrap_err().kind,
+            GeometryErrorKind::Limit
+        );
+    }
+    let oblique = DrawingProjection {
+        frame: PlaneFrame {
+            v: [0., 0., 1.],
+            ..Default::default()
+        },
+        ..options
+    };
+    assert_eq!(
+        project_drawing(&inputs, oblique).unwrap_err().kind,
+        GeometryErrorKind::Unsupported
+    );
+}
+
+#[test]
 fn intrinsic_hubs_extend_one_solid_and_one_continuous_bore_with_exact_face_ancestry() {
     for (beta, sweep) in [
         (0., GearSweep::Spur),

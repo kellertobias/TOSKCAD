@@ -58,6 +58,42 @@ fn built_rust_backend_rebuilds_the_complete_saved_toolcase() {
 }
 
 #[test]
+fn built_rust_backend_saves_and_reopens_a_spur_gear() {
+    let dir = tempfile::tempdir().unwrap();
+    let project = dir.path().join("spur.tcd");
+    let request = dir.path().join("request.json");
+    let write = |value| std::fs::write(&request, serde_json::to_vec(&value).unwrap()).unwrap();
+    write(json!({
+        "tool": "set_gear",
+        "arguments": {
+            "expected_revision": 0,
+            "name": "Metric spur gear",
+            "family": "spur",
+            "teeth": {"value": 24, "unit": "count"}
+        }
+    }));
+    let explicit_backend = cfg!(feature = "occt").then_some("--rust-model");
+    let save_flags: Vec<_> = ["--save"].into_iter().chain(explicit_backend).collect();
+    let (ok, created) = invoke(&project, &request, &save_flags);
+    assert!(ok, "{created}");
+    assert_eq!(created["persistence"], "saved");
+    write(json!({"tool": "evaluate_model", "arguments": {}}));
+    let read_flags: Vec<_> = ["--read-only"]
+        .into_iter()
+        .chain(explicit_backend)
+        .collect();
+    let (ok, reopened) = invoke(&project, &request, &read_flags);
+    assert!(ok, "{reopened}");
+    let parts = reopened["result"]["parts"].as_array().unwrap();
+    let [gear] = parts.as_slice() else {
+        panic!("{reopened}")
+    };
+    assert_eq!(gear["feature"], created["result"]["gear"]);
+    assert_eq!(gear["solid_count"], 1);
+    assert!(gear["volume_mm3"].as_f64().unwrap() > 10_000.);
+}
+
+#[test]
 fn command_dispatch_is_memory_only_unless_explicitly_saved_and_reopens_canonical_parameters() {
     let dir = tempfile::tempdir().unwrap();
     let project = dir.path().join("owned.tcd");

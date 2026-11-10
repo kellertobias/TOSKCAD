@@ -42,6 +42,11 @@ impl Anchor {
             Some(AnalyticGeometry::Point { .. }) => {
                 return Err(invalid("A point does not define an alignment axis"));
             }
+            Some(AnalyticGeometry::InvoluteArc { .. }) => {
+                return Err(invalid(
+                    "An involute flank does not define an alignment axis",
+                ));
+            }
             None => {
                 let f = self.frame()?;
                 (f.origin_mm, f.normal())

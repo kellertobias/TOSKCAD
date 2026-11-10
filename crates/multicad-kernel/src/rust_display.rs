@@ -141,6 +141,52 @@ pub(crate) fn edges(
                     start_rad,
                     sweep_rad,
                 }) => sample(frame, semiaxes_mm, start_rad, sweep_rad, &mut total_points)?,
+                Some(AnalyticGeometry::InvoluteArc {
+                    frame,
+                    base_radius_mm,
+                    parameters: [a, b],
+                }) => {
+                    use multicad_rust_kernel::spur_gear::{Edge, Involute};
+                    let curve =
+                        Involute::new(base_radius_mm, [a.min(b), a.max(b)], 0.).map_err(|_| {
+                            error(
+                                "display edges",
+                                GeometryErrorKind::InvalidResult,
+                                "Invalid Rust involute edge",
+                            )
+                        })?;
+                    let curve = if a > b { curve.reversed() } else { curve };
+                    let points =
+                        Edge::Involute(curve)
+                            .sample(deflection, 0.3)
+                            .map_err(|cause| {
+                                error(
+                                    "display edges",
+                                    if cause == MeshError::BudgetExceeded {
+                                        GeometryErrorKind::Limit
+                                    } else {
+                                        GeometryErrorKind::InvalidResult
+                                    },
+                                    format!("Rust involute edge sampling failed: {cause:?}"),
+                                )
+                            })?;
+                    total_points += points.len();
+                    if total_points > MAX_EDGE_POINTS {
+                        return Err(error(
+                            "display edges",
+                            GeometryErrorKind::Limit,
+                            "Rust edge sampling exceeds the point budget",
+                        ));
+                    }
+                    points
+                        .into_iter()
+                        .map(|[u, v]| {
+                            std::array::from_fn(|i| {
+                                frame.origin_mm[i] + u * frame.u[i] + v * frame.v[i]
+                            })
+                        })
+                        .collect()
+                }
                 _ => {
                     return Err(error(
                         "display edges",

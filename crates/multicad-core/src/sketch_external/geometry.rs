@@ -105,9 +105,9 @@ pub fn project(
                 clockwise: sweep_rad * alignment < 0.,
             })
         }
-        AnalyticGeometry::EllipticArc { .. } => Err(invalid(
-            "Sketch external geometry currently requires straight or circular edges",
-        )),
+        AnalyticGeometry::EllipticArc { .. } | AnalyticGeometry::InvoluteArc { .. } => Err(
+            invalid("Sketch external geometry currently requires straight or circular edges"),
+        ),
         AnalyticGeometry::Plane { .. } => Err(invalid(
             "Select an exact point or finite analytic edge. A face plane alone does not describe its finite boundary",
         )),

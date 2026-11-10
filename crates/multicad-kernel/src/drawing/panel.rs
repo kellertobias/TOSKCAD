@@ -6,6 +6,95 @@ use std::{collections::BTreeMap, f64::consts::TAU};
 
 type Point = [f64; 2];
 
+pub(super) fn project_spur_gear(
+    input: &DrawingSolid<'_>,
+    options: DrawingProjection,
+) -> Option<Result<Vec<ProjectedVector>, GeometryError>> {
+    let (body, frame) = input.solid.spur_gear_body()?;
+    let [u, v, toward_viewer] = planar::view_axes(options.frame);
+    let axis = frame.normal();
+    if dot(axis, u).hypot(dot(axis, v)) > 32. * f64::EPSILON || options.detail.is_some() {
+        return Some(Err(err(
+            GeometryErrorKind::Unsupported,
+            "Rust spur gear drawing currently requires an uncropped axial view",
+        )));
+    }
+    let screen = Screen {
+        origin: options.frame.origin,
+        axes: [u, v],
+        toward_viewer,
+    };
+    Some((|| {
+        use multicad_rust_kernel::spur_gear;
+        let mut planar = Vec::new();
+        let mut vectors = Vec::new();
+        let mut points = 0usize;
+        for (edge, geometry) in body.end_on_rims(frame) {
+            match edge {
+                spur_gear::Edge::Planar(_) => {
+                    planar.push(Edge {
+                        hidden: false,
+                        curve: screen.curve(Some(geometry))?,
+                    });
+                }
+                spur_gear::Edge::Involute(flank) => {
+                    let failed = || {
+                        err(
+                            GeometryErrorKind::Limit,
+                            "Spur gear drawing exceeds its spline or point budget",
+                        )
+                    };
+                    let tolerance = options.chord_tolerance_mm / 2.;
+                    let spline = flank.cubic_spline(tolerance).map_err(|_| failed())?;
+                    let project = |p| screen.point(frame.point(p));
+                    let preview_mm: Vec<_> = edge
+                        .sample(tolerance, 0.3)
+                        .map_err(|_| failed())?
+                        .into_iter()
+                        .map(project)
+                        .collect();
+                    points = points.saturating_add(preview_mm.len());
+                    if points > options.maximum_points as usize {
+                        return Err(failed());
+                    }
+                    vectors.push(ProjectedVector {
+                        source_index: 0,
+                        role: VectorRole::Visible,
+                        curve: VectorCurve::BSpline {
+                            degree: 3,
+                            periodic: false,
+                            weights: vec![1.; spline.poles_mm.len()],
+                            poles: spline.poles_mm.into_iter().map(project).collect(),
+                            knots: spline.knots,
+                            multiplicities: spline
+                                .multiplicities
+                                .into_iter()
+                                .map(u32::from)
+                                .collect(),
+                            first: 0.,
+                            last: 1.,
+                        },
+                        preview_mm,
+                    });
+                }
+            }
+        }
+        let mut remaining = options;
+        remaining.maximum_curves = (options.maximum_curves as usize)
+            .checked_sub(vectors.len())
+            .filter(|count| *count >= planar.len())
+            .ok_or_else(|| {
+                err(
+                    GeometryErrorKind::Limit,
+                    "Spur gear drawing exceeds the curve budget",
+                )
+            })? as u32;
+        remaining.maximum_points -= points as u32;
+        vectors.extend(curved::publish(planar, remaining, 0)?);
+        Ok(vectors)
+    })())
+}
+
 pub(super) fn project_normal_sweep(
     input: &DrawingSolid<'_>,
     options: DrawingProjection,

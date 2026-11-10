@@ -1,4 +1,4 @@
-//! Native gear bodies are derived from the canonical, resolved gear recipe.
+//! Gear bodies are derived from the canonical, resolved gear recipe.
 use crate::{ModelError, error};
 use multicad_core::{
     document::EntityId,
@@ -137,17 +137,19 @@ pub(crate) fn build_rust(
         .parameters
         .resolve_geometry(parameters)
         .map_err(|e| error(Some(feature), e))?;
-    let NativeSpecification::Rack(spec) = specification(feature, &resolved)? else {
-        return Err(error(
-            Some(feature),
-            "Rust gear geometry currently requires a straight rack",
-        ));
+    let solid = match specification(feature, &resolved)? {
+        NativeSpecification::Rack(spec) => Solid::rust_straight_rack_named(spec, feature, policy),
+        NativeSpecification::Rotary(spec) if spec.sweep == GearSweep::Spur => {
+            Solid::rust_spur_gear_named(spec, feature, policy)
+        }
+        _ => {
+            return Err(error(
+                Some(feature),
+                "Rust gear geometry currently requires an external spur gear or a straight rack",
+            ));
+        }
     };
-    place(
-        feature,
-        &resolved,
-        Solid::rust_straight_rack_named(spec, feature, policy),
-    )
+    place(feature, &resolved, solid)
 }
 
 fn place(

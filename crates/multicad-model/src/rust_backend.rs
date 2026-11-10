@@ -30,6 +30,14 @@ pub(crate) fn validate_document(
             continue;
         }
         match &entity.data {
+            EntityData::Extension { definition, .. }
+                if scope.is_none() && definition.type_id == model::GEAR_PAIR_TYPE =>
+            {
+                return Err(error(
+                    Some(entity.id),
+                    "Rust gear pairs require exact interference validation",
+                ));
+            }
             EntityData::Feature {
                 definition,
                 suppressed: false,

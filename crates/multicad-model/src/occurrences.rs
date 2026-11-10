@@ -61,6 +61,24 @@ fn equivalent(a: Option<AnalyticGeometry>, b: Option<AnalyticGeometry>, toleranc
         }
         (Some(Plane { frame: a }), Some(Plane { frame: b })) => plane_equivalent(a, b, tolerance),
         (
+            Some(InvoluteArc {
+                frame: a,
+                base_radius_mm: ra,
+                parameters: pa,
+            }),
+            Some(InvoluteArc {
+                frame: b,
+                base_radius_mm: rb,
+                parameters: pb,
+            }),
+        ) => {
+            pa == pb
+                && ra == rb
+                && distance(a.origin_mm, b.origin_mm) <= tolerance
+                && distance(a.u, b.u) <= 1e-10
+                && distance(a.v, b.v) <= 1e-10
+        }
+        (
             Some(CircularArc {
                 frame: a,
                 radius_mm: ra,
