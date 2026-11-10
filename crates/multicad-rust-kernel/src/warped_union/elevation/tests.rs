@@ -102,7 +102,13 @@ fn curved_patch_has_an_analytic_interior_silhouette() {
     let q = std::f64::consts::FRAC_1_SQRT_2;
     for toward in [[0., -q, -q], [0.8, -0.6 * q, -0.6 * q]] {
         let events = patch
-            .silhouettes(&shell, toward, axis_direction, TOL)
+            .silhouettes(
+                &shell,
+                patch.radial_chart(axis_direction).unwrap(),
+                toward,
+                axis_direction,
+                TOL,
+            )
             .unwrap();
         let [Silhouette::Interior(points)] = events.into_iter().flatten().collect::<Vec<_>>()[..]
         else {
@@ -116,7 +122,13 @@ fn curved_patch_has_an_analytic_interior_silhouette() {
     }
     assert!(
         patch
-            .silhouettes(&shell, axis_direction, axis_direction, TOL)
+            .silhouettes(
+                &shell,
+                patch.radial_chart(axis_direction).unwrap(),
+                axis_direction,
+                axis_direction,
+                TOL
+            )
             .unwrap()
             .into_iter()
             .all(|candidate| candidate.is_none())
@@ -275,6 +287,52 @@ fn circular_miter_projects_trimmed_silhouettes_and_analytic_visible_and_hidden_r
         "{coverage:?}"
     );
     assert!((coverage.into_iter().sum::<f64>() - TAU).abs() <= TOL);
+}
+
+#[test]
+fn multi_corner_elevation_clips_both_ends_of_the_middle_silhouettes() {
+    let path = [[0.; 3], [0., 0., 20.], [20., 0., 20.], [20., 20., 20.]];
+    let shell = circular_miter_chain(&path, 2., TOL).unwrap();
+    let q = std::f64::consts::FRAC_1_SQRT_2;
+    let axes = [X, [0., q, q], [0., -q, q]];
+    let elevation = shell.elevation([0.; 3], axes, 19, TOL, false).unwrap();
+    for sign in [-1., 1.] {
+        // The generators y=z−20=±sqrt(2) meet the two miter planes
+        // x+z=20 and x+y=20 at these independently derived endpoints.
+        let start = -2. * q * sign;
+        let screen_height = 20. * q + 2. * sign;
+        let expected = [
+            [start, screen_height, 20. * q],
+            [20. + start, screen_height, 20. * q],
+        ];
+        assert!(line_present(&elevation, expected), "missing {expected:?}");
+    }
+}
+
+#[test]
+fn elevation_rejects_a_silhouette_rail_detached_from_its_rim_vertex() {
+    let mut shell = circular_miter([[0.; 3], [0., 0., 20.], [20., 0., 20.]], 2., TOL).unwrap();
+    let [rim, next, _, previous] = *shell.faces[1].boundary.as_slice() else {
+        panic!("expected a cylinder with two rails");
+    };
+    let vertex = shell.edges[rim.edge].vertices[0];
+    let rail = [next.edge, previous.edge]
+        .into_iter()
+        .find(|&edge| shell.edges[edge].vertices.contains(&vertex))
+        .unwrap();
+    // Keep the rail geometrically in place, but break its shared vertex
+    // identity. A projected seam cannot be certified from that boundary.
+    let duplicate = shell.vertices.len();
+    shell.vertices.push(shell.vertices[vertex]);
+    shell.edges[rail].vertices = shell.edges[rail]
+        .vertices
+        .map(|id| if id == vertex { duplicate } else { id });
+    assert_eq!(
+        shell
+            .elevation([0.; 3], [X, Z, [0., -1., 0.]], 0, TOL, false)
+            .err(),
+        Some(Error::Invalid),
+    );
 }
 
 #[test]

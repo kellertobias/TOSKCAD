@@ -116,6 +116,35 @@ fn tilted_cylinder_uses_the_first_hit_at_the_exact_miter_plane() {
 }
 
 #[test]
+fn two_tilted_stations_bound_the_hidden_span_on_the_first_cylinder_hit() {
+    let q = std::f64::consts::FRAC_1_SQRT_2;
+    let chart = Ellipse::new([0.; 3], X, Y, [2.; 2]).unwrap();
+    let lower = Ellipse::new([0.; 3], [q, 0., q], [-q, 0., q], [2. / q, 2.]).unwrap();
+    let upper = Ellipse::new([10., 0., 0.], [q, q, 0.], [-q, q, 0.], [2. / q, 2.]).unwrap();
+    let trims = [
+        EllipseArc::new(lower, -FRAC_PI_2, FRAC_PI_2).unwrap(),
+        EllipseArc::new(upper, 0., FRAC_PI_2).unwrap(),
+    ];
+    let blocker = AnalyticFace::cylinder_with_trims(
+        EllipseArc::new(chart, 0., FRAC_PI_2).unwrap(),
+        trims,
+        X,
+        true,
+        TOL,
+    )
+    .unwrap()
+    .unwrap();
+    // A front ray at y=1 intersects z=sqrt(3), so x+z=0 and x+y=10
+    // bound the hidden interval at -sqrt(3) and 9.
+    let lo = -3_f64.sqrt();
+    assert_spans(
+        &line(&blocker, [[-3., 1., 0.], [12., 1., 0.]]),
+        0,
+        &[(false, [-3., lo]), (true, [lo, 9.]), (false, [9., 12.])],
+    );
+}
+
+#[test]
 fn sheet_material_hides_a_line_except_through_its_rectangle_and_circle() {
     let face = AnalyticFace::plane(
         [0., 0., 2.],

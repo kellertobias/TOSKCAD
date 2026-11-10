@@ -66,7 +66,7 @@ struct Cylinder {
     ray_radial: Point,
     projected: f64,
     axial_depth: f64,
-    end: [f64; 3],
+    stations: [[f64; 3]; 2],
     radius: f64,
     radial_ends: [Point2; 2],
     facing: f64,
@@ -197,7 +197,7 @@ impl AnalyticFace {
         outward: bool,
         tolerance: f64,
     ) -> Result<Option<Self>, ProjectionError> {
-        Self::cylinder_between(cap, axis, height, None, outward, tolerance)
+        Self::cylinder_between(cap, axis, height, [None; 2], outward, tolerance)
     }
 
     /// Prepare a cylindrical sector from a perpendicular circle trim to a
@@ -213,14 +213,30 @@ impl AnalyticFace {
             sub(end.ellipse().center_mm(), cap.ellipse().center_mm()),
             unit(axis),
         );
-        Self::cylinder_between(cap, axis, height, Some(end), outward, tolerance)
+        Self::cylinder_between(cap, axis, height, [None, Some(end)], outward, tolerance)
+    }
+
+    /// Prepare a cylindrical sector with two oblique trims. The circular
+    /// chart lies at the first rim center and gives the azimuth of both trims.
+    pub fn cylinder_with_trims(
+        chart: EllipseArc,
+        trims: [EllipseArc; 2],
+        axis: Point,
+        outward: bool,
+        tolerance: f64,
+    ) -> Result<Option<Self>, ProjectionError> {
+        let height = dot(
+            sub(trims[1].ellipse().center_mm(), chart.ellipse().center_mm()),
+            unit(axis),
+        );
+        Self::cylinder_between(chart, axis, height, trims.map(Some), outward, tolerance)
     }
 
     fn cylinder_between(
         cap: EllipseArc,
         axis: Point,
         height: f64,
-        end: Option<EllipseArc>,
+        trims: [Option<EllipseArc>; 2],
         outward: bool,
         tolerance: f64,
     ) -> Result<Option<Self>, ProjectionError> {
@@ -268,14 +284,23 @@ impl AnalyticFace {
             radial_ends.reverse();
         }
         let a = arc_bounds(cap);
-        let (b, end) = if let Some(end) = end {
+        let clip = |rim: Option<EllipseArc>, height: f64| {
+            let Some(end) = rim else {
+                return Ok((
+                    Bounds {
+                        min: std::array::from_fn(|i| axis[i].mul_add(height, a.min[i])),
+                        max: std::array::from_fn(|i| axis[i].mul_add(height, a.max[i])),
+                    },
+                    [height, 0., 0.],
+                ));
+            };
             let ellipse = end.ellipse();
             let normal = ellipse.normal();
             let alignment = dot(normal, axis);
             let [major, minor] = ellipse.semiaxes_mm();
             let shift = sub(ellipse.center_mm(), origin);
             if alignment.abs() <= ANGULAR
-                || length(cross(shift, axis)) > tolerance
+                || length(sub(shift, axis.map(|value| value * height))) > tolerance
                 || (minor - radius).abs() > tolerance
                 || (major * alignment.abs() - radius).abs() > tolerance
                 || dot(ellipse.minor_axis(), axis).abs() > ANGULAR
@@ -304,19 +329,14 @@ impl AnalyticFace {
             }
             let y = -dot(normal, transverse) / alignment;
             let q = -dot(normal, ray_radial) / alignment;
-            if height - radius * y.hypot(q) <= tolerance {
-                return Err(ProjectionError::Invalid);
-            }
-            (arc_bounds(end), [height, y, q])
-        } else {
-            (
-                Bounds {
-                    min: std::array::from_fn(|i| axis[i].mul_add(height, a.min[i])),
-                    max: std::array::from_fn(|i| axis[i].mul_add(height, a.max[i])),
-                },
-                [height, 0., 0.],
-            )
+            Ok((arc_bounds(end), [height, y, q]))
         };
+        let (a, lower) = clip(trims[0], 0.)?;
+        let (b, upper) = clip(trims[1], height)?;
+        let swing = radius * (upper[1] - lower[1]).hypot(upper[2] - lower[2]);
+        if trims[1].is_some() && height - swing <= tolerance {
+            return Err(ProjectionError::Invalid);
+        }
         Ok(Some(Self {
             surface: Surface::Cylinder(Cylinder {
                 origin,
@@ -325,7 +345,7 @@ impl AnalyticFace {
                 ray_radial,
                 projected,
                 axial_depth,
-                end,
+                stations: [lower, upper],
                 radius,
                 radial_ends,
                 facing: if outward { 1. } else { -1. },
@@ -858,8 +878,7 @@ impl Cylinder {
         let depth = path
             .coordinate(self.origin, self.ray_radial)
             .offset((p * gap).max(roundoff));
-        let [height, end_y, end_q] = self.end;
-        for [height, trim_y, trim_q] in [[0.; 3], self.end] {
+        for [height, trim_y, trim_q] in self.stations {
             // The cap station is h + a*y + b*q, where q is the signed
             // radial depth of the first cylinder hit. At a crossing,
             // X + C*q = 0. Eliminate q with q² + y² = r² for the events.
@@ -911,9 +930,11 @@ impl Cylinder {
                 // Multiplying the station by p gives this expression without
                 // dividing by a potentially small projected axis length.
                 let axial = c.mul_add(hit, x.at(t));
-                let axial_limit = p * end_q.mul_add(hit, end_y.mul_add(y, height));
+                let [lo, hi] = self.stations.map(|[height, trim_y, trim_q]| {
+                    p * trim_q.mul_add(hit, trim_y.mul_add(y, height))
+                });
                 let radial = [y / self.radius, hit / self.radius];
-                (0. ..=axial_limit).contains(&axial)
+                (lo..=hi).contains(&axial)
                     && hit > depth.at(t)
                     && clipped_radial[0].is_none_or(|far| hit >= far.at(t))
                     && clipped_radial[1].is_none_or(|near| hit <= near.at(t))

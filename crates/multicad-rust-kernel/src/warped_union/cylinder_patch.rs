@@ -49,6 +49,11 @@ impl CylinderPatch {
                     || cosine <= ANGULAR
                     || (major * cosine - radius).abs() > tolerance
                     || dot(ellipse.minor_axis(), axis).abs() > ANGULAR
+                    || shell.edges[edge]
+                        .vertices
+                        .into_iter()
+                        .zip(arc.endpoints())
+                        .any(|(id, point)| length3(sub(shell.vertices[id], point)) > tolerance)
                 {
                     return Err(Error::Unsupported);
                 }
@@ -59,11 +64,8 @@ impl CylinderPatch {
         });
         let [a, b] = arcs;
         let mut arcs = [a?, b?];
-        if tilted(arcs[0].1, axis) {
+        if tilted(arcs[0].1, axis) && !tilted(arcs[1].1, axis) {
             arcs.swap(0, 1);
-            if tilted(arcs[0].1, axis) {
-                return Err(Error::Unsupported);
-            }
         }
         let rails = [b_rail.edge, d.edge];
         // Each rail connects matching angular endpoints on the two trims.
@@ -80,8 +82,37 @@ impl CylinderPatch {
         }
         Ok(Self { arcs, rails })
     }
+
+    /// Radial phase is the phase of the first rim projected along the axis
+    /// onto the perpendicular disk. Its major and minor vectors project to
+    /// perpendicular vectors of equal length, so the parameter is unchanged.
+    pub(super) fn radial_chart(&self, axis: Point) -> Result<EllipseArc, Error> {
+        let (_, arc) = self.arcs[0];
+        if !tilted(arc, axis) {
+            return Ok(arc);
+        }
+        let rim = arc.ellipse();
+        let alignment = dot(rim.normal(), axis);
+        let normal = axis.map(|value| value * alignment.signum());
+        let major = axis_offset(rim.major_axis(), [0.; 3], axis);
+        let magnitude = length3(major);
+        let radius = rim.semiaxes_mm()[1];
+        Ellipse::new(
+            rim.center_mm(),
+            normal,
+            major.map(|value| value / magnitude),
+            [radius; 2],
+        )
+        .and_then(|disk| EllipseArc::new(disk, arc.start_rad(), arc.sweep_rad()))
+        .map_err(|_| Error::Unsupported)
+    }
 }
 
 pub(super) fn tilted(arc: EllipseArc, axis: Point) -> bool {
     length3(cross(arc.ellipse().normal(), axis)) > ANGULAR
+}
+
+pub(super) fn trim_station(arc: EllipseArc, point: Point, axis: Point) -> f64 {
+    let rim = arc.ellipse();
+    dot(sub(rim.center_mm(), point), rim.normal()) / dot(rim.normal(), axis)
 }

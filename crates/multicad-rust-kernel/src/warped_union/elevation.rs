@@ -1,6 +1,6 @@
 //! Produce physical HLR edges and exact blockers from a certified analytic shell.
 use super::{
-    cylinder_patch::{ANGULAR, CylinderPatch, axis_offset, tilted},
+    cylinder_patch::{ANGULAR, CylinderPatch, axis_offset, tilted, trim_station},
     *,
 };
 use crate::{
@@ -77,8 +77,14 @@ impl Shell {
                         tolerance_mm,
                     )?;
                     let [(_, cap), (_, end)] = patch.arcs;
-                    let events =
-                        patch.silhouettes(self, view_axes[2], axis_direction, tolerance_mm)?;
+                    let radial = patch.radial_chart(axis_direction)?;
+                    let events = patch.silhouettes(
+                        self,
+                        radial,
+                        view_axes[2],
+                        axis_direction,
+                        tolerance_mm,
+                    )?;
                     for event in events.into_iter().flatten() {
                         match event {
                             Silhouette::Rail(edge) => silhouettes[edge] = true,
@@ -93,17 +99,25 @@ impl Shell {
                     let axial = view
                         .vector(axis_direction)
                         .map(|coordinate| coordinate * height.signum());
-                    let cap = view.arc(cap, true)?;
-                    if tilted(end, axis_direction) {
+                    let chart = view.arc(radial, true)?;
+                    if tilted(cap, axis_direction) {
+                        AnalyticFace::cylinder_with_trims(
+                            chart,
+                            [view.arc(cap, true)?, view.arc(end, true)?],
+                            axial,
+                            outward,
+                            tolerance_mm,
+                        )
+                    } else if tilted(end, axis_direction) {
                         AnalyticFace::tilted_cylinder(
-                            cap,
+                            chart,
                             view.arc(end, true)?,
                             axial,
                             outward,
                             tolerance_mm,
                         )
                     } else {
-                        AnalyticFace::cylinder(cap, axial, height.abs(), outward, tolerance_mm)
+                        AnalyticFace::cylinder(chart, axial, height.abs(), outward, tolerance_mm)
                     }
                 }
             }
@@ -363,12 +377,13 @@ impl CylinderPatch {
     fn silhouettes(
         &self,
         shell: &Shell,
+        chart: EllipseArc,
         toward: Point,
         axis: Point,
         tolerance: f64,
     ) -> Result<[Option<Silhouette>; 2], Error> {
-        let [(cap_edge, cap), (_, other)] = self.arcs;
-        let ellipse = cap.ellipse();
+        let [(cap_edge, _), _] = self.arcs;
+        let ellipse = chart.ellipse();
         let [radius, _] = ellipse.semiaxes_mm();
         let radial = cross(toward, axis);
         let length = length3(radial);
@@ -378,16 +393,14 @@ impl CylinderPatch {
         // An oblique view reduces the cross product's magnitude without
         // changing its azimuth. The silhouette remains on the true cylinder.
         let radial = radial.map(|coordinate| coordinate / length);
-        let centers = [ellipse, other.ellipse()].map(Ellipse::center_mm);
         let silhouette = |sign| {
             let radial = radial.map(|coordinate| sign * coordinate);
-            let mut points =
-                centers.map(|center| std::array::from_fn(|i| radius.mul_add(radial[i], center[i])));
-            if tilted(other, axis) {
-                let normal = other.ellipse().normal();
-                let shift = -radius * dot(normal, radial) / dot(normal, axis);
-                points[1] = std::array::from_fn(|i| axis[i].mul_add(shift, points[1][i]));
-            }
+            let point: Point =
+                std::array::from_fn(|i| radius.mul_add(radial[i], ellipse.center_mm()[i]));
+            let points = self.arcs.map(|(_, rim)| {
+                let station = trim_station(rim, point, axis);
+                std::array::from_fn(|i| axis[i].mul_add(station, point[i]))
+            });
             // Reuse a real edge when the silhouette coincides with its
             // generator. Two smooth neighboring sectors can then publish it once.
             for vertex in shell.edges[cap_edge].vertices {
@@ -401,8 +414,8 @@ impl CylinderPatch {
                 }
             }
             let phase = dot(radial, ellipse.minor_axis()).atan2(dot(radial, ellipse.major_axis()));
-            let travel = ((phase - cap.start_rad()) * cap.sweep_rad().signum()).rem_euclid(TAU);
-            Ok((travel < cap.sweep_rad().abs()).then_some(Silhouette::Interior(points)))
+            let travel = ((phase - chart.start_rad()) * chart.sweep_rad().signum()).rem_euclid(TAU);
+            Ok((travel < chart.sweep_rad().abs()).then_some(Silhouette::Interior(points)))
         };
         Ok([silhouette(-1.)?, silhouette(1.)?])
     }

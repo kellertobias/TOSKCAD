@@ -1,6 +1,6 @@
 //! Plane sections of exact planar and trimmed cylindrical shell faces.
 use super::{
-    cylinder_patch::{ANGULAR, CylinderPatch, axis_offset, tilted},
+    cylinder_patch::{ANGULAR, CylinderPatch, axis_offset, tilted, trim_station},
     *,
 };
 use crate::trim_curve::{Cylinder, Plane, PlaneCrossings, cylinder_plane};
@@ -292,10 +292,8 @@ impl Section {
         let cylinder = Cylinder::new(axis_origin, axis, radius).map_err(|_| Error::Unsupported)?;
         let plane = Plane::new(self.origin, self.normal).map_err(|_| Error::Unsupported)?;
         let ellipse = cylinder_plane(cylinder, plane).map_err(|_| Error::Unsupported)?;
-        let [(_, reference), (_, end)] = patch.arcs;
+        let reference = patch.radial_chart(axis)?;
         let base = reference.ellipse();
-        let end_rim = end.ellipse();
-        let end_normal = end_rim.normal();
         let span = reference.sweep_rad().abs();
         let angular_tolerance = 4. * self.tolerance / radius + ANGULAR;
         let cosine = dot(axis, self.normal);
@@ -343,11 +341,12 @@ impl Section {
             let angle =
                 reference.start_rad() + reference.sweep_rad().signum() * start.midpoint(end);
             let radial_point = base.point_at(angle);
-            let height =
-                dot(sub(end_rim.center_mm(), radial_point), end_normal) / dot(end_normal, axis);
+            let [lower, upper] = patch
+                .arcs
+                .map(|(_, rim)| trim_station(rim, radial_point, axis));
             let offset = dot(sub(self.origin, radial_point), self.normal) / cosine;
-            if offset <= height.min(0.) + self.tolerance
-                || offset >= height.max(0.) - self.tolerance
+            if offset <= lower.min(upper) + self.tolerance
+                || offset >= lower.max(upper) - self.tolerance
             {
                 return Err(Error::Unsupported);
             }

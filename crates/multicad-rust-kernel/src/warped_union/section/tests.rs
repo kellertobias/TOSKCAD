@@ -171,7 +171,32 @@ fn oblique_miter_section_joins_two_exact_ellipse_segments() {
 }
 
 #[test]
-fn a_cylinder_chart_rejects_unverified_or_double_tilted_rims() {
+fn multi_corner_sections_intersect_a_leg_with_two_different_tilted_rims() {
+    let path = [[0.; 3], [0., 0., 20.], [20., 0., 20.], [20., 20., 20.]];
+    let shell = circular_miter_chain(&path, 2., TOL).unwrap();
+    let normal = unit([1., 0., 0.5]).unwrap();
+    let loops = shell.section([10., 0., 20.], normal, TOL, 100).unwrap();
+    assert_eq!(loops.len(), 1);
+    assert!((area(&loops, normal) - 4. * std::f64::consts::PI * 1.25_f64.sqrt()).abs() < TOL);
+    for edge in &loops[0] {
+        let Curve::Ellipse(arc) = edge.curve else {
+            panic!("the oblique cut crosses only the middle cylinder");
+        };
+        let [major, minor] = arc.ellipse().semiaxes_mm();
+        assert!((major - 5_f64.sqrt()).abs() < TOL);
+        assert!((minor - 2.).abs() < TOL);
+    }
+
+    let horizontal = shell.section([0., 0., 20.5], Z, TOL, 100).unwrap();
+    assert_eq!(horizontal.len(), 1);
+    // The cut retains a circular segment and two joined strips. The
+    // slanted joint contributes opposite area changes to the two strips.
+    let expected = disk_segment(0.5) + 2. * 3.75_f64.sqrt() * 40.5;
+    assert!((area(&horizontal, Z) - expected).abs() < TOL);
+}
+
+#[test]
+fn a_cylinder_chart_rejects_unverified_or_misplaced_tilted_rims() {
     let mut shell = circular_miter_fixture();
     let face = shell.faces[1].clone();
     let [cap, _, trim, _] = *face.boundary.as_slice() else {
@@ -181,6 +206,15 @@ fn a_cylinder_chart_rejects_unverified_or_double_tilted_rims() {
     let certificate = shell.matched_quarter_rims.take();
     assert!(matches!(inspect(&shell), Err(Error::Unsupported)));
     shell.matched_quarter_rims = certificate;
+    let patch = inspect(&shell).unwrap();
+    let malformed = CylinderPatch {
+        arcs: [patch.arcs[1], patch.arcs[0]],
+        rails: patch.rails,
+    };
+    assert_eq!(
+        malformed.radial_chart([0., 0., 2.]).err(),
+        Some(Error::Unsupported)
+    );
     shell.edges[cap.edge].curve = shell.edges[trim.edge].curve;
     assert!(matches!(inspect(&shell), Err(Error::Unsupported)));
     let invalid = Ellipse::new([0.; 3], Z, X, [3., 2.]).unwrap();
