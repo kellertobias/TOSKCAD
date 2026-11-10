@@ -7,6 +7,7 @@ use multicad_core::{
     commands::{Actor, Channel, Prepared, Request, Session},
     constraint_sketch::{Curve, CurveKind, Dimension, source::Source},
     document::{Document, Entity, EntityData, EntityId, Mutation},
+    manufacturing::PlanarEdge,
     materials::*,
     model::{
         self, Back, Band, BodyOutput, CarcassDefinition, CarcassRequest, Construction, GrainAxis,
@@ -1097,15 +1098,70 @@ fn sketch_region_panel_takes_stock_thickness_and_follows_stock_edits() {
     near(record(&list, "Shaped side").volume_mm3, 450. * 700. * 19.);
 }
 
-#[test]
-fn rust_rebuilds_the_bundled_cabinet_panels_finger_joints_and_drawer_grooves() {
-    let project = project_file::read(
-        &mut include_bytes!("../../../examples/cabinet.tcd").as_slice(),
+fn read_bundled_project(mut bytes: &[u8]) -> ProjectFile {
+    project_file::read(
+        &mut bytes,
         Default::default(),
         &project_file::supported_capabilities(),
     )
     .unwrap()
-    .project;
+    .project
+}
+
+fn compile_stock_sources(
+    document: &Document,
+    roots: &[EntityId],
+    backend: GeometryBackend,
+) -> Model {
+    Compiler::default()
+        .compile_sources_with_backend(document, 0, roots, backend, None)
+        .unwrap_or_else(|error| {
+            let name = error
+                .entity
+                .and_then(|id| document.get(id))
+                .map(|e| &e.name);
+            panic!("{backend:?} failed for {name:?}: {error}")
+        })
+}
+
+fn compare_stock_source(name: &str, id: EntityId, rust: &Model, native: &Model) {
+    assert!(rust.solid(id).unwrap().uses_rust_geometry(), "{name}");
+    let a = &rust.snapshot().shapes[&id];
+    let b = &native.snapshot().shapes[&id];
+    assert_eq!(a.solid_count, b.solid_count, "{name}");
+    assert_eq!(a.solid_count, 1, "{name}");
+    assert!(
+        (a.volume_mm3 - b.volume_mm3).abs() <= 1e-7 + b.volume_mm3 * 1e-10,
+        "{name}: {} != {}",
+        a.volume_mm3,
+        b.volume_mm3
+    );
+    for (a, b) in a
+        .bounds
+        .min
+        .into_iter()
+        .chain(a.bounds.max)
+        .zip(b.bounds.min.into_iter().chain(b.bounds.max))
+    {
+        near(a, b);
+    }
+}
+
+fn compare_stock_cut_lists(document: &Document, rust: &Model, native: &Model) -> usize {
+    let rust_cuts = rust.cut_list(document).unwrap();
+    let native_cuts = native.cut_list(document).unwrap();
+    assert_eq!(rust_cuts.len(), native_cuts.len());
+    for (a, b) in rust_cuts.iter().zip(native_cuts) {
+        assert_eq!((a.part, a.stock, a.grain), (b.part, b.stock, b.grain));
+        pair(a.cut.finished_mm, b.cut.finished_mm);
+        near(a.cut.thickness_mm, b.cut.thickness_mm);
+    }
+    rust_cuts.len()
+}
+
+#[test]
+fn rust_rebuilds_the_bundled_cabinet_panels_finger_joints_and_drawer_grooves() {
+    let project = read_bundled_project(include_bytes!("../../../examples/cabinet.tcd"));
     let document = &project.document;
     let panels: Vec<_> = model::panels(document).map(|entity| entity.id).collect();
     let (finger_cuts, rounded_slots): (Vec<_>, Vec<_>) = model::panel_joint_cuts(document)
@@ -1132,42 +1188,13 @@ fn rust_rebuilds_the_bundled_cabinet_panels_finger_joints_and_drawer_grooves() {
         .chain(finger_cuts.iter().map(|entity| entity.id))
         .chain(grooves)
         .collect();
-    let compiler = Compiler::default();
-    let compile = |backend| {
-        compiler
-            .compile_sources_with_backend(document, 0, &roots, backend, None)
-            .unwrap_or_else(|error| {
-                let name = error
-                    .entity
-                    .and_then(|id| document.get(id))
-                    .map(|e| &e.name);
-                panic!("{backend:?} failed for {name:?}: {error}")
-            })
-    };
-    let rust = compile(GeometryBackend::Rust);
-    let native = compile(GeometryBackend::OpenCascade);
+    let rust = compile_stock_sources(document, &roots, GeometryBackend::Rust);
+    let native = compile_stock_sources(document, &roots, GeometryBackend::OpenCascade);
     for id in roots {
         let name = &document.get(id).unwrap().name;
-        assert!(rust.solid(id).unwrap().uses_rust_geometry(), "{name}");
+        compare_stock_source(name, id, &rust, &native);
         let a = &rust.snapshot().shapes[&id];
         let b = &native.snapshot().shapes[&id];
-        assert_eq!(a.solid_count, b.solid_count, "{name}");
-        assert_eq!(a.solid_count, 1, "{name}");
-        assert!(
-            (a.volume_mm3 - b.volume_mm3).abs() <= 1e-7 + b.volume_mm3 * 1e-10,
-            "{name}: {} != {}",
-            a.volume_mm3,
-            b.volume_mm3
-        );
-        for (a, b) in a
-            .bounds
-            .min
-            .into_iter()
-            .chain(a.bounds.max)
-            .zip(b.bounds.min.into_iter().chain(b.bounds.max))
-        {
-            near(a, b);
-        }
         if panels.contains(&id) {
             assert_eq!(
                 rust.snapshot().panel_frames[&id],
@@ -1207,15 +1234,7 @@ fn rust_rebuilds_the_bundled_cabinet_panels_finger_joints_and_drawer_grooves() {
             }
         }
     }
-    let rust_cuts = rust.cut_list(document).unwrap();
-    let native_cuts = native.cut_list(document).unwrap();
-    assert!(rust_cuts.len() >= 8);
-    assert_eq!(rust_cuts.len(), native_cuts.len());
-    for (a, b) in rust_cuts.iter().zip(native_cuts) {
-        assert_eq!((a.part, a.stock, a.grain), (b.part, b.stock, b.grain));
-        pair(a.cut.finished_mm, b.cut.finished_mm);
-        near(a.cut.thickness_mm, b.cut.thickness_mm);
-    }
+    assert!(compare_stock_cut_lists(document, &rust, &native) >= 8);
 
     // Select the first rounded-slot cut on a panel without including earlier cuts.
     let unsupported = rounded_slots
@@ -1225,7 +1244,7 @@ fn rust_rebuilds_the_bundled_cabinet_panels_finger_joints_and_drawer_grooves() {
             panels.contains(&source.input.producer)
         })
         .unwrap();
-    let Err(error) = compiler.compile_sources_with_backend(
+    let Err(error) = Compiler::default().compile_sources_with_backend(
         document,
         0,
         &[unsupported.id],
@@ -1236,6 +1255,55 @@ fn rust_rebuilds_the_bundled_cabinet_panels_finger_joints_and_drawer_grooves() {
     };
     assert_eq!(error.entity, Some(unsupported.id));
     assert!(error.message.contains("slot"), "{error}");
+}
+
+#[test]
+fn rust_rebuilds_the_bundled_toolcase_stock_panels_with_exact_hole_outlines() {
+    let project = read_bundled_project(include_bytes!("../../../examples/toolcase.tcd"));
+    let document = &project.document;
+    let panels: Vec<_> = model::panels(document).collect();
+    assert_eq!(panels.len(), 7);
+    let roots: Vec<_> = panels.iter().map(|panel| panel.id).collect();
+    let rust = compile_stock_sources(document, &roots, GeometryBackend::Rust);
+    let native = compile_stock_sources(document, &roots, GeometryBackend::OpenCascade);
+    for panel in panels {
+        let id = panel.id;
+        compare_stock_source(&panel.name, id, &rust, &native);
+        let contours = |model: &Model| {
+            let snap = model.snapshot();
+            let start = snap.shapes[&id]
+                .topology
+                .elements
+                .iter()
+                .find(|element| element.frames.iter().any(|f| f.origin.role == "cap.start"))
+                .expect("panel start cap has an authored attachment");
+            model
+                .solid(id)
+                .unwrap()
+                .planar_face_contours(start.key.ordinal, snap.panel_frames[&id])
+                .unwrap()
+        };
+        let actual = contours(&rust);
+        let expected = contours(&native);
+        near(actual.area_mm2(), expected.area_mm2());
+        assert_eq!(actual.loops.len(), expected.loops.len(), "{}", panel.name);
+        let circles = actual
+            .loops
+            .iter()
+            .filter(|wire| {
+                !wire.outer
+                    && matches!(wire.edges.as_slice(), [PlanarEdge::Arc { sweep_rad, .. }]
+                        if (sweep_rad.abs() - std::f64::consts::TAU).abs() < 1e-7)
+            })
+            .count();
+        let expected_circles = match panel.name.as_str() {
+            "Left side feature" | "Right side feature" => 10,
+            _ => 0,
+        };
+        assert_eq!(circles, expected_circles, "{}", panel.name);
+    }
+    // The two side panels have later edge treatments outside these source roots.
+    assert_eq!(compare_stock_cut_lists(document, &rust, &native), 5);
 }
 
 #[test]
