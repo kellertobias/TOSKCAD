@@ -58,6 +58,15 @@ pub(super) fn read_import_members(
 }
 
 pub(super) fn read_analytic(input: &str, tolerance: f64, single: bool) -> Result<Vec<Readback>> {
+    read_analytic_with_helical_cuts(input, tolerance, single)
+        .map(|members| members.into_iter().map(|(proof, _)| proof).collect())
+}
+
+pub(super) fn read_analytic_with_helical_cuts(
+    input: &str,
+    tolerance: f64,
+    single: bool,
+) -> Result<Vec<(Readback, Option<ImportSolid>)>> {
     read_members_by(
         input,
         tolerance,
@@ -66,28 +75,28 @@ pub(super) fn read_analytic(input: &str, tolerance: f64, single: bool) -> Result
         |shell, id, may_be_warped| {
             let faces = shell.member_faces(id)?;
             if let Some((proof, _)) = sphere::read_member(shell, &faces)? {
-                return Ok(proof);
+                return Ok((proof, None));
             }
             if let Some((proof, _)) = torus::read_member(shell, &faces)? {
-                return Ok(proof);
+                return Ok((proof, None));
             }
-            if let Some((proof, _)) = import::read_helical_cut_member(shell, &faces)? {
-                return Ok(proof);
+            if let Some((proof, cut)) = import::read_helical_cut_member(shell, &faces)? {
+                return Ok((proof, Some(cut)));
             }
             if faces
                 .iter()
                 .any(|&face| spline_sweep::has_extrusion_support(shell, face))
             {
-                return spline_sweep::read_member(shell, faces);
+                return spline_sweep::read_member(shell, faces).map(|proof| (proof, None));
             }
             let regular = shell
                 .validate_faces(faces)
                 .and_then(|faces| shell.readback(&faces));
             match regular {
                 Err(error @ (ReadError::Invalid | ReadError::Unsupported)) if may_be_warped => {
-                    fallback_warped(shell, id, error).map(|(readback, _)| readback)
+                    fallback_warped(shell, id, error).map(|(proof, _)| (proof, None))
                 }
-                _ => regular,
+                _ => regular.map(|proof| (proof, None)),
             }
         },
     )

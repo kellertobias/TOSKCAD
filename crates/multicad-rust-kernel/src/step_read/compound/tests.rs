@@ -1,6 +1,7 @@
 use super::*;
 use crate::{
     Rational,
+    helical_tube_cut::{Cut, Spec},
     stadium::Stadium,
     step::{MAX_COMPOUND_SOLIDS, Writer, write_box},
 };
@@ -86,6 +87,66 @@ fn compound_preserves_member_order_volume_and_overlap_as_independent_solids() {
         read_import_compound(&single, TOLERANCE).unwrap(),
         vec![read_import_solid(&single, TOLERANCE).unwrap()]
     );
+}
+
+#[test]
+fn compound_preserves_the_verified_cut_receipt_and_other_analytic_members() {
+    let cut = Cut::new(
+        Spec {
+            stock_radius_mm: 8.,
+            stock_height_mm: 30.,
+            tube_radius_mm: 0.6,
+            pitch_mm: 2.,
+            path_height_mm: 15.,
+            start_height_mm: 16.2,
+            start_angle_rad: 0.1,
+        },
+        TOLERANCE,
+    )
+    .unwrap();
+    let origin = [4., 5., 6.];
+    let v = [0., 0., 1.];
+    let mut writer = Writer::new();
+    writer
+        .append_helical_tube_cut(cut, origin, U, v, TOLERANCE)
+        .unwrap();
+    writer.append_box([n(4); 3], [30., 0., 0.], U, V).unwrap();
+    let source = writer.finish().unwrap();
+    let receipts = read_analytic_compound_with_helical_cuts(&source, TOLERANCE).unwrap();
+    let [(cut_proof, Some(import)), (box_proof, None)] = receipts.as_slice() else {
+        panic!("expected a verified helical cut followed by ordinary box readback");
+    };
+    assert!((cut_proof.volume_mm3 - cut.volume_mm3()).abs() < TOLERANCE);
+    assert_eq!(box_proof.volume_mm3, 64.);
+    assert_eq!([import.origin_mm, import.u, import.v], [origin, U, v]);
+    assert!(matches!(
+        import.profile,
+        ImportProfile::HelicalTubeCut { .. }
+    ));
+    assert_eq!(
+        read_analytic_compound(&source, TOLERANCE).unwrap(),
+        [cut_proof.clone(), box_proof.clone()]
+    );
+
+    let solids: Vec<_> = records(&source, "MANIFOLD_SOLID_BREP(").collect();
+    let shells: Vec<_> = records(&source, "CLOSED_SHELL(")
+        .map(|(id, _)| id)
+        .collect();
+    let ids = [solids[0].0, solids[1].0].join(",");
+    let reordered = source.replace(&ids, &[solids[1].0, solids[0].0].join(","));
+    assert_eq!(
+        read_analytic_compound_with_helical_cuts(&reordered, TOLERANCE).unwrap(),
+        [receipts[1].clone(), receipts[0].clone()]
+    );
+    let repeated = source.replace(&ids, &[solids[0].0; 2].join(","));
+    let shared = source.replace(solids[1].1, &solids[1].1.replace(shells[1], shells[0]));
+    let orphan = append(&source, "#999999=VERTEX_POINT('',#1);");
+    for invalid in [repeated, shared, orphan] {
+        assert_eq!(
+            read_analytic_compound_with_helical_cuts(&invalid, TOLERANCE),
+            Err(ReadError::Invalid)
+        );
+    }
 }
 
 #[test]

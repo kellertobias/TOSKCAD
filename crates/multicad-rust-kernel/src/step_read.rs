@@ -108,6 +108,16 @@ pub fn read_analytic_compound(input: &str, tolerance_mm: f64) -> Result<Vec<Read
     compound::read_analytic(input, tolerance_mm, false)
 }
 
+/// Verify the members of one flat advanced BREP representation in file order.
+/// Independently reconstructed helical tube cuts also carry their placement
+/// and analytic source. Other members only require analytic readback.
+pub fn read_analytic_compound_with_helical_cuts(
+    input: &str,
+    tolerance_mm: f64,
+) -> Result<Vec<(Readback, Option<ImportSolid>)>> {
+    compound::read_analytic_with_helical_cuts(input, tolerance_mm, false)
+}
+
 fn read(input: &str, tolerance_mm: f64, allow_circles: bool) -> Result<Readback> {
     let mut members = if allow_circles {
         compound::read_analytic(input, tolerance_mm, true)?
