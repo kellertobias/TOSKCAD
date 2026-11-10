@@ -191,6 +191,29 @@ impl Solid {
                 Self::from_imported_orthogonal(solid, frame, feature, policy)?
                     .with_orthogonal_pockets(pockets, origins)
             }
+            ImportProfile::DrilledOrthogonal {
+                solid,
+                pockets,
+                through,
+            } => {
+                let circle_origins = pocket_origins(feature, frame, &pockets);
+                let through_origins = through
+                    .iter()
+                    .map(|bore| {
+                        let mut centers = bore
+                            .centers_mm
+                            .map(|point| crate::rust_prism_topology::position(frame, point));
+                        centers.sort_unstable_by(compare_points);
+                        feature_origin(
+                            feature,
+                            "through-bore",
+                            centers.into_iter().flatten().chain([bore.radius_mm]),
+                        )
+                    })
+                    .collect();
+                Self::from_imported_orthogonal(solid, frame, feature, policy)?
+                    .with_orthogonal_round_cuts(pockets, circle_origins, through, through_origins)
+            }
             ImportProfile::SlottedOrthogonal {
                 solid,
                 pockets,

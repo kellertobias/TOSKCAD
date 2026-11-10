@@ -94,7 +94,7 @@ impl Writer {
         if !boundary.supports_step() {
             return Err(StepError::Unsupported);
         }
-        self.append(|file| encode_orthogonal(file, boundary, &[], &[], &transform))
+        self.append(|file| encode_orthogonal(file, boundary, &[], &[], &[], &transform))
     }
 
     pub fn append_pocketed_orthogonal(
@@ -120,7 +120,28 @@ impl Writer {
         }
         orthogonal_slots::validate(geometry, boundary, slots, pockets, 1e-7, 1e-7)
             .map_err(|_| StepError::InvalidGeometry)?;
-        self.append(|file| encode_orthogonal(file, boundary, pockets, slots, transform))
+        self.append(|file| encode_orthogonal(file, boundary, pockets, slots, &[], transform))
+    }
+
+    pub fn append_drilled_orthogonal(
+        &mut self,
+        geometry: &OrthogonalSolid,
+        boundary: &Boundary,
+        pockets: &[OrthogonalPocket],
+        through: &[OrthogonalThroughBore],
+        transform: &dyn Fn(Point) -> Point,
+    ) -> Result<(), StepError> {
+        if through.is_empty() {
+            return self.append_pocketed_orthogonal(geometry, boundary, pockets, transform);
+        }
+        if !supports_drilled_orthogonal(boundary, pockets, through) {
+            return Err(StepError::Unsupported);
+        }
+        crate::orthogonal_pockets::validate_with_through_bores(
+            geometry, boundary, pockets, through, 1e-7, 1e-7,
+        )
+        .map_err(|_| StepError::InvalidGeometry)?;
+        self.append(|file| encode_orthogonal(file, boundary, pockets, &[], through, transform))
     }
 
     pub fn append_polygon_prism(

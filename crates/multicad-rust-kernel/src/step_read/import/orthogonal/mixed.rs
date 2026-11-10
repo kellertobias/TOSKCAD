@@ -1,7 +1,10 @@
 //! Remove certified circular recesses while recovering the orthogonal stock.
 
 use super::*;
-use crate::{orthogonal_boundary::Boundary, orthogonal_pockets};
+use crate::{
+    orthogonal_boundary::Boundary,
+    orthogonal_pockets::{self, FacePlane},
+};
 
 #[cfg(test)]
 mod tests;
@@ -14,15 +17,25 @@ pub(super) struct Recess {
     depth: f64,
 }
 
+#[derive(Clone, Copy)]
+pub(super) struct ThroughRims {
+    centers: [Point; 2],
+    outward: Point,
+    radius: f64,
+}
+
+#[derive(Default)]
+pub(super) struct Drills {
+    pub(super) pockets: Vec<Recess>,
+    pub(super) through: Vec<ThroughRims>,
+    pub(super) omitted: BTreeSet<usize>,
+}
+
 impl Shell<'_, '_> {
-    pub(super) fn orthogonal_recesses(
-        &self,
-        faces: &[Face],
-    ) -> Result<(Vec<Recess>, BTreeSet<usize>)> {
-        let mut recesses = Vec::new();
-        let mut omitted = BTreeSet::new();
+    pub(super) fn orthogonal_recesses(&self, faces: &[Face]) -> Result<Drills> {
+        let mut drills = Drills::default();
         if faces.iter().all(|face| matches!(face, Face::Planar { .. })) {
-            return Ok((recesses, omitted));
+            return Ok(drills);
         }
         let face_edges = self.indexed_edges(faces.len());
         for (wall, face) in faces.iter().enumerate() {
@@ -47,55 +60,63 @@ impl Shell<'_, '_> {
             };
             let a_face = adjacent(a)?;
             let b_face = adjacent(b)?;
-            let a_floor = face_edges[a_face].as_slice() == [a];
-            let b_floor = face_edges[b_face].as_slice() == [b];
-            let (floor, floor_face, mouth, mouth_face) = match (a_floor, b_floor) {
-                (true, false) => (a, a_face, b, b_face),
-                (false, true) => (b, b_face, a, a_face),
-                _ => return Err(ReadError::Unsupported),
+            let (mouth, mouth_face, end, end_face, through) = match (
+                face_edges[a_face].as_slice() == [a],
+                face_edges[b_face].as_slice() == [b],
+            ) {
+                (true, false) => (b, b_face, a, a_face, false),
+                (false, true) => (a, a_face, b, b_face, false),
+                (false, false) => (a, a_face, b, b_face, true),
+                (true, true) => return Err(ReadError::Unsupported),
             };
             let [
                 Face::Planar {
                     normal: outward, ..
                 },
                 Face::Planar {
-                    normal: floor_normal,
-                    ..
+                    normal: end_normal, ..
                 },
-            ] = [&faces[mouth_face], &faces[floor_face]]
+            ] = [&faces[mouth_face], &faces[end_face]]
             else {
                 return Err(ReadError::Unsupported);
             };
-            let [Curve::Circle(mouth_circle), Curve::Circle(floor_circle)] =
-                [mouth, floor].map(|id| self.edges[&id].curve)
+            let [Curve::Circle(mouth_circle), Curve::Circle(end_circle)] =
+                [mouth, end].map(|id| self.edges[&id].curve)
             else {
                 return Err(ReadError::Invalid);
             };
-            let depth = dot(
-                sub(mouth_circle.center_mm, floor_circle.center_mm),
-                *outward,
-            );
-            if depth <= self.tolerance || length(sub(*outward, *floor_normal)) > 1e-10 {
+            let centers = [mouth_circle.center_mm, end_circle.center_mm];
+            let depth = dot(sub(centers[0], centers[1]), *outward);
+            let expected = outward.map(|v| if through { -v } else { v });
+            if depth <= self.tolerance || length(sub(expected, *end_normal)) > 1e-10 {
                 return Err(ReadError::Unsupported);
             }
             self.wall_matches(
                 face,
                 &face_edges[wall],
-                floor,
                 mouth,
-                outward.map(|value| value * depth),
+                end,
+                outward.map(|value| -value * depth),
             )
             .ok_or(ReadError::Unsupported)?;
-            omitted.insert(floor_face);
-            omitted.insert(wall);
-            recesses.push(Recess {
-                mouth: mouth_circle.center_mm,
-                outward: *outward,
-                radius: mouth_circle.radius_mm,
-                depth,
-            });
+            drills.omitted.insert(wall);
+            if through {
+                drills.through.push(ThroughRims {
+                    centers,
+                    outward: *outward,
+                    radius: mouth_circle.radius_mm,
+                });
+            } else {
+                drills.omitted.insert(end_face);
+                drills.pockets.push(Recess {
+                    mouth: centers[0],
+                    outward: *outward,
+                    radius: mouth_circle.radius_mm,
+                    depth,
+                });
+            }
         }
-        Ok((recesses, omitted))
+        Ok(drills)
     }
 
     pub(super) fn placed_recesses(
@@ -154,5 +175,75 @@ impl Shell<'_, '_> {
                 .then(a.depth_mm.total_cmp(&b.depth_mm))
         });
         Ok(pockets)
+    }
+
+    pub(super) fn placed_through_bores(
+        &self,
+        solid: &OrthogonalSolid,
+        boundary: &Boundary,
+        rims: &[ThroughRims],
+        pockets: &[OrthogonalPocket],
+        origin: Point,
+        axes: [Point; 3],
+    ) -> Result<Vec<OrthogonalThroughBore>> {
+        if rims.len().saturating_add(pockets.len()) > orthogonal_pockets::pocket_capacity(solid) {
+            return Err(ReadError::Limit);
+        }
+        let mut through = Vec::with_capacity(rims.len());
+        for rim in rims {
+            let normal = axes.map(|axis| dot(rim.outward, axis));
+            let axis = major(normal);
+            let [a, b] = rim
+                .centers
+                .map(|center| axes.map(|axis| dot(sub(center, origin), axis)));
+            let transverse: Point = std::array::from_fn(|i| a[i].midpoint(b[i]));
+            let locate = |mut center: Point, normal: Point| {
+                for (i, value) in center.iter_mut().enumerate() {
+                    if i != axis {
+                        *value = transverse[i];
+                    }
+                }
+                boundary.faces.iter().enumerate().find_map(|(index, face)| {
+                    let plane = FacePlane::from_face(face)?;
+                    let level = face.rings[0][0][axis];
+                    if length(sub(normal, face.normal)) > 1e-10
+                        || (level - center[axis]).abs() > self.tolerance
+                    {
+                        return None;
+                    }
+                    let center = std::array::from_fn(|i| if i == axis { level } else { center[i] });
+                    plane
+                        .contains_disk(face, center, rim.radius + self.tolerance)
+                        .then_some((index, center))
+                })
+            };
+            let (a, b) = (locate(a, normal), locate(b, normal.map(|v| -v)));
+            let (a, b) = (
+                a.ok_or(ReadError::Unsupported)?,
+                b.ok_or(ReadError::Unsupported)?,
+            );
+            let [(front, entry), (back, exit)] = if a.0 < b.0 { [a, b] } else { [b, a] };
+            through.push(OrthogonalThroughBore {
+                faces: [front, back],
+                centers_mm: [entry, exit],
+                radius_mm: rim.radius,
+            });
+        }
+        orthogonal_pockets::validate_with_through_bores(
+            solid,
+            boundary,
+            pockets,
+            &through,
+            self.tolerance,
+            self.tolerance,
+        )
+        .map_err(|_| ReadError::Unsupported)?;
+        through.sort_by(|a, b| {
+            a.faces
+                .cmp(&b.faces)
+                .then(compare(a.centers_mm[0], b.centers_mm[0]))
+                .then(a.radius_mm.total_cmp(&b.radius_mm))
+        });
+        Ok(through)
     }
 }

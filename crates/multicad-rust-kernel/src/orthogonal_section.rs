@@ -1,8 +1,8 @@
-//! Exact axis-aligned cross sections of orthogonal stock with blind recesses.
+//! Exact axis-aligned cross sections of orthogonal stock with machined cuts.
 use crate::{
     orthogonal::{self, BooleanError, Box3, Operation, OrthogonalSolid},
     orthogonal_boundary::{self, Boundary, BoundaryError},
-    orthogonal_pockets::{FacePlane, OrthogonalPocket},
+    orthogonal_pockets::{FacePlane, OrthogonalPocket, OrthogonalThroughBore},
     orthogonal_slots::{self, OrthogonalSlot},
     stadium::Stadium,
 };
@@ -146,6 +146,7 @@ struct Cavity {
     mouth: Mouth,
     radius: f64,
     depth: f64,
+    outlet: Option<(usize, Point3)>,
 }
 
 enum Profile {
@@ -270,13 +271,35 @@ fn slice_cavity(
                 .map_err(|_| SectionError::Invalid)?,
         ),
     };
+    let far_level = if let Some((face, center)) = cavity.outlet {
+        let outlet = boundary
+            .faces
+            .get(face)
+            .and_then(FacePlane::from_face)
+            .ok_or(SectionError::Invalid)?;
+        if outlet.axis != plane.axis
+            || outlet.sign == plane.sign
+            || center[plane.axis] != outlet.level
+            || plane.sign * (plane.level - outlet.level) != cavity.depth
+            || !matches!(cavity.mouth, Mouth::Circle(first)
+                if axes(plane.axis).into_iter().all(|i| first[i] == center[i]))
+        {
+            return Err(SectionError::Invalid);
+        }
+        outlet.level
+    } else {
+        plane.level - plane.sign * cavity.depth
+    };
     if options.axis == plane.axis {
         let inward = plane.sign * (plane.level - options.depth_mm);
         // The mouth is open at its stock face. A coincident blind floor is
         // itself material, so its cutter has no cross-sectional area there.
-        if inward >= -options.tolerance_mm
-            && inward < cavity.depth - options.tolerance_mm
-            && contains_hole(profile.bounds(), options)?
+        let clear_end = if cavity.outlet.is_some() {
+            inward <= cavity.depth + options.tolerance_mm
+        } else {
+            inward < cavity.depth - options.tolerance_mm
+        };
+        if inward >= -options.tolerance_mm && clear_end && contains_hole(profile.bounds(), options)?
         {
             holes.push(profile.hole());
         }
@@ -284,8 +307,7 @@ fn slice_cavity(
         let cutter_axes = axes(plane.axis);
         let chord_axis = usize::from(options.axis == cutter_axes[1]);
         if let Some(chord) = profile.chord(chord_axis, options.depth_mm)? {
-            let floor = plane.level - plane.sign * cavity.depth;
-            let span = ordered(floor, plane.level);
+            let span = ordered(far_level, plane.level);
             let bounds =
                 axes(options.axis).map(|axis| if axis == plane.axis { span } else { chord });
             notches.extend(lift_rect(bounds, options)?);
@@ -305,6 +327,18 @@ pub fn section(
     slots: &[OrthogonalSlot],
     options: Options,
 ) -> Result<Vec<Vec<Edge>>> {
+    section_with_through_bores(stock, boundary, pockets, slots, &[], options)
+}
+
+/// Cut stock with certified blind recesses and circular through-bores.
+pub fn section_with_through_bores(
+    stock: &OrthogonalSolid,
+    boundary: &Boundary,
+    pockets: &[OrthogonalPocket],
+    slots: &[OrthogonalSlot],
+    through: &[OrthogonalThroughBore],
+    options: Options,
+) -> Result<Vec<Vec<Edge>>> {
     let tolerance = options.tolerance_mm;
     if options.axis >= 3
         || !options.depth_mm.is_finite()
@@ -317,7 +351,12 @@ pub fn section(
     {
         return Err(SectionError::Invalid);
     }
-    if pockets.len().saturating_add(slots.len()) > orthogonal_slots::slot_capacity(stock) {
+    if pockets
+        .len()
+        .saturating_add(slots.len())
+        .saturating_add(through.len())
+        > orthogonal_slots::slot_capacity(stock)
+    {
         return Err(SectionError::Limit);
     }
     let [u, v] = axes(options.axis);
@@ -346,12 +385,21 @@ pub fn section(
             mouth: Mouth::Circle(pocket.center_mm),
             radius: pocket.radius_mm,
             depth: pocket.depth_mm,
+            outlet: None,
         })
         .chain(slots.iter().map(|slot| Cavity {
             face: slot.face,
             mouth: Mouth::Stadium(slot.centers_mm),
             radius: slot.radius_mm,
             depth: slot.depth_mm,
+            outlet: None,
+        }))
+        .chain(through.iter().map(|bore| Cavity {
+            face: bore.faces[0],
+            mouth: Mouth::Circle(bore.centers_mm[0]),
+            radius: bore.radius_mm,
+            depth: bore.depth_mm(),
+            outlet: Some((bore.faces[1], bore.centers_mm[1])),
         }));
     let mut holes = Vec::new();
     let mut notches = Vec::new();

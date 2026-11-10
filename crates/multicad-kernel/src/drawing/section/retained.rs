@@ -385,6 +385,28 @@ fn adapt(
                 },
             });
         }
+        for bore in stock.through_bores {
+            let face = &stock.faces[bore.faces[0]];
+            let [center, _] = bore.centers_mm;
+            let Some(span) = cavity(
+                alignment,
+                &scope,
+                face.normal,
+                [center; 2],
+                bore.radius_mm,
+                bore.depth_mm(),
+            )?
+            else {
+                continue;
+            };
+            result.cuts.push(AxialProfile {
+                span,
+                profile: Profile::Circle {
+                    center: alignment.profile(center),
+                    radius: bore.radius_mm,
+                },
+            });
+        }
         for slot in stock.slots {
             let face = &stock.faces[slot.face];
             let Some(span) = cavity(

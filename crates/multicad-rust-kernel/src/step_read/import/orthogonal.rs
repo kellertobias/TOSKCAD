@@ -235,8 +235,15 @@ fn import_error(error: BooleanError) -> ReadError {
 
 impl Shell<'_, '_> {
     pub(super) fn orthogonal(&self, faces: &[Face]) -> Result<ImportSolid> {
-        let (recesses, mut omitted) = self.orthogonal_recesses(faces)?;
+        let mixed::Drills {
+            pockets: recesses,
+            through,
+            mut omitted,
+        } = self.orthogonal_recesses(faces)?;
         let slot_recesses = self.orthogonal_slots(faces, &mut omitted)?;
+        if !slot_recesses.is_empty() && !through.is_empty() {
+            return Err(ReadError::Unsupported);
+        }
         let mut indices = BTreeMap::new();
         let mut points = Vec::new();
         let mut successors = vec![BTreeMap::new(); faces.len()];
@@ -319,13 +326,21 @@ impl Shell<'_, '_> {
             .collect::<Result<Vec<_>>>()?;
         let solid = solid_from_oriented_faces(&oriented, self.tolerance).map_err(import_error)?;
         let bounds = solid.bounds();
-        let profile = if recesses.is_empty() && slot_recesses.is_empty() {
+        let profile = if recesses.is_empty() && slot_recesses.is_empty() && through.is_empty() {
             ImportProfile::Orthogonal { solid }
         } else {
             let boundary =
                 orthogonal_boundary::build(solid.quads()).or(Err(ReadError::Unsupported))?;
             let pockets = self.placed_recesses(&solid, &boundary, &recesses, origin_mm, axes)?;
-            if slot_recesses.is_empty() {
+            if !through.is_empty() {
+                let through = self
+                    .placed_through_bores(&solid, &boundary, &through, &pockets, origin_mm, axes)?;
+                ImportProfile::DrilledOrthogonal {
+                    solid,
+                    pockets,
+                    through,
+                }
+            } else if slot_recesses.is_empty() {
                 ImportProfile::PocketedOrthogonal { solid, pockets }
             } else {
                 let slots = self.placed_slots(

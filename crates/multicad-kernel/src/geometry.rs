@@ -1014,28 +1014,27 @@ impl Solid {
             && policy.boolean_fuzzy_mm == 0.
             && policy == self.policy
             && policy == other.policy
-            && let Some(result) = self.subtract_coaxial_cylinder(other, policy)
         {
-            return result;
-        }
-        if let Some(tool) = other.axial_cylinder()
-            && operation == BooleanOperation::Subtract
-            && policy.boolean_fuzzy_mm == 0.
-            && policy == self.policy
-            && policy == other.policy
-        {
-            if let Some(target) = self.polygon_prism() {
-                return Self::subtract_polygon_cylinder(target, tool, policy).map(Some);
+            if let Some(result) = self.subtract_coaxial_cylinder(other, policy) {
+                return result;
             }
-            if self.rust_prism().is_some() {
-                return self
-                    .subtract_rust_prism_cylinder(
-                        tool.feature(),
-                        tool.circle(),
-                        tool.bottom(),
-                        tool.top(),
-                    )
-                    .map(Some);
+            if let Some(tool) = other.axial_cylinder() {
+                if let Some(target) = self.polygon_prism() {
+                    return Self::subtract_polygon_cylinder(target, tool, policy).map(Some);
+                }
+                if self.rust_prism().is_some() {
+                    return self
+                        .subtract_rust_prism_cylinder(
+                            tool.feature(),
+                            tool.circle(),
+                            tool.bottom(),
+                            tool.top(),
+                        )
+                        .map(Some);
+                }
+            }
+            if let Some(result) = self.subtract_orthogonal_cylinder(other, policy) {
+                return result.map(Some);
             }
         }
         if self.uses_rust_geometry() && other.uses_rust_geometry() {

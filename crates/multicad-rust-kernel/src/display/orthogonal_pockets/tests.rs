@@ -13,6 +13,125 @@ fn options() -> Tessellation {
 }
 
 #[test]
+fn opposed_bore_mouths_share_the_mesh_wall_without_a_floor() {
+    use crate::{
+        orthogonal::{Box3, Operation, boolean},
+        orthogonal_boundary::build,
+        orthogonal_pockets::{identify_through_bore, volume_with_through_bores_mm3},
+    };
+    use std::collections::BTreeSet;
+
+    let stock = boolean(
+        &[Box3 {
+            min: [0.; 3],
+            max: [20., 16., 10.],
+        }],
+        &[],
+        Operation::Union,
+        1e-7,
+    )
+    .unwrap()
+    .unwrap();
+    let boundary = build(stock.quads()).unwrap();
+    let pocket = identify_pocket(
+        &stock,
+        &boundary,
+        [16., 7., 11.],
+        [16., 7., 8.],
+        1.,
+        1e-7,
+        1e-5,
+    )
+    .unwrap();
+    let bore = |from, to, radius| {
+        identify_through_bore(&stock, &boundary, from, to, radius, 1e-7, 1e-5).unwrap()
+    };
+    let bores = [
+        bore([6., 5., 11.], [6., 5., -1.], 1.),
+        bore([-1., 12., 7.], [21., 12., 7.], 1.5),
+    ];
+    let mesh = bored_orthogonal(&boundary, &[pocket], &bores, options()).unwrap();
+    let proof = certify(&mesh).unwrap();
+    let exact_volume = volume_with_through_bores_mm3(&stock, &[pocket], &bores);
+    assert!((proof.signed_volume_mm3 - exact_volume).abs() < 0.18);
+    assert_eq!(proof.edge_pairs as usize * 2, mesh.indices.len());
+    assert_eq!(
+        mesh.face_indices.iter().copied().max(),
+        Some((boundary.faces.len() + 3) as u32)
+    );
+
+    let triangles = mesh.indices.as_chunks::<3>().0;
+    let vertices_on = |face: usize| -> BTreeSet<u32> {
+        triangles
+            .iter()
+            .zip(&mesh.face_indices)
+            .filter(|(_, id)| **id as usize == face)
+            .flat_map(|(triangle, _)| triangle.iter().copied())
+            .collect()
+    };
+    for (i, bore) in bores.iter().enumerate() {
+        let axis = boundary.faces[bore.faces[0]]
+            .normal
+            .iter()
+            .position(|&v| v != 0.)
+            .unwrap();
+        let wall = vertices_on(boundary.faces.len() + 2 + i);
+        let [near, far] = bore.faces.map(&vertices_on);
+        let [a, b] = [near, far].map(|cap| wall.intersection(&cap).copied().collect::<Vec<_>>());
+        let radial = |mouth: &[u32]| -> BTreeSet<[u64; 2]> {
+            mouth
+                .iter()
+                .map(|&vertex| {
+                    [(axis + 1) % 3, (axis + 2) % 3]
+                        .map(|coordinate| mesh.vertices[vertex as usize * 3 + coordinate].to_bits())
+                })
+                .collect()
+        };
+        let samples = options().arc_segments(bore.radius_mm, TAU).unwrap();
+        assert_eq!(
+            [a.len(), b.len(), wall.len()],
+            [samples, samples, 2 * samples]
+        );
+        assert_eq!(radial(&a), radial(&b));
+    }
+
+    let bore = bores[0];
+    let budget = 4 * options().arc_segments(bore.radius_mm, TAU).unwrap() + 3;
+    assert_eq!(
+        bored_orthogonal(
+            &boundary,
+            &[],
+            &[bore],
+            Tessellation {
+                triangle_limit: budget,
+                ..options()
+            }
+        ),
+        Err(MeshError::BudgetExceeded)
+    );
+    let mut shifted = bore;
+    shifted.centers_mm[1][0] += 1.;
+    let mut off_plane = bore;
+    off_plane
+        .centers_mm
+        .iter_mut()
+        .for_each(|center| center[2] += 1.);
+    for invalid in [
+        shifted,
+        off_plane,
+        OrthogonalThroughBore {
+            faces: [boundary.faces.len(), bore.faces[1]],
+            ..bore
+        },
+    ] {
+        assert_eq!(
+            bored_orthogonal(&boundary, &[], &[invalid], options()),
+            Err(MeshError::UnresolvedBoundary)
+        );
+    }
+}
+
+#[test]
 fn orthogonal_mesh_shares_edges_and_publishes_each_wall_and_floor() {
     use crate::orthogonal_pockets::tests::{CLEARANCE, MINIMUM, grooved_stock};
     let (stock, boundary) = grooved_stock();

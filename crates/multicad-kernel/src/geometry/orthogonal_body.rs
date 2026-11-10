@@ -8,7 +8,7 @@ use multicad_core::references::{
 use multicad_rust_kernel::{
     orthogonal::{self, BooleanError, Box3, Operation, OrthogonalSolid},
     orthogonal_boundary::{self, Boundary, BoundaryError, BoundaryFace},
-    orthogonal_pockets::OrthogonalPocket,
+    orthogonal_pockets::{OrthogonalPocket, OrthogonalThroughBore},
     orthogonal_slots::OrthogonalSlot,
 };
 use std::collections::{BTreeMap, BTreeSet};
@@ -26,6 +26,7 @@ pub(crate) struct DrawingStock<'a> {
     pub(crate) cells: &'a [Box3],
     pub(crate) faces: &'a [BoundaryFace],
     pub(crate) pockets: &'a [OrthogonalPocket],
+    pub(crate) through_bores: &'a [OrthogonalThroughBore],
     pub(crate) slots: &'a [OrthogonalSlot],
 }
 
@@ -56,6 +57,8 @@ pub(crate) struct OrthogonalBody {
     vertex_count: u32,
     pockets: Rc<[OrthogonalPocket]>,
     pocket_origins: Rc<[Origin]>,
+    through_bores: Rc<[OrthogonalThroughBore]>,
+    through_origins: Rc<[Origin]>,
     slots: Rc<[OrthogonalSlot]>,
     slot_origins: Rc<[Origin]>,
 }
@@ -190,11 +193,11 @@ fn operation_error(cause: BooleanError) -> GeometryError {
 
 impl Solid {
     pub(crate) fn has_circular_drawing_stock(&self) -> bool {
-        self.orthogonal_body()
-            .is_some_and(|(body, _)| body.slots.is_empty() && !body.pockets.is_empty())
-            || self
-                .polygon_prism()
-                .is_some_and(|body| !body.pockets.is_empty())
+        self.orthogonal_body().is_some_and(|(body, _)| {
+            body.through_bores.is_empty() && body.slots.is_empty() && !body.pockets.is_empty()
+        }) || self
+            .polygon_prism()
+            .is_some_and(|body| !body.pockets.is_empty())
     }
 
     /// Pair each certified blind opening with its uncut stock face.
@@ -210,7 +213,9 @@ impl Solid {
         &self,
     ) -> Option<(Self, Vec<BlindOpening>, Vec<BlindSlot>)> {
         let (body, openings, slots) = match &self.body {
-            SolidBody::Orthogonal(stock, frame) if stock.has_curved_cuts() => {
+            SolidBody::Orthogonal(stock, frame)
+                if stock.has_curved_cuts() && stock.through_bores.is_empty() =>
+            {
                 let openings = stock
                     .pockets
                     .iter()
@@ -332,6 +337,7 @@ impl Solid {
         let body = match &self.body {
             SolidBody::Orthogonal(stock, frame)
                 if stock.has_curved_cuts()
+                    && stock.through_bores.is_empty()
                     && stock
                         .pockets
                         .iter()
@@ -380,8 +386,7 @@ impl Solid {
     fn orthogonal_cells(&self) -> Result<Option<Vec<Box3>>, GeometryError> {
         if let Some((body, frame)) = self.orthogonal_body()
             && cardinal(frame)
-            && body.pockets.is_empty()
-            && body.slots.is_empty()
+            && !body.has_curved_cuts()
         {
             return Ok(Some(
                 body.geometry
@@ -877,12 +882,13 @@ impl OrthogonalBody {
             cells: self.geometry.cells(),
             faces: &self.boundary.faces,
             pockets: &self.pockets,
+            through_bores: &self.through_bores,
             slots: &self.slots,
         }
     }
 
     pub(crate) fn has_curved_cuts(&self) -> bool {
-        !self.pockets.is_empty() || !self.slots.is_empty()
+        !self.pockets.is_empty() || !self.through_bores.is_empty() || !self.slots.is_empty()
     }
 
     pub(crate) fn section(
@@ -892,11 +898,12 @@ impl OrthogonalBody {
         Vec<Vec<multicad_rust_kernel::orthogonal_section::Edge>>,
         multicad_rust_kernel::orthogonal_section::SectionError,
     > {
-        multicad_rust_kernel::orthogonal_section::section(
+        multicad_rust_kernel::orthogonal_section::section_with_through_bores(
             &self.geometry,
             &self.boundary,
             &self.pockets,
             &self.slots,
+            &self.through_bores,
             options,
         )
     }
@@ -1068,6 +1075,8 @@ impl OrthogonalBody {
             vertex_count,
             pockets: Rc::default(),
             pocket_origins: Rc::default(),
+            through_bores: Rc::default(),
+            through_origins: Rc::default(),
             slots: Rc::default(),
             slot_origins: Rc::default(),
         })
@@ -1082,6 +1091,7 @@ impl OrthogonalBody {
     ) -> Option<[u32; 2]> {
         let bounds = self.geometry.bounds();
         if (self.pockets.is_empty() && self.slots.is_empty())
+            || !self.through_bores.is_empty()
             || self.boundary.shell_count != 1
             || self.boundary.faces.len() != 6
             || self.boundary.faces.iter().any(|face| {
@@ -1125,6 +1135,18 @@ impl OrthogonalBody {
                     .filter(|(_, pocket)| pocket.face == face as usize)
                     .map(|(i, _)| vec![(self.edge_count + 2 * i as u32, false)]),
             );
+            loops.extend(self.through_bores.iter().enumerate().flat_map(|(i, bore)| {
+                bore.faces
+                    .into_iter()
+                    .enumerate()
+                    .filter(move |&(_, mouth)| mouth == face as usize)
+                    .map(move |(rim, _)| {
+                        vec![(
+                            self.edge_count + 2 * (self.pockets.len() + i) as u32 + rim as u32,
+                            false,
+                        )]
+                    })
+            }));
             self.append_slot_openings(face as usize, &mut loops);
             return loops;
         }
@@ -1149,6 +1171,7 @@ impl OrthogonalBody {
         topology.owner = owner;
         topology.revision = revision;
         self.append_pocket_topology(&mut topology);
+        self.append_through_topology(&mut topology);
         self.append_slot_topology(&mut topology);
         if frame != PlaneFrame::default() {
             for element in &mut topology.elements {
@@ -1166,7 +1189,7 @@ impl OrthogonalBody {
                 }
             }
         }
-        if !self.pockets.is_empty() || !self.slots.is_empty() {
+        if self.has_curved_cuts() {
             topology.validate()?;
         }
         Ok(topology)
@@ -1175,6 +1198,7 @@ impl OrthogonalBody {
     pub(super) fn faces(&self, frame: PlaneFrame) -> Vec<Face> {
         let mut faces = self.faces.to_vec();
         self.append_pocket_faces(&mut faces);
+        self.append_through_faces(&mut faces);
         self.append_slot_faces(&mut faces);
         faces
             .into_iter()
@@ -1214,6 +1238,18 @@ impl OrthogonalBody {
         options: multicad_rust_kernel::display::Tessellation,
         usage: MeshUse,
     ) -> Result<ffi::Mesh, GeometryError> {
+        if !self.through_bores.is_empty() {
+            return crate::rust_display::placed_mesh(
+                multicad_rust_kernel::display::bored_orthogonal(
+                    &self.boundary,
+                    &self.pockets,
+                    &self.through_bores,
+                    options,
+                ),
+                frame,
+                false,
+            );
+        }
         if !self.slots.is_empty() {
             return crate::rust_display::placed_mesh(
                 multicad_rust_kernel::display::slotted_orthogonal(

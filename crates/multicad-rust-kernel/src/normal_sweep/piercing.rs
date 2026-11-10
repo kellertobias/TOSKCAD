@@ -275,7 +275,7 @@ fn certify(
     let outline = Sweep::new(vec![opening.outline], thickness, tolerance, minimum)?;
     let ring = &outline.rings()[0];
     match ring.as_slice() {
-        [Edge::Circle { .. }] => (),
+        [Edge::Circle { .. }] => {}
         [
             Edge::Line { .. },
             Edge::Line { .. },
@@ -287,7 +287,7 @@ fn certify(
             .all(|(&a, &b)| {
                 let [a, b] = [a, b].map(|edge| sub(edge.end(), edge.start()));
                 dot(a, b).abs() <= ANGULAR * length(a) * length(b)
-            }) => (),
+            }) => {}
         _ => return Err(invalid),
     }
     opening.outline = ring.clone();

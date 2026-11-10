@@ -140,20 +140,13 @@ impl Solid {
         if tools.is_empty() {
             return self.share();
         }
-        let unsupported_through = || {
-            error(
-                "cylindrical cut",
-                GeometryErrorKind::Unsupported,
-                "Rust through-bores must enter normal to a polygon stock cap",
-            )
-        };
-        let has_through = through.is_some_and(|modes| modes.contains(&true));
-        if let Some((stock, frame)) = self.orthogonal_body() {
-            if has_through {
-                return Err(unsupported_through());
-            }
-            let (pockets, origins) = stock.drill(frame, tools, policy)?;
-            return self.share()?.with_orthogonal_pockets(pockets, origins);
+        if self.orthogonal_body().is_some() {
+            return self.drill_orthogonal_stock(tools, through, policy);
+        }
+        if self.rust_prism().is_some() || self.linear_body().is_some() {
+            return self
+                .orthogonal_stock()?
+                .drill_orthogonal_stock(tools, through, policy);
         }
         let Some(stock) = self.polygon_prism() else {
             return Err(error(
@@ -170,12 +163,9 @@ impl Solid {
             .iter()
             .any(|tool| length(cross(tool.frame.normal(), normal)) > 1e-10)
         {
-            if has_through {
-                return Err(unsupported_through());
-            }
             return self
                 .orthogonal_stock()?
-                .rust_drill_circular_pockets(tools, policy);
+                .drill_orthogonal_stock(tools, through, policy);
         }
         if tools.len() > circular_pockets::pocket_capacity(&stock.prism) - stock.pockets.len() {
             return Err(budget_error());

@@ -98,6 +98,11 @@ impl Solid {
         let SolidBody::Orthogonal(body, _) = &mut self.body else {
             return Err(unsupported_slot("Rounded slots require orthogonal stock"));
         };
+        if !body.through_bores.is_empty() {
+            return Err(unsupported_slot(
+                "Combined slots and orthogonal through-bores are unsupported",
+            ));
+        }
         circular_pocket_body::check_origins(slots.len(), &origins)?;
         body.validate_slots(&slots, &body.pockets, self.policy)?;
         let body = Rc::make_mut(body);

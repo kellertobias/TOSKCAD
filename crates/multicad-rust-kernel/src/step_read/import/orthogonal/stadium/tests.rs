@@ -246,7 +246,7 @@ fn refuses_unrecognized_curves_on_stock_and_unplaceable_mouths() {
     let entities = parse_entities(&text, TOLERANCE).unwrap();
     let mut shell = Shell::new(&entities, TOLERANCE, true);
     let faces = shell.validated_faces().unwrap();
-    let (_, mut omitted) = shell.orthogonal_recesses(&faces).unwrap();
+    let mut omitted = shell.orthogonal_recesses(&faces).unwrap().omitted;
     shell.orthogonal_slots(&faces, &mut omitted).unwrap();
     let stock = shell
         .edges
@@ -283,8 +283,10 @@ fn rechecks_placement_and_combined_cavity_clearance_on_reconstructed_stock() {
     let mut shell = Shell::new(&entities, TOLERANCE, true);
     let faces = shell.validated_faces().unwrap();
     let boundary = orthogonal_boundary::build(stock.quads()).unwrap();
-    let (recesses, mut omitted) = shell.orthogonal_recesses(&faces).unwrap();
-    let mut slots = shell.orthogonal_slots(&faces, &mut omitted).unwrap();
+    let mut drills = shell.orthogonal_recesses(&faces).unwrap();
+    let recesses = drills.pockets;
+    let omitted = &mut drills.omitted;
+    let mut slots = shell.orthogonal_slots(&faces, omitted).unwrap();
     let mut pockets = shell
         .placed_recesses(&stock, &boundary, &recesses, [0.; 3], XYZ)
         .unwrap();

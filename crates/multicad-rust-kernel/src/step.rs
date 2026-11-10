@@ -9,7 +9,7 @@ use crate::{
     linear_sweep::Sweep,
     orthogonal::OrthogonalSolid,
     orthogonal_boundary::{Boundary, BoundaryFace, point_key},
-    orthogonal_pockets::OrthogonalPocket,
+    orthogonal_pockets::{OrthogonalPocket, OrthogonalThroughBore},
     orthogonal_slots::{self, OrthogonalSlot},
     polygon::{MAX_VERTICES, PolygonPrism},
     prism::Prism,
@@ -57,17 +57,56 @@ pub fn supports_slotted_orthogonal(
     pockets: &[OrthogonalPocket],
     slots: &[OrthogonalSlot],
 ) -> bool {
+    supports_orthogonal_cuts(boundary, pockets, slots, &[])
+}
+
+/// Whether blind and through bores fit the planar boundary topology budget.
+pub fn supports_drilled_orthogonal(
+    boundary: &Boundary,
+    pockets: &[OrthogonalPocket],
+    through: &[OrthogonalThroughBore],
+) -> bool {
+    supports_orthogonal_cuts(boundary, pockets, &[], through)
+}
+
+fn supports_orthogonal_cuts(
+    boundary: &Boundary,
+    pockets: &[OrthogonalPocket],
+    slots: &[OrthogonalSlot],
+    through: &[OrthogonalThroughBore],
+) -> bool {
     boundary.supports_step()
         && pockets
             .iter()
             .all(|pocket| pocket.face < boundary.faces.len())
         && slots.iter().all(|slot| slot.face < boundary.faces.len())
+        && through
+            .iter()
+            .flat_map(|bore| bore.faces)
+            .all(|face| face < boundary.faces.len())
         && boundary.faces.iter().enumerate().all(|(index, face)| {
             let circular_openings = pockets.iter().filter(|pocket| pocket.face == index).count();
             let slot_openings = slots.iter().filter(|slot| slot.face == index).count();
-            let openings = circular_openings + 4 * slot_openings;
+            let through_openings = through
+                .iter()
+                .filter(|bore| bore.faces.contains(&index))
+                .count();
+            let openings = circular_openings + 4 * slot_openings + through_openings;
             face.rings.iter().map(Vec::len).sum::<usize>() + openings <= MAX_VERTICES
         })
+}
+
+/// Write orthogonal stock with cylindrical through bores and blind pockets.
+pub fn write_drilled_orthogonal(
+    geometry: &OrthogonalSolid,
+    boundary: &Boundary,
+    pockets: &[OrthogonalPocket],
+    through: &[OrthogonalThroughBore],
+    transform: &dyn Fn(Point) -> Point,
+) -> Result<String, StepError> {
+    write_one(|writer| {
+        writer.append_drilled_orthogonal(geometry, boundary, pockets, through, transform)
+    })
 }
 
 /// Write machined orthogonal stock and its exact circular blind recesses
@@ -99,6 +138,7 @@ fn encode_orthogonal(
     boundary: &Boundary,
     pockets: &[OrthogonalPocket],
     slots: &[OrthogonalSlot],
+    through: &[OrthogonalThroughBore],
     transform: &dyn Fn(Point) -> Point,
 ) -> Result<Entity, StepError> {
     let mut points = Vec::new();
@@ -118,16 +158,37 @@ fn encode_orthogonal(
         }
     }
     let mut brep = BRep::new(file, points);
-    let cavity_face_count = 2 * pockets.len() + 5 * slots.len();
+    let supports: Vec<_> = boundary
+        .faces
+        .iter()
+        .map(|face| {
+            let [outer, ..] = face.rings.as_slice() else {
+                return Err(StepError::InvalidGeometry);
+            };
+            let placed = |point| brep.vertices[indices[&point_key(point)]].point;
+            let (normal, reference) = orthogonal_support(face, outer, placed)?;
+            let point = brep.vertices[indices[&point_key(outer[0])]].cartesian;
+            Ok((point, normal, reference))
+        })
+        .collect::<Result<_, _>>()?;
+    let cavity_face_count = 2 * pockets.len() + 5 * slots.len() + through.len();
     let mut faces = Vec::with_capacity(boundary.faces.len() + cavity_face_count);
     let mut pocket_faces = Vec::with_capacity(cavity_face_count);
+    let mut bore_bounds = vec![Vec::new(); boundary.faces.len()];
+    for bore in through {
+        let [entry, exit] = bore.faces;
+        let (_, normal, reference) = supports[exit];
+        let centers = bore.centers_mm.map(transform);
+        if centers.iter().flatten().any(|value| !value.is_finite()) {
+            return Err(StepError::InvalidPlacement);
+        }
+        let trim = CylindricalTrim::new(brep.file, centers, normal, reference, bore.radius_mm)?;
+        bore_bounds[entry].push(trim.cap_bound(brep.file, false, false));
+        bore_bounds[exit].push(trim.cap_bound(brep.file, true, false));
+        pocket_faces.push(trim.wall(brep.file, false));
+    }
     for (index, face) in boundary.faces.iter().enumerate() {
-        let [outer, ..] = face.rings.as_slice() else {
-            return Err(StepError::InvalidGeometry);
-        };
-        let placed = |point| brep.vertices[indices[&point_key(point)]].point;
-        let (normal, reference) = orthogonal_support(face, outer, placed)?;
-        let point = brep.vertices[indices[&point_key(outer[0])]].cartesian;
+        let (point, normal, reference) = supports[index];
         let mut bounds = face
             .rings
             .iter()
@@ -161,6 +222,7 @@ fn encode_orthogonal(
             pocket_faces.extend(trim.walls(brep.file, false));
             pocket_faces.push(trim.cap(brep.file, 0, true, reference));
         }
+        bounds.append(&mut bore_bounds[index]);
         faces.push(brep.file.face(&bounds, point, normal, reference));
     }
     faces.extend(pocket_faces);

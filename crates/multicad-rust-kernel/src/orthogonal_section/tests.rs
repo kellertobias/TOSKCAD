@@ -84,6 +84,100 @@ fn near(actual: f64, expected: f64) {
 }
 
 #[test]
+fn through_holes_open_at_both_caps_and_cut_transverse_chords() {
+    let (stock, boundary) = stock(&[]);
+    let (pockets, slot) = cavities(&boundary);
+    let bore = OrthogonalThroughBore {
+        faces: [
+            face(&boundary, [0., 0., -1.]),
+            face(&boundary, [0., 0., 1.]),
+        ],
+        centers_mm: [[4., 4., 0.], [4., 4., 10.]],
+        radius_mm: 1.,
+    };
+    let expected = vec![Edge::Arc {
+        center: [4., 4.],
+        radius: 1.,
+        start_rad: 0.,
+        sweep_rad: -TAU,
+    }];
+    for depth in [0., 6., 8., 10.] {
+        let wires = section_with_through_bores(
+            &stock,
+            &boundary,
+            &pockets,
+            &[slot],
+            &[bore],
+            options(2, depth),
+        )
+        .unwrap();
+        assert!(wires.contains(&expected));
+        if depth == 8. {
+            assert!(!wires.iter().any(|wire| wire.iter().any(|edge| {
+                matches!(
+                    edge,
+                    Edge::Arc {
+                        center: [16., 7.],
+                        ..
+                    }
+                )
+            })));
+        }
+    }
+    for (x, area) in [(4., 140.), (4.6, 144.), (5., 160.)] {
+        let wires = section_with_through_bores(&stock, &boundary, &[], &[], &[bore], options(0, x))
+            .unwrap();
+        near(wires.iter().map(|wire| signed_area(wire)).sum(), area);
+    }
+    let malformed =
+        |bore| section_with_through_bores(&stock, &boundary, &[], &[], &[bore], options(2, 5.));
+    for bad in [
+        OrthogonalThroughBore {
+            faces: [bore.faces[0], boundary.faces.len()],
+            ..bore
+        },
+        OrthogonalThroughBore {
+            faces: [bore.faces[0]; 2],
+            ..bore
+        },
+        OrthogonalThroughBore {
+            centers_mm: [bore.centers_mm[0], [5., 4., 10.]],
+            ..bore
+        },
+    ] {
+        assert_eq!(malformed(bad), Err(SectionError::Invalid));
+    }
+}
+
+#[test]
+fn a_groove_through_bore_does_not_leave_a_false_arc_above_its_outlet() {
+    let (stock, boundary) = crate::orthogonal_pockets::tests::grooved_stock();
+    let bore = crate::orthogonal_pockets::identify_through_bore(
+        &stock,
+        &boundary,
+        [10., 6.5, -1.],
+        [10., 6.5, 11.],
+        1.,
+        TOLERANCE,
+        1e-5,
+    )
+    .unwrap();
+    assert_eq!(bore.centers_mm[1][2], 7.);
+    for (depth, expected) in [(7., true), (8., false)] {
+        let wires =
+            section_with_through_bores(&stock, &boundary, &[], &[], &[bore], options(2, depth))
+                .unwrap();
+        assert_eq!(
+            wires
+                .iter()
+                .flatten()
+                .any(|edge| matches!(edge, Edge::Arc { .. })),
+            expected
+        );
+    }
+}
+
+#[test]
 fn axial_sections_preserve_exact_round_and_stadium_holes_until_the_blind_floor() {
     let (stock, boundary) = stock(&[]);
     let (pockets, slot) = cavities(&boundary);

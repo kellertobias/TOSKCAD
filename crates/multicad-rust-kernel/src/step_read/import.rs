@@ -1,9 +1,15 @@
 //! Recognize swept solids by their complete, already validated boundaries.
 use super::*;
 use crate::{
-    chamfered_bores::BoreChamfer, circular_pockets::CircularPocket, linear_sweep::Sweep,
-    normal_sweep, orthogonal::OrthogonalSolid, orthogonal_pockets::OrthogonalPocket,
-    orthogonal_slots::OrthogonalSlot, stadium::Stadium, trimmed_sweep::TrimmedSweep,
+    chamfered_bores::BoreChamfer,
+    circular_pockets::CircularPocket,
+    linear_sweep::Sweep,
+    normal_sweep,
+    orthogonal::OrthogonalSolid,
+    orthogonal_pockets::{OrthogonalPocket, OrthogonalThroughBore},
+    orthogonal_slots::OrthogonalSlot,
+    stadium::Stadium,
+    trimmed_sweep::TrimmedSweep,
 };
 use std::cmp::Ordering;
 
@@ -61,6 +67,11 @@ pub enum ImportProfile {
         /// Certified stock and circular recesses in the local frame.
         solid: OrthogonalSolid,
         pockets: Vec<OrthogonalPocket>,
+    },
+    DrilledOrthogonal {
+        solid: OrthogonalSolid,
+        pockets: Vec<OrthogonalPocket>,
+        through: Vec<OrthogonalThroughBore>,
     },
     SlottedOrthogonal {
         solid: OrthogonalSolid,

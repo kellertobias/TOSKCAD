@@ -8,6 +8,108 @@ fn size() -> [Rational; 3] {
     [5, 7, 9].map(|value| Rational::new(value, 1).unwrap())
 }
 
+#[test]
+fn orthogonal_through_bores_share_two_stock_mouths_and_coexist_with_blind_pockets() {
+    use crate::{
+        orthogonal::{Box3, Operation, boolean},
+        orthogonal_boundary::build,
+        step_read::{ReadError, read_analytic_solid, read_import_solid},
+    };
+    let stock = boolean(
+        &[Box3 {
+            min: ORIGIN,
+            max: [20., 16., 10.],
+        }],
+        &[],
+        Operation::Union,
+        1e-7,
+    )
+    .unwrap()
+    .unwrap();
+    let boundary = build(stock.quads()).unwrap();
+    let side = |normal| {
+        boundary
+            .faces
+            .iter()
+            .position(|face| face.normal == normal)
+            .unwrap()
+    };
+    let bore = OrthogonalThroughBore {
+        faces: [side([-1., 0., 0.]), side(X)],
+        centers_mm: [[0., 5., 4.], [20., 5., 4.]],
+        radius_mm: 1.5,
+    };
+    let blind = OrthogonalPocket {
+        face: side([0., 0., 1.]),
+        center_mm: [16., 12., 10.],
+        radius_mm: 2.,
+        depth_mm: 3.,
+    };
+    let place = |[x, y, z]: Point| [z + 18., x - 2., y + 7.];
+    assert!(supports_drilled_orthogonal(&boundary, &[blind], &[bore]));
+    let write = |through: &[OrthogonalThroughBore]| {
+        write_drilled_orthogonal(&stock, &boundary, &[blind], through, &place)
+    };
+    let source = write(&[bore]).unwrap();
+    let read = read_analytic_solid(&source, 1e-7).unwrap();
+    assert_eq!(read.face_count, 9);
+    assert_eq!(read.circles.len(), 4);
+    let expected =
+        stock.volume_mm3() - (20. * 1.5_f64.powi(2) + 3. * 2_f64.powi(2)) * std::f64::consts::PI;
+    assert!((read.volume_mm3 - expected).abs() < 1e-7);
+    let mut reversed = bore;
+    reversed.faces.reverse();
+    reversed.centers_mm.reverse();
+    let reversed = read_analytic_solid(&write(&[reversed]).unwrap(), 1e-7).unwrap();
+    assert!((reversed.volume_mm3 - expected).abs() < 1e-7);
+    for center in bore.centers_mm.map(place) {
+        assert!(
+            reversed
+                .circles
+                .iter()
+                .any(|rim| rim.center_mm == center && rim.radius_mm == bore.radius_mm)
+        );
+    }
+    let slot = OrthogonalSlot {
+        face: blind.face,
+        centers_mm: [[3., 10., 10.], [7., 10., 10.]],
+        radius_mm: 1.,
+        depth_mm: 2.,
+    };
+    // A valid boundary using both cuts is recognizable STEP. The current
+    // Rust solid representation deliberately rejects the combined profile.
+    let mut foreign = Writer::new();
+    foreign
+        .append(|file| encode_orthogonal(file, &boundary, &[blind], &[slot], &[bore], &place))
+        .unwrap();
+    let foreign = foreign.finish().unwrap();
+    assert_eq!(read_analytic_solid(&foreign, 1e-7).unwrap().face_count, 14);
+    assert_eq!(
+        read_import_solid(&foreign, 1e-7),
+        Err(ReadError::Unsupported)
+    );
+    assert_eq!(
+        write(&[]).unwrap(),
+        write_pocketed_orthogonal(&stock, &boundary, &[blind], &place).unwrap()
+    );
+    let missing = OrthogonalThroughBore {
+        faces: [bore.faces[0], boundary.faces.len()],
+        ..bore
+    };
+    assert_eq!(write(&[missing]), Err(StepError::Unsupported));
+    assert_eq!(write(&[bore, bore]), Err(StepError::InvalidGeometry));
+    assert_eq!(
+        write_drilled_orthogonal(&stock, &boundary, &[blind], &[bore], &|p| {
+            if p == bore.centers_mm[0] {
+                [f64::NAN; 3]
+            } else {
+                place(p)
+            }
+        }),
+        Err(StepError::InvalidPlacement),
+    );
+}
+
 fn split_cone_seam_identity(source: &str, cone_face: &str) -> String {
     let record = |id: &str| {
         source
