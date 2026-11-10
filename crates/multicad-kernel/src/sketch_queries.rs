@@ -1,5 +1,6 @@
 //! Exact worker-side sketch predicates. Elementary curves share their Rust
 //! parameter operations. Native spline calls stay on the calling thread.
+use crate::spline_edits::line_contacts;
 use crate::{
     BSpline2d, CurvePointLocation, CurvedEdge2d, CurvedProfile, GeometryError, GeometryPolicy,
 };
@@ -62,6 +63,19 @@ impl NativeRegionQueries {
         policy.validate().map_err(error)?;
         Ok(policy)
     }
+    fn spline(
+        poles: &[[f64; 2]],
+        basis: &multicad_core::constraint_sketch::SplineBasis,
+    ) -> BSpline2d {
+        BSpline2d {
+            degree: basis.degree,
+            poles: poles.to_vec(),
+            knots: basis.knots.clone(),
+            multiplicities: basis.multiplicities.clone(),
+            weights: basis.weights.clone(),
+        }
+    }
+
     pub fn curve(curve: &ExactCurve) -> CurvedEdge2d {
         match curve {
             ExactCurve::Line { a, b } => CurvedEdge2d::Line { a: *a, b: *b },
@@ -80,13 +94,9 @@ impl NativeRegionQueries {
                 center: *center,
                 radius_mm: *radius_mm,
             },
-            ExactCurve::BSpline { poles, basis } => CurvedEdge2d::BSpline(BSpline2d {
-                degree: basis.degree,
-                poles: poles.clone(),
-                knots: basis.knots.clone(),
-                multiplicities: basis.multiplicities.clone(),
-                weights: basis.weights.clone(),
-            }),
+            ExactCurve::BSpline { poles, basis } => {
+                CurvedEdge2d::BSpline(Self::spline(poles, basis))
+            }
         }
     }
     fn boundary(edges: &[Edge]) -> CurvedProfile {
@@ -275,7 +285,22 @@ impl RegionQueries for NativeRegionQueries {
             return AnalyticQueries.intersections(a, b, tolerance_mm);
         }
         if !self.native_splines || !crate::OCCT_LINKED {
-            return linear_spline::intersections(a, b, self.policy(tolerance_mm)?);
+            let policy = self.policy(tolerance_mm)?;
+            return match (a, b) {
+                (ExactCurve::BSpline { poles, basis }, ExactCurve::Line { a, b })
+                | (ExactCurve::Line { a, b }, ExactCurve::BSpline { poles, basis })
+                    if basis.degree > 1 =>
+                {
+                    let points =
+                        line_contacts::contacts(&Self::spline(poles, basis), [*a, *b], policy)
+                            .map_err(error)?;
+                    Ok(CurveHits {
+                        points,
+                        overlap: false,
+                    })
+                }
+                _ => linear_spline::intersections(a, b, policy),
+            };
         }
         let hits = Self::curve(a)
             .intersections(&Self::curve(b), self.policy(tolerance_mm)?)
@@ -290,11 +315,16 @@ impl RegionQueries for NativeRegionQueries {
         curve: &ExactCurve,
         tolerance_mm: f64,
     ) -> Result<CurveHits, QueryError> {
-        if !matches!(curve, ExactCurve::BSpline { .. }) {
+        let ExactCurve::BSpline { poles, basis } = curve else {
             return AnalyticQueries.self_intersections(curve, tolerance_mm);
-        }
+        };
         if !self.native_splines || !crate::OCCT_LINKED {
-            return linear_spline::self_intersections(curve, self.policy(tolerance_mm)?);
+            let policy = self.policy(tolerance_mm)?;
+            if basis.degree == 1 {
+                return linear_spline::self_intersections(curve, policy);
+            }
+            line_contacts::certify_simple(&Self::spline(poles, basis), policy).map_err(error)?;
+            return Ok(CurveHits::default());
         }
         let curve = Self::curve(curve);
         let policy = self.policy(tolerance_mm)?;
@@ -447,6 +477,9 @@ mod tests {
                 .is_ok()
         );
         assert!(queries.intersections(&spline, &circle, tolerance).is_err());
-        assert!(queries.self_intersections(&spline, tolerance).is_err());
+        assert_eq!(
+            queries.self_intersections(&spline, tolerance).unwrap(),
+            CurveHits::default()
+        );
     }
 }

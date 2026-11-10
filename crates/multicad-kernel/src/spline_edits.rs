@@ -7,6 +7,8 @@ use crate::{BSpline2d, CurvedEdge2d, GeometryError, GeometryErrorKind, GeometryP
 mod bernstein_projection;
 mod linear_projection;
 
+pub(crate) use bernstein_projection::line_contacts;
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CurveProjection2d {
     pub parameter: f64,

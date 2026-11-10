@@ -6,6 +6,7 @@ use crate::{BSpline2d, GeometryError, GeometryErrorKind, GeometryPolicy};
 
 mod coefficients;
 mod interval;
+pub(crate) mod line_contacts;
 #[cfg(test)]
 mod tests;
 
@@ -65,7 +66,12 @@ fn subdivide<T: Copy, const N: usize>(
 }
 
 impl Node {
-    fn split(&self, degree: usize, steps: &mut usize) -> Result<[Self; 2], GeometryError> {
+    fn split(
+        &self,
+        curve_degree: usize,
+        polynomial_degree: usize,
+        steps: &mut usize,
+    ) -> Result<[Self; 2], GeometryError> {
         let [a, b] = self.range;
         if self.depth == MAX_DEPTH {
             return Err(unresolved());
@@ -80,13 +86,13 @@ impl Node {
                 continue;
             }
             let blend = |a, b| a * Interval::point(1. - t) + b * Interval::point(t);
-            let [before, after] = subdivide(self.derivative, 3 * degree - 1, blend);
+            let [before, after] = subdivide(self.derivative, polynomial_degree, blend);
             // Keep split boundaries away from unresolved zeros so every
             // isolated root remains strictly inside one child's interval.
             if !matches!(after[0].sign(), Some(Less | Greater)) {
                 continue;
             }
-            let [left, right] = subdivide(self.curve, degree, |a, b| {
+            let [left, right] = subdivide(self.curve, curve_degree, |a, b| {
                 std::array::from_fn(|i| blend(a[i], b[i]))
             });
             return Ok([
@@ -196,15 +202,24 @@ impl Hull {
 
 // With positive weights, strictly ordered projected control points give a
 // nonzero rational derivative in that coordinate throughout the interval.
+fn control_order(controls: &[[Interval; 3]], axis: usize) -> Option<Ordering> {
+    let sign =
+        |pair: &[[Interval; 3]]| (pair[1][axis] / pair[1][2] - pair[0][axis] / pair[0][2]).sign();
+    let first = sign(&controls[..2])?;
+    if matches!(first, Less | Greater)
+        && controls
+            .windows(2)
+            .skip(1)
+            .all(|pair| sign(pair) == Some(first))
+    {
+        Some(first)
+    } else {
+        None
+    }
+}
+
 fn regular_tangent(controls: &[[Interval; 3]]) -> bool {
-    (0..2).any(|axis| {
-        let sign = |pair: &[[Interval; 3]]| {
-            (pair[1][axis] / pair[1][2] - pair[0][axis] / pair[0][2]).sign()
-        };
-        let first = sign(&controls[..2]);
-        matches!(first, Some(Less | Greater))
-            && controls.windows(2).skip(1).all(|pair| sign(pair) == first)
-    })
+    (0..2).any(|axis| control_order(controls, axis).is_some())
 }
 
 #[derive(Clone, Copy)]
@@ -294,7 +309,7 @@ fn stationary_minima(
             }
             _ => {}
         }
-        let [left, right] = node.split(degree, steps)?;
+        let [left, right] = node.split(degree, 3 * degree - 1, steps)?;
         stack.push(right);
         stack.push(left);
     }
@@ -312,6 +327,25 @@ fn knot_minimum(
     }
 }
 
+fn expanded_knots(spline: &BSpline2d) -> Vec<f64> {
+    spline
+        .knots
+        .iter()
+        .zip(&spline.multiplicities)
+        .flat_map(|(&u, &count)| std::iter::repeat_n(u, count as usize))
+        .collect()
+}
+
+fn spans<'a>(
+    spline: &'a BSpline2d,
+    knots: &'a [f64],
+    query: [f64; 2],
+) -> impl Iterator<Item = ([f64; 2], Curve)> + 'a {
+    (spline.degree as usize..spline.poles.len())
+        .filter(|&i| knots[i] < knots[i + 1])
+        .map(move |i| ([knots[i], knots[i + 1]], extract(spline, knots, i, query)))
+}
+
 pub(super) fn project(
     spline: &BSpline2d,
     point: [f64; 2],
@@ -319,23 +353,14 @@ pub(super) fn project(
 ) -> Result<Vec<CurveProjection2d>, GeometryError> {
     spline.validate(policy)?;
     let degree = spline.degree as usize;
-    let knots: Vec<_> = spline
-        .knots
-        .iter()
-        .zip(&spline.multiplicities)
-        .flat_map(|(&u, &count)| std::iter::repeat_n(u, count as usize))
-        .collect();
-    let spans = (degree..spline.poles.len())
-        .filter(|&i| knots[i] < knots[i + 1])
-        .map(|i| {
-            let curve = extract(spline, &knots, i, point);
-            Span {
-                knots: [knots[i], knots[i + 1]],
-                curve,
-                derivative: stationary(&curve, degree),
-            }
-        });
-    let mut spans = spans.peekable();
+    let knots = expanded_knots(spline);
+    let mut spans = spans(spline, &knots, point)
+        .map(|(knots, curve)| Span {
+            knots,
+            derivative: stationary(&curve, degree),
+            curve,
+        })
+        .peekable();
     let mut previous = None;
     let mut steps = MAX_STEPS;
     let mut candidates = Vec::with_capacity(spline.knots.len() + 1);

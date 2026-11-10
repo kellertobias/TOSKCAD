@@ -218,12 +218,12 @@ fn subdivision_refuses_exhausted_work_depth_and_representable_intervals() {
         derivative: [Interval::point(1.); 9],
         depth: 0,
     };
-    assert!(node.split(2, &mut 0).is_err());
+    assert!(node.split(2, 5, &mut 0).is_err());
     node.depth = MAX_DEPTH;
-    assert!(node.split(2, &mut { MAX_STEPS }).is_err());
+    assert!(node.split(2, 5, &mut { MAX_STEPS }).is_err());
     node.depth = 1;
     node.range = [1_f64.next_down(), 1.];
-    assert!(node.split(2, &mut { MAX_STEPS }).is_err());
+    assert!(node.split(2, 5, &mut { MAX_STEPS }).is_err());
 }
 
 #[test]
