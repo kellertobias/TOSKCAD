@@ -111,7 +111,7 @@ pub(crate) fn faces(prism: &Prism, placement: PlaneFrame) -> Vec<Face> {
     .collect()
 }
 
-struct Builder {
+pub(crate) struct Builder {
     face_origins: Vec<Vec<Origin>>,
     elements: Vec<TopologyElement>,
     next_edge: u32,
@@ -119,7 +119,20 @@ struct Builder {
 }
 
 impl Builder {
-    fn non_face(&mut self, geometry: AnalyticGeometry, incident: &[usize]) {
+    pub(crate) fn new(face_origins: Vec<Vec<Origin>>) -> Self {
+        Self {
+            face_origins,
+            elements: Vec::new(),
+            next_edge: 0,
+            next_vertex: 0,
+        }
+    }
+
+    pub(crate) fn into_elements(self) -> Vec<TopologyElement> {
+        self.elements
+    }
+
+    pub(crate) fn non_face(&mut self, geometry: AnalyticGeometry, incident: &[usize]) {
         let kind = geometry.topology_kind();
         let next = if kind == TopologyKind::Edge {
             &mut self.next_edge
@@ -141,7 +154,7 @@ impl Builder {
         });
     }
 
-    fn face(
+    pub(crate) fn face(
         &mut self,
         ordinal: usize,
         plane: Option<ReferenceFrame>,
@@ -516,38 +529,44 @@ impl PlacedPolygon {
     }
 
     pub(crate) fn planar_loops(&self, face: u32) -> Vec<Vec<(u32, bool)>> {
-        let stride = self.edges.len() as u32;
-        let mut first = 0;
-        let mut ranges = self.prism.rings().iter().map(|ring| {
-            let start = first;
-            first += ring.len() as u32;
-            start..first
-        });
-        if face < 2 {
-            return ranges
-                .map(|range| range.map(|i| (face * stride + i, false)).collect())
-                .chain(
-                    self.circular_sides()
-                        .map(|(i, _)| vec![(face * stride + i as u32, false)]),
-                )
-                .collect();
-        }
-        let side = face - 2;
-        let ring = ranges
-            .find(|range| range.contains(&side))
-            .expect("planar query validated the face index");
-        let next = if side + 1 == ring.end {
-            ring.start
-        } else {
-            side + 1
-        };
-        vec![vec![
-            (side, false),
-            (2 * stride + next, false),
-            (stride + side, true),
-            (2 * stride + side, true),
-        ]]
+        polygon_planar_loops(self.prism.rings(), self.prism.circular_holes().len(), face)
     }
+}
+
+pub(crate) fn polygon_planar_loops<T>(
+    rings: &[Vec<T>],
+    circular_sides: usize,
+    face: u32,
+) -> Vec<Vec<(u32, bool)>> {
+    let line_count = rings.iter().map(Vec::len).sum::<usize>() as u32;
+    let mut end = 0;
+    let mut ranges = rings.iter().map(|ring| {
+        let start = end;
+        end += ring.len() as u32;
+        start..end
+    });
+    let stride = line_count + circular_sides as u32;
+    if face < 2 {
+        return ranges
+            .map(|range| range.map(|i| (face * stride + i, false)).collect())
+            .chain((line_count..stride).map(|i| vec![(face * stride + i, false)]))
+            .collect();
+    }
+    let side = face - 2;
+    let ring = ranges
+        .find(|range| range.contains(&side))
+        .expect("planar query validated the face index");
+    let next = if side + 1 == ring.end {
+        ring.start
+    } else {
+        side + 1
+    };
+    vec![vec![
+        (side, false),
+        (2 * stride + next, false),
+        (stride + side, true),
+        (2 * stride + side, true),
+    ]]
 }
 
 pub(crate) fn cylinder_faces(cylinder: &AxialCylinder, placed: PlaneFrame) -> Vec<Face> {

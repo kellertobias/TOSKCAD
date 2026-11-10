@@ -63,6 +63,17 @@ fn feature_origin(
     }
 }
 
+fn straight_origin(feature: EntityId, frame: PlaneFrame, a: [f64; 2], b: [f64; 2]) -> Origin {
+    let mut points = [frame.point(a), frame.point(b)];
+    points.sort_unstable_by(|a, b| {
+        a.iter()
+            .zip(b)
+            .find_map(|(a, b)| (a != b).then(|| a.total_cmp(b)))
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    feature_origin(feature, "edge", points.into_iter().flatten())
+}
+
 impl Solid {
     /// Import a verified, supported, single analytic STEP solid in millimeters.
     pub fn import_rust_step(
@@ -109,6 +120,19 @@ impl Solid {
         let dimension = |value| convert(value, policy.linear_tolerance_mm);
         let height = dimension(height_mm)?;
         match profile {
+            ImportProfile::LinearSweep { base, top } => {
+                let edges = base
+                    .iter()
+                    .flat_map(|ring| {
+                        ring.iter()
+                            .zip(ring.iter().cycle().skip(1))
+                            .map(|(&a, &b)| (straight_origin(feature, frame, a, b), false))
+                    })
+                    .collect();
+                let sweep = multicad_rust_kernel::linear_sweep::Sweep::new(base, top, height_mm)
+                    .map_err(|cause| invalid(format!("Invalid STEP linear sweep: {cause:?}")))?;
+                Self::from_linear_sweep(sweep, frame, feature, edges, [0.; 2], false, policy)
+            }
             ImportProfile::Annulus {
                 inner_radius_mm,
                 outer_radius_mm,
@@ -165,16 +189,7 @@ impl Solid {
                     .flat_map(|ring| {
                         ring.iter()
                             .zip(ring.iter().cycle().skip(1))
-                            .map(|(&a, &b)| {
-                                let mut points = [frame.point(a), frame.point(b)];
-                                points.sort_unstable_by(|a, b| {
-                                    a.iter()
-                                        .zip(b)
-                                        .find_map(|(a, b)| (a != b).then(|| a.total_cmp(b)))
-                                        .unwrap_or(std::cmp::Ordering::Equal)
-                                });
-                                feature_origin(feature, "edge", points.into_iter().flatten())
-                            })
+                            .map(|(&a, &b)| straight_origin(feature, frame, a, b))
                     })
                     .collect();
                 origins.extend(circular_holes.iter().map(|&(center, radius)| {

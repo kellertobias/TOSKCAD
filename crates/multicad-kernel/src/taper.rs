@@ -123,7 +123,7 @@ pub(crate) fn offset(
         })
         .collect())
 }
-fn end_profile(
+pub(crate) fn end_profile(
     profile: &CurvedProfile,
     displacement: [f64; 3],
     taper_rad: f64,
