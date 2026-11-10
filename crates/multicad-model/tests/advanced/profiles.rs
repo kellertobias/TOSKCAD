@@ -1513,6 +1513,7 @@ fn smooth_planar_loft_keeps_the_intermediate_station_attachment() {
             area(native.solid(request.body).unwrap()),
             area(initial.solid(request.body).unwrap()),
         );
+        verify_smooth_loft_step_with_occt(initial.solid(request.body).unwrap());
     }
     let notch = |model: &multicad_model::Model| {
         let topology = &model.snapshot().shapes[&request.feature].topology;
@@ -1636,6 +1637,8 @@ fn smooth_coaxial_loft_keeps_the_exact_cone_and_all_section_origins() {
     check(&compile(&session));
     let reopened = check_saved_rust_profile(&mut session, &request, volume);
     check(&reopened);
+    #[cfg(feature = "occt")]
+    verify_smooth_loft_step_with_occt(reopened.solid(request.body).unwrap());
     assert_eq!(
         reopened.solid(request.body).unwrap().faces().unwrap().len(),
         3
@@ -1668,6 +1671,35 @@ fn smooth_coaxial_loft_keeps_the_exact_cone_and_all_section_origins() {
         .err()
         .expect("a non-affine circular station must not be flattened");
     assert!(error.message.contains("straight transition"));
+}
+
+#[cfg(feature = "occt")]
+fn verify_smooth_loft_step_with_occt(solid: &multicad_kernel::Solid) {
+    let directory = tempfile::tempdir().unwrap();
+    let step = directory.path().join("smooth-loft.step");
+    solid.write_step(&step).unwrap();
+    let imported = multicad_kernel::Solid::read_step(&step, Default::default()).unwrap();
+    assert_eq!(imported.solid_count().unwrap(), 1);
+    near(imported.volume_mm3().unwrap(), solid.volume_mm3().unwrap());
+    let area = |solid: &multicad_kernel::Solid| -> f64 {
+        solid
+            .faces()
+            .unwrap()
+            .iter()
+            .map(|face| face.area_mm2)
+            .sum()
+    };
+    near(area(&imported), area(solid));
+    let expected = solid.bounds().unwrap();
+    let actual = imported.bounds().unwrap();
+    for (a, b) in actual
+        .min
+        .into_iter()
+        .chain(actual.max)
+        .zip(expected.min.into_iter().chain(expected.max))
+    {
+        near(a, b);
+    }
 }
 
 #[test]
