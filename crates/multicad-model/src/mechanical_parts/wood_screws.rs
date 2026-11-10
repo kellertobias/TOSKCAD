@@ -276,6 +276,7 @@ mod tests {
         *parameters
     }
     #[test]
+    #[cfg(feature = "occt")]
     fn completed_envelope_rebinds_all_provenance_and_native_policy_still_refuses_hits() {
         ENVELOPES.with(|cache| *cache.borrow_mut() = Cache::default());
         let p = resolved();

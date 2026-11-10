@@ -848,11 +848,14 @@ pub(super) fn build_resolved(
 #[cfg(test)]
 mod screw_factory_tests {
     use super::*;
+    #[cfg(feature = "occt")]
+    use multicad_core::model::{MechanicalPartParameters, length};
     use multicad_core::{
         document::Document,
-        model::{self, BodyOutput, MechanicalPartParameters, ThreadRepresentation, length},
+        model::{self, BodyOutput, ThreadRepresentation},
         parameters,
     };
+    #[cfg(feature = "occt")]
     fn reset() {
         SCREWS.with(|slot| *slot.borrow_mut() = ScrewFactory::default());
     }
@@ -865,6 +868,7 @@ mod screw_factory_tests {
             provenance: None,
         }
     }
+    #[cfg(feature = "occt")]
     fn stats() -> (u64, u64, u64, usize, usize) {
         SCREWS.with(|slot| {
             let c = slot.borrow();
@@ -872,6 +876,7 @@ mod screw_factory_tests {
         })
     }
     #[test]
+    #[cfg(feature = "occt")]
     fn completed_screw_reuses_full_native_result_for_fresh_owners_and_isolated_threads() {
         reset();
         let document = Document::new("Whole screw factory").unwrap();
@@ -1008,6 +1013,7 @@ mod screw_factory_tests {
         assert_eq!(a.to_brep().unwrap(), geometry);
     }
     #[test]
+    #[cfg(feature = "occt")]
     fn superseded_compilation_reuses_only_complete_geometry_without_publishing_document_edits() {
         use multicad_core::commands::{Actor, Channel, Session};
         reset();
@@ -1052,6 +1058,7 @@ mod screw_factory_tests {
     }
 
     #[test]
+    #[cfg(feature = "occt")]
     fn full_screw_factory_evicts_old_geometry_and_never_retains_failed_or_foreign_results() {
         reset();
         let document = Document::new("Bounded whole screw cache").unwrap();
@@ -1156,7 +1163,7 @@ mod screw_factory_tests {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "occt"))]
 mod screw_profile_shared_thread_tests {
     use super::*;
     use multicad_core::{

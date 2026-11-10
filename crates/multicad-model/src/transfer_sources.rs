@@ -367,7 +367,7 @@ pub(super) fn profiles(input: Inputs<'_>) -> Result<Vec<Cut>, ModelError> {
     Ok(cuts)
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "occt"))]
 mod tests {
     use super::*;
     use multicad_core::{

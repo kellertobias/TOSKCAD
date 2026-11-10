@@ -54,19 +54,25 @@ fn verifies_the_authored_m3_through_receiver_without_native_geometry() {
     assert_eq!(proof.mouths_mm, [[10., 10., 4.1], [10., 10., 0.]]);
     assert_eq!(proof.radius_mm, 1.7);
     assert_eq!(proof.protected_radius_mm, 2.7);
-    let native_model = compiler
-        .compile_sources_with_backend(
-            candidate,
-            0,
-            &[source.feature],
-            GeometryBackend::OpenCascade,
-            None,
-        )
-        .unwrap();
-    let native = native_model.solid(source.feature).unwrap();
     assert_eq!(receiver.solid_count().unwrap(), 1);
-    assert_eq!(receiver.bounds().unwrap(), native.bounds().unwrap());
-    assert!((receiver.volume_mm3().unwrap() - native.volume_mm3().unwrap()).abs() < 1e-6);
+    assert_eq!(receiver.bounds().unwrap(), stock.bounds().unwrap());
+    let analytic = stock.volume_mm3().unwrap() - std::f64::consts::PI * 1.7_f64.powi(2) * 4.1;
+    assert!((receiver.volume_mm3().unwrap() - analytic).abs() < 1e-6);
+    #[cfg(feature = "occt")]
+    {
+        let native_model = compiler
+            .compile_sources_with_backend(
+                candidate,
+                0,
+                &[source.feature],
+                GeometryBackend::OpenCascade,
+                None,
+            )
+            .unwrap();
+        let native = native_model.solid(source.feature).unwrap();
+        assert_eq!(receiver.bounds().unwrap(), native.bounds().unwrap());
+        assert!((receiver.volume_mm3().unwrap() - native.volume_mm3().unwrap()).abs() < 1e-6);
+    }
     let topology = receiver.topology_snapshot(source.feature, 0).unwrap();
     assert!(topology.elements.iter().any(|element| {
         element.key.kind == TopologyKind::Face

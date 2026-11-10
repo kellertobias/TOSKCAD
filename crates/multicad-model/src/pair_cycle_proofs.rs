@@ -252,7 +252,7 @@ impl Drop for PublicationScope {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "occt"))]
 pub(crate) fn pending_entries() -> usize {
     PUBLICATIONS.with(|s| s.borrow().iter().map(Vec::len).sum())
 }

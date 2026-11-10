@@ -75,7 +75,7 @@ fn placed(solid: &Solid, pose: model::RigidPose, pair: EntityId) -> Result<Solid
         })
         .map_err(|e| error(Some(pair), e))
 }
-#[cfg(test)]
+#[cfg(all(test, feature = "occt"))]
 fn overlap(
     pair: EntityId,
     a: &Solid,
@@ -555,7 +555,7 @@ fn shifted_engagement(document: &Document, features: [EntityId; 2]) -> bool {
     })
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "occt"))]
 fn check_pose(
     document: &Document,
     evaluated: &EvaluatedParameters,
@@ -804,15 +804,15 @@ pub(crate) fn validate(
     Ok(reports)
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "occt"))]
 #[path = "gear_pairs/bevel_tests.rs"]
 mod bevel_tests;
 
-#[cfg(test)]
+#[cfg(all(test, feature = "occt"))]
 #[path = "gear_pairs/coverage_tests.rs"]
 mod coverage_tests;
 
-#[cfg(test)]
+#[cfg(all(test, feature = "occt"))]
 mod tests {
     use super::*;
     use multicad_core::{

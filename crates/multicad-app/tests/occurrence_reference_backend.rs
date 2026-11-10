@@ -5,8 +5,10 @@
 mod external_queries;
 #[path = "../src/reference_repairs.rs"]
 mod reference_repairs;
+#[cfg(feature = "occt")]
+use multicad_core::commands::ErrorCode;
 use multicad_core::{
-    commands::{Actor, Channel, ErrorCode, Request, Session},
+    commands::{Actor, Channel, Request, Session},
     constraint_sketch::{ConstraintKind, source::Source},
     document::{Document, EntityId},
     model::{
@@ -116,6 +118,7 @@ fn fixture(cylinder: bool) -> Fixture {
         copies,
     }
 }
+#[cfg(feature = "occt")]
 fn native_query(f: &Fixture, copy: usize, method: QueryMethod) -> ExternalQuery {
     query_with_backend(f, copy, method, GeometryBackend::OpenCascade)
 }
@@ -437,7 +440,8 @@ fn rust_worker_captures_a_rotated_rim_contact_that_follows_its_source_after_reop
         found.results[1].selector.branch
     );
 
-    if multicad_kernel::OCCT_LINKED {
+    #[cfg(feature = "occt")]
+    {
         let mut native_worker = external_queries::Backend::new();
         let native = catalog(
             &mut native_worker,
@@ -563,6 +567,7 @@ fn rust_worker_captures_an_oblique_rim_as_an_exact_rational_reference() {
     );
 }
 
+#[cfg(feature = "occt")]
 #[test]
 fn actual_worker_capture_repair_remove_preserve_source_and_original_session_ownership() {
     let mut f = fixture(false);
@@ -677,6 +682,7 @@ fn actual_worker_capture_repair_remove_preserve_source_and_original_session_owne
         2400.,
     );
 }
+#[cfg(feature = "occt")]
 #[test]
 fn actual_worker_empty_tangent_singular_and_changed_branch_fail_without_source_mutation() {
     let mut f = fixture(true);
@@ -778,6 +784,7 @@ fn actual_worker_empty_tangent_singular_and_changed_branch_fail_without_source_m
     assert_eq!(f.session.revision(), revision);
 }
 
+#[cfg(feature = "occt")]
 #[test]
 fn actual_worker_rejects_native_preparation_with_an_unconsumed_broken_reference_and_allows_its_removal()
  {

@@ -720,9 +720,23 @@ mod layer_guard_tests {
     use super::*;
     #[test]
     fn exact_overlap_guard_allows_contact_rejects_material_overlap_and_observes_cancel() {
+        overlap_guard(GeometryBackend::Rust);
+        #[cfg(feature = "occt")]
+        overlap_guard(GeometryBackend::OpenCascade);
+    }
+    fn overlap_guard(backend: GeometryBackend) {
         let id = EntityId::new();
         let policy = GeometryPolicy::default();
-        let a = Solid::box_named([10.; 3], id, policy).unwrap();
+        let a = match backend {
+            GeometryBackend::Rust => Solid::rust_box(
+                id.uuid_bits(),
+                [multicad_kernel::rust_kernel::Rational::new(10, 1).unwrap(); 3],
+                Default::default(),
+                policy,
+            ),
+            GeometryBackend::OpenCascade => Solid::box_named([10.; 3], id, policy),
+        }
+        .unwrap();
         let move_by = |x| {
             a.transformed(multicad_kernel::RigidTransform {
                 translation_mm: [x, 0., 0.],

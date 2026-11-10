@@ -331,5 +331,5 @@ pub fn no_intersection(
     Ok(empty)
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "occt"))]
 mod tests;
