@@ -8,7 +8,7 @@ use multicad_rust_kernel::{
 use std::path::Path;
 use std::rc::Rc;
 mod annulus_body;
-mod circular_pocket_body;
+pub(crate) mod circular_pocket_body;
 mod helical_body;
 mod linear_body;
 mod orthogonal_body;
@@ -1147,7 +1147,7 @@ impl Solid {
             return Ok(body.volume_mm3());
         }
         if let Some((body, _)) = self.orthogonal_body() {
-            return Ok(body.geometry.volume_mm3());
+            return Ok(body.volume_mm3());
         }
         if let Some(compound) = self.rust_compound() {
             return Ok(compound.volume_mm3());
@@ -1398,9 +1398,7 @@ impl Solid {
             }
             SolidBody::Revolved(body, frame) => body.mesh(*frame, rust_options),
             SolidBody::RustCompound(compound) => compound.mesh(options, usage),
-            SolidBody::Orthogonal(body, frame) => {
-                body.mesh(*frame, options.maximum_triangles, usage)
-            }
+            SolidBody::Orthogonal(body, frame) => body.mesh(*frame, rust_options, usage),
             SolidBody::Occt(_) => unreachable!("Rust-only tessellation"),
         }
     }
@@ -1686,7 +1684,7 @@ impl Solid {
             SolidBody::Prism(prism, _) => prism.rounded_end().is_none(),
             SolidBody::RustCompound(_) | SolidBody::Helical(..) => false,
             SolidBody::Revolved(body, frame) => body.circular_sweep(*frame).is_some(),
-            SolidBody::Orthogonal(body, _) => body.boundary.supports_step(),
+            SolidBody::Orthogonal(body, _) => body.supports_step(),
         }
     }
 
@@ -1756,9 +1754,7 @@ impl Solid {
             SolidBody::RustCompound(_) | SolidBody::Helical(..) => {
                 unreachable!("STEP support checked above")
             }
-            SolidBody::Orthogonal(body, frame) => step::write_orthogonal(&body.boundary, |point| {
-                crate::rust_prism_topology::position(*frame, point)
-            }),
+            SolidBody::Orthogonal(body, frame) => body.step(*frame),
             SolidBody::Occt(_) => unreachable!("native STEP dispatched above"),
         }
         .map_err(|e| {

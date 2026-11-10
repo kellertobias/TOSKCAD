@@ -925,7 +925,7 @@ impl Solid {
                 crate::rust_prism_topology::snapshot(prism, frame, owner, revision)
                     .map_err(failure)?
             } else if let Some((body, frame)) = self.orthogonal_body() {
-                body.topology(frame, owner, revision)
+                body.topology(frame, owner, revision).map_err(failure)?
             } else {
                 self.rust_compound()
                     .expect("checked Rust body")

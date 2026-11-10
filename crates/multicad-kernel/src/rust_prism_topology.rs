@@ -1,5 +1,8 @@
 //! Publish topology and finite face descriptors from the analytic Rust body.
-use crate::{Bounds, Face, PlaneFrame, geometry::CylinderSketch};
+use crate::{
+    Bounds, Face, PlaneFrame,
+    geometry::{CylinderSketch, circular_pocket_body},
+};
 use multicad_core::{
     document::EntityId,
     references::{
@@ -507,10 +510,7 @@ impl PlacedPolygon {
             .chain(self.pocket_origins.iter().flat_map(|origin| {
                 ["wall", "floor"].map(|role| {
                     vec![
-                        Origin {
-                            source: origin.source,
-                            role: format!("pocket.{role}/{}/{}", origin.source, origin.role),
-                        },
+                        circular_pocket_body::face_origin(origin, role),
                         origin.clone(),
                     ]
                 })

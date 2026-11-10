@@ -3,6 +3,8 @@
 use super::*;
 use crate::orthogonal::{BooleanError, OrientedFace, solid_from_oriented_faces};
 
+mod mixed;
+
 #[cfg(test)]
 mod tests;
 
@@ -231,26 +233,25 @@ fn import_error(error: BooleanError) -> ReadError {
 
 impl Shell<'_, '_> {
     pub(super) fn orthogonal(&self, faces: &[Face]) -> Result<ImportSolid> {
-        let indices: BTreeMap<_, _> = self
-            .points
-            .keys()
-            .copied()
-            .enumerate()
-            .map(|(index, id)| (id, index))
-            .collect();
-        let points: Vec<_> = self.points.values().copied().collect();
-        let mut origin_mm = points
-            .iter()
-            .copied()
-            .min_by(|&a, &b| compare(a, b))
-            .ok_or(ReadError::Invalid)?;
+        let (recesses, omitted) = self.orthogonal_recesses(faces)?;
+        let mut indices = BTreeMap::new();
+        let mut points = Vec::new();
         let mut successors = vec![BTreeMap::new(); faces.len()];
         let mut segments = Vec::with_capacity(self.edges.len());
         for edge in self.edges.values() {
-            if !matches!(edge.curve, Curve::Line) {
-                return Err(ReadError::Unsupported);
+            if edge.uses.iter().any(|use_| omitted.contains(&use_.face)) {
+                // Only a circular opening is shared by the stock and a
+                // recess. The periodic seam and floor belong to the recess.
+                continue;
             }
-            let [a, b] = edge.vertices.map(|id| indices[&id]);
+            debug_assert!(matches!(edge.curve, Curve::Line));
+            let [a, b] = edge.vertices.map(|id| {
+                *indices.entry(id).or_insert_with(|| {
+                    let index = points.len();
+                    points.push(self.points[&id]);
+                    index
+                })
+            });
             segments.push([a, b]);
             for use_ in &edge.uses {
                 let [a, b] = if use_.forward { [a, b] } else { [b, a] };
@@ -259,6 +260,11 @@ impl Shell<'_, '_> {
                 }
             }
         }
+        let mut origin_mm = points
+            .iter()
+            .copied()
+            .min_by(|&a, &b| compare(a, b))
+            .ok_or(ReadError::Invalid)?;
         let scale = points.iter().flatten().map(|x| x.abs()).fold(1., f64::max);
         let roundoff = (32. * f64::EPSILON * scale).min(self.tolerance / 16.);
         let axes = basis(&segments, &points, roundoff)?;
@@ -270,10 +276,12 @@ impl Shell<'_, '_> {
         }
         let normals = faces
             .iter()
-            .map(|face| {
-                let Face::Planar { normal, .. } = face else {
-                    return Err(ReadError::Unsupported);
-                };
+            .enumerate()
+            .filter_map(|(index, face)| match face {
+                Face::Planar { normal, .. } if !omitted.contains(&index) => Some(normal),
+                _ => None,
+            })
+            .map(|normal| {
                 let normal = axes.map(|axis| dot(axis, *normal));
                 let axis = major(normal);
                 if normal[axis].abs() < 1. - 1e-10 {
@@ -282,6 +290,11 @@ impl Shell<'_, '_> {
                 Ok((axis, normal[axis].signum()))
             })
             .collect::<Result<Vec<_>>>()?;
+        let successors: Vec<_> = successors
+            .into_iter()
+            .enumerate()
+            .filter_map(|(index, successors)| (!omitted.contains(&index)).then_some(successors))
+            .collect();
         let local = local_points(
             &points,
             &segments,
@@ -301,12 +314,18 @@ impl Shell<'_, '_> {
             .collect::<Result<Vec<_>>>()?;
         let solid = solid_from_oriented_faces(&oriented, self.tolerance).map_err(import_error)?;
         let bounds = solid.bounds();
+        let profile = if recesses.is_empty() {
+            ImportProfile::Orthogonal { solid }
+        } else {
+            let pockets = self.placed_recesses(&solid, &recesses, origin_mm, axes)?;
+            ImportProfile::PocketedOrthogonal { solid, pockets }
+        };
         Ok(ImportSolid {
             origin_mm,
             u: axes[0],
             v: axes[1],
             height_mm: bounds.max[2] - bounds.min[2],
-            profile: ImportProfile::Orthogonal { solid },
+            profile,
         })
     }
 }

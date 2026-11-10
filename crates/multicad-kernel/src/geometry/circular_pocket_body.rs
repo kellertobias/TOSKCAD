@@ -1,4 +1,4 @@
-//! Analytic circular cuts through the cap of a polygonal stock solid.
+//! Analytic circular cuts through a planar face of supported stock.
 
 use super::*;
 use multicad_rust_kernel::circular_pockets::{self, CircularPocket, PocketError};
@@ -31,9 +31,63 @@ fn length([x, y, z]: [f64; 3]) -> f64 {
     x.hypot(y).hypot(z)
 }
 
+pub(super) fn pocket_error(cause: PocketError) -> GeometryError {
+    match cause {
+        PocketError::InvalidInput => input_error("Invalid circular pocket dimensions or axis"),
+        PocketError::UnresolvedBoundary => {
+            input_error("Circular pocket touches stock boundaries or other cuts")
+        }
+        PocketError::BudgetExceeded => budget_error(),
+    }
+}
+
+pub(super) fn check_origins(count: usize, origins: &[Origin]) -> Result<(), GeometryError> {
+    if count != origins.len()
+        || origins.iter().collect::<BTreeSet<_>>().len() != origins.len()
+        || origins.iter().any(|origin| {
+            origin.source.is_nil()
+                || origin.role.trim().is_empty()
+                || format!("pocket.floor/{}/{}", origin.source, origin.role).len() > 256
+        })
+    {
+        return Err(input_error(
+            "Each circular pocket needs a distinct valid origin",
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) fn face_origin(origin: &Origin, role: &str) -> Origin {
+    Origin {
+        source: origin.source,
+        role: format!("pocket.{role}/{}/{}", origin.source, origin.role),
+    }
+}
+
+pub(super) fn tool_start(
+    tool: &CircularPocketTool,
+    policy: GeometryPolicy,
+) -> Result<[f64; 3], GeometryError> {
+    tool.frame.checked(policy)?;
+    policy.length(tool.radius_mm)?;
+    policy.point(tool.displacement_mm)?;
+    let start = tool.frame.point(tool.center_uv);
+    let finish = std::array::from_fn(|i| start[i] + tool.displacement_mm[i]);
+    policy.point(start)?;
+    policy.point(finish)?;
+    if length(cross(tool.frame.normal(), tool.displacement_mm))
+        > 1e-10 * length(tool.displacement_mm)
+    {
+        return Err(input_error(
+            "Circular pocket tool must travel normal to its profile",
+        ));
+    }
+    Ok(start)
+}
+
 impl Solid {
-    /// Subtract disjoint round pockets from either cap of straight polygon
-    /// stock. Each tool begins outside the stock and leaves a blind floor.
+    /// Subtract disjoint round pockets from polygon or orthogonal stock.
+    /// Each tool begins outside the material and leaves a blind floor.
     pub fn rust_drill_circular_pockets(
         &self,
         tools: &[CircularPocketTool],
@@ -45,16 +99,20 @@ impl Solid {
                 "Circular pockets require the stock's exact geometry policy",
             ));
         }
+        if tools.is_empty() {
+            return self.share();
+        }
+        if let Some((stock, frame)) = self.orthogonal_body() {
+            let (pockets, origins) = stock.drill(frame, tools, policy)?;
+            return self.share()?.with_orthogonal_pockets(pockets, origins);
+        }
         let Some(stock) = self.polygon_prism() else {
             return Err(error(
                 OPERATION,
                 GeometryErrorKind::Unsupported,
-                "Rust blind drilling requires a straight polygonal stock prism",
+                "Rust blind drilling requires polygonal or orthogonal stock",
             ));
         };
-        if tools.is_empty() {
-            return self.share();
-        }
         if tools.len() > circular_pockets::pocket_capacity(&stock.prism) - stock.pockets.len() {
             return Err(budget_error());
         }
@@ -65,12 +123,7 @@ impl Solid {
         let normal = stock.frame.normal().map(|x| sign * x);
         let tolerance = policy.linear_tolerance_mm;
         for tool in tools {
-            tool.frame.checked(policy)?;
-            policy.length(tool.radius_mm)?;
-            policy.point(tool.displacement_mm)?;
-            let start = tool.frame.point(tool.center_uv);
-            policy.point(start)?;
-            policy.point(std::array::from_fn(|i| start[i] + tool.displacement_mm[i]))?;
+            let start = tool_start(tool, policy)?;
             let travel = dot(tool.displacement_mm, normal);
             let sideways = std::array::from_fn(|i| tool.displacement_mm[i] - travel * normal[i]);
             if length(cross(tool.frame.normal(), normal)) > 1e-10
@@ -116,31 +169,14 @@ impl Solid {
         let SolidBody::PolygonPrism(placed) = &mut self.body else {
             return Err(input_error("Circular pockets require polygon stock"));
         };
-        if pockets.len() != origins.len()
-            || origins.iter().collect::<BTreeSet<_>>().len() != origins.len()
-            || origins.iter().any(|origin| {
-                origin.source.is_nil()
-                    || origin.role.trim().is_empty()
-                    || format!("pocket.floor/{}/{}", origin.source, origin.role).len() > 256
-            })
-        {
-            return Err(input_error(
-                "Each circular pocket needs a distinct valid origin",
-            ));
-        }
+        check_origins(pockets.len(), &origins)?;
         circular_pockets::validate(
             &placed.prism,
             &pockets,
             self.policy.linear_tolerance_mm,
             self.policy.minimum_feature_mm,
         )
-        .map_err(|cause| match cause {
-            PocketError::InvalidInput => input_error("Invalid circular pocket dimensions"),
-            PocketError::UnresolvedBoundary => input_error(
-                "Circular pocket touches stock boundaries, through holes, or other pockets",
-            ),
-            PocketError::BudgetExceeded => budget_error(),
-        })?;
+        .map_err(pocket_error)?;
         let placed = Rc::make_mut(placed);
         placed.pockets = pockets.into();
         placed.pocket_origins = origins.into();

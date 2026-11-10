@@ -8,8 +8,11 @@ use multicad_core::references::{
 use multicad_rust_kernel::{
     orthogonal::{self, BooleanError, Box3, Operation, OrthogonalSolid},
     orthogonal_boundary::{self, Boundary, BoundaryError, BoundaryFace},
+    orthogonal_pockets::OrthogonalPocket,
 };
 use std::collections::{BTreeMap, BTreeSet};
+
+mod pockets;
 
 type Point = [f64; 3];
 type PointKey = [u64; 3];
@@ -17,13 +20,17 @@ type PlaneKey = (usize, u64, bool);
 type LineKey = (usize, PointKey);
 type EdgeUse = (u32, bool);
 
+#[derive(Clone)]
 pub(crate) struct OrthogonalBody {
     pub(super) feature: EntityId,
-    pub(super) geometry: OrthogonalSolid,
-    pub(super) boundary: Boundary,
-    topology: TopologySnapshot,
-    faces: Vec<Face>,
-    loops: Vec<Vec<Vec<EdgeUse>>>,
+    pub(super) geometry: Rc<OrthogonalSolid>,
+    pub(super) boundary: Rc<Boundary>,
+    topology: Rc<TopologySnapshot>,
+    faces: Rc<[Face]>,
+    loops: Rc<[Vec<Vec<EdgeUse>>]>,
+    edge_count: u32,
+    pockets: Rc<[OrthogonalPocket]>,
+    pocket_origins: Rc<[Origin]>,
 }
 
 struct Support {
@@ -150,6 +157,7 @@ impl Solid {
     fn orthogonal_cells(&self) -> Result<Option<Vec<Box3>>, GeometryError> {
         if let Some((body, frame)) = self.orthogonal_body()
             && cardinal(frame)
+            && body.pockets.is_empty()
         {
             return Ok(Some(
                 body.geometry
@@ -749,6 +757,7 @@ impl OrthogonalBody {
         } else {
             Vec::new()
         };
+        let edge_count = shared.edges.len() as u32;
         let mut lower = Vec::new();
         for (i, ([a_mm, b_mm], adjacent)) in shared.edges.into_iter().enumerate() {
             let mut item = element(
@@ -796,16 +805,35 @@ impl OrthogonalBody {
         topology.validate().map_err(invalid)?;
         Ok(Self {
             feature,
-            geometry,
-            boundary,
-            topology,
-            faces,
-            loops,
+            geometry: Rc::new(geometry),
+            boundary: Rc::new(boundary),
+            topology: Rc::new(topology),
+            faces: faces.into(),
+            loops: loops.into(),
+            edge_count,
+            pockets: Rc::default(),
+            pocket_origins: Rc::default(),
         })
     }
 
     pub(crate) fn loops(&self, face: u32) -> Vec<Vec<EdgeUse>> {
-        self.loops.get(face as usize).cloned().unwrap_or_default()
+        if let Some(loops) = self.loops.get(face as usize) {
+            let mut loops = loops.clone();
+            loops.extend(
+                self.pockets
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, pocket)| pocket.face == face as usize)
+                    .map(|(i, _)| vec![(self.edge_count + 2 * i as u32, false)]),
+            );
+            return loops;
+        }
+        let pocket_face = face - self.faces.len() as u32;
+        if pocket_face % 2 == 1 && (pocket_face / 2) < self.pockets.len() as u32 {
+            vec![vec![(self.edge_count + pocket_face, false)]]
+        } else {
+            vec![]
+        }
     }
 
     pub(crate) fn topology(
@@ -813,10 +841,11 @@ impl OrthogonalBody {
         frame: PlaneFrame,
         owner: EntityId,
         revision: u64,
-    ) -> TopologySnapshot {
-        let mut topology = self.topology.clone();
+    ) -> Result<TopologySnapshot, String> {
+        let mut topology = self.topology.as_ref().clone();
         topology.owner = owner;
         topology.revision = revision;
+        self.append_pocket_topology(&mut topology);
         if frame != PlaneFrame::default() {
             for element in &mut topology.elements {
                 let point = |p| transform_point(frame, p);
@@ -833,12 +862,17 @@ impl OrthogonalBody {
                 }
             }
         }
-        topology
+        if !self.pockets.is_empty() {
+            topology.validate()?;
+        }
+        Ok(topology)
     }
 
     pub(super) fn faces(&self, frame: PlaneFrame) -> Vec<Face> {
-        self.faces
-            .iter()
+        let mut faces = self.faces.to_vec();
+        self.append_pocket_faces(&mut faces);
+        faces
+            .into_iter()
             .map(|face| Face {
                 plane: face.plane.map(|(origin, normal)| {
                     (
@@ -847,7 +881,7 @@ impl OrthogonalBody {
                     )
                 }),
                 center_mm: transform_point(frame, face.center_mm),
-                ..*face
+                ..face
             })
             .collect()
     }
@@ -872,11 +906,22 @@ impl OrthogonalBody {
     pub(super) fn mesh(
         &self,
         frame: PlaneFrame,
-        budget: u32,
+        options: multicad_rust_kernel::display::Tessellation,
         usage: MeshUse,
     ) -> Result<ffi::Mesh, GeometryError> {
+        if !self.pockets.is_empty() {
+            return crate::rust_display::placed_mesh(
+                multicad_rust_kernel::display::pocketed_orthogonal(
+                    &self.boundary,
+                    &self.pockets,
+                    options,
+                ),
+                frame,
+                false,
+            );
+        }
         let quads = self.geometry.quads();
-        if quads.len() * 2 > budget as usize {
+        if quads.len() * 2 > options.triangle_limit {
             return Err(limit("Orthogonal tessellation exceeds the triangle budget"));
         }
         // A conformal grid corner is shared only within its own exact solid.

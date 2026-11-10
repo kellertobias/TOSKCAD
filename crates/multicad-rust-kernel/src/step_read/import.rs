@@ -2,7 +2,7 @@
 use super::*;
 use crate::{
     circular_pockets::CircularPocket, linear_sweep::Sweep, orthogonal::OrthogonalSolid,
-    trimmed_sweep::TrimmedSweep,
+    orthogonal_pockets::OrthogonalPocket, trimmed_sweep::TrimmedSweep,
 };
 use std::cmp::Ordering;
 
@@ -40,6 +40,11 @@ pub enum ImportProfile {
     Orthogonal {
         /// Certified material and directed boundary in the local frame.
         solid: OrthogonalSolid,
+    },
+    PocketedOrthogonal {
+        /// Certified stock and circular recesses in the local frame.
+        solid: OrthogonalSolid,
+        pockets: Vec<OrthogonalPocket>,
     },
     Cylinder {
         radius_mm: f64,

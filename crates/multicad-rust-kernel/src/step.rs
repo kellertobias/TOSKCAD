@@ -6,8 +6,10 @@ use crate::{
     circular_pockets::{CircularPocket, validate},
     cylinder::AxialCylinder,
     linear_sweep::Sweep,
+    orthogonal::OrthogonalSolid,
     orthogonal_boundary::{Boundary, BoundaryFace, point_key},
-    polygon::PolygonPrism,
+    orthogonal_pockets::{self, OrthogonalPocket},
+    polygon::{MAX_VERTICES, PolygonPrism},
     prism::Prism,
     trimmed_sweep::TrimmedSweep,
 };
@@ -27,16 +29,46 @@ pub fn write_orthogonal(
     boundary: &Boundary,
     transform: impl Fn(Point) -> Point,
 ) -> Result<String, StepError> {
-    write_orthogonal_placed(boundary, &transform)
+    if !boundary.supports_step() {
+        return Err(StepError::Unsupported);
+    }
+    write_orthogonal_placed(boundary, &[], &transform)
+}
+
+/// Whether certified recesses and the stock fit STEP's topology budget.
+pub fn supports_pocketed_orthogonal(boundary: &Boundary, pockets: &[OrthogonalPocket]) -> bool {
+    boundary.supports_step()
+        && pockets
+            .iter()
+            .all(|pocket| pocket.face < boundary.faces.len())
+        && boundary.faces.iter().enumerate().all(|(index, face)| {
+            // Each circular opening adds one oriented edge to the planar face.
+            let openings = pockets.iter().filter(|pocket| pocket.face == index).count();
+            face.rings.iter().map(Vec::len).sum::<usize>() + openings <= MAX_VERTICES
+        })
+}
+
+/// Write machined orthogonal stock and its exact circular blind recesses
+/// after applying a rigid world placement.
+pub fn write_pocketed_orthogonal(
+    geometry: &OrthogonalSolid,
+    boundary: &Boundary,
+    pockets: &[OrthogonalPocket],
+    transform: &dyn Fn(Point) -> Point,
+) -> Result<String, StepError> {
+    if !supports_pocketed_orthogonal(boundary, pockets) {
+        return Err(StepError::Unsupported);
+    }
+    orthogonal_pockets::validate(geometry, boundary, pockets, 1e-7, 1e-7)
+        .map_err(|_| StepError::InvalidGeometry)?;
+    write_orthogonal_placed(boundary, pockets, transform)
 }
 
 fn write_orthogonal_placed(
     boundary: &Boundary,
+    pockets: &[OrthogonalPocket],
     transform: &dyn Fn(Point) -> Point,
 ) -> Result<String, StepError> {
-    if !boundary.supports_step() {
-        return Err(StepError::Unsupported);
-    }
     let mut points = Vec::new();
     let mut indices = BTreeMap::new();
     for point in boundary.faces.iter().flat_map(|face| &face.rings).flatten() {
@@ -54,15 +86,16 @@ fn write_orthogonal_placed(
         }
     }
     let mut brep = BRep::new(points);
-    let mut faces = Vec::with_capacity(boundary.faces.len());
-    for face in &boundary.faces {
+    let mut faces = Vec::with_capacity(boundary.faces.len() + 2 * pockets.len());
+    let mut pocket_faces = Vec::with_capacity(2 * pockets.len());
+    for (index, face) in boundary.faces.iter().enumerate() {
         let [outer, ..] = face.rings.as_slice() else {
             return Err(StepError::InvalidGeometry);
         };
         let placed = |point| brep.vertices[indices[&point_key(point)]].point;
         let (normal, reference) = orthogonal_support(face, outer, placed)?;
         let point = brep.vertices[indices[&point_key(outer[0])]].cartesian;
-        let bounds = face
+        let mut bounds = face
             .rings
             .iter()
             .enumerate()
@@ -77,8 +110,21 @@ fn write_orthogonal_placed(
                 brep.bound(&ids, i == 0)
             })
             .collect::<Result<Vec<_>, _>>()?;
+        for pocket in pockets.iter().filter(|pocket| pocket.face == index) {
+            let floor = pocket.floor_center_mm(face.normal);
+            let trim = CylindricalTrim::new(
+                &mut brep.file,
+                [floor, pocket.center_mm].map(transform),
+                normal,
+                reference,
+                pocket.radius_mm,
+            )?;
+            bounds.push(trim.cap_bound(&mut brep.file, true, false));
+            pocket_faces.extend(trim.blind_faces(&mut brep.file, true, normal, reference));
+        }
         faces.push(brep.file.face(&bounds, point, normal, reference));
     }
+    faces.extend(pocket_faces);
     Ok(brep.file.finish_solid(&faces))
 }
 
@@ -575,19 +621,7 @@ fn write_prism(
             .map(|trim| trim.wall(&mut brep.file, false)),
     );
     for (mouth, trim) in blind_trims {
-        let floor = !mouth;
-        faces.push(trim.wall(&mut brep.file, false));
-        let edge = brep
-            .file
-            .oriented_edge(trim.rims[usize::from(floor)], mouth);
-        let bound = brep.file.bound(&[edge], true);
-        let normal = normal.map(|n| if mouth { n } else { -n });
-        faces.push(brep.file.face(
-            &[bound],
-            trim.centers[usize::from(floor)],
-            normal,
-            placement.u,
-        ));
+        faces.extend(trim.blind_faces(&mut brep.file, mouth, normal, placement.u));
     }
     Ok(brep.file.finish_solid(&faces))
 }
@@ -904,5 +938,28 @@ impl CylindricalTrim {
         ];
         let bound = file.bound(&edges, true);
         file.face_on(&[bound], self.surface, outward)
+    }
+
+    fn blind_faces(
+        &self,
+        file: &mut StepFile,
+        mouth: bool,
+        axis: Point,
+        reference: Point,
+    ) -> [Entity; 2] {
+        let wall = self.wall(file, false);
+        let floor = !mouth;
+        let edge = file.oriented_edge(self.rims[usize::from(floor)], mouth);
+        let bound = file.bound(&[edge], true);
+        let normal = axis.map(|n| if mouth { n } else { -n });
+        [
+            wall,
+            file.face(
+                &[bound],
+                self.centers[usize::from(floor)],
+                normal,
+                reference,
+            ),
+        ]
     }
 }

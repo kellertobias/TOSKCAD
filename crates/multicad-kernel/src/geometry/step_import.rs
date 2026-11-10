@@ -94,7 +94,10 @@ impl Solid {
             };
             error(IMPORT, kind, message)
         })?;
-        let orthogonal = matches!(&imported.profile, ImportProfile::Orthogonal { .. });
+        let orthogonal = matches!(
+            &imported.profile,
+            ImportProfile::Orthogonal { .. } | ImportProfile::PocketedOrthogonal { .. }
+        );
         let solid = Self::from_imported_step(imported, feature, policy)?;
         verify(&solid, &readback, feature, tolerance, orthogonal)?;
         Ok(solid)
@@ -122,6 +125,23 @@ impl Solid {
         match profile {
             ImportProfile::Orthogonal { solid } => {
                 Self::from_imported_orthogonal(solid, frame, feature, policy)
+            }
+            ImportProfile::PocketedOrthogonal { solid, pockets } => {
+                let origins = pockets
+                    .iter()
+                    .map(|pocket| {
+                        let center = crate::rust_prism_topology::position(frame, pocket.center_mm);
+                        feature_origin(
+                            feature,
+                            "pocket",
+                            center
+                                .into_iter()
+                                .chain([pocket.radius_mm, pocket.depth_mm]),
+                        )
+                    })
+                    .collect();
+                Self::from_imported_orthogonal(solid, frame, feature, policy)?
+                    .with_orthogonal_pockets(pockets, origins)
             }
             ImportProfile::LinearSweep { base, top } => {
                 let edges = base
@@ -364,7 +384,7 @@ fn verify(
             "Rebuilt STEP solid differs from the imported bounds or volume",
         ));
     }
-    if orthogonal {
+    if orthogonal && readback.circles.is_empty() {
         // The pure reader has already proved equality of every oriented
         // boundary patch. The rebuilt shell consolidates coplanar source
         // faces and collinear edges, so record counts can differ.
@@ -401,8 +421,9 @@ fn verify(
             (TopologyKind::Vertex, _) => {}
         }
     }
-    if faces != readback.face_count
-        || !match_lines(&readback.edges_mm, &lines, tolerance * 2.)
+    if (!orthogonal
+        && (faces != readback.face_count
+            || !match_lines(&readback.edges_mm, &lines, tolerance * 2.)))
         || !match_circles(&readback.circles, &circles, tolerance * 2.)
     {
         return Err(invalid(

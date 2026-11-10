@@ -4,11 +4,13 @@ use multicad_rust_kernel::{
     cylinder::AxialCylinder,
     orthogonal::{Box3, Operation, boolean},
     orthogonal_boundary,
+    orthogonal_pockets::OrthogonalPocket,
     polygon::PolygonPrism,
     prism::Prism,
     step::{
         StepError, write_axial_cylinder, write_box, write_orthogonal, write_placed_cylinder,
-        write_pocketed_polygon_prism, write_polygon_prism, write_rectangular_prism,
+        write_pocketed_orthogonal, write_pocketed_polygon_prism, write_polygon_prism,
+        write_rectangular_prism,
     },
     step_read::{ImportProfile, ReadError, read_analytic_solid, read_import_solid},
 };
@@ -214,6 +216,264 @@ fn planar_pocket_import_retains_orthogonal_recognition() {
     let (readback, solid) = read_import_solid(&step, 1e-7).unwrap();
     assert_eq!(readback.volume_mm3, 672.);
     assert!(matches!(solid.profile, ImportProfile::Orthogonal { .. }));
+
+    let separate = boolean(
+        &[
+            Box3 {
+                min: ORIGIN,
+                max: [1.; 3],
+            },
+            Box3 {
+                min: [3.; 3],
+                max: [4.; 3],
+            },
+        ],
+        &[],
+        Operation::Union,
+        0.,
+    )
+    .unwrap()
+    .unwrap();
+    let separate_boundary = orthogonal_boundary::build(separate.quads()).unwrap();
+    assert_eq!(
+        write_orthogonal(&separate_boundary, |p| p),
+        Err(StepError::Unsupported)
+    );
+}
+
+#[test]
+fn mixed_orthogonal_step_retains_the_groove_and_blind_recesses_in_rigid_frames() {
+    let body = boolean(
+        &[Box3 {
+            min: ORIGIN,
+            max: [20., 14., 9.],
+        }],
+        &[Box3 {
+            min: [8., 0., 6.],
+            max: [12., 14., 10.],
+        }],
+        Operation::Subtract,
+        0.,
+    )
+    .unwrap()
+    .unwrap();
+    let boundary = orthogonal_boundary::build(body.quads()).unwrap();
+    let cap = boundary
+        .faces
+        .iter()
+        .position(|face| {
+            face.normal == Z
+                && face.rings[0][0][2] == 9.
+                && face.rings[0].iter().all(|point| point[0] <= 8.)
+        })
+        .unwrap();
+    let side = boundary
+        .faces
+        .iter()
+        .position(|face| face.normal == X && face.rings[0][0][0] == 20.)
+        .unwrap();
+    let pockets = [
+        OrthogonalPocket {
+            face: cap,
+            center_mm: [4., 5., 9.],
+            radius_mm: 1.5,
+            depth_mm: 3.,
+        },
+        OrthogonalPocket {
+            face: side,
+            center_mm: [20., 8., 7.],
+            radius_mm: 1.25,
+            depth_mm: 2.,
+        },
+    ];
+    let expected = 2352. - std::f64::consts::PI * 9.875;
+    let (a, b) = (0.49_f64.sin_cos(), 0.28_f64.sin_cos());
+    let rotate = |[x, y, z]: [f64; 3]| {
+        let xz = b.1 * x + b.0 * z;
+        [
+            300. + a.1 * xz - a.0 * y,
+            -400. + a.0 * xz + a.1 * y,
+            150. - b.0 * x + b.1 * z,
+        ]
+    };
+    let transforms: [&dyn Fn([f64; 3]) -> [f64; 3]; 2] = [&|p| p, &rotate];
+    for transform in transforms {
+        let text = write_pocketed_orthogonal(&body, &boundary, &pockets, transform).unwrap();
+        assert_eq!(count(&text, "CYLINDRICAL_SURFACE"), 2);
+        assert_eq!(count(&text, "CIRCLE"), 4);
+        assert_eq!(count(&text, "ADVANCED_FACE"), boundary.faces.len() + 4);
+        let (readback, imported) = read_import_solid(&text, 1e-7).unwrap();
+        assert!((readback.volume_mm3 - expected).abs() < 1e-7);
+        assert_eq!(readback, read_analytic_solid(&text, 1e-7).unwrap());
+        let ImportProfile::PocketedOrthogonal {
+            solid,
+            pockets: restored,
+        } = imported.profile
+        else {
+            panic!("expected the machined stock and its two blind recesses")
+        };
+        assert!((solid.volume_mm3() - body.volume_mm3()).abs() < 1e-8);
+        assert_eq!(restored.len(), 2);
+        let [ux, uy, uz] = imported.u;
+        let [vx, vy, vz] = imported.v;
+        let n = [uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx];
+        for pocket in pockets {
+            let restored = restored
+                .iter()
+                .find(|other| (other.radius_mm - pocket.radius_mm).abs() < 1e-9)
+                .unwrap();
+            assert!((restored.depth_mm - pocket.depth_mm).abs() < 1e-8);
+            let [u, v, w] = restored.center_mm;
+            let world: [f64; 3] = std::array::from_fn(|i| {
+                imported.origin_mm[i] + u * imported.u[i] + v * imported.v[i] + w * n[i]
+            });
+            assert!(
+                world
+                    .into_iter()
+                    .zip(transform(pocket.center_mm))
+                    .all(|(a, b)| (a - b).abs() < 1e-8)
+            );
+        }
+    }
+    let outside = OrthogonalPocket {
+        center_mm: [10., 5., 9.],
+        ..pockets[0]
+    };
+    assert_eq!(
+        write_pocketed_orthogonal(&body, &boundary, &[outside], &|p| p),
+        Err(StepError::InvalidGeometry)
+    );
+    assert_eq!(
+        write_pocketed_orthogonal(
+            &body,
+            &boundary,
+            &[OrthogonalPocket {
+                face: usize::MAX,
+                ..pockets[0]
+            }],
+            &|p| p,
+        ),
+        Err(StepError::Unsupported)
+    );
+    assert_eq!(
+        write_pocketed_orthogonal(&body, &boundary, &pockets, &|point| {
+            if point == pockets[0].center_mm {
+                [f64::NAN; 3]
+            } else {
+                point
+            }
+        }),
+        Err(StepError::InvalidGeometry)
+    );
+
+    let original = write_pocketed_orthogonal(&body, &boundary, &pockets, &|p| p).unwrap();
+    let hits_groove = move_cartesian_coordinate(
+        &original,
+        "(1.8000000000000000E1,",
+        "(1.0000000000000000E1,",
+    );
+    // Incidence and individual STEP faces remain valid, but the bore now
+    // crosses the rectangular groove before reaching its purported floor.
+    assert!(read_analytic_solid(&hits_groove, 1e-7).is_ok());
+    assert_eq!(
+        read_import_solid(&hits_groove, 1e-7),
+        Err(ReadError::Unsupported)
+    );
+
+    let bottom = boundary
+        .faces
+        .iter()
+        .position(|face| face.normal == [0., 0., -1.])
+        .unwrap();
+    let opposed = [
+        pockets[0],
+        OrthogonalPocket {
+            face: bottom,
+            center_mm: [4., 5., 0.],
+            radius_mm: 1.25,
+            depth_mm: 2.,
+        },
+    ];
+    let original = write_pocketed_orthogonal(&body, &boundary, &opposed, &|p| p).unwrap();
+    let hits_bore = move_cartesian_coordinate(
+        &original,
+        ",2.0000000000000000E0));",
+        ",7.0000000000000000E0));",
+    );
+    assert!(read_analytic_solid(&hits_bore, 1e-7).is_ok());
+    assert_eq!(
+        read_import_solid(&hits_bore, 1e-7),
+        Err(ReadError::Unsupported)
+    );
+}
+
+#[test]
+fn mixed_step_limits_recess_proof_work_after_stock_reconstruction() {
+    let stock = boolean(
+        &[Box3 {
+            min: ORIGIN,
+            max: [179., 179., 10.],
+        }],
+        &[],
+        Operation::Union,
+        0.,
+    )
+    .unwrap()
+    .unwrap();
+    let mut boundary = orthogonal_boundary::build(stock.quads()).unwrap();
+    let cap = boundary
+        .faces
+        .iter()
+        .position(|face| face.normal == Z)
+        .unwrap();
+    // Split the long straight edges consistently on all incident faces.
+    // This leaves the exact stock unchanged but gives the STEP reader many
+    // more orthogonal tiles to test against each recovered recess.
+    for ring in boundary.faces.iter_mut().flat_map(|face| &mut face.rings) {
+        *ring = ring
+            .iter()
+            .copied()
+            .zip(ring.iter().copied().cycle().skip(1))
+            .flat_map(|(a, b)| {
+                let segments = if a[2] == b[2] { 179 } else { 1 };
+                (0..segments).map(move |i| {
+                    let t = i as f64 / segments as f64;
+                    std::array::from_fn(|axis| (a[axis] + (b[axis] - a[axis]) * t).round())
+                })
+            })
+            .collect();
+    }
+    let pockets: Vec<_> = (0..64)
+        .map(|i| OrthogonalPocket {
+            face: cap,
+            center_mm: [
+                10. + 20. * f64::from(i % 8),
+                10. + 20. * f64::from(i / 8),
+                10.,
+            ],
+            radius_mm: 2.,
+            depth_mm: 3.,
+        })
+        .collect();
+    let encoded = write_pocketed_orthogonal(&stock, &boundary, &pockets, &|p| p).unwrap();
+    assert!(read_analytic_solid(&encoded, 1e-7).is_ok());
+    assert_eq!(read_import_solid(&encoded, 1e-7), Err(ReadError::Limit));
+}
+
+fn move_cartesian_coordinate(step: &str, from: &str, to: &str) -> String {
+    let moved = step
+        .lines()
+        .map(|line| {
+            if line.contains("=CARTESIAN_POINT(") {
+                line.replace(from, to)
+            } else {
+                line.to_owned()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert_ne!(step.trim(), moved);
+    moved
 }
 
 #[test]

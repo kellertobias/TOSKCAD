@@ -315,7 +315,7 @@ fn rust_mcp_round_trips_a_step_body_and_refuses_an_unsupported_shape() {
 }
 
 #[test]
-fn rust_mcp_reopens_an_embedded_orthogonal_step_with_a_persistent_floor_attachment() {
+fn rust_mcp_reopens_mixed_pocket_step_with_a_persistent_floor_attachment() {
     let dir = tempfile::tempdir().unwrap();
     let policy = GeometryPolicy::default();
     let stock = Solid::box_solid([10., 8., 6.], policy).unwrap();
@@ -326,8 +326,24 @@ fn rust_mcp_reopens_an_embedded_orthogonal_step_with_a_persistent_floor_attachme
             ..Default::default()
         })
         .unwrap();
+    let grooved = stock
+        .boolean(&tool, BooleanOperation::Subtract, policy)
+        .unwrap()
+        .unwrap();
+    let round_tool = Solid::cylinder(
+        PlaneFrame {
+            origin: [8., 4., 4.],
+            ..Default::default()
+        },
+        1.,
+        4.,
+        policy,
+    )
+    .unwrap();
     let pocket_path = dir.path().join("pocket.step");
-    write_pocket(&stock, &tool, &pocket_path, policy);
+    write_pocket(&grooved, &round_tool, &pocket_path, policy);
+    let pi = std::f64::consts::PI;
+    let volume = 432. - 2. * pi;
 
     let open = |document: Document| {
         Headless::with_geometry_backend(
@@ -356,7 +372,7 @@ fn rust_mcp_reopens_an_embedded_orthogonal_step_with_a_persistent_floor_attachme
     let shape = &evaluated["parts"][0];
     assert_eq!(&shape["part"], part);
     assert_eq!(shape["solid_count"], 1);
-    assert!((shape["volume_mm3"].as_f64().unwrap() - 432.).abs() < 1e-7);
+    assert!((shape["volume_mm3"].as_f64().unwrap() - volume).abs() < 1e-7);
     let feature = &shape["feature"];
     let candidate_args = json!({ "source": feature, "kind": "face" });
     let faces = dispatch(
@@ -425,14 +441,29 @@ fn rust_mcp_reopens_an_embedded_orthogonal_step_with_a_persistent_floor_attachme
     )
     .unwrap();
     for field in ["model_volume_mm3", "readback_volume_mm3"] {
-        assert!((exported[field].as_f64().unwrap() - 432.).abs() < 1e-7);
+        assert!((exported[field].as_f64().unwrap() - volume).abs() < 1e-7);
     }
     let independent = Solid::read_step(&dir.path().join("reopened.step"), policy).unwrap();
-    assert!((independent.volume_mm3().unwrap() - 432.).abs() < 1e-7);
-    assert!(independent.faces().unwrap().iter().any(|face| {
+    assert!((independent.volume_mm3().unwrap() - volume).abs() < 1e-7);
+    let faces = independent.faces().unwrap();
+    assert!(faces.iter().any(|face| {
         (face.area_mm2 - 16.).abs() < 1e-7
             && face.plane.is_some_and(|(origin, normal)| {
                 (origin[2] - 3.).abs() < 1e-7 && normal[2] > 0.999999
             })
     }));
+    assert!(faces.iter().any(|face| {
+        (face.area_mm2 - pi).abs() < 1e-7
+            && face.plane.is_some_and(|(_, normal)| normal[2] > 0.999999)
+            && face
+                .center_mm
+                .into_iter()
+                .zip([8., 4., 4.])
+                .all(|(actual, expected)| (actual - expected).abs() < 1e-7)
+    }));
+    assert!(
+        faces
+            .iter()
+            .any(|face| { face.plane.is_none() && (face.area_mm2 - 4. * pi).abs() < 1e-7 })
+    );
 }
