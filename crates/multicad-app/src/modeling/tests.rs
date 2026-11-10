@@ -195,7 +195,7 @@ fn rust_smooth_polygon_loft_publishes_its_taper_in_the_app() {
 }
 
 #[test]
-fn rust_twisted_loft_preview_publishes_a_pickable_wall() {
+fn rust_twisted_loft_preview_publishes_a_pickable_wall_and_drawing_section() {
     use multicad_core::{
         constraint_sketch::source::Source,
         document::Mutation,
@@ -273,6 +273,88 @@ fn rust_twisted_loft_preview_publishes_a_pickable_wall() {
     assert!(intent.attachment.is_none());
     tool.cancel();
     assert_eq!(session.revision(), 1);
+    check_twisted_loft_drawing_worker(&mut session, request.body);
+}
+
+fn check_twisted_loft_drawing_worker(session: &mut Session, body: EntityId) {
+    use multicad_core::{drawings, project_file::ContentHash, references::ReferenceFrame};
+    use multicad_ui::drawings::DrawingBackend;
+
+    let mut page = drawings::Page::new("1");
+    let view = EntityId::new();
+    page.views.push(drawings::DrawingView {
+        id: view,
+        name: "Oblique cut".into(),
+        source: drawings::ViewSource::Model {
+            entities: vec![body],
+        },
+        frame: ReferenceFrame {
+            origin_mm: [0., 0., 3.],
+            u: [1., 0., 0.],
+            v: [0., 0.8, 0.6],
+        },
+        kind: drawings::ViewKind::Section {
+            offset_mm: 0.,
+            range: drawings::SectionRange::SectionOnly,
+            window: drawings::SectionWindow {
+                u_mm: Some([-0.5, 0.5]),
+                v_mm: None,
+            },
+        },
+        position_mm: [50., 50.],
+        scale: drawings::Scale {
+            numerator: 1,
+            denominator: 1,
+        },
+        hidden_lines: false,
+        tangent_edges: false,
+        paper_chord_tolerance_mm: 0.001,
+        guide: None,
+        equipment_categories: None,
+    });
+    let page_id = page.id;
+    let (_, prepared) = drawings::prepare_create(
+        session,
+        session.revision(),
+        Actor::local(Channel::Ui),
+        "Twisted loft drawing",
+        Some(page),
+    )
+    .unwrap();
+    session.commit(prepared).unwrap();
+    let stamp = drawings::DrawingStamp {
+        document: session.document().id(),
+        revision: session.revision(),
+        source_hash: ContentHash::document(session.document()).unwrap(),
+    };
+    let mut worker = crate::drawings::Backend::with_cache_and_backend(None, GeometryBackend::Rust);
+    worker
+        .request_page(session.document(), stamp, page_id)
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let result = loop {
+        if let Some(reply) = worker.poll() {
+            break reply.result.unwrap();
+        }
+        assert!(Instant::now() < deadline, "Rust loft drawing timed out");
+        std::thread::sleep(Duration::from_millis(1));
+    };
+    let drawings::ViewEvaluation::Ready { vectors, .. } = &result.views[&view] else {
+        panic!("{:?}", result.views[&view]);
+    };
+    assert_eq!(vectors.len(), 4);
+    assert!(
+        vectors
+            .iter()
+            .all(|v| v.source == body && v.role == drawings::VectorRole::Section)
+    );
+    assert_eq!(
+        vectors
+            .iter()
+            .filter(|v| matches!(v.curve, drawings::VectorCurve::BSpline { degree: 2, .. }))
+            .count(),
+        2
+    );
 }
 
 #[test]
