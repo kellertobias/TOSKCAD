@@ -376,12 +376,24 @@ fn check_twisted_loft_drawing_worker(session: &mut Session, body: EntityId) {
     assembly.source = drawings::ViewSource::Model {
         entities: vec![rear.body, body],
     };
+    let mut section = assembly.clone();
+    section.id = EntityId::new();
+    section.name = "Assembly depth section".into();
+    section.kind = drawings::ViewKind::Section {
+        offset_mm: 0.,
+        range: drawings::SectionRange::Depth { depth_mm: 5.5 },
+        window: drawings::SectionWindow {
+            u_mm: Some([-2.5, 1.5]),
+            v_mm: None,
+        },
+    };
+    let section_id = section.id;
     let assembly_id = assembly.id;
     let oblique_id = oblique.id;
     let ordinary_id = ordinary.id;
     let retained_id = retained.id;
     page.views
-        .extend([ordinary, retained, oblique, bounded, assembly]);
+        .extend([ordinary, retained, oblique, bounded, assembly, section]);
     let page_id = page.id;
     let (_, prepared) = drawings::prepare_create(
         session,
@@ -488,6 +500,23 @@ fn check_twisted_loft_drawing_worker(session: &mut Session, body: EntityId) {
             assert!(vectors.iter().any(|v| v.source == source && v.role == role));
         }
     }
+    let drawings::ViewEvaluation::Ready { vectors, .. } = &result.views[&section_id] else {
+        panic!("{:?}", result.views[&section_id]);
+    };
+    assert!(
+        vectors
+            .iter()
+            .any(|v| v.source == body && v.role == drawings::VectorRole::Section)
+    );
+    assert!(
+        vectors
+            .iter()
+            .any(|v| v.source == rear.body && v.role == drawings::VectorRole::Hidden)
+    );
+    assert!(
+        vectors.iter().all(|v| v.source == body
+            || (v.source == rear.body && v.role != drawings::VectorRole::Section))
+    );
 }
 
 #[test]
