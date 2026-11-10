@@ -1,6 +1,6 @@
 use super::{Curve, Edge, Error, Face, OrientedEdge, Point, Shell, Support, cross, dot, sub};
 use crate::{
-    normal_sweep::{Edge as ProfileEdge, Sweep},
+    normal_sweep::{Edge as ProfileEdge, PiercedSweep, Piercing, Sweep},
     trim_curve::{Ellipse, EllipseArc},
 };
 use std::collections::BTreeMap;
@@ -18,6 +18,18 @@ pub struct SheetFlange<'a> {
     pub ends: [usize; 2],
 }
 
+/// A rectangular or circular cut through a flange, in the sheet-local frame.
+pub struct SheetFlangeOpening<'a> {
+    /// Section edge ordinals of the entry and exit walls.
+    pub walls: [usize; 2],
+    pub origin_mm: Point,
+    pub u: Point,
+    pub v: Point,
+    pub through_mm: Point,
+    /// Counterclockwise outline and authored face provenance per edge.
+    pub outline: &'a [(ProfileEdge, usize)],
+}
+
 /// Join rectangular stock and up to two opposite flange sweeps at full shared
 /// root faces. All edges and wall supports remain analytic.
 pub fn formed_sheet(
@@ -29,6 +41,34 @@ pub fn formed_sheet(
     tolerance: f64,
     minimum: f64,
 ) -> Result<Shell, Error> {
+    formed_sheet_with_openings(
+        web,
+        holes,
+        caps,
+        flanges,
+        &[],
+        signed_thickness,
+        tolerance,
+        minimum,
+    )
+}
+
+/// Join a web and opposite flange sweeps with certified through openings.
+/// A nonempty `openings` slice supplies one list per flange in flange order.
+#[allow(clippy::too_many_arguments)]
+pub fn formed_sheet_with_openings(
+    web: &[SheetWebEdge],
+    holes: &[Vec<(ProfileEdge, usize)>],
+    caps: [usize; 2],
+    flanges: &[SheetFlange<'_>],
+    openings: &[&[SheetFlangeOpening<'_>]],
+    signed_thickness: f64,
+    tolerance: f64,
+    minimum: f64,
+) -> Result<Shell, Error> {
+    if !openings.is_empty() && openings.len() != flanges.len() {
+        return Err(Error::Invalid);
+    }
     if flanges.is_empty() || flanges.len() > 2 || web.len() > 32 {
         return Err(Error::Unsupported);
     }
@@ -101,8 +141,14 @@ pub fn formed_sheet(
             direction: along,
         };
         let omit = (0..flange.section.len()).map(|i| i == walls.len());
+        let first_wall = builder.faces.len();
         builder.sweep(&[flange.section], &section, frame, flange.ends, omit)?;
-        volume += section.volume_mm3();
+        volume += match openings.get(index).copied() {
+            Some(openings) if !openings.is_empty() => {
+                builder.pierce_flange(&section, openings, frame, first_wall, thickness, minimum)?
+            }
+            _ => section.volume_mm3(),
+        };
         let flange_bounds = frame.bounds(&section);
         for i in 0..3 {
             bounds[0][i] = bounds[0][i].min(flange_bounds[0][i]);
@@ -137,10 +183,14 @@ fn checked_sweep(
         .iter()
         .map(|ring| ring.iter().map(|&(edge, _)| edge).collect())
         .collect();
-    Sweep::new(edges, height, tolerance, minimum).map_err(|error| match error {
+    Sweep::new(edges, height, tolerance, minimum).map_err(sweep_error)
+}
+
+fn sweep_error(error: crate::normal_sweep::Error) -> Error {
+    match error {
         crate::normal_sweep::Error::Limit => Error::Limit,
         _ => Error::Invalid,
-    })
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -157,6 +207,17 @@ impl SweepFrame {
             add(add(self.origin, scale(self.u, u)), scale(self.v, v)),
             scale(self.direction, level),
         )
+    }
+
+    fn vector(self, [u, v, axial]: Point) -> Point {
+        add(
+            add(scale(self.u, u), scale(self.v, v)),
+            scale(self.direction, axial),
+        )
+    }
+
+    fn coordinates(self, vector: Point) -> Point {
+        [self.u, self.v, self.direction].map(|axis| dot(axis, vector))
     }
 
     fn bounds(self, sweep: &Sweep) -> [Point; 2] {
@@ -242,47 +303,13 @@ impl Builder {
     ) -> Result<(), Error> {
         let mut omit = omit.chain(std::iter::repeat(false));
         let height = sweep.height_mm();
-        let reversed = dot(cross(frame.u, frame.v), frame.direction) < 0.;
         let mut cap_loops = [Vec::new(), Vec::new()];
         for (ring, authored) in sweep.rings().iter().zip(rings) {
-            let mut end_loops = [Vec::new(), Vec::new()];
-            for (&edge, &(_, source)) in ring.iter().zip(*authored) {
-                let omit = omit.next().expect("unbounded omission flags");
-                for arc in segments(edge) {
-                    let lifts = [0., height].map(|level| {
-                        let points = [arc.start(), arc.end()].map(|p| frame.point(p, level));
-                        let curve = curve(arc, frame, level)?;
-                        self.edge(points, curve)
-                    });
-                    let [bottom, top] = lifts;
-                    let (bottom, top) = (bottom?, top?);
-                    end_loops[0].push(bottom);
-                    end_loops[1].push(top);
-                    if !omit {
-                        let rail = |p| [0., height].map(|level| frame.point(p, level));
-                        let end = self.edge(rail(arc.end()), Curve::Line)?;
-                        let start = self.edge(rail(arc.start()), Curve::Line)?;
-                        let mut boundary = vec![bottom, end, reverse(top), reverse(start)];
-                        if reversed {
-                            reverse_loop(&mut boundary);
-                            boundary.rotate_right(1);
-                        }
-                        self.faces.push(Face {
-                            boundary,
-                            holes: vec![],
-                            support: side_support(arc, frame, reversed),
-                            point_mm: frame.point(arc.start(), 0.),
-                            area_mm2: arc.length_mm() * height,
-                            source: 0,
-                            source_face: source,
-                        });
-                    }
-                }
-            }
-            for (i, (cap, mut ring)) in cap_loops.iter_mut().zip(end_loops).enumerate() {
-                if (i == 0) != reversed {
-                    reverse_loop(&mut ring);
-                }
+            let edges = ring.iter().zip(*authored).map(|(&edge, &(_, source))| {
+                (edge, source, omit.next().expect("unbounded omission flags"))
+            });
+            let ends = self.sweep_ring(edges, frame, height)?;
+            for (cap, ring) in cap_loops.iter_mut().zip(ends) {
                 cap.push(ring);
             }
         }
@@ -301,6 +328,109 @@ impl Builder {
             });
         }
         Ok(())
+    }
+
+    fn sweep_ring(
+        &mut self,
+        edges: impl Iterator<Item = (ProfileEdge, usize, bool)>,
+        frame: SweepFrame,
+        height: f64,
+    ) -> Result<[Vec<OrientedEdge>; 2], Error> {
+        let reversed = dot(cross(frame.u, frame.v), frame.direction) < 0.;
+        let mut end_loops = [Vec::new(), Vec::new()];
+        for (edge, source, omit) in edges {
+            for arc in segments(edge) {
+                let lifts = [0., height].map(|level| {
+                    let points = [arc.start(), arc.end()].map(|p| frame.point(p, level));
+                    let curve = curve(arc, frame, level)?;
+                    self.edge(points, curve)
+                });
+                let [bottom, top] = lifts;
+                let (bottom, top) = (bottom?, top?);
+                end_loops[0].push(bottom);
+                end_loops[1].push(top);
+                if !omit {
+                    let rail = |p| [0., height].map(|level| frame.point(p, level));
+                    let end = self.edge(rail(arc.end()), Curve::Line)?;
+                    let start = self.edge(rail(arc.start()), Curve::Line)?;
+                    let mut boundary = vec![bottom, end, reverse(top), reverse(start)];
+                    if reversed {
+                        reverse_loop(&mut boundary);
+                        boundary.rotate_right(1);
+                    }
+                    self.faces.push(Face {
+                        boundary,
+                        holes: vec![],
+                        support: side_support(arc, frame, reversed),
+                        point_mm: frame.point(arc.start(), 0.),
+                        area_mm2: arc.length_mm() * height,
+                        source: 0,
+                        source_face: source,
+                    });
+                }
+            }
+        }
+        reverse_loop(&mut end_loops[usize::from(reversed)]);
+        Ok(end_loops)
+    }
+
+    fn pierce_flange(
+        &mut self,
+        section: &Sweep,
+        openings: &[SheetFlangeOpening<'_>],
+        flange: SweepFrame,
+        first_wall: usize,
+        thickness: f64,
+        minimum: f64,
+    ) -> Result<f64, Error> {
+        // A flange has one section ring, with the last edge welded to the web.
+        // The other section edges each emitted exactly one face in ordinal order.
+        let root = section.rings()[0].len() - 1;
+        if openings.iter().any(|hole| hole.walls.contains(&root)) {
+            return Err(Error::Unsupported);
+        }
+        let specs = openings
+            .iter()
+            .map(|hole| Piercing {
+                sides: hole.walls,
+                origin: flange.coordinates(sub(hole.origin_mm, flange.origin)),
+                u: flange.coordinates(hole.u),
+                v: flange.coordinates(hole.v),
+                through: flange.coordinates(hole.through_mm),
+                outline: hole.outline.iter().map(|&(edge, _)| edge).collect(),
+            })
+            .collect();
+        let pierced =
+            PiercedSweep::new(section, specs, self.tolerance, minimum).map_err(sweep_error)?;
+        for (checked, authored) in pierced.openings().iter().zip(openings) {
+            let height = checked.thickness_mm();
+            if (height - thickness).abs() > self.tolerance {
+                return Err(Error::Unsupported);
+            }
+            let spec = checked.spec();
+            let [u, v, axial] = spec.origin;
+            let frame = SweepFrame {
+                origin: flange.point([u, v], axial),
+                u: flange.vector(spec.u),
+                v: flange.vector(spec.v),
+                direction: flange.vector(scale(spec.through, height.recip())),
+            };
+            // The inward wall of a hole uses the opposite winding to a
+            // positive extrusion. The resulting end loops face into the cut.
+            let edges = spec
+                .outline
+                .iter()
+                .zip(authored.outline)
+                .rev()
+                .map(|(&edge, &(_, source))| (edge.reversed(), source, false));
+            let loops = self.sweep_ring(edges, frame, height)?;
+            for (side, ring) in spec.sides.into_iter().zip(loops) {
+                let wall = &mut self.faces[first_wall + side];
+                wall.holes.push(ring);
+                wall.area_mm2 -= checked.area_mm2();
+            }
+        }
+        Ok(pierced.volume_mm3())
     }
 
     fn finish(self, bounds_mm: [Point; 2], volume_mm3: f64) -> Result<Shell, Error> {
@@ -519,6 +649,172 @@ mod tests {
             }
             assert!(incidence.values().all(|counts| *counts == [1, 1]));
         }
+    }
+
+    fn rectangle() -> [(ProfileEdge, usize); 4] {
+        let corners = [[0., 0.], [1.5, 0.], [1.5, 0.6], [0., 0.6]];
+        std::array::from_fn(|i| (line(corners[i], corners[(i + 1) % 4]), 60 + i))
+    }
+
+    fn aperture<'a>(
+        origin_mm: Point,
+        up: f64,
+        outline: &'a [(ProfileEdge, usize)],
+    ) -> SheetFlangeOpening<'a> {
+        SheetFlangeOpening {
+            walls: [1, 3],
+            origin_mm,
+            u: [1., 0., 0.],
+            v: [0., 0., up],
+            through_mm: [0., -1., 0.],
+            outline,
+        }
+    }
+
+    fn aperture_fixture(
+        section: &[(ProfileEdge, usize)],
+        holes: &[&[SheetFlangeOpening<'_>]],
+        signed_thickness: f64,
+    ) -> Result<Shell, Error> {
+        let flanges = [[20, 21], [22, 23]].map(|ends| SheetFlange { section, ends });
+        let web_hole = ProfileEdge::Circle {
+            center: [5., 4.],
+            radius_mm: 1.,
+            clockwise: true,
+        };
+        formed_sheet_with_openings(
+            &web(),
+            &[vec![(web_hole, 50)]],
+            [30, 31],
+            &flanges,
+            holes,
+            signed_thickness,
+            TOL,
+            MIN,
+        )
+    }
+
+    #[test]
+    fn rectangular_and_round_apertures_share_a_flange_without_changing_the_bend() {
+        let section = section();
+        let rectangle = rectangle();
+        let circle = [(
+            ProfileEdge::Circle {
+                center: [0.; 2],
+                radius_mm: 0.3,
+                clockwise: false,
+            },
+            70,
+        )];
+        for up in [-1., 1.] {
+            let baseline = aperture_fixture(&section, &[], up).unwrap();
+            let rect = aperture([3., -1., -2.2 * up], up, &rectangle);
+            let mut round = aperture([6.5, -2., -2. * up], up, &circle);
+            round.walls.reverse();
+            round.through_mm[1] *= -1.;
+            let shell = aperture_fixture(&section, &[&[rect, round], &[]], up).unwrap();
+
+            let rect_area = 1.5 * 0.6;
+            let round_area = std::f64::consts::PI * 0.3_f64.powi(2);
+            assert_eq!(shell.solid_count(), 1);
+            assert_eq!(shell.bounds_mm(), baseline.bounds_mm());
+            assert!(
+                (baseline.volume_mm3() - shell.volume_mm3() - rect_area - round_area).abs() < TOL
+            );
+            let area_delta =
+                2. * (1.5 + 0.6) + std::f64::consts::TAU * 0.3 - 2. * (rect_area + round_area);
+            let area = |shell: &Shell| shell.faces().iter().map(|face| face.area_mm2).sum::<f64>();
+            assert!((area(&shell) - area(&baseline) - area_delta).abs() < TOL);
+
+            let rect_walls: Vec<_> = shell
+                .faces()
+                .iter()
+                .filter(|face| (60..64).contains(&face.source_face))
+                .collect();
+            assert_eq!(rect_walls.len(), 4);
+            assert!(
+                rect_walls
+                    .iter()
+                    .all(|face| matches!(face.support, Support::Plane { .. }))
+            );
+            let circular_walls: Vec<_> = shell
+                .faces()
+                .iter()
+                .filter(|face| face.source_face == 70)
+                .collect();
+            assert_eq!(circular_walls.len(), 4);
+            assert!(
+                circular_walls
+                    .iter()
+                    .all(|face| matches!(face.support, Support::Cylinder { outward: false, .. }))
+            );
+            for source in [11, 13] {
+                assert_eq!(
+                    shell
+                        .faces()
+                        .iter()
+                        .find(|face| face.source_face == source)
+                        .unwrap()
+                        .holes
+                        .len(),
+                    2
+                );
+            }
+
+            let mesh = shell
+                .mesh(Tessellation {
+                    deflection: 0.002,
+                    angle: 0.1,
+                    triangle_limit: 6000,
+                })
+                .unwrap();
+            let proof = crate::manufacturing::certify(&mesh).unwrap();
+            assert!((proof.signed_volume_mm3 - shell.volume_mm3()).abs() < 0.1);
+        }
+    }
+
+    #[test]
+    fn flange_aperture_refuses_bends_overlap_root_and_thickened_legs() {
+        let section = section();
+        let rectangle = rectangle();
+        let valid = || aperture([3., -1., -2.2], 1., &rectangle);
+        assert_eq!(
+            aperture_fixture(&section, &[&[valid()]], 1.),
+            Err(Error::Invalid)
+        );
+        let bend = aperture([3., -1., -1.4], 1., &rectangle);
+        assert_eq!(
+            aperture_fixture(&section, &[&[bend], &[]], 1.),
+            Err(Error::Invalid)
+        );
+        assert_eq!(
+            aperture_fixture(&section, &[&[valid(), valid()], &[]], 1.),
+            Err(Error::Invalid)
+        );
+        let mut root = valid();
+        root.walls = [1, 5];
+        assert_eq!(
+            aperture_fixture(&section, &[&[root], &[]], 1.),
+            Err(Error::Unsupported)
+        );
+
+        let mut thick = section;
+        thick.splice(
+            2..4,
+            [
+                (line([1., -3.], [2.25, -3.]), 12),
+                (line([2.25, -3.], [2.25, -1.5]), 13),
+                (line([2.25, -1.5], [2., -1.5]), 15),
+                (line([2., -1.5], [2., -1.]), 16),
+            ],
+        );
+        assert!(aperture_fixture(&thick, &[], 1.).is_ok());
+        let mut hole = valid();
+        hole.through_mm[1] = -1.25;
+        assert_eq!(
+            aperture_fixture(&thick, &[&[hole], &[]], 1.),
+            Err(Error::Unsupported)
+        );
     }
 
     #[test]

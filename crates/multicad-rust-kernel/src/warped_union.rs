@@ -12,7 +12,9 @@ mod metrics;
 mod sheet;
 pub use axial_cut::{AxialCut, ConvexRecess, OpenBoreSide};
 pub use boss::Boss;
-pub use sheet::{SheetFlange, SheetWebEdge, formed_sheet};
+pub use sheet::{
+    SheetFlange, SheetFlangeOpening, SheetWebEdge, formed_sheet, formed_sheet_with_openings,
+};
 
 type Point = [f64; 3];
 
