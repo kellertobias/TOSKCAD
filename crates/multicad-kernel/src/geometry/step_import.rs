@@ -13,6 +13,7 @@ use multicad_rust_kernel::step_read::{
 use multicad_rust_kernel::trim_curve::{Ellipse, EllipseArc};
 use std::f64::consts::{PI, TAU};
 mod compound;
+mod involute;
 
 type Point = [f64; 3];
 type Segment = [Point; 2];
@@ -664,11 +665,11 @@ fn match_ellipses(expected: &[EllipseArc], actual: &[EllipseArc], tolerance: f64
     })
 }
 
-fn match_round_edges<T>(
+fn match_round_edges<T, U>(
     expected: &[T],
-    actual: &[T],
+    actual: &[U],
     tolerance: f64,
-    deviation: impl Fn(&T, &T) -> f64,
+    deviation: impl Fn(&T, &U) -> f64,
 ) -> bool {
     if expected.len() != actual.len() {
         return false;
@@ -782,7 +783,7 @@ fn verify(
 
 impl Solid {
     /// Compare an independently read STEP shell with the exact topology being
-    /// published. Straight edges and circular trims must match.
+    /// published. Compare finite trims and bound spline deviation from each exact involute.
     pub fn step_topology_matches(
         topology: &TopologySnapshot,
         readback: &Readback,
@@ -805,6 +806,7 @@ fn compare_topology<'a>(
     let mut semicircles = Vec::new();
     let mut arcs = Vec::new();
     let mut ellipses = Vec::new();
+    let mut splines = Vec::new();
     let mut faces = 0;
     for element in elements {
         match (element.key.kind, element.geometry) {
@@ -890,6 +892,18 @@ fn compare_topology<'a>(
                 };
                 ellipses.push(arc);
             }
+            (
+                TopologyKind::Edge,
+                Some(AnalyticGeometry::InvoluteArc {
+                    frame,
+                    base_radius_mm,
+                    parameters,
+                }),
+            ) => splines.push(involute::Flank {
+                frame,
+                radius_mm: base_radius_mm,
+                parameters,
+            }),
             (TopologyKind::Edge, _) => {
                 return false;
             }
@@ -903,6 +917,7 @@ fn compare_topology<'a>(
         && match_semicircles(&readback.semicircles, &semicircles, tolerance)
         && match_arcs(&readback.arcs, &arcs, tolerance)
         && match_ellipses(&readback.ellipses, &ellipses, tolerance)
+        && involute::matches(&splines, &readback.splines, tolerance)
 }
 
 #[cfg(test)]

@@ -1899,9 +1899,12 @@ impl Solid {
             | SolidBody::RoundedSlot(..) => true,
             SolidBody::Prism(prism, _) => prism.rounded_end().is_none(),
             SolidBody::RustCompound(compound) => compound.members().all(Self::supports_step_export),
-            SolidBody::Helical(..) | SolidBody::CosmeticFastener(..) | SolidBody::SpurGear(..) => {
-                false
-            }
+            SolidBody::Helical(..) | SolidBody::CosmeticFastener(..) => false,
+            SolidBody::SpurGear(body, _) => body
+                .profile
+                .hub_extensions()
+                .into_iter()
+                .all(|end| end.is_none()),
             SolidBody::WarpedUnion(body, _) => {
                 multicad_rust_kernel::step::supports_warped_union(&body.geometry)
             }
@@ -2004,6 +2007,13 @@ impl Solid {
             SolidBody::Linear(body, frame) => body.append_step(writer, *frame),
             SolidBody::RoundedSlot(body, frame) => body.append_step(writer, *frame),
             SolidBody::NormalSweep(body, frame) => body.append_step(writer, *frame),
+            SolidBody::SpurGear(body, frame) => writer.append_spur_gear(
+                &body.profile,
+                frame.origin,
+                frame.u,
+                frame.v,
+                self.policy.linear_tolerance_mm,
+            ),
             SolidBody::AxialStack(body, frame) => body.append_step(writer, *frame),
             SolidBody::PlanarBoolean(body, frame) => {
                 writer.append_planar_union(&body.geometry, frame.origin, frame.u, frame.v)
@@ -2036,7 +2046,7 @@ impl Solid {
                 }
                 Ok(())
             }
-            SolidBody::Helical(..) | SolidBody::CosmeticFastener(..) | SolidBody::SpurGear(..) => {
+            SolidBody::Helical(..) | SolidBody::CosmeticFastener(..) => {
                 Err(step::StepError::Unsupported)
             }
             SolidBody::Orthogonal(body, frame) => body.append_step(writer, *frame),

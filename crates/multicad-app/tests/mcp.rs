@@ -548,3 +548,49 @@ fn app_bridge_relays_stdio_to_a_listening_window_and_fails_clearly_without_one()
     close(parameters["parameters"][0]["value"].as_f64().unwrap(), 3.);
     assert_eq!(parameters["parameters"][0]["unit"], "in");
 }
+
+#[test]
+fn rust_stdio_exports_verified_spur_step_after_reopen() {
+    let directory = tempfile::tempdir().unwrap();
+    let project = directory.path().join("spur.tcd");
+    let exports = directory.path().join("exports");
+    std::fs::create_dir(&exports).unwrap();
+    let mut arguments = vec![
+        "--project",
+        project.to_str().unwrap(),
+        "--export-dir",
+        exports.to_str().unwrap(),
+    ];
+    if cfg!(feature = "occt") {
+        arguments.push("--rust-model");
+    }
+    let mut client = Client::start(&arguments);
+    let gear = client.ok(
+        "set_gear",
+        json!({
+            "expected_revision": 0,
+            "name": "STEP spur",
+            "family": "spur",
+            "teeth": {"value": 24, "unit": "count"}
+        }),
+    );
+    let volume = client.part_volume();
+    client.ok("save_project", json!({"expected_revision": 1}));
+    drop(client);
+    let saved = std::fs::read(&project).unwrap();
+
+    let mut reopened = Client::start(&arguments);
+    let receipt = reopened.ok(
+        "export_step",
+        json!({"part": gear["part"], "file_name": "spur.step"}),
+    );
+    close(receipt["readback_volume_mm3"].as_f64().unwrap(), volume);
+    let exported = std::fs::read_to_string(exports.join("spur.step")).unwrap();
+    let read =
+        multicad_kernel::rust_kernel::step_read::read_analytic_solid(&exported, 1e-7).unwrap();
+    assert_eq!(read.solid_count, 1);
+    assert_eq!(read.splines.len(), 24 * 4);
+    close(read.volume_mm3, volume);
+    assert_eq!(std::fs::read_dir(&exports).unwrap().count(), 1);
+    assert_eq!(std::fs::read(project).unwrap(), saved);
+}

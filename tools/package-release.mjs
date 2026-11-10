@@ -123,6 +123,7 @@ export async function buildPackage(version,{rustOnly=false}={}){
   run('cargo',['fetch','--locked'],{stdio:'inherit'});
   if(rustOnly){
     run('cargo',['test','-p','multicad-app','--locked','--no-default-features','--test','cli','--test','command'],{env,stdio:'inherit'});
+    run('cargo',['test','-p','multicad-app','--locked','--no-default-features','--test','mcp','rust_stdio'],{env,stdio:'inherit'});
     run('cargo',['build',...rustCandidateBuildArgs],{env,stdio:'inherit'});
   }else{
     run('cargo',['test','--workspace','--locked'],{env,stdio:'inherit'});

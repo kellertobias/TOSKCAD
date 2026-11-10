@@ -245,6 +245,59 @@ fn rust_spur_flank_projects_into_sketch_with_bounded_curve_error() {
 }
 
 #[test]
+fn rust_spur_step_verifies_each_member_and_rejects_a_mismatched_flank() {
+    use multicad_kernel::{
+        PlaneFrame,
+        rust_kernel::{Rational, step_read},
+    };
+
+    let policy = GeometryPolicy::default();
+    let gear =
+        Solid::rust_spur_gear_named(normal(24, 0., GearSweep::Spur), EntityId::new(), policy)
+            .unwrap();
+    let box_id = EntityId::new();
+    let stock = Solid::rust_box(
+        box_id.uuid_bits(),
+        [Rational::new(5, 1).unwrap(); 3],
+        PlaneFrame {
+            origin: [100., 0., 0.],
+            ..Default::default()
+        },
+        policy,
+    )
+    .unwrap();
+    let feature = EntityId::new();
+    let solid = Solid::compound_named(&[&gear, &stock], feature, policy).unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("spur-and-box.step");
+    solid.write_step(&path).unwrap();
+    let bytes = std::fs::read_to_string(&path).unwrap();
+    let members = step_read::read_analytic_compound(&bytes, policy.linear_tolerance_mm).unwrap();
+    assert_eq!(members.len(), 2);
+    assert_eq!(members[0].splines.len(), 96);
+    assert!(members[1].splines.is_empty());
+    let volume: f64 = members.iter().map(|member| member.volume_mm3).sum();
+    assert!((volume - solid.volume_mm3().unwrap()).abs() < 1e-4);
+    let mut topology = solid.topology_snapshot(feature, 0).unwrap();
+    let tolerance = policy.linear_tolerance_mm * 2.;
+    assert!(Solid::step_compound_topology_matches(
+        &topology, &members, tolerance
+    ));
+    let flank = topology
+        .elements
+        .iter_mut()
+        .find_map(|element| match &mut element.geometry {
+            Some(AnalyticGeometry::InvoluteArc { base_radius_mm, .. }) => Some(base_radius_mm),
+            _ => None,
+        })
+        .unwrap();
+    *flank += 0.01;
+    assert!(!Solid::step_compound_topology_matches(
+        &topology, &members, tolerance
+    ));
+}
+
+#[test]
 fn intrinsic_hubs_extend_one_solid_and_one_continuous_bore_with_exact_face_ancestry() {
     for (beta, sweep) in [
         (0., GearSweep::Spur),

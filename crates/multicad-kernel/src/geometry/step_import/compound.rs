@@ -154,7 +154,8 @@ impl Solid {
                 + readback.circles.len()
                 + readback.semicircles.len()
                 + readback.arcs.len()
-                + readback.ellipses.len();
+                + readback.ellipses.len()
+                + readback.splines.len();
             ends.push(end);
         }
         let mut members = vec![Vec::new(); readbacks.len()];
