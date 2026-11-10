@@ -70,10 +70,21 @@ fn project(
     options: DrawingProjection,
     cut: Option<LoftSceneCut>,
 ) -> Result<(Vec<ProjectedVector>, Vec<bool>), GeometryError> {
+    let rounds: Vec<_> = members
+        .iter()
+        .map(|(_, solid)| {
+            if cut.is_none() && solid.nonplanar_loft_body().is_none() {
+                curved::round_occluder(solid, options.frame)
+            } else {
+                Ok(None)
+            }
+        })
+        .collect::<Result<_, _>>()?;
     let planar_inputs: Vec<_> = members
         .iter()
-        .filter(|(_, solid)| solid.nonplanar_loft_body().is_none())
-        .map(|(_, solid)| DrawingSolid { solid, hatch: None })
+        .zip(&rounds)
+        .filter(|((_, solid), round)| round.is_none() && solid.nonplanar_loft_body().is_none())
+        .map(|((_, solid), _)| DrawingSolid { solid, hatch: None })
         .collect();
     let (planar_bodies, tolerance) = planar::prepare(&planar_inputs, options.frame)?;
     let tolerance = members.iter().fold(tolerance, |value, (_, solid)| {
@@ -109,7 +120,8 @@ fn project(
     let mut planar_bodies = planar_bodies.iter();
     let scene: Vec<_> = members
         .iter()
-        .map(|(_, solid)| {
+        .zip(&rounds)
+        .map(|((_, solid), round)| {
             if let Some((body, placement)) = solid.nonplanar_loft_body() {
                 let Frame { axes, offset } = Frame::new(placement, options.frame.origin, axes);
                 LoftSceneMember::Loft {
@@ -117,6 +129,8 @@ fn project(
                     axes,
                     offset,
                 }
+            } else if let Some(round) = round {
+                LoftSceneMember::Round(round)
             } else {
                 LoftSceneMember::Planar(planar_bodies.next().expect("prepared every planar member"))
             }
@@ -146,19 +160,38 @@ fn project(
         ),
         Error::Limit => limit(),
     })?;
-    let vectors = publish(
-        edges.into_iter().map(|(source, edge)| {
-            (
-                members[source].0,
-                map_curve(edge.curve, |[u, v, _]| [u, v]),
-                if edge.hidden {
-                    VectorRole::Hidden
-                } else {
-                    VectorRole::Visible
-                },
-            )
-        }),
-        options,
-    )?;
+    let mut points = options.maximum_points as usize;
+    let vectors = edges
+        .into_iter()
+        .map(|(source, edge)| {
+            let source = members[source].0;
+            let role = if edge.hidden {
+                VectorRole::Hidden
+            } else {
+                VectorRole::Visible
+            };
+            if let Some(ellipse) = edge.ellipse {
+                let curve = multicad_rust_kernel::curved_projection::Curve::Ellipse(ellipse);
+                let preview_mm = curve
+                    .preview(options.chord_tolerance_mm, points)
+                    .map_err(curved::projection_error)?;
+                charge(&mut points, preview_mm.len())?;
+                Ok(ProjectedVector {
+                    source_index: source,
+                    role,
+                    curve: curved::ellipse_vector(ellipse),
+                    preview_mm,
+                })
+            } else {
+                publish_one(
+                    source,
+                    map_curve(edge.curve, |[u, v, _]| [u, v]),
+                    role,
+                    options,
+                    &mut points,
+                )
+            }
+        })
+        .collect::<Result<_, _>>()?;
     Ok((vectors, clipped))
 }

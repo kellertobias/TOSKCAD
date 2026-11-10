@@ -561,3 +561,143 @@ fn assembly_section_uses_one_cut_for_placed_lofts_and_clipped_planar_faces() {
         Err(Error::Invalid)
     );
 }
+
+#[test]
+fn round_scene_preserves_bore_visibility_and_analytic_rims() {
+    use crate::{planar_projection::tests::rect, round_occlusion::RoundOccluder};
+
+    let ring = RoundOccluder::new([0., 0., 3.], [0., 0., 1.], 3., 2., Some(1.)).unwrap();
+    let stock = rect([-4., 0., 4., 0.5], 0., 1.);
+    let members = [
+        LoftSceneMember::Planar(&stock),
+        LoftSceneMember::Round(&ring),
+    ];
+    let edges = project_loft_scene(&members, scene_options()).unwrap();
+    for (hidden, x) in [
+        (false, [-4., -3.]),
+        (true, [-3., -1.]),
+        (false, [-1., 1.]),
+        (true, [1., 3.]),
+        (false, [3., 4.]),
+    ] {
+        assert!(
+            edges.iter().any(|&(source, edge)| {
+                source == 0
+                    && edge.hidden == hidden
+                    && matches!(edge.curve, LoftSectionCurve::Line([a, b])
+                    if a[1] == 0. && b[1] == 0. && a[2] == 1. && b[2] == 1.
+                        && (a[0] - x[0]).abs() < TOL && (b[0] - x[1]).abs() < TOL)
+            }),
+            "missing {hidden} {x:?}"
+        );
+    }
+    for radius in [1., 3.] {
+        let spans: f64 = edges
+            .iter()
+            .filter_map(|(source, edge)| {
+                let ellipse = edge.ellipse?;
+                (*source == 1 && !edge.hidden && ellipse.major == radius)
+                    .then_some(ellipse.trim[1] - ellipse.trim[0])
+            })
+            .sum();
+        assert!((spans - std::f64::consts::TAU).abs() < TOL);
+    }
+    assert_eq!(
+        project_loft_scene_section(
+            &members,
+            scene_options(),
+            LoftSceneCut {
+                near: 4.,
+                far: None,
+                windows: [None; 2]
+            }
+        ),
+        Err(Error::Unresolved),
+    );
+
+    // Quarter annuli are blocker-only in the round API and cannot supply
+    // standalone candidate edges to this scene.
+    let quarter = RoundOccluder::quarter_annulus(
+        [0.; 3],
+        [0., 0., 1.],
+        [[1., 0., 0.], [0., 1., 0.]],
+        3.,
+        2.,
+        1.,
+    )
+    .unwrap();
+    assert_eq!(
+        project_loft_scene(&[LoftSceneMember::Round(&quarter)], scene_options()),
+        Err(Error::Invalid),
+    );
+}
+
+#[test]
+fn an_edge_changes_depth_order_inside_a_round_silhouette() {
+    use crate::{planar_projection::tests::rect, round_occlusion::RoundOccluder};
+
+    let cylinder = RoundOccluder::new([0.; 3], [1., 0., 0.], 2., 4., None).unwrap();
+    let stock = rect([0.2, -3., 0.3, 3.], 0.8, 1.);
+    let edges = project_loft_scene(
+        &[
+            LoftSceneMember::Round(&cylinder),
+            LoftSceneMember::Planar(&stock),
+        ],
+        scene_options(),
+    )
+    .unwrap();
+    let split = 3_f64.sqrt();
+    assert!(edges.iter().any(|&(source, edge)| {
+        source == 1
+            && edge.hidden
+            && matches!(edge.curve, LoftSectionCurve::Line([a, b])
+                if [a, b].into_iter().all(|p| p[0] == 0.3 && p[2] == 1.)
+                && (a[1] + split).abs() < TOL && (b[1] - split).abs() < TOL)
+    }));
+}
+
+#[test]
+fn aligned_round_bodies_hide_the_rear_contour_without_trig_noise() {
+    use crate::round_occlusion::RoundOccluder;
+
+    let front = RoundOccluder::new([0., 0., 3.], [0., 0., 1.], 2., 2., None).unwrap();
+    let rear = RoundOccluder::new([0.; 3], [0., 0., 1.], 2., 2., None).unwrap();
+    let edges = project_loft_scene(
+        &[
+            LoftSceneMember::Round(&front),
+            LoftSceneMember::Round(&rear),
+        ],
+        scene_options(),
+    )
+    .unwrap();
+    assert!(
+        edges
+            .iter()
+            .any(|(source, edge)| *source == 0 && !edge.hidden)
+    );
+    assert!(
+        edges
+            .iter()
+            .any(|(source, edge)| *source == 1 && edge.hidden)
+    );
+    assert!(
+        !edges
+            .iter()
+            .any(|(source, edge)| *source == 1 && !edge.hidden)
+    );
+}
+
+#[test]
+fn an_almost_edge_on_rim_keeps_its_ellipse_when_the_polynomial_is_flat_on_paper() {
+    use crate::round_occlusion::RoundOccluder;
+
+    let axis = [1., 0., 1e-14];
+    let cylinder = RoundOccluder::new([20., 0., 0.], axis, 2., 3., None).unwrap();
+    let edges = project_loft_scene(&[LoftSceneMember::Round(&cylinder)], scene_options()).unwrap();
+    assert!(edges.iter().any(|(_, edge)| {
+        matches!(edge.curve, LoftSectionCurve::Line(_))
+            && edge.ellipse.is_some_and(|ellipse| {
+                ellipse.minor > 0. && ellipse.minor < 1e-12 && ellipse.trim[1] > ellipse.trim[0]
+            })
+    }));
+}

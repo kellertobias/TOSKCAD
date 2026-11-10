@@ -224,11 +224,14 @@ pub(super) fn project(
                 .any(|wall| wall.blocks(point, near, options.tolerance))
     };
     publish(
-        curves.into_iter().map(|curve| (0, curve, true)).collect(),
+        curves
+            .into_iter()
+            .map(|curve| Candidate::new(0, curve, true))
+            .collect(),
         options,
         epsilon,
         clip.as_ref().map(|clip| clip.planes),
-        &|point| Ok(blocked(point)),
+        &|_, _, point| Ok(blocked(point)),
         &|_, _, _, _| Ok(()),
     )
     .map(|edges| edges.into_iter().map(|(_, edge)| edge).collect())
@@ -259,30 +262,64 @@ pub(super) fn loft_curves(
     walls
 }
 
+pub(super) struct Candidate {
+    pub source: usize,
+    pub curve: Curve,
+    pub emit: bool,
+    pub rim: Option<crate::curved_projection::Rim>,
+    pub hidden: bool,
+}
+
+impl Candidate {
+    pub(super) fn new(source: usize, curve: Curve, emit: bool) -> Self {
+        Self {
+            source,
+            curve,
+            emit,
+            rim: None,
+            hidden: false,
+        }
+    }
+}
+
+type Blocked<'a> =
+    dyn Fn(usize, Option<crate::curved_projection::Rim>, Point) -> Result<bool, Error> + 'a;
 type DepthEvents<'a> = dyn Fn(usize, Curve, [Paper; 2], &mut Vec<f64>) -> Result<(), Error> + 'a;
 
 pub(super) fn publish(
-    mut curves: Vec<(usize, Curve, bool)>,
+    mut curves: Vec<Candidate>,
     options: LoftProjection,
     epsilon: f64,
     planes: Option<clip::Limits>,
-    blocked: &dyn Fn(Point) -> Result<bool, Error>,
+    blocked: &Blocked<'_>,
     depth_events: &DepthEvents<'_>,
 ) -> Result<Vec<(usize, LoftDrawingEdge)>, Error> {
-    curves
-        .retain(|(_, curve, _)| length(minus(paper(curve.at(0.)), paper(curve.at(1.)))) > epsilon);
-    let bounds: Vec<_> = curves.iter().map(|(_, curve, _)| curve.bounds()).collect();
+    curves.retain(|candidate| {
+        let curve = candidate.curve;
+        length(minus(paper(curve.at(0.)), paper(curve.at(1.)))) > epsilon
+    });
+    let bounds: Vec<_> = curves
+        .iter()
+        .map(|candidate| candidate.curve.bounds())
+        .collect();
     let mut output = Vec::new();
     let mut cuts = Vec::new();
-    for (index, &(source, curve, emit)) in curves.iter().enumerate() {
+    for (index, candidate) in curves.iter().enumerate() {
+        let Candidate {
+            source,
+            curve,
+            emit,
+            rim,
+            hidden,
+        } = *candidate;
         if !emit {
             continue;
         }
         cuts.clear();
         cuts.extend([0., 1.]);
-        for (other_index, &(_, other, _)) in curves.iter().enumerate() {
+        for (other_index, other) in curves.iter().enumerate() {
             if index != other_index && overlap(bounds[index], bounds[other_index], epsilon) {
-                curve.intersections(other, epsilon, &mut cuts);
+                curve.intersections(other.curve, epsilon, &mut cuts);
             }
         }
         if let Some((center, radius)) = options.detail {
@@ -307,7 +344,7 @@ pub(super) fn publish(
             if planes.is_some_and(|planes| !clip::includes(planes, point, epsilon)) {
                 continue;
             }
-            let hidden = blocked(point)?;
+            let hidden = hidden || blocked(source, rim, point)?;
             if let Some((span, _)) = runs
                 .last_mut()
                 .filter(|(span, old)| *old == hidden && span[1] == a)
@@ -318,12 +355,21 @@ pub(super) fn publish(
             }
         }
         for (span, hidden) in runs {
-            if let Some(edge) = curve
+            if let Some(mut edge) = curve
                 .slice(span)
                 .publish(hidden, epsilon, options.tolerance)
             {
                 if output.len() >= options.edge_limit {
                     return Err(Error::Limit);
+                }
+                if let Some(rim) = rim {
+                    let ends = match edge.curve {
+                        LoftSectionCurve::Line(ends) => ends,
+                        LoftSectionCurve::Quadratic {
+                            poles: [a, _, b], ..
+                        } => [a, b],
+                    };
+                    edge.ellipse = Some(round::trim_rim(rim, ends));
                 }
                 output.push((source, edge));
             }

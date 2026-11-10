@@ -1,8 +1,9 @@
-//! Shared orthographic visibility for planar bodies and bilinear lofts.
+//! Shared orthographic visibility for planar, round and bilinear bodies.
 use super::*;
 use crate::planar_projection::{Body, Options, ProjectionError, prepare_loft_faces};
+use crate::round_occlusion::RoundOccluder;
 use std::cell::Cell;
-use visibility::{Cap, Wall};
+use visibility::{Candidate, Cap, Wall};
 
 pub enum LoftSceneMember<'a> {
     Loft {
@@ -11,6 +12,7 @@ pub enum LoftSceneMember<'a> {
         offset: Point,
     },
     Planar(&'a Body),
+    Round(&'a RoundOccluder),
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -83,7 +85,7 @@ pub(super) fn project_with_limit(
         .iter()
         .filter_map(|member| match member {
             LoftSceneMember::Planar(body) => Some(*body),
-            LoftSceneMember::Loft { .. } => None,
+            LoftSceneMember::Loft { .. } | LoftSceneMember::Round(_) => None,
         })
         .collect();
     let prepared = prepare_loft_faces(&planar, &options, limit).map_err(|cause| match cause {
@@ -92,6 +94,7 @@ pub(super) fn project_with_limit(
     })?;
     let planar_faces = prepared.faces;
     let mut lofts = Vec::new();
+    let mut rounds = Vec::new();
     let mut curves = Vec::new();
     let mut coordinate_scale = 1_f64;
     let mut tangent = prepared.tangent.into_iter();
@@ -140,7 +143,24 @@ pub(super) fn project_with_limit(
                     walls,
                     clip,
                 });
-                curves.extend(edges.into_iter().map(|edge| (source, edge, true)));
+                curves.extend(
+                    edges
+                        .into_iter()
+                        .map(|edge| Candidate::new(source, edge, true)),
+                );
+            }
+            LoftSceneMember::Round(body) => {
+                if cut.is_some() {
+                    return Err(Error::Unresolved);
+                }
+                coordinate_scale = body
+                    .bounds()
+                    .into_iter()
+                    .flatten()
+                    .map(f64::abs)
+                    .fold(coordinate_scale, f64::max);
+                rounds.push((source, body));
+                curves.extend(round::candidates(source, body, options.hidden_lines)?);
             }
             LoftSceneMember::Planar(body) => {
                 let tags = tangent.next().expect("tangent flags for every planar body");
@@ -150,7 +170,11 @@ pub(super) fn project_with_limit(
                         .chain(b)
                         .map(f64::abs)
                         .fold(coordinate_scale, f64::max);
-                    curves.push((source, Curve::line(a, b), options.tangent_edges || !tangent));
+                    curves.push(Candidate::new(
+                        source,
+                        Curve::line(a, b),
+                        options.tangent_edges || !tangent,
+                    ));
                 }
             }
         }
@@ -169,8 +193,8 @@ pub(super) fn project_with_limit(
     let wall_count: usize = lofts.iter().map(|loft| loft.walls.len()).sum();
     let ray_cost = 4 * wall_count + planar_faces.iter().map(|p| p.boundary_len()).sum::<usize>();
     let near = cut.map_or(f64::INFINITY, |cut| cut.near);
-    let blocked = |point| {
-        charge(ray_cost)?;
+    let blocked = |source, rim: Option<_>, point| {
+        charge(ray_cost + rounds.len())?;
         Ok(planar_faces
             .iter()
             .any(|face| face.covers(point, options.tolerance))
@@ -185,11 +209,16 @@ pub(super) fn project_with_limit(
             || lofts
                 .iter()
                 .filter_map(|loft| loft.clip.as_ref())
-                .any(|clip| clip.blocks(point, options.tolerance)))
+                .any(|clip| clip.blocks(point, options.tolerance))
+            || rounds.iter().any(|&(owner, round)| {
+                source != owner
+                    && (rim.is_some_and(|rim| round.covers_coincident_rim(rim, options.tolerance))
+                        || round.blocks_point(point, options.tolerance))
+            }))
     };
     let epsilon = (64. * f64::EPSILON * coordinate_scale).min(options.tolerance);
     let depth_events = |source, curve: Curve, bounds, cuts: &mut Vec<f64>| {
-        charge(planar_faces.len() + 4 * wall_count)?;
+        charge(planar_faces.len() + 4 * (wall_count + rounds.len()))?;
         for face in &planar_faces {
             curve.plane_crossings(face.point, face.normal, cuts);
         }
@@ -203,6 +232,11 @@ pub(super) fn project_with_limit(
             }
             for wall in &loft.walls {
                 wall.depth_events(curve, bounds, epsilon, cuts);
+            }
+        }
+        for &(owner, round) in &rounds {
+            if owner != source {
+                round::depth_events(round, curve, bounds, epsilon, cuts);
             }
         }
         Ok(())

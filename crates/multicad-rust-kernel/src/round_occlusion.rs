@@ -172,6 +172,35 @@ impl RoundOccluder {
             && (0..2).all(|i| same_coordinate(rim.ellipse.center[i], near[i], self.radius))
     }
 
+    pub(crate) fn circular_boundary(&self) -> (Point, Point, f64, [Option<f64>; 2]) {
+        (
+            self.base,
+            self.axis,
+            self.height,
+            [Some(self.radius), self.bore],
+        )
+    }
+
+    pub(crate) fn blocks_point(&self, point: Point, tolerance: f64) -> bool {
+        if !self.may_hide([point; 2], tolerance) {
+            return false;
+        }
+        let [x, y, z]: Point = std::array::from_fn(|i| point[i] - self.base[i]);
+        let [u, v] = self.screen_axis;
+        let along = u.mul_add(x, v * y);
+        let across = u.mul_add(y, -v * x);
+        let c = self.axis[2];
+        let p = self.projected;
+        let z = z + tolerance;
+        self.ray_hits(
+            p.mul_add(along, c * z),
+            c.mul_add(along, -p * z),
+            across,
+            self.radius,
+            self.bore,
+        )
+    }
+
     pub(crate) fn drawing_edges(
         &self,
         hidden_lines: bool,

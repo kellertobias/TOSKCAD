@@ -1813,6 +1813,11 @@ fn twisted_polygon_loft_rebuilds_and_reopens_from_embedded_step() {
         #[cfg(feature = "occt")]
         native.solid(request.body).unwrap(),
     );
+    verify_twisted_loft_round_scene(
+        solid,
+        #[cfg(feature = "occt")]
+        native.solid(request.body).unwrap(),
+    );
     verify_twisted_loft_assembly_sections(
         solid,
         #[cfg(feature = "occt")]
@@ -2280,6 +2285,151 @@ fn verify_twisted_loft_scene(
             "Twisted loft assembly projection medians over 9 warm runs: Rust {:?}, OpenCascade {:?}",
             measure(&rear, loft, &front),
             measure(&native_rear, native, &native_front),
+        );
+    }
+}
+
+fn verify_twisted_loft_round_scene(
+    loft: &multicad_kernel::Solid,
+    #[cfg(feature = "occt")] native: &multicad_kernel::Solid,
+) {
+    use multicad_core::drawings::{VectorCurve, VectorRole};
+    use multicad_kernel::{DrawingProjection, DrawingSolid, PlaneFrame, Solid, project_drawing};
+
+    let frame = PlaneFrame {
+        origin: [1., -0.5, 7.],
+        ..Default::default()
+    };
+    let ring =
+        Solid::rust_annulus(0.65, 1.4, 1.5, EntityId::new(), frame, Default::default()).unwrap();
+    let project = |loft, ring, options| {
+        project_drawing(
+            &[loft, ring].map(|solid| DrawingSolid { solid, hatch: None }),
+            options,
+        )
+        .unwrap()
+    };
+    let options = DrawingProjection {
+        hidden_lines: true,
+        chord_tolerance_mm: 1e-4,
+        ..Default::default()
+    };
+    let axial = project(loft, &ring, options);
+    for role in [VectorRole::Hidden, VectorRole::Visible] {
+        assert!(axial.iter().any(|v| v.source_index == 0 && v.role == role));
+    }
+    for radius in [0.65, 1.4] {
+        assert!(axial.iter().any(|v| {
+            v.source_index == 1
+                && v.role == VectorRole::Visible
+                && matches!(v.curve, VectorCurve::Ellipse { major_mm, minor_mm, .. }
+                    if major_mm == radius && minor_mm == radius)
+        }));
+    }
+    let oblique = DrawingProjection {
+        frame: PlaneFrame {
+            v: [0., 0.8, 0.6],
+            ..Default::default()
+        },
+        ..options
+    };
+    let tilted = project(loft, &ring, oblique);
+    let visible = project(
+        loft,
+        &ring,
+        DrawingProjection {
+            hidden_lines: false,
+            ..oblique
+        },
+    );
+    assert_eq!(
+        visible,
+        tilted
+            .iter()
+            .filter(|v| v.role == VectorRole::Visible)
+            .cloned()
+            .collect::<Vec<_>>()
+    );
+    let cropped = project(
+        loft,
+        &ring,
+        DrawingProjection {
+            detail: Some(([1., 4.8], 0.75)),
+            ..oblique
+        },
+    );
+    assert!(cropped.iter().any(|v| v.source_index == 1));
+    assert!(
+        cropped
+            .iter()
+            .flat_map(|v| &v.preview_mm)
+            .all(|[x, y]| { (x - 1.).hypot(y - 4.8) <= 0.750001 })
+    );
+
+    #[cfg(feature = "occt")]
+    {
+        let policy = Default::default();
+        let blank = Solid::cylinder(frame, 1.4, 1.5, policy).unwrap();
+        let bore = Solid::cylinder(
+            PlaneFrame {
+                origin: [1., -0.5, 6.],
+                ..frame
+            },
+            0.65,
+            3.5,
+            policy,
+        )
+        .unwrap();
+        let native_ring = blank
+            .boolean(&bore, multicad_kernel::BooleanOperation::Subtract, policy)
+            .unwrap()
+            .unwrap();
+        let reference = project(native, &native_ring, options);
+        for (a, b) in [(&axial, &reference), (&reference, &axial)] {
+            for vector in a {
+                // Axially, coincident back rims can appear in the hidden
+                // layer in the reference. Compare the visible geometry.
+                if vector.role != VectorRole::Visible {
+                    continue;
+                }
+                let segments = b
+                    .iter()
+                    .filter(|other| {
+                        other.source_index == vector.source_index && other.role == vector.role
+                    })
+                    .flat_map(|other| other.preview_mm.windows(2));
+                for &[x, y] in &vector.preview_mm {
+                    let error = segments
+                        .clone()
+                        .map(|ends| {
+                            let [[ax, ay], [bx, by]] = [ends[0], ends[1]];
+                            let [u, v] = [bx - ax, by - ay];
+                            let t = (((x - ax) * u + (y - ay) * v) / (u * u + v * v)).clamp(0., 1.);
+                            (x - ax - t * u).hypot(y - ay - t * v)
+                        })
+                        .fold(f64::INFINITY, f64::min);
+                    assert!(
+                        error < 3. * options.chord_tolerance_mm,
+                        "source {} at [{x}, {y}] error {error}",
+                        vector.source_index
+                    );
+                }
+            }
+        }
+        let measure = |loft, ring| {
+            let mut times = [std::time::Duration::ZERO; 9];
+            for elapsed in &mut times {
+                let start = std::time::Instant::now();
+                assert!(!project(loft, ring, oblique).is_empty());
+                *elapsed = start.elapsed();
+            }
+            times.sort_unstable();
+            times[4]
+        };
+        eprintln!(
+            "Twisted loft and annulus oblique projection, 9 warm runs: Rust {:?}, OpenCascade {:?}",
+            measure(loft, &ring),
+            measure(native, &native_ring),
         );
     }
 }

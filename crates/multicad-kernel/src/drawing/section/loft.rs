@@ -120,42 +120,49 @@ fn publish(
     }
     let mut points = options.maximum_points as usize;
     curves
-        .map(|(source, curve, role)| {
-            let vector = match curve {
-                Curve::Line(ends) => {
-                    charge(&mut points, 2)?;
-                    planar::line(source, role, ends)
-                }
-                Curve::Quadratic(controls) => {
-                    let mut preview = vec![controls[0].point];
-                    charge(&mut points, 1)?;
-                    sample(
-                        controls,
-                        options.chord_tolerance_mm,
-                        0,
-                        &mut points,
-                        &mut preview,
-                    )?;
-                    ProjectedVector {
-                        source_index: source,
-                        role,
-                        curve: VectorCurve::BSpline {
-                            degree: 2,
-                            periodic: false,
-                            poles: controls.map(|control| control.point).to_vec(),
-                            weights: controls.map(|control| control.weight).to_vec(),
-                            knots: vec![0., 1.],
-                            multiplicities: vec![3, 3],
-                            first: 0.,
-                            last: 1.,
-                        },
-                        preview_mm: preview,
-                    }
-                }
-            };
-            Ok(vector)
-        })
+        .map(|(source, curve, role)| publish_one(source, curve, role, options, &mut points))
         .collect()
+}
+
+fn publish_one(
+    source: usize,
+    curve: Curve,
+    role: VectorRole,
+    options: DrawingProjection,
+    points: &mut usize,
+) -> Result<ProjectedVector, GeometryError> {
+    Ok(match curve {
+        Curve::Line(ends) => {
+            charge(points, 2)?;
+            planar::line(source, role, ends)
+        }
+        Curve::Quadratic(controls) => {
+            let mut preview = vec![controls[0].point];
+            charge(points, 1)?;
+            sample(
+                controls,
+                options.chord_tolerance_mm,
+                0,
+                points,
+                &mut preview,
+            )?;
+            ProjectedVector {
+                source_index: source,
+                role,
+                curve: VectorCurve::BSpline {
+                    degree: 2,
+                    periodic: false,
+                    poles: controls.map(|control| control.point).to_vec(),
+                    weights: controls.map(|control| control.weight).to_vec(),
+                    knots: vec![0., 1.],
+                    multiplicities: vec![3, 3],
+                    first: 0.,
+                    last: 1.,
+                },
+                preview_mm: preview,
+            }
+        }
+    })
 }
 
 fn limit() -> GeometryError {

@@ -91,7 +91,11 @@ impl Curve {
                 weights: self.weights,
             }
         };
-        Some(LoftDrawingEdge { curve, hidden })
+        Some(LoftDrawingEdge {
+            curve,
+            hidden,
+            ellipse: None,
+        })
     }
 
     pub(super) fn bounds(self) -> [Paper; 2] {
@@ -170,6 +174,10 @@ impl Curve {
         let x = h.map(|p| p[0]);
         let y = h.map(|p| p[1]);
         let w = h.map(|p| p[2] * radius);
+        Self::radial_crossings(x, y, w, cuts);
+    }
+
+    pub(super) fn radial_crossings(x: [f64; 3], y: [f64; 3], w: [f64; 3], cuts: &mut Vec<f64>) {
         let polynomial = difference_of_products(x, x, w, w);
         let y2 = multiply(y, y);
         let radial = std::array::from_fn::<_, 5, _>(|i| polynomial[i] + y2[i]);

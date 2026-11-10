@@ -4,6 +4,7 @@ use crate::curved_projection::roots;
 
 mod clip;
 mod curve;
+mod round;
 mod scene;
 pub use scene::{
     LoftSceneCut, LoftSceneMember, LoftSceneSection, project_loft_scene, project_loft_scene_section,
@@ -33,6 +34,8 @@ pub struct LoftDrawingEdge {
     /// Paper coordinates and depth in the supplied frame.
     pub curve: LoftSectionCurve,
     pub hidden: bool,
+    /// Analytic paper ellipse when the spatial curve comes from a round rim.
+    pub ellipse: Option<crate::curved_projection::Ellipse>,
 }
 
 type Paper = [f64; 2];

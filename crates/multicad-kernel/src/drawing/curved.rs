@@ -25,7 +25,7 @@ fn unit(vector: [f64; 3]) -> [f64; 3] {
     vector.map(|v| v / length)
 }
 
-fn projection_error(error: Error) -> GeometryError {
+pub(super) fn projection_error(error: Error) -> GeometryError {
     match error {
         Error::Invalid => err(
             GeometryErrorKind::InvalidResult,
@@ -435,15 +435,7 @@ pub(super) fn publish(
             points -= preview_mm.len();
             let curve = match edge.curve {
                 Curve::Line([a, b]) => VectorCurve::Line { a, b },
-                Curve::Ellipse(ellipse) => VectorCurve::Ellipse {
-                    center: ellipse.center,
-                    u: ellipse.u,
-                    v: ellipse.v,
-                    major_mm: ellipse.major,
-                    minor_mm: ellipse.minor,
-                    start_rad: ellipse.trim[0],
-                    end_rad: ellipse.trim[1],
-                },
+                Curve::Ellipse(ellipse) => ellipse_vector(ellipse),
             };
             Ok(ProjectedVector {
                 source_index,
@@ -457,4 +449,16 @@ pub(super) fn publish(
             })
         })
         .collect()
+}
+
+pub(super) fn ellipse_vector(ellipse: curved_projection::Ellipse) -> VectorCurve {
+    VectorCurve::Ellipse {
+        center: ellipse.center,
+        u: ellipse.u,
+        v: ellipse.v,
+        major_mm: ellipse.major,
+        minor_mm: ellipse.minor,
+        start_rad: ellipse.trim[0],
+        end_rad: ellipse.trim[1],
+    }
 }
