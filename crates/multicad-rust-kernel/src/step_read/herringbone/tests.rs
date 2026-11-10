@@ -344,3 +344,50 @@ fn refuses_wrong_hand_tampered_surface_trim_and_incidence() {
         );
     }
 }
+
+#[test]
+fn rotated_bore_keeps_its_authored_seam_vertex() {
+    let [origin, u, v] = [[10., -20., 30.], [0.8, 0., -0.6], [0., 1., 0.]];
+    let gear = fixture(24, 1., 4.);
+    let source = write_herringbone(&gear, origin, u, v, TOL).unwrap();
+    let decoded = verify_herringbone(&source, &gear, origin, u, v, TOL).unwrap();
+    assert!((decoded - gear.volume_mm3()).abs() < 1e-5);
+
+    let rim = source
+        .lines()
+        .filter(|line| line.contains("=EDGE_CURVE("))
+        .nth(5 * gear.profile().outline().len() + 1)
+        .unwrap();
+    let record = |id| {
+        source
+            .lines()
+            .find(|line| line.split_once('=').is_some_and(|(left, _)| left == id))
+            .unwrap()
+    };
+    let vertex = record(&rim[argument(rim, "EDGE_CURVE(", 1)]);
+    let point = record(&vertex[argument(vertex, "VERTEX_POINT(", 1)]);
+    let coords = point[argument(point, "CARTESIAN_POINT(", 1)].trim_matches(['(', ')']);
+    let [x, y, z]: [&str; 3] = coords.split(',').collect::<Vec<_>>().try_into().unwrap();
+    // Tangential movement preserves the rim's plane and radius to general
+    // STEP tolerance, while exceeding the roundoff of the authored seam.
+    let changed_y = y.parse::<f64>().unwrap() + 1e-8;
+    let changed = changed_argument(
+        point,
+        "CARTESIAN_POINT(",
+        1,
+        &format!("({x},{changed_y:.16E},{z})"),
+    );
+    assert_ne!(point, changed);
+    let damaged = source.replacen(point, &changed, 1);
+    let entities = parse_entities(&damaged, TOL).unwrap();
+    let mut shell = Shell::new(&entities, TOL, true);
+    let rim_id = rim.split_once('=').unwrap().0[1..].parse().unwrap();
+    assert!(
+        shell.edge(rim_id).is_ok(),
+        "the generic circular rim accepts the perturbation"
+    );
+    assert_eq!(
+        verify_herringbone(&damaged, &gear, origin, u, v, TOL),
+        Err(ReadError::Invalid),
+    );
+}

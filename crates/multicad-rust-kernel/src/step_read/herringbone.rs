@@ -160,13 +160,16 @@ pub fn verify_herringbone(
                 let Curve::Circle(circle) = shell.edges[&id].curve else {
                     return Err(ReadError::Invalid);
                 };
+                // A circle's seam is defined relative to its serialized axis
+                // center, which is already placed in the end plane.
+                let rim_vertex = std::array::from_fn(|i| center[i] + radius * frame.u[i]);
                 require(
                     a == b
                         && vertex_ids.insert(a)
                         && circle.center_mm == center
                         && circle.radius_mm == radius
                         && length(sub(circle.normal, frame.normal)) < 1e-10
-                        && shell.vertex(a)? == frame.world([radius, 0.], z),
+                        && shell.vertex(a)? == rim_vertex,
                 )?;
                 bore_rims[end] = id;
             }
