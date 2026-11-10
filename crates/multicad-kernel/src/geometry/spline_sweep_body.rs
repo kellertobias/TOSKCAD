@@ -121,6 +121,33 @@ impl SplineSweepBody {
         }
     }
 
+    pub(crate) fn axial_drawing_rims(
+        &self,
+        frame: PlaneFrame,
+        top: bool,
+    ) -> (
+        PlaneFrame,
+        &[Edge],
+        impl Iterator<Item = AnalyticGeometry> + '_,
+    ) {
+        let cap = self.cap(frame, top);
+        let positioned = PlaneFrame {
+            origin: cap.origin_mm,
+            ..frame
+        };
+        let rims = self
+            .sweep
+            .outline()
+            .iter()
+            .filter_map(|edge| match edge {
+                Edge::Analytic(edge) => Some(*edge),
+                Edge::Cubic(_) => None,
+            })
+            .chain(self.sweep.hole())
+            .map(move |edge| normal_sweep_body::rim_in_frame(edge, cap));
+        (positioned, self.sweep.outline(), rims)
+    }
+
     fn side_plane(frame: PlaneFrame, edge: &Edge) -> Option<ReferenceFrame> {
         let Edge::Analytic(AnalyticEdge::Line { a, b }) = edge else {
             return None;

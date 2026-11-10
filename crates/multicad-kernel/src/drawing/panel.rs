@@ -4,6 +4,9 @@ use multicad_core::references::{AnalyticGeometry, TopologyKind};
 use multicad_rust_kernel::curved_projection::{Curve, Edge, Ellipse};
 use std::{collections::BTreeMap, f64::consts::TAU};
 
+mod spline;
+pub(super) use spline::{contains_spline_sweep, project_spline_sweep};
+
 type Point = [f64; 2];
 
 pub(super) fn project_spur_gear(

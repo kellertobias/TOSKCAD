@@ -159,6 +159,20 @@ pub fn project_drawing(
                 "Rust drawing projection requires all sources to use Rust geometry",
             ));
         }
+        if let [input] = solids
+            && let Some(projection) = panel::project_spline_sweep(input, options)
+        {
+            return projection;
+        }
+        if solids
+            .iter()
+            .any(|input| panel::contains_spline_sweep(input.solid))
+        {
+            return Err(err(
+                GeometryErrorKind::Unsupported,
+                "Rust spline sweep drawing supports one solid at a time; scene occlusion is unavailable",
+            ));
+        }
         if let Some(depth) = options.section_offset_mm {
             if let [input] = solids
                 && input.solid.annulus_body().is_some()
