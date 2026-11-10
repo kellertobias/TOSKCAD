@@ -1,6 +1,10 @@
-//! Exact visibility intervals for straight drawing edges behind round stock.
+//! Exact visibility intervals for drawing edges behind round stock.
 
-use crate::planar_projection::ProjectionError;
+use crate::{
+    curved_projection::{self, Cylinder, Detail, Rim, SpatialEdge},
+    drawing_events::{self, Harmonic},
+    planar_projection::ProjectionError,
+};
 
 type Point = [f64; 3];
 type Span = [f64; 2];
@@ -70,6 +74,26 @@ impl RoundOccluder {
 
     pub fn bounds(&self) -> [Point; 2] {
         self.bounds
+    }
+
+    pub(crate) fn drawing_edges(
+        &self,
+        hidden_lines: bool,
+        detail: Option<Detail>,
+    ) -> Result<Vec<SpatialEdge>, ProjectionError> {
+        curved_projection::project_in_depth(
+            Cylinder {
+                base: [self.base[0], self.base[1]],
+                axis: self.axis,
+                radius: self.radius,
+                height: self.height,
+            },
+            self.base[2],
+            self.bore,
+            hidden_lines,
+            detail,
+        )
+        .map_err(|_| ProjectionError::Invalid)
     }
 
     /// Find hidden intervals of a straight edge as normalized parameters in
@@ -158,7 +182,7 @@ impl RoundOccluder {
                 }
             }
         }
-        let ray = |t| self.ray_hits(axial.at(t), radial.at(t), y.at(t));
+        let ray = |t| self.ray_hits(axial.at(t), radial.at(t), y.at(t), self.radius, self.bore);
         let mut hidden: Option<Span> = None;
         for interval in events.sorted().windows(2) {
             let [start, end] = [interval[0], interval[1]];
@@ -176,7 +200,68 @@ impl RoundOccluder {
         }
     }
 
-    fn ray_hits(&self, axial: f64, radial: f64, y: f64) -> bool {
+    pub(crate) fn hide_rim(
+        &self,
+        rim: Rim,
+        tolerance: f64,
+        cuts: &mut Vec<f64>,
+        emit: impl FnMut(Span),
+    ) {
+        let [origin, cosine, sine] = rim.basis();
+        let [x, y, z] =
+            std::array::from_fn(|i| Harmonic([origin[i] - self.base[i], cosine[i], sine[i]]));
+        let scale = origin
+            .into_iter()
+            .chain(self.bounds.into_iter().flatten())
+            .map(f64::abs)
+            .fold(rim.ellipse.major, f64::max);
+        let depth_gap = tolerance.max(16. * f64::EPSILON * scale);
+        let z = z.offset(depth_gap);
+        let [u, v] = self.screen_axis;
+        let [x, y] = [x.combine(u, y, v), x.combine(-v, y, u)];
+        let p = self.projected;
+        let c = self.axis[2];
+        let axial = x.combine(p, z, c);
+        let radial = x.combine(c, z, -p);
+        let trim = rim.ellipse.trim;
+        // In a coaxial view two circumferences can coincide along their
+        // whole trim. A few ulps of trig error must not hide the silhouette.
+        let radial_guard = 16. * f64::EPSILON * self.radius.max(rim.ellipse.major);
+        let outer = self.radius - radial_guard;
+        let bore = self.bore.map(|radius| radius + radial_guard);
+        if bore.is_some_and(|inner| inner >= outer) {
+            return;
+        }
+        cuts.clear();
+        for cap in [0., self.height] {
+            axial.level(cap, trim, cuts);
+        }
+        for radius in [Some(outer), bore].into_iter().flatten() {
+            for level in [-radius, radius] {
+                y.level(level, trim, cuts);
+            }
+            drawing_events::circle(y, radial, radius, trim, cuts);
+            if c != 0. {
+                for cap in [0., self.height] {
+                    drawing_events::circle(
+                        y.scale(c),
+                        x.offset(-p * cap),
+                        c.abs() * radius,
+                        trim,
+                        cuts,
+                    );
+                }
+            }
+        }
+        drawing_events::spans(
+            cuts,
+            trim,
+            |t| self.ray_hits(axial.at(t), radial.at(t), y.at(t), outer, bore),
+            emit,
+        );
+    }
+
+    fn ray_hits(&self, axial: f64, radial: f64, y: f64, outer: f64, bore: Option<f64>) -> bool {
         let c = self.axis[2];
         let p = self.projected;
         let mut front = [0., f64::INFINITY];
@@ -193,9 +278,9 @@ impl RoundOccluder {
         }
         if p == 0. {
             let distance = radial.hypot(y);
-            return distance < self.radius && self.bore.is_none_or(|bore| distance > bore);
+            return distance < outer && bore.is_none_or(|inner| distance > inner);
         }
-        let Some(outer) = chord_half(self.radius, y.abs()) else {
+        let Some(outer) = chord_half(outer, y.abs()) else {
             return false;
         };
         let [low, high] = [(radial - outer) / p, (radial + outer) / p];
@@ -203,7 +288,7 @@ impl RoundOccluder {
         if front[1] <= front[0] {
             return false;
         }
-        let Some(inner) = self.bore.and_then(|radius| chord_half(radius, y.abs())) else {
+        let Some(inner) = bore.and_then(|radius| chord_half(radius, y.abs())) else {
             return true;
         };
         front[0] < (radial - inner) / p || front[1] > (radial + inner) / p

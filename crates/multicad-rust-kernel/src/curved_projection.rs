@@ -3,6 +3,7 @@
 use std::f64::consts::{FRAC_PI_2, PI, TAU};
 
 type Point = [f64; 2];
+type Point3 = [f64; 3];
 type Interval = [f64; 2];
 
 #[derive(Clone, Copy)]
@@ -42,6 +43,75 @@ pub struct Edge {
     pub curve: Curve,
 }
 
+#[derive(Clone, Copy)]
+pub(crate) struct Rim {
+    pub ellipse: Ellipse,
+    pub depth: f64,
+    pub depth_sine: f64,
+}
+
+impl Rim {
+    pub(crate) fn point(self, angle: f64) -> Point3 {
+        let [u, v] = self.ellipse.point(angle);
+        [u, v, self.depth_sine.mul_add(angle.sin(), self.depth)]
+    }
+
+    pub(crate) fn basis(self) -> [Point3; 3] {
+        let Ellipse {
+            center,
+            u,
+            v,
+            major,
+            minor,
+            ..
+        } = self.ellipse;
+        [
+            [center[0], center[1], self.depth],
+            [u[0] * major, u[1] * major, 0.],
+            [v[0] * minor, v[1] * minor, self.depth_sine],
+        ]
+    }
+
+    pub(crate) fn trimmed(self, trim: Interval) -> Curve {
+        if self.ellipse.minor == 0. {
+            let mut ends = trim.map(|angle| self.ellipse.point(angle));
+            if trim[1] <= PI {
+                ends.reverse();
+            }
+            Curve::Line(ends)
+        } else {
+            Curve::Ellipse(Ellipse {
+                trim,
+                ..self.ellipse
+            })
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum SpatialCurve {
+    Line([Point3; 2]),
+    Rim(Rim),
+}
+
+pub(crate) struct SpatialEdge {
+    pub hidden: bool,
+    pub curve: SpatialCurve,
+}
+
+impl SpatialEdge {
+    fn screen(self) -> Edge {
+        let curve = match self.curve {
+            SpatialCurve::Line(line) => Curve::Line(line.map(|[u, v, _]| [u, v])),
+            SpatialCurve::Rim(rim) => rim.trimmed(rim.ellipse.trim),
+        };
+        Edge {
+            hidden: self.hidden,
+            curve,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Error {
     Invalid,
@@ -73,7 +143,10 @@ pub fn project(
     hidden_lines: bool,
     detail: Option<Detail>,
 ) -> Result<Vec<Edge>, Error> {
-    project_circular(cylinder, None, hidden_lines, detail)
+    Ok(project_in_depth(cylinder, 0., None, hidden_lines, detail)?
+        .into_iter()
+        .map(SpatialEdge::screen)
+        .collect())
 }
 
 /// Orthographic edges for a cylindrical annulus with a coaxial through bore.
@@ -83,18 +156,21 @@ pub fn project_annulus(
     hidden_lines: bool,
     detail: Option<Detail>,
 ) -> Result<Vec<Edge>, Error> {
-    if !(1e-7..outer.radius).contains(&inner_radius) {
-        return Err(Error::Invalid);
-    }
-    project_circular(outer, Some(inner_radius), hidden_lines, detail)
+    Ok(
+        project_in_depth(outer, 0., Some(inner_radius), hidden_lines, detail)?
+            .into_iter()
+            .map(SpatialEdge::screen)
+            .collect(),
+    )
 }
 
-fn project_circular(
+pub(crate) fn project_in_depth(
     cylinder: Cylinder,
+    base_depth: f64,
     bore: Option<f64>,
     hidden_lines: bool,
     detail: Option<Detail>,
-) -> Result<Vec<Edge>, Error> {
+) -> Result<Vec<SpatialEdge>, Error> {
     let Cylinder {
         base,
         axis: [x, y, depth],
@@ -102,6 +178,8 @@ fn project_circular(
         height,
     } = cylinder;
     if !bounded(base)
+        || !base_depth.is_finite()
+        || bore.is_some_and(|inner| !(1e-7..radius).contains(&inner))
         || !(1e-7..=1e7).contains(&radius)
         || !(1e-7..=1e7).contains(&height)
         || (x.mul_add(x, y.mul_add(y, depth * depth)) - 1.).abs() > 1e-9
@@ -113,32 +191,57 @@ fn project_circular(
     }
     let projected = x.hypot(y);
     let top = shift(base, [x, y], height);
-    let (near, far) = if depth >= 0. {
-        (top, base)
+    let top_depth = depth.mul_add(height, base_depth);
+    let cap_depths = [base_depth, top_depth];
+    let [(near, near_depth), (far, far_depth)] = if depth >= 0. {
+        [(top, top_depth), (base, base_depth)]
     } else {
-        (base, top)
+        [(base, base_depth), (top, top_depth)]
     };
     let mut edges = Vec::with_capacity(if bore.is_some() { 11 } else { 5 });
-    let mut add = |curve: Curve, hidden: bool| {
+    let mut add = |curve: SpatialCurve, hidden: bool| {
         if !hidden || hidden_lines {
             match (curve, detail) {
-                (Curve::Ellipse(ellipse), Some(detail)) => {
-                    edges.extend(ellipse.in_detail(detail).into_iter().map(|trim| Edge {
-                        hidden,
-                        curve: Curve::Ellipse(Ellipse { trim, ..ellipse }),
+                (SpatialCurve::Rim(rim), Some(detail)) => {
+                    edges.extend(rim.ellipse.in_detail(detail).into_iter().map(|trim| {
+                        SpatialEdge {
+                            hidden,
+                            curve: SpatialCurve::Rim(Rim {
+                                ellipse: Ellipse {
+                                    trim,
+                                    ..rim.ellipse
+                                },
+                                ..rim
+                            }),
+                        }
                     }))
                 }
-                (Curve::Line(line), Some(detail)) => {
-                    if let Some(line) = line_in_detail(line, detail) {
-                        edges.push(Edge {
+                (SpatialCurve::Line(line), Some(detail)) => {
+                    let projected = line.map(|[u, v, _]| [u, v]);
+                    if let Some(clipped) = line_in_detail(projected, detail) {
+                        let delta = difference(projected[1], projected[0]);
+                        let length = delta[0].hypot(delta[1]);
+                        let direction = delta.map(|v| v / length);
+                        let clipped = clipped.map(|[u, v]| {
+                            let t = dot(difference([u, v], projected[0]), direction) / length;
+                            [u, v, (line[1][2] - line[0][2]).mul_add(t, line[0][2])]
+                        });
+                        edges.push(SpatialEdge {
                             hidden,
-                            curve: Curve::Line(line),
+                            curve: SpatialCurve::Line(clipped),
                         });
                     }
                 }
-                (curve, None) => edges.push(Edge { hidden, curve }),
+                (curve, None) => edges.push(SpatialEdge { hidden, curve }),
             }
         }
+    };
+    let arc = |ellipse: Ellipse, depth| {
+        SpatialCurve::Rim(Rim {
+            ellipse,
+            depth,
+            depth_sine: -ellipse.major * projected,
+        })
     };
     if projected <= ANGULAR_ROUNDOFF {
         let rim = Ellipse {
@@ -149,39 +252,61 @@ fn project_circular(
             minor: radius,
             trim: [0., TAU],
         };
-        add(Curve::Ellipse(rim), false);
+        add(arc(rim, near_depth), false);
         if let Some(inner) = bore {
             // Both caps project to the same two circles along the axis.
             add(
-                Curve::Ellipse(Ellipse {
-                    major: inner,
-                    minor: inner,
-                    ..rim
-                }),
+                arc(
+                    Ellipse {
+                        major: inner,
+                        minor: inner,
+                        ..rim
+                    },
+                    near_depth,
+                ),
                 false,
             );
         } else {
-            add(Curve::Ellipse(Ellipse { center: far, ..rim }), true);
+            add(arc(Ellipse { center: far, ..rim }, far_depth), true);
         }
         return Ok(edges);
     }
     let sign = if depth >= 0. { 1. } else { -1. };
     let v = [x, y].map(|value| value / projected * sign);
     let u = [v[1], -v[0]];
+    let generator = |[a, b]: [Point; 2]| {
+        SpatialCurve::Line([[a[0], a[1], base_depth], [b[0], b[1], top_depth]])
+    };
     for at in [-radius, radius] {
         let a = shift(base, u, at);
         let b = shift(top, u, at);
         if a != b {
-            add(Curve::Line([a, b]), false);
+            add(generator([a, b]), false);
         }
     }
     if depth.abs() <= ANGULAR_ROUNDOFF {
         // Each cap rim projects onto a diameter. The front half is visible and
         // the rear half maps onto the same segment in the hidden layer.
-        for center in [base, top] {
-            let rim = Curve::Line([-radius, radius].map(|at| shift(center, u, at)));
-            add(rim, false);
-            add(rim, true);
+        for (center, depth) in [base, top].into_iter().zip(cap_depths) {
+            let rim = Ellipse {
+                center,
+                u,
+                v,
+                major: radius,
+                minor: 0.,
+                trim: [PI, TAU],
+            };
+            add(arc(rim, depth), false);
+            add(
+                arc(
+                    Ellipse {
+                        trim: [0., PI],
+                        ..rim
+                    },
+                    depth,
+                ),
+                true,
+            );
         }
     } else {
         let rim = Ellipse {
@@ -192,16 +317,19 @@ fn project_circular(
             minor: radius * depth.abs().min(1.),
             trim: [0., TAU],
         };
-        add(Curve::Ellipse(rim), false);
+        add(arc(rim, near_depth), false);
         // The near cap is wholly visible. The eye-facing half of the far rim
         // projects away from the near cap, and the wall hides its other half.
         for (trim, hidden) in [([PI, TAU], false), ([0., PI], true)] {
             add(
-                Curve::Ellipse(Ellipse {
-                    center: far,
-                    trim,
-                    ..rim
-                }),
+                arc(
+                    Ellipse {
+                        center: far,
+                        trim,
+                        ..rim
+                    },
+                    far_depth,
+                ),
                 hidden,
             );
         }
@@ -214,7 +342,7 @@ fn project_circular(
             let a = shift(base, u, at);
             let b = shift(top, u, at);
             if a != b {
-                add(Curve::Line([a, b]), true);
+                add(generator([a, b]), true);
             }
         }
         if depth.abs() > ANGULAR_ROUNDOFF {
@@ -226,7 +354,7 @@ fn project_circular(
                 minor: inner * depth.abs().min(1.),
                 trim: [0., TAU],
             };
-            add(Curve::Ellipse(rim), false);
+            add(arc(rim, near_depth), false);
             let rim = Ellipse { center: far, ..rim };
             // At the near cap a ray from far-rim angle t has its radial
             // v component shifted by -height * projected / |depth|.
@@ -242,10 +370,10 @@ fn project_circular(
                     ([start, end], false),
                     ([end, TAU], true),
                 ] {
-                    add(Curve::Ellipse(Ellipse { trim, ..rim }), hidden);
+                    add(arc(Ellipse { trim, ..rim }, far_depth), hidden);
                 }
             } else {
-                add(Curve::Ellipse(rim), true);
+                add(arc(rim, far_depth), true);
             }
         }
     }
@@ -339,7 +467,7 @@ impl Ellipse {
     }
 }
 
-fn derivative(coefficients: &[f64]) -> Vec<f64> {
+pub(crate) fn derivative(coefficients: &[f64]) -> Vec<f64> {
     coefficients
         .iter()
         .enumerate()
@@ -348,7 +476,7 @@ fn derivative(coefficients: &[f64]) -> Vec<f64> {
         .collect()
 }
 
-fn roots(coefficients: &[f64], [lo, hi]: Interval) -> Vec<f64> {
+pub(crate) fn roots(coefficients: &[f64], [lo, hi]: Interval) -> Vec<f64> {
     let Some(degree) = coefficients.iter().rposition(|v| *v != 0.) else {
         return Vec::new();
     };

@@ -2,6 +2,9 @@
 
 use crate::round_occlusion::RoundOccluder;
 
+mod scene;
+pub use scene::{RoundSegment, project_scene};
+
 type Point = [f64; 3];
 type Point2 = [f64; 2];
 type Span = [f64; 2];
@@ -248,6 +251,20 @@ impl Node {
         bounds: Bounds,
         work: &mut Work,
     ) -> Result<(), ProjectionError> {
+        self.visit(bounds, work, &mut |face, work| {
+            if !line.adjacent.contains(&face.id) {
+                face.hide(line, span, work)?;
+            }
+            Ok(())
+        })
+    }
+
+    fn visit(
+        &self,
+        bounds: Bounds,
+        work: &mut Work,
+        face_visitor: &mut impl FnMut(&TrimmedPlane, &mut Work) -> Result<(), ProjectionError>,
+    ) -> Result<(), ProjectionError> {
         work.charge(1)?;
         if !self.bounds.overlaps(bounds, work.tolerance) {
             return Ok(());
@@ -256,16 +273,14 @@ impl Node {
             Children::Leaves(faces) => {
                 work.charge(faces.len())?;
                 for face in faces {
-                    if !line.adjacent.contains(&face.id)
-                        && face.bounds.overlaps(bounds, work.tolerance)
-                    {
-                        face.hide(line, span, work)?;
+                    if face.bounds.overlaps(bounds, work.tolerance) {
+                        face_visitor(face, work)?;
                     }
                 }
             }
             Children::Branches(nodes) => {
                 for node in nodes {
-                    node.hide(line, span, bounds, work)?;
+                    node.visit(bounds, work, face_visitor)?;
                 }
             }
         }
@@ -394,8 +409,17 @@ fn project_bounded(
     options: Options,
     limit: usize,
 ) -> Result<Vec<Segment>, ProjectionError> {
-    if bodies.is_empty()
-        || !(1e-7..=1e-3).contains(&options.tolerance)
+    if bodies.is_empty() {
+        return Err(ProjectionError::Invalid);
+    }
+    let mut work = projection_work(&options, limit)?;
+    let (planes, edge_uses) = prepare(bodies, &mut work)?;
+    let index = Node::build(planes).ok_or(ProjectionError::Invalid)?;
+    project_straight(bodies, &edge_uses, &index, rounds, &options, &mut work)
+}
+
+fn projection_work(options: &Options, limit: usize) -> Result<Work, ProjectionError> {
+    if !(1e-7..=1e-3).contains(&options.tolerance)
         || options.detail.is_some_and(|(center, radius)| {
             center.iter().any(|v| !v.is_finite() || v.abs() > 1e8)
                 || !(1e-5..=1e8).contains(&radius)
@@ -403,14 +427,22 @@ fn project_bounded(
     {
         return Err(ProjectionError::Invalid);
     }
-    let mut work = Work {
+    Ok(Work {
         remaining: limit,
         tolerance: options.tolerance,
         crossings: Vec::new(),
         hidden: Vec::new(),
-    };
-    let (planes, edge_uses) = prepare(bodies, &mut work)?;
-    let index = Node::build(planes).ok_or(ProjectionError::Invalid)?;
+    })
+}
+
+fn project_straight(
+    bodies: &[Body],
+    edge_uses: &[Vec<EdgeUse>],
+    index: &Node,
+    rounds: &[RoundOccluder],
+    options: &Options,
+    work: &mut Work,
+) -> Result<Vec<Segment>, ProjectionError> {
     let mut output = Vec::new();
     for (source, (body, uses)) in bodies.iter().zip(edge_uses).enumerate() {
         for (&edge, edge_use) in body.edges.iter().zip(uses) {
@@ -424,49 +456,82 @@ fn project_bounded(
             if span[1] - span[0] <= options.tolerance {
                 continue;
             }
-            work.hidden.clear();
-            let points = span.map(|s| line.point(s));
-            let [a, b] = points.map(Bounds::point);
-            index.hide(&line, span, a.union(b), &mut work)?;
-            for round in rounds {
-                work.charge(1)?;
-                if round.may_hide(points, options.tolerance) {
-                    work.charge(20)?;
-                    round.hide(points, options.tolerance, |interval| {
-                        let along = interval.map(|t| (span[1] - span[0]).mul_add(t, span[0]));
-                        work.hidden.push(along);
-                    });
-                }
-            }
-            work.hidden.sort_unstable_by(|a, b| a[0].total_cmp(&b[0]));
-            let mut emit = |hidden: bool, a, b| {
-                if b - a > options.tolerance && (!hidden || options.hidden_lines) {
-                    if output.len() >= options.segment_limit {
-                        return Err(ProjectionError::Limit);
+            hide_line(&line, span, Some(index), rounds, None, work)?;
+            publish_spans(
+                &mut work.hidden,
+                span,
+                options.tolerance,
+                |hidden, [a, b]| {
+                    if !hidden || options.hidden_lines {
+                        if output.len() >= options.segment_limit {
+                            return Err(ProjectionError::Limit);
+                        }
+                        output.push(Segment {
+                            source,
+                            hidden,
+                            ends: [a, b].map(|along| planar(line.point(along))),
+                        });
                     }
-                    output.push(Segment {
-                        source,
-                        hidden,
-                        ends: [a, b].map(|along| planar(line.point(along))),
-                    });
-                }
-                Ok(())
-            };
-            let mut start = span[0];
-            let mut hidden = span[0];
-            for &[a, b] in &work.hidden {
-                if a > hidden + options.tolerance {
-                    emit(true, start, hidden)?;
-                    emit(false, hidden, a)?;
-                    start = a;
-                }
-                hidden = hidden.max(b);
-            }
-            emit(true, start, hidden)?;
-            emit(false, hidden, span[1])?;
+                    Ok(())
+                },
+            )?;
         }
     }
     Ok(output)
+}
+
+fn hide_line(
+    line: &Line,
+    span: Span,
+    index: Option<&Node>,
+    rounds: &[RoundOccluder],
+    source: Option<usize>,
+    work: &mut Work,
+) -> Result<(), ProjectionError> {
+    work.hidden.clear();
+    let points = span.map(|s| line.point(s));
+    if let Some(index) = index {
+        let [a, b] = points.map(Bounds::point);
+        index.hide(line, span, a.union(b), work)?;
+    }
+    for (round_id, round) in rounds.iter().enumerate() {
+        work.charge(1)?;
+        if Some(round_id) != source && round.may_hide(points, work.tolerance) {
+            work.charge(20)?;
+            round.hide(points, work.tolerance, |interval| {
+                let along = interval.map(|t| (span[1] - span[0]).mul_add(t, span[0]));
+                work.hidden.push(along);
+            });
+        }
+    }
+    Ok(())
+}
+
+fn publish_spans(
+    hidden: &mut [Span],
+    span: Span,
+    tolerance: f64,
+    mut emit: impl FnMut(bool, Span) -> Result<(), ProjectionError>,
+) -> Result<(), ProjectionError> {
+    hidden.sort_unstable_by(|a, b| a[0].total_cmp(&b[0]));
+    let mut publish = |hidden, a, b| {
+        if b - a > tolerance {
+            emit(hidden, [a, b])?;
+        }
+        Ok(())
+    };
+    let mut start = span[0];
+    let mut covered = span[0];
+    for &[a, b] in hidden.iter() {
+        if a > covered + tolerance {
+            publish(true, start, covered)?;
+            publish(false, covered, a)?;
+            start = a;
+        }
+        covered = covered.max(b);
+    }
+    publish(true, start, covered)?;
+    publish(false, covered, span[1])
 }
 
 #[cfg(test)]
