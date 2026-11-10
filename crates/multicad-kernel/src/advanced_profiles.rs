@@ -302,7 +302,7 @@ impl Solid {
         result.name_advanced_profile(feature, &origins)?;
         Ok(result)
     }
-    /// Loft ordered authored sections with exact planar or round walls.
+    /// Loft ordered authored sections with exact planar, bilinear or round walls.
     pub fn rust_loft_profiles_named(
         profiles: &[CurvedProfile],
         feature: EntityId,

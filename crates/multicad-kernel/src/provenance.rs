@@ -930,6 +930,8 @@ impl Solid {
                 body.topology(frame, owner, revision)
             } else if let Some((body, frame)) = self.planar_boolean_body() {
                 body.topology(frame, owner, revision)
+            } else if let Some((body, frame)) = self.nonplanar_loft_body() {
+                body.topology(frame, owner, revision)
             } else if let Some((body, frame)) = self.warped_union_body() {
                 body.topology(frame, owner, revision)
             } else if let Some((body, frame)) = self.annulus_body() {

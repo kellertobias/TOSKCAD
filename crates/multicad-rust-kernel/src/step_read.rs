@@ -580,6 +580,8 @@ impl<'a, 'input> Shell<'a, 'input> {
         let geometry = self.edge_geometry(reference(geometry)?, vertices)?;
         let curve = if self.allow_circles && self.simple(geometry)?.name == "CIRCLE" {
             self.circle_curve(geometry, vertices, forward)?
+        } else if self.simple(geometry)?.name == "B_SPLINE_CURVE_WITH_KNOTS" {
+            self.straight_spline_curve(geometry, vertices, forward)?
         } else {
             self.line_curve(geometry, vertices, forward)?
         };

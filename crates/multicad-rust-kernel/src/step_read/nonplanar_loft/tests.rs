@@ -44,6 +44,11 @@ fn replays_windings_and_face_order_from_exact_step_edges_and_poles() {
         for source in [&step, &reordered] {
             let restored = read_nonplanar_loft_solid(source, TOL).unwrap();
             let after = read_analytic_solid(source, TOL).unwrap();
+            let (imported_proof, imported) = read_import_solid(source, TOL).unwrap();
+            assert_eq!(after, imported_proof);
+            assert!(
+                matches!(imported.profile, ImportProfile::NonplanarLoft { geometry } if geometry == restored.geometry)
+            );
             let near = |a: f64, b: f64| assert!((a - b).abs() < TOL, "{a} != {b}");
             near(restored.geometry.volume_mm3(), loft.volume_mm3());
             near(after.volume_mm3, loft.volume_mm3());
@@ -74,6 +79,9 @@ fn replays_windings_and_face_order_from_exact_step_edges_and_poles() {
 fn rejects_altered_supports_and_duplicate_faces() {
     let (_, step) = fixture(false);
     for altered in [
+        rewrite(&step, "=B_SPLINE_SURFACE_WITH_KNOTS", |line| {
+            line.replacen("(0.,1.)", "(0.)", 1)
+        }),
         rewrite(&step, "=B_SPLINE_SURFACE_WITH_KNOTS", |line| {
             line.replace("(2,2)", "(1,3)")
         }),
@@ -279,4 +287,94 @@ fn rejects_incomplete_bilinear_nets_and_invalid_reconstructed_sections() {
     shell.points.get_mut(&last[1]).unwrap()[2] += 0.2;
     check(&shell, [0., 0., 1.]);
     assert_eq!(verify_cycle(&first, &last), Err(ReadError::Invalid));
+}
+
+fn decorate_edge(step: &str, rail: bool, spline: bool, reverse: bool) -> String {
+    let entities = parse_entities(step, TOL).unwrap();
+    let shell = Shell::new(&entities, TOL, true);
+    let solid = shell.represented_solids(true).unwrap()[0];
+    let face = shell.member_faces(solid).unwrap()[2];
+    let wall = surface(&shell, face).unwrap().unwrap();
+    let (_, wire, _) = shell.bound(wall.bound, true).unwrap();
+    let edges = refs(&shell.args(wire, "EDGE_LOOP").unwrap()[1]).unwrap();
+    let oriented = edges[usize::from(rail)];
+    let edge = reference(&shell.args(oriented, "ORIENTED_EDGE").unwrap()[3]).unwrap();
+    let args = shell.args(edge, "EDGE_CURVE").unwrap();
+    let [start, end, line] = [1, 2, 3].map(|i| reference(&args[i]).unwrap());
+    let mut poles = [start, end]
+        .map(|vertex| reference(&shell.args(vertex, "VERTEX_POINT").unwrap()[1]).unwrap());
+    if reverse {
+        poles.reverse();
+    }
+    let [a, b] = poles;
+    let (origin, direction, scale) = if rail {
+        ("1.,0.", "0.,1.", 1.)
+    } else {
+        ("0.,0.", "1.,0.", 0.25)
+    };
+    let curve = if spline { 900008 } else { line };
+    let side = if reverse { ".F." } else { ".T." };
+    let master = if reverse { "CURVE_3D" } else { "PCURVE_S1" };
+    let mut extra = format!(
+        "#900001=SURFACE_CURVE('',#{curve},(#900002),.{master}.);\n\
+         #900002=PCURVE('',#{},#900003);\n\
+         #900003=DEFINITIONAL_REPRESENTATION('',(#900004),#900005);\n\
+         #900004=LINE('',#900006,#900007);\n\
+         #900005=GEOMETRIC_REPRESENTATION_CONTEXT(2);\n\
+         #900006=CARTESIAN_POINT('',({origin}));\n\
+         #900007=VECTOR('',#900009,{scale});\n\
+         #900009=DIRECTION('',({direction}));\n",
+        wall.id
+    );
+    if spline {
+        use std::fmt::Write;
+        writeln!(extra,
+            "#900008=B_SPLINE_CURVE_WITH_KNOTS('',1,(#{a},#{b}),.UNSPECIFIED.,.F.,.F.,(2,2),(0.,1.),.PIECEWISE_BEZIER_KNOTS.);"
+        ).unwrap();
+    }
+    replace_entity(
+        step,
+        edge,
+        &format!("EDGE_CURVE('',#{start},#{end},#900001,{side});"),
+    )
+    .replacen("ENDSEC;\nEND-ISO", &format!("{extra}ENDSEC;\nEND-ISO"), 1)
+}
+
+#[test]
+fn verifies_bilinear_master_pcurves_and_straight_spline_rails() {
+    let (_, step) = fixture(false);
+    let expected = read_analytic_solid(&step, TOL).unwrap();
+    let bottom = decorate_edge(&step, false, false, false);
+    let rail = decorate_edge(&step, true, true, false);
+    let reversed = decorate_edge(&step, true, true, true);
+    for source in [&bottom, &rail, &reversed] {
+        assert_eq!(read_analytic_solid(source, TOL).unwrap(), expected);
+    }
+    let diagonal = replace_entity(&rail, 900009, "DIRECTION('',(1.,1.));");
+    let interior = replace_entity(&rail, 900006, "CARTESIAN_POINT('',(0.5,0.));");
+    let singular = rewrite(&bottom, "=B_SPLINE_SURFACE_WITH_KNOTS", |line| {
+        line.replacen("(0.,1.)", "(0.,1.E-310)", 1)
+    });
+    let wrong_master = replace_entity(&rail, 900007, "VECTOR('',#900009,0.5);");
+    let wrong_trim = rewrite(&reversed, "#900008=", |line| {
+        let start = line.find("(#").unwrap() + 1;
+        let end = line[start..].find(')').unwrap() + start;
+        let poles: Vec<_> = line[start..end].split(',').collect();
+        format!(
+            "{}{},{}{}",
+            &line[..start],
+            poles[1],
+            poles[0],
+            &line[end..]
+        )
+    });
+    for source in [diagonal, interior] {
+        assert_eq!(
+            read_analytic_solid(&source, TOL),
+            Err(ReadError::Unsupported)
+        );
+    }
+    for source in [singular, wrong_master, wrong_trim] {
+        assert_eq!(read_analytic_solid(&source, TOL), Err(ReadError::Invalid));
+    }
 }

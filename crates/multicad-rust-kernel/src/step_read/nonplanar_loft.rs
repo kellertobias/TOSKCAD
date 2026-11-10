@@ -177,7 +177,12 @@ fn cap(shell: &mut Shell<'_, '_>, face: u32, surface: &Surface, count: usize) ->
     Ok(Cap { plane, vertices })
 }
 
-fn verify_surface(shell: &Shell<'_, '_>, surface: &Surface, ring: [u32; 4]) -> Result<()> {
+pub(super) struct BilinearPatch {
+    pub(super) corners: [Point; 4],
+    pub(super) limits: [[f64; 2]; 2],
+}
+
+pub(super) fn bilinear_surface(shell: &Shell<'_, '_>, id: u32) -> Result<BilinearPatch> {
     use Value::{Enum, List, Number, String};
     let [
         String(_),
@@ -193,29 +198,41 @@ fn verify_surface(shell: &Shell<'_, '_>, surface: &Surface, ring: [u32; 4]) -> R
         List(u_knots),
         List(v_knots),
         Enum(_),
-    ] = shell.args(surface.id, "B_SPLINE_SURFACE_WITH_KNOTS")?
+    ] = shell.args(id, "B_SPLINE_SURFACE_WITH_KNOTS")?
+    else {
+        return Err(ReadError::Invalid);
+    };
+    let ([Number(u0), Number(u1)], [Number(v0), Number(v1)]) =
+        (u_knots.as_slice(), v_knots.as_slice())
     else {
         return Err(ReadError::Invalid);
     };
     if [u_mult, v_mult]
         .into_iter()
         .any(|m| m.as_slice() != [Number(2.), Number(2.)])
-        || [u_knots, v_knots]
-            .into_iter()
-            .any(|k| !matches!(k.as_slice(), [Number(a), Number(b)] if a < b))
+        || u0 >= u1
+        || v0 >= v1
     {
         return Err(ReadError::Invalid);
     }
-    let [List(u0), List(u1)] = net.as_slice() else {
+    let [List(first_row), List(last_row)] = net.as_slice() else {
         return Err(ReadError::Invalid);
     };
-    let ([a, d], [b, c]) = (u0.as_slice(), u1.as_slice()) else {
+    let ([a, d], [b, c]) = (first_row.as_slice(), last_row.as_slice()) else {
         return Err(ReadError::Invalid);
     };
-    let mut points = [[0.; 3]; 4];
-    for (point, pole) in points.iter_mut().zip([a, b, c, d]) {
+    let mut corners = [[0.; 3]; 4];
+    for (point, pole) in corners.iter_mut().zip([a, b, c, d]) {
         *point = shell.point(reference(pole)?)?;
     }
+    Ok(BilinearPatch {
+        corners,
+        limits: [[*u0, *u1], [*v0, *v1]],
+    })
+}
+
+fn verify_surface(shell: &Shell<'_, '_>, surface: &Surface, ring: [u32; 4]) -> Result<()> {
+    let mut points = bilinear_surface(shell, surface.id)?.corners;
     if !surface.forward {
         points.reverse();
     }

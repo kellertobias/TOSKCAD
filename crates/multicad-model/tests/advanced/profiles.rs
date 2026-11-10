@@ -1773,9 +1773,11 @@ fn loft_polygon<const N: usize>(
     (ProfileSource { sketch, region }, curves)
 }
 
-#[cfg(feature = "occt")]
 #[test]
-fn native_twisted_polygon_loft_matches_integrated_section_area() {
+fn twisted_polygon_loft_rebuilds_and_reopens_from_embedded_step() {
+    use multicad_core::references::{self, GeometryIntent, Resolution, TopologyKind};
+    use multicad_model::{Compiler, GeometryBackend, imports::read_step_file_with_backend};
+
     let (mut session, _) = fixture();
     let bottom = [[-2., -1.], [2., -1.], [2., 1.], [-2., 1.]];
     let (sin, cos) = std::f64::consts::FRAC_PI_6.sin_cos();
@@ -1791,16 +1793,129 @@ fn native_twisted_polygon_loft_matches_integrated_section_area() {
             seams: vec![start[0], end[0]],
             ..Default::default()
         }),
-        vec![first, last],
+        vec![first, last.clone()],
         None,
     );
     commit(&mut session, &request);
-    let model = compile(&session);
-    let solid = model.solid(request.body).unwrap();
-    assert_eq!(solid.solid_count().unwrap(), 1);
-    assert_eq!(solid.faces().unwrap().len(), 6);
     // Integrate the determinant of (1 - t) I + t R across the height.
-    near(solid.volume_mm3().unwrap(), 6. * 8. * (2. + cos) / 3.);
+    let volume = |cos| 6. * 8. * (2. + cos) / 3.;
+    #[cfg(feature = "occt")]
+    let native = compile(&session);
+    let model = check_saved_rust_profile(&mut session, &request, volume(cos));
+    let solid = model.solid(request.body).unwrap();
+    let faces = solid.faces().unwrap();
+    assert_eq!(faces.len(), 6);
+    assert_eq!(faces.iter().filter(|face| face.plane.is_some()).count(), 2);
+    #[cfg(feature = "occt")]
+    {
+        let native = native.solid(request.body).unwrap();
+        near(native.volume_mm3().unwrap(), volume(cos));
+        near(
+            native
+                .faces()
+                .unwrap()
+                .iter()
+                .map(|face| face.area_mm2)
+                .sum(),
+            faces.iter().map(|face| face.area_mm2).sum(),
+        );
+        verify_smooth_loft_step_with_occt(solid);
+        let exchange = tempfile::tempdir().unwrap();
+        let authored = exchange.path().join("opencascade-twisted.step");
+        native.write_step(&authored).unwrap();
+        let imported = read_step_file_with_backend(&authored, GeometryBackend::Rust).unwrap();
+        let [(_, _, signature)] = imported.solids.as_slice() else {
+            panic!("expected one imported loft");
+        };
+        near(signature.volume_mm3, volume(cos));
+        let bounds = solid.bounds().unwrap();
+        for (actual, expected) in signature
+            .min
+            .into_iter()
+            .chain(signature.max)
+            .zip(bounds.min.into_iter().chain(bounds.max))
+        {
+            near(actual, expected);
+        }
+    }
+    let contours = solid
+        .planar_face_contours_with_sources(0, Default::default())
+        .unwrap();
+    assert_eq!(contours.edge_keys[0].len(), 4);
+    near(contours.contours.loops[0].signed_area(), 8.);
+
+    let wall_key = |model: &multicad_model::Model| {
+        let topology = &model.snapshot().shapes[&request.feature].topology;
+        let wall = topology
+            .elements
+            .iter()
+            .find(|face| {
+                face.key.kind == TopologyKind::Face
+                    && [start[0], end[0]]
+                        .iter()
+                        .all(|id| face.origins.iter().any(|origin| origin.source == *id))
+            })
+            .unwrap();
+        wall.key
+    };
+    let topology = &model.snapshot().shapes[&request.feature].topology;
+    let intent = GeometryIntent::capture(topology, wall_key(&model)).unwrap();
+    let (sin, cos) = (40. * PI / 180.).sin_cos();
+    let mut upper = Source::read(session.document(), last.sketch).unwrap().0;
+    for (point, [x, y]) in upper.sketch.points.iter_mut().zip(bottom) {
+        point.position_mm = [cos * x - sin * y + 1., sin * x + cos * y + 0.5];
+    }
+    session
+        .apply(Request {
+            expected_revision: session.revision(),
+            actor: actor(),
+            label: "Rotate the upper loft section".into(),
+            edits: upper.replace(session.document(), last.sketch).unwrap(),
+        })
+        .unwrap();
+    let edited = check_saved_rust_profile(&mut session, &request, volume(cos));
+    let topology = &edited.snapshot().shapes[&request.feature].topology;
+    let key = wall_key(&edited);
+    assert!(matches!(
+        references::resolve(&intent, topology, topology.revision),
+        Resolution::Resolved { key: actual, frame: None, .. } if actual == key
+    ));
+
+    let directory = tempfile::tempdir().unwrap();
+    let step = directory.path().join("twisted.step");
+    edited
+        .solid(request.body)
+        .unwrap()
+        .write_step(&step)
+        .unwrap();
+    let input = read_step_file_with_backend(&step, GeometryBackend::Rust).unwrap();
+    let mut imported =
+        Session::new(multicad_core::document::Document::new("Imported twisted loft").unwrap())
+            .unwrap();
+    let staged = model::imports::prepare_step_import(&imported, 0, actor(), &input).unwrap();
+    let body = staged.model.outputs[0].body;
+    imported.commit(staged.model.prepared).unwrap();
+    let mut bytes = Vec::new();
+    project_file::write(
+        &ProjectFile::new(imported.document().clone()).unwrap(),
+        &mut bytes,
+        Default::default(),
+    )
+    .unwrap();
+    std::fs::remove_file(step).unwrap();
+    let opened = project_file::read(
+        &mut bytes.as_slice(),
+        Default::default(),
+        &project_file::supported_capabilities(),
+    )
+    .unwrap();
+    let imported = Compiler::default()
+        .compile_with_backend(&opened.project.document, 0, GeometryBackend::Rust, None)
+        .unwrap();
+    near(
+        imported.solid(body).unwrap().volume_mm3().unwrap(),
+        volume(cos),
+    );
 }
 
 fn notched_loft_footprints() -> [[[f64; 2]; 8]; 2] {

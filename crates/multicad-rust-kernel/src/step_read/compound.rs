@@ -36,6 +36,9 @@ pub(super) fn read_import_members(
             if let Some(cut) = import::read_helical_cut_member(shell, &face_ids)? {
                 return Ok(cut);
             }
+            if let Some((proof, loft)) = nonplanar_loft::read_member(shell, &face_ids)? {
+                return Ok(import::recognize_nonplanar_loft(proof, loft));
+            }
             if face_ids
                 .iter()
                 .any(|&face| spline_sweep::has_extrusion_support(shell, face))

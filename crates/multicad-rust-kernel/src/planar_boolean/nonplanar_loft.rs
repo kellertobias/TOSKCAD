@@ -38,7 +38,7 @@ impl LoftWall {
 
 /// A closed solid with planar caps and bilinear sides. Strict convexity
 /// throughout the interval excludes crossing walls and zero-area sections.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct NonplanarLoft {
     rings: [Vec<Point>; 2],
     clockwise: bool,

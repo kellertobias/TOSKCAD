@@ -2,7 +2,7 @@
 use super::*;
 use crate::{CurvedEdge2d, CurvedProfile, advanced_profiles::matches_straight_loft_station};
 use multicad_core::references::GeometryIntent;
-use multicad_rust_kernel::planar_boolean::ruled_loft;
+use multicad_rust_kernel::planar_boolean::{NonplanarLoft, ruled_loft};
 
 const OPERATION: &str = "Rust ruled polygon loft";
 const ANGULAR_ROUNDOFF: f64 = 64. * f64::EPSILON;
@@ -62,7 +62,7 @@ fn validate_origins(
 }
 
 impl Solid {
-    /// Loft ordered matching polygon sections with planar ruled sides.
+    /// Loft ordered matching polygon sections with ruled sides.
     pub fn rust_loft_ruled_polygons_named(
         profiles: &[CurvedProfile],
         feature: EntityId,
@@ -221,10 +221,23 @@ impl Solid {
         } else {
             ruled_loft(&sections, &heights, tolerance)
         };
+        if matches!(loft, Err(Error::Invalid))
+            && let [start, end] = sections.as_slice()
+            && let Ok(geometry) = NonplanarLoft::new([start, end], heights[1], tolerance)
+        {
+            return Self::from_nonplanar_loft(
+                geometry,
+                feature,
+                placement,
+                [&section_origins[0], &section_origins[1]],
+                [frames[0], frames[1]],
+                policy,
+            );
+        }
         let (geometry, material) = loft.map_err(|cause| {
             match cause {
                 Error::Invalid => unsupported(
-                    "Rust ruled loft requires consistently wound simple sections and planar noncrossing sides",
+                    "Rust ruled loft requires planar noncrossing sides or two sections that stay strictly convex throughout",
                 ),
                 Error::Unresolved => error(
                     OPERATION,

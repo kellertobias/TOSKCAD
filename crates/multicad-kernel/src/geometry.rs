@@ -19,6 +19,7 @@ mod helical_body;
 mod helical_tube_body;
 mod herringbone_body;
 mod linear_body;
+mod nonplanar_loft_body;
 mod normal_sweep_body;
 mod orthogonal_body;
 mod planar_boolean_body;
@@ -41,6 +42,7 @@ pub use helical_tube_body::HelicalTube;
 use helical_tube_body::HelicalTubeBody;
 use herringbone_body::HerringboneBody;
 use linear_body::LinearBody;
+use nonplanar_loft_body::NonplanarLoftBody;
 use normal_sweep_body::NormalSweepBody;
 pub use normal_sweep_body::SweepOpening;
 use orthogonal_body::OrthogonalBody;
@@ -566,6 +568,7 @@ enum SolidBody {
     Revolved(Rc<RevolutionBody>, PlaneFrame),
     RoundedSlot(Rc<RoundedSlotBody>, PlaneFrame),
     NormalSweep(Rc<NormalSweepBody>, PlaneFrame),
+    NonplanarLoft(Rc<NonplanarLoftBody>, PlaneFrame),
     SplineSweep(Rc<SplineSweepBody>, PlaneFrame),
     SpurGear(Rc<SpurGearBody>, PlaneFrame),
     Herringbone(Rc<HerringboneBody>, PlaneFrame),
@@ -944,6 +947,9 @@ impl Solid {
             SolidBody::PlanarBoolean(body, frame) => {
                 SolidBody::PlanarBoolean(Rc::clone(body), *frame)
             }
+            SolidBody::NonplanarLoft(body, frame) => {
+                SolidBody::NonplanarLoft(Rc::clone(body), *frame)
+            }
             SolidBody::WarpedUnion(body, frame) => SolidBody::WarpedUnion(Rc::clone(body), *frame),
             SolidBody::RustCompound(compound) => SolidBody::RustCompound(Rc::clone(compound)),
             SolidBody::Orthogonal(body, frame) => SolidBody::Orthogonal(Rc::clone(body), *frame),
@@ -1233,6 +1239,9 @@ impl Solid {
                 SolidBody::PlanarBoolean(body, frame) => {
                     SolidBody::PlanarBoolean(Rc::clone(body), transform.frame(*frame))
                 }
+                SolidBody::NonplanarLoft(body, frame) => {
+                    SolidBody::NonplanarLoft(Rc::clone(body), transform.frame(*frame))
+                }
                 SolidBody::WarpedUnion(body, frame) => {
                     SolidBody::WarpedUnion(Rc::clone(body), transform.frame(*frame))
                 }
@@ -1286,6 +1295,9 @@ impl Solid {
         }
         if let Some((body, _)) = self.planar_boolean_body() {
             return Ok(body.volume_mm3());
+        }
+        if let Some((body, _)) = self.nonplanar_loft_body() {
+            return Ok(body.geometry.volume_mm3());
         }
         if let Some((body, _)) = self.axial_stack_body() {
             return Ok(body.volume_mm3());
@@ -1375,6 +1387,9 @@ impl Solid {
             return Ok(body.bounds(frame));
         }
         if let Some((body, frame)) = self.planar_boolean_body() {
+            return Ok(body.bounds(frame));
+        }
+        if let Some((body, frame)) = self.nonplanar_loft_body() {
             return Ok(body.bounds(frame));
         }
         if let Some((body, frame)) = self.axial_stack_body() {
@@ -1512,6 +1527,9 @@ impl Solid {
         }
         if let Some((body, frame)) = self.planar_boolean_body() {
             return Ok(body.faces(frame));
+        }
+        if let Some((body, frame)) = self.nonplanar_loft_body() {
+            return body.faces(frame);
         }
         if let Some((body, frame)) = self.axial_stack_body() {
             return Ok(body.faces(frame));
@@ -1680,6 +1698,9 @@ impl Solid {
             }
             SolidBody::AxialStack(body, frame) => body.mesh(*frame, rust_options),
             SolidBody::PlanarBoolean(body, frame) => body.mesh(*frame, rust_options),
+            SolidBody::NonplanarLoft(body, frame) => {
+                crate::rust_display::placed_mesh(body.geometry.mesh(rust_options), *frame, false)
+            }
             SolidBody::WarpedUnion(body, frame) => body.mesh(*frame, rust_options),
             SolidBody::RustCompound(compound) => compound.mesh(options, usage),
             SolidBody::Orthogonal(body, frame) => body.mesh(*frame, rust_options, usage),
@@ -2004,6 +2025,7 @@ impl Solid {
             SolidBody::Torus(body, _) => body.feature,
             SolidBody::AxialStack(body, _) => body.feature,
             SolidBody::PlanarBoolean(body, _) => body.feature,
+            SolidBody::NonplanarLoft(body, _) => body.feature,
             SolidBody::WarpedUnion(body, _) => body.feature,
             SolidBody::RustCompound(compound) => compound.feature,
             SolidBody::Orthogonal(body, _) => body.feature,
@@ -2024,6 +2046,7 @@ impl Solid {
             | SolidBody::Annulus(..)
             | SolidBody::Linear(..)
             | SolidBody::NormalSweep(..)
+            | SolidBody::NonplanarLoft(..)
             | SolidBody::SplineSweep(..)
             | SolidBody::SpurGear(..)
             | SolidBody::AxialStack(..)
@@ -2165,6 +2188,9 @@ impl Solid {
             SolidBody::AxialStack(body, frame) => body.append_step(writer, *frame),
             SolidBody::PlanarBoolean(body, frame) => {
                 writer.append_planar_union(&body.geometry, frame.origin, frame.u, frame.v)
+            }
+            SolidBody::NonplanarLoft(body, frame) => {
+                writer.append_nonplanar_loft(&body.geometry, frame.origin, frame.u, frame.v)
             }
             SolidBody::WarpedUnion(body, frame) => {
                 writer.append_warped_union(&body.geometry, frame.origin, frame.u, frame.v)

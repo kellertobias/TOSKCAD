@@ -65,6 +65,9 @@ pub enum ImportProfile {
     SplineSweep {
         sweep: crate::spline_sweep::Sweep,
     },
+    NonplanarLoft {
+        geometry: crate::planar_boolean::NonplanarLoft,
+    },
     PiercedNormalSweep {
         sweep: normal_sweep::PiercedSweep,
     },
@@ -202,6 +205,28 @@ pub(super) fn recognize_warped(
             v,
             height_mm: hi[2] - lo[2],
             profile: ImportProfile::WarpedUnion { shell },
+        },
+    )
+}
+
+pub(super) fn recognize_nonplanar_loft(
+    readback: Readback,
+    imported: ImportedNonplanarLoft,
+) -> (Readback, ImportSolid) {
+    let ImportedNonplanarLoft {
+        geometry,
+        origin_mm,
+        u,
+        v,
+    } = imported;
+    (
+        readback,
+        ImportSolid {
+            origin_mm,
+            u,
+            v,
+            height_mm: geometry.rings()[1][0][2],
+            profile: ImportProfile::NonplanarLoft { geometry },
         },
     )
 }

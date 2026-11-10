@@ -1,6 +1,7 @@
 use super::*;
 use std::f64::consts::TAU;
 
+mod bilinear;
 mod planar_circle;
 
 struct LinePcurve {
@@ -75,6 +76,9 @@ impl Shell<'_, '_> {
                     self.line_pcurve_geometry(surface, curve)?,
                     vertices,
                 )?,
+                "B_SPLINE_SURFACE_WITH_KNOTS" => {
+                    self.verify_bilinear_line_master(curve_3d, surface, curve, vertices)?
+                }
                 _ => return Err(ReadError::Unsupported),
             }
         }
@@ -126,6 +130,28 @@ impl Shell<'_, '_> {
     }
 
     fn clamped_segment(&self, surface: u32, curve: u32) -> Result<LinePcurve> {
+        let ([a, b], [start, end]) = self.clamped_line_definition(curve)?;
+        let span = end - start;
+        let a = self.parameter_pair(a, "CARTESIAN_POINT")?;
+        let b = self.parameter_pair(b, "CARTESIAN_POINT")?;
+        let delta = sub(b, a);
+        let direction = unit(delta)?;
+        let scale = length(delta) / span;
+        if !scale.is_finite() || scale <= 0. {
+            return Err(ReadError::Invalid);
+        }
+        let start_distance = (-start / span) * length(delta);
+        let origin = std::array::from_fn(|i| direction[i].mul_add(start_distance, a[i]));
+        Ok(LinePcurve {
+            surface,
+            origin,
+            direction,
+            scale,
+            trim: Some([start, end]),
+        })
+    }
+
+    fn clamped_line_definition(&self, curve: u32) -> Result<([u32; 2], [f64; 2])> {
         let [
             Value::String(_),
             Value::Number(1.),
@@ -156,25 +182,7 @@ impl Shell<'_, '_> {
         if !span.is_finite() || span <= 0. {
             return Err(ReadError::Invalid);
         }
-        let a = self.parameter_pair(reference(a)?, "CARTESIAN_POINT")?;
-        let b = self.parameter_pair(reference(b)?, "CARTESIAN_POINT")?;
-        // With degree one and two clamped knots, the complete spline is
-        // exactly affine over its finite parameter interval.
-        let delta = sub(b, a);
-        let direction = unit(delta)?;
-        let scale = length(delta) / span;
-        if !scale.is_finite() || scale <= 0. {
-            return Err(ReadError::Invalid);
-        }
-        let start_distance = (-start / span) * length(delta);
-        let origin = std::array::from_fn(|i| direction[i].mul_add(start_distance, a[i]));
-        Ok(LinePcurve {
-            surface,
-            origin,
-            direction,
-            scale,
-            trim: Some([*start, *end]),
-        })
+        Ok(([reference(a)?, reference(b)?], [*start, *end]))
     }
 
     fn verify_planar_line_master(

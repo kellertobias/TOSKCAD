@@ -307,6 +307,9 @@ pub(crate) fn planar_loops(solid: &Solid, face: u32) -> Vec<Vec<(u32, bool)>> {
     if let Some((body, _)) = solid.planar_boolean_body() {
         return body.planar_loops(face);
     }
+    if let Some((body, _)) = solid.nonplanar_loft_body() {
+        return body.planar_loops(face);
+    }
     if let Some((body, _)) = solid.warped_union_body() {
         return body.planar_loops(face);
     }
