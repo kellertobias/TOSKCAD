@@ -70,6 +70,34 @@ fn native(operation: &'static str, e: impl std::fmt::Display) -> GeometryError {
     error(operation, GeometryErrorKind::Native, e.to_string())
 }
 
+fn rational_coordinate(value: f64, tolerance: f64) -> Option<Rational> {
+    // Use the first continued-fraction convergent inside the error budget
+    // so floating-point projection noise does not inflate denominators.
+    let mut remainder = value.abs();
+    let mut previous = [0_i128, 1];
+    let mut current = [1_i128, 0];
+    for _ in 0..32 {
+        if !remainder.is_finite() || remainder > i64::MAX as f64 {
+            break;
+        }
+        let whole = remainder.floor();
+        let next = std::array::from_fn(|i| whole as i128 * current[i] + previous[i]);
+        let [Ok(n), Ok(d)] = next.map(i64::try_from) else {
+            break;
+        };
+        let Ok(candidate) = Rational::new(if value.is_sign_negative() { -n } else { n }, d) else {
+            break;
+        };
+        if (candidate.as_f64() - value).abs() <= tolerance / 32. {
+            return Some(candidate);
+        }
+        previous = current;
+        current = next;
+        remainder = 1. / (remainder - whole);
+    }
+    None
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct GeometryPolicy {
     pub linear_tolerance_mm: f64,
@@ -1038,27 +1066,15 @@ impl Solid {
                 "The tool must extend strictly through both polygon caps",
             ));
         }
-        let mut holes = target.prism.circular_holes().to_vec();
-        holes.push(tool.circle());
-        let prism = PolygonPrism::with_circular_holes(
-            target.prism.rings().to_vec(),
-            holes,
-            target.prism.height(),
-        )
-        .map_err(|reason| error(operation, GeometryErrorKind::Input, format!("{reason:?}")))?;
-        let (mut origins, mut reversed): (Vec<_>, Vec<_>) = target.edges.iter().cloned().unzip();
-        origins.push(Origin {
-            source: EntityId::from_uuid_bits(tool.feature()),
-            role: "side.cylinder".into(),
-        });
-        reversed.push(false);
-        let result = Self::from_polygon_prism_sweep(
-            prism,
-            target.frame,
-            target.reverse_sweep,
-            target.feature,
-            &origins,
-            &reversed,
+        let result = Self::with_polygon_through_holes(
+            target,
+            [(
+                tool.circle(),
+                Origin {
+                    source: EntityId::from_uuid_bits(tool.feature()),
+                    role: "side.cylinder".into(),
+                },
+            )],
             policy,
         )?;
         if target.pockets.is_empty() {

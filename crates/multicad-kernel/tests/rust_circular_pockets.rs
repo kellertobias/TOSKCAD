@@ -198,7 +198,7 @@ fn opposite_blind_drills_keep_exact_floors_rims_references_and_step() {
     };
     assert!(
         stock
-            .rust_drill_circular_pockets(&[crossing], policy)
+            .rust_drill_circular_pockets(std::slice::from_ref(&crossing), policy)
             .is_err()
     );
     let intersecting = CircularPocketTool {
@@ -209,5 +209,40 @@ fn opposite_blind_drills_keep_exact_floors_rims_references_and_step() {
         staged
             .rust_drill_circular_pockets(&[intersecting], policy)
             .is_err()
+    );
+
+    // Through-bore depth is explicit. A bore that spans both caps cannot
+    // intersect even the blind pocket that was cut by an earlier feature.
+    assert!(
+        staged
+            .rust_drill_circular_machining(std::slice::from_ref(&crossing), &[true], policy)
+            .is_err()
+    );
+    assert!(
+        staged
+            .rust_drill_circular_machining(&tools[1..], &[true], policy)
+            .is_err()
+    );
+    assert!(
+        staged
+            .rust_drill_circular_machining(&tools[1..], &[], policy)
+            .is_err()
+    );
+    let bore = CircularPocketTool {
+        center_uv: [21., 10.],
+        origin: Origin {
+            source: drill,
+            role: "through-bore".into(),
+        },
+        ..crossing
+    };
+    let mixed = staged
+        .rust_drill_circular_machining(&[bore, tools[1].clone()], &[true, false], policy)
+        .unwrap();
+    near(mixed.volume_mm3().unwrap(), volume - PI * 4. * 12., 1e-7);
+    assert!(
+        mixed
+            .manufacturing_mesh_with_receipt(MeshOptions::default())
+            .is_ok()
     );
 }

@@ -20,7 +20,7 @@ use multicad_core::{
     sketch::Datum,
     sketch_regions,
 };
-use multicad_kernel::{MeshOptions, PlaneFrame};
+use multicad_kernel::{GeometryPolicy, MeshOptions, PlaneFrame, Solid};
 use multicad_model::{Compiler, CutRecord, GeometryBackend, Model};
 
 fn actor() -> Actor {
@@ -1107,6 +1107,70 @@ fn read_bundled_project(mut bytes: &[u8]) -> ProjectFile {
     )
     .unwrap()
     .project
+}
+
+#[test]
+fn rust_bundled_workbench_rebuilds_all_parts_with_through_and_blind_drilling() {
+    let project = read_bundled_project(include_bytes!("../../../examples/welded-workbench.tcd"));
+    let document = &project.document;
+    let compile = |backend| {
+        Compiler::default()
+            .compile_with_backend(document, 0, backend, None)
+            .unwrap_or_else(|error| panic!("{backend:?}: {error:?}"))
+    };
+    let rust = compile(GeometryBackend::Rust);
+    let native = compile(GeometryBackend::OpenCascade);
+    assert_eq!(rust.snapshot().bodies.len(), 20);
+    assert_eq!(rust.snapshot().bodies, native.snapshot().bodies);
+    assert_eq!(rust.snapshot().shapes.len(), native.snapshot().shapes.len());
+    for (&part, &feature) in &rust.snapshot().bodies {
+        let name = &document.get(part).unwrap().name;
+        compare_stock_source(name, feature, &rust, &native);
+    }
+
+    let records = rust.machining(document).unwrap();
+    assert_eq!(records.len(), 2);
+    assert_eq!(
+        records
+            .iter()
+            .flat_map(|record| &record.holes)
+            .filter(|hole| hole.through)
+            .count(),
+        100
+    );
+    assert_eq!(
+        records
+            .iter()
+            .flat_map(|record| &record.holes)
+            .filter(|hole| !hole.through)
+            .count(),
+        4
+    );
+    let worktop = rust.cut_list(document).unwrap().pop().unwrap().part;
+    let feature = rust.snapshot().bodies[&worktop];
+    let solid = rust.solid(feature).unwrap();
+    let geometry = solid.topology_snapshot(feature, 0).unwrap();
+    let rims = geometry
+        .elements
+        .iter()
+        .filter(|element| matches!(element.geometry, Some(AnalyticGeometry::CircularArc { .. })));
+    assert_eq!(rims.count(), 208);
+    let receipt = solid
+        .manufacturing_mesh_with_receipt(MeshOptions::default())
+        .unwrap();
+    assert!(receipt.edge_pairs > 0 && receipt.vertex_links > 0);
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("worktop.step");
+    solid.write_step(&path).unwrap();
+    let policy = GeometryPolicy::default();
+    let readbacks = [
+        Solid::read_step(&path, policy).unwrap(),
+        Solid::import_rust_step(&std::fs::read_to_string(&path).unwrap(), feature, policy).unwrap(),
+    ];
+    for imported in readbacks {
+        assert_eq!(imported.solid_count().unwrap(), 1);
+        near(imported.volume_mm3().unwrap(), solid.volume_mm3().unwrap());
+    }
 }
 
 fn compile_stock_sources(

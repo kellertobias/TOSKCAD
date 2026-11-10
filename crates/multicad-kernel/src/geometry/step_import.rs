@@ -20,34 +20,9 @@ fn invalid(message: impl Into<String>) -> GeometryError {
 }
 
 fn convert(value: f64, tolerance: f64) -> Result<Rational, GeometryError> {
-    // Select the first continued-fraction convergent within the error
-    // budget. This avoids treating floating-point projection noise as
-    // authored precision and preserves ordinary fractional dimensions.
-    let mut remainder = value.abs();
-    let mut previous = [0_i128, 1];
-    let mut current = [1_i128, 0];
-    for _ in 0..32 {
-        if !remainder.is_finite() || remainder > i64::MAX as f64 {
-            break;
-        }
-        let whole = remainder.floor();
-        let next = std::array::from_fn(|i| whole as i128 * current[i] + previous[i]);
-        let [Ok(n), Ok(d)] = next.map(i64::try_from) else {
-            break;
-        };
-        let Ok(candidate) = Rational::new(if value.is_sign_negative() { -n } else { n }, d) else {
-            break;
-        };
-        if (candidate.as_f64() - value).abs() <= tolerance / 32. {
-            return Ok(candidate);
-        }
-        previous = current;
-        current = next;
-        remainder = 1. / (remainder - whole);
-    }
-    Err(invalid(
-        "STEP dimension cannot be represented within the geometry tolerance",
-    ))
+    rational_coordinate(value, tolerance).ok_or_else(|| {
+        invalid("STEP dimension cannot be represented within the geometry tolerance")
+    })
 }
 
 fn feature_origin(

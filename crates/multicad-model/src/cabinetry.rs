@@ -128,7 +128,7 @@ fn subtract(
             .iter()
             .any(|p| p.circle.is_some() || p.slot.is_some())
     {
-        return subtract_analytic(base, prisms, id, role, policy);
+        return subtract_analytic(base, prisms, id, role, None, policy);
     }
     let batch_circles = prisms.len() > 1 && prisms.iter().all(|p| p.circle.is_some());
     let mut tools = Vec::with_capacity(prisms.len());
@@ -227,6 +227,7 @@ fn subtract_analytic(
     prisms: &[model::CutPrism],
     id: EntityId,
     role: &str,
+    through: Option<&[bool]>,
     policy: GeometryPolicy,
 ) -> Result<Solid, ModelError> {
     let mut circles = Vec::new();
@@ -273,7 +274,10 @@ fn subtract_analytic(
     // A canonical operation has one cutter profile. A mortise with coincident
     // end centers is the same circular cut as a bore.
     let result = match (circles.is_empty(), slots.is_empty()) {
-        (false, true) => base.rust_drill_circular_pockets(&circles, policy),
+        (false, true) => match through {
+            Some(modes) => base.rust_drill_circular_machining(&circles, modes, policy),
+            None => base.rust_drill_circular_pockets(&circles, policy),
+        },
         (true, false) => base.rust_drill_rounded_slots(&slots, policy),
         _ => {
             return Err(error(
@@ -462,11 +466,22 @@ pub(crate) fn build_machining_cut(
     let base = solids
         .get(&cut.input.producer)
         .ok_or_else(|| error(Some(id), "The panel before this operation has no solid"))?;
+    let role = format!("machining.{}", cut.operation);
+    if backend == GeometryBackend::Rust && resolved.holes.iter().any(|hole| hole.through) {
+        if resolved.holes.len() != resolved.prisms.len() {
+            return Err(error(
+                Some(id),
+                "Rust through drilling needs circular tools",
+            ));
+        }
+        let through: Vec<_> = resolved.holes.iter().map(|hole| hole.through).collect();
+        return subtract_analytic(base, &resolved.prisms, id, &role, Some(&through), policy);
+    }
     subtract(
         base,
         &resolved.prisms,
         id,
-        &format!("machining.{}", cut.operation),
+        &role,
         policy,
         op.label(),
         backend,
