@@ -402,17 +402,11 @@ pub(crate) fn build_rust(
     evaluated: &EvaluatedParameters,
     policy: GeometryPolicy,
 ) -> Result<Solid, ModelError> {
-    let fail = |message| error(Some(feature), message);
-    let authored_thread = match &source.parameters {
-        MechanicalPartParameters::MachineScrew { thread, .. }
-        | MechanicalPartParameters::HexNut { thread, .. } => thread,
-        _ => {
-            return Err(fail(
-                "Rust mechanical parts currently support modeled machine screws and hex nuts",
-            ));
-        }
-    };
-    crate::threads::validate_rust_family(feature, authored_thread.family)?;
+    if let MechanicalPartParameters::MachineScrew { thread, .. }
+    | MechanicalPartParameters::HexNut { thread, .. } = &source.parameters
+    {
+        crate::threads::validate_rust_family(feature, thread.family)?;
+    }
     match source
         .parameters
         .resolve(evaluated)
@@ -449,7 +443,34 @@ pub(crate) fn build_rust(
             )
             .map_err(|cause| error(Some(feature), cause))
         }
-        _ => unreachable!("Resolved an authored machine screw or hex nut"),
+        ResolvedMechanicalPart::Washer {
+            bore_radius_mm,
+            outside_radius_mm,
+            thickness_mm,
+            frame,
+        }
+        | ResolvedMechanicalPart::BearingEnvelope {
+            bore_radius_mm,
+            outside_radius_mm,
+            width_mm: thickness_mm,
+            frame,
+        } => Solid::rust_annulus(
+            bore_radius_mm,
+            outside_radius_mm,
+            thickness_mm,
+            feature,
+            PlaneFrame {
+                origin: frame.origin,
+                u: frame.u,
+                v: frame.v,
+            },
+            policy,
+        )
+        .map_err(|cause| error(Some(feature), cause)),
+        _ => Err(error(
+            Some(feature),
+            "Rust mechanical parts currently support washers, bearing envelopes, modeled machine screws and modeled hex nuts",
+        )),
     }
 }
 

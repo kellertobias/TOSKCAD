@@ -32,6 +32,99 @@ fn mm(value: f64) -> Value {
 }
 
 #[test]
+fn rust_mcp_round_trips_rotated_washer_step_and_edits_bearing_envelope() {
+    use multicad_mcp::Storage;
+    use multicad_model::GeometryBackend;
+    use std::f64::consts::PI;
+
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("annular-hardware.tcd");
+    let document = Document::new("Rust annular hardware").unwrap();
+    ProjectStore
+        .save(
+            &path,
+            &multicad_core::project_file::ProjectFile::new(document).unwrap(),
+        )
+        .unwrap();
+    let open = || {
+        Headless::with_geometry_backend(
+            Workspace::project(path.clone(), Box::new(ProjectStore)).unwrap(),
+            Some(directory.path().into()),
+            false,
+            GeometryBackend::Rust,
+        )
+    };
+    let h = open();
+    let profiles = run(&h, "mechanical_part_profiles", json!({}));
+    assert_eq!(
+        profiles["active_geometry_support"]["step_geometry"],
+        json!(["washer", "bearing_envelope"])
+    );
+    let washer = run(
+        &h,
+        "set_mechanical_part",
+        json!({
+            "expected_revision":0,"name":"Rotated washer","recipe":{
+                "kind":"washer","plane":"yz","origin":[mm(10.),mm(20.),mm(30.)]
+            }
+        }),
+    );
+    let file_name = "annulus.step";
+    let step = run(
+        &h,
+        "export_step",
+        json!({"part":washer["part"],"file_name":file_name}),
+    );
+    let washer_volume = PI * (3.5_f64.powi(2) - 1.6_f64.powi(2)) * 0.5;
+    let near = |actual: &Value, expected: f64| {
+        let actual = actual.as_f64().unwrap();
+        assert!((actual - expected).abs() < 1e-6, "{actual} != {expected}");
+    };
+    near(&step["readback_volume_mm3"], washer_volume);
+    let imported = run(
+        &h,
+        "import_step",
+        json!({"expected_revision":1,"file_name":file_name}),
+    );
+    let bearing = run(
+        &h,
+        "set_mechanical_part",
+        json!({
+            "expected_revision":2,"name":"Bearing envelope","recipe":{"kind":"bearing_envelope"}
+        }),
+    );
+    let edit = run(
+        &h,
+        "set_mechanical_part",
+        json!({
+            "expected_revision":3,"feature":bearing["feature"],"recipe":{"kind":"bearing_envelope","width":mm(12.)}
+        }),
+    );
+    assert_eq!(edit["feature"], bearing["feature"]);
+    assert_eq!(edit["part"], bearing["part"]);
+    let model = run(&h, "evaluate_model", json!({}));
+    let parts = model["parts"].as_array().unwrap();
+    assert_eq!(parts.len(), 3);
+    let part = |id: &Value| parts.iter().find(|part| part["part"] == *id).unwrap();
+    let original = part(&washer["part"]);
+    let exchange = part(&imported["parts"][0]);
+    near(&exchange["volume_mm3"], washer_volume);
+    assert_eq!(exchange["bounds_mm"], original["bounds_mm"]);
+    near(
+        &part(&bearing["part"])["volume_mm3"],
+        PI * (225. - 25.) * 12.,
+    );
+    run(&h, "save_project", json!({"expected_revision": 4}));
+    drop(h);
+    std::fs::remove_file(directory.path().join(file_name)).unwrap();
+    let reopened = open();
+    assert_eq!(
+        run(&reopened, "evaluate_model", json!({}))["parts"],
+        model["parts"],
+    );
+}
+
+#[test]
 fn rust_mcp_edits_and_reopens_a_modeled_m6_socket_screw() {
     use multicad_mcp::Storage;
     use multicad_model::GeometryBackend;
@@ -57,7 +150,7 @@ fn rust_mcp_edits_and_reopens_a_modeled_m6_socket_screw() {
     let profiles = run(&h, "mechanical_part_profiles", json!({}));
     assert_eq!(
         profiles["supported_geometry"],
-        json!(["machine_screw", "hex_nut"])
+        json!(["machine_screw", "hex_nut", "washer", "bearing_envelope"])
     );
     assert_eq!(
         profiles["active_geometry_support"]["head_drive_pairs"],

@@ -1,7 +1,7 @@
 use multicad_core::{
     commands::{Actor, Channel, Request, Session},
-    constraint_sketch::{CurveKind, source::Source},
-    document::{Document, EntityData, Mutation},
+    constraint_sketch::{Curve, CurveKind, source::Source},
+    document::{Document, EntityData, EntityId, Mutation},
     manufacturing::PlanarEdge,
     model::{
         self, Direction, Extent, ExtrudeParameters, PrimitiveFrame, PrimitiveParameters,
@@ -54,6 +54,123 @@ fn reopen(session: &Session) -> Session {
     .unwrap();
     assert_eq!(&result.project.document, session.document());
     Session::new(result.project.document).unwrap()
+}
+
+#[test]
+fn rust_annular_sketch_extrusion_preserves_both_circles_and_reverse_cap_frames() {
+    let (sketch, edits) = Source::create(sketch::Datum::Xz, "Concentric circles").unwrap();
+    let document = Document::new("Reverse annular sweep")
+        .unwrap()
+        .edited(&edits)
+        .unwrap();
+    let mut source = Source::read(&document, sketch).unwrap().0;
+    let center = source.add_point([7., 9.]);
+    let circles = [EntityId::new(), EntityId::new()];
+    for (id, radius_mm) in circles.into_iter().zip([4., 1.5]) {
+        source.sketch.curves.push(Curve {
+            id,
+            construction: false,
+            kind: CurveKind::Circle { center, radius_mm },
+        });
+    }
+    let region = multicad_core::sketch_regions::extract(&source)
+        .regions
+        .into_iter()
+        .find(|region| region.holes.len() == 1)
+        .unwrap()
+        .intent();
+    let document = document
+        .edited(&source.replace(&document, sketch).unwrap())
+        .unwrap();
+    let mut session = Session::new(document).unwrap();
+    let request = model::ExtrudeRequest::new(
+        sketch,
+        vec![region],
+        ExtrudeParameters {
+            direction: Direction {
+                reverse: true,
+                ..Default::default()
+            },
+            start_offset: length(2.),
+            extent: Extent::OneSided {
+                end: Termination::Distance {
+                    distance: length(6.),
+                },
+            },
+            ..Default::default()
+        },
+    );
+    let prepared = model::prepare_extrude(&session, 0, actor(), &request).unwrap();
+    session.commit(prepared.prepared).unwrap();
+    let feature = request.outputs[0].feature;
+    let reopened = reopen(&session);
+    let native = compile(&reopened, GeometryBackend::OpenCascade);
+    let rust = compile(&reopened, GeometryBackend::Rust);
+    let actual = &rust.snapshot().shapes[&feature];
+    let expected = &native.snapshot().shapes[&feature];
+    near(actual.volume_mm3, PI * (16. - 2.25) * 6.);
+    near(actual.volume_mm3, expected.volume_mm3);
+    for (a, b) in actual
+        .bounds
+        .min
+        .into_iter()
+        .chain(actual.bounds.max)
+        .zip(expected.bounds.min.into_iter().chain(expected.bounds.max))
+    {
+        near(a, b);
+    }
+    for face in expected
+        .topology
+        .elements
+        .iter()
+        .filter(|element| element.key.kind == TopologyKind::Face)
+    {
+        let intent = GeometryIntent::capture(&expected.topology, face.key).unwrap();
+        let Resolution::Resolved { key, .. } =
+            references::resolve(&intent, &actual.topology, reopened.revision())
+        else {
+            panic!("Lost annular sketch face intent {intent:?}");
+        };
+        let exact = actual
+            .topology
+            .elements
+            .iter()
+            .find(|element| element.key == key)
+            .unwrap();
+        assert_eq!(exact.frames, face.frames);
+    }
+    for id in circles {
+        assert!(actual.topology.elements.iter().any(|element| {
+            element.key.kind == TopologyKind::Face
+                && element.origins.iter().any(|origin| origin.source == id)
+        }));
+    }
+
+    let original = reopened.document();
+    let mut edited_source = Source::read(original, sketch).unwrap().0;
+    let offset_center = edited_source.add_point([7.25, 9.]);
+    edited_source
+        .sketch
+        .curves
+        .iter_mut()
+        .find(|curve| curve.id == circles[1])
+        .unwrap()
+        .kind = CurveKind::Circle {
+        center: offset_center,
+        radius_mm: 1.5,
+    };
+    let eccentric = original
+        .edited(&edited_source.replace(original, sketch).unwrap())
+        .unwrap();
+    let Err(error) = compiler().compile_with_backend(&eccentric, 0, GeometryBackend::Rust, None)
+    else {
+        panic!("Rust annular extrusion accepted an eccentric bore");
+    };
+    assert!(
+        error.message.contains("requires concentric circles"),
+        "{error}"
+    );
+    assert_eq!(original, session.document());
 }
 
 #[test]

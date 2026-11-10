@@ -956,6 +956,32 @@ fn rust_export_worker_writes_one_closed_hex_nut_with_an_open_threaded_bore() {
     });
 }
 
+#[test]
+fn rust_export_worker_writes_a_closed_bearing_envelope_with_open_axis() {
+    let parameters = model::MechanicalPartParameters::BearingEnvelope {
+        bore_diameter: length(8.),
+        outside_diameter: length(22.),
+        width: length(7.),
+        frame: Default::default(),
+    };
+    rust_export_hardware_mesh(parameters, |triangles| {
+        assert_bounds(bounds(triangles), [[-11., -11., 0.], [11., 11., 7.]], 0.05);
+        let cross = |a: [f64; 3], b: [f64; 3]| a[0] * b[1] - a[1] * b[0];
+        for &[a, b, c] in triangles {
+            let signed = [cross(a, b), cross(b, c), cross(c, a)];
+            assert!(
+                signed.iter().any(|area| *area < -1e-8) && signed.iter().any(|area| *area > 1e-8)
+            );
+        }
+        assert!(
+            triangles
+                .iter()
+                .flatten()
+                .any(|p| (p[0].hypot(p[1]) - 4.).abs() < 1e-6)
+        );
+    });
+}
+
 fn rust_export_hardware_mesh(
     parameters: model::MechanicalPartParameters,
     verify: impl Fn(&Triangles),

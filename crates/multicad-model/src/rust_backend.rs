@@ -384,19 +384,48 @@ pub(crate) fn extrude(
 ) -> Result<Solid, ModelError> {
     let fail = |message: String| error(Some(id), message);
     if let [CurvedEdge2d::Circle { center, radius_mm }] = profile.outer.as_slice() {
-        let [origin] = origins else {
-            return Err(fail(
-                "Rust circular extrusion requires one authored boundary identity".into(),
-            ));
-        };
-        if !profile.holes.is_empty() {
-            return Err(fail(
-                "Rust circular extrusion does not support inner loops in a circular outer profile"
-                    .into(),
-            ));
-        }
         let sweep = straight_sweep(source, controls, parameters).map_err(fail)?;
-        return circular_prism(id, profile, *center, *radius_mm, origin, sweep, policy);
+        return match (profile.holes.as_slice(), origins) {
+            ([], [origin]) => {
+                circular_prism(id, profile, *center, *radius_mm, origin, sweep, policy)
+            }
+            ([hole], [outer, inner])
+                if let [
+                    CurvedEdge2d::Circle {
+                        center: bore_center,
+                        radius_mm: bore_radius,
+                    },
+                ] = hole.as_slice() =>
+            {
+                let [dx, dy] = std::array::from_fn(|i| bore_center[i] - center[i]);
+                if dx.hypot(dy) > policy.linear_tolerance_mm {
+                    return Err(fail(
+                        "Rust annular extrusion requires concentric circles".into(),
+                    ));
+                }
+                let normal = profile.frame.normal();
+                let start = PlaneFrame {
+                    origin: std::array::from_fn(|i| {
+                        profile.frame.origin[i] + normal[i] * sweep.start_offset
+                    }),
+                    ..profile.frame
+                };
+                let sign = if sweep.reverse { -1. } else { 1. };
+                Solid::rust_annulus_from_sketch(
+                    [*bore_radius, *radius_mm],
+                    sign * sweep.height.as_f64(),
+                    id,
+                    start,
+                    *center,
+                    [inner.clone(), outer.clone()],
+                    policy,
+                )
+                .map_err(|cause| error(Some(id), cause))
+            }
+            _ => Err(fail(
+                "Rust circular extrusion requires one circle or a concentric pair with authored boundary identities".into(),
+            )),
+        };
     }
     if profile
         .outer

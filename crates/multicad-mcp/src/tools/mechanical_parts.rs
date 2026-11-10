@@ -926,7 +926,7 @@ fn parameters(
 pub(super) fn mechanical_part_profiles(_: &dyn Host, call: &Request, _: NoArgs) -> ToolResult {
     if call.backend == GeometryBackend::Rust {
         return Ok(json!({
-            "supported_geometry": ["machine_screw", "hex_nut"],
+            "supported_geometry": ["machine_screw", "hex_nut", "washer", "bearing_envelope"],
             "head_forms": ["socket_cap", "external_hex"],
             "drive_forms": ["hex_socket", "external_hex"],
             "active_geometry_support": {
@@ -939,10 +939,12 @@ pub(super) fn mechanical_part_profiles(_: &dyn Host, call: &Request, _: NoArgs) 
                 "end_treatments": false,
                 "radial_taper": false,
                 "mesh": true,
-                "step": false
+                "threaded_step": false,
+                "step_geometry": ["washer", "bearing_envelope"]
             },
             "machine_screw": "The underhead length runs from the head seat to the tip. Overall length adds the head height. The thread length is its extent ending at the tip, and its frame locates the underhead datum.",
-            "nut_thread": "Rust requires the modeled representation for hex nuts. The thread length sets the nut height."
+            "nut_thread": "Rust requires the modeled representation for hex nuts. The thread length sets the nut height.",
+            "bearing": "External mounting envelope only; races, rolling elements and seals are not modeled"
         }));
     }
     Ok(json!({

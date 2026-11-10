@@ -71,6 +71,71 @@ fn probe(solid: &Solid, center: [f64; 3]) -> f64 {
 }
 
 #[test]
+fn rust_annular_catalog_parts_match_native_faces_and_step_readback() {
+    let directory = tempfile::tempdir().unwrap();
+    let policy = GeometryPolicy::default();
+    for file in ["washer-normal-m6.tcd", "bearing-open-608.tcd"] {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../library")
+            .join(file);
+        let project = project_file::read(
+            &mut std::fs::File::open(path).unwrap(),
+            Default::default(),
+            &project_file::supported_capabilities(),
+        )
+        .unwrap()
+        .project;
+        let native = compiler().compile(&project.document, 0).unwrap();
+        let rust = compiler()
+            .compile_with_backend(&project.document, 0, GeometryBackend::Rust, None)
+            .unwrap();
+        let (&part, &feature) = rust.snapshot().bodies.iter().next().unwrap();
+        assert_eq!(native.snapshot().bodies[&part], feature);
+        let ring = rust.solid(feature).unwrap();
+        let control = native.solid(feature).unwrap();
+        assert!(ring.uses_rust_geometry());
+        assert_eq!(ring.solid_count().unwrap(), 1);
+        let near = |a: f64, b: f64| assert!((a - b).abs() < 1e-7, "{file}: {a} != {b}");
+        near(ring.volume_mm3().unwrap(), control.volume_mm3().unwrap());
+        let bounds = ring.bounds().unwrap();
+        let reference = control.bounds().unwrap();
+        for (a, b) in bounds
+            .min
+            .into_iter()
+            .chain(bounds.max)
+            .zip(reference.min.into_iter().chain(reference.max))
+        {
+            near(a, b);
+        }
+        let native_topology = control.topology_snapshot(feature, 0).unwrap();
+        let rust_topology = ring.topology_snapshot(feature, 0).unwrap();
+        let faces = ring.faces().unwrap();
+        let native_faces = control.faces().unwrap();
+        assert_eq!(faces.len(), 4);
+        for element in native_topology
+            .elements
+            .iter()
+            .filter(|e| e.key.kind == TopologyKind::Face)
+        {
+            let intent = GeometryIntent::capture(&native_topology, element.key).unwrap();
+            let Resolution::Resolved { key, .. } = resolve(&intent, &rust_topology, 0) else {
+                panic!("{file} lost source face intent {intent:?}");
+            };
+            near(
+                faces[key.ordinal as usize].area_mm2,
+                native_faces[element.key.ordinal as usize].area_mm2,
+            );
+        }
+        let step = directory.path().join(file).with_extension("step");
+        ring.write_step(&step).unwrap();
+        let imported = Solid::read_step(&step, policy).unwrap();
+        assert_eq!(imported.solid_count().unwrap(), 1);
+        near(imported.volume_mm3().unwrap(), ring.volume_mm3().unwrap());
+        assert!(probe(&imported, [0., 0., bounds.max[2] / 2.]) < 1e-8);
+    }
+}
+
+#[test]
 fn rust_hex_nut_rebuilds_iso_and_din_m6_catalog_with_original_stock_face_intents() {
     for file in ["nut-iso4032-2012-m6.tcd", "nut-din934-1987-m6.tcd"] {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))

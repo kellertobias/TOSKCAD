@@ -1797,6 +1797,58 @@ mod painted_default_screw {
     }
 
     #[test]
+    fn painted_rust_bearing_envelope_applies_with_a_pickable_bore() {
+        let factory = Backend::factory(GeometryBackend::Rust).unwrap();
+        let mut controller = ModelToolController::default();
+        controller.set_backend(factory());
+        let mut canonical = SceneFeed::default();
+        canonical.set_backend(factory());
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        let session =
+            Session::new(Document::new("Painted Rust bearing envelope").unwrap()).unwrap();
+        let before = session.document().clone();
+        let mut painted = Painted {
+            ctx,
+            controller,
+            canonical,
+            session,
+            applied: vec![],
+            clock: Instant::now(),
+        };
+        painted.wait(true);
+        painted
+            .controller
+            .begin_mechanical_part(&painted.session, &Default::default(), Channel::Ui)
+            .unwrap();
+        painted.click("Plain washer");
+        painted.click("Bearing mounting envelope");
+        painted.click("Preview");
+        painted.wait(false);
+        assert_eq!(painted.session.document(), &before);
+        painted.click("Apply");
+        painted.wait(true);
+        let [created] = painted.applied.as_slice() else {
+            panic!("Expected one applied bearing envelope");
+        };
+        let source =
+            model::read_mechanical_part(painted.session.document(), created.feature).unwrap();
+        assert!(matches!(
+            source.parameters,
+            model::MechanicalPartParameters::BearingEnvelope { .. }
+        ));
+        let scene = painted.canonical.visible().unwrap();
+        let ray = |origin, direction| viewport::Ray::new(origin, direction).unwrap();
+        assert!(scene.pick_face(ray([0., 0., 20.], [0., 0., -1.])).is_none());
+        let inside = scene.pick_face(ray([0., 0., 4.], [1., 0., 0.])).unwrap();
+        let outside = scene.pick_face(ray([20., 0., 4.], [-1., 0., 0.])).unwrap();
+        assert_eq!(inside.instance, created.body);
+        assert_eq!(outside.instance, created.body);
+        assert!((inside.point_mm[0] - 5.).abs() < 1e-6);
+        assert!((outside.point_mm[0] - 15.).abs() < 1e-6);
+    }
+
+    #[test]
     fn actual_default_m3_controls_measure_preview_unchanged_and_apply_to_canonical_ready() {
         let owner = Backend::runtime(GeometryBackend::OpenCascade).unwrap();
         let preview_records: Records = Default::default();
