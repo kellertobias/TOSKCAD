@@ -290,6 +290,25 @@ impl Solid {
         }
     }
 
+    /// Validate the closed helical STEP against its source certificate and
+    /// integrate its decoded surface volume in mm³.
+    pub fn verify_helical_step(
+        &self,
+        source: &str,
+    ) -> Option<Result<f64, multicad_rust_kernel::step_read::ReadError>> {
+        let (body, frame) = self.helical_body()?;
+        let radius = body.step_stock()?;
+        Some(multicad_rust_kernel::step_read::verify_helical_thread(
+            source,
+            &body.geometry,
+            radius,
+            frame.origin,
+            frame.u,
+            frame.v,
+            self.policy.linear_tolerance_mm,
+        ))
+    }
+
     /// Query the modeled helical material in world coordinates.
     pub fn rust_thread_contains(&self, point_mm: Point) -> Result<bool, GeometryError> {
         self.policy.point(point_mm)?;
@@ -423,6 +442,45 @@ impl HelicalBody {
             local_faces,
             rails,
         }
+    }
+
+    /// Shape forms covered by the certified helical STEP shell.
+    fn step_stock(&self) -> Option<Option<f64>> {
+        match &self.form {
+            HelicalForm::Shaft => Some(None),
+            HelicalForm::Bore(stock) => Some(Some(stock.radius())),
+            HelicalForm::Blind(_) | HelicalForm::Nut(_) | HelicalForm::Screw(_) => None,
+        }
+    }
+
+    pub(super) fn supports_step(&self, frame: PlaneFrame, policy: GeometryPolicy) -> bool {
+        self.step_stock().is_some_and(|radius| {
+            multicad_rust_kernel::step::supports_helical_thread(
+                &self.geometry,
+                radius,
+                frame.origin,
+                policy.linear_tolerance_mm,
+            )
+        })
+    }
+
+    pub(super) fn append_step(
+        &self,
+        writer: &mut multicad_rust_kernel::step::Writer,
+        frame: PlaneFrame,
+        policy: GeometryPolicy,
+    ) -> Result<(), multicad_rust_kernel::step::StepError> {
+        let radius = self
+            .step_stock()
+            .ok_or(multicad_rust_kernel::step::StepError::Unsupported)?;
+        writer.append_helical_thread(
+            &self.geometry,
+            radius,
+            frame.origin,
+            frame.u,
+            frame.v,
+            policy.linear_tolerance_mm,
+        )
     }
 
     pub(super) fn volume_mm3(&self) -> f64 {

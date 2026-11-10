@@ -193,7 +193,7 @@ fn rust_mcp_models_edits_and_reopens_a_metric_thread_without_fallback() {
         profiles["active_geometry_support"]["modes"],
         json!(["new_external", "cut_internal"])
     );
-    assert_eq!(profiles["active_geometry_support"]["step"], false);
+    assert_eq!(profiles["active_geometry_support"]["step"], true);
     let families = profiles["families"].as_array().unwrap();
     let metric = families
         .iter()
@@ -246,15 +246,14 @@ fn rust_mcp_models_edits_and_reopens_a_metric_thread_without_fallback() {
     );
     assert_eq!(h.document(), before_rejection);
 
-    let unsupported_step = dispatch(
+    let step = run(
         &h,
-        &call(false),
         "export_step",
         json!({"part":part,"file_name":"thread.step"}),
-    )
-    .unwrap_err();
-    assert_eq!(unsupported_step.code, "export_failed");
-    assert!(!directory.path().join("thread.step").exists());
+    );
+    let readback_volume = step["readback_volume_mm3"].as_f64().unwrap();
+    assert!((readback_volume - volume * 0.8).abs() < 1e-7);
+    assert!(directory.path().join("thread.step").is_file());
     assert!(!directory.path().join(".thread.step.partial.step").exists());
 
     run(&h, "save_project", json!({"expected_revision":2}));

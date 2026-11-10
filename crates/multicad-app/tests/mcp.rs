@@ -550,6 +550,90 @@ fn app_bridge_relays_stdio_to_a_listening_window_and_fails_clearly_without_one()
 }
 
 #[test]
+fn rust_stdio_exports_verified_metric_shaft_and_receiving_thread_after_reopen() {
+    let directory = tempfile::tempdir().unwrap();
+    let project = directory.path().join("thread.tcd");
+    let exports = directory.path().join("exports");
+    std::fs::create_dir(&exports).unwrap();
+    let arguments = [
+        "--rust-model",
+        "--project",
+        project.to_str().unwrap(),
+        "--export-dir",
+        exports.to_str().unwrap(),
+    ];
+    let mut client = Client::start(&arguments);
+    let shaft = client.ok(
+        "set_thread",
+        json!({
+            "expected_revision": 0, "name": "M6 shaft", "family": "iso_metric",
+            "major_diameter": length(6.), "pitch": length(1.), "length": length(3.7),
+            "origin": [length(15.), length(0.), length(0.)],
+        }),
+    )["part"]
+        .clone();
+    let sketch = client.ok(
+        "create_sketch",
+        json!({
+            "expected_revision": 1, "plane": "xy", "name": "Receiver stock",
+        }),
+    )["sketch"]
+        .clone();
+    client.ok(
+        "sketch_add_circle",
+        json!({
+            "expected_revision": 2, "sketch": sketch, "center_mm": [0., 0.],
+            "diameter": length(9.),
+        }),
+    );
+    let stock = client.ok(
+        "extrude",
+        json!({
+            "expected_revision": 3, "sketch": sketch, "regions": [0],
+            "distance": length(3.7), "operation": "new_body",
+        }),
+    )["created"][0]["part"]
+        .clone();
+    let receiver = client.ok(
+        "set_thread",
+        json!({
+            "expected_revision": 4, "name": "M6 through receiver", "family": "iso_metric",
+            "mode": "cut_internal", "target_part": stock, "hand": "left",
+            "major_diameter": length(6.), "pitch": length(1.), "length": length(3.7),
+        }),
+    )["part"]
+        .clone();
+    client.ok("save_project", json!({"expected_revision": 5}));
+    drop(client);
+
+    let saved = std::fs::read(&project).unwrap();
+    let mut reopened = Client::start(&arguments);
+    let model = reopened.ok("evaluate_model", json!({}));
+    for (part, name, stock_wall) in [
+        (shaft, "shaft.step", false),
+        (receiver, "receiver.step", true),
+    ] {
+        let exact = model["parts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|shape| shape["part"] == part)
+            .unwrap();
+        let receipt = reopened.ok("export_step", json!({"part": part, "file_name": name}));
+        close(
+            receipt["readback_volume_mm3"].as_f64().unwrap(),
+            exact["volume_mm3"].as_f64().unwrap(),
+        );
+        let step = std::fs::read_to_string(exports.join(name)).unwrap();
+        assert_eq!(step.matches("B_SPLINE_SURFACE_WITH_KNOTS").count(), 4);
+        assert_eq!(step.contains("CYLINDRICAL_SURFACE"), stock_wall);
+        assert_eq!(step.matches("MANIFOLD_SOLID_BREP").count(), 1);
+        assert!(!step.contains("FACETED_BREP"));
+    }
+    assert_eq!(std::fs::read(&project).unwrap(), saved);
+}
+
+#[test]
 fn rust_stdio_exports_verified_spur_step_after_reopen() {
     export_spur_step_after_reopen(None);
 }

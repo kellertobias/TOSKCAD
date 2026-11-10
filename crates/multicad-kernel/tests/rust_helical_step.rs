@@ -1,0 +1,51 @@
+#![cfg(feature = "occt")]
+
+use multicad_kernel::{
+    GeometryPolicy, Solid,
+    rust_kernel::{
+        helical_thread::{Spec, Thread},
+        step::write_helical_thread,
+        step_read::verify_helical_thread,
+    },
+};
+use std::f64::consts::PI;
+
+#[test]
+fn occt_reads_bounded_spline_threads_as_real_solids() {
+    let scratch = tempfile::tempdir().unwrap();
+    let angle = 0.3_f64;
+    let u = [angle.cos(), 0., angle.sin()];
+    let v = [0., 1., 0.];
+    let origin = [19., -7., 17.];
+    let height = 3.7;
+    for (i, (left_hand, stock_radius)) in [(false, None), (true, Some(4.5))].into_iter().enumerate()
+    {
+        let thread = Thread::new(Spec {
+            major_radius_mm: 3.,
+            pitch_mm: 1.,
+            length_mm: height,
+            depth_mm: 5. * 3_f64.sqrt() / 16.,
+            crest_width_mm: 0.125,
+            lower_flank_deg: 30.,
+            upper_flank_deg: 30.,
+            starts: 1,
+            left_hand,
+            root_radius_mm: None,
+        })
+        .unwrap();
+        let encoded = write_helical_thread(&thread, stock_radius, origin, u, v, 1e-7).unwrap();
+        let measured =
+            verify_helical_thread(&encoded, &thread, stock_radius, origin, u, v, 1e-7).unwrap();
+        let path = scratch.path().join(format!("thread-{i}.step"));
+        std::fs::write(&path, encoded).unwrap();
+        let read = Solid::read_step(&path, GeometryPolicy::default()).unwrap();
+        assert_eq!(read.solid_count().unwrap(), 1);
+        let actual = read.volume_mm3().unwrap();
+        let expected = stock_radius.map_or(thread.volume_mm3(), |radius| {
+            PI * radius * radius * height - thread.volume_mm3()
+        });
+        assert!((actual - expected).abs() < 1e-5, "{actual} != {expected}");
+        assert!((actual - measured).abs() < 1e-5, "{actual} != {measured}");
+        assert_ne!(measured, expected);
+    }
+}

@@ -231,7 +231,7 @@ fn read_rust_step(
         ));
     }
     let source = std::str::from_utf8(&bytes).map_err(|e| invalid(e.to_string()))?;
-    let members = step_read::read_analytic_compound(source, tolerance).map_err(|e| {
+    let readback_error = |e| {
         let kind = match e {
             step_read::ReadError::Limit => ErrorKind::Budget,
             _ => ErrorKind::Invalid,
@@ -241,7 +241,15 @@ fn read_rust_step(
             Some(producer),
             format!("Rust STEP readback rejected the geometry: {e:?}"),
         )
-    })?;
+    };
+    if let Some(proof) = solid.verify_helical_step(source) {
+        let volume = proof.map_err(readback_error)?;
+        // The verified boundary gives the source bounds within its uniform
+        // position error. Volume is integrated from the decoded STEP.
+        let bounds = solid.bounds().map_err(io)?;
+        return Ok((1, volume, [bounds.min, bounds.max]));
+    }
+    let members = step_read::read_analytic_compound(source, tolerance).map_err(readback_error)?;
     if !solid.step_readback_matches(topology, &members, tolerance * 2.) {
         return Err(invalid(
             "STEP readback differs from the source member topology".into(),

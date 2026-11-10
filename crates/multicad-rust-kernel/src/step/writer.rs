@@ -86,6 +86,19 @@ impl Writer {
         }
     }
 
+    pub fn append_helical_thread(
+        &mut self,
+        thread: &crate::helical_thread::Thread,
+        stock_radius_mm: Option<f64>,
+        origin: Point,
+        u: Point,
+        v: Point,
+        tolerance_mm: f64,
+    ) -> Result<(), StepError> {
+        let placement = Placement::new(origin, u, v)?;
+        self.append(|file| helical::encode(file, thread, stock_radius_mm, placement, tolerance_mm))
+    }
+
     pub fn append_orthogonal(
         &mut self,
         boundary: &Boundary,

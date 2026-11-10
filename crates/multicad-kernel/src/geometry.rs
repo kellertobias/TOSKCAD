@@ -1921,6 +1921,10 @@ impl Solid {
     }
     /// Whether the active backend can encode this exact solid in STEP.
     pub fn supports_step_export(&self) -> bool {
+        self.supports_step_shell(true)
+    }
+
+    fn supports_step_shell(&self, standalone: bool) -> bool {
         match &self.body {
             SolidBody::Occt(_)
             | SolidBody::PolygonPrism(_)
@@ -1933,8 +1937,13 @@ impl Solid {
             | SolidBody::AxialStack(..)
             | SolidBody::RoundedSlot(..) => true,
             SolidBody::Prism(prism, _) => prism.rounded_end().is_none(),
-            SolidBody::RustCompound(compound) => compound.members().all(Self::supports_step_export),
-            SolidBody::Helical(..) | SolidBody::CosmeticFastener(..) => false,
+            SolidBody::RustCompound(compound) => compound
+                .members()
+                .all(|member| member.supports_step_shell(false)),
+            SolidBody::Helical(body, frame) => {
+                standalone && body.supports_step(*frame, self.policy)
+            }
+            SolidBody::CosmeticFastener(..) => false,
             SolidBody::WarpedUnion(body, _) => {
                 multicad_rust_kernel::step::supports_warped_union(&body.geometry)
             }
@@ -1956,13 +1965,6 @@ impl Solid {
             return ffi::write_step(&shape.0, path_text).map_err(|e| native("write STEP", e));
         }
         let operation = "write STEP";
-        if self.helical_body().is_some() {
-            return Err(error(
-                operation,
-                GeometryErrorKind::Unsupported,
-                "STEP export of Rust helical surfaces is unavailable",
-            ));
-        }
         if !self.supports_step_export() {
             return Err(error(
                 operation,
@@ -2083,9 +2085,8 @@ impl Solid {
                 }
                 Ok(())
             }
-            SolidBody::Helical(..) | SolidBody::CosmeticFastener(..) => {
-                Err(step::StepError::Unsupported)
-            }
+            SolidBody::Helical(body, frame) => body.append_step(writer, *frame, self.policy),
+            SolidBody::CosmeticFastener(..) => Err(step::StepError::Unsupported),
             SolidBody::Orthogonal(body, frame) => body.append_step(writer, *frame),
             SolidBody::Occt(_) => unreachable!("native STEP dispatched above"),
         }

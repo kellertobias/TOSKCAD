@@ -691,7 +691,8 @@ pub(super) fn thread_profiles(_: &dyn Host, call: &Request, _: NoArgs) -> ToolRe
             "representations": ["modeled"],
             "end_treatments": false,
             "radial_taper": false,
-            "step": false,
+            "step": true,
+            "step_scope": "Standalone straight single-start flat-root modeled shafts and through threads in round stock, within the bounded spline budget",
             "manufacturing_mesh": true,
             "reference_data_includes_other_backends": true
         });

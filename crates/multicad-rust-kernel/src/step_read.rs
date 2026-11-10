@@ -5,6 +5,8 @@
 
 mod compound;
 mod curve;
+mod helical;
+pub use helical::verify_helical_thread;
 mod import;
 mod mixed;
 mod part21;
