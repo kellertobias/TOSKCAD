@@ -244,6 +244,14 @@ fn project(
         curved_projection::project(cylinder, options.hidden_lines, detail)
     }
     .map_err(projection_error)?;
+    publish(edges, options, source_index)
+}
+
+pub(super) fn publish(
+    edges: Vec<curved_projection::Edge>,
+    options: DrawingProjection,
+    source_index: usize,
+) -> Result<Vec<ProjectedVector>, GeometryError> {
     if edges.len() > options.maximum_curves as usize {
         return Err(err(
             GeometryErrorKind::Limit,

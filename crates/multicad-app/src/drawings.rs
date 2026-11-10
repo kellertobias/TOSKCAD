@@ -952,6 +952,110 @@ mod tests {
         );
     }
 
+    #[test]
+    fn rust_worker_draws_the_shipped_cabinet_panel_and_reuses_the_cached_page() {
+        use drawings::{VectorCurve, VectorRole, ViewEvaluation};
+        use std::f64::consts::{PI, TAU};
+
+        let directory = tempfile::tempdir().unwrap();
+        let cache = cache::Cache::isolated(directory.path().to_owned());
+        let mut session = open_example("cabinet.tcd");
+        let panel = session
+            .document()
+            .entities()
+            .find(|entity| {
+                entity.name == "Cabinet left side"
+                    && matches!(
+                        entity.data,
+                        multicad_core::document::EntityData::Part { .. }
+                    )
+            })
+            .expect("bundled left cabinet panel")
+            .id;
+        let mut page = projection_page(panel);
+        let front = &mut page.views[0];
+        front.name = "Inside face".into();
+        front.frame.u = [0., 1., 0.];
+        front.frame.v = [0., 0., 1.];
+        let front_id = front.id;
+        let mut back = front.clone();
+        back.id = EntityId::new();
+        back.name = "Outside face".into();
+        back.frame.u = [0., -1., 0.];
+        back.hidden_lines = true;
+        let back_id = back.id;
+        page.views.push(back);
+        let (_, prepared) = drawings::prepare_create(
+            &session,
+            session.revision(),
+            Actor::local(Channel::Ui),
+            "Cabinet panel machining",
+            Some(page.clone()),
+        )
+        .unwrap();
+        session.commit(prepared).unwrap();
+
+        let mut worker =
+            Backend::with_cache_and_backend(Some(cache.clone()), GeometryBackend::Rust);
+        let original = preview(&mut worker, &session, page.id);
+        let count = |id, role| {
+            let ViewEvaluation::Ready { vectors, .. } = &original.views[&id] else {
+                panic!("{:?}", original.views[&id]);
+            };
+            assert!(vectors.iter().all(|vector| vector.source == panel));
+            let mut counts = [0; 3];
+            for vector in vectors.iter().filter(|vector| vector.role == role) {
+                match vector.curve {
+                    VectorCurve::Line { .. } => counts[0] += 1,
+                    VectorCurve::Ellipse {
+                        major_mm,
+                        minor_mm,
+                        start_rad,
+                        end_rad,
+                        ..
+                    } => {
+                        assert!((major_mm - minor_mm).abs() < 1e-8);
+                        let sweep = (end_rad - start_rad).abs();
+                        if (sweep - TAU).abs() < 1e-8 {
+                            counts[1] += 1;
+                        } else {
+                            assert!((sweep - PI).abs() < 1e-8);
+                            assert!((major_mm - 4.).abs() < 1e-8);
+                            counts[2] += 1;
+                        }
+                    }
+                    _ => panic!("Unexpected cabinet panel curve: {:?}", vector.curve),
+                }
+            }
+            counts
+        };
+        assert_eq!(count(front_id, VectorRole::Visible), [28, 66, 24]);
+        assert_eq!(count(front_id, VectorRole::Hidden), [0; 3]);
+        assert_eq!(count(back_id, VectorRole::Visible), [4, 0, 0]);
+        assert_eq!(count(back_id, VectorRole::Hidden), [24, 66, 24]);
+        assert!(
+            worker
+                .runtime
+                .as_ref()
+                .unwrap()
+                .last_compile_stats()
+                .is_some()
+        );
+        drop(worker);
+
+        let mut worker = Backend::with_cache_and_backend(Some(cache), GeometryBackend::Rust);
+        let restored = preview(&mut worker, &session, page.id);
+        assert_eq!(restored.views, original.views);
+        assert!(
+            worker
+                .runtime
+                .as_ref()
+                .unwrap()
+                .last_compile_stats()
+                .is_none()
+        );
+    }
+
     fn add_box(session: &mut Session, name: &str, x: f64) -> model::BodyInput {
         let request = PrimitiveRequest::new(
             name,

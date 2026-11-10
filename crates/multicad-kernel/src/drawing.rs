@@ -3,6 +3,7 @@
 use crate::{GeometryError, GeometryErrorKind, GeometryPolicy, PlaneFrame, Solid, ffi};
 use multicad_core::drawings::{VectorCurve, VectorRole};
 mod curved;
+mod panel;
 mod planar;
 mod section;
 
@@ -152,6 +153,11 @@ pub fn project_drawing(
                 };
             }
             return section::project(solids, options, depth);
+        }
+        if let [input] = solids
+            && let Some(projection) = panel::project(input, options)
+        {
+            return projection;
         }
         if solids.iter().any(|input| curved::is_round(input.solid)) {
             return curved::project_scene(solids, options);

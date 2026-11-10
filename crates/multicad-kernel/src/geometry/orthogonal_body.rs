@@ -834,6 +834,48 @@ impl OrthogonalBody {
         })
     }
 
+    /// Near and far stock faces for a face-on view of a rectangular panel
+    /// whose certified blind cuts all enter from one of those two faces.
+    pub(crate) fn parallel_panel_faces(
+        &self,
+        frame: PlaneFrame,
+        toward_viewer: Point,
+    ) -> Option<[u32; 2]> {
+        let bounds = self.geometry.bounds();
+        if (self.pockets.is_empty() && self.slots.is_empty())
+            || self.boundary.shell_count != 1
+            || self.boundary.faces.len() != 6
+            || self.boundary.faces.iter().any(|face| {
+                !matches!(face.rings.as_slice(), [ring] if ring.len() == 4
+                    && extent(ring.iter().copied()) == box_face(bounds, face.normal))
+            })
+        {
+            return None;
+        }
+        let depth = [frame.u, frame.v, frame.normal()].map(|axis| dot(toward_viewer, axis));
+        let depth_axis = depth.iter().position(|coordinate| coordinate.abs() > 0.5)?;
+        if depth
+            .iter()
+            .enumerate()
+            .any(|(i, coordinate)| i != depth_axis && coordinate.abs() > 32. * f64::EPSILON)
+        {
+            return None;
+        }
+        let [near, far] = [depth[depth_axis].signum(), -depth[depth_axis].signum()].map(|sign| {
+            self.boundary
+                .faces
+                .iter()
+                .position(|face| face.normal[depth_axis] == sign)
+        });
+        let [near, far] = [near?, far?];
+        self.pockets
+            .iter()
+            .map(|pocket| pocket.face)
+            .chain(self.slots.iter().map(|slot| slot.face))
+            .all(|face| face == near || face == far)
+            .then_some([near as u32, far as u32])
+    }
+
     pub(crate) fn loops(&self, face: u32) -> Vec<Vec<EdgeUse>> {
         if let Some(loops) = self.loops.get(face as usize) {
             let mut loops = loops.clone();
