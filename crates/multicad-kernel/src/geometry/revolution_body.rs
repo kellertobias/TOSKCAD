@@ -225,11 +225,14 @@ impl Solid {
         sections: &[[f64; 2]],
         feature: EntityId,
         origins: &[Origin],
+        continuous: bool,
         policy: GeometryPolicy,
     ) -> Result<Self, GeometryError> {
         let height = sections.last().expect("validated loft sections")[1];
+        let ends = [sections[0], sections[sections.len() - 1]];
+        let profile = if continuous { &ends } else { sections };
         let meridian = std::iter::once([0., 0.])
-            .chain(sections.iter().copied())
+            .chain(profile.iter().copied())
             .chain([[0., height]])
             .collect();
         let geometry = Revolution::new(vec![meridian], std::f64::consts::TAU).map_err(|cause| {
@@ -251,21 +254,35 @@ impl Solid {
             authored_start: [0., level],
         };
         let mut segments = vec![cap("cap.start", 0.)];
-        for (i, pair) in origins.windows(2).enumerate() {
-            let [lower, upper] = [&pair[0], &pair[1]];
-            let mut inherited = vec![upper.clone()];
-            // Each section's generated side identity names only one band.
-            // The final section has no following band, so attach it here.
-            if i + 2 == origins.len() {
-                inherited.push(generated(&format!("side/{}/{}", upper.source, upper.role)));
-            }
+        let side = |origin: &Origin| generated(&format!("side/{}/{}", origin.source, origin.role));
+        if continuous {
             segments.push(MeridianSegment {
-                origin: lower.clone(),
+                origin: origins[0].clone(),
                 cap_identity: false,
-                inherited,
+                inherited: origins[1..]
+                    .iter()
+                    .flat_map(|origin| [origin.clone(), side(origin)])
+                    .collect(),
                 inherited_frames: vec![],
-                authored_start: sections[i],
+                authored_start: sections[0],
             });
+        } else {
+            for (i, pair) in origins.windows(2).enumerate() {
+                let [lower, upper] = [&pair[0], &pair[1]];
+                let mut inherited = vec![upper.clone()];
+                // Each section's generated side identity names only one band.
+                // The final section has no following band, so attach it here.
+                if i + 2 == origins.len() {
+                    inherited.push(side(upper));
+                }
+                segments.push(MeridianSegment {
+                    origin: lower.clone(),
+                    cap_identity: false,
+                    inherited,
+                    inherited_frames: vec![],
+                    authored_start: sections[i],
+                });
+            }
         }
         segments.push(cap("cap.end", height));
         segments.push(cap("loft.axis", 0.));

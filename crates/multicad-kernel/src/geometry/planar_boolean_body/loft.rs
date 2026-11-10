@@ -1,6 +1,6 @@
 //! Ruled lofts with authored correspondence and stable planar attachments.
 use super::*;
-use crate::{CurvedEdge2d, CurvedProfile};
+use crate::{CurvedEdge2d, CurvedProfile, advanced_profiles::matches_straight_loft_station};
 use multicad_core::references::GeometryIntent;
 use multicad_rust_kernel::planar_boolean::ruled_loft;
 
@@ -27,6 +27,7 @@ fn validate_origins(
     feature: EntityId,
     section_origins: &[Vec<Origin>],
     caps: &[Origin; 2],
+    continuous: bool,
 ) -> Result<(), GeometryError> {
     let mut authored = BTreeSet::new();
     let mut generated: BTreeSet<_> = caps.iter().cloned().collect();
@@ -36,7 +37,7 @@ fn validate_origins(
                 return Err(input("Loft needs distinct authored curve origins"));
             }
             let mut origins = BTreeSet::from([edge.clone()]);
-            if section + 1 < section_origins.len() {
+            if continuous || section + 1 < section_origins.len() {
                 let side = side_origin(feature, edge);
                 origins.insert(side.clone());
                 generated.insert(side);
@@ -66,6 +67,16 @@ impl Solid {
         profiles: &[CurvedProfile],
         feature: EntityId,
         section_origins: &[Vec<Origin>],
+        policy: GeometryPolicy,
+    ) -> Result<Self, GeometryError> {
+        Self::rust_loft_polygon_sections_named(profiles, feature, section_origins, true, policy)
+    }
+
+    pub(crate) fn rust_loft_polygon_sections_named(
+        profiles: &[CurvedProfile],
+        feature: EntityId,
+        section_origins: &[Vec<Origin>],
+        ruled: bool,
         policy: GeometryPolicy,
     ) -> Result<Self, GeometryError> {
         policy.validate()?;
@@ -100,7 +111,8 @@ impl Solid {
             source: feature,
             role: role.into(),
         });
-        validate_origins(feature, section_origins, &caps)?;
+        let continuous = !ruled && profiles.len() > 2;
+        validate_origins(feature, section_origins, &caps, continuous)?;
 
         let first = profiles[0].frame;
         let last = profiles[profiles.len() - 1].frame;
@@ -177,7 +189,39 @@ impl Solid {
             });
             heights.push(height);
         }
-        let (geometry, material) = ruled_loft(&sections, &heights, tolerance).map_err(|cause| {
+        let loft = if continuous {
+            let last = sections.len() - 1;
+            if sections[1..last]
+                .iter()
+                .zip(&heights[1..last])
+                .any(|(station, &height)| {
+                    let fraction = height / heights[last];
+                    sections[0]
+                        .iter()
+                        .zip(station)
+                        .zip(&sections[last])
+                        .any(|((&a, &p), &b)| {
+                            (0..2).any(|i| {
+                                !matches_straight_loft_station(
+                                    a[i], p[i], b[i], fraction, tolerance,
+                                )
+                            })
+                        })
+                })
+            {
+                return Err(unsupported(
+                    "Rust smooth polygon loft requires all stations on the same straight transition",
+                ));
+            }
+            ruled_loft(
+                &[sections[0].clone(), sections[last].clone()],
+                &[0., heights[last]],
+                tolerance,
+            )
+        } else {
+            ruled_loft(&sections, &heights, tolerance)
+        };
+        let (geometry, material) = loft.map_err(|cause| {
             match cause {
                 Error::Invalid => unsupported(
                     "Rust ruled loft requires consistently wound simple sections and planar noncrossing sides",
@@ -213,8 +257,6 @@ impl Solid {
                     return (vec![origin.clone()], vec![AnchoredFrame { origin, frame }]);
                 }
                 let edge = face.source_face - 2;
-                let lower = face.source;
-                let upper = lower + 1;
                 let side_frame = |section: usize| {
                     let [a, b] = [edge, (edge + 1) % count].map(|i| sections[section][i]);
                     let along = [b[0] - a[0], b[1] - a[1], 0.];
@@ -228,6 +270,22 @@ impl Solid {
                         v: cross(normal, u),
                     }
                 };
+                if continuous {
+                    let anchors: Vec<_> = section_origins
+                        .iter()
+                        .enumerate()
+                        .flat_map(|(station, edges)| {
+                            let origin = &edges[edge];
+                            let frame = side_frame(station);
+                            [origin.clone(), side_origin(feature, origin)]
+                                .map(|origin| AnchoredFrame { origin, frame })
+                        })
+                        .collect();
+                    let labels = anchors.iter().map(|anchor| anchor.origin.clone()).collect();
+                    return (labels, anchors);
+                }
+                let lower = face.source;
+                let upper = lower + 1;
                 let start = &section_origins[lower][edge];
                 let end = &section_origins[upper][edge];
                 // An interior section is both an end and a start. The

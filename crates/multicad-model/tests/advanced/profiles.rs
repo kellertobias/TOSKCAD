@@ -1461,6 +1461,216 @@ fn ruled_polygon_loft_preserves_section_seams_after_edit_reopen_and_step() {
 }
 
 #[test]
+fn smooth_planar_loft_keeps_the_intermediate_station_attachment() {
+    use multicad_core::references::{self, Attachment, GeometryIntent, Resolution, TopologyKind};
+
+    let (mut session, _) = fixture();
+    let [a, b] = notched_loft_footprints();
+    let interpolate = |t: f64| {
+        std::array::from_fn(|i| std::array::from_fn(|j| (b[i][j] - a[i][j]).mul_add(t, a[i][j])))
+    };
+    let [(first, start), (middle, station), (last, end)] = [
+        ("Smooth start", 0., a),
+        ("Smooth station", 1.5, interpolate(0.375)),
+        ("Smooth end", 4., b),
+    ]
+    .map(|(name, z, points)| loft_polygon(&mut session, name, z, points));
+    let request = AdvancedRequest::new_body(
+        "Smooth planar notch",
+        AdvancedParameters::Loft(LoftParameters {
+            seams: vec![start[0], station[0], end[0]],
+            ..Default::default()
+        }),
+        vec![first, middle.clone(), last],
+        None,
+    );
+    commit(&mut session, &request);
+    let volume = 4. * (56. + 4. * 70.5 + 86.) / 6.;
+    #[cfg(feature = "occt")]
+    let native = compile(&session);
+    #[cfg(feature = "occt")]
+    near(
+        native.solid(request.body).unwrap().volume_mm3().unwrap(),
+        volume,
+    );
+
+    let initial = check_saved_rust_profile(&mut session, &request, volume);
+    assert_eq!(
+        initial.solid(request.body).unwrap().faces().unwrap().len(),
+        10
+    );
+    #[cfg(feature = "occt")]
+    {
+        let area = |solid: &multicad_kernel::Solid| -> f64 {
+            solid
+                .faces()
+                .unwrap()
+                .iter()
+                .map(|face| face.area_mm2)
+                .sum()
+        };
+        near(
+            area(native.solid(request.body).unwrap()),
+            area(initial.solid(request.body).unwrap()),
+        );
+    }
+    let notch = |model: &multicad_model::Model| {
+        let topology = &model.snapshot().shapes[&request.feature].topology;
+        topology
+            .elements
+            .iter()
+            .find(|face| {
+                face.key.kind == TopologyKind::Face
+                    && [start[4], station[4], end[4]]
+                        .into_iter()
+                        .all(|id| face.origins.iter().any(|origin| origin.source == id))
+            })
+            .unwrap()
+            .clone()
+    };
+    let face = notch(&initial);
+    let topology = &initial.snapshot().shapes[&request.feature].topology;
+    let mut intent = GeometryIntent::capture(topology, face.key).unwrap();
+    let anchor = face
+        .frames
+        .iter()
+        .find(|anchor| anchor.origin.source == station[4])
+        .unwrap();
+    near(anchor.frame.origin_mm[2], 1.5);
+    intent.attachment = Some(Attachment {
+        anchor: anchor.origin.clone(),
+        offset_mm: [0.; 3],
+        angle_rad: 0.,
+    });
+
+    let mut source = Source::read(session.document(), middle.sketch).unwrap().0;
+    for (point, position) in source.sketch.points.iter_mut().zip(interpolate(0.625)) {
+        point.position_mm = position;
+    }
+    let EntityData::Sketch { plane, .. } = session.document().get(middle.sketch).unwrap().data
+    else {
+        panic!("expected the middle section plane");
+    };
+    let mut plane = session.document().get(plane).unwrap().clone();
+    let EntityData::Plane { origin_mm, .. } = &mut plane.data else {
+        panic!("expected a datum plane");
+    };
+    origin_mm[2] = 2.5;
+    let mut edits = source.replace(session.document(), middle.sketch).unwrap();
+    edits.push(Mutation::Replace(plane));
+    session
+        .apply(Request {
+            expected_revision: session.revision(),
+            actor: actor(),
+            label: "Move the smooth loft station along the same wall".into(),
+            edits,
+        })
+        .unwrap();
+    let restored = check_saved_rust_profile(&mut session, &request, volume);
+    let topology = &restored.snapshot().shapes[&request.feature].topology;
+    let Resolution::Resolved {
+        key,
+        frame: Some(frame),
+        ..
+    } = references::resolve(&intent, topology, topology.revision)
+    else {
+        panic!("the station attachment must resolve on the merged wall");
+    };
+    assert_eq!(key, notch(&restored).key);
+    near(frame.origin_mm[2], 2.5);
+
+    // A real change in the transition needs the general smooth provider.
+    source.sketch.points[0].position_mm[0] += 0.5;
+    let altered = session
+        .document()
+        .edited(&source.replace(session.document(), middle.sketch).unwrap())
+        .unwrap();
+    let error = multicad_model::Compiler::default()
+        .compile_sources_with_backend(
+            &altered,
+            session.revision(),
+            &[request.body],
+            multicad_model::GeometryBackend::Rust,
+            None,
+        )
+        .err()
+        .expect("a non-affine station must not be flattened");
+    assert!(error.message.contains("straight transition"));
+}
+
+#[test]
+fn smooth_coaxial_loft_keeps_the_exact_cone_and_all_section_origins() {
+    use multicad_core::references::TopologyKind;
+
+    let (mut session, _) = fixture();
+    let (first, a) = circle(&mut session, "Cone start", 0., 2., false);
+    let (middle, b) = circle(&mut session, "Cone station", 7., 3.05, false);
+    let middle_sketch = middle.sketch;
+    let (last, c) = circle(&mut session, "Cone end", 20., 5., false);
+    let request = AdvancedRequest::new_body(
+        "Smooth coaxial cone",
+        AdvancedParameters::Loft(LoftParameters {
+            seams: vec![a, b, c],
+            ..Default::default()
+        }),
+        vec![first, middle, last],
+        None,
+    );
+    commit(&mut session, &request);
+    let volume = 20. * PI * (4. + 10. + 25.) / 3.;
+    let area = PI * (4. + 25. + 7. * 20_f64.hypot(3.));
+    let check = |model: &multicad_model::Model| {
+        let solid = model.solid(request.body).unwrap();
+        near(solid.volume_mm3().unwrap(), volume);
+        near(
+            solid
+                .faces()
+                .unwrap()
+                .iter()
+                .map(|face| face.area_mm2)
+                .sum(),
+            area,
+        );
+    };
+    #[cfg(feature = "occt")]
+    check(&compile(&session));
+    let reopened = check_saved_rust_profile(&mut session, &request, volume);
+    check(&reopened);
+    assert_eq!(
+        reopened.solid(request.body).unwrap().faces().unwrap().len(),
+        3
+    );
+    let topology = &reopened.snapshot().shapes[&request.feature].topology;
+    assert!(topology.elements.iter().any(|face| {
+        face.key.kind == TopologyKind::Face
+            && [a, b, c]
+                .into_iter()
+                .all(|id| face.origins.iter().any(|origin| origin.source == id))
+    }));
+
+    let mut source = Source::read(session.document(), middle_sketch).unwrap().0;
+    let CurveKind::Circle { radius_mm, .. } = &mut source.sketch.curves[0].kind else {
+        panic!("expected the authored circle");
+    };
+    *radius_mm += 0.25;
+    let altered = session
+        .document()
+        .edited(&source.replace(session.document(), middle_sketch).unwrap())
+        .unwrap();
+    let error = multicad_model::Compiler::default()
+        .compile_sources_with_backend(
+            &altered,
+            session.revision(),
+            &[request.body],
+            multicad_model::GeometryBackend::Rust,
+            None,
+        )
+        .err()
+        .expect("a non-affine circular station must not be flattened");
+    assert!(error.message.contains("straight transition"));
+}
+
+#[test]
 fn default_two_section_loft_preserves_planar_notch_after_reopen() {
     let (mut session, _) = fixture();
     let [bottom, top] = notched_loft_footprints();

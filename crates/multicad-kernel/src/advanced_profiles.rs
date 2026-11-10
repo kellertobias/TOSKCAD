@@ -17,6 +17,19 @@ fn failure(kind: GeometryErrorKind, message: impl Into<String>) -> GeometryError
         message: message.into(),
     }
 }
+
+pub(crate) fn matches_straight_loft_station(
+    start: f64,
+    station: f64,
+    end: f64,
+    fraction: f64,
+    tolerance_mm: f64,
+) -> bool {
+    let scale = start.abs().max(station.abs()).max(end.abs()).max(1.);
+    let roundoff = (64. * f64::EPSILON * scale).min(tolerance_mm);
+    ((end - start).mul_add(fraction, start) - station).abs() <= roundoff
+}
+
 fn origins_valid(feature: EntityId, origins: &[Origin]) -> Result<(), GeometryError> {
     let authored: BTreeSet<_> = origins.iter().collect();
     if feature.is_nil()
@@ -297,30 +310,21 @@ impl Solid {
         ruled: bool,
         policy: GeometryPolicy,
     ) -> Result<Self, GeometryError> {
-        // Two sections have one interpolation interval. Matching polygon
-        // edges with planar side walls also define the default smooth loft.
-        if (ruled || profiles.len() == 2)
-            && profiles.iter().all(|profile| {
-                profile
-                    .outer
-                    .iter()
-                    .all(|edge| matches!(edge, CurvedEdge2d::Line { .. }))
-            })
-        {
-            return Self::rust_loft_ruled_polygons_named(
+        if profiles.iter().all(|profile| {
+            profile
+                .outer
+                .iter()
+                .all(|edge| matches!(edge, CurvedEdge2d::Line { .. }))
+        }) {
+            return Self::rust_loft_polygon_sections_named(
                 profiles,
                 feature,
                 section_origins,
+                ruled,
                 policy,
             );
         }
-        if !ruled && profiles.len() != 2 {
-            return Err(failure(
-                GeometryErrorKind::Unsupported,
-                "Rust loft needs ruled construction for more than two sections",
-            ));
-        }
-        Self::rust_loft_round_sections(profiles, feature, section_origins, policy)
+        Self::rust_loft_round_sections(profiles, feature, section_origins, ruled, policy)
     }
 
     /// Loft two full circles on one axis with the same authored seam phase.
@@ -336,13 +340,14 @@ impl Solid {
                 "Rust loft requires two ordered circular sections",
             ));
         }
-        Self::rust_loft_round_sections(profiles, feature, section_origins, policy)
+        Self::rust_loft_round_sections(profiles, feature, section_origins, true, policy)
     }
 
     fn rust_loft_round_sections(
         profiles: &[CurvedProfile],
         feature: EntityId,
         section_origins: &[Vec<Origin>],
+        ruled: bool,
         policy: GeometryPolicy,
     ) -> Result<Self, GeometryError> {
         policy.validate()?;
@@ -417,12 +422,31 @@ impl Solid {
             origins.push(origin.clone());
         }
         origins_valid(feature, &origins)?;
+        let continuous = !ruled && sections.len() > 2;
+        if continuous {
+            let [first, _] = sections[0];
+            let [last, height] = sections[sections.len() - 1];
+            if sections[1..sections.len() - 1].iter().any(|&[radius, z]| {
+                !matches_straight_loft_station(
+                    first,
+                    radius,
+                    last,
+                    z / height,
+                    policy.linear_tolerance_mm,
+                )
+            }) {
+                return Err(failure(
+                    GeometryErrorKind::Unsupported,
+                    "Rust smooth circular loft requires all stations on the same straight transition",
+                ));
+            }
+        }
         let frame = PlaneFrame {
             origin: axis_origin,
             u: start.u,
             v: start.v.map(|component| component * sign),
         };
-        Self::rust_revolve_circle_loft(frame, &sections, feature, &origins, policy)
+        Self::rust_revolve_circle_loft(frame, &sections, feature, &origins, continuous, policy)
     }
 
     /// Loft 2..16 closed sections in supplied order, keeping their edge order
