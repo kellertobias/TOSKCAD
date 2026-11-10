@@ -27,7 +27,9 @@ impl SplineEdge {
 
     /// Resolve the double interior knots into cubic Bezier spans. The shared
     /// endpoint follows from C1 continuity under unequal knot intervals.
-    pub fn bezier_spans(&self) -> impl Iterator<Item = [Point; 4]> + '_ {
+    pub fn bezier_spans(
+        &self,
+    ) -> impl DoubleEndedIterator<Item = [Point; 4]> + ExactSizeIterator + '_ {
         let count = self.knots.len() - 1;
         let join = move |index: usize| {
             if index == 0 {

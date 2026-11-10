@@ -299,24 +299,33 @@ impl SplineSweepBody {
         }) {
             for z in [0., self.sweep.height_mm()] {
                 let place = |[x, y]: [f64; 2]| position(frame, [x, y, z]);
-                let start = project(place(cubic.poles()[0]));
+                let start = project(place(cubic.point(0.)));
                 let index = starts.partition_point(|entry| entry.0 < start - tolerance * 2.);
                 let Some((_, found, _)) = starts[index..]
                     .iter()
                     .take_while(|entry| entry.0 <= start + tolerance * 2.)
                     .find(|&&(_, i, reversed)| {
-                        let actual = &readback[i];
-                        let poles = actual.poles_mm();
+                        let mut actual = readback[i].bezier_spans();
+                        let mut expected = cubic.bezier_spans();
                         !used[i]
-                            && poles.len() == cubic.poles().len()
-                            && cubic.poles().iter().enumerate().all(|(j, &point)| {
-                                let actual = poles[if reversed { poles.len() - 1 - j } else { j }];
-                                place(point)
-                                    .into_iter()
-                                    .zip(actual)
-                                    .all(|(a, b)| (a - b).abs() <= tolerance)
+                            && actual.len() == expected.len()
+                            && expected.all(|span| {
+                                let actual = if reversed {
+                                    let mut span =
+                                        actual.next_back().expect("matching span counts");
+                                    span.reverse();
+                                    span
+                                } else {
+                                    actual.next().expect("matching span counts")
+                                };
+                                // A cubic remains inside its Bezier control hull.
+                                // Comparing every matched control bounds the whole trim.
+                                span.map(place).into_iter().zip(actual).all(|(a, b)| {
+                                    a.into_iter()
+                                        .zip(b)
+                                        .all(|(a, b)| (a - b).abs() <= tolerance)
+                                })
                             })
-                            && same_knot_intervals(cubic.knots(), actual.knots(), reversed)
                     })
                 else {
                     return false;
@@ -352,19 +361,4 @@ impl SplineSweepBody {
                 .collect()
         }))
     }
-}
-
-fn same_knot_intervals(expected: &[f64], actual: &[f64], reversed: bool) -> bool {
-    let last = expected.len() - 1;
-    if expected.len() != actual.len() {
-        return false;
-    }
-    let a_range = expected[last] - expected[0];
-    let b_range = actual[last] - actual[0];
-    expected.windows(2).enumerate().all(|(i, pair)| {
-        let j = if reversed { last - 1 - i } else { i };
-        let a = (pair[1] - pair[0]) / a_range;
-        let b = (actual[j + 1] - actual[j]) / b_range;
-        (a - b).abs() <= 1e-12
-    })
 }
