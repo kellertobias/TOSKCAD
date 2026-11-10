@@ -18,7 +18,7 @@ pub(super) fn reconstruct(
     }
 
     let leg_count = (face_count - 2) / 4;
-    let Some((rims, edge_rim)) = rims(boundary, leg_count + 1) else {
+    let Some((rims, edge_rim)) = rims(boundary, leg_count + 1, reader.tolerance) else {
         return Ok(None);
     };
     let Some((chain, cap_vertex)) = centerline(boundary, &rims, &edge_rim) else {
@@ -64,7 +64,7 @@ pub(super) fn reconstruct(
 
 type RimIds = BTreeMap<u32, usize>;
 
-fn rims(boundary: &Boundary, expected: usize) -> Option<(Vec<Ellipse>, RimIds)> {
+fn rims(boundary: &Boundary, expected: usize, tolerance: f64) -> Option<(Vec<Ellipse>, RimIds)> {
     let mut incident = BTreeMap::<u32, Vec<u32>>::new();
     let mut arcs = BTreeMap::new();
     for (&id, &(vertices, curve)) in &boundary.curves {
@@ -90,7 +90,12 @@ fn rims(boundary: &Boundary, expected: usize) -> Option<(Vec<Ellipse>, RimIds)> 
             if remaining.remove(&edge) {
                 let (vertices, support) = arcs[&edge];
                 size += 1;
-                if size > 4 || is_circle(support) != is_circle(ellipse) {
+                // A four-sector mixed profile can have the same incidence.
+                // A circular sweep's rim sectors also share one center.
+                if size > 4
+                    || is_circle(support) != is_circle(ellipse)
+                    || length(sub(support.center_mm(), ellipse.center_mm())) > tolerance
+                {
                     return None;
                 }
                 edge_rim.insert(edge, rims.len());

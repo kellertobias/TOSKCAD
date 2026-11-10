@@ -129,14 +129,11 @@ fn build(
         band: None,
         chart_w: vec![],
         chart_edges: 0,
-        matched_quarter_rims: Some((
-            rim_edge_count,
-            bends
-                .iter()
-                .flatten()
-                .map(|bend| bend.major)
-                .fold(radius, f64::max),
-        )),
+        matched_quarter_rims: Some(MatchedRims {
+            edges: rim_edge_count,
+            pieces: 4,
+            circular: true,
+        }),
     };
     if shell
         .bounds_mm
@@ -370,7 +367,10 @@ impl Shell {
         signed_distance: impl Fn(Point) -> f64,
         tolerance: f64,
     ) -> Result<(Self, Vec<f64>), Error> {
-        let (edges, _) = self.matched_quarter_rims.ok_or(Error::Unsupported)?;
+        let MatchedRims { edges, .. } = self
+            .matched_quarter_rims
+            .filter(|rims| rims.circular)
+            .ok_or(Error::Unsupported)?;
         if edges < 12
             || self.vertices.len() != edges
             || self.edges.len() != 2 * edges - 4
@@ -482,7 +482,7 @@ fn bounds(ellipses: impl Iterator<Item = Ellipse>) -> [Point; 2] {
     bounds
 }
 
-fn prove_incidence(shell: &Shell) -> Result<(), Error> {
+pub(super) fn prove_incidence(shell: &Shell) -> Result<(), Error> {
     let mut uses = vec![[0; 2]; shell.edges.len()];
     for face in &shell.faces {
         for (&a, &b) in face

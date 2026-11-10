@@ -29,6 +29,17 @@ impl CylinderPatch {
         let [a, b_rail, c, d] = face.boundary.as_slice() else {
             return Err(Error::Unsupported);
         };
+        // An imported mixed rim retains its partition. Roundoff when the
+        // saved endpoints are placed back in the cap chart can put a quarter
+        // just past 90 degrees. Admit only a small, linear-tolerance excess.
+        let quarter_slack = if shell
+            .matched_quarter_rims
+            .is_some_and(|rims| !rims.circular)
+        {
+            ANGULAR.max((tolerance / radius).min(1e-6))
+        } else {
+            ANGULAR
+        };
         let arcs = [a.edge, c.edge].map(|edge| {
             let Curve::Ellipse(arc) = shell.edges[edge].curve else {
                 return Err(Error::Unsupported);
@@ -37,7 +48,7 @@ impl CylinderPatch {
             let [major, minor] = ellipse.semiaxes_mm();
             if length3(axis_offset(ellipse.center_mm(), origin, axis)) > tolerance
                 || (minor - radius).abs() > tolerance
-                || arc.sweep_rad().abs() > FRAC_PI_2 + ANGULAR
+                || arc.sweep_rad().abs() > FRAC_PI_2 + quarter_slack
             {
                 return Err(Error::Unsupported);
             }

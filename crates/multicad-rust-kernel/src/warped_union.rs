@@ -12,6 +12,7 @@ mod cylinder_patch;
 mod elevation;
 mod mesh;
 mod metrics;
+mod mixed_miter;
 mod section;
 mod sheet;
 pub use axial_cut::{AxialCut, ConvexRecess, OpenBoreSide};
@@ -19,6 +20,8 @@ pub use boss::Boss;
 pub(crate) use circular_miter::circular_miter_chain_from_radial;
 pub use circular_miter::{circular_miter, circular_miter_chain};
 pub use elevation::Elevation;
+pub(crate) use mixed_miter::mixed_miter_from_rim;
+pub use mixed_miter::{mixed_miter, mixed_miter_with_end_frame};
 pub use section::{SectionClipPlane, SectionEdge, clip_section_loops};
 pub use sheet::{
     SheetFlange, SheetFlangeOpening, SheetWebEdge, formed_sheet, formed_sheet_with_openings,
@@ -98,8 +101,17 @@ pub struct Shell {
     band: Option<Band>,
     chart_w: Vec<f64>,
     chart_edges: usize,
-    /// Number and maximum radius of leading quarter-rim edges sharing a grid.
-    matched_quarter_rims: Option<(usize, f64)>,
+    matched_quarter_rims: Option<MatchedRims>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct MatchedRims {
+    /// Leading rim edges, grouped by station in identical profile order.
+    edges: usize,
+    /// Profile pieces per station, including lines.
+    pieces: usize,
+    /// Only disk sweeps can rotate all artificial seams together.
+    circular: bool,
 }
 
 impl Shell {

@@ -1,5 +1,5 @@
 use super::*;
-use crate::warped_union::section::tests::fixture;
+use crate::warped_union::section::tests::{fixture, mixed_miter_fixture};
 
 const X: Point = [1., 0., 0.];
 const Y: Point = [0., 1., 0.];
@@ -306,6 +306,64 @@ fn multi_corner_elevation_clips_both_ends_of_the_middle_silhouettes() {
             [20. + start, screen_height, 20. * q],
         ];
         assert!(line_present(&elevation, expected), "missing {expected:?}");
+    }
+}
+
+#[test]
+fn mixed_miter_projects_analytic_rims_and_the_inward_middle_silhouette() {
+    use crate::{
+        curved_projection::Curve,
+        planar_projection::{Options, SceneExtras, project_scene_with_analytic_faces},
+    };
+
+    let shell = mixed_miter_fixture();
+    let axes = [X, [0., 0.6, 0.8], [0., -0.8, 0.6]];
+    let elevation = shell.elevation([0.; 3], axes, 19, TOL, true).unwrap();
+    // y−2=−0.6 and z−20=−0.8 locate the interior silhouette of the
+    // reentrant cylinder. Its generator ends on x+z=20 and x+y=20.
+    assert!(line_present(
+        &elevation,
+        [[0.8, 16.2, 10.4], [18.6, 16.2, 10.4]]
+    ));
+    let view = View::new([0.; 3], axes, TOL).unwrap();
+    let q = std::f64::consts::FRAC_1_SQRT_2;
+    let seam = [[q, 2. - q, 20. - q], [18. + q, 2. - q, 20. - q]];
+    assert!(!line_present(
+        &elevation,
+        seam.map(|point| view.point(point))
+    ));
+    assert!(!elevation.spatial_ellipses.is_empty());
+
+    let cap_axes = [[-1., 0., 0.], Y, [0., 0., -1.]];
+    for elevation in [
+        elevation,
+        shell.elevation([0.; 3], cap_axes, 19, TOL, false).unwrap(),
+    ] {
+        let (_, _, edges) = project_scene_with_analytic_faces(
+            &[],
+            &[],
+            SceneExtras {
+                lines: &elevation.lines,
+                spatial_rims: &elevation.rims,
+                spatial_ellipses: &elevation.spatial_ellipses,
+                ..Default::default()
+            },
+            &elevation.blockers,
+            Options {
+                tolerance: TOL,
+                hidden_lines: true,
+                tangent_edges: true,
+                detail: None,
+                segment_limit: 1000,
+            },
+        )
+        .unwrap();
+        assert!(edges.iter().all(|edge| edge.source == 19));
+        assert!(edges.iter().any(|edge| {
+            matches!(edge.edge.curve, Curve::Ellipse(ellipse) if ellipse.minor > TOL)
+        }));
+        assert!(edges.iter().any(|edge| !edge.edge.hidden));
+        assert!(edges.iter().any(|edge| edge.edge.hidden));
     }
 }
 

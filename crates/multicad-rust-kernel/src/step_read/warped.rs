@@ -10,6 +10,7 @@ mod axial_cuts;
 mod bosses;
 mod circular_miter;
 mod formed_sheet;
+mod mixed_miter;
 mod open_bore;
 
 #[derive(Debug)]
@@ -149,7 +150,11 @@ impl Boundary {
             loop_.push((edge, forward));
             uses.entry(edge).or_default()[usize::from(forward)] += 1;
         }
-        if vertices.len() < 3
+        if vertices.len() < 2
+            || (vertices.len() == 2
+                && loop_
+                    .iter()
+                    .all(|&(edge, _)| matches!(curves[&edge].1, TrimCurve::Line)))
             || vertices
                 .iter()
                 .zip(vertices.iter().cycle().skip(1))
@@ -339,6 +344,8 @@ pub(super) fn read_member(
     } else if boundary.faces.iter().any(|face| !face.holes.is_empty()) {
         bosses::reconstruct(reader, &boundary)?
     } else if let Some(imported) = circular_miter::reconstruct(reader, &boundary)? {
+        imported
+    } else if let Some(imported) = mixed_miter::reconstruct(reader, &boundary)? {
         imported
     } else {
         resolve_chart(reader, &boundary, false)?.0

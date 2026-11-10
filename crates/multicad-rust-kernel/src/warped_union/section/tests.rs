@@ -115,6 +115,92 @@ fn circular_miter_fixture() -> Shell {
     circular_miter([[0.; 3], [0., 0., 20.], [20., 0., 20.]], 2., TOL).unwrap()
 }
 
+pub(in crate::warped_union) fn mixed_miter_fixture() -> Shell {
+    let split = std::f64::consts::FRAC_1_SQRT_2;
+    let center = [0., 2.];
+    let a = [1., 2.];
+    let b = [split, 2. - split];
+    let c = [-1., 2.];
+    let profile = [
+        Edge::Line {
+            a: [-3., -2.],
+            b: [3., -2.],
+        },
+        Edge::Line {
+            a: [3., -2.],
+            b: [3., 2.],
+        },
+        Edge::Line { a: [3., 2.], b: a },
+        Edge::Arc {
+            center,
+            a,
+            b,
+            clockwise: true,
+        },
+        Edge::Arc {
+            center,
+            a: b,
+            b: c,
+            clockwise: true,
+        },
+        Edge::Line { a: c, b: [-3., 2.] },
+        Edge::Line {
+            a: [-3., 2.],
+            b: [-3., -2.],
+        },
+    ];
+    let path = [[0.; 3], [0., 0., 20.], [20., 0., 20.], [20., 20., 20.]];
+    mixed_miter(&profile, &path, TOL).unwrap()
+}
+
+#[test]
+fn mixed_section_keeps_clockwise_exact_arcs_between_two_tilted_rims() {
+    let shell = mixed_miter_fixture();
+    for tilt in [0., 0.5] {
+        let normal = unit([1., 0., tilt]).unwrap();
+        let loops = shell.section([10., 0., 20.], normal, TOL, 100).unwrap();
+        assert_eq!(loops.len(), 1);
+        let projected_area = 24. - FRAC_PI_2;
+        assert!((area(&loops, normal) * normal[0] - projected_area).abs() < TOL);
+
+        let mut lines = 0;
+        let mut sweep = 0.;
+        for edge in &loops[0] {
+            assert!(
+                edge.ends_mm
+                    .iter()
+                    .all(|&point| { dot(sub(point, [10., 0., 20.]), normal).abs() < TOL })
+            );
+            match edge.curve {
+                Curve::Line => lines += 1,
+                Curve::Ellipse(arc) => {
+                    let ellipse = arc.ellipse();
+                    let [major, minor] = ellipse.semiaxes_mm();
+                    assert!((minor - 1.).abs() < TOL);
+                    assert!((major * normal[0] - 1.).abs() < TOL);
+                    assert!(length3(sub(ellipse.center_mm(), [10., 2., 20.])) < TOL);
+                    let signed_sweep = arc.sweep_rad() * dot(ellipse.normal(), normal);
+                    assert!(signed_sweep < 0.);
+                    sweep += signed_sweep;
+                }
+            }
+        }
+        assert_eq!(lines, 5);
+        assert!((sweep + std::f64::consts::PI).abs() < TOL);
+    }
+}
+
+#[test]
+fn mixed_section_refuses_an_authored_trim_vertex_without_rephasing() {
+    let shell = mixed_miter_fixture();
+    // This cut contains the start-cap join between a planar flank and the
+    // circular notch. The circular-only repartition cannot move that join.
+    assert_eq!(
+        shell.section([1., 2., 0.], X, TOL, 100),
+        Err(Error::Unsupported)
+    );
+}
+
 fn disk_segment(offset: f64) -> f64 {
     4. * (offset / 2.).acos() - offset * (4. - offset * offset).sqrt()
 }

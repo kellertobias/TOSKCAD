@@ -29,18 +29,23 @@ impl Shell {
         });
         let (mut angle_levels, grid) = sample_angles(&source_angles, steps);
 
-        // Miter legs run between equal angular intervals of circular and
-        // elliptical rims. Use the largest semiaxis for all paired strips so
-        // they share phase and respect the chord error on the oblique rim.
-        let (matched_edges, matched_steps) = self
-            .matched_quarter_rims
-            .map(|(edges, radius)| {
-                options
-                    .arc_segments(radius, FRAC_PI_2)
-                    .map(|steps| (edges, steps))
-            })
-            .transpose()?
-            .unwrap_or_default();
+        // Give each profile piece a common angular grid across all rims.
+        // Using its most demanding rim keeps the chord error bounded while
+        // allowing short arcs and small radii to use fewer triangles.
+        let (matched_edges, matched_steps) = if let Some(rims) = self.matched_quarter_rims {
+            let mut steps = vec![0; rims.pieces];
+            for (index, edge) in self.edges.iter().take(rims.edges).enumerate() {
+                if let Curve::Ellipse(arc) = edge.curve {
+                    let count =
+                        options.arc_segments(arc.ellipse().semiaxes_mm()[0], arc.sweep_rad())?;
+                    let matched = &mut steps[index % rims.pieces];
+                    *matched = (*matched).max(count);
+                }
+            }
+            (rims.edges, steps)
+        } else {
+            (0, Vec::new())
+        };
 
         let mut boundary_intervals = 0;
         let sampling = self
@@ -59,7 +64,7 @@ impl Shell {
                         )
                     }
                     Curve::Ellipse(arc) if index < matched_edges => {
-                        Samples::Circle(arc, matched_steps)
+                        Samples::Circle(arc, matched_steps[index % matched_steps.len()])
                     }
                     Curve::Ellipse(arc) => Samples::Circle(
                         arc,
@@ -310,6 +315,41 @@ fn mesh_cylinder(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::warped_union::{cylinder_patch::axis_offset, section::tests::mixed_miter_fixture};
+
+    #[test]
+    fn mixed_rims_share_samples_and_keep_inward_cylinder_winding() {
+        let shell = mixed_miter_fixture();
+        let mesh = shell
+            .mesh(Tessellation {
+                deflection: 0.005,
+                angle: 0.25,
+                // A uniform quarter-turn grid would require 276 triangles.
+                triangle_limit: 220,
+            })
+            .unwrap();
+        let proof = crate::manufacturing::certify(&mesh).unwrap();
+        assert!((proof.signed_volume_mm3 / shell.volume_mm3() - 1.).abs() < 0.001);
+
+        let vertices = mesh.vertices.as_chunks::<3>().0;
+        let triangles = mesh.indices.as_chunks::<3>().0;
+        let mut inward_triangles = 0;
+        for (&triangle, &face) in triangles.iter().zip(&mesh.face_indices) {
+            if let Support::Cylinder {
+                axis_origin_mm,
+                axis_direction,
+                outward: false,
+                ..
+            } = shell.faces[face as usize].support
+            {
+                let [a, b, c] = triangle.map(|vertex| vertices[vertex as usize]);
+                let radial = axis_offset(a, axis_origin_mm, axis_direction);
+                assert!(dot(cross(sub(b, a), sub(c, a)), radial) < 0.);
+                inward_triangles += 1;
+            }
+        }
+        assert!(inward_triangles > 0);
+    }
 
     #[test]
     fn coincident_miter_levels_share_one_sampling_row() {

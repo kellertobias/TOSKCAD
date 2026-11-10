@@ -54,7 +54,7 @@ fn replays_a_placed_nonplanar_chain_from_either_cap_and_shuffled_faces() {
         assert!(length(sub(a, b)) < TOL);
     }
 
-    let (rims, edge_rim) = rims(&boundary, path.len()).unwrap();
+    let (rims, edge_rim) = rims(&boundary, path.len(), TOL).unwrap();
     let (chain, _) = centerline(&boundary, &rims, &edge_rim).unwrap();
     let [a, b, _, _, y, z] = <[_; 6]>::try_from(chain).unwrap();
     let reroute = |changed: &mut Boundary, fixed, from, to| {
@@ -228,7 +228,7 @@ fn refuses_broken_rim_and_leg_incidence_even_with_plausible_record_counts() {
         .unwrap();
     let cap_loop = &boundary.faces[start].loop_;
     let cap_edge = cap_loop[0].0;
-    let (rims, edge_rim) = rims(&boundary, 3).unwrap();
+    let (rims, edge_rim) = rims(&boundary, 3, TOL).unwrap();
     let cap_rim = edge_rim[&cap_edge];
     let joint = rims.iter().position(|&rim| !is_circle(rim)).unwrap();
     let joint_edges: Vec<_> = edge_rim

@@ -35,8 +35,10 @@ struct Section {
 
 impl Shell {
     /// Intersect the boundary with a transverse cutting plane. Cylindrical
-    /// patches can have circular cap trims or one certified tilted miter rim.
-    /// Their section curves are straight generators, circles or exact ellipses.
+    /// patches can have circular or certified tilted miter rims. Their section
+    /// curves are straight generators, circles or exact ellipses. Cuts through
+    /// a mixed-profile trim vertex require a vertex-incidence certificate and
+    /// return `Error::Unsupported`.
     pub fn section(
         &self,
         origin_mm: Point,
@@ -57,9 +59,9 @@ impl Shell {
         let mut distances: Vec<_> = self.vertices.iter().copied().map(signed).collect();
         let shifted;
         let shell = if distances.iter().any(|d| d.abs() <= tolerance_mm) {
-            // On a miter the quarter-rim vertices only partition a pair of
-            // analytic cylinders. Move those seams for this query without
-            // moving the cut or changing the solid's saved topology.
+            // A circular miter can move its artificial quarter seams for this
+            // query. The mixed-profile boundaries include authored vertices,
+            // which cannot be moved without changing the solid.
             (shifted, distances) = self.repartition_circular_miter(signed, tolerance_mm)?;
             &shifted
         } else {
