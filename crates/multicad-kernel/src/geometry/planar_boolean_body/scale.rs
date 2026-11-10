@@ -227,7 +227,7 @@ impl Solid {
             &[topology],
             feature,
             policy,
-            Some(vec![piece]),
+            Some(Material::Positive(vec![piece])),
         )?;
         let SolidBody::PlanarBoolean(body, _) = &mut result.body else {
             unreachable!("constructed planar scale")

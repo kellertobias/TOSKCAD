@@ -517,6 +517,124 @@ fn rust_cut_of_both_full_depth_triangles_rejects_empty_output_before_commit() {
 }
 
 #[test]
+fn rust_chained_triangle_cuts_keep_both_wall_origins_after_reopen_and_edit() {
+    let mut f = Fixture::on(GeometryBackend::Rust, None);
+    let intents: Vec<_> = f
+        .regions_on(GeometryBackend::Rust)
+        .regions
+        .iter()
+        .map(|region| region.intent())
+        .collect();
+    let [first, second] = intents.as_slice() else {
+        panic!("expected the two attached triangle cells");
+    };
+    let stock = f.stock.feature;
+    let (cut1, tools1) = f.prepare_extrusion(vec![first.clone()], Operation::Cut, -3.);
+    f.session.commit(cut1.prepared).unwrap();
+    let cut1 = compile_on(&f.session, GeometryBackend::Rust)
+        .snapshot()
+        .bodies[&f.stock.body];
+
+    let extrusion = f.extrusion_request(vec![second.clone()], -5.);
+    let prepared =
+        model::prepare_extrude(&f.session, f.session.revision(), actor(), &extrusion).unwrap();
+    let source = prepared.prepared.document();
+    let revision = f.session.revision() + 1;
+    let selection = Compiler::default()
+        .compile_with_backend(source, revision, GeometryBackend::Rust, None)
+        .unwrap()
+        .cut_targets(
+            source,
+            revision,
+            &model::CutTargetQuery {
+                tools: vec![extrusion.outputs[0].feature],
+                component: None,
+                include: vec![],
+                exclude: vec![],
+            },
+            None,
+        )
+        .unwrap();
+    assert_eq!(selection.targets[0].producer, cut1);
+
+    let tools2 = extrusion.outputs[0].feature;
+    let cut2 = ExtrudeBooleanRequest::new(extrusion, Operation::Cut, selection.targets, false);
+    let prepared =
+        model::prepare_extrude_boolean(&f.session, f.session.revision(), actor(), &cut2).unwrap();
+    f.session.commit(prepared.prepared).unwrap();
+    let cut2 = cut2.booleans[0].feature;
+
+    let mut bytes = Vec::new();
+    project_file::write(
+        &ProjectFile::new(f.session.document().clone()).unwrap(),
+        &mut bytes,
+        FileLimits::default(),
+    )
+    .unwrap();
+    let reopened = project_file::read(
+        &mut std::io::Cursor::new(bytes),
+        FileLimits::default(),
+        &project_file::supported_capabilities(),
+    )
+    .unwrap();
+    f.session = Session::new(reopened.project.document).unwrap();
+    for height in [10., 12.] {
+        if height > 10. {
+            let edit = model::prepare_primitive_edit(
+                &f.session,
+                f.session.revision(),
+                actor(),
+                stock,
+                &PrimitiveParameters::Box {
+                    size: [length(20.), length(20.), length(height)],
+                    frame: PrimitiveFrame::default(),
+                },
+            )
+            .unwrap();
+            f.session.commit(edit.prepared).unwrap();
+        }
+        let result = compile_on(&f.session, GeometryBackend::Rust);
+        let snapshot = result.snapshot();
+        assert_eq!(snapshot.bodies[&f.stock.body], cut2);
+        let shape = &snapshot.shapes[&cut2];
+        assert_eq!(shape.solid_count, 1);
+        near(shape.volume_mm3, 400. * height - 1600.);
+        near(shape.bounds.max[2], height - 3.);
+        for (source, floor) in [(tools1[0], height - 3.), (tools2, height - 5.)] {
+            assert!(shape.topology.elements.iter().any(|face| {
+                face.origins.iter().any(|origin| origin.source == source)
+                    && matches!(
+                        face.geometry,
+                        Some(multicad_core::references::AnalyticGeometry::Plane { frame })
+                            if (frame.origin_mm[2] - floor).abs() < 1e-7 && frame.normal()[2] > 0.99
+                    )
+            }));
+        }
+        #[cfg(feature = "occt")]
+        {
+            let oracle = compile_on(&f.session, GeometryBackend::OpenCascade);
+            let native_shape = &oracle.snapshot().shapes[&cut2];
+            near(shape.volume_mm3, native_shape.volume_mm3);
+            let area = |model: &Model| {
+                model
+                    .solid(cut2)
+                    .unwrap()
+                    .faces()
+                    .unwrap()
+                    .iter()
+                    .map(|face| face.area_mm2)
+                    .sum::<f64>()
+            };
+            near(area(&result), area(&oracle));
+            for axis in 0..3 {
+                near(shape.bounds.min[axis], native_shape.bounds.min[axis]);
+                near(shape.bounds.max[axis], native_shape.bounds.max[axis]);
+            }
+        }
+    }
+}
+
+#[test]
 fn regions_and_settings_survive_undo_redo_and_project_roundtrip() {
     let mut f = Fixture::new();
     let region = f.regions().regions[0].intent();

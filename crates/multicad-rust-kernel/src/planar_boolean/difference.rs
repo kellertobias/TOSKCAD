@@ -9,28 +9,64 @@ impl Union {
         tools: &[ConvexPiece],
         tolerance_mm: f64,
     ) -> Result<Option<Self>, Error> {
-        validate_tolerance(tolerance_mm)?;
-        if stock.is_empty() || tools.is_empty() {
-            return Err(Error::Invalid);
-        }
-        if stock.len().saturating_add(tools.len()) > MAX_PIECES {
-            return Err(Error::Limit);
-        }
+        validate_cut(stock, tools, tolerance_mm)?;
         let stock_boundary = clipping::exterior(stock, tolerance_mm, MAX_WORK)?;
-        let tool_boundary = clipping::exterior(tools, tolerance_mm, MAX_WORK)?;
-        let mut cut = CutBoundary {
-            boundary: shell::Boundary::new(tolerance_mm),
-            tolerance: tolerance_mm,
-            budget: MAX_WORK,
-        };
-        cut.stock_faces(stock_boundary, tools)?;
-        cut.tool_faces(tool_boundary, stock)?;
-        if cut.boundary.faces.is_empty() {
-            return Ok(None);
-        }
-        cut.boundary.split_edges(&mut cut.budget)?;
-        Self::from_boundary(cut.boundary).map(Some)
+        subtract(stock_boundary, stock, tools, stock.len(), tolerance_mm)
     }
+}
+
+impl CutMaterial {
+    /// Keep the existing exposed face indices as source 0. Cutter cell
+    /// sources follow at index 1. Interior partition caps have no ancestry.
+    pub fn subtract(
+        &self,
+        tools: &[ConvexPiece],
+        tolerance_mm: f64,
+    ) -> Result<Option<Union>, Error> {
+        validate_cut(&self.pieces, tools, tolerance_mm)?;
+        let mut boundary = shell::Boundary::new(tolerance_mm);
+        for (i, face) in self.boundary.faces.iter().enumerate() {
+            boundary.add(&polygon(&self.boundary.vertices, face), face.normal, 0, i)?;
+        }
+        subtract(boundary, &self.pieces, tools, 1, tolerance_mm)
+    }
+}
+
+fn validate_cut(
+    stock: &[ConvexPiece],
+    tools: &[ConvexPiece],
+    tolerance_mm: f64,
+) -> Result<(), Error> {
+    validate_tolerance(tolerance_mm)?;
+    if stock.is_empty() || tools.is_empty() {
+        return Err(Error::Invalid);
+    }
+    if stock.len().saturating_add(tools.len()) > MAX_PIECES {
+        return Err(Error::Limit);
+    }
+    Ok(())
+}
+
+fn subtract(
+    stock_boundary: shell::Boundary,
+    stock: &[ConvexPiece],
+    tools: &[ConvexPiece],
+    tool_offset: usize,
+    tolerance: f64,
+) -> Result<Option<Union>, Error> {
+    let tool_boundary = clipping::exterior(tools, tolerance, MAX_WORK)?;
+    let mut cut = CutBoundary {
+        boundary: shell::Boundary::new(tolerance),
+        tolerance,
+        budget: MAX_WORK,
+    };
+    cut.stock_faces(stock_boundary, tools)?;
+    cut.tool_faces(tool_boundary, stock, tool_offset)?;
+    if cut.boundary.faces.is_empty() {
+        return Ok(None);
+    }
+    cut.boundary.split_edges(&mut cut.budget)?;
+    Union::from_boundary(cut.boundary).map(Some)
 }
 
 struct CutBoundary {
@@ -93,6 +129,7 @@ impl CutBoundary {
         &mut self,
         exterior: shell::Boundary,
         stock: &[ConvexPiece],
+        tool_offset: usize,
     ) -> Result<(), Error> {
         for face in &exterior.faces {
             let ring = polygon(&exterior.vertices, face);
@@ -115,7 +152,7 @@ impl CutBoundary {
                 self.boundary.add(
                     &ring,
                     opposite.normal,
-                    stock.len() + face.source,
+                    tool_offset + face.source,
                     face.source_face,
                 )?;
             }
@@ -163,7 +200,10 @@ mod tests {
         let stock_exterior = clipping::exterior(&stock, tolerance, MAX_WORK).unwrap();
         assert_eq!(cut.stock_faces(stock_exterior, &tools), Err(Error::Limit));
         let tool_exterior = clipping::exterior(&tools, tolerance, MAX_WORK).unwrap();
-        assert_eq!(cut.tool_faces(tool_exterior, &stock), Err(Error::Limit));
+        assert_eq!(
+            cut.tool_faces(tool_exterior, &stock, stock.len()),
+            Err(Error::Limit)
+        );
     }
 
     #[test]
@@ -186,7 +226,7 @@ mod tests {
             .unwrap();
         let tool_exterior = clipping::exterior(&tools, tolerance, MAX_WORK).unwrap();
         assert_eq!(
-            cut.tool_faces(tool_exterior, &stock),
+            cut.tool_faces(tool_exterior, &stock, stock.len()),
             Err(Error::Unresolved)
         );
     }

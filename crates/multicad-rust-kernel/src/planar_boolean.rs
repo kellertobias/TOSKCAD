@@ -11,10 +11,12 @@ use std::collections::BTreeMap;
 mod clipping;
 mod difference;
 mod intersection;
+mod material;
 mod shell;
 mod slab;
 mod verify_boundary;
 mod vertical_profile;
+pub use material::CutMaterial;
 pub use slab::Slab;
 pub use vertical_profile::{ProfileFace, ProfilePiece};
 

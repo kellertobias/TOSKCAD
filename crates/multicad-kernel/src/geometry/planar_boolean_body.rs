@@ -5,9 +5,12 @@ use multicad_core::references::{AnalyticGeometry, AnchoredFrame, ReferenceFrame,
 use multicad_rust_kernel::{
     display::Tessellation,
     orthogonal::Box3,
-    planar_boolean::{ConvexPiece, Error, ProfileFace, Union},
+    planar_boolean::{ConvexPiece, CutMaterial, Error, ProfileFace, Union},
 };
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    cell::OnceCell,
+    collections::{BTreeMap, BTreeSet},
+};
 
 mod chamfer;
 mod scale;
@@ -19,10 +22,30 @@ type ConvexPart = (ConvexPiece, Vec<Option<usize>>);
 pub(crate) struct PlanarBooleanBody {
     pub(super) feature: EntityId,
     pub(super) geometry: Union,
-    material: Option<Vec<ConvexPiece>>,
+    material: Option<Material>,
     scaled_ancestry: Option<scale::Ancestry>,
     faces: Vec<Boundary>,
     edges: Vec<(Key, Vec<usize>)>,
+}
+
+enum Material {
+    Positive(Vec<ConvexPiece>),
+    Cut(Box<CutRecipe>),
+}
+
+struct CutRecipe {
+    stock: Vec<ConvexPiece>,
+    tools: Vec<ConvexPiece>,
+    certified: OnceCell<Result<CutMaterial, Error>>,
+}
+
+impl CutRecipe {
+    fn certify(&self, boundary: &Union, tolerance: f64) -> Result<&CutMaterial, GeometryError> {
+        self.certified
+            .get_or_init(|| CutMaterial::recover(boundary, &self.stock, &self.tools, tolerance))
+            .as_ref()
+            .map_err(|&cause| planar_error(cause))
+    }
 }
 
 struct Boundary {
@@ -261,8 +284,11 @@ impl Solid {
     ) -> Option<Vec<ConvexPart>> {
         let tolerance = policy.linear_tolerance_mm;
         if let Some((body, frame)) = self.planar_boolean_body() {
+            let Some(Material::Positive(pieces)) = &body.material else {
+                return None;
+            };
             return Some(
-                body.material_pieces(frame, tolerance)
+                PlanarBooleanBody::placed_pieces(pieces, frame, tolerance)
                     .ok()?
                     .into_iter()
                     .map(|piece| (piece, Vec::new()))
@@ -388,14 +414,58 @@ impl Solid {
         if tools.is_empty() {
             return self.share().map(Some);
         }
+        let tolerance = policy.linear_tolerance_mm;
         let mut operands = PlanarOperands::default();
-        operands.append(self, 1., policy)?;
+        let previous = self.planar_boolean_body().and_then(|(body, frame)| {
+            let Some(Material::Cut(recipe)) = &body.material else {
+                return None;
+            };
+            Some((body, frame, recipe))
+        });
+        if let Some((body, _, _)) = previous {
+            let topology = self.rust_topology().ok_or_else(planar_unsupported)??;
+            let mut faces = vec![None; body.geometry.faces().len()];
+            for (i, element) in topology.elements.iter().enumerate() {
+                if element.key.kind == TopologyKind::Face {
+                    faces[element.key.ordinal as usize] = Some(i);
+                }
+            }
+            operands.sources.push(SourcePart {
+                operand: 0,
+                faces,
+                normal_sign: 1.,
+            });
+            operands.topologies.push(topology);
+        } else {
+            operands.append(self, 1., policy)?;
+        }
         let stock_count = operands.pieces.len();
         for tool in tools {
             operands.append(tool, -1., policy)?;
         }
-        let (stock, cutting) = operands.pieces.split_at(stock_count);
-        Union::subtract(stock, cutting, policy.linear_tolerance_mm)
+        let cutting = operands.pieces.split_off(stock_count);
+        let (geometry, stock) = if let Some((body, frame, recipe)) = previous {
+            let certified = recipe.certify(&body.geometry, tolerance)?;
+            let placed;
+            let material = if frame == PlaneFrame::default() {
+                certified
+            } else {
+                placed = certified
+                    .transformed(&|point| position(frame, point), tolerance)
+                    .map_err(planar_error)?;
+                &placed
+            };
+            (
+                material.subtract(&cutting, tolerance),
+                material.pieces().to_vec(),
+            )
+        } else {
+            (
+                Union::subtract(&operands.pieces, &cutting, tolerance),
+                operands.pieces,
+            )
+        };
+        geometry
             .map_err(planar_error)?
             .map(|geometry| {
                 PlanarBooleanBody::build(
@@ -404,7 +474,11 @@ impl Solid {
                     &operands.topologies,
                     feature,
                     policy,
-                    None,
+                    Some(Material::Cut(Box::new(CutRecipe {
+                        stock,
+                        tools: cutting,
+                        certified: OnceCell::new(),
+                    }))),
                 )
             })
             .transpose()
@@ -449,7 +523,7 @@ impl Solid {
             &operands.topologies,
             feature,
             policy,
-            Some(operands.pieces),
+            Some(Material::Positive(operands.pieces)),
         ))
     }
 
@@ -513,9 +587,20 @@ impl PlanarBooleanBody {
         frame: PlaneFrame,
         tolerance: f64,
     ) -> Result<Vec<ConvexPiece>, GeometryError> {
-        let material = self.material.as_ref().ok_or_else(planar_unsupported)?;
+        let pieces = match self.material.as_ref().ok_or_else(planar_unsupported)? {
+            Material::Positive(pieces) => pieces,
+            Material::Cut(recipe) => recipe.certify(&self.geometry, tolerance)?.pieces(),
+        };
+        Self::placed_pieces(pieces, frame, tolerance)
+    }
+
+    fn placed_pieces(
+        material: &[ConvexPiece],
+        frame: PlaneFrame,
+        tolerance: f64,
+    ) -> Result<Vec<ConvexPiece>, GeometryError> {
         if frame == PlaneFrame::default() {
-            return Ok(material.clone());
+            return Ok(material.to_vec());
         }
         material
             .iter()
@@ -533,7 +618,7 @@ impl PlanarBooleanBody {
         topologies: &[TopologySnapshot],
         feature: EntityId,
         policy: GeometryPolicy,
-        material: Option<Vec<ConvexPiece>>,
+        material: Option<Material>,
     ) -> Result<Solid, GeometryError> {
         if feature.is_nil() {
             return Err(input("Planar Boolean needs a source feature"));

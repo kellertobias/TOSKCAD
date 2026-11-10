@@ -170,7 +170,7 @@ impl Solid {
             &[topology],
             feature,
             policy,
-            Some(vec![material]),
+            Some(Material::Positive(vec![material])),
         )
     }
 }
