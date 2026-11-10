@@ -1,14 +1,112 @@
-use super::{ParameterError, ParameterErrorCode, Quantity, Unit};
+use super::{Dimension, ParameterError, ParameterErrorCode, Quantity, Unit};
 use std::collections::BTreeSet;
+
+/// A typed formula value in the selected scalar's canonical units.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FormulaQuantity<T> {
+    pub canonical: T,
+    pub dimension: Dimension,
+}
+
+impl From<Quantity> for FormulaQuantity<f64> {
+    fn from(quantity: Quantity) -> Self {
+        Self {
+            canonical: quantity.canonical,
+            dimension: quantity.dimension,
+        }
+    }
+}
+
+impl From<FormulaQuantity<f64>> for Quantity {
+    fn from(quantity: FormulaQuantity<f64>) -> Self {
+        Self {
+            canonical: quantity.canonical,
+            dimension: quantity.dimension,
+        }
+    }
+}
+
+/// Numeric operations for the shared typed formula evaluator. Unit scales
+/// and resolved values must use the same canonical representation.
+pub trait FormulaScalar: Sized + PartialOrd {
+    /// Decode the original numeric token. The parser also supplies the
+    /// finite floating-point interpretation for compatibility consumers.
+    fn literal(source: &str, parsed_f64: f64) -> Result<Self, ParameterError>;
+    fn unit_scale(unit: Unit) -> Result<Self, ParameterError>;
+    /// Return the numeric value zero or one.
+    fn from_bool(value: bool) -> Self;
+    fn negate(self) -> Result<Self, ParameterError>;
+    fn add(self, rhs: Self) -> Result<Self, ParameterError>;
+    fn subtract(self, rhs: Self) -> Result<Self, ParameterError>;
+    fn multiply(self, rhs: Self) -> Result<Self, ParameterError>;
+    fn divide(self, rhs: Self) -> Result<Self, ParameterError>;
+    fn is_finite(&self) -> bool;
+    /// Check that a result can be used as a nonnegative whole count.
+    fn is_count(&self) -> bool;
+}
+
+impl FormulaScalar for f64 {
+    fn literal(_: &str, parsed_f64: f64) -> Result<Self, ParameterError> {
+        Ok(parsed_f64)
+    }
+
+    fn unit_scale(unit: Unit) -> Result<Self, ParameterError> {
+        Ok(unit.scale())
+    }
+
+    fn from_bool(value: bool) -> Self {
+        f64::from(value)
+    }
+
+    fn negate(self) -> Result<Self, ParameterError> {
+        Ok(-self)
+    }
+
+    fn add(self, rhs: Self) -> Result<Self, ParameterError> {
+        Ok(self + rhs)
+    }
+
+    fn subtract(self, rhs: Self) -> Result<Self, ParameterError> {
+        Ok(self - rhs)
+    }
+
+    fn multiply(self, rhs: Self) -> Result<Self, ParameterError> {
+        Ok(self * rhs)
+    }
+
+    fn divide(self, rhs: Self) -> Result<Self, ParameterError> {
+        Ok(self / rhs)
+    }
+
+    fn is_finite(&self) -> bool {
+        f64::is_finite(*self)
+    }
+
+    fn is_count(&self) -> bool {
+        *self >= 0. && self.fract().abs() <= 1e-9
+    }
+}
+
+/// Evaluate a persisted formula using caller-supplied arithmetic and name
+/// resolution. A leading '=' enables contextual units in addition and
+/// subtraction, as in ordinary project parameter evaluation.
+pub fn evaluate_formula<T: FormulaScalar>(
+    source: &str,
+    unit: Unit,
+    resolve: impl FnMut(&str) -> Result<FormulaQuantity<T>, ParameterError>,
+) -> Result<FormulaQuantity<T>, ParameterError> {
+    parse(source)?.evaluate_declared(unit, source.trim_start().starts_with('='), resolve)
+}
+
 #[derive(Clone, Debug)]
-pub(crate) enum Expr {
-    Number(f64, Option<Unit>),
+pub(crate) enum Expr<'source> {
+    Number(&'source str, f64, Option<Unit>),
     Name(String),
     Neg(Box<Self>),
     Binary(char, Box<Self>, Box<Self>),
     Compare(String, Box<Self>, Box<Self>),
 }
-impl Expr {
+impl Expr<'_> {
     pub fn names(&self, out: &mut BTreeSet<String>) {
         match self {
             Self::Name(n) => {
@@ -28,26 +126,78 @@ impl Expr {
         explicit: bool,
         resolve: &impl Fn(&str) -> Result<Quantity, ParameterError>,
     ) -> Result<(Quantity, bool), ParameterError> {
+        let (quantity, implicit) = self.evaluate_with::<f64>(unit, explicit, &mut |name| {
+            resolve(name).map(FormulaQuantity::from)
+        })?;
+        Ok((quantity.into(), implicit))
+    }
+
+    pub(crate) fn evaluate_declared<T: FormulaScalar>(
+        &self,
+        unit: Unit,
+        explicit: bool,
+        mut resolve: impl FnMut(&str) -> Result<FormulaQuantity<T>, ParameterError>,
+    ) -> Result<FormulaQuantity<T>, ParameterError> {
+        let (mut quantity, implicit) = self.evaluate_with(unit, explicit, &mut resolve)?;
+        if implicit && quantity.dimension == Dimension::RATIO {
+            quantity = contextual(quantity, unit)?;
+        }
+        if quantity.dimension != unit.dimension() {
+            return Err(ParameterError::new(
+                ParameterErrorCode::Dimension,
+                format!(
+                    "Expression dimension {:?} does not match unit {}",
+                    quantity.dimension,
+                    unit.symbol()
+                ),
+            ));
+        }
+        if !quantity.canonical.is_finite() {
+            return Err(ParameterError::new(
+                ParameterErrorCode::NonFinite,
+                "Converted result is not finite",
+            ));
+        }
+        if quantity.dimension == Dimension::COUNT && !quantity.canonical.is_count() {
+            return Err(ParameterError::new(
+                ParameterErrorCode::Count,
+                "Counts must be nonnegative whole numbers",
+            ));
+        }
+        Ok(quantity)
+    }
+
+    fn evaluate_with<T: FormulaScalar>(
+        &self,
+        unit: Unit,
+        explicit: bool,
+        resolve: &mut impl FnMut(&str) -> Result<FormulaQuantity<T>, ParameterError>,
+    ) -> Result<(FormulaQuantity<T>, bool), ParameterError> {
         let (q, implicit) = match self {
-            Self::Number(value, unit) => {
-                let unit_value = unit.unwrap_or(Unit::Ratio);
+            Self::Number(raw, parsed, unit) => {
+                let value = T::literal(raw, *parsed)?;
+                let quantity = FormulaQuantity {
+                    canonical: value,
+                    dimension: Dimension::RATIO,
+                };
                 (
-                    Quantity {
-                        canonical: value * unit_value.scale(),
-                        dimension: unit_value.dimension(),
+                    if let Some(unit) = unit {
+                        contextual(quantity, *unit)?
+                    } else {
+                        quantity
                     },
                     unit.is_none(),
                 )
             }
             Self::Name(name) => (resolve(name)?, false),
             Self::Neg(expr) => {
-                let (mut q, i) = expr.evaluate(unit, explicit, resolve)?;
-                q.canonical = -q.canonical;
+                let (mut q, i) = expr.evaluate_with(unit, explicit, resolve)?;
+                q.canonical = q.canonical.negate()?;
                 (q, i)
             }
             Self::Compare(op, a, b) => {
-                let (a, _) = a.evaluate(unit, explicit, resolve)?;
-                let (b, _) = b.evaluate(unit, explicit, resolve)?;
+                let (a, _) = a.evaluate_with(unit, explicit, resolve)?;
+                let (b, _) = b.evaluate_with(unit, explicit, resolve)?;
                 if a.dimension != b.dimension {
                     return Err(ParameterError::new(
                         ParameterErrorCode::Dimension,
@@ -64,22 +214,22 @@ impl Expr {
                     _ => unreachable!(),
                 };
                 (
-                    Quantity {
-                        canonical: if result { 1. } else { 0. },
-                        dimension: super::Dimension::RATIO,
+                    FormulaQuantity {
+                        canonical: T::from_bool(result),
+                        dimension: Dimension::RATIO,
                     },
                     false,
                 )
             }
             Self::Binary(op, a, b) => {
-                let (mut a, ai) = a.evaluate(unit, explicit, resolve)?;
-                let (mut b, bi) = b.evaluate(unit, explicit, resolve)?;
+                let (mut a, ai) = a.evaluate_with(unit, explicit, resolve)?;
+                let (mut b, bi) = b.evaluate_with(unit, explicit, resolve)?;
                 if explicit && matches!(op, '+' | '-') {
                     if ai && a.dimension != b.dimension {
-                        a = contextual(a, unit);
+                        a = contextual(a, unit)?;
                     }
                     if bi && a.dimension != b.dimension {
-                        b = contextual(b, unit);
+                        b = contextual(b, unit)?;
                     }
                 }
                 let dim = match op {
@@ -105,20 +255,20 @@ impl Expr {
                     _ => unreachable!(),
                 };
                 let value = match op {
-                    '+' => a.canonical + b.canonical,
-                    '-' => a.canonical - b.canonical,
-                    '*' => a.canonical * b.canonical,
-                    '/' if b.canonical == 0.0 => {
+                    '+' => a.canonical.add(b.canonical)?,
+                    '-' => a.canonical.subtract(b.canonical)?,
+                    '*' => a.canonical.multiply(b.canonical)?,
+                    '/' if b.canonical == T::from_bool(false) => {
                         return Err(ParameterError::new(
                             ParameterErrorCode::NonFinite,
                             "Division by zero",
                         ));
                     }
-                    '/' => a.canonical / b.canonical,
+                    '/' => a.canonical.divide(b.canonical)?,
                     _ => unreachable!(),
                 };
                 (
-                    Quantity {
+                    FormulaQuantity {
                         canonical: value,
                         dimension: dim,
                     },
@@ -135,12 +285,15 @@ impl Expr {
         Ok((q, implicit))
     }
 }
-fn contextual(mut q: Quantity, unit: Unit) -> Quantity {
-    if q.dimension == super::Dimension::RATIO {
-        q.canonical *= unit.scale();
+fn contextual<T: FormulaScalar>(
+    mut q: FormulaQuantity<T>,
+    unit: Unit,
+) -> Result<FormulaQuantity<T>, ParameterError> {
+    if q.dimension == Dimension::RATIO {
+        q.canonical = q.canonical.multiply(T::unit_scale(unit)?)?;
         q.dimension = unit.dimension();
     }
-    q
+    Ok(q)
 }
 struct Parser<'a> {
     source: &'a str,
@@ -148,7 +301,7 @@ struct Parser<'a> {
     nodes: usize,
     explicit: bool,
 }
-impl Parser<'_> {
+impl<'source> Parser<'source> {
     fn error(&self, message: &str) -> ParameterError {
         let mut error = ParameterError::new(ParameterErrorCode::Syntax, message);
         error.offset = Some(self.offset);
@@ -181,7 +334,7 @@ impl Parser<'_> {
         }
         (start != self.offset).then(|| self.source[start..self.offset].to_owned())
     }
-    fn expression(&mut self, min: u8, depth: usize) -> Result<Expr, ParameterError> {
+    fn expression(&mut self, min: u8, depth: usize) -> Result<Expr<'source>, ParameterError> {
         if depth > 48 || self.nodes >= 256 {
             return Err(self.error("Expression complexity limit exceeded"));
         }
@@ -239,7 +392,9 @@ impl Parser<'_> {
                         self.offset += 1;
                     }
                 }
-                let value = self.source[start..self.offset]
+                let source = self.source;
+                let raw = &source[start..self.offset];
+                let value = raw
                     .parse::<f64>()
                     .map_err(|_| self.error("Invalid number"))?;
                 if !value.is_finite() {
@@ -257,7 +412,7 @@ impl Parser<'_> {
                 } else {
                     None
                 };
-                Expr::Number(value, unit)
+                Expr::Number(raw, value, unit)
             }
             b'$' => {
                 self.offset += 1;
@@ -315,10 +470,10 @@ impl Parser<'_> {
         Ok(left)
     }
 }
-pub(crate) fn parse(source: &str) -> Result<Expr, ParameterError> {
+pub(crate) fn parse(source: &str) -> Result<Expr<'_>, ParameterError> {
     parse_input(source, false)
 }
-fn parse_input(source: &str, strict: bool) -> Result<Expr, ParameterError> {
+fn parse_input(source: &str, strict: bool) -> Result<Expr<'_>, ParameterError> {
     if source.len() > 4096 {
         return Err(ParameterError::new(
             ParameterErrorCode::Syntax,
@@ -343,10 +498,10 @@ fn parse_input(source: &str, strict: bool) -> Result<Expr, ParameterError> {
     Ok(expression)
 }
 
-impl Expr {
+impl Expr<'_> {
     fn input(&self) -> String {
         match self {
-            Self::Number(n, unit) => format!(
+            Self::Number(_, n, unit) => format!(
                 "{}{}",
                 n,
                 unit.map(|u| format!(" {}", u.symbol())).unwrap_or_default()
@@ -380,3 +535,6 @@ pub fn validate_input(source: &str) -> Result<(), ParameterError> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests;

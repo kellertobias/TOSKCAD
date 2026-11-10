@@ -31,7 +31,7 @@ pub struct ParameterError {
     pub offset: Option<usize>,
 }
 impl ParameterError {
-    pub(crate) fn new(code: ParameterErrorCode, message: impl Into<String>) -> Self {
+    pub fn new(code: ParameterErrorCode, message: impl Into<String>) -> Self {
         Self {
             entity: None,
             code,
@@ -264,55 +264,26 @@ fn evaluate_impl(
         else {
             unreachable!()
         };
-        let (mut quantity, implicit) = expression
-            .evaluate(*unit, *explicit, &|name| {
+        let quantity = expression
+            .evaluate_declared::<f64>(*unit, *explicit, |name| {
                 let link = inputs.iter().find(|r| r.role == name).ok_or_else(|| {
                     ParameterError::new(
                         ParameterErrorCode::MissingReference,
                         format!("Unbound parameter '{name}'"),
                     )
                 })?;
-                values.get(&link.target).map(|p| p.quantity).ok_or_else(|| {
-                    ParameterError::new(
-                        ParameterErrorCode::MissingReference,
-                        format!("Dependency '{}' has no value", link.role),
-                    )
-                })
+                values
+                    .get(&link.target)
+                    .map(|p| p.quantity.into())
+                    .ok_or_else(|| {
+                        ParameterError::new(
+                            ParameterErrorCode::MissingReference,
+                            format!("Dependency '{}' has no value", link.role),
+                        )
+                    })
             })
-            .map_err(|e| e.at(id))?;
-        if implicit && quantity.dimension == Dimension::RATIO {
-            quantity = Quantity {
-                canonical: quantity.canonical * unit.scale(),
-                dimension: unit.dimension(),
-            };
-        }
-        if quantity.dimension != unit.dimension() {
-            return Err(ParameterError::new(
-                ParameterErrorCode::Dimension,
-                format!(
-                    "Expression dimension {:?} does not match unit {}",
-                    quantity.dimension,
-                    unit.symbol()
-                ),
-            )
-            .at(id));
-        }
-        if !quantity.canonical.is_finite() {
-            return Err(ParameterError::new(
-                ParameterErrorCode::NonFinite,
-                "Converted result is not finite",
-            )
-            .at(id));
-        }
-        if quantity.dimension == Dimension::COUNT
-            && (quantity.canonical < 0.0 || quantity.canonical.fract().abs() > 1e-9)
-        {
-            return Err(ParameterError::new(
-                ParameterErrorCode::Count,
-                "Counts must be nonnegative whole numbers",
-            )
-            .at(id));
-        }
+            .map_err(|e| e.at(id))?
+            .into();
         values.insert(
             id,
             ParameterValue {
@@ -333,7 +304,9 @@ fn evaluate_impl(
     })
 }
 
-pub use expression::{display_input, validate_input};
+pub use expression::{
+    FormulaQuantity, FormulaScalar, display_input, evaluate_formula, validate_input,
+};
 /// Replace an exposed parameter's default formula with an explicit supplied value.
 /// Callers commit the returned source mutation through Session, preserving undo.
 pub fn override_exposed(
