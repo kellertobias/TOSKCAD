@@ -5,7 +5,7 @@ use multicad_core::{
     project_file::{ContentHash, ProjectResources},
     sketch_external::{ExternalQuery, OccurrenceCaptureRequest},
 };
-use multicad_model::{Compiler, EvaluationScope};
+use multicad_model::{Compiler, EvaluationScope, GeometryBackend};
 use multicad_ui::external_references::{
     ExternalPrepared, ExternalQueryBackend, ExternalQueryReply,
 };
@@ -103,17 +103,23 @@ impl Drop for Exit {
         self.0.wake.notify_all();
     }
 }
-fn process(compiler: &Compiler, job: &Job, cancelled: &dyn Fn() -> bool) -> ExternalQueryReply {
+fn process(
+    compiler: &Compiler,
+    geometry_backend: GeometryBackend,
+    job: &Job,
+    cancelled: &dyn Fn() -> bool,
+) -> ExternalQueryReply {
     let session = job.source.session();
     match &job.header.kind {
         Kind::Catalog(query) => ExternalQueryReply::Catalog {
             request: job.header.request,
             query: query.as_ref().clone(),
             result: compiler
-                .query_external_catalog(
+                .query_external_catalog_with_backend(
                     session.document(),
                     session.revision(),
                     query,
+                    geometry_backend,
                     Some(cancelled),
                 )
                 .map_err(|error| error.to_string())
@@ -138,22 +144,16 @@ fn process(compiler: &Compiler, job: &Job, cancelled: &dyn Fn() -> bool) -> Exte
             repair,
         } => {
             let result = (|| {
-                let checked = if *repair {
-                    compiler.prepare_external_repair(
+                let checked = compiler
+                    .prepare_external_with_backend(
                         &job.source,
                         actor.clone(),
                         input,
+                        *repair,
+                        geometry_backend,
                         Some(cancelled),
                     )
-                } else {
-                    compiler.prepare_external_capture(
-                        &job.source,
-                        actor.clone(),
-                        input,
-                        Some(cancelled),
-                    )
-                }
-                .map_err(|error| error.to_string())?;
+                    .map_err(|error| error.to_string())?;
                 checked_reply(session, input.query.reference, checked)
             })();
             ExternalQueryReply::Prepared {
@@ -174,11 +174,12 @@ fn process(compiler: &Compiler, job: &Job, cancelled: &dyn Fn() -> bool) -> Exte
             sketch: *sketch,
             reference: *reference,
             result: compiler
-                .prepare_external_remove(
+                .prepare_external_remove_with_backend(
                     &job.source,
                     actor.clone(),
                     *sketch,
                     *reference,
+                    geometry_backend,
                     Some(cancelled),
                 )
                 .map_err(|error| error.to_string())
@@ -225,10 +226,10 @@ fn checked_reply(
 struct Worker(Arc<Shared>);
 type Processor = dyn FnMut(&Job, &dyn Fn() -> bool) -> ExternalQueryReply;
 impl Worker {
-    fn spawn() -> Result<Self, String> {
-        Self::with_processor(|| {
+    fn spawn(geometry_backend: GeometryBackend) -> Result<Self, String> {
+        Self::with_processor(move || {
             let compiler = Compiler::default();
-            Box::new(move |job, cancelled| process(&compiler, job, cancelled))
+            Box::new(move |job, cancelled| process(&compiler, geometry_backend, job, cancelled))
         })
     }
     fn with_processor(
@@ -292,14 +293,24 @@ impl Drop for Worker {
         self.0.wake.notify_all();
     }
 }
-#[derive(Default)]
 pub struct Backend {
     worker: Option<Worker>,
     generation: u64,
+    geometry_backend: GeometryBackend,
 }
 impl Backend {
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            worker: None,
+            generation: 0,
+            geometry_backend: GeometryBackend::OpenCascade,
+        }
+    }
+    pub fn with_geometry_backend(geometry_backend: GeometryBackend) -> Self {
+        Self {
+            geometry_backend,
+            ..Self::new()
+        }
     }
     fn enqueue(
         &mut self,
@@ -324,7 +335,7 @@ impl Backend {
             self.worker = None;
         }
         if self.worker.is_none() {
-            self.worker = Some(Worker::spawn()?);
+            self.worker = Some(Worker::spawn(self.geometry_backend)?);
         }
         let worker = self.worker.as_ref().expect("reference worker");
         let mut slots = lock(&worker.0);

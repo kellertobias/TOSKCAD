@@ -1,13 +1,19 @@
 //! Exact assembly queries stay on their native owner worker.
 use multicad_core::{assembly_inspection::*, document::Document};
-use multicad_model::{Compiler, assembly_inspection::AssemblyInspectionWorker};
+use multicad_model::{Compiler, GeometryBackend, assembly_inspection::AssemblyInspectionWorker};
 pub struct Backend {
     worker: Result<AssemblyInspectionWorker, String>,
 }
 impl Backend {
-    pub fn new() -> Self {
+    pub fn with_geometry_backend(geometry_backend: GeometryBackend) -> Self {
         Self {
-            worker: AssemblyInspectionWorker::new(Compiler::default()),
+            worker: AssemblyInspectionWorker::with_geometry_backend(
+                Compiler {
+                    omit_display: true,
+                    ..Compiler::default()
+                },
+                geometry_backend,
+            ),
         }
     }
 }

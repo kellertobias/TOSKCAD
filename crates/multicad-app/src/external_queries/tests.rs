@@ -77,7 +77,7 @@ fn held_native_job_keeps_only_latest_queue_and_never_publishes_cancelled_source(
     .unwrap();
     let mut backend = Backend {
         worker: Some(worker),
-        generation: 0,
+        ..Backend::new()
     };
     let session = source();
     let canonical = session.document().clone();
@@ -129,7 +129,7 @@ fn worker_exit_reports_latest_request_and_allows_an_independent_retry() {
         Worker::with_processor(|| Box::new(|_, _| panic!("Controlled query failure"))).unwrap();
     let mut backend = Backend {
         worker: Some(worker),
-        generation: 0,
+        ..Backend::new()
     };
     let session = source();
     let input = fixture_query();

@@ -54,6 +54,13 @@ pub struct AssemblyInspectionWorker {
 }
 impl AssemblyInspectionWorker {
     pub fn new(compiler: Compiler) -> Result<Self, String> {
+        Self::with_geometry_backend(compiler, GeometryBackend::OpenCascade)
+    }
+
+    pub fn with_geometry_backend(
+        compiler: Compiler,
+        geometry_backend: GeometryBackend,
+    ) -> Result<Self, String> {
         Self::with_factory(move || {
             let mut cached: Option<(InspectionStamp, Model)> = None;
             Box::new(move |job: &Job, interrupt: &dyn Fn() -> bool| {
@@ -66,9 +73,10 @@ impl AssemblyInspectionWorker {
                     AssemblyInspectionQuery::Current(query) => {
                         if cached.as_ref().is_none_or(|(old, _)| *old != stamp) {
                             let model = compiler
-                                .compile_interruptible(
+                                .compile_with_backend(
                                     &job.document,
                                     stamp.revision,
+                                    geometry_backend,
                                     Some(interrupt),
                                 )
                                 .map_err(|e| e.to_string())?;
@@ -84,8 +92,14 @@ impl AssemblyInspectionWorker {
                         )
                     }
                     AssemblyInspectionQuery::Range(query) => AssemblyInspectionReport::Range(
-                        sample_assembly_range(&compiler, &job.document, query, Some(interrupt))
-                            .map_err(|e| e.to_string())?,
+                        sample_assembly_range_with_backend(
+                            &compiler,
+                            &job.document,
+                            query,
+                            geometry_backend,
+                            Some(interrupt),
+                        )
+                        .map_err(|e| e.to_string())?,
                     ),
                 };
                 if interrupt() {

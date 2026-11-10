@@ -1,7 +1,7 @@
 //! Exact physical-leaf inspection. All native work runs on an owning model
 //! thread; only detached, source-bound DTOs may cross to a UI/MCP caller.
 mod worker;
-use crate::{Compiler, EvaluationScope, Model};
+use crate::{Compiler, EvaluationScope, GeometryBackend, Model};
 use multicad_core::{
     assembly_inspection::*,
     document::Document,
@@ -139,6 +139,22 @@ pub fn sample_assembly_range(
     query: &MotionRangeQuery,
     interrupt: Option<&dyn Fn() -> bool>,
 ) -> Result<MotionRangeReport, InspectionFailure> {
+    sample_assembly_range_with_backend(
+        compiler,
+        document,
+        query,
+        GeometryBackend::OpenCascade,
+        interrupt,
+    )
+}
+
+pub fn sample_assembly_range_with_backend(
+    compiler: &Compiler,
+    document: &Document,
+    query: &MotionRangeQuery,
+    geometry_backend: GeometryBackend,
+    interrupt: Option<&dyn Fn() -> bool>,
+) -> Result<MotionRangeReport, InspectionFailure> {
     check_cancel(interrupt)?;
     query
         .validate()
@@ -157,7 +173,12 @@ pub fn sample_assembly_range(
     }
     // Validate the full unmodified source before evaluating derived candidates.
     let baseline = compiler
-        .compile_interruptible(document, query.expected.revision, interrupt)
+        .compile_with_backend(
+            document,
+            query.expected.revision,
+            geometry_backend,
+            interrupt,
+        )
         .map_err(|e| failure(InspectionFailureKind::Invalid, e.to_string()))?;
     inspect_assembly_interruptible(&baseline, &query.pair_query(), interrupt)?;
     drop(baseline);
@@ -182,7 +203,12 @@ pub fn sample_assembly_range(
                     InspectionStamp::capture(candidate_document, query.expected.revision)
                         .map_err(|e| failure(InspectionFailureKind::Invalid, e))?;
                 let result = compiler
-                    .compile_interruptible(candidate_document, query.expected.revision, interrupt)
+                    .compile_with_backend(
+                        candidate_document,
+                        query.expected.revision,
+                        geometry_backend,
+                        interrupt,
+                    )
                     .map_err(|e| failure(InspectionFailureKind::Invalid, e.to_string()))
                     .and_then(|model| {
                         let mut pair = query.pair_query();

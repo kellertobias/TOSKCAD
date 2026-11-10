@@ -1,13 +1,19 @@
 //! Native owner-thread measurement provider for the UI's data-only Inspector.
 use multicad_core::{document::Document, inspection::*};
-use multicad_model::{Compiler, inspection::MeasurementWorker};
+use multicad_model::{Compiler, GeometryBackend, inspection::MeasurementWorker};
 pub struct Backend {
     worker: Result<MeasurementWorker, String>,
 }
 impl Backend {
-    pub fn new() -> Self {
+    pub fn with_geometry_backend(geometry_backend: GeometryBackend) -> Self {
         Self {
-            worker: MeasurementWorker::new(Compiler::default()),
+            worker: MeasurementWorker::with_geometry_backend(
+                Compiler {
+                    omit_display: true,
+                    ..Compiler::default()
+                },
+                geometry_backend,
+            ),
         }
     }
 }

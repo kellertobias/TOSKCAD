@@ -1,7 +1,7 @@
 //! Latest-only read queries; all native construction, reuse and destruction
 //! occur on this worker. Cancellation never publishes a partial batch.
 use super::measure_model;
-use crate::{Compiler, Model};
+use crate::{Compiler, GeometryBackend, Model};
 use multicad_core::{document::Document, inspection::*};
 use std::sync::{
     Arc, Condvar, Mutex,
@@ -55,6 +55,13 @@ pub struct MeasurementWorker {
 }
 impl MeasurementWorker {
     pub fn new(compiler: Compiler) -> Result<Self, String> {
+        Self::with_geometry_backend(compiler, GeometryBackend::OpenCascade)
+    }
+
+    pub fn with_geometry_backend(
+        compiler: Compiler,
+        geometry_backend: GeometryBackend,
+    ) -> Result<Self, String> {
         Self::with_factory(move || {
             struct Cached {
                 stamp: MeasurementStamp,
@@ -72,7 +79,12 @@ impl MeasurementWorker {
                 }
                 if cache.as_ref().is_none_or(|c| c.stamp != job.stamp) {
                     let model = compiler
-                        .compile_interruptible(&job.document, job.stamp.revision, Some(interrupt))
+                        .compile_with_backend(
+                            &job.document,
+                            job.stamp.revision,
+                            geometry_backend,
+                            Some(interrupt),
+                        )
                         .map_err(|e| e.to_string())?;
                     let stamp = model.snapshot().stamp;
                     if stamp.document != job.stamp.document

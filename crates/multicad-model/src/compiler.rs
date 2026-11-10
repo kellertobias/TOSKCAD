@@ -137,7 +137,6 @@ struct Profiles<'a> {
     context: &'a SketchEvaluationContext<'a>,
     references: Option<references::ReferenceInspector>,
     queries: &'a dyn RegionQueries,
-    backend: GeometryBackend,
     body_heads: &'a BTreeMap<EntityId, EntityId>,
     policy: GeometryPolicy,
     cache: BTreeMap<EntityId, (multicad_core::sketch::Frame, Extraction)>,
@@ -162,18 +161,16 @@ impl Profiles<'_> {
                     )
                 })
                 .inspect(topologies);
-            if self.backend == GeometryBackend::OpenCascade {
-                crate::external::Sources {
-                    document: self.context.document(),
-                    revision: self.context.stamp().revision,
-                    parameters: self.context.parameters(),
-                    body_heads: self.body_heads,
-                    solids,
-                    topologies,
-                    policy: self.policy,
-                }
-                .populate(&mut report, Some(sketch), interrupt)?;
+            crate::external::Sources {
+                document: self.context.document(),
+                revision: self.context.stamp().revision,
+                parameters: self.context.parameters(),
+                body_heads: self.body_heads,
+                solids,
+                topologies,
+                policy: self.policy,
             }
+            .populate(&mut report, Some(sketch), interrupt)?;
             let evaluated = self
                 .context
                 .evaluate(sketch, Some(&report), interrupt)
@@ -725,7 +722,6 @@ impl Compiler {
             } else {
                 &native_queries
             },
-            backend,
             body_heads: &bodies,
             policy: self.policy,
             cache: BTreeMap::new(),
@@ -1594,23 +1590,22 @@ impl Compiler {
             .take()
             .unwrap_or_else(|| references::ReferenceInspector::new(document, revision))
             .inspect(&topologies);
-        if backend == GeometryBackend::OpenCascade {
-            crate::external::complete_report(
-                self,
-                &crate::external::Sources {
-                    document,
-                    revision,
-                    parameters: context.parameters(),
-                    body_heads: &bodies,
-                    solids: &solids,
-                    topologies: &topologies,
-                    policy: self.policy,
-                },
-                &mut references,
-                roots.is_none(),
-                interrupt,
-            )?;
-        }
+        crate::external::complete_report(
+            self,
+            &crate::external::Sources {
+                document,
+                revision,
+                parameters: context.parameters(),
+                body_heads: &bodies,
+                solids: &solids,
+                topologies: &topologies,
+                policy: self.policy,
+            },
+            &mut references,
+            roots.is_none(),
+            backend,
+            interrupt,
+        )?;
         if roots.is_some() {
             bodies.retain(|_, producer| shapes.contains_key(producer));
         }

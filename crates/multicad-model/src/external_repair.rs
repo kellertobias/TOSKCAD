@@ -2,7 +2,7 @@
 //! cumulative candidate with fresh topology and catalogues; the whole candidate
 //! must compile, resolve every driving reference and solve every affected
 //! sketch before a single attributable transaction becomes commit-capable.
-use crate::{Compiler, ModelError, ModelSnapshot, error, external::topologies};
+use crate::{Compiler, GeometryBackend, ModelError, ModelSnapshot, error, external::topologies};
 use multicad_core::{
     commands::{Actor, PreparationSnapshot, Prepared, Request},
     document::{Document, DocumentError, EntityId},
@@ -34,6 +34,7 @@ impl RepairSetPrepared {
 struct Native<'a> {
     compiler: &'a Compiler,
     revision: u64,
+    geometry_backend: GeometryBackend,
     interrupt: Option<&'a dyn Fn() -> bool>,
 }
 fn document_error(e: impl std::fmt::Display) -> DocumentError {
@@ -47,7 +48,13 @@ impl RepairNative for Native<'_> {
     ) -> Result<TopologySnapshot, DocumentError> {
         let model = self
             .compiler
-            .compile_sources_interruptible(candidate, self.revision, &[source], self.interrupt)
+            .compile_sources_with_backend(
+                candidate,
+                self.revision,
+                &[source],
+                self.geometry_backend,
+                self.interrupt,
+            )
             .map_err(document_error)?;
         topologies(&model)
             .remove(&source)
@@ -59,7 +66,13 @@ impl RepairNative for Native<'_> {
         query: &ExternalQuery,
     ) -> Result<ExternalCatalog, DocumentError> {
         self.compiler
-            .query_external_catalog(candidate, self.revision, query, self.interrupt)
+            .query_external_catalog_with_backend(
+                candidate,
+                self.revision,
+                query,
+                self.geometry_backend,
+                self.interrupt,
+            )
             .map_err(document_error)
     }
 }
@@ -111,11 +124,31 @@ impl Compiler {
         resources: Option<&str>,
         interrupt: Option<&dyn Fn() -> bool>,
     ) -> Result<RepairSetPrepared, ModelError> {
+        self.prepare_repair_set_with_backend(
+            snapshot,
+            actor,
+            set,
+            resources,
+            GeometryBackend::OpenCascade,
+            interrupt,
+        )
+    }
+
+    pub fn prepare_repair_set_with_backend(
+        &self,
+        snapshot: &PreparationSnapshot,
+        actor: Actor,
+        set: &RepairSet,
+        resources: Option<&str>,
+        geometry_backend: GeometryBackend,
+        interrupt: Option<&dyn Fn() -> bool>,
+    ) -> Result<RepairSetPrepared, ModelError> {
         let session = snapshot.session();
         let revision = session.revision();
         let native = Native {
             compiler: self,
             revision,
+            geometry_backend,
             interrupt,
         };
         let staged = stage_repair_set(session.document(), revision, resources, set, &native)
@@ -160,7 +193,12 @@ impl Compiler {
                 "Repair set transaction disagrees with its staged candidate",
             ));
         }
-        let model = match self.compile_interruptible(prepared.document(), revision, interrupt) {
+        let model = match self.compile_with_backend(
+            prepared.document(),
+            revision,
+            geometry_backend,
+            interrupt,
+        ) {
             Ok(model) => model,
             Err(e) => {
                 out.blockers

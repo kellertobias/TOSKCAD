@@ -1,6 +1,8 @@
 //! Exact external reference evaluation and source-only discovery. Native handles
 //! remain on this worker; only stamped owned geometry and preparations escape.
-use crate::{Compiler, Model, ModelError, ModelSnapshot, error, external_geometry};
+use crate::{
+    Compiler, GeometryBackend, Model, ModelError, ModelSnapshot, error, external_geometry,
+};
 use multicad_core::{
     commands::{Actor, PreparationSnapshot, Request},
     constraint_sketch::source::Source,
@@ -169,7 +171,24 @@ impl Compiler {
         query: &ExternalQuery,
         interrupt: Option<&dyn Fn() -> bool>,
     ) -> Result<ExternalCatalog, ModelError> {
-        self.external_catalog_context(document, revision, query, interrupt)
+        self.query_external_catalog_with_backend(
+            document,
+            revision,
+            query,
+            GeometryBackend::OpenCascade,
+            interrupt,
+        )
+    }
+
+    pub fn query_external_catalog_with_backend(
+        &self,
+        document: &Document,
+        revision: u64,
+        query: &ExternalQuery,
+        geometry_backend: GeometryBackend,
+        interrupt: Option<&dyn Fn() -> bool>,
+    ) -> Result<ExternalCatalog, ModelError> {
+        self.external_catalog_context(document, revision, query, geometry_backend, interrupt)
             .map(|(catalog, _)| catalog)
     }
     pub(crate) fn external_catalog_context(
@@ -177,6 +196,7 @@ impl Compiler {
         document: &Document,
         revision: u64,
         query: &ExternalQuery,
+        geometry_backend: GeometryBackend,
         interrupt: Option<&dyn Fn() -> bool>,
     ) -> Result<(ExternalCatalog, Frame), ModelError> {
         checkpoint(interrupt)?;
@@ -208,10 +228,11 @@ impl Compiler {
                 Some(EntityData::Parameter { .. })
             )
         });
-        let native = self.compile_sources_interruptible(
+        let native = self.compile_sources_with_backend(
             document,
             revision,
             &roots.into_iter().collect::<Vec<_>>(),
+            geometry_backend,
             interrupt,
         )?;
         checkpoint(interrupt)?;
@@ -257,7 +278,14 @@ impl Compiler {
         request: &OccurrenceCaptureRequest,
         interrupt: Option<&dyn Fn() -> bool>,
     ) -> Result<ExternalCapturePrepared, ModelError> {
-        self.prepare_external(snapshot, actor, request, false, interrupt)
+        self.prepare_external_with_backend(
+            snapshot,
+            actor,
+            request,
+            false,
+            GeometryBackend::OpenCascade,
+            interrupt,
+        )
     }
     pub fn prepare_external_repair(
         &self,
@@ -266,20 +294,33 @@ impl Compiler {
         request: &OccurrenceCaptureRequest,
         interrupt: Option<&dyn Fn() -> bool>,
     ) -> Result<ExternalCapturePrepared, ModelError> {
-        self.prepare_external(snapshot, actor, request, true, interrupt)
+        self.prepare_external_with_backend(
+            snapshot,
+            actor,
+            request,
+            true,
+            GeometryBackend::OpenCascade,
+            interrupt,
+        )
     }
-    fn prepare_external(
+    pub fn prepare_external_with_backend(
         &self,
         snapshot: &PreparationSnapshot,
         actor: Actor,
         request: &OccurrenceCaptureRequest,
         repair: bool,
+        geometry_backend: GeometryBackend,
         interrupt: Option<&dyn Fn() -> bool>,
     ) -> Result<ExternalCapturePrepared, ModelError> {
         let session = snapshot.session();
         let revision = session.revision();
-        let catalog =
-            self.query_external_catalog(session.document(), revision, &request.query, interrupt)?;
+        let catalog = self.query_external_catalog_with_backend(
+            session.document(),
+            revision,
+            &request.query,
+            geometry_backend,
+            interrupt,
+        )?;
         let edits = external::occurrence_capture_edits(
             session.document(),
             revision,
@@ -301,7 +342,13 @@ impl Compiler {
                 edits,
             })
             .map_err(|e| error(Some(request.query.reference), e))?;
-        self.finish_external(prepared, revision, request.query.sketch, interrupt)
+        self.finish_external(
+            prepared,
+            revision,
+            request.query.sketch,
+            geometry_backend,
+            interrupt,
+        )
     }
     pub fn prepare_external_remove(
         &self,
@@ -309,6 +356,25 @@ impl Compiler {
         actor: Actor,
         sketch: EntityId,
         reference: EntityId,
+        interrupt: Option<&dyn Fn() -> bool>,
+    ) -> Result<ExternalCapturePrepared, ModelError> {
+        self.prepare_external_remove_with_backend(
+            snapshot,
+            actor,
+            sketch,
+            reference,
+            GeometryBackend::OpenCascade,
+            interrupt,
+        )
+    }
+
+    pub fn prepare_external_remove_with_backend(
+        &self,
+        snapshot: &PreparationSnapshot,
+        actor: Actor,
+        sketch: EntityId,
+        reference: EntityId,
+        geometry_backend: GeometryBackend,
         interrupt: Option<&dyn Fn() -> bool>,
     ) -> Result<ExternalCapturePrepared, ModelError> {
         let session = snapshot.session();
@@ -322,17 +388,25 @@ impl Compiler {
                 edits,
             })
             .map_err(|e| error(Some(reference), e))?;
-        self.finish_external(prepared, session.revision(), sketch, interrupt)
+        self.finish_external(
+            prepared,
+            session.revision(),
+            sketch,
+            geometry_backend,
+            interrupt,
+        )
     }
     fn finish_external(
         &self,
         prepared: multicad_core::commands::Prepared,
         revision: u64,
         sketch: EntityId,
+        geometry_backend: GeometryBackend,
         interrupt: Option<&dyn Fn() -> bool>,
     ) -> Result<ExternalCapturePrepared, ModelError> {
         checkpoint(interrupt)?;
-        let model = self.compile_interruptible(prepared.document(), revision, interrupt)?;
+        let model =
+            self.compile_with_backend(prepared.document(), revision, geometry_backend, interrupt)?;
         let report = model.snapshot().references.clone();
         if !report
             .for_model(prepared.document())
@@ -414,6 +488,7 @@ pub(crate) fn complete_report(
     sources: &Sources<'_>,
     report: &mut ReferenceReport,
     full: bool,
+    geometry_backend: GeometryBackend,
     interrupt: Option<&dyn Fn() -> bool>,
 ) -> Result<(), ModelError> {
     if !full {
@@ -429,6 +504,7 @@ pub(crate) fn complete_report(
             sources.document,
             sources.revision,
             &request.query,
+            geometry_backend,
             interrupt,
         ) {
             Ok((catalog, frame)) => {

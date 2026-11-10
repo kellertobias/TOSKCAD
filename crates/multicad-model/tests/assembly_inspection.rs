@@ -4,7 +4,7 @@ use multicad_core::{
     document::Document,
     model::*,
 };
-use multicad_model::{Compiler, assembly_inspection::*};
+use multicad_model::{Compiler, GeometryBackend, assembly_inspection::*};
 fn actor() -> Actor {
     Actor::local(Channel::Ui)
 }
@@ -196,6 +196,54 @@ fn sampled_drawer_checks_exact_intervals_limits_and_real_overlap_without_source_
         .kind,
         InspectionFailureKind::Cancelled
     );
+}
+
+#[test]
+fn rust_motion_worker_checks_each_slider_candidate_without_committing_it() {
+    use std::time::{Duration, Instant};
+
+    let f = fixture(JointKind::Slider);
+    let document = f.session.document();
+    let source = document.clone();
+    let range = range(&f, JointCoordinate::Z, 0., 12., 6.);
+    let query = AssemblyInspectionQuery::Range(range.clone());
+    let mut worker =
+        AssemblyInspectionWorker::with_geometry_backend(Compiler::default(), GeometryBackend::Rust)
+            .unwrap();
+    let request = worker.submit(document, query.clone()).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let reply = loop {
+        if let Some(reply) = worker.poll() {
+            break reply;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "Rust motion worker did not reply"
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    };
+    assert_eq!(reply.request, request);
+    assert_eq!(reply.query, query);
+    let AssemblyInspectionReport::Range(report) = reply.result.unwrap() else {
+        panic!("Expected a range report");
+    };
+    report.validate_against(&range).unwrap();
+    assert_eq!(report.sample_values, [0., 6., 12.]);
+    for (sample, (volume, clearance)) in
+        report
+            .samples
+            .iter()
+            .zip([(1000., 0.), (400., 0.), (0., 2.)])
+    {
+        let pair = sample.result.as_ref().unwrap().pairs[0]
+            .result
+            .as_ref()
+            .unwrap();
+        near(pair.overlap_volume_mm3, volume);
+        near(pair.minimum_clearance_mm, clearance);
+    }
+    assert_eq!(document, &source);
+    assert_eq!(f.session.revision(), range.expected.revision);
 }
 #[test]
 fn hinge_range_uses_radians_and_preserves_requested_endpoint() {

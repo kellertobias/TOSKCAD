@@ -3,27 +3,32 @@
 //! is the production app backend, not a test geometry/query implementation.
 #[path = "../src/external_queries.rs"]
 mod external_queries;
+#[path = "../src/reference_repairs.rs"]
+mod reference_repairs;
 use multicad_core::{
-    commands::{Actor, Channel, ErrorCode, Session},
-    constraint_sketch::source::Source,
+    commands::{Actor, Channel, ErrorCode, Request, Session},
+    constraint_sketch::{ConstraintKind, source::Source},
     document::{Document, EntityId},
     model::{
         self, BodyInput, InstanceCopyRequest, InstanceCopySource, NumericTransform, OccurrencePath,
         PrimitiveParameters, PrimitiveRequest, angle, length,
     },
-    project_file::{ContentHash, ProjectResources},
+    project_file::{self, ContentHash, FileLimits, ProjectFile, ProjectResources},
     references::{AnalyticGeometry, GeometryIntent},
     sketch::Datum,
     sketch_external::{
         self, Behavior, ExternalCatalog, ExternalGeometry, ExternalQuery, OccurrenceCaptureRequest,
-        OccurrenceSource, QueryMethod,
+        OccurrenceSource, QueryMethod, RepairSet, RepairStamp, RepairStep,
     },
 };
-use multicad_model::Compiler;
+use multicad_model::{Compiler, GeometryBackend};
 use multicad_ui::external_references::{
     ExternalPrepared, ExternalQueryBackend, ExternalQueryReply,
 };
-use std::time::{Duration, Instant};
+use std::{
+    sync::{Arc, atomic::AtomicBool},
+    time::{Duration, Instant},
+};
 fn actor() -> Actor {
     Actor::local(Channel::Mcp)
 }
@@ -112,8 +117,16 @@ fn fixture(cylinder: bool) -> Fixture {
     }
 }
 fn native_query(f: &Fixture, copy: usize, method: QueryMethod) -> ExternalQuery {
+    query_with_backend(f, copy, method, GeometryBackend::OpenCascade)
+}
+fn query_with_backend(
+    f: &Fixture,
+    copy: usize,
+    method: QueryMethod,
+    backend: GeometryBackend,
+) -> ExternalQuery {
     let native = Compiler::default()
-        .compile(f.session.document(), f.session.revision())
+        .compile_with_backend(f.session.document(), f.session.revision(), backend, None)
         .unwrap();
     let topology = native
         .solid(f.part.body)
@@ -227,6 +240,200 @@ fn line_x(catalog: &ExternalCatalog, x: f64) {
     near(b[0], x);
     near(a[1].min(b[1]), 200.);
     near(a[1].max(b[1]), 230.);
+}
+
+#[test]
+fn rust_worker_captures_a_placed_line_that_rebuilds_its_consuming_extrusion_after_reopen() {
+    let mut f = fixture(false);
+    let backend = GeometryBackend::Rust;
+    let compiler = Compiler::default();
+    let mut worker = external_queries::Backend::with_geometry_backend(backend);
+    let query = query_with_backend(&f, 0, QueryMethod::Project, backend);
+    let discovered = catalog(&mut worker, &f.session, &query);
+    line_x(&discovered, 100.);
+    let input = OccurrenceCaptureRequest::new(
+        &discovered,
+        &discovered.results[0].selector,
+        Behavior::Derived,
+    )
+    .unwrap();
+    let prepared = prepare(&mut worker, &f.session, &input, false).unwrap();
+    assert!(
+        prepared
+            .report
+            .external_results
+            .contains_key(&input.query.reference)
+    );
+    f.session.commit(prepared.edit.preview.unwrap()).unwrap();
+
+    let ExternalGeometry::Line { a_mm, b_mm } = discovered.results[0].geometry else {
+        panic!("Expected the exact projected line");
+    };
+    let [mut low, mut high] = [input.output.points[0], input.output.points[1]];
+    if a_mm[1] > b_mm[1] {
+        std::mem::swap(&mut low, &mut high);
+    }
+    let mut source =
+        Source::read_for_evaluation(f.session.document(), f.sketch, f.session.revision(), None)
+            .unwrap()
+            .0;
+    let right_low = source.add_point([110., 200.]);
+    let right_high = source.add_point([110., 230.]);
+    for point in [right_low, right_high] {
+        source.add_constraint(ConstraintKind::Fix { point });
+    }
+    source.add_line(low, right_low);
+    source.add_line(right_low, right_high);
+    source.add_line(right_high, high);
+    let edits = source.replace(f.session.document(), f.sketch).unwrap();
+    f.session
+        .apply(Request {
+            expected_revision: f.session.revision(),
+            actor: actor(),
+            label: "Close the outline using the projected edge".into(),
+            edits,
+        })
+        .unwrap();
+    let model = compiler
+        .compile_with_backend(f.session.document(), f.session.revision(), backend, None)
+        .unwrap();
+    let evaluated = multicad_solver::evaluate_document_sketch(
+        f.session.document(),
+        f.session.revision(),
+        f.sketch,
+        Some(&model.snapshot().references),
+    )
+    .unwrap();
+    let region = evaluated.regions().unwrap().regions[0].intent();
+    let extrusion = model::ExtrudeRequest::new(f.sketch, vec![region], Default::default());
+    let prepared =
+        model::prepare_extrude(&f.session, f.session.revision(), actor(), &extrusion).unwrap();
+    let output = prepared.outputs[0].clone();
+    f.session.commit(prepared.prepared).unwrap();
+
+    let mut bytes = Vec::new();
+    project_file::write(
+        &ProjectFile::new(f.session.document().clone()).unwrap(),
+        &mut bytes,
+        FileLimits::default(),
+    )
+    .unwrap();
+    let reopened = project_file::read(
+        &mut bytes.as_slice(),
+        FileLimits::default(),
+        &project_file::supported_capabilities(),
+    )
+    .unwrap();
+    let mut session = Session::new(reopened.project.document).unwrap();
+    let rebuild = |session: &Session| {
+        compiler
+            .compile_with_backend(session.document(), session.revision(), backend, None)
+            .unwrap()
+    };
+    let model = rebuild(&session);
+    near(model.snapshot().shapes[&output.feature].volume_mm3, 3000.);
+    assert!(
+        model
+            .snapshot()
+            .references
+            .external_results
+            .contains_key(&input.query.reference)
+    );
+
+    let mut placement = f.copies[0].parameters.clone();
+    placement.translation[0] = length(98.);
+    let edit = model::prepare_instance_placement_edit(
+        &session,
+        session.revision(),
+        actor(),
+        f.copies[0].driver,
+        &placement,
+    )
+    .unwrap();
+    session.commit(edit.prepared).unwrap();
+    let model = rebuild(&session);
+    near(model.snapshot().shapes[&output.feature].volume_mm3, 3600.);
+    line_x(&catalog(&mut worker, &session, &query), 98.);
+
+    let mut second = f.copies[1].parameters.clone();
+    second.translation[0] = length(103.);
+    let edit = model::prepare_instance_placement_edit(
+        &session,
+        session.revision(),
+        actor(),
+        f.copies[1].driver,
+        &second,
+    )
+    .unwrap();
+    session.commit(edit.prepared).unwrap();
+    let mut replacement = query;
+    replacement.source.path.root = f.copies[1].instance;
+    let replacement = catalog(&mut worker, &session, &replacement);
+    line_x(&replacement, 103.);
+    let repair = OccurrenceCaptureRequest::repair(
+        &replacement,
+        &replacement.results[0].selector,
+        Behavior::Derived,
+        &input,
+    )
+    .unwrap();
+    assert_eq!(repair.output, input.output);
+    let before = session.document().clone();
+    let resources = "no resources".to_owned();
+    let set = RepairSet {
+        stamp: RepairStamp::current(&before, session.revision(), Some(resources.clone())).unwrap(),
+        steps: vec![RepairStep::RebindOccurrence {
+            request: Box::new(repair),
+        }],
+    };
+    let checked = reference_repairs::check_with_geometry_backend(
+        backend,
+        session.preparation_snapshot(),
+        set,
+        resources,
+        Arc::new(AtomicBool::new(false)),
+    )
+    .unwrap();
+    assert!(checked.can_apply(), "{:?}", checked.blockers);
+    assert_eq!(session.document(), &before);
+    session.commit(checked.prepared.unwrap()).unwrap();
+    near(
+        rebuild(&session).snapshot().shapes[&output.feature].volume_mm3,
+        2100.,
+    );
+}
+
+#[test]
+fn rust_catalogue_refuses_a_curved_edge_that_the_native_worker_resolves() {
+    let f = fixture(true);
+    let before = f.session.document().clone();
+    let mut native_worker = external_queries::Backend::new();
+    let native = native_query(&f, 0, QueryMethod::Intersect);
+    assert_eq!(
+        catalog(&mut native_worker, &f.session, &native)
+            .results
+            .len(),
+        2
+    );
+    let backend = GeometryBackend::Rust;
+    let rust = query_with_backend(&f, 0, QueryMethod::Intersect, backend);
+    let mut rust_worker = external_queries::Backend::with_geometry_backend(backend);
+    rust_worker
+        .request_catalog(
+            f.session.preparation_snapshot(),
+            ProjectResources::default(),
+            rust,
+        )
+        .unwrap();
+    let ExternalQueryReply::Catalog { result, .. } = poll(&mut rust_worker) else {
+        panic!("Expected a catalogue reply");
+    };
+    let error = result.unwrap_err();
+    assert!(
+        error.contains("Rust sketch references support finite vertices and straight edges"),
+        "{error}"
+    );
+    assert_eq!(f.session.document(), &before);
 }
 #[test]
 fn actual_worker_capture_repair_remove_preserve_source_and_original_session_ownership() {
