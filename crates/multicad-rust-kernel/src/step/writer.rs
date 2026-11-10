@@ -268,6 +268,19 @@ impl Writer {
         self.append(|file| normal_sweep::encode(file, sweep, &[], placement, reverse_sweep))
     }
 
+    /// Append a spur gear with tolerance-bounded spline flanks.
+    pub fn append_spur_gear(
+        &mut self,
+        profile: &crate::spur_gear::Profile,
+        origin: Point,
+        u: Point,
+        v: Point,
+        tolerance_mm: f64,
+    ) -> Result<(), StepError> {
+        let placement = Placement::new(origin, u, v)?;
+        self.append(|file| spur_gear::encode(file, profile, placement, tolerance_mm))
+    }
+
     /// Append an exact normal sweep with certified paired through-openings.
     pub fn append_pierced_normal_sweep(
         &mut self,

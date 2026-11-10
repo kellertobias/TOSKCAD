@@ -12,16 +12,36 @@ pub fn write_normal_sweep(
     write_one(|writer| writer.append_normal_sweep(sweep, origin, u, v, reverse_sweep))
 }
 
+pub(super) enum ProfileEdge {
+    Analytic(Edge),
+    Cubic(spur_gear::FlankSpline),
+}
+
+impl ProfileEdge {
+    fn start(&self) -> [f64; 2] {
+        match self {
+            Self::Analytic(edge) => edge.start(),
+            Self::Cubic(spline) => spline.start(),
+        }
+    }
+}
+
+enum WallSupport {
+    Plane,
+    Cylinder(Entity),
+    LinearExtrusion(Entity),
+}
+
 struct Rim {
     vertices: Vec<Vertex>,
     edges: Vec<Entity>,
-    arc_axes: Vec<Option<Entity>>,
+    supports: Vec<WallSupport>,
 }
 
 impl Rim {
     fn new(
         file: &mut StepFile,
-        ring: &[Edge],
+        ring: &[ProfileEdge],
         placement: &Placement,
         z: f64,
     ) -> Result<Self, StepError> {
@@ -29,22 +49,26 @@ impl Rim {
             .iter()
             .map(|edge| file.vertex(placement.point_f64(edge.start(), z)))
             .collect();
-        let (edges, arc_axes) = ring
+        let (edges, supports) = ring
             .iter()
             .zip(vertices.iter().zip(vertices.iter().cycle().skip(1)))
-            .map(|(edge, (&from, &to))| match *edge {
-                Edge::Line { .. } => Ok((line_edge(file, from, to)?, None)),
-                Edge::Arc {
-                    center,
-                    a,
-                    clockwise,
-                    ..
-                } => {
+            .map(|(edge, (&from, &to))| match edge {
+                ProfileEdge::Analytic(Edge::Line { .. }) => {
+                    Ok((line_edge(file, from, to)?, WallSupport::Plane))
+                }
+                ProfileEdge::Analytic(
+                    edge @ Edge::Arc {
+                        center,
+                        a,
+                        clockwise,
+                        ..
+                    },
+                ) => {
                     let [x, y] = std::array::from_fn(|i| a[i] - center[i]);
                     let radius = x.hypot(y);
                     let reference = placement.vector([x / radius, y / radius, 0.]);
-                    let normal = placement.normal.map(|n| if clockwise { -n } else { n });
-                    let center = placement.point_f64(center, z);
+                    let normal = placement.normal.map(|n| if *clockwise { -n } else { n });
+                    let center = placement.point_f64(*center, z);
                     let sweep = edge.signed_sweep_rad().ok_or(StepError::InvalidGeometry)?;
                     let (edge, axis) = circular_arc_edge(
                         file,
@@ -55,9 +79,13 @@ impl Rim {
                         radius,
                         sweep,
                     )?;
-                    Ok((edge, Some(axis)))
+                    Ok((edge, WallSupport::Cylinder(axis)))
                 }
-                Edge::Circle { .. } => Err(StepError::InvalidGeometry),
+                ProfileEdge::Analytic(Edge::Circle { .. }) => Err(StepError::InvalidGeometry),
+                ProfileEdge::Cubic(spline) => {
+                    let (edge, curve) = spline.encode(file, [from, to], placement, z)?;
+                    Ok((edge, WallSupport::LinearExtrusion(curve)))
+                }
             })
             .collect::<Result<Vec<_>, _>>()?
             .into_iter()
@@ -65,7 +93,7 @@ impl Rim {
         Ok(Self {
             vertices,
             edges,
-            arc_axes,
+            supports,
         })
     }
 
@@ -89,7 +117,28 @@ pub(super) fn encode(
     placement: Placement,
     reverse: bool,
 ) -> Result<Entity, StepError> {
-    let height = sweep.height_mm();
+    let mut rings = sweep
+        .rings()
+        .iter()
+        .map(|ring| ring.iter().copied().map(ProfileEdge::Analytic).collect());
+    encode_rings(
+        file,
+        &mut rings,
+        sweep.height_mm(),
+        piercings,
+        placement,
+        reverse,
+    )
+}
+
+pub(super) fn encode_rings(
+    file: &mut StepFile,
+    rings: &mut dyn Iterator<Item = Vec<ProfileEdge>>,
+    height: f64,
+    piercings: &[CertifiedPiercing],
+    placement: Placement,
+    reverse: bool,
+) -> Result<Entity, StepError> {
     let levels = if reverse { [-height, 0.] } else { [0., height] };
     let normal = placement.normal;
     let openings = pierced_sweep::encode_openings(file, piercings, &placement, reverse)?;
@@ -97,14 +146,14 @@ pub(super) fn encode(
     let mut caps = [Vec::new(), Vec::new()];
     let mut walls = Vec::new();
     let mut side_ordinal = 0;
-    for (index, ring) in sweep.rings().iter().enumerate() {
+    for (index, ring) in rings.enumerate() {
         let ring_ordinal = side_ordinal;
         side_ordinal += ring.len();
         let outer = index == 0;
         if let [
-            Edge::Circle {
+            ProfileEdge::Analytic(Edge::Circle {
                 center, radius_mm, ..
-            },
+            }),
         ] = ring.as_slice()
         {
             let trim = CylindricalTrim::new(
@@ -120,8 +169,8 @@ pub(super) fn encode(
             walls.push(trim.wall(file, outer));
             continue;
         }
-        let low = Rim::new(file, ring, &placement, levels[0])?;
-        let high = Rim::new(file, ring, &placement, levels[1])?;
+        let low = Rim::new(file, &ring, &placement, levels[0])?;
+        let high = Rim::new(file, &ring, &placement, levels[1])?;
         caps[0].push(low.bound(file, false, outer));
         caps[1].push(high.bound(file, true, outer));
         let rails = low
@@ -140,30 +189,40 @@ pub(super) fn encode(
             ]
             .map(|(edge, forward)| file.oriented_edge(edge, forward));
             let bound = file.bound(&boundary, true);
-            let face = if let Edge::Arc {
-                center,
-                a,
-                clockwise,
-                ..
-            } = *edge
+            let face = if let (
+                ProfileEdge::Analytic(Edge::Arc {
+                    center,
+                    a,
+                    clockwise,
+                    ..
+                }),
+                WallSupport::Cylinder(axis),
+            ) = (edge, &low.supports[i])
             {
                 let [x, y] = std::array::from_fn(|j| a[j] - center[j]);
                 let radius = x.hypot(y);
                 // Cylinder support always follows the sweep axis. The
                 // circular edge itself may run clockwise around this axis.
-                let axis = if clockwise {
-                    let center = file.point(placement.point_f64(center, levels[0]));
+                let axis = if *clockwise {
+                    let center = file.point(placement.point_f64(*center, levels[0]));
                     file.axis(
                         center,
                         normal,
                         placement.vector([x / radius, y / radius, 0.]),
                     )
                 } else {
-                    low.arc_axes[i].ok_or(StepError::InvalidGeometry)?
+                    *axis
                 };
                 let cylinder =
                     file.entity(format_args!("CYLINDRICAL_SURFACE('',{axis},{radius:.16E})"));
-                file.face_on(&[bound], cylinder, !clockwise)
+                file.face_on(&[bound], cylinder, !*clockwise)
+            } else if let WallSupport::LinearExtrusion(curve) = low.supports[i] {
+                let axis = file.direction(normal);
+                let vector = file.entity(format_args!("VECTOR('',{axis},1.)"));
+                let surface = file.entity(format_args!(
+                    "SURFACE_OF_LINEAR_EXTRUSION('',{curve},{vector})"
+                ));
+                file.face_on(&[bound], surface, true)
             } else {
                 let tangent = direction(low.vertices[i].point, low.vertices[next].point)?;
                 let mut boundaries = vec![bound];
@@ -210,24 +269,45 @@ mod tests {
                 a: arc.end(),
                 b: arc.start(),
             },
-        ];
-        assert!(matches!(
-            Rim::new(&mut StepFile::new(), &arc_wire, &placement, 0.),
-            Err(StepError::InvalidGeometry)
-        ));
+        ]
+        .map(ProfileEdge::Analytic);
+        assert_eq!(
+            Rim::new(&mut StepFile::new(), &arc_wire, &placement, 0.).err(),
+            Some(StepError::InvalidGeometry)
+        );
         let circle = Edge::Circle {
             center: [0., 0.],
             radius_mm: 1.,
             clockwise: false,
         };
-        assert!(matches!(
-            Rim::new(&mut StepFile::new(), &[circle], &placement, 0.),
-            Err(StepError::InvalidGeometry)
-        ));
+        assert_eq!(
+            Rim::new(
+                &mut StepFile::new(),
+                &[ProfileEdge::Analytic(circle)],
+                &placement,
+                0.
+            )
+            .err(),
+            Some(StepError::InvalidGeometry)
+        );
         let sweep = Sweep::new(vec![vec![circle]], 1., 1e-7, 1e-5).unwrap();
         assert_eq!(
             write_normal_sweep(&sweep, [0., 0., 1e16], x, y, false),
             Err(StepError::InvalidGeometry)
         );
+        let corners = [[0., 0.], [1., 0.], [1., 1.], [0., 1.]];
+        let square = (0..4)
+            .map(|i| Edge::Line {
+                a: corners[i],
+                b: corners[(i + 1) % 4],
+            })
+            .collect();
+        let sweep = Sweep::new(vec![square], 1., 1e-7, 1e-5).unwrap();
+        for origin in [[1e16, 0., 0.], [0., 0., 1e16]] {
+            assert_eq!(
+                write_normal_sweep(&sweep, origin, x, y, false),
+                Err(StepError::InvalidGeometry)
+            );
+        }
     }
 }
