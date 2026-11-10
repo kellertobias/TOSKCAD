@@ -22,6 +22,7 @@ use multicad_kernel::{
 };
 
 mod channel;
+mod inset;
 mod profile_cut;
 pub(crate) use profile_cut::{CutProfile, build_profile_cut};
 
@@ -221,7 +222,16 @@ pub(crate) fn build(
             } else {
                 length_mm
             };
-            let solid = channel::build(&mut layout, section_width, policy).map_err(m)?;
+            let solid = if layout.flanges.iter().any(|flange| {
+                flange.flange.start_inset_mm > 0.
+                    || flange.flange.end_inset_mm > 0.
+                    || flange.flange.relief_mm.is_some()
+            }) {
+                inset::build(&mut layout, policy)
+            } else {
+                channel::build(&mut layout, section_width, policy)
+            }
+            .map_err(m)?;
             return Ok((solid, layout));
         }
         layout.rust_base_origins = Some(origins);
@@ -477,47 +487,15 @@ fn flat_solid(layout: &SheetLayout, policy: GeometryPolicy) -> Result<(Solid, f6
             return Err("A flange edge is not straight".into());
         };
         let developed = f.flange.developed_mm(t, k);
-        let at = |along: f64, out: f64| {
-            [
-                f.start[0] + f.along[0] * along + f.outward[0] * out,
-                f.start[1] + f.along[1] * along + f.outward[1] * out,
-            ]
-        };
-        let mut points = vec![a];
-        let relief = f.flange.relief_mm;
-        if f.flange.start_inset_mm > 1e-9 {
-            if let Some([w, depth]) = relief {
-                if w > f.flange.start_inset_mm + 1e-9 {
-                    return Err(format!(
-                        "Flange {} relief is wider than its start inset",
-                        f.flange.index + 1
-                    ));
-                }
-                points.extend([at(-w, 0.), at(-w, -depth), at(0., -depth)]);
-                area -= w * depth;
-            }
-            points.push(at(0., 0.));
+        let points = inset::edge_points(f, a, b, developed)?;
+        if let Some([w, depth]) = f.flange.relief_mm {
+            area -= w
+                * depth
+                * f64::from(
+                    u8::from(f.flange.start_inset_mm > 1e-9)
+                        + u8::from(f.flange.end_inset_mm > 1e-9),
+                );
         }
-        points.extend([at(0., developed), at(f.width, developed)]);
-        if f.flange.end_inset_mm > 1e-9 {
-            points.push(at(f.width, 0.));
-            if let Some([w, depth]) = relief {
-                if w > f.flange.end_inset_mm + 1e-9 {
-                    return Err(format!(
-                        "Flange {} relief is wider than its end inset",
-                        f.flange.index + 1
-                    ));
-                }
-                points.extend([
-                    at(f.width, -depth),
-                    at(f.width + w, -depth),
-                    at(f.width + w, 0.),
-                ]);
-                area -= w * depth;
-            }
-        }
-        points.push(b);
-        points.dedup_by(|p, q| (p[0] - q[0]).hypot(p[1] - q[1]) < 1e-9);
         outer.extend(
             points
                 .windows(2)

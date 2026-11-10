@@ -9,8 +9,10 @@ mod axial_cut;
 mod boss;
 mod mesh;
 mod metrics;
+mod sheet;
 pub use axial_cut::{AxialCut, ConvexRecess, OpenBoreSide};
 pub use boss::Boss;
+pub use sheet::{SheetFlange, SheetWebEdge, formed_sheet};
 
 type Point = [f64; 3];
 

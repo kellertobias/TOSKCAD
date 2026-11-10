@@ -387,11 +387,28 @@ fn mcp_rust_backend_builds_and_exports_flat_and_single_bend_sheets() {
     let bent_dxf = std::fs::read_to_string(folder.path().join("bent-lid.dxf")).unwrap();
     assert!(bent_dxf.contains("\n8\nBEND_UP\n") && bent_dxf.contains("\n8\nCUT_INNER\n"));
 
+    let inset = run(
+        "set_sheet_forming",
+        json!({ "expected_revision": 4, "feature": blank["feature"],
+            "flanges": [{ "edge": 0, "kind": "bend", "length": mm(10.),
+                "start_inset": mm(2.), "end_inset": mm(2.) }],
+            "cutouts": [{ "shape": "circle", "center_mm": [40, 25], "diameter": mm(6.) }] }),
+    )
+    .unwrap();
+    assert_eq!(inset["revision"], 5);
+    let listed = run("sheet_metal", json!({})).unwrap();
+    near(
+        &sheet(&listed, "Lid")["volume_mm3"],
+        4000. + 76. * (10. + 0.75 * pi) - 9. * pi,
+    );
     let before = host.document();
     let unsupported = [
         (
-            json!([{ "edge": 0, "kind": "bend", "length": mm(10.), "start_inset": mm(2.) }]),
-            "full-length bend",
+            json!([
+                { "edge": 0, "kind": "bend", "length": mm(10.), "end_inset": mm(2.) },
+                { "edge": 1, "kind": "bend", "length": mm(10.), "start_inset": mm(2.) }
+            ]),
+            "two opposite bends",
         ),
         (
             json!([
@@ -404,7 +421,7 @@ fn mcp_rust_backend_builds_and_exports_flat_and_single_bend_sheets() {
     for (flanges, reason) in unsupported {
         let refusal = run(
             "set_sheet_forming",
-            json!({ "expected_revision": 4, "feature": blank["feature"], "flanges": flanges }),
+            json!({ "expected_revision": 5, "feature": blank["feature"], "flanges": flanges }),
         )
         .unwrap_err();
         assert!(refusal.message.contains(reason), "{refusal:?}");

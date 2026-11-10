@@ -6,10 +6,10 @@ use crate::sheet_forming::section;
 use multicad_core::references::ReferenceFrame;
 
 mod piercing;
-pub(super) use piercing::append_profile;
+pub(super) use piercing::{append_profile, developed_hole};
 
-const WEB_A: &str = "sheet.web/cap.start";
-const WEB_B: &str = "sheet.web/cap.end";
+pub(super) const WEB_A: &str = "sheet.web/cap.start";
+pub(super) const WEB_B: &str = "sheet.web/cap.end";
 const UNSUPPORTED: &str = "Rust formed sheet requires one full-length bend or two opposite full-length bends without reliefs";
 
 pub(super) fn build(

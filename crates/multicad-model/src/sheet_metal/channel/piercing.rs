@@ -98,7 +98,9 @@ fn opening(
     })
 }
 
-fn developed_hole(outline: &[CurvedEdge2d]) -> Result<PlanarLoop, String> {
+pub(in crate::sheet_metal) fn developed_hole(
+    outline: &[CurvedEdge2d],
+) -> Result<PlanarLoop, String> {
     let mut loop_ = PlanarLoop {
         outer: false,
         edges: outline

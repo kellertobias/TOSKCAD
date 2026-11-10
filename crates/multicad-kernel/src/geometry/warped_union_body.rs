@@ -439,6 +439,33 @@ impl Solid {
         }
     }
 
+    /// Place a certified analytic shell and preserve its authored face identities.
+    pub fn rust_place_formed_sheet(
+        geometry: Shell,
+        frame: PlaneFrame,
+        feature: EntityId,
+        origins: &[Origin],
+        policy: GeometryPolicy,
+    ) -> Result<Self, GeometryError> {
+        policy.validate()?;
+        frame.checked(policy)?;
+        if feature.is_nil() {
+            return Err(input("Formed sheet needs a source feature"));
+        }
+        let face_origins = geometry
+            .faces()
+            .iter()
+            .map(|face| {
+                origins
+                    .get(face.source_face)
+                    .filter(|origin| !origin.source.is_nil() && !origin.role.trim().is_empty())
+                    .map(|origin| vec![origin.clone()])
+                    .ok_or_else(|| input("Formed sheet needs an authored identity for each face"))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Self::from_boundary_shell(geometry, frame, feature, face_origins, policy)
+    }
+
     pub(super) fn from_imported_warped_union(
         geometry: Shell,
         frame: PlaneFrame,
@@ -453,6 +480,16 @@ impl Solid {
                 }]
             })
             .collect();
+        Self::from_boundary_shell(geometry, frame, feature, origins, policy)
+    }
+
+    fn from_boundary_shell(
+        geometry: Shell,
+        frame: PlaneFrame,
+        feature: EntityId,
+        origins: Vec<Vec<Origin>>,
+        policy: GeometryPolicy,
+    ) -> Result<Self, GeometryError> {
         let result = Self {
             body: SolidBody::WarpedUnion(
                 Rc::new(WarpedUnionBody {

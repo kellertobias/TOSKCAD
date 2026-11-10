@@ -140,30 +140,6 @@ fn rust_builds_and_develops_the_saved_front_panel_channel_before_piercing() {
             near(a, b);
         }
     }
-
-    sheet.flanges[0].start_inset = Some(length(5.));
-    let request = SheetRequest::new("Inset bend", sheet);
-    let prepared = model::prepare_sheet(
-        &session,
-        session.revision(),
-        Actor::local(Channel::Ui),
-        &request,
-    )
-    .unwrap();
-    let error = compiler
-        .compile_sources_with_backend(
-            prepared.prepared.document(),
-            session.revision() + 1,
-            &[request.body],
-            GeometryBackend::Rust,
-            None,
-        )
-        .err()
-        .expect("the inset channel needs a nonconstant section");
-    assert!(
-        error.message.contains("opposite full-length bends"),
-        "{error}"
-    );
 }
 
 #[test]
@@ -271,6 +247,199 @@ fn rust_builds_and_develops_a_single_full_length_bend_with_a_web_opening() {
         near(flat.area_mm2, expected_flat.area_mm2);
         for (a, b) in flat.size_mm.into_iter().zip(expected_flat.size_mm) {
             near(a, b);
+        }
+    }
+}
+
+#[test]
+fn control_desk_reliefs_form_one_solid_and_develop_exactly() {
+    use multicad_core::{
+        document::{Entity, EntityData, EntityId},
+        materials::{LibraryDefinition, Stock, StockKind, prepare_library},
+        model::{
+            BendDirection, BodyOutput, Flange, FlangeKind, PanelPlane, Relief, SheetBase, angle,
+        },
+    };
+    let actor = Actor::local(Channel::Ui);
+    let mut session = Session::new(Document::new("Control Desk inset shell").unwrap()).unwrap();
+    let material = Entity::new(
+        "AlMg3",
+        EntityData::Material {
+            density_kg_m3: Some(2660.),
+            color_rgba: [180, 184, 190, 255],
+            section_hatch: None,
+        },
+    );
+    let stock = LibraryDefinition::Stock(Stock {
+        material: material.id,
+        specification: StockKind::Sheet {
+            thickness_mm: 1.5,
+            length_mm: 1000.,
+            width_mm: 500.,
+            inside_bend_radius_mm: 1.5,
+            k_factor: 0.44,
+        },
+    })
+    .entity(EntityId::new(), "AlMg3 1.5 sheet")
+    .unwrap();
+    let stock_id = stock.id;
+    session
+        .commit(prepare_library(&session, 0, actor.clone(), &[material, stock]).unwrap())
+        .unwrap();
+    let flange = |edge, leg| Flange {
+        edge,
+        kind: FlangeKind::Bend { angle: angle(90.) },
+        direction: BendDirection::Down,
+        length: length(leg),
+        inside_radius: None,
+        start_inset: Some(length(14.)),
+        end_inset: Some(length(14.)),
+        relief: Some(Relief {
+            width: length(2.),
+            depth: length(4.),
+        }),
+    };
+    let compiler = Compiler {
+        omit_display: true,
+        ..Default::default()
+    };
+    for reverse in [false, true] {
+        let sheet = SheetDefinition {
+            output: BodyOutput {
+                body: EntityId::new(),
+            },
+            stock: stock_id,
+            base: SheetBase::Rectangle {
+                plane: PanelPlane::Xy,
+                origin: [length(0.), length(0.), length(0.)],
+                length: length(240.),
+                width: length(160.),
+            },
+            reverse,
+            inside_radius: None,
+            k_factor: None,
+            flanges: vec![flange(0, 50.), flange(2, 30.)],
+            cutouts: vec![
+                Cutout {
+                    face: CutoutFace::Base,
+                    shape: CutoutShape::Rectangle {
+                        center: [length(120.), length(70.)],
+                        size: [length(40.), length(22.)],
+                    },
+                },
+                Cutout {
+                    face: CutoutFace::Base,
+                    shape: CutoutShape::Circle {
+                        center: [length(23.), length(90.)],
+                        diameter: length(8.),
+                    },
+                },
+                Cutout {
+                    face: CutoutFace::Flange { index: 1 },
+                    shape: CutoutShape::Circle {
+                        center: [length(30.), length(15.)],
+                        diameter: length(4.2),
+                    },
+                },
+                Cutout {
+                    face: CutoutFace::Flange { index: 1 },
+                    shape: CutoutShape::Circle {
+                        center: [length(182.), length(15.)],
+                        diameter: length(4.2),
+                    },
+                },
+            ],
+            fasteners: vec![],
+        };
+        let request = SheetRequest::new("Relieved Control Desk panel", sheet);
+        let prepared =
+            model::prepare_sheet(&session, session.revision(), actor.clone(), &request).unwrap();
+        session.commit(prepared.prepared).unwrap();
+        let evaluate = |backend| {
+            compiler
+                .compile_sources_with_backend(
+                    session.document(),
+                    session.revision(),
+                    &[request.body],
+                    backend,
+                    None,
+                )
+                .unwrap_or_else(|error| panic!("{backend:?}: {error}"))
+        };
+        let rust = evaluate(GeometryBackend::Rust);
+        let solid = rust.solid(request.feature).unwrap();
+        assert!(solid.uses_rust_geometry());
+        assert_eq!(solid.solid_count().unwrap(), 1);
+        let pi = std::f64::consts::PI;
+        let web_area = 240. * 160. - 4. * 2. * 4. - 40. * 22. - 16. * pi;
+        let flange_span = 240. - 2. * 14.;
+        let flange_holes = 2. * pi * 2.1_f64.powi(2);
+        near(
+            solid.volume_mm3().unwrap(),
+            1.5 * (web_area - flange_holes)
+                + flange_span * (1.5 * 80. + pi * 0.5 * (3_f64.powi(2) - 1.5_f64.powi(2))),
+        );
+        let topology = solid
+            .topology_snapshot(request.feature, session.revision())
+            .unwrap();
+        for role in [
+            "sheet.web/cap.start",
+            "sheet.web/cap.end",
+            "sheet.flange.0.bend.0.a",
+            "sheet.flange.1.leg.b",
+        ] {
+            assert_eq!(
+                topology
+                    .elements
+                    .iter()
+                    .filter(|face| face.key.kind == TopologyKind::Face
+                        && face.origins.iter().any(|origin| origin.role == role))
+                    .count(),
+                1,
+                "{role}"
+            );
+        }
+        let receipt = solid
+            .manufacturing_mesh_with_receipt(Default::default())
+            .unwrap();
+        assert!(!receipt.mesh.indices.is_empty());
+        let developed = rust.unfold(session.document(), request.body).unwrap();
+        assert_eq!(developed.cut.loops.len(), 5);
+        assert_eq!(developed.cut.loops[0].edges.len(), 24);
+        near(
+            developed.area_mm2,
+            web_area - flange_holes + flange_span * (80. + pi * (1.5 + 0.44 * 1.5)),
+        );
+
+        #[cfg(feature = "occt")]
+        {
+            let native = evaluate(GeometryBackend::OpenCascade);
+            let expected = native.solid(request.feature).unwrap();
+            let bounds = |solid: &Solid| {
+                let b = solid.bounds().unwrap();
+                b.min.into_iter().chain(b.max)
+            };
+            let surface = |solid: &Solid| solid.faces().unwrap().iter().map(|f| f.area_mm2).sum();
+            let step = tempfile::tempdir().unwrap();
+            let path = step.path().join("relieved.step");
+            solid.write_step(&path).unwrap();
+            let imported = Solid::read_step(&path, GeometryPolicy::default()).unwrap();
+            for measured in [solid, &imported] {
+                assert_eq!(measured.solid_count().unwrap(), 1);
+                near(
+                    measured.volume_mm3().unwrap(),
+                    expected.volume_mm3().unwrap(),
+                );
+                near(surface(measured), surface(expected));
+                for (a, b) in bounds(measured).zip(bounds(expected)) {
+                    near(a, b);
+                }
+            }
+            let flat = native.unfold(session.document(), request.body).unwrap();
+            near(flat.area_mm2, developed.area_mm2);
+            for (a, b) in flat.size_mm.into_iter().zip(developed.size_mm) {
+                near(a, b);
+            }
         }
     }
 }
