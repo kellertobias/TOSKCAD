@@ -26,7 +26,7 @@ fn unsigned_normal(normal: Point) -> Point {
 // Use world geometry instead of STEP record numbers or the order of other
 // members. An update must not bind a face to a different shell just because
 // its shell was moved to the same list position.
-fn member_signature(readback: &Readback) -> ContentHash {
+fn member_signature(readback: &Readback, imported: &ImportSolid) -> ContentHash {
     let lines = readback.edges_mm.iter().map(|&points| {
         let mut points = points;
         points.sort_unstable_by(compare_points);
@@ -112,6 +112,29 @@ fn member_signature(readback: &Readback) -> ContentHash {
             bytes.extend(entry.to_le_bytes());
         }
     }
+    if let ImportProfile::HelicalTubeCut {
+        stock_radius_mm,
+        radius_mm,
+        pitch_mm,
+        start_height_mm,
+        start_angle_rad,
+        ..
+    } = imported.profile
+    {
+        // The groove's analytic rails and cap spline have no compact
+        // public edge records. Their reconstructed parameters identify
+        // the removed material even when aggregate dimensions coincide.
+        bytes.extend(b"helical-tube-cut");
+        for value in imported.u.into_iter().chain(imported.v).chain([
+            stock_radius_mm,
+            radius_mm,
+            pitch_mm,
+            start_height_mm,
+            start_angle_rad,
+        ]) {
+            bytes.extend(if value == 0. { 0. } else { value }.to_le_bytes());
+        }
+    }
     ContentHash::of(&bytes)
 }
 
@@ -123,7 +146,7 @@ pub(super) fn rebuild(
     let mut occurrences = BTreeMap::<ContentHash, u32>::new();
     let mut solids = Vec::with_capacity(members.len());
     for (readback, imported) in members {
-        let signature = member_signature(&readback);
+        let signature = member_signature(&readback, &imported);
         let occurrence = occurrences.entry(signature).or_default();
         let mut bytes = b"multicad.step-member/1".to_vec();
         bytes.extend(feature.uuid_bits().to_le_bytes());
@@ -159,21 +182,62 @@ impl Solid {
         readbacks: &[Readback],
         tolerance: f64,
     ) -> bool {
-        let mut bodies = Vec::with_capacity(readbacks.len());
-        self.step_spline_members(&mut bodies);
+        let mut leaves = Vec::with_capacity(readbacks.len());
+        self.step_leaf_members(&mut leaves);
+        let bodies: Vec<_> = leaves
+            .iter()
+            .map(|solid| solid.spline_sweep_body())
+            .collect();
         match_compound(topology, readbacks, tolerance, Some(&bodies))
     }
 
-    fn step_spline_members<'a>(
-        &'a self,
-        bodies: &mut Vec<Option<(&'a SplineSweepBody, PlaneFrame)>>,
-    ) {
+    /// Match a mixed STEP representation containing independently certified
+    /// helical tube cuts. The serialization can split an edge or add a seam,
+    /// so ordinals from the STEP loops are not source topology ordinals.
+    pub fn step_helical_members_match(
+        &self,
+        readbacks: &[(Readback, Option<ImportSolid>)],
+        tolerance: f64,
+    ) -> bool {
+        if !tolerance.is_finite() || tolerance <= 0. || readbacks.is_empty() {
+            return false;
+        }
+        let mut leaves = Vec::with_capacity(readbacks.len());
+        self.step_leaf_members(&mut leaves);
+        leaves.len() == readbacks.len()
+            && leaves
+                .into_iter()
+                .zip(readbacks)
+                .all(|(leaf, (readback, profile))| {
+                    if readback.solid_count != 1
+                        || verify_step_metrics(leaf, readback, tolerance).is_err()
+                    {
+                        return false;
+                    }
+                    if let Some(profile) = profile {
+                        return leaf.matches_helical_cut_profile(profile);
+                    }
+                    leaf.rust_topology().is_some_and(|topology| {
+                        topology.is_ok_and(|topology| {
+                            compare_topology(
+                                &topology.elements,
+                                readback,
+                                tolerance,
+                                false,
+                                leaf.spline_sweep_body(),
+                            )
+                        })
+                    })
+                })
+    }
+
+    fn step_leaf_members<'a>(&'a self, leaves: &mut Vec<&'a Solid>) {
         if let Some(compound) = self.rust_compound() {
             for member in compound.members() {
-                member.step_spline_members(bodies);
+                member.step_leaf_members(leaves);
             }
         } else {
-            bodies.push(self.spline_sweep_body());
+            leaves.push(self);
         }
     }
 }

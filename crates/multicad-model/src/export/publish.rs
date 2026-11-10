@@ -245,7 +245,6 @@ fn read_rust_step(
     if let Some(proof) = solid
         .verify_helical_step(source)
         .or_else(|| solid.verify_herringbone_step(source))
-        .or_else(|| solid.verify_helical_tube_cut_step(source))
     {
         let volume = proof.map_err(readback_error)?;
         // The verified boundary gives the source bounds within its uniform
@@ -253,8 +252,14 @@ fn read_rust_step(
         let bounds = solid.bounds().map_err(io)?;
         return Ok((1, volume, [bounds.min, bounds.max]));
     }
-    let members = step_read::read_analytic_compound(source, tolerance).map_err(readback_error)?;
-    if !solid.step_readback_matches(topology, &members, tolerance * 2.) {
+    let decoded = step_read::read_analytic_compound_with_helical_cuts(source, tolerance)
+        .map_err(readback_error)?;
+    let has_helical_cuts = decoded.iter().any(|(_, profile)| profile.is_some());
+    let certified = !has_helical_cuts || solid.step_helical_members_match(&decoded, tolerance * 2.);
+    let members: Vec<_> = decoded.into_iter().map(|(readback, _)| readback).collect();
+    if !certified
+        || (!has_helical_cuts && !solid.step_readback_matches(topology, &members, tolerance * 2.))
+    {
         return Err(invalid(
             "STEP readback differs from the source member topology".into(),
         ));

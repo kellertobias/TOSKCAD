@@ -373,6 +373,135 @@ fn rust_stdio_round_trips_helical_tube_cut_step_after_reopen() {
 }
 
 #[test]
+fn rust_stdio_round_trips_a_mixed_helical_tube_cut_compound() {
+    use multicad_kernel::rust_kernel::{
+        Rational,
+        helical_tube_cut::{Cut, Spec},
+        step::Writer,
+        step_read::{ImportProfile, read_import_compound},
+    };
+
+    let directory = tempfile::tempdir().unwrap();
+    let source = directory.path().join("mixed.step");
+    let project = directory.path().join("mixed.tcd");
+    let output = directory.path().join("mixed-reexported.step");
+    let cut = Cut::new(
+        Spec {
+            stock_radius_mm: 8.,
+            stock_height_mm: 30.,
+            tube_radius_mm: 0.6,
+            pitch_mm: 2.,
+            path_height_mm: 15.,
+            start_height_mm: 16.2,
+            start_angle_rad: 0.,
+        },
+        1e-7,
+    )
+    .unwrap();
+    let u = [1., 0., 0.];
+    let v = [0., 1., 0.];
+    let mut writer = Writer::new();
+    writer
+        .append_helical_tube_cut(cut, [17., 4., -12.], [0.8, 0., -0.6], v, 1e-7)
+        .unwrap();
+    writer
+        .append_box(
+            [2, 3, 4].map(|n| Rational::new(n, 1).unwrap()),
+            [70., -20., 5.],
+            u,
+            v,
+        )
+        .unwrap();
+    let step = writer.finish().unwrap();
+    std::fs::write(&source, &step).unwrap();
+
+    let volumes = [5841.816902505, 24.];
+    let total_volume = volumes.into_iter().sum();
+    let check_members = |step: &str| {
+        let decoded = read_import_compound(step, 1e-7).unwrap();
+        let [helical, ordinary] = decoded.as_slice() else {
+            panic!("expected two independent STEP members");
+        };
+        assert!(matches!(
+            helical.1.profile,
+            ImportProfile::HelicalTubeCut { .. }
+        ));
+        assert!(!matches!(
+            ordinary.1.profile,
+            ImportProfile::HelicalTubeCut { .. }
+        ));
+        assert_eq!([helical.0.face_count, ordinary.0.face_count], [5, 6]);
+        assert_eq!([helical.0.solid_count, ordinary.0.solid_count], [1, 1]);
+        close(helical.0.volume_mm3, volumes[0]);
+        close(ordinary.0.volume_mm3, volumes[1]);
+        assert_eq!(ordinary.0.bounds_mm, [[70., -20., 5.], [72., -17., 9.]]);
+        [helical.0.bounds_mm, ordinary.0.bounds_mm]
+    };
+    let original_bounds = check_members(&step);
+    let [helical, ordinary] = original_bounds;
+    let lower: [f64; 3] = std::array::from_fn(|i| helical[0][i].min(ordinary[0][i]));
+    let upper: [f64; 3] = std::array::from_fn(|i| helical[1][i].max(ordinary[1][i]));
+
+    let mut arguments = vec![
+        "--project",
+        project.to_str().unwrap(),
+        "--export-dir",
+        directory.path().to_str().unwrap(),
+    ];
+    if cfg!(feature = "occt") {
+        arguments.push("--rust-model");
+    }
+    let mut importer = Client::start(&arguments);
+    let imported = importer.ok(
+        "import_step",
+        json!({"expected_revision":0,"file_name":"mixed.step"}),
+    );
+    let [part] = imported["parts"].as_array().unwrap().as_slice() else {
+        panic!("expected one part containing both STEP solids: {imported}");
+    };
+    let model = importer.ok("evaluate_model", json!({}));
+    let [compound] = model["parts"].as_array().unwrap().as_slice() else {
+        panic!("expected one modeled compound: {model}");
+    };
+    assert_eq!(compound["part"], *part);
+    assert_eq!(compound["solid_count"], 2);
+    close(compound["volume_mm3"].as_f64().unwrap(), total_volume);
+    for (key, expected) in [("min", lower), ("max", upper)] {
+        for (axis, expected) in expected.into_iter().enumerate() {
+            close(compound["bounds_mm"][key][axis].as_f64().unwrap(), expected);
+        }
+    }
+    importer.ok("save_project", json!({"expected_revision":1}));
+    drop(importer);
+    std::fs::remove_file(&source).unwrap();
+
+    let mut reopened = Client::start(&arguments);
+    assert_eq!(reopened.revision(), 0);
+    assert_eq!(
+        reopened.ok("evaluate_model", json!({}))["parts"],
+        model["parts"]
+    );
+    let receipt = reopened.ok(
+        "export_step",
+        json!({"part":part,"file_name":"mixed-reexported.step"}),
+    );
+    close(receipt["model_volume_mm3"].as_f64().unwrap(), total_volume);
+    close(
+        receipt["readback_volume_mm3"].as_f64().unwrap(),
+        total_volume,
+    );
+    let exported_bounds = check_members(&std::fs::read_to_string(output).unwrap());
+    for (actual, expected) in exported_bounds
+        .into_iter()
+        .flatten()
+        .flatten()
+        .zip(original_bounds.into_iter().flatten().flatten())
+    {
+        close(actual, expected);
+    }
+}
+
+#[test]
 fn rust_stdio_extrude_cut_keeps_an_imported_triangle_after_reopen() {
     let directory = tempfile::tempdir().unwrap();
     let project = directory.path().join("triangular-cut.tcd");

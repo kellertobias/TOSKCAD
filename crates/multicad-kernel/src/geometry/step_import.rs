@@ -850,12 +850,10 @@ fn same_segments(
     })
 }
 
-fn verify(
+fn verify_step_metrics(
     solid: &Solid,
     readback: &Readback,
-    feature: EntityId,
     tolerance: f64,
-    orthogonal: bool,
 ) -> Result<(), GeometryError> {
     let bounds = solid.bounds()?;
     solid.policy.point(bounds.min)?;
@@ -871,6 +869,17 @@ fn verify(
             "Rebuilt STEP solid differs from the imported bounds or volume",
         ));
     }
+    Ok(())
+}
+
+fn verify(
+    solid: &Solid,
+    readback: &Readback,
+    feature: EntityId,
+    tolerance: f64,
+    orthogonal: bool,
+) -> Result<(), GeometryError> {
+    verify_step_metrics(solid, readback, tolerance)?;
     if solid.helical_tube_cut_body().is_some() {
         // ImportProfile::HelicalTubeCut is produced only after the reader
         // verifies the oriented loops, every edge and the cavity support.

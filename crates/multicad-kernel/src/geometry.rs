@@ -2038,12 +2038,11 @@ impl Solid {
                 standalone && body.supports_step(*frame, self.policy)
             }
             SolidBody::HelicalTubeCut(body, frame) => {
-                standalone
-                    && multicad_rust_kernel::step::supports_helical_tube_cut(
-                        body.cut,
-                        frame.origin,
-                        self.policy.linear_tolerance_mm,
-                    )
+                multicad_rust_kernel::step::supports_helical_tube_cut(
+                    body.cut,
+                    frame.origin,
+                    self.policy.linear_tolerance_mm,
+                )
             }
             SolidBody::CosmeticFastener(..) => false,
             SolidBody::WarpedUnion(body, _) => {

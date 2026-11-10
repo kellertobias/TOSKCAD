@@ -195,6 +195,69 @@ fn step_readback_preserves_cut_material_and_rejects_the_wrong_phase() {
 }
 
 #[test]
+fn mixed_step_publication_matches_the_source_geometry_of_each_member() {
+    use multicad_kernel::rust_kernel::step_read::read_analytic_compound_with_helical_cuts;
+
+    let (_, stock) = stock();
+    let policy = GeometryPolicy::default();
+    let make_cut = |phase| {
+        stock
+            .rust_cut_helical_tube(
+                HelicalTube {
+                    start_angle_rad: phase,
+                    ..tube(16.2)
+                },
+                EntityId::new(),
+                policy,
+            )
+            .unwrap()
+    };
+    let first = make_cut(0.);
+    let alternate = make_cut(PI);
+    let other = Solid::rust_box(
+        EntityId::new().uuid_bits(),
+        [2, 3, 4].map(|n| Rational::new(n, 1).unwrap()),
+        PlaneFrame {
+            origin: [40., 0., 0.],
+            ..Default::default()
+        },
+        policy,
+    )
+    .unwrap();
+    let feature = EntityId::new();
+    let placed = make_cut(PI)
+        .transformed(RigidTransform {
+            translation_mm: [80., 0., 0.],
+            ..Default::default()
+        })
+        .unwrap();
+    let nested = Solid::compound_named(&[&first, &other], EntityId::new(), policy).unwrap();
+    let compound = Solid::compound_named(&[&nested, &placed], feature, policy).unwrap();
+    assert!(compound.supports_step_export());
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("mixed.step");
+    compound.write_step(&path).unwrap();
+    let text = std::fs::read_to_string(&path).unwrap();
+    let tolerance = policy.linear_tolerance_mm;
+    let mut readbacks = read_analytic_compound_with_helical_cuts(&text, tolerance).unwrap();
+    assert!(compound.step_helical_members_match(&readbacks, tolerance * 2.));
+    #[cfg(feature = "occt")]
+    {
+        let native = Solid::read_step(&path, policy).unwrap();
+        assert_eq!(native.solid_count().unwrap(), 3);
+        assert!((native.volume_mm3().unwrap() - compound.volume_mm3().unwrap()).abs() < 1e-6);
+    }
+    readbacks.swap(0, 2);
+    assert!(!compound.step_helical_members_match(&readbacks, tolerance * 2.));
+    readbacks.swap(0, 2);
+    let wrong = Solid::compound_named(&[&alternate, &other, &placed], feature, policy).unwrap();
+    assert_eq!(compound.volume_mm3().unwrap(), wrong.volume_mm3().unwrap());
+    assert!(!wrong.step_helical_members_match(&readbacks, tolerance * 2.));
+    readbacks[0].1 = None;
+    assert!(!compound.step_helical_members_match(&readbacks, tolerance * 2.));
+}
+
+#[test]
 fn a_tube_that_never_exits_preserves_the_original_stock() {
     let (_, stock) = stock();
     let Err(error) =
