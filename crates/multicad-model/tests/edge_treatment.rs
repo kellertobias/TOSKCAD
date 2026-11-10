@@ -487,3 +487,69 @@ fn sided_distance_and_bound_angle_rebuild_the_same_explicit_edge() {
         vec![edge, face]
     );
 }
+
+#[test]
+fn preserved_bevel_ancestry_survives_two_exact_cuts() {
+    use multicad_model::GeometryBackend;
+    let (mut session, input, edge) = fixture();
+    let request = EdgeTreatmentRequest::new(
+        input.clone(),
+        EdgeTreatmentParameters {
+            profile: EdgeTreatmentProfile::Chamfer,
+            size: length(2.),
+        },
+        vec![edge.clone()],
+    );
+    let prepared =
+        model::prepare_edge_treatment(&session, session.revision(), actor(), &request).unwrap();
+    session.commit(prepared.prepared).unwrap();
+    let mut target = BodyInput {
+        producer: request.feature,
+        ..input
+    };
+    for x in [5., 9.] {
+        let tool = PrimitiveRequest::new(
+            "Cutting box",
+            PrimitiveParameters::Box {
+                size: [length(2.), length(2.), length(2.)],
+                frame: model::PrimitiveFrame {
+                    origin: [length(x), length(x), length(8.)],
+                    ..Default::default()
+                },
+            },
+        );
+        let prepared =
+            model::prepare_primitive(&session, session.revision(), actor(), &tool).unwrap();
+        session.commit(prepared.prepared).unwrap();
+        let cut = model::BooleanRequest::new(
+            model::Operation::Cut,
+            target.clone(),
+            vec![BodyInput {
+                body: tool.body,
+                producer: tool.feature,
+            }],
+        );
+        let prepared = model::prepare_boolean(&session, session.revision(), actor(), &cut).unwrap();
+        session.commit(prepared.prepared).unwrap();
+        target.producer = cut.feature;
+    }
+    let compiled = Compiler::default()
+        .compile_with_backend(
+            session.document(),
+            session.revision(),
+            GeometryBackend::Rust,
+            None,
+        )
+        .unwrap();
+    let generated = Origin {
+        source: request.feature,
+        role: format!("edge/{}", edge.id),
+    };
+    let shape = &compiled.snapshot().shapes[&target.producer];
+    near(shape.volume_mm3, 5964.);
+    assert!(
+        shape.topology.elements.iter().any(|face| {
+            face.key.kind == TopologyKind::Face && face.origins.contains(&generated)
+        })
+    );
+}
