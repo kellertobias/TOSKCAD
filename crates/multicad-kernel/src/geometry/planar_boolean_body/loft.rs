@@ -194,7 +194,7 @@ impl Solid {
             geometry,
             feature,
             policy,
-            Some(Material::RuledLoft(material)),
+            Some(Material::LabeledCells(material)),
             placement,
             |_, face, _| {
                 let normal = face.normal;
@@ -237,26 +237,6 @@ impl Solid {
                 (origins, anchors)
             },
         )
-    }
-}
-
-impl PlanarBooleanBody {
-    /// The loft certificate preserves each source slab and side ordinal,
-    /// including consecutive slabs with coplanar exterior faces.
-    pub(super) fn loft_material_faces(
-        &self,
-        topology: &TopologySnapshot,
-        piece_count: usize,
-    ) -> Vec<Vec<Option<usize>>> {
-        let faces_per_piece = (self.faces.len() - 2) / piece_count + 2;
-        let mut mapped = vec![vec![None; faces_per_piece]; piece_count];
-        for (index, face) in topology.elements.iter().enumerate() {
-            if face.key.kind == TopologyKind::Face {
-                let raw = &self.geometry.faces()[face.key.ordinal as usize];
-                mapped[raw.source][raw.source_face] = Some(index);
-            }
-        }
-        mapped
     }
 }
 

@@ -14,6 +14,7 @@ use std::{
 
 mod chamfer;
 mod loft;
+mod miter_sweep;
 mod scale;
 
 type Point = [f64; 3];
@@ -32,7 +33,7 @@ pub(crate) struct PlanarBooleanBody {
 
 enum Material {
     Positive(Vec<ConvexPiece>),
-    RuledLoft(Vec<ConvexPiece>),
+    LabeledCells(Vec<ConvexPiece>),
     Cut(Box<CutRecipe>),
 }
 
@@ -289,14 +290,14 @@ impl Solid {
         if let Some((body, frame)) = self.planar_boolean_body() {
             let (pieces, named) = match body.material.as_ref()? {
                 Material::Positive(pieces) => (pieces, false),
-                Material::RuledLoft(pieces) => (pieces, true),
+                Material::LabeledCells(pieces) => (pieces, true),
                 Material::Cut(_) => return None,
             };
             let placed = PlanarBooleanBody::placed_pieces(pieces, frame, tolerance).ok()?;
             return Some(if named {
                 placed
                     .into_iter()
-                    .zip(body.loft_material_faces(topology, pieces.len()))
+                    .zip(body.labeled_cell_faces(topology, pieces.len()))
                     .collect()
             } else {
                 placed
@@ -598,7 +599,7 @@ impl PlanarBooleanBody {
         tolerance: f64,
     ) -> Result<Vec<ConvexPiece>, GeometryError> {
         let pieces = match self.material.as_ref().ok_or_else(planar_unsupported)? {
-            Material::Positive(pieces) | Material::RuledLoft(pieces) => pieces,
+            Material::Positive(pieces) | Material::LabeledCells(pieces) => pieces,
             Material::Cut(recipe) => recipe.certify(&self.geometry, tolerance)?.pieces(),
         };
         Self::placed_pieces(pieces, frame, tolerance)
@@ -637,7 +638,8 @@ impl PlanarBooleanBody {
             policy,
             material,
             PlaneFrame::default(),
-            |i, raw, point| {
+            |i, raw, vertices| {
+                let point = vertices[raw.vertices[0]];
                 let mut origins = vec![Origin {
                     source: feature,
                     role: format!("planar-boolean.face.{i}"),
@@ -679,7 +681,7 @@ impl PlanarBooleanBody {
         policy: GeometryPolicy,
         material: Option<Material>,
         placement: PlaneFrame,
-        mut labels: impl FnMut(usize, &PureFace, Point) -> FaceLabels,
+        mut labels: impl FnMut(usize, &PureFace, &[Point]) -> FaceLabels,
     ) -> Result<Solid, GeometryError> {
         if feature.is_nil() {
             return Err(input("Planar Boolean needs a source feature"));
@@ -694,7 +696,7 @@ impl PlanarBooleanBody {
                 .map(|&v| geometry.vertices()[v])
                 .collect();
             let (area_mm2, center_mm) = face_metrics(&points, raw.normal);
-            let (origins, anchors) = labels(i, raw, points[0]);
+            let (origins, anchors) = labels(i, raw, geometry.vertices());
             let uses = raw
                 .vertices
                 .iter()
@@ -749,6 +751,24 @@ impl PlanarBooleanBody {
 
     pub(super) fn volume_mm3(&self) -> f64 {
         self.geometry.volume_mm3()
+    }
+
+    /// Map source faces of labeled cells onto the exterior. The shared caps
+    /// have no exterior face and retain their `None` entries.
+    fn labeled_cell_faces(
+        &self,
+        topology: &TopologySnapshot,
+        piece_count: usize,
+    ) -> Vec<Vec<Option<usize>>> {
+        let faces_per_piece = (self.faces.len() - 2) / piece_count + 2;
+        let mut mapped = vec![vec![None; faces_per_piece]; piece_count];
+        for (index, face) in topology.elements.iter().enumerate() {
+            if face.key.kind == TopologyKind::Face {
+                let raw = &self.geometry.faces()[face.key.ordinal as usize];
+                mapped[raw.source][raw.source_face] = Some(index);
+            }
+        }
+        mapped
     }
 
     pub(super) fn solid_count(&self) -> u32 {

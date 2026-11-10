@@ -18,10 +18,11 @@ fn failure(kind: GeometryErrorKind, message: impl Into<String>) -> GeometryError
     }
 }
 fn origins_valid(feature: EntityId, origins: &[Origin]) -> Result<(), GeometryError> {
+    let authored: BTreeSet<_> = origins.iter().collect();
     if feature.is_nil()
         || origins.is_empty()
         || origins.len() > 1024
-        || origins.iter().collect::<BTreeSet<_>>().len() != origins.len()
+        || authored.len() != origins.len()
     {
         return Err(failure(
             GeometryErrorKind::Input,
@@ -35,16 +36,20 @@ fn origins_valid(feature: EntityId, origins: &[Origin]) -> Result<(), GeometryEr
                 "Authored curve origin collides with a generated cap identity",
             ));
         }
+        let side = Origin {
+            source: feature,
+            role: format!("side/{}/{}", origin.source, origin.role),
+        };
+        if authored.contains(&side) {
+            return Err(failure(
+                GeometryErrorKind::Input,
+                "Authored curve origin collides with a generated side identity",
+            ));
+        }
         GeometryIntent {
             id: feature,
             kind: TopologyKind::Face,
-            origins: BTreeSet::from([
-                origin.clone(),
-                Origin {
-                    source: feature,
-                    role: format!("side/{}/{}", origin.source, origin.role),
-                },
-            ]),
+            origins: BTreeSet::from([origin.clone(), side]),
             boundary: None,
             attachment: None,
         }
@@ -85,6 +90,37 @@ fn sweep_origins(
 }
 
 impl Solid {
+    /// Sweep a closed profile along an authored straight or mitered polyline.
+    pub fn rust_sweep_polyline_named(
+        profile: &CurvedProfile,
+        path_mm: &[[f64; 3]],
+        feature: EntityId,
+        profile_origins: &[Origin],
+        path_origins: &[Origin],
+        policy: GeometryPolicy,
+    ) -> Result<Self, GeometryError> {
+        if path_mm.len() == 2 {
+            return Self::rust_sweep_straight_named(
+                profile,
+                path_mm,
+                feature,
+                profile_origins,
+                path_origins,
+                policy,
+            );
+        }
+        policy.validate()?;
+        sweep_origins(profile, path_mm, feature, profile_origins, path_origins)?;
+        Self::rust_sweep_miter_named(
+            profile,
+            path_mm,
+            feature,
+            profile_origins,
+            path_origins,
+            policy,
+        )
+    }
+
     /// A straight path has a constant corrected Frenet frame. The authored
     /// section translates along that segment with no relocation or rotation.
     pub fn rust_sweep_straight_named(

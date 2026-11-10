@@ -218,6 +218,165 @@ fn sweep_rebuilds_solved_profile_and_ordered_path_without_display_geometry() {
     assert_eq!(source.profiles, request.profiles);
     assert_eq!(source.path, request.path);
 }
+
+#[test]
+fn mitered_sweep_preserves_path_faces_after_edit_reopen_and_step() {
+    use multicad_core::references::{
+        self, AnalyticGeometry, GeometryIntent, Origin, Resolution, TopologyKind,
+    };
+    use multicad_kernel::Solid;
+    #[cfg(feature = "occt")]
+    use multicad_model::{Compiler, GeometryBackend};
+
+    let (mut session, _) = fixture();
+    let (sketch, section) = add_sketch(&mut session, Datum::Xy, "Sweep section", 0., |s, _| {
+        s.add_rectangle([-2., -1.], [2., 1.]).unwrap();
+    });
+    let profile = ProfileSource {
+        sketch,
+        region: sketch_regions::extract(&section).regions[0].intent(),
+    };
+    let mut curves = vec![];
+    let (sketch, _) = add_sketch(&mut session, Datum::Xz, "Miter path", 0., |s, session| {
+        let start = s.add_point([0., 0.]);
+        let corner = s.add_point([0., 40.]);
+        let end = s.add_point([20., 40.]);
+        let first = s.add_line(start, corner);
+        let second = s.add_line(corner, end);
+        curves.extend([first, second]);
+        s.add_constraint(ConstraintKind::Fix { point: start });
+        s.add_constraint(ConstraintKind::Vertical { line: first });
+        s.add_constraint(ConstraintKind::Horizontal { line: second });
+        s.add_constraint(ConstraintKind::Length {
+            line: first,
+            dimension: bound(session, "pitch", "mm"),
+        });
+        s.add_constraint(ConstraintKind::Length {
+            line: second,
+            dimension: length(20.),
+        });
+    });
+    let path = SketchPathSource { sketch, curves };
+    let request = AdvancedRequest::new_body(
+        "Mitered sweep",
+        AdvancedParameters::Sweep(Default::default()),
+        vec![profile],
+        Some(path.clone()),
+    );
+    let preview = commit(&mut session, &request);
+    let check_geometry = |solid: &Solid, bend_z: f64| {
+        assert_eq!(solid.solid_count().unwrap(), 1);
+        near(solid.volume_mm3().unwrap(), 8. * (bend_z + 20.));
+        near(
+            solid
+                .faces()
+                .unwrap()
+                .iter()
+                .map(|face| face.area_mm2)
+                .sum(),
+            16. + 12. * (bend_z + 20.),
+        );
+        let bounds = solid.bounds().unwrap();
+        for (actual, expected) in
+            bounds
+                .min
+                .into_iter()
+                .chain(bounds.max)
+                .zip([-2., -1., 0., 20., 1., bend_z + 2.])
+        {
+            near(actual, expected);
+        }
+    };
+    check_geometry(preview.solid(request.body).unwrap(), 40.);
+    let initial = check_saved_rust_profile(&mut session, &request, 480.);
+    check_geometry(initial.solid(request.body).unwrap(), 40.);
+    let topology = &initial.snapshot().shapes[&request.feature].topology;
+    let path_origins = path.curves.iter().map(|&source| Origin {
+        source,
+        role: "path.edge".into(),
+    });
+    let side_intents = path_origins
+        .map(|origin| {
+            let sides = topology
+                .elements
+                .iter()
+                .filter(|face| {
+                    face.key.kind == TopologyKind::Face && face.origins.contains(&origin)
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(sides.len(), 4, "each leg owns its four exterior walls");
+            sides
+                .into_iter()
+                .map(|side| GeometryIntent::capture(topology, side.key).unwrap())
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    let cap_intents = ["cap.start", "cap.end"].map(|role| {
+        let face = topology
+            .elements
+            .iter()
+            .find(|face| {
+                face.key.kind == TopologyKind::Face
+                    && face.origins.contains(&Origin {
+                        source: request.feature,
+                        role: role.into(),
+                    })
+            })
+            .unwrap();
+        GeometryIntent::capture(topology, face.key).unwrap()
+    });
+
+    apply_parameter(&mut session, "pitch", "55");
+    let reopened = check_saved_rust_profile(&mut session, &request, 600.);
+    let solid = reopened.solid(request.body).unwrap();
+    check_geometry(solid, 55.);
+    #[cfg(feature = "occt")]
+    {
+        let native = Compiler::default()
+            .compile_sources_with_backend(
+                session.document(),
+                session.revision(),
+                &[request.body],
+                GeometryBackend::OpenCascade,
+                None,
+            )
+            .unwrap();
+        check_geometry(native.solid(request.body).unwrap(), 55.);
+        let directory = tempfile::tempdir().unwrap();
+        let step = directory.path().join("mitered-sweep.step");
+        solid.write_step(&step).unwrap();
+        check_geometry(&Solid::read_step(&step, Default::default()).unwrap(), 55.);
+    }
+    let topology = &reopened.snapshot().shapes[&request.feature].topology;
+    let resolve = |intent| match references::resolve(intent, topology, topology.revision) {
+        Resolution::Resolved {
+            key,
+            geometry: Some(AnalyticGeometry::Plane { frame }),
+            ..
+        } => (key, frame),
+        other => panic!("miter sweep face did not resolve after reopening: {other:?}"),
+    };
+    let sides: std::collections::BTreeSet<_> = side_intents
+        .iter()
+        .flatten()
+        .map(|intent| resolve(intent).0)
+        .collect();
+    assert_eq!(sides.len(), 8);
+    let (_, start) = resolve(&cap_intents[0]);
+    let (_, end) = resolve(&cap_intents[1]);
+    near(start.origin_mm[2], 0.);
+    near(start.normal()[2], -1.);
+    near(end.origin_mm[0], 20.);
+    near(end.normal()[0], 1.);
+    assert_eq!(
+        model::read_advanced(session.document(), request.feature)
+            .unwrap()
+            .0
+            .path,
+        Some(path),
+    );
+}
+
 #[test]
 fn an_existing_sweep_rejects_a_path_changed_to_construction_without_source_mutation() {
     let (mut session, _) = fixture();

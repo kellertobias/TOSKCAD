@@ -55,7 +55,7 @@ pub(crate) fn build(
             .as_ref()
             .ok_or_else(|| error(Some(feature), "Sweep path is unavailable"))?;
         let sweep = match inputs.backend {
-            GeometryBackend::Rust => Solid::rust_sweep_straight_named,
+            GeometryBackend::Rust => Solid::rust_sweep_polyline_named,
             GeometryBackend::OpenCascade => Solid::sweep_polyline_named,
         };
         return sweep(
