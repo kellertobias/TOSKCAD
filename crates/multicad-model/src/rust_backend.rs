@@ -13,10 +13,10 @@ use multicad_core::{
 use multicad_kernel::{
     CurvedEdge2d, CurvedProfile, GeometryPolicy, PlaneFrame, RigidTransform, Solid,
     rust_kernel::{
-        Circle, Rational,
+        Circle, Error as ExactError, Rational,
         cylinder::AxialCylinder,
         parse_length_mm,
-        polygon::{PolygonPrism, signed_area},
+        polygon::{PolygonError, PolygonPrism, signed_area},
         prism::Prism,
     },
 };
@@ -331,11 +331,30 @@ fn straight_prism(
     }
     reversed.resize(origins.len(), false);
     side_origins.extend(circle_origins);
-    let polygon = PolygonPrism::with_circular_holes(rings, circles, sweep.height)
-        .map_err(|e| fail(format!("Rust polygon extrusion failed: {e:?}")))?;
     let mut frame = profile.frame;
     let normal = frame.normal();
     frame.origin = std::array::from_fn(|i| frame.origin[i] + normal[i] * sweep.start_offset);
+    let straight = circles.is_empty();
+    let polygon = match PolygonPrism::with_circular_holes(rings, circles, sweep.height) {
+        Ok(polygon) => polygon,
+        Err(PolygonError::Arithmetic(ExactError::OutOfRange)) if straight => {
+            // Derived sketch coordinates can exhaust rational intermediate
+            // products even when their planar geometry is well-conditioned.
+            let displacement = sweep.height.as_f64() * if sweep.reverse { -1. } else { 1. };
+            let mut profile = profile.clone();
+            profile.frame = frame;
+            return Solid::rust_extrude_linear_named(
+                &profile,
+                normal.map(|value| value * displacement),
+                0.,
+                id,
+                origins,
+                policy,
+            )
+            .map_err(|cause| error(Some(id), cause));
+        }
+        Err(cause) => return Err(fail(format!("Rust polygon extrusion failed: {cause:?}"))),
+    };
     Solid::from_polygon_prism_sweep(
         polygon,
         frame,

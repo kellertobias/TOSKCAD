@@ -11,17 +11,20 @@ use multicad_kernel::{
 use multicad_model::{Compiler, GeometryBackend};
 use std::f64::consts::FRAC_PI_2;
 
-#[test]
-fn saved_toolcase_floor_profiles_rebuild_and_round_trip_with_analytic_quarter_arcs() {
-    let mut bytes = include_bytes!("../../../examples/toolcase.tcd").as_slice();
-    let document = project_file::read(
-        &mut bytes,
+fn toolcase() -> multicad_core::document::Document {
+    project_file::read(
+        &mut include_bytes!("../../../examples/toolcase.tcd").as_slice(),
         Default::default(),
         &project_file::supported_capabilities(),
     )
     .unwrap()
     .project
-    .document;
+    .document
+}
+
+#[test]
+fn saved_toolcase_floor_profiles_rebuild_and_round_trip_with_analytic_quarter_arcs() {
+    let document = toolcase();
     let features = [
         "015a44ba-56d1-477e-aaa0-c9016233401a",
         "16cc5d02-e3cc-472f-a2bd-9a1334340d67",
@@ -128,6 +131,33 @@ fn saved_toolcase_floor_profiles_rebuild_and_round_trip_with_analytic_quarter_ar
         ] {
             assert_eq!(readback.solid_count().unwrap(), 1);
             near(readback.volume_mm3().unwrap(), expected_volume);
+        }
+    }
+}
+
+#[test]
+fn saved_toolcase_ribs_rebuild_with_bounded_straight_sweeps() {
+    let document = toolcase();
+    let features = document
+        .entities()
+        .filter(|entity| entity.name == "Small drawer sliding rib extrusion")
+        .map(|entity| entity.id)
+        .collect::<Vec<_>>();
+    assert!(!features.is_empty());
+    let [rust, native] = [GeometryBackend::Rust, GeometryBackend::OpenCascade].map(|backend| {
+        Compiler::default()
+            .compile_sources_with_backend(&document, 0, &features, backend, None)
+            .unwrap_or_else(|cause| panic!("{backend:?}: {cause}"))
+    });
+    for feature in features {
+        let a = rust.solid(feature).unwrap();
+        let b = native.solid(feature).unwrap();
+        assert_eq!(a.solid_count().unwrap(), 1);
+        assert!((a.volume_mm3().unwrap() - b.volume_mm3().unwrap()).abs() < 1e-6);
+        let (a, b) = (a.bounds().unwrap(), b.bounds().unwrap());
+        for axis in 0..3 {
+            assert!((a.min[axis] - b.min[axis]).abs() < 1e-6);
+            assert!((a.max[axis] - b.max[axis]).abs() < 1e-6);
         }
     }
 }
