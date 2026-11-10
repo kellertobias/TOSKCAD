@@ -844,6 +844,19 @@ mod tests {
         };
         projection.hidden_lines = true;
         let id = projection.id;
+        let mut section = projection.clone();
+        section.id = EntityId::new();
+        section.name = "Sphere depth section".into();
+        section.kind = drawings::ViewKind::Section {
+            offset_mm: 12.,
+            range: drawings::SectionRange::Depth { depth_mm: 9. },
+            window: drawings::SectionWindow {
+                u_mm: Some([6.5, 14.5]),
+                v_mm: Some([-3.5, 4.5]),
+            },
+        };
+        let section_id = section.id;
+        page.views.push(section);
         let (_, prepared) = drawings::prepare_create(
             &session,
             session.revision(),
@@ -874,6 +887,18 @@ mod tests {
             && matches!(v.curve, VectorCurve::Line { a,b }
                 if [a,b].into_iter().all(|p| p[1].abs() < 1e-7)
                     && (a[0].min(b[0])-6.).abs() < 1e-6 && (a[0].max(b[0])-14.).abs() < 1e-6)));
+        let ViewEvaluation::Ready { vectors, .. } = &result.views[&section_id] else {
+            panic!("{:?}", result.views[&section_id]);
+        };
+        assert!(vectors.iter().any(|v| v.source == sphere.body
+            && v.role == VectorRole::Section
+            && matches!(v.curve, VectorCurve::Ellipse { major_mm, .. }
+                if (major_mm - 15_f64.sqrt()).abs() < 1e-8)));
+        assert!(
+            vectors
+                .iter()
+                .any(|v| v.source == stock && v.role == VectorRole::Hidden)
+        );
     }
 
     #[test]
