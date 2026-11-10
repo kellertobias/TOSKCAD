@@ -5,6 +5,11 @@ use super::*;
 use crate::sheet_forming::section;
 use multicad_core::references::ReferenceFrame;
 
+mod piercing;
+
+const WEB_A: &str = "sheet.web/cap.start";
+const WEB_B: &str = "sheet.web/cap.end";
+
 pub(super) fn build(
     layout: &mut SheetLayout,
     section_width_mm: f64,
@@ -28,9 +33,6 @@ pub(super) fn build(
         return Err(
             "Rust formed sheet requires two opposite full-length bends without reliefs".into(),
         );
-    }
-    if !layout.cutouts.is_empty() {
-        return Err("Rust formed sheet currently requires an unpierced channel".into());
     }
     let [u, v] = first.outward.map(|c| -c);
     let across = [u, v];
@@ -60,7 +62,7 @@ pub(super) fn build(
             a: [0., t],
             b: [section_width_mm, t],
         },
-        "sheet.web/cap.end".into(),
+        WEB_B.into(),
     ));
     boundary.extend(
         right
@@ -76,7 +78,7 @@ pub(super) fn build(
             a: [section_width_mm, 0.],
             b: [0., 0.],
         },
-        "sheet.web/cap.start".into(),
+        WEB_A.into(),
     ));
     let (outer, origins): (Vec<_>, Vec<_>) = boundary
         .into_iter()
@@ -130,6 +132,7 @@ pub(super) fn build(
         },
         loops: vec![outer],
     };
+    let (solid, contours) = piercing::apply(layout, solid, contours, policy)?;
     contours.validate(policy.linear_tolerance_mm)?;
     layout.developed = Some(contours);
     Ok(solid)

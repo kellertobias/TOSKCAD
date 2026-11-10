@@ -28,6 +28,7 @@ use cosmetic_fastener_body::CosmeticFastenerBody;
 use helical_body::HelicalBody;
 use linear_body::LinearBody;
 use normal_sweep_body::NormalSweepBody;
+pub use normal_sweep_body::SweepOpening;
 use orthogonal_body::OrthogonalBody;
 pub use orthogonal_body::slots::RoundedSlotTool;
 use revolution_body::RevolutionBody;
@@ -1814,8 +1815,8 @@ impl Solid {
             | SolidBody::AxialCylinder(..)
             | SolidBody::Annulus(..)
             | SolidBody::Linear(..)
-            | SolidBody::NormalSweep(..)
             | SolidBody::RoundedSlot(..) => true,
+            SolidBody::NormalSweep(body, _) => body.supports_step(),
             SolidBody::Prism(prism, _) => prism.rounded_end().is_none(),
             SolidBody::RustCompound(compound) => compound.members().all(Self::supports_step_export),
             SolidBody::Helical(..) | SolidBody::CosmeticFastener(..) => false,

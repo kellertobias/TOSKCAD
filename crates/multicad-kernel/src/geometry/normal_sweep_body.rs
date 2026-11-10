@@ -8,14 +8,20 @@ use multicad_core::references::{AnalyticGeometry, ReferenceFrame, TopologySnapsh
 use multicad_rust_kernel::normal_sweep::{self, Edge, Sweep};
 use std::{collections::BTreeSet, f64::consts::TAU};
 
+mod piercing;
+pub use piercing::SweepOpening;
+
+#[derive(Clone)]
 pub(crate) struct NormalSweepBody {
     sweep: Sweep,
     reverse: bool,
     pub(super) feature: EntityId,
     sides: Vec<Side>,
     rings: Vec<std::ops::Range<usize>>,
+    openings: Option<Rc<piercing::Openings>>,
 }
 
+#[derive(Clone)]
 struct Side {
     edge: Edge,
     origin: Origin,
@@ -114,6 +120,7 @@ impl Solid {
             feature,
             sides,
             rings: ranges,
+            openings: None,
         };
         let bounds = body.bounds(profile.frame);
         policy.point(bounds.min)?;
@@ -212,43 +219,12 @@ impl NormalSweepBody {
     }
 
     fn rim(&self, frame: PlaneFrame, side: &Side, end: bool) -> AnalyticGeometry {
-        match side.edge {
-            Edge::Line { a, b } => AnalyticGeometry::Line {
-                a_mm: self.point(frame, a, end),
-                b_mm: self.point(frame, b, end),
-            },
-            Edge::Arc { center, a, .. } => {
-                let [x, y] = std::array::from_fn(|i| a[i] - center[i]);
-                AnalyticGeometry::CircularArc {
-                    frame: ReferenceFrame {
-                        origin_mm: self.point(frame, center, end),
-                        u: frame.u,
-                        v: frame.v,
-                    },
-                    radius_mm: x.hypot(y),
-                    start_rad: y.atan2(x),
-                    sweep_rad: side.edge.signed_sweep_rad().expect("circular arc"),
-                }
-            }
-            Edge::Circle {
-                center,
-                radius_mm,
-                clockwise,
-            } => AnalyticGeometry::CircularArc {
-                frame: ReferenceFrame {
-                    origin_mm: self.point(frame, center, end),
-                    u: frame.u,
-                    v: frame.v,
-                },
-                radius_mm,
-                start_rad: 0.,
-                sweep_rad: if clockwise { -TAU } else { TAU },
-            },
-        }
+        rim_in_frame(side.edge, self.cap(frame, end, false))
     }
 
     pub(super) fn volume_mm3(&self) -> f64 {
-        self.sweep.volume_mm3()
+        self.pierced_volume()
+            .unwrap_or_else(|| self.sweep.volume_mm3())
     }
 
     pub(super) fn bounds(&self, frame: PlaneFrame) -> Bounds {
@@ -265,7 +241,7 @@ impl NormalSweepBody {
     }
 
     pub(super) fn faces(&self, frame: PlaneFrame) -> Vec<Face> {
-        [false, true]
+        let mut faces = [false, true]
             .into_iter()
             .enumerate()
             .map(|(index, end)| {
@@ -288,7 +264,9 @@ impl NormalSweepBody {
                     area_mm2: side.edge.length_mm() * self.sweep.height_mm(),
                 }
             }))
-            .collect()
+            .collect();
+        self.apply_cut_faces(frame, &mut faces);
+        faces
     }
 
     pub(super) fn mesh(
@@ -296,6 +274,9 @@ impl NormalSweepBody {
         frame: PlaneFrame,
         options: multicad_rust_kernel::display::Tessellation,
     ) -> Result<ffi::Mesh, GeometryError> {
+        if let Some(result) = self.pierced_mesh(frame, options) {
+            return result;
+        }
         crate::rust_display::placed_mesh(
             multicad_rust_kernel::display::normal_sweep(&self.sweep, options),
             frame,
@@ -308,7 +289,18 @@ impl NormalSweepBody {
         writer: &mut multicad_rust_kernel::step::Writer,
         frame: PlaneFrame,
     ) -> Result<(), multicad_rust_kernel::step::StepError> {
+        if !self.supports_step() {
+            return Err(multicad_rust_kernel::step::StepError::Unsupported);
+        }
         writer.append_normal_sweep(&self.sweep, frame.origin, frame.u, frame.v, self.reverse)
+    }
+
+    pub(super) fn supports_step(&self) -> bool {
+        !self.has_piercings()
+    }
+
+    pub(crate) fn has_piercings(&self) -> bool {
+        self.openings.is_some()
     }
 
     pub(crate) fn planar_loops(&self, face: u32) -> Vec<Vec<(u32, bool)>> {
@@ -325,17 +317,22 @@ impl NormalSweepBody {
                 .collect();
         }
         let index = face - 2;
-        let side = &self.sides[index as usize];
+        let Some(side) = self.sides.get(index as usize) else {
+            return self.extra_loops(face, vec![]);
+        };
         let Some(rail) = side.rail else { return vec![] };
-        vec![vec![
-            (index, false),
-            (
-                self.sides[side.next].rail.expect("closed piecewise ring"),
-                false,
-            ),
-            (count + index, true),
-            (rail, true),
-        ]]
+        self.extra_loops(
+            face,
+            vec![vec![
+                (index, false),
+                (
+                    self.sides[side.next].rail.expect("closed piecewise ring"),
+                    false,
+                ),
+                (count + index, true),
+                (rail, true),
+            ]],
+        )
     }
 
     pub(crate) fn topology(
@@ -361,6 +358,7 @@ impl NormalSweepBody {
                     side.origin.clone(),
                 ]
             }))
+            .chain(self.cut_face_origins())
             .collect();
         let mut build = Builder::new(origins);
         for (cap, end) in [false, true].into_iter().enumerate() {
@@ -392,7 +390,9 @@ impl NormalSweepBody {
                 ordinal,
                 self.plane(frame, side, false),
                 self.plane(frame, side, true),
-                [0, 1, side.previous + 2, side.next + 2],
+                [0, 1, side.previous + 2, side.next + 2]
+                    .into_iter()
+                    .chain(self.cut_wall_neighbors(index)),
             );
             let corner = side.edge.start();
             build.non_face(
@@ -403,10 +403,46 @@ impl NormalSweepBody {
                 &[side.previous + 2, ordinal],
             );
         }
+        self.append_cut_topology(frame, &mut build);
         TopologySnapshot {
             owner,
             revision,
             elements: build.into_elements(),
         }
+    }
+}
+
+fn rim_in_frame(edge: Edge, frame: ReferenceFrame) -> AnalyticGeometry {
+    let at = |p| super::rounded_slot_body::point(frame, p);
+    match edge {
+        Edge::Line { a, b } => AnalyticGeometry::Line {
+            a_mm: at(a),
+            b_mm: at(b),
+        },
+        Edge::Arc { center, a, .. } => {
+            let [x, y] = std::array::from_fn(|i| a[i] - center[i]);
+            AnalyticGeometry::CircularArc {
+                frame: ReferenceFrame {
+                    origin_mm: at(center),
+                    ..frame
+                },
+                radius_mm: x.hypot(y),
+                start_rad: y.atan2(x),
+                sweep_rad: edge.signed_sweep_rad().expect("circular arc"),
+            }
+        }
+        Edge::Circle {
+            center,
+            radius_mm,
+            clockwise,
+        } => AnalyticGeometry::CircularArc {
+            frame: ReferenceFrame {
+                origin_mm: at(center),
+                ..frame
+            },
+            radius_mm,
+            start_rad: 0.,
+            sweep_rad: if clockwise { -TAU } else { TAU },
+        },
     }
 }

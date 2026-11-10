@@ -22,6 +22,12 @@ pub(super) fn project_normal_sweep(
             "Rust face-on normal-sweep projection does not yet support a detail crop",
         )));
     }
+    if options.hidden_lines && body.has_piercings() {
+        return Some(Err(err(
+            GeometryErrorKind::Unsupported,
+            "Rust face-on sweep projection does not yet support hidden through-cut edges",
+        )));
+    }
     let screen = Screen {
         origin: options.frame.origin,
         axes: [u, v],
