@@ -1678,6 +1678,21 @@ fn compile(
     ))
 }
 
+fn compile_without_display(
+    document: &multicad_core::document::Document,
+    revision: u64,
+    call: &Request,
+) -> Result<multicad_model::Model, ToolError> {
+    let interrupt = || call.cancelled();
+    call.finish(
+        Compiler {
+            omit_display: true,
+            ..Default::default()
+        }
+        .compile_with_backend(document, revision, call.backend, Some(&interrupt)),
+    )
+}
+
 fn compile_sources(
     document: &multicad_core::document::Document,
     revision: u64,
@@ -1938,14 +1953,7 @@ fn extrude_faces(
 
 fn evaluate_model(host: &dyn Host, call: &Request, _: NoArgs) -> ToolResult {
     let (document, revision, _) = snapshot(host)?;
-    let interrupt = || call.cancelled();
-    let model = call.finish(
-        Compiler {
-            omit_display: true,
-            ..Default::default()
-        }
-        .compile_with_backend(&document, revision, call.backend, Some(&interrupt)),
-    )?;
+    let model = compile_without_display(&document, revision, call)?;
     let snapshot = model.snapshot();
     let parts: Vec<_> = snapshot
         .bodies
@@ -2111,7 +2119,7 @@ fn export_step(host: &dyn Host, call: &Request, args: ExportStep) -> ToolResult 
     ) {
         return Err(ToolError::not_found(part, "Part"));
     }
-    let model = compile(&document, revision, call)?;
+    let model = compile_without_display(&document, revision, call)?;
     let definition_parts = multicad_core::model::assembly_definition_parts(&document)?;
     let feature = *model
         .snapshot()
