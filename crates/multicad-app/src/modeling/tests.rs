@@ -299,6 +299,26 @@ fn check_twisted_loft_drawing_worker(session: &mut Session, body: EntityId) {
     .unwrap();
     session.commit(prepared.prepared).unwrap();
 
+    let cylinder = PrimitiveRequest::new(
+        "Round drawing stock",
+        PrimitiveParameters::Cylinder {
+            radius: length(1.4),
+            height: length(1.5),
+            frame: multicad_core::model::PrimitiveFrame {
+                origin: [1., -0.5, 7.].map(length),
+                ..Default::default()
+            },
+        },
+    );
+    let prepared = model::prepare_primitive(
+        session,
+        session.revision(),
+        Actor::local(Channel::Ui),
+        &cylinder,
+    )
+    .unwrap();
+    session.commit(prepared.prepared).unwrap();
+
     let mut page = drawings::Page::new("1");
     let view = EntityId::new();
     page.views.push(drawings::DrawingView {
@@ -387,13 +407,21 @@ fn check_twisted_loft_drawing_worker(session: &mut Session, body: EntityId) {
             v_mm: None,
         },
     };
+    let mut round = assembly.clone();
+    round.id = EntityId::new();
+    round.name = "Round stock projection".into();
+    round.source = drawings::ViewSource::Model {
+        entities: vec![body, rear.body, cylinder.body],
+    };
+    let round_id = round.id;
     let section_id = section.id;
     let assembly_id = assembly.id;
     let oblique_id = oblique.id;
     let ordinary_id = ordinary.id;
     let retained_id = retained.id;
-    page.views
-        .extend([ordinary, retained, oblique, bounded, assembly, section]);
+    page.views.extend([
+        ordinary, retained, oblique, bounded, assembly, section, round,
+    ]);
     let page_id = page.id;
     let (_, prepared) = drawings::prepare_create(
         session,
@@ -500,6 +528,17 @@ fn check_twisted_loft_drawing_worker(session: &mut Session, body: EntityId) {
             assert!(vectors.iter().any(|v| v.source == source && v.role == role));
         }
     }
+    let drawings::ViewEvaluation::Ready { vectors, .. } = &result.views[&round_id] else {
+        panic!("{:?}", result.views[&round_id]);
+    };
+    assert!(vectors.iter().any(|v| v.source == cylinder.body
+        && v.role == drawings::VectorRole::Visible
+        && matches!(v.curve, drawings::VectorCurve::Ellipse { .. })));
+    assert!(
+        vectors
+            .iter()
+            .any(|v| v.source == body && v.role == drawings::VectorRole::Hidden)
+    );
     let drawings::ViewEvaluation::Ready { vectors, .. } = &result.views[&section_id] else {
         panic!("{:?}", result.views[&section_id]);
     };
