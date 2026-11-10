@@ -12,6 +12,26 @@ fn near(a: f64, b: f64) {
     assert!((a - b).abs() <= 1e-7 * b.abs().max(1.), "{a} != {b}");
 }
 
+fn assert_same_solid(actual: &Solid, expected: &Solid) {
+    let surface_area = |solid: &Solid| {
+        solid
+            .faces()
+            .unwrap()
+            .into_iter()
+            .map(|face| face.area_mm2)
+            .sum()
+    };
+    assert_eq!(actual.solid_count().unwrap(), 1);
+    near(actual.volume_mm3().unwrap(), expected.volume_mm3().unwrap());
+    near(surface_area(actual), surface_area(expected));
+    let actual = actual.bounds().unwrap();
+    let expected = expected.bounds().unwrap();
+    for axis in 0..3 {
+        near(actual.min[axis], expected.min[axis]);
+        near(actual.max[axis], expected.max[axis]);
+    }
+}
+
 fn front_panel_sheet() -> (Document, SheetDefinition) {
     let document = project_file::read(
         &mut include_bytes!("../../../examples/front-panel.tcd").as_slice(),
@@ -65,28 +85,10 @@ fn rust_builds_and_develops_the_saved_front_panel_channel_before_piercing() {
                 )
                 .unwrap()
         };
-        let [rust, native] = [GeometryBackend::Rust, GeometryBackend::OpenCascade].map(evaluate);
-        let [solid, reference] = [&rust, &native].map(|m| m.solid(request.feature).unwrap());
+        let rust = evaluate(GeometryBackend::Rust);
+        let solid = rust.solid(request.feature).unwrap();
         assert!(solid.uses_rust_geometry());
         assert_eq!(solid.solid_count().unwrap(), 1);
-        near(solid.volume_mm3().unwrap(), reference.volume_mm3().unwrap());
-        let surface_area = |s: &multicad_kernel::Solid| {
-            s.faces()
-                .unwrap()
-                .into_iter()
-                .map(|face| face.area_mm2)
-                .sum()
-        };
-        near(surface_area(solid), surface_area(reference));
-        let [a, b] = [solid.bounds().unwrap(), reference.bounds().unwrap()];
-        for (x, y) in a
-            .min
-            .into_iter()
-            .chain(a.max)
-            .zip(b.min.into_iter().chain(b.max))
-        {
-            near(x, y);
-        }
         let topology = solid
             .topology_snapshot(request.feature, session.revision())
             .unwrap();
@@ -116,28 +118,30 @@ fn rust_builds_and_develops_the_saved_front_panel_channel_before_piercing() {
         let step = temporary.path().join(format!("folded-{reverse}.step"));
         solid.write_step(&step).unwrap();
         let policy = GeometryPolicy::default();
-        for imported in [
-            Solid::read_step(&step, policy).unwrap(),
-            Solid::import_rust_step(
-                &std::fs::read_to_string(&step).unwrap(),
-                request.feature,
-                policy,
-            )
-            .unwrap(),
-        ] {
-            assert_eq!(imported.faces().unwrap().len(), 14);
-            near(
-                imported.volume_mm3().unwrap(),
-                reference.volume_mm3().unwrap(),
-            );
-        }
-        let [developed, expected] =
-            [&rust, &native].map(|m| m.unfold(session.document(), request.body).unwrap());
-        assert_eq!(developed.bends, expected.bends);
+        let imported = Solid::import_rust_step(
+            &std::fs::read_to_string(&step).unwrap(),
+            request.feature,
+            policy,
+        )
+        .unwrap();
+        assert_eq!(imported.faces().unwrap().len(), 14);
+        assert_same_solid(&imported, solid);
+        let developed = rust.unfold(session.document(), request.body).unwrap();
+        assert_eq!(developed.bends.len(), 2);
         assert_eq!(developed.cut.loops.len(), 1);
-        near(developed.area_mm2, expected.area_mm2);
-        for (a, b) in developed.size_mm.into_iter().zip(expected.size_mm) {
-            near(a, b);
+        if cfg!(feature = "occt") {
+            let native = evaluate(GeometryBackend::OpenCascade);
+            let reference = native.solid(request.feature).unwrap();
+            assert_same_solid(solid, reference);
+            let readback = Solid::read_step(&step, policy).unwrap();
+            assert_eq!(readback.faces().unwrap().len(), 14);
+            assert_same_solid(&readback, reference);
+            let expected = native.unfold(session.document(), request.body).unwrap();
+            assert_eq!(developed.bends, expected.bends);
+            near(developed.area_mm2, expected.area_mm2);
+            for (a, b) in developed.size_mm.into_iter().zip(expected.size_mm) {
+                near(a, b);
+            }
         }
     }
 }
@@ -178,7 +182,7 @@ fn rust_builds_and_develops_a_single_full_length_bend_with_a_web_opening() {
         )
         .unwrap();
         session.commit(prepared.prepared).unwrap();
-        let [rust, native] = [GeometryBackend::Rust, GeometryBackend::OpenCascade].map(|backend| {
+        let evaluate = |backend| {
             compiler
                 .compile_sources_with_backend(
                     session.document(),
@@ -188,8 +192,9 @@ fn rust_builds_and_develops_a_single_full_length_bend_with_a_web_opening() {
                     None,
                 )
                 .unwrap_or_else(|error| panic!("{backend:?}: {error}"))
-        });
-        let [solid, expected] = [&rust, &native].map(|m| m.solid(request.feature).unwrap());
+        };
+        let rust = evaluate(GeometryBackend::Rust);
+        let solid = rust.solid(request.feature).unwrap();
         assert!(solid.uses_rust_geometry());
         let role = format!("sheet.base.edge.{opposite}");
         let topology = solid
@@ -212,41 +217,29 @@ fn rust_builds_and_develops_a_single_full_length_bend_with_a_web_opening() {
         );
         let step = temporary.path().join(format!("single-{reverse}.step"));
         solid.write_step(&step).unwrap();
-        let native_readback = Solid::read_step(&step, compiler.policy).unwrap();
         let rust_readback = Solid::import_rust_step(
             &std::fs::read_to_string(&step).unwrap(),
             request.feature,
             compiler.policy,
         )
         .unwrap();
-        let surface_area = |solid: &Solid| {
-            solid
-                .faces()
-                .unwrap()
-                .iter()
-                .map(|face| face.area_mm2)
-                .sum()
-        };
-        let bounds = expected.bounds().unwrap();
-        for shape in [solid, &native_readback, &rust_readback] {
-            assert_eq!(shape.solid_count().unwrap(), 1);
-            near(shape.volume_mm3().unwrap(), expected.volume_mm3().unwrap());
-            near(surface_area(shape), surface_area(expected));
-            let actual = shape.bounds().unwrap();
-            for i in 0..3 {
-                near(actual.min[i], bounds.min[i]);
-                near(actual.max[i], bounds.max[i]);
-            }
-        }
-        let [flat, expected_flat] =
-            [&rust, &native].map(|m| m.unfold(session.document(), request.body).unwrap());
-        assert_eq!(flat.bends, expected_flat.bends);
+        assert_same_solid(&rust_readback, solid);
+        let flat = rust.unfold(session.document(), request.body).unwrap();
         assert_eq!(flat.bends.len(), 1);
         assert_eq!(flat.cut.loops.len(), 2);
-        assert_eq!(flat.drills, expected_flat.drills);
-        near(flat.area_mm2, expected_flat.area_mm2);
-        for (a, b) in flat.size_mm.into_iter().zip(expected_flat.size_mm) {
-            near(a, b);
+        assert_eq!(flat.drills.len(), 1);
+        if cfg!(feature = "occt") {
+            let native = evaluate(GeometryBackend::OpenCascade);
+            let expected = native.solid(request.feature).unwrap();
+            assert_same_solid(solid, expected);
+            assert_same_solid(&Solid::read_step(&step, compiler.policy).unwrap(), expected);
+            let expected_flat = native.unfold(session.document(), request.body).unwrap();
+            assert_eq!(flat.bends, expected_flat.bends);
+            assert_eq!(flat.drills, expected_flat.drills);
+            near(flat.area_mm2, expected_flat.area_mm2);
+            for (a, b) in flat.size_mm.into_iter().zip(expected_flat.size_mm) {
+                near(a, b);
+            }
         }
     }
 }
