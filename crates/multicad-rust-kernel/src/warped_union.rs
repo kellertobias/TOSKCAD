@@ -5,8 +5,11 @@ use crate::{
 };
 use std::{collections::BTreeMap, f64::consts::FRAC_PI_2};
 
+mod boss;
 mod mesh;
 mod metrics;
+pub use boss::Boss;
+
 type Point = [f64; 3];
 
 const FRAME_EPS: f64 = 1e-10;
@@ -59,6 +62,8 @@ pub enum Support {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Face {
     pub boundary: Vec<OrientedEdge>,
+    /// Clockwise inner loops of a planar face.
+    pub holes: Vec<Vec<OrientedEdge>>,
     pub support: Support,
     pub point_mm: Point,
     pub area_mm2: f64,
@@ -77,6 +82,7 @@ pub struct Shell {
     shell_count: usize,
     band: Band,
     chart_w: Vec<f64>,
+    chart_edges: usize,
 }
 
 impl Shell {
@@ -220,6 +226,7 @@ pub fn remap(union: &Union, band: Band, tolerance_mm: f64) -> Result<Shell, Erro
         }
         faces.push(Face {
             boundary,
+            holes: Vec::new(),
             support,
             point_mm,
             area_mm2: metrics.area_mm2,
@@ -233,6 +240,7 @@ pub fn remap(union: &Union, band: Band, tolerance_mm: f64) -> Result<Shell, Erro
     let bounds_mm = center.map(|point| band.point(point));
     Ok(Shell {
         vertices,
+        chart_edges: edges.len(),
         edges,
         faces,
         bounds_mm,

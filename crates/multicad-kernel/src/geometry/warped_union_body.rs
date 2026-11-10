@@ -6,7 +6,7 @@ use multicad_core::references::{AnalyticGeometry, AnchoredFrame, ReferenceFrame,
 use multicad_rust_kernel::{
     display::Tessellation,
     planar_boolean::{self, ConvexPiece, Union},
-    warped_union::{self, Band, Curve, Shell, Support},
+    warped_union::{self, Band, Boss, Curve, Shell, Support},
 };
 use std::collections::BTreeSet;
 
@@ -38,6 +38,14 @@ struct Chart {
     pieces: Vec<ConvexPiece>,
     sources: Vec<SourcePart>,
     topologies: Vec<Rc<TopologySnapshot>>,
+    bosses: Vec<AuthoredBoss>,
+}
+
+#[derive(Clone)]
+struct AuthoredBoss {
+    ends: [Point; 2],
+    radius: f64,
+    source: SourcePart,
 }
 
 impl Chart {
@@ -48,6 +56,7 @@ impl Chart {
             pieces: Vec::new(),
             sources: Vec::new(),
             topologies: Vec::new(),
+            bosses: Vec::new(),
         }
     }
 
@@ -111,27 +120,117 @@ impl Chart {
         Some(Ok(()))
     }
 
+    fn append_boss(&mut self, solid: &Solid) -> Option<Result<(), GeometryError>> {
+        let (cylinder, frame) = solid.axial_cylinder_frame()?;
+        let topology = match solid.rust_topology()? {
+            Ok(topology) => topology,
+            Err(cause) => return Some(Err(cause)),
+        };
+        let mut faces = vec![None; 3];
+        for (i, element) in topology.elements.iter().enumerate() {
+            if element.key.kind == TopologyKind::Face {
+                *faces.get_mut(element.key.ordinal as usize)? = Some(i);
+            }
+        }
+        self.bosses.push(AuthoredBoss {
+            ends: [
+                frame.origin,
+                position(frame, [0., 0., cylinder.height().as_f64()]),
+            ],
+            radius: cylinder.circle().radius().as_f64(),
+            source: SourcePart {
+                operand: self.topologies.len(),
+                faces,
+            },
+        });
+        self.topologies.push(Rc::new(topology));
+        Some(Ok(()))
+    }
+
     fn finish(
         self,
         union: Union,
         feature: EntityId,
         policy: GeometryPolicy,
     ) -> Result<Solid, GeometryError> {
-        let geometry = warped_union::remap(&union, self.band, policy.linear_tolerance_mm).map_err(
-            |cause| {
-                let kind = match cause {
-                    warped_union::Error::Invalid => GeometryErrorKind::InvalidResult,
-                    warped_union::Error::Unsupported => GeometryErrorKind::Unsupported,
-                    warped_union::Error::Limit => GeometryErrorKind::Limit,
-                };
-                error(
-                    "quarter-round Boolean",
-                    kind,
-                    format!("Cannot certify the curved boundary: {cause:?}"),
-                )
-            },
-        )?;
+        let tolerance = policy.linear_tolerance_mm;
+        let mut geometry = warped_union::remap(&union, self.band, tolerance)
+            .map_err(|cause| warped_error("curved boundary", cause))?;
+        if !self.bosses.is_empty() {
+            let bosses = self
+                .bosses
+                .iter()
+                .enumerate()
+                .map(|(index, boss)| {
+                    boss.oriented(&geometry, self.sources.len() + index, tolerance)
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            geometry = geometry
+                .attach_bosses(&bosses, tolerance)
+                .map_err(|cause| warped_error("cylindrical boss attachment", cause))?;
+        }
         WarpedUnionBody::build(geometry, self, feature, policy)
+    }
+}
+
+impl AuthoredBoss {
+    fn bounds(&self) -> Bounds {
+        let axis = subtract(self.ends[1], self.ends[0]);
+        let length = norm(axis);
+        let radius: Point = std::array::from_fn(|i| {
+            self.radius * (axis[(i + 1) % 3] / length).hypot(axis[(i + 2) % 3] / length)
+        });
+        let [a, b] = self.ends;
+        Bounds {
+            min: std::array::from_fn(|i| a[i].min(b[i]) - radius[i]),
+            max: std::array::from_fn(|i| a[i].max(b[i]) + radius[i]),
+        }
+    }
+
+    fn oriented(
+        &self,
+        shell: &Shell,
+        source: usize,
+        tolerance: f64,
+    ) -> Result<Boss, GeometryError> {
+        let axis = subtract(self.ends[1], self.ends[0]);
+        let axis = axis.map(|component| component / norm(axis));
+        let mut possible = [false; 2];
+        for face in shell.faces() {
+            let Support::Plane { normal } = face.support else {
+                continue;
+            };
+            let alignment = dot(normal, axis);
+            if (1. - alignment.abs()).abs() > 1e-10 {
+                continue;
+            }
+            let [a, b] = self
+                .ends
+                .map(|end| dot(normal, subtract(end, face.point_mm)));
+            if a < -tolerance && b > tolerance {
+                possible[1] = true;
+            } else if b < -tolerance && a > tolerance {
+                possible[0] = true;
+            }
+        }
+        let (start, end) = match possible {
+            [true, false] => (1, 0),
+            [false, true] => (0, 1),
+            _ => {
+                return Err(warped_error(
+                    "cylindrical boss direction",
+                    warped_union::Error::Unsupported,
+                ));
+            }
+        };
+        Ok(Boss {
+            start_mm: self.ends[start],
+            end_mm: self.ends[end],
+            radius_mm: self.radius,
+            source,
+            wall_source_face: 2,
+            cap_source_face: end,
+        })
     }
 }
 
@@ -141,6 +240,10 @@ fn subtract(a: Point, b: Point) -> Point {
 
 fn norm([x, y, z]: Point) -> f64 {
     x.hypot(y).hypot(z)
+}
+
+fn rings(face: &warped_union::Face) -> impl Iterator<Item = &[warped_union::OrientedEdge]> {
+    std::iter::once(face.boundary.as_slice()).chain(face.holes.iter().map(Vec::as_slice))
 }
 
 fn vector(frame: PlaneFrame, p: Point) -> Point {
@@ -162,6 +265,19 @@ fn source_error(cause: planar_boolean::Error) -> GeometryError {
             GeometryErrorKind::InvalidResult
         },
         format!("Cannot certify the Boolean height sections: {cause:?}"),
+    )
+}
+
+fn warped_error(operation: &str, cause: warped_union::Error) -> GeometryError {
+    let kind = match cause {
+        warped_union::Error::Invalid => GeometryErrorKind::InvalidResult,
+        warped_union::Error::Unsupported => GeometryErrorKind::Unsupported,
+        warped_union::Error::Limit => GeometryErrorKind::Limit,
+    };
+    error(
+        "quarter-round Boolean",
+        kind,
+        format!("Cannot certify {operation}: {cause:?}"),
     )
 }
 
@@ -205,7 +321,10 @@ impl Solid {
         }
         let mut chart = Chart::new(band);
         for (&solid, fillet) in solids.iter().zip(fillets) {
-            if let Err(cause) = chart.append(solid, fillet, policy)? {
+            if let Err(cause) = chart
+                .append_boss(solid)
+                .or_else(|| chart.append(solid, fillet, policy))?
+            {
                 return Some(Err(cause));
             }
         }
@@ -273,7 +392,10 @@ impl WarpedUnionBody {
         let mut origins = Vec::with_capacity(geometry.faces().len());
         let mut anchors = Vec::with_capacity(geometry.faces().len());
         for (i, face) in geometry.faces().iter().enumerate() {
-            let part = &chart.sources[face.source];
+            let part = chart
+                .sources
+                .get(face.source)
+                .unwrap_or_else(|| &chart.bosses[face.source - chart.sources.len()].source);
             let topology = &chart.topologies[part.operand];
             let source = part
                 .faces
@@ -394,14 +516,16 @@ impl WarpedUnionBody {
             .get(face as usize)
             .and_then(|face| {
                 matches!(face.support, Support::Plane { .. }).then(|| {
-                    face.boundary
-                        .iter()
-                        .map(|use_| (use_.edge as u32, !use_.forward))
+                    rings(face)
+                        .map(|ring| {
+                            ring.iter()
+                                .map(|use_| (use_.edge as u32, !use_.forward))
+                                .collect()
+                        })
                         .collect()
                 })
             })
-            .into_iter()
-            .collect()
+            .unwrap_or_default()
     }
 
     pub(crate) fn topology(
@@ -414,7 +538,7 @@ impl WarpedUnionBody {
         let mut edge_faces = vec![Vec::with_capacity(2); self.geometry.edges().len()];
         let mut vertex_faces = vec![BTreeSet::new(); self.geometry.vertices().len()];
         for (i, face) in self.geometry.faces().iter().enumerate() {
-            for use_ in &face.boundary {
+            for use_ in rings(face).flatten() {
                 edge_faces[use_.edge].push(i);
                 for vertex in self.geometry.edges()[use_.edge].vertices {
                     vertex_faces[vertex].insert(i);
@@ -486,8 +610,8 @@ impl WarpedUnionBody {
                 i,
                 plane,
                 plane,
-                face.boundary
-                    .iter()
+                rings(face)
+                    .flatten()
                     .flat_map(|use_| edge_faces[use_.edge].iter().copied())
                     .filter(|&neighbor| neighbor != i),
             );

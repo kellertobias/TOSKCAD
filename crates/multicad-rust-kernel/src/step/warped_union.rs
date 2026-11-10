@@ -3,17 +3,16 @@
 use super::*;
 use crate::{
     trim_curve::EllipseArc,
-    warped_union::{Curve, Shell, Support},
+    warped_union::{Curve, OrientedEdge, Shell, Support},
 };
 use std::f64::consts::TAU;
 
 /// Whether the exact warped boundary fits STEP's single-shell profile.
 pub fn supports_warped_union(shell: &Shell) -> bool {
     shell.shell_count() == 1
-        && shell
-            .faces()
-            .iter()
-            .all(|face| face.boundary.len() <= MAX_VERTICES)
+        && shell.faces().iter().all(|face| {
+            face.boundary.len() + face.holes.iter().map(Vec::len).sum::<usize>() <= MAX_VERTICES
+        })
 }
 
 /// Write a rigidly placed warped solid with analytic ellipse trims.
@@ -78,6 +77,14 @@ fn plane_reference(normal: Point) -> Result<Point, StepError> {
     direction([0.; 3], cross(axis, normal))
 }
 
+fn bound(file: &mut StepFile, loop_: &[OrientedEdge], edges: &[Entity], outer: bool) -> Entity {
+    let oriented: Vec<_> = loop_
+        .iter()
+        .map(|use_| file.oriented_edge(edges[use_.edge], use_.forward))
+        .collect();
+    file.bound(&oriented, outer)
+}
+
 pub(super) fn encode(
     file: &mut StepFile,
     placement: Placement,
@@ -101,19 +108,18 @@ pub(super) fn encode(
         .collect::<Result<Vec<_>, _>>()?;
     let mut faces = Vec::with_capacity(shell.faces().len());
     for face in shell.faces() {
-        let boundary: Vec<_> = face
-            .boundary
-            .iter()
-            .map(|use_| file.oriented_edge(edges[use_.edge], use_.forward))
-            .collect();
-        let bound = file.bound(&boundary, true);
+        let mut bounds = Vec::with_capacity(1 + face.holes.len());
+        bounds.push(bound(file, &face.boundary, &edges, true));
+        for hole in &face.holes {
+            bounds.push(bound(file, hole, &edges, false));
+        }
         let first = face.boundary[0].edge;
         let vertex = shell.edges()[first].vertices[0];
         let surface = match face.support {
             Support::Plane { normal } => {
                 let normal = placement.vector(normal);
                 file.face(
-                    &[bound],
+                    &bounds,
                     vertices[vertex].cartesian,
                     normal,
                     plane_reference(normal)?,
@@ -141,7 +147,7 @@ pub(super) fn encode(
                 let cylinder = file.entity(format_args!(
                     "CYLINDRICAL_SURFACE('',{axis},{radius_mm:.16E})"
                 ));
-                file.face_on(&[bound], cylinder, outward)
+                file.face_on(&bounds, cylinder, outward)
             }
         };
         faces.push(surface);
@@ -155,7 +161,7 @@ mod tests {
     use crate::{
         planar_boolean::{ConvexPiece, Union},
         trim_curve::Ellipse,
-        warped_union::{Band, remap},
+        warped_union::{Band, Boss, remap},
     };
 
     const X: Point = [1., 0., 0.];
@@ -232,6 +238,54 @@ mod tests {
         }
         let full = EllipseArc::new(ellipse, 0., TAU).unwrap();
         ellipse_edge(&mut file, [from, from], full, &placement).unwrap();
+    }
+
+    #[test]
+    fn two_boss_rims_share_an_outer_planar_face_as_separate_inner_bounds() {
+        let stock = ConvexPiece::from_box([0., 0., 3.], [10., 80., 30.], TOL).unwrap();
+        let union = Union::new(&[stock], TOL).unwrap();
+        let base = remap(
+            &union,
+            Band {
+                center_z_mm: 10.,
+                radius_mm: 2.,
+            },
+            TOL,
+        )
+        .unwrap();
+        let bosses = [(20., 2.), (60., 3.)].map(|(y, radius_mm)| Boss {
+            start_mm: [9.95, y, 20.],
+            end_mm: [13.5, y, 20.],
+            radius_mm,
+            source: 1,
+            wall_source_face: 2,
+            cap_source_face: 1,
+        });
+        let joined = base.attach_bosses(&bosses, TOL).unwrap();
+        let step = write_warped_union(&joined, ZERO, X, Y).unwrap();
+        assert_eq!(step.matches("=CIRCLE(").count(), 16);
+        assert_eq!(step.matches("=CYLINDRICAL_SURFACE(").count(), 8);
+        assert_eq!(step.matches("=FACE_BOUND(").count(), 2);
+        assert_eq!(step.matches("=MANIFOLD_SOLID_BREP(").count(), 1);
+        assert_eq!(step.matches("=CLOSED_SHELL(").count(), 1);
+        assert_eq!(step.matches("=EDGE_CURVE(").count(), joined.edges().len());
+        assert_eq!(
+            step.matches("=ORIENTED_EDGE(").count(),
+            2 * joined.edges().len()
+        );
+        assert!(step.lines().any(|line| {
+            line.contains("=ADVANCED_FACE(")
+                && line
+                    .split_once(",(")
+                    .unwrap()
+                    .1
+                    .split_once("),")
+                    .unwrap()
+                    .0
+                    .matches('#')
+                    .count()
+                    == 3
+        }));
     }
 
     #[test]

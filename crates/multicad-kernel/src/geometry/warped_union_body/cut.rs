@@ -25,11 +25,31 @@ impl Solid {
             translation_mm: axes.map(|axis| -dot(axis, frame.origin)),
         };
         let mut chart = body.chart.clone()?;
+        let boss_bounds: Vec<_> = chart.bosses.iter().map(AuthoredBoss::bounds).collect();
+        let tolerance = policy.linear_tolerance_mm;
         for tool in tools {
             let local = match tool.transformed(inverse) {
                 Ok(local) => local,
                 Err(cause) => return Some(Err(cause)),
             };
+            if !boss_bounds.is_empty() {
+                let bounds = match local.bounds() {
+                    Ok(bounds) => bounds,
+                    Err(cause) => return Some(Err(cause)),
+                };
+                if boss_bounds.iter().any(|boss| {
+                    (0..3).all(|i| {
+                        bounds.min[i] <= boss.max[i] + tolerance
+                            && boss.min[i] <= bounds.max[i] + tolerance
+                    })
+                }) {
+                    return Some(Err(error(
+                        "quarter-round Boolean",
+                        GeometryErrorKind::Unsupported,
+                        "This cutter may intersect an attached cylinder",
+                    )));
+                }
+            }
             if let Err(cause) = chart.append(&local, None, policy)? {
                 return Some(Err(cause));
             }
@@ -38,7 +58,6 @@ impl Solid {
             &chart.pieces[..chart.stock_count],
             &chart.pieces[chart.stock_count..],
         ];
-        let tolerance = policy.linear_tolerance_mm;
         let union = match Union::subtract(stock, cutters, tolerance) {
             Ok(Some(union)) => union,
             Ok(None) => {

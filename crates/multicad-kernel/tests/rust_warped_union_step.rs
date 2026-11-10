@@ -4,7 +4,7 @@ use multicad_kernel::{
     rust_kernel::{
         planar_boolean::{ConvexPiece, Union},
         step::write_warped_union,
-        warped_union::{Band, Curve, remap},
+        warped_union::{Band, Boss, Curve, remap},
     },
 };
 
@@ -147,6 +147,96 @@ fn native_step_reader_keeps_the_elliptical_trim_of_a_joined_fillet() {
     };
     near(area(&independent), area(&native));
     let [a, b] = [independent.bounds().unwrap(), native.bounds().unwrap()];
+    for (x, y) in a
+        .min
+        .into_iter()
+        .chain(a.max)
+        .zip(b.min.into_iter().chain(b.max))
+    {
+        near(x, y);
+    }
+}
+
+#[test]
+fn native_step_reader_keeps_two_exact_boss_rims_on_one_stock_face() {
+    let policy = GeometryPolicy::default();
+    let tolerance = policy.linear_tolerance_mm;
+    let chart = ConvexPiece::from_box([0., 0., 3.], [10., 80., 30.], tolerance).unwrap();
+    let shell = remap(
+        &Union::new(&[chart], tolerance).unwrap(),
+        Band {
+            center_z_mm: 10.,
+            radius_mm: 2.,
+        },
+        tolerance,
+    )
+    .unwrap();
+    let bosses = [(20., 2.), (60., 3.)].map(|(y, radius_mm)| Boss {
+        start_mm: [9.95, y, 20.],
+        end_mm: [13.5, y, 20.],
+        radius_mm,
+        source: 1,
+        wall_source_face: 2,
+        cap_source_face: 1,
+    });
+    let joined = shell.attach_bosses(&bosses, tolerance).unwrap();
+
+    let mut native = Solid::box_solid([10., 80., 27.], policy)
+        .unwrap()
+        .transformed(RigidTransform {
+            translation_mm: [0., 0., 11.],
+            ..Default::default()
+        })
+        .unwrap();
+    for boss in bosses {
+        let tool = Solid::cylinder(
+            PlaneFrame {
+                origin: boss.start_mm,
+                u: [0., 1., 0.],
+                v: [0., 0., 1.],
+            },
+            boss.radius_mm,
+            boss.end_mm[0] - boss.start_mm[0],
+            policy,
+        )
+        .unwrap();
+        native = native
+            .boolean(&tool, BooleanOperation::Union, policy)
+            .unwrap()
+            .unwrap();
+    }
+    let pose = RigidTransform {
+        rotation: [[0.8, -0.36, 0.48], [0.6, 0.48, -0.64], [0., 0.8, 0.6]],
+        translation_mm: [13., -7., 42.],
+    };
+    let native = native.transformed(pose).unwrap();
+    let step = write_warped_union(
+        &joined,
+        pose.translation_mm,
+        [0.8, 0.6, 0.],
+        [-0.36, 0.48, 0.8],
+    )
+    .unwrap();
+    assert_eq!(step.matches("=FACE_BOUND(").count(), 2);
+    assert_eq!(step.matches("=CIRCLE(").count(), 16);
+    let scratch = tempfile::tempdir().unwrap();
+    let path = scratch.path().join("two-bosses.step");
+    std::fs::write(&path, step).unwrap();
+    let reopened = Solid::read_step(&path, policy).unwrap();
+    assert_eq!(reopened.solid_count().unwrap(), 1);
+    let near = |a: f64, b: f64| assert!((a - b).abs() < 1e-6, "{a} != {b}");
+    near(reopened.volume_mm3().unwrap(), native.volume_mm3().unwrap());
+    near(reopened.volume_mm3().unwrap(), joined.volume_mm3());
+    let area = |solid: &Solid| {
+        solid
+            .faces()
+            .unwrap()
+            .iter()
+            .map(|face| face.area_mm2)
+            .sum::<f64>()
+    };
+    near(area(&reopened), area(&native));
+    let [a, b] = [reopened.bounds().unwrap(), native.bounds().unwrap()];
     for (x, y) in a
         .min
         .into_iter()

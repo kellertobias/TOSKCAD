@@ -1,6 +1,7 @@
 use super::*;
 use crate::display::{DisplayMesh, MeshError, Tessellation, triangulate_region};
 use spade::Point2;
+use std::ops::Range;
 
 impl Shell {
     /// Tessellate both sides of a shared trim from the same samples. Cylinder
@@ -10,6 +11,7 @@ impl Shell {
         let max_radius = self
             .edges
             .iter()
+            .take(self.chart_edges)
             .filter_map(|edge| match edge.curve {
                 Curve::Line => None,
                 Curve::Ellipse(arc) => Some(arc.ellipse().semiaxes_mm()[0]),
@@ -27,22 +29,36 @@ impl Shell {
         let (mut angle_levels, grid) = sample_angles(&source_angles, steps);
 
         let mut boundary_intervals = 0;
-        let ranges = self
+        let sampling = self
             .edges
             .iter()
-            .map(|edge| {
-                let [a, b] = edge.vertices.map(|i| angle_levels[i]);
-                let range = if matches!(edge.curve, Curve::Ellipse(_)) {
-                    grid.partition_point(|&w| w <= a.min(b))
-                        ..grid.partition_point(|&w| w < a.max(b))
-                } else {
-                    0..0
+            .enumerate()
+            .map(|(index, edge)| {
+                let sample = match edge.curve {
+                    Curve::Line => Samples::Line,
+                    Curve::Ellipse(arc) if index < self.chart_edges => {
+                        let [a, b] = edge.vertices.map(|i| angle_levels[i]);
+                        Samples::Chart(
+                            arc,
+                            grid.partition_point(|&w| w <= a.min(b))
+                                ..grid.partition_point(|&w| w < a.max(b)),
+                        )
+                    }
+                    Curve::Ellipse(arc) => Samples::Circle(
+                        arc,
+                        options.arc_segments(arc.ellipse().semiaxes_mm()[0], arc.sweep_rad())?,
+                    ),
                 };
-                boundary_intervals += 1 + range.len();
-                range
+                boundary_intervals += sample.intervals();
+                Ok(sample)
             })
-            .collect::<Vec<_>>();
-        let triangles = 2 * boundary_intervals - 2 * self.faces.len();
+            .collect::<Result<Vec<_>, MeshError>>()?;
+        let holes = self
+            .faces
+            .iter()
+            .map(|face| face.holes.len())
+            .sum::<usize>();
+        let triangles = 2 * (boundary_intervals + holes - self.faces.len());
         if triangles > options.triangle_limit {
             return Err(MeshError::BudgetExceeded);
         }
@@ -52,22 +68,33 @@ impl Shell {
             indices: Vec::with_capacity(3 * triangles),
             face_indices: Vec::with_capacity(triangles),
         };
+        angle_levels.resize(self.vertices.len(), 0.);
         let mut paths = Vec::with_capacity(self.edges.len());
-        for (edge, range) in self.edges.iter().zip(ranges) {
+        for (edge, sampling) in self.edges.iter().zip(sampling) {
             let [a, b] = edge.vertices;
-            let mut path = Vec::with_capacity(range.len() + 2);
+            let mut path = Vec::with_capacity(sampling.intervals() + 1);
             path.push(a);
-            if let Curve::Ellipse(arc) = edge.curve {
-                let mut add = |angle| {
-                    path.push(angle_levels.len());
-                    angle_levels.push(angle);
-                    let parameter = arc.start_rad() + (angle - source_angles[a]);
-                    mesh.vertices.extend(arc.ellipse().point_at(parameter));
-                };
-                if source_angles[a] < source_angles[b] {
-                    grid[range].iter().copied().for_each(&mut add);
-                } else {
-                    grid[range].iter().rev().copied().for_each(&mut add);
+            match sampling {
+                Samples::Line => {}
+                Samples::Chart(arc, range) => {
+                    let mut add = |angle| {
+                        path.push(angle_levels.len());
+                        angle_levels.push(angle);
+                        let parameter = arc.start_rad() + (angle - source_angles[a]);
+                        mesh.vertices.extend(arc.ellipse().point_at(parameter));
+                    };
+                    if source_angles[a] < source_angles[b] {
+                        grid[range].iter().copied().for_each(&mut add);
+                    } else {
+                        grid[range].iter().rev().copied().for_each(&mut add);
+                    }
+                }
+                Samples::Circle(arc, count) => {
+                    for i in 1..count {
+                        path.push(mesh.vertices.len() / 3);
+                        let parameter = arc.start_rad() + arc.sweep_rad() * i as f64 / count as f64;
+                        mesh.vertices.extend(arc.ellipse().point_at(parameter));
+                    }
                 }
             }
             path.push(b);
@@ -75,23 +102,21 @@ impl Shell {
         }
 
         for (index, face) in self.faces.iter().enumerate() {
-            let mut ring = Vec::new();
-            for edge in &face.boundary {
-                let path = &paths[edge.edge];
-                if edge.forward {
-                    ring.extend(&path[..path.len() - 1]);
-                } else {
-                    ring.extend(path[1..].iter().rev());
-                }
-            }
             let index = index as u32;
             match face.support {
                 Support::Plane { normal } => {
-                    mesh_planar(&mut mesh, &ring, normal, face.point_mm, index)?;
+                    let outer = boundary_samples(&face.boundary, &paths);
+                    let holes = face.holes.iter().map(|hole| boundary_samples(hole, &paths));
+                    let rings = std::iter::once(outer).chain(holes);
+                    mesh_planar(&mut mesh, rings, normal, face.point_mm, index)?;
                 }
-                Support::Cylinder { axis_direction, .. } => {
+                Support::Cylinder { axis_direction, .. }
+                    if face.boundary[0].edge < self.chart_edges =>
+                {
+                    let mut ring = boundary_samples(&face.boundary, &paths);
                     mesh_cylinder(&mut mesh, &mut ring, &angle_levels, axis_direction, index)?;
                 }
+                Support::Cylinder { .. } => mesh_boss(&mut mesh, face, &paths, index)?,
             }
         }
         if mesh.face_indices.len() != triangles {
@@ -99,6 +124,55 @@ impl Shell {
         }
         Ok(mesh)
     }
+}
+
+enum Samples {
+    Line,
+    Chart(EllipseArc, Range<usize>),
+    Circle(EllipseArc, usize),
+}
+
+impl Samples {
+    fn intervals(&self) -> usize {
+        match self {
+            Self::Line => 1,
+            Self::Chart(_, range) => range.len() + 1,
+            Self::Circle(_, count) => *count,
+        }
+    }
+}
+
+fn boundary_samples(boundary: &[OrientedEdge], paths: &[Vec<usize>]) -> Vec<usize> {
+    let mut ring = Vec::new();
+    for edge in boundary {
+        let path = &paths[edge.edge];
+        if edge.forward {
+            ring.extend(&path[..path.len() - 1]);
+        } else {
+            ring.extend(path[1..].iter().rev());
+        }
+    }
+    ring
+}
+
+fn mesh_boss(
+    mesh: &mut DisplayMesh,
+    face: &Face,
+    paths: &[Vec<usize>],
+    index: u32,
+) -> Result<(), MeshError> {
+    let [base, _, end, _] = *face.boundary.as_slice() else {
+        return Err(MeshError::UnresolvedBoundary);
+    };
+    let [a, b] = [base, end].map(|edge| &paths[edge.edge]);
+    if !base.forward || end.forward || a.len() != b.len() {
+        return Err(MeshError::UnresolvedBoundary);
+    }
+    for (a, b) in a.windows(2).zip(b.windows(2)) {
+        mesh.triangle([a[0], a[1], b[1]], index);
+        mesh.triangle([a[0], b[1], b[0]], index);
+    }
+    Ok(())
 }
 
 fn sample_angles(source: &[f64], steps: usize) -> (Vec<f64>, Vec<f64>) {
@@ -128,7 +202,7 @@ fn sample_angles(source: &[f64], steps: usize) -> (Vec<f64>, Vec<f64>) {
 
 fn mesh_planar(
     mesh: &mut DisplayMesh,
-    ring: &[usize],
+    rings: impl Iterator<Item = Vec<usize>>,
     normal: Point,
     origin: Point,
     face: u32,
@@ -140,16 +214,22 @@ fn mesh_planar(
     let u = cross(reference, normal);
     let u = u.map(|v| v / length3(u));
     let v = cross(normal, u);
-    let points = ring
-        .iter()
-        .map(|&id| {
+    let mut holes = 0;
+    let mut points = Vec::new();
+    let mut ids = Vec::new();
+    let mut edges = Vec::new();
+    for ring in rings {
+        let offset = ids.len();
+        holes += usize::from(offset != 0);
+        for (i, id) in ring.iter().copied().enumerate() {
             let delta = sub(mesh_point(mesh, id), origin);
-            Point2::new(dot(delta, u), dot(delta, v))
-        })
-        .collect();
-    let edges: Vec<_> = (0..ring.len()).map(|i| [i, (i + 1) % ring.len()]).collect();
-    for triangle in triangulate_region(points, &edges, 0)?.triangles {
-        mesh.triangle(triangle.map(|i| ring[i]), face);
+            points.push(Point2::new(dot(delta, u), dot(delta, v)));
+            edges.push([offset + i, offset + (i + 1) % ring.len()]);
+        }
+        ids.extend(ring);
+    }
+    for triangle in triangulate_region(points, &edges, holes)?.triangles {
+        mesh.triangle(triangle.map(|i| ids[i]), face);
     }
     Ok(())
 }
@@ -239,6 +319,48 @@ mod tests {
         };
         assert_eq!(
             mesh_cylinder(&mut mesh, &mut [0, 1, 2], &[0.; 3], [0., 1., 0.], 0),
+            Err(MeshError::UnresolvedBoundary)
+        );
+    }
+
+    #[test]
+    fn a_boss_patch_requires_paired_outward_rims() {
+        let face = Face {
+            boundary: vec![
+                OrientedEdge {
+                    edge: 0,
+                    forward: true
+                };
+                3
+            ],
+            holes: Vec::new(),
+            support: Support::Cylinder {
+                axis_origin_mm: [0.; 3],
+                axis_direction: [0., 0., 1.],
+                radius_mm: 2.,
+                outward: true,
+            },
+            point_mm: [2., 0., 0.],
+            area_mm2: 1.,
+            source: 0,
+            source_face: 0,
+        };
+        let mut mesh = DisplayMesh {
+            vertices: Vec::new(),
+            indices: Vec::new(),
+            face_indices: Vec::new(),
+        };
+        assert_eq!(
+            mesh_boss(&mut mesh, &face, &[], 0),
+            Err(MeshError::UnresolvedBoundary)
+        );
+        let mut face = face;
+        face.boundary.push(OrientedEdge {
+            edge: 0,
+            forward: true,
+        });
+        assert_eq!(
+            mesh_boss(&mut mesh, &face, &[vec![0, 1]], 0),
             Err(MeshError::UnresolvedBoundary)
         );
     }
