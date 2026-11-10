@@ -1105,7 +1105,7 @@ impl Solid {
     }
     pub fn volume_mm3(&self) -> Result<f64, GeometryError> {
         if let Some((body, _)) = self.helical_body() {
-            return Ok(body.geometry.volume_mm3());
+            return Ok(body.volume_mm3());
         }
         if let Some((body, _)) = self.orthogonal_body() {
             return Ok(body.geometry.volume_mm3());
@@ -1463,10 +1463,7 @@ impl Solid {
             }
         }
         let chord_error = if let Some((body, _)) = self.helical_body() {
-            multicad_rust_kernel::helical_thread_mesh::volume_error_bound(
-                &body.geometry,
-                Self::rust_mesh_options(options),
-            )
+            body.volume_error_bound(Self::rust_mesh_options(options))
         } else {
             // Arc/chord area loss is bounded by sagitta times arc length.
             // Extruding this loss bounds volume by the curved wall area.

@@ -1,10 +1,14 @@
 use multicad_core::{
     document::EntityId,
-    references::{AnalyticGeometry, TopologyKind},
+    references::{
+        AnalyticGeometry, Attachment, GeometryIntent, Resolution, TopologyKey, TopologyKind,
+        resolve,
+    },
 };
 use multicad_kernel::{
     GeometryErrorKind, GeometryPolicy, HelicalThread, MeshOptions, PlaneFrame, RigidTransform,
     Solid,
+    rust_kernel::{Circle, cylinder::AxialCylinder, parse_length_mm},
 };
 
 fn metric(left_hand: bool, starts: u32) -> HelicalThread {
@@ -126,4 +130,155 @@ fn manufacturing_mesh_keeps_all_real_face_ordinals_and_closed_indexed_shells() {
     let faces: std::collections::BTreeSet<_> = receipt.mesh.face_indices.iter().copied().collect();
     assert_eq!(faces, (0..20).collect());
     assert_eq!(compound.solid_count().unwrap(), 2);
+}
+
+fn cylindrical_stock(feature: EntityId, frame: PlaneFrame) -> Solid {
+    let length = |text| parse_length_mm(text).unwrap();
+    let zero = length("0 mm");
+    let stock = AxialCylinder::new(
+        feature.uuid_bits(),
+        Circle::new([zero; 2], length("6 mm")).unwrap(),
+        zero,
+        length("10 mm"),
+    )
+    .unwrap();
+    Solid::from_axial_cylinder_sweep(
+        stock,
+        frame,
+        [1., 2.],
+        false,
+        multicad_core::references::Origin {
+            source: EntityId::new(),
+            role: "authored.circle".into(),
+        },
+        GeometryPolicy::default(),
+    )
+    .unwrap()
+}
+
+#[test]
+fn reverse_through_thread_keeps_stock_caps_wall_and_rims_and_removes_real_material() {
+    let policy = GeometryPolicy::default();
+    let stock_id = EntityId::new();
+    let owner = EntityId::new();
+    let stock_frame = PlaneFrame {
+        origin: [21., 30., 50.],
+        u: [0., 1., 0.],
+        v: [0., 0., 1.],
+    };
+    let stock = cylindrical_stock(stock_id, stock_frame);
+    let frame = PlaneFrame {
+        origin: [31., 30., 50.],
+        u: [0., 0., 1.],
+        v: [0., 1., 0.],
+    };
+    let mut spec = metric(false, 1);
+    spec.length_mm = 10.;
+    let tool = Solid::rust_helical_thread(spec, None, owner, frame, policy).unwrap();
+    let cut = stock
+        .rust_cut_internal_thread(spec, 1., owner, frame, policy)
+        .unwrap();
+    assert_eq!(cut.bounds().unwrap(), stock.bounds().unwrap());
+    let removed = stock.volume_mm3().unwrap() - cut.volume_mm3().unwrap();
+    assert!((removed - tool.volume_mm3().unwrap()).abs() < 1e-9);
+    assert!(!cut.rust_thread_contains([28.5, 30., 53.8]).unwrap());
+    assert!(cut.rust_thread_contains([27.875, 30., 53.8]).unwrap());
+    assert!(cut.rust_thread_contains([31., 30., 55.]).unwrap());
+    assert!(!cut.rust_thread_contains([26., 30., 50.]).unwrap());
+    assert!(!cut.rust_thread_contains([26., 30., 57.]).unwrap());
+    assert_eq!(cut.solid_count().unwrap(), 1);
+    let before = stock.topology_snapshot(stock_id, 0).unwrap();
+    let after = cut.topology_snapshot(owner, 1).unwrap();
+    for element in &before.elements {
+        let mut intent = GeometryIntent::capture(&before, element.key).unwrap();
+        if let Some(anchor) = element.frames.first() {
+            intent.attachment = Some(Attachment {
+                anchor: anchor.origin.clone(),
+                offset_mm: [0.; 3],
+                angle_rad: 0.,
+            });
+        }
+        let Resolution::Resolved {
+            key,
+            frame,
+            geometry,
+        } = resolve(&intent, &after, 1)
+        else {
+            panic!("Original receiving topology was lost for {:?}", element.key);
+        };
+        let expected_ordinal = match (element.key.kind, element.key.ordinal) {
+            (TopologyKind::Face, 0 | 1) => 1 - element.key.ordinal,
+            (TopologyKind::Face, 2) => 6,
+            (TopologyKind::Edge, ordinal) => 12 + ordinal,
+            _ => unreachable!(),
+        };
+        assert_eq!(
+            key,
+            TopologyKey {
+                ordinal: expected_ordinal,
+                ..element.key
+            }
+        );
+        assert_eq!(frame, element.frames.first().map(|anchor| anchor.frame));
+        if let Some(AnalyticGeometry::CircularArc { .. }) = element.geometry {
+            assert_eq!(geometry, element.geometry);
+        }
+    }
+    assert_eq!(cut.display_edges(0.05).unwrap().len(), 14);
+    let receipt = cut
+        .manufacturing_mesh_with_receipt(MeshOptions::default())
+        .unwrap();
+    assert_eq!(receipt.edge_pairs as usize * 2, receipt.mesh.indices.len());
+    let faces: std::collections::BTreeSet<_> = receipt.mesh.face_indices.into_iter().collect();
+    assert_eq!(faces, (0..7).collect());
+}
+
+#[test]
+fn unsupported_stock_placement_and_insufficient_wall_fail_without_changing_stock() {
+    let policy = GeometryPolicy::default();
+    let stock_id = EntityId::new();
+    let stock = cylindrical_stock(stock_id, PlaneFrame::default());
+    let owner = EntityId::new();
+    let mut spec = metric(true, 2);
+    spec.length_mm = 10.;
+    let displaced = PlaneFrame {
+        origin: [0.1, 0., 0.],
+        ..PlaneFrame::default()
+    };
+    for (spec, frame) in [
+        (spec, displaced),
+        (
+            HelicalThread {
+                length_mm: 8.,
+                ..spec
+            },
+            PlaneFrame::default(),
+        ),
+        (
+            spec,
+            PlaneFrame {
+                v: [0., 0., 1.],
+                ..PlaneFrame::default()
+            },
+        ),
+    ] {
+        let Err(cause) = stock.rust_cut_internal_thread(spec, 1., owner, frame, policy) else {
+            panic!("Incompatible receiving cylinder was accepted");
+        };
+        assert_eq!(cause.kind, GeometryErrorKind::Unsupported);
+    }
+    for (minimum_wall, feature) in [(2.1, owner), (1., stock_id)] {
+        let Err(cause) = stock.rust_cut_internal_thread(
+            spec,
+            minimum_wall,
+            feature,
+            PlaneFrame::default(),
+            policy,
+        ) else {
+            panic!("Invalid through-thread was accepted");
+        };
+        assert_eq!(cause.kind, GeometryErrorKind::Input);
+    }
+    assert_eq!(stock.faces().unwrap().len(), 3);
+    assert!((stock.volume_mm3().unwrap() - 360. * std::f64::consts::PI).abs() < 1e-9);
 }

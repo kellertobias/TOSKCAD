@@ -1,6 +1,9 @@
 //! Placed analytic thread body, stable boundary identities and display curves.
 use super::*;
-use crate::{HelicalThread, rust_prism_topology::position};
+use crate::{
+    HelicalThread,
+    rust_prism_topology::{cylinder_snapshot, position},
+};
 use multicad_core::references::{
     AnalyticGeometry, AnchoredFrame, ReferenceFrame, TopologyElement, TopologyKey, TopologyKind,
     TopologySnapshot,
@@ -9,7 +12,10 @@ use multicad_rust_kernel::{
     helical_thread::{Spec, Thread, ThreadError},
     helical_thread_mesh,
 };
-use std::{collections::BTreeSet, f64::consts::TAU};
+use std::{
+    collections::BTreeSet,
+    f64::consts::{PI, TAU},
+};
 
 type Point = [f64; 3];
 const OPERATION: &str = "Rust helical thread";
@@ -18,12 +24,50 @@ const BAND_NAMES: [&str; 4] = ["lower", "crest", "upper", "root"];
 const MAX_DISPLAY_EDGE_POINTS: usize = 500_000;
 
 pub(crate) struct HelicalBody {
-    pub(super) geometry: Thread,
+    geometry: Thread,
     pub(super) feature: EntityId,
+    stock: Option<BoreStock>,
     // Exact face definitions are retained by phase and trim. These detached
     // area and centroid properties come from smooth per-band integrals.
     local_faces: Vec<(Point, f64)>,
     rails: Vec<f64>,
+}
+
+struct BoreStock {
+    cylinder: AxialCylinder,
+    frame_in_thread: PlaneFrame,
+    sketch: Option<Rc<CylinderSketch>>,
+    reversed: bool,
+}
+
+impl BoreStock {
+    fn radius(&self) -> f64 {
+        self.cylinder.circle().radius().as_f64()
+    }
+
+    fn topology(
+        &self,
+        frame: PlaneFrame,
+        owner: EntityId,
+        revision: u64,
+    ) -> Result<TopologySnapshot, GeometryError> {
+        let axes = [frame.u, frame.v, frame.normal()];
+        let direction =
+            |local: Point| std::array::from_fn(|i| dot(local, axes.map(|axis| axis[i])));
+        let placed = PlaneFrame {
+            origin: position(frame, self.frame_in_thread.origin),
+            u: direction(self.frame_in_thread.u),
+            v: direction(self.frame_in_thread.v),
+        };
+        cylinder_snapshot(
+            &self.cylinder,
+            placed,
+            self.sketch.as_deref(),
+            owner,
+            revision,
+        )
+        .map_err(|e| error(OPERATION, GeometryErrorKind::InvalidResult, e))
+    }
 }
 
 impl Solid {
@@ -34,6 +78,109 @@ impl Solid {
         feature: EntityId,
         frame: PlaneFrame,
         policy: GeometryPolicy,
+    ) -> Result<Self, GeometryError> {
+        Self::rust_helical_body(spec, root_radius_mm, feature, frame, policy, None)
+    }
+
+    /// Drill and thread through an entire coaxial Rust cylinder. The unchanged
+    /// outer wall and both cap attachment frames retain their authored origins.
+    pub fn rust_cut_internal_thread(
+        &self,
+        mut spec: HelicalThread,
+        minimum_wall_mm: f64,
+        feature: EntityId,
+        frame: PlaneFrame,
+        policy: GeometryPolicy,
+    ) -> Result<Self, GeometryError> {
+        policy.validate()?;
+        frame.checked(policy)?;
+        let SolidBody::AxialCylinder(cylinder, stock_frame, sketch) = &self.body else {
+            return Err(error(
+                OPERATION,
+                GeometryErrorKind::Unsupported,
+                "A through-thread requires one analytic cylindrical receiving solid",
+            ));
+        };
+        let stock_frame = *stock_frame;
+        let height = cylinder.height().as_f64();
+        let normal = frame.normal();
+        let stock_normal = stock_frame.normal();
+        let alignment = dot(normal, stock_normal);
+        let reversed = alignment < 0.;
+        let cap = if reversed { height } else { 0. };
+        let start = position(stock_frame, [0., 0., cap]);
+        let end = position(stock_frame, [0., 0., height - cap]);
+        let requested_end = position(frame, [0., 0., spec.length_mm]);
+        let distance = |a: Point, b: Point| {
+            let [x, y, z] = std::array::from_fn(|i| a[i] - b[i]);
+            x.hypot(y).hypot(z)
+        };
+        if self.policy != policy
+            || policy.boolean_fuzzy_mm != 0.
+            || !spec.length_mm.is_finite()
+            || (alignment.abs() - 1.).abs() > 1e-10
+            || distance(start, frame.origin) > policy.linear_tolerance_mm
+            || distance(end, requested_end) > policy.linear_tolerance_mm
+        {
+            return Err(error(
+                OPERATION,
+                GeometryErrorKind::Unsupported,
+                "A through-thread must span the complete coaxial cylinder under the same unfuzzed geometry policy",
+            ));
+        }
+        if !minimum_wall_mm.is_finite()
+            || minimum_wall_mm < 0.
+            || cylinder.circle().radius().as_f64() - spec.major_radius_mm
+                < minimum_wall_mm.max(policy.minimum_feature_mm)
+        {
+            return Err(error(
+                OPERATION,
+                GeometryErrorKind::Input,
+                "The receiving cylinder has insufficient wall outside the thread crest",
+            ));
+        }
+        if cylinder.feature() == feature.uuid_bits() {
+            return Err(error(
+                OPERATION,
+                GeometryErrorKind::Input,
+                "The thread and receiving feature identities must be distinct",
+            ));
+        }
+
+        // Match the stock caps exactly. Preserve the thread's angular clocking
+        // by projecting its authored U onto the stock plane.
+        let axis = stock_normal.map(|value| if reversed { -value } else { value });
+        let [x, y] = [dot(frame.u, stock_frame.u), dot(frame.u, stock_frame.v)];
+        let length = x.hypot(y);
+        let u = std::array::from_fn(|i| (x * stock_frame.u[i] + y * stock_frame.v[i]) / length);
+        let v = cross(axis, u);
+        let placed = PlaneFrame {
+            origin: start,
+            u,
+            v,
+        };
+        let local_direction = |axis| [dot(u, axis), dot(v, axis), 0.];
+        let stock = BoreStock {
+            cylinder: **cylinder,
+            frame_in_thread: PlaneFrame {
+                origin: [0., 0., cap],
+                u: local_direction(stock_frame.u),
+                v: local_direction(stock_frame.v),
+            },
+            sketch: sketch.clone(),
+            reversed,
+        };
+        spec.length_mm = height;
+        Self::rust_helical_body(spec, None, feature, placed, policy, Some(stock))
+    }
+
+    fn rust_helical_body(
+        spec: HelicalThread,
+        root_radius_mm: Option<f64>,
+        feature: EntityId,
+        frame: PlaneFrame,
+        policy: GeometryPolicy,
+        stock: Option<BoreStock>,
     ) -> Result<Self, GeometryError> {
         policy.validate()?;
         frame.checked(policy)?;
@@ -88,7 +235,7 @@ impl Solid {
                 "Helical thread exceeds the turn budget",
             ),
         })?;
-        let placed = HelicalBody::new(geometry, feature);
+        let placed = HelicalBody::new(geometry, feature, stock);
         let bounds = placed.bounds(frame);
         policy.point(bounds.min)?;
         policy.point(bounds.max)?;
@@ -119,9 +266,7 @@ impl Solid {
         })?;
         let offset = std::array::from_fn(|i| point_mm[i] - frame.origin[i]);
         let local = [frame.u, frame.v, frame.normal()].map(|axis| dot(axis, offset));
-        Ok(body
-            .geometry
-            .contains(local, self.policy.linear_tolerance_mm))
+        Ok(body.contains(local, self.policy.linear_tolerance_mm))
     }
 }
 
@@ -160,12 +305,15 @@ fn integral<const N: usize>(a: f64, b: f64, function: impl Fn(f64) -> [f64; N]) 
 }
 
 impl HelicalBody {
-    fn new(geometry: Thread, feature: EntityId) -> Self {
+    fn new(geometry: Thread, feature: EntityId, stock: Option<BoreStock>) -> Self {
         let spec = geometry.spec();
         let breaks = geometry.profile_breaks();
         let height = spec.length_mm;
         let rate = geometry.helical_rate();
-        let cap_area = geometry.volume_mm3() / height;
+        let hole_area = geometry.volume_mm3() / height;
+        let cap_area = stock
+            .as_ref()
+            .map_or(hole_area, |stock| PI * stock.radius().powi(2) - hole_area);
         let half_twist = height / (2. * rate);
         let spin_average = half_twist.sin() / half_twist;
         let mut cap_moment = [0.; 2];
@@ -194,7 +342,8 @@ impl HelicalBody {
             }
         }
         let cap_center = |z: f64| {
-            let [x, y] = cap_moment.map(|moment| moment / (3. * rate.abs() * cap_area));
+            let sign = if stock.is_some() { -1. } else { 1. };
+            let [x, y] = cap_moment.map(|moment| sign * moment / (3. * rate.abs() * cap_area));
             let (sin, cos) = (z / rate).sin_cos();
             [x * cos - y * sin, x * sin + y * cos, z]
         };
@@ -205,6 +354,9 @@ impl HelicalBody {
             let y_mid = (x * sin + y * cos) * spin_average / area;
             ([x_mid, y_mid, height / 2.], area * height / rate.abs())
         }));
+        if let Some(stock) = &stock {
+            local_faces.push(([0., 0., height / 2.], TAU * stock.radius() * height));
+        }
         let rails = (0..spec.starts)
             .flat_map(|period| {
                 breaks[1..5]
@@ -215,16 +367,45 @@ impl HelicalBody {
         Self {
             geometry,
             feature,
+            stock,
             local_faces,
             rails,
         }
     }
 
+    pub(super) fn volume_mm3(&self) -> f64 {
+        self.stock.as_ref().map_or_else(
+            || self.geometry.volume_mm3(),
+            |stock| PI * stock.cylinder.volume_factor().as_f64() - self.geometry.volume_mm3(),
+        )
+    }
+
+    fn contains(&self, local: Point, tolerance: f64) -> bool {
+        let Some(stock) = &self.stock else {
+            return self.geometry.contains(local, tolerance);
+        };
+        let [x, y, z] = local;
+        let length = self.geometry.spec().length_mm;
+        let radius = x.hypot(y);
+        z >= -tolerance
+            && z <= length + tolerance
+            && radius <= stock.radius() + tolerance
+            && radius >= self.geometry.radius(y.atan2(x), z.clamp(0., length)) - tolerance
+    }
+
     pub(super) fn bounds(&self, frame: PlaneFrame) -> Bounds {
         let normal = frame.normal();
         let support = |i: usize, sign: f64| {
-            self.geometry
-                .support([frame.u[i], frame.v[i], normal[i]].map(|x| x * sign))
+            self.stock.as_ref().map_or_else(
+                || {
+                    self.geometry
+                        .support([frame.u[i], frame.v[i], normal[i]].map(|x| x * sign))
+                },
+                |stock| {
+                    stock.radius() * frame.u[i].hypot(frame.v[i])
+                        + (sign * normal[i] * self.geometry.spec().length_mm).max(0.)
+                },
+            )
         };
         Bounds {
             min: std::array::from_fn(|i| frame.origin[i] - support(i, -1.)),
@@ -405,6 +586,44 @@ impl HelicalBody {
                 });
             }
         }
+        if let Some(stock) = &self.stock {
+            let authored = stock.topology(frame, owner, revision)?;
+            for mut element in authored.elements {
+                match element.key {
+                    TopologyKey {
+                        kind: TopologyKind::Face,
+                        ordinal: 0 | 1,
+                    } => {
+                        let index = element.key.ordinal as usize ^ usize::from(stock.reversed);
+                        let cap = &mut elements[index];
+                        cap.origins.extend(element.origins);
+                        cap.boundary.extend(element.boundary);
+                        cap.frames.extend(element.frames);
+                    }
+                    TopologyKey {
+                        kind: TopologyKind::Face,
+                        ordinal: 2,
+                    } => {
+                        element.key.ordinal = (2 + count) as u32;
+                        elements.push(element);
+                    }
+                    TopologyKey {
+                        kind: TopologyKind::Edge,
+                        ..
+                    } => {
+                        element.key.ordinal += (3 * count) as u32;
+                        elements.push(element);
+                    }
+                    _ => {
+                        return Err(error(
+                            OPERATION,
+                            GeometryErrorKind::InvalidResult,
+                            "Unexpected analytic receiving cylinder topology",
+                        ));
+                    }
+                }
+            }
+        }
         let snapshot = TopologySnapshot {
             owner,
             revision,
@@ -475,7 +694,31 @@ impl HelicalBody {
                 points_mm,
             });
         }
+        if let Some(stock) = &self.stock {
+            let authored = stock.topology(frame, self.feature, 0)?;
+            let rims = crate::rust_display::edges(authored, deflection)?;
+            edges.extend(rims.into_iter().map(|mut edge| {
+                edge.index += (3 * count) as u32;
+                edge
+            }));
+        }
         Ok(edges)
+    }
+
+    pub(super) fn volume_error_bound(
+        &self,
+        options: multicad_rust_kernel::display::Tessellation,
+    ) -> f64 {
+        self.stock.as_ref().map_or_else(
+            || helical_thread_mesh::volume_error_bound(&self.geometry, options),
+            |stock| {
+                helical_thread_mesh::bore_volume_error_bound(
+                    &self.geometry,
+                    stock.radius(),
+                    options,
+                )
+            },
+        )
     }
 
     pub(super) fn mesh(
@@ -483,10 +726,10 @@ impl HelicalBody {
         frame: PlaneFrame,
         options: multicad_rust_kernel::display::Tessellation,
     ) -> Result<ffi::Mesh, GeometryError> {
-        crate::rust_display::placed_mesh(
-            helical_thread_mesh::tessellate(&self.geometry, options),
-            frame,
-            false,
-        )
+        let mesh = self.stock.as_ref().map_or_else(
+            || helical_thread_mesh::tessellate(&self.geometry, options),
+            |stock| helical_thread_mesh::tessellate_bore(&self.geometry, stock.radius(), options),
+        );
+        crate::rust_display::placed_mesh(mesh, frame, false)
     }
 }
