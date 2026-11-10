@@ -9,11 +9,11 @@ const MAX_PATH_POINTS: usize = 65;
 const MAX_SECTION_VERTICES: usize = MAX_PIECE_FACES - 2;
 const Z: Point = [0., 0., 1.];
 
-/// One convex material cell of a miter sweep, with face indices in piece order.
+/// One convex material cell of a profile operation, with face labels in piece order.
 /// Start and end caps describe this segment even when the adjacent segment
 /// covers them. `Partition` walls only subdivide the interior of the segment.
 #[derive(Clone, Debug)]
-pub struct MiterCell {
+pub struct ProfileCell {
     pub piece: ConvexPiece,
     pub segment: usize,
     pub source_faces: Vec<ProfileFace>,
@@ -32,7 +32,7 @@ pub fn miter_sweep(
     section: &[[f64; 2]],
     path: &[[f64; 3]],
     tolerance_mm: f64,
-) -> Result<(Union, Vec<MiterCell>), Error> {
+) -> Result<(Union, Vec<ProfileCell>), Error> {
     validate_tolerance(tolerance_mm)?;
     if section.len() > MAX_SECTION_VERTICES || path.len() > MAX_PATH_POINTS {
         return Err(Error::Limit);
@@ -108,7 +108,7 @@ pub fn miter_sweep(
         }
     }
 
-    let mut material: Vec<MiterCell> = Vec::with_capacity(cell_count);
+    let mut material: Vec<ProfileCell> = Vec::with_capacity(cell_count);
     let mut faces = Vec::with_capacity(2 + legs * count);
     let mut budget = MAX_WORK;
     for (source, &tangent) in tangents.iter().enumerate() {
@@ -152,7 +152,7 @@ pub fn miter_sweep(
         let wall_normals = if partition.is_empty() {
             let mut source_faces = vec![ProfileFace::StartCap, ProfileFace::EndCap];
             source_faces.extend((0..count).map(ProfileFace::Edge));
-            material.push(MiterCell {
+            material.push(ProfileCell {
                 piece: piece(&rings)?,
                 segment: source,
                 source_faces,
@@ -172,7 +172,7 @@ pub fn miter_sweep(
                         wall_normals[edge] = plane.normal;
                     }
                 }
-                material.push(MiterCell {
+                material.push(ProfileCell {
                     piece,
                     segment: source,
                     source_faces,
@@ -234,35 +234,51 @@ fn partition_section(
         return Ok(Vec::new());
     }
 
-    let ring: Vec<_> = (0..count)
+    triangulate_section(section, clockwise, tolerance_mm)
+}
+
+pub(super) fn triangulate_section(
+    section: &[[f64; 2]],
+    clockwise: bool,
+    tolerance_mm: f64,
+) -> Result<Vec<[usize; 3]>, Error> {
+    certify_section(section, clockwise, tolerance_mm)?;
+    let ring: Vec<_> = (0..section.len())
         .map(|i| {
-            let edge = [i, (i + 1) % count];
+            let edge = [i, (i + 1) % section.len()];
             if clockwise { [edge[1], edge[0]] } else { edge }
         })
         .collect();
-    let edges = ring.iter().map(|&[a, b]| Edge::Line {
-        a: section[a],
-        b: section[b],
-    });
-    let certified = if clockwise {
-        edges.rev().collect()
-    } else {
-        edges.collect()
-    };
-    // Prove the line ring at model tolerance before triangulating its interior.
-    Sweep::new(vec![certified], 1., tolerance_mm, tolerance_mm.next_up()).map_err(|error| {
-        match error {
-            normal_sweep::Error::Limit => Error::Limit,
-            _ => Error::Invalid,
-        }
-    })?;
     let points = section.iter().map(|&[x, y]| Point2::new(x, y)).collect();
     triangulate_region(points, &ring, 0)
         .map(|region| region.triangles)
         .map_err(|_| Error::Unresolved)
 }
 
-fn triangle_rings(triangle: [usize; 3], low: usize, high: usize) -> Vec<Vec<usize>> {
+pub(super) fn certify_section(
+    section: &[[f64; 2]],
+    clockwise: bool,
+    tolerance_mm: f64,
+) -> Result<(), Error> {
+    let edges = (0..section.len()).map(|i| {
+        let [a, b] = [section[i], section[(i + 1) % section.len()]];
+        let (a, b) = if clockwise { (b, a) } else { (a, b) };
+        Edge::Line { a, b }
+    });
+    let certified = if clockwise {
+        edges.rev().collect()
+    } else {
+        edges.collect()
+    };
+    Sweep::new(vec![certified], 1., tolerance_mm, tolerance_mm.next_up())
+        .map(|_| ())
+        .map_err(|error| match error {
+            normal_sweep::Error::Limit => Error::Limit,
+            _ => Error::Invalid,
+        })
+}
+
+pub(super) fn triangle_rings(triangle: [usize; 3], low: usize, high: usize) -> Vec<Vec<usize>> {
     let [a, b, c] = triangle;
     vec![
         vec![low + c, low + b, low + a],
@@ -273,7 +289,7 @@ fn triangle_rings(triangle: [usize; 3], low: usize, high: usize) -> Vec<Vec<usiz
     ]
 }
 
-fn triangle_sources([a, b, c]: [usize; 3], count: usize) -> Vec<ProfileFace> {
+pub(super) fn triangle_sources([a, b, c]: [usize; 3], count: usize) -> Vec<ProfileFace> {
     let mut sources = vec![ProfileFace::StartCap, ProfileFace::EndCap];
     sources.extend([[a, b], [b, c], [c, a]].map(|[a, b]| {
         if (a + 1) % count == b {

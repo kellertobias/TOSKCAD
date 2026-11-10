@@ -20,7 +20,8 @@ mod verify_boundary;
 mod vertical_profile;
 pub use loft::ruled_loft;
 pub use material::CutMaterial;
-pub use miter_sweep::{MiterCell, miter_sweep};
+pub use miter_sweep::{ProfileCell, miter_sweep};
+pub type MiterCell = ProfileCell;
 pub use slab::Slab;
 pub use vertical_profile::{ProfileFace, ProfilePiece};
 

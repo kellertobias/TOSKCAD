@@ -1,18 +1,21 @@
 use super::*;
+use miter_sweep::{certify_section, triangulate_section};
+
+mod partition;
 
 const MAX_SECTIONS: usize = 16;
 const MAX_SECTION_VERTICES: usize = MAX_PIECE_FACES - 2;
 
-/// Join corresponding vertices of consistently wound convex XY sections.
+/// Join corresponding vertices of consistently wound simple XY sections.
 /// Heights are strictly increasing and every ruled side must be planar.
 /// The exterior keeps authored side ordinals (`2 + edge`), plus the bottom
 /// (`0`) of the first slab and top (`1`) of the last slab. The returned convex
-/// cells meet at complete section caps and can be used by later Booleans.
+/// cells partition the same material for later Booleans.
 pub fn ruled_loft(
     sections: &[Vec<[f64; 2]>],
     heights: &[f64],
     tolerance_mm: f64,
-) -> Result<(Union, Vec<ConvexPiece>), Error> {
+) -> Result<(Union, Vec<ProfileCell>), Error> {
     validate_tolerance(tolerance_mm)?;
     if sections.len() > MAX_SECTIONS || sections.iter().any(|s| s.len() > MAX_SECTION_VERTICES) {
         return Err(Error::Limit);
@@ -47,9 +50,17 @@ pub fn ruled_loft(
         .map(|edge| cross(sub(edge[0], origin), sub(edge[1], origin))[2])
         .sum::<f64>()
         < 0.;
-    for ring in vertices.chunks_exact(count) {
-        prove_convex_ring(ring, clockwise)?;
-    }
+    let triangles = if vertices
+        .chunks_exact(count)
+        .all(|ring| prove_convex_ring(ring, clockwise).is_ok())
+    {
+        Vec::new()
+    } else {
+        for section in &sections[1..] {
+            certify_section(section, clockwise, tolerance_mm)?;
+        }
+        triangulate_section(&sections[0], clockwise, tolerance_mm)?
+    };
 
     let slab_count = heights.len() - 1;
     let mut material = Vec::with_capacity(slab_count);
@@ -71,29 +82,53 @@ pub fn ruled_loft(
                 ring.reverse();
             }
         }
-        let cell = ConvexPiece::new(
-            rings
-                .iter()
-                .map(|ring| ring.iter().map(|&vertex| vertices[vertex]).collect())
-                .collect(),
-            tolerance_mm,
-        )?;
-
-        // The convex slab occupies only its interval of Z. Its only possible
-        // contact with another slab is the corresponding common cap, whose
-        // orientation and vertices are identical up to reversal.
-        for (source_face, vertices) in rings.into_iter().enumerate() {
+        let cell_start = material.len();
+        if triangles.is_empty() {
+            let piece = ConvexPiece::new(
+                rings
+                    .iter()
+                    .map(|ring| ring.iter().map(|&vertex| vertices[vertex]).collect())
+                    .collect(),
+                tolerance_mm,
+            )?;
+            let source_faces = [ProfileFace::StartCap, ProfileFace::EndCap]
+                .into_iter()
+                .chain((0..count).map(ProfileFace::Edge))
+                .collect();
+            material.push(ProfileCell {
+                piece,
+                segment: source,
+                source_faces,
+            });
+        } else {
+            material.extend(partition::slab(
+                &vertices,
+                source,
+                count,
+                &triangles,
+                tolerance_mm,
+                MAX_PIECES - cell_start,
+            )?);
+        }
+        // Slabs occupy distinct height intervals. Keep only the exterior caps
+        // and the original ruled walls in the published boundary.
+        for (source_face, ring) in rings.into_iter().enumerate() {
             if (source_face == 0 && source != 0) || (source_face == 1 && source != slab_count - 1) {
                 continue;
             }
+            let normal = if triangles.is_empty() {
+                material[cell_start].piece.planes[source_face].normal
+            } else {
+                let points: Vec<_> = ring.iter().map(|&vertex| vertices[vertex]).collect();
+                planar_ring(&points, tolerance_mm)?.0.normal
+            };
             faces.push(Face {
-                vertices,
-                normal: cell.planes[source_face].normal,
+                vertices: ring,
+                normal,
                 source,
                 source_face,
             });
         }
-        material.push(cell);
     }
     let boundary = Union::from_indexed_boundary(vertices, faces)?;
     Ok((boundary, material))

@@ -61,7 +61,7 @@ fn validate_origins(
 }
 
 impl Solid {
-    /// Loft ordered matching convex polygon sections with planar ruled sides.
+    /// Loft ordered matching polygon sections with planar ruled sides.
     pub fn rust_loft_ruled_polygons_named(
         profiles: &[CurvedProfile],
         feature: EntityId,
@@ -180,7 +180,7 @@ impl Solid {
         let (geometry, material) = ruled_loft(&sections, &heights, tolerance).map_err(|cause| {
             match cause {
                 Error::Invalid => unsupported(
-                    "Rust ruled loft requires consistently wound convex sections and planar corresponding sides",
+                    "Rust ruled loft requires consistently wound simple sections and planar noncrossing sides",
                 ),
                 Error::Unresolved => error(
                     OPERATION,
@@ -190,16 +190,11 @@ impl Solid {
                 Error::Limit => error(OPERATION, GeometryErrorKind::Limit, "Loft exceeds the planar geometry budget"),
             }
         })?;
-        let source_faces: Vec<_> = [ProfileFace::StartCap, ProfileFace::EndCap]
-            .into_iter()
-            .chain((0..count).map(ProfileFace::Edge))
-            .collect();
         let material = Material::profile_cells(
             &geometry,
             material
                 .into_iter()
-                .enumerate()
-                .map(|(segment, piece)| (piece, segment, source_faces.clone())),
+                .map(|cell| (cell.piece, cell.segment, cell.source_faces)),
         );
         PlanarBooleanBody::build_labeled(
             geometry,

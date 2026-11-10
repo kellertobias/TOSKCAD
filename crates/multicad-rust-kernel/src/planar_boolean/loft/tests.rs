@@ -48,8 +48,8 @@ fn multi_station_taper_has_no_internal_caps_and_keeps_convex_cells() {
     assert_eq!(loft.vertices().len(), 12);
     assert_eq!(loft.faces().len(), 10);
     assert_eq!(cells.len(), 2);
-    assert_eq!(cells[0].bounds, [[0., 0., 0.], [5., 5., 2.]]);
-    assert_eq!(cells[1].bounds, [[1., 2., 2.], [5., 5., 8.]]);
+    assert_eq!(cells[0].piece.bounds, [[0., 0., 0.], [5., 5., 2.]]);
+    assert_eq!(cells[1].piece.bounds, [[1., 2., 2.], [5., 5., 8.]]);
     let caps: Vec<_> = loft
         .faces()
         .iter()
@@ -69,7 +69,8 @@ fn multi_station_taper_has_no_internal_caps_and_keeps_convex_cells() {
     // quadratically as (4−2t)(3−2t), giving 38 mm³ over 6 mm.
     assert!((loft.volume_mm3() - 62.).abs() < TOL);
     assert!((measured.signed_volume_mm3 - 62.).abs() < TOL);
-    let same = Union::new(&cells, TOL).unwrap();
+    let pieces: Vec<_> = cells.into_iter().map(|cell| cell.piece).collect();
+    let same = Union::new(&pieces, TOL).unwrap();
     assert_eq!(same.solid_count(), 1);
     assert!((same.volume_mm3() - loft.volume_mm3()).abs() < TOL);
 }
@@ -84,6 +85,74 @@ fn noncardinal_triangular_frustum_and_parallel_roundoff() {
     let (loft, _) = ruled_loft(&[base, top], &[0., 3.], TOL).unwrap();
     assert_eq!(loft.faces().len(), 5);
     assert!((loft.volume_mm3() - 17.5).abs() < TOL);
+}
+
+#[test]
+fn concave_u_loft_preserves_exact_caps_walls_and_boolean_material() {
+    let mut sections = [
+        vec![
+            [0., 0.],
+            [10., 0.],
+            [10., 8.],
+            [7., 8.],
+            [7., 2.],
+            [3., 2.],
+            [3., 8.],
+            [0., 8.],
+        ],
+        vec![
+            [1., -1.],
+            [12., -1.],
+            [12., 10.],
+            [9., 10.],
+            [9., 3.],
+            [4., 3.],
+            [4., 10.],
+            [1., 10.],
+        ],
+        Vec::new(),
+    ];
+    sections[2] = sections[1]
+        .iter()
+        .map(|&[x, y]| [0.75 * x + 1., 0.75 * y + 1.])
+        .collect();
+    // Each station interval varies linearly in width and height. Simpson
+    // integration of the rectangle minus its notch is exact.
+    let expected =
+        4. * (56. + 4. * 70.5 + 86.) / 6. + 6. * 86. * (1. + 0.75 + 0.75_f64.powi(2)) / 3.;
+    for reversed in [false, true] {
+        if reversed {
+            sections.iter_mut().for_each(|s| s.reverse());
+        }
+        let (shell, cells) = ruled_loft(&sections, &[0., 4., 10.], TOL).unwrap();
+        assert_eq!(shell.faces().len(), 18);
+        assert_eq!((shell.solid_count(), shell.shell_count()), (1, 1));
+        for (i, face) in shell.faces().iter().enumerate() {
+            let (section, role) = match i {
+                0 => (0, 0),
+                9 => (1, 1),
+                1..=8 => (0, i + 1),
+                _ => (1, i - 8),
+            };
+            assert_eq!((face.source, face.source_face), (section, role));
+            assert_eq!(face.vertices.len(), if role < 2 { 8 } else { 4 });
+        }
+        assert_eq!(cells.iter().filter(|cell| cell.segment == 0).count(), 18);
+        assert_eq!(cells.iter().filter(|cell| cell.segment == 1).count(), 6);
+        assert!((shell.volume_mm3() - expected).abs() < TOL);
+        let mesh = shell
+            .mesh(Tessellation {
+                deflection: 0.1,
+                angle: 0.2,
+                triangle_limit: 1_000,
+            })
+            .unwrap();
+        assert!((manufacturing::certify(&mesh).unwrap().signed_volume_mm3 - expected).abs() < TOL);
+        let pieces: Vec<_> = cells.into_iter().map(|cell| cell.piece).collect();
+        let material = Union::new(&pieces, TOL).unwrap();
+        assert_eq!(material.solid_count(), 1);
+        assert!((material.volume_mm3() - expected).abs() < TOL);
+    }
 }
 
 #[test]
@@ -124,7 +193,7 @@ fn rejects_oversized_nonmatching_and_unresolved_section_intervals() {
 }
 
 #[test]
-fn rejects_crossed_nonplanar_and_concave_ruled_faces() {
+fn rejects_crossed_and_nonplanar_ruled_faces() {
     let base = rectangle([0., 0.], [4., 3.]);
     let mut mismatches = [base.clone(), base.clone(), base.clone()];
     mismatches[0].rotate_left(2);
@@ -136,16 +205,39 @@ fn rejects_crossed_nonplanar_and_concave_ruled_faces() {
             Error::Invalid
         );
     }
-    let mut concave = base.clone();
-    concave.insert(1, [2., 1e-4]);
-    assert_eq!(
-        ruled_loft(&[concave.clone(), concave], &[0., 2.], 1e-3).unwrap_err(),
-        Error::Invalid
-    );
     let mut crossed = base.clone();
     crossed.swap(1, 2);
     assert_eq!(
         ruled_loft(&[crossed.clone(), crossed], &[0., 2.], TOL).unwrap_err(),
+        Error::Invalid
+    );
+}
+
+#[test]
+fn rejects_two_simple_profiles_whose_side_walls_cross_between_stations() {
+    let opposed_notches = |right: [f64; 2], left: [f64; 2]| {
+        vec![
+            [0., 0.],
+            [12., 0.],
+            [12., right[0]],
+            [4., right[0]],
+            [4., right[1]],
+            [12., right[1]],
+            [12., 12.],
+            [0., 12.],
+            [0., left[1]],
+            [8., left[1]],
+            [8., left[0]],
+            [0., left[0]],
+        ]
+    };
+    let a = opposed_notches([2., 4.], [8., 10.]);
+    let b = opposed_notches([8., 10.], [2., 4.]);
+    for profile in [&a, &b] {
+        certify_section(profile, false, TOL).unwrap();
+    }
+    assert_eq!(
+        ruled_loft(&[a, b], &[0., 4.], TOL).unwrap_err(),
         Error::Invalid
     );
 }
