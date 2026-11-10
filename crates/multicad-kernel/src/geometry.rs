@@ -1126,7 +1126,7 @@ impl Solid {
     }
     pub fn volume_mm3(&self) -> Result<f64, GeometryError> {
         if let Some((body, _)) = self.linear_body() {
-            return Ok(body.geometry.volume_mm3());
+            return Ok(body.volume_mm3());
         }
         if let Some((body, _)) = self.revolution_body() {
             return Ok(body.geometry.volume_mm3());
@@ -1374,11 +1374,9 @@ impl Solid {
                 false,
             ),
             SolidBody::Helical(body, frame) => body.mesh(*frame, rust_options),
-            SolidBody::Linear(body, frame) => crate::rust_display::placed_mesh(
-                multicad_rust_kernel::linear_sweep_mesh::tessellate(&body.geometry, rust_options),
-                *frame,
-                false,
-            ),
+            SolidBody::Linear(body, frame) => {
+                crate::rust_display::placed_mesh(body.mesh(rust_options), *frame, false)
+            }
             SolidBody::Revolved(body, frame) => body.mesh(*frame, rust_options),
             SolidBody::RustCompound(compound) => compound.mesh(options, usage),
             SolidBody::Orthogonal(body, frame) => {
@@ -1716,9 +1714,7 @@ impl Solid {
             SolidBody::Annulus(body, frame) => {
                 step::write_placed_annulus(&body.geometry, frame.origin, frame.u, frame.v)
             }
-            SolidBody::Linear(body, frame) => {
-                step::write_linear_sweep(&body.geometry, frame.origin, frame.u, frame.v)
-            }
+            SolidBody::Linear(body, frame) => body.step(*frame),
             SolidBody::Revolved(body, frame) => {
                 let (base, radius, height, bore) = body
                     .circular_sweep(*frame)

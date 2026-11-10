@@ -118,7 +118,6 @@ impl Solid {
         };
         frame.checked(policy)?;
         let dimension = |value| convert(value, policy.linear_tolerance_mm);
-        let height = dimension(height_mm)?;
         match profile {
             ImportProfile::LinearSweep { base, top } => {
                 let edges = base
@@ -132,6 +131,35 @@ impl Solid {
                 let sweep = multicad_rust_kernel::linear_sweep::Sweep::new(base, top, height_mm)
                     .map_err(|cause| invalid(format!("Invalid STEP linear sweep: {cause:?}")))?;
                 Self::from_linear_sweep(sweep, frame, feature, edges, [0.; 2], false, policy)
+            }
+            ImportProfile::TrimmedSweep {
+                rings,
+                direction,
+                travels,
+            } => {
+                let edges = rings
+                    .iter()
+                    .flat_map(|ring| {
+                        ring.iter()
+                            .zip(ring.iter().cycle().skip(1))
+                            .map(|(&a, &b)| (straight_origin(feature, frame, a, b), false))
+                    })
+                    .collect();
+                let sweep = multicad_rust_kernel::trimmed_sweep::TrimmedSweep::new(
+                    rings,
+                    direction,
+                    travels,
+                    policy.minimum_feature_mm,
+                )
+                .map_err(|cause| {
+                    invalid(format!(
+                        "Invalid STEP plane-terminated extrusion: {cause:?}"
+                    ))
+                })?;
+                for &point in sweep.rings().iter().flatten() {
+                    policy.length(sweep.travel(true, point))?;
+                }
+                Self::from_trimmed_linear_sweep(sweep, frame, None, feature, edges, policy)
             }
             ImportProfile::Annulus {
                 inner_radius_mm,
@@ -151,6 +179,7 @@ impl Solid {
                 )
             }
             ImportProfile::Cylinder { radius_mm } => {
+                let height = dimension(height_mm)?;
                 let zero = Rational::new(0, 1).expect("zero is representable");
                 let circle = Circle::new([zero; 2], dimension(radius_mm)?)
                     .map_err(|cause| invalid(format!("Invalid STEP circle: {cause:?}")))?;
@@ -167,6 +196,7 @@ impl Solid {
                 rings,
                 circular_holes,
             } => {
+                let height = dimension(height_mm)?;
                 let exact_rings = rings
                     .iter()
                     .map(|ring| {

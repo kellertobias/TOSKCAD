@@ -230,3 +230,108 @@ fn drafted_oblique_sweep_keeps_exact_miter_walls_and_step_geometry() {
     near(imported.volume_mm3().unwrap(), 498.);
     assert_eq!(imported.solid_count().unwrap(), 1);
 }
+
+#[test]
+fn negative_oblique_extrusion_to_a_sloped_plane_keeps_hole_and_face_frames() {
+    let policy = GeometryPolicy::default();
+    let feature = EntityId::new();
+    let (profile, origins) = profile(
+        PlaneFrame::default(),
+        &[[0., 0.], [10., 0.], [10., 6.], [0., 6.]],
+        &[[3., 2.], [3., 4.], [5., 4.], [5., 2.]],
+    );
+    let direction = [0.6, 0., -0.8];
+    let l = 1_f64.hypot(0.2);
+    let end = PlaneFrame {
+        origin: [0., 0., -10.],
+        u: [1. / l, 0., 0.2 / l],
+        ..PlaneFrame::default()
+    };
+    let native = Solid::extrude_curved_profile_to_plane_named(
+        &profile, direction, end, feature, &origins, policy,
+    )
+    .unwrap();
+    let rust = Solid::rust_extrude_to_planes_named(
+        &profile, direction, None, end, feature, &origins, policy,
+    )
+    .unwrap();
+    // Integrate the affine travel over the actual remaining sketch area.
+    let volume = 0.8 * (56. * 10. - 0.2 * (60. * 5. - 4. * 4.)) / 0.92;
+    compare(&rust, &native, feature, volume);
+    let rust_faces = rust.faces().unwrap();
+    let native_faces = native.faces().unwrap();
+    for face in rust_faces {
+        assert!(native_faces.iter().any(|native| {
+            native
+                .center_mm
+                .into_iter()
+                .zip(face.center_mm)
+                .all(|(a, b)| (a - b).abs() < 2e-6)
+        }));
+    }
+    let topology = rust.topology_snapshot(feature, 0).unwrap();
+    let cap = &topology
+        .elements
+        .iter()
+        .find(|e| e.key.kind == TopologyKind::Face && e.key.ordinal == 1)
+        .unwrap()
+        .frames[0]
+        .frame;
+    assert_eq!(cap.origin_mm, end.origin);
+    assert_eq!(cap.u, end.u);
+    assert_eq!(cap.v, end.v);
+    assert_eq!(rust.planar_face_contours(1, end).unwrap().loops.len(), 2);
+    let scratch = tempfile::tempdir().unwrap();
+    let path = scratch.path().join("sloped.step");
+    rust.write_step(&path).unwrap();
+    let native_path = scratch.path().join("native-sloped.step");
+    native.write_step(&native_path).unwrap();
+    for readback in [
+        Solid::read_step(&path, policy).unwrap(),
+        Solid::import_rust_step(&std::fs::read_to_string(&path).unwrap(), feature, policy).unwrap(),
+        Solid::import_rust_step(
+            &std::fs::read_to_string(&native_path).unwrap(),
+            feature,
+            policy,
+        )
+        .unwrap(),
+    ] {
+        near(readback.volume_mm3().unwrap(), volume);
+        assert_eq!(readback.faces().unwrap().len(), 10);
+    }
+}
+
+#[test]
+fn each_associative_end_must_clear_the_entire_working_sketch() {
+    let policy = GeometryPolicy::default();
+    let feature = EntityId::new();
+    let frame = PlaneFrame::default();
+    let (profile, origins) = profile(
+        frame,
+        &[[0., 0.], [10., 0.], [10., 6.], [0., 6.]],
+        &[[3., 2.], [3., 4.], [5., 4.], [5., 2.]],
+    );
+    let end = PlaneFrame {
+        origin: [0., 0., 10.],
+        ..frame
+    };
+    let crossing = PlaneFrame {
+        origin: [5., 0., 0.],
+        u: [0.8, 0., 0.6],
+        ..frame
+    };
+    for (start, end) in [(None, crossing), (Some(crossing), end), (Some(frame), end)] {
+        let error = Solid::rust_extrude_to_planes_named(
+            &profile,
+            [0., 0., 1.],
+            start,
+            end,
+            feature,
+            &origins,
+            policy,
+        )
+        .err()
+        .expect("crossing or coincident end must fail");
+        assert_eq!(error.kind, multicad_kernel::GeometryErrorKind::Input);
+    }
+}
