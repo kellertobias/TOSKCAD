@@ -9,6 +9,7 @@ use multicad_rust_kernel::{
 };
 use std::collections::{BTreeMap, BTreeSet};
 
+mod chamfer;
 mod scale;
 
 type Point = [f64; 3];

@@ -3,7 +3,9 @@
 use crate::{GeometryError, GeometryErrorKind, GeometryPolicy, Solid, ffi};
 use multicad_core::{
     document::EntityId,
-    references::{GeometryIntent, Origin, TopologyKey, TopologyKind},
+    references::{
+        AnalyticGeometry, GeometryIntent, Origin, TopologyKey, TopologyKind, TopologySnapshot,
+    },
 };
 use std::collections::BTreeSet;
 
@@ -78,13 +80,8 @@ impl Solid {
             }
         };
         let selections: Vec<_> = edges.iter().map(|edge| edge.edge.clone()).collect();
-        let indices = self.validate_treatment_edges(&selections, feature)?;
-        let available: BTreeSet<_> = self
-            .topology_snapshot(feature, 0)?
-            .elements
-            .into_iter()
-            .map(|e| e.key)
-            .collect();
+        let (indices, topology) = self.validate_treatment_edges(&selections, feature)?;
+        let available: BTreeSet<_> = topology.elements.iter().map(|e| e.key).collect();
         if edges.iter().any(|edge| {
             edge.reference_face.kind != TopologyKind::Face
                 || !available.contains(&edge.reference_face)
@@ -93,6 +90,27 @@ impl Solid {
                 GeometryErrorKind::Input,
                 "Each asymmetric chamfer edge needs a current explicitly selected reference face",
             ));
+        }
+        if self.uses_rust_geometry() {
+            let [selection] = edges else {
+                return Err(failure(
+                    GeometryErrorKind::Unsupported,
+                    "Rust sided chamfer requires one straight edge",
+                ));
+            };
+            let distance = if mode == 3 {
+                first * second.tan()
+            } else {
+                second
+            };
+            return self.rust_chamfer_box_edge(
+                &selection.edge,
+                Some(selection.reference_face),
+                [first, distance],
+                feature,
+                policy,
+                topology,
+            );
         }
         let sides: Vec<_> = edges
             .iter()
@@ -125,12 +143,27 @@ impl Solid {
             EdgeTreatment::Chamfer { distance_mm } => (1, distance_mm),
         };
         policy.length(size)?;
-        let indices = self.validate_treatment_edges(edges, feature)?;
+        let (indices, topology) = self.validate_treatment_edges(edges, feature)?;
         if self.uses_rust_geometry() {
             return match treatment {
-                EdgeTreatment::Chamfer { distance_mm } => {
-                    self.chamfer_polygon_bores(edges, distance_mm, policy)
-                }
+                EdgeTreatment::Chamfer { distance_mm } => match edges {
+                    [edge]
+                        if topology.elements.iter().any(|element| {
+                            element.key == edge.key
+                                && matches!(element.geometry, Some(AnalyticGeometry::Line { .. }))
+                        }) =>
+                    {
+                        self.rust_chamfer_box_edge(
+                            edge,
+                            None,
+                            [distance_mm; 2],
+                            feature,
+                            policy,
+                            topology,
+                        )
+                    }
+                    _ => self.chamfer_polygon_bores(edges, distance_mm, policy),
+                },
                 EdgeTreatment::Fillet { .. } => Err(failure(
                     GeometryErrorKind::Unsupported,
                     "Rust does not yet support fillets on existing solid edges",
@@ -153,7 +186,7 @@ impl Solid {
         &self,
         edges: &[TreatmentEdge],
         feature: EntityId,
-    ) -> Result<Vec<u32>, GeometryError> {
+    ) -> Result<(Vec<u32>, TopologySnapshot), GeometryError> {
         if feature.is_nil() || edges.is_empty() || edges.len() > 128 {
             return Err(failure(
                 GeometryErrorKind::Input,
@@ -202,6 +235,6 @@ impl Solid {
                 ));
             }
         }
-        Ok(edges.iter().map(|e| e.key.ordinal).collect())
+        Ok((edges.iter().map(|e| e.key.ordinal).collect(), snapshot))
     }
 }

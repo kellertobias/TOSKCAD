@@ -289,7 +289,70 @@ fn failed_native_geometry_missing_and_ambiguous_edges_preserve_the_previous_soli
     );
 }
 #[test]
-fn sided_distance_and_bound_angle_rebuild_the_same_explicit_native_edge() {
+fn symmetric_box_chamfer_preserves_the_linked_body_and_undo() {
+    let (mut session, input, edge) = fixture();
+    let mut request = EdgeTreatmentRequest::new(
+        input.clone(),
+        EdgeTreatmentParameters {
+            profile: EdgeTreatmentProfile::Chamfer,
+            size: length(2.),
+        },
+        vec![edge.clone()],
+    );
+    let original = session.document().clone();
+    let invalid = {
+        request.parameters.size = length(20.);
+        model::prepare_edge_treatment(&session, session.revision(), actor(), &request).unwrap()
+    };
+    assert!(
+        Compiler::default()
+            .compile(invalid.prepared.document(), session.revision())
+            .is_err()
+    );
+    assert_eq!(session.document(), &original);
+
+    request.parameters.size = length(2.);
+    let prepared =
+        model::prepare_edge_treatment(&session, session.revision(), actor(), &request).unwrap();
+    session.commit(prepared.prepared).unwrap();
+    let model = compile(&session);
+    near(
+        model.solid(input.body).unwrap().volume_mm3().unwrap(),
+        5980.,
+    );
+    assert_eq!(model.snapshot().occurrences.len(), 1);
+    for occurrence in model.snapshot().occurrences.keys() {
+        near(
+            model.solid(*occurrence).unwrap().volume_mm3().unwrap(),
+            5980.,
+        );
+    }
+    let generated = Origin {
+        source: request.feature,
+        role: format!("edge/{}", edge.id),
+    };
+    assert!(
+        model.snapshot().shapes[&request.feature]
+            .topology
+            .elements
+            .iter()
+            .any(|element| {
+                element.key.kind == TopologyKind::Face && element.origins.contains(&generated)
+            })
+    );
+    session.undo(session.revision(), actor()).unwrap();
+    near(
+        compile(&session)
+            .solid(input.body)
+            .unwrap()
+            .volume_mm3()
+            .unwrap(),
+        6000.,
+    );
+}
+
+#[test]
+fn sided_distance_and_bound_angle_rebuild_the_same_explicit_edge() {
     let (mut session, input, edge) = fixture();
     let before = session.document().clone();
     let base = compile(&session);
