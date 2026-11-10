@@ -77,6 +77,12 @@ impl Rational {
         (self.numerator, self.denominator)
     }
 
+    /// Read a signed ASCII decimal with an optional base-ten exponent.
+    /// Numeric tokens are limited to 256 bytes after trimming whitespace.
+    pub fn parse_decimal(text: &str) -> Result<Self, Error> {
+        decimal(text.trim())
+    }
+
     /// Approximate this value for consumers of floating-point coordinates.
     pub fn as_f64(self) -> f64 {
         self.numerator as f64 / self.denominator as f64
@@ -142,9 +148,21 @@ impl PartialOrd for Rational {
     }
 }
 
+const MAX_DECIMAL_BYTES: usize = 4096;
+// An unreduced numerator can grow by at most 10^places. With a nonzero
+// final digit, at least 2^places remains in the reduced denominator.
+const MAX_DECIMAL_DIGITS: usize = 1 + (MAX_COMPONENT.ilog10() + MAX_COMPONENT.ilog2()) as usize;
+
 fn decimal(text: &str) -> Result<Rational, Error> {
-    let text = text.trim();
-    let unsigned = text.strip_prefix(['+', '-']).unwrap_or(text);
+    if text.len() > MAX_DECIMAL_BYTES {
+        return Err(Error::OutOfRange);
+    }
+    let (mantissa, exponent) = text
+        .split_once(['e', 'E'])
+        .map_or((text, None), |(mantissa, exponent)| {
+            (mantissa, Some(exponent))
+        });
+    let unsigned = mantissa.strip_prefix(['+', '-']).unwrap_or(mantissa);
     let (whole, fraction) = unsigned.split_once('.').unwrap_or((unsigned, ""));
     if whole.is_empty() && fraction.is_empty()
         || !whole
@@ -154,23 +172,91 @@ fn decimal(text: &str) -> Result<Rational, Error> {
     {
         return Err(Error::InvalidLength);
     }
-    let fraction = fraction.trim_end_matches('0');
-    let places = u32::try_from(fraction.len()).map_err(|_| Error::OutOfRange)?;
-    let denominator = 10_i128.checked_pow(places).ok_or(Error::OutOfRange)?;
-    let whole = whole.trim_start_matches('0');
-    let magnitude = whole
-        .bytes()
-        .chain(fraction.bytes())
-        .try_fold(0_i128, |acc, b| {
-            acc.checked_mul(10)?.checked_add((b - b'0').into())
-        })
+    let exponent = exponent.map_or(Ok(0), decimal_exponent)?;
+    let count = whole.len() + fraction.len();
+    let bytes = || whole.bytes().chain(fraction.bytes());
+    let Some(first) = bytes().position(|byte| byte != b'0') else {
+        return Rational::new(0, 1);
+    };
+    let trailing = bytes().rev().take_while(|&byte| byte == b'0').count();
+    let mut storage = [0; MAX_DECIMAL_DIGITS];
+    let digits = storage
+        .get_mut(..count - first - trailing)
         .ok_or(Error::OutOfRange)?;
+    for (digit, byte) in digits.iter_mut().zip(bytes().skip(first)) {
+        *digit = byte - b'0';
+    }
+    let shift = i64::from(exponent) - fraction.len() as i64 + trailing as i64;
+    let (magnitude, denominator) = if shift >= 0 {
+        if shift > i64::from(MAX_COMPONENT.ilog10()) {
+            return Err(Error::OutOfRange);
+        }
+        (decimal_component(digits)? * 10_i128.pow(shift as u32), 1)
+    } else {
+        decimal_fraction(digits, -shift)?
+    };
     let numerator = if text.starts_with('-') {
         -magnitude
     } else {
         magnitude
     };
     Rational::normalize(numerator, denominator)
+}
+
+fn decimal_exponent(text: &str) -> Result<i32, Error> {
+    let digits = text.strip_prefix(['+', '-']).unwrap_or(text);
+    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return Err(Error::InvalidLength);
+    }
+    // A larger exponent cannot place a nonzero, bounded mantissa in range.
+    // Saturation lets an authored zero retain its value with any valid exponent.
+    Ok(text.parse().unwrap_or_else(|_| {
+        if text.starts_with('-') {
+            i32::MIN
+        } else {
+            i32::MAX
+        }
+    }))
+}
+
+fn decimal_component(digits: &[u8]) -> Result<i128, Error> {
+    digits
+        .iter()
+        .try_fold(0_i128, |value, &digit| {
+            let value = value * 10 + i128::from(digit);
+            (value <= MAX_COMPONENT).then_some(value)
+        })
+        .ok_or(Error::OutOfRange)
+}
+
+fn decimal_fraction(digits: &mut [u8], places: i64) -> Result<(i128, i128), Error> {
+    // The last significant digit is nonzero, so at least one prime retains
+    // all of its powers in the reduced denominator. Two gives the looser cap.
+    if places > i64::from(MAX_COMPONENT.ilog2()) {
+        return Err(Error::OutOfRange);
+    }
+    let mut twos = places as u32;
+    let mut fives = twos;
+    // Divide the decimal digits directly. The unreduced significand can
+    // exceed i128 even when both reduced components fit.
+    for (prime, remaining) in [(2, &mut twos), (5, &mut fives)] {
+        while *remaining > 0 && digits[digits.len() - 1].is_multiple_of(prime) {
+            let mut carry = 0;
+            for digit in &mut *digits {
+                let value = carry * 10 + *digit;
+                *digit = value / prime;
+                carry = value % prime;
+            }
+            *remaining -= 1;
+        }
+    }
+    if fives > MAX_COMPONENT.ilog(5) {
+        return Err(Error::OutOfRange);
+    }
+    Ok((
+        decimal_component(digits)?,
+        2_i128.pow(twos) * 5_i128.pow(fives),
+    ))
 }
 
 fn strip_unit(text: &str) -> Option<(&str, Rational)> {
@@ -190,20 +276,20 @@ fn strip_unit(text: &str) -> Option<(&str, Rational)> {
     }
 }
 
-/// Read a decimal or single fraction in millimeters or inches without a float
-/// conversion. A unit may follow the numerator or the whole fraction.
+/// Read a decimal, optionally in scientific notation, or a single fraction
+/// in millimeters or inches. A unit may follow the numerator or the fraction.
 pub fn parse_length_mm(text: &str) -> Result<Rational, Error> {
     if let Some((value, factor)) = strip_unit(text) {
         let length = match value.split_once('/') {
-            Some((a, b)) => decimal(a)?.checked_div(decimal(b)?)?,
-            None => decimal(value)?,
+            Some((a, b)) => Rational::parse_decimal(a)?.checked_div(Rational::parse_decimal(b)?)?,
+            None => Rational::parse_decimal(value)?,
         };
         return length.checked_mul(factor);
     }
     let (numerator, denominator) = text.split_once('/').ok_or(Error::InvalidLength)?;
     let (value, factor) = strip_unit(numerator).ok_or(Error::InvalidLength)?;
-    decimal(value)?
-        .checked_div(decimal(denominator)?)?
+    Rational::parse_decimal(value)?
+        .checked_div(Rational::parse_decimal(denominator)?)?
         .checked_mul(factor)
 }
 

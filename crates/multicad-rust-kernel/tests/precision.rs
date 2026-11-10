@@ -33,6 +33,70 @@ fn decimal_and_fractional_lengths_are_exact_before_any_geometry() {
 }
 
 #[test]
+fn authored_decimal_tokens_keep_their_exact_reduced_value() {
+    for (token, expected) in [
+        (".1", r(1, 10)),
+        ("1.", r(1, 1)),
+        ("1e-4", r(1, 10_000)),
+        (" +.125E+2 ", r(25, 2)),
+        ("-12.5000e-1", r(-5, 4)),
+        ("-0.e-2147483648", r(0, 1)),
+        ("0e99999999999999999999", r(0, 1)),
+        ("25e-19", r(1, 400_000_000_000_000_000)),
+        ("1e18", r(1_000_000_000_000_000_000, 1)),
+        ("10000000000000000000000000000000000000000e-40", r(1, 1)),
+        ("33554432e-25", r(1, 298_023_223_876_953_125)),
+        (
+            "173472347597680709441192448139190673828125e-59",
+            r(1, 576_460_752_303_423_488),
+        ),
+    ] {
+        assert_eq!(Rational::parse_decimal(token), Ok(expected), "{token}");
+    }
+    assert_eq!(parse_length_mm("1.2e+2 mm / 2e1"), Ok(r(6, 1)));
+    assert_eq!(parse_length_mm("5e-1/2e0 in"), Ok(r(127, 20)));
+}
+
+#[test]
+fn decimal_reader_rejects_malformed_and_unrepresentable_tokens() {
+    for token in [
+        "", ".", "e5", "1..2", "1e", "1e+", "1e-+2", "1e2e3", "1 e2", "1e 2", "1_2",
+    ] {
+        assert_eq!(
+            Rational::parse_decimal(token),
+            Err(Error::InvalidLength),
+            "{token}"
+        );
+    }
+    for token in [
+        "1e-2147483648",
+        "1e-2147483649",
+        "1e2147483648",
+        "1e-26",
+        "3e-19",
+        "99e17",
+        "1e19",
+        "10000000000000000001e-1",
+    ] {
+        assert_eq!(
+            Rational::parse_decimal(token),
+            Err(Error::OutOfRange),
+            "{token}"
+        );
+    }
+    let at_limit = format!("{}1", "0".repeat(4095));
+    assert_eq!(Rational::parse_decimal(&at_limit), Ok(r(1, 1)));
+    assert_eq!(
+        Rational::parse_decimal(&format!("0{at_limit}")),
+        Err(Error::OutOfRange)
+    );
+    assert_eq!(
+        Rational::parse_decimal(&"1".repeat(100)),
+        Err(Error::OutOfRange)
+    );
+}
+
+#[test]
 fn alternate_quantums_classify_ticks_without_rounding() {
     let coarse = Quantum::new(r(1, 100)).unwrap();
     let fine = Quantum::new(r(1, 1000)).unwrap();
@@ -82,7 +146,7 @@ fn circle_probe_keeps_irrational_intersections_in_exact_form() {
 
 #[test]
 fn invalid_arithmetic_and_geometry_fail_explicitly() {
-    for input in ["", "mm", "NaN mm", "1/2/3 mm", "--1 mm", "3", "1e3 mm"] {
+    for input in ["", "mm", "NaN mm", "1/2/3 mm", "--1 mm", "3", "1e+ mm"] {
         assert_eq!(parse_length_mm(input), Err(Error::InvalidLength), "{input}");
     }
     assert_eq!(parse_length_mm("1 / 0 mm"), Err(Error::DivisionByZero));
