@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { archiveName, sourceName, digest, targets, validateDescriptor, verifyPackageSet } from './package-release.mjs';
+import { archiveName, sourceName, digest, rustCandidateArchiveName, targets, validateDescriptor, validateRustCandidateDiagnostics, verifyPackageSet, verifyRustCandidate, zip } from './package-release.mjs';
 
 const version='1.2.3',commit='a'.repeat(40);
 function fixture(){
@@ -47,4 +47,77 @@ for(const scenario of ['missing target','changed bytes','wrong commit','wrong ta
 test('descriptor validation rejects an unknown target and invalid SemVer',()=>{
   assert.throws(()=>validateDescriptor({},version,commit,'unknown','hash'));
   assert.throws(()=>archiveName('../bad','linux-x64'));
+});
+
+const candidateTarget='macos-arm64';
+const candidateIdentity={version,commit,target:candidateTarget,kind:'rust-only-development-host',geometryBackend:'rust'};
+const candidateDiagnostics=`ToskCAD ${version}\nTarget: macos/aarch64\nSource commit: ${commit}\nCAD kernel: MultiCAD Rust\n`;
+
+test('candidate diagnostics demand exact version, commit, target and Rust-only kernel',()=>{
+  const verify=text=>validateRustCandidateDiagnostics(text,version,commit,candidateTarget);
+  verify(candidateDiagnostics);
+  verify(candidateDiagnostics.replaceAll('\n','\r\n'));
+  for(const text of [
+    candidateDiagnostics.replace(version,'1.2.30'),
+    candidateDiagnostics.replace(commit,'b'.repeat(40)),
+    candidateDiagnostics.replace('macos/aarch64','macos/x86_64'),
+    candidateDiagnostics.replace('MultiCAD Rust','OCCT 7.9.3 (statically linked)'),
+    candidateDiagnostics+'OCCT source: stale\n',
+    candidateDiagnostics+'CAD kernel: OCCT 7.9.3 (statically linked)\n',
+  ])assert.throws(()=>verify(text),/diagnostics/);
+});
+
+test('candidate archive verification binds both ZIPs, binary diagnostics and the local-only descriptor',()=>{
+  const dir=mkdtempSync(join(tmpdir(),'multicad-rust-candidate-'));
+  try{
+    const name=rustCandidateArchiveName(version,candidateTarget);
+    const source=name.replace(/\.zip$/,'-sources.zip');
+    const runtimeIdentity=join(dir,name.slice(0,-4),'BUILD-IDENTITY.json');
+    const runtimeDiagnostics=join(dir,name.slice(0,-4),'BUILD-IDENTITY.txt');
+    const sourceIdentity=join(dir,source.slice(0,-4),'BUILD-IDENTITY.json');
+    for(const stem of [name,source].map(file=>file.slice(0,-4)))mkdirSync(join(dir,stem));
+    writeFileSync(runtimeIdentity,JSON.stringify(candidateIdentity));
+    writeFileSync(runtimeDiagnostics,candidateDiagnostics);
+    writeFileSync(sourceIdentity,JSON.stringify(candidateIdentity));
+    const archive=asset=>{
+      const file=join(dir,asset);rmSync(file,{force:true});zip(dir,asset.slice(0,-4),file);
+      const hash=digest(file);writeFileSync(file+'.sha256',`${hash}  ${asset}\n`);return hash;
+    };
+    const descriptor={...candidateIdentity,archive:name,sha256:archive(name),sources:{archive:source,sha256:archive(source)},runtimeLibraries:['/usr/lib/libSystem.B.dylib']};
+    const writeDescriptor=()=>writeFileSync(join(dir,name+'.json'),JSON.stringify(descriptor));
+    const verify=()=>verifyRustCandidate(dir,version,commit,candidateTarget);
+    writeDescriptor();
+    assert.deepEqual(verify(),descriptor);
+    assert.throws(()=>validateDescriptor(descriptor,version,commit,candidateTarget,descriptor.sha256),/Mismatched release asset/);
+
+    descriptor.runtimeLibraries.push('/usr/lib/libTKernel.dylib');
+    writeDescriptor();assert.throws(verify,/OpenCascade/);
+    descriptor.runtimeLibraries.pop();
+    descriptor.nativeSourceHash='c'.repeat(64);
+    writeDescriptor();assert.throws(verify,/candidate identity/);
+    delete descriptor.nativeSourceHash;
+
+    writeFileSync(sourceIdentity,JSON.stringify({...candidateIdentity,commit:'b'.repeat(40)}));
+    descriptor.sources.sha256=archive(source);
+    writeDescriptor();assert.throws(verify,/candidate identity/);
+    writeFileSync(sourceIdentity,JSON.stringify(candidateIdentity));
+    descriptor.sources.sha256=archive(source);
+
+    const native=join(dir,source.slice(0,-4),'artifacts/native-deps');
+    mkdirSync(native,{recursive:true});
+    writeFileSync(join(native,'occt-7.9.3.tar.gz'),'unexpected native source');
+    descriptor.sources.sha256=archive(source);
+    writeDescriptor();assert.throws(verify,/OpenCascade asset/);
+    rmSync(native,{recursive:true});
+    descriptor.sources.sha256=archive(source);
+
+    writeFileSync(runtimeDiagnostics,candidateDiagnostics.replace('MultiCAD Rust','OCCT'));
+    descriptor.sha256=archive(name);
+    writeDescriptor();assert.throws(verify,/diagnostics/);
+    writeFileSync(runtimeDiagnostics,candidateDiagnostics);
+    descriptor.sha256=archive(name);
+    writeDescriptor();
+    writeFileSync(join(dir,source+'.sha256'),'stale checksum');
+    assert.throws(verify,/Checksum mismatch/);
+  }finally{rmSync(dir,{recursive:true,force:true});}
 });

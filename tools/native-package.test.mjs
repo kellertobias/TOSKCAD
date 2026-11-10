@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
-import {mkdtempSync,mkdirSync,readFileSync,rmSync,writeFileSync,chmodSync,statSync,copyFileSync,cpSync} from 'node:fs';
+import {existsSync,mkdtempSync,mkdirSync,readFileSync,rmSync,writeFileSync,chmodSync,statSync,copyFileSync,cpSync} from 'node:fs';
 import {execFileSync,spawnSync} from 'node:child_process';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import test from 'node:test';
-import {assembleRuntime,checkProjectContainer,collectNotices,isNoticeFile,nativeSourceHash,peImports,runtimeExecutable,validateExamples,validateBundledLibrary} from './native-package.mjs';
+import {assembleRuntime,checkProjectContainer,collectNotices,isNoticeFile,nativeSourceHash,peImports,runtimeExecutable,rustCandidateBuildArgs,stageSourceSupport,validateExamples,validateBundledLibrary} from './native-package.mjs';
 import {readdirSync} from 'node:fs';
 import {createHash} from 'node:crypto';
 
@@ -16,6 +16,32 @@ function executableFixture(directory){
   else{writeFileSync(binary,'layout fixture only');chmodSync(binary,0o755);}
   return binary;
 }
+
+test('Rust-only candidate resources and source instructions omit the external OpenCascade package',()=>{
+  const directory=mkdtempSync(join(tmpdir(),'multicad-rust-layout-'));
+  try{
+    const stage=join(directory,'runtime'),source=join(directory,'source');
+    const layout=assembleRuntime(stage,executableFixture(directory),'1.2.3',{rustOnly:true});
+    for(const name of ['native-dependencies.json','OCCT-LICENSE-LGPL-2.1.txt','OCCT-LGPL-EXCEPTION.txt']){
+      assert(!existsSync(join(layout.resources,name)),name);
+    }
+    assert(existsSync(join(layout.resources,'examples/examples.json')));
+    assert(existsSync(join(layout.resources,'library/library.json')));
+    assert.match(readFileSync(join(stage,'README.txt'),'utf8'),/Rust-only development candidate/);
+    mkdirSync(source);
+    const commit='a'.repeat(40);
+    stageSourceSupport(source,commit,'1.2.3',{rustOnly:true});
+    const reproduction=readFileSync(join(source,'SOURCE-REPRODUCTION.md'),'utf8');
+    assert(reproduction.includes(`Source commit: ${commit}`));
+    assert.deepEqual(rustCandidateBuildArgs,['-p','multicad-app','--release','--locked','--no-default-features']);
+    assert(reproduction.includes(`cargo build ${rustCandidateBuildArgs.join(' ')} --offline`));
+    assert(!reproduction.includes('foundation-deps'));
+    const native=join(source,'artifacts/native-deps');
+    assert(!existsSync(native));
+    mkdirSync(native,{recursive:true});
+    assert.throws(()=>stageSourceSupport(source,commit,'1.2.3',{rustOnly:true}),/native dependency assets/);
+  }finally{rmSync(directory,{recursive:true,force:true});}
+});
 
 test('hardware packaging refuses damaged data, missing notices, duplicate IDs and escaping paths',()=>{
   const directory=mkdtempSync(join(tmpdir(),'multicad-hardware-package-'));
