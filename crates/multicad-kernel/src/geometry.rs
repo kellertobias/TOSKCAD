@@ -1841,12 +1841,11 @@ impl Solid {
             | SolidBody::Annulus(..)
             | SolidBody::Linear(..)
             | SolidBody::NormalSweep(..)
+            | SolidBody::AxialStack(..)
             | SolidBody::RoundedSlot(..) => true,
             SolidBody::Prism(prism, _) => prism.rounded_end().is_none(),
             SolidBody::RustCompound(compound) => compound.members().all(Self::supports_step_export),
-            SolidBody::Helical(..)
-            | SolidBody::CosmeticFastener(..)
-            | SolidBody::AxialStack(..) => false,
+            SolidBody::Helical(..) | SolidBody::CosmeticFastener(..) => false,
             SolidBody::Revolved(body, _) => {
                 multicad_rust_kernel::step::supports_cylindrical_revolution(&body.geometry)
             }
@@ -1943,6 +1942,7 @@ impl Solid {
             SolidBody::Linear(body, frame) => body.append_step(writer, *frame),
             SolidBody::RoundedSlot(body, frame) => body.append_step(writer, *frame),
             SolidBody::NormalSweep(body, frame) => body.append_step(writer, *frame),
+            SolidBody::AxialStack(body, frame) => body.append_step(writer, *frame),
             SolidBody::Revolved(body, frame) => {
                 if let Some((base, radius, height, bore)) = body.circular_sweep(*frame) {
                     writer.append_placed_circular_sweep(
@@ -1968,9 +1968,9 @@ impl Solid {
                 }
                 Ok(())
             }
-            SolidBody::Helical(..)
-            | SolidBody::CosmeticFastener(..)
-            | SolidBody::AxialStack(..) => Err(step::StepError::Unsupported),
+            SolidBody::Helical(..) | SolidBody::CosmeticFastener(..) => {
+                Err(step::StepError::Unsupported)
+            }
             SolidBody::Orthogonal(body, frame) => body.append_step(writer, *frame),
             SolidBody::Occt(_) => unreachable!("native STEP dispatched above"),
         }

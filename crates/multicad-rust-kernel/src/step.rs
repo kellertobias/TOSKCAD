@@ -17,11 +17,13 @@ use crate::{
 };
 use std::{collections::BTreeMap, fmt, fmt::Write, ops::Range};
 
+mod axial_stack;
 mod cylindrical_revolution;
 mod normal_sweep;
 mod pierced_sweep;
 mod stadium;
 mod writer;
+pub use axial_stack::write_axial_profile_stack;
 pub use cylindrical_revolution::{supports_cylindrical_revolution, write_cylindrical_revolution};
 pub use normal_sweep::write_normal_sweep;
 pub use pierced_sweep::write_pierced_normal_sweep;
@@ -940,6 +942,34 @@ fn line_edge(file: &mut StepFile, from: Vertex, to: Vertex) -> Result<Entity, St
     let line = file.entity(format_args!("LINE('',{start},{vector})"));
     let (start, end) = (from.vertex, to.vertex);
     Ok(file.entity(format_args!("EDGE_CURVE('',{start},{end},{line},.T.)")))
+}
+
+fn circular_arc_edge(
+    file: &mut StepFile,
+    [from, to]: [Vertex; 2],
+    center: Point,
+    normal: Point,
+    reference: Point,
+    radius: f64,
+    sweep: f64,
+) -> Result<(Entity, Entity), StepError> {
+    let (sin, cos) = sweep.abs().sin_cos();
+    let side = cross(normal, reference);
+    let end = std::array::from_fn(|i| cos * reference[i] + sin * side[i]);
+    let error = |point: Point, radial: Point| {
+        let [x, y, z] = std::array::from_fn(|i| point[i] - center[i] - radius * radial[i]);
+        x.hypot(y).hypot(z)
+    };
+    if from.point == to.point || error(from.point, reference) > 1e-7 || error(to.point, end) > 1e-7
+    {
+        return Err(StepError::InvalidGeometry);
+    }
+    let center = file.point(center);
+    let axis = file.axis(center, normal, reference);
+    let circle = file.entity(format_args!("CIRCLE('',{axis},{radius:.16E})"));
+    let (start, end) = (from.vertex, to.vertex);
+    let edge = file.entity(format_args!("EDGE_CURVE('',{start},{end},{circle},.T.)"));
+    Ok((edge, axis))
 }
 
 struct CylindricalTrim {

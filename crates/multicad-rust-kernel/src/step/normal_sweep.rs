@@ -45,32 +45,17 @@ impl Rim {
                     let reference = placement.vector([x / radius, y / radius, 0.]);
                     let normal = placement.normal.map(|n| if clockwise { -n } else { n });
                     let center = placement.point_f64(center, z);
-                    let (sin, cos) = edge
-                        .signed_sweep_rad()
-                        .ok_or(StepError::InvalidGeometry)?
-                        .abs()
-                        .sin_cos();
-                    let side = cross(normal, reference);
-                    let end = std::array::from_fn(|i| cos * reference[i] + sin * side[i]);
-                    let error = |point: Point, radial: Point| {
-                        let [x, y, z] =
-                            std::array::from_fn(|i| point[i] - center[i] - radius * radial[i]);
-                        x.hypot(y).hypot(z)
-                    };
-                    if from.point == to.point
-                        || error(from.point, reference) > 1e-7
-                        || error(to.point, end) > 1e-7
-                    {
-                        return Err(StepError::InvalidGeometry);
-                    }
-                    let center = file.point(center);
-                    let axis = file.axis(center, normal, reference);
-                    let circle = file.entity(format_args!("CIRCLE('',{axis},{radius:.16E})"));
-                    let (start, end) = (from.vertex, to.vertex);
-                    Ok((
-                        file.entity(format_args!("EDGE_CURVE('',{start},{end},{circle},.T.)")),
-                        Some(axis),
-                    ))
+                    let sweep = edge.signed_sweep_rad().ok_or(StepError::InvalidGeometry)?;
+                    let (edge, axis) = circular_arc_edge(
+                        file,
+                        [from, to],
+                        center,
+                        normal,
+                        reference,
+                        radius,
+                        sweep,
+                    )?;
+                    Ok((edge, Some(axis)))
                 }
                 Edge::Circle { .. } => Err(StepError::InvalidGeometry),
             })

@@ -413,6 +413,17 @@ impl Writer {
         self.append(|file| cylindrical_revolution::encode(file, placement, ring))
     }
 
+    pub fn append_axial_profile_stack(
+        &mut self,
+        stack: &crate::axial_profile_stack::ProfileStack,
+        origin: Point,
+        u: Point,
+        v: Point,
+    ) -> Result<(), StepError> {
+        let placement = Placement::new(origin, u, v)?;
+        self.append(|file| axial_stack::encode(file, placement, stack))
+    }
+
     pub fn append_box(
         &mut self,
         size: [Rational; 3],

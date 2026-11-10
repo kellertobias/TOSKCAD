@@ -4,7 +4,7 @@ use crate::rust_prism_topology::{Builder, position};
 use multicad_core::references::{AnalyticGeometry, ReferenceFrame, TopologyKind, TopologySnapshot};
 use multicad_rust_kernel::{
     axial_profile_stack::{self, Curve, Operand, Profile, ProfileStack, Support},
-    display,
+    display, step,
 };
 use std::collections::BTreeSet;
 
@@ -133,6 +133,14 @@ impl Solid {
 }
 
 impl AxialStackBody {
+    pub(super) fn append_step(
+        &self,
+        writer: &mut step::Writer,
+        frame: PlaneFrame,
+    ) -> Result<(), step::StepError> {
+        writer.append_axial_profile_stack(&self.geometry, frame.origin, frame.u, frame.v)
+    }
+
     fn place(
         geometry: ProfileStack,
         frame: PlaneFrame,
