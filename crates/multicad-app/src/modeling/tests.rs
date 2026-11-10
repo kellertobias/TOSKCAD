@@ -107,7 +107,7 @@ fn rust_existing_mixed_sweep_previews_a_pickable_wall_in_the_app() {
 }
 
 #[test]
-fn rust_default_polygon_loft_publishes_its_taper_in_the_app() {
+fn rust_smooth_polygon_loft_publishes_its_taper_in_the_app() {
     use multicad_core::{
         constraint_sketch::source::Source,
         document::Mutation,
@@ -121,6 +121,7 @@ fn rust_default_polygon_loft_publishes_its_taper_in_the_app() {
     let mut seams = Vec::new();
     for (name, z, origin, size) in [
         ("Start", 0., [0., 0.], [6., 4.]),
+        ("Station", 4., [1., 0.5], [5., 3.]),
         ("End", 8., [2., 1.], [4., 2.]),
     ] {
         let (sketch, mut edits) = Source::create(Datum::Xy, name).unwrap();
@@ -168,17 +169,28 @@ fn rust_default_polygon_loft_publishes_its_taper_in_the_app() {
         scene.native_instance_bounds(request.body),
         Some([[0., 0., 0.], [6., 4., 8.]])
     );
+    let topology = scene.geometry_snapshot(request.feature).unwrap();
+    assert_eq!(
+        topology
+            .elements
+            .iter()
+            .filter(|item| item.key.kind == TopologyKind::Face)
+            .count(),
+        6
+    );
     let hit = scene
         .pick_face(viewport::Ray::new([-10., 2., 4.], [1., 0., 0.]).unwrap())
         .unwrap();
     assert_eq!(hit.geometry, request.feature);
     assert!((hit.point_mm[0] - 1.).abs() < 1e-6);
-    assert!(
+    assert_eq!(
         hit.intent
             .unwrap()
             .origins
             .iter()
-            .any(|origin| origin.role.starts_with("side/"))
+            .filter(|origin| origin.role.starts_with("side/"))
+            .count(),
+        3
     );
 }
 
