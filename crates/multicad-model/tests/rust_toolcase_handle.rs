@@ -74,13 +74,24 @@ fn saved_toolcase_handle_joins_tangent_posts_into_one_manufacturable_solid() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("carry-handle.step");
     solid.write_step(&path).unwrap();
-    let imported = Solid::read_step(&path, compiler.policy).unwrap();
-    assert_eq!(imported.solid_count().unwrap(), 1);
-    near(imported.volume_mm3().unwrap(), solid.volume_mm3().unwrap());
-    near(area(&imported.faces().unwrap()), area(&native_faces));
-    let imported_bounds = imported.bounds().unwrap();
-    for i in 0..3 {
-        near(imported_bounds.min[i], bounds.min[i]);
-        near(imported_bounds.max[i], bounds.max[i]);
+    let readers = [
+        Solid::read_step(&path, compiler.policy).unwrap(),
+        Solid::import_rust_step(
+            &std::fs::read_to_string(&path).unwrap(),
+            feature,
+            compiler.policy,
+        )
+        .unwrap(),
+    ];
+    assert!(readers[1].uses_rust_geometry());
+    for imported in readers {
+        assert_eq!(imported.solid_count().unwrap(), 1);
+        near(imported.volume_mm3().unwrap(), solid.volume_mm3().unwrap());
+        near(area(&imported.faces().unwrap()), area(&native_faces));
+        let imported_bounds = imported.bounds().unwrap();
+        for i in 0..3 {
+            near(imported_bounds.min[i], bounds.min[i]);
+            near(imported_bounds.max[i], bounds.max[i]);
+        }
     }
 }

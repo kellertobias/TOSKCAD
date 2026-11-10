@@ -130,6 +130,23 @@ impl Solid {
             _ => None,
         }
     }
+
+    pub(super) fn from_imported_axial_stack(
+        geometry: ProfileStack,
+        frame: PlaneFrame,
+        feature: EntityId,
+        policy: GeometryPolicy,
+    ) -> Result<Self, GeometryError> {
+        let origins = (0..geometry.faces().len())
+            .map(|index| {
+                vec![Origin {
+                    source: feature,
+                    role: format!("step.axial-face.{index}"),
+                }]
+            })
+            .collect();
+        AxialStackBody::place_with_origins(geometry, frame, feature, origins, policy)
+    }
 }
 
 impl AxialStackBody {
@@ -192,6 +209,16 @@ impl AxialStackBody {
                 .collect(),
             );
         }
+        Self::place_with_origins(geometry, frame, feature, origins, policy)
+    }
+
+    fn place_with_origins(
+        geometry: ProfileStack,
+        frame: PlaneFrame,
+        feature: EntityId,
+        origins: Vec<Vec<Origin>>,
+        policy: GeometryPolicy,
+    ) -> Result<Solid, GeometryError> {
         let body = Self {
             feature,
             geometry,

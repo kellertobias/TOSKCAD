@@ -13,6 +13,7 @@ use crate::{
 };
 use std::cmp::Ordering;
 
+mod axial_profile_stack;
 mod chamfered;
 use chamfered::{Bore, canonical_bores};
 mod cylindrical_revolution;
@@ -89,6 +90,9 @@ pub enum ImportProfile {
         inner_radius_mm: f64,
         outer_radius_mm: f64,
     },
+    AxialProfileStack {
+        stack: crate::axial_profile_stack::ProfileStack,
+    },
     CylindricalRevolution {
         /// Counterclockwise rectilinear boundary in [radius, axial] coordinates.
         meridian: Vec<[f64; 2]>,
@@ -137,6 +141,7 @@ fn recognize_member(shell: &Shell<'_, '_>, faces: &[Face]) -> Result<(Readback, 
         .or_else(|| shell.pocketed_polygon(faces))
         .or_else(|| shell.pierced_normal_sweep(faces))
         .or_else(|| shell.cylindrical_revolution(faces, &readback))
+        .or_else(|| shell.axial_profile_stack(faces, &readback))
     {
         Some(solid) => solid,
         None => shell.orthogonal(faces)?,

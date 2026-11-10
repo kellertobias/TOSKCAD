@@ -158,6 +158,9 @@ impl Solid {
             ImportProfile::NormalSweep { sweep } => {
                 Self::from_imported_normal_sweep(&sweep, frame, feature, policy)
             }
+            ImportProfile::AxialProfileStack { stack } => {
+                Self::from_imported_axial_stack(stack, frame, feature, policy)
+            }
             ImportProfile::CylindricalRevolution { meridian } => {
                 let axis = frame.normal();
                 let profile_frame = PlaneFrame { v: axis, ..frame };
