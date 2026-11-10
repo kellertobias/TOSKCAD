@@ -61,6 +61,27 @@ pub(crate) fn build_slab(
     }
     let height = slab.top_mm - slab.bottom_mm;
     if backend == GeometryBackend::Rust {
+        let rectilinear = std::iter::once(slab.outline.as_slice())
+            .chain(slab.holes.iter().map(|hole| hole.corners.as_slice()))
+            .all(|ring| {
+                ring.iter()
+                    .zip(ring.iter().cycle().skip(1))
+                    .all(|(a, b)| a[0] == b[0] || a[1] == b[1])
+            });
+        if !rectilinear {
+            // A rotated outline has derived floating-point coordinates.
+            // Preserve its straight edges directly without rationalizing
+            // their coordinates before computing areas and intersections.
+            return Solid::rust_extrude_linear_named(
+                &profile,
+                [0., 0., height],
+                0.,
+                id,
+                &roles,
+                policy,
+            )
+            .map_err(|e| error(Some(id), e));
+        }
         return crate::rust_backend::stock_profile(id, &profile, &roles, height, policy);
     }
     Solid::extrude_curved_profile_vector_named(&profile, [0., 0., height], id, &roles, policy)

@@ -114,7 +114,7 @@ fn slab_shaft_edit_removes_material_and_keeps_the_four_sides_named() {
         center: [length(500.), length(500.)],
         width: length(500.),
         depth: length(800.),
-        rotation_deg: 0.,
+        rotation_deg: 30.,
     });
     let edit = model::prepare_slab_edit(
         &session,
@@ -126,8 +126,14 @@ fn slab_shaft_edit_removes_material_and_keeps_the_four_sides_named() {
     .unwrap();
     session.commit(edit.prepared).unwrap();
     let updated = compile(&session, &[feature], GeometryBackend::Rust);
+    let native = compile(&session, &[feature], GeometryBackend::OpenCascade);
     let old = &baseline.snapshot().shapes[&feature];
     let new = &updated.snapshot().shapes[&feature];
+    near(
+        new.volume_mm3,
+        native.snapshot().shapes[&feature].volume_mm3,
+        1e-3,
+    );
     assert_eq!(old.bounds, new.bounds);
     let height = old.bounds.max[2] - old.bounds.min[2];
     near(old.volume_mm3 - new.volume_mm3, 500. * 800. * height, 1e-3);
