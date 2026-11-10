@@ -208,6 +208,7 @@ impl Boundary {
             semicircles: Vec::new(),
             arcs,
             ellipses,
+            splines: Vec::new(),
             solid_count: 1,
         })
     }

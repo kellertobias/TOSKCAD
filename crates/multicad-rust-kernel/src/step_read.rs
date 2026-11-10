@@ -1,7 +1,7 @@
 //! Readback for millimetre STEP advanced solids bounded by planes and full or
-//! half cylindrical walls, plus bounded quarter-round patches with elliptic
-//! trims. The reader verifies each shell and integrates its
-//! analytic boundary without tessellating it.
+//! half cylindrical walls, bounded quarter-round patches with elliptic trims,
+//! and normal sweeps with clamped cubic trims. The reader verifies each shell
+//! and integrates its boundary without tessellating it.
 
 mod compound;
 mod curve;
@@ -9,6 +9,9 @@ mod import;
 mod mixed;
 mod part21;
 mod round;
+mod spline;
+mod spline_sweep;
+pub use spline::SplineEdge;
 mod stadium;
 mod warped;
 
@@ -72,6 +75,8 @@ pub struct Readback {
     pub semicircles: Vec<SemicircleEdge>,
     pub arcs: Vec<ArcEdge>,
     pub ellipses: Vec<EllipseArc>,
+    /// Clamped cubic trims, oriented from each STEP edge start to its end.
+    pub splines: Vec<SplineEdge>,
     pub solid_count: u32,
 }
 
@@ -85,7 +90,7 @@ pub fn read_planar_solid(input: &str, tolerance_mm: f64) -> Result<Readback> {
 
 /// Verify a planar solid or a solid containing full circles and semicircles
 /// with cylindrical walls between planar caps, or a certified quarter-round
-/// shell with elliptic trims. General STEP import is outside this profile.
+/// shell with elliptic trims or a bounded normal sweep with cubic trims.
 pub fn read_analytic_solid(input: &str, tolerance_mm: f64) -> Result<Readback> {
     read(input, tolerance_mm, true)
 }
@@ -93,24 +98,12 @@ pub fn read_analytic_solid(input: &str, tolerance_mm: f64) -> Result<Readback> {
 /// Verify the independent members of one flat advanced BREP representation.
 /// Each readback describes one member, in the order listed in the STEP file.
 pub fn read_analytic_compound(input: &str, tolerance_mm: f64) -> Result<Vec<Readback>> {
-    compound::read_members_with_warped(
-        input,
-        tolerance_mm,
-        false,
-        readback_member,
-        |readback, _| readback,
-    )
+    compound::read_analytic(input, tolerance_mm, false)
 }
 
 fn read(input: &str, tolerance_mm: f64, allow_circles: bool) -> Result<Readback> {
     let mut members = if allow_circles {
-        compound::read_members_with_warped(
-            input,
-            tolerance_mm,
-            true,
-            readback_member,
-            |readback, _| readback,
-        )?
+        compound::read_analytic(input, tolerance_mm, true)?
     } else {
         compound::read_members(input, tolerance_mm, false, true, readback_member)?
     };
@@ -383,6 +376,7 @@ impl<'a, 'input> Shell<'a, 'input> {
             semicircles,
             arcs,
             ellipses: Vec::new(),
+            splines: Vec::new(),
             solid_count: 1,
         })
     }

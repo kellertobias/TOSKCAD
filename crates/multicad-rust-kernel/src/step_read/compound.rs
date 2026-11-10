@@ -33,20 +33,55 @@ pub(super) fn read_members_with_warped<T>(
                 .and_then(|face_ids| shell.validate_faces(face_ids))
                 .and_then(|faces| member(shell, &faces));
             match regular {
-                Err(ReadError::Invalid | ReadError::Unsupported) if may_be_warped => {
-                    // The independent verifier accepts only its own complete
-                    // chart class, and does not reuse a partially parsed shell.
-                    let mut clean = Shell::new(shell.entities, shell.tolerance, true);
-                    match warped::read_member(&mut clean, id) {
-                        Ok((readback, import)) => Ok(warped_member(readback, import)),
-                        Err(ReadError::Limit) => Err(ReadError::Limit),
-                        Err(_) => regular,
-                    }
+                Err(error @ (ReadError::Invalid | ReadError::Unsupported)) if may_be_warped => {
+                    fallback_warped(shell, id, error)
+                        .map(|(readback, import)| warped_member(readback, import))
                 }
                 _ => regular,
             }
         },
     )
+}
+
+pub(super) fn read_analytic(input: &str, tolerance: f64, single: bool) -> Result<Vec<Readback>> {
+    read_members_by(
+        input,
+        tolerance,
+        true,
+        single,
+        |shell, id, may_be_warped| {
+            let faces = shell.member_faces(id)?;
+            if faces
+                .iter()
+                .any(|&face| spline_sweep::has_extrusion_support(shell, face))
+            {
+                return spline_sweep::read_member(shell, faces);
+            }
+            let regular = shell
+                .validate_faces(faces)
+                .and_then(|faces| shell.readback(&faces));
+            match regular {
+                Err(error @ (ReadError::Invalid | ReadError::Unsupported)) if may_be_warped => {
+                    fallback_warped(shell, id, error).map(|(readback, _)| readback)
+                }
+                _ => regular,
+            }
+        },
+    )
+}
+
+fn fallback_warped(
+    shell: &Shell<'_, '_>,
+    id: u32,
+    error: ReadError,
+) -> Result<(Readback, ImportedWarped)> {
+    // The independent verifier does not reuse a partially parsed shell.
+    let mut clean = Shell::new(shell.entities, shell.tolerance, true);
+    match warped::read_member(&mut clean, id) {
+        Ok(result) => Ok(result),
+        Err(ReadError::Limit) => Err(ReadError::Limit),
+        Err(_) => Err(error),
+    }
 }
 
 pub(super) fn read_members_by<T>(
