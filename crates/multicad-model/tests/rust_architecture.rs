@@ -216,8 +216,8 @@ fn uncut_partition(session: &Session) -> (EntityId, model::WallDefinition) {
 }
 
 #[test]
-fn a_diagonal_wall_returns_an_explicit_rust_model_error() {
-    let session = apartment();
+fn edited_diagonal_wall_matches_the_native_volume_and_boundary() {
+    let mut session = apartment();
     let (feature, mut wall) = uncut_partition(&session);
     wall.path[1][0] = length(4700.);
     let edit = model::prepare_wall_edit(
@@ -228,27 +228,17 @@ fn a_diagonal_wall_returns_an_explicit_rust_model_error() {
         &wall,
     )
     .unwrap();
-    assert!(
-        Compiler::default()
-            .compile_sources_with_backend(
-                edit.prepared.document(),
-                session.revision(),
-                &[feature],
-                GeometryBackend::OpenCascade,
-                None,
-            )
-            .is_ok()
-    );
-    let result = Compiler::default()
-        .compile_sources_with_backend(
-            edit.prepared.document(),
-            session.revision(),
-            &[feature],
-            GeometryBackend::Rust,
-            None,
-        )
-        .err()
-        .unwrap();
-    assert_eq!(result.entity, Some(feature));
-    assert!(result.message.contains("axis-aligned uniform wall"));
+    session.commit(edit.prepared).unwrap();
+    let rust = compile(&session, &[feature], GeometryBackend::Rust);
+    let native = compile(&session, &[feature], GeometryBackend::OpenCascade);
+    let actual = &rust.snapshot().shapes[&feature];
+    let expected = &native.snapshot().shapes[&feature];
+    assert_eq!(actual.solid_count, 1);
+    assert!(rust.solid(feature).unwrap().uses_rust_geometry());
+    near(actual.volume_mm3, expected.volume_mm3, 1e-3);
+    for axis in 0..3 {
+        near(actual.bounds.min[axis], expected.bounds.min[axis], 1e-6);
+        near(actual.bounds.max[axis], expected.bounds.max[axis], 1e-6);
+    }
+    assert!(face_has_role(&rust, feature, "wall.seg.0.left"));
 }

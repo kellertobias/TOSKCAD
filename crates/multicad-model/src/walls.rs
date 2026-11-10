@@ -246,14 +246,32 @@ fn extrude_region(
             }
             role.clone()
         });
+    let roles = origins(id, roles);
+    if backend == GeometryBackend::Rust && has_diagonal_segments(plan) {
+        return Solid::rust_extrude_linear_named(
+            &profile,
+            [0., 0., wall.height_mm],
+            0.,
+            id,
+            &roles,
+            policy,
+        )
+        .map_err(|e| error(Some(id), e));
+    }
     sweep_wall_profile(
         &profile,
         [0., 0., wall.height_mm],
         id,
-        &origins(id, roles),
+        &roles,
         policy,
         backend,
     )
+}
+
+fn has_diagonal_segments(plan: &model::WallPlan) -> bool {
+    plan.segments
+        .iter()
+        .any(|segment| segment.direction[0] != 0. && segment.direction[1] != 0.)
 }
 
 fn sweep_wall_profile(
@@ -438,14 +456,12 @@ pub(crate) fn build(
     if backend == GeometryBackend::Rust
         && (wall.layers.is_some()
             || !wall.junctions.is_empty()
-            || plan
-                .segments
-                .iter()
-                .any(|segment| segment.direction[0] != 0. && segment.direction[1] != 0.))
+            || (has_diagonal_segments(&plan)
+                && (!wall.openings.is_empty() || !wall.cutouts.is_empty())))
     {
         return Err(error(
             Some(id),
-            "Rust wall geometry requires an axis-aligned uniform wall without junctions",
+            "Rust wall geometry requires a uniform wall without junctions. Opening and chase cuts require axis-aligned segments",
         ));
     }
     if let Some(layers) = &wall.layers {
