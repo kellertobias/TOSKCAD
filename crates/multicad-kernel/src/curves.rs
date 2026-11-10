@@ -77,7 +77,7 @@ pub struct BSpline2d {
     pub weights: Option<Vec<f64>>,
 }
 impl BSpline2d {
-    fn basis(&self) -> multicad_core::constraint_sketch::SplineBasis {
+    pub(crate) fn basis(&self) -> multicad_core::constraint_sketch::SplineBasis {
         multicad_core::constraint_sketch::SplineBasis {
             degree: self.degree,
             knots: self.knots.clone(),

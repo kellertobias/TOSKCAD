@@ -1,5 +1,5 @@
 //! Exact spline editing in the authored parameter domain.
-//! Segmentation uses OCCT knot insertion on a private copy. Continuation adds
+//! Segmentation uses homogeneous knot insertion. Continuation adds
 //! a finite straight tangent span without fitting or extrapolating old spans.
 use crate::elementary_curves::ElementaryCurve;
 use crate::{BSpline2d, CurvedEdge2d, GeometryError, GeometryErrorKind, GeometryPolicy, ffi};
@@ -105,6 +105,29 @@ impl BSpline2d {
         policy: GeometryPolicy,
     ) -> Result<Self, GeometryError> {
         self.validate(policy)?;
+        let (poles, basis) = self
+            .basis()
+            .segment(&self.poles, from, to)
+            .map_err(|e| failure(GeometryErrorKind::Input, e.to_string()))?;
+        let result = Self {
+            degree: basis.degree,
+            poles,
+            knots: basis.knots,
+            multiplicities: basis.multiplicities,
+            weights: basis.weights,
+        };
+        result.validate(policy)?;
+        self.verify_segment_endpoints(&result, from, to, policy)?;
+        Ok(result)
+    }
+
+    pub(crate) fn segment_native(
+        &self,
+        from: f64,
+        to: f64,
+        policy: GeometryPolicy,
+    ) -> Result<Self, GeometryError> {
+        self.validate(policy)?;
         let original = CurvedEdge2d::BSpline(self.clone());
         let native = ffi::spline_segment(&original.data(policy, 0)?, from, to)
             .map_err(|e| failure(GeometryErrorKind::Native, e.to_string()))?;
@@ -123,18 +146,29 @@ impl BSpline2d {
             weights: (!native.weights.is_empty()).then_some(native.weights),
         };
         result.validate(policy)?;
-        let domain = CurvedEdge2d::BSpline(result.clone()).domain(policy)?;
+        self.verify_segment_endpoints(&result, from, to, policy)?;
+        Ok(result)
+    }
+
+    fn verify_segment_endpoints(
+        &self,
+        result: &Self,
+        from: f64,
+        to: f64,
+        policy: GeometryPolicy,
+    ) -> Result<(), GeometryError> {
+        let domain = [result.knots[0], result.knots[result.knots.len() - 1]];
         for (before, after) in [(from, domain[0]), (to, domain[1])] {
             let a = self.evaluate(before, policy)?.point;
             let b = result.evaluate(after, policy)?.point;
             if (a[0] - b[0]).hypot(a[1] - b[1]) > policy.linear_tolerance_mm {
                 return Err(failure(
                     GeometryErrorKind::InvalidResult,
-                    "Native spline segmentation changed a requested endpoint beyond modeling tolerance",
+                    "Spline segmentation changed a requested endpoint beyond modeling tolerance",
                 ));
             }
         }
-        Ok(result)
+        Ok(())
     }
     /// Add one straight G1 tangent span. The original native parameter interval,
     /// poles and weights remain intact; the old clamped end becomes an internal

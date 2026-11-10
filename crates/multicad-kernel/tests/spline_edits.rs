@@ -52,7 +52,7 @@ fn exact(s: &BSpline2d) -> ExactCurve {
     }
 }
 #[test]
-fn native_segmentation_preserves_rational_and_nonrational_spans_and_original_source() {
+fn rust_segmentation_preserves_rational_and_nonrational_spans_and_original_source() {
     for mut source in [arch(), quarter(), multi()] {
         source.knots.iter_mut().for_each(|u| *u = -2. + *u * 5.);
         let before = source.clone();
@@ -61,8 +61,21 @@ fn native_segmentation_preserves_rational_and_nonrational_spans_and_original_sou
         assert_eq!(segment.weights.is_some(), source.weights.is_some());
         near(segment.knots[0], -1.);
         near(*segment.knots.last().unwrap(), 2.);
+        let native = if OCCT_LINKED {
+            let source = exact(&source);
+            let segment = NativeRegionQueries::default()
+                .curve_segment(&source, 0.2, 0.8, p().linear_tolerance_mm)
+                .unwrap();
+            Some(NativeRegionQueries::curve(&segment))
+        } else {
+            None
+        };
         for i in 0..=80 {
             let u = -1. + 3. * i as f64 / 80.;
+            let actual = segment.evaluate(u, p()).unwrap().point;
+            if let Some(native) = &native {
+                point(actual, native.evaluate(u, p()).unwrap().point);
+            }
             point(
                 source.evaluate(u, p()).unwrap().point,
                 segment.evaluate(u, p()).unwrap().point,
@@ -71,6 +84,73 @@ fn native_segmentation_preserves_rational_and_nonrational_spans_and_original_sou
         assert_eq!(source, before);
     }
 }
+#[test]
+fn segmentation_preserves_internal_knots_and_handles_clamped_and_repeated_cut_limits() {
+    let source = BSpline2d {
+        degree: 3,
+        poles: vec![
+            [0., 0.],
+            [1., 2.],
+            [2., 1.],
+            [3., 1.],
+            [4., 0.],
+            [5., 2.],
+            [6., 0.],
+        ],
+        knots: vec![-3., -1., 2., 8.],
+        multiplicities: vec![4, 2, 1, 4],
+        weights: Some(vec![1., 0.7, 0.9, 1.3, 1.1, 0.8, 0.95]),
+    };
+    assert_eq!(source.segment(-3., 8., p()).unwrap(), source);
+    for [first, last] in [
+        [-3., -1.],
+        [-1., 2.],
+        [2., 8.],
+        [-1., 4.],
+        [-2., 2.],
+        [0.1, 0.2],
+    ] {
+        let retained = source.segment(first, last, p()).unwrap();
+        assert_eq!(retained.knots[0], first);
+        assert_eq!(*retained.knots.last().unwrap(), last);
+        if first == -1. && last == 4. {
+            assert_eq!(retained.knots, [-1., 2., 4.]);
+            assert_eq!(retained.multiplicities, [4, 1, 4]);
+        }
+        for i in 1..32 {
+            let u = first + (last - first) * f64::from(i) / 32.;
+            let old = source.evaluate(u, p()).unwrap();
+            let new = retained.evaluate(u, p()).unwrap();
+            point(old.point, new.point);
+            point(old.derivative, new.derivative);
+        }
+    }
+    assert!(source.segment(-1. - 1e-13, 2., p()).is_err());
+
+    // The edit may temporarily insert controls above the canonical cap, but
+    // the retained result must still fit the 256-pole authored budget.
+    let basis = SplineBasis::open_uniform(25, 256).unwrap();
+    let high = BSpline2d {
+        degree: basis.degree,
+        poles: (0..256).map(|i| [f64::from(i), f64::from(i % 7)]).collect(),
+        knots: basis.knots,
+        multiplicities: basis.multiplicities,
+        weights: None,
+    };
+    let retained = high.segment(0.2, 0.8, p()).unwrap();
+    for i in 0..=32 {
+        let u = if i == 32 {
+            0.8
+        } else {
+            0.2 + 0.6 * f64::from(i) / 32.
+        };
+        point(
+            high.evaluate(u, p()).unwrap().point,
+            retained.evaluate(u, p()).unwrap().point,
+        );
+    }
+}
+
 #[test]
 fn exact_segment_hits_line_arc_circle_and_spline_boundaries_and_builds_a_real_solid() {
     let original = quarter();

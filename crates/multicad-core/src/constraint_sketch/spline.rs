@@ -108,6 +108,73 @@ impl SplineBasis {
             .collect()
     }
 
+    /// Extract a clamped subcurve in the original parameter domain. Knot
+    /// insertion changes the control basis without refitting the curve.
+    pub fn segment(
+        &self,
+        poles: &[[f64; 2]],
+        from: f64,
+        to: f64,
+    ) -> Result<(Vec<[f64; 2]>, Self), DocumentError> {
+        self.validate_poles(poles)?;
+        let first = self.knots[0];
+        let last = self.knots[self.knots.len() - 1];
+        if !from.is_finite() || !to.is_finite() || from < first || to > last || from >= to {
+            return Err(invalid(
+                "Spline segment requires increasing parameters inside its domain",
+            ));
+        }
+        if from == first && to == last {
+            return Ok((poles.to_vec(), self.clone()));
+        }
+
+        let degree = self.degree as usize;
+        let mut knots = self.expanded_knots();
+        let mut controls: Vec<_> = poles
+            .iter()
+            .enumerate()
+            .map(|(i, &[x, y])| {
+                let weight = self.weights.as_ref().map_or(1., |weights| weights[i]);
+                [weight * x, weight * y, weight]
+            })
+            .collect();
+        for cut in [from, to] {
+            if cut != first && cut != last {
+                insert_cut(&mut knots, &mut controls, degree, cut);
+            }
+        }
+
+        // An interior knot with degree copies has one shared control between
+        // the adjacent spans. A cut at a clamped endpoint already has degree+1.
+        let start = if from == first {
+            0
+        } else {
+            knots.partition_point(|&k| k < from) - 1
+        };
+        let end = knots.partition_point(|&k| k < to) - 1;
+        let controls = &controls[start..=end];
+        let mut basis = Self {
+            degree: self.degree,
+            knots: vec![from],
+            multiplicities: vec![self.degree + 1],
+            weights: self
+                .weights
+                .as_ref()
+                .map(|_| controls.iter().map(|p| p[2]).collect()),
+        };
+        for (&knot, &multiplicity) in self.knots.iter().zip(&self.multiplicities) {
+            if from < knot && knot < to {
+                basis.knots.push(knot);
+                basis.multiplicities.push(multiplicity);
+            }
+        }
+        basis.knots.push(to);
+        basis.multiplicities.push(self.degree + 1);
+        let poles: Vec<_> = controls.iter().map(|&[x, y, w]| [x / w, y / w]).collect();
+        basis.validate_poles(&poles)?;
+        Ok((poles, basis))
+    }
+
     fn validate_poles(&self, poles: &[[f64; 2]]) -> Result<(), DocumentError> {
         self.validate(poles.len())?;
         if poles
@@ -212,6 +279,23 @@ struct HomogeneousSample {
 impl HomogeneousSample {
     fn point(&self) -> [f64; 2] {
         [self.value[0] / self.value[2], self.value[1] / self.value[2]]
+    }
+}
+
+// In-place homogeneous Boehm insertion. Working backward keeps the old
+// neighboring controls available, including when the cut is an authored knot.
+fn insert_cut(knots: &mut Vec<f64>, controls: &mut Vec<[f64; 3]>, degree: usize, cut: f64) {
+    let first = knots.partition_point(|&k| k < cut);
+    let initial_end = knots.partition_point(|&k| k <= cut);
+    for (added, multiplicity) in ((initial_end - first)..degree).enumerate() {
+        let after = initial_end + added;
+        let span = after - 1;
+        controls.insert(span - multiplicity + 1, controls[span - multiplicity]);
+        for i in (span - degree + 1..=span - multiplicity).rev() {
+            let weight = (cut - knots[i]) / (knots[i + degree] - knots[i]);
+            controls[i] = blend(controls[i - 1], controls[i], weight);
+        }
+        knots.insert(after, cut);
     }
 }
 
