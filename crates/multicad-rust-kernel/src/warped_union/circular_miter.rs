@@ -1,4 +1,4 @@
-//! One exact miter between two right-circular cylinder legs.
+//! Exact miter joints between right-circular cylinder legs.
 use super::{
     boss::{Rim, append_edge, oriented},
     *,
@@ -6,30 +6,81 @@ use super::{
 use std::f64::consts::PI;
 
 const MAX_COORDINATE_MM: f64 = 1e12;
+const MAX_PATH_POINTS: usize = 65;
 
-/// Sweep a disk between two caps normal to their respective straight axes.
-/// `path` gives the two cap centers and their common axis intersection.
-/// The cylinders share one ellipse in the angle bisector plane, with no
-/// internal cap. Cylindrical sectors have source `leg` and source face `2..6`.
-/// The start cap has source face `0` and the end cap has source face `1`.
+/// Sweep a disk along two axes meeting at a miter.
 pub fn circular_miter(path: [Point; 3], radius_mm: f64, tolerance_mm: f64) -> Result<Shell, Error> {
-    circular_miter_with_phase(path, radius_mm, tolerance_mm, 0.)
+    circular_miter_chain(&path, radius_mm, tolerance_mm)
 }
 
-fn circular_miter_with_phase(
-    path: [Point; 3],
+/// Sweep a disk along straight cylinder axes. The first and last path points
+/// are the cap centers. Interior points are intersections of neighboring
+/// axes. The cylinders share a rim on each joint's bisector plane. The shell
+/// retains four sectors per leg and two exterior disk faces.
+pub fn circular_miter_chain(
+    path: &[Point],
     radius_mm: f64,
     tolerance_mm: f64,
-    phase: f64,
 ) -> Result<Shell, Error> {
-    if !(1e-10..=1e-3).contains(&tolerance_mm)
-        || !radius_mm.is_finite()
-        || radius_mm <= tolerance_mm
+    build(path, radius_mm, tolerance_mm, None)
+}
+
+/// Restore a saved partition using the displacement from the start cap center
+/// to one of its rim vertices.
+pub(crate) fn circular_miter_chain_from_radial(
+    path: &[Point],
+    radius_mm: f64,
+    tolerance_mm: f64,
+    first_radial: Point,
+) -> Result<Shell, Error> {
+    build(path, radius_mm, tolerance_mm, Some(first_radial))
+}
+
+#[derive(Clone, Copy)]
+struct Bend {
+    normal: Point,
+    bisector: Point,
+    major: f64,
+}
+
+#[derive(Clone, Copy)]
+struct PhasedRim {
+    ellipse: Ellipse,
+    phase: f64,
+}
+
+impl PhasedRim {
+    fn offsets(self) -> [Point; 2] {
+        let [major, minor] = self.ellipse.semiaxes_mm();
+        let a = scale(self.ellipse.major_axis(), major);
+        let b = scale(self.ellipse.minor_axis(), minor);
+        let (sin, cos) = self.phase.sin_cos();
+        [combine(a, cos, b, sin), combine(b, cos, a, -sin)]
+    }
+
+    fn point(self, parameter: f64) -> Point {
+        self.ellipse.point_at(self.phase + parameter)
+    }
+}
+
+fn build(
+    path: &[Point],
+    radius: f64,
+    tolerance: f64,
+    first_radial: Option<Point>,
+) -> Result<Shell, Error> {
+    if path.len() > MAX_PATH_POINTS {
+        return Err(Error::Limit);
+    }
+    if path.len() < 3
+        || !(1e-10..=1e-3).contains(&tolerance)
+        || !radius.is_finite()
+        || radius <= tolerance
         || path.iter().flatten().any(|value| !value.is_finite())
     {
         return Err(Error::Invalid);
     }
-    if radius_mm > MAX_COORDINATE_MM
+    if radius > MAX_COORDINATE_MM
         || path
             .iter()
             .flatten()
@@ -38,63 +89,54 @@ fn circular_miter_with_phase(
         return Err(Error::Limit);
     }
 
-    let [start, corner, end] = path;
-    let vectors = [sub(corner, start), sub(end, corner)];
-    let lengths = vectors.map(length3);
-    if lengths.into_iter().any(|length| length <= tolerance_mm) {
+    let legs: Vec<_> = path.windows(2).map(|pair| sub(pair[1], pair[0])).collect();
+    let lengths: Vec<_> = legs.iter().copied().map(length3).collect();
+    if lengths.iter().any(|&length| length <= tolerance) {
         return Err(Error::Invalid);
     }
-    let [first, second] = std::array::from_fn(|i| scale(vectors[i], lengths[i].recip()));
-    let bend = cross(first, second);
-    let turn = length3(bend);
-    if turn <= FRAME_EPS {
-        return Err(Error::Unsupported);
-    }
-    let bend_normal = scale(bend, turn.recip());
-    let sum = std::array::from_fn(|i| first[i] + second[i]);
-    let bisector = scale(sum, length3(sum).recip());
-    let cosine = 0.5 * length3(sum);
-    let sine = 0.5 * length3(sub(first, second));
-    let reach = radius_mm * sine / cosine;
-    let major = radius_mm / cosine.min(1.);
-    if major <= radius_mm {
-        return Err(Error::Unsupported);
-    }
-    if major > MAX_COORDINATE_MM {
-        return Err(Error::Limit);
-    }
-    // The miter cuts each generator at an axial station whose deviation
-    // from the axis intersection is bounded by reach. Beyond this check
-    // the two legs occupy strictly opposite halfspaces of the bisector.
-    if lengths
-        .into_iter()
-        .any(|length| length - reach <= tolerance_mm)
-    {
-        return Err(Error::Unsupported);
-    }
-
-    let axes = [first, bisector, second];
-    let ellipse = |i: usize| {
-        let axis = axes[i];
-        let major = if i == 1 { major } else { radius_mm };
-        Ellipse::new(path[i], axis, cross(bend_normal, axis), [major, radius_mm])
-            .ok()
-            .ok_or(Error::Invalid)
+    let axes: Vec<_> = legs
+        .iter()
+        .zip(&lengths)
+        .map(|(&direction, &length)| scale(direction, length.recip()))
+        .collect();
+    let bends = axes
+        .windows(2)
+        .map(|pair| bend(pair[0], pair[1], radius))
+        .collect::<Result<Vec<_>, _>>()?;
+    let first_bend = bends.iter().flatten().next().ok_or(Error::Unsupported)?;
+    let radial = if let Some(radial) = first_radial {
+        let length = length3(radial);
+        let station = dot(radial, axes[0]);
+        if !length.is_finite() || (length - radius).abs() > tolerance || station.abs() > tolerance {
+            return Err(Error::Invalid);
+        }
+        let projected = combine(radial, 1., axes[0], -station);
+        scale(projected, length3(projected).recip())
+    } else {
+        cross(first_bend.normal, axes[0])
     };
-    let ellipses = [ellipse(0)?, ellipse(1)?, ellipse(2)?];
-    let disk_area = PI * radius_mm * radius_mm;
+    let trims = rims(path, &axes, &bends, radial, radius)?;
+    let disk_area = PI * radius * radius;
+    let rim_edge_count = 4 * trims.len();
     let mut shell = Shell {
-        vertices: Vec::with_capacity(12),
-        edges: Vec::with_capacity(20),
-        faces: Vec::with_capacity(10),
-        bounds_mm: bounds(&ellipses),
-        volume_mm3: disk_area * (lengths[0] + lengths[1]),
+        vertices: Vec::with_capacity(rim_edge_count),
+        edges: Vec::with_capacity(rim_edge_count + 4 * legs.len()),
+        faces: Vec::with_capacity(2 + 4 * legs.len()),
+        bounds_mm: bounds(trims.iter().map(|rim| rim.ellipse)),
+        volume_mm3: disk_area * lengths.iter().sum::<f64>(),
         solid_count: 1,
         shell_count: 1,
         band: None,
         chart_w: vec![],
         chart_edges: 0,
-        matched_quarter_rims: Some((12, major)),
+        matched_quarter_rims: Some((
+            rim_edge_count,
+            bends
+                .iter()
+                .flatten()
+                .map(|bend| bend.major)
+                .fold(radius, f64::max),
+        )),
     };
     if shell
         .bounds_mm
@@ -104,14 +146,24 @@ fn circular_miter_with_phase(
     {
         return Err(Error::Limit);
     }
-    let [a, joint, b] = ellipses;
-    let rims = [
-        append_rim(&mut shell, a, tolerance_mm, phase)?,
-        append_rim(&mut shell, joint, tolerance_mm, phase)?,
-        append_rim(&mut shell, b, tolerance_mm, phase)?,
-    ];
-    let (phase_sine, phase_cosine) = phase.sin_cos();
-
+    for (leg, &axis) in axes.iter().enumerate() {
+        for (earlier, &earlier_axis) in axes.iter().take(leg.saturating_sub(1)).enumerate() {
+            if !separated(
+                [trims[earlier].ellipse, trims[earlier + 1].ellipse],
+                [trims[leg].ellipse, trims[leg + 1].ellipse],
+                [earlier_axis, axis],
+                tolerance,
+            ) {
+                return Err(Error::Unsupported);
+            }
+        }
+    }
+    let rims = trims
+        .iter()
+        .copied()
+        .map(|rim| append_rim(&mut shell, rim, tolerance))
+        .collect::<Result<Vec<_>, _>>()?;
+    let end = axes.len() - 1;
     shell.faces.push(Face {
         boundary: rims[0]
             .edges
@@ -121,15 +173,28 @@ fn circular_miter_with_phase(
             .collect(),
         holes: Vec::new(),
         support: Support::Plane {
-            normal: scale(first, -1.),
+            normal: scale(axes[0], -1.),
         },
-        point_mm: start,
+        point_mm: path[0],
         area_mm2: disk_area,
         source: 0,
         source_face: 0,
     });
-    for (leg, axis) in [first, second].into_iter().enumerate() {
+    for (leg, &axis) in axes.iter().enumerate() {
         let [lower, upper] = [&rims[leg], &rims[leg + 1]];
+        let [low, high] = [trims[leg], trims[leg + 1]];
+        let [low_u, low_v] = low.offsets();
+        let [high_u, high_v] = high.offsets();
+        let [a, b] = [sub(high_u, low_u), sub(high_v, low_v)];
+        let [cosine, sine] = [dot(axis, a), dot(axis, b)];
+        // Generator lengths are affine in the shared radial angle. Their
+        // global minimum is the center distance less the harmonic amplitude.
+        let length = lengths[leg];
+        if length - cosine.hypot(sine) <= tolerance
+            || length3(cross(a, axis)).hypot(length3(cross(b, axis))) > tolerance
+        {
+            return Err(Error::Unsupported);
+        }
         let rails: [usize; 4] = std::array::from_fn(|i| {
             append_edge(
                 &mut shell,
@@ -140,23 +205,17 @@ fn circular_miter_with_phase(
         if rails.iter().any(|&rail| {
             let [a, b] = shell.edges[rail].vertices.map(|i| shell.vertices[i]);
             let delta = sub(b, a);
-            dot(delta, axis) <= tolerance_mm || length3(cross(delta, axis)) > tolerance_mm
+            dot(delta, axis) <= tolerance || length3(cross(delta, axis)) > tolerance
         }) {
             return Err(Error::Unsupported);
         }
-        // The generator lengths are L − reach·cos(θ). Each sector integrates
-        // this affine harmonic exactly over one quadrant.
-        let sine_deltas = [
-            phase_cosine - phase_sine,
-            -phase_cosine - phase_sine,
-            phase_sine - phase_cosine,
-            phase_sine + phase_cosine,
-        ];
-        for (sector, delta_sine) in sine_deltas.into_iter().enumerate() {
+        let radial = [[1., 0.], [0., 1.], [-1., 0.], [0., -1.]];
+        for sector in 0..4 {
             let next = (sector + 1) % 4;
-            let midpoint = phase + (sector as f64 + 0.5) * FRAC_PI_2;
-            let [a, b] =
-                [ellipses[leg], ellipses[leg + 1]].map(|ellipse| ellipse.point_at(midpoint));
+            let [c0, s0] = radial[sector];
+            let [c1, s1] = radial[next];
+            let midpoint = (sector as f64 + 0.5) * FRAC_PI_2;
+            let [p, q] = [low.point(midpoint), high.point(midpoint)];
             shell.faces.push(Face {
                 boundary: vec![
                     oriented(lower.edges[sector], true),
@@ -168,74 +227,191 @@ fn circular_miter_with_phase(
                 support: Support::Cylinder {
                     axis_origin_mm: path[leg],
                     axis_direction: axis,
-                    radius_mm,
+                    radius_mm: radius,
                     outward: true,
                 },
-                point_mm: std::array::from_fn(|i| a[i].midpoint(b[i])),
-                area_mm2: radius_mm * (FRAC_PI_2 * lengths[leg] - reach * delta_sine),
+                point_mm: std::array::from_fn(|i| p[i].midpoint(q[i])),
+                area_mm2: radius * (FRAC_PI_2 * length + cosine * (s1 - s0) + sine * (c0 - c1)),
                 source: leg,
                 source_face: 2 + sector,
             });
         }
     }
     shell.faces.push(Face {
-        boundary: rims[2].edges.map(|edge| oriented(edge, true)).into(),
+        boundary: rims[end + 1].edges.map(|edge| oriented(edge, true)).into(),
         holes: Vec::new(),
-        support: Support::Plane { normal: second },
-        point_mm: end,
+        support: Support::Plane { normal: axes[end] },
+        point_mm: path[end + 1],
         area_mm2: disk_area,
-        source: 1,
+        source: end,
         source_face: 1,
     });
-    // Every circumferential edge is shared by adjacent legs or a cap,
-    // and adjacent sectors traverse each generator in opposite directions.
     prove_incidence(&shell)?;
     Ok(shell)
 }
 
+fn bend(first: Point, second: Point, radius: f64) -> Result<Option<Bend>, Error> {
+    let axis = cross(first, second);
+    let turn = length3(axis);
+    if turn <= 64. * f64::EPSILON && dot(first, second) > 0. {
+        return Ok(None);
+    }
+    if turn <= FRAME_EPS {
+        return Err(Error::Unsupported);
+    }
+    let sum = combine(first, 1., second, 1.);
+    let bisector = scale(sum, length3(sum).recip());
+    let cosine = 0.5 * length3(sum);
+    let major = radius / cosine.min(1.);
+    if major <= radius {
+        return Err(Error::Unsupported);
+    }
+    if major > MAX_COORDINATE_MM {
+        return Err(Error::Limit);
+    }
+    Ok(Some(Bend {
+        normal: scale(axis, turn.recip()),
+        bisector,
+        major,
+    }))
+}
+
+fn rims(
+    path: &[Point],
+    axes: &[Point],
+    bends: &[Option<Bend>],
+    mut radial: Point,
+    radius: f64,
+) -> Result<Vec<PhasedRim>, Error> {
+    let circle = |point, axis, radial| {
+        Ellipse::new(point, axis, radial, [radius; 2])
+            .map(|ellipse| PhasedRim { ellipse, phase: 0. })
+            .map_err(|_| Error::Invalid)
+    };
+    let mut rims = Vec::with_capacity(path.len());
+    rims.push(circle(path[0], axes[0], radial)?);
+    for (joint, bend) in bends.iter().enumerate() {
+        let [incoming, outgoing] = [axes[joint], axes[joint + 1]];
+        let point = path[joint + 1];
+        let Some(bend) = bend else {
+            rims.push(circle(point, incoming, radial)?);
+            continue;
+        };
+        // The bend-normal component stays fixed. The in-plane radial
+        // component rotates into the outgoing chart by the same angle as
+        // the tangent. On the bisector it stretches by the secant.
+        let incoming_radial = cross(bend.normal, incoming);
+        let c = dot(radial, incoming_radial);
+        let s = dot(radial, bend.normal);
+        let ellipse = Ellipse::new(
+            point,
+            bend.bisector,
+            cross(bend.normal, bend.bisector),
+            [bend.major, radius],
+        )
+        .map_err(|_| Error::Invalid)?;
+        rims.push(PhasedRim {
+            ellipse,
+            phase: s.atan2(c),
+        });
+        radial = combine(cross(bend.normal, outgoing), c, bend.normal, s);
+    }
+    let end = path.len() - 1;
+    rims.push(circle(path[end], axes[end - 1], radial)?);
+    Ok(rims)
+}
+
+fn separated(a: [Ellipse; 2], b: [Ellipse; 2], axes: [Point; 2], tolerance: f64) -> bool {
+    let origin = a[0].center_mm();
+    let directions = [
+        [1., 0., 0.],
+        [0., 1., 0.],
+        [0., 0., 1.],
+        axes[0],
+        axes[1],
+        cross(axes[0], axes[1]),
+        a[0].normal(),
+        a[1].normal(),
+        b[0].normal(),
+        b[1].normal(),
+        sub(b[0].center_mm(), origin),
+        sub(b[1].center_mm(), origin),
+        sub(b[0].center_mm(), a[1].center_mm()),
+        sub(b[1].center_mm(), a[1].center_mm()),
+    ];
+    directions.into_iter().any(|direction| {
+        let length = length3(direction);
+        if length <= FRAME_EPS {
+            return false;
+        }
+        let axis = scale(direction, length.recip());
+        let [a, b] = [a, b].map(|rims| {
+            rims.into_iter()
+                .fold([f64::INFINITY, f64::NEG_INFINITY], |[lo, hi], rim| {
+                    let center = dot(sub(rim.center_mm(), origin), axis);
+                    let [major, minor] = rim.semiaxes_mm();
+                    let extent = (major * dot(rim.major_axis(), axis))
+                        .hypot(minor * dot(rim.minor_axis(), axis));
+                    [lo.min(center - extent), hi.max(center + extent)]
+                })
+        });
+        // A positive-length leg is the convex hull of the two trimmed
+        // disks. Its exact support interval is the hull of their intervals.
+        let roundoff = 64. * f64::EPSILON * a.into_iter().chain(b).map(f64::abs).fold(1., f64::max);
+        a[0] - b[1] > tolerance + roundoff || b[0] - a[1] > tolerance + roundoff
+    })
+}
+
 impl Shell {
     /// Rotate the artificial quarter trims of an unmodified miter until no
-    /// trim vertex lies on the cutting plane. The three rim supports and
-    /// the two cylinder supports stay the same.
+    /// trim vertex lies on the cutting plane.
     pub(super) fn repartition_circular_miter(
         &self,
         signed_distance: impl Fn(Point) -> f64,
-        tolerance_mm: f64,
+        tolerance: f64,
     ) -> Result<(Self, Vec<f64>), Error> {
-        if !matches!(self.matched_quarter_rims, Some((12, _)))
-            || self.vertices.len() != 12
-            || self.edges.len() != 20
-            || self.faces.len() != 10
+        let (edges, _) = self.matched_quarter_rims.ok_or(Error::Unsupported)?;
+        if edges < 12
+            || self.vertices.len() != edges
+            || self.edges.len() != 2 * edges - 4
+            || self.faces.len() != edges - 2
         {
             return Err(Error::Unsupported);
         }
-        let rims = [0, 4, 8].map(|index| match self.edges[index].curve {
-            Curve::Ellipse(arc) => Some(arc.ellipse()),
-            Curve::Line => None,
-        });
-        let [Some(first), Some(joint), Some(last)] = rims else {
-            return Err(Error::Unsupported);
-        };
-        let ellipses = [first, joint, last];
+        let rims: Vec<_> = self.edges[..edges]
+            .iter()
+            .step_by(4)
+            .map(|edge| match edge.curve {
+                Curve::Ellipse(arc) => Ok(PhasedRim {
+                    ellipse: arc.ellipse(),
+                    phase: arc.start_rad(),
+                }),
+                Curve::Line => Err(Error::Unsupported),
+            })
+            .collect::<Result<_, _>>()?;
         // Each noncoincident ellipse has at most two plane hits, hence at
-        // most six excluded phases modulo a quadrant. A clearance check
-        // also rejects numerically indistinguishable hits and coincidences.
-        let phase = (1..8)
-            .map(|i| f64::from(i) * FRAC_PI_2 / 8.)
+        // most two excluded phases modulo a quadrant per rim.
+        let trials = 2 * rims.len() + 2;
+        let phase = (1..trials)
+            .map(|i| FRAC_PI_2 * i as f64 / trials as f64)
             .find(|&phase| {
-                ellipses.iter().all(|ellipse| {
+                rims.iter().all(|rim| {
                     (0..4).all(|i| {
-                        let point = ellipse.point_at(phase + f64::from(i) * FRAC_PI_2);
-                        signed_distance(point).abs() > tolerance_mm
+                        signed_distance(rim.point(phase + f64::from(i) * FRAC_PI_2)).abs()
+                            > tolerance
                     })
                 })
             })
             .ok_or(Error::Unsupported)?;
-        let shifted = circular_miter_with_phase(
-            ellipses.map(Ellipse::center_mm),
-            first.semiaxes_mm()[1],
-            tolerance_mm,
-            phase,
+        let path: Vec<_> = rims.iter().map(|rim| rim.ellipse.center_mm()).collect();
+        let first = rims[0];
+        let [u, v] = first.offsets();
+        let (s, c) = phase.sin_cos();
+        let shifted = circular_miter_chain_from_radial(
+            &path,
+            first.ellipse.semiaxes_mm()[1],
+            tolerance,
+            combine(u, c, v, s),
         )?;
         let distances: Vec<_> = shifted
             .vertices
@@ -245,7 +421,7 @@ impl Shell {
             .collect();
         distances
             .iter()
-            .all(|d| d.abs() > tolerance_mm)
+            .all(|d| d.abs() > tolerance)
             .then_some((shifted, distances))
             .ok_or(Error::Unsupported)
     }
@@ -255,29 +431,23 @@ fn scale(point: Point, factor: f64) -> Point {
     point.map(|value| value * factor)
 }
 
-fn append_rim(
-    shell: &mut Shell,
-    ellipse: Ellipse,
-    tolerance_mm: f64,
-    phase: f64,
-) -> Result<Rim, Error> {
-    let center = ellipse.center_mm();
-    let [major, minor] = ellipse.semiaxes_mm();
-    let a = scale(ellipse.major_axis(), major);
-    let b = scale(ellipse.minor_axis(), minor);
-    let (sin, cos) = phase.sin_cos();
-    let u = std::array::from_fn(|i| a[i] * cos + b[i] * sin);
-    let v = std::array::from_fn(|i| b[i] * cos - a[i] * sin);
+fn combine(a: Point, a_factor: f64, b: Point, b_factor: f64) -> Point {
+    std::array::from_fn(|i| a[i] * a_factor + b[i] * b_factor)
+}
+
+fn append_rim(shell: &mut Shell, rim: PhasedRim, tolerance: f64) -> Result<Rim, Error> {
+    let center = rim.ellipse.center_mm();
+    let minor = rim.ellipse.semiaxes_mm()[1];
+    let [u, v] = rim.offsets();
     let mut vertices = [0; 4];
     for (vertex, offset) in vertices
         .iter_mut()
         .zip([u, v, scale(u, -1.), scale(v, -1.)])
     {
-        let point = std::array::from_fn(|i| center[i] + offset[i]);
-        // A small but analytically valid rim can lose its physical vertices
-        // under rounding far from the chart origin. Bound the actual offset
-        // error and keep adjacent vertices separated at the model tolerance.
-        if length3(sub(sub(point, center), offset)) > tolerance_mm.min(minor * 0.125) {
+        let point = combine(center, 1., offset, 1.);
+        // A small rim can lose its physical vertices under rounding far
+        // from the chart origin. Bound the actual offset error.
+        if length3(sub(sub(point, center), offset)) > tolerance.min(minor * 0.125) {
             return Err(Error::Unsupported);
         }
         let index = shell.vertices.len();
@@ -285,7 +455,7 @@ fn append_rim(
         *vertex = index;
     }
     let edges = std::array::from_fn(|i| {
-        let arc = EllipseArc::new(ellipse, phase + i as f64 * FRAC_PI_2, FRAC_PI_2)
+        let arc = EllipseArc::new(rim.ellipse, rim.phase + i as f64 * FRAC_PI_2, FRAC_PI_2)
             .expect("constant quarter-ellipse trim");
         append_edge(
             shell,
@@ -296,11 +466,9 @@ fn append_rim(
     Ok(Rim { vertices, edges })
 }
 
-fn bounds(ellipses: &[Ellipse; 3]) -> [Point; 2] {
-    // Every point of a cylinder generator lies between the paired rim
-    // points, so its coordinate extrema are achieved on these ellipses.
+fn bounds(ellipses: impl Iterator<Item = Ellipse>) -> [Point; 2] {
     let mut bounds = [[f64::INFINITY; 3], [f64::NEG_INFINITY; 3]];
-    for &ellipse in ellipses {
+    for ellipse in ellipses {
         let center = ellipse.center_mm();
         let [major, minor] = ellipse.semiaxes_mm();
         let u = ellipse.major_axis();
@@ -315,7 +483,7 @@ fn bounds(ellipses: &[Ellipse; 3]) -> [Point; 2] {
 }
 
 fn prove_incidence(shell: &Shell) -> Result<(), Error> {
-    let mut uses = [[0; 2]; 20];
+    let mut uses = vec![[0; 2]; shell.edges.len()];
     for face in &shell.faces {
         for (&a, &b) in face
             .boundary

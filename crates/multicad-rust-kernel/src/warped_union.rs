@@ -16,7 +16,8 @@ mod section;
 mod sheet;
 pub use axial_cut::{AxialCut, ConvexRecess, OpenBoreSide};
 pub use boss::Boss;
-pub use circular_miter::circular_miter;
+pub(crate) use circular_miter::circular_miter_chain_from_radial;
+pub use circular_miter::{circular_miter, circular_miter_chain};
 pub use elevation::Elevation;
 pub use section::{SectionClipPlane, SectionEdge, clip_section_loops};
 pub use sheet::{

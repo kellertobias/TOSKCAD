@@ -2,6 +2,7 @@ use super::*;
 use crate::display::{MeshError, Tessellation};
 
 const RIGHT_ANGLE: [Point; 3] = [[0.; 3], [0., 0., 20.], [20., 0., 20.]];
+const SKEW_CHAIN: [Point; 4] = [[0.; 3], [0., 0., 20.], [20., 0., 20.], [20., 20., 20.]];
 const TOL: f64 = 1e-7;
 
 fn close(actual: f64, expected: f64) {
@@ -13,6 +14,136 @@ fn trim(shell: &Shell, index: usize) -> EllipseArc {
         panic!("expected an exact circular or elliptical trim");
     };
     arc
+}
+
+#[test]
+fn transports_quarters_through_non_coplanar_joints() {
+    let shell = circular_miter_chain(&SKEW_CHAIN, 2., TOL).unwrap();
+    assert_eq!((shell.solid_count(), shell.shell_count()), (1, 1));
+    assert_eq!(shell.faces().len(), 14);
+    assert_eq!(shell.edges().len(), 28);
+    close(shell.volume_mm3(), 240. * PI);
+    close(
+        shell.faces().iter().map(|face| face.area_mm2).sum(),
+        248. * PI,
+    );
+    for (actual, expected) in shell
+        .bounds_mm()
+        .into_iter()
+        .flatten()
+        .zip([-2., -2., 0., 22., 20., 22.])
+    {
+        close(actual, expected);
+    }
+    close(trim(&shell, 4).start_rad(), 0.);
+    close(trim(&shell, 8).start_rad(), 3. * FRAC_PI_2);
+    for joint in 1..3 {
+        let arms = [joint - 1, joint].map(|i| {
+            let delta = sub(SKEW_CHAIN[i + 1], SKEW_CHAIN[i]);
+            scale(delta, length3(delta).recip())
+        });
+        for i in 0..4 {
+            let edge = 4 * joint + i;
+            let arc = trim(&shell, edge);
+            close(
+                arc.ellipse().semiaxes_mm()[0],
+                2. * std::f64::consts::SQRT_2,
+            );
+            let point = arc.ellipse().point_at(arc.start_rad() + FRAC_PI_2 / 3.);
+            for axis in arms {
+                close(length3(cross(sub(point, SKEW_CHAIN[joint]), axis)), 2.);
+            }
+            let uses: Vec<_> = shell
+                .faces()
+                .iter()
+                .flat_map(|face| {
+                    face.boundary
+                        .iter()
+                        .filter(move |usage| usage.edge == edge)
+                        .map(move |usage| (face.source, usage.forward))
+                })
+                .collect();
+            assert_eq!(uses, [(joint - 1, false), (joint, true)]);
+        }
+    }
+    let mesh = shell
+        .mesh(Tessellation {
+            deflection: 0.005,
+            angle: 1.,
+            triangle_limit: 10_000,
+        })
+        .unwrap();
+    let metrics = crate::manufacturing::certify(&mesh).unwrap();
+    assert!((metrics.signed_volume_mm3 / shell.volume_mm3() - 1.).abs() < 0.005);
+}
+
+#[test]
+fn restores_nondefault_partition_and_keeps_collinear_path_legs() {
+    let path = [[0.; 3], [0., 0., 10.], [0., 0., 20.], [20., 0., 20.]];
+    let shell = circular_miter_chain_from_radial(&path, 2., TOL, [0., 2., 0.]).unwrap();
+    assert_eq!(shell.vertices()[0], [0., 2., 0.]);
+    close(trim(&shell, 4).ellipse().semiaxes_mm()[0], 2.);
+    close(shell.volume_mm3(), 160. * PI);
+    for leg in 0..3 {
+        assert_eq!(
+            shell
+                .faces()
+                .iter()
+                .filter(|face| face.source == leg && face.source_face >= 2)
+                .count(),
+            4
+        );
+    }
+    let (shifted, distances) = shell
+        .repartition_circular_miter(|point| point[1], TOL)
+        .unwrap();
+    assert!(distances.iter().all(|value| value.abs() > TOL));
+    close(shifted.volume_mm3(), shell.volume_mm3());
+    assert_eq!(shifted.bounds_mm(), shell.bounds_mm());
+    assert_eq!(
+        circular_miter_chain_from_radial(&path, 2., TOL, [0., 0., 2.]),
+        Err(Error::Invalid)
+    );
+}
+
+#[test]
+fn refuses_crossing_nonadjacent_legs_and_path_budget_overflow() {
+    let crossing = [
+        [0.; 3],
+        [0., 0., 20.],
+        [20., 0., 20.],
+        [20., 0., 10.],
+        [-5., 0., 10.],
+    ];
+    assert_eq!(
+        circular_miter_chain(&crossing, 2., TOL),
+        Err(Error::Unsupported)
+    );
+    assert_eq!(
+        circular_miter_chain(&[[0.; 3]; MAX_PATH_POINTS + 1], 2., TOL),
+        Err(Error::Limit)
+    );
+    assert_eq!(
+        circular_miter_chain(&crossing[..2], 2., TOL),
+        Err(Error::Invalid)
+    );
+}
+
+#[test]
+fn certifies_parallel_legs_with_overlapping_world_bounds() {
+    // The parallel legs clear in the diagonal direction while their world
+    // X, Y and Z intervals all overlap. Their cross product cannot certify
+    // separation, but the direction between the cap centers can.
+    let offset = 5. * std::f64::consts::FRAC_1_SQRT_2;
+    let path = [
+        [0.; 3],
+        [0., 0., 20.],
+        [offset, offset, 20.],
+        [offset, offset, 0.],
+    ];
+    let shell = circular_miter_chain(&path, 2., TOL).unwrap();
+    assert_eq!(shell.solid_count(), 1);
+    close(shell.volume_mm3(), 180. * PI);
 }
 
 #[test]
