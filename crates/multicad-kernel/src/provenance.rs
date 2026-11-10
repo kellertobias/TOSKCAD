@@ -905,8 +905,14 @@ impl Solid {
             let mut snapshot = if let Some(placed) = self.polygon_prism() {
                 placed.snapshot(owner, revision).map_err(failure)?
             } else if let Some((cylinder, frame)) = self.axial_cylinder_frame() {
-                crate::rust_prism_topology::cylinder_snapshot(cylinder, frame, owner, revision)
-                    .map_err(failure)?
+                crate::rust_prism_topology::cylinder_snapshot(
+                    cylinder,
+                    frame,
+                    self.cylinder_sketch(),
+                    owner,
+                    revision,
+                )
+                .map_err(failure)?
             } else if let Some((prism, frame)) = self.rust_prism_frame() {
                 crate::rust_prism_topology::snapshot(prism, frame, owner, revision)
                     .map_err(failure)?

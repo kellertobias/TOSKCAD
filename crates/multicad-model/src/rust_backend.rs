@@ -134,7 +134,7 @@ fn straight_sweep(
 ) -> Result<StraightSweep, String> {
     let [u, v, normal] = controls.direction;
     if u != 0. || v != 0. || normal.abs() != 1. || controls.taper_rad != 0. {
-        return Err("Rust polygon extrusion requires a normal sweep without taper".into());
+        return Err("Rust straight extrusion requires a normal sweep without taper".into());
     }
     let range_error = |e| format!("Rust extrusion extent exceeds the exact length range: {e:?}");
     let length = |dimension| exact_length(dimension, parameters);
@@ -167,7 +167,7 @@ fn straight_sweep(
                 backward,
             )
         }
-        _ => return Err("Rust polygon extrusion requires distance terminations".into()),
+        _ => return Err("Rust straight extrusion requires distance terminations".into()),
     };
     let reverse = normal < 0.;
     let start_offset = match length(&source.start_offset) {
@@ -187,6 +187,55 @@ fn straight_sweep(
         start_offset,
         reverse,
     })
+}
+
+fn circular_prism(
+    id: EntityId,
+    profile: &CurvedProfile,
+    center_uv: [f64; 2],
+    radius_mm: f64,
+    origin: &Origin,
+    sweep: StraightSweep,
+    policy: GeometryPolicy,
+) -> Result<Solid, ModelError> {
+    let fail = |message: String| error(Some(id), message);
+    let radius = coordinate(radius_mm).map_err(fail)?;
+    let normal = profile.frame.normal();
+    let center = profile.frame.point(center_uv);
+    let frame = PlaneFrame {
+        origin: std::array::from_fn(|i| center[i] + normal[i] * sweep.start_offset),
+        u: profile.frame.u,
+        v: if sweep.reverse {
+            profile.frame.v.map(|axis| -axis)
+        } else {
+            profile.frame.v
+        },
+    };
+    // Retain exact world coordinates for upward XY cylinders so the existing
+    // exact through-cut can use them. Other sweeps use a rigid placement of
+    // the same analytic axial body.
+    let zero = Rational::new(0, 1).expect("zero is representable");
+    let [x, y, bottom] = if frame.u[2] == 0. && frame.v[2] == 0. && frame.normal()[2] > 0. {
+        match frame.origin.map(coordinate) {
+            [Ok(x), Ok(y), Ok(z)] => [x, y, z],
+            _ => [zero; 3],
+        }
+    } else {
+        [zero; 3]
+    };
+    let circle = Circle::new([x, y], radius)
+        .map_err(|e| fail(format!("Rust circular extrusion profile failed: {e:?}")))?;
+    let cylinder = AxialCylinder::new(id.uuid_bits(), circle, bottom, sweep.height)
+        .map_err(|e| fail(format!("Rust circular extrusion failed: {e:?}")))?;
+    Solid::from_axial_cylinder_sweep(
+        cylinder,
+        frame,
+        center_uv,
+        sweep.reverse,
+        origin.clone(),
+        policy,
+    )
+    .map_err(|e| error(Some(id), e))
 }
 
 fn straight_prism(
@@ -332,6 +381,21 @@ pub(crate) fn extrude(
     policy: GeometryPolicy,
 ) -> Result<Solid, ModelError> {
     let fail = |message: String| error(Some(id), message);
+    if let [CurvedEdge2d::Circle { center, radius_mm }] = profile.outer.as_slice() {
+        let [origin] = origins else {
+            return Err(fail(
+                "Rust circular extrusion requires one authored boundary identity".into(),
+            ));
+        };
+        if !profile.holes.is_empty() {
+            return Err(fail(
+                "Rust circular extrusion does not support inner loops in a circular outer profile"
+                    .into(),
+            ));
+        }
+        let sweep = straight_sweep(source, controls, parameters).map_err(fail)?;
+        return circular_prism(id, profile, *center, *radius_mm, origin, sweep, policy);
+    }
     if profile
         .outer
         .iter()

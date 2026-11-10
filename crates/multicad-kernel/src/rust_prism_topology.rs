@@ -1,5 +1,5 @@
 //! Publish topology and finite face descriptors from the analytic Rust body.
-use crate::{Bounds, Face, PlaneFrame};
+use crate::{Bounds, Face, PlaneFrame, geometry::CylinderSketch};
 use multicad_core::{
     document::EntityId,
     references::{
@@ -582,19 +582,31 @@ pub(crate) fn cylinder_faces(cylinder: &AxialCylinder, placed: PlaneFrame) -> Ve
 pub(crate) fn cylinder_snapshot(
     cylinder: &AxialCylinder,
     authored: PlaneFrame,
+    sketch: Option<&CylinderSketch>,
     owner: EntityId,
     revision: u64,
 ) -> Result<TopologySnapshot, String> {
     let source = EntityId::from_uuid_bits(cylinder.feature());
+    let side_role = sketch.map_or_else(
+        || "side.cylinder".into(),
+        |sketch| format!("side/{}/{}", sketch.origin.source, sketch.origin.role),
+    );
+    let mut side = vec![Origin {
+        source,
+        role: side_role,
+    }];
+    if let Some(sketch) = sketch {
+        side.push(sketch.origin.clone());
+    }
     let face_origins = CAP_ROLES
         .into_iter()
-        .chain(["side.cylinder"])
         .map(|role| {
             vec![Origin {
                 source,
                 role: role.into(),
             }]
         })
+        .chain([side])
         .collect();
     let mut build = Builder {
         face_origins,
@@ -611,11 +623,20 @@ pub(crate) fn cylinder_snapshot(
             authored.v
         };
         let support = frame(origin, authored.u, outward_v);
-        let anchor = frame(origin, authored.u, authored.v);
+        let authored_v = if sketch.is_some_and(|sketch| sketch.reverse) {
+            authored.v.map(|x| -x)
+        } else {
+            authored.v
+        };
+        let anchor_origin = sketch.map_or(origin, |sketch| {
+            let [u, v] = sketch.center_uv;
+            std::array::from_fn(|i| origin[i] - authored.u[i] * u - authored_v[i] * v)
+        });
+        let anchor = frame(anchor_origin, authored.u, authored_v);
         build.face(cap, Some(support), Some(anchor), [2]);
         build.non_face(
             AnalyticGeometry::CircularArc {
-                frame: anchor,
+                frame: frame(origin, authored.u, authored_v),
                 radius_mm,
                 start_rad: 0.,
                 sweep_rad: TAU,

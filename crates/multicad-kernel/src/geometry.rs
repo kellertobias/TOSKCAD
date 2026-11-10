@@ -482,9 +482,15 @@ enum SolidBody {
     Occt(Shape),
     Prism(Rc<Prism>, PlaneFrame),
     PolygonPrism(Rc<PlacedPolygon>),
-    AxialCylinder(Rc<AxialCylinder>, PlaneFrame),
+    AxialCylinder(Rc<AxialCylinder>, PlaneFrame, Option<Rc<CylinderSketch>>),
     RustCompound(Rc<RustCompound>),
     Orthogonal(Rc<OrthogonalBody>, PlaneFrame),
+}
+
+pub(crate) struct CylinderSketch {
+    pub(crate) origin: Origin,
+    pub(crate) center_uv: [f64; 2],
+    pub(crate) reverse: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -637,19 +643,7 @@ impl Solid {
         frame: PlaneFrame,
         policy: GeometryPolicy,
     ) -> Result<Self, GeometryError> {
-        policy.validate()?;
-        if cylinder.feature() == 0 {
-            return Err(input(
-                "Cylinder topology requires a non-nil source identity",
-            ));
-        }
-        policy.length(cylinder.circle().radius().as_f64())?;
-        policy.length(cylinder.height().as_f64())?;
-        for corner in cylinder.bounds() {
-            policy.point(corner.map(Rational::as_f64))?;
-        }
         let [x, y] = cylinder.circle().center().map(Rational::as_f64);
-        frame.checked(policy)?;
         if frame.origin != [x, y, cylinder.bottom().as_f64()]
             || frame.u[2] != 0.
             || frame.v[2] != 0.
@@ -659,12 +653,62 @@ impl Solid {
                 "Rust cylinder requires a matching frame with positive Z normal",
             ));
         }
-        Ok(Self {
-            body: SolidBody::AxialCylinder(Rc::new(cylinder), frame),
+        Self::build_axial_cylinder(cylinder, frame, None, policy)
+    }
+
+    /// Place a circular sketch sweep along the frame normal. The frame
+    /// starts at the first rim center and points along the positive height.
+    /// A reverse sweep retains the authored cap attachment basis.
+    pub fn from_axial_cylinder_sweep(
+        cylinder: AxialCylinder,
+        frame: PlaneFrame,
+        center_uv: [f64; 2],
+        reverse: bool,
+        origin: Origin,
+        policy: GeometryPolicy,
+    ) -> Result<Self, GeometryError> {
+        if origin.source.is_nil()
+            || origin.role.trim().is_empty()
+            || format!("side/{}/{}", origin.source, origin.role).len() > 256
+        {
+            return Err(input(
+                "Circular extrusion requires a valid authored curve origin",
+            ));
+        }
+        policy.point([center_uv[0], center_uv[1], 0.])?;
+        let sketch = CylinderSketch {
+            origin,
+            center_uv,
+            reverse,
+        };
+        Self::build_axial_cylinder(cylinder, frame, Some(Rc::new(sketch)), policy)
+    }
+
+    fn build_axial_cylinder(
+        cylinder: AxialCylinder,
+        frame: PlaneFrame,
+        sketch: Option<Rc<CylinderSketch>>,
+        policy: GeometryPolicy,
+    ) -> Result<Self, GeometryError> {
+        policy.validate()?;
+        if cylinder.feature() == 0 {
+            return Err(input(
+                "Cylinder topology requires a non-nil source identity",
+            ));
+        }
+        policy.length(cylinder.circle().radius().as_f64())?;
+        policy.length(cylinder.height().as_f64())?;
+        frame.checked(policy)?;
+        let solid = Self {
+            body: SolidBody::AxialCylinder(Rc::new(cylinder), frame, sketch),
             policy,
             provenance: vec![],
             rust_origins: vec![],
-        })
+        };
+        let bounds = solid.bounds()?;
+        policy.point(bounds.min)?;
+        policy.point(bounds.max)?;
+        Ok(solid)
     }
 
     pub fn axial_cylinder(&self) -> Option<&AxialCylinder> {
@@ -679,7 +723,14 @@ impl Solid {
 
     pub(crate) fn axial_cylinder_frame(&self) -> Option<(&AxialCylinder, PlaneFrame)> {
         match &self.body {
-            SolidBody::AxialCylinder(cylinder, frame) => Some((cylinder, *frame)),
+            SolidBody::AxialCylinder(cylinder, frame, _) => Some((cylinder, *frame)),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn cylinder_sketch(&self) -> Option<&CylinderSketch> {
+        match &self.body {
+            SolidBody::AxialCylinder(_, _, sketch) => sketch.as_deref(),
             _ => None,
         }
     }
@@ -772,8 +823,8 @@ impl Solid {
         let body = match &self.body {
             SolidBody::Prism(prism, frame) => SolidBody::Prism(Rc::clone(prism), *frame),
             SolidBody::PolygonPrism(prism) => SolidBody::PolygonPrism(Rc::clone(prism)),
-            SolidBody::AxialCylinder(cylinder, frame) => {
-                SolidBody::AxialCylinder(Rc::clone(cylinder), *frame)
+            SolidBody::AxialCylinder(cylinder, frame, sketch) => {
+                SolidBody::AxialCylinder(Rc::clone(cylinder), *frame, sketch.clone())
             }
             SolidBody::RustCompound(compound) => SolidBody::RustCompound(Rc::clone(compound)),
             SolidBody::Orthogonal(body, frame) => SolidBody::Orthogonal(Rc::clone(body), *frame),
@@ -1011,9 +1062,11 @@ impl Solid {
                     placed.frame = transform.frame(placed.frame);
                     SolidBody::PolygonPrism(Rc::new(placed))
                 }
-                SolidBody::AxialCylinder(cylinder, frame) => {
-                    SolidBody::AxialCylinder(Rc::clone(cylinder), transform.frame(*frame))
-                }
+                SolidBody::AxialCylinder(cylinder, frame, sketch) => SolidBody::AxialCylinder(
+                    Rc::clone(cylinder),
+                    transform.frame(*frame),
+                    sketch.clone(),
+                ),
                 SolidBody::RustCompound(compound) => {
                     SolidBody::RustCompound(compound.transformed(transform, self.policy)?)
                 }
@@ -1233,7 +1286,7 @@ impl Solid {
                 placed.frame,
                 placed.reverse_sweep,
             ),
-            SolidBody::AxialCylinder(cylinder, frame) => {
+            SolidBody::AxialCylinder(cylinder, frame, _) => {
                 let mut mesh = crate::rust_display::mesh(
                     multicad_rust_kernel::display::axial_cylinder(cylinder, rust_options),
                 )?;
@@ -1482,7 +1535,7 @@ impl Solid {
         let feature = match &self.body {
             SolidBody::PolygonPrism(placed) => placed.feature,
             SolidBody::Prism(prism, _) => EntityId::from_uuid_bits(prism.feature()),
-            SolidBody::AxialCylinder(cylinder, _) => EntityId::from_uuid_bits(cylinder.feature()),
+            SolidBody::AxialCylinder(cylinder, ..) => EntityId::from_uuid_bits(cylinder.feature()),
             SolidBody::RustCompound(compound) => compound.feature,
             SolidBody::Orthogonal(body, _) => body.feature,
             SolidBody::Occt(_) => return None,
@@ -1492,9 +1545,7 @@ impl Solid {
     /// Whether the active backend can encode this exact solid in STEP.
     pub fn supports_step_export(&self) -> bool {
         match &self.body {
-            SolidBody::Occt(_) | SolidBody::PolygonPrism(_) | SolidBody::AxialCylinder(_, _) => {
-                true
-            }
+            SolidBody::Occt(_) | SolidBody::PolygonPrism(_) | SolidBody::AxialCylinder(..) => true,
             SolidBody::Prism(prism, _) => prism.rounded_end().is_none(),
             SolidBody::RustCompound(_) => false,
             SolidBody::Orthogonal(body, _) => body.boundary.supports_step(),
@@ -1527,7 +1578,7 @@ impl Solid {
             SolidBody::Prism(prism, frame) => {
                 step::write_rectangular_prism(prism, frame.origin, frame.u, frame.v)
             }
-            SolidBody::AxialCylinder(cylinder, frame) => {
+            SolidBody::AxialCylinder(cylinder, frame, _) => {
                 if self.axial_cylinder().is_some() {
                     step::write_axial_cylinder(cylinder, frame.u)
                 } else {
