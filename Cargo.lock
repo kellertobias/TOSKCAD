@@ -2152,7 +2152,9 @@ dependencies = [
  "multicad-core",
  "multicad-native-build",
  "multicad-rust-kernel",
+ "quote",
  "serde_json",
+ "syn 3.0.9",
  "tempfile",
 ]
 

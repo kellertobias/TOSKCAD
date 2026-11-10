@@ -276,7 +276,7 @@ fn restore(
 pub(crate) fn load(
     data: &ffi::ThreadData,
     policy: GeometryPolicy,
-) -> Result<Option<cxx::UniquePtr<ffi::Shape>>, GeometryError> {
+) -> Result<Option<crate::OcctHandle>, GeometryError> {
     let Some(entry) = registered_entry(data, policy) else {
         return Ok(None);
     };
@@ -288,7 +288,7 @@ pub(crate) fn load(
 pub(crate) fn load_root_rounded(
     data: &ffi::ThreadData,
     policy: GeometryPolicy,
-) -> Result<Option<cxx::UniquePtr<ffi::Shape>>, GeometryError> {
+) -> Result<Option<crate::OcctHandle>, GeometryError> {
     let Some(entry) = root_entry(data, policy) else {
         return Ok(None);
     };

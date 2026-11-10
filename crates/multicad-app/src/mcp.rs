@@ -122,9 +122,11 @@ pub(crate) fn headless(options: Options, save_enabled: bool) -> Result<Headless,
     let geometry_backend = if options.rust_model {
         GeometryBackend::Rust
     } else {
-        multicad_kernel::route_native_output_to_stderr();
-        GeometryBackend::OpenCascade
+        GeometryBackend::default()
     };
+    if geometry_backend == GeometryBackend::OpenCascade {
+        multicad_kernel::route_native_output_to_stderr();
+    }
     let export_directory = options
         .export_directory
         .map(|d| {

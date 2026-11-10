@@ -112,7 +112,7 @@ impl Headless {
             workspace,
             export_directory,
             read_only,
-            GeometryBackend::OpenCascade,
+            GeometryBackend::default(),
         )
     }
     pub fn with_geometry_backend(

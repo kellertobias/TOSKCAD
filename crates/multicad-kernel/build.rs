@@ -1,3 +1,13 @@
+#[cfg(not(feature = "occt"))]
+#[path = "build/no_occt.rs"]
+mod no_occt;
+
+#[cfg(not(feature = "occt"))]
+fn main() {
+    no_occt::generate();
+}
+
+#[cfg(feature = "occt")]
 fn main() {
     let root = multicad_native_build::build();
     let mut build = cxx_build::bridge("src/lib.rs");

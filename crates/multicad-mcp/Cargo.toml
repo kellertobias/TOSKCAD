@@ -7,6 +7,10 @@ rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 
+[features]
+default = ["occt"]
+occt = ["multicad-kernel/occt", "multicad-model/occt"]
+
 [dependencies]
 multicad-core.workspace = true
 multicad-kernel.workspace = true

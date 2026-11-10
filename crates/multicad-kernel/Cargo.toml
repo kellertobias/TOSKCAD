@@ -1,14 +1,18 @@
 [package]
 name = "multicad-kernel"
-description = "Owned OCCT boundary; general modeling policy is implemented separately"
+description = "MultiCAD geometry providers and shared modeling API"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 
+[features]
+default = ["occt"]
+occt = ["dep:cxx", "dep:cxx-build", "dep:multicad-native-build"]
+
 [dependencies]
-cxx = "=1.0.205"
+cxx = { version = "=1.0.205", optional = true }
 multicad-core.workspace = true
 multicad-rust-kernel.workspace = true
 
@@ -17,8 +21,10 @@ tempfile = "=3.27.0"
 serde_json = "=1.0.154"
 
 [build-dependencies]
-cxx-build = "=1.0.205"
-multicad-native-build.workspace = true
+cxx-build = { version = "=1.0.205", optional = true }
+multicad-native-build = { workspace = true, optional = true }
+quote = "=1.0.47"
+syn = { version = "=3.0.9", features = ["full"] }
 
 # The audited CXX declaration is the only unsafe-code exception in this crate.
 [lints.rust]

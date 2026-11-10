@@ -135,7 +135,7 @@ impl<T: Send + 'static> Runtime<T> {
     ) -> Result<Self, String> {
         Self::with_scoped_cached_model_publisher(
             compiler,
-            GeometryBackend::OpenCascade,
+            GeometryBackend::default(),
             cached,
             |_, _| None,
             publish,
@@ -171,7 +171,7 @@ impl<T: Send + 'static> Runtime<T> {
         + Send
         + 'static,
     ) -> Result<Self, String> {
-        Self::with_model_and_snapshot_backend(compiler, GeometryBackend::OpenCascade, publish)
+        Self::with_model_and_snapshot_backend(compiler, GeometryBackend::default(), publish)
     }
 
     /// Pin the backend for all evaluations on this worker and its forked lanes.

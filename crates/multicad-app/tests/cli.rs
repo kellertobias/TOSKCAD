@@ -54,7 +54,12 @@ fn diagnostics_report_the_compiled_target_and_capabilities() {
         "Source commit: {}",
         option_env!("MULTICAD_BUILD_COMMIT").unwrap_or("not stamped")
     )));
-    assert!(text.contains("CAD kernel: OCCT 7.9.3"));
+    let expected_kernel = if cfg!(feature = "occt") {
+        "CAD kernel: OCCT 7.9.3"
+    } else {
+        "CAD kernel: MultiCAD Rust"
+    };
+    assert!(text.contains(expected_kernel));
     assert!(text.contains("Native UI: eframe 0.36.2 / wgpu"));
     assert!(text.contains("MCP server: local stdio (multicad --mcp)"));
 }

@@ -12,6 +12,10 @@ publish.workspace = true
 name = "multicad"
 path = "src/main.rs"
 
+[features]
+default = ["occt"]
+occt = ["multicad-kernel/occt", "multicad-model/occt", "multicad-mcp/occt"]
+
 [dependencies]
 multicad-core.workspace = true
 multicad-kernel.workspace = true

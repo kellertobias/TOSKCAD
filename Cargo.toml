@@ -13,12 +13,12 @@ publish = false
 
 [workspace.dependencies]
 multicad-core = { path = "crates/multicad-core" }
-multicad-kernel = { path = "crates/multicad-kernel" }
+multicad-kernel = { path = "crates/multicad-kernel", default-features = false }
 multicad-rust-kernel = { path = "crates/multicad-rust-kernel" }
 multicad-solver = { path = "crates/multicad-solver" }
-multicad-model = { path = "crates/multicad-model" }
+multicad-model = { path = "crates/multicad-model", default-features = false }
 multicad-ui = { path = "crates/multicad-ui" }
-multicad-mcp = { path = "crates/multicad-mcp" }
+multicad-mcp = { path = "crates/multicad-mcp", default-features = false }
 multicad-native-build = { path = "crates/multicad-native-build" }
 eframe = { version = "=0.36.2", default-features = false, features = ["wgpu", "default_fonts", "accesskit", "wayland", "x11"] }
 

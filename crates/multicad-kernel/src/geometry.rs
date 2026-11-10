@@ -856,7 +856,7 @@ impl Solid {
         }
     }
 
-    pub(crate) fn into_occt(self) -> Option<cxx::UniquePtr<ffi::Shape>> {
+    pub(crate) fn into_occt(self) -> Option<crate::OcctHandle> {
         match self.body {
             SolidBody::Occt(shape) => Some(shape.0),
             _ => None,
@@ -936,7 +936,7 @@ impl Solid {
         })
     }
     pub(crate) fn adopt(
-        handle: cxx::UniquePtr<ffi::Shape>,
+        handle: crate::OcctHandle,
         policy: GeometryPolicy,
         operation: &'static str,
     ) -> Result<Self, GeometryError> {

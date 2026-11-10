@@ -2,6 +2,7 @@
 #![deny(unsafe_code)]
 
 // CXX owns shape lifetimes and translates std::exception into Rust Result.
+#[cfg(feature = "occt")]
 #[allow(unsafe_code)]
 #[cxx::bridge(namespace = "multicad::kernel")]
 mod ffi {
@@ -620,7 +621,21 @@ mod ffi {
 }
 mod mesh;
 pub use mesh::{ManufacturingMesh, Mesh};
-pub struct Shape(cxx::UniquePtr<ffi::Shape>);
+#[cfg(not(feature = "occt"))]
+#[allow(dead_code, unused_variables)]
+mod no_occt;
+#[cfg(not(feature = "occt"))]
+use no_occt as ffi;
+
+#[cfg(feature = "occt")]
+type OcctHandle = cxx::UniquePtr<ffi::Shape>;
+#[cfg(not(feature = "occt"))]
+type OcctHandle = ffi::UniquePtr<ffi::Shape>;
+
+pub struct Shape(OcctHandle);
+
+/// Whether this executable contains the optional comparison provider.
+pub const OCCT_LINKED: bool = cfg!(feature = "occt");
 
 pub use multicad_rust_kernel as rust_kernel;
 pub type Error = Box<dyn std::error::Error>;
@@ -670,9 +685,16 @@ mod to_plane;
 pub use curves::*;
 pub use revolve::RevolutionAxis;
 pub use split::{PlaneSplit, SolidSplit};
-/// Content identity of the exact native source tree, including local patches.
+/// Identity for exports stamped with the compiled geometry provider.
 pub const fn source_identity() -> &'static str {
-    env!("MULTICAD_OCCT_SOURCE_HASH")
+    #[cfg(feature = "occt")]
+    {
+        env!("MULTICAD_OCCT_SOURCE_HASH")
+    }
+    #[cfg(not(feature = "occt"))]
+    {
+        "multicad-rust-kernel"
+    }
 }
 
 /// Send OCCT messages and C++ `std::cout` to stderr, at warning level and
@@ -741,8 +763,8 @@ pub use spline_edits::*;
 mod sketch_references;
 pub use sketch_references::*;
 
-#[cfg(test)]
+#[cfg(all(test, feature = "occt"))]
 mod validity_cache_tests;
 
-#[cfg(test)]
+#[cfg(all(test, feature = "occt"))]
 mod mesh_cache_tests;

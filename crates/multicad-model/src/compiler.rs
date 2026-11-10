@@ -344,6 +344,16 @@ pub enum GeometryBackend {
     Rust,
 }
 
+impl Default for GeometryBackend {
+    fn default() -> Self {
+        if multicad_kernel::OCCT_LINKED {
+            Self::OpenCascade
+        } else {
+            Self::Rust
+        }
+    }
+}
+
 struct EvaluationMode {
     roots: Option<Vec<EntityId>>,
     backend: GeometryBackend,
@@ -361,7 +371,7 @@ impl Compiler {
         revision: u64,
         interrupt: Option<&dyn Fn() -> bool>,
     ) -> Result<Model, ModelError> {
-        self.compile_with_backend(document, revision, GeometryBackend::OpenCascade, interrupt)
+        self.compile_with_backend(document, revision, GeometryBackend::default(), interrupt)
     }
 
     /// Evaluate the whole canonical document with one explicitly selected solid backend.
@@ -394,7 +404,7 @@ impl Compiler {
             cache,
             document,
             revision,
-            GeometryBackend::OpenCascade,
+            GeometryBackend::default(),
             interrupt,
         )
     }
@@ -433,7 +443,7 @@ impl Compiler {
             document,
             revision,
             roots,
-            GeometryBackend::OpenCascade,
+            GeometryBackend::default(),
             interrupt,
         )
     }
@@ -483,7 +493,7 @@ impl Compiler {
             document,
             revision,
             roots,
-            GeometryBackend::OpenCascade,
+            GeometryBackend::default(),
             interrupt,
         )
     }
@@ -524,6 +534,9 @@ impl Compiler {
     ) -> Result<Model, ModelError> {
         let started = std::time::Instant::now();
         let native_backend = mode.backend == GeometryBackend::OpenCascade;
+        if native_backend && !multicad_kernel::OCCT_LINKED {
+            return Err(error(None, "OpenCascade is unavailable in this build"));
+        }
         let full_evaluation = mode.roots.is_none() && native_backend;
         let full_rust = mode.roots.is_none() && !native_backend;
         if full_rust && let Some(cache) = cache.as_deref_mut() {

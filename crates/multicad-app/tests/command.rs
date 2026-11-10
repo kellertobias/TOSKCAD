@@ -36,7 +36,12 @@ fn built_rust_backend_rebuilds_the_complete_saved_toolcase() {
         serde_json::to_vec(&json!({"tool": "evaluate_model", "arguments": {}})).unwrap(),
     )
     .unwrap();
-    let (ok, receipt) = invoke(&project, &request, &["--read-only", "--rust-model"]);
+    let flags: &[_] = if cfg!(feature = "occt") {
+        &["--read-only", "--rust-model"]
+    } else {
+        &["--read-only"]
+    };
+    let (ok, receipt) = invoke(&project, &request, flags);
     assert!(ok, "{receipt}");
     let model = &receipt["result"];
     assert_eq!(model["scope"], "full");
@@ -115,7 +120,14 @@ fn command_dispatch_is_memory_only_unless_explicitly_saved_and_reopens_canonical
     )
     .unwrap();
     for (flags, backend) in [
-        (&["--read-only"][..], "opencascade"),
+        (
+            &["--read-only"][..],
+            if cfg!(feature = "occt") {
+                "opencascade"
+            } else {
+                "rust"
+            },
+        ),
         (&["--read-only", "--rust-model"][..], "rust"),
     ] {
         let (ok, receipt) = invoke(&project, &request, flags);
@@ -165,17 +177,17 @@ fn built_rust_backend_saves_and_revalidates_a_metric_through_connection() {
 }
 
 #[test]
-fn real_cli_connection_full_request_native_lifecycle_reopens_and_matches_direct_mcp() {
+fn real_cli_connection_lifecycle_reopens_and_matches_direct_mcp() {
     use multicad_core::model::*;
     use multicad_mcp::{
         Headless, Workspace,
         tools::{Call, dispatch},
     };
     use std::sync::{Arc, atomic::AtomicBool};
-    for (document, mut request, stock) in [
-        connection_fixture::fixture(),
-        connection_fixture::tapped_fixture(),
-    ] {
+    let fixtures = std::iter::once(connection_fixture::fixture());
+    #[cfg(feature = "occt")]
+    let fixtures = fixtures.chain(std::iter::once(connection_fixture::tapped_fixture()));
+    for (document, mut request, stock) in fixtures {
         let dir = tempfile::tempdir().unwrap();
         let project = dir.path().join("connection.tcd");
         let command = dir.path().join("request.json");
@@ -274,4 +286,40 @@ fn real_cli_connection_full_request_native_lifecycle_reopens_and_matches_direct_
         .document;
         assert_eq!(removed, document);
     }
+}
+
+#[cfg(not(feature = "occt"))]
+#[test]
+fn rust_only_refuses_an_unavailable_tapped_receiver_before_saving() {
+    let (document, request, _) = connection_fixture::tapped_fixture();
+    let dir = tempfile::tempdir().unwrap();
+    let project = dir.path().join("connection.tcd");
+    let command = dir.path().join("request.json");
+    let mut original = vec![];
+    project_file::write(
+        &ProjectFile::new(document).unwrap(),
+        &mut original,
+        Default::default(),
+    )
+    .unwrap();
+    std::fs::write(&project, &original).unwrap();
+    std::fs::write(
+        &command,
+        serde_json::to_vec(
+            &json!({"tool":"set_screw_connection","arguments":{"expected_revision":0,"request":request}}),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let (ok, receipt) = invoke(&project, &command, &["--save"]);
+    assert!(!ok, "{receipt}");
+    assert_eq!(receipt["error"]["code"], "model_failed");
+    assert!(
+        receipt["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("unseated round through bore"),
+        "{receipt}"
+    );
+    assert_eq!(std::fs::read(&project).unwrap(), original);
 }

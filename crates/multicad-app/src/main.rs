@@ -86,7 +86,7 @@ fn main() -> ExitCode {
     };
     let build = BuildInfo::current();
     let result = match action {
-        Action::Run(project) => run_application(project, GeometryBackend::OpenCascade)
+        Action::Run(project) => run_application(project, GeometryBackend::default())
             .inspect_err(|error| record_startup_error(error)),
         Action::RunRustModel(project) => run_application(project, GeometryBackend::Rust)
             .inspect_err(|error| record_startup_error(error)),
@@ -102,14 +102,22 @@ fn main() -> ExitCode {
             Ok(())
         }
         Action::Diagnostics => {
+            let kernel = if multicad_kernel::OCCT_LINKED {
+                format!(
+                    "OCCT 7.9.3 (statically linked)\nOCCT source: {}",
+                    multicad_kernel::source_identity()
+                )
+            } else {
+                "MultiCAD Rust".into()
+            };
             println!(
-                "{} {}\nStage: native-integration\nTarget: {}/{}\nSource commit: {}\nCAD kernel: OCCT 7.9.3 (statically linked)\nOCCT source: {}\nSketch solver: sketch-solver 0.1.0\nNative UI: eframe 0.36.2 / wgpu\nCAD workspaces: Project; constrained Sketch; initial New body extrusion\nNative project format: versioned .tcd container (legacy .multicad accepted); atomic saves and explicit recovery copies\nMCP server: local stdio (multicad --mcp), rmcp 3.8.0\nRuntime: compiled Rust and native libraries; no Python or Node.js dependency",
+                "{} {}\nStage: native-integration\nTarget: {}/{}\nSource commit: {}\nCAD kernel: {}\nSketch solver: sketch-solver 0.1.0\nNative UI: eframe 0.36.2 / wgpu\nCAD workspaces: Project; constrained Sketch; initial New body extrusion\nNative project format: versioned .tcd container (legacy .multicad accepted); atomic saves and explicit recovery copies\nMCP server: local stdio (multicad --mcp), rmcp 3.8.0\nRuntime: compiled Rust and native libraries; no Python or Node.js dependency",
                 build.product,
                 build.version,
                 build.target_os,
                 build.target_arch,
                 build.commit.unwrap_or("not stamped"),
-                multicad_kernel::source_identity()
+                kernel
             );
             Ok(())
         }
