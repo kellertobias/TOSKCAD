@@ -163,7 +163,10 @@ impl DrawingBackend for Backend {
             .get_or_insert_with(|| {
                 let create = || {
                     Runtime::with_model_and_snapshot_backend(
-                        Compiler::default(),
+                        Compiler {
+                            omit_display: true,
+                            ..Default::default()
+                        },
                         self.geometry_backend,
                         |document, model, _, mask| Ok(build_tables(document, model, mask)),
                     )
@@ -1671,9 +1674,13 @@ mod tests {
             std::thread::sleep(Duration::from_millis(2));
         }
     }
-    fn fresh_rows(session: &Session, spec: ScheduleSpec) -> Vec<Vec<String>> {
+    fn fresh_rows(
+        session: &Session,
+        spec: ScheduleSpec,
+        backend: GeometryBackend,
+    ) -> Vec<Vec<String>> {
         let model = Compiler::default()
-            .compile(session.document(), session.revision())
+            .compile_with_backend(session.document(), session.revision(), backend, None)
             .unwrap();
         schedules::build(&model, session.document(), session.revision(), spec)
             .unwrap()
@@ -1691,13 +1698,25 @@ mod tests {
             .unwrap()
     }
 
+    #[cfg(feature = "occt")]
     #[test]
     fn native_backend_places_checks_and_refreshes_a_real_bom_table() {
+        places_checks_and_refreshes_a_real_bom_table(GeometryBackend::OpenCascade);
+    }
+
+    #[test]
+    fn rust_backend_places_checks_and_refreshes_a_real_bom_table() {
+        places_checks_and_refreshes_a_real_bom_table(GeometryBackend::Rust);
+    }
+
+    fn places_checks_and_refreshes_a_real_bom_table(backend: GeometryBackend) {
         let mut session = Session::new(Document::new("Native schedules").unwrap()).unwrap();
         add_box(&mut session, "Leg", 0.);
         add_box(&mut session, "Top", 40.);
         let mut editor = DrawingEditor::default();
-        editor.set_backend_factory(Arc::new(|| Box::new(Backend::new())));
+        editor.set_backend_factory(Arc::new(move || {
+            Box::new(Backend::with_cache_and_backend(None, backend))
+        }));
         editor
             .invoke(&mut session, DrawingTool::AddPage, Channel::Ui)
             .unwrap();
@@ -1710,7 +1729,7 @@ mod tests {
             .place_schedule(&mut session, spec, Channel::Ui)
             .unwrap();
         until(&mut editor, &mut session, |_, s| s.revision() > revision);
-        assert_eq!(placed(&session), fresh_rows(&session, spec));
+        assert_eq!(placed(&session), fresh_rows(&session, spec, backend));
         assert_eq!(placed(&session).len(), 2);
         let table = editor.selected_annotation().unwrap();
         until(&mut editor, &mut session, |e, s| {
@@ -1726,7 +1745,7 @@ mod tests {
             .refresh_schedule_table(&mut session, table, Channel::Ui)
             .unwrap();
         assert_eq!(placed(&session).len(), 3);
-        assert_eq!(placed(&session), fresh_rows(&session, spec));
+        assert_eq!(placed(&session), fresh_rows(&session, spec, backend));
         until(&mut editor, &mut session, |e, s| {
             e.schedule_status(s, table) == ScheduleStatus::Current
         });
