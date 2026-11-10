@@ -2324,6 +2324,89 @@ fn rust_model_worker_picks_a_directed_draft_around_its_through_hole() {
 }
 
 #[test]
+fn rust_model_worker_picks_the_moving_associative_cap_around_its_hole() {
+    use multicad_core::{
+        commands::Request,
+        document::{Entity, EntityData, Mutation},
+        model::{Extent, Termination},
+    };
+
+    let (mut session, feature, mut parameters) = rust_polygon::drafted_fixture();
+    let scale = 1_f64.hypot(0.5);
+    let mut plane = Entity::new(
+        "Sloped end",
+        EntityData::Plane {
+            origin_mm: [0., 0., 8.],
+            normal: [-0.5 / scale, 0., 1. / scale],
+            anchor: None,
+        },
+    );
+    session
+        .apply(Request {
+            expected_revision: session.revision(),
+            actor: Actor::local(Channel::Ui),
+            label: "Add the termination plane".into(),
+            edits: vec![Mutation::Insert(plane.clone())],
+        })
+        .unwrap();
+    parameters.direction = Default::default();
+    parameters.taper = model::angle(0.);
+    parameters.extent = Extent::OneSided {
+        end: Termination::ToPlane {
+            plane: plane.id,
+            offset: length(0.),
+        },
+    };
+    let prepared = model::prepare_extrude_edit(
+        &session,
+        session.revision(),
+        Actor::local(Channel::Ui),
+        feature,
+        &parameters,
+    )
+    .unwrap();
+    session.commit(prepared.prepared).unwrap();
+
+    let mut backend = Backend::factory(GeometryBackend::Rust).unwrap()();
+    let ray = |x, y| viewport::Ray::new([x, y, 30.], [0., 0., -1.]).unwrap();
+    for (generation, z) in [(1, 9.), (2, 16.)] {
+        if generation == 2 {
+            let EntityData::Plane { origin_mm, .. } = &mut plane.data else {
+                unreachable!()
+            };
+            origin_mm[2] = 15.;
+            session
+                .apply(Request {
+                    expected_revision: session.revision(),
+                    actor: Actor::local(Channel::Ui),
+                    label: "Move the termination plane".into(),
+                    edits: vec![Mutation::Replace(plane.clone())],
+                })
+                .unwrap();
+        }
+        let stamp = SceneStamp {
+            document: session.document().id(),
+            revision: session.revision(),
+            generation,
+        };
+        backend.request(session.document(), stamp).unwrap();
+        let scene = wait_for_scene(&mut *backend).result.unwrap();
+        assert_eq!(scene.stamp(), stamp);
+        assert_eq!(scene.instances().len(), 1);
+        assert!(scene.pick_face(ray(6., 5.)).is_none());
+        let cap = scene.pick_face(ray(2., 2.)).unwrap();
+        assert!((cap.point_mm[2] - z).abs() < 1e-6);
+        assert!(
+            cap.intent
+                .unwrap()
+                .origins
+                .iter()
+                .any(|origin| origin.source == feature && origin.role == "cap.end")
+        );
+    }
+}
+
+#[test]
 fn rust_model_worker_picks_a_sketch_extrusion_around_its_holes_and_notch() {
     let factory = Backend::factory(GeometryBackend::Rust).unwrap();
     let mut backend = factory();

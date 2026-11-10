@@ -11,7 +11,7 @@ use multicad_core::{
     sketch::Datum,
     sketch_regions,
 };
-use multicad_model::{Compiler, Model, ShapeSnapshot};
+use multicad_model::{Compiler, GeometryBackend, Model, ModelError, ShapeSnapshot};
 fn actor() -> Actor {
     Actor::local(Channel::Mcp)
 }
@@ -24,6 +24,9 @@ struct Fixture {
 }
 impl Fixture {
     fn new() -> Self {
+        Self::rectangle(false)
+    }
+    fn rectangle(with_hole: bool) -> Self {
         let (sketch, edits) = Source::create(Datum::Xy, "Terminated profile").unwrap();
         let mut doc = Document::new("Native terminations")
             .unwrap()
@@ -31,7 +34,15 @@ impl Fixture {
             .unwrap();
         let mut source = Source::read(&doc, sketch).unwrap().0;
         source.add_rectangle([0., 0.], [10., 6.]).unwrap();
-        let region = sketch_regions::extract(&source).regions[0].intent();
+        if with_hole {
+            source.add_rectangle([3., 2.], [7., 4.]).unwrap();
+        }
+        let region = sketch_regions::extract(&source)
+            .regions
+            .into_iter()
+            .find(|region| region.holes.len() == usize::from(with_hole))
+            .unwrap()
+            .intent();
         doc = doc.edited(&source.replace(&doc, sketch).unwrap()).unwrap();
         Self {
             session: Session::new(doc).unwrap(),
@@ -74,9 +85,46 @@ impl Fixture {
         self.session.commit(prepared.prepared).unwrap();
     }
     fn compile(&self) -> Model {
-        Compiler::default()
-            .compile(self.session.document(), self.session.revision())
+        self.compile_with_backend(GeometryBackend::OpenCascade)
             .unwrap()
+    }
+    fn compile_rust(&self) -> Result<Model, ModelError> {
+        self.compile_with_backend(GeometryBackend::Rust)
+    }
+    fn compile_with_backend(&self, backend: GeometryBackend) -> Result<Model, ModelError> {
+        Compiler::default().compile_with_backend(
+            self.session.document(),
+            self.session.revision(),
+            backend,
+            None,
+        )
+    }
+    fn compare_rust(&self, native: &Model) -> Model {
+        let rust = self.compile_rust().unwrap();
+        let feature = self.request.outputs[0].feature;
+        let rust_solid = rust.solid(feature).unwrap();
+        assert!(rust_solid.uses_rust_geometry());
+        assert_eq!(rust_solid.solid_count().unwrap(), 1);
+        assert_eq!(rust.snapshot().bodies, native.snapshot().bodies);
+        let expected = self.shape(native);
+        let actual = self.shape(&rust);
+        near(actual.volume_mm3, expected.volume_mm3);
+        for i in 0..3 {
+            near(actual.bounds.min[i], expected.bounds.min[i]);
+            near(actual.bounds.max[i], expected.bounds.max[i]);
+        }
+        for role in ["cap.start", "cap.end"] {
+            let source = cap(expected, role);
+            let destination = cap(actual, role);
+            let source_frame = source.frames[0].frame;
+            let destination_frame = destination.frames[0].frame;
+            for i in 0..3 {
+                near(destination_frame.origin_mm[i], source_frame.origin_mm[i]);
+                near(destination_frame.u[i], source_frame.u[i]);
+                near(destination_frame.v[i], source_frame.v[i]);
+            }
+        }
+        rust
     }
     fn shape<'a>(&self, model: &'a Model) -> &'a ShapeSnapshot {
         &model.snapshot().shapes[&self.request.outputs[0].feature]
@@ -132,6 +180,7 @@ fn nonparallel_plane_offset_and_later_plane_move_rebuild_real_geometry() {
             intercept,
         );
     }
+    f.compare_rust(&first);
     assert_eq!(f.session.document(), &original);
     let mut entity = original.get(plane).unwrap().clone();
     let EntityData::Plane { origin_mm, .. } = &mut entity.data else {
@@ -145,6 +194,7 @@ fn nonparallel_plane_offset_and_later_plane_move_rebuild_real_geometry() {
         f.shape(&second).volume_mm3,
         60. * (20. + 2. * 1_f64.hypot(0.5) + 2.5 - 3.),
     );
+    f.compare_rust(&second);
     assert_eq!(
         model::read_extrude(f.session.document(), f.request.outputs[0].feature).unwrap(),
         source
@@ -164,6 +214,7 @@ fn target_normal_offset_and_tilt_are_independent_of_start_plane_offset() {
     let model = f.compile();
     near(f.shape(&model).volume_mm3, 60. * 18.);
     near(f.shape(&model).bounds.max[2], 18.);
+    f.compare_rust(&model);
     let mut f = Fixture::new();
     let plane = f.plane(20., 0., false);
     f.request.parameters = ExtrudeParameters {
@@ -188,6 +239,7 @@ fn target_normal_offset_and_tilt_are_independent_of_start_plane_offset() {
     near(f.shape(&model).bounds.max[0], 27.);
     near(f.shape(&model).bounds.min[2], 3.);
     near(f.shape(&model).bounds.max[2], 20.);
+    f.compare_rust(&model);
 }
 #[test]
 fn behind_parallel_crossing_and_zero_height_targets_fail_instead_of_guessing_distance() {
@@ -220,6 +272,11 @@ fn behind_parallel_crossing_and_zero_height_targets_fail_instead_of_guessing_dis
             .err()
             .expect("Unreachable termination must not produce a default solid");
         assert_eq!(error.entity, Some(f.request.outputs[0].feature));
+        let rust_error = f
+            .compile_rust()
+            .err()
+            .expect("Rust must reject the same plane");
+        assert_eq!(rust_error.entity, error.entity);
         assert_eq!(f.session.document(), &original);
     }
 }
@@ -283,8 +340,80 @@ fn independent_plane_and_distance_ends_have_one_truthful_logical_cap_per_side() 
                 near(frame.frame.origin_mm[2], z);
             }
         }
+        f.compare_rust(&model);
     }
 }
+
+#[test]
+fn oblique_two_sided_plane_sweep_preserves_the_hole_on_both_sloped_caps() {
+    let mut f = Fixture::rectangle(true);
+    let forward = f.plane(15., 0.2, false);
+    let backward = f.plane(-8., -0.1, true);
+    f.request.parameters.direction = Direction {
+        elevation: angle(45.),
+        azimuth: angle(0.),
+        reverse: false,
+    };
+    f.request.parameters.start_offset = length(2.);
+    f.request.parameters.extent = Extent::TwoSided {
+        forward: Termination::ToPlane {
+            plane: forward,
+            offset: length(0.),
+        },
+        backward: Termination::ToPlane {
+            plane: backward,
+            offset: length(0.),
+        },
+    };
+    f.commit();
+    let native = f.compile();
+    let rust = f.compare_rust(&native);
+    let shape = f.shape(&rust);
+    // Integrate the affine travel gap over the source face. Its centroid
+    // stays at (5, 3) because the inner rectangle is concentric.
+    let front_height = (15. + 0.2 * 5. - 2.) / (1. - 0.2);
+    let back_height = (-8. - 0.1 * 5. - 2.) / (1. + 0.1);
+    near(shape.volume_mm3, 52. * (front_height - back_height));
+    let solid = rust.solid(shape.producer).unwrap();
+    for role in ["cap.start", "cap.end"] {
+        let face = cap(shape, role);
+        let frame = face.frames[0].frame;
+        let contours = solid
+            .planar_face_contours(
+                face.key.ordinal,
+                multicad_kernel::PlaneFrame {
+                    origin: frame.origin_mm,
+                    u: frame.u,
+                    v: frame.v,
+                },
+            )
+            .unwrap();
+        assert_eq!(contours.loops.len(), 2);
+    }
+}
+
+#[test]
+fn two_sided_plane_at_the_working_sketch_cannot_become_a_one_sided_sweep() {
+    let mut f = Fixture::new();
+    let backward = f.plane(2., 0., false);
+    f.request.parameters.start_offset = length(2.);
+    f.request.parameters.extent = Extent::TwoSided {
+        forward: Termination::Distance {
+            distance: length(7.),
+        },
+        backward: Termination::ToPlane {
+            plane: backward,
+            offset: length(0.),
+        },
+    };
+    f.commit();
+    let error = f
+        .compile_rust()
+        .err()
+        .expect("Zero backward span is invalid");
+    assert_eq!(error.entity, Some(f.request.outputs[0].feature));
+}
+
 #[test]
 fn face_termination_follows_a_real_primitive_cap_height_and_rejects_missing_reference() {
     let mut f = Fixture::new();
@@ -311,6 +440,7 @@ fn face_termination_follows_a_real_primitive_cap_height_and_rejects_missing_refe
     let first = f.compile();
     near(f.shape(&first).volume_mm3, 1200.);
     near(f.shape(&first).bounds.max[2], 20.);
+    f.compare_rust(&first);
     assert_eq!(f.session.document(), &original);
     let parameters = PrimitiveParameters::Box {
         size: [length(30.), length(30.), length(35.)],
@@ -328,6 +458,7 @@ fn face_termination_follows_a_real_primitive_cap_height_and_rejects_missing_refe
     let updated = f.compile();
     near(f.shape(&updated).volume_mm3, 2100.);
     near(f.shape(&updated).bounds.max[2], 35.);
+    f.compare_rust(&updated);
     assert_eq!(updated.snapshot().bodies, first.snapshot().bodies);
     assert_eq!(
         f.session.document().get(f.request.sketch),
@@ -356,50 +487,58 @@ fn face_termination_follows_a_real_primitive_cap_height_and_rejects_missing_refe
         .expect("Missing face reference cannot fall back to a saved plane");
     assert_eq!(error.entity, Some(feature));
     assert!(error.message.contains("unresolved"));
+    let rust_error = f
+        .compile_rust()
+        .err()
+        .expect("Rust must reject the missing reference");
+    assert_eq!(rust_error.entity, Some(feature));
+    assert!(rust_error.message.contains("unresolved"));
 }
 #[test]
 fn genuine_curved_face_is_rejected_as_a_planar_termination_target() {
-    let mut f = Fixture::new();
-    let target = f.primitive(PrimitiveParameters::Cylinder {
-        radius: length(20.),
-        height: length(20.),
-        frame: Default::default(),
-    });
-    let initial = f.compile();
-    let snapshot = &initial.snapshot().shapes[&target.feature].topology;
-    let solid = initial.solid(target.feature).unwrap();
-    let native_faces = solid.faces().unwrap();
-    let key = snapshot
-        .elements
-        .iter()
-        .find(|e| {
-            e.key.kind == TopologyKind::Face
-                && native_faces
-                    .iter()
-                    .any(|face| face.index == e.key.ordinal && face.plane.is_none())
-        })
-        .unwrap()
-        .key;
-    let intent = GeometryIntent::capture(snapshot, key).unwrap();
-    f.request.parameters.extent = Extent::OneSided {
-        end: Termination::ToFace {
-            reference: intent.id,
-            offset: length(0.),
-        },
-    };
-    f.request.faces = vec![FaceInput {
-        source: target.feature,
-        intent,
-    }];
-    f.commit();
-    let original = f.session.document().clone();
-    let error = Compiler::default()
-        .compile(&original, f.session.revision())
-        .err()
-        .expect("Curved face must not be approximated by a tangent or center plane");
-    assert_eq!(error.entity, Some(f.request.outputs[0].feature));
-    assert!(error.message.contains("curved"));
-    assert_eq!(f.session.document(), &original);
+    for backend in [GeometryBackend::OpenCascade, GeometryBackend::Rust] {
+        let mut f = Fixture::new();
+        let target = f.primitive(PrimitiveParameters::Cylinder {
+            radius: length(20.),
+            height: length(20.),
+            frame: Default::default(),
+        });
+        let initial = f.compile_with_backend(backend).unwrap();
+        let snapshot = &initial.snapshot().shapes[&target.feature].topology;
+        let solid = initial.solid(target.feature).unwrap();
+        let faces = solid.faces().unwrap();
+        let key = snapshot
+            .elements
+            .iter()
+            .find(|e| {
+                e.key.kind == TopologyKind::Face
+                    && faces
+                        .iter()
+                        .any(|face| face.index == e.key.ordinal && face.plane.is_none())
+            })
+            .unwrap()
+            .key;
+        let intent = GeometryIntent::capture(snapshot, key).unwrap();
+        f.request.parameters.extent = Extent::OneSided {
+            end: Termination::ToFace {
+                reference: intent.id,
+                offset: length(0.),
+            },
+        };
+        f.request.faces = vec![FaceInput {
+            source: target.feature,
+            intent,
+        }];
+        f.commit();
+        let original = f.session.document().clone();
+        let error = f
+            .compile_with_backend(backend)
+            .err()
+            .expect("Curved face must not be approximated by a tangent or center plane");
+        assert_eq!(error.entity, Some(f.request.outputs[0].feature));
+        assert!(error.message.contains("curved"));
+        assert_eq!(f.session.document(), &original);
+    }
 }
 #[test]
 fn signed_face_offset_uses_native_outward_normal_with_opposing_inherited_frames() {

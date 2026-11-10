@@ -1011,7 +1011,8 @@ impl Compiler {
                         .map_err(|e| error(Some(id), e))?;
                     let (profile, origins) =
                         profiles.model(&source.profile, id, &solids, &topologies, interrupt)?;
-                    if backend == GeometryBackend::Rust {
+                    let associative = crate::extrude::has_associative_end(&extent.extent);
+                    if backend == GeometryBackend::Rust && !associative {
                         crate::rust_backend::extrude(
                             id,
                             &source.parameters,
@@ -1022,16 +1023,31 @@ impl Compiler {
                             self.policy,
                         )?
                     } else {
-                        crate::extrude::Extrusion {
+                        let report = (associative && extent.taper_rad == 0.).then(|| {
+                            profiles
+                                .references
+                                .get_or_insert_with(|| {
+                                    references::ReferenceInspector::new(document, revision)
+                                })
+                                .inspect(&topologies)
+                        });
+                        let extrusion = crate::extrude::Extrusion {
                             document,
                             revision,
                             feature: id,
                             solids: &solids,
-                            topologies: &topologies,
+                            report: report.as_ref(),
                             policy: self.policy,
                             interrupt,
+                        };
+                        match backend {
+                            GeometryBackend::OpenCascade => {
+                                extrusion.build(profile, &origins, &extent)?
+                            }
+                            GeometryBackend::Rust => {
+                                extrusion.build_rust_associative(profile, &origins, &extent)?
+                            }
                         }
-                        .build(profile, &origins, &extent)?
                     }
                 }
                 (model::PRIMITIVE_TYPE, model::PRIMITIVE_SCHEMA) => {
