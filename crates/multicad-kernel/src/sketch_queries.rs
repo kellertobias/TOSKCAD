@@ -127,7 +127,9 @@ impl RegionQueries for NativeRegionQueries {
         point_mm: [f64; 2],
         tolerance_mm: f64,
     ) -> Result<Vec<CurveProjection>, QueryError> {
-        self.require_curve(curve)?;
+        if !matches!(curve, ExactCurve::BSpline { basis, .. } if basis.degree == 1) {
+            self.require_curve(curve)?;
+        }
         let policy = self.policy(tolerance_mm)?;
         let native = Self::curve(curve);
         let [first, last] = native.domain(policy).map_err(error)?;
@@ -364,6 +366,32 @@ impl RegionQueries for NativeRegionQueries {
 mod tests {
     use super::*;
     use multicad_core::constraint_sketch::SplineBasis;
+
+    #[test]
+    fn rust_sketch_projection_normalizes_authored_linear_spline_parameters() {
+        let policy = GeometryPolicy::default();
+        let queries = NativeRegionQueries::analytic(policy).unwrap();
+        let tolerance = policy.linear_tolerance_mm;
+        let curve = ExactCurve::BSpline {
+            poles: vec![[0., 0.], [4., 0.]],
+            basis: SplineBasis {
+                degree: 1,
+                knots: vec![2., 10.],
+                multiplicities: vec![2, 2],
+                weights: Some(vec![2., 6.]),
+            },
+        };
+        let hits = queries
+            .project_parameters(&curve, [2., 3.], tolerance)
+            .unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].parameter, 0.25);
+        assert_eq!(hits[0].point_mm, [2., 0.]);
+        assert_eq!(hits[0].tangent, [1., 0.]);
+        assert_eq!(hits[0].distance_mm, 3.);
+        assert!(queries.curve_segment(&curve, 0., 0.5, tolerance).is_err());
+        assert!(queries.intersections(&curve, &curve, tolerance).is_err());
+    }
 
     #[test]
     fn rust_sketch_queries_reuse_exact_round_parameters_and_refuse_splines() {

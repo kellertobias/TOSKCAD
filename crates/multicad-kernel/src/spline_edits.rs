@@ -1,8 +1,11 @@
-//! Exact native spline editing. Parameters here are native, not normalized.
+//! Exact spline editing in the authored parameter domain.
 //! Segmentation uses OCCT knot insertion on a private copy. Continuation adds
 //! a finite straight tangent span without fitting or extrapolating old spans.
 use crate::elementary_curves::ElementaryCurve;
 use crate::{BSpline2d, CurvedEdge2d, GeometryError, GeometryErrorKind, GeometryPolicy, ffi};
+
+mod linear_projection;
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CurveProjection2d {
     pub parameter: f64,
@@ -32,6 +35,18 @@ impl CurvedEdge2d {
         policy: GeometryPolicy,
     ) -> Result<Vec<CurveProjection2d>, GeometryError> {
         policy.point([point[0], point[1], 0.])?;
+        if let Self::BSpline(spline) = self {
+            if spline.degree == 1 {
+                return linear_projection::project(spline, point, policy);
+            }
+            if !cfg!(feature = "occt") {
+                spline.validate(policy)?;
+                return Err(failure(
+                    GeometryErrorKind::Unsupported,
+                    "Rust spline projection currently supports degree-one curves",
+                ));
+            }
+        }
         let data = self.data(policy, 0)?;
         if let Some(elementary) = ElementaryCurve::new(self, &data) {
             return elementary.project(point, policy.linear_tolerance_mm);
