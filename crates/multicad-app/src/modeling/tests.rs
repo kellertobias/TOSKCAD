@@ -338,10 +338,22 @@ fn check_twisted_loft_drawing_worker(session: &mut Session, body: EntityId) {
         range: drawings::SectionRange::Depth { depth_mm: 1.8 },
         window: drawings::SectionWindow::default(),
     };
+    let mut bounded = oblique.clone();
+    bounded.id = EntityId::new();
+    bounded.name = "Windowed depth section".into();
+    bounded.kind = drawings::ViewKind::Section {
+        offset_mm: 0.6,
+        range: drawings::SectionRange::Depth { depth_mm: 1.8 },
+        window: drawings::SectionWindow {
+            u_mm: Some([-0.65, 1.5]),
+            v_mm: Some([-0.8, 1.5]),
+        },
+    };
+    let bounded_id = bounded.id;
     let oblique_id = oblique.id;
     let ordinary_id = ordinary.id;
     let retained_id = retained.id;
-    page.views.extend([ordinary, retained, oblique]);
+    page.views.extend([ordinary, retained, oblique, bounded]);
     let page_id = page.id;
     let (_, prepared) = drawings::prepare_create(
         session,
@@ -422,6 +434,24 @@ fn check_twisted_loft_drawing_worker(session: &mut Session, body: EntityId) {
             .count(),
         4
     );
+    let drawings::ViewEvaluation::Ready { vectors, .. } = &result.views[&bounded_id] else {
+        panic!("{:?}", result.views[&bounded_id]);
+    };
+    assert!(
+        vectors
+            .iter()
+            .any(|vector| vector.role == drawings::VectorRole::Hidden)
+    );
+    assert!(
+        vectors
+            .iter()
+            .any(|vector| vector.role == drawings::VectorRole::Section
+                && matches!(
+                    vector.curve,
+                    drawings::VectorCurve::BSpline { degree: 2, .. }
+                ))
+    );
+    assert!(vectors.iter().all(|v| v.source == body));
 }
 
 #[test]
