@@ -13,12 +13,14 @@ mod difference;
 mod intersection;
 mod loft;
 mod material;
+mod miter_sweep;
 mod shell;
 mod slab;
 mod verify_boundary;
 mod vertical_profile;
 pub use loft::ruled_loft;
 pub use material::CutMaterial;
+pub use miter_sweep::miter_sweep;
 pub use slab::Slab;
 pub use vertical_profile::{ProfileFace, ProfilePiece};
 
