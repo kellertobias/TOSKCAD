@@ -10,7 +10,7 @@ use multicad_model::{Compiler, GeometryBackend, drawing_preview_sources};
 
 fn with_channel<T>(
     backend: GeometryBackend,
-    inspect: impl FnOnce(&Solid, DrawingProjection) -> T,
+    inspect: impl FnOnce(&Solid, [DrawingProjection; 3]) -> T,
 ) -> T {
     let document = project_file::read(
         &mut include_bytes!("../../../examples/front-panel.tcd").as_slice(),
@@ -31,19 +31,14 @@ fn with_channel<T>(
     }
     .compile_sources_with_backend(&document, 0, &roots, backend, None)
     .unwrap();
-    let view = page
-        .views
-        .iter()
-        .find(|view| view.name == "Left end")
-        .unwrap();
     let leaf = model
         .snapshot()
         .leaf_occurrences
         .iter()
         .find(|(_, leaf)| document.get(leaf.producer).unwrap().name == "Front panel sheet feature")
         .unwrap();
-    inspect(
-        model.leaf_solid(leaf.0).unwrap(),
+    let options = ["Front", "Top", "Left end"].map(|name| {
+        let view = page.views.iter().find(|view| view.name == name).unwrap();
         DrawingProjection {
             frame: PlaneFrame {
                 origin: view.frame.origin_mm,
@@ -53,8 +48,9 @@ fn with_channel<T>(
             hidden_lines: view.hidden_lines,
             tangent_edges: view.tangent_edges,
             ..Default::default()
-        },
-    )
+        }
+    });
+    inspect(model.leaf_solid(leaf.0).unwrap(), options)
 }
 
 fn project(solid: &Solid, options: DrawingProjection) -> Vec<ProjectedVector> {
@@ -63,7 +59,7 @@ fn project(solid: &Solid, options: DrawingProjection) -> Vec<ProjectedVector> {
 
 #[test]
 fn saved_pierced_channel_end_view_preserves_the_hidden_cuts() {
-    with_channel(GeometryBackend::Rust, |solid, options| {
+    with_channel(GeometryBackend::Rust, |solid, [_, _, options]| {
         let vectors = project(solid, options);
         assert_eq!(vectors.len(), 88);
         let visible: Vec<_> = vectors
@@ -108,9 +104,59 @@ fn saved_pierced_channel_end_view_preserves_the_hidden_cuts() {
     });
 }
 
+#[test]
+fn saved_pierced_channel_projects_both_transverse_views_with_hidden_lines() {
+    with_channel(GeometryBackend::Rust, |solid, [front, top, _]| {
+        for (options, [visible_count, hidden_count], circular_count) in
+            [(front, [18, 38], 10), (top, [6, 62], 2)]
+        {
+            let vectors = project(solid, options);
+            let (visible, hidden): (Vec<_>, Vec<_>) = vectors
+                .into_iter()
+                .partition(|vector| vector.role == VectorRole::Visible);
+            assert_eq!([visible.len(), hidden.len()], [visible_count, hidden_count]);
+            assert!(
+                hidden
+                    .iter()
+                    .all(|vector| vector.role == VectorRole::Hidden)
+            );
+            assert_eq!(
+                visible
+                    .iter()
+                    .filter(|vector| matches!(vector.curve, VectorCurve::Ellipse { .. }))
+                    .count(),
+                circular_count
+            );
+            assert_eq!(
+                visible,
+                project(
+                    solid,
+                    DrawingProjection {
+                        hidden_lines: false,
+                        ..options
+                    }
+                )
+            );
+        }
+
+        let a = std::f64::consts::FRAC_1_SQRT_2;
+        let oblique_openings = DrawingProjection {
+            frame: PlaneFrame {
+                v: [0., a, a],
+                ..front.frame
+            },
+            ..front
+        };
+        let error =
+            project_drawing(&[DrawingSolid { solid, hatch: None }], oblique_openings).unwrap_err();
+        assert_eq!(error.kind, GeometryErrorKind::Unsupported);
+        assert!(error.message.contains("face-on or edge-on piercings"));
+    });
+}
+
 #[cfg(feature = "occt")]
 #[test]
-fn saved_pierced_channel_end_view_matches_native_physical_intervals() {
+fn saved_pierced_channel_views_match_native_physical_intervals() {
     use multicad_core::manufacturing::PlanarEdge;
     use std::{
         collections::{BTreeMap, BTreeSet},
@@ -128,9 +174,12 @@ fn saved_pierced_channel_end_view_matches_native_physical_intervals() {
         points
     }
 
-    let rust = with_channel(GeometryBackend::Rust, project);
-    let (native, seams) = with_channel(GeometryBackend::OpenCascade, |solid, options| {
+    let rust = with_channel(GeometryBackend::Rust, |solid, views| {
+        views.map(|options| project(solid, options))
+    });
+    let (native, seams) = with_channel(GeometryBackend::OpenCascade, |solid, views| {
         let mut cap_lines = BTreeMap::new();
+        let mut cap_edges = BTreeMap::<_, Vec<PlanarEdge>>::new();
         for face in solid.faces().unwrap() {
             let Some((point, normal)) = face.plane else {
                 continue;
@@ -138,13 +187,14 @@ fn saved_pierced_channel_end_view_matches_native_physical_intervals() {
             if (normal[0].abs() - 1.).abs() > 1e-10 {
                 continue;
             }
-            let mut frame = options.frame;
+            let mut frame = views[2].frame;
             frame.origin[0] = point[0];
             let sourced = solid
                 .planar_face_contours_with_sources(face.index, frame)
                 .unwrap();
             for (ring, keys) in sourced.contours.loops.iter().zip(sourced.edge_keys) {
                 for (edge, key) in ring.edges.iter().zip(keys) {
+                    cap_edges.entry(q(point[0])).or_default().push(edge.clone());
                     if let PlanarEdge::Line { a, b } = *edge {
                         let count = cap_lines
                             .entry((q(point[0]), key, line_key(a, b)))
@@ -169,10 +219,48 @@ fn saved_pierced_channel_end_view_matches_native_physical_intervals() {
                 .flat_map(|depth| web_joints.map(|line| (depth, line)))
                 .collect(),
         );
-        (project(solid, options), web_joints)
+        // Each seam endpoint joins a straight web edge to a tangential
+        // bend arc. Extruding this joint leaves no physical crease.
+        for (depth, [a, b]) in seams {
+            let edges = &cap_edges[&depth];
+            for end in [a, b] {
+                let (tangent, point) = edges
+                    .iter()
+                    .find_map(|edge| {
+                        let PlanarEdge::Line { a, b } = *edge else {
+                            return None;
+                        };
+                        if web_joints.contains(&line_key(a, b)) {
+                            return None;
+                        }
+                        let direction = [b[0] - a[0], b[1] - a[1]];
+                        [a, b]
+                            .into_iter()
+                            .find(|p| p.map(q) == end)
+                            .map(|p| (direction, p))
+                    })
+                    .unwrap();
+                let tangent_bend = edges.iter().any(|edge| {
+                    let PlanarEdge::Arc { a, b, center, .. } = *edge else {
+                        return false;
+                    };
+                    [a, b].into_iter().any(|p| p.map(q) == end)
+                        && (tangent[0] * (point[0] - center[0])
+                            + tangent[1] * (point[1] - center[1]))
+                            .abs()
+                            < 1e-8
+                });
+                assert!(tangent_bend);
+            }
+        }
+        let bend_rails = [0., 80.].map(|z| line_key([0., z], [260., z]));
+        (
+            views.map(|options| project(solid, options)),
+            [bend_rails.as_slice(), &[], web_joints.as_slice()].map(<[_]>::to_vec),
+        )
     });
 
-    let intervals = |vectors: Vec<ProjectedVector>, remove_seams: bool| {
+    let intervals = |vectors: Vec<ProjectedVector>, seams: &[[Point; 2]]| {
         let mut spans: BTreeMap<Key, Vec<Point>> = BTreeMap::new();
         let mut removed = 0;
         for vector in vectors {
@@ -206,7 +294,7 @@ fn saved_pierced_channel_end_view_matches_native_physical_intervals() {
                     continue;
                 }
                 VectorCurve::Line { a, b } => {
-                    if remove_seams && seams.contains(&line_key(a, b)) {
+                    if seams.contains(&line_key(a, b)) {
                         removed += 1;
                         continue;
                     }
@@ -243,7 +331,7 @@ fn saved_pierced_channel_end_view_matches_native_physical_intervals() {
             };
             spans.entry((hidden, key)).or_default().push(range);
         }
-        assert_eq!(removed, if remove_seams { 4 } else { 0 });
+        assert_eq!(removed, seams.len() * 2);
         for values in spans.values_mut() {
             values.sort_unstable();
             let mut merged: Vec<Point> = Vec::new();
@@ -260,8 +348,107 @@ fn saved_pierced_channel_end_view_matches_native_physical_intervals() {
         }
         spans
     };
-    let rust = intervals(rust, false);
-    assert_eq!(rust.len(), 34);
-    assert_eq!(rust.values().map(Vec::len).sum::<usize>(), 38);
-    assert_eq!(rust, intervals(native, true));
+    let mut totals = [0; 2];
+    for ((rust, native), seams) in rust.into_iter().zip(native).zip(seams) {
+        let rust = intervals(rust, &[]);
+        assert_eq!(rust, intervals(native, &seams));
+        totals[0] += rust.len();
+        totals[1] += rust.values().map(Vec::len).sum::<usize>();
+    }
+    assert_eq!(totals, [101, 109]);
+}
+
+#[test]
+fn transverse_projection_requires_coincident_or_separate_openings_in_two_layers() {
+    use multicad_core::{document::EntityId, references::Origin};
+    use multicad_kernel::{CurvedEdge2d, CurvedProfile, GeometryPolicy, SweepOpening};
+
+    let origin = |role: &str| Origin {
+        source: EntityId::new(),
+        role: role.into(),
+    };
+    let vertices = [
+        [0., 0.],
+        [20., 0.],
+        [20., 2.],
+        [4., 2.],
+        [4., 8.],
+        [20., 8.],
+        [20., 10.],
+        [0., 10.],
+    ];
+    let sides = vertices.map(|_| origin("stock side"));
+    let profile = CurvedProfile {
+        frame: PlaneFrame::default(),
+        outer: vertices
+            .into_iter()
+            .zip(vertices.into_iter().cycle().skip(1))
+            .map(|(a, b)| CurvedEdge2d::Line { a, b })
+            .collect(),
+        holes: vec![],
+    };
+    let policy = GeometryPolicy::default();
+    let stock =
+        Solid::rust_extrude_normal_profile_named(&profile, 25., EntityId::new(), &sides, policy)
+            .unwrap();
+    let make_opening = |wall: [usize; 2], y, travel, x| SweepOpening {
+        walls: wall.map(|i| sides[i].clone()),
+        frame: PlaneFrame {
+            origin: [0., y, 0.],
+            u: [1., 0., 0.],
+            v: [0., 0., 1.],
+        },
+        through_mm: [0., travel, 0.],
+        outline: vec![CurvedEdge2d::Circle {
+            center: [x, 12.],
+            radius_mm: 1.,
+        }],
+        origins: vec![origin("round opening")],
+    };
+    let pierced = |x| {
+        stock
+            .rust_pierce_normal_profile(
+                &[
+                    make_opening([0, 2], 0., 2., 10.),
+                    make_opening([6, 4], 10., -2., x),
+                ],
+                policy,
+            )
+            .unwrap()
+    };
+    let options = DrawingProjection {
+        frame: PlaneFrame {
+            origin: [0.; 3],
+            u: [0., 0., 1.],
+            v: [1., 0., 0.],
+        },
+        hidden_lines: true,
+        ..Default::default()
+    };
+    for x in [10., 14.] {
+        let solid = pierced(x);
+        let vectors = project(&solid, options);
+        let rims: Vec<_> = vectors
+            .iter()
+            .filter(|v| matches!(v.curve, VectorCurve::Ellipse { .. }))
+            .collect();
+        assert_eq!(rims.len(), 4);
+        assert_eq!(
+            rims.iter()
+                .filter(|v| v.role == VectorRole::Visible)
+                .count(),
+            1
+        );
+    }
+    let offset = pierced(10.5);
+    let error = project_drawing(
+        &[DrawingSolid {
+            solid: &offset,
+            hatch: None,
+        }],
+        options,
+    )
+    .unwrap_err();
+    assert_eq!(error.kind, GeometryErrorKind::Unsupported);
+    assert!(error.message.contains("overlapping projected piercings"));
 }

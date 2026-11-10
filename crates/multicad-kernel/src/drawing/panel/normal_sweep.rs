@@ -3,6 +3,8 @@ use super::*;
 use multicad_core::references::ReferenceFrame;
 use multicad_rust_kernel::normal_sweep::Edge as ProfileEdge;
 
+mod transverse;
+
 type Point3 = [f64; 3];
 
 pub(in crate::drawing) fn project_normal_sweep(
@@ -12,13 +14,15 @@ pub(in crate::drawing) fn project_normal_sweep(
     let (body, frame) = input.solid.normal_sweep_body()?;
     let [u, v, toward_viewer] = planar::view_axes(options.frame);
     let axis = frame.normal();
-    if dot(axis, u).hypot(dot(axis, v)) > 32. * f64::EPSILON {
+    let axial = dot(axis, u).hypot(dot(axis, v)) <= 32. * f64::EPSILON;
+    let transverse = dot(axis, toward_viewer).abs() <= 32. * f64::EPSILON;
+    if !axial && !transverse {
         return None;
     }
     if options.detail.is_some() {
         return Some(Err(err(
             GeometryErrorKind::Unsupported,
-            "Rust face-on normal-sweep projection does not yet support a detail crop",
+            "Rust normal-sweep projection does not yet support a detail crop",
         )));
     }
     let screen = Screen {
@@ -26,6 +30,9 @@ pub(in crate::drawing) fn project_normal_sweep(
         axes: [u, v],
         toward_viewer,
     };
+    if transverse {
+        return Some(transverse::project(input, options, frame, &screen));
+    }
     let tolerance = input.solid.geometry_policy().linear_tolerance_mm;
     Some((|| {
         let mut edges = Vec::new();

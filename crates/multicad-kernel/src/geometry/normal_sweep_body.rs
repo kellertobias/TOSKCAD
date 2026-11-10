@@ -178,6 +178,10 @@ impl NormalSweepBody {
             )
         })
     }
+    pub(crate) fn drawing_section(&self) -> (&[Vec<Edge>], f64) {
+        (self.sweep.rings(), self.z(true))
+    }
+
     pub(crate) fn end_on_rims(
         &self,
         frame: PlaneFrame,
