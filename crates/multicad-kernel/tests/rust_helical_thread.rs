@@ -128,6 +128,15 @@ fn manufacturing_mesh_keeps_all_real_face_ordinals_and_closed_indexed_shells() {
         GeometryPolicy::default(),
     )
     .unwrap();
+    assert!(!compound.supports_step_export());
+    let directory = tempfile::tempdir().unwrap();
+    let step = directory.path().join("existing.step");
+    std::fs::write(&step, b"previous export").unwrap();
+    assert_eq!(
+        compound.write_step(&step).unwrap_err().kind,
+        GeometryErrorKind::Unsupported
+    );
+    assert_eq!(std::fs::read(&step).unwrap(), b"previous export");
     let options = MeshOptions {
         linear_deflection_mm: 0.05,
         angular_deflection_rad: 0.3,

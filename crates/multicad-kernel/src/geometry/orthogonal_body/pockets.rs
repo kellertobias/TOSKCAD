@@ -83,10 +83,14 @@ impl OrthogonalBody {
         }
     }
 
-    pub(in crate::geometry) fn step(&self, frame: PlaneFrame) -> Result<String, step::StepError> {
+    pub(in crate::geometry) fn append_step(
+        &self,
+        writer: &mut step::Writer,
+        frame: PlaneFrame,
+    ) -> Result<(), step::StepError> {
         let placed = |point| transform_point(frame, point);
         if !self.slots.is_empty() {
-            step::write_slotted_orthogonal(
+            writer.append_slotted_orthogonal(
                 &self.geometry,
                 &self.boundary,
                 &self.pockets,
@@ -94,9 +98,14 @@ impl OrthogonalBody {
                 &placed,
             )
         } else if self.pockets.is_empty() {
-            step::write_orthogonal(&self.boundary, placed)
+            writer.append_orthogonal(&self.boundary, placed)
         } else {
-            step::write_pocketed_orthogonal(&self.geometry, &self.boundary, &self.pockets, &placed)
+            writer.append_pocketed_orthogonal(
+                &self.geometry,
+                &self.boundary,
+                &self.pockets,
+                &placed,
+            )
         }
     }
 

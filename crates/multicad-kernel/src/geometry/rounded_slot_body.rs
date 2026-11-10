@@ -212,11 +212,12 @@ impl RoundedSlotBody {
         )
     }
 
-    pub(super) fn step(
+    pub(super) fn append_step(
         &self,
+        writer: &mut multicad_rust_kernel::step::Writer,
         frame: PlaneFrame,
-    ) -> Result<String, multicad_rust_kernel::step::StepError> {
-        multicad_rust_kernel::step::write_stadium_prism(
+    ) -> Result<(), multicad_rust_kernel::step::StepError> {
+        writer.append_stadium_prism(
             &self.profile,
             self.height,
             frame.origin,

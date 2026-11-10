@@ -1,6 +1,7 @@
 use multicad_core::{document::EntityId, references::AnalyticGeometry};
 use multicad_kernel::{
-    BooleanOperation, GeometryErrorKind, GeometryPolicy, PlaneFrame, RigidTransform, Solid,
+    BooleanOperation, CurvedEdge2d, CurvedProfile, GeometryErrorKind, GeometryPolicy, PlaneFrame,
+    RevolutionAxis, RigidTransform, Solid,
     rust_kernel::{Circle, Rational, cylinder::AxialCylinder, polygon::PolygonPrism},
 };
 
@@ -141,7 +142,7 @@ fn rust_import_reconstructs_fractional_cylinder_without_tessellating() {
 }
 
 #[test]
-fn rust_import_refuses_a_valid_solid_that_is_not_an_extrusion() {
+fn rust_import_reconstructs_a_rectilinear_blind_pocket() {
     let policy = GeometryPolicy::default();
     let box_at = |size: [i64; 3], origin| {
         Solid::rust_box(
@@ -161,7 +162,39 @@ fn rust_import_refuses_a_valid_solid_that_is_not_an_extrusion() {
         .boolean(&tool, BooleanOperation::Subtract, policy)
         .unwrap()
         .unwrap();
-    let err = Solid::import_rust_step(&text(&pocket), EntityId::new(), policy)
+    let imported = Solid::import_rust_step(&text(&pocket), EntityId::new(), policy).unwrap();
+    same_shape(&imported, &pocket);
+    near(imported.volume_mm3().unwrap(), 980.);
+}
+
+#[test]
+fn rust_import_refuses_a_valid_conical_step_surface() {
+    let policy = GeometryPolicy::default();
+    let points = [[0., 0.], [3., 0.], [1., 7.], [0., 7.]];
+    let profile = CurvedProfile {
+        frame: PlaneFrame {
+            v: [0., 0., 1.],
+            ..Default::default()
+        },
+        outer: points
+            .into_iter()
+            .zip(points.into_iter().cycle().skip(1))
+            .map(|(a, b)| CurvedEdge2d::Line { a, b })
+            .collect(),
+        holes: vec![],
+    };
+    let cone = Solid::revolve_curved_profile(
+        &profile,
+        RevolutionAxis {
+            origin_mm: [0.; 3],
+            direction: [0., 0., 1.],
+        },
+        std::f64::consts::TAU,
+        policy,
+    )
+    .unwrap();
+    near(cone.volume_mm3().unwrap(), 91. * std::f64::consts::PI / 3.);
+    let err = Solid::import_rust_step(&text(&cone), EntityId::new(), policy)
         .err()
         .unwrap();
     assert_eq!(err.kind, GeometryErrorKind::Unsupported);

@@ -11,7 +11,7 @@ use multicad_rust_kernel::{
     display::{DisplayMesh, MeshError, Tessellation},
     linear_sweep::{Error as SweepError, Sweep},
     linear_sweep_mesh,
-    step::{self, StepError},
+    step::{StepError, Writer},
     trimmed_sweep::{Error as TrimError, TrimmedSweep},
 };
 use std::collections::BTreeSet;
@@ -420,13 +420,17 @@ impl LinearBody {
         }
     }
 
-    pub(super) fn step(&self, frame: PlaneFrame) -> Result<String, StepError> {
+    pub(super) fn append_step(
+        &self,
+        writer: &mut Writer,
+        frame: PlaneFrame,
+    ) -> Result<(), StepError> {
         match &self.geometry {
             Geometry::Ruled(sweep) => {
-                step::write_linear_sweep(sweep, frame.origin, frame.u, frame.v)
+                writer.append_linear_sweep(sweep, frame.origin, frame.u, frame.v)
             }
             Geometry::Trimmed { sweep, .. } => {
-                step::write_trimmed_sweep(sweep, frame.origin, frame.u, frame.v)
+                writer.append_trimmed_sweep(sweep, frame.origin, frame.u, frame.v)
             }
         }
     }

@@ -1,11 +1,15 @@
 //! Rebuild independently verified STEP boundaries as analytic Rust solids.
 use super::*;
-use multicad_core::{project_file::ContentHash, references::AnalyticGeometry};
+use multicad_core::{
+    project_file::ContentHash,
+    references::{AnalyticGeometry, TopologyElement, TopologyKind},
+};
 use multicad_rust_kernel::orthogonal_pockets::OrthogonalPocket;
 use multicad_rust_kernel::step_read::{
     self, CircleEdge, ImportProfile, ImportSolid, ReadError, Readback, SemicircleEdge,
 };
 use std::f64::consts::{PI, TAU};
+mod compound;
 
 type Point = [f64; 3];
 type Segment = [Point; 2];
@@ -99,25 +103,44 @@ fn pocket_origins(
 }
 
 impl Solid {
-    /// Import a verified, supported, single analytic STEP solid in millimeters.
+    /// Import a verified analytic STEP solid or independent solid group in millimeters.
     pub fn import_rust_step(
         input: &str,
         feature: EntityId,
         policy: GeometryPolicy,
     ) -> Result<Self, GeometryError> {
         policy.validate()?;
+        if feature.is_nil() {
+            return Err(invalid("STEP import needs a source identity"));
+        }
         let tolerance = policy.linear_tolerance_mm;
-        let (readback, imported) = step_read::read_import_solid(input, tolerance).map_err(|cause| {
+        let mut members = step_read::read_import_compound(input, tolerance).map_err(|cause| {
             let (kind, message) = match cause {
                 ReadError::Invalid => (GeometryErrorKind::InvalidResult, "Invalid STEP geometry"),
-                ReadError::Limit => (GeometryErrorKind::Limit, "STEP exceeds the Rust import budget"),
+                ReadError::Limit => (
+                    GeometryErrorKind::Limit,
+                    "STEP exceeds the Rust import budget",
+                ),
                 ReadError::Unsupported => (
                     GeometryErrorKind::Unsupported,
-                    "Rust STEP import supports one solid in millimeters with a certified swept or orthogonal boundary",
+                    "Rust STEP import requires certified swept or orthogonal solids in millimeters",
                 ),
             };
             error(IMPORT, kind, message)
         })?;
+        if members.len() == 1 {
+            let (readback, imported) = members.pop().expect("one member");
+            return Self::verified_step_member(&readback, imported, feature, policy);
+        }
+        compound::rebuild(members, feature, policy)
+    }
+
+    fn verified_step_member(
+        readback: &Readback,
+        imported: ImportSolid,
+        feature: EntityId,
+        policy: GeometryPolicy,
+    ) -> Result<Self, GeometryError> {
         let orthogonal = matches!(
             &imported.profile,
             ImportProfile::Orthogonal { .. }
@@ -125,7 +148,13 @@ impl Solid {
                 | ImportProfile::SlottedOrthogonal { .. }
         );
         let solid = Self::from_imported_step(imported, feature, policy)?;
-        verify(&solid, &readback, feature, tolerance, orthogonal)?;
+        verify(
+            &solid,
+            readback,
+            feature,
+            policy.linear_tolerance_mm,
+            orthogonal,
+        )?;
         Ok(solid)
     }
 
@@ -513,7 +542,7 @@ fn verify(
         return Ok(());
     }
     let topology = solid.topology_snapshot(feature, 0)?;
-    if !compare_topology(&topology, readback, tolerance * 2., orthogonal) {
+    if !compare_topology(&topology.elements, readback, tolerance * 2., orthogonal) {
         return Err(invalid(
             "Rebuilt STEP extrusion differs from the imported analytic topology",
         ));
@@ -531,12 +560,12 @@ impl Solid {
     ) -> bool {
         tolerance.is_finite()
             && tolerance > 0.
-            && compare_topology(topology, readback, tolerance, false)
+            && compare_topology(&topology.elements, readback, tolerance, false)
     }
 }
 
-fn compare_topology(
-    topology: &TopologySnapshot,
+fn compare_topology<'a>(
+    elements: impl IntoIterator<Item = &'a TopologyElement>,
     readback: &Readback,
     tolerance: f64,
     allow_consolidation: bool,
@@ -545,8 +574,7 @@ fn compare_topology(
     let mut circles = Vec::new();
     let mut semicircles = Vec::new();
     let mut faces = 0;
-    for element in &topology.elements {
-        use multicad_core::references::TopologyKind;
+    for element in elements {
         match (element.key.kind, element.geometry) {
             (TopologyKind::Face, _) => faces += 1,
             (TopologyKind::Edge, Some(AnalyticGeometry::Line { a_mm, b_mm })) => {

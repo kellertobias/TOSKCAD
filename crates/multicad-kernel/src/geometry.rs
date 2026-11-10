@@ -1744,7 +1744,8 @@ impl Solid {
             | SolidBody::Linear(..)
             | SolidBody::RoundedSlot(..) => true,
             SolidBody::Prism(prism, _) => prism.rounded_end().is_none(),
-            SolidBody::RustCompound(_) | SolidBody::Helical(..) => false,
+            SolidBody::RustCompound(compound) => compound.members().all(Self::supports_step_export),
+            SolidBody::Helical(..) => false,
             SolidBody::Revolved(body, frame) => body.circular_sweep(*frame).is_some(),
             SolidBody::Orthogonal(body, _) => body.supports_step(),
         }
@@ -1769,13 +1770,34 @@ impl Solid {
             return Err(error(
                 operation,
                 GeometryErrorKind::Unsupported,
-                "Rust STEP export requires a supported solid with one closed exterior shell",
+                "Rust STEP export requires supported geometry with one closed exterior shell per solid",
             ));
         }
-        let encoded = match &self.body {
+        let mut writer = step::Writer::new();
+        let encoded = self
+            .append_step(&mut writer)
+            .and_then(|()| writer.finish())
+            .map_err(|e| {
+                let kind = match e {
+                    step::StepError::Unsupported => GeometryErrorKind::Unsupported,
+                    step::StepError::Limit => GeometryErrorKind::Limit,
+                    _ => GeometryErrorKind::InvalidResult,
+                };
+                error(operation, kind, format!("{e:?}"))
+            })?;
+        std::fs::write(path, encoded)
+            .map_err(|e| error(operation, GeometryErrorKind::InvalidResult, e.to_string()))
+    }
+
+    fn append_step(
+        &self,
+        writer: &mut multicad_rust_kernel::step::Writer,
+    ) -> Result<(), multicad_rust_kernel::step::StepError> {
+        use multicad_rust_kernel::step;
+        match &self.body {
             SolidBody::PolygonPrism(placed) => {
                 if placed.pockets.is_empty() {
-                    step::write_polygon_prism(
+                    writer.append_polygon_prism(
                         &placed.prism,
                         placed.frame.origin,
                         placed.frame.u,
@@ -1783,7 +1805,7 @@ impl Solid {
                         placed.reverse_sweep,
                     )
                 } else {
-                    step::write_pocketed_polygon_prism(
+                    writer.append_pocketed_polygon_prism(
                         &placed.prism,
                         &placed.pockets,
                         placed.frame.origin,
@@ -1794,42 +1816,45 @@ impl Solid {
                 }
             }
             SolidBody::Prism(prism, frame) => {
-                step::write_rectangular_prism(prism, frame.origin, frame.u, frame.v)
+                writer.append_rectangular_prism(prism, frame.origin, frame.u, frame.v)
             }
             SolidBody::AxialCylinder(cylinder, frame, _) => {
                 if self.axial_cylinder().is_some() {
-                    step::write_axial_cylinder(cylinder, frame.u)
+                    writer.append_axial_cylinder(cylinder, frame.u)
                 } else {
-                    step::write_placed_cylinder(cylinder, frame.origin, frame.u, frame.v)
+                    writer.append_placed_cylinder(cylinder, frame.origin, frame.u, frame.v)
                 }
             }
             SolidBody::Annulus(body, frame) => {
-                step::write_placed_annulus(&body.geometry, frame.origin, frame.u, frame.v)
+                writer.append_placed_annulus(&body.geometry, frame.origin, frame.u, frame.v)
             }
-            SolidBody::Linear(body, frame) => body.step(*frame),
-            SolidBody::RoundedSlot(body, frame) => body.step(*frame),
+            SolidBody::Linear(body, frame) => body.append_step(writer, *frame),
+            SolidBody::RoundedSlot(body, frame) => body.append_step(writer, *frame),
             SolidBody::Revolved(body, frame) => {
                 let (base, radius, height, bore) = body
                     .circular_sweep(*frame)
                     .expect("checked round revolution");
-                step::write_placed_circular_sweep(radius, bore, height, base.origin, base.u, base.v)
+                writer.append_placed_circular_sweep(
+                    radius,
+                    bore,
+                    height,
+                    base.origin,
+                    base.u,
+                    base.v,
+                )
             }
-            SolidBody::RustCompound(_) | SolidBody::Helical(..) => {
-                unreachable!("STEP support checked above")
+            SolidBody::RustCompound(compound) => {
+                for member in compound.members() {
+                    member.append_step(writer)?;
+                }
+                Ok(())
             }
-            SolidBody::Orthogonal(body, frame) => body.step(*frame),
+            SolidBody::Helical(..) => Err(step::StepError::Unsupported),
+            SolidBody::Orthogonal(body, frame) => body.append_step(writer, *frame),
             SolidBody::Occt(_) => unreachable!("native STEP dispatched above"),
         }
-        .map_err(|e| {
-            error(
-                operation,
-                GeometryErrorKind::InvalidResult,
-                format!("{e:?}"),
-            )
-        })?;
-        std::fs::write(path, encoded)
-            .map_err(|e| error(operation, GeometryErrorKind::InvalidResult, e.to_string()))
     }
+
     /// Every solid in a STEP file as (representation name, exact BRep text).
     pub fn step_solids(path: &Path) -> Result<Vec<(String, String)>, GeometryError> {
         let path = crate::step_path(path).map_err(|e| input(e.to_string()))?;
