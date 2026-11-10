@@ -12,7 +12,7 @@ const ANGULAR: f64 = 32. * f64::EPSILON;
 type Point = [f64; 3];
 
 mod oblique;
-pub(super) use oblique::oblique_stock;
+pub(super) use oblique::analytic_stock;
 
 struct Screen {
     axes: [Point; 3],

@@ -180,7 +180,7 @@ fn project_members(
         let tolerance = solid.geometry_policy().linear_tolerance_mm;
         let elevation =
             match warped::for_projection(solid, source, tolerance, options, oblique_cuts)? {
-                None if oblique_cuts => machined::oblique_stock(solid, source, options)?,
+                None if oblique_cuts => machined::analytic_stock(solid, source, options)?,
                 elevation => elevation,
             };
         if let Some(elevation) = elevation {

@@ -1,4 +1,4 @@
-//! Exact trimmed surfaces for a stock body with obliquely viewed drilled cuts.
+//! Exact trimmed surfaces for a stock body with drilled cuts.
 use super::*;
 use multicad_core::references::{AnalyticGeometry, TopologyKind};
 use multicad_rust_kernel::{
@@ -10,7 +10,7 @@ use std::{collections::BTreeMap, f64::consts::FRAC_PI_2};
 
 type Trims = BTreeMap<usize, Vec<Vec<FaceTrim>>>;
 
-pub(in crate::drawing::curved) fn oblique_stock(
+pub(in crate::drawing::curved) fn analytic_stock(
     solid: &Solid,
     source: usize,
     options: DrawingProjection,
@@ -19,9 +19,10 @@ pub(in crate::drawing::curved) fn oblique_stock(
         return oblique_hex(solid, source, options);
     };
     let screen = Screen::new(options.frame);
-    if !cuts
-        .iter()
-        .any(|cut| is_oblique(screen.vector(cut.outward)))
+    if options.hidden_lines
+        && !cuts
+            .iter()
+            .any(|cut| is_oblique(screen.vector(cut.outward)))
     {
         return Ok(None);
     }
@@ -108,7 +109,7 @@ fn oblique_hex(
 fn unsupported_stock() -> GeometryError {
     err(
         GeometryErrorKind::Unsupported,
-        "Rust oblique circular stock requires closed straight-edged stock faces",
+        "Rust circular stock projection requires closed straight-edged stock faces",
     )
 }
 

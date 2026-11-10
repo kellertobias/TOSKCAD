@@ -82,6 +82,82 @@ fn drawing(
     )
 }
 
+fn matches_native(
+    solids: &[&Solid],
+    options: DrawingProjection,
+) -> Vec<multicad_kernel::ProjectedVector> {
+    #[cfg(feature = "occt")]
+    use multicad_kernel::ProjectedVector;
+
+    let project = |solids: &[&Solid]| {
+        let inputs: Vec<_> = solids
+            .iter()
+            .map(|&solid| DrawingSolid { solid, hatch: None })
+            .collect();
+        project_drawing(&inputs, options).unwrap()
+    };
+    let result = project(solids);
+    #[cfg(feature = "occt")]
+    {
+        // The exchange isolates drawing parity from different construction
+        // histories. OpenCascade receives the same exact finite solid.
+        let directory = tempfile::tempdir().unwrap();
+        let native: Vec<_> = solids
+            .iter()
+            .enumerate()
+            .map(|(index, solid)| {
+                let path = directory.path().join(format!("solid-{index}.step"));
+                solid.write_step(&path).unwrap();
+                Solid::read_step(&path, solid.geometry_policy()).unwrap()
+            })
+            .collect();
+        let native = project(&native.iter().collect::<Vec<_>>());
+        for (label, from, to) in [
+            ("Rust", &result, &native),
+            ("OpenCascade", &native, &result),
+        ] {
+            for ProjectedVector {
+                source_index,
+                role,
+                preview_mm,
+                ..
+            } in from
+            {
+                let spans = to
+                    .iter()
+                    .filter(|vector| vector.source_index == *source_index && vector.role == *role)
+                    .flat_map(|vector| vector.preview_mm.windows(2));
+                for pair in preview_mm.windows(2) {
+                    for [x, y] in [
+                        pair[0],
+                        [
+                            pair[0][0].midpoint(pair[1][0]),
+                            pair[0][1].midpoint(pair[1][1]),
+                        ],
+                        pair[1],
+                    ] {
+                        let distance = spans
+                            .clone()
+                            .map(|span| {
+                                let [[a, b], [c, d]] = [span[0], span[1]];
+                                let [u, v] = [c - a, d - b];
+                                let along =
+                                    (((x - a) * u + (y - b) * v) / (u * u + v * v)).clamp(0., 1.);
+                                (x - a - along * u).hypot(y - b - along * v)
+                            })
+                            .fold(f64::INFINITY, f64::min);
+                        assert!(
+                            distance <= 3. * options.chord_tolerance_mm,
+                            "{label} {role:?} source {source_index} at [{x}, {y}]: {distance} mm"
+                        );
+                    }
+                }
+            }
+        }
+    }
+    result
+}
+
 #[test]
 fn aperture_rim_is_visible_only_when_not_occluded_in_front() {
     let plate = stock(false);
@@ -110,15 +186,21 @@ fn aperture_rim_is_visible_only_when_not_occluded_in_front() {
 }
 
 #[test]
-fn projection_refuses_potential_visibility_behind_the_hole() {
+fn projection_resolves_visibility_behind_the_hole_and_at_its_tangent() {
     let plate = stock(false);
     let through_ray = block([9., 9., 0.], [2; 3]);
     let touching = block([12., 9., 0.], [2; 3]);
-    for other in [&through_ray, &touching] {
-        let error = drawing(&[&plate, other], PlaneFrame::default()).unwrap_err();
-        assert_eq!(error.kind, GeometryErrorKind::Unsupported);
-        assert!(error.message.contains("overlaps the aperture"));
-    }
+    let options = DrawingProjection {
+        chord_tolerance_mm: 1e-4,
+        ..Default::default()
+    };
+    let through = matches_native(&[&plate, &through_ray], options);
+    assert_eq!(
+        through.iter().filter(|edge| edge.source_index == 1).count(),
+        4
+    );
+    let grazing = matches_native(&[&plate, &touching], options);
+    assert!(grazing.iter().all(|edge| edge.source_index == 0));
 
     let side_view = PlaneFrame {
         origin: [0.; 3],
@@ -137,16 +219,32 @@ fn projection_refuses_potential_visibility_behind_the_hole() {
         u: [1., 0., 0.],
         v: [0., a, a],
     };
-    let error = drawing(&[&plate], oblique).unwrap_err();
-    assert!(error.message.contains("far rim"));
+    let thin = through_plate(false, 3);
+    let slanted = matches_native(
+        &[&thin],
+        DrawingProjection {
+            frame: oblique,
+            ..options
+        },
+    );
+    assert!(slanted.iter().any(|edge| matches!(edge.curve,
+        VectorCurve::Ellipse { center, .. } if (center[1] - 20. * a).abs() < 1e-7
+    )));
 
     let front_pocket = stock(true);
-    let error = drawing(&[&front_pocket], PlaneFrame::default()).unwrap_err();
-    assert!(error.message.contains("blind pockets"));
+    let mixed = matches_native(&[&front_pocket], options);
+    assert!(mixed.iter().any(|edge| matches!(
+        edge.curve,
+        VectorCurve::Ellipse {
+            center: [5., 5.],
+            major_mm: 1.,
+            ..
+        }
+    )));
 }
 
 #[test]
-fn oblique_aperture_publishes_ellipse_only_when_the_cavity_is_proved_clear() {
+fn oblique_aperture_resolves_material_in_front_behind_and_inside_the_bore() {
     let a = std::f64::consts::FRAC_1_SQRT_2;
     let frame = PlaneFrame {
         origin: [0.; 3],
@@ -156,7 +254,7 @@ fn oblique_aperture_publishes_ellipse_only_when_the_cavity_is_proved_clear() {
     let plate = through_plate(false, 10);
     let behind = block([9.5, 9.5, 4.], [1; 3]);
     let before_mouth = block([9.5, 9.5, 12.], [1; 3]);
-    let unsafe_inside = block([9.5, 9.5, 18.], [1; 3]);
+    let inside = block([9.5, 9.5, 18.], [1; 3]);
 
     for other in [&behind, &before_mouth] {
         let visible = drawing(&[&plate, other], frame).unwrap();
@@ -185,9 +283,19 @@ fn oblique_aperture_publishes_ellipse_only_when_the_cavity_is_proved_clear() {
         assert!((curves.iter().sum::<f64>() - std::f64::consts::TAU).abs() < 1e-10);
     }
 
-    let error = drawing(&[&plate, &unsafe_inside], frame).unwrap_err();
-    assert_eq!(error.kind, GeometryErrorKind::Unsupported);
-    assert!(error.message.contains("another body may enter the cavity"));
+    let in_cavity = matches_native(
+        &[&plate, &inside],
+        DrawingProjection {
+            frame,
+            chord_tolerance_mm: 1e-4,
+            ..Default::default()
+        },
+    );
+    assert!(
+        in_cavity
+            .iter()
+            .any(|edge| edge.source_index == 1 && edge.role == VectorRole::Visible)
+    );
 
     let contacts_mouth = block([7., 7., 20.], [6; 3]);
     let covered = drawing(&[&plate, &contacts_mouth], frame).unwrap();
@@ -212,7 +320,7 @@ fn oblique_aperture_publishes_ellipse_only_when_the_cavity_is_proved_clear() {
 }
 
 #[test]
-fn oblique_blind_bore_draws_a_deep_rim_and_rejects_a_visible_floor() {
+fn oblique_blind_bore_draws_the_floor_rim_only_where_it_is_visible() {
     let a = std::f64::consts::FRAC_1_SQRT_2;
     let frame = PlaneFrame {
         origin: [0.; 3],
@@ -249,8 +357,19 @@ fn oblique_blind_bore_draws_a_deep_rim_and_rejects_a_visible_floor() {
             .iter()
             .any(|edge| matches!(edge.curve, VectorCurve::Ellipse { .. }))
     );
-    let error = drawing(&[&shallow], frame).unwrap_err();
-    assert!(error.message.contains("far rim"));
+    let shallow_view = matches_native(
+        &[&shallow],
+        DrawingProjection {
+            frame,
+            chord_tolerance_mm: 1e-4,
+            ..Default::default()
+        },
+    );
+    assert!(shallow_view.iter().any(|edge| matches!(edge.curve,
+        VectorCurve::Ellipse { center, start_rad, end_rad, .. }
+            if (center[1] - 29. * a).abs() < 1e-7
+                && end_rad - start_rad < std::f64::consts::TAU
+    )));
 
     let from_back = PlaneFrame {
         v: frame.v.map(|x| -x),
@@ -349,7 +468,7 @@ fn oblique_mortise_requires_strict_full_shadow_from_intact_material() {
 }
 
 #[test]
-fn oblique_bore_accepts_a_seated_pin_and_rejects_a_gap_or_offset() {
+fn oblique_bore_resolves_seated_clearance_and_recessed_pins() {
     let a = std::f64::consts::FRAC_1_SQRT_2;
     let view = PlaneFrame {
         origin: [0.; 3],
@@ -392,11 +511,60 @@ fn oblique_bore_accepts_a_seated_pin_and_rejects_a_gap_or_offset() {
     let clearance = pin(Rational::new(199, 100).unwrap(), 10., 17.);
     let offset = pin(matching, 10.05, 17.);
     let below_mouth = pin(matching, 10., 13.);
-    for obstruction in [&clearance, &offset, &below_mouth] {
-        let error = drawing(&[&plate, obstruction], view).unwrap_err();
-        assert_eq!(error.kind, GeometryErrorKind::Unsupported);
-        assert!(error.message.contains("another body may enter the cavity"));
+    let options = DrawingProjection {
+        frame: view,
+        chord_tolerance_mm: 1e-4,
+        ..Default::default()
+    };
+    for obstruction in [&clearance, &below_mouth] {
+        let result = matches_native(&[&plate, obstruction], options);
+        assert!(
+            result
+                .iter()
+                .any(|edge| edge.source_index == 1 && edge.role == VectorRole::Visible)
+        );
     }
+
+    // At the plate mouth point [12, 10, 20], the view ray advances
+    // toward -Y and +Z. At t = 0.1 mm along that ray the point is
+    // inside the offset pin and still within its axial interval [17, 23].
+    let t = 0.1;
+    let point = [12., 10. - t * a, 20. + t * a];
+    assert!((point[0] - 10.05).hypot(point[1] - 10.) < 2.);
+    assert!((17. ..23.).contains(&point[2]));
+    let mouth = [12., 30. * a];
+    let interference = project_drawing(
+        &[&plate, &offset].map(|solid| DrawingSolid { solid, hatch: None }),
+        DrawingProjection {
+            hidden_lines: true,
+            ..options
+        },
+    )
+    .unwrap();
+    assert!(
+        interference
+            .iter()
+            .any(|edge| edge.source_index == 1 && edge.role == VectorRole::Visible)
+    );
+    let rim_at_mouth = |edge: &multicad_kernel::ProjectedVector| {
+        edge.source_index == 0
+            && matches!(edge.curve, VectorCurve::Ellipse { center, .. } if
+                (center[0] - 10.).abs() < 1e-7 && (center[1] - mouth[1]).abs() < 1e-7)
+            && edge
+                .preview_mm
+                .iter()
+                .any(|[x, y]| (x - mouth[0]).hypot(y - mouth[1]) < 0.05)
+    };
+    assert!(
+        interference
+            .iter()
+            .any(|edge| edge.role == VectorRole::Hidden && rim_at_mouth(edge))
+    );
+    assert!(
+        !interference
+            .iter()
+            .any(|edge| edge.role == VectorRole::Visible && rim_at_mouth(edge))
+    );
 }
 
 #[test]
@@ -469,8 +637,16 @@ fn hidden_polygon_stock_keeps_a_through_aperture_transparent() {
             },
             ..options
         };
-        let error = draw(&[&plate], oblique).unwrap_err();
-        assert_eq!(error.kind, GeometryErrorKind::Unsupported);
-        assert!(error.message.contains("face-on or edge-on cuts"));
+        let slanted = matches_native(
+            &[&plate],
+            DrawingProjection {
+                chord_tolerance_mm: 1e-4,
+                ..oblique
+            },
+        );
+        for role in [VectorRole::Visible, VectorRole::Hidden] {
+            assert!(slanted.iter().any(|edge| edge.role == role
+                && matches!(edge.curve, VectorCurve::Ellipse { major_mm: 2., .. })));
+        }
     }
 }
