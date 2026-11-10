@@ -291,3 +291,187 @@ fn slab_refuses_empty_or_ambiguous_material_and_bad_mappings() {
         Error::Invalid
     );
 }
+
+#[test]
+fn difference_removes_overlapping_cutters_once_and_reverses_cavity_faces() {
+    let stock = [block([0.; 3], [4.; 3])];
+    let tools = [block([1.; 3], [3.; 3]), block([1.5, 1., 1.], [3.5, 3., 3.])];
+    let result = Union::subtract(&stock, &tools, TOL).unwrap().unwrap();
+    check_volume(result.volume_mm3(), 54.);
+    assert_eq!(result.bounds(), [[0.; 3], [4.; 3]]);
+    assert_eq!(result.solid_count(), 1);
+    assert_eq!(result.shell_count(), 2);
+    assert!(
+        result
+            .faces()
+            .iter()
+            .any(|f| f.source == 1 && f.source_face == 5 && f.normal == [1., 0., 0.])
+    );
+    assert!(
+        result
+            .faces()
+            .iter()
+            .any(|f| f.source == 2 && f.source_face == 3 && f.normal == [-1., 0., 0.])
+    );
+    let mesh = result.mesh(options(1_000)).unwrap();
+    check_volume(
+        manufacturing::certify(&mesh).unwrap().signed_volume_mm3,
+        54.,
+    );
+}
+
+#[test]
+fn difference_crosses_internal_piece_seams_and_counts_disconnected_material() {
+    let stock = [
+        block([0.; 3], [2.; 3]),
+        block([2., 0., 0.], [4., 2., 2.]),
+        block([1., 0., 0.], [3., 2., 2.]),
+    ];
+    let tools = [block([2., -1., -1.], [3., 3., 3.])];
+    let result = Union::subtract(&stock, &tools, TOL).unwrap().unwrap();
+    check_volume(result.volume_mm3(), 12.);
+    assert_eq!(result.solid_count(), 2);
+    assert_eq!(result.shell_count(), 2);
+    assert!(
+        result
+            .faces()
+            .iter()
+            .any(|f| f.source == 3 && f.normal == [1., 0., 0.])
+    );
+}
+
+#[test]
+fn difference_contact_preserves_volume_and_complete_removal_is_empty() {
+    let a = block([0.; 3], [2.; 3]);
+    let stock = std::slice::from_ref(&a);
+    for other in [block([2., 1., 0.5], [3., 3., 1.5]), block([4.; 3], [5.; 3])] {
+        let result = Union::subtract(stock, &[other], TOL).unwrap().unwrap();
+        check_volume(result.volume_mm3(), 8.);
+        assert_eq!(result.bounds(), [[0.; 3], [2.; 3]]);
+        assert_eq!(result.solid_count(), 1);
+        assert!(result.faces().iter().all(|face| face.source == 0));
+    }
+    assert!(Union::subtract(stock, stock, TOL).unwrap().is_none());
+    assert!(
+        Union::subtract(stock, &[block([-1.; 3], [3.; 3])], TOL)
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        Union::subtract(stock, &[], TOL).unwrap_err(),
+        Error::Invalid
+    );
+    assert_eq!(
+        Union::subtract(stock, &vec![a.clone(); MAX_PIECES], TOL).unwrap_err(),
+        Error::Limit
+    );
+}
+
+#[test]
+fn difference_rejects_void_touching_outer_shell_only_at_a_vertex() {
+    let stock = [block([0.; 3], [4.; 3])];
+    let faces = vec![
+        vec![[0., 0., 0.], [1., 1., 2.], [2., 1., 1.]],
+        vec![[0., 0., 0.], [1., 2., 1.], [1., 1., 2.]],
+        vec![[0., 0., 0.], [2., 1., 1.], [1., 2., 1.]],
+        vec![[2., 1., 1.], [1., 1., 2.], [1., 2., 1.]],
+    ];
+    let tool = ConvexPiece::new(
+        faces
+            .into_iter()
+            .map(|mut face| {
+                face.reverse();
+                face
+            })
+            .collect(),
+        TOL,
+    )
+    .unwrap();
+    assert_eq!(
+        Union::subtract(&stock, &[tool], TOL).unwrap_err(),
+        Error::Unresolved
+    );
+}
+
+#[test]
+fn vertical_decomposition_matches_the_saved_concave_front_pull() {
+    let ring = [
+        [97., 10., 272.5],
+        [97., 3., 265.5],
+        [97., -1., 262.5],
+        [97., -1., 250.5],
+        [97., 10., 250.5],
+    ];
+    let pieces = ConvexPiece::from_vertical_profile_sweep(&ring, [40., 0., 0.], TOL).unwrap();
+    assert_eq!(pieces.len(), 2);
+    for index in 0..5 {
+        assert!(
+            pieces
+                .iter()
+                .any(|p| p.source_faces.contains(&ProfileFace::Edge(index))),
+            "missing profile edge {index}"
+        );
+    }
+    for piece in &pieces {
+        assert_eq!(
+            piece.source_faces[..2],
+            [ProfileFace::StartCap, ProfileFace::EndCap]
+        );
+        assert!(piece.source_faces.contains(&ProfileFace::Partition));
+    }
+    let pieces: Vec<_> = pieces.into_iter().map(|piece| piece.piece).collect();
+    let union = Union::new(&pieces, TOL).unwrap();
+    check_volume(union.volume_mm3(), 7340.);
+    let center: Vec<_> = pieces
+        .into_iter()
+        .map(|piece| {
+            piece
+                .clip_z_band([250.5, 252.5], TOL)
+                .unwrap()
+                .unwrap()
+                .remap_quarter_circle(250.5, 2., TOL)
+                .unwrap()
+                .piece
+        })
+        .collect();
+    check_volume(Union::new(&center, TOL).unwrap().volume_mm3(), 880.);
+}
+
+#[test]
+fn strip_sweep_handles_triangle_tips_multiple_crossings_and_reverse_input() {
+    let profile = [
+        [0., 0.],
+        [4., 0.],
+        [3., 1.],
+        [1., 1.],
+        [1., 2.],
+        [3., 2.],
+        [4., 3.],
+        [0., 3.],
+    ];
+    let ring: Vec<_> = profile.into_iter().rev().map(|[x, z]| [x, 4., z]).collect();
+    let pieces = ConvexPiece::from_vertical_profile_sweep(&ring, [0., -2., 0.], TOL).unwrap();
+    let convex: Vec<_> = pieces.into_iter().map(|piece| piece.piece).collect();
+    let union = Union::new(&convex, TOL).unwrap();
+    assert_eq!(union.solid_count(), 1);
+    check_volume(union.volume_mm3(), 16.);
+}
+
+#[test]
+fn strip_sweep_refuses_nonvertical_and_ambiguous_profiles() {
+    let ring = [[0., 0., 0.], [0., 2., 0.], [0., 2., 2.], [0., 0., 2.]];
+    let sweep =
+        |ring: &[_], direction| ConvexPiece::from_vertical_profile_sweep(ring, direction, TOL);
+    assert_eq!(sweep(&ring[..2], [1., 0., 0.]).unwrap_err(), Error::Invalid);
+    assert_eq!(
+        sweep(&vec![ring[0]; MAX_FACE_VERTICES + 1], [1., 0., 0.]).unwrap_err(),
+        Error::Limit
+    );
+    assert_eq!(sweep(&ring, [1., 0., 1.]).unwrap_err(), Error::Invalid);
+    assert_eq!(sweep(&ring, [0., 1., 0.]).unwrap_err(), Error::Invalid);
+    let near = [[0., 0., 0.], [0., 2., 0.], [0., 2., 2.], [0., TOL / 2., 2.]];
+    assert_eq!(sweep(&near, [1., 0., 0.]).unwrap_err(), Error::Unresolved);
+    let crossing = [ring[0], ring[2], ring[1], ring[3]];
+    assert_eq!(sweep(&crossing, [1., 0., 0.]).unwrap_err(), Error::Invalid);
+    assert_eq!(sweep(&ring, [2e7, 0., 0.]).unwrap_err(), Error::Limit);
+}

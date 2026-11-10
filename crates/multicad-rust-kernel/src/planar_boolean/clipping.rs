@@ -27,7 +27,7 @@ pub(super) fn exterior(
                 let mut remaining = Vec::new();
                 let mut fragment_budget = MAX_INCIDENCES;
                 for polygon in fragments {
-                    subtract(
+                    partition(
                         polygon,
                         &other.planes,
                         tolerance,
@@ -50,18 +50,18 @@ pub(super) fn exterior(
     Ok(boundary)
 }
 
-fn bounds_overlap(a: [Point; 2], b: [Point; 2], tolerance: f64) -> bool {
+pub(super) fn bounds_overlap(a: [Point; 2], b: [Point; 2], tolerance: f64) -> bool {
     (0..3).all(|i| a[0][i] <= b[1][i] + tolerance && b[0][i] <= a[1][i] + tolerance)
 }
 
-fn subtract(
+pub(super) fn partition(
     polygon: Vec<Point>,
     planes: &[Plane],
     tolerance: f64,
     outside: &mut Vec<Vec<Point>>,
     budget: &mut usize,
     fragment_budget: &mut usize,
-) -> Result<(), Error> {
+) -> Result<Option<Vec<Point>>, Error> {
     // Reject a nonblocking piece before splitting. A contact along only a
     // point or line does not remove any area of the source face.
     charge(budget, planes.len() * polygon.len())?;
@@ -78,7 +78,7 @@ fn subtract(
     }) {
         charge(fragment_budget, polygon.len())?;
         outside.push(polygon);
-        return Ok(());
+        return Ok(None);
     }
 
     let mut remaining = polygon;
@@ -90,11 +90,11 @@ fn subtract(
             outside.push(fragment);
         }
         if inside.len() < 3 {
-            break;
+            return Ok(None);
         }
         remaining = inside;
     }
-    Ok(())
+    Ok(Some(remaining))
 }
 
 fn split(polygon: Vec<Point>, plane: Plane, tolerance: f64) -> (Vec<Point>, Vec<Point>) {

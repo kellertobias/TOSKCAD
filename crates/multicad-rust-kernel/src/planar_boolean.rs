@@ -9,9 +9,12 @@ use crate::{
 use std::collections::BTreeMap;
 
 mod clipping;
+mod difference;
 mod shell;
 mod slab;
+mod vertical_profile;
 pub use slab::Slab;
+pub use vertical_profile::{ProfileFace, ProfilePiece};
 
 type Point = [f64; 3];
 const MAX_COORDINATE: f64 = 1e8;
@@ -142,9 +145,14 @@ impl Union {
         if pieces.len() > MAX_PIECES {
             return Err(Error::Limit);
         }
-        let shell::Boundary {
+        Self::from_boundary(clipping::exterior(pieces, tolerance_mm, MAX_WORK)?)
+    }
+
+    fn from_boundary(
+        shell::Boundary {
             vertices, faces, ..
-        } = clipping::exterior(pieces, tolerance_mm, MAX_WORK)?;
+        }: shell::Boundary,
+    ) -> Result<Self, Error> {
         let proof = shell::prove(&vertices, &faces)?;
         let bounds = bounds(vertices.iter().copied());
         Ok(Self {

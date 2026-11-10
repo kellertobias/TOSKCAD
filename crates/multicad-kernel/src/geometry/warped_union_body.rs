@@ -10,6 +10,7 @@ use multicad_rust_kernel::{
 };
 use std::collections::BTreeSet;
 
+mod cut;
 mod operands;
 use super::planar_boolean_body::winding;
 use operands::QuarterFillet;
@@ -21,11 +22,117 @@ pub(crate) struct WarpedUnionBody {
     pub(super) geometry: Shell,
     origins: Vec<Vec<Origin>>,
     anchors: Vec<Vec<AnchoredFrame>>,
+    chart: Chart,
 }
 
+#[derive(Clone)]
 struct SourcePart {
     operand: usize,
     faces: Vec<Option<usize>>,
+}
+
+#[derive(Clone)]
+struct Chart {
+    band: Band,
+    stock_count: usize,
+    pieces: Vec<ConvexPiece>,
+    sources: Vec<SourcePart>,
+    topologies: Vec<Rc<TopologySnapshot>>,
+}
+
+impl Chart {
+    fn new(band: Band) -> Self {
+        Self {
+            band,
+            stock_count: 0,
+            pieces: Vec::new(),
+            sources: Vec::new(),
+            topologies: Vec::new(),
+        }
+    }
+
+    fn append(
+        &mut self,
+        solid: &Solid,
+        fillet: Option<QuarterFillet>,
+        policy: GeometryPolicy,
+    ) -> Option<Result<(), GeometryError>> {
+        let tolerance = policy.linear_tolerance_mm;
+        let topology = match solid.rust_topology()? {
+            Ok(topology) => topology,
+            Err(cause) => return Some(Err(cause)),
+        };
+        let [center, radius] = [self.band.center_z_mm, self.band.radius_mm];
+        let floor = center - radius;
+        let limit = policy.maximum_coordinate_mm;
+        let levels = [-limit, floor, center, limit];
+        let operand = self.topologies.len();
+        if let Some(fillet) = fillet {
+            let fillet_pieces = match fillet.pieces(center, radius, tolerance) {
+                Ok(fillet_pieces) => fillet_pieces,
+                Err(cause) => return Some(Err(source_error(cause))),
+            };
+            for piece in fillet_pieces {
+                self.pieces.push(piece);
+                self.sources.push(SourcePart {
+                    operand,
+                    faces: Vec::new(),
+                });
+            }
+        } else {
+            for (piece, ancestry) in solid.planar_convex_parts(&topology, policy)? {
+                for (i, pair) in levels.windows(2).enumerate() {
+                    let slab = match piece.clip_z_band([pair[0], pair[1]], tolerance) {
+                        Ok(Some(slab)) => slab,
+                        Ok(None) => continue,
+                        Err(cause) => return Some(Err(source_error(cause))),
+                    };
+                    let placed = match i {
+                        0 => slab.translate_z(floor, 0., tolerance),
+                        1 => slab.remap_quarter_circle(floor, radius, tolerance),
+                        _ => slab.translate_z(center, radius, tolerance),
+                    };
+                    let placed = match placed {
+                        Ok(placed) => placed,
+                        Err(planar_boolean::Error::Unresolved) if i == 1 => return None,
+                        Err(cause) => return Some(Err(source_error(cause))),
+                    };
+                    let faces = placed
+                        .source_faces
+                        .into_iter()
+                        .map(|i| i.and_then(|i| ancestry.get(i)).copied().flatten())
+                        .collect();
+                    self.pieces.push(placed.piece);
+                    self.sources.push(SourcePart { operand, faces });
+                }
+            }
+        }
+        self.topologies.push(Rc::new(topology));
+        Some(Ok(()))
+    }
+
+    fn finish(
+        self,
+        union: Union,
+        feature: EntityId,
+        policy: GeometryPolicy,
+    ) -> Result<Solid, GeometryError> {
+        let geometry = warped_union::remap(&union, self.band, policy.linear_tolerance_mm).map_err(
+            |cause| {
+                let kind = match cause {
+                    warped_union::Error::Invalid => GeometryErrorKind::InvalidResult,
+                    warped_union::Error::Unsupported => GeometryErrorKind::Unsupported,
+                    warped_union::Error::Limit => GeometryErrorKind::Limit,
+                };
+                error(
+                    "quarter-round Boolean",
+                    kind,
+                    format!("Cannot certify the curved boundary: {cause:?}"),
+                )
+            },
+        )?;
+        WarpedUnionBody::build(geometry, self, feature, policy)
+    }
 }
 
 fn subtract(a: Point, b: Point) -> Point {
@@ -88,7 +195,7 @@ impl Solid {
             radius_mm: first.radius,
         };
         let [center, radius] = [band.center_z_mm, band.radius_mm];
-        let floor = center - radius;
+
         let roundoff = 32. * f64::EPSILON * center.abs().max(radius).max(1.);
         if fillets.iter().flatten().any(|fillet| {
             (fillet.center[2] - center).abs() > roundoff
@@ -96,84 +203,18 @@ impl Solid {
         }) {
             return None;
         }
-        let limit = policy.maximum_coordinate_mm;
-        let levels = [-limit, floor, center, limit];
-        let mut pieces = Vec::new();
-        let mut sources = Vec::new();
-        let mut topologies = Vec::new();
-        for (operand, (&solid, fillet)) in solids.iter().zip(fillets).enumerate() {
-            let topology = match solid.rust_topology()? {
-                Ok(topology) => topology,
-                Err(cause) => return Some(Err(cause)),
-            };
-            if let Some(fillet) = fillet {
-                let fillet_pieces = match fillet.pieces(center, radius, tolerance) {
-                    Ok(fillet_pieces) => fillet_pieces,
-                    Err(cause) => return Some(Err(source_error(cause))),
-                };
-                for piece in fillet_pieces {
-                    pieces.push(piece);
-                    sources.push(SourcePart {
-                        operand,
-                        faces: Vec::new(),
-                    });
-                }
-            } else {
-                for (piece, ancestry) in solid.planar_convex_parts(&topology, policy)? {
-                    for (i, pair) in levels.windows(2).enumerate() {
-                        let slab = match piece.clip_z_band([pair[0], pair[1]], tolerance) {
-                            Ok(Some(slab)) => slab,
-                            Ok(None) => continue,
-                            Err(cause) => return Some(Err(source_error(cause))),
-                        };
-                        let placed = match i {
-                            0 => slab.translate_z(floor, 0., tolerance),
-                            1 => slab.remap_quarter_circle(floor, radius, tolerance),
-                            _ => slab.translate_z(center, radius, tolerance),
-                        };
-                        let placed = match placed {
-                            Ok(placed) => placed,
-                            Err(planar_boolean::Error::Unresolved) if i == 1 => return None,
-                            Err(cause) => return Some(Err(source_error(cause))),
-                        };
-                        let faces = placed
-                            .source_faces
-                            .into_iter()
-                            .map(|i| i.and_then(|i| ancestry.get(i)).copied())
-                            .collect();
-                        pieces.push(placed.piece);
-                        sources.push(SourcePart { operand, faces });
-                    }
-                }
+        let mut chart = Chart::new(band);
+        for (&solid, fillet) in solids.iter().zip(fillets) {
+            if let Err(cause) = chart.append(solid, fillet, policy)? {
+                return Some(Err(cause));
             }
-            topologies.push(topology);
         }
-        let union = match Union::new(&pieces, tolerance) {
-            Ok(union) => union,
-            Err(cause) => return Some(Err(source_error(cause))),
-        };
-        let geometry = match warped_union::remap(&union, band, tolerance) {
-            Ok(geometry) => geometry,
-            Err(cause) => {
-                let kind = match cause {
-                    warped_union::Error::Invalid => GeometryErrorKind::InvalidResult,
-                    warped_union::Error::Unsupported => GeometryErrorKind::Unsupported,
-                    warped_union::Error::Limit => GeometryErrorKind::Limit,
-                };
-                return Some(Err(error(
-                    "quarter-round union",
-                    kind,
-                    format!("Cannot certify the curved boundary: {cause:?}"),
-                )));
-            }
-        };
-        Some(WarpedUnionBody::build(
-            geometry,
-            &sources,
-            &topologies,
-            feature,
-            policy,
-        ))
+        chart.stock_count = chart.pieces.len();
+        Some(
+            Union::new(&chart.pieces, tolerance)
+                .map_err(source_error)
+                .and_then(|union| chart.finish(union, feature, policy)),
+        )
     }
 
     pub(crate) fn warped_union_body(&self) -> Option<(&WarpedUnionBody, PlaneFrame)> {
@@ -187,8 +228,7 @@ impl Solid {
 impl WarpedUnionBody {
     fn build(
         geometry: Shell,
-        sources: &[SourcePart],
-        topologies: &[TopologySnapshot],
+        chart: Chart,
         feature: EntityId,
         policy: GeometryPolicy,
     ) -> Result<Solid, GeometryError> {
@@ -198,8 +238,8 @@ impl WarpedUnionBody {
         let mut origins = Vec::with_capacity(geometry.faces().len());
         let mut anchors = Vec::with_capacity(geometry.faces().len());
         for (i, face) in geometry.faces().iter().enumerate() {
-            let part = &sources[face.source];
-            let topology = &topologies[part.operand];
+            let part = &chart.sources[face.source];
+            let topology = &chart.topologies[part.operand];
             let source = part
                 .faces
                 .get(face.source_face)
@@ -246,6 +286,7 @@ impl WarpedUnionBody {
                     geometry,
                     origins,
                     anchors,
+                    chart,
                 }),
                 PlaneFrame::default(),
             ),

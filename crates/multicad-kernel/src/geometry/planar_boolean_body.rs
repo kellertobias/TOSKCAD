@@ -5,13 +5,13 @@ use multicad_core::references::{AnalyticGeometry, AnchoredFrame, ReferenceFrame,
 use multicad_rust_kernel::{
     display::Tessellation,
     orthogonal::Box3,
-    planar_boolean::{ConvexPiece, Error, Union},
+    planar_boolean::{ConvexPiece, Error, ProfileFace, Union},
 };
 use std::collections::{BTreeMap, BTreeSet};
 
 type Point = [f64; 3];
 type Key = [usize; 2];
-type ConvexPart = (ConvexPiece, Vec<usize>);
+type ConvexPart = (ConvexPiece, Vec<Option<usize>>);
 
 pub(crate) struct PlanarBooleanBody {
     pub(super) feature: EntityId,
@@ -29,7 +29,7 @@ struct Boundary {
 
 struct SourcePart {
     operand: usize,
-    faces: Vec<usize>,
+    faces: Vec<Option<usize>>,
 }
 
 fn subtract(a: Point, b: Point) -> Point {
@@ -130,6 +130,71 @@ fn convex_faces(
         .collect::<Option<_>>()
 }
 
+fn vertical_convex_parts(
+    faces: &[Vec<Point>],
+    ancestry: &[usize],
+    tolerance: f64,
+) -> Option<Vec<ConvexPart>> {
+    let [base, end, sides @ ..] = faces else {
+        return None;
+    };
+    if base.len() != end.len() || sides.len() != base.len() {
+        return None;
+    }
+    let anchor = |ring: &[Point]| {
+        *ring
+            .iter()
+            .min_by(|a, b| {
+                (0..3)
+                    .map(|i| a[i].total_cmp(&b[i]))
+                    .find(|order| !order.is_eq())
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .expect("closed face")
+    };
+    let displacement = subtract(anchor(end), anchor(base));
+    let near = |a: Point, b: Point| norm(subtract(a, b)) <= tolerance;
+    let translated = |p: Point| std::array::from_fn(|i| p[i] + displacement[i]);
+    if !base.iter().all(|p| {
+        let q = translated(*p);
+        end.iter().any(|&end| near(end, q))
+    }) {
+        return None;
+    }
+    let side_ancestry: Vec<_> = base
+        .iter()
+        .zip(base.iter().cycle().skip(1))
+        .map(|(&a, &b)| {
+            let expected = [a, b, translated(a), translated(b)];
+            sides
+                .iter()
+                .position(|ring| {
+                    ring.len() == 4 && expected.iter().all(|&p| ring.iter().any(|&q| near(p, q)))
+                })
+                .map(|side| ancestry[side + 2])
+        })
+        .collect::<Option<_>>()?;
+    let parts = ConvexPiece::from_vertical_profile_sweep(base, displacement, tolerance).ok()?;
+    Some(
+        parts
+            .into_iter()
+            .map(|part| {
+                let source_faces = part
+                    .source_faces
+                    .into_iter()
+                    .map(|face| match face {
+                        ProfileFace::StartCap => Some(ancestry[0]),
+                        ProfileFace::EndCap => Some(ancestry[1]),
+                        ProfileFace::Edge(edge) => Some(side_ancestry[edge]),
+                        ProfileFace::Partition => None,
+                    })
+                    .collect();
+                (part.piece, source_faces)
+            })
+            .collect(),
+    )
+}
+
 impl Solid {
     pub(super) fn planar_convex_parts(
         &self,
@@ -153,7 +218,15 @@ impl Solid {
                 .collect()
         } else {
             let (faces, ancestry) = convex_faces(self, topology, policy)?;
-            Some(vec![(ConvexPiece::new(faces, tolerance).ok()?, ancestry)])
+            match ConvexPiece::new(faces.clone(), tolerance) {
+                Ok(piece) => Some(vec![(piece, ancestry.into_iter().map(Some).collect())]),
+                Err(Error::Invalid)
+                    if self.polygon_prism().is_some() || self.linear_body().is_some() =>
+                {
+                    vertical_convex_parts(&faces, &ancestry, tolerance)
+                }
+                Err(_) => None,
+            }
         }
     }
 
@@ -280,7 +353,9 @@ impl PlanarBooleanBody {
             let source = part
                 .faces
                 .get(raw.source_face)
-                .map(|&i| &topology.elements[i])
+                .copied()
+                .flatten()
+                .map(|i| &topology.elements[i])
                 .or_else(|| {
                     let mut matching = topology.elements.iter().filter(|element| {
                         matches!(element.geometry, Some(AnalyticGeometry::Plane { frame })

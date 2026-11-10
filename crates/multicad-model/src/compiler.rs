@@ -1533,17 +1533,32 @@ impl Compiler {
                         })?;
                         operands.push(tool);
                     }
-                    let analytic = (backend == GeometryBackend::Rust
-                        && operation == multicad_kernel::BooleanOperation::Union)
-                        .then(|| {
-                            Solid::union_coaxial_cylinders(&operands, id, self.policy)
-                                .or_else(|| {
-                                    Solid::union_round_rectangular_stack(&operands, id, self.policy)
-                                })
-                                .or_else(|| Solid::union_quarter_rounds(&operands, id, self.policy))
-                                .or_else(|| Solid::union_planar_pieces(&operands, id, self.policy))
-                        })
-                        .flatten();
+                    let analytic = if backend == GeometryBackend::Rust {
+                        match operation {
+                            multicad_kernel::BooleanOperation::Union => {
+                                Solid::union_coaxial_cylinders(&operands, id, self.policy)
+                                    .or_else(|| {
+                                        Solid::union_round_rectangular_stack(
+                                            &operands,
+                                            id,
+                                            self.policy,
+                                        )
+                                    })
+                                    .or_else(|| {
+                                        Solid::union_quarter_rounds(&operands, id, self.policy)
+                                    })
+                                    .or_else(|| {
+                                        Solid::union_planar_pieces(&operands, id, self.policy)
+                                    })
+                            }
+                            multicad_kernel::BooleanOperation::Subtract => {
+                                target.subtract_warped_tools(&operands[1..], id, self.policy)
+                            }
+                            multicad_kernel::BooleanOperation::Intersect => None,
+                        }
+                    } else {
+                        None
+                    };
                     let solid = if let Some(analytic) = analytic {
                         analytic.map_err(|e| error(Some(id), e))?
                     } else {
