@@ -250,6 +250,11 @@ impl Profiles<'_> {
 #[derive(Clone, Debug, Default, serde::Serialize)]
 pub struct ModelTimings {
     pub total_ms: f64,
+    pub source_preparation_ms: f64,
+    pub feature_cache_lookup_ms: f64,
+    /// Time spent in feature providers, excluding display publication.
+    pub feature_providers_ms: BTreeMap<String, f64>,
+    pub reference_resolution_ms: f64,
     pub gear_construction_ms: f64,
     pub thread_construction_ms: f64,
     pub hardware_construction_ms: f64,
@@ -642,6 +647,7 @@ impl Compiler {
     ) -> Result<Model, ModelError> {
         let EvaluationMode { roots, backend } = mode;
         let mut timings = ModelTimings::default();
+        let preparation_started = std::time::Instant::now();
         checkpoint(interrupt)?;
         let source = document.validated().map_err(|e| error(None, e))?;
         self.policy.validate().map_err(|e| error(None, e))?;
@@ -784,6 +790,7 @@ impl Compiler {
         let mut leaves = crate::assemblies::LeafStore::default();
         let mut topologies: BTreeMap<EntityId, TopologySnapshot> = BTreeMap::new();
         let mut triangles = 0usize;
+        timings.source_preparation_ms = preparation_started.elapsed().as_secs_f64() * 1000.;
         for &id in source.topological_order() {
             checkpoint(interrupt)?;
             let entity = document
@@ -1001,10 +1008,11 @@ impl Compiler {
             } else {
                 None
             };
+            let cache_started = std::time::Instant::now();
             let key = cached.as_mut().and_then(|c| c.key(id));
-            if let Some((solid, shape, extras)) =
-                key.and_then(|key| cached.as_mut().and_then(|c| c.lookup(&key, revision)))
-            {
+            let hit = key.and_then(|key| cached.as_mut().and_then(|c| c.lookup(&key, revision)));
+            timings.feature_cache_lookup_ms += cache_started.elapsed().as_secs_f64() * 1000.;
+            if let Some((solid, shape, extras)) = hit {
                 extras.apply(
                     id,
                     crate::eval_cache::Sides {
@@ -1034,6 +1042,7 @@ impl Compiler {
             let mut consumed_by_feature = Vec::new();
             // Provider dispatch is confined to the native model layer. The UI,
             // document and storage layers do not implement geometry algorithms.
+            let feature_started = std::time::Instant::now();
             let solid = match (definition.type_id.as_str(), definition.schema_version) {
                 (model::EXTRUDE_TYPE, model::EXTRUDE_SCHEMA) => {
                     let source =
@@ -1738,6 +1747,14 @@ impl Compiler {
                     ));
                 }
             };
+            let elapsed = feature_started.elapsed().as_secs_f64() * 1000.;
+            if let Some(total) = timings.feature_providers_ms.get_mut(&definition.type_id) {
+                *total += elapsed;
+            } else {
+                timings
+                    .feature_providers_ms
+                    .insert(definition.type_id.clone(), elapsed);
+            }
             checkpoint(interrupt)?;
             let publication_started = std::time::Instant::now();
             let TopologyDisplay {
@@ -1815,6 +1832,7 @@ impl Compiler {
         };
         checkpoint(interrupt)?;
         timings.pair_validation_ms = pair_started.elapsed().as_secs_f64() * 1000.;
+        let reference_started = std::time::Instant::now();
         let mut references = profiles
             .references
             .take()
@@ -1836,6 +1854,7 @@ impl Compiler {
             backend,
             interrupt,
         )?;
+        timings.reference_resolution_ms = reference_started.elapsed().as_secs_f64() * 1000.;
         if roots.is_some() {
             bodies.retain(|_, producer| shapes.contains_key(producer));
         }
