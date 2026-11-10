@@ -79,7 +79,7 @@ impl Shell<'_, '_> {
         };
         if start != end {
             let other = sub(self.vertex(end)?, plane.origin);
-            return self.semicircle_curve(circle, point, other);
+            return self.open_circle_curve(circle, point, other);
         }
         Ok(Curve::Circle(circle))
     }
@@ -99,11 +99,16 @@ impl Shell<'_, '_> {
                 ccw,
             });
         }
-        if wire
-            .iter()
-            .any(|edge| matches!(self.edges[&edge.edge].curve, Curve::Semicircle(_)))
-        {
-            return self.stadium_trim(wire, plane);
+        if wire.iter().any(|edge| {
+            matches!(
+                self.edges[&edge.edge].curve,
+                Curve::Arc(_) | Curve::Semicircle(_)
+            )
+        }) {
+            if let Ok(stadium) = self.stadium_trim(wire, plane) {
+                return Ok(stadium);
+            }
+            return self.mixed_trim(wire, plane);
         }
         if wire.len() < 3 {
             return Err(ReadError::Invalid);
@@ -143,6 +148,14 @@ impl Shell<'_, '_> {
         let [a, seam_out, b, seam_back] = &self.periodic_round_loop(bounds, face)?;
         if matches!(self.edges[&a.edge].curve, Curve::Semicircle(_)) {
             return self.half_cylindrical_face(
+                &surface,
+                radius,
+                outward,
+                [a, seam_out, b, seam_back],
+            );
+        }
+        if matches!(self.edges[&a.edge].curve, Curve::Arc(_)) {
+            return self.partial_cylindrical_face(
                 &surface,
                 radius,
                 outward,
@@ -298,6 +311,7 @@ pub(super) enum Trim {
         profile: Stadium,
         ccw: bool,
     },
+    Mixed(Vec<crate::normal_sweep::Edge>),
 }
 
 impl Trim {
@@ -306,13 +320,14 @@ impl Trim {
             Self::Polygon(ring) => signed_area(ring),
             Self::Circle { radius, ccw, .. } => PI * radius.powi(2) * if *ccw { 1. } else { -1. },
             Self::Stadium { profile, ccw } => profile.area_mm2() * if *ccw { 1. } else { -1. },
+            Self::Mixed(edges) => crate::normal_sweep::signed_area(edges),
         }
     }
 
     pub(super) fn simple(&self, tolerance: f64) -> bool {
         match self {
             Self::Polygon(ring) => simple_ring(ring, tolerance),
-            Self::Circle { .. } | Self::Stadium { .. } => true,
+            Self::Circle { .. } | Self::Stadium { .. } | Self::Mixed(_) => true,
         }
     }
 
@@ -355,6 +370,7 @@ impl Trim {
                         < profile.radius_mm()
                 })
             }
+            (Self::Mixed(_), _) | (_, Self::Mixed(_)) => false,
         }
     }
 
@@ -389,6 +405,7 @@ impl Trim {
                 segments_distance(profile.centers(), other.centers())
                     > profile.radius_mm() + other.radius_mm() + tolerance
             }
+            (Self::Mixed(_), _) | (_, Self::Mixed(_)) => false,
         }
     }
 }

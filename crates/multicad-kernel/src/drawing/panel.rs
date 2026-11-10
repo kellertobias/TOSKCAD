@@ -6,6 +6,40 @@ use std::{collections::BTreeMap, f64::consts::TAU};
 
 type Point = [f64; 2];
 
+pub(super) fn project_normal_sweep(
+    input: &DrawingSolid<'_>,
+    options: DrawingProjection,
+) -> Option<Result<Vec<ProjectedVector>, GeometryError>> {
+    let (body, frame) = input.solid.normal_sweep_body()?;
+    let [u, v, toward_viewer] = planar::view_axes(options.frame);
+    let axis = frame.normal();
+    if dot(axis, u).hypot(dot(axis, v)) > 32. * f64::EPSILON {
+        return None;
+    }
+    if options.detail.is_some() {
+        return Some(Err(err(
+            GeometryErrorKind::Unsupported,
+            "Rust face-on normal-sweep projection does not yet support a detail crop",
+        )));
+    }
+    let screen = Screen {
+        origin: options.frame.origin,
+        axes: [u, v],
+        toward_viewer,
+    };
+    // The rear cap and every axial seam project onto the visible cap.
+    let edges = body
+        .end_on_rims(frame)
+        .map(|rim| {
+            Ok(Edge {
+                hidden: false,
+                curve: screen.curve(Some(rim))?,
+            })
+        })
+        .collect::<Result<Vec<_>, _>>();
+    Some(edges.and_then(|edges| curved::publish(edges, options, 0)))
+}
+
 pub(super) fn project(
     input: &DrawingSolid<'_>,
     options: DrawingProjection,

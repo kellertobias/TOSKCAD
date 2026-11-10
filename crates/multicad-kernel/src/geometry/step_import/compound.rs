@@ -51,7 +51,23 @@ fn member_signature(readback: &Readback) -> ContentHash {
                 .chain(rim.radial_mid),
         )
     });
-    let mut edges: Vec<_> = lines.chain(circles).chain(halves).collect();
+    let arcs = readback.arcs.iter().map(|rim| {
+        let mut ends = [rim.radial_start, rim.radial_end];
+        ends.sort_unstable_by(compare_points);
+        let radius = if rim.sweep_rad > PI {
+            -rim.radius_mm
+        } else {
+            rim.radius_mm
+        };
+        record(
+            4,
+            rim.center_mm
+                .into_iter()
+                .chain(ends.into_iter().flatten())
+                .chain([radius]),
+        )
+    });
+    let mut edges: Vec<_> = lines.chain(circles).chain(halves).chain(arcs).collect();
     edges.sort_unstable();
     let mut bytes = Vec::with_capacity(64 + edges.len() * 11 * 8);
     bytes.extend((readback.face_count as u64).to_le_bytes());
@@ -112,7 +128,10 @@ impl Solid {
                 return false;
             }
             end[0] += readback.face_count;
-            end[1] += readback.edges_mm.len() + readback.circles.len() + readback.semicircles.len();
+            end[1] += readback.edges_mm.len()
+                + readback.circles.len()
+                + readback.semicircles.len()
+                + readback.arcs.len();
             ends.push(end);
         }
         let mut members = vec![Vec::new(); readbacks.len()];

@@ -234,6 +234,19 @@ impl Writer {
         })
     }
 
+    /// Append a straight normal sweep bounded by exact lines and circles.
+    pub fn append_normal_sweep(
+        &mut self,
+        sweep: &crate::normal_sweep::Sweep,
+        origin: Point,
+        u: Point,
+        v: Point,
+        reverse_sweep: bool,
+    ) -> Result<(), StepError> {
+        let placement = Placement::new(origin, u, v)?;
+        self.append(|file| normal_sweep::encode(file, sweep, placement, reverse_sweep))
+    }
+
     pub fn append_trimmed_sweep(
         &mut self,
         sweep: &TrimmedSweep,

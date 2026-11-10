@@ -5,6 +5,7 @@
 mod compound;
 mod curve;
 mod import;
+mod mixed;
 mod part21;
 mod round;
 mod stadium;
@@ -46,6 +47,17 @@ pub struct SemicircleEdge {
     pub radial_mid: Point,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ArcEdge {
+    pub center_mm: Point,
+    pub normal: Point,
+    pub radius_mm: f64,
+    pub radial_start: Point,
+    pub radial_end: Point,
+    /// Positive sweep in radians about `normal`.
+    pub sweep_rad: f64,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Readback {
     pub bounds_mm: [Point; 2],
@@ -55,6 +67,7 @@ pub struct Readback {
     pub edges_mm: Vec<[Point; 2]>,
     pub circles: Vec<CircleEdge>,
     pub semicircles: Vec<SemicircleEdge>,
+    pub arcs: Vec<ArcEdge>,
     pub solid_count: u32,
 }
 
@@ -187,6 +200,7 @@ enum Curve {
     Line,
     Circle(CircleEdge),
     Semicircle(SemicircleEdge),
+    Arc(ArcEdge),
 }
 
 enum Face {
@@ -201,6 +215,7 @@ enum Face {
     },
     Conical(round::ConicalWall),
     HalfCylinder(HalfCylinder),
+    PartialCylinder(mixed::PartialCylinder),
 }
 
 impl Face {
@@ -208,7 +223,7 @@ impl Face {
         match self {
             Self::Cylindrical { seam, .. } => Some(*seam),
             Self::Conical(wall) => Some(wall.seam),
-            Self::Planar { .. } | Self::HalfCylinder(_) => None,
+            Self::Planar { .. } | Self::HalfCylinder(_) | Self::PartialCylinder(_) => None,
         }
     }
 
@@ -222,6 +237,7 @@ impl Face {
             Self::Cylindrical { flux, .. } => *flux,
             Self::Conical(wall) => wall.flux(anchor),
             Self::HalfCylinder(wall) => wall.flux(anchor),
+            Self::PartialCylinder(wall) => wall.flux(anchor),
         }
     }
 }
@@ -309,6 +325,7 @@ impl<'a, 'input> Shell<'a, 'input> {
         let seams: BTreeSet<_> = faces.iter().filter_map(Face::seam).collect();
         let mut circles = Vec::new();
         let mut semicircles = Vec::new();
+        let mut arcs = Vec::new();
         let mut edges_mm = Vec::new();
         for (&id, edge) in &self.edges {
             match edge.curve {
@@ -326,6 +343,10 @@ impl<'a, 'input> Shell<'a, 'input> {
                     arc.include_bounds(&mut bounds_mm);
                     semicircles.push(arc);
                 }
+                Curve::Arc(arc) => {
+                    arc.include_bounds(&mut bounds_mm);
+                    arcs.push(arc);
+                }
             }
         }
         // Divergence theorem with a translated origin to avoid cancellation on
@@ -341,6 +362,7 @@ impl<'a, 'input> Shell<'a, 'input> {
             edges_mm,
             circles,
             semicircles,
+            arcs,
             solid_count: 1,
         })
     }
@@ -699,7 +721,7 @@ impl<'a, 'input> Shell<'a, 'input> {
     fn check_incidence(&self, faces: &[Face]) -> Result<()> {
         let face_count = faces.len();
         let mut adjacency = vec![Vec::new(); face_count];
-        let mut identities = BTreeSet::new();
+        let mut identities = BTreeMap::<[u32; 2], (u32, bool)>::new();
         let mut fans = BTreeMap::<u32, Vec<[usize; 2]>>::new();
         for (&id, edge) in &self.edges {
             let [first, second] = edge.uses.as_slice() else {
@@ -707,8 +729,26 @@ impl<'a, 'input> Shell<'a, 'input> {
             };
             let mut key = edge.vertices;
             key.sort_unstable();
-            if first.forward == second.forward || !identities.insert(key) {
+            if first.forward == second.forward {
                 return Err(ReadError::Invalid);
+            }
+            match identities.entry(key) {
+                std::collections::btree_map::Entry::Vacant(entry) => {
+                    entry.insert((id, false));
+                }
+                std::collections::btree_map::Entry::Occupied(mut entry) => {
+                    let (other, paired) = entry.get_mut();
+                    if *paired
+                        || mixed::duplicate_curve(
+                            edge.curve,
+                            self.edges[other].curve,
+                            self.tolerance,
+                        )
+                    {
+                        return Err(ReadError::Invalid);
+                    }
+                    *paired = true;
+                }
             }
             if first.face == second.face {
                 if faces[first.face].seam() == Some(id) {
@@ -736,6 +776,11 @@ impl<'a, 'input> Shell<'a, 'input> {
                     supports,
                     (Face::Planar { .. }, Face::HalfCylinder(_))
                         | (Face::HalfCylinder(_), Face::Planar { .. })
+                ),
+                Curve::Arc(_) => !matches!(
+                    supports,
+                    (Face::Planar { .. }, Face::PartialCylinder(_))
+                        | (Face::PartialCylinder(_), Face::Planar { .. })
                 ),
             } {
                 return Err(ReadError::Invalid);
@@ -849,6 +894,12 @@ fn rings_meet(a: &[Point2], b: &[Point2], tolerance: f64) -> bool {
 }
 
 fn face_area(outer: &Trim, holes: &[Trim], tolerance: f64) -> Result<f64> {
+    if std::iter::once(outer)
+        .chain(holes)
+        .any(|trim| matches!(trim, Trim::Mixed(_)))
+    {
+        return mixed::face_area(outer, holes, tolerance);
+    }
     let mut area = outer.signed_area();
     let minimum = tolerance * tolerance;
     if area <= minimum || !outer.simple(tolerance) {

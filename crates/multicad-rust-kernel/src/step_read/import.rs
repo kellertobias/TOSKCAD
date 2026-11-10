@@ -2,7 +2,7 @@
 use super::*;
 use crate::{
     chamfered_bores::BoreChamfer, circular_pockets::CircularPocket, linear_sweep::Sweep,
-    orthogonal::OrthogonalSolid, orthogonal_pockets::OrthogonalPocket,
+    normal_sweep, orthogonal::OrthogonalSolid, orthogonal_pockets::OrthogonalPocket,
     orthogonal_slots::OrthogonalSlot, stadium::Stadium, trimmed_sweep::TrimmedSweep,
 };
 use std::cmp::Ordering;
@@ -45,6 +45,9 @@ pub enum ImportProfile {
         direction: Point,
         /// Affine travel distances from the lower cap. The first row is zero.
         travels: [[f64; 3]; 2],
+    },
+    NormalSweep {
+        sweep: normal_sweep::Sweep,
     },
     Orthogonal {
         /// Certified material and directed boundary in the local frame.
@@ -138,14 +141,14 @@ fn preferred_axis(normal: Point) -> bool {
     normal[major] > 0.
 }
 
-fn reference_axis(normal: Point) -> Point {
+pub(super) fn reference_axis(normal: Point) -> Point {
     let reference = (0..3)
         .min_by(|&a, &b| normal[a].abs().total_cmp(&normal[b].abs()))
         .expect("3D direction");
     std::array::from_fn(|i| f64::from(i == reference))
 }
 
-fn frame_axes(normal: Point, reference: Point) -> [Point; 2] {
+pub(super) fn frame_axes(normal: Point, reference: Point) -> [Point; 2] {
     let side = cross(normal, reference);
     let width = length(side);
     let v = side.map(|x| x / width);
@@ -395,6 +398,7 @@ impl Shell<'_, '_> {
                     Curve::Semicircle(_),
                     Curve::Semicircle(_)
                 )
+                | (Face::PartialCylinder(_), Curve::Arc(_), Curve::Arc(_))
         ) || edges.len() != 4
         {
             return None;
@@ -431,7 +435,8 @@ impl Shell<'_, '_> {
         let displaced = |a: Point, b: Point| length(sub(sub(b, a), sweep)) <= self.tolerance;
         match (face, base.curve, end.curve) {
             (Face::Planar { .. }, Curve::Line, Curve::Line)
-            | (Face::HalfCylinder(_), Curve::Semicircle(_), Curve::Semicircle(_)) => {
+            | (Face::HalfCylinder(_), Curve::Semicircle(_), Curve::Semicircle(_))
+            | (Face::PartialCylinder(_), Curve::Arc(_), Curve::Arc(_)) => {
                 // Each of these walls has two distinct straight generators.
                 // The shell has already validated a half-cylinder's matching rims.
                 for [a, b] in self.wall_generators(face, edges, bottom, top)? {
@@ -535,6 +540,13 @@ impl Shell<'_, '_> {
                 },
             });
         }
+        if correspondence.is_none()
+            && edges
+                .iter()
+                .any(|id| matches!(self.edges[id].curve, Curve::Arc(_) | Curve::Semicircle(_)))
+        {
+            return self.normal_sweep_profile(edges, lower, direction, height_mm);
+        }
         let kind = correspondence.map_or(PlanarMatch::Straight(height_mm, &[]), |correspondence| {
             PlanarMatch::Ruled(height_mm, correspondence)
         });
@@ -573,7 +585,7 @@ impl Shell<'_, '_> {
                     }
                     circles.push(circle);
                 }
-                Curve::Semicircle(_) => return None,
+                Curve::Semicircle(_) | Curve::Arc(_) => return None,
             }
         }
         // Following a long rim edge preserves the profile's native axes on

@@ -395,13 +395,10 @@ fn rounded_dimensions(profile: &CurvedProfile) -> Result<(Rational, Rational), S
     Ok((length_exact, radius_exact))
 }
 
-fn linear_sweep(
+fn sweep_distances(
     id: EntityId,
     controls: &ResolvedExtrudeControls,
-    mut profile: CurvedProfile,
-    origins: &[Origin],
-    policy: GeometryPolicy,
-) -> Result<Solid, ModelError> {
+) -> Result<(f64, f64), ModelError> {
     use ResolvedTermination::Distance;
 
     let (length, backward) = match controls.extent {
@@ -432,6 +429,17 @@ fn linear_sweep(
             ));
         }
     };
+    Ok((length, backward))
+}
+
+fn linear_sweep(
+    id: EntityId,
+    controls: &ResolvedExtrudeControls,
+    mut profile: CurvedProfile,
+    origins: &[Origin],
+    policy: GeometryPolicy,
+) -> Result<Solid, ModelError> {
+    let (length, backward) = sweep_distances(id, controls)?;
     let normal = profile.frame.normal();
     let [u, v, n] = controls.direction;
     let direction: [f64; 3] =
@@ -454,7 +462,7 @@ pub(crate) fn extrude(
     id: EntityId,
     source: &ExtrudeParameters,
     controls: &ResolvedExtrudeControls,
-    profile: CurvedProfile,
+    mut profile: CurvedProfile,
     origins: &[Origin],
     parameters: &EvaluatedParameters,
     policy: GeometryPolicy,
@@ -463,52 +471,53 @@ pub(crate) fn extrude(
     if controls.taper_rad != 0. || controls.direction[0] != 0. || controls.direction[1] != 0. {
         return linear_sweep(id, controls, profile, origins, policy);
     }
-    if matches!(profile.outer.as_slice(), [CurvedEdge2d::Circle { .. }])
-        || profile
-            .outer
-            .iter()
-            .all(|edge| matches!(edge, CurvedEdge2d::Line { .. }))
+    if !has_partial_arcs(&profile)
+        && (matches!(profile.outer.as_slice(), [CurvedEdge2d::Circle { .. }])
+            || profile
+                .outer
+                .iter()
+                .all(|edge| matches!(edge, CurvedEdge2d::Line { .. })))
     {
         let sweep = straight_sweep(source, controls, parameters).map_err(fail)?;
         return normal_profile(id, &profile, origins, sweep, policy);
     }
-    let Extent::OneSided {
+    if let Extent::OneSided {
         end: Termination::Distance { distance },
     } = &source.extent
-    else {
-        return Err(fail(
-            "Rust rounded panel extrusion requires a one-sided distance".into(),
-        ));
-    };
-    if controls.direction != [0., 0., 1.] || controls.taper_rad != 0. {
-        return Err(fail(
-            "Rust rounded panel extrusion requires a positive normal sweep without taper".into(),
-        ));
+        && controls.direction == [0., 0., 1.]
+        && controls.start_offset_mm == 0.
+        && let Ok(height) = exact_length(distance, parameters)
+        && height.as_f64() > 0.
+        && let Ok((length, radius)) = rounded_dimensions(&profile)
+        && profile
+            .holes
+            .iter()
+            .all(|hole| matches!(hole.as_slice(), [CurvedEdge2d::Circle { .. }]))
+    {
+        let mut prism = Prism::extrude(id.uuid_bits(), length, radius, height)
+            .map_err(|e| fail(format!("Rust extrusion failed: {e:?}")))?;
+        for (index, hole) in profile.holes.iter().enumerate() {
+            let [CurvedEdge2d::Circle { center, radius_mm }] = hole.as_slice() else {
+                unreachable!("validated circular inner loops");
+            };
+            let origin = origins.get(profile.outer.len() + index).ok_or_else(|| {
+                fail("Rust extrusion is missing the authored inner-loop identity".into())
+            })?;
+            let circle = profile_circle(*center, *radius_mm).map_err(fail)?;
+            prism = prism
+                .with_inner_loop(origin.source.uuid_bits(), circle)
+                .map_err(|e| fail(format!("Rust inner loop failed: {e:?}")))?;
+        }
+        return Solid::from_rust_prism(prism, policy).map_err(|e| error(Some(id), e));
     }
-    let height = exact_length(distance, parameters).map_err(fail)?;
-    if controls.start_offset_mm != 0. {
-        return Err(fail(
-            "Rust rounded panel extrusion requires zero start offset".into(),
-        ));
-    }
-    let (length, radius) = rounded_dimensions(&profile).map_err(fail)?;
-    let mut prism = Prism::extrude(id.uuid_bits(), length, radius, height)
-        .map_err(|e| fail(format!("Rust extrusion failed: {e:?}")))?;
-    for (index, hole) in profile.holes.iter().enumerate() {
-        let [CurvedEdge2d::Circle { center, radius_mm }] = hole.as_slice() else {
-            return Err(fail(
-                "Rust extrusion supports only whole circular inner loops".into(),
-            ));
-        };
-        let origin = origins.get(profile.outer.len() + index).ok_or_else(|| {
-            fail("Rust extrusion is missing the authored inner-loop identity".into())
-        })?;
-        let circle = profile_circle(*center, *radius_mm).map_err(fail)?;
-        prism = prism
-            .with_inner_loop(origin.source.uuid_bits(), circle)
-            .map_err(|e| fail(format!("Rust inner loop failed: {e:?}")))?;
-    }
-    Solid::from_rust_prism(prism, policy).map_err(|e| error(Some(id), e))
+    let (length, backward) = sweep_distances(id, controls)?;
+    let sign = controls.direction[2];
+    let normal = profile.frame.normal();
+    profile.frame.origin = std::array::from_fn(|i| {
+        profile.frame.origin[i] + normal[i] * (controls.start_offset_mm - sign * backward)
+    });
+    Solid::rust_extrude_normal_profile_named(&profile, sign * length, id, origins, policy)
+        .map_err(|cause| error(Some(id), cause))
 }
 
 pub(crate) fn stock_profile(
@@ -518,12 +527,24 @@ pub(crate) fn stock_profile(
     height_mm: f64,
     policy: GeometryPolicy,
 ) -> Result<Solid, ModelError> {
+    if has_partial_arcs(profile) {
+        return Solid::rust_extrude_normal_profile_named(profile, height_mm, id, origins, policy)
+            .map_err(|cause| error(Some(id), cause));
+    }
     let sweep = StraightSweep {
         height: coordinate(height_mm.abs()).map_err(|cause| error(Some(id), cause))?,
         start_offset: 0.,
         reverse: height_mm < 0.,
     };
     normal_profile(id, profile, origins, sweep, policy)
+}
+
+fn has_partial_arcs(profile: &CurvedProfile) -> bool {
+    profile
+        .outer
+        .iter()
+        .chain(profile.holes.iter().flatten())
+        .any(|edge| matches!(edge, CurvedEdge2d::Arc { .. }))
 }
 
 fn normal_profile(

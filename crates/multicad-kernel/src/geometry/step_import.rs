@@ -1,12 +1,14 @@
 //! Rebuild independently verified STEP boundaries as analytic Rust solids.
 use super::*;
+use crate::{CurvedEdge2d, CurvedProfile};
 use multicad_core::{
     project_file::ContentHash,
     references::{AnalyticGeometry, TopologyElement, TopologyKind},
 };
+use multicad_rust_kernel::normal_sweep::Edge as SweepEdge;
 use multicad_rust_kernel::orthogonal_pockets::OrthogonalPocket;
 use multicad_rust_kernel::step_read::{
-    self, CircleEdge, ImportProfile, ImportSolid, ReadError, Readback, SemicircleEdge,
+    self, ArcEdge, CircleEdge, ImportProfile, ImportSolid, ReadError, Readback, SemicircleEdge,
 };
 use std::f64::consts::{PI, TAU};
 mod compound;
@@ -153,6 +155,74 @@ impl Solid {
         frame.checked(policy)?;
         let dimension = |value| convert(value, policy.linear_tolerance_mm);
         match profile {
+            ImportProfile::NormalSweep { sweep } => {
+                let mut origins = Vec::new();
+                let mut wires = sweep.rings().iter().map(|ring| {
+                    ring.iter()
+                        .map(|&edge| {
+                            let (curve, origin) = match edge {
+                                SweepEdge::Line { a, b } => (
+                                    CurvedEdge2d::Line { a, b },
+                                    straight_origin(feature, frame, a, b),
+                                ),
+                                SweepEdge::Arc {
+                                    center,
+                                    a,
+                                    b,
+                                    clockwise,
+                                } => {
+                                    let mut endpoints = [frame.point(a), frame.point(b)];
+                                    endpoints.sort_unstable_by(compare_points);
+                                    let origin = feature_origin(
+                                        feature,
+                                        "arc",
+                                        endpoints
+                                            .into_iter()
+                                            .flatten()
+                                            .chain(frame.point(edge.point(0.5))),
+                                    );
+                                    (
+                                        CurvedEdge2d::Arc {
+                                            center,
+                                            a,
+                                            b,
+                                            clockwise,
+                                        },
+                                        origin,
+                                    )
+                                }
+                                SweepEdge::Circle {
+                                    center, radius_mm, ..
+                                } => {
+                                    let origin = feature_origin(
+                                        feature,
+                                        "circle",
+                                        frame.point(center).into_iter().chain([radius_mm]),
+                                    );
+                                    (CurvedEdge2d::Circle { center, radius_mm }, origin)
+                                }
+                            };
+                            origins.push(origin);
+                            curve
+                        })
+                        .collect()
+                });
+                let outer = wires
+                    .next()
+                    .ok_or_else(|| invalid("STEP normal sweep has no outer ring"))?;
+                let holes = wires.collect();
+                Self::rust_extrude_normal_profile_named(
+                    &CurvedProfile {
+                        frame,
+                        outer,
+                        holes,
+                    },
+                    height_mm,
+                    feature,
+                    &origins,
+                    policy,
+                )
+            }
             ImportProfile::Orthogonal { solid } => {
                 Self::from_imported_orthogonal(solid, frame, feature, policy)
             }
@@ -447,6 +517,28 @@ fn match_semicircles(
     })
 }
 
+fn match_arcs(expected: &[ArcEdge], actual: &[ArcEdge], tolerance: f64) -> bool {
+    let circle = |rim: &ArcEdge| CircleEdge {
+        center_mm: rim.center_mm,
+        normal: rim.normal,
+        radius_mm: rim.radius_mm,
+    };
+    let mid = |rim: &ArcEdge| {
+        let tangent = cross(rim.normal, rim.radial_start);
+        let (s, c) = (rim.sweep_rad * 0.5).sin_cos();
+        std::array::from_fn(|i| c.mul_add(rim.radial_start[i], s * tangent[i]))
+    };
+    match_round_edges(expected, actual, tolerance, |rim, candidate| {
+        let paired = max_error(rim.radial_start, candidate.radial_start)
+            .max(max_error(rim.radial_end, candidate.radial_end));
+        let swapped = max_error(rim.radial_start, candidate.radial_end)
+            .max(max_error(rim.radial_end, candidate.radial_start));
+        circle_error(&circle(rim), &circle(candidate))
+            .max(paired.min(swapped) * rim.radius_mm)
+            .max(max_error(mid(rim), mid(candidate)) * rim.radius_mm)
+    })
+}
+
 fn match_round_edges<T>(
     expected: &[T],
     actual: &[T],
@@ -543,7 +635,11 @@ fn verify(
             "Rebuilt STEP solid differs from the imported bounds or volume",
         ));
     }
-    if orthogonal && readback.circles.is_empty() && readback.semicircles.is_empty() {
+    if orthogonal
+        && readback.circles.is_empty()
+        && readback.semicircles.is_empty()
+        && readback.arcs.is_empty()
+    {
         // The pure reader has already proved equality of every oriented
         // boundary patch. The rebuilt shell consolidates coplanar source
         // faces and collinear edges, so record counts can differ.
@@ -560,7 +656,7 @@ fn verify(
 
 impl Solid {
     /// Compare an independently read STEP shell with the exact topology being
-    /// published. Straight edges and both types of circular trim must match.
+    /// published. Straight edges and circular trims must match.
     pub fn step_topology_matches(
         topology: &TopologySnapshot,
         readback: &Readback,
@@ -581,6 +677,7 @@ fn compare_topology<'a>(
     let mut lines = Vec::new();
     let mut circles = Vec::new();
     let mut semicircles = Vec::new();
+    let mut arcs = Vec::new();
     let mut faces = 0;
     for element in elements {
         match (element.key.kind, element.geometry) {
@@ -620,6 +717,33 @@ fn compare_topology<'a>(
                     radial_mid: std::array::from_fn(|i| cos * frame.u[i] + sin * frame.v[i]),
                 });
             }
+            (
+                TopologyKind::Edge,
+                Some(AnalyticGeometry::CircularArc {
+                    frame,
+                    radius_mm,
+                    start_rad,
+                    sweep_rad,
+                }),
+            ) => {
+                let radial = |angle: f64| {
+                    let (s, c) = angle.sin_cos();
+                    std::array::from_fn(|i| c.mul_add(frame.u[i], s * frame.v[i]))
+                };
+                let (start, end) = if sweep_rad > 0. {
+                    (start_rad, start_rad + sweep_rad)
+                } else {
+                    (start_rad + sweep_rad, start_rad)
+                };
+                arcs.push(ArcEdge {
+                    center_mm: frame.origin_mm,
+                    normal: frame.normal(),
+                    radius_mm,
+                    radial_start: radial(start),
+                    radial_end: radial(end),
+                    sweep_rad: sweep_rad.abs(),
+                });
+            }
             (TopologyKind::Edge, _) => {
                 return false;
             }
@@ -631,6 +755,7 @@ fn compare_topology<'a>(
             && same_segments(&readback.edges_mm, &lines, readback.bounds_mm, tolerance)))
         && match_circles(&readback.circles, &circles, tolerance)
         && match_semicircles(&readback.semicircles, &semicircles, tolerance)
+        && match_arcs(&readback.arcs, &arcs, tolerance)
 }
 
 #[cfg(test)]
