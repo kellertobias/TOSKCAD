@@ -136,12 +136,7 @@ fn project_members(
     members: &[(usize, &Solid)],
     options: DrawingProjection,
 ) -> Result<Vec<ProjectedVector>, GeometryError> {
-    let mut apertures = (!options.hidden_lines
-        && members
-            .iter()
-            .any(|(_, solid)| apertures::has_through_bores(solid)))
-    .then(|| apertures::Scene::new(members, options.frame))
-    .transpose()?;
+    let mut apertures = None;
     let mut planar_members = Vec::new();
     let mut round_sources = Vec::new();
     let mut rounds = Vec::new();
@@ -153,12 +148,16 @@ fn project_members(
             round_sources.push(source);
             rounds.push(round);
         } else {
-            let proxy = match &mut apertures {
-                Some(scene) if apertures::has_through_bores(solid) => {
-                    Some(scene.stock(solid, index, source)?)
-                }
-                _ if options.hidden_lines => None,
-                _ => pockets::stock(solid, source, planar_members.len(), options)?,
+            let proxy = if options.hidden_lines {
+                None
+            } else if apertures::has_through_bores(solid) {
+                let scene = apertures::Scene::get(&mut apertures, members, options.frame)?;
+                Some(scene.stock(solid, index, source)?)
+            } else {
+                pockets::stock(solid, source, planar_members.len(), options, |cavity| {
+                    let scene = apertures::Scene::get(&mut apertures, members, options.frame)?;
+                    scene.oblique(index, source, cavity)
+                })?
             };
             planar_members.push((source, solid, proxy));
         }
@@ -180,6 +179,7 @@ fn project_members(
     for (_, _, proxy) in planar_members {
         if let Some(proxy) = proxy {
             rims.extend(proxy.rims);
+            rounded.rims.extend(proxy.spatial_rims);
             openings.extend(proxy.openings);
         }
     }

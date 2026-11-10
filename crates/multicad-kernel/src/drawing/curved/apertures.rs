@@ -1,8 +1,13 @@
 //! Use an uncut box in visible-line projection only when filling the through
 //! apertures cannot hide any geometry. Emit the actual visible rims separately.
+//! The same proof applies to blind cavities with fully shadowed floors.
 
 use super::{pockets::Stock, *};
-use multicad_rust_kernel::{orthogonal::Box3, planar_projection::RimCandidate};
+use multicad_rust_kernel::{
+    curved_projection::Ellipse,
+    orthogonal::Box3,
+    planar_projection::{RimCandidate, SpatialRimCandidate},
+};
 use std::f64::consts::TAU;
 
 const DIRECTION_TOLERANCE: f64 = 32. * f64::EPSILON;
@@ -16,6 +21,14 @@ pub(super) fn has_through_bores(solid: &Solid) -> bool {
         || solid.polygon_prism().is_some_and(|stock| {
             stock.bore_treatments.is_none() && !stock.prism.circular_holes().is_empty()
         })
+}
+
+pub(super) struct Cavity {
+    pub mouth: Point,
+    pub normal: Point,
+    pub view_normal: Point,
+    pub radius: f64,
+    pub depth: f64,
 }
 
 struct Bore {
@@ -89,19 +102,29 @@ impl Cuts {
     }
 }
 
-pub(super) struct Scene {
+pub(super) struct Scene<'a> {
     frame: PlaneFrame,
     axes: [Point; 3],
     extents: Vec<Box3>,
+    world: Vec<Box3>,
+    members: &'a [(usize, &'a Solid)],
     tolerance: f64,
     budget: usize,
 }
 
-impl Scene {
-    pub(super) fn new(
-        members: &[(usize, &Solid)],
+impl<'a> Scene<'a> {
+    pub(super) fn get<'scene>(
+        scene: &'scene mut Option<Self>,
+        members: &'a [(usize, &'a Solid)],
         frame: PlaneFrame,
-    ) -> Result<Self, GeometryError> {
+    ) -> Result<&'scene mut Self, GeometryError> {
+        if scene.is_none() {
+            *scene = Some(Self::new(members, frame)?);
+        }
+        Ok(scene.as_mut().expect("created aperture scene"))
+    }
+
+    fn new(members: &'a [(usize, &'a Solid)], frame: PlaneFrame) -> Result<Self, GeometryError> {
         let axes = planar::view_axes(frame);
         let world_axes = std::array::from_fn(|i| axes.map(|axis| axis[i]));
         let offset = axes.map(|axis| -dot(axis, frame.origin));
@@ -109,26 +132,30 @@ impl Scene {
             .iter()
             .map(|(_, solid)| solid.geometry_policy().linear_tolerance_mm)
             .fold(0., f64::max);
-        let extents = members
+        let mut budget = WORK_LIMIT;
+        charge(&mut budget, members.len())?;
+        let world = members
             .iter()
             .map(|(_, solid)| {
                 let bounds = solid.bounds()?;
-                Ok(opaque::projected_bounds(
-                    Box3 {
-                        min: bounds.min,
-                        max: bounds.max,
-                    },
-                    world_axes,
-                    offset,
-                ))
+                Ok(Box3 {
+                    min: bounds.min,
+                    max: bounds.max,
+                })
             })
             .collect::<Result<Vec<_>, GeometryError>>()?;
+        let extents = world
+            .iter()
+            .map(|&bounds| opaque::projected_bounds(bounds, world_axes, offset))
+            .collect();
         Ok(Self {
             frame,
             axes,
             extents,
+            world,
+            members,
             tolerance,
-            budget: WORK_LIMIT,
+            budget,
         })
     }
 
@@ -152,8 +179,8 @@ impl Scene {
         let aim = |normal| local_to_view.map(|axis| dot(axis, normal));
 
         for normal in blind_normals {
-            let [x, y, z] = aim(normal);
-            if z.abs() > DIRECTION_TOLERANCE && !(z < 0. && x.hypot(y) <= DIRECTION_TOLERANCE) {
+            let [_, _, z] = aim(normal);
+            if z > DIRECTION_TOLERANCE {
                 return Err(unsupported(
                     "Rust through-bore projection requires blind pockets to face away or lie edge-on",
                 ));
@@ -161,6 +188,7 @@ impl Scene {
         }
 
         let mut rims = Vec::with_capacity(bores.len());
+        let mut spatial_rims = Vec::new();
         for bore in bores {
             let [x, y, z] = aim(bore.outward);
             if z.abs() <= DIRECTION_TOLERANCE {
@@ -168,29 +196,126 @@ impl Scene {
                 // stock's side planes. Edge-on rays still hit the first side.
                 continue;
             }
-            if x.hypot(y) > DIRECTION_TOLERANCE {
-                return Err(unsupported(
-                    "Rust through-bore projection requires axial or edge-on circular apertures",
-                ));
+            let near = usize::from(z < 0.);
+            let mouth = position(bore.centers[near]);
+            if x.hypot(y) <= DIRECTION_TOLERANCE {
+                let offset = std::array::from_fn(|i| mouth[i] - self.frame.origin[i]);
+                let [u, v, depth] = self.axes.map(|axis| dot(axis, offset));
+                let center = [u, v];
+                self.clear(owner, center, bore.radius, depth)?;
+                rims.push(RimCandidate {
+                    source,
+                    center,
+                    depth,
+                    radius: bore.radius,
+                    trim: [0., TAU],
+                });
+                continue;
             }
-            let near = position(bore.centers[usize::from(z < 0.)]);
-            let offset = std::array::from_fn(|i| near[i] - self.frame.origin[i]);
-            let [u, v, depth] = self.axes.map(|axis| dot(axis, offset));
-            let center = [u, v];
-            self.clear(owner, center, bore.radius, depth)?;
-            rims.push(RimCandidate {
+
+            let sign = if near == 0 { 1. } else { -1. };
+            let normal =
+                std::array::from_fn(|i| sign * dot(bore.outward, local.map(|axis| axis[i])));
+            let far = position(bore.centers[1 - near]);
+            let bore_depth = (0..3).map(|i| (mouth[i] - far[i]) * normal[i]).sum();
+            spatial_rims.push(self.oblique(
+                owner,
                 source,
-                center,
-                depth,
-                radius: bore.radius,
-                trim: [0., TAU],
-            });
+                Cavity {
+                    mouth,
+                    normal,
+                    view_normal: [sign * x, sign * y, z.abs()],
+                    radius: bore.radius,
+                    depth: bore_depth,
+                },
+            )?);
         }
         Ok(Stock {
             solid: proxy,
             rims,
+            spatial_rims,
             openings: Vec::new(),
         })
+    }
+
+    pub(super) fn oblique(
+        &mut self,
+        owner: usize,
+        source: usize,
+        cavity: Cavity,
+    ) -> Result<SpatialRimCandidate, GeometryError> {
+        let Cavity {
+            mouth,
+            normal,
+            view_normal: [x, y, cosine],
+            radius,
+            depth: bore_depth,
+        } = cavity;
+        let sine = x.hypot(y);
+        // No ray inside the mouth crosses more than one disk diameter
+        // transverse to the cylinder axis before it hits solid stock.
+        let penetration = 2. * radius * cosine / sine;
+        if penetration + self.tolerance >= bore_depth {
+            return Err(unsupported(
+                "Rust oblique aperture projection requires its far rim to be fully shadowed",
+            ));
+        }
+        self.clear_volume(
+            owner,
+            mouth,
+            normal,
+            cavity_bounds(mouth, normal, radius, penetration),
+        )?;
+
+        let offset = std::array::from_fn(|i| mouth[i] - self.frame.origin[i]);
+        let [u, v, depth] = self.axes.map(|axis| dot(axis, offset));
+        Ok(SpatialRimCandidate {
+            source,
+            ellipse: Ellipse {
+                center: [u, v],
+                u: [-y / sine, x / sine],
+                v: [-x / sine, -y / sine],
+                major: radius,
+                minor: radius * cosine,
+                trim: [0., TAU],
+            },
+            depth,
+            depth_sine: radius * sine,
+        })
+    }
+
+    fn clear_volume(
+        &mut self,
+        owner: usize,
+        mouth: Point,
+        normal: Point,
+        cavity: Box3,
+    ) -> Result<(), GeometryError> {
+        for (index, &bounds) in self.world.iter().enumerate() {
+            charge(&mut self.budget, 1)?;
+            if index == owner
+                || outside_mouth(bounds, mouth, normal)
+                || !overlaps(bounds, cavity, self.tolerance)
+            {
+                continue;
+            }
+            if let Some((body, frame)) = self.members[index].1.orthogonal_body() {
+                let cells = body.drawing_stock().cells;
+                charge(&mut self.budget, cells.len())?;
+                let axes = planar::view_axes(frame);
+                if cells.iter().all(|&cell| {
+                    let bounds = opaque::projected_bounds(cell, axes, frame.origin);
+                    outside_mouth(bounds, mouth, normal)
+                        || !overlaps(bounds, cavity, self.tolerance)
+                }) {
+                    continue;
+                }
+            }
+            return Err(unsupported(
+                "Rust oblique aperture visibility is unresolved because another body may enter the cavity",
+            ));
+        }
+        Ok(())
     }
 
     fn clear(
@@ -201,12 +326,7 @@ impl Scene {
         depth: f64,
     ) -> Result<(), GeometryError> {
         for (index, bounds) in self.extents.iter().enumerate() {
-            self.budget = self.budget.checked_sub(1).ok_or_else(|| {
-                err(
-                    GeometryErrorKind::Limit,
-                    "Rust through-bore visibility proof exceeded its work budget",
-                )
-            })?;
+            charge(&mut self.budget, 1)?;
             // A body wholly in front of the aperture can hide its rim;
             // the regular scene handles it without filling any visible ray.
             if index == owner || bounds.min[2] > depth + self.tolerance {
@@ -222,6 +342,42 @@ impl Scene {
         }
         Ok(())
     }
+}
+
+// Material in the outward half-space is in front of the proxy's mouth
+// plane on every ray through the aperture. An exact cardinal plane can
+// prove this even when an adjacent face touches the mouth.
+fn outside_mouth(bounds: Box3, mouth: Point, normal: Point) -> bool {
+    (0..3).any(|i| {
+        normal[(i + 1) % 3] == 0.
+            && normal[(i + 2) % 3] == 0.
+            && ((normal[i] > 0. && bounds.min[i] >= mouth[i])
+                || (normal[i] < 0. && bounds.max[i] <= mouth[i]))
+    })
+}
+
+fn cavity_bounds(mouth: Point, normal: Point, radius: f64, penetration: f64) -> Box3 {
+    let end: Point = std::array::from_fn(|i| mouth[i] - normal[i] * penetration);
+    let radial: Point =
+        std::array::from_fn(|i| radius * normal[(i + 1) % 3].hypot(normal[(i + 2) % 3]));
+    Box3 {
+        min: std::array::from_fn(|i| mouth[i].min(end[i]) - radial[i]),
+        max: std::array::from_fn(|i| mouth[i].max(end[i]) + radial[i]),
+    }
+}
+
+fn overlaps(a: Box3, b: Box3, tolerance: f64) -> bool {
+    (0..3).all(|i| a.min[i] <= b.max[i] + tolerance && b.min[i] <= a.max[i] + tolerance)
+}
+
+fn charge(budget: &mut usize, count: usize) -> Result<(), GeometryError> {
+    *budget = budget.checked_sub(count).ok_or_else(|| {
+        err(
+            GeometryErrorKind::Limit,
+            "Rust aperture visibility proof exceeded its work budget",
+        )
+    })?;
+    Ok(())
 }
 
 fn unsupported(message: &str) -> GeometryError {

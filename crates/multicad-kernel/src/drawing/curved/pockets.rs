@@ -1,6 +1,6 @@
-//! Transfer exact face-on blind opening trims and floors into the drawing scene.
+//! Transfer exact circular blind opening trims and visible floors into the drawing scene.
 use super::*;
-use multicad_rust_kernel::planar_projection::{FaceOpening, RimCandidate};
+use multicad_rust_kernel::planar_projection::{FaceOpening, RimCandidate, SpatialRimCandidate};
 use std::f64::consts::TAU;
 
 const DIRECTION_TOLERANCE: f64 = 32. * f64::EPSILON;
@@ -8,6 +8,7 @@ const DIRECTION_TOLERANCE: f64 = 32. * f64::EPSILON;
 pub(super) struct Stock {
     pub solid: Solid,
     pub rims: Vec<RimCandidate>,
+    pub spatial_rims: Vec<SpatialRimCandidate>,
     pub openings: Vec<FaceOpening>,
 }
 
@@ -16,12 +17,14 @@ pub(super) fn stock(
     source: usize,
     body: usize,
     options: DrawingProjection,
+    mut oblique: impl FnMut(apertures::Cavity) -> Result<SpatialRimCandidate, GeometryError>,
 ) -> Result<Option<Stock>, GeometryError> {
     let view = planar::view_axes(options.frame);
     if let Some(solid) = solid.stock_for_visible_projection(view[2]) {
         return Ok(Some(Stock {
             solid,
             rims: Vec::new(),
+            spatial_rims: Vec::new(),
             openings: Vec::new(),
         }));
     }
@@ -31,23 +34,23 @@ pub(super) fn stock(
     let mut result = Stock {
         solid,
         rims: Vec::with_capacity(openings.len()),
+        spatial_rims: Vec::new(),
         openings: Vec::with_capacity(openings.len()),
     };
     for opening in openings {
         let axis = view.map(|axis| dot(axis, opening.normal));
-        if axis[2].abs() <= DIRECTION_TOLERANCE {
-            // The blind cavity opens on a plane perpendicular to a view
-            // ray's first-hit faces, which remain intact.
+        if axis[2] <= DIRECTION_TOLERANCE {
+            // A blind opening facing away or edge-on leaves the first hit intact.
             continue;
         }
         if axis[0].hypot(axis[1]) > DIRECTION_TOLERANCE {
-            return Err(err(
-                GeometryErrorKind::Unsupported,
-                "Rust circular drawing stock requires face-on or edge-on openings",
-            ));
-        }
-        if axis[2] < 0. {
-            // A back-facing blind opening cannot change the first material hit.
+            result.spatial_rims.push(oblique(apertures::Cavity {
+                mouth: opening.center,
+                normal: opening.normal,
+                view_normal: axis,
+                radius: opening.radius,
+                depth: opening.depth,
+            })?);
             continue;
         }
         let offset = std::array::from_fn(|i| opening.center[i] - options.frame.origin[i]);
