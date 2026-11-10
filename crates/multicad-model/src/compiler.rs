@@ -1122,6 +1122,7 @@ impl Compiler {
                         id,
                         &solids,
                         self.policy,
+                        backend,
                         interrupt,
                     )?,
                 (model::COMPOUND_CUTOUT_RECEIVER_TYPE, model::COMPOUND_CUTOUT_SCHEMA) => {

@@ -1,12 +1,16 @@
 //! One cutter validates every registered receiver before any generated result
-//! becomes available, including during a source-scoped native preview.
-use crate::{ModelError, error};
+//! becomes available, including during a source-scoped preview.
+use crate::{GeometryBackend, ModelError, error};
 use multicad_core::{
     document::{Document, EntityId},
     model::{self, CompoundReceiverKind, ResolvedCompoundBox},
     parameters::EvaluatedParameters,
+    references::Origin,
 };
-use multicad_kernel::{BooleanOperation, GeometryPolicy, RigidTransform, Solid};
+use multicad_kernel::{
+    BooleanOperation, CurvedEdge2d, CurvedProfile, GeometryPolicy, PlaneFrame, RigidTransform,
+    Solid,
+};
 use std::collections::BTreeMap;
 
 #[derive(Default)]
@@ -23,39 +27,81 @@ fn box_solid(
     item: &ResolvedCompoundBox,
     owner: EntityId,
     policy: GeometryPolicy,
+    backend: GeometryBackend,
 ) -> Result<Solid, ModelError> {
     let e = |e| error(Some(owner), e);
-    let (s, c) = item.rectangle.rotation_deg.to_radians().sin_cos();
     let w = item.rectangle.width;
     let d = item.rectangle.depth;
-    Solid::box_named([w, d, item.top_mm - item.bottom_mm], owner, policy)
-        .map_err(e)?
-        .transformed(RigidTransform {
-            rotation: [[c, -s, 0.], [s, c, 0.], [0., 0., 1.]],
-            translation_mm: [
-                item.rectangle.center[0] - c * w / 2. + s * d / 2.,
-                item.rectangle.center[1] - s * w / 2. - c * d / 2.,
-                item.bottom_mm,
-            ],
-        })
-        .map_err(e)?
-        .with_component_origin(owner, item.id)
-        .map_err(e)
+    let height = item.top_mm - item.bottom_mm;
+    let (s, c) = match backend {
+        GeometryBackend::OpenCascade => item.rectangle.rotation_deg.to_radians().sin_cos(),
+        GeometryBackend::Rust => match item.rectangle.rotation_deg.rem_euclid(360.) {
+            0. => (0., 1.),
+            90. => (1., 0.),
+            180. => (0., -1.),
+            270. => (-1., 0.),
+            _ => {
+                return Err(error(
+                    Some(owner),
+                    "Rust compound cutouts require boxes aligned to the world axes",
+                ));
+            }
+        },
+    };
+    let origin = [
+        item.rectangle.center[0] - c * w / 2. + s * d / 2.,
+        item.rectangle.center[1] - s * w / 2. - c * d / 2.,
+        item.bottom_mm,
+    ];
+    let solid = match backend {
+        GeometryBackend::OpenCascade => Solid::box_named([w, d, height], owner, policy)
+            .map_err(e)?
+            .transformed(RigidTransform {
+                rotation: [[c, -s, 0.], [s, c, 0.], [0., 0., 1.]],
+                translation_mm: origin,
+            })
+            .map_err(e)?,
+        GeometryBackend::Rust => {
+            let corners = [[0., 0.], [w, 0.], [w, d], [0., d]];
+            let profile = CurvedProfile {
+                frame: PlaneFrame {
+                    origin,
+                    u: [c, s, 0.],
+                    v: [-s, c, 0.],
+                },
+                outer: (0..4)
+                    .map(|i| CurvedEdge2d::Line {
+                        a: corners[i],
+                        b: corners[(i + 1) % 4],
+                    })
+                    .collect(),
+                holes: Vec::new(),
+            };
+            let origins = std::array::from_fn::<_, 4, _>(|i| Origin {
+                source: owner,
+                role: format!("cutout.{}.side.{i}", item.id),
+            });
+            crate::rust_backend::stock_profile(owner, &profile, &origins, height, policy)?
+        }
+    };
+    solid.with_component_origin(owner, item.id).map_err(e)
 }
 fn union(
-    solids: Vec<Solid>,
+    solids: &[Solid],
     id: EntityId,
     policy: GeometryPolicy,
     interrupt: Option<&dyn Fn() -> bool>,
 ) -> Result<Solid, ModelError> {
-    let mut iter = solids.into_iter();
-    let mut result = iter
-        .next()
+    let (first, rest) = solids
+        .split_first()
         .ok_or_else(|| error(Some(id), "Compound cutout has no active boxes"))?;
-    for tool in iter {
+    let mut result = first
+        .transformed(Default::default())
+        .map_err(|e| error(Some(id), e))?;
+    for tool in rest {
         checkpoint(id, interrupt)?;
         result = result
-            .boolean(&tool, BooleanOperation::Union, policy)
+            .boolean(tool, BooleanOperation::Union, policy)
             .map_err(|e| error(Some(id), e))?
             .ok_or_else(|| error(Some(id), "Empty compound cutout union"))?;
     }
@@ -77,6 +123,7 @@ impl Context {
             )
         })
     }
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn build(
         &mut self,
         document: &Document,
@@ -84,6 +131,7 @@ impl Context {
         id: EntityId,
         solids: &BTreeMap<EntityId, Solid>,
         policy: GeometryPolicy,
+        backend: GeometryBackend,
         interrupt: Option<&dyn Fn() -> bool>,
     ) -> Result<Solid, ModelError> {
         checkpoint(id, interrupt)?;
@@ -93,18 +141,9 @@ impl Context {
         let boxes = resolved
             .boxes
             .iter()
-            .map(|item| box_solid(item, id, policy))
+            .map(|item| box_solid(item, id, policy, backend))
             .collect::<Result<Vec<_>, _>>()?;
-        let cutter = union(
-            resolved
-                .boxes
-                .iter()
-                .map(|item| box_solid(item, id, policy))
-                .collect::<Result<Vec<_>, _>>()?,
-            id,
-            policy,
-            interrupt,
-        )?;
+        let cutter = union(&boxes, id, policy, interrupt)?;
         if cutter.solid_count().map_err(|e| error(Some(id), e))? != 1 {
             return Err(error(
                 Some(id),
@@ -124,8 +163,20 @@ impl Context {
                         "Cutout receiver input is missing; repair its frozen producer",
                     )
                 })?;
+            let components = target
+                .solid_components_interruptible(policy, interrupt)
+                .map_err(|e| error(Some(id), e))?;
             for (i, tool) in boxes.iter().enumerate() {
-                if overlap(target, tool, id, policy)? > 1e-6 {
+                if hits[i] {
+                    continue;
+                }
+                let volume = match backend {
+                    GeometryBackend::OpenCascade => overlap(target, tool, id, policy)?,
+                    GeometryBackend::Rust => components.iter().try_fold(0., |sum, component| {
+                        overlap(component, tool, id, policy).map(|volume| sum + volume)
+                    })?,
+                };
+                if volume > 1e-6 {
                     hits[i] = true;
                 }
             }
@@ -138,13 +189,15 @@ impl Context {
                 )
                 .map_err(|e| error(Some(id), e))?;
                 let plan = wall.plan().map_err(|e| error(Some(id), e))?;
-                let mut previous = crate::walls::cut_tools(
-                    &wall,
-                    &plan,
-                    receiver.base.feature,
-                    policy,
-                    interrupt,
-                )?;
+                let wall_id = receiver.base.feature;
+                let mut previous = match backend {
+                    GeometryBackend::OpenCascade => {
+                        crate::walls::cut_tools(&wall, &plan, wall_id, policy, interrupt)?
+                    }
+                    GeometryBackend::Rust => crate::walls::cut_tools_with_backend(
+                        &wall, &plan, wall_id, policy, interrupt, backend,
+                    )?,
+                };
                 for previous_id in &receiver.base.previous {
                     previous.push(
                         solids
@@ -167,10 +220,7 @@ impl Context {
             }
             let before = target.volume_mm3().map_err(|e| error(Some(id), e))?;
             let mut pieces = vec![];
-            for component in target
-                .solid_components_interruptible(policy, interrupt)
-                .map_err(|e| error(Some(id), e))?
-            {
+            for component in components {
                 checkpoint(id, interrupt)?;
                 let materials = model::wall_face_materials(
                     document,
@@ -238,10 +288,10 @@ impl Context {
                         let mut item = item.clone();
                         item.bottom_mm = receiver.bottom_mm;
                         item.top_mm = receiver.top_mm;
-                        box_solid(&item, id, policy)
+                        box_solid(&item, id, policy, backend)
                     })
                     .collect::<Result<Vec<_>, _>>()?;
-                let through = union(projected, id, policy, interrupt)?;
+                let through = union(&projected, id, policy, interrupt)?;
                 let expected = overlap(target, &through, id, policy)?;
                 if (expected - removed).abs() > 1e-3_f64.max(expected * 1e-9) {
                     return Err(error(

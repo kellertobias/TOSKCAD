@@ -310,7 +310,7 @@ pub(crate) fn cut_tools(
     )
 }
 
-fn cut_tools_with_backend(
+pub(crate) fn cut_tools_with_backend(
     wall: &model::ResolvedWall,
     plan: &model::WallPlan,
     id: EntityId,

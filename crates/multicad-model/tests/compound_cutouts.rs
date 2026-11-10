@@ -4,7 +4,10 @@ use multicad_core::{
     model::*,
 };
 use multicad_kernel::{GeometryPolicy, Solid};
-use multicad_model::Compiler;
+use multicad_model::{Compiler, GeometryBackend};
+
+const BACKENDS: [GeometryBackend; 2] = [GeometryBackend::OpenCascade, GeometryBackend::Rust];
+
 fn actor() -> Actor {
     Actor::local(Channel::Ui)
 }
@@ -143,33 +146,36 @@ fn wall_only_slab_only_and_combined_cut_exactly_the_explicit_parts() {
         if walls {
             request.definition.receivers.push(wall.clone());
         }
+        if walls && slabs {
+            let rectangle = &mut request.definition.boxes[1].rectangle;
+            std::mem::swap(&mut rectangle.width, &mut rectangle.depth);
+            rectangle.rotation_deg = 90.;
+        }
         let prepared = prepared(&session, &request);
         session.commit(prepared.prepared).unwrap();
-        let native = Compiler::default()
-            .compile(session.document(), session.revision())
-            .unwrap();
-        near(
-            native
-                .solid(wall.target.body)
-                .unwrap()
-                .volume_mm3()
-                .unwrap(),
-            4000. * 200. * 2500. - if walls { 1000. * 50. * 2500. } else { 0. },
-        );
-        for floor in floors {
+        for backend in BACKENDS {
+            let model = Compiler::default()
+                .compile_with_backend(session.document(), session.revision(), backend, None)
+                .unwrap_or_else(|e| panic!("{backend:?}: {e}"));
+            let solid = model.solid(wall.target.body).unwrap();
+            assert_eq!(solid.uses_rust_geometry(), backend == GeometryBackend::Rust);
             near(
-                native
-                    .solid(floor.target.body)
-                    .unwrap()
-                    .volume_mm3()
-                    .unwrap(),
-                6000. * 4000. * 200.
-                    - if slabs {
-                        (1000. * 400. + 400. * 1000. - 400. * 400.) * 200.
-                    } else {
-                        0.
-                    },
+                solid.volume_mm3().unwrap(),
+                4000. * 200. * 2500. - if walls { 1000. * 50. * 2500. } else { 0. },
             );
+            for floor in &floors {
+                let solid = model.solid(floor.target.body).unwrap();
+                assert_eq!(solid.uses_rust_geometry(), backend == GeometryBackend::Rust);
+                near(
+                    solid.volume_mm3().unwrap(),
+                    6000. * 4000. * 200.
+                        - if slabs {
+                            (1000. * 400. + 400. * 1000. - 400. * 400.) * 200.
+                        } else {
+                            0.
+                        },
+                );
+            }
         }
     }
 }
@@ -292,15 +298,19 @@ fn even_scoped_first_slab_preview_refuses_another_receivers_wall_split() {
     request.definition.receivers.push(wall);
     let original = session.document().clone();
     let prepared = prepared(&session, &request);
-    let result = Compiler::default().compile_sources(
-        prepared.prepared.document(),
-        session.revision() + 1,
-        &[request.definition.receivers[0].feature],
-    );
-    let Err(error) = result else {
-        panic!("Every receiving solid must be proved")
-    };
-    assert!(error.to_string().contains("split"));
+    for backend in BACKENDS {
+        let result = Compiler::default().compile_sources_with_backend(
+            prepared.prepared.document(),
+            session.revision() + 1,
+            &[request.definition.receivers[0].feature],
+            backend,
+            None,
+        );
+        let Err(error) = result else {
+            panic!("Every receiving solid must be proved");
+        };
+        assert!(error.to_string().contains("split"), "{backend:?}: {error}");
+    }
     assert_eq!(session.document(), &original);
 }
 #[test]
@@ -338,21 +348,45 @@ fn saved_compound_boxes_drive_linked_plan_and_section_after_edit_and_reopen() {
         equipment_categories: None,
     };
     let vectors = |session: &Session, view: &DrawingView| {
-        let native = Compiler::default()
-            .compile(session.document(), session.revision())
-            .unwrap();
-        let ViewEvaluation::Ready { vectors, .. } = native
-            .drawing_view(
-                session.document(),
-                session.revision(),
-                view,
-                &Default::default(),
-            )
-            .unwrap()
-        else {
-            panic!("Linked native drawing must resolve")
-        };
-        vectors
+        let [native, rust] = BACKENDS.map(|backend| {
+            let model = Compiler::default()
+                .compile_with_backend(session.document(), session.revision(), backend, None)
+                .unwrap_or_else(|e| panic!("{backend:?}: {e}"));
+            let ViewEvaluation::Ready { vectors, .. } = model
+                .drawing_view(
+                    session.document(),
+                    session.revision(),
+                    view,
+                    &Default::default(),
+                )
+                .unwrap()
+            else {
+                panic!("{backend:?} linked drawing must resolve");
+            };
+            vectors
+        });
+        if matches!(view.kind, ViewKind::Section { .. }) {
+            let sections = |vectors: &[DrawingVector]| {
+                let mut sections: Vec<_> = vectors
+                    .iter()
+                    .filter(|vector| vector.role == VectorRole::Section)
+                    .map(|vector| {
+                        let VectorCurve::Line { a, b } = vector.curve else {
+                            panic!("This cut section has only straight edges");
+                        };
+                        let mut ends = [a, b].map(|p| p.map(|c| (c * 1_000.).round() as i64));
+                        ends.sort_unstable();
+                        (vector.source, vector.material_part, ends)
+                    })
+                    .collect();
+                sections.sort_unstable();
+                sections
+            };
+            let expected = sections(&native);
+            assert!(!expected.is_empty());
+            assert_eq!(sections(&rust), expected);
+        }
+        native
     };
     let has_corner = |vectors: &[DrawingVector], point: [f64; 2]| {
         vectors.iter().any(|vector| {
@@ -509,12 +543,37 @@ fn disconnected_off_target_and_partial_slab_cuts_fail_native_preview_without_sou
     ] {
         let before = session.document().clone();
         let change = prepared(&session, &request);
-        let Err(error) =
-            Compiler::default().compile(change.prepared.document(), session.revision() + 1)
-        else {
-            panic!("Invalid cut must fail native evaluation")
-        };
-        assert!(error.to_string().contains(expected), "{error}");
+        for backend in BACKENDS {
+            let Err(error) = Compiler::default().compile_with_backend(
+                change.prepared.document(),
+                session.revision() + 1,
+                backend,
+                None,
+            ) else {
+                panic!("Invalid cut must fail {backend:?} evaluation");
+            };
+            assert!(error.to_string().contains(expected), "{backend:?}: {error}");
+        }
         assert_eq!(session.document(), &before);
     }
+}
+
+#[test]
+fn rust_refuses_a_noncardinal_cutter_explicitly() {
+    let (session, mut request) = fixture();
+    request.definition.boxes[1].rectangle.rotation_deg = 10.;
+    let prepared = prepared(&session, &request);
+    let document = prepared.prepared.document();
+    let compiler = Compiler::default();
+    compiler
+        .compile_with_backend(document, 1, GeometryBackend::OpenCascade, None)
+        .unwrap();
+    let Err(error) = compiler.compile_with_backend(document, 1, GeometryBackend::Rust, None) else {
+        panic!("Rust cannot prove a rotated compound cutter");
+    };
+    assert_eq!(error.entity, Some(request.feature));
+    assert!(
+        error.message.contains("aligned to the world axes"),
+        "{error}"
+    );
 }
