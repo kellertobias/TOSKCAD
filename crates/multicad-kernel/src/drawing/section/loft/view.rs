@@ -18,16 +18,28 @@ pub(in crate::drawing) fn project_view(
     let mut stations = [0., 1.];
     let mut depth_clip = None;
     let mut section = None;
+    let mut windows = [None; 2];
     if let Some(depth) = options.section_offset_mm {
-        if options.section_u_mm.is_some()
-            || options.section_v_mm.is_some()
-            || options.detail.is_some()
-        {
+        if options.detail.is_some() {
             return Err(err(
                 GeometryErrorKind::Unsupported,
-                "Rust retained twisted loft drawings do not support a lateral or detail window",
+                "Rust retained twisted loft drawings do not support a combined detail window",
             ));
         }
+        windows = [options.section_u_mm, options.section_v_mm];
+        for (axis, window) in windows.iter_mut().enumerate() {
+            if let Some(range) = window {
+                *range = range.map(|value| value - frame.offset[axis]);
+                let [min, max] = body.drawing_depth_span(frame.axes[axis]);
+                if range[1] <= min + tolerance || range[0] >= max - tolerance {
+                    return Ok(Vec::new());
+                }
+                if range[0] <= min + tolerance && range[1] >= max - tolerance {
+                    *window = None;
+                }
+            }
+        }
+        let windowed = windows.iter().any(Option::is_some);
         let n = frame.axes[2];
         let near = depth - frame.offset[2];
         let [min, max] = body.drawing_depth_span(n);
@@ -37,10 +49,11 @@ pub(in crate::drawing) fn project_view(
         if near.min(max) - far.max(min) <= tolerance {
             return Ok(Vec::new());
         }
-        if near < max - tolerance {
+        let truncated = near < max - tolerance || far > min + tolerance;
+        if near <= max + tolerance && (truncated || windowed) {
             section = Some(depth);
         }
-        if n[0].hypot(n[1]) <= 64. * f64::EPSILON {
+        if !windowed && n[0].hypot(n[1]) <= 64. * f64::EPSILON {
             let height = body.drawing_height() * n[2];
             stations = if height > 0. {
                 [far / height, near / height]
@@ -48,7 +61,7 @@ pub(in crate::drawing) fn project_view(
                 [near / height, far / height]
             };
             stations = [stations[0].max(0.), stations[1].min(1.)];
-        } else if near < max - tolerance || far > min + tolerance {
+        } else if truncated {
             depth_clip = Some([far.max(min), near.min(max)]);
         }
     }
@@ -60,6 +73,7 @@ pub(in crate::drawing) fn project_view(
             axes: frame.axes,
             stations,
             depth: depth_clip,
+            windows,
             tolerance,
             hidden_lines: options.hidden_lines,
             detail,
@@ -91,7 +105,9 @@ pub(in crate::drawing) fn project_view(
         options,
         0,
     )?;
-    if let Some(depth) = section {
+    if let Some(depth) = section
+        && !output.is_empty()
+    {
         let points = output
             .iter()
             .map(|vector| vector.preview_mm.len() as u32)

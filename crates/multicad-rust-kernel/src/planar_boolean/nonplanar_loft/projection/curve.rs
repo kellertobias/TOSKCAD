@@ -127,10 +127,30 @@ impl Curve {
         std::array::from_fn(|i| [x[i], y[i], w[i]])
     }
 
-    pub(super) fn depth_crossings(self, planes: [f64; 2], cuts: &mut Vec<f64>) {
-        for plane in planes {
-            cuts.extend(roots(&self.coefficients(|p| p[2] - plane), [0., 1.]));
-        }
+    pub(super) fn crossings(self, axis: usize, coordinate: f64) -> Vec<f64> {
+        roots(&self.coefficients(|p| p[axis] - coordinate), [0., 1.])
+    }
+
+    pub(super) fn on_plane(self, axis: usize, coordinate: f64, tolerance: f64) -> bool {
+        self.poles
+            .iter()
+            .all(|p| (p[axis] - coordinate).abs() <= tolerance)
+    }
+
+    /// An edge on a side face is collinear on paper, but its projection can
+    /// reverse direction. Split its exact depth parameter at those reversals.
+    pub(super) fn monotone_spans(self, axis: usize) -> Vec<Self> {
+        let [a, b, c] = self.coefficients(|p| p[axis] - self.poles[0][axis]);
+        let [u, v, w] = Self::power(self.weights);
+        let mut cuts = vec![0.];
+        cuts.extend(roots(
+            &[b * u - a * v, 2. * (c * u - a * w), c * v - b * w],
+            [0., 1.],
+        ));
+        cuts.push(1.);
+        cuts.windows(2)
+            .map(|span| self.slice([span[0], span[1]]))
+            .collect()
     }
 
     pub(super) fn detail_crossings(self, center: Paper, radius: f64, cuts: &mut Vec<f64>) {
@@ -192,4 +212,26 @@ fn difference_of_products(a: [f64; 3], b: [f64; 3], c: [f64; 3], d: [f64; 3]) ->
     let p = multiply(a, b);
     let q = multiply(c, d);
     std::array::from_fn(|i| p[i] - q[i])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn side_rim_with_coincident_projected_ends_splits_into_two_exact_spans() {
+        let edge = Curve::new([[1., 0., 0.], [1., 4., 1.], [1., 0., 2.]], [1., 0.5, 1.]);
+        let spans = edge.monotone_spans(1);
+        assert_eq!(spans.len(), 2);
+        assert_eq!(spans[0].at(0.), [1., 0., 0.]);
+        let middle = [1., 4. / 3., 1.];
+        assert!(norm(sub(spans[0].at(1.), middle)) < 1e-12);
+        assert!(norm(sub(spans[1].at(0.), middle)) < 1e-12);
+        assert_eq!(spans[1].at(1.), [1., 0., 2.]);
+        assert!(
+            spans
+                .into_iter()
+                .all(|span| span.publish(false, 1e-9, 1e-7).is_some())
+        );
+    }
 }

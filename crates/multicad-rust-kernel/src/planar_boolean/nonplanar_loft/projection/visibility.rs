@@ -173,61 +173,11 @@ impl<'a> Cap<'a> {
     }
 }
 
-pub(super) struct Depth<'a> {
-    loft: &'a NonplanarLoft,
-    inverse: [Point; 3],
-    planes: [f64; 2],
-    has_front_cap: bool,
-}
-
-impl<'a> Depth<'a> {
-    pub(super) fn new(
-        loft: &'a NonplanarLoft,
-        [u, v, n]: [Point; 3],
-        planes: [f64; 2],
-        has_front_cap: bool,
-    ) -> Self {
-        let w = cross(u, v);
-        let determinant = dot(w, n);
-        let inverse =
-            [cross(v, n), cross(n, u), w].map(|column| scale(column, determinant.recip()));
-        Self {
-            loft,
-            inverse,
-            planes,
-            has_front_cap,
-        }
-    }
-
-    fn blocks(&self, point: Point, tolerance: f64) -> bool {
-        let near = self.planes[1];
-        if !self.has_front_cap || near <= point[2] + tolerance {
-            return false;
-        }
-        let [u, v, _] = point;
-        let [a, b, c] = self.inverse;
-        let p = add(add(scale(a, u), scale(b, v)), scale(c, near));
-        let [lower, upper] = self.loft.rings();
-        let t = p[2] / upper[0][2];
-        if !(0. ..=1.).contains(&t) {
-            return false;
-        }
-        let side = if self.loft.clockwise() { -1. } else { 1. };
-        (0..lower.len()).all(|i| {
-            let j = (i + 1) % lower.len();
-            let a = paper(interpolate(lower[i], upper[i], t));
-            let b = paper(interpolate(lower[j], upper[j], t));
-            let edge = minus(b, a);
-            side * determinant(edge, minus(paper(p), a)) >= -tolerance * length(edge)
-        })
-    }
-}
-
 pub(super) fn project(
     rings: [Vec<Point>; 2],
     options: LoftProjection,
     epsilon: f64,
-    depth: Option<Depth<'_>>,
+    clip: Option<clip::Clip<'_>>,
     mut curves: Vec<Curve>,
 ) -> Result<Vec<LoftDrawingEdge>, Error> {
     let [first, last] = &rings;
@@ -251,10 +201,9 @@ pub(super) fn project(
     curves.retain(|curve| length(minus(paper(curve.at(0.)), paper(curve.at(1.)))) > epsilon);
     let bounds: Vec<_> = curves.iter().map(|curve| curve.bounds()).collect();
     let caps = [Cap::new(first), Cap::new(last)];
-    let near = depth.as_ref().map_or(f64::INFINITY, |clip| clip.planes[1]);
+    let near = clip.as_ref().map_or(f64::INFINITY, clip::Clip::near);
     let blocked = |point| {
-        depth
-            .as_ref()
+        clip.as_ref()
             .is_some_and(|clip| clip.blocks(point, options.tolerance))
             || caps
                 .iter()
@@ -276,8 +225,8 @@ pub(super) fn project(
         if let Some((center, radius)) = options.detail {
             curve.detail_crossings(center, radius, &mut cuts);
         }
-        if let Some(clip) = &depth {
-            curve.depth_crossings(clip.planes, &mut cuts);
+        if let Some(clip) = &clip {
+            clip.crossings(curve, &mut cuts);
         }
         cuts.sort_unstable_by(f64::total_cmp);
         cuts.dedup_by(|a, b| (*a - *b).abs() <= 1e-12);
@@ -291,9 +240,10 @@ pub(super) fn project(
             {
                 continue;
             }
-            if depth.as_ref().is_some_and(|clip| {
-                point[2] < clip.planes[0] - epsilon || point[2] > clip.planes[1] + epsilon
-            }) {
+            if clip
+                .as_ref()
+                .is_some_and(|clip| !clip.includes(point, epsilon))
+            {
                 continue;
             }
             let hidden = blocked(point);
@@ -346,15 +296,5 @@ mod tests {
         assert!(!planar.blocks([0.5, 0., 0.], f64::INFINITY, 1e-7));
         assert_eq!(ray_roots([-0.5, 1., 0.]), [Some(0.5), None]);
         assert_eq!(ray_roots([0.25, -1., 1.]), [Some(0.5), None]);
-    }
-
-    #[test]
-    fn near_cap_ray_rejects_points_above_the_authored_stations() {
-        let square = [[-1., -1.], [1., -1.], [1., 1.], [-1., 1.]];
-        let loft = NonplanarLoft::new([&square, &square], 6., 1e-7).unwrap();
-        let axes = [[1., 0., 0.], [0., 0.8, 0.6], [0., -0.6, 0.8]];
-        let depth = Depth::new(&loft, axes, [1.2, 3.], true);
-        assert!(depth.blocks([0., 2., 1.2], 1e-7));
-        assert!(!depth.blocks([0., 7., 1.2], 1e-7));
     }
 }

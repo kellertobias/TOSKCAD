@@ -1996,6 +1996,43 @@ fn verify_twisted_loft_sections(
     };
     let through = project(solid, oblique_through, None).unwrap();
     assert!(through.iter().any(|v| v.role == VectorRole::Hidden));
+    let window_depth = DrawingProjection {
+        section_u_mm: Some([-0.65, 1.5]),
+        section_v_mm: Some([-0.8, 1.5]),
+        ..oblique_depth
+    };
+    let window_through = DrawingProjection {
+        section_depth_mm: None,
+        ..window_depth
+    };
+    let window_axial = DrawingProjection {
+        section_u_mm: Some([-0.5, 1.]),
+        ..retained_options
+    };
+    let bounded = [window_depth, window_through, window_axial].map(|options| {
+        let vectors = project(solid, options, None).unwrap();
+        for vector in &vectors {
+            for &point in &vector.preview_mm {
+                assert!(
+                    point
+                        .into_iter()
+                        .zip([options.section_u_mm, options.section_v_mm])
+                        .all(|(x, range)| range
+                            .is_none_or(|[lo, hi]| (lo - 1e-7..=hi + 1e-7).contains(&x)))
+                );
+            }
+        }
+        assert!(vectors.iter().any(|v| v.role == VectorRole::Section));
+        assert!(vectors.iter().any(|v| v.role == VectorRole::Visible));
+        vectors
+    });
+    assert!(bounded[0].iter().any(|v| v.role == VectorRole::Section
+        && matches!(&v.curve, VectorCurve::BSpline { degree: 2, .. })));
+    let outside_window = DrawingProjection {
+        section_u_mm: Some([2.9, 3.1]),
+        ..oblique_depth
+    };
+    assert!(project(solid, outside_window, None).unwrap().is_empty());
     let reverse = project(
         solid,
         DrawingProjection {
@@ -2094,6 +2131,17 @@ fn verify_twisted_loft_sections(
             .unwrap()
             .iter()
             .any(|vector| vector.role == VectorRole::Hatch)
+    );
+    assert!(
+        project(solid, window_depth, Some(hatch))
+            .unwrap()
+            .iter()
+            .any(|vector| vector.role == VectorRole::Hatch)
+    );
+    assert!(
+        project(solid, outside_window, Some(hatch))
+            .unwrap()
+            .is_empty()
     );
     let hatched = project(solid, options, Some(hatch)).unwrap();
     assert_eq!(&hatched[..4], &rust);
@@ -2245,6 +2293,11 @@ fn verify_twisted_loft_sections(
                 }
             }
         }
+        assert!(
+            project(native, outside_window, Some(hatch))
+                .unwrap()
+                .is_empty()
+        );
         let side_options = DrawingProjection {
             frame: PlaneFrame {
                 v: [0., 0., 1.],
@@ -2259,6 +2312,9 @@ fn verify_twisted_loft_sections(
             ("axial depth section", &retained, retained_options),
             ("oblique depth section", &oblique_retained, oblique_depth),
             ("oblique through section", &through, oblique_through),
+            ("oblique window depth", &bounded[0], window_depth),
+            ("oblique window through", &bounded[1], window_through),
+            ("axial single-axis window", &bounded[2], window_axial),
         ] {
             let reference = project(native, options, None).unwrap();
             for (label, a, b) in [
@@ -2300,6 +2356,11 @@ fn verify_twisted_loft_sections(
             "Twisted loft oblique depth medians over 9 warm projections: Rust {:?}, OpenCascade {:?}",
             measure(solid, oblique_depth),
             measure(native, oblique_depth),
+        );
+        eprintln!(
+            "Twisted loft windowed depth medians over 9 warm projections: Rust {:?}, OpenCascade {:?}",
+            measure(solid, window_depth),
+            measure(native, window_depth),
         );
     }
 }

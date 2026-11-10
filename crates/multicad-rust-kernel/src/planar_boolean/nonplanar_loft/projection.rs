@@ -2,6 +2,7 @@
 use super::*;
 use crate::curved_projection::roots;
 
+mod clip;
 mod curve;
 mod visibility;
 use curve::Curve;
@@ -14,6 +15,8 @@ pub struct LoftProjection {
     pub stations: [f64; 2],
     /// Optional far and near planes in paper-depth coordinates.
     pub depth: Option<[f64; 2]>,
+    /// Optional horizontal and vertical limits in paper coordinates.
+    pub windows: [Option<[f64; 2]>; 2],
     pub tolerance: f64,
     pub hidden_lines: bool,
     /// Optional circular detail region in paper coordinates.
@@ -56,9 +59,12 @@ impl NonplanarLoft {
         let [start, end] = options.stations;
         if !(0. ..end).contains(&start)
             || !(0. ..=1.).contains(&end)
-            || options.depth.is_some_and(|[far, near]| {
-                options.stations != [0., 1.] || !far.is_finite() || !near.is_finite() || far >= near
-            })
+            || [options.windows[0], options.windows[1], options.depth]
+                .into_iter()
+                .flatten()
+                .any(|[lo, hi]| {
+                    options.stations != [0., 1.] || !lo.is_finite() || !hi.is_finite() || lo >= hi
+                })
             || options.detail.is_some_and(|(center, radius)| {
                 center.into_iter().any(|p| !p.is_finite()) || !radius.is_finite() || radius <= 0.
             })
@@ -93,52 +99,18 @@ impl NonplanarLoft {
                 .map(|x| x.abs())
                 .fold(1., f64::max))
         .min(options.tolerance);
+        let planes = [options.windows[0], options.windows[1], options.depth];
         let mut cut_edges = Vec::new();
-        let depth = if let Some([far, near]) = options.depth {
-            let [min, max] = rings
-                .iter()
-                .flatten()
-                .map(|p| p[2])
-                .fold([f64::INFINITY, f64::NEG_INFINITY], |[min, max], z| {
-                    [min.min(z), max.max(z)]
-                });
-            if near.min(max) - far.max(min) <= epsilon {
+        let clip = if planes.iter().any(Option::is_some) {
+            let Some((clip, edges)) = clip::prepare(self, &rings, options, planes, epsilon) else {
                 return Ok(Vec::new());
-            }
-            let normal = options.axes[2];
-            let magnitude = norm(normal);
-            for z in [far, near]
-                .into_iter()
-                .filter(|&z| z > min + epsilon && z < max - epsilon)
-            {
-                let curves = self.section_in_frame(
-                    scale(normal, z / (magnitude * magnitude)),
-                    scale(normal, magnitude.recip()),
-                    options.tolerance,
-                );
-                for curve in curves {
-                    let to_plane = |p| [dot(options.axes[0], p), dot(options.axes[1], p), z];
-                    cut_edges.push(match curve {
-                        LoftSectionCurve::Line(ends) => {
-                            let [a, b] = ends.map(to_plane);
-                            Curve::line(a, b)
-                        }
-                        LoftSectionCurve::Quadratic { poles, weights } => {
-                            Curve::new(poles.map(to_plane), weights)
-                        }
-                    });
-                }
-            }
-            Some(visibility::Depth::new(
-                self,
-                options.axes,
-                [far, near],
-                near < max - epsilon,
-            ))
+            };
+            cut_edges = edges;
+            Some(clip)
         } else {
             None
         };
-        visibility::project(rings, options, epsilon, depth, cut_edges)
+        visibility::project(rings, options, epsilon, clip, cut_edges)
     }
 }
 

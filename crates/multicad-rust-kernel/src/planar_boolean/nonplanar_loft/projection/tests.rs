@@ -14,6 +14,7 @@ fn options(axes: [Point; 3]) -> LoftProjection {
         axes,
         stations: [0., 1.],
         depth: None,
+        windows: [None; 2],
         tolerance: TOL,
         hidden_lines: true,
         detail: None,
@@ -252,4 +253,59 @@ fn depth_with_edge_on_caps_publishes_straight_and_curved_rim_edges() {
             .any(|e| matches!(e.curve, LoftSectionCurve::Quadratic { .. }))
     );
     assert!(front.iter().all(|e| !e.hidden));
+}
+
+#[test]
+fn oblique_window_rebuilds_visible_connectors_and_keeps_exact_clipped_curves() {
+    let loft = fixture();
+    let axes = [[1., 0., 0.], [0., 0.8, 0.6], [0., -0.6, 0.8]];
+    let u = [-0.65, 1.5];
+    let v = [1., 3.3];
+    let z = [1.2, 3.];
+    let projection = LoftProjection {
+        depth: Some(z),
+        windows: [Some(u), Some(v)],
+        ..options(axes)
+    };
+    let drawing = loft.drawing_edges(projection).unwrap();
+    for edge in &drawing {
+        for t in [0., 0.25, 0.5, 0.75, 1.] {
+            let p = point(edge.curve, t);
+            assert!(
+                p.into_iter()
+                    .zip([u, v, z])
+                    .all(|(p, [lo, hi])| (lo - TOL..=hi + TOL).contains(&p)),
+                "{edge:?} at {p:?}"
+            );
+        }
+    }
+    assert!(drawing.iter().any(|e| e.hidden));
+    assert!(
+        drawing
+            .iter()
+            .any(|e| !e.hidden && matches!(e.curve, LoftSectionCurve::Quadratic { .. }))
+    );
+    for wall in u {
+        assert!(
+            drawing.iter().any(|e| !e.hidden
+                && matches!(e.curve, LoftSectionCurve::Line(ends)
+            if ends.into_iter().all(|p| (p[0] - wall).abs() < TOL && (p[2] - z[1]).abs() < TOL))),
+            "missing visible connector on u={wall}"
+        );
+    }
+    assert!(
+        loft.drawing_edges(LoftProjection {
+            windows: [Some([8., 9.]), Some(v)],
+            ..projection
+        })
+        .unwrap()
+        .is_empty()
+    );
+    assert_eq!(
+        loft.drawing_edges(LoftProjection {
+            windows: [Some([1., -1.]), Some(v)],
+            ..projection
+        }),
+        Err(Error::Invalid)
+    );
 }
