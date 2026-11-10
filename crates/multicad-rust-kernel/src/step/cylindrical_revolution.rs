@@ -1,4 +1,4 @@
-//! Full rectilinear meridians become one shell of cylinders and plane faces.
+//! Full meridians become one shell of cylinders, cones and plane faces.
 
 use super::*;
 use crate::revolution::Revolution;
@@ -35,6 +35,12 @@ pub(super) fn meridian(revolution: &Revolution) -> Option<&[[f64; 2]]> {
 
 /// Whether this revolution is a single disk-to-disk conical frustum.
 pub fn supports_conical_frustum(revolution: &Revolution, tolerance: f64) -> bool {
+    conical_meridian(revolution, tolerance).is_some_and(|ring| ring.len() == 4)
+}
+
+/// Whether the meridian is a disk-ended sequence of coaxial round sections
+/// with at least one conical wall and an exact shared rim between sections.
+pub fn supports_conical_revolution(revolution: &Revolution, tolerance: f64) -> bool {
     conical_meridian(revolution, tolerance).is_some()
 }
 
@@ -42,21 +48,38 @@ pub(super) fn conical_meridian(revolution: &Revolution, tolerance: f64) -> Optio
     let [ring] = revolution.rings() else {
         return None;
     };
-    if !revolution.is_full() || ring.len() != 4 || !tolerance.is_finite() || tolerance < 0. {
+    if !revolution.is_full()
+        || !(4..=18).contains(&ring.len())
+        || !tolerance.is_finite()
+        || tolerance < 0.
+    {
         return None;
     }
-    let mut points = [ring[0], ring[1], ring[2], ring[3]];
-    points.sort_unstable_by(|a, b| a[1].total_cmp(&b[1]).then(a[0].total_cmp(&b[0])));
-    let [[a0, z0], [r0, z1], [a1, z2], [r1, z3]] = points;
-    (a0 == 0.
-        && a1 == 0.
-        && z0 == z1
-        && z2 == z3
-        && z2 - z0 > tolerance
-        && r0 > tolerance
-        && r1 > tolerance
-        && (r0 - r1).abs() > tolerance)
-        .then_some(ring)
+    let (bottom, _) = ring
+        .iter()
+        .enumerate()
+        .filter(|(_, point)| point[0] == 0.)
+        .min_by(|(_, a), (_, b)| a[1].total_cmp(&b[1]))?;
+    let at = |i| ring[(bottom + i) % ring.len()];
+    let top = at(ring.len() - 1);
+    if top[0] != 0.
+        || at(0)[1] != at(1)[1]
+        || top[1] != at(ring.len() - 2)[1]
+        || (1..ring.len() - 1).any(|i| at(i)[0] <= tolerance)
+    {
+        return None;
+    }
+    let mut has_cone = false;
+    for i in 1..ring.len() - 2 {
+        let [a, low] = at(i);
+        let [b, high] = at(i + 1);
+        let rise = (b - a).abs();
+        if high - low <= tolerance || (rise != 0. && rise <= tolerance) {
+            return None;
+        }
+        has_cone |= rise != 0.;
+    }
+    has_cone.then_some(ring)
 }
 
 pub(super) fn encode(
@@ -237,6 +260,51 @@ mod conical_tests {
     use super::*;
     use crate::step_read::{ImportProfile, read_import_solid};
     use std::f64::consts::{PI, TAU};
+
+    #[test]
+    fn circular_loft_exports_shared_rims_on_cylindrical_and_conical_bands() {
+        let ring = vec![
+            [0., 0.],
+            [2., 0.],
+            [2., 7.],
+            [5., 20.],
+            [3., 27.],
+            [0., 27.],
+        ];
+        let geometry = Revolution::new(vec![ring.clone()], TAU).unwrap();
+        assert!(supports_conical_revolution(&geometry, 1e-7));
+        assert!(!supports_conical_frustum(&geometry, 1e-7));
+        let mut writer = Writer::new();
+        let [origin, u, v] = [[8., -4., 12.], [1., 0., 0.], [0., 0.8, 0.6]];
+        writer
+            .append_conical_revolution(&geometry, origin, u, v, 1e-7)
+            .unwrap();
+        let text = writer.finish().unwrap();
+        assert_eq!(text.matches("=CYLINDRICAL_SURFACE(").count(), 1);
+        assert_eq!(text.matches("=CONICAL_SURFACE(").count(), 2);
+        let (readback, imported) = read_import_solid(&text, 1e-7).unwrap();
+        assert_eq!(readback.face_count, 5);
+        assert!(
+            matches!(imported.profile, ImportProfile::ConicalRevolution { meridian }
+            if meridian.len() == ring.len() && meridian.iter().flatten().zip(ring.iter().flatten())
+                .all(|(actual, expected)| (actual - expected).abs() < 1e-9))
+        );
+        let volume = PI * (28. + (13. * 39. + 7. * 49.) / 3.);
+        assert!((readback.volume_mm3 - volume).abs() < 1e-8);
+    }
+
+    #[test]
+    fn cone_series_requires_two_disk_caps_and_strictly_ordered_bands() {
+        for ring in [
+            vec![[1., 0.], [2., 0.], [4., 10.], [1., 10.]],
+            vec![[0., 0.], [2., 0.], [3., 4.], [4., 4.], [4., 10.], [0., 10.]],
+            vec![[0., 0.], [2., 0.], [2. + 1e-8, 4.], [4., 10.], [0., 10.]],
+            vec![[0., 0.], [2., 0.], [2., 4.], [2., 10.], [0., 10.]],
+        ] {
+            let geometry = Revolution::new(vec![ring], TAU).unwrap();
+            assert!(!supports_conical_revolution(&geometry, 1e-7));
+        }
+    }
 
     #[test]
     fn conical_writer_rejects_unsupported_or_collapsed_boundaries() {

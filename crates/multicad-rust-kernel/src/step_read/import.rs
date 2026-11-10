@@ -214,7 +214,7 @@ pub(super) fn recognize_member(
     if faces.iter().any(|face| matches!(face, Face::Conical(_))) {
         let solid = shell
             .chamfered_polygon(faces)
-            .or_else(|| shell.conical_frustum(faces, &readback))
+            .or_else(|| shell.conical_revolution(faces, &readback))
             .ok_or(ReadError::Unsupported)?;
         return Ok((readback, solid));
     }

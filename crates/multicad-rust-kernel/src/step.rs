@@ -37,7 +37,8 @@ mod warped_union;
 mod writer;
 pub use axial_stack::write_axial_profile_stack;
 pub use cylindrical_revolution::{
-    supports_conical_frustum, supports_cylindrical_revolution, write_cylindrical_revolution,
+    supports_conical_frustum, supports_conical_revolution, supports_cylindrical_revolution,
+    write_cylindrical_revolution,
 };
 pub use helical::{
     supports_helical_screw, supports_helical_thread, write_helical_screw, write_helical_thread,

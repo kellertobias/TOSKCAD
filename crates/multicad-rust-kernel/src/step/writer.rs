@@ -542,6 +542,20 @@ impl Writer {
         v: Point,
         tolerance: f64,
     ) -> Result<(), StepError> {
+        if !cylindrical_revolution::supports_conical_frustum(revolution, tolerance) {
+            return Err(StepError::Unsupported);
+        }
+        self.append_conical_revolution(revolution, origin, u, v, tolerance)
+    }
+
+    pub fn append_conical_revolution(
+        &mut self,
+        revolution: &crate::revolution::Revolution,
+        origin: Point,
+        u: Point,
+        v: Point,
+        tolerance: f64,
+    ) -> Result<(), StepError> {
         let ring = cylindrical_revolution::conical_meridian(revolution, tolerance)
             .ok_or(StepError::Unsupported)?;
         let placement = Placement::new(origin, u, v)?;

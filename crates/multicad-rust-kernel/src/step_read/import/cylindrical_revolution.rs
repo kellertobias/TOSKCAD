@@ -20,17 +20,15 @@ impl Shell<'_, '_> {
         self.revolution(faces, readback, false)
     }
 
-    pub(super) fn conical_frustum(
+    pub(super) fn conical_revolution(
         &self,
         faces: &[Face],
         readback: &Readback,
     ) -> Option<ImportSolid> {
-        if faces.len() != 3
-            || faces
+        if !(3..=17).contains(&faces.len())
+            || !faces
                 .iter()
-                .filter(|face| matches!(face, Face::Conical(wall) if wall.outward))
-                .count()
-                != 1
+                .any(|face| matches!(face, Face::Conical(wall) if wall.outward))
         {
             return None;
         }
@@ -83,7 +81,7 @@ impl Shell<'_, '_> {
             let rims = trims.into_iter().map(Node::Rim);
             let rim_point = |rim| points.get(&rim).copied();
             let [from, to] = match face {
-                Face::Cylindrical { seam, flux } if !conical => {
+                Face::Cylindrical { seam, flux } if !conical || *flux > 0. => {
                     let rims: Vec<_> = rims.filter(|node| *node != Node::Rim(*seam)).collect();
                     let [a, b] = *rims.as_slice() else {
                         return None;
@@ -144,6 +142,9 @@ impl Shell<'_, '_> {
         close_axis(&axis_nodes, &points, &mut links, self.tolerance)?;
         let meridian = cycle(&points, &links)?;
         let revolution = Revolution::new(vec![meridian.clone()], TAU).ok()?;
+        if conical && !crate::step::supports_conical_revolution(&revolution, self.tolerance) {
+            return None;
+        }
         let [u, v] = frame_axes(axis, reference_axis(axis));
         if !matches_readback(
             &revolution,

@@ -332,7 +332,7 @@ fn conical_frustum_requires_one_outward_wall_and_its_two_shared_rims() {
     let mut shell = Shell::new(&entities, TOLERANCE, true);
     let mut faces = shell.validated_faces().unwrap();
     let readback = shell.readback(&faces).unwrap();
-    assert!(shell.conical_frustum(&faces[..2], &readback).is_none());
+    assert!(shell.conical_revolution(&faces[..2], &readback).is_none());
     let wall = faces
         .iter_mut()
         .find_map(|face| {
@@ -344,5 +344,24 @@ fn conical_frustum_requires_one_outward_wall_and_its_two_shared_rims() {
         })
         .unwrap();
     wall.seam = 0;
-    assert!(shell.conical_frustum(&faces, &readback).is_none());
+    assert!(shell.conical_revolution(&faces, &readback).is_none());
+}
+
+#[test]
+fn reconstruction_refuses_a_taper_below_the_requested_resolution() {
+    let cone = revolved(&[[0., 0.], [2., 0.], [2.0002, 20.], [0., 20.]]);
+    let mut writer = Writer::new();
+    writer
+        .append_conical_frustum(&cone, [0.; 3], [1., 0., 0.], [0., 1., 0.], TOLERANCE)
+        .unwrap();
+    let text = writer.finish().unwrap();
+    let entities = parse_entities(&text, TOLERANCE).unwrap();
+    let mut shell = Shell::new(&entities, TOLERANCE, true);
+    let faces = shell.validated_faces().unwrap();
+    let readback = shell.readback(&faces).unwrap();
+    assert!(shell.conical_revolution(&faces, &readback).is_some());
+
+    // Keep the tighter face proofs to isolate the loft reconstruction check.
+    shell.tolerance = 1e-3;
+    assert!(shell.conical_revolution(&faces, &readback).is_none());
 }
