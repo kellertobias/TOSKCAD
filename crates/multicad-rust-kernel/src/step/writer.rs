@@ -573,6 +573,17 @@ impl Writer {
         self.append(|file| axial_stack::encode(file, placement, stack))
     }
 
+    pub fn append_nonplanar_loft(
+        &mut self,
+        loft: &crate::planar_boolean::NonplanarLoft,
+        origin: Point,
+        u: Point,
+        v: Point,
+    ) -> Result<(), StepError> {
+        let placement = Placement::new(origin, u, v)?;
+        self.append(|file| nonplanar_loft::encode(file, &placement, loft))
+    }
+
     pub fn append_planar_union(
         &mut self,
         union: &crate::planar_boolean::Union,

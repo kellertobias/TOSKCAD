@@ -26,6 +26,7 @@ mod helical_tube_cut;
 pub(crate) mod herringbone;
 pub use helical_tube_cut::{supports_helical_tube_cut, write_helical_tube_cut};
 pub use herringbone::{supports_herringbone, write_herringbone};
+mod nonplanar_loft;
 mod normal_sweep;
 mod pierced_sweep;
 mod planar_union;
@@ -43,6 +44,7 @@ pub use cylindrical_revolution::{
 pub use helical::{
     supports_helical_screw, supports_helical_thread, write_helical_screw, write_helical_thread,
 };
+pub use nonplanar_loft::write_nonplanar_loft;
 pub use normal_sweep::write_normal_sweep;
 pub use pierced_sweep::write_pierced_normal_sweep;
 pub use planar_union::{supports_planar_union, write_planar_union};

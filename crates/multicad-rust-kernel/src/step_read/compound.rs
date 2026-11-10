@@ -83,6 +83,9 @@ pub(super) fn read_analytic_with_helical_cuts(
             if let Some((proof, cut)) = import::read_helical_cut_member(shell, &faces)? {
                 return Ok((proof, Some(cut)));
             }
+            if let Some((proof, _)) = nonplanar_loft::read_member(shell, &faces)? {
+                return Ok((proof, None));
+            }
             if faces
                 .iter()
                 .any(|&face| spline_sweep::has_extrusion_support(shell, face))

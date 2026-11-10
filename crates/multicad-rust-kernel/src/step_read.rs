@@ -11,6 +11,7 @@ pub use helical::{verify_helical_screw, verify_helical_thread};
 pub use herringbone::verify_herringbone;
 mod import;
 mod mixed;
+mod nonplanar_loft;
 mod part21;
 mod round;
 mod sphere;
@@ -23,6 +24,7 @@ mod warped;
 
 use crate::{polygon::MAX_VERTICES, trim_curve::EllipseArc};
 pub use import::{ImportProfile, ImportSolid, read_import_compound, read_import_solid};
+pub use nonplanar_loft::{ImportedNonplanarLoft, read_nonplanar_loft_solid};
 use part21::{Entity, Value};
 use round::Trim;
 use stadium::{HalfCylinder, StadiumLoop};
