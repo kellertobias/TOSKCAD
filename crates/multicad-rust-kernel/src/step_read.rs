@@ -512,7 +512,17 @@ impl<'a, 'input> Shell<'a, 'input> {
                 holes.push(ring);
             }
         }
-        let outer = outer.ok_or(ReadError::Invalid)?;
+        let outer = if let Some(outer) = outer {
+            outer
+        } else {
+            // Some writers use FACE_BOUND for every loop. The positive ring
+            // is exterior; face_area rejects any other positive or unnested loop.
+            let index = holes
+                .iter()
+                .position(|ring| ring.signed_area() > 0.)
+                .ok_or(ReadError::Invalid)?;
+            holes.remove(index)
+        };
         let area = face_area(&outer, &holes, self.tolerance)?;
         Ok(Face::Planar {
             origin: plane.origin,

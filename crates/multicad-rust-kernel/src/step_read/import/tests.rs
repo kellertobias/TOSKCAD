@@ -124,6 +124,28 @@ fn a_circular_rim_must_have_the_cap_winding() {
 }
 
 #[test]
+fn circular_profile_recognition_is_order_independent_and_refuses_eccentric_bores() {
+    let annulus = crate::annulus::Annulus::new(1., 3., 4.).unwrap();
+    let source = step::write_placed_annulus(&annulus, [0.; 3], X, Y).unwrap();
+    let entities = parse_entities(&source, TOLERANCE).unwrap();
+    let mut shell = Shell::new(&entities, TOLERANCE, true);
+    let faces = shell.validated_faces().unwrap();
+    let edges = shell.indexed_edges(faces.len());
+    let [outer, inner] = edges[0][..] else {
+        panic!("expected two full lower rims")
+    };
+    let expected = shell.profile(&[outer, inner], 0, Z, 4.);
+    assert!(expected.is_some());
+    assert_eq!(shell.profile(&[inner, outer], 0, Z, 4.), expected);
+    let edge = shell.edges.get_mut(&inner).unwrap();
+    let Curve::Circle(ref mut circle) = edge.curve else {
+        panic!("expected circular bore")
+    };
+    circle.center_mm[0] += 0.1;
+    assert!(shell.profile(&[outer, inner], 0, Z, 4.).is_none());
+}
+
+#[test]
 fn profile_rejects_a_second_exterior_and_repeated_rim_start() {
     let source = box_step();
     let entities = parse_entities(&source, TOLERANCE).unwrap();

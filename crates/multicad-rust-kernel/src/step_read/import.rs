@@ -12,6 +12,10 @@ pub enum ImportProfile {
     Cylinder {
         radius_mm: f64,
     },
+    Annulus {
+        inner_radius_mm: f64,
+        outer_radius_mm: f64,
+    },
 }
 
 #[cfg(test)]
@@ -26,7 +30,8 @@ pub struct ImportSolid {
     pub profile: ImportProfile,
 }
 
-/// Decode a single right prism or full cylinder from a verified STEP shell.
+/// Decode a single right prism, full cylinder or coaxial annulus from a
+/// verified STEP shell.
 /// The entire shell must consist of two translated caps and their exact walls.
 pub fn read_import_solid(input: &str, tolerance_mm: f64) -> Result<(Readback, ImportSolid)> {
     let entities = parse_entities(input, tolerance_mm)?;
@@ -230,6 +235,32 @@ impl Shell<'_, '_> {
                 height_mm,
                 profile: ImportProfile::Cylinder {
                     radius_mm: circle.radius_mm,
+                },
+            });
+        }
+        if let [a, b] = edges
+            && let [Curve::Circle(a), Curve::Circle(b)] = [a, b].map(|id| self.edges[id].curve)
+        {
+            // The shell validator has proved cap nesting and opposite
+            // winding, and prism recognition has matched both full walls.
+            // An eccentric hole would require a different canonical solid.
+            if length(sub(a.center_mm, b.center_mm)) > self.tolerance {
+                return None;
+            }
+            let [inner, outer] = if a.radius_mm < b.radius_mm {
+                [a, b]
+            } else {
+                [b, a]
+            };
+            let [u, v] = frame_axes(direction, reference_axis(direction));
+            return Some(ImportSolid {
+                origin_mm: outer.center_mm.map(zero),
+                u,
+                v,
+                height_mm,
+                profile: ImportProfile::Annulus {
+                    inner_radius_mm: inner.radius_mm,
+                    outer_radius_mm: outer.radius_mm,
                 },
             });
         }

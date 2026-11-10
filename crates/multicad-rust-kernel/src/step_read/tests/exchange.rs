@@ -1,10 +1,14 @@
 use crate::{
     Circle, Rational,
+    annulus::Annulus,
     cylinder::AxialCylinder,
     orthogonal::{Box3, Operation, boolean},
     orthogonal_boundary,
     polygon::PolygonPrism,
-    step::{write_axial_cylinder, write_box, write_orthogonal, write_polygon_prism},
+    step::{
+        StepError, write_axial_cylinder, write_box, write_orthogonal, write_placed_annulus,
+        write_polygon_prism,
+    },
     step_read::{
         ImportProfile, ImportSolid, ReadError, read_analytic_solid, read_import_solid,
         read_planar_solid,
@@ -289,6 +293,149 @@ fn read_cylinder_extrema_away_from_the_seam_and_measure_volume() {
     assert_eq!(solid.origin_mm, [3., 3., -5.]);
     assert_eq!(solid.height_mm, 2.);
     assert_eq!(solid.profile, ImportProfile::Cylinder { radius_mm: 1. });
+}
+
+#[test]
+fn annulus_round_trip_preserves_analytic_bore_and_tilted_extrema() {
+    let annulus = Annulus::new(2.5, 6., 1.75).unwrap();
+    let diagonal = 0.5_f64.sqrt();
+    let origin = [100., -20., 300.];
+    let v = [-diagonal, 0., diagonal];
+    assert_eq!(
+        write_placed_annulus(&annulus, origin, Y, Y),
+        Err(StepError::InvalidPlacement)
+    );
+    let source = write_placed_annulus(&annulus, origin, Y, v).unwrap();
+    assert_eq!(source.matches("=CYLINDRICAL_SURFACE(").count(), 2);
+    assert_eq!(source.matches("=FACE_BOUND(").count(), 2);
+    assert!(read_planar_solid(&source, TOLERANCE).is_err());
+    let readback = read_analytic_solid(&source, TOLERANCE).unwrap();
+    let (verified, solid) = read_import_solid(&source, TOLERANCE).unwrap();
+    assert_eq!(verified, readback);
+    assert_eq!(readback.solid_count, 1);
+    assert_eq!(readback.face_count, 4);
+    assert_eq!(readback.circles.len(), 4);
+    assert!(readback.edges_mm.is_empty());
+    close(
+        readback.volume_mm3,
+        std::f64::consts::PI * (36. - 6.25) * 1.75,
+    );
+    let radial = 6. * diagonal;
+    let axial = 1.75 * diagonal;
+    for (actual, expected) in readback.bounds_mm.into_iter().flatten().zip([
+        100. - radial,
+        -26.,
+        300. - radial,
+        100. + radial + axial,
+        -14.,
+        300. + radial + axial,
+    ]) {
+        close(actual, expected);
+    }
+    assert_eq!(solid.origin_mm, origin);
+    close(solid.height_mm, 1.75);
+    assert_eq!(
+        solid.profile,
+        ImportProfile::Annulus {
+            inner_radius_mm: 2.5,
+            outer_radius_mm: 6.
+        }
+    );
+
+    // Cap bounds may not turn the hole into a second material island.
+    let reversed = replace(&source, "FACE_BOUND", 0, |line| line.replace(".T.", ".F."));
+    assert_eq!(
+        read_import_solid(&reversed, TOLERANCE),
+        Err(ReadError::Invalid)
+    );
+    let outward = replace(&source, "ADVANCED_FACE", 3, |line| {
+        line.replace(".F.", ".T.")
+    });
+    assert_eq!(
+        read_import_solid(&outward, TOLERANCE),
+        Err(ReadError::Invalid)
+    );
+}
+
+#[test]
+fn native_annulus_proves_cylindrical_parameter_masters_and_implicit_cap_winding() {
+    let source = include_str!("fixtures/occt-annulus.step");
+    let (readback, solid) = read_import_solid(source, TOLERANCE).unwrap();
+    assert_eq!(readback.face_count, 4);
+    assert_eq!(readback.circles.len(), 4);
+    close(
+        readback.volume_mm3,
+        std::f64::consts::PI * (6.125_f64.powi(2) - 2.75_f64.powi(2)) * 1.25,
+    );
+    assert_eq!(
+        solid.profile,
+        ImportProfile::Annulus {
+            inner_radius_mm: 2.75,
+            outer_radius_mm: 6.125
+        }
+    );
+    close(solid.height_mm, 1.25);
+
+    for (from, to, expected) in [
+        ("(#31,#43)", "(#31)", ReadError::Invalid),
+        (
+            "#43 = PCURVE('',#32,",
+            "#43 = PCURVE('',#120,",
+            ReadError::Invalid,
+        ),
+        (
+            "#41 = DIRECTION('',(-0.,-1.));",
+            "#41 = DIRECTION('',(1.,0.));",
+            ReadError::Invalid,
+        ),
+        (
+            "#48 = DIRECTION('',(-0.,-1.));",
+            "#48 = DIRECTION('',(1.,0.));",
+            ReadError::Invalid,
+        ),
+        ("(-6.28318530718,0.)", "(-6.1,0.)", ReadError::Invalid),
+        (
+            "#63 = DIRECTION('',(-1.,0.));",
+            "#63 = DIRECTION('',(-1.,1.));",
+            ReadError::Unsupported,
+        ),
+        (
+            "#53 = CIRCLE('',#54,6.125);",
+            "#53 = CIRCLE('',#54,6.125,$);",
+            ReadError::Invalid,
+        ),
+        (
+            "#62 = VECTOR('',#63,1.);",
+            "#62 = VECTOR('',#63,1.001);",
+            ReadError::Invalid,
+        ),
+        (
+            "#58 = PCURVE('',#32,",
+            "#58 = PCURVE('',#27,",
+            ReadError::Unsupported,
+        ),
+        (
+            "#184 = FACE_BOUND('',#185,.F.);",
+            "#184 = FACE_BOUND('',#185,.T.);",
+            ReadError::Invalid,
+        ),
+    ] {
+        assert!(source.contains(from), "{from}");
+        assert_eq!(
+            read_import_solid(&source.replacen(from, to, 1), TOLERANCE),
+            Err(expected),
+            "{from}"
+        );
+    }
+    let wrong_cylinder = source.replacen("#31 = PCURVE('',#32,", "#31 = PCURVE('',#120,", 1);
+    for change in ["'',#121,2.75,$", "'',#121,1.E-8"] {
+        let invalid = wrong_cylinder.replacen("'',#121,2.75", change, 1);
+        assert_eq!(
+            read_import_solid(&invalid, TOLERANCE),
+            Err(ReadError::Invalid),
+            "{change}"
+        );
+    }
 }
 
 #[test]

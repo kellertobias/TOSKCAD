@@ -2,6 +2,7 @@
 
 use crate::{
     Circle, Rational,
+    annulus::Annulus,
     cylinder::AxialCylinder,
     orthogonal_boundary::{Boundary, BoundaryFace, point_key},
     polygon::PolygonPrism,
@@ -143,7 +144,7 @@ pub fn write_axial_cylinder(
     let bottom = [x, y, cylinder.bottom().as_f64()];
     let placement = Placement::new(bottom, reference, cross(axis, reference))?;
     let top = [x, y, cylinder.top().as_f64()];
-    write_cylinder_between(cylinder, placement, top)
+    write_circular_between(placement, top, cylinder.circle().radius().as_f64(), None)
 }
 
 /// Write the same exact cylinder in a rigid world frame at its bottom center.
@@ -156,13 +157,32 @@ pub fn write_placed_cylinder(
     let placement = Placement::new(bottom, reference, side)?;
     let height = cylinder.height().as_f64();
     let top = std::array::from_fn(|i| bottom[i] + placement.normal[i] * height);
-    write_cylinder_between(cylinder, placement, top)
+    write_circular_between(placement, top, cylinder.circle().radius().as_f64(), None)
 }
 
-fn write_cylinder_between(
-    cylinder: &AxialCylinder,
+/// Write a coaxial annulus as two trimmed planar caps and two analytic
+/// cylindrical walls. The bore has its own oppositely oriented closed rims.
+pub fn write_placed_annulus(
+    annulus: &Annulus,
+    bottom: Point,
+    reference: Point,
+    side: Point,
+) -> Result<String, StepError> {
+    let placement = Placement::new(bottom, reference, side)?;
+    let top = std::array::from_fn(|i| bottom[i] + placement.normal[i] * annulus.height_mm());
+    write_circular_between(
+        placement,
+        top,
+        annulus.outer_radius_mm(),
+        Some(annulus.inner_radius_mm()),
+    )
+}
+
+fn write_circular_between(
     placement: Placement,
     top: Point,
+    outer_radius: f64,
+    inner_radius: Option<f64>,
 ) -> Result<String, StepError> {
     let Placement {
         origin: bottom,
@@ -170,20 +190,25 @@ fn write_cylinder_between(
         normal: axis,
         ..
     } = placement;
-    let radius = cylinder.circle().radius().as_f64();
     let mut file = StepFile::new();
-    let trim = CylindricalTrim::new(&mut file, [bottom, top], axis, reference, radius)?;
-    let bottom_bound = trim.cap_bound(&mut file, false, true);
-    let top_bound = trim.cap_bound(&mut file, true, true);
-    let bottom_face = file.face(
-        &[bottom_bound],
-        trim.centers[0],
-        axis.map(|x| -x),
-        reference,
-    );
-    let top_face = file.face(&[top_bound], trim.centers[1], axis, reference);
-    let wall = trim.wall(&mut file, true);
-    Ok(file.finish_solid(&[bottom_face, top_face, wall]))
+    let outer = CylindricalTrim::new(&mut file, [bottom, top], axis, reference, outer_radius)?;
+    let inner = inner_radius
+        .map(|radius| CylindricalTrim::new(&mut file, [bottom, top], axis, reference, radius))
+        .transpose()?;
+    let mut cap = |top: bool, normal| {
+        let mut bounds = vec![outer.cap_bound(&mut file, top, true)];
+        if let Some(inner) = &inner {
+            bounds.push(inner.cap_bound(&mut file, top, false));
+        }
+        file.face(&bounds, outer.centers[usize::from(top)], normal, reference)
+    };
+    let bottom_face = cap(false, axis.map(|x| -x));
+    let top_face = cap(true, axis);
+    let mut faces = vec![bottom_face, top_face, outer.wall(&mut file, true)];
+    if let Some(inner) = &inner {
+        faces.push(inner.wall(&mut file, false));
+    }
+    Ok(file.finish_solid(&faces))
 }
 
 pub fn write_box(
