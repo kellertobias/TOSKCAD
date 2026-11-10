@@ -1,5 +1,7 @@
 //! Orthographic visibility from straight B-rep edges and trimmed planar faces.
 
+use crate::round_occlusion::RoundOccluder;
+
 type Point = [f64; 3];
 type Point2 = [f64; 2];
 type Span = [f64; 2];
@@ -42,7 +44,17 @@ pub struct Segment {
 const WORK_LIMIT: usize = 20_000_000;
 
 pub fn project(bodies: &[Body], options: Options) -> Result<Vec<Segment>, ProjectionError> {
-    project_bounded(bodies, options, WORK_LIMIT)
+    project_with_rounds(bodies, &[], options)
+}
+
+/// Project planar body edges against both planar faces and bounded round
+/// occluders. Round occluders contribute no edges of their own.
+pub fn project_with_rounds(
+    bodies: &[Body],
+    rounds: &[RoundOccluder],
+    options: Options,
+) -> Result<Vec<Segment>, ProjectionError> {
+    project_bounded(bodies, rounds, options, WORK_LIMIT)
 }
 
 fn dot<const N: usize>(a: [f64; N], b: [f64; N]) -> f64 {
@@ -378,6 +390,7 @@ fn prepare(
 
 fn project_bounded(
     bodies: &[Body],
+    rounds: &[RoundOccluder],
     options: Options,
     limit: usize,
 ) -> Result<Vec<Segment>, ProjectionError> {
@@ -412,8 +425,19 @@ fn project_bounded(
                 continue;
             }
             work.hidden.clear();
-            let [a, b] = span.map(|s| Bounds::point(line.point(s)));
+            let points = span.map(|s| line.point(s));
+            let [a, b] = points.map(Bounds::point);
             index.hide(&line, span, a.union(b), &mut work)?;
+            for round in rounds {
+                work.charge(1)?;
+                if round.may_hide(points, options.tolerance) {
+                    work.charge(20)?;
+                    round.hide(points, options.tolerance, |interval| {
+                        let along = interval.map(|t| (span[1] - span[0]).mul_add(t, span[0]));
+                        work.hidden.push(along);
+                    });
+                }
+            }
             work.hidden.sort_unstable_by(|a, b| a[0].total_cmp(&b[0]));
             let mut emit = |hidden: bool, a, b| {
                 if b - a > options.tolerance && (!hidden || options.hidden_lines) {

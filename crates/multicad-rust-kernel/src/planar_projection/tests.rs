@@ -105,6 +105,35 @@ fn opening_in_foreground_plate_keeps_rear_line_visible_through_it() {
 }
 
 #[test]
+fn round_occluders_merge_with_planar_faces_and_preserve_the_bore_opening() {
+    let front = rect([4., -0.5, 5., 0.5], 4., 5.);
+    let rear = rect([0., 0., 10., 4.], -2., -1.);
+    let round = RoundOccluder::new([5., 0., 2.], [0., 0., 1.], 2., 1., Some(1.)).unwrap();
+    let bodies = [front, rear];
+    let projected = project_with_rounds(&bodies, &[round], options()).unwrap();
+    let visible = line_ranges(&projected, 1, 0., false);
+    assert_eq!(visible.len(), 3);
+    for (actual, expected) in visible.into_iter().flatten().zip([0., 3., 5., 6., 7., 10.]) {
+        assert!((actual - expected).abs() < 1e-7, "{actual} != {expected}");
+    }
+    let hidden = line_ranges(&projected, 1, 0., true);
+    assert!(
+        hidden
+            .iter()
+            .any(|[a, b]| (*a - 3.).abs() < 1e-7 && (*b - 5.).abs() < 1e-7)
+    );
+    assert!(
+        hidden
+            .iter()
+            .any(|[a, b]| (*a - 6.).abs() < 1e-7 && (*b - 7.).abs() < 1e-7)
+    );
+    assert_eq!(
+        project_bounded(&bodies, &[round; 100], options(), 200),
+        Err(ProjectionError::Limit)
+    );
+}
+
+#[test]
 fn disk_clips_lines_and_compact_index_prunes_disjoint_bodies() {
     let bodies: Vec<_> = (0..16)
         .map(|i| rect([i as f64 * 12., 0., i as f64 * 12. + 10., 2.], 0., 1.))
@@ -218,7 +247,7 @@ fn invalid_sources_and_work_or_output_overflow_return_errors() {
     );
     let body = rect([0., 0., 2., 2.], 0., 1.);
     assert_eq!(
-        project_bounded(std::slice::from_ref(&body), options(), 1),
+        project_bounded(std::slice::from_ref(&body), &[], options(), 1),
         Err(ProjectionError::Limit)
     );
     assert_eq!(
