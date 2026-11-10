@@ -107,3 +107,57 @@ fn occt_reads_placed_headed_screw_as_one_connected_solid() {
     assert!((actual - screw.volume_mm3()).abs() < 1e-5);
     assert!((actual - measured).abs() < 1e-5);
 }
+
+#[test]
+fn occt_reads_nominal_tangent_shank_socket_screw() {
+    use multicad_kernel::rust_kernel::{
+        headed_screw::{Screw, ScrewHead, ScrewSpec},
+        step::write_helical_screw,
+        step_read::verify_helical_screw,
+    };
+    let scratch = tempfile::tempdir().unwrap();
+    for left_hand in [false, true] {
+        let thread = Thread::new(Spec {
+            major_radius_mm: 3.,
+            pitch_mm: 1.,
+            length_mm: 3.7,
+            depth_mm: 5. * 3_f64.sqrt() / 16.,
+            crest_width_mm: 0.125,
+            lower_flank_deg: 30.,
+            upper_flank_deg: 30.,
+            starts: 1,
+            left_hand,
+            root_radius_mm: None,
+        })
+        .unwrap();
+        let screw = Screw::new(
+            thread,
+            ScrewSpec {
+                head: ScrewHead::SocketCap {
+                    radius_mm: 5.,
+                    height_mm: 6.,
+                    socket_across_flats_mm: 5.,
+                    socket_depth_mm: 3.,
+                },
+                shank_length_mm: 2.,
+                shank_radius_mm: 3.,
+            },
+        )
+        .unwrap();
+        let step = write_helical_screw(&screw, [0.; 3], [1., 0., 0.], [0., 1., 0.], 1e-7).unwrap();
+        let path = scratch.path().join(format!("tangent-{left_hand}.step"));
+        let measured =
+            verify_helical_screw(&step, &screw, [0.; 3], [1., 0., 0.], [0., 1., 0.], 1e-7).unwrap();
+        std::fs::write(&path, step).unwrap();
+        let shape = multicad_kernel::Shape::read_step(&path).unwrap();
+        assert!(shape.valid().unwrap());
+        assert_eq!(Solid::step_solids(&path).unwrap().len(), 1);
+        let actual = shape.volume().unwrap();
+        assert!((actual - measured).abs() < 1e-5);
+        assert!(
+            (actual - screw.volume_mm3()).abs() < 1e-5,
+            "{actual} vs {}",
+            screw.volume_mm3()
+        );
+    }
+}

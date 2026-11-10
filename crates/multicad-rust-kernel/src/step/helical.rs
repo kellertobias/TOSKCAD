@@ -7,6 +7,7 @@ use crate::{
 };
 
 mod rounded;
+mod tangent;
 
 pub(crate) const DEGREE: usize = 11;
 const JETS: usize = DEGREE.div_ceil(2);
@@ -21,6 +22,7 @@ pub(crate) struct SocketHead {
     pub(crate) height_mm: f64,
     pub(crate) across_flats_mm: f64,
     pub(crate) depth_mm: f64,
+    pub(crate) shank_length_mm: f64,
 }
 
 #[derive(Clone, Copy)]
@@ -41,7 +43,10 @@ impl Closure {
 
     pub(crate) fn screw(screw: &Screw) -> Result<Self, StepError> {
         let spec = screw.spec();
-        if spec.shank_length_mm != 0. {
+        if spec.shank_length_mm > 0.
+            && (!matches!(spec.head, ScrewHead::SocketCap { .. })
+                || spec.shank_radius_mm != screw.thread().spec().major_radius_mm)
+        {
             return Err(StepError::Unsupported);
         }
         Ok(match spec.head {
@@ -62,6 +67,7 @@ impl Closure {
                 height_mm,
                 across_flats_mm: socket_across_flats_mm,
                 depth_mm: socket_depth_mm,
+                shank_length_mm: spec.shank_length_mm,
             }),
         })
     }
@@ -74,8 +80,18 @@ impl Closure {
         matches!(self, Self::Bore(_))
     }
 
+    pub(crate) fn tangent_shank(self) -> Option<f64> {
+        if let Self::SocketHead(head) = self
+            && head.shank_length_mm > 0.
+        {
+            Some(head.shank_length_mm)
+        } else {
+            None
+        }
+    }
+
     pub(crate) fn cap_hole(self, top: bool) -> bool {
-        self.inside() || (!top && self.is_screw())
+        self.inside() || (!top && self.is_screw() && self.tangent_shank().is_none())
     }
 
     pub(crate) fn face_count(self) -> usize {
@@ -83,7 +99,7 @@ impl Closure {
             Self::Shaft => 6,
             Self::Bore(_) => 7,
             Self::HexHead { .. } => 13,
-            Self::SocketHead(_) => 15,
+            Self::SocketHead(head) => 15 + 2 * usize::from(head.shank_length_mm > 0.),
         }
     }
 
@@ -95,7 +111,7 @@ impl Closure {
                 across_flats_mm,
                 height_mm,
             } => (across_flats_mm / 3_f64.sqrt(), height_mm),
-            Self::SocketHead(head) => (head.radius_mm, head.height_mm),
+            Self::SocketHead(head) => (head.radius_mm, head.height_mm + head.shank_length_mm),
         }
     }
 }
@@ -185,12 +201,22 @@ pub(super) fn encode(
             curve(file, &axial, [bottom, top], &mut poles)
         })
         .collect::<Vec<_>>();
+    let shank = closure
+        .tangent_shank()
+        .map(|length| tangent::encode(file, &placement, thread, length, [rings[0][0], rings[0][3]]))
+        .transpose()?;
     let mut faces = Vec::with_capacity(closure.face_count());
     let mut cap_edges = [Vec::with_capacity(4), Vec::with_capacity(4)];
     let forward = spec.left_hand != closure.inside();
     for (i, band) in bands.iter().enumerate() {
         let next = (i + 1) % bands.len();
         let rims = [0, 1].map(|end| {
+            if end == 0
+                && i == 3
+                && let Some(shank) = &shank
+            {
+                return shank.crest;
+            }
             let z = [0., height][end];
             let mut poles = band
                 .poles
@@ -238,14 +264,18 @@ pub(super) fn encode(
     for (end, cap) in cap_edges.into_iter().enumerate() {
         let top = end == 1;
         let ring_forward = top == forward;
+        let mut uses = cap.into_iter().map(|edge| (edge, true)).collect::<Vec<_>>();
+        if !top && let Some(shank) = &shank {
+            uses[3] = (shank.complement, false);
+        }
         let edges = if ring_forward {
-            cap.into_iter()
-                .map(|edge| file.oriented_edge(edge, true))
+            uses.into_iter()
+                .map(|(edge, sense)| file.oriented_edge(edge, sense))
                 .collect::<Vec<_>>()
         } else {
-            cap.into_iter()
+            uses.into_iter()
                 .rev()
-                .map(|edge| file.oriented_edge(edge, false))
+                .map(|(edge, sense)| file.oriented_edge(edge, !sense))
                 .collect::<Vec<_>>()
         };
         let trim = file.bound(&edges, !closure.cap_hole(top));
@@ -253,7 +283,10 @@ pub(super) fn encode(
         if let Some(cylinder) = &cylinder {
             bounds.push(cylinder.cap_bound(file, top, true));
         }
-        if !top && let Some((shoulder, _)) = &head {
+        if !top
+            && shank.is_none()
+            && let Some((shoulder, _)) = &head
+        {
             bounds.push(*shoulder);
         }
         bounds.push(trim);
@@ -267,7 +300,18 @@ pub(super) fn encode(
     if let Some(cylinder) = &cylinder {
         faces.push(cylinder.wall(file, true));
     }
-    if let Some((_, head_faces)) = head {
+    if let Some((head_seat, head_faces)) = head {
+        if let Some(shank) = shank {
+            let length = closure.tangent_shank().expect("existing shank");
+            let seat = file.point(placement.point_f64([0.; 2], -length));
+            faces.push(shank.wall);
+            faces.push(file.face(
+                &[head_seat, shank.seat_hole],
+                seat,
+                placement.normal,
+                placement.u,
+            ));
+        }
         faces.extend(head_faces);
     }
     Ok(file.solid(&faces))
@@ -292,12 +336,13 @@ fn encode_socket_head(
     placement: &Placement,
     head: SocketHead,
 ) -> Result<(Entity, Vec<Entity>), StepError> {
-    let lower = -head.height_mm;
+    let seat = -head.shank_length_mm;
+    let lower = seat - head.height_mm;
     let floor = lower + head.depth_mm;
     let center = |z| placement.point_f64([0.; 2], z);
     let shell = CylindricalTrim::new(
         file,
-        [center(lower), center(0.)],
+        [center(lower), center(seat)],
         placement.normal,
         placement.u,
         head.radius_mm,
@@ -402,7 +447,8 @@ pub(crate) fn prepare(
             if across_flats_mm / 2. - major <= tolerance || height_mm <= tolerance)
         || matches!(closure, Closure::SocketHead(head) if head.radius_mm - major <= tolerance
             || head.radius_mm - head.across_flats_mm / 3_f64.sqrt() <= tolerance
-            || head.depth_mm <= tolerance || head.height_mm - head.depth_mm <= tolerance)
+            || head.depth_mm <= tolerance || head.height_mm - head.depth_mm <= tolerance
+            || (head.shank_length_mm > 0. && head.shank_length_mm <= tolerance))
     {
         return Err(StepError::Limit);
     }
@@ -456,6 +502,9 @@ pub(crate) fn prepare(
     if bands.iter().any(|band| !band.advances_angle(-hand)) {
         return Err(StepError::Limit);
     }
+    if closure.tangent_shank().is_some() {
+        check_shank_clearance(&bands[..3], major)?;
+    }
     let poles = bands.iter().map(|band| band.poles.len()).sum::<usize>();
     if poles > (MAX_STEP_ENTITIES / 2) / axial.poles.len() {
         return Err(StepError::Limit);
@@ -472,6 +521,13 @@ pub(crate) fn prepare(
 pub(crate) struct Spline {
     pub(crate) knots: Vec<f64>,
     pub(crate) poles: Vec<Complex>,
+}
+
+fn check_shank_clearance(inward: &[Spline], radius: f64) -> Result<(), StepError> {
+    if inward.iter().any(|band| !band.below_radius(radius)) {
+        return Err(StepError::Limit);
+    }
+    Ok(())
 }
 
 impl Spline {
@@ -569,6 +625,26 @@ impl Spline {
                         (sum + term, absolute + term.abs())
                     });
                 direction * coefficient.0 > 64. * f64::EPSILON * coefficient.1.max(1.)
+            })
+        })
+    }
+
+    fn below_radius(&self, radius: f64) -> bool {
+        let radius_squared = radius * radius;
+        self.poles.windows(DEGREE + 1).step_by(DEGREE).all(|poles| {
+            // A Bernstein bound on the squared radial distance of each
+            // inward chart. It may meet the shank at the two shared ends.
+            (0..=2 * DEGREE).all(|degree| {
+                let coefficient = (degree.saturating_sub(DEGREE)..=degree.min(DEGREE))
+                    .map(|i| {
+                        let j = degree - i;
+                        let a = poles[i];
+                        let b = poles[j];
+                        binomial(DEGREE, i) * binomial(DEGREE, j) * (a[0] * b[0] + a[1] * b[1])
+                    })
+                    .sum::<f64>()
+                    / binomial(2 * DEGREE, degree);
+                coefficient <= radius_squared * (1. + 128. * f64::EPSILON)
             })
         })
     }
@@ -715,11 +791,18 @@ mod tests {
             height_mm: 6.,
             across_flats_mm: 5.,
             depth_mm: 3.,
+            shank_length_mm: 0.,
         };
         assert_eq!(
             encode_socket_head(&mut file, &placement, invalid).err(),
             Some(StepError::InvalidGeometry)
         );
+    }
+
+    #[test]
+    fn refuses_a_spline_that_crosses_the_tangent_shank_radius() {
+        let band = Spline::new(0., 1., [2.9, 3.01], 1., 1e-8).unwrap();
+        assert_eq!(check_shank_clearance(&[band], 3.), Err(StepError::Limit));
     }
 
     #[test]

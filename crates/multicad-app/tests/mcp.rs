@@ -712,13 +712,28 @@ fn export_m6_hex_screw(fit: &str) {
 
 #[test]
 fn rust_stdio_exports_the_shipped_m6_socket_cap_with_its_recess() {
+    export_shipped_m6_socket(
+        include_bytes!("../../../library/screw-socket-m6-l20.tcd"),
+        20.,
+        1,
+        15,
+    );
+}
+
+#[test]
+fn rust_stdio_exports_the_shipped_m6_socket_screw_with_a_tangent_shank() {
+    export_shipped_m6_socket(
+        include_bytes!("../../../library/screw-socket-m6-l40.tcd"),
+        40.,
+        2,
+        17,
+    );
+}
+
+fn export_shipped_m6_socket(source: &[u8], length_mm: f64, cylinders: usize, faces: usize) {
     let directory = tempfile::tempdir().unwrap();
     let project = directory.path().join("m6-socket.tcd");
-    std::fs::write(
-        &project,
-        include_bytes!("../../../library/screw-socket-m6-l20.tcd"),
-    )
-    .unwrap();
+    std::fs::write(&project, source).unwrap();
     let args = [
         "--rust-model",
         "--project",
@@ -730,7 +745,7 @@ fn rust_stdio_exports_the_shipped_m6_socket_cap_with_its_recess() {
     let result = client.ok("evaluate_model", json!({}));
     let part = &result["parts"][0];
     assert_eq!(part["solid_count"], 1);
-    assert_eq!(part["bounds_mm"]["max"][2], 20.);
+    assert_eq!(part["bounds_mm"]["max"][2], length_mm);
     let receipt = client.ok(
         "export_step",
         json!({"part": part["part"], "file_name": "socket.step"}),
@@ -740,8 +755,8 @@ fn rust_stdio_exports_the_shipped_m6_socket_cap_with_its_recess() {
     let path = directory.path().join("socket.step");
     let step = std::fs::read_to_string(&path).unwrap();
     assert_eq!(step.matches("B_SPLINE_SURFACE_WITH_KNOTS").count(), 4);
-    assert_eq!(step.matches("CYLINDRICAL_SURFACE").count(), 1);
-    assert_eq!(step.matches("ADVANCED_FACE").count(), 15);
+    assert_eq!(step.matches("CYLINDRICAL_SURFACE").count(), cylinders);
+    assert_eq!(step.matches("ADVANCED_FACE").count(), faces);
     assert_eq!(step.matches("MANIFOLD_SOLID_BREP").count(), 1);
     assert!(!step.contains("FACETED_BREP"));
     if multicad_kernel::OCCT_LINKED {

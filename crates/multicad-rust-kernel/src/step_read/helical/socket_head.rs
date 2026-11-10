@@ -11,7 +11,7 @@ pub(super) fn verify(
     head: SocketHead,
     world: impl Fn(Point2, f64) -> Point,
 ) -> Result<f64> {
-    let lower = -head.height_mm;
+    let lower = -head.shank_length_mm - head.height_mm;
     let upper = lower + head.depth_mm;
     let down = axis.map(|n| -n);
     let (end, forward, bounds) = face(shell, faces[0])?;
@@ -26,8 +26,24 @@ pub(super) fn verify(
         down,
         reference,
     )?;
-    let lower_rim = circle_rim(shell, outer, false, bottom.origin, axis, head.radius_mm)?;
-    let upper_rim = circle_rim(shell, shoulder, true, shoulder_center, axis, head.radius_mm)?;
+    let lower_rim = circle_rim(
+        shell,
+        outer,
+        true,
+        false,
+        bottom.origin,
+        axis,
+        head.radius_mm,
+    )?;
+    let upper_rim = circle_rim(
+        shell,
+        shoulder,
+        true,
+        true,
+        shoulder_center,
+        axis,
+        head.radius_mm,
+    )?;
     let (radius, cylinder_axis) = check_cylinder(
         shell,
         faces[1],
@@ -72,15 +88,16 @@ pub(super) fn verify(
     Ok(volume)
 }
 
-fn circle_rim(
+pub(super) fn circle_rim(
     shell: &mut Shell<'_, '_>,
     bound: u32,
+    exterior: bool,
     forward: bool,
     center: Point,
     normal: Point,
     radius: f64,
 ) -> Result<u32> {
-    let edges = ring(shell, bound, true)?;
+    let edges = ring(shell, bound, exterior)?;
     let [(edge, sense)] = edges[..] else {
         return Err(ReadError::Invalid);
     };

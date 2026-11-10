@@ -11,6 +11,7 @@ use crate::{
 
 mod hex_head;
 mod socket_head;
+mod tangent_shank;
 mod volume;
 
 type EdgeRef = (u32, bool);
@@ -37,7 +38,7 @@ pub fn verify_helical_thread(
     )
 }
 
-/// Verify and integrate an authored external-hex fully threaded screw STEP.
+/// Verify and integrate an authored analytic headed screw STEP.
 pub fn verify_helical_screw(
     input: &str,
     screw: &Screw,
@@ -73,6 +74,7 @@ fn verify(
         std::array::from_fn(|i| origin[i] + u[i] * x + v[i] * y + normal[i] * z)
     };
     let height = thread.spec().length_mm;
+    let shank_length = closure.tangent_shank();
     let forward = thread.spec().left_hand != closure.inside();
     let mut volumes = compound::read_members_by(input, tolerance, true, true, |shell, id, _| {
         let faces = shell.member_faces(id)?;
@@ -156,6 +158,10 @@ fn verify(
                 )?;
             }
             for (cap, &rim) in [start, end].iter().enumerate() {
+                if cap == 0 && i == 3 && shank_length.is_some() {
+                    // The circular crest is verified with the shank wall.
+                    continue;
+                }
                 let z = [0., height][cap];
                 let axial = splines.axial.poles[if cap == 0 {
                     0
@@ -176,6 +182,7 @@ fn verify(
         let mut cylinder_rims = [0; 2];
         let mut caps = [[0.; 3]; 2];
         let mut shoulder = None;
+        let mut tangent = None;
         for (end, (face_id, z)) in faces[4..6].iter().zip([0., height]).enumerate() {
             let top = end == 1;
             let (surface, outward, bounds) = face(shell, *face_id)?;
@@ -187,13 +194,25 @@ fn verify(
             let positive = top || closure.is_screw();
             let cap_axis = normal.map(|n| if positive { n } else { -n });
             caps[end] = check_axis(shell, axis, world([0.; 2], z), cap_axis, u)?.origin;
-            let expected = rings[end].map(|edge| (edge, true));
-            require(
-                ring(shell, bounds[usize::from(hole)], !hole)? == orient(&expected, top == forward),
-            )?;
-            if closure.is_screw() && !top {
+            let mut expected = rings[end].map(|edge| (edge, true));
+            let actual = orient(
+                &ring(shell, bounds[usize::from(hole)], !hole)?,
+                top == forward,
+            );
+            if !top && shank_length.is_some() {
+                let [_, _, _, (complement, false)] = actual[..] else {
+                    return Err(ReadError::Invalid);
+                };
+                expected[3] = (complement, false);
+                tangent = Some(tangent_shank::Junction {
+                    crest: rings[0][3],
+                    complement,
+                    corners: [corners[0][0][0], corners[3][0][0]],
+                });
+            } else if closure.is_screw() && !top {
                 shoulder = Some(bounds[0]);
             }
+            require(actual == expected)?;
             if let Closure::Bore(radius) = closure {
                 let rim = ring(shell, bounds[0], true)?;
                 let [(edge, sense)] = rim[..] else {
@@ -231,15 +250,32 @@ fn verify(
                 [across_flats_mm, height_mm],
                 world,
             )?,
-            Closure::SocketHead(head) => socket_head::verify(
-                shell,
-                &faces[6..],
-                shoulder.ok_or(ReadError::Invalid)?,
-                caps[0],
-                [u, normal],
-                head,
-                world,
-            )?,
+            Closure::SocketHead(head) => {
+                let (rim, seat, shank_volume, offset) = if let Some(length) = shank_length {
+                    let joint = tangent.ok_or(ReadError::Invalid)?;
+                    let (rim, seat, volume) = tangent_shank::verify(
+                        shell,
+                        [faces[6], faces[7]],
+                        joint,
+                        thread,
+                        length,
+                        [origin, u, v],
+                    )?;
+                    (rim, seat, volume, 8)
+                } else {
+                    (shoulder.ok_or(ReadError::Invalid)?, caps[0], 0., 6)
+                };
+                let head_volume = socket_head::verify(
+                    shell,
+                    &faces[offset..],
+                    rim,
+                    seat,
+                    [u, normal],
+                    head,
+                    world,
+                )?;
+                head_volume + shank_volume
+            }
         };
         let volume = outside_volume + if forward { flux } else { -flux };
         require(volume.is_finite() && volume > 0.)?;
