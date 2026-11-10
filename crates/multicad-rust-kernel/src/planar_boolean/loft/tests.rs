@@ -1,0 +1,151 @@
+use super::*;
+
+const TOL: f64 = 1e-7;
+
+fn rectangle([x, y]: [f64; 2], [w, h]: [f64; 2]) -> Vec<[f64; 2]> {
+    vec![[x, y], [x + w, y], [x + w, y + h], [x, y + h]]
+}
+
+#[test]
+fn offset_loft_keeps_authored_source_edges_in_both_windings() {
+    let mut sections = [rectangle([0., 0.], [4., 3.]), rectangle([2., 7.], [4., 3.])];
+    for reverse in [false, true] {
+        if reverse {
+            sections.iter_mut().for_each(|ring| ring.reverse());
+        }
+        let (loft, cells) = ruled_loft(&sections, &[-2., 6.], TOL).unwrap();
+        assert_eq!(loft.bounds(), [[0., 0., -2.], [6., 10., 6.]]);
+        assert!((loft.volume_mm3() - 96.).abs() < TOL);
+        assert_eq!((loft.solid_count(), loft.shell_count()), (1, 1));
+        assert_eq!(cells.len(), 1);
+        assert_eq!(loft.faces().len(), 6);
+        assert_eq!(loft.faces()[0].normal, [0., 0., -1.]);
+        assert_eq!(loft.faces()[1].normal, [0., 0., 1.]);
+        for (edge, face) in loft.faces()[2..].iter().enumerate() {
+            assert_eq!((face.source, face.source_face), (0, 2 + edge));
+            let end = (edge + 1) % sections[0].len();
+            for (section, z) in sections.iter().zip([-2., 6.]) {
+                for [x, y] in [section[edge], section[end]] {
+                    assert!(
+                        face.vertices
+                            .iter()
+                            .any(|&id| loft.vertices()[id] == [x, y, z])
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn multi_station_taper_has_no_internal_caps_and_keeps_convex_cells() {
+    let sections = [
+        rectangle([0., 0.], [4., 3.]),
+        rectangle([1., 2.], [4., 3.]),
+        rectangle([2., 3.], [2., 1.]),
+    ];
+    let (loft, cells) = ruled_loft(&sections, &[0., 2., 8.], TOL).unwrap();
+    assert_eq!(loft.vertices().len(), 12);
+    assert_eq!(loft.faces().len(), 10);
+    assert_eq!(cells.len(), 2);
+    assert_eq!(cells[0].bounds, [[0., 0., 0.], [5., 5., 2.]]);
+    assert_eq!(cells[1].bounds, [[1., 2., 2.], [5., 5., 8.]]);
+    let caps: Vec<_> = loft
+        .faces()
+        .iter()
+        .filter(|face| face.source_face < 2)
+        .map(|face| (face.source, face.source_face))
+        .collect();
+    assert_eq!(caps, [(0, 0), (1, 1)]);
+    let mesh = loft
+        .mesh(Tessellation {
+            deflection: 0.1,
+            angle: 0.2,
+            triangle_limit: 1_000,
+        })
+        .unwrap();
+    let measured = manufacturing::certify(&mesh).unwrap();
+    // The first slab is 4×3×2. In the second slab, section area varies
+    // quadratically as (4−2t)(3−2t), giving 38 mm³ over 6 mm.
+    assert!((loft.volume_mm3() - 62.).abs() < TOL);
+    assert!((measured.signed_volume_mm3 - 62.).abs() < TOL);
+    let same = Union::new(&cells, TOL).unwrap();
+    assert_eq!(same.solid_count(), 1);
+    assert!((same.volume_mm3() - loft.volume_mm3()).abs() < TOL);
+}
+
+#[test]
+fn noncardinal_triangular_frustum_and_parallel_roundoff() {
+    let base = vec![[0.1, 0.2], [3.1, 1.2], [1.1, 2.2]];
+    let top = base
+        .iter()
+        .map(|&[x, y]| [2. * x + 0.3, 2. * y - 0.4])
+        .collect();
+    let (loft, _) = ruled_loft(&[base, top], &[0., 3.], TOL).unwrap();
+    assert_eq!(loft.faces().len(), 5);
+    assert!((loft.volume_mm3() - 17.5).abs() < TOL);
+}
+
+#[test]
+fn rejects_oversized_nonmatching_and_unresolved_section_intervals() {
+    let rect = rectangle([0., 0.], [4., 3.]);
+    let rings = [rect.clone(), rect.clone()];
+    let error = |sections: &[Vec<[f64; 2]>], heights: &[f64], tolerance| {
+        ruled_loft(sections, heights, tolerance).unwrap_err()
+    };
+    assert_eq!(error(&rings, &[0., 2.], f64::NAN), Error::Invalid);
+    assert_eq!(error(&rings[..1], &[0.], TOL), Error::Invalid);
+    assert_eq!(error(&rings, &[0.], TOL), Error::Invalid);
+    for invalid in [[1., 0.], [0., TOL], [0., f64::INFINITY], [0., 1e9]] {
+        assert_eq!(error(&rings, &invalid, TOL), Error::Invalid);
+    }
+    assert_eq!(error(&vec![rect.clone(); 17], &[0.; 17], TOL), Error::Limit);
+    assert_eq!(
+        error(&[vec![[0.; 2]; 127], rect.clone()], &[0., 1.], TOL),
+        Error::Limit
+    );
+    assert_eq!(
+        error(&[rect.clone(), rect[..3].to_vec()], &[0., 1.], TOL),
+        Error::Invalid
+    );
+    let short = vec![[0., 0.]; 2];
+    assert_eq!(
+        error(&[short.clone(), short], &[0., 1.], TOL),
+        Error::Invalid
+    );
+    let mut invalid = rect.clone();
+    invalid[0][1] = f64::NAN;
+    assert_eq!(error(&[rect, invalid], &[0., 1.], TOL), Error::Invalid);
+    let sub_resolution = rectangle([0., 0.], [TOL / 2., 3.]);
+    assert_eq!(
+        error(&[sub_resolution.clone(), sub_resolution], &[0., 1.], TOL),
+        Error::Invalid
+    );
+}
+
+#[test]
+fn rejects_crossed_nonplanar_and_concave_ruled_faces() {
+    let base = rectangle([0., 0.], [4., 3.]);
+    let mut mismatches = [base.clone(), base.clone(), base.clone()];
+    mismatches[0].rotate_left(2);
+    mismatches[1][1][1] += 1e-4;
+    mismatches[2].reverse();
+    for top in mismatches {
+        assert_eq!(
+            ruled_loft(&[base.clone(), top], &[0., 2.], 1e-3).unwrap_err(),
+            Error::Invalid
+        );
+    }
+    let mut concave = base.clone();
+    concave.insert(1, [2., 1e-4]);
+    assert_eq!(
+        ruled_loft(&[concave.clone(), concave], &[0., 2.], 1e-3).unwrap_err(),
+        Error::Invalid
+    );
+    let mut crossed = base.clone();
+    crossed.swap(1, 2);
+    assert_eq!(
+        ruled_loft(&[crossed.clone(), crossed], &[0., 2.], TOL).unwrap_err(),
+        Error::Invalid
+    );
+}

@@ -11,11 +11,13 @@ use std::collections::BTreeMap;
 mod clipping;
 mod difference;
 mod intersection;
+mod loft;
 mod material;
 mod shell;
 mod slab;
 mod verify_boundary;
 mod vertical_profile;
+pub use loft::ruled_loft;
 pub use material::CutMaterial;
 pub use slab::Slab;
 pub use vertical_profile::{ProfileFace, ProfilePiece};
@@ -180,6 +182,10 @@ impl Union {
             vertices, faces, ..
         }: shell::Boundary,
     ) -> Result<Self, Error> {
+        Self::from_indexed_boundary(vertices, faces)
+    }
+
+    fn from_indexed_boundary(vertices: Vec<Point>, faces: Vec<Face>) -> Result<Self, Error> {
         let proof = shell::prove(&vertices, &faces)?;
         let bounds = bounds(vertices.iter().copied());
         Ok(Self {
