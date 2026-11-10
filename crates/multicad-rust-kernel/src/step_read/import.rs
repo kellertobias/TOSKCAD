@@ -59,6 +59,9 @@ pub enum ImportProfile {
     NormalSweep {
         sweep: normal_sweep::Sweep,
     },
+    SplineSweep {
+        sweep: crate::spline_sweep::Sweep,
+    },
     PiercedNormalSweep {
         sweep: normal_sweep::PiercedSweep,
     },
@@ -129,6 +132,7 @@ pub fn read_import_solid(input: &str, tolerance_mm: f64) -> Result<(Readback, Im
         true,
         recognize_member,
         recognize_warped,
+        recognize_spline,
     )?
     .pop()
     .ok_or(ReadError::Invalid)
@@ -145,6 +149,29 @@ pub fn read_import_compound(
         false,
         recognize_member,
         recognize_warped,
+        recognize_spline,
+    )
+}
+
+fn recognize_spline(
+    readback: Readback,
+    body: spline_sweep::DecodedSplineSweep,
+) -> (Readback, ImportSolid) {
+    let spline_sweep::DecodedSplineSweep {
+        origin_mm,
+        u,
+        v,
+        sweep,
+    } = body;
+    (
+        readback,
+        ImportSolid {
+            origin_mm,
+            u,
+            v,
+            height_mm: sweep.height_mm(),
+            profile: ImportProfile::SplineSweep { sweep },
+        },
     )
 }
 

@@ -80,6 +80,7 @@ fn saved_toolcase_rack_retains_dovetail_faces_and_all_sixteen_exact_blind_bores(
     }
     let receipt = verify_rust_step_shape(
         &path,
+        rust.solid(feature).unwrap(),
         &rust.snapshot().shapes[&feature],
         compiler.policy.linear_tolerance_mm,
     )
@@ -161,6 +162,7 @@ fn saved_rack_coupon_crops_one_blind_bore_into_an_exact_open_notch() {
     }
     let receipt = verify_rust_step_shape(
         &path,
+        rust.solid(feature).unwrap(),
         &rust.snapshot().shapes[&feature],
         compiler.policy.linear_tolerance_mm,
     )

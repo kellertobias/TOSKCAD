@@ -199,3 +199,137 @@ fn rust_import_refuses_a_valid_conical_step_surface() {
         .unwrap();
     assert_eq!(err.kind, GeometryErrorKind::Unsupported);
 }
+
+#[test]
+fn imported_spline_compound_retains_exact_geometry_and_viewport_edge_identity() {
+    use multicad_core::references::TopologyKind;
+    use multicad_kernel::{
+        MeshOptions,
+        rust_kernel::{
+            spur_gear::{Profile, Spec},
+            step::Writer,
+        },
+    };
+    let policy = GeometryPolicy::default();
+    let pressure = 20_f64.to_radians();
+    let gear = Profile::new(
+        Spec {
+            teeth: 20,
+            pitch_radius_mm: 20.,
+            base_radius_mm: 20. * pressure.cos(),
+            tip_radius_mm: 22.,
+            root_radius_mm: 17.5,
+            root_fillet_radius_mm: 0.4,
+            half_base_angle_rad: std::f64::consts::PI / 40. + pressure.tan()
+                - pressure
+                - 0.05 / 40.,
+            face_width_mm: 8.,
+            bore_radius_mm: 2.,
+        },
+        1e-5,
+        1e7,
+    )
+    .unwrap();
+    let frame = PlaneFrame::default();
+    let mut writer = Writer::new();
+    writer
+        .append_rectangular_prism(
+            &multicad_kernel::rust_kernel::prism::Prism::rectangular(1, [n(2), n(3), n(4)])
+                .unwrap(),
+            [-100., 0., 0.],
+            frame.u,
+            frame.v,
+        )
+        .unwrap();
+    writer
+        .append_spur_gear(
+            &gear,
+            frame.origin,
+            frame.u,
+            frame.v,
+            policy.linear_tolerance_mm,
+        )
+        .unwrap();
+    let source = writer.finish().unwrap();
+    let owner = EntityId::new();
+    let solid = Solid::import_rust_step(&source, owner, policy).unwrap();
+    assert_eq!(solid.solid_count().unwrap(), 2);
+    let volume = solid.volume_mm3().unwrap();
+    assert!((volume - gear.volume_mm3() - 24.).abs() < 1e-4);
+    let before = solid.topology_with_display(owner, 1, Some(0.05)).unwrap();
+    let cubics: Vec<_> = before
+        .topology
+        .elements
+        .iter()
+        .filter(|edge| edge.key.kind == TopologyKind::Edge && edge.geometry.is_none())
+        .collect();
+    assert_eq!(cubics.len(), 80);
+    assert!(cubics.iter().all(|edge| edge.key.ordinal >= 12));
+    for edge in cubics {
+        let overlay = before
+            .edges
+            .iter()
+            .find(|candidate| candidate.index == edge.key.ordinal)
+            .unwrap();
+        assert!(overlay.points_mm.len() > 2);
+    }
+
+    let moved = solid
+        .transformed(RigidTransform {
+            rotation: [[0., -1., 0.], [1., 0., 0.], [0., 0., 1.]],
+            translation_mm: [2., 3., 5.],
+        })
+        .unwrap();
+    let after = moved.topology_with_display(owner, 2, Some(0.05)).unwrap();
+    for (a, b) in before.edges.iter().zip(&after.edges) {
+        assert_eq!(a.index, b.index);
+        assert_eq!(a.points_mm.len(), b.points_mm.len());
+        // Circular arcs may choose a different but equivalent starting frame.
+        if before.topology.elements.iter().any(|edge| {
+            edge.key.kind == TopologyKind::Edge
+                && edge.key.ordinal == a.index
+                && edge.geometry.is_none()
+        }) {
+            for (&[x, y, z], &[moved_x, moved_y, moved_z]) in a.points_mm.iter().zip(&b.points_mm) {
+                near(moved_x, 2. - y);
+                near(moved_y, 3. + x);
+                near(moved_z, 5. + z);
+            }
+        }
+    }
+    assert_eq!(
+        before
+            .topology
+            .elements
+            .iter()
+            .map(|e| (&e.key, &e.origins))
+            .collect::<Vec<_>>(),
+        after
+            .topology
+            .elements
+            .iter()
+            .map(|e| (&e.key, &e.origins))
+            .collect::<Vec<_>>(),
+    );
+    let mesh = moved
+        .manufacturing_mesh_with_receipt(MeshOptions::default())
+        .unwrap();
+    assert!(mesh.edge_pairs > 0 && mesh.vertex_links > 0);
+    let mut written = multicad_kernel::rust_kernel::step_read::read_analytic_compound(
+        &text(&moved),
+        policy.linear_tolerance_mm,
+    )
+    .unwrap();
+    assert!(moved.step_readback_matches(
+        &after.topology,
+        &written,
+        2. * policy.linear_tolerance_mm
+    ));
+    let splines = &mut written[1].splines;
+    splines[0] = splines[1].clone();
+    assert!(!moved.step_readback_matches(
+        &after.topology,
+        &written,
+        2. * policy.linear_tolerance_mm
+    ));
+}

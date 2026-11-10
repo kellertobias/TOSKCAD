@@ -2148,6 +2148,7 @@ fn export_step(host: &dyn Host, call: &Request, args: ExportStep) -> ToolResult 
             })?;
             multicad_model::export::verify_rust_step_shape(
                 &partial,
+                solid,
                 shape,
                 policy.linear_tolerance_mm,
             )

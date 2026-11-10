@@ -63,10 +63,9 @@ fn independent_reader_verifies_placed_spur_shells_and_mixed_compounds() {
         {
             assert!((actual - expected).abs() < TOL, "{actual} != {expected}");
         }
-        assert_eq!(
-            read_import_solid(&source, TOL).unwrap_err(),
-            ReadError::Unsupported
-        );
+        let (checked, rebuilt) = read_import_solid(&source, TOL).unwrap();
+        assert_eq!(checked, shape);
+        assert!(matches!(rebuilt.profile, ImportProfile::SplineSweep { .. }));
     }
 
     let mut writer = Writer::new();

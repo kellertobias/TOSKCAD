@@ -29,7 +29,7 @@ fn convert(value: f64, tolerance: f64) -> Result<Rational, GeometryError> {
     })
 }
 
-fn feature_origin(
+pub(super) fn feature_origin(
     feature: EntityId,
     kind: &str,
     coordinates: impl IntoIterator<Item = f64>,
@@ -46,6 +46,25 @@ fn feature_origin(
         source: feature,
         role: format!("step.{kind}/{hash}"),
     }
+}
+
+pub(super) fn spline_control_key(poles: &[Point], knots: &[f64]) -> Vec<u64> {
+    let oriented = |reverse: bool| {
+        let last = knots.len() - 1;
+        let width = knots[last] - knots[0];
+        (0..poles.len())
+            .flat_map(|i| poles[if reverse { poles.len() - 1 - i } else { i }])
+            .chain((0..knots.len()).map(|i| {
+                if reverse {
+                    (knots[last] - knots[last - i]) / width
+                } else {
+                    (knots[i] - knots[0]) / width
+                }
+            }))
+            .map(|value| if value == 0. { 0 } else { value.to_bits() })
+            .collect::<Vec<_>>()
+    };
+    oriented(false).min(oriented(true))
 }
 
 fn straight_origin(feature: EntityId, frame: PlaneFrame, a: [f64; 2], b: [f64; 2]) -> Origin {
@@ -157,6 +176,15 @@ impl Solid {
         frame.checked(policy)?;
         let dimension = |value| convert(value, policy.linear_tolerance_mm);
         match profile {
+            ImportProfile::SplineSweep { sweep } => {
+                let body = SplineSweepBody::new(feature, sweep, frame, policy.linear_tolerance_mm)?;
+                Ok(Self {
+                    body: SolidBody::SplineSweep(Rc::new(body), frame),
+                    policy,
+                    provenance: vec![],
+                    rust_origins: vec![],
+                })
+            }
             ImportProfile::NormalSweep { sweep } => {
                 Self::from_imported_normal_sweep(&sweep, frame, feature, policy)
             }
@@ -750,6 +778,8 @@ fn verify(
     orthogonal: bool,
 ) -> Result<(), GeometryError> {
     let bounds = solid.bounds()?;
+    solid.policy.point(bounds.min)?;
+    solid.policy.point(bounds.max)?;
     let [x, y, z] = std::array::from_fn(|i| bounds.max[i] - bounds.min[i]);
     let volume_tolerance =
         (readback.volume_mm3 * 1e-8).max(tolerance * 2. * (x * y + y * z + z * x));
@@ -773,7 +803,13 @@ fn verify(
         return Ok(());
     }
     let topology = solid.topology_snapshot(feature, 0)?;
-    if !compare_topology(&topology.elements, readback, tolerance * 2., orthogonal) {
+    if !compare_topology(
+        &topology.elements,
+        readback,
+        tolerance * 2.,
+        orthogonal,
+        solid.spline_sweep_body(),
+    ) {
         return Err(invalid(
             "Rebuilt STEP extrusion differs from the imported analytic topology",
         ));
@@ -791,7 +827,7 @@ impl Solid {
     ) -> bool {
         tolerance.is_finite()
             && tolerance > 0.
-            && compare_topology(&topology.elements, readback, tolerance, false)
+            && compare_topology(&topology.elements, readback, tolerance, false, None)
     }
 }
 
@@ -800,6 +836,7 @@ fn compare_topology<'a>(
     readback: &Readback,
     tolerance: f64,
     allow_consolidation: bool,
+    spline_body: Option<(&SplineSweepBody, PlaneFrame)>,
 ) -> bool {
     let mut lines = Vec::new();
     let mut circles = Vec::new();
@@ -808,6 +845,7 @@ fn compare_topology<'a>(
     let mut ellipses = Vec::new();
     let mut splines = Vec::new();
     let mut faces = 0;
+    let mut retained_edges = 0;
     for element in elements {
         match (element.key.kind, element.geometry) {
             (TopologyKind::Face, _) => faces += 1,
@@ -904,6 +942,7 @@ fn compare_topology<'a>(
                 radius_mm: base_radius_mm,
                 parameters,
             }),
+            (TopologyKind::Edge, None) if spline_body.is_some() => retained_edges += 1,
             (TopologyKind::Edge, _) => {
                 return false;
             }
@@ -917,7 +956,13 @@ fn compare_topology<'a>(
         && match_semicircles(&readback.semicircles, &semicircles, tolerance)
         && match_arcs(&readback.arcs, &arcs, tolerance)
         && match_ellipses(&readback.ellipses, &ellipses, tolerance)
-        && involute::matches(&splines, &readback.splines, tolerance)
+        && if let Some((body, frame)) = spline_body {
+            retained_edges == readback.splines.len()
+                && splines.is_empty()
+                && body.matches_splines(frame, &readback.splines, tolerance)
+        } else {
+            involute::matches(&splines, &readback.splines, tolerance)
+        }
 }
 
 #[cfg(test)]

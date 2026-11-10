@@ -18,10 +18,12 @@ use crate::{
 use std::{collections::BTreeMap, fmt, fmt::Write, ops::Range};
 
 mod axial_stack;
+mod cubic_trim;
 mod cylindrical_revolution;
 mod normal_sweep;
 mod pierced_sweep;
 mod planar_union;
+mod spline_sweep;
 mod spur_gear;
 mod stadium;
 mod warped_union;
@@ -31,6 +33,7 @@ pub use cylindrical_revolution::{supports_cylindrical_revolution, write_cylindri
 pub use normal_sweep::write_normal_sweep;
 pub use pierced_sweep::write_pierced_normal_sweep;
 pub use planar_union::{supports_planar_union, write_planar_union};
+pub use spline_sweep::write_spline_sweep;
 pub use spur_gear::{SPUR_STEP_MAX_ERROR_MM, write_spur_gear};
 use stadium::StadiumTrim;
 pub use stadium::write_stadium_prism;

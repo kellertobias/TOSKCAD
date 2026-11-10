@@ -2,6 +2,8 @@
 use super::*;
 
 mod hub;
+mod reconstruction;
+pub(super) use reconstruction::{DecodedSplineSweep, import_member};
 mod section;
 
 struct FaceWire {
@@ -39,6 +41,14 @@ fn face_args(reader: &Shell<'_, '_>, id: u32) -> Result<(Vec<u32>, u32, bool)> {
 }
 
 pub(super) fn read_member(reader: &mut Shell<'_, '_>, ids: Vec<u32>) -> Result<Readback> {
+    read_member_with(reader, ids, |_, _, _, _, _, _| Ok(())).map(|(readback, _)| readback)
+}
+
+fn read_member_with<T>(
+    reader: &mut Shell<'_, '_>,
+    ids: Vec<u32>,
+    reconstruct: impl FnOnce(&Shell<'_, '_>, &Edges, &Plane, &FaceWire, Point, f64) -> Result<T>,
+) -> Result<(Readback, Option<T>)> {
     if ids.len() < 5 || ids.len() > MAX_VERTICES + 7 {
         return Err(ReadError::Limit);
     }
@@ -97,7 +107,7 @@ pub(super) fn read_member(reader: &mut Shell<'_, '_>, ids: Vec<u32>) -> Result<R
             normal,
             height,
         )?;
-        return metrics(reader, edges, &seams, face_ids.len(), volume);
+        return metrics(reader, edges, &seams, face_ids.len(), volume).map(|proof| (proof, None));
     }
     if (base_area - top_area).abs() > reader.tolerance * base_area.sqrt().max(1.) * 32. {
         return Err(ReadError::Invalid);
@@ -119,7 +129,9 @@ pub(super) fn read_member(reader: &mut Shell<'_, '_>, ids: Vec<u32>) -> Result<R
     }
     // Every rim edge has two opposite uses and each wall consumes exactly
     // one edge from each cap, so every rim edge has a unique side.
-    metrics(reader, edges, &seams, face_ids.len(), base_area * height)
+    let solid = reconstruct(reader, &edges, &base, &low, normal, height)?;
+    let readback = metrics(reader, edges, &seams, face_ids.len(), base_area * height)?;
+    Ok((readback, Some(solid)))
 }
 
 fn read_face(reader: &mut Shell<'_, '_>, id: u32, edges: &mut Edges) -> Result<FaceWire> {

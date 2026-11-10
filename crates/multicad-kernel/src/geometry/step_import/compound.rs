@@ -100,6 +100,18 @@ fn member_signature(readback: &Readback) -> ContentHash {
     for entry in ellipses.into_iter().flatten() {
         bytes.extend(entry.to_le_bytes());
     }
+    let mut splines = readback
+        .splines
+        .iter()
+        .map(|curve| spline_control_key(curve.poles_mm(), curve.knots()))
+        .collect::<Vec<_>>();
+    splines.sort_unstable();
+    for spline in splines {
+        bytes.extend((spline.len() as u64).to_le_bytes());
+        for entry in spline {
+            bytes.extend(entry.to_le_bytes());
+        }
+    }
     ContentHash::of(&bytes)
 }
 
@@ -136,44 +148,93 @@ impl Solid {
         readbacks: &[Readback],
         tolerance: f64,
     ) -> bool {
-        if !tolerance.is_finite() || tolerance <= 0. || readbacks.is_empty() {
+        match_compound(topology, readbacks, tolerance, None)
+    }
+
+    /// Compare exported member shells with the retained solid, including
+    /// spline control nets that have no compact public topology descriptor.
+    pub fn step_readback_matches(
+        &self,
+        topology: &TopologySnapshot,
+        readbacks: &[Readback],
+        tolerance: f64,
+    ) -> bool {
+        let mut bodies = Vec::with_capacity(readbacks.len());
+        self.step_spline_members(&mut bodies);
+        match_compound(topology, readbacks, tolerance, Some(&bodies))
+    }
+
+    fn step_spline_members<'a>(
+        &'a self,
+        bodies: &mut Vec<Option<(&'a SplineSweepBody, PlaneFrame)>>,
+    ) {
+        if let Some(compound) = self.rust_compound() {
+            for member in compound.members() {
+                member.step_spline_members(bodies);
+            }
+        } else {
+            bodies.push(self.spline_sweep_body());
+        }
+    }
+}
+
+fn match_compound(
+    topology: &TopologySnapshot,
+    readbacks: &[Readback],
+    tolerance: f64,
+    spline_bodies: Option<&[Option<(&SplineSweepBody, PlaneFrame)>]>,
+) -> bool {
+    if !tolerance.is_finite()
+        || tolerance <= 0.
+        || readbacks.is_empty()
+        || spline_bodies.is_some_and(|bodies| bodies.len() != readbacks.len())
+    {
+        return false;
+    }
+    let spline_body = |index| spline_bodies.and_then(|bodies| bodies[index]);
+    if let [readback] = readbacks {
+        return readback.solid_count == 1
+            && compare_topology(
+                &topology.elements,
+                readback,
+                tolerance,
+                false,
+                spline_body(0),
+            );
+    }
+    let mut ends = Vec::with_capacity(readbacks.len());
+    let mut end = [0usize; 2];
+    for readback in readbacks {
+        if readback.solid_count != 1 || readback.face_count == 0 {
             return false;
         }
-        if let [readback] = readbacks {
-            return readback.solid_count == 1
-                && Self::step_topology_matches(topology, readback, tolerance);
-        }
-        let mut ends = Vec::with_capacity(readbacks.len());
-        let mut end = [0usize; 2];
-        for readback in readbacks {
-            if readback.solid_count != 1 || readback.face_count == 0 {
-                return false;
-            }
-            end[0] += readback.face_count;
-            end[1] += readback.edges_mm.len()
-                + readback.circles.len()
-                + readback.semicircles.len()
-                + readback.arcs.len()
-                + readback.ellipses.len()
-                + readback.splines.len();
-            ends.push(end);
-        }
-        let mut members = vec![Vec::new(); readbacks.len()];
-        for element in &topology.elements {
-            let kind = match element.key.kind {
-                TopologyKind::Face => 0,
-                TopologyKind::Edge => 1,
-                TopologyKind::Vertex => continue,
-            };
-            let index = ends.partition_point(|end| end[kind] <= element.key.ordinal as usize);
-            let Some(member) = members.get_mut(index) else {
-                return false;
-            };
-            member.push(element);
-        }
-        members
-            .into_iter()
-            .zip(readbacks)
-            .all(|(elements, readback)| compare_topology(elements, readback, tolerance, false))
+        end[0] += readback.face_count;
+        end[1] += readback.edges_mm.len()
+            + readback.circles.len()
+            + readback.semicircles.len()
+            + readback.arcs.len()
+            + readback.ellipses.len()
+            + readback.splines.len();
+        ends.push(end);
     }
+    let mut members = vec![Vec::new(); readbacks.len()];
+    for element in &topology.elements {
+        let kind = match element.key.kind {
+            TopologyKind::Face => 0,
+            TopologyKind::Edge => 1,
+            TopologyKind::Vertex => continue,
+        };
+        let index = ends.partition_point(|end| end[kind] <= element.key.ordinal as usize);
+        let Some(member) = members.get_mut(index) else {
+            return false;
+        };
+        member.push(element);
+    }
+    members
+        .into_iter()
+        .zip(readbacks)
+        .enumerate()
+        .all(|(index, (elements, readback))| {
+            compare_topology(elements, readback, tolerance, false, spline_body(index))
+        })
 }

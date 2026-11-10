@@ -84,6 +84,7 @@ fn point_on_ellipse(frame: ReferenceFrame, [major, minor]: [f64; 2], angle: f64)
 }
 
 pub(crate) fn edges(
+    solid: Option<&Solid>,
     topology: &TopologySnapshot,
     deflection: f64,
 ) -> Result<Vec<DisplayEdge>, GeometryError> {
@@ -186,6 +187,42 @@ pub(crate) fn edges(
                             })
                         })
                         .collect()
+                }
+                None => {
+                    let options = multicad_rust_kernel::display::Tessellation {
+                        deflection,
+                        angle: 0.3,
+                        triangle_limit: MAX_EDGE_POINTS.saturating_sub(total_points).max(1),
+                    };
+                    let Some(points) =
+                        solid.and_then(|s| s.sample_non_analytic_edge(e.key.ordinal, options))
+                    else {
+                        return Err(error(
+                            "display edges",
+                            GeometryErrorKind::InvalidResult,
+                            "Rust topology is missing edge geometry",
+                        ));
+                    };
+                    let points = points.map_err(|cause| {
+                        error(
+                            "display edges",
+                            if cause == MeshError::BudgetExceeded {
+                                GeometryErrorKind::Limit
+                            } else {
+                                GeometryErrorKind::InvalidResult
+                            },
+                            format!("Rust spline edge sampling failed: {cause:?}"),
+                        )
+                    })?;
+                    total_points += points.len();
+                    if total_points > MAX_EDGE_POINTS {
+                        return Err(error(
+                            "display edges",
+                            GeometryErrorKind::Limit,
+                            "Rust edge sampling exceeds the point budget",
+                        ));
+                    }
+                    points
                 }
                 _ => {
                     return Err(error(

@@ -106,6 +106,7 @@ fn saved_toolcase_drawer_reinforcements_join_when_all_operands_are_planar() {
     near(
         verify_rust_step_shape(
             &step,
+            rust.solid(feature).unwrap(),
             &rust.snapshot().shapes[&feature],
             compiler.policy.linear_tolerance_mm,
         )

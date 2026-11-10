@@ -93,8 +93,18 @@ fn verify(
     }
     let tolerance = exporter.compiler.policy.linear_tolerance_mm;
     let actual = if built.backend == GeometryBackend::Rust {
-        let topology = rust_step_topology(built, artifact)?;
-        read_rust_step(path, topology, artifact.producer, tolerance)?
+        let model = built
+            .model
+            .as_ref()
+            .ok_or_else(|| io("Missing source model"))?;
+        let topology = rust_step_topology(model, artifact)?;
+        read_rust_step(
+            path,
+            artifact_solid(model, artifact)?,
+            topology,
+            artifact.producer,
+            tolerance,
+        )?
     } else {
         let read = Solid::read_step(path, exporter.compiler.policy).map_err(io)?;
         let bounds = read.bounds().map_err(io)?;
@@ -147,10 +157,11 @@ fn verify_step_dimensions(
 /// of a Rust-authored STEP against the exact source shape.
 pub fn verify_rust_step_shape(
     path: &Path,
+    solid: &Solid,
     shape: &crate::ShapeSnapshot,
     tolerance: f64,
 ) -> Result<f64, ExportError> {
-    let actual = read_rust_step(path, &shape.topology, shape.producer, tolerance)?;
+    let actual = read_rust_step(path, solid, &shape.topology, shape.producer, tolerance)?;
     verify_step_dimensions(
         shape.producer,
         (
@@ -165,44 +176,42 @@ pub fn verify_rust_step_shape(
 }
 
 fn rust_step_topology<'a>(
-    built: &'a Built,
+    model: &'a crate::Model,
     artifact: &ExportArtifact,
 ) -> Result<&'a TopologySnapshot, ExportError> {
-    built
-        .model
-        .as_ref()
-        .and_then(|model| {
-            let OutputSubject::Part(part) = &artifact.output.subject else {
-                return None;
-            };
-            if let Some((&root, members)) = part.occurrence_path.split_first() {
-                let leaf = model.leaf_snapshot(&multicad_core::model::OccurrencePath {
-                    root,
-                    members: members.to_vec(),
-                })?;
-                (root == artifact.solid
-                    && leaf.component == part.part
-                    && leaf.producer == artifact.producer)
-                    .then_some(&leaf.topology)
-            } else {
-                model
-                    .snapshot()
-                    .shapes
-                    .get(&artifact.solid)
-                    .map(|shape| &shape.topology)
-            }
-        })
-        .ok_or_else(|| {
-            failure(
-                ErrorKind::Invalid,
-                Some(artifact.producer),
-                "Rust STEP verification requires the exact source topology",
-            )
-        })
+    (|| {
+        let OutputSubject::Part(part) = &artifact.output.subject else {
+            return None;
+        };
+        if let Some((&root, members)) = part.occurrence_path.split_first() {
+            let leaf = model.leaf_snapshot(&multicad_core::model::OccurrencePath {
+                root,
+                members: members.to_vec(),
+            })?;
+            (root == artifact.solid
+                && leaf.component == part.part
+                && leaf.producer == artifact.producer)
+                .then_some(&leaf.topology)
+        } else {
+            model
+                .snapshot()
+                .shapes
+                .get(&artifact.solid)
+                .map(|shape| &shape.topology)
+        }
+    })()
+    .ok_or_else(|| {
+        failure(
+            ErrorKind::Invalid,
+            Some(artifact.producer),
+            "Rust STEP verification requires the exact source topology",
+        )
+    })
 }
 
 fn read_rust_step(
     path: &Path,
+    solid: &Solid,
     topology: &TopologySnapshot,
     producer: EntityId,
     tolerance: f64,
@@ -233,7 +242,7 @@ fn read_rust_step(
             format!("Rust STEP readback rejected the geometry: {e:?}"),
         )
     })?;
-    if !Solid::step_compound_topology_matches(topology, &members, tolerance * 2.) {
+    if !solid.step_readback_matches(topology, &members, tolerance * 2.) {
         return Err(invalid(
             "STEP readback differs from the source member topology".into(),
         ));

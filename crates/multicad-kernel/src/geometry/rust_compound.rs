@@ -189,6 +189,15 @@ impl RustCompound {
         })
     }
 
+    pub(super) fn edge_source(&self, ordinal: u32) -> Option<(&Solid, u32)> {
+        let index = self
+            .members
+            .partition_point(|member| member.offset[1] <= ordinal);
+        let member = self.members.get(index.checked_sub(1)?)?;
+        let local = ordinal - member.offset[1];
+        (local < member.count[1]).then_some((&member.solid, local))
+    }
+
     pub(crate) fn face_source(&self, face: u32) -> Option<(&Solid, u32, u32)> {
         let i = self
             .members

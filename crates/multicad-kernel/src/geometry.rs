@@ -23,6 +23,7 @@ mod planar_boolean_body;
 mod revolution_body;
 mod rounded_slot_body;
 mod rust_compound;
+mod spline_sweep_body;
 mod spur_gear_body;
 mod step_import;
 mod warped_union_body;
@@ -41,6 +42,7 @@ use planar_boolean_body::PlanarBooleanBody;
 use revolution_body::RevolutionBody;
 use rounded_slot_body::RoundedSlotBody;
 use rust_compound::RustCompound;
+use spline_sweep_body::SplineSweepBody;
 use spur_gear_body::SpurGearBody;
 use warped_union_body::WarpedUnionBody;
 
@@ -554,6 +556,7 @@ enum SolidBody {
     Revolved(Rc<RevolutionBody>, PlaneFrame),
     RoundedSlot(Rc<RoundedSlotBody>, PlaneFrame),
     NormalSweep(Rc<NormalSweepBody>, PlaneFrame),
+    SplineSweep(Rc<SplineSweepBody>, PlaneFrame),
     SpurGear(Rc<SpurGearBody>, PlaneFrame),
     AxialStack(Rc<AxialStackBody>, PlaneFrame),
     RustCompound(Rc<RustCompound>),
@@ -913,6 +916,7 @@ impl Solid {
             SolidBody::Revolved(body, frame) => SolidBody::Revolved(Rc::clone(body), *frame),
             SolidBody::RoundedSlot(body, frame) => SolidBody::RoundedSlot(Rc::clone(body), *frame),
             SolidBody::NormalSweep(body, frame) => SolidBody::NormalSweep(Rc::clone(body), *frame),
+            SolidBody::SplineSweep(body, frame) => SolidBody::SplineSweep(Rc::clone(body), *frame),
             SolidBody::SpurGear(body, frame) => SolidBody::SpurGear(Rc::clone(body), *frame),
             SolidBody::AxialStack(body, frame) => SolidBody::AxialStack(Rc::clone(body), *frame),
             SolidBody::PlanarBoolean(body, frame) => {
@@ -1178,6 +1182,9 @@ impl Solid {
                 SolidBody::RoundedSlot(body, frame) => {
                     SolidBody::RoundedSlot(Rc::clone(body), transform.frame(*frame))
                 }
+                SolidBody::SplineSweep(body, frame) => {
+                    SolidBody::SplineSweep(Rc::clone(body), transform.frame(*frame))
+                }
                 SolidBody::NormalSweep(body, frame) => {
                     SolidBody::NormalSweep(Rc::clone(body), transform.frame(*frame))
                 }
@@ -1237,6 +1244,9 @@ impl Solid {
         }
         if let Some((body, _)) = self.normal_sweep_body() {
             return Ok(body.volume_mm3());
+        }
+        if let Some((body, _)) = self.spline_sweep_body() {
+            return Ok(body.sweep.volume_mm3());
         }
         if let Some((body, _)) = self.cosmetic_fastener_body() {
             return Ok(body.geometry.volume_mm3());
@@ -1311,6 +1321,9 @@ impl Solid {
             return Ok(body.bounds(frame));
         }
         if let Some((body, frame)) = self.normal_sweep_body() {
+            return Ok(body.bounds(frame));
+        }
+        if let Some((body, frame)) = self.spline_sweep_body() {
             return Ok(body.bounds(frame));
         }
         if let Some((body, frame)) = self.cosmetic_fastener_body() {
@@ -1432,6 +1445,9 @@ impl Solid {
             return Ok(body.faces(frame));
         }
         if let Some((body, frame)) = self.normal_sweep_body() {
+            return Ok(body.faces(frame));
+        }
+        if let Some((body, frame)) = self.spline_sweep_body() {
             return Ok(body.faces(frame));
         }
         if let Some((body, frame)) = self.cosmetic_fastener_body() {
@@ -1574,6 +1590,7 @@ impl Solid {
             SolidBody::Revolved(body, frame) => body.mesh(*frame, rust_options),
             SolidBody::RoundedSlot(body, frame) => body.mesh(*frame, rust_options),
             SolidBody::NormalSweep(body, frame) => body.mesh(*frame, rust_options),
+            SolidBody::SplineSweep(body, frame) => body.mesh(*frame, rust_options),
             SolidBody::SpurGear(body, frame) => {
                 crate::rust_display::placed_mesh(body.profile.mesh(rust_options), *frame, false)
             }
@@ -1793,7 +1810,7 @@ impl Solid {
                 let edges = if let Some((body, frame)) = self.helical_body() {
                     body.display_edges(frame, deflection)?
                 } else {
-                    crate::rust_display::edges(&topology, deflection)?
+                    crate::rust_display::edges(Some(self), &topology, deflection)?
                 };
                 (edges, crate::rust_display::vertices(&topology))
             }
@@ -1822,7 +1839,7 @@ impl Solid {
             return body.display_edges(frame, deflection_mm);
         }
         if let Some(topology) = self.rust_topology() {
-            return crate::rust_display::edges(&topology?, deflection_mm);
+            return crate::rust_display::edges(Some(self), &topology?, deflection_mm);
         }
         let edges = ffi::display_edges(self.occt()?, deflection_mm)
             .map_err(|e| native("display edges", e))?;
@@ -1846,6 +1863,18 @@ impl Solid {
             })
             .collect()
     }
+    pub(crate) fn sample_non_analytic_edge(
+        &self,
+        ordinal: u32,
+        options: multicad_rust_kernel::display::Tessellation,
+    ) -> Option<Result<Vec<[f64; 3]>, multicad_rust_kernel::display::MeshError>> {
+        if let Some((body, frame)) = self.spline_sweep_body() {
+            return body.sample_rim(frame, ordinal, options);
+        }
+        let (member, local) = self.rust_compound()?.edge_source(ordinal)?;
+        member.sample_non_analytic_edge(local, options)
+    }
+
     pub fn display_vertices(&self) -> Result<Vec<DisplayVertex>, GeometryError> {
         if let Some(topology) = self.rust_topology() {
             return Ok(crate::rust_display::vertices(&topology?));
@@ -1877,6 +1906,7 @@ impl Solid {
             SolidBody::Revolved(body, _) => body.feature,
             SolidBody::RoundedSlot(body, _) => body.feature,
             SolidBody::NormalSweep(body, _) => body.feature,
+            SolidBody::SplineSweep(body, _) => body.feature,
             SolidBody::SpurGear(body, _) => body.feature,
             SolidBody::AxialStack(body, _) => body.feature,
             SolidBody::PlanarBoolean(body, _) => body.feature,
@@ -1896,6 +1926,7 @@ impl Solid {
             | SolidBody::Annulus(..)
             | SolidBody::Linear(..)
             | SolidBody::NormalSweep(..)
+            | SolidBody::SplineSweep(..)
             | SolidBody::SpurGear(..)
             | SolidBody::AxialStack(..)
             | SolidBody::RoundedSlot(..) => true,
@@ -2004,6 +2035,13 @@ impl Solid {
             SolidBody::Linear(body, frame) => body.append_step(writer, *frame),
             SolidBody::RoundedSlot(body, frame) => body.append_step(writer, *frame),
             SolidBody::NormalSweep(body, frame) => body.append_step(writer, *frame),
+            SolidBody::SplineSweep(body, frame) => writer.append_spline_sweep(
+                &body.sweep,
+                frame.origin,
+                frame.u,
+                frame.v,
+                self.policy.linear_tolerance_mm,
+            ),
             SolidBody::SpurGear(body, frame) => writer.append_spur_gear(
                 &body.profile,
                 frame.origin,

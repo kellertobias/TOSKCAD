@@ -327,6 +327,7 @@ fn rust_spur_hub_extends_the_bore_and_keeps_native_face_roles() {
     solid.write_step(&path).unwrap();
     let verified = multicad_model::export::verify_rust_step_shape(
         &path,
+        rust.solid(feature).unwrap(),
         &rust.snapshot().shapes[&feature],
         compiler.policy.linear_tolerance_mm,
     )

@@ -1,5 +1,5 @@
 use super::*;
-use crate::spur_gear::Spec;
+use crate::spur_gear::{Involute, Spec};
 use std::f64::consts::{FRAC_1_SQRT_2, PI};
 
 const ORIGIN: Point = [11., -7., 23.];
@@ -95,7 +95,7 @@ fn uncertifiable_spur_exchange_leaves_the_writer_unchanged() {
 #[test]
 fn spline_rejects_collapsed_edges_and_uncertifiable_world_rounding() {
     let flank = Involute::new(20., [0.2, 0.5], 0.).unwrap();
-    let spline = FlankSpline::new(flank, SPUR_STEP_MAX_ERROR_MM).unwrap();
+    let spline = CubicTrim::flank(flank, SPUR_STEP_MAX_ERROR_MM).unwrap();
     let placement = Placement::new([1e16, 0., 0.], [1., 0., 0.], [0., 1., 0.]).unwrap();
     let mut file = StepFile::new();
     let from = file.vertex(placement.point_f64(flank.point(0.), 0.));

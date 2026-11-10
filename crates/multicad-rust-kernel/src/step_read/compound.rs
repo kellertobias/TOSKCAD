@@ -21,6 +21,7 @@ pub(super) fn read_members_with_warped<T>(
     single: bool,
     member: impl Fn(&Shell<'_, '_>, &[Face]) -> Result<T>,
     warped_member: impl Fn(Readback, ImportedWarped) -> T,
+    spline_member: impl Fn(Readback, spline_sweep::DecodedSplineSweep) -> T,
 ) -> Result<Vec<T>> {
     read_members_by(
         input,
@@ -28,9 +29,16 @@ pub(super) fn read_members_with_warped<T>(
         true,
         single,
         |shell, id, may_be_warped| {
+            let face_ids = shell.member_faces(id)?;
+            if face_ids
+                .iter()
+                .any(|&face| spline_sweep::has_extrusion_support(shell, face))
+            {
+                return spline_sweep::import_member(shell, face_ids)
+                    .map(|(proof, body)| spline_member(proof, body));
+            }
             let regular = shell
-                .member_faces(id)
-                .and_then(|face_ids| shell.validate_faces(face_ids))
+                .validate_faces(face_ids)
                 .and_then(|faces| member(shell, &faces));
             match regular {
                 Err(error @ (ReadError::Invalid | ReadError::Unsupported)) if may_be_warped => {

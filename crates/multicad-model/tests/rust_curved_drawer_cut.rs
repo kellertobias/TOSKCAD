@@ -74,6 +74,7 @@ fn saved_toolcase_drawer_cuts_front_pull_and_lead_ins_without_losing_fillet_geom
     near(
         verify_rust_step_shape(
             &path,
+            rust.solid(feature).unwrap(),
             &rust.snapshot().shapes[&feature],
             compiler.policy.linear_tolerance_mm,
         )

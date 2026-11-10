@@ -80,6 +80,7 @@ fn saved_toolcase_cuts_bores_and_captive_nut_recesses_in_both_drawers() {
         }
         let receipt = verify_rust_step_shape(
             &path,
+            rust.solid(feature).unwrap(),
             &rust.snapshot().shapes[&feature],
             compiler.policy.linear_tolerance_mm,
         )

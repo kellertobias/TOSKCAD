@@ -141,7 +141,19 @@ impl Builder {
     }
 
     pub(crate) fn non_face(&mut self, geometry: AnalyticGeometry, incident: &[usize]) {
-        let kind = geometry.topology_kind();
+        self.boundary_element(geometry.topology_kind(), Some(geometry), incident);
+    }
+
+    pub(crate) fn non_analytic_edge(&mut self, incident: &[usize]) {
+        self.boundary_element(TopologyKind::Edge, None, incident);
+    }
+
+    fn boundary_element(
+        &mut self,
+        kind: TopologyKind,
+        geometry: Option<AnalyticGeometry>,
+        incident: &[usize],
+    ) {
         let next = if kind == TopologyKind::Edge {
             &mut self.next_edge
         } else {
@@ -158,7 +170,7 @@ impl Builder {
             boundary: origins.clone(),
             origins,
             frames: vec![],
-            geometry: Some(geometry),
+            geometry,
         });
     }
 

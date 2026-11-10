@@ -142,6 +142,7 @@ fn rust_stairs_preserve_rotated_flights_landings_and_manufacturing_geometry() {
         near(reopened.volume_mm3().unwrap(), volume, 1e-8 * volume);
         let receipt = verify_rust_step_shape(
             &path,
+            rust.solid(feature).unwrap(),
             &rust.snapshot().shapes[&feature],
             compiler.policy.linear_tolerance_mm,
         )

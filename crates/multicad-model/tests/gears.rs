@@ -75,6 +75,7 @@ fn rust_straight_rack_preserves_placement_tooth_origins_and_step_exchange() {
     );
     let verified = multicad_model::export::verify_rust_step_shape(
         &path,
+        rust.solid(feature).unwrap(),
         &rust.snapshot().shapes[&feature],
         compiler.policy.linear_tolerance_mm,
     )

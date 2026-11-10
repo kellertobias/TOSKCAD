@@ -80,6 +80,7 @@ fn saved_toolcase_joins_round_mounting_and_magnet_bosses_to_both_drawers() {
         }
         let receipt = verify_rust_step_shape(
             &path,
+            rust.solid(feature).unwrap(),
             &rust.snapshot().shapes[&feature],
             compiler.policy.linear_tolerance_mm,
         )

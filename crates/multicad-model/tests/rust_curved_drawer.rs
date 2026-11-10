@@ -76,6 +76,7 @@ fn saved_toolcase_drawer_keeps_exact_floor_fillet_intersections() {
         }
         let receipt = verify_rust_step_shape(
             &path,
+            rust.solid(feature).unwrap(),
             &rust.snapshot().shapes[&feature],
             compiler.policy.linear_tolerance_mm,
         )

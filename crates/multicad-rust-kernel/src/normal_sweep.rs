@@ -238,7 +238,7 @@ impl Edge {
     }
 
     /// Exact Green integrals from the chord and the signed circular segment.
-    fn moments(self, origin: Point) -> [f64; 3] {
+    pub(crate) fn moments(self, origin: Point) -> [f64; 3] {
         let [a, b] = [self.start(), self.end()].map(|point| sub(point, origin));
         let wedge = cross(a, b) / 2.;
         let mut moment = [

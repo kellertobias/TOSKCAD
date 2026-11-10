@@ -608,3 +608,58 @@ fn export_spur_step_after_reopen(hub: Option<Value>) {
     assert_eq!(std::fs::read_dir(&exports).unwrap().count(), 1);
     assert_eq!(std::fs::read(project).unwrap(), saved);
 }
+
+#[test]
+fn rust_stdio_imports_and_reopens_spline_step_without_the_original_file() {
+    let directory = tempfile::tempdir().unwrap();
+    let source = directory.path().join("source.tcd");
+    let project = directory.path().join("imported.tcd");
+    let exchange = directory.path().to_str().unwrap();
+    let arguments = |project| {
+        [
+            "--rust-model",
+            "--project",
+            project,
+            "--export-dir",
+            exchange,
+        ]
+    };
+    let mut author = Client::start(&arguments(source.to_str().unwrap()));
+    let gear = author.ok(
+        "set_gear",
+        json!({
+            "expected_revision": 0, "name": "Exchange gear", "family": "spur",
+            "teeth": {"value": 24, "unit": "count"}
+        }),
+    );
+    let volume = author.part_volume();
+    author.ok(
+        "export_step",
+        json!({"part": gear["part"], "file_name": "exchange.step"}),
+    );
+    drop(author);
+
+    let mut importer = Client::start(&arguments(project.to_str().unwrap()));
+    let imported = importer.ok(
+        "import_step",
+        json!({"expected_revision": 0, "file_name": "exchange.step"}),
+    );
+    assert_eq!(imported["parts"].as_array().unwrap().len(), 1);
+    close(importer.part_volume(), volume);
+    importer.ok("save_project", json!({"expected_revision": 1}));
+    drop(importer);
+    std::fs::remove_file(directory.path().join("exchange.step")).unwrap();
+    let mut reopened = Client::start(&arguments(project.to_str().unwrap()));
+    close(reopened.part_volume(), volume);
+    let model = reopened.ok("evaluate_model", json!({}));
+    assert_eq!(model["parts"][0]["part"], imported["parts"][0]);
+    let receipt = reopened.ok(
+        "export_step",
+        json!({"part": imported["parts"][0], "file_name": "reexported.step"}),
+    );
+    close(receipt["readback_volume_mm3"].as_f64().unwrap(), volume);
+    let step = std::fs::read_to_string(directory.path().join("reexported.step")).unwrap();
+    let readback =
+        multicad_kernel::rust_kernel::step_read::read_analytic_solid(&step, 1e-7).unwrap();
+    assert_eq!(readback.splines.len(), 96);
+}

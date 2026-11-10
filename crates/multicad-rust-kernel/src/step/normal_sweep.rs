@@ -12,12 +12,12 @@ pub fn write_normal_sweep(
     write_one(|writer| writer.append_normal_sweep(sweep, origin, u, v, reverse_sweep))
 }
 
-pub(super) enum ProfileEdge {
+pub(super) enum ProfileEdge<'a> {
     Analytic(Edge),
-    Cubic(spur_gear::FlankSpline),
+    Cubic(cubic_trim::CubicTrim<'a>),
 }
 
-impl ProfileEdge {
+impl ProfileEdge<'_> {
     fn start(&self) -> [f64; 2] {
         match self {
             Self::Analytic(edge) => edge.start(),
@@ -34,14 +34,14 @@ enum WallSupport {
 
 struct Rim {
     vertices: Vec<Vertex>,
-    edges: Vec<Entity>,
+    edges: Vec<(Entity, bool)>,
     supports: Vec<WallSupport>,
 }
 
 impl Rim {
     fn new(
         file: &mut StepFile,
-        ring: &[ProfileEdge],
+        ring: &[ProfileEdge<'_>],
         placement: &Placement,
         z: f64,
     ) -> Result<Self, StepError> {
@@ -54,7 +54,7 @@ impl Rim {
             .zip(vertices.iter().zip(vertices.iter().cycle().skip(1)))
             .map(|(edge, (&from, &to))| match edge {
                 ProfileEdge::Analytic(Edge::Line { .. }) => {
-                    Ok((line_edge(file, from, to)?, WallSupport::Plane))
+                    Ok(((line_edge(file, from, to)?, true), WallSupport::Plane))
                 }
                 ProfileEdge::Analytic(
                     edge @ Edge::Arc {
@@ -79,12 +79,15 @@ impl Rim {
                         radius,
                         sweep,
                     )?;
-                    Ok((edge, WallSupport::Cylinder(axis)))
+                    Ok(((edge, true), WallSupport::Cylinder(axis)))
                 }
                 ProfileEdge::Analytic(Edge::Circle { .. }) => Err(StepError::InvalidGeometry),
                 ProfileEdge::Cubic(spline) => {
                     let (edge, curve) = spline.encode(file, [from, to], placement, z)?;
-                    Ok((edge, WallSupport::LinearExtrusion(curve)))
+                    Ok((
+                        (edge, !spline.reversed()),
+                        WallSupport::LinearExtrusion(curve),
+                    ))
                 }
             })
             .collect::<Result<Vec<_>, _>>()?
@@ -104,7 +107,7 @@ impl Rim {
         }
         let edges: Vec<_> = edges
             .into_iter()
-            .map(|edge| file.oriented_edge(edge, end))
+            .map(|(edge, forward)| file.oriented_edge(edge, end == forward))
             .collect();
         file.bound(&edges, outer)
     }
@@ -131,9 +134,9 @@ pub(super) fn encode(
     )
 }
 
-pub(super) fn encode_rings(
+pub(super) fn encode_rings<'a>(
     file: &mut StepFile,
-    rings: &mut dyn Iterator<Item = Vec<ProfileEdge>>,
+    rings: &mut dyn Iterator<Item = Vec<ProfileEdge<'a>>>,
     height: f64,
     piercings: &[CertifiedPiercing],
     placement: Placement,
@@ -156,9 +159,9 @@ pub(super) struct EndTrims {
     pub(super) faces: Vec<Entity>,
 }
 
-pub(super) fn encode_rings_with_trims(
+pub(super) fn encode_rings_with_trims<'a>(
     file: &mut StepFile,
-    rings: &mut dyn Iterator<Item = Vec<ProfileEdge>>,
+    rings: &mut dyn Iterator<Item = Vec<ProfileEdge<'a>>>,
     height: f64,
     piercings: &[CertifiedPiercing],
     placement: Placement,
@@ -208,9 +211,9 @@ pub(super) fn encode_rings_with_trims(
         for (i, edge) in ring.iter().enumerate() {
             let next = (i + 1) % ring.len();
             let boundary = [
-                (low.edges[i], true),
+                low.edges[i],
                 (rails[next], true),
-                (high.edges[i], false),
+                (high.edges[i].0, !high.edges[i].1),
                 (rails[i], false),
             ]
             .map(|(edge, forward)| file.oriented_edge(edge, forward));
@@ -248,7 +251,7 @@ pub(super) fn encode_rings_with_trims(
                 let surface = file.entity(format_args!(
                     "SURFACE_OF_LINEAR_EXTRUSION('',{curve},{vector})"
                 ));
-                file.face_on(&[bound], surface, true)
+                file.face_on(&[bound], surface, low.edges[i].1)
             } else {
                 let tangent = direction(low.vertices[i].point, low.vertices[next].point)?;
                 let mut boundaries = vec![bound];

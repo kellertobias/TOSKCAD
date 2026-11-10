@@ -71,6 +71,7 @@ fn saved_toolcase_crops_the_exact_finished_drawer_to_its_front_coupon() {
     }
     let receipt = verify_rust_step_shape(
         &path,
+        rust.solid(feature).unwrap(),
         &rust.snapshot().shapes[&feature],
         compiler.policy.linear_tolerance_mm,
     )
