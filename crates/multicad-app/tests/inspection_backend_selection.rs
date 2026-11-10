@@ -109,15 +109,16 @@ fn desktop_inspection_workers_keep_the_selected_backend_for_the_same_source() {
     let mut rust_assembly =
         assembly_inspection::Backend::with_geometry_backend(GeometryBackend::Rust);
     rust_assembly.request(document, &assembly).unwrap();
-    for error in [
-        reply(|| rust_measure.poll()).result.unwrap_err(),
-        reply(|| rust_assembly.poll()).result.unwrap_err(),
-    ] {
-        assert!(
-            error.contains("Rust backend supports only box and axial cylinder primitives"),
-            "{error}"
-        );
-    }
+    assert!(reply(|| rust_measure.poll()).result.is_ok());
+    let AssemblyInspectionReport::Current(report) = reply(|| rust_assembly.poll()).result.unwrap()
+    else {
+        panic!("Expected current Rust assembly report");
+    };
+    let failure = report.pairs[0].result.as_ref().unwrap_err();
+    assert_eq!(
+        failure.kind,
+        multicad_core::assembly_inspection::InspectionFailureKind::Unsupported
+    );
     assert_eq!(session.revision(), revision);
 }
 

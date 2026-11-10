@@ -92,6 +92,13 @@ fn projection_members<'a>(solids: &[DrawingSolid<'a>]) -> Vec<(usize, &'a Solid)
     members
 }
 
+fn contains_sphere(solid: &Solid) -> bool {
+    solid.sphere_body().is_some()
+        || solid
+            .rust_compound()
+            .is_some_and(|compound| compound.members().any(contains_sphere))
+}
+
 fn contains_herringbone(solid: &Solid) -> bool {
     solid.herringbone_body().is_some()
         || solid
@@ -164,6 +171,12 @@ pub fn project_drawing(
             return Err(err(
                 GeometryErrorKind::Unsupported,
                 "Rust drawing projection requires all sources to use Rust geometry",
+            ));
+        }
+        if solids.iter().any(|input| contains_sphere(input.solid)) {
+            return Err(err(
+                GeometryErrorKind::Unsupported,
+                "Rust exact drawing projection for spheres is unavailable",
             ));
         }
         if solids.iter().any(|input| contains_herringbone(input.solid)) {

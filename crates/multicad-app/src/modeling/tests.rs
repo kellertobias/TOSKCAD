@@ -2254,13 +2254,14 @@ fn rust_model_worker_publishes_pickable_panel_and_isolates_preview_failures() {
     assert_eq!(box_cap.geometry, box_source.feature);
     assert_eq!(box_cap.point_mm, [5., 5., 30.]);
 
-    let sphere = PrimitiveRequest::new(
-        "Unsupported sphere",
-        PrimitiveParameters::Sphere {
-            radius: length(4.),
-            frame: Default::default(),
+    let sphere_at_height = |height| PrimitiveParameters::Sphere {
+        radius: length(4.),
+        frame: multicad_core::model::PrimitiveFrame {
+            origin: [5., 5., height].map(length),
+            ..Default::default()
         },
-    );
+    };
+    let sphere = PrimitiveRequest::new("Sphere", sphere_at_height(40.));
     let create = model::prepare_primitive(
         &box_doc,
         box_doc.revision(),
@@ -2269,9 +2270,32 @@ fn rust_model_worker_publishes_pickable_panel_and_isolates_preview_failures() {
     )
     .unwrap();
     box_doc.commit(create.prepared).unwrap();
-    let bad_stamp = SceneStamp {
+    let sphere_stamp = SceneStamp {
         revision: box_doc.revision(),
         generation: 4,
+        ..box_stamp
+    };
+    preview.request(box_doc.document(), sphere_stamp).unwrap();
+    let sphere_scene = wait_for_scene(&mut *preview).result.unwrap();
+    assert_eq!(sphere_scene.stamp(), sphere_stamp);
+    let picked = sphere_scene
+        .pick_face(viewport::Ray::new([5., 5., 50.], [0., 0., -1.]).unwrap())
+        .unwrap();
+    assert_eq!(picked.geometry, sphere.feature);
+    assert!((picked.point_mm[2] - 44.).abs() < 1e-8);
+
+    let invalid = model::prepare_primitive_edit(
+        &box_doc,
+        box_doc.revision(),
+        Actor::local(Channel::Ui),
+        sphere.feature,
+        &sphere_at_height(1e7),
+    )
+    .unwrap();
+    box_doc.commit(invalid.prepared).unwrap();
+    let bad_stamp = SceneStamp {
+        revision: box_doc.revision(),
+        generation: 5,
         ..box_stamp
     };
     preview.request(box_doc.document(), bad_stamp).unwrap();
@@ -2282,7 +2306,7 @@ fn rust_model_worker_publishes_pickable_panel_and_isolates_preview_failures() {
             .result
             .err()
             .unwrap()
-            .contains("box and axial cylinder")
+            .contains("outside model bounds")
     );
     assert!(canonical.poll().is_none());
     assert_eq!(scene.stamp(), stamp);

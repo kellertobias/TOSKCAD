@@ -686,15 +686,31 @@ pub(crate) fn primitive(
             })
             .map_err(|e| error(Some(id), e));
     }
+    if matches!(source, PrimitiveParameters::Sphere { .. }) {
+        let model::ResolvedPrimitive::Sphere { radius_mm, frame } =
+            source.resolve(parameters).map_err(|e| error(Some(id), e))?
+        else {
+            unreachable!("checked sphere variant");
+        };
+        return Solid::rust_sphere_named(
+            radius_mm,
+            PlaneFrame {
+                origin: frame.origin,
+                u: frame.u,
+                v: frame.v,
+            },
+            id,
+            policy,
+        )
+        .map_err(|e| error(Some(id), e));
+    }
     let PrimitiveParameters::Cylinder {
         radius,
         height,
         frame,
     } = source
     else {
-        return Err(fail(
-            "Rust backend supports only box and axial cylinder primitives".into(),
-        ));
+        unreachable!("handled box and sphere variants");
     };
     let resolved = frame.resolve(parameters).map_err(|e| error(Some(id), e))?;
     let placement = PlaneFrame {

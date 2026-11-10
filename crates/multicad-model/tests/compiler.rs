@@ -662,7 +662,9 @@ fn sphere_primitive_compiles_edits_and_reopens_as_an_exact_named_solid() {
 
     let compiler = Compiler::default();
     let check = |document: &Document, revision, radius: f64| {
-        let model = compiler.compile(document, revision).unwrap();
+        let model = compiler
+            .compile_with_backend(document, revision, GeometryBackend::Rust, None)
+            .unwrap();
         let sphere = shape(&model, request.body);
         assert_eq!(sphere.producer, request.feature);
         assert_eq!(sphere.solid_count, 1);
@@ -681,6 +683,78 @@ fn sphere_primitive_compiles_edits_and_reopens_as_an_exact_named_solid() {
                     .iter()
                     .any(|origin| origin.source == request.feature)
         }));
+        sphere.topology.validate().unwrap();
+        let exact = model.solid(request.feature).unwrap();
+        let faces = exact.faces().unwrap();
+        assert_eq!(faces.len(), 1);
+        near(
+            faces[0].area_mm2,
+            4. * std::f64::consts::PI * radius.powi(2),
+        );
+        point_near(faces[0].center_mm, center);
+        assert_eq!(faces[0].plane, None);
+        let mesh = exact
+            .manufacturing_mesh_with_receipt(Default::default())
+            .unwrap();
+        assert!(mesh.edge_pairs > 0 && mesh.vertex_links > 0);
+        assert!(mesh.mesh.face_indices.iter().all(|&face| face == 0));
+        assert_eq!(exact.display_edges(0.1).unwrap().len(), 1);
+        let poles = exact.display_vertices().unwrap();
+        assert_eq!(poles.len(), 2);
+        point_near(
+            poles[0].position_mm,
+            [center[0] - radius, center[1], center[2]],
+        );
+        point_near(
+            poles[1].position_mm,
+            [center[0] + radius, center[1], center[2]],
+        );
+        let translated = exact
+            .transformed(multicad_kernel::RigidTransform {
+                rotation: [[0., -1., 0.], [1., 0., 0.], [0., 0., 1.]],
+                translation_mm: [20., 30., 40.],
+            })
+            .unwrap();
+        let moved_center = [30., 130., 45.];
+        let moved_poles = translated.display_vertices().unwrap();
+        point_near(moved_poles[0].position_mm, [30., 130. - radius, 45.]);
+        point_near(moved_poles[1].position_mm, [30., 130. + radius, 45.]);
+        point_near(
+            translated.bounds().unwrap().min,
+            moved_center.map(|x| x - radius),
+        );
+        assert_eq!(
+            exact
+                .topology_snapshot(request.body, revision)
+                .unwrap()
+                .elements
+                .into_iter()
+                .map(|e| e.origins)
+                .collect::<Vec<_>>(),
+            translated
+                .topology_snapshot(request.body, revision)
+                .unwrap()
+                .elements
+                .into_iter()
+                .map(|e| e.origins)
+                .collect::<Vec<_>>()
+        );
+
+        #[cfg(feature = "occt")]
+        {
+            let oracle = compiler
+                .compile_with_backend(document, revision, GeometryBackend::OpenCascade, None)
+                .unwrap();
+            let native = oracle.solid(request.feature).unwrap();
+            assert_eq!(native.solid_count().unwrap(), exact.solid_count().unwrap());
+            near(native.volume_mm3().unwrap(), exact.volume_mm3().unwrap());
+            let native_bounds = native.bounds().unwrap();
+            point_near(native_bounds.min, sphere.bounds.min);
+            point_near(native_bounds.max, sphere.bounds.max);
+            let native_faces = native.faces().unwrap();
+            assert_eq!(native_faces.len(), 1);
+            near(native_faces[0].area_mm2, faces[0].area_mm2);
+        }
     };
     check(session.document(), session.revision(), 10.);
     assert!(

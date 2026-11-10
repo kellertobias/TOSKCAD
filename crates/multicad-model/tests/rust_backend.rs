@@ -1663,8 +1663,10 @@ fn a_tangent_bore_is_rejected_without_native_fallback() {
 }
 
 #[test]
-fn unsupported_documents_return_explicit_errors() {
-    let mut session = Session::new(Document::new("Unsupported Rust primitive").unwrap()).unwrap();
+fn sphere_refuses_unsupported_exact_exchange_and_drawings() {
+    use multicad_kernel::{DrawingProjection, DrawingSolid, GeometryErrorKind, project_drawing};
+
+    let mut session = Session::new(Document::new("Sphere exchange").unwrap()).unwrap();
     let stock = PrimitiveRequest::new(
         "Sphere",
         PrimitiveParameters::Sphere {
@@ -1674,22 +1676,20 @@ fn unsupported_documents_return_explicit_errors() {
     );
     let prepared = model::prepare_primitive(&session, session.revision(), actor(), &stock).unwrap();
     session.commit(prepared.prepared).unwrap();
-    let native = compile(&session, GeometryBackend::OpenCascade);
-    near(
-        native.solid(stock.feature).unwrap().volume_mm3().unwrap(),
-        4. * PI / 3.,
+    let rust = compile(&session, GeometryBackend::Rust);
+    let solid = rust.solid(stock.feature).unwrap();
+    assert!(!solid.supports_step_export());
+    let directory = tempfile::tempdir().unwrap();
+    let destination = directory.path().join("sphere.step");
+    assert_eq!(
+        solid.write_step(&destination).unwrap_err().kind,
+        GeometryErrorKind::Unsupported
     );
-    let rust = compiler()
-        .compile_with_backend(
-            session.document(),
-            session.revision(),
-            GeometryBackend::Rust,
-            None,
-        )
-        .err()
-        .unwrap();
-    assert_eq!(rust.entity, Some(stock.feature));
-    assert!(rust.message.contains("box and axial cylinder"));
+    assert!(!destination.exists());
+    let input = DrawingSolid { solid, hatch: None };
+    let error = project_drawing(&[input], DrawingProjection::default()).unwrap_err();
+    assert_eq!(error.kind, GeometryErrorKind::Unsupported);
+    assert!(error.message.contains("sphere"));
 }
 
 #[test]

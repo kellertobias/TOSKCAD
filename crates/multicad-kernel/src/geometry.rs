@@ -24,6 +24,7 @@ mod planar_boolean_body;
 mod revolution_body;
 mod rounded_slot_body;
 mod rust_compound;
+mod sphere_body;
 mod spline_sweep_body;
 mod spur_gear_body;
 mod step_import;
@@ -44,6 +45,7 @@ use planar_boolean_body::PlanarBooleanBody;
 use revolution_body::RevolutionBody;
 use rounded_slot_body::RoundedSlotBody;
 use rust_compound::RustCompound;
+use sphere_body::SphereBody;
 use spline_sweep_body::SplineSweepBody;
 use spur_gear_body::SpurGearBody;
 use warped_union_body::WarpedUnionBody;
@@ -561,6 +563,7 @@ enum SolidBody {
     SplineSweep(Rc<SplineSweepBody>, PlaneFrame),
     SpurGear(Rc<SpurGearBody>, PlaneFrame),
     Herringbone(Rc<HerringboneBody>, PlaneFrame),
+    Sphere(Rc<SphereBody>, PlaneFrame),
     AxialStack(Rc<AxialStackBody>, PlaneFrame),
     RustCompound(Rc<RustCompound>),
     Orthogonal(Rc<OrthogonalBody>, PlaneFrame),
@@ -922,6 +925,7 @@ impl Solid {
             SolidBody::SplineSweep(body, frame) => SolidBody::SplineSweep(Rc::clone(body), *frame),
             SolidBody::SpurGear(body, frame) => SolidBody::SpurGear(Rc::clone(body), *frame),
             SolidBody::Herringbone(body, frame) => SolidBody::Herringbone(Rc::clone(body), *frame),
+            SolidBody::Sphere(body, frame) => SolidBody::Sphere(Rc::clone(body), *frame),
             SolidBody::AxialStack(body, frame) => SolidBody::AxialStack(Rc::clone(body), *frame),
             SolidBody::PlanarBoolean(body, frame) => {
                 SolidBody::PlanarBoolean(Rc::clone(body), *frame)
@@ -1200,6 +1204,9 @@ impl Solid {
                 SolidBody::Herringbone(body, frame) => {
                     SolidBody::Herringbone(Rc::clone(body), transform.frame(*frame))
                 }
+                SolidBody::Sphere(body, frame) => {
+                    SolidBody::Sphere(Rc::clone(body), transform.frame(*frame))
+                }
                 SolidBody::AxialStack(body, frame) => {
                     SolidBody::AxialStack(Rc::clone(body), transform.frame(*frame))
                 }
@@ -1239,6 +1246,9 @@ impl Solid {
         Ok(result)
     }
     pub fn volume_mm3(&self) -> Result<f64, GeometryError> {
+        if let Some((body, _)) = self.sphere_body() {
+            return Ok(body.geometry.volume_mm3());
+        }
         if let Some((body, _)) = self.spur_gear_body() {
             return Ok(body.profile.volume_mm3());
         }
@@ -1320,6 +1330,9 @@ impl Solid {
         ffi::solid_count(self.occt()?).map_err(|e| native("solid count", e))
     }
     pub fn bounds(&self) -> Result<Bounds, GeometryError> {
+        if let Some((body, frame)) = self.sphere_body() {
+            return Ok(body.bounds(frame));
+        }
         if let Some((body, frame)) = self.spur_gear_body() {
             return Ok(body.bounds(frame));
         }
@@ -1447,6 +1460,9 @@ impl Solid {
         crate::planar_contours::extract(self, face, frame, self.policy)
     }
     pub fn faces(&self) -> Result<Vec<Face>, GeometryError> {
+        if let Some((body, frame)) = self.sphere_body() {
+            return Ok(vec![body.face(frame)]);
+        }
         if let Some((body, frame)) = self.spur_gear_body() {
             return Ok(body.faces(frame));
         }
@@ -1613,6 +1629,9 @@ impl Solid {
                 crate::rust_display::placed_mesh(body.profile.mesh(rust_options), *frame, false)
             }
             SolidBody::Herringbone(body, frame) => {
+                crate::rust_display::placed_mesh(body.geometry.mesh(rust_options), *frame, false)
+            }
+            SolidBody::Sphere(body, frame) => {
                 crate::rust_display::placed_mesh(body.geometry.mesh(rust_options), *frame, false)
             }
             SolidBody::AxialStack(body, frame) => body.mesh(*frame, rust_options),
@@ -1933,6 +1952,7 @@ impl Solid {
             SolidBody::SplineSweep(body, _) => body.feature,
             SolidBody::SpurGear(body, _) => body.feature,
             SolidBody::Herringbone(body, _) => body.feature,
+            SolidBody::Sphere(body, _) => body.feature,
             SolidBody::AxialStack(body, _) => body.feature,
             SolidBody::PlanarBoolean(body, _) => body.feature,
             SolidBody::WarpedUnion(body, _) => body.feature,
@@ -1969,7 +1989,7 @@ impl Solid {
             SolidBody::Herringbone(body, frame) => {
                 standalone && body.supports_step(*frame, self.policy)
             }
-            SolidBody::CosmeticFastener(..) => false,
+            SolidBody::CosmeticFastener(..) | SolidBody::Sphere(..) => false,
             SolidBody::WarpedUnion(body, _) => {
                 multicad_rust_kernel::step::supports_warped_union(&body.geometry)
             }
@@ -2128,7 +2148,9 @@ impl Solid {
                 Ok(())
             }
             SolidBody::Helical(body, frame) => body.append_step(writer, *frame, self.policy),
-            SolidBody::CosmeticFastener(..) => Err(step::StepError::Unsupported),
+            SolidBody::CosmeticFastener(..) | SolidBody::Sphere(..) => {
+                Err(step::StepError::Unsupported)
+            }
             SolidBody::Orthogonal(body, frame) => body.append_step(writer, *frame),
             SolidBody::Occt(_) => unreachable!("native STEP dispatched above"),
         }
