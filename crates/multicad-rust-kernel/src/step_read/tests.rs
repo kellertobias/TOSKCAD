@@ -58,6 +58,7 @@ fn incidence_with_curves(
         tolerance: 1e-7,
         allow_circles: false,
         points: BTreeMap::new(),
+        stadium_loops: BTreeMap::new(),
         edges: edges
             .into_iter()
             .enumerate()
@@ -126,6 +127,16 @@ fn only_periodic_seams_may_repeat_and_circular_edges_need_a_wall() {
     });
     assert_eq!(
         incidence_with_curves([([1, 1], [0, 1], circle)], 2),
+        Err(ReadError::Invalid)
+    );
+    let half = Curve::Semicircle(SemicircleEdge {
+        center_mm: [0.; 3],
+        normal: [0., 0., 1.],
+        radius_mm: 1.,
+        radial_mid: [1., 0., 0.],
+    });
+    assert_eq!(
+        incidence_with_curves([([1, 2], [0, 1], half)], 2),
         Err(ReadError::Invalid)
     );
 }

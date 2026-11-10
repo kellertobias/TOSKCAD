@@ -15,6 +15,26 @@ fn box_step() -> String {
 }
 
 #[test]
+fn stadium_recognition_ignores_wire_start_and_refuses_a_polygon_fallback() {
+    let profile = Stadium::new([[0.; 2], [6., 0.]], 1.).unwrap();
+    let text = step::write_stadium_prism(&profile, 4., [0.; 3], X, Y, false).unwrap();
+    let entities = parse_entities(&text, TOLERANCE).unwrap();
+    let mut shell = Shell::new(&entities, TOLERANCE, true);
+    let faces = shell.validated_faces().unwrap();
+    let face_edges = shell.indexed_edges(faces.len());
+    let recognized = shell.recognize(&faces).unwrap();
+    shell.stadium_loops.get_mut(&0).unwrap()[0]
+        .edges
+        .rotate_left(2);
+    assert_eq!(shell.recognize(&faces), Some(recognized));
+    assert!(
+        shell
+            .planar_profile(&face_edges[0], 0, Z, PlanarMatch::Straight(4., &[]))
+            .is_none()
+    );
+}
+
+#[test]
 fn prism_candidate_rejects_incompatible_caps_and_shared_walls() {
     let source = box_step();
     let entities = parse_entities(&source, TOLERANCE).unwrap();

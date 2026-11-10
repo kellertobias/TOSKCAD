@@ -2,8 +2,10 @@
 
 use super::*;
 use crate::orthogonal::{BooleanError, OrientedFace, solid_from_oriented_faces};
+use crate::orthogonal_boundary;
 
 mod mixed;
+mod stadium;
 
 #[cfg(test)]
 mod tests;
@@ -233,18 +235,21 @@ fn import_error(error: BooleanError) -> ReadError {
 
 impl Shell<'_, '_> {
     pub(super) fn orthogonal(&self, faces: &[Face]) -> Result<ImportSolid> {
-        let (recesses, omitted) = self.orthogonal_recesses(faces)?;
+        let (recesses, mut omitted) = self.orthogonal_recesses(faces)?;
+        let slot_recesses = self.orthogonal_slots(faces, &mut omitted)?;
         let mut indices = BTreeMap::new();
         let mut points = Vec::new();
         let mut successors = vec![BTreeMap::new(); faces.len()];
         let mut segments = Vec::with_capacity(self.edges.len());
         for edge in self.edges.values() {
             if edge.uses.iter().any(|use_| omitted.contains(&use_.face)) {
-                // Only a circular opening is shared by the stock and a
-                // recess. The periodic seam and floor belong to the recess.
+                // Only a verified opening is shared by the stock and a
+                // recess. The walls and floor belong to the recess.
                 continue;
             }
-            debug_assert!(matches!(edge.curve, Curve::Line));
+            if !matches!(edge.curve, Curve::Line) {
+                return Err(ReadError::Unsupported);
+            }
             let [a, b] = edge.vertices.map(|id| {
                 *indices.entry(id).or_insert_with(|| {
                     let index = points.len();
@@ -314,11 +319,29 @@ impl Shell<'_, '_> {
             .collect::<Result<Vec<_>>>()?;
         let solid = solid_from_oriented_faces(&oriented, self.tolerance).map_err(import_error)?;
         let bounds = solid.bounds();
-        let profile = if recesses.is_empty() {
+        let profile = if recesses.is_empty() && slot_recesses.is_empty() {
             ImportProfile::Orthogonal { solid }
         } else {
-            let pockets = self.placed_recesses(&solid, &recesses, origin_mm, axes)?;
-            ImportProfile::PocketedOrthogonal { solid, pockets }
+            let boundary =
+                orthogonal_boundary::build(solid.quads()).or(Err(ReadError::Unsupported))?;
+            let pockets = self.placed_recesses(&solid, &boundary, &recesses, origin_mm, axes)?;
+            if slot_recesses.is_empty() {
+                ImportProfile::PocketedOrthogonal { solid, pockets }
+            } else {
+                let slots = self.placed_slots(
+                    &solid,
+                    &boundary,
+                    &slot_recesses,
+                    &pockets,
+                    origin_mm,
+                    axes,
+                )?;
+                ImportProfile::SlottedOrthogonal {
+                    solid,
+                    pockets,
+                    slots,
+                }
+            }
         };
         Ok(ImportSolid {
             origin_mm,

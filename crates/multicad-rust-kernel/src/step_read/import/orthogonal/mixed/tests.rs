@@ -154,19 +154,21 @@ fn reconstructed_stock_caps_recess_work_before_searching_for_mouths() {
     let entities = parse_entities(&step, TOLERANCE).unwrap();
     let mut shell = Shell::new(&entities, TOLERANCE, true);
     let faces = shell.validated_faces().unwrap();
+    let boundary = orthogonal_boundary::build(stock.quads()).unwrap();
     let recess = shell.orthogonal_recesses(&faces).unwrap().0[0];
     let other = Recess {
         mouth: [20., 12., 4.],
         ..recess
     };
     let ordered = shell
-        .placed_recesses(&stock, &[other, recess], [0.; 3], XYZ)
+        .placed_recesses(&stock, &boundary, &[other, recess], [0.; 3], XYZ)
         .unwrap();
     assert_eq!(ordered.len(), 2);
     assert_eq!(ordered[0].center_mm, recess.mouth);
     assert_eq!(
         shell.placed_recesses(
             &stock,
+            &boundary,
             &[Recess {
                 depth: 25.,
                 ..recess
@@ -177,12 +179,12 @@ fn reconstructed_stock_caps_recess_work_before_searching_for_mouths() {
         Err(ReadError::Unsupported)
     );
     assert_eq!(
-        shell.placed_recesses(&stock, &[recess; 2], [0.; 3], XYZ),
+        shell.placed_recesses(&stock, &boundary, &[recess; 2], [0.; 3], XYZ),
         Err(ReadError::Unsupported)
     );
     let too_many = vec![recess; orthogonal_pockets::pocket_capacity(&stock) + 1];
     assert_eq!(
-        shell.placed_recesses(&stock, &too_many, [0.; 3], XYZ),
+        shell.placed_recesses(&stock, &boundary, &too_many, [0.; 3], XYZ),
         Err(ReadError::Limit)
     );
 }

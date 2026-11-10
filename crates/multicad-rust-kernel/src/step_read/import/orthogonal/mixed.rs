@@ -1,7 +1,7 @@
 //! Remove certified circular recesses while recovering the orthogonal stock.
 
 use super::*;
-use crate::{orthogonal_boundary, orthogonal_pockets};
+use crate::{orthogonal_boundary::Boundary, orthogonal_pockets};
 
 #[cfg(test)]
 mod tests;
@@ -101,6 +101,7 @@ impl Shell<'_, '_> {
     pub(super) fn placed_recesses(
         &self,
         solid: &OrthogonalSolid,
+        boundary: &Boundary,
         recesses: &[Recess],
         origin: Point,
         axes: [Point; 3],
@@ -108,9 +109,8 @@ impl Shell<'_, '_> {
         if recesses.len() > orthogonal_pockets::pocket_capacity(solid) {
             return Err(ReadError::Limit);
         }
-        let boundary = orthogonal_boundary::build(solid.quads()).or(Err(ReadError::Unsupported))?;
         let validate = |pockets: &[OrthogonalPocket]| {
-            orthogonal_pockets::validate(solid, &boundary, pockets, self.tolerance, self.tolerance)
+            orthogonal_pockets::validate(solid, boundary, pockets, self.tolerance, self.tolerance)
         };
         let mut pockets = Vec::with_capacity(recesses.len());
         for recess in recesses {

@@ -1,16 +1,18 @@
 //! Readback for a single millimetre STEP advanced solid bounded by planes and
-//! full cylindrical walls. The reader follows the shared topology in the
+//! full or half cylindrical walls. The reader follows the shared topology in the
 //! file and integrates the analytic boundary without tessellating it.
 
 mod curve;
 mod import;
 mod part21;
 mod round;
+mod stadium;
 
 use crate::polygon::MAX_VERTICES;
 pub use import::{ImportProfile, ImportSolid, read_import_solid};
 use part21::{Entity, Value};
 use round::Trim;
+use stadium::{HalfCylinder, StadiumLoop};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Maximum size of a Part 21 file accepted by either reader.
@@ -33,6 +35,15 @@ pub struct CircleEdge {
     pub radius_mm: f64,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SemicircleEdge {
+    pub center_mm: Point,
+    pub normal: Point,
+    pub radius_mm: f64,
+    /// Unit direction from the center to the midpoint of the half arc.
+    pub radial_mid: Point,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Readback {
     pub bounds_mm: [Point; 2],
@@ -41,6 +52,7 @@ pub struct Readback {
     /// Straight model edges. Periodic surface seams are excluded.
     pub edges_mm: Vec<[Point; 2]>,
     pub circles: Vec<CircleEdge>,
+    pub semicircles: Vec<SemicircleEdge>,
     pub solid_count: u32,
 }
 
@@ -52,8 +64,8 @@ pub fn read_planar_solid(input: &str, tolerance_mm: f64) -> Result<Readback> {
     read(input, tolerance_mm, false)
 }
 
-/// Verify a planar solid or a solid containing closed circular edges and
-/// full cylindrical walls between planar caps. General STEP import and
+/// Verify a planar solid or a solid containing full circles and semicircles
+/// with cylindrical walls between planar caps. General STEP import and
 /// intersection tests between unrelated 3D faces are outside this profile.
 pub fn read_analytic_solid(input: &str, tolerance_mm: f64) -> Result<Readback> {
     read(input, tolerance_mm, true)
@@ -163,6 +175,7 @@ struct Edge {
 enum Curve {
     Line,
     Circle(CircleEdge),
+    Semicircle(SemicircleEdge),
 }
 
 enum Face {
@@ -175,6 +188,7 @@ enum Face {
         seam: u32,
         flux: f64,
     },
+    HalfCylinder(HalfCylinder),
 }
 
 impl Face {
@@ -186,6 +200,7 @@ impl Face {
                 area,
             } => area * dot(sub(*origin, anchor), *normal),
             Self::Cylindrical { flux, .. } => *flux,
+            Self::HalfCylinder(wall) => wall.flux(anchor),
         }
     }
 }
@@ -203,6 +218,7 @@ struct Shell<'a, 'input> {
     allow_circles: bool,
     points: BTreeMap<u32, Point>,
     edges: BTreeMap<u32, Edge>,
+    stadium_loops: BTreeMap<usize, Vec<StadiumLoop>>,
 }
 
 impl<'a, 'input> Shell<'a, 'input> {
@@ -217,6 +233,7 @@ impl<'a, 'input> Shell<'a, 'input> {
             allow_circles,
             points: BTreeMap::new(),
             edges: BTreeMap::new(),
+            stadium_loops: BTreeMap::new(),
         }
     }
 
@@ -268,10 +285,11 @@ impl<'a, 'input> Shell<'a, 'input> {
             .iter()
             .filter_map(|face| match face {
                 Face::Cylindrical { seam, .. } => Some(*seam),
-                Face::Planar { .. } => None,
+                Face::Planar { .. } | Face::HalfCylinder(_) => None,
             })
             .collect();
         let mut circles = Vec::new();
+        let mut semicircles = Vec::new();
         let mut edges_mm = Vec::new();
         for (&id, edge) in &self.edges {
             match edge.curve {
@@ -284,6 +302,10 @@ impl<'a, 'input> Shell<'a, 'input> {
                         include_point(&mut bounds_mm, point);
                     }
                     circles.push(circle);
+                }
+                Curve::Semicircle(arc) => {
+                    arc.include_bounds(&mut bounds_mm);
+                    semicircles.push(arc);
                 }
             }
         }
@@ -299,6 +321,7 @@ impl<'a, 'input> Shell<'a, 'input> {
             face_count: faces.len(),
             edges_mm,
             circles,
+            semicircles,
             solid_count: 1,
         })
     }
@@ -504,6 +527,13 @@ impl<'a, 'input> Shell<'a, 'input> {
             let traversals = self.traversals(wire, forward, face, remaining_vertices)?;
             remaining_vertices -= traversals.len();
             let ring = self.planar_trim(&traversals, &plane)?;
+            if let Trim::Stadium { ccw, .. } = &ring {
+                let edges = std::array::from_fn(|i| traversals[i].edge);
+                self.stadium_loops
+                    .entry(face)
+                    .or_default()
+                    .push(StadiumLoop { edges, ccw: *ccw });
+            }
             if exterior {
                 if outer.replace(ring).is_some() {
                     return Err(ReadError::Invalid);
@@ -625,10 +655,20 @@ impl<'a, 'input> Shell<'a, 'input> {
                 }
                 return Err(ReadError::Invalid);
             }
-            if matches!(edge.curve, Curve::Circle(_))
-                && matches!(faces[first.face], Face::Planar { .. })
-                    == matches!(faces[second.face], Face::Planar { .. })
-            {
+            let supports = (&faces[first.face], &faces[second.face]);
+            if match edge.curve {
+                Curve::Line => false,
+                Curve::Circle(_) => !matches!(
+                    supports,
+                    (Face::Planar { .. }, Face::Cylindrical { .. })
+                        | (Face::Cylindrical { .. }, Face::Planar { .. })
+                ),
+                Curve::Semicircle(_) => !matches!(
+                    supports,
+                    (Face::Planar { .. }, Face::HalfCylinder(_))
+                        | (Face::HalfCylinder(_), Face::Planar { .. })
+                ),
+            } {
                 return Err(ReadError::Invalid);
             }
             adjacency[first.face].push(second.face);

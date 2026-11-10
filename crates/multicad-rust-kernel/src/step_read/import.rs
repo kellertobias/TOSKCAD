@@ -2,7 +2,8 @@
 use super::*;
 use crate::{
     circular_pockets::CircularPocket, linear_sweep::Sweep, orthogonal::OrthogonalSolid,
-    orthogonal_pockets::OrthogonalPocket, trimmed_sweep::TrimmedSweep,
+    orthogonal_pockets::OrthogonalPocket, orthogonal_slots::OrthogonalSlot, stadium::Stadium,
+    trimmed_sweep::TrimmedSweep,
 };
 use std::cmp::Ordering;
 
@@ -45,6 +46,14 @@ pub enum ImportProfile {
         /// Certified stock and circular recesses in the local frame.
         solid: OrthogonalSolid,
         pockets: Vec<OrthogonalPocket>,
+    },
+    SlottedOrthogonal {
+        solid: OrthogonalSolid,
+        pockets: Vec<OrthogonalPocket>,
+        slots: Vec<OrthogonalSlot>,
+    },
+    Stadium {
+        profile: Stadium,
     },
     Cylinder {
         radius_mm: f64,
@@ -355,6 +364,11 @@ impl Shell<'_, '_> {
         if !matches!(
             (face, base.curve, end.curve),
             (Face::Planar { .. }, Curve::Line, Curve::Line)
+                | (
+                    Face::HalfCylinder(_),
+                    Curve::Semicircle(_),
+                    Curve::Semicircle(_)
+                )
         ) || edges.len() != 4
         {
             return None;
@@ -390,9 +404,10 @@ impl Shell<'_, '_> {
         let end = &self.edges[&top];
         let displaced = |a: Point, b: Point| length(sub(sub(b, a), sweep)) <= self.tolerance;
         match (face, base.curve, end.curve) {
-            (Face::Planar { .. }, Curve::Line, Curve::Line) => {
-                // Each exact wall is bounded by the two cap edges and two
-                // generators. Their endpoints prove the whole planar quad.
+            (Face::Planar { .. }, Curve::Line, Curve::Line)
+            | (Face::HalfCylinder(_), Curve::Semicircle(_), Curve::Semicircle(_)) => {
+                // Each of these walls has two distinct straight generators.
+                // The shell has already validated a half-cylinder's matching rims.
                 for [a, b] in self.wall_generators(face, edges, bottom, top)? {
                     if !displaced(self.points[&a], self.points[&b]) {
                         return None;
@@ -421,6 +436,39 @@ impl Shell<'_, '_> {
         height_mm: f64,
         correspondence: Option<&BTreeMap<u32, u32>>,
     ) -> Option<ImportSolid> {
+        if correspondence.is_none()
+            && let Some([rim]) = self.stadium_loops.get(&lower).map(Vec::as_slice)
+            && rim.ccw
+            && edges.len() == 4
+        {
+            let mut arcs = rim
+                .edges
+                .iter()
+                .filter_map(|id| match self.edges[id].curve {
+                    Curve::Semicircle(arc) => Some(arc),
+                    _ => None,
+                });
+            let [a, b] = [arcs.next()?, arcs.next()?];
+            let (a, b) = if compare(a.center_mm, b.center_mm).is_gt() {
+                (b, a)
+            } else {
+                (a, b)
+            };
+            let delta = sub(b.center_mm, a.center_mm);
+            let [u, v] = frame_axes(direction, delta);
+            let profile = Stadium::new(
+                [[0.; 2], [dot(delta, u), 0.]],
+                a.radius_mm.midpoint(b.radius_mm),
+            )
+            .ok()?;
+            return Some(ImportSolid {
+                origin_mm: a.center_mm.map(zero),
+                u,
+                v,
+                height_mm,
+                profile: ImportProfile::Stadium { profile },
+            });
+        }
         if let [id] = edges
             && let Curve::Circle(circle) = self.edges[id].curve
         {
@@ -499,6 +547,7 @@ impl Shell<'_, '_> {
                     }
                     circles.push(circle);
                 }
+                Curve::Semicircle(_) => return None,
             }
         }
         // Following a long rim edge preserves the profile's native axes on

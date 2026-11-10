@@ -1,4 +1,6 @@
 use super::*;
+use crate::stadium::{Stadium, segments_distance};
+use stadium::{distance_to_spine, polygon_clear_of_stadium};
 use std::f64::consts::PI;
 
 impl CircleEdge {
@@ -16,7 +18,7 @@ impl CircleEdge {
         })
     }
 
-    fn within_plane(self, plane: &Plane, tolerance: f64) -> bool {
+    pub(super) fn within_plane(self, plane: &Plane, tolerance: f64) -> bool {
         let center_deviation = dot(sub(self.center_mm, plane.origin), plane.normal).abs();
         let radial_deviation = self.radius_mm * length(cross(self.normal, plane.normal));
         center_deviation + radial_deviation <= tolerance
@@ -35,7 +37,7 @@ impl Shell<'_, '_> {
         };
         let radius = *radius;
         let plane = self.placement(reference(axis)?)?;
-        if start != end || radius <= self.tolerance || radius > 1e12 {
+        if radius <= self.tolerance || radius > 1e12 {
             return Err(ReadError::Invalid);
         }
         let point = sub(self.vertex(start)?, plane.origin);
@@ -44,13 +46,18 @@ impl Shell<'_, '_> {
         {
             return Err(ReadError::Invalid);
         }
-        Ok(Curve::Circle(CircleEdge {
+        let circle = CircleEdge {
             center_mm: plane.origin,
             normal: plane
                 .normal
                 .map(|coordinate| if forward { coordinate } else { -coordinate }),
             radius_mm: radius,
-        }))
+        };
+        if start != end {
+            let other = sub(self.vertex(end)?, plane.origin);
+            return self.semicircle_curve(circle, point, other);
+        }
+        Ok(Curve::Circle(circle))
     }
 
     pub(super) fn planar_trim(&self, wire: &[Traversal], plane: &Plane) -> Result<Trim> {
@@ -67,6 +74,12 @@ impl Shell<'_, '_> {
                 radius: circle.radius_mm,
                 ccw,
             });
+        }
+        if wire
+            .iter()
+            .any(|edge| matches!(self.edges[&edge.edge].curve, Curve::Semicircle(_)))
+        {
+            return self.stadium_trim(wire, plane);
         }
         if wire.len() < 3 {
             return Err(ReadError::Invalid);
@@ -110,12 +123,20 @@ impl Shell<'_, '_> {
         let mut wire = self.traversals(wire, forward, face, MAX_VERTICES)?;
         let first = wire
             .iter()
-            .position(|edge| edge.start == edge.end)
+            .position(|edge| !matches!(self.edges[&edge.edge].curve, Curve::Line))
             .ok_or(ReadError::Invalid)?;
         wire.rotate_left(first);
         let [a, seam_out, b, seam_back] = wire.as_slice() else {
             return Err(ReadError::Unsupported);
         };
+        if matches!(self.edges[&a.edge].curve, Curve::Semicircle(_)) {
+            return self.half_cylindrical_face(
+                &surface,
+                radius,
+                outward,
+                [a, seam_out, b, seam_back],
+            );
+        }
         let [Curve::Circle(circle_a), Curve::Circle(circle_b)] =
             [a, b].map(|edge| self.edges[&edge.edge].curve)
         else {
@@ -168,6 +189,10 @@ pub(super) enum Trim {
         radius: f64,
         ccw: bool,
     },
+    Stadium {
+        profile: Stadium,
+        ccw: bool,
+    },
 }
 
 impl Trim {
@@ -175,13 +200,14 @@ impl Trim {
         match self {
             Self::Polygon(ring) => signed_area(ring),
             Self::Circle { radius, ccw, .. } => PI * radius.powi(2) * if *ccw { 1. } else { -1. },
+            Self::Stadium { profile, ccw } => profile.area_mm2() * if *ccw { 1. } else { -1. },
         }
     }
 
     pub(super) fn simple(&self, tolerance: f64) -> bool {
         match self {
             Self::Polygon(ring) => simple_ring(ring, tolerance),
-            Self::Circle { .. } => true,
+            Self::Circle { .. } | Self::Stadium { .. } => true,
         }
     }
 
@@ -204,6 +230,26 @@ impl Trim {
                     ..
                 },
             ) => distance(*center, *inner) + inner_radius + tolerance < *radius,
+            (Self::Polygon(ring), Self::Stadium { profile, .. }) => {
+                contains(ring, profile.centers()[0])
+                    && polygon_clear_of_stadium(ring, *profile, tolerance)
+            }
+            (Self::Stadium { profile, .. }, Self::Polygon(ring)) => ring
+                .iter()
+                .all(|&point| distance_to_spine(*profile, point) + tolerance < profile.radius_mm()),
+            (Self::Circle { center, radius, .. }, Self::Stadium { profile, .. }) => profile
+                .centers()
+                .into_iter()
+                .all(|point| distance(*center, point) + profile.radius_mm() + tolerance < *radius),
+            (Self::Stadium { profile, .. }, Self::Circle { center, radius, .. }) => {
+                distance_to_spine(*profile, *center) + radius + tolerance < profile.radius_mm()
+            }
+            (Self::Stadium { profile, .. }, Self::Stadium { profile: inner, .. }) => {
+                inner.centers().into_iter().all(|point| {
+                    distance_to_spine(*profile, point) + inner.radius_mm() + tolerance
+                        < profile.radius_mm()
+                })
+            }
         }
     }
 
@@ -225,6 +271,19 @@ impl Trim {
                     ..
                 },
             ) => distance(*center, *other) > radius + other_radius + tolerance,
+            (Self::Polygon(ring), Self::Stadium { profile, .. })
+            | (Self::Stadium { profile, .. }, Self::Polygon(ring)) => {
+                !contains(ring, profile.centers()[0])
+                    && polygon_clear_of_stadium(ring, *profile, tolerance)
+            }
+            (Self::Circle { center, radius, .. }, Self::Stadium { profile, .. })
+            | (Self::Stadium { profile, .. }, Self::Circle { center, radius, .. }) => {
+                distance_to_spine(*profile, *center) > profile.radius_mm() + radius + tolerance
+            }
+            (Self::Stadium { profile, .. }, Self::Stadium { profile: other, .. }) => {
+                segments_distance(profile.centers(), other.centers())
+                    > profile.radius_mm() + other.radius_mm() + tolerance
+            }
         }
     }
 }
