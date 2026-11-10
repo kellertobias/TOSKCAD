@@ -16,7 +16,7 @@ pub use candidates::{
     SpatialRimCandidate, StadiumOpening,
 };
 pub use depth::DepthRange;
-use std::f64::consts::PI;
+use std::f64::consts::{PI, TAU};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RoundSegment {
@@ -343,6 +343,34 @@ impl Scene<'_> {
     }
 }
 
+fn trimmed_rim_bounds([origin, cosine, sine]: [Point; 3], extent: Point, trim: Span) -> Bounds {
+    let trigonometry = trim.map(f64::sin_cos);
+    let ranges = std::array::from_fn::<_, 3, _>(|i| {
+        let [a, b] =
+            trigonometry.map(|(sin, cos)| cosine[i].mul_add(cos, sine[i].mul_add(sin, origin[i])));
+        let phase = sine[i].atan2(cosine[i]).rem_euclid(TAU);
+        let antipode = (phase + PI).rem_euclid(TAU);
+        let range = trim[0]..=trim[1];
+        let min = if range.contains(&antipode) {
+            origin[i] - extent[i]
+        } else {
+            a.min(b)
+        };
+        let max = if range.contains(&phase) {
+            origin[i] + extent[i]
+        } else {
+            a.max(b)
+        };
+        // Enclose numerical variation at wrapped extrema and endpoints.
+        let pad = 16. * f64::EPSILON * (origin[i].abs() + extent[i]).max(1.);
+        [min - pad, max + pad]
+    });
+    Bounds {
+        min: ranges.map(|range| range[0]),
+        max: ranges.map(|range| range[1]),
+    }
+}
+
 fn hide_rim(
     rim: Rim,
     blockers: Blockers<'_>,
@@ -353,13 +381,19 @@ fn hide_rim(
     work.hidden.clear();
     let [origin, cos, sin] = rim.basis();
     let extent: Point = std::array::from_fn(|i| cos[i].hypot(sin[i]));
-    let bounds = Bounds {
+    let full_bounds = Bounds {
         min: std::array::from_fn(|i| origin[i] - extent[i]),
         max: std::array::from_fn(|i| origin[i] + extent[i]),
     };
+    let trim = rim.ellipse.trim;
+    let bounds = if trim == [0., TAU] {
+        full_bounds
+    } else {
+        trimmed_rim_bounds([origin, cos, sin], extent, trim)
+    };
     if let Some(index) = blockers.planes {
         index.visit(bounds, work, &mut |face, work| {
-            face.hide_rim(rim, bounds, work)
+            face.hide_rim(rim, full_bounds, work)
         })?;
     }
     if let Some(index) = blockers.analytic {

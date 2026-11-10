@@ -1024,3 +1024,47 @@ fn transparent_aperture_preserves_rear_geometry_and_hidden_sources() {
         Err(ProjectionError::Limit),
     );
 }
+
+#[test]
+fn trimmed_rim_bounds_include_wrapped_stationary_points_and_exclude_far_quadrants() {
+    let basis = [[0., 20., 3.], [4., 0., 0.], [-3., 2., 5.]];
+    let extent = [5., 2., 5.];
+    let bounds = trimmed_rim_bounds(basis, extent, [5.4, 5.9]);
+    close(bounds.max[0], 5.);
+    assert!(bounds.min[0] > 4.);
+    assert!(bounds.max[1] < 20.);
+    assert!(bounds.max[2] < 3.);
+
+    let bounds = trimmed_rim_bounds(basis, extent, [2.3, 2.8]);
+    close(bounds.min[0], -5.);
+    assert!(bounds.max[0] < -4.);
+}
+
+#[test]
+fn trimmed_rim_bounds_enclose_tiny_and_edge_on_curves_with_depth() {
+    let basis = [[1e7, -12., 1e7], [5., 0., 0.], [0., 0., -5.]];
+    let extent = [5., 0., 5.];
+    for trim in [
+        [0.51, 0.51 + 1e-11],
+        [FRAC_PI_2 - 1e-10, FRAC_PI_2 + 1e-10],
+        [TAU - 1e-4, TAU],
+        [0., 1e-4],
+    ] {
+        let bounds = trimmed_rim_bounds(basis, extent, trim);
+        for i in 0..=100 {
+            let at = trim[0] + (trim[1] - trim[0]) * f64::from(i) / 100.;
+            let point = std::array::from_fn::<_, 3, _>(|axis| {
+                basis[0][axis] + basis[1][axis] * at.cos() + basis[2][axis] * at.sin()
+            });
+            assert!(
+                point
+                    .into_iter()
+                    .enumerate()
+                    .all(|(i, p)| { (bounds.min[i]..=bounds.max[i]).contains(&p) })
+            );
+        }
+        assert!(bounds.max[0] - bounds.min[0] < 1e-3);
+        assert!(bounds.max[1] - bounds.min[1] < 1e-10);
+        assert!(bounds.max[2] - bounds.min[2] < 1e-3);
+    }
+}
