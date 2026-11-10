@@ -9,15 +9,14 @@ impl Shell<'_, '_> {
         if faces
             .iter()
             .any(|face| !matches!(face, Face::Planar { .. }))
-            || self
-                .edges
-                .values()
-                .any(|edge| !matches!(edge.curve, Curve::Line))
         {
             return Err(ReadError::Unsupported);
         }
         let mut successors = vec![BTreeMap::new(); faces.len()];
         for edge in self.edges.values() {
+            if !matches!(edge.curve, Curve::Line) {
+                return Err(ReadError::Unsupported);
+            }
             for &use_ in &edge.uses {
                 let [a, b] = edge.vertices;
                 let [start, end] = if use_.forward { [a, b] } else { [b, a] };

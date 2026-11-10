@@ -139,6 +139,14 @@ fn keeps_structural_and_geometric_rejections_separate() {
     let mut parsed = Shell::new(&entities, TOL, false);
     let faces = parsed.validated_faces().unwrap();
     let first = parsed.edges.values_mut().next().unwrap();
+    first.curve = Curve::Circle(CircleEdge {
+        center_mm: ORIGIN,
+        normal: cross(U, V),
+        radius_mm: 1.,
+    });
+    assert_eq!(parsed.planar_boundary(&faces), Err(ReadError::Unsupported));
+    let first = parsed.edges.values_mut().next().unwrap();
+    first.curve = Curve::Line;
     first.uses.push(first.uses[0]);
     assert_eq!(parsed.planar_boundary(&faces), Err(ReadError::Invalid));
     parsed.edges.values_mut().next().unwrap().uses.pop();
