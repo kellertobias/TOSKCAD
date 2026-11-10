@@ -2,8 +2,7 @@
 //! sheet and produce separate purchased-hardware Parts placed on the
 //! evaluated faces. Moving points, replacing presets and removing items
 //! update holes, hardware and the developed pattern; stack and catalogue
-//! thickness incompatibilities are reported. Everything is measured from
-//! native solids.
+//! thickness incompatibilities are reported. Measurements use exact solids.
 use multicad_core::{
     commands::{Actor, Channel, Session},
     document::{Document, Entity, EntityData, EntityId},
@@ -296,4 +295,148 @@ fn mounting_patterns_cut_holes_and_place_separate_hardware_parts() {
         s.undo(s.revision(), actor()).unwrap();
     }
     assert_eq!(s.document(), &before);
+}
+
+#[test]
+fn rust_flat_sheet_builds_nominal_purchased_pieces_and_the_same_hardware_records() {
+    use multicad_model::GeometryBackend;
+    let mut session = Session::new(Document::new("Flat hardware").unwrap()).unwrap();
+    let steel = Entity::new(
+        "Steel",
+        EntityData::Material {
+            density_kg_m3: Some(7850.),
+            color_rgba: [180, 184, 190, 255],
+            section_hatch: None,
+        },
+    );
+    let stock = LibraryDefinition::Stock(Stock {
+        material: steel.id,
+        specification: StockKind::Sheet {
+            thickness_mm: 1.5,
+            length_mm: 2000.,
+            width_mm: 1000.,
+            inside_bend_radius_mm: 1.5,
+            k_factor: 0.42,
+        },
+    })
+    .entity(EntityId::new(), "Steel 1.5")
+    .unwrap();
+    let stock_id = stock.id;
+    session
+        .commit(prepare_library(&session, 0, actor(), &[steel, stock]).unwrap())
+        .unwrap();
+    let sheet = SheetRequest::new(
+        "Plate",
+        SheetDefinition {
+            output: BodyOutput {
+                body: EntityId::new(),
+            },
+            stock: stock_id,
+            base: SheetBase::Rectangle {
+                plane: PanelPlane::Xz,
+                origin: [1., 10., 5.].map(length),
+                length: length(100.),
+                width: length(60.),
+            },
+            reverse: true,
+            inside_radius: None,
+            k_factor: None,
+            flanges: vec![],
+            cutouts: vec![],
+            fasteners: vec![],
+        },
+    );
+    let prepared = model::prepare_sheet(&session, session.revision(), actor(), &sheet).unwrap();
+    session.commit(prepared.prepared).unwrap();
+    let patterns = [
+        screws(&[[15., 12.], [85., 48.]], Thread::M3, 8., true),
+        MountingPattern {
+            preset: HardwarePreset::Standoff {
+                thread: Thread::M4,
+                length: length(6.),
+                across_flats: length(7.),
+            },
+            face: CutoutFace::Base,
+            side: HardwareSide::Base,
+            points: vec![[20., 48.].map(length), [80., 12.].map(length)],
+        },
+        MountingPattern {
+            face: CutoutFace::Base,
+            side: HardwareSide::Base,
+            points: vec![[50., 30.].map(length)],
+            ..insert()
+        },
+    ];
+    let prepared = model::prepare_sheet_fasteners(
+        &session,
+        session.revision(),
+        actor(),
+        sheet.feature,
+        &patterns,
+    )
+    .unwrap();
+    assert_eq!(prepared.hardware.len(), 5);
+    session.commit(prepared.model.prepared).unwrap();
+    let compiler = Compiler {
+        omit_display: true,
+        ..Default::default()
+    };
+    let rust = compiler
+        .compile_with_backend(
+            session.document(),
+            session.revision(),
+            GeometryBackend::Rust,
+            None,
+        )
+        .unwrap();
+    let native = compiler
+        .compile(session.document(), session.revision())
+        .unwrap();
+    let rust_records = rust.sheet_hardware(session.document()).unwrap();
+    assert_eq!(
+        rust_records,
+        native.sheet_hardware(session.document()).unwrap()
+    );
+    for (item, count) in [
+        (HardwareItem::Screw, 2),
+        (HardwareItem::Washer, 4),
+        (HardwareItem::Nut, 2),
+        (HardwareItem::Standoff, 2),
+        (HardwareItem::Insert, 1),
+    ] {
+        let hardware = record(&rust_records, item);
+        assert_eq!(hardware.quantity, count);
+        let [r, n] = [&rust, &native].map(|model| {
+            model
+                .solid(model.snapshot().bodies[&hardware.part])
+                .unwrap()
+        });
+        assert!(r.uses_rust_geometry());
+        near(r.volume_mm3().unwrap(), n.volume_mm3().unwrap());
+        assert_eq!(r.faces().unwrap().len(), n.faces().unwrap().len());
+        assert!(!r.mesh(Default::default()).unwrap().indices.is_empty());
+        let manufacturing = r.manufacturing_mesh_with_receipt(Default::default());
+        if matches!(item, HardwareItem::Nut | HardwareItem::Standoff) {
+            assert_eq!(
+                manufacturing.unwrap_err().kind,
+                multicad_kernel::GeometryErrorKind::Unsupported
+            );
+        } else {
+            let receipt = manufacturing.unwrap_or_else(|e| panic!("{item:?}: {e}"));
+            assert!(!receipt.mesh.indices.is_empty());
+        }
+        assert_eq!(
+            r.supports_step_export(),
+            matches!(item, HardwareItem::Washer | HardwareItem::Insert)
+        );
+        let [a, b] = [r.bounds().unwrap(), n.bounds().unwrap()];
+        for (x, y) in a
+            .min
+            .into_iter()
+            .chain(a.max)
+            .zip(b.min.into_iter().chain(b.max))
+        {
+            near(x, y);
+        }
+    }
 }

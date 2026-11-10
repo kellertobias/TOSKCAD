@@ -1,9 +1,9 @@
-//! Native attached hardware: each hardware Part's solids placed at its
+//! Attached hardware: each hardware Part's solids placed at its
 //! mounting pattern's points on the evaluated sheet, and the purchased-item
 //! records with quantities measured from those solids and compatibility
 //! findings. Dimensions are nominal; nothing here is an installation,
 //! torque or strength statement.
-use crate::{Model, ModelError, SheetLayout, error};
+use crate::{GeometryBackend, Model, ModelError, SheetLayout, error};
 use multicad_core::{
     document::{Document, DocumentError, EntityData, EntityId},
     model::{self, HardwareItem, HardwareSide, ResolvedPreset},
@@ -12,6 +12,10 @@ use multicad_kernel::{
     BooleanOperation, CurvedEdge2d, CurvedProfile, GeometryPolicy, PlaneFrame, Solid,
 };
 use std::collections::BTreeMap;
+
+mod rust;
+#[cfg(test)]
+mod tests;
 
 fn add(a: [f64; 3], b: [f64; 3], s: f64) -> [f64; 3] {
     [a[0] + b[0] * s, a[1] + b[1] * s, a[2] + b[2] * s]
@@ -75,6 +79,7 @@ pub(crate) fn build(
     id: EntityId,
     layouts: &BTreeMap<EntityId, SheetLayout>,
     policy: GeometryPolicy,
+    backend: GeometryBackend,
 ) -> Result<Solid, ModelError> {
     let m = |m: String| error(Some(id), m);
     let h = model::read_hardware(document, id).map_err(|e: DocumentError| error(Some(id), e))?;
@@ -104,6 +109,32 @@ pub(crate) fn build(
         HardwareSide::Base => (n.map(|c| -c), 0., t),
     };
     let back = out.map(|c| -c);
+    if backend == GeometryBackend::Rust {
+        let mut pieces = Vec::new();
+        for p in &pattern.points {
+            let base = frame.point(*p);
+            rust::append_pieces(
+                &mut pieces,
+                rust::Mount {
+                    frame,
+                    surface: add(base, n, surface_offset),
+                    rear: add(base, n, back_offset),
+                    out,
+                },
+                &pattern.preset,
+                h.item,
+                id,
+                policy,
+            )
+            .map_err(m)?;
+        }
+        return match pieces.as_slice() {
+            [] => Err(m("A mounting pattern needs points".into())),
+            [_] => Ok(pieces.pop().expect("one checked hardware piece")),
+            _ => Solid::compound_named(&pieces.iter().collect::<Vec<_>>(), id, policy)
+                .map_err(|e| m(e.to_string())),
+        };
+    }
     let mut acc = None;
     for p in &pattern.points {
         let base = frame.point(*p);
@@ -319,20 +350,51 @@ impl Model {
             }
             if let Some(sheet_head) = self.snapshot().bodies.get(&sheet.output.body)
                 && let Some(sheet_solid) = self.solid(*sheet_head)
-                && let Some(common) = solid
-                    .boolean(
-                        sheet_solid,
-                        BooleanOperation::Intersect,
-                        GeometryPolicy {
-                            boolean_fuzzy_mm: 0.,
-                            ..self.policy
-                        },
-                    )
-                    .map_err(|e| error(Some(id), e))?
-                && common.volume_mm3().map_err(|e| error(Some(id), e))? > 1e-6
             {
-                findings
-                    .push("The hardware intersects the sheet; check its side and points".into());
+                let intersects = if solid.uses_rust_geometry() {
+                    if sheet_solid.uses_rust_geometry()
+                        && self
+                            .snapshot()
+                            .sheet_layouts
+                            .get(sheet_head)
+                            .is_some_and(|head| {
+                                head.forming_feature == h.sheet && head.flanges.is_empty()
+                            })
+                    {
+                        // Every flat-sheet piece seats outside the stock.
+                        // Only the screw shaft enters it, inside the retained
+                        // circular through-opening in the forming layout.
+                        matches!(&pattern.preset, ResolvedPreset::Screw { thread, .. }
+                            if h.item == HardwareItem::Screw && thread.data().diameter > pattern.preset.hole_mm())
+                    } else {
+                        findings.push(
+                            "Exact hardware interference requires a verified flat Rust sheet"
+                                .into(),
+                        );
+                        false
+                    }
+                } else {
+                    let common = solid
+                        .boolean(
+                            sheet_solid,
+                            BooleanOperation::Intersect,
+                            GeometryPolicy {
+                                boolean_fuzzy_mm: 0.,
+                                ..self.policy
+                            },
+                        )
+                        .map_err(|e| error(Some(id), e))?;
+                    common
+                        .map(|s| s.volume_mm3())
+                        .transpose()
+                        .map_err(|e| error(Some(id), e))?
+                        .is_some_and(|volume| volume > 1e-6)
+                };
+                if intersects {
+                    findings.push(
+                        "The hardware intersects the sheet; check its side and points".into(),
+                    );
+                }
             }
             let EntityData::Part { .. } = &document
                 .get(part)

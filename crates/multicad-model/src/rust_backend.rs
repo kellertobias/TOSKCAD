@@ -57,6 +57,7 @@ pub(crate) fn validate_document(
                     | (model::LOOSE_TENON_TYPE, model::LOOSE_TENON_SCHEMA)
                     | (model::MACHINING_CUT_TYPE, model::MACHINING_CUT_SCHEMA)
                     | (model::SHEET_TYPE, model::SHEET_SCHEMA)
+                    | (model::HARDWARE_TYPE, model::HARDWARE_SCHEMA)
                     | (
                         model::SHEET_PROFILE_CUT_TYPE,
                         model::SHEET_PROFILE_CUT_SCHEMA

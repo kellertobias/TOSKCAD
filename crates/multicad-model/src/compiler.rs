@@ -1316,9 +1316,13 @@ impl Compiler {
                     sheet_layouts.insert(id, layout);
                     solid
                 }
-                (model::HARDWARE_TYPE, model::HARDWARE_SCHEMA) => {
-                    crate::sheet_hardware::build(document, id, &sheet_layouts, self.policy)?
-                }
+                (model::HARDWARE_TYPE, model::HARDWARE_SCHEMA) => crate::sheet_hardware::build(
+                    document,
+                    id,
+                    &sheet_layouts,
+                    self.policy,
+                    backend,
+                )?,
                 (model::WALL_TYPE, model::WALL_SCHEMA | model::LAYERED_WALL_SCHEMA) => {
                     crate::walls::build(
                         document,
