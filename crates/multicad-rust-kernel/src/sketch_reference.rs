@@ -1,4 +1,6 @@
-//! Analytic references to finite points and straight edges in a sketch frame.
+//! Analytic references to finite geometry in a sketch frame.
+
+pub mod conic;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Method {

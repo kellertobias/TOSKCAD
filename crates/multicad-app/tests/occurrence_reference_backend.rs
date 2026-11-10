@@ -404,37 +404,165 @@ fn rust_worker_captures_a_placed_line_that_rebuilds_its_consuming_extrusion_afte
 }
 
 #[test]
-fn rust_catalogue_refuses_a_curved_edge_that_the_native_worker_resolves() {
+fn rust_worker_captures_a_rotated_rim_contact_that_follows_its_source_after_reopen() {
     let f = fixture(true);
     let before = f.session.document().clone();
-    let mut native_worker = external_queries::Backend::new();
-    let native = native_query(&f, 0, QueryMethod::Intersect);
-    assert_eq!(
-        catalog(&mut native_worker, &f.session, &native)
-            .results
-            .len(),
-        2
-    );
     let backend = GeometryBackend::Rust;
     let rust = query_with_backend(&f, 0, QueryMethod::Intersect, backend);
-    let mut rust_worker = external_queries::Backend::with_geometry_backend(backend);
-    rust_worker
-        .request_catalog(
-            f.session.preparation_snapshot(),
-            ProjectResources::default(),
-            rust,
-        )
-        .unwrap();
-    let ExternalQueryReply::Catalog { result, .. } = poll(&mut rust_worker) else {
-        panic!("Expected a catalogue reply");
+    let mut worker = external_queries::Backend::with_geometry_backend(backend);
+    let found = catalog(&mut worker, &f.session, &rust);
+    let point = |choice: &sketch_external::ExternalChoice| {
+        let ExternalGeometry::Point { position_mm } = choice.geometry else {
+            panic!("Expected a finite rim contact");
+        };
+        position_mm
     };
-    let error = result.unwrap_err();
+    assert_eq!(found.results.len(), 2);
+    let mut ys = found
+        .results
+        .iter()
+        .map(|c| point(c)[1])
+        .collect::<Vec<_>>();
+    ys.sort_by(f64::total_cmp);
+    near(ys[0], -5.);
+    near(ys[1], 5.);
     assert!(
-        error.contains("Rust sketch references support finite vertices and straight edges"),
-        "{error}"
+        found
+            .results
+            .iter()
+            .all(|c| point(c)[0].abs() < 1e-7 && !c.tangent)
     );
+    assert_ne!(
+        found.results[0].selector.branch,
+        found.results[1].selector.branch
+    );
+
+    if multicad_kernel::OCCT_LINKED {
+        let mut native_worker = external_queries::Backend::new();
+        let native = catalog(
+            &mut native_worker,
+            &f.session,
+            &native_query(&f, 0, QueryMethod::Intersect),
+        );
+        assert_eq!(native.results.len(), found.results.len());
+        for rust in &found.results {
+            assert!(native.results.iter().any(|reference| {
+                let [a, b] = [point(rust), point(reference)];
+                (a[0] - b[0]).hypot(a[1] - b[1]) < 1e-7
+            }));
+        }
+    }
+
+    let selected = found.results.iter().find(|c| point(c)[1] > 0.).unwrap();
+    let request =
+        OccurrenceCaptureRequest::new(&found, &selected.selector, Behavior::Derived).unwrap();
+    let prepared = prepare(&mut worker, &f.session, &request, false).unwrap();
     assert_eq!(f.session.document(), &before);
+    let mut session = f.session;
+    session.commit(prepared.edit.preview.unwrap()).unwrap();
+    let mut bytes = Vec::new();
+    project_file::write(
+        &ProjectFile::new(session.document().clone()).unwrap(),
+        &mut bytes,
+        FileLimits::default(),
+    )
+    .unwrap();
+    let reopened = project_file::read(
+        &mut bytes.as_slice(),
+        FileLimits::default(),
+        &project_file::supported_capabilities(),
+    )
+    .unwrap();
+    let mut session = Session::new(reopened.project.document).unwrap();
+    assert_eq!(
+        sketch_external::read_occurrence(session.document(), request.query.reference).unwrap(),
+        request
+    );
+    let assert_receipt = |session: &Session, expected_y: f64| {
+        let model = Compiler::default()
+            .compile_with_backend(session.document(), session.revision(), backend, None)
+            .unwrap();
+        assert!(model.snapshot().references.external_errors.is_empty());
+        let receipt = &model.snapshot().references.external_results[&request.query.reference];
+        assert_eq!(receipt.selector, request.selector);
+        let ExternalGeometry::Point { position_mm } = receipt.geometry else {
+            panic!("Expected a resolved sketch point");
+        };
+        near(position_mm[0], 0.);
+        near(position_mm[1], expected_y);
+    };
+    assert_receipt(&session, 5.);
+
+    let mut moved = f.copies[0].parameters.clone();
+    moved.translation[1] = length(2.);
+    moved.translation[2] = length(1.);
+    let edit = model::prepare_instance_placement_edit(
+        &session,
+        session.revision(),
+        actor(),
+        f.copies[0].driver,
+        &moved,
+    )
+    .unwrap();
+    session.commit(edit.prepared).unwrap();
+    assert_receipt(&session, 2. + 24_f64.sqrt());
 }
+#[test]
+fn rust_worker_captures_an_oblique_rim_as_an_exact_rational_reference() {
+    let mut f = fixture(true);
+    let backend = GeometryBackend::Rust;
+    let mut placement = f.copies[0].parameters.clone();
+    placement.angle = angle(45.);
+    let edit = model::prepare_instance_placement_edit(
+        &f.session,
+        f.session.revision(),
+        actor(),
+        f.copies[0].driver,
+        &placement,
+    )
+    .unwrap();
+    f.session.commit(edit.prepared).unwrap();
+    let query = query_with_backend(&f, 0, QueryMethod::Project, backend);
+    let mut worker = external_queries::Backend::with_geometry_backend(backend);
+    let found = catalog(&mut worker, &f.session, &query);
+    assert_eq!(found.results.len(), 1);
+    let ExternalGeometry::BSpline { poles_mm, basis } = &found.results[0].geometry else {
+        panic!("Expected an exact rational ellipse");
+    };
+    assert_eq!(basis.degree, 2);
+    assert_eq!(basis.multiplicities, [3, 2, 2, 2, 3]);
+    assert_eq!(poles_mm[0], poles_mm[8]);
+    for i in 0..=32 {
+        let [x, y] = basis.evaluate(poles_mm, f64::from(i) / 32.).unwrap().point;
+        near(2. * x.powi(2) + y.powi(2), 25.);
+    }
+    let request =
+        OccurrenceCaptureRequest::new(&found, &found.results[0].selector, Behavior::ReferenceOnly)
+            .unwrap();
+    let prepared = prepare(&mut worker, &f.session, &request, false).unwrap();
+    f.session.commit(prepared.edit.preview.unwrap()).unwrap();
+    let rebuilt = Compiler::default()
+        .compile_with_backend(f.session.document(), f.session.revision(), backend, None)
+        .unwrap();
+    let receipt = &rebuilt.snapshot().references.external_results[&request.query.reference];
+    assert_eq!(receipt.geometry, found.results[0].geometry);
+    let source = Source::read_for_evaluation(
+        f.session.document(),
+        f.sketch,
+        f.session.revision(),
+        Some(&rebuilt.snapshot().references),
+    )
+    .unwrap()
+    .0;
+    assert!(
+        source
+            .sketch
+            .curves
+            .iter()
+            .any(|curve| Some(curve.id) == request.output.curve && curve.construction)
+    );
+}
+
 #[test]
 fn actual_worker_capture_repair_remove_preserve_source_and_original_session_ownership() {
     let mut f = fixture(false);
