@@ -409,7 +409,8 @@ impl Ellipse {
         )
     }
 
-    pub(crate) fn in_detail(self, detail: Detail) -> Vec<Interval> {
+    /// Trim a validated projected ellipse to a circular drawing detail.
+    pub fn in_detail(self, detail: Detail) -> Vec<Interval> {
         let offset = difference(self.center, detail.center);
         let [x, y] = [dot(offset, self.u), dot(offset, self.v)];
         let scale = x.abs().max(y.abs()).max(self.major).max(detail.radius);

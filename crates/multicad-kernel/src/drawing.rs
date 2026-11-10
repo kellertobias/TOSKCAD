@@ -6,6 +6,7 @@ mod curved;
 mod panel;
 mod planar;
 mod section;
+mod sphere;
 
 #[derive(Clone, Copy, Debug)]
 pub struct DrawingProjection {
@@ -173,10 +174,15 @@ pub fn project_drawing(
                 "Rust drawing projection requires all sources to use Rust geometry",
             ));
         }
+        if let [input] = solids
+            && let Some((sphere, frame)) = input.solid.sphere_body()
+        {
+            return sphere::project(input, frame.origin, sphere.radius_mm(), options);
+        }
         if solids.iter().any(|input| contains_sphere(input.solid)) {
             return Err(err(
                 GeometryErrorKind::Unsupported,
-                "Rust exact drawing projection for spheres is unavailable",
+                "Rust sphere projection currently requires an isolated sphere",
             ));
         }
         if solids.iter().any(|input| contains_herringbone(input.solid)) {

@@ -47,6 +47,10 @@ impl Solid {
 }
 
 impl SphereBody {
+    pub(crate) fn radius_mm(&self) -> f64 {
+        self.geometry.radius_mm()
+    }
+
     pub(super) fn bounds(&self, frame: PlaneFrame) -> Bounds {
         let r = self.geometry.radius_mm();
         Bounds {

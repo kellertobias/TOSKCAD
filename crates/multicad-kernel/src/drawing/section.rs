@@ -7,7 +7,7 @@ mod annulus;
 mod end_on;
 mod machined;
 mod retained;
-pub(super) use annulus::project_circular;
+pub(super) use annulus::{project_circular, project_disk};
 
 pub(super) fn project(
     solids: &[DrawingSolid<'_>],

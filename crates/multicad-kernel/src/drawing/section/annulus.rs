@@ -137,7 +137,7 @@ pub(in crate::drawing) fn project_circular(
         .hatch
         .filter(|hatch| hatch.pattern != HatchPattern::None);
 
-    let (frame, mut output, boundary) = if c.abs() <= ANGULAR_ROUNDOFF {
+    let (frame, output, boundary) = if c.abs() <= ANGULAR_ROUNDOFF {
         // The plane meets the cylinders along generators, or misses them
         // entirely. A tangent generator has no material area.
         let distance = delta_depth.abs();
@@ -212,6 +212,49 @@ pub(in crate::drawing) fn project_circular(
         (frame, output, boundary)
     };
 
+    finish_section(frame, output, boundary, hatch, options, tolerance)
+}
+
+pub(in crate::drawing) fn project_disk(
+    origin: Point,
+    radius: f64,
+    input: &DrawingSolid<'_>,
+    options: DrawingProjection,
+) -> Result<Vec<ProjectedVector>, GeometryError> {
+    let frame = Frame2 {
+        origin,
+        u: [1., 0.],
+        v: [0., 1.],
+    };
+    let outer = [radius; 2];
+    let planes = frame.window([options.section_u_mm, options.section_v_mm]);
+    let tolerance = input.solid.geometry_policy().linear_tolerance_mm;
+    let output = elliptical_section(frame, outer, [0.; 2], &planes, options, tolerance)?;
+    let hatch = input
+        .hatch
+        .filter(|hatch| hatch.pattern != HatchPattern::None);
+    let boundary = if hatch.is_some() && !output.is_empty() {
+        hatch_boundary(
+            outer,
+            [0.; 2],
+            &planes,
+            options.chord_tolerance_mm,
+            tolerance,
+        )?
+    } else {
+        Vec::new()
+    };
+    finish_section(frame, output, boundary, hatch, options, tolerance)
+}
+
+fn finish_section(
+    frame: Frame2,
+    mut output: Vec<ProjectedVector>,
+    boundary: Vec<Segment>,
+    hatch: Option<DrawingHatch>,
+    options: DrawingProjection,
+    tolerance: f64,
+) -> Result<Vec<ProjectedVector>, GeometryError> {
     let mut curves = (options.maximum_curves as usize)
         .checked_sub(output.len())
         .ok_or_else(limit)?;
