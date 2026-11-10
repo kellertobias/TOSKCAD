@@ -34,7 +34,7 @@ fn rust_thread_tool_previews_real_m8_ridges_and_cancel_keeps_the_document() {
         tool.begin_thread(&session, &resources, None, &Default::default(), Channel::Ui)
             .unwrap();
         assert!(!tool.can_apply(&session, &resources));
-        tool.preview(&session, &resources, Channel::Ui).unwrap();
+        assert!(tool.pending(), "the default thread should preview on open");
         let deadline = Instant::now() + Duration::from_secs(15);
         while tool.pending() {
             tool.poll(&session, &resources);

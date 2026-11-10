@@ -738,7 +738,11 @@ impl ModelToolController {
                 selected,
                 false,
             )?)),
-        )
+        )?;
+        if self.supports_fast_hardware_preview() {
+            let _ = self.preview(session, resources, channel);
+        }
+        Ok(())
     }
     pub fn begin_mechanical_part(
         &mut self,
@@ -2443,11 +2447,8 @@ impl ModelToolController {
                 | ModelForm::Scale(_)
                 | ModelForm::Revolve(_),
             ) => 0.075,
-            Some(ModelForm::MechanicalPart(_))
-                if self
-                    .backend
-                    .as_ref()
-                    .is_some_and(|backend| backend.supports_fast_hardware_preview()) =>
+            Some(ModelForm::MechanicalPart(_) | ModelForm::Thread(_))
+                if self.supports_fast_hardware_preview() =>
             {
                 0.075
             }
@@ -2463,6 +2464,12 @@ impl ModelToolController {
         };
         self.auto_preview = Some((stamp, ui.input(|input| input.time) + delay));
         ui.ctx().request_repaint();
+    }
+
+    fn supports_fast_hardware_preview(&self) -> bool {
+        self.backend
+            .as_ref()
+            .is_some_and(|backend| backend.supports_fast_hardware_preview())
     }
 
     pub(crate) fn tick_auto_preview(
