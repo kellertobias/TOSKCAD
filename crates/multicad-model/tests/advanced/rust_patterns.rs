@@ -5,6 +5,7 @@ use multicad_core::{
     project_file::{self, ProjectFile},
     references::{self, AnalyticGeometry, GeometryIntent, Origin, Resolution, TopologySnapshot},
 };
+use multicad_kernel::{Bounds, GeometryPolicy, Solid};
 use multicad_model::{Compiler, GeometryBackend};
 
 #[test]
@@ -90,6 +91,168 @@ fn member_points(topology: &TopologySnapshot, member: &Origin) -> Vec<[f64; 3]> 
             _ => None,
         })
         .collect()
+}
+
+#[test]
+fn merged_rotated_pattern_rebuilds_overlapping_and_independent_members_and_reopens_step() {
+    let (mut session, input) = fixture();
+    let seed = PrimitiveParameters::Box {
+        size: [length(10.), length(10.), length(4.)],
+        frame: PrimitiveFrame::default(),
+    };
+    let edited =
+        model::prepare_primitive_edit(&session, session.revision(), actor(), input.producer, &seed)
+            .unwrap();
+    session.commit(edited.prepared).unwrap();
+    apply_parameter(&mut session, "pitch", "5");
+    let request = AdvancedRequest::on_body(
+        input.clone(),
+        AdvancedParameters::CircularPattern(CircularPatternParameters {
+            count: bound(&session, "copies", "count"),
+            step_angle: angle(45.),
+            origin: [bound(&session, "pitch", "mm"), length(5.), length(0.)],
+            axis: [0., 0., 1.],
+            merge: true,
+        }),
+        vec![],
+    );
+    let prepared =
+        model::prepare_advanced(&session, session.revision(), actor(), &request).unwrap();
+    session.commit(prepared.prepared).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let radius = 5. * std::f64::consts::SQRT_2;
+    let check = |solid: &Solid, volume: f64, count, expected: Bounds| {
+        near(solid.volume_mm3().unwrap(), volume);
+        assert_eq!(solid.solid_count().unwrap(), count);
+        let bounds = solid.bounds().unwrap();
+        for i in 0..3 {
+            near(bounds.min[i], expected.min[i]);
+            near(bounds.max[i], expected.max[i]);
+        }
+    };
+    for (pivot, volume, count) in [
+        (5., (100. + 2. * (10. - radius).powi(2)) * 4., 1),
+        (50., 800., 2),
+    ] {
+        apply_parameter(&mut session, "pitch", &pivot.to_string());
+        let file = ProjectFile::new(session.document().clone()).unwrap();
+        let mut bytes = vec![];
+        project_file::write(&file, &mut bytes, Default::default()).unwrap();
+        let restored = project_file::read(
+            &mut bytes.as_slice(),
+            Default::default(),
+            &project_file::supported_capabilities(),
+        )
+        .unwrap()
+        .project;
+        assert_eq!(&restored.document, session.document());
+        let compile = |backend| {
+            Compiler {
+                omit_display: true,
+                ..Default::default()
+            }
+            .compile_with_backend(&restored.document, 0, backend, None)
+            .unwrap()
+        };
+        let rust = compile(GeometryBackend::Rust);
+        assert_eq!(rust.snapshot().body_sources[&request.body], request.feature);
+        assert_eq!(request.body, input.body);
+        near(
+            rust.solid(input.producer).unwrap().volume_mm3().unwrap(),
+            400.,
+        );
+        let offset = (5. - pivot) * std::f64::consts::FRAC_1_SQRT_2;
+        let center = [pivot + offset, 5. + offset];
+        let expected = Bounds {
+            min: [
+                (center[0] - radius).min(0.),
+                (center[1] - radius).min(0.),
+                0.,
+            ],
+            max: [
+                (center[0] + radius).max(10.),
+                (center[1] + radius).max(10.),
+                4.,
+            ],
+        };
+        let merged = rust.solid(request.body).unwrap();
+        assert!(merged.uses_rust_geometry());
+        check(merged, volume, count, expected);
+        let topology = &rust.snapshot().shapes[&request.feature].topology;
+        for member in 0..2 {
+            let origin = Origin {
+                source: request.feature,
+                role: format!("member/{member}"),
+            };
+            assert!(
+                !member_points(topology, &origin).is_empty(),
+                "missing {origin:?}"
+            );
+        }
+
+        let path = dir.path().join(format!("rotated-pattern-{count}.step"));
+        assert!(merged.supports_step_export());
+        merged.write_step(&path).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        let policy = GeometryPolicy::default();
+        let reopened = Solid::import_rust_step(&text, request.feature, policy).unwrap();
+        check(&reopened, volume, count, expected);
+        #[cfg(feature = "occt")]
+        {
+            let native = compile(GeometryBackend::OpenCascade);
+            check(native.solid(request.body).unwrap(), volume, count, expected);
+            check(
+                &Solid::read_step(&path, policy).unwrap(),
+                volume,
+                count,
+                expected,
+            );
+        }
+    }
+}
+
+#[test]
+fn merged_circular_pattern_declines_curved_members_without_changing_the_document() {
+    let (mut session, input) = fixture();
+    let seed = PrimitiveParameters::Cylinder {
+        radius: length(3.),
+        height: length(5.),
+        frame: PrimitiveFrame::default(),
+    };
+    let edited =
+        model::prepare_primitive_edit(&session, session.revision(), actor(), input.producer, &seed)
+            .unwrap();
+    session.commit(edited.prepared).unwrap();
+    let request = AdvancedRequest::on_body(
+        input,
+        AdvancedParameters::CircularPattern(CircularPatternParameters {
+            count: bound(&session, "copies", "count"),
+            step_angle: angle(45.),
+            origin: [length(1.), length(0.), length(0.)],
+            axis: [0., 0., 1.],
+            merge: true,
+        }),
+        vec![],
+    );
+    let original = session.document().clone();
+    let revision = session.revision();
+    let prepared = model::prepare_advanced(&session, revision, actor(), &request).unwrap();
+    let error = Compiler::default()
+        .compile_with_backend(
+            prepared.prepared.document(),
+            revision,
+            GeometryBackend::Rust,
+            None,
+        )
+        .err()
+        .expect("A merged curved pattern needs a certified curved union");
+    assert_eq!(error.entity, Some(request.feature));
+    assert!(
+        error.message.contains("certified straight-sided"),
+        "{error}"
+    );
+    assert_eq!(session.document(), &original);
+    assert_eq!(session.revision(), revision);
 }
 
 #[test]

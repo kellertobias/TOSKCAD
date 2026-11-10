@@ -7,8 +7,8 @@ use multicad_core::{
     references::{self, GeometryIntent, Origin, Resolution, TopologyKind, TopologySnapshot},
 };
 use multicad_kernel::{
-    BooleanOperation, CurvedProfile, GeometryPolicy, PlaneFrame, RigidTransform, Solid,
-    TreatmentFace,
+    BooleanOperation, CurvedProfile, GeometryErrorKind, GeometryPolicy, PlaneFrame, RigidTransform,
+    Solid, TreatmentFace,
 };
 use std::collections::BTreeMap;
 pub(crate) type Section = (CurvedProfile, Vec<Origin>);
@@ -200,12 +200,12 @@ fn pattern(
     policy: GeometryPolicy,
 ) -> Result<Solid, ModelError> {
     let count = solid.solid_count().map_err(|e| error(Some(feature), e))? as usize;
-    if count.checked_mul(transforms.len()).is_none_or(|n| n > 1024) {
+    let Some(max_solids) = count.checked_mul(transforms.len()).filter(|&n| n <= 1024) else {
         return Err(error(
             Some(feature),
             "Pattern exceeds the 1024-solid budget; reduce count or simplify the source",
         ));
-    }
+    };
     if snapshot
         .elements
         .len()
@@ -234,10 +234,34 @@ fn pattern(
         && let Some((first, rest)) = members.split_first()
         && !rest.is_empty()
     {
-        return first
-            .rust_union_orthogonal_tools(rest, policy)
-            .map_err(|e| error(Some(feature), e))?
-            .ok_or_else(|| error(Some(feature), "Pattern merge removed every solid"));
+        match first.rust_union_orthogonal_tools(rest, policy) {
+            Ok(result) => {
+                return result
+                    .ok_or_else(|| error(Some(feature), "Pattern merge removed every solid"));
+            }
+            Err(cause) if cause.kind == GeometryErrorKind::Unsupported => {}
+            Err(cause) => return Err(error(Some(feature), cause)),
+        }
+        let solids: Vec<_> = members.iter().collect();
+        let merged = Solid::union_planar_pieces(&solids, feature, policy)
+            .ok_or_else(|| {
+                error(
+                    Some(feature),
+                    "Rust pattern merge requires certified straight-sided material",
+                )
+            })?
+            .map_err(|cause| error(Some(feature), cause))?;
+        // A union cannot split an input solid. If the certified count did not
+        // decrease, preserve the independent members and their STEP shells.
+        if merged
+            .solid_count()
+            .map_err(|cause| error(Some(feature), cause))? as usize
+            == max_solids
+        {
+            return Solid::compound_named(&solids, feature, policy)
+                .map_err(|cause| error(Some(feature), cause));
+        }
+        return Ok(merged);
     }
     let mut members = members.into_iter();
     let mut result = members

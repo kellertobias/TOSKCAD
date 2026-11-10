@@ -1545,25 +1545,6 @@ impl Compiler {
                 (model::ADVANCED_TYPE, model::ADVANCED_SCHEMA) => {
                     let (source, captures) =
                         model::read_advanced(document, id).map_err(|e| error(Some(id), e))?;
-                    if backend == GeometryBackend::Rust
-                        && !matches!(
-                            source.parameters,
-                            model::AdvancedParameters::Sweep(_)
-                                | model::AdvancedParameters::Loft(_)
-                                | model::AdvancedParameters::Mirror(_)
-                                | model::AdvancedParameters::Draft(_)
-                                | model::AdvancedParameters::Shell(_)
-                                | model::AdvancedParameters::LinearPattern(_)
-                                | model::AdvancedParameters::CircularPattern(
-                                    model::CircularPatternParameters { merge: false, .. }
-                                )
-                        )
-                    {
-                        return Err(error(
-                            Some(id),
-                            "Rust advanced operations currently support straight sweeps, coaxial circular lofts, cardinal mirrors, rectangular drafts, rectangular shells, linear patterns and separate-member circular patterns",
-                        ));
-                    }
                     let selected =
                         profiles.advanced(&source, id, &solids, &topologies, interrupt)?;
                     crate::advanced::build(
