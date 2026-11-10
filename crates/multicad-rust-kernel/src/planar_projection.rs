@@ -300,6 +300,12 @@ fn prepare(
     for body in bodies {
         work.charge(body.edges.len())?;
         work.charge(body.faces.len())?;
+        // Section clipping retains an empty slot for a removed source so that
+        // each surviving vector still carries the original source index.
+        if body.edges.is_empty() && body.faces.is_empty() {
+            edge_uses.push(Vec::new());
+            continue;
+        }
         if body.edges.is_empty()
             || body.faces.is_empty()
             || body

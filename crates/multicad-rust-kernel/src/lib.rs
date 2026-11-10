@@ -1,13 +1,16 @@
 //! Bounded exact lengths and one analytic curve probe for the kernel study.
 
+pub mod curved_projection;
 pub mod cylinder;
 pub mod display;
 pub mod manufacturing;
 pub mod orthogonal;
 pub mod orthogonal_boundary;
 pub mod planar_projection;
+pub mod planar_section;
 pub mod polygon;
 pub mod prism;
+pub mod section_hatch;
 pub mod step;
 pub mod step_read;
 
