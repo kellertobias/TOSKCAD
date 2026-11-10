@@ -246,8 +246,8 @@ impl Prism {
         self.with_hole(feature, circle)
     }
 
-    /// Subtract an axial cylinder that extends strictly past both caps. Partial
-    /// cuts and flush caps are outside this experiment's Boolean contract.
+    /// Subtract an axial cylinder that reaches or passes both caps. The exact
+    /// rational endpoints distinguish a flush opening from a residual floor.
     pub fn subtract_cylinder(
         &self,
         feature: u128,
@@ -255,7 +255,7 @@ impl Prism {
         bottom: Rational,
         top: Rational,
     ) -> Result<Self, PrismError> {
-        if bottom >= ZERO || top <= self.height {
+        if bottom > ZERO || top < self.height {
             return Err(PrismError::NotThrough);
         }
         self.with_hole(feature, circle)

@@ -262,9 +262,23 @@ fn rejects_tangent_and_overlapping_cuts_without_changing_the_source() {
         );
         assert_eq!(solid, before);
     }
-    for (bottom, top) in [(0, 9), (-1, 8), (2, 6), (10, 12), (-3, -1)] {
+    let cutter = circle(28, 10, 4);
+    let through = solid.subtract_cylinder(30, cutter, n(-1), n(9)).unwrap();
+    for (bottom, top) in [(0, 9), (-1, 8), (0, 8)] {
         assert_eq!(
-            solid.subtract_cylinder(30, circle(28, 10, 4), n(bottom), n(top)),
+            solid.subtract_cylinder(30, cutter, n(bottom), n(top)),
+            Ok(through.clone())
+        );
+    }
+    for (bottom, top) in [
+        (n(2), n(6)),
+        (n(10), n(12)),
+        (n(-3), n(-1)),
+        (q("0.000000001 mm"), n(8)),
+        (n(0), q("7.999999999 mm")),
+    ] {
+        assert_eq!(
+            solid.subtract_cylinder(30, cutter, bottom, top),
             Err(NotThrough)
         );
     }
