@@ -8,6 +8,9 @@ use crate::{
 };
 use std::{collections::HashMap, f64::consts::TAU};
 
+mod screw;
+pub use screw::{screw_volume_error_bound, tessellate_screw};
+
 /// The positional bound is for linear interpolation in each screw-coordinate
 /// triangle. Angular deflection bounds the variation of the exact normal
 /// within each smooth triangle, without smoothing across profile creases.
@@ -36,13 +39,7 @@ fn tessellate_envelope(
     outer_radius: Option<f64>,
     options: Tessellation,
 ) -> Result<DisplayMesh, MeshError> {
-    if !options.deflection.is_finite()
-        || options.deflection <= 0.
-        || !(0.01..=1.).contains(&options.angle)
-        || !(1..=5_000_000).contains(&options.triangle_limit)
-    {
-        return Err(MeshError::InvalidOptions);
-    }
+    check_options(options)?;
     let major = thread.spec().major_radius_mm;
     let radius = outer_radius.unwrap_or(major);
     // The outer polygon's apothem must exceed every inner vertex radius,
@@ -58,6 +55,17 @@ fn tessellate_envelope(
     let angular_steps = angular_steps as usize;
     let strips = phase_strips(thread, TAU / angular_steps as f64, options)?;
     Builder::new(thread, angular_steps, strips, options).build(outer_radius)
+}
+
+fn check_options(options: Tessellation) -> Result<(), MeshError> {
+    if !options.deflection.is_finite()
+        || options.deflection <= 0.
+        || !(0.01..=1.).contains(&options.angle)
+        || !(1..=5_000_000).contains(&options.triangle_limit)
+    {
+        return Err(MeshError::InvalidOptions);
+    }
+    Ok(())
 }
 
 /// Bound volume deviation for the generated mesh. At equal depth, each
@@ -213,6 +221,19 @@ impl<'a> Builder<'a> {
     }
 
     fn build(mut self, outer_radius: Option<f64>) -> Result<DisplayMesh, MeshError> {
+        self.build_wall()?;
+        let caps = std::mem::take(&mut self.caps);
+        if let Some(radius) = outer_radius {
+            self.add_bore(caps, radius)?;
+        } else {
+            for (cap, ring) in caps.into_iter().enumerate() {
+                self.add_cap(cap, ring)?;
+            }
+        }
+        Ok(self.mesh)
+    }
+
+    fn build_wall(&mut self) -> Result<(), MeshError> {
         let per_period = self.strips.len() as i64;
         for column in 0..self.steps {
             let a = self.advance(column);
@@ -240,15 +261,7 @@ impl<'a> Builder<'a> {
                 }
             }
         }
-        let caps = std::mem::take(&mut self.caps);
-        if let Some(radius) = outer_radius {
-            self.add_bore(caps, radius)?;
-        } else {
-            for (cap, ring) in caps.into_iter().enumerate() {
-                self.add_cap(cap, ring)?;
-            }
-        }
-        Ok(self.mesh)
+        Ok(())
     }
 
     fn sort_ring(ring: &mut [(f64, u32)]) -> Result<(), MeshError> {

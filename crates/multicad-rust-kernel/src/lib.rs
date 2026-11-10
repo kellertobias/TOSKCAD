@@ -3,6 +3,7 @@
 pub mod curved_projection;
 pub mod cylinder;
 pub mod display;
+pub mod headed_screw;
 pub mod helical_thread;
 pub mod helical_thread_mesh;
 pub mod manufacturing;
