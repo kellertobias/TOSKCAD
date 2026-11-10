@@ -2,7 +2,9 @@
 use super::*;
 use multicad_rust_kernel::{
     curved_projection::{Curve, Edge, Ellipse},
-    warped_union::{Curve as Trim, Error, SectionEdge, Shell},
+    warped_union::{
+        Curve as Trim, Error, SectionClipPlane, SectionEdge, Shell, clip_section_loops,
+    },
 };
 use std::f64::consts::{FRAC_PI_2, TAU};
 
@@ -23,27 +25,7 @@ pub(super) fn project(
 ) -> Result<(Vec<ProjectedVector>, Vec<Segment>), GeometryError> {
     let frame = Frame::new(placement, options.frame);
     let loops = frame.intersection(shell, depth, options.maximum_curves, policy)?;
-    let windows = [options.section_u_mm, options.section_v_mm];
-    if windows.iter().any(Option::is_some) {
-        let bounds = frame.bounds(&loops);
-        if windows
-            .into_iter()
-            .zip(bounds)
-            .any(|(window, [lo, hi])| window.is_some_and(|[a, b]| hi <= a || lo >= b))
-        {
-            return Ok((Vec::new(), Vec::new()));
-        }
-        if windows
-            .into_iter()
-            .zip(bounds)
-            .any(|(window, [lo, hi])| window.is_some_and(|[a, b]| lo < a || hi > b))
-        {
-            return Err(err(
-                GeometryErrorKind::Unsupported,
-                "Rust trimmed shell section cannot yet clip a curved section window",
-            ));
-        }
-    }
+    let loops = frame.clip(loops, options, policy)?;
     let output = frame.vectors(&loops, options, source)?;
     let boundary = if hatch {
         frame.hatch(
@@ -78,9 +60,24 @@ impl Frame {
         maximum_curves: u32,
         policy: GeometryPolicy,
     ) -> Result<Vec<Vec<SectionEdge>>, GeometryError> {
-        let normal = self.directions.map(|axis| axis[2]);
-        let offset = (depth - self.origin[2]) / dot(normal, normal);
-        let origin = normal.map(|component| offset * component);
+        self.section_at(shell, 2, depth, maximum_curves, policy)
+    }
+
+    fn local_plane(&self, axis: usize, coordinate: f64) -> (Point, Point) {
+        let normal = self.directions.map(|direction| direction[axis]);
+        let offset = (coordinate - self.origin[axis]) / dot(normal, normal);
+        (normal.map(|component| offset * component), normal)
+    }
+
+    fn section_at(
+        &self,
+        shell: &Shell,
+        axis: usize,
+        coordinate: f64,
+        maximum_curves: u32,
+        policy: GeometryPolicy,
+    ) -> Result<Vec<Vec<SectionEdge>>, GeometryError> {
+        let (origin, normal) = self.local_plane(axis, coordinate);
         shell
             .section(
                 origin,
@@ -88,17 +85,47 @@ impl Frame {
                 policy.linear_tolerance_mm,
                 maximum_curves as usize,
             )
-            .map_err(|error| match error {
-                Error::Invalid => err(
-                    GeometryErrorKind::InvalidResult,
-                    "Invalid trimmed shell section geometry",
-                ),
-                Error::Limit => limit(),
-                Error::Unsupported => err(
-                    GeometryErrorKind::Unsupported,
-                    "Rust could not resolve the section against the trimmed shell boundary",
-                ),
-            })
+            .map_err(section_error)
+    }
+
+    fn clip(
+        &self,
+        loops: Vec<Vec<SectionEdge>>,
+        options: DrawingProjection,
+        policy: GeometryPolicy,
+    ) -> Result<Vec<Vec<SectionEdge>>, GeometryError> {
+        let windows = [options.section_u_mm, options.section_v_mm];
+        if loops.is_empty() || windows.iter().all(Option::is_none) {
+            return Ok(loops);
+        }
+        let mut planes = Vec::new();
+        for (axis, (window, [lo, hi])) in windows.into_iter().zip(self.bounds(&loops)).enumerate() {
+            let Some([a, b]) = window else { continue };
+            if hi <= a || lo >= b {
+                return Ok(Vec::new());
+            }
+            for (active, bound, sign) in [(lo < a, a, 1.), (hi > b, b, -1.)] {
+                if !active {
+                    continue;
+                }
+                let (origin_mm, normal) = self.local_plane(axis, bound);
+                planes.push(SectionClipPlane {
+                    origin_mm,
+                    inward_normal: normal.map(|value| value * sign),
+                });
+            }
+        }
+        if planes.is_empty() {
+            return Ok(loops);
+        }
+        clip_section_loops(
+            loops,
+            self.directions.map(|direction| direction[2]),
+            &planes,
+            policy.linear_tolerance_mm,
+            options.maximum_curves as usize,
+        )
+        .map_err(section_error)
     }
 
     fn vectors(
@@ -254,4 +281,18 @@ fn limit() -> GeometryError {
         GeometryErrorKind::Limit,
         "Rust trimmed shell section exceeded its geometry budget",
     )
+}
+
+fn section_error(error: Error) -> GeometryError {
+    match error {
+        Error::Invalid => err(
+            GeometryErrorKind::InvalidResult,
+            "Invalid trimmed shell section geometry",
+        ),
+        Error::Limit => limit(),
+        Error::Unsupported => err(
+            GeometryErrorKind::Unsupported,
+            "Rust could not resolve the section against the trimmed shell boundary",
+        ),
+    }
 }

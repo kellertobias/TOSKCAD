@@ -88,6 +88,29 @@ fn check_inset_sections(solid: &Solid) {
         DrawingHatch, DrawingProjection, DrawingSolid, PlaneFrame, project_drawing,
     };
 
+    let input = [DrawingSolid {
+        solid,
+        hatch: Some(DrawingHatch {
+            angle_rad: 0.,
+            spacing_mm: 2.,
+            line_width_mm: 0.2,
+            pattern: HatchPattern::Solid,
+        }),
+    }];
+    let section = |x, cosine: f64| DrawingProjection {
+        frame: PlaneFrame {
+            origin: [0.; 3],
+            u: [0., 1., 0.],
+            v: [-(1. - cosine * cosine).sqrt(), 0., cosine],
+        },
+        section_only: true,
+        section_offset_mm: Some(x * cosine),
+        chord_tolerance_mm: 0.0001,
+        ..Default::default()
+    };
+    let triangle_area = |[a, b, c]: [[f64; 2]; 3]| {
+        0.5 * ((b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])).abs()
+    };
     let bend_area = std::f64::consts::FRAC_PI_2 * (3_f64.powi(2) - 1.5_f64.powi(2));
     let round_chord = 2. * (2.1_f64.powi(2) - 0.5_f64.powi(2)).sqrt();
     for (x, cosine, expected_area, bends) in [
@@ -111,30 +134,8 @@ fn check_inset_sections(solid: &Solid) {
             true,
         ),
     ] {
-        let sine = (1.0_f64 - cosine * cosine).sqrt();
-        let vectors = project_drawing(
-            &[DrawingSolid {
-                solid,
-                hatch: Some(DrawingHatch {
-                    angle_rad: 0.,
-                    spacing_mm: 2.,
-                    line_width_mm: 0.2,
-                    pattern: HatchPattern::Solid,
-                }),
-            }],
-            DrawingProjection {
-                frame: PlaneFrame {
-                    origin: [0.; 3],
-                    u: [0., 1., 0.],
-                    v: [-sine, 0., cosine],
-                },
-                section_only: true,
-                section_offset_mm: Some(x * cosine),
-                chord_tolerance_mm: 0.0001,
-                ..Default::default()
-            },
-        )
-        .unwrap_or_else(|error| panic!("Section at X={x}: {error}"));
+        let vectors = project_drawing(&input, section(x, cosine))
+            .unwrap_or_else(|error| panic!("Section at X={x}: {error}"));
         let mut bend_arcs = [0.; 2];
         let mut hatch_area = 0.;
         for vector in vectors {
@@ -157,9 +158,8 @@ fn check_inset_sections(solid: &Solid) {
                     near(major_mm, radius / cosine);
                     bend_arcs[index] += (end_rad - start_rad).abs();
                 }
-                (VectorRole::Hatch, VectorCurve::HatchTriangle { points: [a, b, c] }) => {
-                    hatch_area +=
-                        0.5 * ((b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])).abs();
+                (VectorRole::Hatch, VectorCurve::HatchTriangle { points }) => {
+                    hatch_area += triangle_area(points);
                 }
                 other => panic!("Unexpected inset section output: {other:?}"),
             }
@@ -172,6 +172,74 @@ fn check_inset_sections(solid: &Solid) {
             "Section X={x}: hatch area {hatch_area}, expected {expected_area}"
         );
     }
+
+    // Clip through both circular rims of the front bend at Y=-0.75.
+    // Only the retained annular portion and its 50 mm leg remain.
+    let offset = 0.75;
+    let options = section(120., 1.);
+    let clipped = project_drawing(
+        &input,
+        DrawingProjection {
+            section_u_mm: Some([-10., -offset]),
+            ..options
+        },
+    )
+    .unwrap();
+    let mut hatch_area = 0.;
+    let mut bend_sweeps = [0.; 2];
+    let mut connector = 0.;
+    for vector in clipped {
+        assert!(vector.preview_mm.iter().all(|p| p[0] <= -offset + 1e-7));
+        match (vector.role, vector.curve) {
+            (VectorRole::Section, VectorCurve::Line { a, b }) => {
+                if [a[0], b[0]].iter().all(|u| (u + offset).abs() < 1e-7) {
+                    connector += (a[1] - b[1]).abs();
+                }
+            }
+            (
+                VectorRole::Section,
+                VectorCurve::Ellipse {
+                    major_mm,
+                    minor_mm,
+                    start_rad,
+                    end_rad,
+                    ..
+                },
+            ) => {
+                let index = usize::from(major_mm > 2.);
+                near(major_mm, [1.5, 3.][index]);
+                near(minor_mm, major_mm);
+                bend_sweeps[index] += end_rad - start_rad;
+            }
+            (VectorRole::Hatch, VectorCurve::HatchTriangle { points }) => {
+                hatch_area += triangle_area(points);
+            }
+            other => panic!("Unexpected clipped inset section output: {other:?}"),
+        }
+    }
+    let chord = |radius: f64| (radius * radius - offset * offset).sqrt();
+    let angle = |radius: f64| (offset / radius).acos();
+    let area = |radius| 0.5 * (radius * radius * angle(radius) - offset * chord(radius));
+    near(connector, chord(3.) - chord(1.5));
+    for (actual, radius) in bend_sweeps.into_iter().zip([1.5, 3.]) {
+        near(actual, angle(radius));
+    }
+    let expected = 50. * 1.5 + area(3.) - area(1.5);
+    assert!(
+        (hatch_area - expected).abs() < 0.02,
+        "{hatch_area} != {expected}"
+    );
+    assert!(
+        project_drawing(
+            &input,
+            DrawingProjection {
+                section_u_mm: Some([300., 310.]),
+                ..options
+            }
+        )
+        .unwrap()
+        .is_empty()
+    );
 }
 
 fn check_inset_elevations(sheet: &Solid) {
@@ -346,8 +414,7 @@ fn check_retained_section(sheet: &Solid) {
         materials::HatchPattern,
     };
     use multicad_kernel::{
-        DrawingHatch, DrawingProjection, DrawingSolid, GeometryErrorKind, PlaneFrame,
-        project_drawing,
+        DrawingHatch, DrawingProjection, DrawingSolid, PlaneFrame, project_drawing,
     };
 
     let options = DrawingProjection {
@@ -432,15 +499,68 @@ fn check_retained_section(sheet: &Solid) {
     })
     .unwrap();
     assert_eq!(deep, enclosing);
+    let window = DrawingProjection {
+        section_u_mm: Some([65., 96.]),
+        ..options
+    };
+    let partial_deep = render(DrawingProjection {
+        section_depth_mm: Some(75.5),
+        ..window
+    })
+    .unwrap();
+    let partial_shallow = render(DrawingProjection {
+        section_depth_mm: Some(10.),
+        ..window
+    })
+    .unwrap();
     assert_eq!(
-        render(DrawingProjection {
-            section_u_mm: Some([20., 120.]),
-            ..options
-        })
-        .unwrap_err()
-        .kind,
-        GeometryErrorKind::Unsupported
+        published_cut(&partial_deep),
+        published_cut(&partial_shallow)
     );
+    assert_eq!(
+        published_cut(&partial_deep),
+        render(DrawingProjection {
+            section_only: true,
+            ..window
+        })
+        .unwrap()
+    );
+    let partial_back = |vectors: &[multicad_kernel::ProjectedVector]| {
+        vectors.iter().any(|v| {
+            v.role == VectorRole::Visible
+                && matches!(v.curve, VectorCurve::Line { a, b }
+                    if (a[0].min(b[0]) - 65.).abs() < 1e-6
+                        && (a[0].max(b[0]) - 81.).abs() < 1e-6
+                        && (a[1] - b[1]).abs() < 1e-6)
+        })
+    };
+    assert!(partial_back(&partial_deep));
+    assert!(!partial_back(&partial_shallow));
+    let points = partial_deep.iter().flat_map(|v| &v.preview_mm);
+    assert!(
+        points
+            .clone()
+            .all(|p| (64.999999..=96.000001).contains(&p[0]))
+    );
+
+    let window = DrawingProjection {
+        section_u_mm: Some([-2., 25.5]),
+        section_depth_mm: Some(75.5),
+        ..options
+    };
+    let bend = render(window).unwrap();
+    assert_eq!(
+        published_cut(&bend),
+        render(DrawingProjection {
+            section_only: true,
+            section_depth_mm: None,
+            ..window
+        })
+        .unwrap()
+    );
+    assert!(bend.iter().any(|v| v.role == VectorRole::Section
+        && matches!(v.curve, VectorCurve::Ellipse { major_mm, .. } if (major_mm - 3.).abs() < 1e-7)
+        && v.preview_mm.iter().any(|p| (p[0] + 2.).abs() < 1e-7)));
 }
 
 fn check_oblique_web_aperture(sheet: &Solid, witness: &Solid) {
@@ -501,7 +621,8 @@ fn check_oblique_web_aperture(sheet: &Solid, witness: &Solid) {
 fn check_inset_drawing_view(model: &Model, document: &Document, revision: u64, part: EntityId) {
     use multicad_core::{
         drawings::{
-            DrawingView, Scale, VectorCurve, VectorRole, ViewEvaluation, ViewKind, ViewSource,
+            DrawingView, Scale, SectionRange, SectionWindow, VectorCurve, VectorRole,
+            ViewEvaluation, ViewKind, ViewSource,
         },
         references::ReferenceFrame,
     };
@@ -552,6 +673,43 @@ fn check_inset_drawing_view(model: &Model, document: &Document, revision: u64, p
             vectors
                 .iter()
                 .any(|vector| vector.role == VectorRole::Hidden)
+        );
+    }
+
+    view.name = "Windowed front bend section".into();
+    view.frame = ReferenceFrame {
+        origin_mm: [10., 5., 2.],
+        u: [0., 1., 0.],
+        v: [0., 0., 1.],
+    };
+    view.kind = ViewKind::Section {
+        offset_mm: 110.,
+        range: SectionRange::SectionOnly,
+        window: SectionWindow {
+            u_mm: Some([-15., -5.75]),
+            v_mm: None,
+        },
+    };
+    let result = model
+        .drawing_view(document, revision, &view, &Default::default())
+        .unwrap();
+    let ViewEvaluation::Ready { vectors, .. } = result else {
+        panic!("Windowed inset sheet section failed: {result:?}");
+    };
+    assert!(vectors.iter().all(|vector| {
+        vector.source == part
+            && vector.material_part == part
+            && matches!(vector.role, VectorRole::Section | VectorRole::Hatch)
+            && vector.preview_mm.iter().all(|p| p[0] <= -5.75 + 1e-7)
+    }));
+    for radius in [1.5, 3.] {
+        assert!(
+            vectors
+                .iter()
+                .any(|vector| vector.role == VectorRole::Section
+                    && matches!(vector.curve, VectorCurve::Ellipse { major_mm, .. }
+                if (major_mm - radius).abs() < 1e-7)
+                    && vector.preview_mm.iter().any(|p| (p[0] + 5.75).abs() < 1e-7))
         );
     }
 }

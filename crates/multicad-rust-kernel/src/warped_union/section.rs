@@ -6,6 +6,9 @@ use super::{
 use crate::trim_curve::{Cylinder, Plane, PlaneCrossings, cylinder_plane};
 use std::f64::consts::TAU;
 
+mod clip;
+pub use clip::{SectionClipPlane, clip_section_loops};
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SectionEdge {
     /// Shared endpoint positions, ordered with material to the left of the edge.

@@ -30,13 +30,16 @@ pub(in crate::drawing::section) fn project(
             hatch_budget: section_hatch::Budget::default(),
         };
         let far = options.section_depth_mm.map(|distance| near - distance);
-        let depth = DepthRange::new(near, far).map_err(planar::projection_error)?;
+        let windows = [options.section_u_mm, options.section_v_mm];
+        let depth = DepthRange::new(near, far)
+            .and_then(|depth| depth.with_lateral(windows))
+            .map_err(planar::projection_error)?;
         let mut tolerance = GeometryPolicy::default().linear_tolerance_mm;
         for (source, shell, placement, policy) in members {
             let frame = Frame::new(placement, options.frame);
-            if !in_window(shell, &frame, options, near, far)? {
+            let Some(sides) = window_sides(shell, &frame, windows, near, far) else {
                 continue;
-            }
+            };
             tolerance = tolerance.max(policy.linear_tolerance_mm);
             let elevation = curved::warped::elevation(
                 shell,
@@ -61,11 +64,31 @@ pub(in crate::drawing::section) fn project(
                     .into_iter()
                     .filter_map(|face| face.retained(depth)),
             );
-            let cut = frame.intersection(shell, near, scene.options.maximum_curves, policy)?;
+            let cut = frame.clip(
+                frame.intersection(shell, near, scene.options.maximum_curves, policy)?,
+                options,
+                policy,
+            )?;
             scene.near_cut(&frame, &cut, near, source, policy, solids[source].hatch)?;
             if let Some(far) = far {
-                let cut = frame.intersection(shell, far, scene.options.maximum_curves, policy)?;
+                let cut = frame.clip(
+                    frame.intersection(shell, far, scene.options.maximum_curves, policy)?,
+                    options,
+                    policy,
+                )?;
                 scene.far_cut(&frame, &cut, far, source)?;
+            }
+            for (axis, coordinates) in sides.into_iter().enumerate() {
+                for coordinate in coordinates.into_iter().flatten() {
+                    let cut = frame.section_at(
+                        shell,
+                        axis,
+                        coordinate,
+                        options.maximum_curves,
+                        policy,
+                    )?;
+                    scene.side_cut(&frame, cut, axis, coordinate, depth, source)?;
+                }
             }
         }
         scene.finish(tolerance)
@@ -161,6 +184,78 @@ impl Retained {
                     })
                 }
                 Curve::Ellipse(_) => return Err(non_circular()),
+            }
+        }
+        Ok(())
+    }
+
+    fn side_cut(
+        &mut self,
+        frame: &Frame,
+        loops: Vec<Vec<SectionEdge>>,
+        axis: usize,
+        coordinate: f64,
+        depth: DepthRange,
+        source: usize,
+    ) -> Result<(), GeometryError> {
+        let other = 1 - axis;
+        let depth_axis = frame.directions.map(|direction| direction[2]);
+        let screen_point = |p| {
+            let [x, y] = frame.point(p);
+            let mut point = [x, y, frame.origin[2] + dot(depth_axis, p)];
+            point[axis] = coordinate;
+            point
+        };
+        // The cut face is edge-on. Its near and far connectors are already
+        // part of those caps, and connectors to another side project to points.
+        for edge in loops.into_iter().flatten() {
+            match edge.curve {
+                Trim::Line => self.lines.extend(
+                    depth
+                        .clip_line(LineCandidate {
+                            source,
+                            points: edge.ends_mm.map(screen_point),
+                        })
+                        .map_err(planar::projection_error)?,
+                ),
+                Trim::Ellipse(arc) => {
+                    let ellipse = arc.ellipse();
+                    let [radius, minor] = ellipse.semiaxes_mm();
+                    if radius != minor {
+                        return Err(non_circular());
+                    }
+                    let u = ellipse.major_axis();
+                    let v = ellipse.minor_axis();
+                    let phase = frame.vector(v)[other].atan2(frame.vector(u)[other]);
+                    let (sin, cos) = phase.sin_cos();
+                    let depth_sine =
+                        radius * (-sin * dot(depth_axis, u) + cos * dot(depth_axis, v));
+                    let [x, y, z] = screen_point(ellipse.center_mm());
+                    let sweep = arc.sweep_rad();
+                    let lo = (arc.start_rad() + sweep.min(0.) - phase).rem_euclid(TAU);
+                    let hi = lo + sweep.abs();
+                    for trim in [[lo, hi.min(TAU)], [0., hi - TAU]] {
+                        if trim[1] > trim[0] {
+                            self.rims.extend(
+                                depth
+                                    .clip_rim(SpatialRimCandidate {
+                                        source,
+                                        ellipse: Ellipse {
+                                            center: [x, y],
+                                            u: std::array::from_fn(|i| f64::from(i == other)),
+                                            v: std::array::from_fn(|i| f64::from(i == axis)),
+                                            major: radius,
+                                            minor: 0.,
+                                            trim,
+                                        },
+                                        depth: z,
+                                        depth_sine,
+                                    })
+                                    .map_err(planar::projection_error)?,
+                            );
+                        }
+                    }
+                }
             }
         }
         Ok(())
@@ -262,13 +357,13 @@ fn non_circular() -> GeometryError {
     )
 }
 
-fn in_window(
+fn window_sides(
     shell: &Shell,
     frame: &Frame,
-    options: DrawingProjection,
+    windows: [Option<[f64; 2]>; 2],
     near: f64,
     far: Option<f64>,
-) -> Result<bool, GeometryError> {
+) -> Option<[[Option<f64>; 2]; 2]> {
     let [min, max] = shell.bounds_mm();
     let bounds: [[f64; 2]; 3] = std::array::from_fn(|axis| {
         [false, true].map(|upper| {
@@ -283,25 +378,19 @@ fn in_window(
         })
     });
     if near <= bounds[2][0] || far.is_some_and(|far| far >= bounds[2][1]) {
-        return Ok(false);
+        return None;
     }
-    let windows = [options.section_u_mm, options.section_v_mm];
     if windows
         .into_iter()
         .zip(bounds)
         .any(|(window, [lo, hi])| window.is_some_and(|[a, b]| hi <= a || lo >= b))
     {
-        return Ok(false);
+        return None;
     }
-    if windows
-        .into_iter()
-        .zip(bounds)
-        .any(|(window, [lo, hi])| window.is_some_and(|[a, b]| lo < a || hi > b))
-    {
-        return Err(err(
-            GeometryErrorKind::Unsupported,
-            "Rust retained shell sections cannot yet clip a lateral window",
-        ));
-    }
-    Ok(true)
+    Some(std::array::from_fn(|axis| {
+        windows[axis].map_or([None; 2], |[a, b]| {
+            let [lo, hi] = bounds[axis];
+            [(lo < a).then_some(a), (hi > b).then_some(b)]
+        })
+    }))
 }

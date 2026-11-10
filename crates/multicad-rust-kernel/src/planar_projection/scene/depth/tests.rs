@@ -309,3 +309,133 @@ fn invalid_ranges_and_spatial_candidates_fail_closed() {
         Err(ProjectionError::Invalid)
     ));
 }
+
+#[test]
+fn lateral_windows_and_depth_choose_one_common_line_interval() {
+    let range = DepthRange::new(2., Some(-1.))
+        .unwrap()
+        .with_lateral([Some([1., 7.]), Some([-2., 3.])])
+        .unwrap();
+    let candidate = LineCandidate {
+        source: 56,
+        points: [[0., -4., -2.], [8., 4., 6.]],
+    };
+    for reverse in [false, true] {
+        let (mut points, mut expected) = (candidate.points, [[2., -2., 0.], [4., 0., 2.]]);
+        if reverse {
+            points.reverse();
+            expected.reverse();
+        }
+        let retained = range
+            .clip_line(LineCandidate {
+                points,
+                ..candidate
+            })
+            .unwrap()
+            .unwrap();
+        assert_eq!(retained.source, candidate.source);
+        assert_eq!(retained.points, expected);
+    }
+
+    let corner = DepthRange::new(3., None)
+        .unwrap()
+        .with_lateral([Some([0., 1.]), Some([1., 2.])])
+        .unwrap();
+    let line = |points| LineCandidate { source: 41, points };
+    assert!(
+        corner
+            .clip_line(line([[0., 0., 0.], [2., 2., 0.]]))
+            .unwrap()
+            .is_none()
+    );
+    let retained = corner
+        .clip_line(line([[-1., 1., 0.], [2., 1., 0.]]))
+        .unwrap()
+        .unwrap();
+    assert_eq!(retained.points, [[0., 1., 0.], [1., 1., 0.]]);
+    let tied = corner
+        .clip_line(line([[-1., 0., 0.], [1., 2., 0.]]))
+        .unwrap()
+        .unwrap();
+    assert_eq!(tied.points, [[0., 1., 0.], [1., 2., 0.]]);
+}
+
+#[test]
+fn a_boundary_snap_survives_a_root_rounded_to_the_source_endpoint() {
+    let range = DepthRange::new(1., None)
+        .unwrap()
+        .with_lateral([Some([-1e8, 0.]), None])
+        .unwrap();
+    let candidate = LineCandidate {
+        source: 23,
+        points: [[-1e8, 0., 0.], [1e-10, 2., 0.]],
+    };
+    let retained = range.clip_line(candidate).unwrap().unwrap();
+    assert_eq!(retained.points, [[-1e8, 0., 0.], [0., 2., 0.]]);
+}
+
+#[test]
+fn a_rotated_rim_keeps_exact_trim_parameters_under_all_three_window_axes() {
+    let range = DepthRange::new(0.55, Some(0.))
+        .unwrap()
+        .with_lateral([Some([2.2, 3.]), Some([-2.5, -1.5])])
+        .unwrap();
+    let mut rim = spatial_rim(0.6, 0.8);
+    rim.ellipse.center = [3., -2.];
+    rim.ellipse.u = [0., 1.];
+    rim.ellipse.v = [-1., 0.];
+    let pieces = range.clip_rim(rim).unwrap();
+    let limit = (11_f64 / 12.).asin();
+    assert_eq!(pieces.len(), 2);
+    for (piece, [start, end]) in pieces
+        .into_iter()
+        .zip([[PI / 3., limit], [PI - limit, 2. * PI / 3.]])
+    {
+        assert!((piece.ellipse.trim[0] - start).abs() < TOL);
+        assert!((piece.ellipse.trim[1] - end).abs() < TOL);
+        assert_eq!(piece.ellipse.center, rim.ellipse.center);
+        assert_eq!(piece.ellipse.u, rim.ellipse.u);
+        assert_eq!(piece.ellipse.v, rim.ellipse.v);
+        assert_eq!(piece.depth_sine, rim.depth_sine);
+        assert_eq!(piece.source, rim.source);
+    }
+
+    let mut outside = rim;
+    outside.ellipse.trim = [4., 5.];
+    assert!(range.clip_rim(outside).unwrap().is_empty());
+    let disjoint = range.with_lateral([Some([4., 5.]), None]).unwrap();
+    assert!(disjoint.clip_rim(rim).unwrap().is_empty());
+    let mut inside = rim;
+    inside.ellipse.trim = [1.08, 1.12];
+    assert_eq!(
+        range.clip_rim(inside).unwrap()[0].ellipse.trim,
+        inside.ellipse.trim
+    );
+
+    let edge_on = spatial_rim(1., 0.);
+    let edge_range = DepthRange::new(1., None)
+        .unwrap()
+        .with_lateral([None, Some([0., 1.])])
+        .unwrap();
+    assert_eq!(
+        edge_range.clip_rim(edge_on).unwrap()[0].ellipse.trim,
+        [0., TAU]
+    );
+}
+
+#[test]
+fn lateral_windows_require_finite_ordered_bounds() {
+    let range = DepthRange::new(1., None).unwrap();
+    for invalid in [
+        [0., 0.],
+        [2., 1.],
+        [f64::NAN, 1.],
+        [0., f64::INFINITY],
+        [-1e9, 0.],
+    ] {
+        assert!(matches!(
+            range.with_lateral([None, Some(invalid)]),
+            Err(ProjectionError::Invalid)
+        ));
+    }
+}

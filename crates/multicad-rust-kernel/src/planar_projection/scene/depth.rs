@@ -1,51 +1,104 @@
-//! Exact view-depth clipping of spatial drawing candidates and face hits.
+//! Exact view-volume clipping of spatial drawing candidates.
 use super::*;
 
-/// The retained view-depth interval. Positive depth points toward the viewer.
+/// The retained view-depth interval with optional U and V candidate windows.
+/// Positive depth points toward the viewer.
 #[derive(Clone, Copy, Debug)]
 pub struct DepthRange {
     pub(super) near: f64,
     pub(super) far: Option<f64>,
+    lateral: [Option<Span>; 2],
 }
 
 impl DepthRange {
     /// Keep depths at or behind `near_mm` and, if present, at or ahead of
     /// `far_mm`. Both finite limits use the view frame's depth coordinate.
     pub fn new(near_mm: f64, far_mm: Option<f64>) -> Result<Self, ProjectionError> {
-        let bounded = |depth: f64| depth.is_finite() && depth.abs() <= 1e8;
         if !bounded(near_mm) || far_mm.is_some_and(|far| !bounded(far) || far >= near_mm) {
             return Err(ProjectionError::Invalid);
         }
         Ok(Self {
             near: near_mm,
             far: far_mm,
+            lateral: [None; 2],
         })
     }
 
-    /// Retain a straight candidate's positive-length portion in this range.
+    /// Limit candidates to these U and V windows before projecting visibility.
+    /// Face blockers only use the depth interval because a view ray has
+    /// the same U and V as the candidate all along its depth.
+    pub fn with_lateral(
+        mut self,
+        windows_mm: [Option<[f64; 2]>; 2],
+    ) -> Result<Self, ProjectionError> {
+        if windows_mm
+            .into_iter()
+            .flatten()
+            .any(|[lo, hi]| !bounded(lo) || !bounded(hi) || lo >= hi)
+        {
+            return Err(ProjectionError::Invalid);
+        }
+        self.lateral = windows_mm;
+        Ok(self)
+    }
+
+    /// Retain a straight candidate's positive-length portion in this volume.
     pub fn clip_line(
         self,
         candidate: LineCandidate,
     ) -> Result<Option<LineCandidate>, ProjectionError> {
         candidate.spatial()?;
         let [a, b] = candidate.points;
-        if self.contains(a[2]) && self.contains(b[2]) {
-            return Ok(Some(candidate));
+        let bounds = self.bounds();
+        let mut trim = [0., 1.];
+        let mut snaps = [[None; 3]; 2];
+        let delta = sub(b, a);
+        for (axis, [lo, hi]) in bounds.into_iter().enumerate() {
+            if lo == f64::NEG_INFINITY && hi == f64::INFINITY {
+                continue;
+            }
+            let ends = [a[axis], b[axis]];
+            let clipped = ends.map(|v| v.clamp(lo, hi));
+            if ends == clipped {
+                continue;
+            }
+            if hi <= ends[0].min(ends[1]) || lo >= ends[0].max(ends[1]) {
+                return Ok(None);
+            }
+            for end in 0..2 {
+                if ends[end] == clipped[end] {
+                    continue;
+                }
+                let root = (clipped[end] - a[axis]) / delta[axis];
+                if (end == 0 && root > trim[end]) || (end == 1 && root < trim[end]) {
+                    trim[end] = root;
+                    snaps[end] = [None; 3];
+                }
+                if root == trim[end] {
+                    snaps[end][axis] = Some(clipped[end]);
+                }
+            }
         }
-        let [lo, hi] = [a[2].min(b[2]), a[2].max(b[2])];
-        if self.near <= lo || self.far.is_some_and(|far| far >= hi) {
+        if trim[0] >= trim[1] {
             return Ok(None);
         }
-        let ends = [a, b];
-        let points = std::array::from_fn(|i| {
-            let [x, y, z] = ends[i];
-            let depth = z.clamp(self.far.unwrap_or(f64::NEG_INFINITY), self.near);
-            if depth == z {
-                return ends[i];
+        let points = std::array::from_fn(|end| {
+            let t = trim[end];
+            let unchanged = t == end as f64;
+            if unchanged && snaps[end] == [None; 3] {
+                return candidate.points[end];
             }
-            let [u, v, w] = ends[1 - i];
-            let t = (depth - z) / (w - z);
-            [(u - x).mul_add(t, x), (v - y).mul_add(t, y), depth]
+            std::array::from_fn(|axis| {
+                let [lo, hi] = bounds[axis];
+                snaps[end][axis].unwrap_or_else(|| {
+                    let value = if unchanged {
+                        candidate.points[end][axis]
+                    } else {
+                        delta[axis].mul_add(t, a[axis])
+                    };
+                    value.clamp(lo, hi)
+                })
+            })
         });
         Ok(Some(LineCandidate {
             points,
@@ -53,47 +106,78 @@ impl DepthRange {
         }))
     }
 
-    /// Clip a spatial circular edge by its exact harmonic depth. A cap may
-    /// split the original trim into several intervals without changing its
-    /// ellipse, parameter basis, or source.
+    /// Clip a spatial circular edge by exact coordinate harmonics. The
+    /// window can split a trim without changing its ellipse or source.
     pub fn clip_rim(
         self,
         candidate: SpatialRimCandidate,
     ) -> Result<Vec<SpatialRimCandidate>, ProjectionError> {
         let rim = candidate.spatial()?;
-        let depth = Harmonic([rim.depth, 0., rim.depth_sine]);
-        if self.contains(rim.depth - rim.depth_sine.abs())
-            && self.contains(rim.depth + rim.depth_sine.abs())
-        {
-            return Ok(vec![candidate]);
-        }
+        let [origin, cosine, sine] = rim.basis();
         let trim = rim.ellipse.trim;
         let mut cuts = Vec::new();
-        depth.level(self.near, trim, &mut cuts);
-        if let Some(far) = self.far {
-            depth.level(far, trim, &mut cuts);
+        let mut active = [const { None }; 3];
+        for (axis, [lo, hi]) in self.bounds().into_iter().enumerate() {
+            if lo == f64::NEG_INFINITY && hi == f64::INFINITY {
+                continue;
+            }
+            let [center, a, b] = [origin[axis], cosine[axis], sine[axis]];
+            let amplitude = a.hypot(b);
+            let [min, max] = [center - amplitude, center + amplitude];
+            if lo > max || hi < min {
+                return Ok(Vec::new());
+            }
+            if lo <= min && hi >= max {
+                continue;
+            }
+            let trace = Harmonic([center, a, b]);
+            active[axis] = Some((trace, lo..=hi));
+            if lo > min {
+                trace.level(lo, trim, &mut cuts);
+            }
+            if hi < max {
+                trace.level(hi, trim, &mut cuts);
+            }
+        }
+        if active.iter().all(Option::is_none) {
+            return Ok(vec![candidate]);
+        }
+        let inside = |t: f64| {
+            let (sin, cos) = t.sin_cos();
+            active.iter().flatten().all(|(trace, range)| {
+                let [center, a, b] = trace.0;
+                range.contains(&a.mul_add(cos, b.mul_add(sin, center)))
+            })
+        };
+        if cuts.is_empty() {
+            return Ok(inside(trim[0].midpoint(trim[1]))
+                .then_some(candidate)
+                .into_iter()
+                .collect());
         }
         let mut output = Vec::new();
-        drawing_events::spans(
-            &mut cuts,
-            trim,
-            |t| self.contains(depth.at(t)),
-            |trim| {
-                output.push(SpatialRimCandidate {
-                    ellipse: crate::curved_projection::Ellipse {
-                        trim,
-                        ..candidate.ellipse
-                    },
-                    ..candidate
-                })
-            },
-        );
+        drawing_events::spans(&mut cuts, trim, inside, |trim| {
+            output.push(SpatialRimCandidate {
+                ellipse: crate::curved_projection::Ellipse {
+                    trim,
+                    ..candidate.ellipse
+                },
+                ..candidate
+            })
+        });
         Ok(output)
     }
 
-    fn contains(self, depth: f64) -> bool {
-        depth <= self.near && self.far.is_none_or(|far| depth >= far)
+    fn bounds(self) -> [Span; 3] {
+        let [u, v] = self
+            .lateral
+            .map(|window| window.unwrap_or([f64::NEG_INFINITY, f64::INFINITY]));
+        [u, v, [self.far.unwrap_or(f64::NEG_INFINITY), self.near]]
     }
+}
+
+fn bounded(value: f64) -> bool {
+    value.is_finite() && value.abs() <= 1e8
 }
 
 #[cfg(test)]

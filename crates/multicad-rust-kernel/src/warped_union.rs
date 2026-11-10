@@ -16,7 +16,7 @@ mod sheet;
 pub use axial_cut::{AxialCut, ConvexRecess, OpenBoreSide};
 pub use boss::Boss;
 pub use elevation::Elevation;
-pub use section::SectionEdge;
+pub use section::{SectionClipPlane, SectionEdge, clip_section_loops};
 pub use sheet::{
     SheetFlange, SheetFlangeOpening, SheetWebEdge, formed_sheet, formed_sheet_with_openings,
     normal_sweep_shell, pierced_sweep_shell,
