@@ -1803,6 +1803,11 @@ fn twisted_polygon_loft_rebuilds_and_reopens_from_embedded_step() {
     let native = compile(&session);
     let model = check_saved_rust_profile(&mut session, &request, volume(cos));
     let solid = model.solid(request.body).unwrap();
+    verify_twisted_loft_sections(
+        solid,
+        #[cfg(feature = "occt")]
+        native.solid(request.body).unwrap(),
+    );
     let faces = solid.faces().unwrap();
     assert_eq!(faces.len(), 6);
     assert_eq!(faces.iter().filter(|face| face.plane.is_some()).count(), 2);
@@ -1916,6 +1921,231 @@ fn twisted_polygon_loft_rebuilds_and_reopens_from_embedded_step() {
         imported.solid(body).unwrap().volume_mm3().unwrap(),
         volume(cos),
     );
+}
+
+fn verify_twisted_loft_sections(
+    solid: &multicad_kernel::Solid,
+    #[cfg(feature = "occt")] native: &multicad_kernel::Solid,
+) {
+    use multicad_core::{
+        drawings::{VectorCurve, VectorRole},
+        materials::HatchPattern,
+    };
+    use multicad_kernel::{
+        DrawingHatch, DrawingProjection, DrawingSolid, GeometryErrorKind, PlaneFrame,
+        project_drawing,
+    };
+
+    let options = DrawingProjection {
+        frame: PlaneFrame {
+            origin: [0., 0., 3.],
+            u: [1., 0., 0.],
+            v: [0., 0.8, 0.6],
+        },
+        section_only: true,
+        section_offset_mm: Some(0.),
+        chord_tolerance_mm: 1e-4,
+        ..Default::default()
+    };
+    let project =
+        |solid, options, hatch| project_drawing(&[DrawingSolid { solid, hatch }], options);
+    let rust = project(solid, options, None).unwrap();
+    assert_eq!(rust.len(), 4);
+    assert!(rust.iter().all(|vector| vector.role == VectorRole::Section
+        && matches!(&vector.curve, VectorCurve::BSpline {
+            degree: 2, periodic: false, poles, weights, ..
+        } if poles.len() == 3 && weights.iter().all(|&weight| weight > 0.))));
+    assert!(rust.iter().all(|vector| vector.preview_mm.len() > 2));
+
+    let placement = multicad_kernel::RigidTransform {
+        rotation: [[0., 0., 1.], [0., 1., 0.], [-1., 0., 0.]],
+        translation_mm: [11., 7., -5.],
+    };
+    let placed = solid.transformed(placement).unwrap();
+    let placed_vectors = project(
+        &placed,
+        DrawingProjection {
+            frame: PlaneFrame {
+                origin: [14., 7., -5.],
+                u: [0., 0., -1.],
+                v: [0.6, 0.8, 0.],
+            },
+            ..options
+        },
+        None,
+    )
+    .unwrap();
+    assert_eq!(placed_vectors.len(), rust.len());
+    for (a, b) in placed_vectors.iter().zip(&rust) {
+        assert_eq!(a.preview_mm.len(), b.preview_mm.len());
+        for (&[x, y], &[u, v]) in a.preview_mm.iter().zip(&b.preview_mm) {
+            near(x, u);
+            near(y, v);
+        }
+    }
+
+    let hatch = DrawingHatch {
+        angle_rad: 0.3,
+        spacing_mm: 0.3,
+        line_width_mm: 0.1,
+        pattern: HatchPattern::Lines,
+    };
+    let hatched = project(solid, options, Some(hatch)).unwrap();
+    assert_eq!(&hatched[..4], &rust);
+    assert!(
+        hatched[4..]
+            .iter()
+            .any(|vector| vector.role == VectorRole::Hatch)
+    );
+
+    let axial = DrawingProjection {
+        frame: PlaneFrame::default(),
+        section_offset_mm: Some(3.),
+        ..options
+    };
+    let lines = project(solid, axial, None).unwrap();
+    assert_eq!(lines.len(), 4);
+    let twice_area: f64 = lines
+        .iter()
+        .map(|vector| match vector.curve {
+            VectorCurve::Line { a, b } => a[0] * b[1] - a[1] * b[0],
+            _ => panic!("parallel loft section should retain straight edges"),
+        })
+        .sum();
+    near(
+        twice_area.abs() / 2.,
+        4. * (1. + std::f64::consts::FRAC_PI_6.cos()),
+    );
+    assert!(
+        project(
+            solid,
+            DrawingProjection {
+                section_offset_mm: Some(30.),
+                ..axial
+            },
+            Some(hatch)
+        )
+        .unwrap()
+        .is_empty()
+    );
+    assert_eq!(
+        project(
+            solid,
+            DrawingProjection {
+                maximum_points: 3,
+                ..options
+            },
+            None
+        )
+        .unwrap_err()
+        .kind,
+        GeometryErrorKind::Limit,
+    );
+    assert_eq!(
+        project(
+            solid,
+            DrawingProjection {
+                maximum_curves: 3,
+                ..options
+            },
+            None
+        )
+        .unwrap_err()
+        .kind,
+        GeometryErrorKind::Limit,
+    );
+    let window = DrawingProjection {
+        section_u_mm: Some([-10., 10.]),
+        section_v_mm: Some([-10., 10.]),
+        ..options
+    };
+    assert_eq!(project(solid, window, None).unwrap(), rust);
+    let clipped_options = DrawingProjection {
+        section_u_mm: Some([-0.5, 0.5]),
+        section_v_mm: Some([-1.2, 1.6]),
+        ..options
+    };
+    let clipped = project(solid, clipped_options, None).unwrap();
+    assert!(
+        clipped
+            .iter()
+            .any(|v| matches!(v.curve, VectorCurve::BSpline { degree: 2, .. }))
+    );
+    assert!(
+        clipped
+            .iter()
+            .any(|v| matches!(v.curve, VectorCurve::Line { a, b } if a[0] == 0.5 && b[0] == 0.5))
+    );
+    assert!(
+        clipped
+            .iter()
+            .flat_map(|v| &v.preview_mm)
+            .all(|[u, v]| (-0.5 - 1e-12..=0.5 + 1e-12).contains(u)
+                && (-1.2 - 1e-12..=1.6 + 1e-12).contains(v))
+    );
+    assert!(
+        project(solid, clipped_options, Some(hatch))
+            .unwrap()
+            .iter()
+            .any(|v| v.role == VectorRole::Hatch)
+    );
+    assert!(
+        project(
+            solid,
+            DrawingProjection {
+                section_u_mm: Some([8., 9.]),
+                ..options
+            },
+            None
+        )
+        .unwrap()
+        .is_empty()
+    );
+
+    #[cfg(feature = "occt")]
+    {
+        use std::time::Instant;
+        let measure = |source| {
+            let mut samples = [std::time::Duration::ZERO; 9];
+            for elapsed in &mut samples {
+                let start = Instant::now();
+                assert_eq!(project(source, options, None).unwrap().len(), 4);
+                *elapsed = start.elapsed();
+            }
+            samples.sort_unstable();
+            samples[4]
+        };
+        let point_distance = |[x, y]: [f64; 2], [a, b]: [[f64; 2]; 2]| {
+            let [u, v] = [b[0] - a[0], b[1] - a[1]];
+            let t = (((x - a[0]) * u + (y - a[1]) * v) / (u * u + v * v)).clamp(0., 1.);
+            (x - a[0] - t * u).hypot(y - a[1] - t * v)
+        };
+        for (rust, options) in [(&rust, options), (&clipped, clipped_options)] {
+            let reference = project(native, options, None).unwrap();
+            for (a, b) in [(rust, &reference), (&reference, rust)] {
+                let segments = b
+                    .iter()
+                    .flat_map(|v| v.preview_mm.windows(2))
+                    .collect::<Vec<_>>();
+                assert!(!segments.is_empty());
+                for point in a.iter().flat_map(|v| v.preview_mm.iter().copied()) {
+                    let error = segments
+                        .iter()
+                        .map(|ends| point_distance(point, [ends[0], ends[1]]))
+                        .fold(f64::INFINITY, f64::min);
+                    assert!(
+                        error < 3. * options.chord_tolerance_mm,
+                        "{point:?}: {error}"
+                    );
+                }
+            }
+        }
+        eprintln!(
+            "Twisted loft section medians over 9 warm projections: Rust {:?}, OpenCascade {:?}",
+            measure(solid),
+            measure(native),
+        );
+    }
 }
 
 fn notched_loft_footprints() -> [[[f64; 2]; 8]; 2] {

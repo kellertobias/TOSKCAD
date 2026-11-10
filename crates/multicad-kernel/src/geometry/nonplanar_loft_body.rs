@@ -2,7 +2,7 @@
 use super::*;
 use crate::rust_prism_topology::{Builder, place_frame, polygon_planar_loops, position};
 use multicad_core::references::{AnalyticGeometry, AnchoredFrame};
-use multicad_rust_kernel::planar_boolean::NonplanarLoft;
+use multicad_rust_kernel::planar_boolean::{self, LoftSectionCurve, NonplanarLoft};
 
 type Point = [f64; 3];
 
@@ -205,6 +205,25 @@ impl Solid {
 }
 
 impl NonplanarLoftBody {
+    pub(crate) fn section(
+        &self,
+        placement: PlaneFrame,
+        origin: Point,
+        normal: Point,
+        tolerance: f64,
+    ) -> Result<Vec<LoftSectionCurve>, planar_boolean::Error> {
+        let axes = [placement.u, placement.v, placement.normal()];
+        let local_normal = axes.map(|axis| dot(axis, normal));
+        let length = norm(local_normal);
+        let local_normal = local_normal.map(|value| value / length);
+        let depth = dot(normal, subtract(origin, placement.origin)) / length;
+        self.geometry.section(
+            local_normal.map(|value| value * depth),
+            local_normal,
+            tolerance,
+        )
+    }
+
     pub(super) fn bounds(&self, placement: PlaneFrame) -> Bounds {
         let mut bounds = Bounds {
             min: [f64::INFINITY; 3],

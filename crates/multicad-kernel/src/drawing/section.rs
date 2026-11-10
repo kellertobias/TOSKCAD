@@ -5,6 +5,7 @@ use multicad_rust_kernel::{planar_section, section_hatch};
 
 mod annulus;
 mod end_on;
+mod loft;
 mod machined;
 mod retained;
 mod warped;

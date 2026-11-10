@@ -18,6 +18,7 @@ pub(super) fn needs_analytic_section(solid: &Solid) -> bool {
             .is_some_and(|body| !body.pockets.is_empty())
         || solid.rounded_slot_body().is_some()
         || solid.warped_union_body().is_some()
+        || solid.nonplanar_loft_body().is_some()
         || curved::is_round(solid)
         || solid
             .rust_compound()
@@ -133,6 +134,22 @@ impl SectionOutput {
         }
         let policy = solid.geometry_policy();
         let tolerance = policy.linear_tolerance_mm;
+        if solid.nonplanar_loft_body().is_some() {
+            let vectors = loft::project(solid, self.options, source, depth)?;
+            let hatch = hatch.filter(|h| h.pattern != HatchPattern::None);
+            let boundary = hatch.map(|_| {
+                vectors
+                    .iter()
+                    .flat_map(|vector| vector.preview_mm.windows(2))
+                    .map(|points| [points[0], points[1]])
+                    .collect::<Vec<_>>()
+            });
+            self.extend(vectors)?;
+            if let Some((hatch, boundary)) = hatch.zip(boundary) {
+                self.hatch(source, hatch, &boundary, tolerance)?;
+            }
+            return Ok(());
+        }
         let screen = planar::view_axes(self.options.frame);
         let bounds = solid.bounds()?;
         let ends = [false, true].map(|upper| {
@@ -184,21 +201,8 @@ impl SectionOutput {
                 hatch.is_some(),
             )?;
             self.extend(vectors)?;
-            if let Some(hatch) = hatch
-                && !boundary.is_empty()
-            {
-                let mut curves = self.options.maximum_curves as usize;
-                let mut points = self.options.maximum_points as usize;
-                let strokes = publish_hatch(
-                    source,
-                    hatch,
-                    &boundary,
-                    tolerance,
-                    &mut curves,
-                    &mut points,
-                    &mut self.hatch_budget,
-                )?;
-                self.extend(strokes)?;
+            if let Some(hatch) = hatch {
+                self.hatch(source, hatch, &boundary, tolerance)?;
             }
             return Ok(());
         }
@@ -244,20 +248,32 @@ impl SectionOutput {
                 deflection = deflection.min(policy.minimum_feature_mm / 4.);
             }
             let boundary = hatch_segments(loops, frame, enlarge_voids, deflection)?;
-            let mut curves = self.options.maximum_curves as usize;
-            let mut points = self.options.maximum_points as usize;
-            let strokes = publish_hatch(
-                source,
-                hatch,
-                &boundary,
-                policy.linear_tolerance_mm,
-                &mut curves,
-                &mut points,
-                &mut self.hatch_budget,
-            )?;
-            self.extend(strokes)?;
+            self.hatch(source, hatch, &boundary, policy.linear_tolerance_mm)?;
         }
         Ok(())
+    }
+    fn hatch(
+        &mut self,
+        source: usize,
+        hatch: DrawingHatch,
+        boundary: &[Segment],
+        tolerance: f64,
+    ) -> Result<(), GeometryError> {
+        if boundary.is_empty() {
+            return Ok(());
+        }
+        let mut curves = self.options.maximum_curves as usize;
+        let mut points = self.options.maximum_points as usize;
+        let strokes = publish_hatch(
+            source,
+            hatch,
+            boundary,
+            tolerance,
+            &mut curves,
+            &mut points,
+            &mut self.hatch_budget,
+        )?;
+        self.extend(strokes)
     }
 }
 

@@ -2,6 +2,8 @@
 use super::*;
 
 mod area;
+mod section;
+pub use section::LoftSectionCurve;
 
 const MAX_EDGES: usize = 64;
 
