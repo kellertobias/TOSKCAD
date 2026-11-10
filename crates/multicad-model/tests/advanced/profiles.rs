@@ -1461,6 +1461,167 @@ fn ruled_polygon_loft_preserves_section_seams_after_edit_reopen_and_step() {
 }
 
 #[test]
+fn concave_ruled_loft_rebuilds_its_notch_and_saved_walls() {
+    use multicad_core::{
+        drawings::{VectorCurve, VectorRole},
+        references::{self, GeometryIntent, Resolution, TopologyKind},
+    };
+    use multicad_kernel::{
+        DrawingProjection, DrawingSolid, PlaneFrame, Solid, project_drawing, rust_kernel::Rational,
+    };
+
+    let (mut session, _) = fixture();
+    let bottom = [
+        [0., 0.],
+        [10., 0.],
+        [10., 8.],
+        [7., 8.],
+        [7., 2.],
+        [3., 2.],
+        [3., 8.],
+        [0., 8.],
+    ];
+    let middle = [
+        [1., -1.],
+        [12., -1.],
+        [12., 10.],
+        [9., 10.],
+        [9., 3.],
+        [4., 3.],
+        [4., 10.],
+        [1., 10.],
+    ];
+    let end = middle.map(|[x, y]| [0.75 * x + 1., 0.75 * y + 1.]);
+    let sections = [
+        ("Notched start", 0., bottom),
+        ("Notched transition", 4., middle),
+        ("Notched end", 10., end),
+    ];
+    let [(first, a), (middle, b), (last, c)] = sections.map(|(name, z, outline)| {
+        let mut curves = [EntityId::nil(); 8];
+        let (sketch, source) = add_sketch(&mut session, Datum::Xy, name, z, |source, _| {
+            let points = outline.map(|p| source.add_point(p));
+            curves = std::array::from_fn(|i| source.add_line(points[i], points[(i + 1) % 8]));
+        });
+        let region = sketch_regions::extract(&source).regions[0].intent();
+        (ProfileSource { sketch, region }, curves)
+    });
+    let request = AdvancedRequest::new_body(
+        "Notched ruled loft",
+        AdvancedParameters::Loft(LoftParameters {
+            ruled: true,
+            seams: vec![a[0], b[0], c[0]],
+        }),
+        vec![first, middle.clone(), last],
+        None,
+    );
+    commit(&mut session, &request);
+    let volume = |z| {
+        z * (56. + 4. * 70.5 + 86.) / 6. + (10. - z) * 86. * (1. + 0.75 + 0.75_f64.powi(2)) / 3.
+    };
+    let initial = check_saved_rust_profile(&mut session, &request, volume(4.));
+    let topology = &initial.snapshot().shapes[&request.feature].topology;
+    let notch = topology
+        .elements
+        .iter()
+        .find(|face| {
+            face.key.kind == TopologyKind::Face
+                && [a[4], b[4]]
+                    .into_iter()
+                    .all(|id| face.origins.iter().any(|origin| origin.source == id))
+        })
+        .unwrap();
+    let intent = GeometryIntent::capture(topology, notch.key).unwrap();
+    let EntityData::Sketch { plane, .. } = session.document().get(middle.sketch).unwrap().data
+    else {
+        panic!("expected the middle sketch plane");
+    };
+    let mut plane = session.document().get(plane).unwrap().clone();
+    let EntityData::Plane { origin_mm, .. } = &mut plane.data else {
+        panic!("expected a datum plane");
+    };
+    origin_mm[2] = 5.;
+    session
+        .apply(Request {
+            expected_revision: session.revision(),
+            actor: actor(),
+            label: "Move the middle notch section".into(),
+            edits: vec![Mutation::Replace(plane)],
+        })
+        .unwrap();
+    let reopened = check_saved_rust_profile(&mut session, &request, volume(5.));
+    let solid = reopened.solid(request.body).unwrap();
+    assert_eq!(solid.faces().unwrap().len(), 18);
+    let topology = &reopened.snapshot().shapes[&request.feature].topology;
+    assert!(matches!(
+        references::resolve(&intent, topology, topology.revision),
+        Resolution::Resolved { .. }
+    ));
+    let vectors = project_drawing(
+        &[DrawingSolid { solid, hatch: None }],
+        DrawingProjection {
+            section_offset_mm: Some(2.5),
+            section_only: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert!(
+        vectors
+            .iter()
+            .any(|vector| vector.role == VectorRole::Section
+                && matches!(vector.curve, VectorCurve::Line { a, b }
+            if (a[1] - 2.5).abs() < 1e-7 && (b[1] - 2.5).abs() < 1e-7
+                && (a[0].min(b[0]) - 3.5).abs() < 1e-7
+                && (a[0].max(b[0]) - 8.).abs() < 1e-7))
+    );
+    let tool = Solid::rust_box(
+        EntityId::new().uuid_bits(),
+        [1, 1, 3].map(|size| Rational::new(size, 1).unwrap()),
+        PlaneFrame {
+            origin: [1.2, 0.25, -1.],
+            ..Default::default()
+        },
+        Default::default(),
+    )
+    .unwrap();
+    let cut_feature = EntityId::new();
+    let cut = solid
+        .rust_subtract_planar_tools(&[&tool], cut_feature, Default::default())
+        .unwrap()
+        .unwrap();
+    assert_eq!(cut.solid_count().unwrap(), 1);
+    near(cut.volume_mm3().unwrap(), volume(5.) - 2.);
+    assert!(
+        cut.topology_snapshot(cut_feature, 0)
+            .unwrap()
+            .elements
+            .iter()
+            .any(|face| face.key.kind == TopologyKind::Face
+                && [a[4], b[4]]
+                    .into_iter()
+                    .all(|id| face.origins.iter().any(|origin| origin.source == id)))
+    );
+    #[cfg(feature = "occt")]
+    {
+        near(
+            compile(&session)
+                .solid(request.body)
+                .unwrap()
+                .volume_mm3()
+                .unwrap(),
+            volume(5.),
+        );
+        let directory = tempfile::tempdir().unwrap();
+        let step = directory.path().join("notched-loft.step");
+        solid.write_step(&step).unwrap();
+        let imported = multicad_kernel::Solid::read_step(&step, Default::default()).unwrap();
+        near(imported.volume_mm3().unwrap(), volume(5.));
+        assert_eq!(imported.solid_count().unwrap(), 1);
+    }
+}
+
+#[test]
 fn missing_seam_and_unsupported_curved_path_fail_without_committing_source() {
     let (mut session, _) = fixture();
     let (first, _) = circle(&mut session, "First", 0., 2., false);
