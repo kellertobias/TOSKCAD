@@ -30,6 +30,9 @@ pub(super) fn read_import_members(
             if let Some(sphere) = sphere::read_member(shell, &face_ids)? {
                 return Ok(sphere);
             }
+            if let Some(torus) = torus::read_member(shell, &face_ids)? {
+                return Ok(torus);
+            }
             if face_ids
                 .iter()
                 .any(|&face| spline_sweep::has_extrusion_support(shell, face))
@@ -60,6 +63,9 @@ pub(super) fn read_analytic(input: &str, tolerance: f64, single: bool) -> Result
         |shell, id, may_be_warped| {
             let faces = shell.member_faces(id)?;
             if let Some((proof, _)) = sphere::read_member(shell, &faces)? {
+                return Ok(proof);
+            }
+            if let Some((proof, _)) = torus::read_member(shell, &faces)? {
                 return Ok(proof);
             }
             if faces

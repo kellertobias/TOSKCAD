@@ -29,6 +29,7 @@ mod planar_union;
 mod spline_sweep;
 mod spur_gear;
 mod stadium;
+mod torus;
 mod warped_union;
 mod writer;
 pub use axial_stack::write_axial_profile_stack;

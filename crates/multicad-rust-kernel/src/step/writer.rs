@@ -109,6 +109,18 @@ impl Writer {
         })
     }
 
+    /// Append one complete regular torus with both periodic seams.
+    pub fn append_torus(
+        &mut self,
+        torus: crate::torus::Torus,
+        origin: Point,
+        u: Point,
+        v: Point,
+    ) -> Result<(), StepError> {
+        let placement = Placement::new(origin, u, v)?;
+        self.append(|file| super::torus::encode(file, torus, &placement))
+    }
+
     /// Append one bounded authored chevron solid with two continuous bands.
     pub fn append_herringbone(
         &mut self,

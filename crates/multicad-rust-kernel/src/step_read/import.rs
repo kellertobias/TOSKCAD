@@ -90,6 +90,10 @@ pub enum ImportProfile {
     Sphere {
         radius_mm: f64,
     },
+    Torus {
+        major_radius_mm: f64,
+        minor_radius_mm: f64,
+    },
     Cylinder {
         radius_mm: f64,
     },

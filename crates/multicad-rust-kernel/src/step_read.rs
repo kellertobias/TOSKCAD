@@ -16,6 +16,7 @@ mod round;
 mod sphere;
 mod spline;
 mod spline_sweep;
+mod torus;
 pub use spline::SplineEdge;
 mod stadium;
 mod warped;
@@ -469,7 +470,7 @@ impl<'a, 'input> Shell<'a, 'input> {
         };
         let needs_radians = self.allow_circles
             && self.entities.values().any(|components| {
-                matches!(components.as_slice(), [entity] if entity.name == "CONICAL_SURFACE")
+                matches!(components.as_slice(), [entity] if matches!(entity.name, "CONICAL_SURFACE" | "TOROIDAL_SURFACE"))
             });
         let mut length_units = 0;
         let mut angle_units = 0;

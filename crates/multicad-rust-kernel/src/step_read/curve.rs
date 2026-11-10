@@ -86,7 +86,7 @@ impl Shell<'_, '_> {
         self.line_pcurve_geometry(surface, curve)
     }
 
-    fn pcurve_definition(&self, pcurve: u32) -> Result<(u32, u32)> {
+    pub(super) fn pcurve_definition(&self, pcurve: u32) -> Result<(u32, u32)> {
         let [Value::String(_), surface, definition] = self.args(pcurve, "PCURVE")? else {
             return Err(ReadError::Invalid);
         };
