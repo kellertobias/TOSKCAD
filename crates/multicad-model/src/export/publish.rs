@@ -245,10 +245,11 @@ fn read_rust_step(
     if let Some(proof) = solid
         .verify_helical_step(source)
         .or_else(|| solid.verify_herringbone_step(source))
+        .or_else(|| solid.verify_helical_tube_cut_step(source))
     {
         let volume = proof.map_err(readback_error)?;
         // The verified boundary gives the source bounds within its uniform
-        // position error. Volume is integrated from the decoded STEP.
+        // position error. Volume comes from the independently decoded boundary.
         let bounds = solid.bounds().map_err(io)?;
         return Ok((1, volume, [bounds.min, bounds.max]));
     }

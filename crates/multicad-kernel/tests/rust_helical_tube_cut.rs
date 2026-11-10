@@ -91,7 +91,6 @@ fn helical_seam_cut_builds_watertight_named_geometry_and_preserves_stock_caps() 
             .unwrap(),
         Location::Exterior
     );
-    assert!(!cut.supports_step_export());
     let q = std::f64::consts::FRAC_1_SQRT_2;
     let tilted = cut
         .transformed(RigidTransform {
@@ -111,6 +110,87 @@ fn helical_seam_cut_builds_watertight_named_geometry_and_preserves_stock_caps() 
             ])
             .unwrap(),
         Location::Exterior
+    );
+}
+
+#[test]
+fn step_readback_preserves_cut_material_and_rejects_the_wrong_phase() {
+    let (_, stock) = stock();
+    let policy = GeometryPolicy::default();
+    let placement = RigidTransform {
+        rotation: [[0.6, 0., 0.8], [0., 1., 0.], [-0.8, 0., 0.6]],
+        translation_mm: [17., 4., 0.],
+    };
+    let cut = stock
+        .rust_cut_helical_tube(tube(16.2), EntityId::new(), policy)
+        .unwrap()
+        .transformed(placement)
+        .unwrap();
+    assert!(cut.supports_step_export());
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("cut.step");
+    cut.write_step(&path).unwrap();
+    let text = std::fs::read_to_string(&path).unwrap();
+    let measure = cut.verify_helical_tube_cut_step(&text).unwrap().unwrap();
+    assert!((measure - cut.volume_mm3().unwrap()).abs() < 1e-6);
+    assert!(stock.verify_helical_tube_cut_step(&text).is_none());
+    #[cfg(feature = "occt")]
+    {
+        let native = Solid::read_step(&path, policy).unwrap();
+        assert_eq!(native.solid_count().unwrap(), 1);
+        assert_eq!(native.faces().unwrap().len(), 5);
+        assert!((native.volume_mm3().unwrap() - measure).abs() < 1e-6);
+    }
+
+    let rotated = stock
+        .rust_cut_helical_tube(
+            HelicalTube {
+                start_angle_rad: PI,
+                ..tube(16.2)
+            },
+            EntityId::new(),
+            policy,
+        )
+        .unwrap()
+        .transformed(placement)
+        .unwrap();
+    assert_eq!(rotated.volume_mm3().unwrap(), cut.volume_mm3().unwrap());
+    assert!(
+        rotated
+            .verify_helical_tube_cut_step(&text)
+            .unwrap()
+            .is_err()
+    );
+
+    let imported = Solid::import_rust_step(&text, EntityId::new(), policy).unwrap();
+    assert_eq!(imported.solid_count().unwrap(), 1);
+    assert!((imported.volume_mm3().unwrap() - measure).abs() < 1e-6);
+    let bounds = cut.bounds().unwrap();
+    let restored = imported.bounds().unwrap();
+    for (expected, actual) in bounds
+        .min
+        .into_iter()
+        .chain(bounds.max)
+        .zip(restored.min.into_iter().chain(restored.max))
+    {
+        assert!((expected - actual).abs() < 1e-7);
+    }
+    let phase: f64 = 0.25;
+    let z = 16.2 + phase / PI;
+    let point = |angle: f64| {
+        let x = 7.7 * angle.cos();
+        let y = 7.7 * angle.sin();
+        [17. + 0.6 * x + 0.8 * z, 4. + y, -0.8 * x + 0.6 * z]
+    };
+    assert_eq!(
+        imported.rust_helical_tube_material(point(phase)).unwrap(),
+        Location::Exterior
+    );
+    assert_eq!(
+        imported
+            .rust_helical_tube_material(point(phase + PI))
+            .unwrap(),
+        Location::Interior
     );
 }
 

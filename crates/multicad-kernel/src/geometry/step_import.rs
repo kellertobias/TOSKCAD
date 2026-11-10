@@ -30,6 +30,28 @@ fn convert(value: f64, tolerance: f64) -> Result<Rational, GeometryError> {
     })
 }
 
+fn import_cylinder(
+    radius_mm: f64,
+    height_mm: f64,
+    frame: PlaneFrame,
+    feature: EntityId,
+    policy: GeometryPolicy,
+) -> Result<Solid, GeometryError> {
+    let height = convert(height_mm, policy.linear_tolerance_mm)?;
+    let zero = Rational::new(0, 1).expect("zero is representable");
+    let radius = convert(radius_mm, policy.linear_tolerance_mm)?;
+    let circle = Circle::new([zero; 2], radius)
+        .map_err(|cause| invalid(format!("Invalid STEP circle: {cause:?}")))?;
+    let cylinder = AxialCylinder::new(feature.uuid_bits(), circle, zero, height)
+        .map_err(|cause| invalid(format!("Invalid STEP cylinder: {cause:?}")))?;
+    let source = Solid::from_axial_cylinder(cylinder, PlaneFrame::default(), policy)?;
+    let normal = frame.normal();
+    source.transformed(RigidTransform {
+        rotation: std::array::from_fn(|i| [frame.u[i], frame.v[i], normal[i]]),
+        translation_mm: frame.origin,
+    })
+}
+
 pub(super) fn feature_origin(
     feature: EntityId,
     kind: &str,
@@ -175,7 +197,6 @@ impl Solid {
             v,
         };
         frame.checked(policy)?;
-        let dimension = |value| convert(value, policy.linear_tolerance_mm);
         match profile {
             ImportProfile::Sphere { radius_mm } => {
                 Self::rust_sphere_named(radius_mm, frame, feature, policy)
@@ -409,19 +430,27 @@ impl Solid {
                 )
             }
             ImportProfile::Cylinder { radius_mm } => {
-                let height = dimension(height_mm)?;
-                let zero = Rational::new(0, 1).expect("zero is representable");
-                let circle = Circle::new([zero; 2], dimension(radius_mm)?)
-                    .map_err(|cause| invalid(format!("Invalid STEP circle: {cause:?}")))?;
-                let cylinder = AxialCylinder::new(feature.uuid_bits(), circle, zero, height)
-                    .map_err(|cause| invalid(format!("Invalid STEP cylinder: {cause:?}")))?;
-                let source = Self::from_axial_cylinder(cylinder, PlaneFrame::default(), policy)?;
-                let normal = frame.normal();
-                source.transformed(RigidTransform {
-                    rotation: std::array::from_fn(|i| [u[i], v[i], normal[i]]),
-                    translation_mm: origin_mm,
-                })
+                import_cylinder(radius_mm, height_mm, frame, feature, policy)
             }
+            ImportProfile::HelicalTubeCut {
+                stock_radius_mm,
+                radius_mm,
+                pitch_mm,
+                path_height_mm,
+                start_height_mm,
+                start_angle_rad,
+            } => import_cylinder(stock_radius_mm, height_mm, frame, feature, policy)?
+                .rust_cut_helical_tube(
+                    HelicalTube {
+                        radius_mm,
+                        pitch_mm,
+                        path_height_mm,
+                        start_height_mm,
+                        start_angle_rad,
+                    },
+                    feature,
+                    policy,
+                ),
             ImportProfile::Polygon {
                 rings,
                 circular_holes,
@@ -841,6 +870,12 @@ fn verify(
         return Err(invalid(
             "Rebuilt STEP solid differs from the imported bounds or volume",
         ));
+    }
+    if solid.helical_tube_cut_body().is_some() {
+        // ImportProfile::HelicalTubeCut is produced only after the reader
+        // verifies the oriented loops, every edge and the cavity support.
+        // STEP splits the rim and adds a cylindrical seam to that boundary.
+        return Ok(());
     }
     if orthogonal
         && readback.circles.is_empty()

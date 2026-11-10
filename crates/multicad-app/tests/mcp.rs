@@ -284,6 +284,95 @@ fn rust_stdio_helical_tube_cut_preserves_material_history_and_reopens() {
 }
 
 #[test]
+fn rust_stdio_round_trips_helical_tube_cut_step_after_reopen() {
+    let directory = tempfile::tempdir().unwrap();
+    let source = directory.path().join("source.tcd");
+    let project = directory.path().join("imported.tcd");
+    let exchange = directory.path().to_str().unwrap();
+    let arguments = |project| {
+        let mut arguments = vec!["--project", project, "--export-dir", exchange];
+        if cfg!(feature = "occt") {
+            arguments.push("--rust-model");
+        }
+        arguments
+    };
+    let mut author = Client::start(&arguments(source.to_str().unwrap()));
+    assert_eq!(
+        author.ok("document_info", json!({}))["geometry_backend"],
+        "rust"
+    );
+    let sketch = author.ok(
+        "create_sketch",
+        json!({"expected_revision":0,"plane":"xz","name":"Helical STEP stock"}),
+    )["sketch"]
+        .clone();
+    let outline = author.ok(
+        "sketch_add_circle",
+        json!({"expected_revision":1,"sketch":sketch,"center_mm":[4,-6],"diameter":length(16.)}),
+    );
+    assert_eq!(outline["revision"], 2);
+    let stock = author.ok(
+        "extrude",
+        json!({"expected_revision":2,"sketch":sketch,"regions":[0],
+            "distance":length(30.),"operation":"new_body"}),
+    );
+    let part = &stock["created"][0]["part"];
+    author.ok(
+        "set_helical_tube_cut",
+        json!({"expected_revision":3,"target_part":part,"radius":length(0.6),
+            "pitch":length(2.),"path_height":length(15.),"start_height":length(16.6),
+            "start_angle":{"value":90,"unit":"deg"}}),
+    );
+    let volume = author.part_volume();
+    close(volume, 5847.325337067);
+    let source_model = author.ok("evaluate_model", json!({}));
+    let source_bounds = &source_model["parts"][0]["bounds_mm"];
+    let exported = author.ok(
+        "export_step",
+        json!({"part":part,"file_name":"helical-cut.step"}),
+    );
+    close(exported["readback_volume_mm3"].as_f64().unwrap(), volume);
+    assert_eq!(author.revision(), 4);
+    drop(author);
+
+    let mut importer = Client::start(&arguments(project.to_str().unwrap()));
+    let imported = importer.ok(
+        "import_step",
+        json!({"expected_revision":0,"file_name":"helical-cut.step"}),
+    );
+    let [part] = imported["parts"].as_array().unwrap().as_slice() else {
+        panic!("expected one retained cylinder: {imported}");
+    };
+    let imported_model = importer.ok("evaluate_model", json!({}));
+    let body = &imported_model["parts"][0];
+    assert_eq!(body["part"], *part);
+    assert_eq!(body["solid_count"], 1);
+    for side in ["min", "max"] {
+        for axis in 0..3 {
+            close(
+                body["bounds_mm"][side][axis].as_f64().unwrap(),
+                source_bounds[side][axis].as_f64().unwrap(),
+            );
+        }
+    }
+    close(body["volume_mm3"].as_f64().unwrap(), volume);
+    importer.ok("save_project", json!({"expected_revision":1}));
+    drop(importer);
+    std::fs::remove_file(directory.path().join("helical-cut.step")).unwrap();
+
+    let mut reopened = Client::start(&arguments(project.to_str().unwrap()));
+    assert_eq!(
+        reopened.ok("evaluate_model", json!({}))["parts"],
+        imported_model["parts"]
+    );
+    let reexported = reopened.ok(
+        "export_step",
+        json!({"part":part,"file_name":"helical-cut-reexported.step"}),
+    );
+    close(reexported["readback_volume_mm3"].as_f64().unwrap(), volume);
+}
+
+#[test]
 fn rust_stdio_extrude_cut_keeps_an_imported_triangle_after_reopen() {
     let directory = tempfile::tempdir().unwrap();
     let project = directory.path().join("triangular-cut.tcd");

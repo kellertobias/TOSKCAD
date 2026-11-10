@@ -2037,7 +2037,15 @@ impl Solid {
             SolidBody::Herringbone(body, frame) => {
                 standalone && body.supports_step(*frame, self.policy)
             }
-            SolidBody::CosmeticFastener(..) | SolidBody::HelicalTubeCut(..) => false,
+            SolidBody::HelicalTubeCut(body, frame) => {
+                standalone
+                    && multicad_rust_kernel::step::supports_helical_tube_cut(
+                        body.cut,
+                        frame.origin,
+                        self.policy.linear_tolerance_mm,
+                    )
+            }
+            SolidBody::CosmeticFastener(..) => false,
             SolidBody::WarpedUnion(body, _) => {
                 multicad_rust_kernel::step::supports_warped_union(&body.geometry)
             }
@@ -2202,9 +2210,14 @@ impl Solid {
             SolidBody::Torus(body, frame) => {
                 writer.append_torus(body.geometry, frame.origin, frame.u, frame.v)
             }
-            SolidBody::CosmeticFastener(..) | SolidBody::HelicalTubeCut(..) => {
-                Err(step::StepError::Unsupported)
-            }
+            SolidBody::HelicalTubeCut(body, frame) => writer.append_helical_tube_cut(
+                body.cut,
+                frame.origin,
+                frame.u,
+                frame.v,
+                self.policy.linear_tolerance_mm,
+            ),
+            SolidBody::CosmeticFastener(..) => Err(step::StepError::Unsupported),
             SolidBody::Orthogonal(body, frame) => body.append_step(writer, *frame),
             SolidBody::Occt(_) => unreachable!("native STEP dispatched above"),
         }

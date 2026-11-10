@@ -168,6 +168,60 @@ impl Solid {
             _ => None,
         }
     }
+
+    /// Verify a published STEP boundary against this retained cylinder.
+    pub fn verify_helical_tube_cut_step(
+        &self,
+        source: &str,
+    ) -> Option<Result<f64, multicad_rust_kernel::step_read::ReadError>> {
+        use multicad_rust_kernel::step_read::{self, ImportProfile, ReadError};
+        let (body, frame) = self.helical_tube_cut_body()?;
+        let tolerance = self.policy.linear_tolerance_mm;
+        Some((|| {
+            let (readback, imported) = step_read::read_import_solid(source, tolerance)?;
+            let ImportProfile::HelicalTubeCut {
+                stock_radius_mm,
+                radius_mm,
+                pitch_mm,
+                start_height_mm,
+                start_angle_rad,
+                ..
+            } = imported.profile
+            else {
+                return Err(ReadError::Invalid);
+            };
+            let spec = body.cut.spec();
+            let stock_extent = spec.stock_height_mm + spec.stock_radius_mm;
+            let distance =
+                |a: [f64; 3], b: [f64; 3]| (a[0] - b[0]).hypot(a[1] - b[1]).hypot(a[2] - b[2]);
+            let start_error = (start_height_mm - spec.start_height_mm).abs();
+            let pitch_error = (pitch_mm - spec.pitch_mm).abs();
+            let turns = (spec.stock_height_mm - spec.start_height_mm) / spec.pitch_mm;
+            let angular_error = (start_angle_rad - spec.start_angle_rad) * 0.5;
+            let phase_error = 2. * spec.stock_radius_mm * angular_error.sin().abs();
+            let azimuth_drift =
+                std::f64::consts::TAU * spec.stock_radius_mm * (start_error + turns * pitch_error)
+                    / spec.pitch_mm;
+            let errors = [
+                distance(frame.origin, imported.origin_mm),
+                stock_extent * distance(frame.u, imported.u),
+                stock_extent * distance(frame.v, imported.v),
+                (imported.height_mm - spec.stock_height_mm).abs(),
+                (stock_radius_mm - spec.stock_radius_mm).abs(),
+                (radius_mm - spec.tube_radius_mm).abs(),
+                start_error,
+                pitch_error,
+                phase_error,
+                azimuth_drift,
+            ];
+            let total_error = errors.into_iter().sum::<f64>();
+            // Leave the remaining budget for the decoded trim and support.
+            if !total_error.is_finite() || total_error > tolerance * 0.25 {
+                return Err(ReadError::Invalid);
+            }
+            Ok(readback.volume_mm3)
+        })())
+    }
 }
 
 impl HelicalTubeBody {
