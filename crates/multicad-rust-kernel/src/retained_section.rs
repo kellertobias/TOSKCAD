@@ -2,8 +2,10 @@
 //! a common screen axis. Open bands share one analytic depth envelope.
 use crate::{orthogonal::Box3, planar_projection::ProjectionError, stadium::Stadium};
 use std::collections::BTreeMap;
+mod crossed;
 mod heights;
 mod strips;
+pub use crossed::project_crossed;
 use heights::{Height, dot, sort_unique};
 use strips::{Collector, Strip};
 
@@ -84,71 +86,153 @@ pub fn project(bodies: &[Body], options: Options) -> Result<Vec<Segment>> {
 }
 
 fn project_bounded(bodies: &[Body], options: Options, mut work: usize) -> Result<Vec<Segment>> {
-    let tolerance = options.tolerance_mm;
-    let finite = [-COORDINATE_LIMIT, COORDINATE_LIMIT];
-    let depth = [options.far_mm.unwrap_or(finite[0]), options.depth_mm];
-    if !(1e-7..=1e-3).contains(&tolerance)
-        || !depth.into_iter().all(bounded)
-        || depth[1] - depth[0] <= tolerance
-        || options
-            .windows_mm
-            .into_iter()
-            .flatten()
-            .any(|[a, b]| !bounded(a) || !bounded(b) || b - a <= tolerance)
-    {
-        return Err(ProjectionError::Invalid);
-    }
-    let window = options.windows_mm.map(|span| span.unwrap_or(finite));
-    let mut strips = Vec::new();
-    for (i, body) in bodies.iter().enumerate() {
-        charge(
-            &mut work,
-            body.stock
-                .len()
-                .saturating_add(body.cuts.len())
-                .saturating_add(body.positive.len())
-                .saturating_add(1),
-        )?;
-        Collector::new(&mut strips, i, window, depth).add(body)?;
-    }
-    if strips.iter().all(|strip| strip.removed) {
-        return Ok(Vec::new());
-    }
-    let mut u_events: Vec<_> = strips.iter().flat_map(|strip| strip.u).collect();
-    sort_unique(&mut u_events);
-    // Every support intersection is a V event. Between events the depth
-    // ordering is fixed, so a midpoint selects the exact front support.
-    let v_events = v_events(&strips, depth, &mut work)?;
-    let y_count = v_events.len().saturating_sub(1);
-    charge(&mut work, y_count.saturating_mul(bodies.len()))?;
-    let empty = vec![vec![None; bodies.len()]; y_count];
-    let mut previous = empty.clone();
-    let mut result = Output {
-        segments: BTreeMap::new(),
-        bodies,
-        tolerance,
-    };
-    for interval in u_events.windows(2) {
-        let u = [interval[0], interval[1]];
-        let band = band(
-            &strips,
-            u[0].midpoint(u[1]),
-            &v_events,
-            bodies.len(),
+    let scene = Scene::new(bodies, options, &mut work)?;
+    let mut output = Output::new(options.tolerance_mm);
+    scene.scan(&mut output, &mut work)?;
+    output.finish(options.segment_limit)
+}
+
+struct Scene<'a> {
+    bodies: &'a [Body],
+    strips: Vec<Strip>,
+    u: Vec<f64>,
+    v: Vec<f64>,
+    depth: Span,
+}
+
+impl<'a> Scene<'a> {
+    fn new(bodies: &'a [Body], options: Options, work: &mut usize) -> Result<Self> {
+        let tolerance = options.tolerance_mm;
+        let finite = [-COORDINATE_LIMIT, COORDINATE_LIMIT];
+        let depth = [options.far_mm.unwrap_or(finite[0]), options.depth_mm];
+        if !(1e-7..=1e-3).contains(&tolerance)
+            || !depth.into_iter().all(bounded)
+            || depth[1] - depth[0] <= tolerance
+            || options
+                .windows_mm
+                .into_iter()
+                .flatten()
+                .any(|[a, b]| !bounded(a) || !bounded(b) || b - a <= tolerance)
+        {
+            return Err(ProjectionError::Invalid);
+        }
+        let window = options.windows_mm.map(|span| span.unwrap_or(finite));
+        let mut strips = Vec::new();
+        for (i, body) in bodies.iter().enumerate() {
+            charge(
+                work,
+                body.stock
+                    .len()
+                    .saturating_add(body.cuts.len())
+                    .saturating_add(body.positive.len())
+                    .saturating_add(1),
+            )?;
+            Collector::new(&mut strips, i, window, depth).add(body)?;
+        }
+        if strips.iter().all(|strip| strip.removed) {
+            strips.clear();
+        }
+        let mut u: Vec<_> = strips.iter().flat_map(|strip| strip.u).collect();
+        sort_unique(&mut u);
+        // Between support intersections the depth ordering is fixed.
+        let v = v_events(&strips, depth, work)?;
+        Ok(Self {
+            bodies,
+            strips,
+            u,
+            v,
             depth,
-            &mut work,
-        )?;
-        result.vertical(u[0], &v_events, &previous, &band);
-        result.horizontal(u, &v_events, &band);
-        previous = band;
+        })
     }
-    result.vertical(
-        *u_events.last().expect("visible stock has an axial span"),
-        &v_events,
-        &previous,
-        &empty,
-    );
-    result.finish(options.segment_limit)
+
+    fn scan(&self, output: &mut impl ScanOutput, work: &mut usize) -> Result<()> {
+        let Some(&last) = self.u.last() else {
+            return Ok(());
+        };
+        let y_count = self.v.len().saturating_sub(1);
+        charge(work, y_count.saturating_mul(self.bodies.len()))?;
+        let empty = vec![vec![None; self.bodies.len()]; y_count];
+        let mut previous = empty.clone();
+        for interval in self.u.windows(2) {
+            let u = [interval[0], interval[1]];
+            let band = band(
+                &self.strips,
+                u[0].midpoint(u[1]),
+                &self.v,
+                self.bodies.len(),
+                self.depth,
+                work,
+            )?;
+            self.vertical(output, u[0], &previous, &band);
+            self.horizontal(output, u, &band);
+            output.band(&self.v, &band);
+            previous = band;
+        }
+        self.vertical(output, last, &previous, &empty);
+        Ok(())
+    }
+
+    fn vertical(&self, output: &mut impl ScanOutput, u: f64, left: &Band, right: &Band) {
+        for ((v, left), right) in self.v.windows(2).zip(left).zip(right) {
+            let sample = v[0].midpoint(v[1]);
+            // A neighboring source can cover the rear of an edge-on recess
+            // even when its footprint meets this source only at the seam.
+            let foreground = front(left, right, sample);
+            for (i, (&a, &b)) in left.iter().zip(right).enumerate() {
+                let [za, zb] =
+                    [a, b].map(|height| height.map_or(f64::NEG_INFINITY, |h| h.at(sample)));
+                if !equal(za, zb)
+                    && equal(za.max(zb), foreground)
+                    && let Some(height) = if za > zb { a } else { b }
+                {
+                    output.edge(Candidate {
+                        source: self.bodies[i].source,
+                        axis: 0,
+                        fixed: u,
+                        span: [v[0], v[1]],
+                        height,
+                    });
+                }
+            }
+        }
+    }
+
+    fn horizontal(&self, output: &mut impl ScanOutput, u: Span, band: &Band) {
+        let empty = vec![None; self.bodies.len()];
+        let left = std::iter::once(&empty).chain(band.iter());
+        let right = band.iter().chain(std::iter::once(&empty));
+        for ((&v, left), right) in self.v.iter().zip(left).zip(right) {
+            let foreground = front(left, right, v);
+            for (i, (&a, &b)) in left.iter().zip(right).enumerate() {
+                if let Some(depth) = crease(a, b, v)
+                    && equal(depth, foreground)
+                {
+                    output.edge(Candidate {
+                        source: self.bodies[i].source,
+                        axis: 1,
+                        fixed: v,
+                        span: u,
+                        height: Height::flat(depth),
+                    });
+                }
+            }
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct Candidate {
+    source: usize,
+    /// Fixed screen axis. The height function uses the other coordinate.
+    axis: usize,
+    fixed: f64,
+    span: Span,
+    height: Height,
+}
+
+trait ScanOutput {
+    fn edge(&mut self, edge: Candidate);
+    fn band(&mut self, _v_events: &[f64], _band: &Band) {}
 }
 
 fn v_events(strips: &[Strip], depth: Span, work: &mut usize) -> Result<Vec<f64>> {
@@ -281,54 +365,30 @@ fn front(a: &[Option<Height>], b: &[Option<Height>], v: f64) -> f64 {
         .fold(f64::NEG_INFINITY, f64::max)
 }
 
-struct Output<'a> {
+struct Output {
     segments: BTreeMap<(usize, usize, u64), Vec<Span>>,
-    bodies: &'a [Body],
     tolerance: f64,
 }
 
-impl Output<'_> {
-    fn add(&mut self, body: usize, axis: usize, coordinate: f64, span: Span) {
-        let key = if coordinate == 0. {
+impl ScanOutput for Output {
+    fn edge(&mut self, edge: Candidate) {
+        let key = if edge.fixed == 0. {
             0
         } else {
-            coordinate.to_bits()
+            edge.fixed.to_bits()
         };
         self.segments
-            .entry((self.bodies[body].source, axis, key))
+            .entry((edge.source, edge.axis, key))
             .or_default()
-            .push(span);
+            .push(edge.span);
     }
+}
 
-    fn vertical(&mut self, u: f64, v_events: &[f64], left: &Band, right: &Band) {
-        for ((v, left), right) in v_events.windows(2).zip(left).zip(right) {
-            let sample = v[0].midpoint(v[1]);
-            // A neighboring source can cover the rear of an edge-on recess
-            // even when its footprint meets this source only at the seam.
-            let foreground = front(left, right, sample);
-            for (i, (&a, &b)) in left.iter().zip(right).enumerate() {
-                let [a, b] =
-                    [a, b].map(|height| height.map_or(f64::NEG_INFINITY, |h| h.at(sample)));
-                if !equal(a, b) && equal(a.max(b), foreground) {
-                    self.add(i, 0, u, [v[0], v[1]]);
-                }
-            }
-        }
-    }
-
-    fn horizontal(&mut self, u: Span, v_events: &[f64], band: &Band) {
-        let empty = vec![None; self.bodies.len()];
-        let left = std::iter::once(&empty).chain(band.iter());
-        let right = band.iter().chain(std::iter::once(&empty));
-        for ((&v, left), right) in v_events.iter().zip(left).zip(right) {
-            let foreground = front(left, right, v);
-            for (i, (&a, &b)) in left.iter().zip(right).enumerate() {
-                if let Some(depth) = crease(a, b, v)
-                    && equal(depth, foreground)
-                {
-                    self.add(i, 1, v, u);
-                }
-            }
+impl Output {
+    fn new(tolerance: f64) -> Self {
+        Self {
+            segments: BTreeMap::new(),
+            tolerance,
         }
     }
 

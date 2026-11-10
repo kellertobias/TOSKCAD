@@ -236,3 +236,100 @@ fn invalid_empty_and_budgeted_requests_are_distinct() {
         .extend((0..1500).map(|_| disk([0., 1.], [1., 1.], 0.5)));
     assert_eq!(project(&[crowded], good), Err(ProjectionError::Limit));
 }
+
+#[test]
+fn perpendicular_sweep_hides_only_the_exact_overlapping_screen_span() {
+    let a = Body {
+        source: 1,
+        stock: vec![],
+        positive: vec![disk([0., 10.], [5., 4.], 1.)],
+        cuts: vec![],
+    };
+    // Transposed coordinates place this sweep along screen V.
+    let b = Body {
+        source: 2,
+        stock: vec![],
+        positive: vec![disk([0., 10.], [5., 7.], 2.)],
+        cuts: vec![],
+    };
+    let visible = project_crossed(&[a], &[b], options()).unwrap();
+    assert_eq!(visible.len(), 10, "{visible:?}");
+    for y in [4., 6.] {
+        assert_edge(&visible, 1, [[0., y], [3., y]]);
+        assert_edge(&visible, 1, [[7., y], [10., y]]);
+    }
+    for x in [3., 7.] {
+        assert_edge(&visible, 2, [[x, 0.], [x, 10.]]);
+    }
+}
+
+#[test]
+fn curved_cap_visibility_changes_at_analytic_depth_intersections() {
+    let a = Body {
+        source: 1,
+        stock: vec![],
+        positive: vec![disk([0., 10.], [5., 4.], 3.)],
+        cuts: vec![],
+    };
+    let b = Body {
+        source: 2,
+        stock: vec![],
+        positive: vec![disk([1., 9.], [0., 5.], 1.)],
+        cuts: vec![],
+    };
+    let visible = project_crossed(&[a], &[b], options()).unwrap();
+    let cap = visible
+        .iter()
+        .find(|segment| segment.source == 1 && segment.ends.iter().all(|point| point[0] == 0.))
+        .unwrap();
+    let half = 5_f64.sqrt();
+    let [lo, hi] = cap.ends.map(|point| point[1]);
+    assert!((lo - (5. - half)).abs() < 1e-12, "{visible:?}");
+    assert!((hi - (5. + half)).abs() < 1e-12, "{visible:?}");
+    assert_edge(&visible, 1, [[10., 2.], [10., 8.]]);
+}
+
+#[test]
+fn crossed_projection_keeps_asymmetric_crop_and_empty_group_parity() {
+    let a = panel(1, [0.; 3], [10.; 3]);
+    let crop = Options {
+        windows_mm: [Some([2., 7.]), Some([3., 9.])],
+        ..options()
+    };
+    let a = [a];
+    let expected = project(&a, crop).unwrap();
+    assert_eq!(project_crossed(&a, &[], crop).unwrap(), expected);
+    assert_eq!(project_crossed(&[], &a, crop).unwrap(), expected);
+    assert_eq!(
+        project_crossed(
+            &a,
+            &[],
+            Options {
+                segment_limit: 3,
+                ..crop
+            }
+        ),
+        Err(ProjectionError::Limit)
+    );
+    assert!(project_crossed(&[], &[], crop).unwrap().is_empty());
+    assert_eq!(
+        project_crossed(&a, &[panel(2, [0.; 3], [0.; 3])], crop),
+        Err(ProjectionError::Invalid)
+    );
+}
+
+#[test]
+fn crossed_projection_uses_both_sides_of_an_opposing_seam() {
+    let a = panel(1, [0., 3., 0.], [8., 5., 3.]);
+    let b = [
+        panel(2, [0., 2., 0.], [5., 6., 4.]),
+        panel(3, [0., 3., 0.], [5., 5., 7.]),
+        panel(4, [5., 2., 0.], [8., 6., 6.]),
+    ];
+    let visible = project_crossed(&[a], &b, options()).unwrap();
+    for y in [3., 5.] {
+        assert_edge(&visible, 1, [[0., y], [2., y]]);
+        assert_edge(&visible, 1, [[6., y], [8., y]]);
+    }
+    assert_eq!(visible.iter().filter(|edge| edge.source == 1).count(), 6);
+}

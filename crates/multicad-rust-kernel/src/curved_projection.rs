@@ -409,7 +409,7 @@ impl Ellipse {
         )
     }
 
-    fn in_detail(self, detail: Detail) -> Vec<Interval> {
+    pub(crate) fn in_detail(self, detail: Detail) -> Vec<Interval> {
         let offset = difference(self.center, detail.center);
         let [x, y] = [dot(offset, self.u), dot(offset, self.v)];
         let scale = x.abs().max(y.abs()).max(self.major).max(detail.radius);

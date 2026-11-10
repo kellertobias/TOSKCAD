@@ -1,5 +1,8 @@
 use super::*;
-use crate::planar_projection::tests::{options, prism, rect};
+use crate::{
+    curved_projection::Ellipse,
+    planar_projection::tests::{options, prism, rect},
+};
 use std::f64::consts::{FRAC_PI_2, PI, TAU};
 
 fn close(actual: f64, expected: f64) {
@@ -303,4 +306,345 @@ fn each_mixed_scene_stage_obeys_the_same_work_limit() {
             },
         );
     assert!(enough.is_some_and(|limit| limit > 160));
+}
+
+fn supplied_rim(source: usize, center: Point2, radius: f64, depth: f64) -> RimCandidate {
+    RimCandidate {
+        source,
+        center,
+        depth,
+        radius,
+        trim: [0., TAU],
+    }
+}
+
+fn supplied_line(source: usize, depth: f64, y: f64) -> LineCandidate {
+    LineCandidate {
+        source,
+        points: [[-4., y, depth], [4., y, depth]],
+    }
+}
+
+fn supplied_lines(edges: &[RoundSegment], source: usize, hidden: bool) -> Vec<Span> {
+    edges
+        .iter()
+        .filter_map(|edge| match edge.edge.curve {
+            Curve::Line(points) if edge.source == source && edge.edge.hidden == hidden => {
+                Some(points.map(|point| point[0]))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn external_edges_use_blockers_without_publishing_their_own_edges() {
+    let panel = rect([0., -7., 7., 7.], 2., 3.);
+    let round = RoundOccluder::new([3., 0., 3.], [0., 0., 1.], 2., 1., None).unwrap();
+    let [rim] = [supplied_rim(17, [0.; 2], 3., 1.)];
+    let (lines, generated, supplied) = project_scene_with_candidates(
+        &[],
+        &[],
+        SceneExtras {
+            rims: &[rim],
+            blocker_bodies: &[panel],
+            ..SceneExtras::default()
+        },
+        Options {
+            hidden_lines: false,
+            ..options()
+        },
+    )
+    .unwrap();
+    assert!(lines.is_empty() && generated.is_empty());
+    intervals(
+        &circles(&supplied, 17, [0.; 2]),
+        &[(false, [FRAC_PI_2, 3. * FRAC_PI_2])],
+    );
+    let (lines, generated, supplied) = project_scene_with_candidates(
+        &[],
+        &[],
+        SceneExtras {
+            rims: &[rim],
+            blocker_rounds: &[round],
+            ..SceneExtras::default()
+        },
+        Options {
+            hidden_lines: false,
+            ..options()
+        },
+    )
+    .unwrap();
+    assert!(lines.is_empty() && generated.is_empty());
+    let a = (7_f64 / 9.).acos();
+    intervals(&circles(&supplied, 17, [0.; 2]), &[(false, [a, TAU - a])]);
+}
+
+#[test]
+fn exact_cavity_removes_the_mouth_disk_but_its_floor_still_occludes() {
+    let stock = rect([-5., -5., 5., 5.], 0., 5.);
+    let opening = FaceOpening {
+        body: 0,
+        face: 5,
+        center: [0.; 2],
+        radius: 2.,
+        floor_depth: 2.,
+    };
+    let rims = [
+        supplied_rim(20, [0.; 2], 1., 3.),
+        supplied_rim(21, [0.; 2], 1., 1.),
+        supplied_rim(22, [0.; 2], 2., 5.),
+        supplied_rim(23, [0.; 2], 2., 2.),
+        supplied_rim(24, [1., 0.], 2., 3.),
+    ];
+    let lines = [
+        supplied_line(10, 3., 0.),
+        supplied_line(11, 1., 0.),
+        supplied_line(12, 3., 2.),
+    ];
+    let (planar, round, supplied) = project_scene_with_candidates(
+        &[],
+        &[],
+        SceneExtras {
+            rims: &rims,
+            lines: &lines,
+            blocker_bodies: &[stock],
+            openings: &[opening],
+            ..SceneExtras::default()
+        },
+        options(),
+    )
+    .unwrap();
+    assert!(planar.is_empty() && round.is_empty());
+    assert_eq!(supplied_lines(&supplied, 10, false), [[-2., 2.]]);
+    assert_eq!(supplied_lines(&supplied, 10, true), [[-4., -2.], [2., 4.]]);
+    for source in [11, 12] {
+        assert!(supplied_lines(&supplied, source, false).is_empty());
+        assert_eq!(supplied_lines(&supplied, source, true), [[-4., 4.]]);
+    }
+    for source in [20, 22, 23] {
+        intervals(&circles(&supplied, source, [0.; 2]), &[(false, [0., TAU])]);
+    }
+    intervals(&circles(&supplied, 21, [0.; 2]), &[(true, [0., TAU])]);
+    let cut = (-0.25_f64).acos();
+    intervals(
+        &circles(&supplied, 24, [1., 0.]),
+        &[
+            (true, [0., cut]),
+            (false, [cut, TAU - cut]),
+            (true, [TAU - cut, TAU]),
+        ],
+    );
+}
+
+#[test]
+fn separate_foreground_hinge_arm_can_cover_a_certified_cavity_rim() {
+    let stock = rect([-5., -5., 5., 5.], 0., 5.);
+    let arm = rect([-3., -3., 3., 3.], 5., 6.);
+    let opening = FaceOpening {
+        body: 0,
+        face: 5,
+        center: [0.; 2],
+        radius: 2.,
+        floor_depth: 2.,
+    };
+    let rims = [
+        supplied_rim(20, [0.; 2], 2., 5.),
+        supplied_rim(21, [0.; 2], 2., 2.),
+    ];
+    let (planar, _, supplied) = project_scene_with_candidates(
+        &[stock],
+        &[],
+        SceneExtras {
+            rims: &rims,
+            blocker_bodies: &[arm],
+            openings: &[opening],
+            ..SceneExtras::default()
+        },
+        Options {
+            hidden_lines: false,
+            ..options()
+        },
+    )
+    .unwrap();
+    assert!(planar.iter().all(|line| line.source == 0));
+    assert!(supplied.is_empty());
+}
+
+#[test]
+fn supplied_edge_on_circle_splits_at_the_extremum_and_resolves_depth() {
+    let cap = SpatialRimCandidate {
+        source: 27,
+        ellipse: Ellipse {
+            center: [0.; 2],
+            u: [1., 0.],
+            v: [0., 1.],
+            major: 2.,
+            minor: 0.,
+            trim: [0., TAU],
+        },
+        depth: 0.,
+        depth_sine: -2.,
+    };
+    let panel = rect([-3., -1., 3., 1.], 0.25, 0.5);
+    let (_, _, supplied) = project_scene_with_candidates(
+        &[],
+        &[],
+        SceneExtras {
+            spatial_rims: &[cap],
+            blocker_bodies: &[panel],
+            ..SceneExtras::default()
+        },
+        Options {
+            hidden_lines: false,
+            ..options()
+        },
+    )
+    .unwrap();
+    let lines = supplied_lines(&supplied, 27, false);
+    let x = (4. - (0.5 - options().tolerance).powi(2)).sqrt();
+    assert_eq!(lines.len(), 1);
+    close(lines[0][0], -x);
+    close(lines[0][1], x);
+}
+
+#[test]
+fn validates_supplied_curves_and_clips_a_line_to_the_detail_window() {
+    let line = supplied_line(14, 2., 0.);
+    let outside = supplied_line(15, 2., 3.);
+    let (_, _, supplied) = project_scene_with_candidates(
+        &[],
+        &[],
+        SceneExtras {
+            lines: &[line, outside],
+            ..SceneExtras::default()
+        },
+        Options {
+            detail: Some(([0.; 2], 1.)),
+            ..options()
+        },
+    )
+    .unwrap();
+    assert_eq!(supplied_lines(&supplied, 14, false), [[-1., 1.]]);
+    assert!(supplied_lines(&supplied, 15, false).is_empty());
+    assert_eq!(
+        project_scene_with_candidates(
+            &[],
+            &[],
+            SceneExtras {
+                lines: &[line],
+                ..SceneExtras::default()
+            },
+            Options {
+                segment_limit: 0,
+                ..options()
+            }
+        ),
+        Err(ProjectionError::Limit)
+    );
+    let (_, _, clipped) = project_scene_with_candidates(
+        &[],
+        &[],
+        SceneExtras {
+            rims: &[supplied_rim(17, [0.; 2], 2., 1.)],
+            ..SceneExtras::default()
+        },
+        Options {
+            detail: Some(([-2., 0.], 1.)),
+            ..options()
+        },
+    )
+    .unwrap();
+    let angle = (7_f64 / 8.).acos();
+    intervals(
+        &circles(&clipped, 17, [0.; 2]),
+        &[(false, [PI - angle, PI + angle])],
+    );
+    for extras in [
+        SceneExtras {
+            lines: &[supplied_line(14, f64::NAN, 0.)],
+            ..SceneExtras::default()
+        },
+        SceneExtras {
+            rims: &[supplied_rim(14, [0.; 2], 0., 0.)],
+            ..SceneExtras::default()
+        },
+        SceneExtras {
+            spatial_rims: &[SpatialRimCandidate {
+                source: 10,
+                ellipse: Ellipse {
+                    center: [0.; 2],
+                    u: [1., 0.],
+                    v: [0., 1.],
+                    major: 2.,
+                    minor: 0.,
+                    trim: [0., TAU],
+                },
+                depth: 0.,
+                depth_sine: -1.,
+            }],
+            ..SceneExtras::default()
+        },
+    ] {
+        assert_eq!(
+            project_scene_with_candidates(&[], &[], extras, options()),
+            Err(ProjectionError::Invalid)
+        );
+    }
+}
+
+#[test]
+fn cavity_openings_must_fit_the_selected_face_and_leave_a_floor() {
+    let stock = rect([-5., -5., 5., 5.], 0., 5.);
+    let opening = FaceOpening {
+        body: 0,
+        face: 5,
+        center: [0.; 2],
+        radius: 2.,
+        floor_depth: 2.,
+    };
+    let project = |openings: &[FaceOpening]| {
+        project_scene_with_candidates(
+            std::slice::from_ref(&stock),
+            &[],
+            SceneExtras {
+                openings,
+                ..SceneExtras::default()
+            },
+            options(),
+        )
+    };
+    for invalid in [
+        FaceOpening { body: 1, ..opening },
+        FaceOpening { face: 6, ..opening },
+        FaceOpening { face: 0, ..opening },
+        FaceOpening {
+            floor_depth: 5.,
+            ..opening
+        },
+        FaceOpening {
+            floor_depth: 0.,
+            ..opening
+        },
+        FaceOpening {
+            center: [7., 0.],
+            ..opening
+        },
+        FaceOpening {
+            center: [4., 0.],
+            ..opening
+        },
+    ] {
+        assert_eq!(project(&[invalid]), Err(ProjectionError::Invalid));
+    }
+    assert_eq!(
+        project(&[
+            opening,
+            FaceOpening {
+                center: [2.5, 0.],
+                ..opening
+            }
+        ]),
+        Err(ProjectionError::Invalid)
+    );
 }

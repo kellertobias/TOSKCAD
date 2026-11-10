@@ -3,7 +3,10 @@
 use crate::round_occlusion::RoundOccluder;
 
 mod scene;
-pub use scene::{RoundSegment, project_scene};
+pub use scene::{
+    FaceOpening, LineCandidate, RimCandidate, RoundSegment, SceneExtras, SceneProjection,
+    SpatialRimCandidate, project_scene, project_scene_with_candidates,
+};
 
 type Point = [f64; 3];
 type Point2 = [f64; 2];
@@ -106,7 +109,14 @@ struct TrimmedPlane {
     point: Point,
     normal: Point,
     boundary: Vec<[Point2; 2]>,
+    circles: Vec<CircleTrim>,
     bounds: Bounds,
+}
+
+#[derive(Clone, Copy)]
+struct CircleTrim {
+    center: Point2,
+    radius: f64,
 }
 
 struct Line {
@@ -184,7 +194,7 @@ impl TrimmedPlane {
             let root = (span[1] - span[0]).mul_add((threshold - a) / (b - a), span[0]);
             span[usize::from(a > threshold)] = root;
         }
-        work.charge(self.boundary.len())?;
+        work.charge(self.boundary.len() + self.circles.len())?;
         work.crossings.clear();
         for edge in &self.boundary {
             let [[u0, v0], [u1, v1]] = edge.map(|point| line.coordinates(point));
@@ -196,6 +206,14 @@ impl TrimmedPlane {
             // a silhouette. A single vertex contact does not hide any length.
             if v0 == 0. && v1 == 0. {
                 work.add_hidden([u0.min(u1), u0.max(u1)], span);
+            }
+        }
+        for circle in &self.circles {
+            let [along, offset] = line.coordinates(circle.center);
+            let offset = offset.abs();
+            if offset < circle.radius {
+                let half = ((circle.radius - offset) * (circle.radius + offset)).sqrt();
+                work.crossings.extend([along - half, along + half]);
             }
         }
         work.crossings.sort_unstable_by(f64::total_cmp);
@@ -317,12 +335,13 @@ struct EdgeUse {
     tangent: bool,
 }
 
-fn prepare(
-    bodies: &[Body],
+fn prepare<'a>(
+    bodies: impl IntoIterator<Item = &'a Body>,
     work: &mut Work,
 ) -> Result<(Vec<TrimmedPlane>, Vec<Vec<EdgeUse>>), ProjectionError> {
+    let bodies = bodies.into_iter();
     let mut planes = Vec::new();
-    let mut edge_uses = Vec::with_capacity(bodies.len());
+    let mut edge_uses = Vec::with_capacity(bodies.size_hint().0);
     let mut face_id = 0;
     for body in bodies {
         work.charge(body.edges.len())?;
@@ -378,6 +397,7 @@ fn prepare(
                     point: face.point,
                     normal: face.normal.map(|n| n * face.normal[2].signum()),
                     boundary,
+                    circles: Vec::new(),
                     bounds: bounds.expect("face has edges"),
                 });
             }
