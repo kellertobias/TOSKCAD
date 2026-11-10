@@ -816,6 +816,67 @@ mod tests {
     }
 
     #[test]
+    fn rust_drawing_worker_resolves_sphere_and_stock_visibility() {
+        use drawings::{VectorCurve, VectorRole, ViewEvaluation};
+
+        let mut session =
+            Session::new(Document::new("Spherical assembly drawing").unwrap()).unwrap();
+        let stock = add_box(&mut session, "Stock", 0.).body;
+        let sphere = PrimitiveRequest::new(
+            "Sphere",
+            PrimitiveParameters::Sphere {
+                radius: length(4.),
+                frame: PrimitiveFrame {
+                    origin: [10., 0., 11.].map(length),
+                    ..Default::default()
+                },
+            },
+        );
+        let actor = Actor::local(Channel::Ui);
+        let prepared =
+            model::prepare_primitive(&session, session.revision(), actor.clone(), &sphere).unwrap();
+        session.commit(prepared.prepared).unwrap();
+
+        let mut page = projection_page(stock);
+        let projection = &mut page.views[0];
+        projection.source = drawings::ViewSource::Model {
+            entities: vec![stock, sphere.body],
+        };
+        projection.hidden_lines = true;
+        let id = projection.id;
+        let (_, prepared) = drawings::prepare_create(
+            &session,
+            session.revision(),
+            actor,
+            "Drawing",
+            Some(page.clone()),
+        )
+        .unwrap();
+        session.commit(prepared).unwrap();
+        let mut backend = Backend::with_cache_and_backend(None, GeometryBackend::Rust);
+        let result = preview(&mut backend, &session, page.id);
+        let ViewEvaluation::Ready { vectors, .. } = &result.views[&id] else {
+            panic!("{:?}", result.views[&id]);
+        };
+        assert!(vectors.iter().any(|v| v.source == sphere.body
+            && v.role == VectorRole::Visible
+            && matches!(
+                v.curve,
+                VectorCurve::Ellipse {
+                    center: [10., 0.],
+                    major_mm: 4.,
+                    minor_mm: 4.,
+                    ..
+                }
+            )));
+        assert!(vectors.iter().any(|v| v.source == stock
+            && v.role == VectorRole::Hidden
+            && matches!(v.curve, VectorCurve::Line { a,b }
+                if [a,b].into_iter().all(|p| p[1].abs() < 1e-7)
+                    && (a[0].min(b[0])-6.).abs() < 1e-6 && (a[0].max(b[0])-14.).abs() < 1e-6)));
+    }
+
+    #[test]
     fn rust_drawing_worker_publishes_curved_projection_and_detail_together() {
         use drawings::{VectorCurve, VectorRole, ViewEvaluation};
 
