@@ -138,6 +138,44 @@ fn fixture() -> (Session, TopologySnapshot, ReferenceAddress, EntityId) {
     }
     (Session::new(doc).unwrap(), snapshot, address, hole.id)
 }
+
+#[test]
+fn inspection_rechecks_replaced_topology_shared_by_multiple_intents() {
+    let (session, mut snapshot, _, _) = fixture();
+    let mut document = session.document().clone();
+    let mut link = Link::new(snapshot.owner, "another face");
+    link.geometry = Some(attached(&snapshot));
+    document
+        .insert(source("Another face consumer", vec![link]))
+        .unwrap();
+    let inspector = ReferenceInspector::new(&document, 0);
+    let inspect_snapshot = |snapshot: &TopologySnapshot| {
+        inspector.inspect(&BTreeMap::from([(snapshot.owner, snapshot.clone())]))
+    };
+    let check = |snapshot: &TopologySnapshot| {
+        let report = inspect_snapshot(snapshot);
+        assert_eq!(report.entries.len(), 2);
+        for entry in &report.entries {
+            assert_eq!(entry.resolution, resolve(&entry.intent, snapshot, 0));
+        }
+        report.entries[0].resolution.clone()
+    };
+
+    assert!(matches!(check(&snapshot), Resolution::Resolved { .. }));
+    snapshot.elements.push(snapshot.elements[0].clone());
+    assert!(matches!(check(&snapshot), Resolution::Invalid { .. }));
+    snapshot.elements.pop();
+    snapshot.revision = 1;
+    assert_eq!(
+        check(&snapshot),
+        Resolution::Stale {
+            snapshot_revision: 1
+        }
+    );
+    snapshot.revision = 0;
+    assert!(matches!(check(&snapshot), Resolution::Resolved { .. }));
+}
+
 #[test]
 fn repair_is_explicit_previewable_attributable_and_one_undoable_transaction() {
     let (mut session, mut snapshot, address, hole) = fixture();

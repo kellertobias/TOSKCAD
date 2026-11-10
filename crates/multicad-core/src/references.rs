@@ -267,7 +267,16 @@ fn matching<'a>(
         .collect()
 }
 pub fn resolve(intent: &GeometryIntent, snapshot: &TopologySnapshot, revision: u64) -> Resolution {
-    if let Err(message) = intent.validate().and_then(|()| snapshot.validate()) {
+    resolve_with_validation(intent, snapshot, revision, || snapshot.validate())
+}
+
+fn resolve_with_validation(
+    intent: &GeometryIntent,
+    snapshot: &TopologySnapshot,
+    revision: u64,
+    validate_snapshot: impl FnOnce() -> Result<(), String>,
+) -> Resolution {
+    if let Err(message) = intent.validate().and_then(|()| validate_snapshot()) {
         return Resolution::Invalid { message };
     }
     if snapshot.revision != revision {
@@ -472,6 +481,9 @@ impl ReferenceInspector {
 
     pub fn inspect(&self, snapshots: &BTreeMap<EntityId, TopologySnapshot>) -> ReferenceReport {
         let mut report = self.report.clone();
+        // The snapshots are immutable for this inspection. Several intents can
+        // share a source, including intents used by different features.
+        let mut validation = BTreeMap::new();
         for entry in &mut report.entries {
             if self.missing_sources.contains(&entry.source) {
                 continue;
@@ -481,7 +493,14 @@ impl ReferenceInspector {
                 Some(snapshot) if snapshot.owner != entry.source => Resolution::Invalid {
                     message: "Topology snapshot belongs to another source".into(),
                 },
-                Some(snapshot) => resolve(&entry.intent, snapshot, report.revision),
+                Some(snapshot) => {
+                    resolve_with_validation(&entry.intent, snapshot, report.revision, || {
+                        validation
+                            .entry(entry.source)
+                            .or_insert_with(|| snapshot.validate())
+                            .clone()
+                    })
+                }
             };
         }
         report
