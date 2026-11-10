@@ -1,6 +1,6 @@
 //! Recognize swept solids by their complete, already validated boundaries.
 use super::*;
-use crate::linear_sweep::Sweep;
+use crate::{linear_sweep::Sweep, trimmed_sweep::TrimmedSweep};
 use std::cmp::Ordering;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -15,6 +15,14 @@ pub enum ImportProfile {
         base: Vec<Vec<[f64; 2]>>,
         /// End sections in the base frame, including their in-plane offset.
         top: Vec<Vec<[f64; 2]>>,
+    },
+    TrimmedSweep {
+        /// Exterior counterclockwise, followed by clockwise straight holes.
+        rings: Vec<Vec<[f64; 2]>>,
+        /// The common unit generator direction in the lower cap frame.
+        direction: Point,
+        /// Affine travel distances from the lower cap. The first row is zero.
+        travels: [[f64; 3]; 2],
     },
     Cylinder {
         radius_mm: f64,
@@ -33,12 +41,14 @@ pub struct ImportSolid {
     pub origin_mm: [f64; 3],
     pub u: [f64; 3],
     pub v: [f64; 3],
+    /// Height at the origin of the lower cap frame.
     pub height_mm: f64,
     pub profile: ImportProfile,
 }
 
 /// Decode a single right prism, full cylinder, coaxial annulus or straight-edged
-/// linear sweep from a verified STEP shell. Every wall must join paired rims.
+/// linear sweep, including sloped trims, from a verified STEP shell.
+/// Every wall must join paired rims.
 pub fn read_import_solid(input: &str, tolerance_mm: f64) -> Result<(Readback, ImportSolid)> {
     let entities = parse_entities(input, tolerance_mm)?;
     let mut shell = Shell::new(&entities, tolerance_mm, true);
@@ -88,6 +98,16 @@ struct Wall {
     top: u32,
 }
 
+enum PlanarMatch<'a> {
+    Straight(f64),
+    Ruled(f64, &'a BTreeMap<u32, u32>),
+    Trimmed {
+        direction: Point,
+        top_origin: Point,
+        top_normal: Point,
+    },
+}
+
 impl Shell<'_, '_> {
     fn indexed_edges(&self, face_count: usize) -> Vec<Vec<u32>> {
         let mut face_edges = vec![Vec::new(); face_count];
@@ -112,8 +132,7 @@ impl Shell<'_, '_> {
                     return None;
                 };
                 let direction = normal.map(|v| zero(-v));
-                (face_edges[face].len() == faces.len() - 2 && preferred_axis(direction))
-                    .then_some((face, direction, *origin))
+                (face_edges[face].len() == faces.len() - 2).then_some((face, direction, *origin))
             })
             .collect();
         // A box may have several valid extrusion axes. Prefer Z, then Y,
@@ -123,25 +142,27 @@ impl Shell<'_, '_> {
                 |direction: Point| [direction[2].abs(), direction[1].abs(), direction[0].abs()];
             compare(preference(b.1), preference(a.1)).then(compare(b.1, a.1))
         });
-        caps.iter()
+        let preferred = || {
+            caps.iter()
+                .filter(|(_, direction, _)| preferred_axis(*direction))
+        };
+        preferred()
             .find_map(|&(lower, direction, origin)| {
                 self.prism(faces, &face_edges, lower, direction, origin)
             })
             .or_else(|| {
-                caps.into_iter().find_map(|(lower, direction, origin)| {
+                preferred().find_map(|&(lower, direction, origin)| {
                     self.linear_sweep(faces, &face_edges, lower, direction, origin)
+                })
+            })
+            .or_else(|| {
+                caps.iter().find_map(|&(lower, direction, _)| {
+                    self.trimmed_sweep(faces, &face_edges, lower, direction)
                 })
             })
     }
 
-    fn cap_walls(
-        &self,
-        faces: &[Face],
-        face_edges: &[Vec<u32>],
-        lower: usize,
-        direction: Point,
-        bottom: Point,
-    ) -> Option<(f64, Vec<Wall>)> {
+    fn paired_walls(&self, face_edges: &[Vec<u32>], lower: usize) -> Option<(usize, Vec<Wall>)> {
         let mut walls = BTreeMap::new();
         for &edge in &face_edges[lower] {
             let wall = self.edges[&edge]
@@ -153,20 +174,9 @@ impl Shell<'_, '_> {
                 return None;
             }
         }
-        let upper = (0..faces.len()).find(|face| *face != lower && !walls.contains_key(face))?;
-        let Face::Planar {
-            origin: top,
-            normal,
-            ..
-        } = faces[upper]
-        else {
-            return None;
-        };
-        if length(sub(direction, normal)) > 1e-10 || face_edges[upper].len() != walls.len() {
-            return None;
-        }
-        let height_mm = dot(sub(top, bottom), direction);
-        if height_mm <= self.tolerance {
+        let upper =
+            (0..face_edges.len()).find(|face| *face != lower && !walls.contains_key(face))?;
+        if face_edges[upper].len() != walls.len() {
             return None;
         }
         let mut paired = Vec::with_capacity(walls.len());
@@ -184,7 +194,29 @@ impl Shell<'_, '_> {
                 top: top_edge,
             });
         }
-        Some((height_mm, paired))
+        Some((upper, paired))
+    }
+
+    fn cap_walls(
+        &self,
+        faces: &[Face],
+        face_edges: &[Vec<u32>],
+        lower: usize,
+        direction: Point,
+        bottom: Point,
+    ) -> Option<(f64, Vec<Wall>)> {
+        let (upper, walls) = self.paired_walls(face_edges, lower)?;
+        let Face::Planar {
+            origin: top,
+            normal,
+            ..
+        } = faces[upper]
+        else {
+            return None;
+        };
+        let height_mm = dot(sub(top, bottom), direction);
+        (length(sub(direction, normal)) <= 1e-10 && height_mm > self.tolerance)
+            .then_some((height_mm, walls))
     }
 
     fn prism(
@@ -226,6 +258,61 @@ impl Shell<'_, '_> {
             direction,
             height_mm,
             Some(&correspondence),
+        )
+    }
+
+    fn trimmed_sweep(
+        &self,
+        faces: &[Face],
+        face_edges: &[Vec<u32>],
+        lower: usize,
+        inward: Point,
+    ) -> Option<ImportSolid> {
+        let (upper, walls) = self.paired_walls(face_edges, lower)?;
+        let Face::Planar {
+            origin: top_origin,
+            normal: top_normal,
+            ..
+        } = faces[upper]
+        else {
+            return None;
+        };
+        let mut rails = Vec::with_capacity(walls.len() * 2);
+        for Wall { face, base, top } in walls {
+            rails.extend(
+                self.wall_generators(&faces[face], &face_edges[face], base, top)?
+                    .map(|[a, b]| [self.points[&a], self.points[&b]]),
+            );
+        }
+        let longest = rails
+            .iter()
+            .map(|[a, b]| sub(*b, *a))
+            .max_by(|&a, &b| length(a).total_cmp(&length(b)).then(compare(a, b)))?;
+        let direction = unit(longest).ok()?;
+        let denominator = dot(direction, top_normal);
+        if dot(direction, inward) < 1e-10 || denominator < 1e-10 {
+            return None;
+        }
+        // The shared shell is already validated. Compare each rail to the
+        // candidate ray's actual intersection with the opposing cap plane.
+        // This bounds any mismatch even when the cap is nearly parallel.
+        for [a, b] in rails {
+            let travel = dot(sub(top_origin, a), top_normal) / denominator;
+            if travel <= self.tolerance
+                || length(sub(sub(b, a), direction.map(|value| value * travel))) > self.tolerance
+            {
+                return None;
+            }
+        }
+        self.planar_profile(
+            &face_edges[lower],
+            lower,
+            inward,
+            PlanarMatch::Trimmed {
+                direction,
+                top_origin,
+                top_normal,
+            },
         )
     }
 
@@ -347,6 +434,23 @@ impl Shell<'_, '_> {
                 },
             });
         }
+        let kind = correspondence.map_or(PlanarMatch::Straight(height_mm), |correspondence| {
+            PlanarMatch::Ruled(height_mm, correspondence)
+        });
+        self.planar_profile(edges, lower, direction, kind)
+    }
+
+    fn planar_profile(
+        &self,
+        edges: &[u32],
+        lower: usize,
+        direction: Point,
+        kind: PlanarMatch<'_>,
+    ) -> Option<ImportSolid> {
+        let correspondence = match kind {
+            PlanarMatch::Ruled(_, correspondence) => Some(correspondence),
+            _ => None,
+        };
         let mut successors = BTreeMap::new();
         let mut circles = Vec::new();
         for &id in edges {
@@ -428,19 +532,51 @@ impl Shell<'_, '_> {
         }
         holes.sort_unstable_by(|a, b| compare(a.0[0], b.0[0]));
         let rings = std::iter::once(outer?).chain(holes);
-        let profile = if correspondence.is_some() {
-            let (base, top): (Vec<_>, Vec<_>) = rings.unzip();
-            Sweep::new(base.clone(), top.clone(), height_mm).ok()?;
-            ImportProfile::LinearSweep { base, top }
-        } else {
-            let mut circular_holes: Vec<_> = circles
-                .into_iter()
-                .map(|circle| (project(circle.center_mm), circle.radius_mm))
-                .collect();
-            circular_holes.sort_unstable_by(|a, b| compare(a.0, b.0).then(a.1.total_cmp(&b.1)));
-            ImportProfile::Polygon {
-                rings: rings.map(|(ring, _)| ring).collect(),
-                circular_holes,
+        let (height_mm, profile) = match kind {
+            PlanarMatch::Straight(height_mm) => {
+                let mut circular_holes: Vec<_> = circles
+                    .into_iter()
+                    .map(|circle| (project(circle.center_mm), circle.radius_mm))
+                    .collect();
+                circular_holes.sort_unstable_by(|a, b| compare(a.0, b.0).then(a.1.total_cmp(&b.1)));
+                (
+                    height_mm,
+                    ImportProfile::Polygon {
+                        rings: rings.map(|(ring, _)| ring).collect(),
+                        circular_holes,
+                    },
+                )
+            }
+            PlanarMatch::Ruled(height_mm, _) => {
+                let (base, top): (Vec<_>, Vec<_>) = rings.unzip();
+                Sweep::new(base.clone(), top.clone(), height_mm).ok()?;
+                (height_mm, ImportProfile::LinearSweep { base, top })
+            }
+            PlanarMatch::Trimmed {
+                direction: generator,
+                top_origin,
+                top_normal,
+            } => {
+                let denominator = dot(generator, top_normal);
+                let direction = [u, v, direction].map(|axis| dot(generator, axis));
+                let travels = [
+                    [0.; 3],
+                    [
+                        dot(sub(top_origin, origin_mm), top_normal) / denominator,
+                        -dot(u, top_normal) / denominator,
+                        -dot(v, top_normal) / denominator,
+                    ],
+                ];
+                let rings: Vec<_> = rings.map(|(ring, _)| ring).collect();
+                TrimmedSweep::new(rings.clone(), direction, travels, self.tolerance).ok()?;
+                (
+                    travels[1][0] * direction[2],
+                    ImportProfile::TrimmedSweep {
+                        rings,
+                        direction,
+                        travels,
+                    },
+                )
             }
         };
         Some(ImportSolid {

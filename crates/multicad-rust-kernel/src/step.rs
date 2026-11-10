@@ -8,6 +8,7 @@ use crate::{
     orthogonal_boundary::{Boundary, BoundaryFace, point_key},
     polygon::PolygonPrism,
     prism::Prism,
+    trimmed_sweep::TrimmedSweep,
 };
 use std::{collections::BTreeMap, fmt, fmt::Write, ops::Range};
 
@@ -140,46 +141,99 @@ pub fn write_linear_sweep(
     v: Point,
 ) -> Result<String, StepError> {
     let placement = Placement::new(origin, u, v)?;
-    let mut ranges = Vec::with_capacity(sweep.base().len());
+    let height = sweep.height_mm();
+    write_planar_sweep(
+        &placement,
+        sweep.base(),
+        [([0., 0., -1.], [1., 0., 0.]), ([0., 0., 1.], [1., 0., 0.])],
+        |end, ring, vertex| {
+            if end {
+                let [x, y] = sweep.top()[ring][vertex];
+                [x, y, height]
+            } else {
+                let [x, y] = sweep.base()[ring][vertex];
+                [x, y, 0.]
+            }
+        },
+        |ring, vertex| {
+            let [x, y] = sweep.base()[ring][vertex];
+            let [top_x, top_y] = sweep.top()[ring][vertex];
+            direction([0.; 3], [top_x - x, top_y - y, height])
+        },
+    )
+}
+
+/// Write a straight prism clipped between planar caps in a rigid world frame.
+pub fn write_trimmed_sweep(
+    sweep: &TrimmedSweep,
+    origin: Point,
+    u: Point,
+    v: Point,
+) -> Result<String, StepError> {
+    let placement = Placement::new(origin, u, v)?;
+    let supports = [false, true].map(|end| {
+        let normal = sweep.cap_normal(end);
+        // Pick a basis axis well away from parallel to the face normal.
+        let mut indices = [0, 1, 2];
+        indices.sort_unstable_by(|&a, &b| normal[a].abs().total_cmp(&normal[b].abs()));
+        let mut axis = [0.; 3];
+        axis[indices[0]] = 1.;
+        let reference = cross(cross(normal, axis), normal);
+        (normal, reference)
+    });
+    write_planar_sweep(
+        &placement,
+        sweep.rings(),
+        supports,
+        |end, ring, vertex| sweep.point(end, sweep.rings()[ring][vertex]),
+        |_, _| Ok(sweep.direction()),
+    )
+}
+
+fn write_planar_sweep(
+    placement: &Placement,
+    rings: &[Vec<[f64; 2]>],
+    cap_supports: [(Point, Point); 2],
+    point: impl Fn(bool, usize, usize) -> Point,
+    generator: impl Fn(usize, usize) -> Result<Point, StepError>,
+) -> Result<String, StepError> {
+    let mut ranges = Vec::with_capacity(rings.len());
     let mut count = 0;
-    for ring in sweep.base() {
+    for ring in rings {
         ranges.push(count..count + ring.len());
         count += ring.len();
     }
-    let height = sweep.height_mm();
-    let points = [sweep.base(), sweep.top()]
-        .into_iter()
-        .enumerate()
-        .flat_map(|(end, rings)| {
-            let placement = &placement;
-            rings
-                .iter()
-                .flatten()
-                .map(move |&point| placement.point_f64(point, end as f64 * height))
-        })
-        .collect();
+    let mut points = Vec::with_capacity(2 * count);
+    for end in [false, true] {
+        for (index, ring) in rings.iter().enumerate() {
+            points.extend((0..ring.len()).map(|vertex| {
+                let [x, y, z] = point(end, index, vertex);
+                placement.point_f64([x, y], z)
+            }));
+        }
+    }
     let mut brep = BRep::new(points);
     let mut faces = Vec::with_capacity(count + 2);
-    faces.push(brep.cap(
-        &ranges,
-        &[],
-        0,
-        placement.normal.map(|n| -n),
-        placement.u,
-        true,
-    )?);
-    faces.push(brep.cap(&ranges, &[], count, placement.normal, placement.u, false)?);
-    for (base, top) in sweep.base().iter().zip(sweep.top()) {
+    for (cap, (normal, reference)) in cap_supports.into_iter().enumerate() {
+        faces.push(brep.cap(
+            &ranges,
+            &[],
+            cap * count,
+            placement.vector(normal),
+            placement.vector(reference),
+            cap == 0,
+        )?);
+    }
+    for (index, base) in rings.iter().enumerate() {
         let offset = faces.len() - 2;
         for (a, &[x, y]) in base.iter().enumerate() {
             let b = (a + 1) % base.len();
             let [next_x, next_y] = base[b];
-            let [top_x, top_y] = top[a];
             // The direction vectors are formed before translation to avoid
             // cancellation on small stock at a large model origin.
             let local = [next_x - x, next_y - y, 0.];
             let tangent = placement.vector(direction([0.; 3], local)?);
-            let generator = placement.vector(direction([0.; 3], [top_x - x, top_y - y, height])?);
+            let generator = placement.vector(generator(index, a)?);
             let [a, b] = [a + offset, b + offset];
             let bound = brep.bound(&[a, b, b + count, a + count], true)?;
             let origin = brep.vertices[a].cartesian;

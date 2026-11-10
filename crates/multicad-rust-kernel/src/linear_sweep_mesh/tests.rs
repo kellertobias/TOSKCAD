@@ -69,6 +69,45 @@ fn translated_concave_sweep_retains_the_reentrant_cap_corner() {
 }
 
 #[test]
+fn sloping_caps_share_the_sketch_hole_and_have_outward_triangle_normals() {
+    let sweep = TrimmedSweep::new(
+        vec![
+            vec![[0., 0.], [10., 0.], [10., 6.], [0., 6.]],
+            vec![[3., 2.], [3., 4.], [5., 4.], [5., 2.]],
+        ],
+        [0.6, 0., 0.8],
+        [[-2., 0.05, 0.1], [5., 0.25, -0.1]],
+        1e-5,
+    )
+    .unwrap();
+    let mesh = tessellate_trimmed(&sweep, OPTIONS).unwrap();
+    let proof = certify(&mesh).unwrap();
+    assert_eq!(proof.vertex_links, 16);
+    assert_eq!(proof.edge_pairs as usize * 2, mesh.indices.len());
+    assert_eq!(mesh.face_indices.len(), 32);
+    assert!((proof.signed_volume_mm3 - 332.16).abs() < 1e-11);
+
+    let vertices = mesh.vertices.as_chunks::<3>().0;
+    for (i, triangle) in mesh.indices.as_chunks::<3>().0.iter().enumerate() {
+        let face = mesh.face_indices[i];
+        if face < 2 {
+            let [a, b, c] = triangle.map(|id| vertices[id as usize]);
+            let u: [f64; 3] = std::array::from_fn(|i| b[i] - a[i]);
+            let v: [f64; 3] = std::array::from_fn(|i| c[i] - a[i]);
+            let normal: [f64; 3] = std::array::from_fn(|i| {
+                u[(i + 1) % 3] * v[(i + 2) % 3] - u[(i + 2) % 3] * v[(i + 1) % 3]
+            });
+            let alignment: f64 = normal
+                .into_iter()
+                .zip(sweep.cap_normal(face == 1))
+                .map(|(a, b)| a * b)
+                .sum();
+            assert!(alignment > 0.);
+        }
+    }
+}
+
+#[test]
 fn exact_triangle_budget_and_unresolvable_cap_fail_closed() {
     let shape = drafted_sweep();
     assert_eq!(

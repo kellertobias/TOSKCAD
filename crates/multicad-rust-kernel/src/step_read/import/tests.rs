@@ -41,6 +41,10 @@ fn prism_candidate_rejects_incompatible_caps_and_shared_walls() {
     assert!(prism(&shell, &faces, &edges, [0.; 3]).is_none());
     faces[1] = upper;
 
+    let missing_edge = edges[1].pop().unwrap();
+    assert!(prism(&shell, &faces, &edges, [0.; 3]).is_none());
+    edges[1].push(missing_edge);
+
     let wall = shell.edges[&edges[0][0]]
         .uses
         .iter()
@@ -65,6 +69,47 @@ fn prism_candidate_rejects_incompatible_caps_and_shared_walls() {
         .unwrap()
         .face = wall;
     assert!(prism(&shell, &faces, &edges, [0.; 3]).is_none());
+}
+
+#[test]
+fn sloped_trim_requires_reachable_planes_and_a_common_direction() {
+    let sweep = TrimmedSweep::new(
+        vec![vec![[0., 0.], [12., 0.], [12., 8.], [0., 8.]]],
+        [0.6, 0., 0.8],
+        [[0.; 3], [5., 0.1, -0.1]],
+        TOLERANCE,
+    )
+    .unwrap();
+    let source = step::write_trimmed_sweep(&sweep, [0.; 3], X, Y).unwrap();
+    let entities = parse_entities(&source, TOLERANCE).unwrap();
+    let mut shell = Shell::new(&entities, TOLERANCE, true);
+    let mut faces = shell.validated_faces().unwrap();
+    let edges = shell.indexed_edges(faces.len());
+    assert!(shell.trimmed_sweep(&faces, &edges, 0, Z).is_some());
+    assert!(
+        shell
+            .trimmed_sweep(&faces, &edges, 0, [0., 0., -1.])
+            .is_none()
+    );
+    let top = std::mem::replace(
+        &mut faces[1],
+        Face::Cylindrical {
+            seam: edges[1][0],
+            flux: 1.,
+        },
+    );
+    assert!(shell.trimmed_sweep(&faces, &edges, 0, Z).is_none());
+    faces[1] = Face::Planar {
+        origin: [0., 0., 4.],
+        normal: Y,
+        area: 96.,
+    };
+    assert!(shell.trimmed_sweep(&faces, &edges, 0, Z).is_none());
+    faces[1] = top;
+
+    let vertex = shell.edges[&edges[1][0]].vertices[0];
+    shell.points.get_mut(&vertex).unwrap()[0] += 0.1;
+    assert!(shell.trimmed_sweep(&faces, &edges, 0, Z).is_none());
 }
 
 #[test]

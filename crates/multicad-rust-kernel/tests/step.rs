@@ -345,3 +345,108 @@ fn directed_draft_step_shares_planar_edges_and_retains_the_hole() {
         Err(StepError::InvalidGeometry)
     );
 }
+
+#[test]
+fn oblique_plane_trim_step_retains_both_sloped_caps_and_the_through_hole() {
+    use multicad_rust_kernel::{
+        step::write_trimmed_sweep,
+        step_read::{ImportProfile, read_import_solid},
+        trimmed_sweep::TrimmedSweep,
+    };
+
+    let sweep = TrimmedSweep::new(
+        vec![
+            vec![[0., 0.], [10., 0.], [10., 6.], [0., 6.]],
+            vec![[3., 2.], [3., 4.], [5., 4.], [5., 2.]],
+        ],
+        [0.6, 0., 0.8],
+        [[-2., 0.05, 0.1], [5., 0.25, -0.1]],
+        1e-5,
+    )
+    .unwrap();
+    let placement = [10., -7., 4.];
+    let encoded = write_trimmed_sweep(&sweep, placement, Y, Z).unwrap();
+    assert_eq!(
+        encoded,
+        write_trimmed_sweep(&sweep, placement, Y, Z).unwrap()
+    );
+    closed_edges(&encoded, 24);
+    assert_eq!(count(&encoded, "ADVANCED_FACE"), 10);
+    assert_eq!(count(&encoded, "PLANE"), 10);
+    assert_eq!(count(&encoded, "FACE_BOUND"), 2);
+
+    let read = read_analytic_solid(&encoded, 1e-8).unwrap();
+    assert_eq!(read.solid_count, 1);
+    assert_eq!(read.face_count, 10);
+    assert_eq!(read.edges_mm.len(), 24);
+    for (actual, expected) in read
+        .bounds_mm
+        .into_iter()
+        .flatten()
+        .zip([8.4, -8.2, 4., 16., 7.5, 10.])
+    {
+        assert!((actual - expected).abs() < 1e-8);
+    }
+    assert!((read.volume_mm3 - 332.16).abs() < 1e-8);
+    // Pick a generator from the hole, which proves the cap trims are
+    // placed independently rather than merely recovering the same volume.
+    let rim = [[8.68, -4.99, 6.], [14.44, -0.67, 6.]];
+    assert!(read.edges_mm.iter().any(|edge| {
+        [*edge, [edge[1], edge[0]]].iter().any(|edge| {
+            edge.iter()
+                .flatten()
+                .zip(rim.iter().flatten())
+                .all(|(a, b)| (a - b).abs() < 1e-8)
+        })
+    }));
+    let (_, imported) = read_import_solid(&encoded, 1e-8).unwrap();
+    let ImportProfile::TrimmedSweep {
+        rings,
+        direction,
+        travels,
+    } = imported.profile
+    else {
+        panic!("the cap slope must survive import");
+    };
+    assert_eq!(rings.len(), 2);
+    assert_eq!(travels[0], [0.; 3]);
+    let rebuilt = TrimmedSweep::new(rings, direction, travels, 1e-8).unwrap();
+    assert!((rebuilt.volume_mm3() - 332.16).abs() < 1e-8);
+    let encoded =
+        write_trimmed_sweep(&rebuilt, imported.origin_mm, imported.u, imported.v).unwrap();
+    let roundtrip = read_analytic_solid(&encoded, 1e-8).unwrap();
+    assert_eq!(roundtrip.face_count, read.face_count);
+    assert!(read.edges_mm.iter().all(|old| {
+        roundtrip.edges_mm.iter().any(|new| {
+            [*new, [new[1], new[0]]].iter().any(|new| {
+                old.iter()
+                    .flatten()
+                    .zip(new.iter().flatten())
+                    .all(|(a, b)| (a - b).abs() < 1e-8)
+            })
+        })
+    }));
+    assert_eq!(
+        write_trimmed_sweep(&sweep, ORIGIN, X, X),
+        Err(StepError::InvalidPlacement)
+    );
+}
+
+#[test]
+fn oblique_trim_can_terminate_at_a_vertical_plane() {
+    use multicad_rust_kernel::{step::write_trimmed_sweep, trimmed_sweep::TrimmedSweep};
+
+    let sweep = TrimmedSweep::new(
+        vec![vec![[0., 0.], [10., 0.], [10., 6.], [0., 6.]]],
+        [0.6, 0., 0.8],
+        [[0.; 3], [20., -1. / 0.6, 0.]],
+        1e-5,
+    )
+    .unwrap();
+    let encoded = write_trimmed_sweep(&sweep, ORIGIN, X, Y).unwrap();
+    let read = read_analytic_solid(&encoded, 1e-8).unwrap();
+    closed_edges(&encoded, 12);
+    assert_eq!(read.face_count, 6);
+    assert_eq!(read.bounds_mm, [[0.; 3], [12., 6., 16.]]);
+    assert!((read.volume_mm3 - 560.).abs() < 1e-8);
+}
