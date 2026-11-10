@@ -128,13 +128,29 @@ pub(super) fn project_scene(
     }
 
     let members = projection_members(solids);
-    match project_members(&members, options) {
-        Err(error) if error.kind == GeometryErrorKind::Unsupported && !options.hidden_lines => {
-            let visible = opaque::visible_members(&members, options.frame)?;
+    if options.hidden_lines {
+        return project_members(&members, options, true);
+    }
+    match project_visible(&members, options, false) {
+        Err(error) if error.kind == GeometryErrorKind::Unsupported => {
+            project_visible(&members, options, true)
+        }
+        result => result,
+    }
+}
+
+fn project_visible(
+    members: &[(usize, &Solid)],
+    options: DrawingProjection,
+    oblique_cuts: bool,
+) -> Result<Vec<ProjectedVector>, GeometryError> {
+    match project_members(members, options, oblique_cuts) {
+        Err(error) if error.kind == GeometryErrorKind::Unsupported => {
+            let visible = opaque::visible_members(members, options.frame)?;
             if visible.len() == members.len() {
                 Err(error)
             } else {
-                project_members(&visible, options)
+                project_members(&visible, options, oblique_cuts)
             }
         }
         result => result,
@@ -144,6 +160,7 @@ pub(super) fn project_scene(
 fn project_members(
     members: &[(usize, &Solid)],
     options: DrawingProjection,
+    oblique_cuts: bool,
 ) -> Result<Vec<ProjectedVector>, GeometryError> {
     let mut apertures = None;
     let mut shadows = None;
@@ -160,10 +177,11 @@ fn project_members(
             continue;
         }
         let tolerance = solid.geometry_policy().linear_tolerance_mm;
-        let elevation = match warped::for_projection(solid, source, tolerance, options)? {
-            Some(elevation) => Some(elevation),
-            None => machined::oblique_stock(solid, source, options)?,
-        };
+        let elevation =
+            match warped::for_projection(solid, source, tolerance, options, oblique_cuts)? {
+                None if oblique_cuts => machined::oblique_stock(solid, source, options)?,
+                elevation => elevation,
+            };
         if let Some(elevation) = elevation {
             shell_faces.extend(elevation.blockers);
             rounded.lines.extend(elevation.lines);

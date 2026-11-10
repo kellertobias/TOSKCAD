@@ -604,19 +604,21 @@ mod native {
             same_intervals(&a, &b);
         }
 
-        let (document, page, view) = oblique_page();
-        let [rust, native] = [GeometryBackend::Rust, GeometryBackend::OpenCascade]
-            .map(|backend| oblique_assembly(&document, page, view, backend));
-        let rust_curves = || rust.iter().map(|v| (v.role, &v.curve));
-        let native_curves = || native.iter().map(|v| (v.role, &v.curve));
-        same_intervals(&window_edge(rust_curves()), &window_edge(native_curves()));
-        for x in [150., 185., 220.] {
-            for z in [25., 55.] {
-                let center = [x, (z - 5.5) * FRAC_1_SQRT_2];
-                let a = rim_intervals(rust_curves(), VectorRole::Visible, center, 7.5);
-                let b = rim_intervals(native_curves(), VectorRole::Visible, center, 7.5);
-                assert!(!a.is_empty(), "button cap at {center:?}");
-                same_intervals(&a, &b);
+        for hidden_lines in [true, false] {
+            let (document, page, view) = oblique_page(hidden_lines);
+            let [rust, native] = [GeometryBackend::Rust, GeometryBackend::OpenCascade]
+                .map(|backend| oblique_assembly(&document, page, view, backend));
+            let rust_curves = || rust.iter().map(|v| (v.role, &v.curve));
+            let native_curves = || native.iter().map(|v| (v.role, &v.curve));
+            same_intervals(&window_edge(rust_curves()), &window_edge(native_curves()));
+            for x in [150., 185., 220.] {
+                for z in [25., 55.] {
+                    let center = [x, (z - 5.5) * FRAC_1_SQRT_2];
+                    let a = rim_intervals(rust_curves(), VectorRole::Visible, center, 7.5);
+                    let b = rim_intervals(native_curves(), VectorRole::Visible, center, 7.5);
+                    assert!(!a.is_empty(), "button cap at {center:?}");
+                    same_intervals(&a, &b);
+                }
             }
         }
     }
@@ -717,7 +719,7 @@ fn assembled_bent_channel_only_reveals_foreign_edges_through_material_openings()
     });
 }
 
-fn oblique_page() -> (multicad_core::document::Document, EntityId, EntityId) {
+fn oblique_page(hidden_lines: bool) -> (multicad_core::document::Document, EntityId, EntityId) {
     let (document, saved) = fixture();
     let mut front = saved
         .views
@@ -728,6 +730,7 @@ fn oblique_page() -> (multicad_core::document::Document, EntityId, EntityId) {
     front.id = EntityId::new();
     front.name = "Oblique front".into();
     front.frame.v = OBLIQUE_V;
+    front.hidden_lines = hidden_lines;
     front.guide = None;
     let view = front.id;
     let mut page = drawings::Page::new("FP-101-OBLIQUE");
@@ -771,18 +774,23 @@ fn oblique_assembly(
 
 #[test]
 fn bundled_front_panel_assembly_projects_an_oblique_drawing_with_six_button_caps() {
-    let (document, page, view) = oblique_page();
-    let vectors = oblique_assembly(&document, page, view, GeometryBackend::Rust);
-    let curves = || vectors.iter().map(|v| (v.role, &v.curve));
-    same_intervals(&window_edge(curves()), &[[34., 106.]]);
-    assert!(vectors.iter().any(|v| v.role == VectorRole::Hidden));
-    for x in [150., 185., 220.] {
-        for z in [25., 55.] {
-            let center = [x, (z - 5.5) * FRAC_1_SQRT_2];
-            same_intervals(
-                &rim_intervals(curves(), VectorRole::Visible, center, 7.5),
-                &[[0., TAU]],
-            );
+    for hidden_lines in [true, false] {
+        let (document, page, view) = oblique_page(hidden_lines);
+        let vectors = oblique_assembly(&document, page, view, GeometryBackend::Rust);
+        let curves = || vectors.iter().map(|v| (v.role, &v.curve));
+        same_intervals(&window_edge(curves()), &[[34., 106.]]);
+        assert_eq!(
+            vectors.iter().any(|v| v.role == VectorRole::Hidden),
+            hidden_lines
+        );
+        for x in [150., 185., 220.] {
+            for z in [25., 55.] {
+                let center = [x, (z - 5.5) * FRAC_1_SQRT_2];
+                same_intervals(
+                    &rim_intervals(curves(), VectorRole::Visible, center, 7.5),
+                    &[[0., TAU]],
+                );
+            }
         }
     }
 }

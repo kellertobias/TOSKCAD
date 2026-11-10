@@ -18,6 +18,7 @@ pub(super) fn for_projection(
     source: usize,
     tolerance: f64,
     options: DrawingProjection,
+    oblique_cuts: bool,
 ) -> Result<Option<Elevation>, GeometryError> {
     if let Some((shell, placement)) = solid.drawing_warped_shell() {
         return elevation(shell, placement, source, tolerance, options).map(Some);
@@ -25,7 +26,7 @@ pub(super) fn for_projection(
     let Some((body, placement)) = solid.normal_sweep_body() else {
         return Ok(None);
     };
-    if !needs_sweep_shell(placement, options) {
+    if !oblique_cuts || !needs_sweep_shell(placement, options) {
         return Ok(None);
     }
     let result = body
