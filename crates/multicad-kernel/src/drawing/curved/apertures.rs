@@ -246,10 +246,10 @@ impl<'a> Scene<'a> {
     ) -> Result<SpatialRimCandidate, GeometryError> {
         let Cavity {
             mouth,
-            normal,
             view_normal: [x, y, cosine],
             radius,
             depth: bore_depth,
+            ..
         } = cavity;
         let sine = x.hypot(y);
         // No ray inside the mouth crosses more than one disk diameter
@@ -260,12 +260,7 @@ impl<'a> Scene<'a> {
                 "Rust oblique aperture projection requires its far rim to be fully shadowed",
             ));
         }
-        self.clear_volume(
-            owner,
-            mouth,
-            normal,
-            cavity_bounds(mouth, normal, radius, penetration),
-        )?;
+        self.clear_volume(owner, cavity, penetration)?;
 
         let offset = std::array::from_fn(|i| mouth[i] - self.frame.origin[i]);
         let [u, v, depth] = self.axes.map(|axis| dot(axis, offset));
@@ -287,10 +282,17 @@ impl<'a> Scene<'a> {
     fn clear_volume(
         &mut self,
         owner: usize,
-        mouth: Point,
-        normal: Point,
-        cavity: Box3,
+        opening: Cavity,
+        penetration: f64,
     ) -> Result<(), GeometryError> {
+        let Cavity {
+            mouth,
+            normal,
+            radius,
+            ..
+        } = opening;
+        let cavity = cavity_bounds(mouth, normal, radius, penetration);
+        let mut unresolved = false;
         for (index, &bounds) in self.world.iter().enumerate() {
             charge(&mut self.budget, 1)?;
             if index == owner
@@ -311,6 +313,14 @@ impl<'a> Scene<'a> {
                     continue;
                 }
             }
+            if seals_mouth(self.members[index].1, mouth, normal, radius, self.tolerance) {
+                // Every affected view ray hits the pin on or before the
+                // proxy plane, even if another member lies inside the bore.
+                return Ok(());
+            }
+            unresolved = true;
+        }
+        if unresolved {
             return Err(unsupported(
                 "Rust oblique aperture visibility is unresolved because another body may enter the cavity",
             ));
@@ -354,6 +364,29 @@ fn outside_mouth(bounds: Box3, mouth: Point, normal: Point) -> bool {
             && ((normal[i] > 0. && bounds.min[i] >= mouth[i])
                 || (normal[i] < 0. && bounds.max[i] <= mouth[i]))
     })
+}
+
+// A solid cylindrical member that spans the bore mouth can serve as the
+// first material hit. Circular inserts with a gap or a bore cannot seal it.
+fn seals_mouth(solid: &Solid, mouth: Point, normal: Point, radius: f64, tolerance: f64) -> bool {
+    let Some((frame, outer, height, None)) = circular_dimensions(solid) else {
+        return false;
+    };
+    let [u, v, axis] = planar::view_axes(frame);
+    let relative = std::array::from_fn(|i| mouth[i] - frame.origin[i]);
+    let level = dot(relative, axis);
+    let alignment = dot(u, normal).hypot(dot(v, normal));
+    let displacement = dot(u, relative).hypot(dot(v, relative));
+    let roundoff = (0..3)
+        .map(|i| mouth[i].abs() + frame.origin[i].abs())
+        .sum::<f64>()
+        * (16. * f64::EPSILON);
+    let axial_margin = tolerance + radius * alignment;
+    alignment <= DIRECTION_TOLERANCE
+        && level > axial_margin
+        && level < height - axial_margin
+        && outer >= radius
+        && displacement <= outer - radius + roundoff
 }
 
 fn cavity_bounds(mouth: Point, normal: Point, radius: f64, penetration: f64) -> Box3 {

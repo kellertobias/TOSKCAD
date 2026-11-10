@@ -12,11 +12,19 @@ pub(super) struct Stock {
     pub openings: Vec<FaceOpening>,
 }
 
+pub(super) fn has_machined_stock(solid: &Solid) -> bool {
+    solid.has_circular_drawing_stock()
+        || solid
+            .orthogonal_body()
+            .is_some_and(|(body, _)| !body.drawing_stock().slots.is_empty())
+}
+
 pub(super) fn stock(
     solid: &Solid,
     source: usize,
     body: usize,
     options: DrawingProjection,
+    mut covers: impl FnMut(shadows::Mouth) -> Result<bool, GeometryError>,
     mut oblique: impl FnMut(apertures::Cavity) -> Result<SpatialRimCandidate, GeometryError>,
 ) -> Result<Option<Stock>, GeometryError> {
     let view = planar::view_axes(options.frame);
@@ -28,7 +36,7 @@ pub(super) fn stock(
             openings: Vec::new(),
         }));
     }
-    let Some((solid, openings)) = solid.drawing_circular_stock() else {
+    let Some((solid, openings, slots)) = solid.drawing_machined_stock() else {
         return Ok(None);
     };
     let mut result = Stock {
@@ -37,6 +45,20 @@ pub(super) fn stock(
         spatial_rims: Vec::new(),
         openings: Vec::with_capacity(openings.len()),
     };
+    for slot in slots {
+        if dot(view[2], slot.normal) > DIRECTION_TOLERANCE
+            && !covers(shadows::Mouth {
+                centers: slot.centers,
+                normal: slot.normal,
+                radius: slot.radius,
+            })?
+        {
+            return Err(err(
+                GeometryErrorKind::Unsupported,
+                "Rust drawing projection cannot prove full shadow of a rounded mortise",
+            ));
+        }
+    }
     for opening in openings {
         let axis = view.map(|axis| dot(axis, opening.normal));
         if axis[2] <= DIRECTION_TOLERANCE {
@@ -44,13 +66,24 @@ pub(super) fn stock(
             continue;
         }
         if axis[0].hypot(axis[1]) > DIRECTION_TOLERANCE {
-            result.spatial_rims.push(oblique(apertures::Cavity {
+            let cavity = apertures::Cavity {
                 mouth: opening.center,
                 normal: opening.normal,
                 view_normal: axis,
                 radius: opening.radius,
                 depth: opening.depth,
-            })?);
+            };
+            match oblique(cavity) {
+                Ok(rim) => result.spatial_rims.push(rim),
+                Err(error)
+                    if error.kind == GeometryErrorKind::Unsupported
+                        && covers(shadows::Mouth {
+                            centers: [opening.center; 2],
+                            normal: opening.normal,
+                            radius: opening.radius,
+                        })? => {}
+                Err(error) => return Err(error),
+            }
             continue;
         }
         let offset = std::array::from_fn(|i| opening.center[i] - options.frame.origin[i]);

@@ -247,15 +247,6 @@ impl Solid {
         })
     }
 
-    /// Pair each certified blind opening with its uncut stock face.
-    pub(crate) fn drawing_circular_stock(&self) -> Option<(Self, Vec<BlindOpening>)> {
-        if !self.has_circular_drawing_stock() {
-            return None;
-        }
-        let (stock, circles, _) = self.drawing_machined_stock()?;
-        Some((stock, circles))
-    }
-
     pub(crate) fn drawing_machined_stock(
         &self,
     ) -> Option<(Self, Vec<BlindOpening>, Vec<BlindSlot>)> {

@@ -1,6 +1,6 @@
 use multicad_core::{
     document::Document,
-    drawings::{self, DrawingVector, Page, VectorCurve, VectorRole, ViewEvaluation, ViewSource},
+    drawings::{self, DrawingVector, Page, VectorCurve, VectorRole, ViewEvaluation},
     project_file,
 };
 use multicad_model::{Compiler, GeometryBackend, drawing_preview_sources};
@@ -168,33 +168,29 @@ fn apartment_floor_plan_structural_vectors_match_open_cascade() {
 #[test]
 fn apartment_isometric_projects_workbench_apertures_with_room_occlusion() {
     let (document, page) = fixture("AP-102");
-    let [saved] = page.views.as_slice() else {
-        panic!("expected one AP-102 view");
+    let source = |name| {
+        page.views[0]
+            .source
+            .entities()
+            .into_iter()
+            .find(|&id| document.get(id).unwrap().name == name)
+            .unwrap()
     };
-    let mut view = saved.clone();
-    let ViewSource::Model { entities } = &mut view.source else {
-        panic!("expected model sources");
-    };
-    let workbench = *entities
-        .iter()
-        .find(|&&id| document.get(id).unwrap().name == "Workbench")
-        .unwrap();
-    // Keep the room occluders and all sources except the cabinet, whose
-    // oblique mortises require separate visibility support.
-    entities.retain(|&id| document.get(id).unwrap().name != "Cabinet");
+    let workbench = source("Workbench");
+    let cabinet = source("Cabinet");
+    let vectors = preview(&document, &page, GeometryBackend::Rust);
+    assert_eq!(vectors.len(), 212);
+    assert!(vectors.iter().all(|v| v.role == VectorRole::Visible));
+    let cabinet_vectors: Vec<_> = vectors.iter().filter(|v| v.source == cabinet).collect();
+    assert_eq!(cabinet_vectors.len(), 52);
+    assert_eq!(
+        cabinet_vectors
+            .iter()
+            .filter(|v| matches!(v.curve, VectorCurve::Ellipse { major_mm: 2.5, .. }))
+            .count(),
+        13
+    );
 
-    let model = Compiler {
-        omit_display: true,
-        ..Default::default()
-    }
-    .compile_with_backend(&document, 0, GeometryBackend::Rust, None)
-    .unwrap();
-    let evaluation = model
-        .drawing_view(&document, 0, &view, &Default::default())
-        .unwrap();
-    let ViewEvaluation::Ready { vectors, .. } = evaluation else {
-        panic!("{evaluation:?}");
-    };
     let worktop: Vec<_> = vectors.iter().filter(|v| v.source == workbench).collect();
     assert_eq!(worktop.len(), 20);
     assert!(worktop.iter().all(|v| v.role == VectorRole::Visible));
@@ -230,4 +226,87 @@ fn apartment_isometric_projects_workbench_apertures_with_room_occlusion() {
             .zip(expected)
             .all(|(actual, expected)| (actual - expected).abs() < 1e-9)
     );
+}
+
+#[cfg(feature = "occt")]
+#[test]
+fn apartment_isometric_visible_intervals_match_open_cascade() {
+    use multicad_core::document::EntityId;
+    use std::collections::BTreeMap;
+
+    fn intervals(vectors: Vec<DrawingVector>) -> BTreeMap<(EntityId, Vec<i64>), Vec<[i64; 2]>> {
+        let quantize = |v: f64| (v * 1e6).round() as i64;
+        let first_quadrant = |[u, v]: [f64; 2]| u > 1e-10 || (u.abs() <= 1e-10 && v > 0.);
+        let mut spans = BTreeMap::<_, Vec<[f64; 2]>>::new();
+        for vector in vectors {
+            assert_eq!(vector.role, VectorRole::Visible);
+            match vector.curve {
+                VectorCurve::Line { a, b } => {
+                    let [x, y] = [b[0] - a[0], b[1] - a[1]];
+                    let length = x.hypot(y);
+                    let mut axis = [x / length, y / length];
+                    if !first_quadrant(axis) {
+                        axis = axis.map(|v| -v);
+                    }
+                    let [x, y] = axis;
+                    let key = vec![0, quantize(x), quantize(y), quantize(a[0] * y - a[1] * x)];
+                    let mut range = [a, b].map(|p| p[0] * x + p[1] * y);
+                    range.sort_by(f64::total_cmp);
+                    spans.entry((vector.source, key)).or_default().push(range);
+                }
+                VectorCurve::Ellipse {
+                    center,
+                    u,
+                    v,
+                    major_mm,
+                    minor_mm,
+                    start_rad,
+                    end_rad,
+                } => {
+                    let sign = u[0] * v[1] - u[1] * v[0];
+                    let shift = if first_quadrant(u) { 0. } else { PI };
+                    let u = if shift == 0. { u } else { u.map(|x| -x) };
+                    let key = [center[0], center[1], u[0], u[1], major_mm, minor_mm].map(quantize);
+                    let entry = spans
+                        .entry((vector.source, [vec![1], key.to_vec()].concat()))
+                        .or_default();
+                    let directed_start = if sign > 0. { start_rad } else { -end_rad };
+                    let start = (directed_start + shift).rem_euclid(TAU);
+                    let start = if start >= TAU - 1e-9 { 0. } else { start };
+                    let end = start + end_rad - start_rad;
+                    entry.push([start, end.min(TAU)]);
+                    if end > TAU + 1e-9 {
+                        entry.push([0., end - TAU]);
+                    }
+                }
+                other => panic!("unexpected isometric curve {other:?}"),
+            }
+        }
+        spans
+            .into_iter()
+            .map(|(key, mut ranges)| {
+                ranges.sort_by(|a, b| a[0].total_cmp(&b[0]));
+                let mut merged: Vec<[f64; 2]> = Vec::new();
+                for [a, b] in ranges {
+                    if let Some(last) = merged.last_mut()
+                        && a <= last[1] + 1e-6
+                    {
+                        last[1] = last[1].max(b);
+                    } else {
+                        merged.push([a, b]);
+                    }
+                }
+                (
+                    key,
+                    merged.into_iter().map(|span| span.map(quantize)).collect(),
+                )
+            })
+            .collect()
+    }
+
+    let (document, page) = fixture("AP-102");
+    let rust = intervals(preview(&document, &page, GeometryBackend::Rust));
+    let native = intervals(preview(&document, &page, GeometryBackend::OpenCascade));
+    assert_eq!(rust.len(), 181);
+    assert_eq!(rust, native);
 }

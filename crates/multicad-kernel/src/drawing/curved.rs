@@ -9,6 +9,7 @@ use multicad_rust_kernel::{
 mod apertures;
 mod opaque;
 mod pockets;
+mod shadows;
 pub(super) mod stadium;
 
 fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
@@ -61,7 +62,7 @@ pub(super) fn is_round(solid: &Solid) -> bool {
 
 pub(super) fn needs_curved_scene(solid: &Solid) -> bool {
     is_round(solid)
-        || solid.has_circular_drawing_stock()
+        || pockets::has_machined_stock(solid)
         || apertures::has_through_bores(solid)
         || solid.rounded_slot_body().is_some()
         || solid
@@ -137,6 +138,7 @@ fn project_members(
     options: DrawingProjection,
 ) -> Result<Vec<ProjectedVector>, GeometryError> {
     let mut apertures = None;
+    let mut shadows = None;
     let mut planar_members = Vec::new();
     let mut round_sources = Vec::new();
     let mut rounds = Vec::new();
@@ -154,10 +156,21 @@ fn project_members(
                 let scene = apertures::Scene::get(&mut apertures, members, options.frame)?;
                 Some(scene.stock(solid, index, source)?)
             } else {
-                pockets::stock(solid, source, planar_members.len(), options, |cavity| {
-                    let scene = apertures::Scene::get(&mut apertures, members, options.frame)?;
-                    scene.oblique(index, source, cavity)
-                })?
+                let cover = |mouth| {
+                    shadows::Shadows::get(&mut shadows, members, options.frame)?
+                        .covers(index, mouth)
+                };
+                pockets::stock(
+                    solid,
+                    source,
+                    planar_members.len(),
+                    options,
+                    cover,
+                    |cavity| {
+                        let scene = apertures::Scene::get(&mut apertures, members, options.frame)?;
+                        scene.oblique(index, source, cavity)
+                    },
+                )?
             };
             planar_members.push((source, solid, proxy));
         }

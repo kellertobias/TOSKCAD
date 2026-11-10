@@ -5,9 +5,9 @@ use multicad_core::{
 };
 use multicad_kernel::{
     CircularPocketTool, DrawingProjection, DrawingSolid, GeometryErrorKind, GeometryPolicy,
-    PlaneFrame, Solid, project_drawing,
+    PlaneFrame, RoundedSlotTool, Solid, project_drawing,
 };
-use multicad_rust_kernel::Rational;
+use multicad_rust_kernel::{Circle, Rational, cylinder::AxialCylinder};
 
 fn block(origin: [f64; 3], size: [i64; 3]) -> Solid {
     Solid::rust_box(
@@ -261,4 +261,140 @@ fn oblique_blind_bore_draws_a_deep_rim_and_rejects_a_visible_floor() {
         back.iter()
             .all(|edge| matches!(edge.curve, VectorCurve::Line { .. }))
     );
+}
+
+#[test]
+fn oblique_mortise_requires_strict_full_shadow_from_intact_material() {
+    let a = std::f64::consts::FRAC_1_SQRT_2;
+    let frame = PlaneFrame {
+        origin: [0.; 3],
+        u: [1., 0., 0.],
+        v: [0., a, a],
+    };
+    let policy = GeometryPolicy::default();
+    let plain = block([0., 0., 10.], [20, 20, 10]);
+    let mortised = plain
+        .rust_drill_rounded_slots(
+            &[RoundedSlotTool {
+                frame: PlaneFrame {
+                    origin: [0., 0., 21.],
+                    ..Default::default()
+                },
+                centers_uv: [[8., 10.], [12., 10.]],
+                radius_mm: 2.,
+                displacement_mm: [0., 0., -8.],
+                origin: Origin {
+                    source: EntityId::new(),
+                    role: "mortise".into(),
+                },
+            }],
+            policy,
+        )
+        .unwrap();
+    let cover = block([5., 0., 24.], [10, 10, 3]);
+    let signatures = |solids: &[&Solid], frame| {
+        let mut lines: Vec<_> = drawing(solids, frame)
+            .unwrap()
+            .into_iter()
+            .map(|v| {
+                assert_eq!(v.role, VectorRole::Visible);
+                let VectorCurve::Line { a, b } = v.curve else {
+                    panic!("unexpected curved edge");
+                };
+                let mut endpoints = [a, b].map(|p| p.map(|x| (x * 1e8).round() as i64));
+                endpoints.sort_unstable();
+                (v.source_index, endpoints)
+            })
+            .collect();
+        lines.sort_unstable();
+        lines
+    };
+    assert_eq!(
+        signatures(&[&plain, &cover], frame),
+        signatures(&[&mortised, &cover], frame)
+    );
+
+    let partial = block([7., 0., 24.], [6, 10, 3]);
+    let behind = block([5., 21., 6.], [10, 10, 3]);
+    let perforated = cover
+        .rust_drill_circular_machining(
+            &[CircularPocketTool {
+                frame: PlaneFrame {
+                    origin: [0., 0., 28.],
+                    ..Default::default()
+                },
+                center_uv: [10., 3.],
+                radius_mm: 1.,
+                displacement_mm: [0., 0., -2.],
+                origin: Origin {
+                    source: EntityId::new(),
+                    role: "cover bore".into(),
+                },
+            }],
+            &[false],
+            policy,
+        )
+        .unwrap();
+    for cover in [&partial, &behind, &perforated] {
+        let error = drawing(&[&mortised, cover], frame).unwrap_err();
+        assert_eq!(error.kind, GeometryErrorKind::Unsupported);
+        assert!(error.message.contains("full shadow"));
+    }
+
+    let back = PlaneFrame {
+        v: frame.v.map(|x| -x),
+        ..frame
+    };
+    assert_eq!(signatures(&[&plain], back), signatures(&[&mortised], back));
+}
+
+#[test]
+fn oblique_bore_accepts_a_seated_pin_and_rejects_a_gap_or_offset() {
+    let a = std::f64::consts::FRAC_1_SQRT_2;
+    let view = PlaneFrame {
+        origin: [0.; 3],
+        u: [1., 0., 0.],
+        v: [0., a, a],
+    };
+    let plate = through_plate(false, 10);
+    let pin = |radius, x, z| {
+        let feature = EntityId::new();
+        let integer = |v| Rational::new(v, 1).unwrap();
+        let cylinder = AxialCylinder::new(
+            feature.uuid_bits(),
+            Circle::new([integer(0); 2], radius).unwrap(),
+            integer(0),
+            integer(6),
+        )
+        .unwrap();
+        Solid::from_axial_cylinder_sweep(
+            cylinder,
+            PlaneFrame {
+                origin: [x, 10., z],
+                ..Default::default()
+            },
+            [0.; 2],
+            false,
+            Origin {
+                source: feature,
+                role: "support pin".into(),
+            },
+            GeometryPolicy::default(),
+        )
+        .unwrap()
+    };
+    let matching = Rational::new(2, 1).unwrap();
+    let seated = pin(matching, 10., 17.);
+    let visible = drawing(&[&plate, &seated], view).unwrap();
+    assert!(visible.iter().any(|edge| edge.source_index == 1
+        && matches!(edge.curve, VectorCurve::Ellipse { .. })));
+
+    let clearance = pin(Rational::new(199, 100).unwrap(), 10., 17.);
+    let offset = pin(matching, 10.05, 17.);
+    let below_mouth = pin(matching, 10., 13.);
+    for obstruction in [&clearance, &offset, &below_mouth] {
+        let error = drawing(&[&plate, obstruction], view).unwrap_err();
+        assert_eq!(error.kind, GeometryErrorKind::Unsupported);
+        assert!(error.message.contains("another body may enter the cavity"));
+    }
 }
