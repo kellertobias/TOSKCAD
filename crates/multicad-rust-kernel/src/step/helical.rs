@@ -10,7 +10,7 @@ mod rounded;
 mod tangent;
 
 pub(crate) const DEGREE: usize = 11;
-const JETS: usize = DEGREE.div_ceil(2);
+pub(super) const JETS: usize = DEGREE.div_ceil(2);
 const FACTORIAL: f64 = 479_001_600.;
 const MAX_ERROR_MM: f64 = 1e-7;
 
@@ -557,7 +557,7 @@ impl Spline {
         })
     }
 
-    fn with_jets(
+    pub(super) fn with_jets(
         a: f64,
         b: f64,
         span_limit: f64,

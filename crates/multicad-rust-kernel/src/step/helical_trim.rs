@@ -6,8 +6,12 @@ use std::f64::consts::TAU;
 
 const DEGREE: usize = helical::DEGREE;
 const MAX_SPANS: usize = 1024;
-const ERROR_DENOMINATOR: f64 = 479_001_600. * 4096.;
+const FACTORIAL_12: f64 = 479_001_600.;
+const HALF_SPAN_POWER: f64 = 4096.;
 type Point = [f64; 3];
+
+mod top_cavity;
+pub use top_cavity::TopCavity;
 
 /// The finite affine line in cylindrical [azimuth, height] parameters.
 /// `velocity` includes the STEP VECTOR magnitude.
@@ -19,7 +23,7 @@ pub struct Pcurve {
 }
 
 /// Clamped piecewise Bézier form of a STEP B_SPLINE_CURVE_WITH_KNOTS.
-/// The poles are in the same local cylinder frame as the pcurve.
+/// The poles are in the local stock frame.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Spline {
     pub degree: usize,
@@ -82,25 +86,7 @@ impl Rail {
     pub fn spline(self) -> Result<Spline, StepError> {
         let [a, b] = self.trim.azimuth_rad;
         let spline = helical::Spline::new(a, b, [self.radius; 2], 1., self.tolerance * 0.125)?;
-        let heights =
-            std::iter::once(self.height(a)).chain(spline.knots.windows(2).flat_map(|span| {
-                (1..=DEGREE).map(move |i| self.height(knot(span[0], span[1], i)))
-            }));
-        let poles_mm = spline
-            .poles
-            .into_iter()
-            .zip(heights)
-            .map(|([x, y], z)| [x, y, z])
-            .collect();
-        let multiplicities = (0..spline.knots.len())
-            .map(|i| DEGREE + usize::from(i == 0 || i + 1 == spline.knots.len()))
-            .collect();
-        Ok(Spline {
-            degree: DEGREE,
-            knots: spline.knots,
-            multiplicities,
-            poles_mm,
-        })
+        Ok(Spline::from_hermite(spline, |t| self.height(t)))
     }
 
     /// Certify independent decoded coefficients. The returned distance
@@ -133,59 +119,20 @@ impl Rail {
         if pcurve_error > self.roundoff || pcurve.velocity[0] <= 0. || pcurve.velocity[1] <= 0. {
             return Err(StepError::InvalidGeometry);
         }
-        let knots = &spline.knots;
-        if !(2..=MAX_SPANS + 1).contains(&knots.len())
-            || spline.degree != DEGREE
-            || spline.multiplicities.len() != knots.len()
-            || spline.poles_mm.len() != (knots.len() - 1) * DEGREE + 1
-            || [knots[0], knots[knots.len() - 1]] != expected.domain
-            || spline
-                .multiplicities
-                .iter()
-                .enumerate()
-                .any(|(i, &m)| m != DEGREE + usize::from(i == 0 || i + 1 == knots.len()))
-            || knots
-                .windows(2)
-                .any(|span| !span[0].is_finite() || span[0] >= span[1])
-            || spline.poles_mm.iter().flatten().any(|x| !x.is_finite())
-            || spline
-                .poles_mm
-                .windows(2)
-                .any(|pair| pair[0][2] >= pair[1][2])
-        {
-            return Err(StepError::InvalidGeometry);
-        }
-        let mut bound: f64 = 0.;
-        for (span, controls) in knots
+        spline.validate_domain(expected.domain)?;
+        if spline
+            .poles_mm
             .windows(2)
-            .zip(spline.poles_mm.windows(DEGREE + 1).step_by(DEGREE))
+            .any(|pair| pair[0][2] >= pair[1][2])
         {
-            let [a, b] = [span[0], span[1]];
-            let h = b - a;
-            let remainder = self.radius * h.powi(12) / ERROR_DENOMINATOR;
-            let max_control_error = controls
-                .iter()
-                .enumerate()
-                .map(|(i, control)| {
-                    let ideal = if i <= DEGREE / 2 {
-                        self.ideal_pole(a, h, i)
-                    } else {
-                        self.ideal_pole(b, -h, DEGREE - i)
-                    };
-                    (control[0] - ideal[0])
-                        .hypot(control[1] - ideal[1])
-                        .hypot(control[2] - ideal[2])
-                })
-                .fold(0., f64::max);
-            // The difference between two Bézier curves is inside the
-            // convex hull of their control differences.
-            bound = bound.max(remainder + max_control_error);
-        }
-        bound += self.roundoff + pcurve_error;
-        if bound > self.tolerance {
             return Err(StepError::InvalidGeometry);
         }
-        Ok(bound)
+        spline.certify(
+            self.radius / FACTORIAL_12,
+            self.roundoff + pcurve_error,
+            self.tolerance,
+            |a, h, i| self.ideal_pole(a, h, i),
+        )
     }
 
     fn height(self, azimuth: f64) -> f64 {
@@ -211,6 +158,96 @@ impl Rail {
             point[1] * self.radius,
             self.height(knot(endpoint, endpoint + span, index)),
         ]
+    }
+}
+
+impl Spline {
+    fn from_hermite(spline: helical::Spline, height: impl Fn(f64) -> f64 + Copy) -> Self {
+        let a = spline.knots[0];
+        let heights = std::iter::once(height(a)).chain(
+            spline
+                .knots
+                .windows(2)
+                .flat_map(|span| (1..=DEGREE).map(move |i| height(knot(span[0], span[1], i)))),
+        );
+        let poles_mm = spline
+            .poles
+            .into_iter()
+            .zip(heights)
+            .map(|([x, y], z)| [x, y, z])
+            .collect();
+        let multiplicities = (0..spline.knots.len())
+            .map(|i| DEGREE + usize::from(i == 0 || i + 1 == spline.knots.len()))
+            .collect();
+        Self {
+            degree: DEGREE,
+            knots: spline.knots,
+            multiplicities,
+            poles_mm,
+        }
+    }
+
+    fn validate_domain(&self, domain: [f64; 2]) -> Result<(), StepError> {
+        let knots = &self.knots;
+        if !(2..=MAX_SPANS + 1).contains(&knots.len())
+            || self.degree != DEGREE
+            || self.multiplicities.len() != knots.len()
+            || self.poles_mm.len() != (knots.len() - 1) * DEGREE + 1
+            || [knots[0], knots[knots.len() - 1]] != domain
+            || self
+                .multiplicities
+                .iter()
+                .enumerate()
+                .any(|(i, &m)| m != DEGREE + usize::from(i == 0 || i + 1 == knots.len()))
+            || knots
+                .windows(2)
+                .any(|span| !span[0].is_finite() || span[0] >= span[1])
+            || self.poles_mm.iter().flatten().any(|x| !x.is_finite())
+        {
+            return Err(StepError::InvalidGeometry);
+        }
+        Ok(())
+    }
+
+    fn certify(
+        &self,
+        normalized_derivative: f64,
+        guard: f64,
+        tolerance: f64,
+        ideal_pole: impl Fn(f64, f64, usize) -> Point,
+    ) -> Result<f64, StepError> {
+        let mut bound: f64 = 0.;
+        for (span, controls) in self
+            .knots
+            .windows(2)
+            .zip(self.poles_mm.windows(DEGREE + 1).step_by(DEGREE))
+        {
+            let [a, b] = [span[0], span[1]];
+            let h = b - a;
+            let remainder = normalized_derivative * h.powi(12) / HALF_SPAN_POWER;
+            let max_control_error = controls
+                .iter()
+                .enumerate()
+                .map(|(i, control)| {
+                    let ideal = if i <= DEGREE / 2 {
+                        ideal_pole(a, h, i)
+                    } else {
+                        ideal_pole(b, -h, DEGREE - i)
+                    };
+                    (control[0] - ideal[0])
+                        .hypot(control[1] - ideal[1])
+                        .hypot(control[2] - ideal[2])
+                })
+                .fold(0., f64::max);
+            // The difference between two Bézier curves is inside the
+            // convex hull of their control differences.
+            bound = bound.max(remainder + max_control_error);
+        }
+        bound += guard;
+        if bound > tolerance {
+            return Err(StepError::InvalidGeometry);
+        }
+        Ok(bound)
     }
 }
 

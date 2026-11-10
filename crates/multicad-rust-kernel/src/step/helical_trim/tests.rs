@@ -151,3 +151,82 @@ fn refuses_unbounded_nonfinite_or_reverse_charts() {
         StepError::Limit
     );
 }
+
+#[test]
+fn top_cavity_is_certified_between_both_cylinder_rail_endpoints() {
+    use crate::helical_tube_cut::BoundaryEdge;
+
+    for (phase, pitch) in [(-TAU, 2.), (-0.1, 1.3), (0., 2.), (0.1, 8.), (TAU, 32.)] {
+        let base = cut(phase).spec();
+        let cut = Cut::new(
+            Spec {
+                pitch_mm: pitch,
+                ..base
+            },
+            TOLERANCE,
+        )
+        .unwrap();
+        let cap = TopCavity::new(cut, TOLERANCE).unwrap();
+        let spline = cap.spline().unwrap();
+        let tolerance = cap.certify(&spline).unwrap();
+        assert!(tolerance > 0. && tolerance < TOLERANCE * 0.25);
+        let domain = cut.edge_domain(BoundaryEdge::TopCavity);
+        assert_eq!(spline.knots[0], domain[0]);
+        assert_eq!(*spline.knots.last().unwrap(), domain[1]);
+        let rails = cut.cylinder_trims().map(|trim| {
+            Rail::new(base.stock_radius_mm, trim, TOLERANCE)
+                .unwrap()
+                .spline()
+                .unwrap()
+        });
+        for (vertex, rail) in [spline.poles_mm[0], *spline.poles_mm.last().unwrap()]
+            .into_iter()
+            .zip(rails.iter().rev())
+        {
+            assert!(distance(vertex, *rail.poles_mm.last().unwrap()) < 1e-12);
+        }
+        assert!(spline.poles_mm.iter().all(|p| p[2] == base.stock_height_mm));
+        for (i, pair) in spline.knots.windows(2).enumerate() {
+            let first = i * DEGREE;
+            let controls = spline.poles_mm[first..=first + DEGREE].try_into().unwrap();
+            for j in 0..=24 {
+                let t = j as f64 / 24.;
+                let phi = pair[0] + (pair[1] - pair[0]) * t;
+                let exact = cut.edge_point(BoundaryEdge::TopCavity, phi);
+                let error = distance(eval(controls, t), exact);
+                assert!(error <= tolerance, "{error} exceeds {tolerance}");
+            }
+        }
+    }
+}
+
+fn distance(a: Point, b: Point) -> f64 {
+    (a[0] - b[0]).hypot(a[1] - b[1]).hypot(a[2] - b[2])
+}
+
+#[test]
+fn top_cavity_refuses_ambiguous_accuracy_and_tampered_decoded_trims() {
+    let cut = cut(0.);
+    assert_eq!(
+        TopCavity::new(cut, 0.).unwrap_err(),
+        StepError::InvalidGeometry
+    );
+    assert_eq!(
+        TopCavity::new(self::cut(TAU), 1e-10).unwrap_err(),
+        StepError::Limit
+    );
+    let cap = TopCavity::new(cut, TOLERANCE).unwrap();
+    let valid = cap.spline().unwrap();
+    let invalid = Err(StepError::InvalidGeometry);
+    let mut tampered = valid.clone();
+    tampered.poles_mm[5][2] += 0.5 * TOLERANCE;
+    assert_eq!(cap.certify(&tampered), invalid);
+    let mut tampered = valid.clone();
+    tampered.poles_mm[5][0] += TOLERANCE * 0.05;
+    assert!(cap.certify(&tampered).unwrap() > cap.certify(&valid).unwrap());
+    tampered.poles_mm[5][0] += 3. * TOLERANCE;
+    assert_eq!(cap.certify(&tampered), invalid);
+    let mut tampered = valid;
+    tampered.knots[0] += 0.01;
+    assert_eq!(cap.certify(&tampered), invalid);
+}
