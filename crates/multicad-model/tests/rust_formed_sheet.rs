@@ -89,15 +89,28 @@ fn check_inset_sections(solid: &Solid) {
 
     let bend_area = std::f64::consts::FRAC_PI_2 * (3_f64.powi(2) - 1.5_f64.powi(2));
     let round_chord = 2. * (2.1_f64.powi(2) - 0.5_f64.powi(2)).sqrt();
-    for (x, expected_area, bends) in [
-        (7., 160. * 1.5, false),
-        (120., (160. + 50. + 30. - 22. - 8.) * 1.5 + bend_area, true),
+    for (x, cosine, expected_area, bends) in [
+        (7., 1., 160. * 1.5, false),
+        (
+            120.,
+            1.,
+            (160. + 50. + 30. - 22. - 8.) * 1.5 + bend_area,
+            true,
+        ),
         (
             44.5,
+            1.,
             (160. + 50. + 30. - round_chord) * 1.5 + bend_area,
             true,
         ),
+        (
+            171.,
+            0.8,
+            ((160. + 50. + 30. - 14.) * 1.5 + bend_area) / 0.8,
+            true,
+        ),
     ] {
+        let sine = (1.0_f64 - cosine * cosine).sqrt();
         let vectors = project_drawing(
             &[DrawingSolid {
                 solid,
@@ -112,16 +125,16 @@ fn check_inset_sections(solid: &Solid) {
                 frame: PlaneFrame {
                     origin: [0.; 3],
                     u: [0., 1., 0.],
-                    v: [0., 0., 1.],
+                    v: [-sine, 0., cosine],
                 },
                 section_only: true,
-                section_offset_mm: Some(x),
+                section_offset_mm: Some(x * cosine),
                 chord_tolerance_mm: 0.0001,
                 ..Default::default()
             },
         )
         .unwrap_or_else(|error| panic!("Section at X={x}: {error}"));
-        let mut radii = Vec::new();
+        let mut bend_arcs = [0.; 2];
         let mut hatch_area = 0.;
         for vector in vectors {
             match (vector.role, vector.curve) {
@@ -129,11 +142,19 @@ fn check_inset_sections(solid: &Solid) {
                 (
                     VectorRole::Section,
                     VectorCurve::Ellipse {
-                        major_mm, minor_mm, ..
+                        major_mm,
+                        minor_mm,
+                        start_rad,
+                        end_rad,
+                        ..
                     },
                 ) => {
-                    near(major_mm, minor_mm);
-                    radii.push(major_mm);
+                    assert!(bends);
+                    let index = usize::from(minor_mm > 2.);
+                    let radius = [1.5, 3.][index];
+                    near(minor_mm, radius);
+                    near(major_mm, radius / cosine);
+                    bend_arcs[index] += (end_rad - start_rad).abs();
                 }
                 (VectorRole::Hatch, VectorCurve::HatchTriangle { points: [a, b, c] }) => {
                     hatch_area +=
@@ -142,14 +163,8 @@ fn check_inset_sections(solid: &Solid) {
                 other => panic!("Unexpected inset section output: {other:?}"),
             }
         }
-        radii.sort_by(f64::total_cmp);
-        if bends {
-            assert_eq!(radii.len(), 4);
-            for (actual, expected) in radii.into_iter().zip([1.5, 1.5, 3., 3.]) {
-                near(actual, expected);
-            }
-        } else {
-            assert!(radii.is_empty());
+        for actual in bend_arcs {
+            near(actual, if bends { std::f64::consts::PI } else { 0. });
         }
         assert!(
             (hatch_area - expected_area).abs() < 0.02,
@@ -234,23 +249,6 @@ fn check_inset_elevations(sheet: &Solid) {
         .kind,
         GeometryErrorKind::Limit
     );
-    let diagonal = std::f64::consts::FRAC_1_SQRT_2;
-    assert_eq!(
-        project_drawing(
-            &[input()],
-            DrawingProjection {
-                frame: PlaneFrame {
-                    v: [0., diagonal, diagonal],
-                    ..Default::default()
-                },
-                ..Default::default()
-            },
-        )
-        .unwrap_err()
-        .kind,
-        GeometryErrorKind::Unsupported
-    );
-
     let witness = |origin, size: [i64; 3]| {
         Solid::rust_box(
             12,
@@ -338,6 +336,62 @@ fn check_inset_elevations(sheet: &Solid) {
     assert!(!spans.is_empty());
     near(spans.iter().copied().fold(f64::INFINITY, f64::min), 100.);
     near(spans.into_iter().fold(f64::NEG_INFINITY, f64::max), 140.);
+    check_oblique_web_aperture(sheet, &witness([17., 92., -5.], [12, 2, 1]));
+}
+
+fn check_oblique_web_aperture(sheet: &Solid, witness: &Solid) {
+    use multicad_core::drawings::{VectorCurve, VectorRole};
+    use multicad_kernel::{DrawingProjection, DrawingSolid, PlaneFrame, project_drawing};
+
+    let frame = PlaneFrame {
+        v: [0., 0.8, 0.6],
+        ..Default::default()
+    };
+    let inputs = [sheet, witness].map(|solid| DrawingSolid { solid, hatch: None });
+    let vectors = project_drawing(
+        &inputs,
+        DrawingProjection {
+            frame,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert!(vectors.iter().any(|v| v.source_index == 0 && v.role == VectorRole::Visible
+        && matches!(v.curve, VectorCurve::Ellipse { center: [x, _], major_mm, minor_mm, .. }
+            if (x - 23.).abs() < 1e-6 && (major_mm - 4.).abs() < 1e-6 && (minor_mm - 3.2).abs() < 1e-6)));
+    let witness_y = 0.8 * 92. - 0.6 * 4.;
+    let [lo, hi] = vectors
+        .iter()
+        .filter(|v| v.source_index == 1 && v.role == VectorRole::Visible)
+        .filter_map(|v| match v.curve {
+            VectorCurve::Line { a, b }
+                if [a[1], b[1]].iter().all(|y| (y - witness_y).abs() < 1e-6) =>
+            {
+                Some([a[0], b[0]])
+            }
+            _ => None,
+        })
+        .flatten()
+        .fold([f64::INFINITY, f64::NEG_INFINITY], |[lo, hi], x| {
+            [lo.min(x), hi.max(x)]
+        });
+    let mut web_caps: Vec<_> = sheet
+        .faces()
+        .unwrap()
+        .into_iter()
+        .filter_map(|face| {
+            let (point, normal) = face.plane?;
+            ((normal[2].abs() - 1.).abs() < 1e-8).then_some((face.area_mm2, point[2]))
+        })
+        .collect();
+    web_caps.sort_unstable_by(|a, b| b.0.total_cmp(&a.0));
+    let offset = web_caps[..2]
+        .iter()
+        .map(|&(_, z)| (92. - 0.75 * (z + 4.) - 90.).abs())
+        .fold(0., f64::max);
+    let half_chord = (16. - offset * offset).sqrt();
+    near(lo, 23. - half_chord);
+    near(hi, 23. + half_chord);
 }
 
 fn check_inset_drawing_view(model: &Model, document: &Document, revision: u64, part: EntityId) {
@@ -347,7 +401,7 @@ fn check_inset_drawing_view(model: &Model, document: &Document, revision: u64, p
         },
         references::ReferenceFrame,
     };
-    let view = DrawingView {
+    let mut view = DrawingView {
         id: EntityId::new(),
         name: "Web elevation".into(),
         source: ViewSource::Model {
@@ -370,24 +424,32 @@ fn check_inset_drawing_view(model: &Model, document: &Document, revision: u64, p
         guide: None,
         equipment_categories: None,
     };
-    let result = model
-        .drawing_view(document, revision, &view, &Default::default())
-        .unwrap();
-    let ViewEvaluation::Ready { vectors, .. } = result else {
-        panic!("Inset sheet elevation failed: {result:?}");
-    };
-    assert!(
-        vectors
-            .iter()
-            .all(|vector| vector.source == part && vector.material_part == part)
-    );
-    assert!(vectors.iter().any(|vector| vector.role == VectorRole::Visible
-        && matches!(vector.curve, VectorCurve::Ellipse { major_mm, .. } if (major_mm - 4.).abs() < 1e-8)));
-    assert!(
-        vectors
-            .iter()
-            .any(|vector| vector.role == VectorRole::Hidden)
-    );
+    for vertical in [[0., 1., 0.], [0., 0.8, 0.6]] {
+        view.frame.v = vertical;
+        let result = model
+            .drawing_view(document, revision, &view, &Default::default())
+            .unwrap();
+        let ViewEvaluation::Ready { vectors, .. } = result else {
+            panic!("Inset sheet elevation failed: {result:?}");
+        };
+        assert!(
+            vectors
+                .iter()
+                .all(|vector| vector.source == part && vector.material_part == part)
+        );
+        assert!(
+            vectors
+                .iter()
+                .any(|vector| vector.role == VectorRole::Visible
+                    && matches!(vector.curve, VectorCurve::Ellipse { major_mm, minor_mm, .. }
+                if (major_mm - 4.).abs() < 1e-8 && (minor_mm - 4. * vertical[1]).abs() < 1e-8))
+        );
+        assert!(
+            vectors
+                .iter()
+                .any(|vector| vector.role == VectorRole::Hidden)
+        );
+    }
 }
 
 #[cfg(feature = "occt")]
@@ -420,6 +482,14 @@ fn check_native_web_aperture(sheet: &Solid) {
     let chord = 15_f64.sqrt();
     near(bounds[0], 23. - chord);
     near(bounds[1], 23. + chord);
+    let oblique_witness = Solid::box_solid([12., 2., 1.], GeometryPolicy::default())
+        .unwrap()
+        .transformed(RigidTransform {
+            translation_mm: [17., 92., -5.],
+            ..Default::default()
+        })
+        .unwrap();
+    check_oblique_web_aperture(sheet, &oblique_witness);
 }
 
 fn prepare_sheet_rectangle(

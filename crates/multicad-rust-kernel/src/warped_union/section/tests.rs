@@ -154,7 +154,7 @@ fn section_keeps_closed_circular_web_hole_in_a_face_on_cut() {
 }
 
 #[test]
-fn sections_reject_unresolved_contact_oblique_bends_and_excess_work() {
+fn sections_reject_unresolved_contact_ill_conditioned_cuts_and_excess_work() {
     let shell = fixture(1.);
     assert_eq!(shell.section([-1., 0., 0.], X, TOL, 100), Ok(vec![]));
     assert_eq!(shell.section([3.5, 0., 0.], X, TOL, 1), Err(Error::Limit));
@@ -175,9 +175,95 @@ fn sections_reject_unresolved_contact_oblique_bends_and_excess_work() {
         Err(Error::Unsupported)
     );
     assert_eq!(
-        shell.section([4.73, 0., 0.], [1., 0.05, 0.], TOL, 100),
+        shell.section([0., -1.4, 0.], [1e-13, -1., 1.], TOL, 100),
         Err(Error::Unsupported)
     );
+}
+
+#[test]
+fn oblique_section_preserves_bend_ellipses_and_the_exact_web_bore_chord() {
+    let slope = 0.05;
+    let x = 4.73;
+    let stretch = 1_f64.hypot(slope);
+    let distance = (5. + slope * 4. - x) / stretch;
+    let expected =
+        (10. + 3. * std::f64::consts::FRAC_PI_4) * stretch - 2. * (1. - distance * distance).sqrt();
+    for up in [-1., 1.] {
+        let shell = fixture(up);
+        for sign in [-1., 1.] {
+            let normal = unit([sign, sign * slope, 0.]).unwrap();
+            let loops = shell.section([x, 0., 0.], normal, TOL, 100).unwrap();
+            assert_eq!(loops.len(), 2);
+            assert!((area(&loops, normal) - expected).abs() < TOL);
+            let arcs: Vec<_> = loops
+                .iter()
+                .flatten()
+                .filter_map(|edge| match edge.curve {
+                    Curve::Ellipse(arc) => Some(arc),
+                    Curve::Line => None,
+                })
+                .collect();
+            assert_eq!(arcs.len(), 2);
+            for arc in arcs {
+                let [major, minor] = arc.ellipse().semiaxes_mm();
+                assert!(major > minor);
+                assert!((major / minor - stretch).abs() < TOL);
+                assert!((arc.sweep_rad().abs() - FRAC_PI_2).abs() < TOL);
+            }
+        }
+    }
+}
+
+#[test]
+fn oblique_bore_arcs_terminate_on_actual_rims_even_with_no_rail_crossing() {
+    let shell = fixture(1.);
+    let threshold = 1.21;
+    for (point, normal, expected, root_count) in [
+        (
+            [5., 4., 0.25],
+            [0.5, 0., 1.],
+            4. * std::f64::consts::PI / 3.,
+            2,
+        ),
+        (
+            [5., 4., -threshold],
+            [-1., -1., 1.],
+            2. * (threshold / std::f64::consts::SQRT_2).acos(),
+            2,
+        ),
+    ] {
+        let normal = unit(normal).unwrap();
+        let loops = shell.section(point, normal, TOL, 100).unwrap();
+        area(&loops, normal);
+        let arcs: Vec<_> = loops
+            .iter()
+            .flatten()
+            .filter_map(|edge| match edge.curve {
+                Curve::Ellipse(arc) if length3(sub(arc.ellipse().center_mm(), point)) < TOL => {
+                    Some((edge.ends_mm, arc))
+                }
+                _ => None,
+            })
+            .collect();
+        let mut roots = 0;
+        let mut sweep = 0.;
+        for (ends, arc) in &arcs {
+            assert!(arc.sweep_rad() < 0.);
+            sweep -= arc.sweep_rad();
+            for (p, q) in ends.iter().zip(arc.endpoints()) {
+                assert!(length3(sub(*p, q)) < TOL);
+                assert!(dot(sub(*p, point), normal).abs() < TOL);
+                assert!(((p[0] - 5.).hypot(p[1] - 4.) - 1.).abs() < TOL);
+                assert!((-TOL..1. + TOL).contains(&p[2]));
+                roots += usize::from(p[2].abs() < TOL);
+            }
+        }
+        assert!((sweep - expected).abs() < TOL, "{sweep} != {expected}");
+        assert_eq!(roots, root_count);
+        if point[2] < 0. {
+            assert_eq!(arcs.len(), 1, "Both trim roots lie on one cap quadrant");
+        }
+    }
 }
 
 #[test]
@@ -321,4 +407,53 @@ fn inconsistent_face_intersections_fail_closed() {
         Err(Error::Unsupported)
     );
     assert_eq!(state.loops(), Err(Error::Unsupported));
+}
+
+#[test]
+fn oblique_section_refuses_inconsistent_trim_ports() {
+    let shell = fixture(1.);
+    let face = &shell.faces[0];
+    let Support::Cylinder {
+        axis_origin_mm: origin,
+        axis_direction: axis,
+        radius_mm: radius,
+        outward,
+    } = face.support
+    else {
+        panic!("The first face is a flange bend");
+    };
+    let patch = CylinderPatch::new(&shell, face, origin, axis, radius, TOL).unwrap();
+    let (cap, reference) = patch.arcs[0];
+    let [first, last] = patch.rails;
+    let span = reference.sweep_rad().abs();
+    let slip = 3. * TOL / radius;
+    for (shift, samples) in [
+        // A cap hit cannot also lie on a chart rail.
+        (0., &[(cap, 0.)][..]),
+        // One port or two coincident ports cannot bound an arc.
+        (0., &[(first, 0.)][..]),
+        (0., &[(first, 0.), (last, 0.)][..]),
+        // The infinite ellipse does not lie within these finite cap levels.
+        (30., &[(first, 0.), (last, span)][..]),
+        // Both points can snap individually, but their ellipse sweep no
+        // longer matches the certified angular span between the rails.
+        (0., &[(first, slip), (last, span - slip)][..]),
+    ] {
+        let mut state = section_state(&shell, unit([1., 0.05, 0.]).unwrap());
+        state.origin = translate([5., 0., 0.], axis, shift);
+        for &(edge, phase) in samples {
+            let angle = reference.start_rad() + reference.sweep_rad().signum() * phase;
+            let point = reference.ellipse().point_at(angle);
+            let level = dot(sub(state.origin, point), state.normal) / dot(axis, state.normal);
+            state.hits[edge].push(Hit {
+                port: [edge, 0],
+                point: translate(point, axis, level),
+            });
+        }
+        assert_eq!(
+            state.cylinder(&shell, face, origin, axis, radius, outward),
+            Err(Error::Unsupported),
+            "shift {shift}, samples {samples:?}"
+        );
+    }
 }

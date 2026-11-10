@@ -1,10 +1,10 @@
-//! Publish the exact line and circle intersection of a trimmed analytic shell.
+//! Publish the exact line and conic intersections of a trimmed analytic shell.
 use super::*;
 use multicad_rust_kernel::{
     curved_projection::{Curve, Edge, Ellipse},
     warped_union::{Curve as Trim, Error, SectionEdge, Shell},
 };
-use std::f64::consts::FRAC_PI_2;
+use std::f64::consts::{FRAC_PI_2, TAU};
 
 type Point = [f64; 3];
 type Segment = [[f64; 2]; 2];
@@ -33,7 +33,7 @@ pub(super) fn project(
             Error::Limit => limit(),
             Error::Unsupported => err(
                 GeometryErrorKind::Unsupported,
-                "Rust trimmed shell section requires a transverse cut through rectangular cylinder patches",
+                "Rust could not resolve the section against the trimmed shell boundary",
             ),
         })?;
     let windows = [options.section_u_mm, options.section_v_mm];
@@ -60,8 +60,9 @@ pub(super) fn project(
     let edges = loops
         .iter()
         .flatten()
-        .map(|&edge| Edge {
-            curve: frame.curve(edge),
+        .flat_map(|&edge| frame.curves(edge).into_iter().flatten())
+        .map(|curve| Edge {
+            curve,
             hidden: false,
         })
         .collect();
@@ -104,24 +105,42 @@ impl Frame {
         std::array::from_fn(|i| dot(p, self.directions.map(|axis| axis[i])))
     }
 
-    fn curve(&self, edge: SectionEdge) -> Curve {
+    fn ellipse(&self, arc: multicad_rust_kernel::trim_curve::EllipseArc) -> Ellipse {
+        let ellipse = arc.ellipse();
+        let [major, minor] = ellipse.semiaxes_mm();
+        let sign = arc.sweep_rad().signum();
+        let [u, v] = [ellipse.major_axis(), ellipse.minor_axis()].map(|axis| self.vector(axis));
+        let sweep = arc.sweep_rad().abs();
+        if major == minor {
+            let (sin, cos) = arc.start_rad().sin_cos();
+            return Ellipse {
+                center: self.point(ellipse.center_mm()),
+                u: std::array::from_fn(|i| u[i] * cos + v[i] * sin),
+                v: std::array::from_fn(|i| (-u[i] * sin + v[i] * cos) * sign),
+                major,
+                minor,
+                trim: [0., sweep],
+            };
+        }
+        let start = (sign * arc.start_rad()).rem_euclid(TAU);
+        Ellipse {
+            center: self.point(ellipse.center_mm()),
+            u,
+            v: v.map(|value| value * sign),
+            major,
+            minor,
+            trim: [start, start + sweep],
+        }
+    }
+
+    fn curves(&self, edge: SectionEdge) -> [Option<Curve>; 2] {
         match edge.curve {
-            Trim::Line => Curve::Line(edge.ends_mm.map(|p| self.point(p))),
+            Trim::Line => [Some(Curve::Line(edge.ends_mm.map(|p| self.point(p)))), None],
             Trim::Ellipse(arc) => {
-                let ellipse = arc.ellipse();
-                let [a, b] = [ellipse.major_axis(), ellipse.minor_axis()];
-                let [major, minor] = ellipse.semiaxes_mm();
-                let (sin, cos) = arc.start_rad().sin_cos();
-                let sign = arc.sweep_rad().signum();
-                let radial = std::array::from_fn(|i| a[i] * cos + b[i] * sin);
-                let tangent = std::array::from_fn(|i| (-a[i] * sin + b[i] * cos) * sign);
-                Curve::Ellipse(Ellipse {
-                    center: self.point(ellipse.center_mm()),
-                    u: self.vector(radial),
-                    v: self.vector(tangent),
-                    major,
-                    minor,
-                    trim: [0., arc.sweep_rad().abs()],
+                let ellipse = self.ellipse(arc);
+                let [start, end] = ellipse.trim;
+                [[start, end.min(TAU)], [0., end - TAU]].map(|trim| {
+                    (trim[1] > trim[0]).then_some(Curve::Ellipse(Ellipse { trim, ..ellipse }))
                 })
             }
         }
@@ -155,34 +174,30 @@ impl Frame {
         let mut boundary = Vec::new();
         for &edge in loops.iter().flatten() {
             let [start, end] = edge.ends_mm.map(|p| self.point(p));
-            match self.curve(edge) {
-                Curve::Line(_) => boundary.push([start, end]),
-                Curve::Ellipse(arc) => {
+            match edge.curve {
+                Trim::Line => boundary.push([start, end]),
+                Trim::Ellipse(trim) => {
+                    let arc = self.ellipse(trim);
                     let clockwise = arc.u[0] * arc.v[1] - arc.u[1] * arc.v[0] < 0.;
                     let radius = arc.major;
                     let target = 4. * (deflection / (4. * (radius + deflection))).sqrt().asin();
-                    let count = (arc.trim[1] / target.min(FRAC_PI_2)).ceil() as usize;
+                    let sweep = trim.sweep_rad().abs();
+                    let count = (sweep / target.min(FRAC_PI_2)).ceil() as usize;
                     if count > (LIMIT - boundary.len()) / (1 + usize::from(clockwise)) {
                         return Err(limit());
                     }
-                    let step = arc.trim[1] / count as f64;
-                    let at = |angle: f64, radius: f64| {
-                        let (sin, cos) = angle.sin_cos();
-                        std::array::from_fn(|i| {
-                            arc.center[i] + radius * (arc.u[i] * cos + arc.v[i] * sin)
-                        })
-                    };
+                    let step = sweep / count as f64;
+                    let at = |travel: f64| arc.point(arc.trim[0] + travel);
                     let mut previous = start;
                     for i in 1..=count {
-                        let next = if i == count {
-                            end
-                        } else {
-                            at(i as f64 * step, radius)
-                        };
+                        let next = if i == count { end } else { at(i as f64 * step) };
                         if clockwise {
                             // Use tangent segments on concave trims to keep
                             // the published fill on the material side.
-                            let tip = at((i as f64 - 0.5) * step, radius / (step / 2.).cos());
+                            let midpoint = at((i as f64 - 0.5) * step);
+                            let tip = std::array::from_fn(|i| {
+                                arc.center[i] + (midpoint[i] - arc.center[i]) / (step / 2.).cos()
+                            });
                             boundary.push([previous, tip]);
                             previous = tip;
                         }

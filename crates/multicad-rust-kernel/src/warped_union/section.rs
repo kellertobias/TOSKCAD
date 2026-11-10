@@ -3,7 +3,8 @@ use super::{
     cylinder_patch::{ANGULAR, CylinderPatch, axis_offset},
     *,
 };
-use crate::trim_curve::{Plane, PlaneCrossings};
+use crate::trim_curve::{Cylinder, Plane, PlaneCrossings, cylinder_plane};
+use std::f64::consts::TAU;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SectionEdge {
@@ -31,8 +32,8 @@ struct Section {
 
 impl Shell {
     /// Intersect the boundary with a transverse cutting plane. Cylindrical
-    /// patches need circular cap trims, straight generators, and a section
-    /// normal parallel or perpendicular to the cylinder axis.
+    /// patches need circular cap trims and straight generators. Their section
+    /// curves are straight generators, circular arcs or exact ellipse arcs.
     pub fn section(
         &self,
         origin_mm: Point,
@@ -142,7 +143,7 @@ fn unit(v: Point) -> Result<Point, Error> {
 }
 
 fn travel(arc: EllipseArc, angle: f64) -> f64 {
-    ((angle - arc.start_rad()) * arc.sweep_rad().signum()).rem_euclid(std::f64::consts::TAU)
+    ((angle - arc.start_rad()) * arc.sweep_rad().signum()).rem_euclid(TAU)
 }
 
 fn arc_hits(arc: EllipseArc, plane: Plane, tolerance: f64) -> Result<Vec<Point>, Error> {
@@ -268,8 +269,93 @@ impl Section {
             }
             Ok(())
         } else {
-            Err(Error::Unsupported)
+            self.oblique_cylinder(patch, axis_origin, axis, radius, outward)
         }
+    }
+
+    fn oblique_cylinder(
+        &mut self,
+        patch: CylinderPatch,
+        axis_origin: Point,
+        axis: Point,
+        radius: f64,
+        outward: bool,
+    ) -> Result<(), Error> {
+        let cylinder = Cylinder::new(axis_origin, axis, radius).map_err(|_| Error::Unsupported)?;
+        let plane = Plane::new(self.origin, self.normal).map_err(|_| Error::Unsupported)?;
+        let ellipse = cylinder_plane(cylinder, plane).map_err(|_| Error::Unsupported)?;
+        let [(_, reference), (_, end)] = patch.arcs;
+        let base = reference.ellipse();
+        let height = dot(sub(end.ellipse().center_mm(), base.center_mm()), axis);
+        let span = reference.sweep_rad().abs();
+        let angular_tolerance = 4. * self.tolerance / radius + ANGULAR;
+        let cosine = dot(axis, self.normal);
+        let mut hits = Vec::new();
+        for (edge, rail) in patch
+            .arcs
+            .map(|(edge, _)| (edge, false))
+            .into_iter()
+            .chain(patch.rails.map(|edge| (edge, true)))
+        {
+            for &hit in &self.hits[edge] {
+                let radial = axis_offset(hit.point, base.center_mm(), axis);
+                let point = translate(base.center_mm(), radial, 1.);
+                let angle = base
+                    .parameter_at(point, self.tolerance)
+                    .ok_or(Error::Unsupported)?;
+                let phase = travel(reference, angle);
+                let phase = if rail && phase.min(TAU - phase) <= angular_tolerance {
+                    0.
+                } else if rail && (phase - span).abs() <= angular_tolerance {
+                    span
+                } else if !rail && phase > angular_tolerance && phase < span - angular_tolerance {
+                    phase
+                } else {
+                    return Err(Error::Unsupported);
+                };
+                hits.push((phase, hit));
+            }
+        }
+        hits.sort_unstable_by(|a, b| a.0.total_cmp(&b.0));
+        let (pairs, remainder) = hits.as_chunks::<2>();
+        if !remainder.is_empty()
+            || hits
+                .windows(2)
+                .any(|pair| pair[1].0 - pair[0].0 <= angular_tolerance)
+        {
+            return Err(Error::Unsupported);
+        }
+
+        // All cap roots and rail crossings were enumerated analytically.
+        // Between successive roots, the signed axial distances to both cap
+        // planes have constant signs. Classify each retained interval there.
+        let positive = dot(base.normal(), axis) * reference.sweep_rad() * cosine > 0.;
+        for &[(start, first), (end, last)] in pairs {
+            let angle =
+                reference.start_rad() + reference.sweep_rad().signum() * start.midpoint(end);
+            let offset = dot(sub(self.origin, base.point_at(angle)), self.normal) / cosine;
+            if offset <= height.min(0.) + self.tolerance
+                || offset >= height.max(0.) - self.tolerance
+            {
+                return Err(Error::Unsupported);
+            }
+            let mut pair = [first, last];
+            if positive != outward {
+                pair.reverse();
+            }
+            let arc = EllipseArc::from_endpoints(
+                ellipse,
+                pair.map(|hit| hit.point),
+                !outward,
+                self.tolerance,
+            )
+            .map_err(|_| Error::Unsupported)?;
+            if (arc.sweep_rad().abs() - (end - start)).abs() > angular_tolerance {
+                return Err(Error::Unsupported);
+            }
+            self.add(pair, Curve::Ellipse(arc))?;
+        }
+        Ok(())
     }
 
     fn add(&mut self, [a, b]: [Hit; 2], curve: Curve) -> Result<(), Error> {
