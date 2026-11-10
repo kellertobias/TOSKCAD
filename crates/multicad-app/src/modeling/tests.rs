@@ -280,6 +280,25 @@ fn check_twisted_loft_drawing_worker(session: &mut Session, body: EntityId) {
     use multicad_core::{drawings, project_file::ContentHash, references::ReferenceFrame};
     use multicad_ui::drawings::DrawingBackend;
 
+    let rear = PrimitiveRequest::new(
+        "Rear drawing stock",
+        PrimitiveParameters::Box {
+            size: [7., 1., 1.].map(length),
+            frame: multicad_core::model::PrimitiveFrame {
+                origin: [-3., 0.4, -2.].map(length),
+                ..Default::default()
+            },
+        },
+    );
+    let prepared = model::prepare_primitive(
+        session,
+        session.revision(),
+        Actor::local(Channel::Ui),
+        &rear,
+    )
+    .unwrap();
+    session.commit(prepared.prepared).unwrap();
+
     let mut page = drawings::Page::new("1");
     let view = EntityId::new();
     page.views.push(drawings::DrawingView {
@@ -350,10 +369,19 @@ fn check_twisted_loft_drawing_worker(session: &mut Session, body: EntityId) {
         },
     };
     let bounded_id = bounded.id;
+    let mut assembly = ordinary.clone();
+    assembly.id = EntityId::new();
+    assembly.name = "Assembly projection".into();
+    assembly.frame.v = [0., 1., 0.];
+    assembly.source = drawings::ViewSource::Model {
+        entities: vec![rear.body, body],
+    };
+    let assembly_id = assembly.id;
     let oblique_id = oblique.id;
     let ordinary_id = ordinary.id;
     let retained_id = retained.id;
-    page.views.extend([ordinary, retained, oblique, bounded]);
+    page.views
+        .extend([ordinary, retained, oblique, bounded, assembly]);
     let page_id = page.id;
     let (_, prepared) = drawings::prepare_create(
         session,
@@ -452,6 +480,14 @@ fn check_twisted_loft_drawing_worker(session: &mut Session, body: EntityId) {
                 ))
     );
     assert!(vectors.iter().all(|v| v.source == body));
+    let drawings::ViewEvaluation::Ready { vectors, .. } = &result.views[&assembly_id] else {
+        panic!("{:?}", result.views[&assembly_id]);
+    };
+    for source in [rear.body, body] {
+        for role in [drawings::VectorRole::Visible, drawings::VectorRole::Hidden] {
+            assert!(vectors.iter().any(|v| v.source == source && v.role == role));
+        }
+    }
 }
 
 #[test]
