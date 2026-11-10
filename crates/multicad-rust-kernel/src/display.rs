@@ -12,6 +12,9 @@ use std::{
     ops::Range,
 };
 
+mod orthogonal_pockets;
+pub use orthogonal_pockets::pocketed_orthogonal;
+
 #[derive(Clone, Copy, Debug)]
 pub struct Tessellation {
     pub deflection: f64,

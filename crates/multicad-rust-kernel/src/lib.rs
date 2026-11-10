@@ -14,6 +14,7 @@ pub mod linear_sweep_mesh;
 pub mod manufacturing;
 pub mod orthogonal;
 pub mod orthogonal_boundary;
+pub mod orthogonal_pockets;
 pub mod planar_distance;
 pub mod planar_projection;
 pub mod planar_section;

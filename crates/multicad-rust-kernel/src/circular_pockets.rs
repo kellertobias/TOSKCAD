@@ -72,7 +72,7 @@ fn segment_distance(a: Point, b: Point) -> f64 {
     norm([x.mul_add(travel, a[0]), y.mul_add(travel, a[1])])
 }
 
-fn ring_contains_clear_disk(
+pub(crate) fn ring_contains_clear_disk(
     ring: &[Point],
     center: Point,
     exclusion: f64,
