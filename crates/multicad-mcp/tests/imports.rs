@@ -4,8 +4,10 @@ use multicad_core::{
     commands::{Actor, Channel},
     document::{Document, EntityId},
     model::imports::{StepEncoding, read_step_source},
+    project_file::{self, ProjectFile},
+    references::{AnalyticGeometry, Resolution},
 };
-use multicad_kernel::{BooleanOperation, GeometryPolicy, RigidTransform, Solid};
+use multicad_kernel::{BooleanOperation, GeometryPolicy, PlaneFrame, RigidTransform, Solid};
 use multicad_mcp::{
     Headless, Workspace,
     tools::{Call, dispatch},
@@ -22,6 +24,15 @@ fn call() -> Call {
         },
         cancel: Arc::new(AtomicBool::new(false)),
     }
+}
+
+fn write_pocket(stock: &Solid, tool: &Solid, path: &std::path::Path, policy: GeometryPolicy) {
+    stock
+        .boolean(tool, BooleanOperation::Subtract, policy)
+        .unwrap()
+        .unwrap()
+        .write_step(path)
+        .unwrap();
 }
 
 const BOARD: &str = r#"(kicad_pcb (general (thickness 1.6))
@@ -123,12 +134,23 @@ fn rust_mcp_round_trips_a_step_body_and_refuses_an_unsupported_shape() {
         })
         .unwrap();
     let pocket_file = dir.path().join("blind-pocket.step");
-    stock
-        .boolean(&tool, BooleanOperation::Subtract, policy)
-        .unwrap()
-        .unwrap()
-        .write_step(&pocket_file)
-        .unwrap();
+    write_pocket(&stock, &tool, &pocket_file, policy);
+    let round_tool = Solid::cylinder(
+        PlaneFrame {
+            origin: [4., 4., 3.],
+            ..Default::default()
+        },
+        2.,
+        4.,
+        policy,
+    )
+    .unwrap();
+    write_pocket(
+        &stock,
+        &round_tool,
+        &dir.path().join("round-blind-pocket.step"),
+        policy,
+    );
     let workspace = || Workspace::new(Document::new("STEP backend").unwrap()).unwrap();
     let native = Headless::new(workspace(), Some(dir.path().to_path_buf()), false);
     let rust = Headless::with_geometry_backend(
@@ -168,7 +190,13 @@ fn rust_mcp_round_trips_a_step_body_and_refuses_an_unsupported_shape() {
         assert_eq!(info["scope"]["mode"], "headless");
     }
     let before = rust.document();
-    let refused = dispatch(&rust, &call(), "import_step", import_pocket).unwrap_err();
+    let refused = dispatch(
+        &rust,
+        &call(),
+        "import_step",
+        json!({ "expected_revision": 0, "file_name": "round-blind-pocket.step" }),
+    )
+    .unwrap_err();
     assert_eq!(refused.code, "model_failed");
     assert!(refused.message.contains("Rust STEP import"), "{refused}");
     assert_eq!(rust.document(), before);
@@ -240,4 +268,127 @@ fn rust_mcp_round_trips_a_step_body_and_refuses_an_unsupported_shape() {
     .unwrap_err();
     assert_eq!(kicad.code, "unsupported");
     assert_eq!(rust.document(), before);
+}
+
+#[test]
+fn rust_mcp_reopens_an_embedded_orthogonal_step_with_a_persistent_floor_attachment() {
+    let dir = tempfile::tempdir().unwrap();
+    let policy = GeometryPolicy::default();
+    let stock = Solid::box_solid([10., 8., 6.], policy).unwrap();
+    let tool = Solid::box_solid([4., 4., 4.], policy)
+        .unwrap()
+        .transformed(RigidTransform {
+            translation_mm: [2., 2., 3.],
+            ..Default::default()
+        })
+        .unwrap();
+    let pocket_path = dir.path().join("pocket.step");
+    write_pocket(&stock, &tool, &pocket_path, policy);
+
+    let open = |document: Document| {
+        Headless::with_geometry_backend(
+            Workspace::new(document).unwrap(),
+            Some(dir.path().to_path_buf()),
+            false,
+            GeometryBackend::Rust,
+        )
+    };
+    let rust = open(Document::new("Pocket STEP project").unwrap());
+    let imported = dispatch(
+        &rust,
+        &call(),
+        "import_step",
+        json!({ "expected_revision": 0, "file_name": "pocket.step" }),
+    )
+    .unwrap();
+    assert_eq!(imported["revision"], 1);
+    let source = EntityId::parse(imported["source"].as_str().unwrap()).unwrap();
+    assert_eq!(
+        read_step_source(&rust.document(), source).unwrap().encoding,
+        StepEncoding::RustStep
+    );
+    let part = &imported["parts"][0];
+    let evaluated = dispatch(&rust, &call(), "evaluate_model", json!({})).unwrap();
+    let shape = &evaluated["parts"][0];
+    assert_eq!(&shape["part"], part);
+    assert_eq!(shape["solid_count"], 1);
+    assert!((shape["volume_mm3"].as_f64().unwrap() - 432.).abs() < 1e-7);
+    let feature = &shape["feature"];
+    let candidate_args = json!({ "source": feature, "kind": "face" });
+    let faces = dispatch(
+        &rust,
+        &call(),
+        "reference_candidates",
+        candidate_args.clone(),
+    )
+    .unwrap();
+    let floor = faces["elements"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|candidate| {
+            let geometry = serde_json::from_value(candidate["geometry"].clone()).unwrap();
+            matches!(geometry, AnalyticGeometry::Plane { frame }
+                if (frame.origin_mm[2] - 3.).abs() < 1e-7 && frame.normal()[2] > 0.999999)
+        })
+        .expect("blind pocket must have a planar floor above the bottom of the stock");
+    let attached = dispatch(
+        &rust,
+        &call(),
+        "create_engraving_sketch",
+        json!({ "expected_revision": 1, "source": feature, "face": floor["element"]["ordinal"] }),
+    )
+    .unwrap();
+    assert_eq!(attached["revision"], 2);
+    let sketch_args = json!({ "sketch": attached["sketch"] });
+
+    std::fs::remove_file(pocket_path).unwrap();
+    let project = ProjectFile::new(rust.document()).unwrap();
+    let mut saved = Vec::new();
+    project_file::write(&project, &mut saved, Default::default()).unwrap();
+    let loaded = project_file::read(
+        &mut saved.as_slice(),
+        Default::default(),
+        &project_file::supported_capabilities(),
+    )
+    .unwrap()
+    .project;
+    let reopened = open(loaded.document);
+    let rebuilt = dispatch(&reopened, &call(), "evaluate_model", json!({})).unwrap();
+    assert_eq!(&rebuilt["parts"][0], shape);
+    let attachment = rebuilt["references"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|reference| &reference["source"] == feature)
+        .expect("the reopened sketch must still refer to the imported part");
+    let resolution = serde_json::from_value(attachment["resolution"].clone()).unwrap();
+    assert!(
+        matches!(resolution, Resolution::Resolved { frame: Some(frame), .. }
+        if (frame.origin_mm[2] - 3.).abs() < 1e-7)
+    );
+    let rebuilt_faces =
+        dispatch(&reopened, &call(), "reference_candidates", candidate_args).unwrap();
+    assert_eq!(rebuilt_faces["elements"], faces["elements"]);
+    let sketch = dispatch(&reopened, &call(), "inspect_sketch", sketch_args).unwrap();
+    assert_eq!(sketch["solved"], true);
+
+    let exported = dispatch(
+        &reopened,
+        &call(),
+        "export_step",
+        json!({ "part": part, "file_name": "reopened.step" }),
+    )
+    .unwrap();
+    for field in ["model_volume_mm3", "readback_volume_mm3"] {
+        assert!((exported[field].as_f64().unwrap() - 432.).abs() < 1e-7);
+    }
+    let independent = Solid::read_step(&dir.path().join("reopened.step"), policy).unwrap();
+    assert!((independent.volume_mm3().unwrap() - 432.).abs() < 1e-7);
+    assert!(independent.faces().unwrap().iter().any(|face| {
+        (face.area_mm2 - 16.).abs() < 1e-7
+            && face.plane.is_some_and(|(origin, normal)| {
+                (origin[2] - 3.).abs() < 1e-7 && normal[2] > 0.999999
+            })
+    }));
 }

@@ -384,13 +384,37 @@ impl Solid {
         else {
             return Ok(None);
         };
-        let body = OrthogonalBody::build(feature, geometry, sources)?;
+        let body = OrthogonalBody::build(feature, geometry, Some(sources))?;
         Ok(Some(Self {
             body: SolidBody::Orthogonal(Rc::new(body), PlaneFrame::default()),
             policy,
             provenance: vec![],
             rust_origins: vec![],
         }))
+    }
+
+    pub(super) fn from_imported_orthogonal(
+        geometry: OrthogonalSolid,
+        frame: PlaneFrame,
+        feature: EntityId,
+        policy: GeometryPolicy,
+    ) -> Result<Self, GeometryError> {
+        if feature.is_nil() {
+            return Err(invalid("Orthogonal STEP import needs a feature identity"));
+        }
+        if geometry.solid_count() != 1 {
+            return Err(invalid("Orthogonal STEP import must produce one solid"));
+        }
+        let body = OrthogonalBody::build(feature, geometry, None)?;
+        let bounds = body.bounds(frame);
+        policy.point(bounds.min)?;
+        policy.point(bounds.max)?;
+        Ok(Self {
+            body: SolidBody::Orthogonal(Rc::new(body), frame),
+            policy,
+            provenance: vec![],
+            rust_origins: vec![],
+        })
     }
 }
 
@@ -598,11 +622,27 @@ fn name_intersection(
     }
 }
 
+fn imported_origin(
+    feature: EntityId,
+    role: &str,
+    points: impl IntoIterator<Item = PointKey>,
+) -> Origin {
+    let bytes: Vec<_> = points
+        .into_iter()
+        .flatten()
+        .flat_map(u64::to_le_bytes)
+        .collect();
+    Origin {
+        source: feature,
+        role: format!("step.{role}/{}", ContentHash::of(&bytes)),
+    }
+}
+
 impl OrthogonalBody {
     fn build(
         feature: EntityId,
         geometry: OrthogonalSolid,
-        sources: Sources,
+        sources: Option<Sources>,
     ) -> Result<Self, GeometryError> {
         let boundary =
             orthogonal_boundary::build(geometry.quads()).map_err(|cause| match cause {
@@ -621,17 +661,6 @@ impl OrthogonalBody {
         for (index, face) in boundary.faces.iter().enumerate() {
             let (patches, center, area) = bounds_face(face, &geometry);
             let origin = face.rings[0][0];
-            let face_sources = sources
-                .faces
-                .get(&plane_key(face.normal, origin))
-                .map_or(&[][..], Vec::as_slice);
-            let (origins, frames) =
-                support_origins(face.normal, &patches, face_sources, &mut budget)?;
-            if origins.is_empty() {
-                return Err(invalid(
-                    "Orthogonal Boolean could not certify source face ancestry",
-                ));
-            }
             let u = std::array::from_fn(|i| {
                 if i == (axis(face.normal) + 1) % 3 {
                     1.
@@ -643,6 +672,32 @@ impl OrthogonalBody {
                 origin_mm: origin,
                 u,
                 v: cross(face.normal, u),
+            };
+            let (origins, frames) = if let Some(sources) = &sources {
+                let face_sources = sources
+                    .faces
+                    .get(&plane_key(face.normal, origin))
+                    .map_or(&[][..], Vec::as_slice);
+                let (origins, frames) =
+                    support_origins(face.normal, &patches, face_sources, &mut budget)?;
+                if origins.is_empty() {
+                    return Err(invalid(
+                        "Orthogonal Boolean could not certify source face ancestry",
+                    ));
+                }
+                (origins, frames)
+            } else {
+                let mut points: Vec<_> = face.rings.iter().flatten().copied().map(key).collect();
+                points.sort_unstable();
+                let origin = imported_origin(
+                    feature,
+                    "face",
+                    std::iter::once(key(face.normal)).chain(points),
+                );
+                (
+                    BTreeSet::from([origin.clone()]),
+                    vec![AnchoredFrame { origin, frame }],
+                )
             };
             let mut topology = element(
                 TopologyKind::Face,
@@ -684,11 +739,15 @@ impl OrthogonalBody {
                 .flat_map(|&i| elements[i].origins.iter().cloned())
                 .collect::<BTreeSet<_>>()
         };
-        let signatures: Vec<_> = elements
-            .iter()
-            .zip(&boundary.faces)
-            .map(|(element, face)| face_signature(face.normal, &element.origins))
-            .collect();
+        let signatures: Vec<_> = if sources.is_some() {
+            elements
+                .iter()
+                .zip(&boundary.faces)
+                .map(|(element, face)| face_signature(face.normal, &element.origins))
+                .collect()
+        } else {
+            Vec::new()
+        };
         let mut lower = Vec::new();
         for (i, ([a_mm, b_mm], adjacent)) in shared.edges.into_iter().enumerate() {
             let mut item = element(
@@ -698,8 +757,15 @@ impl OrthogonalBody {
                 AnalyticGeometry::Line { a_mm, b_mm },
             );
             item.boundary = adjacent_origins(&adjacent);
-            inherit_lower_origins(&mut item, &sources, &mut budget)?;
-            name_intersection(&mut item, feature, &adjacent, &signatures, 2, "edge");
+            if let Some(sources) = &sources {
+                inherit_lower_origins(&mut item, sources, &mut budget)?;
+                name_intersection(&mut item, feature, &adjacent, &signatures, 2, "edge");
+            } else {
+                let mut endpoints = [key(a_mm), key(b_mm)];
+                endpoints.sort_unstable();
+                item.origins
+                    .insert(imported_origin(feature, "edge", endpoints));
+            }
             lower.push(item);
         }
         for (i, (position_mm, adjacent)) in shared.vertices.into_values().enumerate() {
@@ -711,8 +777,13 @@ impl OrthogonalBody {
             );
             let adjacent: Vec<_> = adjacent.into_iter().collect();
             item.boundary = adjacent_origins(&adjacent);
-            inherit_lower_origins(&mut item, &sources, &mut budget)?;
-            name_intersection(&mut item, feature, &adjacent, &signatures, 3, "vertex");
+            if let Some(sources) = &sources {
+                inherit_lower_origins(&mut item, sources, &mut budget)?;
+                name_intersection(&mut item, feature, &adjacent, &signatures, 3, "vertex");
+            } else {
+                item.origins
+                    .insert(imported_origin(feature, "vertex", [key(position_mm)]));
+            }
             lower.push(item);
         }
         elements.extend(lower);

@@ -10,8 +10,8 @@ use crate::{
         write_polygon_prism,
     },
     step_read::{
-        ImportProfile, ImportSolid, ReadError, read_analytic_solid, read_import_solid,
-        read_planar_solid,
+        ImportProfile, ImportSolid, ReadError, cross, dot, read_analytic_solid, read_import_solid,
+        read_planar_solid, sub,
     },
 };
 
@@ -128,7 +128,7 @@ fn import_box_frame_ignores_record_and_shell_order() {
 }
 
 #[test]
-fn import_recognizes_oblique_shell_and_refuses_a_blind_pocket() {
+fn import_recognizes_oblique_shell_and_a_blind_pocket() {
     let cube = Box3 {
         min: [0.; 3],
         max: [3.; 3],
@@ -166,10 +166,111 @@ fn import_recognizes_oblique_shell_and_refuses_a_blind_pocket() {
             .volume_mm3,
         25.,
     );
-    assert_eq!(
-        read_import_solid(&blind_pocket, TOLERANCE),
-        Err(ReadError::Unsupported)
-    );
+    let (_, recognized) = read_import_solid(&blind_pocket, TOLERANCE).unwrap();
+    let ImportProfile::Orthogonal { solid: imported } = recognized.profile else {
+        panic!("expected a blind pocket with an orthogonal boundary");
+    };
+    assert_eq!(solid.cells(), imported.cells());
+    assert_eq!(solid.quads(), imported.quads());
+}
+
+#[test]
+fn import_orthogonal_through_and_blind_cuts_in_a_rotated_far_placement() {
+    let stock = Box3 {
+        min: [0.; 3],
+        max: [12., 10., 6.],
+    };
+    let tools = [
+        Box3 {
+            min: [1., 1., 4.],
+            max: [3., 3., 7.],
+        },
+        Box3 {
+            min: [8., 6., -1.],
+            max: [10., 9., 3.],
+        },
+        Box3 {
+            min: [5., 4., -1.],
+            max: [7., 6., 7.],
+        },
+        Box3 {
+            min: [4., 8., 4.],
+            max: [6., 9., 7.],
+        },
+    ];
+    let solid = boolean(&[stock], &tools, Operation::Subtract, TOLERANCE)
+        .unwrap()
+        .unwrap();
+    let boundary = orthogonal_boundary::build(solid.quads()).unwrap();
+    let placed = |[x, y, z]: [f64; 3]| {
+        [
+            1_000_000. + 0.6 * x - 0.48 * y + 0.64 * z,
+            -700_000. + 0.8 * x + 0.36 * y - 0.48 * z,
+            200_000. + 0.8 * y + 0.6 * z,
+        ]
+    };
+    let source = write_orthogonal(&boundary, placed).unwrap();
+    let (readback, imported) = read_import_solid(&source, TOLERANCE).unwrap();
+    close(readback.volume_mm3, 666.);
+    let ImportProfile::Orthogonal { solid: rebuilt } = imported.profile else {
+        panic!("expected a rotated orthogonal boundary");
+    };
+    close(rebuilt.volume_mm3(), 666.);
+    assert_eq!(rebuilt.solid_count(), 1);
+    let material = |point| {
+        let delta = sub(placed(point), imported.origin_mm);
+        let point =
+            [imported.u, imported.v, cross(imported.u, imported.v)].map(|axis| dot(delta, axis));
+        rebuilt.cells().iter().any(|cell| {
+            (0..3).all(|i| cell.min[i] + 1e-7 < point[i] && point[i] < cell.max[i] - 1e-7)
+        })
+    };
+    assert!(!material([1.5, 1.5, 5.]));
+    assert!(!material([9., 7., 2.]));
+    assert!(!material([6., 5., 2.]));
+    assert!(!material([5.5, 8.5, 5.]));
+    assert!(material([1.5, 1.5, 2.]));
+    assert!(material([9., 7., 5.]));
+    assert!(material([5.5, 8.5, 2.]));
+
+    for shear in [0.01, 1e-6] {
+        let skewed = write_orthogonal(&boundary, |[x, y, z]| [x + z * shear, y, z]).unwrap();
+        assert!(read_planar_solid(&skewed, TOLERANCE).is_ok());
+        assert_eq!(
+            read_import_solid(&skewed, TOLERANCE),
+            Err(ReadError::Unsupported)
+        );
+    }
+}
+
+#[test]
+fn import_orthogonal_refuses_distinct_cardinal_planes_inside_tolerance() {
+    for (bottom, floor, gap) in [(0., 4., TOLERANCE / 2.), (-1e7, 0., 5e-10)] {
+        let stock = Box3 {
+            min: [0., 0., bottom],
+            max: [12., 10., 6.],
+        };
+        let tools = [
+            Box3 {
+                min: [1., 1., floor],
+                max: [3., 3., 7.],
+            },
+            Box3 {
+                min: [7., 6., floor + gap],
+                max: [9., 8., 7.],
+            },
+        ];
+        let solid = boolean(&[stock], &tools, Operation::Subtract, 0.)
+            .unwrap()
+            .unwrap();
+        let boundary = orthogonal_boundary::build(solid.quads()).unwrap();
+        let source = write_orthogonal(&boundary, |p| p).unwrap();
+        assert!(read_planar_solid(&source, TOLERANCE).is_ok());
+        assert_eq!(
+            read_import_solid(&source, TOLERANCE),
+            Err(ReadError::Unsupported)
+        );
+    }
 }
 
 #[test]

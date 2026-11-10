@@ -258,6 +258,123 @@ fn rust_batched_cuts_match_native_material_and_keep_each_tool_ancestry() {
 }
 
 #[test]
+fn rust_step_rebuilds_placed_orthogonal_stock_with_blind_and_through_cuts() {
+    let policy = GeometryPolicy::default();
+    let stock = stock(10, [0.; 3]);
+    let box_at = |size: [i64; 3], origin| {
+        Solid::rust_box(
+            EntityId::new().uuid_bits(),
+            size.map(n),
+            PlaneFrame {
+                origin,
+                ..Default::default()
+            },
+            policy,
+        )
+        .unwrap()
+    };
+    let milled = stock
+        .rust_subtract_orthogonal_tools(
+            &[
+                box_at([2, 2, 12], [1., 1., -1.]),
+                box_at([3, 2, 5], [6., 6., 7.]),
+            ],
+            policy,
+        )
+        .unwrap()
+        .unwrap();
+    let [a, b] = [0.37_f64, -0.61_f64];
+    let (sa, ca) = a.sin_cos();
+    let (sb, cb) = b.sin_cos();
+    let placement = RigidTransform {
+        rotation: [
+            [ca * cb, -sa, ca * sb],
+            [sa * cb, ca, sa * sb],
+            [-sb, 0., cb],
+        ],
+        translation_mm: [14_000., -9_700., 600.],
+    };
+    let scratch = tempfile::tempdir().unwrap();
+    let path = scratch.path().join("machined.step");
+    let owner = EntityId::new();
+    let near = |a: f64, b: f64| assert!((a - b).abs() <= 1e-6, "{a} != {b}");
+    for (index, shape) in [
+        milled.share().unwrap(),
+        milled.transformed(placement).unwrap(),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        shape.write_step(&path).unwrap();
+        let native = Solid::read_step(&path, policy).unwrap();
+        near(native.volume_mm3().unwrap(), 942.);
+        let text = std::fs::read_to_string(&path).unwrap();
+        let rust = Solid::import_rust_step(&text, owner, policy).unwrap();
+        assert!(rust.uses_rust_geometry());
+        let bounds = shape.bounds().unwrap();
+        let rebuilt = rust.bounds().unwrap();
+        for (actual, expected) in rebuilt
+            .min
+            .into_iter()
+            .chain(rebuilt.max)
+            .zip(bounds.min.into_iter().chain(bounds.max))
+        {
+            near(actual, expected);
+        }
+        let receipt = rust.manufacturing_mesh_with_receipt(options(0.03)).unwrap();
+        near(mesh_proof(&receipt).signed_volume_mm3, 942.);
+        let topology = rust.topology_snapshot(owner, 0).unwrap();
+        let top = topology
+            .elements
+            .iter()
+            .find(|e| {
+                e.key.kind == TopologyKind::Face
+                    && e.frames.first().is_some_and(|anchor| {
+                        let frame = anchor.frame;
+                        rust.planar_face_contours(
+                            e.key.ordinal,
+                            PlaneFrame {
+                                origin: frame.origin_mm,
+                                u: frame.u,
+                                v: frame.v,
+                            },
+                        )
+                        .is_ok_and(|c| c.loops.len() == 3)
+                    })
+            })
+            .expect("top face retains both pocket and through-hole contours");
+        let intent = GeometryIntent::capture(&topology, top.key).unwrap();
+        let reopened = Solid::import_rust_step(&text, owner, policy).unwrap();
+        assert!(
+            matches!(resolve(&intent, &reopened.topology_snapshot(owner, 1).unwrap(), 1),
+            Resolution::Resolved { key, .. } if key == top.key)
+        );
+        if index == 0 {
+            let edited = reopened
+                .rust_subtract_orthogonal_tools(&[box_at([2, 2, 12], [5., 1., -1.])], policy)
+                .unwrap()
+                .unwrap();
+            near(edited.volume_mm3().unwrap(), 902.);
+            assert!(matches!(
+                resolve(&intent, &edited.topology_snapshot(owner, 2).unwrap(), 2),
+                Resolution::Resolved { .. }
+            ));
+        }
+        let original = shape.faces().unwrap();
+        for face in rust.faces().unwrap() {
+            assert!(original.iter().any(|source| {
+                (source.area_mm2 - face.area_mm2).abs() < 1e-6
+                    && source
+                        .center_mm
+                        .into_iter()
+                        .zip(face.center_mm)
+                        .all(|(a, b)| (a - b).abs() < 1e-6)
+            }));
+        }
+    }
+}
+
+#[test]
 fn rust_batched_cuts_keep_empty_and_refused_outcomes_distinct() {
     let policy = GeometryPolicy::default();
     let source = stock(6, [0.; 3]);

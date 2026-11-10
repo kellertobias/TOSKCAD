@@ -1,7 +1,9 @@
 //! Recognize swept solids by their complete, already validated boundaries.
 use super::*;
-use crate::{linear_sweep::Sweep, trimmed_sweep::TrimmedSweep};
+use crate::{linear_sweep::Sweep, orthogonal::OrthogonalSolid, trimmed_sweep::TrimmedSweep};
 use std::cmp::Ordering;
+
+mod orthogonal;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum ImportProfile {
@@ -23,6 +25,10 @@ pub enum ImportProfile {
         direction: Point,
         /// Affine travel distances from the lower cap. The first row is zero.
         travels: [[f64; 3]; 2],
+    },
+    Orthogonal {
+        /// Certified material and directed boundary in the local frame.
+        solid: OrthogonalSolid,
     },
     Cylinder {
         radius_mm: f64,
@@ -46,15 +52,17 @@ pub struct ImportSolid {
     pub profile: ImportProfile,
 }
 
-/// Decode a single right prism, full cylinder, coaxial annulus or straight-edged
-/// linear sweep, including sloped trims, from a verified STEP shell.
-/// Every wall must join paired rims.
+/// Decode a single analytic extrusion or rectilinear solid from a verified
+/// STEP shell. Orthogonal solids can contain blind and through pockets.
 pub fn read_import_solid(input: &str, tolerance_mm: f64) -> Result<(Readback, ImportSolid)> {
     let entities = parse_entities(input, tolerance_mm)?;
     let mut shell = Shell::new(&entities, tolerance_mm, true);
     let faces = shell.validated_faces()?;
     let readback = shell.readback(&faces)?;
-    let solid = shell.recognize(&faces).ok_or(ReadError::Unsupported)?;
+    let solid = match shell.recognize(&faces) {
+        Some(solid) => solid,
+        None => shell.orthogonal(&faces)?,
+    };
     Ok((readback, solid))
 }
 

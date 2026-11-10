@@ -5,6 +5,9 @@
 use crate::{Rational, polygon::PolygonPrism};
 use std::collections::{BTreeMap, BTreeSet};
 
+mod import;
+pub(crate) use import::{OrientedFace, solid_from_oriented_faces};
+
 const MAX_GRID_POINTS: usize = 131_072;
 pub const MAX_CELLS: usize = 65_536;
 const MAX_QUADS: usize = 65_536;
@@ -38,7 +41,7 @@ pub enum BooleanError {
     Limit,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct OrthogonalSolid {
     cells: Vec<Box3>,
     quads: Vec<BoundaryQuad>,
@@ -229,6 +232,10 @@ impl Grid {
                 axis.extend([canonical(lo), canonical(hi)]);
             }
         }
+        Self::from_axes(axes, tolerance)
+    }
+
+    fn from_axes(mut axes: [Vec<f64>; 3], tolerance: f64) -> Result<Self, BooleanError> {
         for axis in &mut axes {
             axis.sort_unstable_by(f64::total_cmp);
             axis.dedup();

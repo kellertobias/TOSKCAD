@@ -1,4 +1,4 @@
-//! Rebuild an independently verified STEP extrusion as exact Rust geometry.
+//! Rebuild independently verified STEP boundaries as analytic Rust solids.
 use super::*;
 use multicad_core::{project_file::ContentHash, references::AnalyticGeometry};
 use multicad_rust_kernel::step_read::{
@@ -89,17 +89,18 @@ impl Solid {
                 ReadError::Limit => (GeometryErrorKind::Limit, "STEP exceeds the Rust import budget"),
                 ReadError::Unsupported => (
                     GeometryErrorKind::Unsupported,
-                    "Rust STEP import supports one millimeter extrusion with straight or circular trims",
+                    "Rust STEP import supports one solid in millimeters with a certified swept or orthogonal boundary",
                 ),
             };
             error(IMPORT, kind, message)
         })?;
-        let solid = Self::from_imported_extrusion(imported, feature, policy)?;
-        verify(&solid, &readback, feature, tolerance)?;
+        let orthogonal = matches!(&imported.profile, ImportProfile::Orthogonal { .. });
+        let solid = Self::from_imported_step(imported, feature, policy)?;
+        verify(&solid, &readback, feature, tolerance, orthogonal)?;
         Ok(solid)
     }
 
-    fn from_imported_extrusion(
+    fn from_imported_step(
         imported: ImportSolid,
         feature: EntityId,
         policy: GeometryPolicy,
@@ -119,6 +120,9 @@ impl Solid {
         frame.checked(policy)?;
         let dimension = |value| convert(value, policy.linear_tolerance_mm);
         match profile {
+            ImportProfile::Orthogonal { solid } => {
+                Self::from_imported_orthogonal(solid, frame, feature, policy)
+            }
             ImportProfile::LinearSweep { base, top } => {
                 let edges = base
                     .iter()
@@ -301,6 +305,7 @@ fn verify(
     readback: &Readback,
     feature: EntityId,
     tolerance: f64,
+    orthogonal: bool,
 ) -> Result<(), GeometryError> {
     let bounds = solid.bounds()?;
     let [x, y, z] = std::array::from_fn(|i| bounds.max[i] - bounds.min[i]);
@@ -311,8 +316,14 @@ fn verify(
         || (solid.volume_mm3()? - readback.volume_mm3).abs() > volume_tolerance
     {
         return Err(invalid(
-            "Rebuilt STEP extrusion differs from the imported bounds or volume",
+            "Rebuilt STEP solid differs from the imported bounds or volume",
         ));
+    }
+    if orthogonal {
+        // The pure reader has already proved equality of every oriented
+        // boundary patch. The rebuilt shell consolidates coplanar source
+        // faces and collinear edges, so record counts can differ.
+        return Ok(());
     }
     let mut lines = Vec::new();
     let mut circles = Vec::new();
