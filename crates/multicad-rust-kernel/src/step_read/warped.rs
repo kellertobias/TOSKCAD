@@ -8,6 +8,7 @@ use std::f64::consts::FRAC_PI_2;
 
 mod axial_cuts;
 mod bosses;
+mod circular_miter;
 mod formed_sheet;
 mod open_bore;
 
@@ -337,6 +338,8 @@ pub(super) fn read_member(
         imported
     } else if boundary.faces.iter().any(|face| !face.holes.is_empty()) {
         bosses::reconstruct(reader, &boundary)?
+    } else if let Some(imported) = circular_miter::reconstruct(reader, &boundary)? {
+        imported
     } else {
         resolve_chart(reader, &boundary, false)?.0
     };
