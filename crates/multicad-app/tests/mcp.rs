@@ -883,6 +883,75 @@ fn rust_stdio_imports_and_reopens_spline_step_without_the_original_file() {
 }
 
 #[test]
+fn rust_stdio_round_trips_freecad_step_without_the_original_file() {
+    use multicad_kernel::rust_kernel::step_read::read_analytic_solid;
+
+    // FreeCAD 1.1.1 exported a 20 × 30 × 8 box at (13, -7, 5) after
+    // subtracting a radius-2 cylinder from (20, 3, 5) through its height.
+    let fixture = include_bytes!("fixtures/exchange/freecad-drilled-box.step");
+    let directory = tempfile::tempdir().unwrap();
+    let source = directory.path().join("freecad-drilled-box.step");
+    let project = directory.path().join("drilled-box.tcd");
+    std::fs::write(&source, fixture).unwrap();
+    let arguments = [
+        "--rust-model",
+        "--project",
+        project.to_str().unwrap(),
+        "--export-dir",
+        directory.path().to_str().unwrap(),
+    ];
+    let volume = 4800. - 32. * PI;
+    let mut importer = Client::start(&arguments);
+    let imported = importer.ok(
+        "import_step",
+        json!({"expected_revision": 0, "file_name": "freecad-drilled-box.step"}),
+    );
+    let [part] = imported["parts"].as_array().unwrap().as_slice() else {
+        panic!("expected one imported part: {imported}");
+    };
+    let model = importer.ok("evaluate_model", json!({}));
+    assert_eq!(model["parts"][0]["part"], *part);
+    assert_eq!(model["parts"][0]["solid_count"], 1);
+    assert_eq!(
+        model["parts"][0]["bounds_mm"],
+        json!({"min":[13.,-7.,5.], "max":[33.,23.,13.]})
+    );
+    close(model["parts"][0]["volume_mm3"].as_f64().unwrap(), volume);
+    importer.ok("save_project", json!({"expected_revision": 1}));
+    drop(importer);
+    std::fs::remove_file(source).unwrap();
+    let saved = std::fs::read(&project).unwrap();
+
+    let mut reopened = Client::start(&arguments);
+    assert_eq!(
+        reopened.ok("evaluate_model", json!({}))["parts"],
+        model["parts"]
+    );
+    let receipt = reopened.ok(
+        "export_step",
+        json!({"part": part, "file_name": "drilled-box.step"}),
+    );
+    close(receipt["readback_volume_mm3"].as_f64().unwrap(), volume);
+    let exported = std::fs::read_to_string(directory.path().join("drilled-box.step")).unwrap();
+    let readback = read_analytic_solid(&exported, 1e-7).unwrap();
+    assert_eq!(readback.solid_count, 1);
+    close(readback.volume_mm3, volume);
+    assert_eq!(readback.bounds_mm, [[13., -7., 5.], [33., 23., 13.]]);
+    assert_eq!(readback.circles.len(), 2);
+    for height in [5., 13.] {
+        let circle = readback
+            .circles
+            .iter()
+            .find(|circle| circle.center_mm[2] == height)
+            .unwrap();
+        assert_eq!(circle.center_mm, [20., 3., height]);
+        assert_eq!(circle.normal.map(f64::abs), [0., 0., 1.]);
+        close(circle.radius_mm, 2.);
+    }
+    assert_eq!(std::fs::read(project).unwrap(), saved);
+}
+
+#[test]
 fn rust_stdio_imports_updates_and_reopens_kicad_with_an_embedded_component() {
     use multicad_kernel::rust_kernel::{Rational, step::write_box};
 
