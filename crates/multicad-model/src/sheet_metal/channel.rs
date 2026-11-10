@@ -6,6 +6,7 @@ use crate::sheet_forming::section;
 use multicad_core::references::ReferenceFrame;
 
 mod piercing;
+pub(super) use piercing::append_profile;
 
 const WEB_A: &str = "sheet.web/cap.start";
 const WEB_B: &str = "sheet.web/cap.end";

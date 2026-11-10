@@ -1,7 +1,7 @@
 use multicad_core::{
     commands::{Actor, Channel, Request, Session},
     constraint_sketch::{ConstraintKind, Curve, CurveKind, source::Source},
-    document::{EntityData, EntityId},
+    document::{Document, EntityData, EntityId, Mutation},
     exchange::LengthUnit,
     model::{self, BodyInput, BodyOutput, CutoutFace, ProfileSource, SheetProfileCutDefinition},
     project_file::{self, ProjectFile},
@@ -60,9 +60,22 @@ fn cut(
         .iter()
         .filter(|element| element.key.kind == TopologyKind::Face)
         .find(|element| {
+            let Some(AnalyticGeometry::Plane { frame: surface }) = element.geometry else {
+                return false;
+            };
+            let normal = surface.normal();
+            let delta =
+                std::array::from_fn::<_, 3, _>(|i| surface.origin_mm[i] - frame.origin_mm[i]);
+            let dot =
+                |a: [f64; 3], b: [f64; 3]| a.into_iter().zip(b).map(|(a, b)| a * b).sum::<f64>();
             element.origins.iter().any(|origin| {
                 origin.source == frame.feature && origin.role.rsplit('/').next() == Some(&role)
             }) && !element.frames.is_empty()
+                && dot(delta, normal).abs() < 1e-7
+                && (dot(frame.through_mm, normal).abs()
+                    - dot(frame.through_mm, frame.through_mm).sqrt())
+                .abs()
+                    < 1e-7
         })
         .unwrap();
     let created = sketch::prepare_new(
@@ -477,5 +490,166 @@ fn developed_c_channel_flange_cut_matches_folded_geometry_and_millimeter_dxf() {
     assert_eq!(
         updated.unfold(session.document(), part).unwrap(),
         flat_updated
+    );
+}
+
+#[test]
+fn rust_rebuilds_live_sketch_cuts_on_folded_and_developed_c_channel_faces() {
+    let fixture = project_file::read(
+        &mut include_bytes!("../../../examples/front-panel.tcd").as_slice(),
+        Default::default(),
+        &project_file::supported_capabilities(),
+    )
+    .unwrap()
+    .project
+    .document;
+    let original = fixture
+        .entities()
+        .find(|e| e.name == "Front panel sheet")
+        .unwrap()
+        .id;
+    let sheet =
+        model::read_sheet(&fixture, model::sheet_feature(&fixture, original).unwrap()).unwrap();
+    let stock = model::read_sheet_stock(&fixture, sheet.stock).unwrap();
+    // Evaluate a complete authoring document with the saved panel's stock and
+    // parameters. Source-only inspection deliberately omits authoring faces.
+    let edits: Vec<_> = fixture
+        .entities()
+        .filter(|e| {
+            e.id == sheet.stock
+                || e.id == stock.material
+                || matches!(e.data, EntityData::Parameter { .. })
+        })
+        .cloned()
+        .map(Mutation::Insert)
+        .collect();
+    let document = Document::new("Front panel sheet editing")
+        .unwrap()
+        .edited(&edits)
+        .unwrap();
+    let mut session = Session::new(document).unwrap();
+    let request = model::SheetRequest::new("Front panel sheet", sheet);
+    let part = request.body;
+    let forming = request.feature;
+    let prepared = model::prepare_sheet(&session, 0, actor(), &request).unwrap();
+    session.commit(prepared.prepared).unwrap();
+    let compiler = Compiler {
+        omit_display: true,
+        ..Default::default()
+    };
+    let evaluate = |session: &Session| {
+        compiler
+            .compile_with_backend(
+                session.document(),
+                session.revision(),
+                multicad_model::GeometryBackend::Rust,
+                None,
+            )
+            .unwrap()
+    };
+    let base = evaluate(&session);
+    let pattern = base.unfold(session.document(), part).unwrap();
+    let volume = base.solid(forming).unwrap().volume_mm3().unwrap();
+    let (_, folded) = cut(&mut session, &base, part, CutoutFace::Base, |source, uv| {
+        let points =
+            [[16., 12.], [24., 12.], [24., 18.], [16., 18.]].map(|p| source.add_point(uv(p)));
+        for (a, b) in points.into_iter().zip(points.into_iter().cycle().skip(1)) {
+            source.add_line(a, b);
+        }
+    });
+    let folded_model = evaluate(&session);
+    let folded_pattern = folded_model.unfold(session.document(), part).unwrap();
+    near(pattern.area_mm2 - folded_pattern.area_mm2, 48.);
+
+    let face = CutoutFace::Flange { index: 0 };
+    let [a, b, _, d] = folded_pattern.chart.legs[0].quad;
+    let unit = |p: [f64; 2]| {
+        let [x, y] = [p[0] - a[0], p[1] - a[1]];
+        let magnitude = x.hypot(y);
+        [x / magnitude, y / magnitude]
+    };
+    let u = unit(b);
+    let v = unit(d);
+    let center = std::array::from_fn(|i| a[i] + 45. * u[i] + 25. * v[i]);
+    let created = sketch::prepare_new(
+        &session,
+        session.revision(),
+        actor(),
+        "Circular developed flange cut",
+        CreationPlane::DevelopedSheet { part, face },
+        PlaneOptions::default(),
+    )
+    .unwrap();
+    let sketch = created.sketch;
+    session.commit(created.prepared).unwrap();
+    let mut profile = source(&session, sketch);
+    let center_id = profile.add_point(center);
+    let circle = EntityId::new();
+    profile.sketch.curves.push(Curve {
+        id: circle,
+        construction: false,
+        kind: CurveKind::Circle {
+            center: center_id,
+            radius_mm: 2.5,
+        },
+    });
+    profile.add_constraint(ConstraintKind::Fix { point: center_id });
+    profile.add_constraint(ConstraintKind::Radius {
+        curve: circle,
+        dimension: model::length(2.5),
+    });
+    let region = sketch_regions::extract(&profile).regions[0].intent();
+    apply_sketch(&mut session, sketch, &profile);
+    let feature = EntityId::new();
+    let prepared = model::prepare_sheet_profile_cut(
+        &session,
+        session.revision(),
+        actor(),
+        feature,
+        &SheetProfileCutDefinition {
+            output: BodyOutput { body: part },
+            input: BodyInput {
+                body: part,
+                producer: folded,
+            },
+            profile: ProfileSource { sketch, region },
+            face,
+        },
+    )
+    .unwrap();
+    session.commit(prepared.prepared).unwrap();
+    let built = evaluate(&session);
+    let actual = built.unfold(session.document(), part).unwrap();
+    let total_area = 48. + std::f64::consts::PI * 2.5_f64.powi(2);
+    near(pattern.area_mm2 - actual.area_mm2, total_area);
+    assert_eq!(actual.cut.loops.len(), pattern.cut.loops.len() + 2);
+    assert_eq!(actual.bends, pattern.bends);
+    near(
+        volume - built.solid(feature).unwrap().volume_mm3().unwrap(),
+        total_area * actual.thickness_mm,
+    );
+
+    for constraint in &mut profile.sketch.constraints {
+        if let ConstraintKind::Radius { dimension, .. } = &mut constraint.kind {
+            *dimension = model::length(3.);
+        }
+    }
+    apply_sketch(&mut session, sketch, &profile);
+    let updated = evaluate(&session).unfold(session.document(), part).unwrap();
+    near(
+        actual.area_mm2 - updated.area_mm2,
+        2.75 * std::f64::consts::PI,
+    );
+    assert!(
+        updated
+            .drills
+            .iter()
+            .any(|drill| drill.id.starts_with("profile_cut.")
+                && (drill.diameter_mm - 6.).abs() < 1e-8)
+    );
+    session.undo(session.revision(), actor()).unwrap();
+    assert_eq!(
+        evaluate(&session).unfold(session.document(), part).unwrap(),
+        actual
     );
 }

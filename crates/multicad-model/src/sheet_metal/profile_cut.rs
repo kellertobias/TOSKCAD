@@ -1,4 +1,6 @@
-use super::{SheetLayout, cross, dot, flat_contours, polygon_edges, rebuild_rust_flat, scale};
+use super::{
+    SheetLayout, channel, cross, dot, flat_contours, polygon_edges, rebuild_rust_flat, scale,
+};
 use crate::{GeometryBackend, ModelError, error, sheet_forming::FlatFrame};
 use multicad_core::{document::EntityId, model::CutoutFace, references::Origin};
 use multicad_kernel::{BooleanOperation, CurvedEdge2d, CurvedProfile, GeometryPolicy, Solid};
@@ -37,13 +39,6 @@ pub(crate) fn build_profile_cut(
     if !profile.holes.is_empty() {
         return Err(failure(
             "Choose one closed region without internal islands for a sheet cut".into(),
-        ));
-    }
-    if backend == GeometryBackend::Rust
-        && (face != CutoutFace::Base || !previous.flanges.is_empty())
-    {
-        return Err(failure(
-            "Rust sheet cuts currently require the flat base face".into(),
         ));
     }
 
@@ -127,11 +122,27 @@ pub(crate) fn build_profile_cut(
             area_mm2: 0.,
             origins: origins.to_vec(),
         });
-        let cut = rebuild_rust_flat(&mut layout, feature, policy)?;
+        let cut = if layout.flanges.is_empty() {
+            rebuild_rust_flat(&mut layout, feature, policy)?
+        } else {
+            let (solid, developed) = channel::append_profile(
+                previous,
+                sheet,
+                outer,
+                layout
+                    .profile_cuts
+                    .last()
+                    .expect("newly appended profile cut"),
+                policy,
+            )
+            .map_err(failure)?;
+            layout.developed = Some(developed);
+            solid
+        };
         let removed = sheet.volume_mm3().map_err(native)? - cut.volume_mm3().map_err(native)?;
         if removed <= 0. || !removed.is_finite() {
             return Err(failure(
-                "The exact cut does not remove material from the flat sheet".into(),
+                "The exact cut does not remove material from the sheet".into(),
             ));
         }
         layout
