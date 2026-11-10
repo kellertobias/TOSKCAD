@@ -44,6 +44,12 @@ pub(crate) fn validate_document(
                     | (model::ALIGN_TYPE, model::ALIGN_SCHEMA)
                     | (model::THREAD_TYPE, model::THREAD_SCHEMA)
                     | (model::MECHANICAL_PART_TYPE, model::MECHANICAL_PART_SCHEMA)
+                    | (
+                        model::PANEL_TYPE,
+                        model::PANEL_SCHEMA | model::RECIPE_PANEL_SCHEMA
+                    )
+                    | (model::PANEL_JOINT_CUT_TYPE, model::PANEL_JOINT_CUT_SCHEMA)
+                    | (model::MACHINING_CUT_TYPE, model::MACHINING_CUT_SCHEMA)
                     | (model::imports::STEP_BODY_TYPE, 1)
             ) =>
             {
@@ -443,57 +449,14 @@ pub(crate) fn extrude(
     if controls.taper_rad != 0. || controls.direction[0] != 0. || controls.direction[1] != 0. {
         return linear_sweep(id, controls, profile, origins, policy);
     }
-    if let [CurvedEdge2d::Circle { center, radius_mm }] = profile.outer.as_slice() {
-        let sweep = straight_sweep(source, controls, parameters).map_err(fail)?;
-        return match (profile.holes.as_slice(), origins) {
-            ([], [origin]) => {
-                circular_prism(id, &profile, *center, *radius_mm, origin, sweep, policy)
-            }
-            ([hole], [outer, inner])
-                if let [
-                    CurvedEdge2d::Circle {
-                        center: bore_center,
-                        radius_mm: bore_radius,
-                    },
-                ] = hole.as_slice() =>
-            {
-                let [dx, dy] = std::array::from_fn(|i| bore_center[i] - center[i]);
-                if dx.hypot(dy) > policy.linear_tolerance_mm {
-                    return Err(fail(
-                        "Rust annular extrusion requires concentric circles".into(),
-                    ));
-                }
-                let normal = profile.frame.normal();
-                let start = PlaneFrame {
-                    origin: std::array::from_fn(|i| {
-                        profile.frame.origin[i] + normal[i] * sweep.start_offset
-                    }),
-                    ..profile.frame
-                };
-                let sign = if sweep.reverse { -1. } else { 1. };
-                Solid::rust_annulus_from_sketch(
-                    [*bore_radius, *radius_mm],
-                    sign * sweep.height.as_f64(),
-                    id,
-                    start,
-                    *center,
-                    [inner.clone(), outer.clone()],
-                    policy,
-                )
-                .map_err(|cause| error(Some(id), cause))
-            }
-            _ => Err(fail(
-                "Rust circular extrusion requires one circle or a concentric pair with authored boundary identities".into(),
-            )),
-        };
-    }
-    if profile
-        .outer
-        .iter()
-        .all(|edge| matches!(edge, CurvedEdge2d::Line { .. }))
+    if matches!(profile.outer.as_slice(), [CurvedEdge2d::Circle { .. }])
+        || profile
+            .outer
+            .iter()
+            .all(|edge| matches!(edge, CurvedEdge2d::Line { .. }))
     {
         let sweep = straight_sweep(source, controls, parameters).map_err(fail)?;
-        return straight_prism(id, &profile, origins, sweep, policy);
+        return normal_profile(id, &profile, origins, sweep, policy);
     }
     let Extent::OneSided {
         end: Termination::Distance { distance },
@@ -532,6 +495,74 @@ pub(crate) fn extrude(
             .map_err(|e| fail(format!("Rust inner loop failed: {e:?}")))?;
     }
     Solid::from_rust_prism(prism, policy).map_err(|e| error(Some(id), e))
+}
+
+pub(crate) fn stock_profile(
+    id: EntityId,
+    profile: &CurvedProfile,
+    origins: &[Origin],
+    height_mm: f64,
+    policy: GeometryPolicy,
+) -> Result<Solid, ModelError> {
+    let sweep = StraightSweep {
+        height: coordinate(height_mm.abs()).map_err(|cause| error(Some(id), cause))?,
+        start_offset: 0.,
+        reverse: height_mm < 0.,
+    };
+    normal_profile(id, profile, origins, sweep, policy)
+}
+
+fn normal_profile(
+    id: EntityId,
+    profile: &CurvedProfile,
+    origins: &[Origin],
+    sweep: StraightSweep,
+    policy: GeometryPolicy,
+) -> Result<Solid, ModelError> {
+    let [CurvedEdge2d::Circle { center, radius_mm }] = profile.outer.as_slice() else {
+        return straight_prism(id, profile, origins, sweep, policy);
+    };
+    match (profile.holes.as_slice(), origins) {
+        ([], [origin]) => circular_prism(id, profile, *center, *radius_mm, origin, sweep, policy),
+        ([hole], [outer, inner])
+            if let [
+                CurvedEdge2d::Circle {
+                    center: bore_center,
+                    radius_mm: bore_radius,
+                },
+            ] = hole.as_slice() =>
+        {
+            let [dx, dy] = std::array::from_fn(|i| bore_center[i] - center[i]);
+            if dx.hypot(dy) > policy.linear_tolerance_mm {
+                return Err(error(
+                    Some(id),
+                    "Rust annular extrusion requires concentric circles",
+                ));
+            }
+            let normal = profile.frame.normal();
+            let start = PlaneFrame {
+                origin: std::array::from_fn(|i| {
+                    profile.frame.origin[i] + normal[i] * sweep.start_offset
+                }),
+                ..profile.frame
+            };
+            let sign = if sweep.reverse { -1. } else { 1. };
+            Solid::rust_annulus_from_sketch(
+                [*bore_radius, *radius_mm],
+                sign * sweep.height.as_f64(),
+                id,
+                start,
+                *center,
+                [inner.clone(), outer.clone()],
+                policy,
+            )
+            .map_err(|cause| error(Some(id), cause))
+        }
+        _ => Err(error(
+            Some(id),
+            "Rust circular extrusion requires one circle or a concentric pair with authored boundary identities",
+        )),
+    }
 }
 
 pub(crate) fn primitive(

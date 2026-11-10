@@ -9,6 +9,8 @@ use multicad_core::{
 
 pub const MAX_SPLINE_POLES: usize = 256;
 pub const MAX_CURVED_PROFILE_EDGES: usize = 64;
+pub const MAX_CABINET_PANEL_EDGES: usize = 128;
+pub const MAX_CABINET_PANEL_HOLES: usize = 32;
 
 // The native exact face builder checks pairs of curves. Keep a finite
 // manufacturing budget independent of the much smaller interactive budget.
@@ -378,8 +380,8 @@ impl CurvedProfile {
                 "Curved profile exceeds the 64-edge/16-hole query budget",
             ),
             ProfileBudget::CabinetPanel => (
-                128,
-                32,
+                MAX_CABINET_PANEL_EDGES,
+                MAX_CABINET_PANEL_HOLES,
                 "Panel profile exceeds the 128-edge/32-hole manufacturing budget",
             ),
             ProfileBudget::DevelopedSheet => (

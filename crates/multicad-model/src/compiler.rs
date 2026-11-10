@@ -1156,6 +1156,7 @@ impl Compiler {
                         context.parameters(),
                         id,
                         self.policy,
+                        backend,
                         |sketch, region| {
                             profiles.get(sketch, region, id, &solids, &topologies, interrupt)
                         },
@@ -1176,6 +1177,7 @@ impl Compiler {
                         id,
                         self.policy,
                         &solids,
+                        backend,
                     )?
                 }
                 (model::LOOSE_TENON_TYPE, model::LOOSE_TENON_SCHEMA) => {
@@ -1193,6 +1195,7 @@ impl Compiler {
                         id,
                         self.policy,
                         &solids,
+                        backend,
                     )?
                 }
                 (model::imports::STEP_BODY_TYPE, 1) => {

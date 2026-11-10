@@ -1,8 +1,8 @@
-//! Native cabinetry: panel solids from stock, and cut records and stack
+//! Cabinetry: panel solids from stock, and cut records and stack
 //! checks measured from the evaluated solids. A panel's final Part solid is
 //! measured in its panel frame, so later features that change the Part are
 //! reflected in its finished size.
-use crate::{Model, ModelError, error};
+use crate::{GeometryBackend, Model, ModelError, error};
 use multicad_core::{
     document::{Document, DocumentError, EntityData, EntityId},
     materials,
@@ -12,8 +12,8 @@ use multicad_core::{
     sketch_regions::RegionIntent,
 };
 use multicad_kernel::{
-    BooleanOperation, CurvedEdge2d, CurvedProfile, GeometryPolicy, PlaneFrame, RigidTransform,
-    Solid,
+    BooleanOperation, CurvedEdge2d, CurvedProfile, GeometryPolicy, MAX_CABINET_PANEL_EDGES,
+    MAX_CABINET_PANEL_HOLES, PlaneFrame, RigidTransform, Solid,
 };
 use std::collections::BTreeMap;
 
@@ -44,6 +44,7 @@ pub(crate) fn build(
     parameters: &EvaluatedParameters,
     id: EntityId,
     policy: GeometryPolicy,
+    backend: GeometryBackend,
     profile: impl FnOnce(EntityId, &RegionIntent) -> Result<(CurvedProfile, Vec<Origin>), ModelError>,
 ) -> Result<(Solid, PlaneFrame), ModelError> {
     let e = |e: DocumentError| error(Some(id), e);
@@ -87,15 +88,26 @@ pub(crate) fn build(
     if thickness <= 0. {
         return Err(error(Some(id), "Panel stock has no thickness"));
     }
-    let n = cross(profile.frame.u, profile.frame.v);
-    let solid = Solid::extrude_panel_profile_vector_named(
-        &profile,
-        n.map(|c| c * thickness),
-        id,
-        &origins,
-        policy,
-    )
-    .map_err(|e| error(Some(id), e))?;
+    let solid = match backend {
+        GeometryBackend::Rust => {
+            let edges = profile.outer.len() + profile.holes.iter().map(Vec::len).sum::<usize>();
+            if edges > MAX_CABINET_PANEL_EDGES || profile.holes.len() > MAX_CABINET_PANEL_HOLES {
+                return Err(error(
+                    Some(id),
+                    "Panel profile exceeds the 128-edge/32-hole manufacturing budget",
+                ));
+            }
+            crate::rust_backend::stock_profile(id, &profile, &origins, thickness, policy)?
+        }
+        GeometryBackend::OpenCascade => Solid::extrude_panel_profile_vector_named(
+            &profile,
+            profile.frame.normal().map(|c| c * thickness),
+            id,
+            &origins,
+            policy,
+        )
+        .map_err(|e| error(Some(id), e))?,
+    };
     Ok((solid, profile.frame))
 }
 
@@ -108,11 +120,18 @@ fn subtract(
     role: &str,
     policy: GeometryPolicy,
     what: &str,
+    backend: GeometryBackend,
 ) -> Result<Solid, ModelError> {
     let batch_circles = prisms.len() > 1 && prisms.iter().all(|p| p.circle.is_some());
     let mut tools = Vec::with_capacity(prisms.len());
     let mut current: Option<Solid> = None;
     for (k, prism) in prisms.iter().enumerate() {
+        if backend == GeometryBackend::Rust && (prism.circle.is_some() || prism.slot.is_some()) {
+            return Err(error(
+                Some(id),
+                "Rust panel cuts currently require rectilinear tools; round drilling and slots need curved tool support",
+            ));
+        }
         let outer: Vec<_> = match (prism.circle, prism.slot) {
             (Some((center, radius_mm)), _) => vec![CurvedEdge2d::Circle { center, radius_mm }],
             (None, Some((a, b, r))) => slot_edges(a, b, r),
@@ -141,29 +160,50 @@ fn subtract(
             outer,
             holes: vec![],
         };
-        let tool =
-            Solid::extrude_curved_profile_vector_named(&profile, prism.sweep, id, &origins, policy)
-                .map_err(|e| error(Some(id), e))?;
+        let tool = match backend {
+            GeometryBackend::Rust => {
+                Solid::rust_extrude_linear_named(&profile, prism.sweep, 0., id, &origins, policy)
+                    .map_err(|e| error(Some(id), e))?
+            }
+            GeometryBackend::OpenCascade => Solid::extrude_curved_profile_vector_named(
+                &profile,
+                prism.sweep,
+                id,
+                &origins,
+                policy,
+            )
+            .map_err(|e| error(Some(id), e))?,
+        };
         tools.push(tool);
     }
     // Circular drilling is bounded by the shared hole budget. Combine at
     // most 128 exact tool solids per native Boolean, preserving each tool's
     // named faces. The profile and removed-volume contracts are unchanged.
-    for chunk in tools.chunks(if batch_circles { 128 } else { 1 }) {
-        let compound;
-        let tool = if chunk.len() == 1 {
-            &chunk[0]
-        } else {
-            compound = Solid::compound_named(&chunk.iter().collect::<Vec<_>>(), id, policy)
-                .map_err(|e| error(Some(id), e))?;
-            &compound
-        };
-        let source = current.as_ref().unwrap_or(base);
-        current = source
-            .boolean(tool, BooleanOperation::Subtract, policy)
-            .map_err(|e| error(Some(id), e))?
-            .map(Some)
-            .ok_or_else(|| error(Some(id), format!("The {what} removed the whole panel")))?;
+    let removed = || error(Some(id), format!("The {what} removed the whole panel"));
+    if backend == GeometryBackend::Rust && !tools.is_empty() {
+        current = Some(
+            base.rust_subtract_orthogonal_tools(&tools, policy)
+                .map_err(|e| error(Some(id), e))?
+                .ok_or_else(removed)?,
+        );
+    } else {
+        for chunk in tools.chunks(if batch_circles { 128 } else { 1 }) {
+            let compound;
+            let tool = if chunk.len() == 1 {
+                &chunk[0]
+            } else {
+                compound = Solid::compound_named(&chunk.iter().collect::<Vec<_>>(), id, policy)
+                    .map_err(|e| error(Some(id), e))?;
+                &compound
+            };
+            let source = current.as_ref().unwrap_or(base);
+            current = Some(
+                source
+                    .boolean(tool, BooleanOperation::Subtract, policy)
+                    .map_err(|e| error(Some(id), e))?
+                    .ok_or_else(removed)?,
+            );
+        }
     }
     let solid = match current {
         Some(solid) => solid,
@@ -273,6 +313,7 @@ pub(crate) fn build_joint_cut(
     id: EntityId,
     policy: GeometryPolicy,
     solids: &BTreeMap<EntityId, Solid>,
+    backend: GeometryBackend,
 ) -> Result<Solid, ModelError> {
     let e = |e: DocumentError| error(Some(id), e);
     let cut = model::read_panel_joint_cut(document, id).map_err(e)?;
@@ -293,6 +334,7 @@ pub(crate) fn build_joint_cut(
         &format!("joint.{}", cut.joint),
         policy,
         "joint",
+        backend,
     )
 }
 /// Cut one machining operation into one target panel.
@@ -302,6 +344,7 @@ pub(crate) fn build_machining_cut(
     id: EntityId,
     policy: GeometryPolicy,
     solids: &BTreeMap<EntityId, Solid>,
+    backend: GeometryBackend,
 ) -> Result<Solid, ModelError> {
     let e = |e: DocumentError| error(Some(id), e);
     let cut = model::read_machining_cut(document, id).map_err(e)?;
@@ -318,6 +361,7 @@ pub(crate) fn build_machining_cut(
         &format!("machining.{}", cut.operation),
         policy,
         op.label(),
+        backend,
     )
 }
 

@@ -5,20 +5,21 @@
 //! the native solids.
 use multicad_core::{
     commands::{Actor, Channel, Prepared, Request, Session},
-    constraint_sketch::{Dimension, source::Source},
+    constraint_sketch::{Curve, CurveKind, Dimension, source::Source},
     document::{Document, Entity, EntityData, EntityId, Mutation},
     materials::*,
     model::{
         self, Back, Band, BodyOutput, CarcassDefinition, CarcassRequest, Construction, GrainAxis,
-        PanelDefinition, PanelEdges, PanelPlane, PanelRequest, PanelRole, PanelSource,
-        ProfileSource, ShelfLayout, Shelves, angle, length,
+        MachiningKind, PanelDefinition, PanelEdges, PanelJointKind, PanelPlane, PanelRequest,
+        PanelRole, PanelSource, ProfileSource, ShelfLayout, Shelves, angle, length,
     },
     parameters::BoundExpression,
     project_file::{self, ProjectFile},
+    references::{self, AnalyticGeometry, Attachment, GeometryIntent, Resolution},
     sketch::Datum,
     sketch_regions,
 };
-use multicad_model::{Compiler, CutRecord, Model};
+use multicad_model::{Compiler, CutRecord, GeometryBackend, Model};
 
 fn actor() -> Actor {
     Actor::local(Channel::Ui)
@@ -1094,4 +1095,207 @@ fn sketch_region_panel_takes_stock_thickness_and_follows_stock_edits() {
     let list = compile(&f.s).cut_list(f.s.document()).unwrap();
     near(record(&list, "Shaped side").cut.thickness_mm, 19.);
     near(record(&list, "Shaped side").volume_mm3, 450. * 700. * 19.);
+}
+
+#[test]
+fn rust_rebuilds_the_bundled_cabinet_panels_finger_joints_and_drawer_grooves() {
+    let project = project_file::read(
+        &mut include_bytes!("../../../examples/cabinet.tcd").as_slice(),
+        Default::default(),
+        &project_file::supported_capabilities(),
+    )
+    .unwrap()
+    .project;
+    let document = &project.document;
+    let panels: Vec<_> = model::panels(document).map(|entity| entity.id).collect();
+    let (finger_cuts, rounded_slots): (Vec<_>, Vec<_>) = model::panel_joint_cuts(document)
+        .partition(|entity| {
+            let cut = model::read_panel_joint_cut(document, entity.id).unwrap();
+            let joint = model::read_panel_joint(document, cut.joint).unwrap();
+            matches!(joint.kind, PanelJointKind::Finger { .. })
+        });
+    let grooves: Vec<_> = model::machining_cuts(document)
+        .filter(|entity| {
+            let cut = model::read_machining_cut(document, entity.id).unwrap();
+            let source = model::read_machining(document, cut.operation).unwrap();
+            matches!(source.kind, MachiningKind::Groove { .. })
+        })
+        .map(|entity| entity.id)
+        .collect();
+    assert_eq!(
+        (panels.len(), finger_cuts.len(), grooves.len()),
+        (24, 16, 8)
+    );
+    let roots: Vec<_> = panels
+        .iter()
+        .copied()
+        .chain(finger_cuts.iter().map(|entity| entity.id))
+        .chain(grooves)
+        .collect();
+    let compiler = Compiler::default();
+    let compile = |backend| {
+        compiler
+            .compile_sources_with_backend(document, 0, &roots, backend, None)
+            .unwrap_or_else(|error| {
+                let name = error
+                    .entity
+                    .and_then(|id| document.get(id))
+                    .map(|e| &e.name);
+                panic!("{backend:?} failed for {name:?}: {error}")
+            })
+    };
+    let rust = compile(GeometryBackend::Rust);
+    let native = compile(GeometryBackend::OpenCascade);
+    for id in roots {
+        let name = &document.get(id).unwrap().name;
+        assert!(rust.solid(id).unwrap().uses_rust_geometry(), "{name}");
+        let a = &rust.snapshot().shapes[&id];
+        let b = &native.snapshot().shapes[&id];
+        assert_eq!(a.solid_count, b.solid_count, "{name}");
+        assert_eq!(a.solid_count, 1, "{name}");
+        assert!(
+            (a.volume_mm3 - b.volume_mm3).abs() <= 1e-7 + b.volume_mm3 * 1e-10,
+            "{name}: {} != {}",
+            a.volume_mm3,
+            b.volume_mm3
+        );
+        for (a, b) in a
+            .bounds
+            .min
+            .into_iter()
+            .chain(a.bounds.max)
+            .zip(b.bounds.min.into_iter().chain(b.bounds.max))
+        {
+            near(a, b);
+        }
+        if panels.contains(&id) {
+            assert_eq!(
+                rust.snapshot().panel_frames[&id],
+                native.snapshot().panel_frames[&id]
+            );
+            for face in b.topology.elements.iter().filter(|e| !e.frames.is_empty()) {
+                for anchor in &face.frames {
+                    let mut intent = GeometryIntent::capture(&b.topology, face.key).unwrap();
+                    intent.attachment = Some(Attachment {
+                        anchor: anchor.origin.clone(),
+                        offset_mm: [0.; 3],
+                        angle_rad: 0.,
+                    });
+                    let Resolution::Resolved {
+                        frame: Some(frame), ..
+                    } = references::resolve(&intent, &a.topology, 0)
+                    else {
+                        panic!("{name} lost authored face attachment {:?}", anchor.origin);
+                    };
+                    for (a, b) in frame
+                        .origin_mm
+                        .into_iter()
+                        .chain(frame.u)
+                        .chain(frame.v)
+                        .zip(
+                            anchor
+                                .frame
+                                .origin_mm
+                                .into_iter()
+                                .chain(anchor.frame.u)
+                                .chain(anchor.frame.v),
+                        )
+                    {
+                        near(a, b);
+                    }
+                }
+            }
+        }
+    }
+    let rust_cuts = rust.cut_list(document).unwrap();
+    let native_cuts = native.cut_list(document).unwrap();
+    assert!(rust_cuts.len() >= 8);
+    assert_eq!(rust_cuts.len(), native_cuts.len());
+    for (a, b) in rust_cuts.iter().zip(native_cuts) {
+        assert_eq!((a.part, a.stock, a.grain), (b.part, b.stock, b.grain));
+        pair(a.cut.finished_mm, b.cut.finished_mm);
+        near(a.cut.thickness_mm, b.cut.thickness_mm);
+    }
+
+    // Select the first rounded-slot cut on a panel without including earlier cuts.
+    let unsupported = rounded_slots
+        .into_iter()
+        .find(|entity| {
+            let source = model::read_panel_joint_cut(document, entity.id).unwrap();
+            panels.contains(&source.input.producer)
+        })
+        .unwrap();
+    let Err(error) = compiler.compile_sources_with_backend(
+        document,
+        0,
+        &[unsupported.id],
+        GeometryBackend::Rust,
+        None,
+    ) else {
+        panic!("rounded slot unexpectedly built");
+    };
+    assert_eq!(error.entity, Some(unsupported.id));
+    assert!(error.message.contains("slot"), "{error}");
+}
+
+#[test]
+fn rust_stock_backed_profile_panel_keeps_its_round_through_hole_and_cut_dimensions() {
+    let mut f = fixture();
+    let (sketch, edits) = Source::create(Datum::Xz, "Drilled panel profile").unwrap();
+    insert(&mut f.s, edits);
+    let mut source = Source::read(f.s.document(), sketch).unwrap().0;
+    source.add_rectangle([0., 0.], [120., 70.]).unwrap();
+    let center = source.add_point([27., 33.]);
+    source.sketch.curves.push(Curve {
+        id: EntityId::new(),
+        construction: false,
+        kind: CurveKind::Circle {
+            center,
+            radius_mm: 6.,
+        },
+    });
+    let region = sketch_regions::extract(&source)
+        .regions
+        .into_iter()
+        .find(|region| region.holes.len() == 1)
+        .unwrap()
+        .intent();
+    let edits = source.replace(f.s.document(), sketch).unwrap();
+    insert(&mut f.s, edits);
+    let panel = PanelRequest::new(
+        "Drilled panel",
+        PanelDefinition {
+            output: BodyOutput {
+                body: EntityId::new(),
+            },
+            source: PanelSource::Profile {
+                stock: f.ply,
+                profile: ProfileSource { sketch, region },
+            },
+            grain: GrainAxis::V,
+            edges: PanelEdges::default(),
+            oversize: None,
+        },
+    );
+    let prepared = model::prepare_panel(&f.s, f.s.revision(), actor(), &panel).unwrap();
+    checked(&mut f.s, prepared.prepared);
+    let rust = Compiler::default()
+        .compile_with_backend(f.s.document(), f.s.revision(), GeometryBackend::Rust, None)
+        .unwrap();
+    assert!(rust.solid(panel.feature).unwrap().uses_rust_geometry());
+    let list = rust.cut_list(f.s.document()).unwrap();
+    let cut = record(&list, "Drilled panel");
+    assert_eq!(cut.stock, f.ply);
+    pair(cut.cut.finished_mm, [70., 120.]);
+    near(cut.cut.thickness_mm, 18.);
+    near(
+        cut.volume_mm3,
+        (120. * 70. - std::f64::consts::PI * 6. * 6.) * 18.,
+    );
+    same_cut_records(&list, &compile(&f.s).cut_list(f.s.document()).unwrap());
+    let topology = &rust.snapshot().shapes[&panel.feature].topology;
+    let round_edges = topology.elements.iter().filter(|e| {
+        matches!(e.geometry, Some(AnalyticGeometry::CircularArc { radius_mm, .. }) if radius_mm == 6.)
+    }).count();
+    assert_eq!(round_edges, 2);
 }

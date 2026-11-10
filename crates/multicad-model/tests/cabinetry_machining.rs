@@ -11,9 +11,10 @@ use multicad_core::{
     model::*,
     parameters::BoundExpression,
     project_file::{self, ProjectFile},
-    references::{AnalyticGeometry, GeometryIntent},
+    references::{self, AnalyticGeometry, Attachment, GeometryIntent, Resolution},
 };
-use multicad_model::{Compiler, Model};
+use multicad_kernel::{GeometryPolicy, Solid};
+use multicad_model::{Compiler, GeometryBackend, Model};
 use std::f64::consts::PI;
 
 fn actor() -> Actor {
@@ -147,6 +148,92 @@ fn machine(s: &mut Session, name: &str, def: MachiningDefinition) -> MachiningPr
     let out = p.clone();
     checked(s, p.model.prepared);
     out
+}
+
+#[test]
+fn rust_machines_a_blind_rectangular_pocket_with_the_bottom_material_intact() {
+    let mut f = fixture();
+    let pocket = machine(
+        &mut f.s,
+        "Rectangular pocket",
+        MachiningDefinition {
+            generated_by: None,
+            suppressed: false,
+            kind: MachiningKind::Pocket {
+                center: [length(100.), length(200.)],
+                size: [length(40.), length(30.)],
+                depth: length(5.),
+            },
+            face: MachiningFace::Top,
+            targets: vec![f.side.body],
+        },
+    );
+    let rust = Compiler::default()
+        .compile_with_backend(f.s.document(), f.s.revision(), GeometryBackend::Rust, None)
+        .unwrap();
+    let feature = pocket.model.outputs[0].feature;
+    let solid = rust.solid(feature).unwrap();
+    assert!(solid.uses_rust_geometry());
+    assert_eq!(solid.solid_count().unwrap(), 1);
+    near(volume(&rust, f.side.body), PANEL - 40. * 30. * 5.);
+    let native = compile(&f.s);
+    near(volume(&rust, f.side.body), volume(&native, f.side.body));
+    let source = &native.snapshot().shapes[&f.side.feature].topology;
+    let cap = source
+        .elements
+        .iter()
+        .find_map(|face| {
+            let anchor = face.frames.iter().find(|f| f.origin.role == "cap.end")?;
+            Some((face, anchor))
+        })
+        .expect("source panel has an authored top face");
+    let mut intent = GeometryIntent::capture(source, cap.0.key).unwrap();
+    intent.attachment = Some(Attachment {
+        anchor: cap.1.origin.clone(),
+        offset_mm: [0.; 3],
+        angle_rad: 0.,
+    });
+    let result = &rust.snapshot().shapes[&feature].topology;
+    let Resolution::Resolved {
+        frame: Some(frame), ..
+    } = references::resolve(&intent, result, f.s.revision())
+    else {
+        panic!("saved top attachment did not survive the pocket");
+    };
+    assert_eq!(frame, cap.1.frame);
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("pocket.step");
+    solid.write_step(&path).unwrap();
+    let exchanged = Solid::read_step(&path, GeometryPolicy::default()).unwrap();
+    let project = ProjectFile::new(f.s.document().clone()).unwrap();
+    let mut bytes = vec![];
+    project_file::write(&project, &mut bytes, Default::default()).unwrap();
+    let reopened = project_file::read(
+        &mut bytes.as_slice(),
+        Default::default(),
+        &project_file::supported_capabilities(),
+    )
+    .unwrap()
+    .project;
+    assert_eq!(&reopened.document, f.s.document());
+    let rebuilt = Compiler::default()
+        .compile_with_backend(&reopened.document, 0, GeometryBackend::Rust, None)
+        .unwrap();
+    for checked in [solid, &exchanged, rebuilt.solid(feature).unwrap()] {
+        assert_eq!(checked.solid_count().unwrap(), 1);
+        near(checked.volume_mm3().unwrap(), PANEL - 40. * 30. * 5.);
+        let floor = checked
+            .faces()
+            .unwrap()
+            .into_iter()
+            .find(|face| {
+                face.plane.is_some_and(|(point, normal)| {
+                    (point[2] - 13.).abs() < 1e-6 && normal[2] > 0.99
+                })
+            })
+            .expect("blind pocket leaves a genuine floor at z = 13 mm");
+        near(floor.area_mm2, 40. * 30.);
+    }
 }
 
 #[test]
