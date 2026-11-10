@@ -424,6 +424,20 @@ impl Writer {
         self.append(|file| axial_stack::encode(file, placement, stack))
     }
 
+    pub fn append_planar_union(
+        &mut self,
+        union: &crate::planar_boolean::Union,
+        origin: Point,
+        u: Point,
+        v: Point,
+    ) -> Result<(), StepError> {
+        if !supports_planar_union(union) {
+            return Err(StepError::Unsupported);
+        }
+        let placement = Placement::new(origin, u, v)?;
+        self.append(|file| planar_union::encode(file, placement, union))
+    }
+
     pub fn append_box(
         &mut self,
         size: [Rational; 3],

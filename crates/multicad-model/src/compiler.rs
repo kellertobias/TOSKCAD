@@ -1536,9 +1536,11 @@ impl Compiler {
                     let analytic = (backend == GeometryBackend::Rust
                         && operation == multicad_kernel::BooleanOperation::Union)
                         .then(|| {
-                            Solid::union_coaxial_cylinders(&operands, id, self.policy).or_else(
-                                || Solid::union_round_rectangular_stack(&operands, id, self.policy),
-                            )
+                            Solid::union_coaxial_cylinders(&operands, id, self.policy)
+                                .or_else(|| {
+                                    Solid::union_round_rectangular_stack(&operands, id, self.policy)
+                                })
+                                .or_else(|| Solid::union_planar_pieces(&operands, id, self.policy))
                         })
                         .flatten();
                     let solid = if let Some(analytic) = analytic {

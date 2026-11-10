@@ -1,0 +1,205 @@
+use super::*;
+
+pub(super) struct Boundary {
+    pub(super) vertices: Vec<Point>,
+    pub(super) faces: Vec<Face>,
+    tolerance: f64,
+    remaining_incidences: usize,
+    budget: usize,
+}
+
+impl Boundary {
+    pub(super) fn new(tolerance: f64) -> Self {
+        Self {
+            vertices: Vec::new(),
+            faces: Vec::new(),
+            tolerance,
+            remaining_incidences: MAX_INCIDENCES,
+            budget: MAX_WORK,
+        }
+    }
+
+    pub(super) fn add(
+        &mut self,
+        polygon: &[Point],
+        normal: Point,
+        source: usize,
+        source_face: usize,
+    ) -> Result<(), Error> {
+        charge(&mut self.remaining_incidences, polygon.len())?;
+        let mut vertices = Vec::with_capacity(polygon.len());
+        for &point in polygon {
+            charge(&mut self.budget, self.vertices.len())?;
+            let mut matches = self.vertices.iter().enumerate().filter_map(|(id, &other)| {
+                let distance = norm(sub(point, other));
+                (distance <= self.tolerance).then_some((id, distance))
+            });
+            let vertex = if let Some((id, distance)) = matches.next() {
+                let magnitude = point.into_iter().map(f64::abs).fold(1., f64::max);
+                let numeric_tolerance = (8. * f64::EPSILON * magnitude).max(self.tolerance * 1e-3);
+                if distance > numeric_tolerance || matches.next().is_some() {
+                    return Err(Error::Unresolved);
+                }
+                id
+            } else {
+                self.vertices.push(point);
+                self.vertices.len() - 1
+            };
+            if vertices.contains(&vertex) {
+                return Err(Error::Unresolved);
+            }
+            vertices.push(vertex);
+        }
+        self.faces.push(Face {
+            vertices,
+            normal,
+            source,
+            source_face,
+        });
+        Ok(())
+    }
+
+    /// Clipping one face may introduce vertices into an adjacent unsplit edge.
+    /// Install each of these once in both loops before testing shell incidence.
+    pub(super) fn split_edges(&mut self, budget: &mut usize) -> Result<(), Error> {
+        let incidences = MAX_INCIDENCES - self.remaining_incidences;
+        charge(budget, incidences.saturating_mul(self.vertices.len()))?;
+        let mut remaining_incidences = MAX_INCIDENCES;
+        for face in &mut self.faces {
+            let mut ring = Vec::new();
+            for (&a, &b) in face
+                .vertices
+                .iter()
+                .zip(face.vertices.iter().cycle().skip(1))
+            {
+                let start = self.vertices[a];
+                let direction = sub(self.vertices[b], start);
+                let length_squared = dot(direction, direction);
+                let margin = self.tolerance / length_squared.sqrt();
+                let mut splits = Vec::new();
+                for (vertex, &point) in self.vertices.iter().enumerate() {
+                    let relative = sub(point, start);
+                    let fraction = dot(relative, direction) / length_squared;
+                    if fraction > margin
+                        && fraction < 1. - margin
+                        && norm(sub(relative, scale(direction, fraction))) <= self.tolerance
+                    {
+                        splits.push((fraction, vertex));
+                    }
+                }
+                splits.sort_unstable_by(|a, b| a.0.total_cmp(&b.0));
+                ring.push(a);
+                ring.extend(splits.into_iter().map(|(_, vertex)| vertex));
+            }
+            charge(&mut remaining_incidences, ring.len())?;
+            face.vertices = ring;
+        }
+        Ok(())
+    }
+
+    pub(super) fn prove(&self) -> Result<Proof, Error> {
+        prove(&self.vertices, &self.faces)
+    }
+}
+
+pub(super) struct Proof {
+    pub(super) volume_mm3: f64,
+    pub(super) solid_count: usize,
+    pub(super) shell_count: usize,
+}
+
+pub(super) fn prove(vertices: &[Point], faces: &[Face]) -> Result<Proof, Error> {
+    let mesh = mesh(vertices, faces, MAX_INCIDENCES).map_err(|_| Error::Limit)?;
+    let proof = manufacturing::certify(&mesh).map_err(|_| Error::Unresolved)?;
+
+    // Count outward shells only. A disconnected inward shell bounds a cavity
+    // and contributes negative volume but does not create an additional part.
+    let mut owner = BTreeMap::new();
+    let mut adjacent = vec![Vec::new(); faces.len()];
+    for (index, face) in faces.iter().enumerate() {
+        for (&a, &b) in face
+            .vertices
+            .iter()
+            .zip(face.vertices.iter().cycle().skip(1))
+        {
+            if let Some(other) = owner.insert([a.min(b), a.max(b)], index) {
+                adjacent[index].push(other);
+                adjacent[other].push(index);
+            }
+        }
+    }
+    let mut visited = vec![false; faces.len()];
+    let mut solid_count = 0;
+    let mut shell_count = 0;
+    for (index, face) in faces.iter().enumerate() {
+        if visited[index] {
+            continue;
+        }
+        shell_count += 1;
+        let origin = vertices[face.vertices[0]];
+        let mut pending = vec![index];
+        let mut six_volume = 0.;
+        visited[index] = true;
+        while let Some(current) = pending.pop() {
+            let ring = &faces[current].vertices;
+            let a = sub(vertices[ring[0]], origin);
+            for edge in ring[1..].windows(2) {
+                let b = sub(vertices[edge[0]], origin);
+                let c = sub(vertices[edge[1]], origin);
+                six_volume += dot(a, cross(b, c));
+            }
+            for &next in &adjacent[current] {
+                if !visited[next] {
+                    visited[next] = true;
+                    pending.push(next);
+                }
+            }
+        }
+        if six_volume > 0. {
+            solid_count += 1;
+        }
+    }
+    Ok(Proof {
+        volume_mm3: proof.signed_volume_mm3,
+        solid_count,
+        shell_count,
+    })
+}
+
+pub(super) fn mesh(
+    vertices: &[Point],
+    faces: &[Face],
+    triangle_limit: usize,
+) -> Result<DisplayMesh, MeshError> {
+    let triangles = faces.iter().map(|f| f.vertices.len()).sum::<usize>();
+    if triangles > triangle_limit {
+        return Err(MeshError::BudgetExceeded);
+    }
+    let mut mesh = DisplayMesh {
+        vertices: vertices.iter().copied().flatten().collect(),
+        indices: Vec::with_capacity(triangles * 3),
+        face_indices: Vec::with_capacity(triangles),
+    };
+    for (ordinal, face) in faces.iter().enumerate() {
+        let origin = vertices[face.vertices[0]];
+        let center = add(
+            origin,
+            scale(
+                face.vertices
+                    .iter()
+                    .fold([0.; 3], |sum, &i| add(sum, sub(vertices[i], origin))),
+                1. / face.vertices.len() as f64,
+            ),
+        );
+        let center_index = mesh.vertices.len() / 3;
+        mesh.vertices.extend(center);
+        for (&a, &b) in face
+            .vertices
+            .iter()
+            .zip(face.vertices.iter().cycle().skip(1))
+        {
+            mesh.triangle([a, b, center_index], ordinal as u32);
+        }
+    }
+    Ok(mesh)
+}

@@ -22,6 +22,7 @@ pub mod orthogonal_boundary;
 pub mod orthogonal_pockets;
 pub mod orthogonal_section;
 pub mod orthogonal_slots;
+pub mod planar_boolean;
 pub mod planar_distance;
 pub mod planar_projection;
 pub mod planar_section;

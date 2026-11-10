@@ -383,7 +383,7 @@ impl Solid {
         })
     }
 
-    fn orthogonal_cells(&self) -> Result<Option<Vec<Box3>>, GeometryError> {
+    pub(super) fn orthogonal_cells(&self) -> Result<Option<Vec<Box3>>, GeometryError> {
         if let Some((body, frame)) = self.orthogonal_body()
             && cardinal(frame)
             && !body.has_curved_cuts()

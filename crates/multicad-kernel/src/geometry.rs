@@ -19,6 +19,7 @@ mod helical_body;
 mod linear_body;
 mod normal_sweep_body;
 mod orthogonal_body;
+mod planar_boolean_body;
 mod revolution_body;
 mod rounded_slot_body;
 mod rust_compound;
@@ -33,6 +34,7 @@ use normal_sweep_body::NormalSweepBody;
 pub use normal_sweep_body::SweepOpening;
 use orthogonal_body::OrthogonalBody;
 pub use orthogonal_body::slots::RoundedSlotTool;
+use planar_boolean_body::PlanarBooleanBody;
 use revolution_body::RevolutionBody;
 use rounded_slot_body::RoundedSlotBody;
 use rust_compound::RustCompound;
@@ -550,6 +552,7 @@ enum SolidBody {
     AxialStack(Rc<AxialStackBody>, PlaneFrame),
     RustCompound(Rc<RustCompound>),
     Orthogonal(Rc<OrthogonalBody>, PlaneFrame),
+    PlanarBoolean(Rc<PlanarBooleanBody>, PlaneFrame),
 }
 
 pub(crate) struct CylinderSketch {
@@ -904,6 +907,9 @@ impl Solid {
             SolidBody::RoundedSlot(body, frame) => SolidBody::RoundedSlot(Rc::clone(body), *frame),
             SolidBody::NormalSweep(body, frame) => SolidBody::NormalSweep(Rc::clone(body), *frame),
             SolidBody::AxialStack(body, frame) => SolidBody::AxialStack(Rc::clone(body), *frame),
+            SolidBody::PlanarBoolean(body, frame) => {
+                SolidBody::PlanarBoolean(Rc::clone(body), *frame)
+            }
             SolidBody::RustCompound(compound) => SolidBody::RustCompound(Rc::clone(compound)),
             SolidBody::Orthogonal(body, frame) => SolidBody::Orthogonal(Rc::clone(body), *frame),
             SolidBody::Occt(shape) => {
@@ -1169,6 +1175,9 @@ impl Solid {
                 SolidBody::AxialStack(body, frame) => {
                     SolidBody::AxialStack(Rc::clone(body), transform.frame(*frame))
                 }
+                SolidBody::PlanarBoolean(body, frame) => {
+                    SolidBody::PlanarBoolean(Rc::clone(body), transform.frame(*frame))
+                }
                 SolidBody::RustCompound(compound) => {
                     SolidBody::RustCompound(compound.transformed(transform, self.policy)?)
                 }
@@ -1199,6 +1208,9 @@ impl Solid {
         Ok(result)
     }
     pub fn volume_mm3(&self) -> Result<f64, GeometryError> {
+        if let Some((body, _)) = self.planar_boolean_body() {
+            return Ok(body.volume_mm3());
+        }
         if let Some((body, _)) = self.axial_stack_body() {
             return Ok(body.volume_mm3());
         }
@@ -1247,6 +1259,9 @@ impl Solid {
         ffi::volume(self.occt()?).map_err(|e| native("volume", e))
     }
     pub fn solid_count(&self) -> Result<u32, GeometryError> {
+        if let Some((body, _)) = self.planar_boolean_body() {
+            return Ok(body.solid_count());
+        }
         if let Some((body, _)) = self.orthogonal_body() {
             return Ok(body.geometry.solid_count());
         }
@@ -1259,6 +1274,9 @@ impl Solid {
         ffi::solid_count(self.occt()?).map_err(|e| native("solid count", e))
     }
     pub fn bounds(&self) -> Result<Bounds, GeometryError> {
+        if let Some((body, frame)) = self.planar_boolean_body() {
+            return Ok(body.bounds(frame));
+        }
         if let Some((body, frame)) = self.axial_stack_body() {
             return Ok(body.bounds(frame));
         }
@@ -1371,6 +1389,9 @@ impl Solid {
         crate::planar_contours::extract(self, face, frame, self.policy)
     }
     pub fn faces(&self) -> Result<Vec<Face>, GeometryError> {
+        if let Some((body, frame)) = self.planar_boolean_body() {
+            return Ok(body.faces(frame));
+        }
         if let Some((body, frame)) = self.axial_stack_body() {
             return Ok(body.faces(frame));
         }
@@ -1518,6 +1539,7 @@ impl Solid {
             SolidBody::RoundedSlot(body, frame) => body.mesh(*frame, rust_options),
             SolidBody::NormalSweep(body, frame) => body.mesh(*frame, rust_options),
             SolidBody::AxialStack(body, frame) => body.mesh(*frame, rust_options),
+            SolidBody::PlanarBoolean(body, frame) => body.mesh(*frame, rust_options),
             SolidBody::RustCompound(compound) => compound.mesh(options, usage),
             SolidBody::Orthogonal(body, frame) => body.mesh(*frame, rust_options, usage),
             SolidBody::Occt(_) => unreachable!("Rust-only tessellation"),
@@ -1826,6 +1848,7 @@ impl Solid {
             SolidBody::RoundedSlot(body, _) => body.feature,
             SolidBody::NormalSweep(body, _) => body.feature,
             SolidBody::AxialStack(body, _) => body.feature,
+            SolidBody::PlanarBoolean(body, _) => body.feature,
             SolidBody::RustCompound(compound) => compound.feature,
             SolidBody::Orthogonal(body, _) => body.feature,
             SolidBody::Occt(_) => return None,
@@ -1846,6 +1869,9 @@ impl Solid {
             SolidBody::Prism(prism, _) => prism.rounded_end().is_none(),
             SolidBody::RustCompound(compound) => compound.members().all(Self::supports_step_export),
             SolidBody::Helical(..) | SolidBody::CosmeticFastener(..) => false,
+            SolidBody::PlanarBoolean(body, _) => {
+                multicad_rust_kernel::step::supports_planar_union(&body.geometry)
+            }
             SolidBody::Revolved(body, _) => {
                 multicad_rust_kernel::step::supports_cylindrical_revolution(&body.geometry)
             }
@@ -1943,6 +1969,9 @@ impl Solid {
             SolidBody::RoundedSlot(body, frame) => body.append_step(writer, *frame),
             SolidBody::NormalSweep(body, frame) => body.append_step(writer, *frame),
             SolidBody::AxialStack(body, frame) => body.append_step(writer, *frame),
+            SolidBody::PlanarBoolean(body, frame) => {
+                writer.append_planar_union(&body.geometry, frame.origin, frame.u, frame.v)
+            }
             SolidBody::Revolved(body, frame) => {
                 if let Some((base, radius, height, bore)) = body.circular_sweep(*frame) {
                     writer.append_placed_circular_sweep(
