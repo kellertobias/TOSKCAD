@@ -25,7 +25,7 @@ impl crate::Compiler {
             document,
             revision,
             sketch,
-            GeometryBackend::OpenCascade,
+            GeometryBackend::default(),
             interrupt,
         )
     }

@@ -21,6 +21,12 @@ fn actor() -> Actor {
 fn near(a: f64, b: f64) {
     assert!((a - b).abs() < 1e-5, "{a} != {b}");
 }
+fn region_queries(backend: GeometryBackend) -> NativeRegionQueries {
+    match backend {
+        GeometryBackend::Rust => NativeRegionQueries::analytic(Default::default()).unwrap(),
+        GeometryBackend::OpenCascade => NativeRegionQueries::default(),
+    }
+}
 fn compile(s: &Session) -> Model {
     compile_on(s, GeometryBackend::default())
 }
@@ -166,11 +172,7 @@ impl Fixture {
     fn regions_on(&self, backend: GeometryBackend) -> Extraction {
         let compiled = compile_on(&self.session, backend);
         let report = &compiled.snapshot().references;
-        let queries = if backend == GeometryBackend::Rust {
-            NativeRegionQueries::analytic(Default::default()).unwrap()
-        } else {
-            NativeRegionQueries::default()
-        };
+        let queries = region_queries(backend);
         assert!(
             report.sketch_supports[&self.sketch].is_ok(),
             "{:?}",
@@ -581,7 +583,7 @@ fn circular_face_holes_are_excluded_even_when_the_diagonal_crosses_them() {
         .unwrap();
         let local = semantic.frame.coordinates([center[0], center[1], 10.]);
         assert!(regions.regions.iter().all(|r| {
-            !r.contains_with_queries(local, &NativeRegionQueries::default())
+            !r.contains_with_queries(local, &region_queries(GeometryBackend::default()))
                 .unwrap()
         }));
         let ids = f.extrude(
@@ -716,7 +718,7 @@ fn changed_or_missing_diagonal_recomputes_and_never_retargets_a_missing_region()
     )
     .unwrap();
     let remaining = repair
-        .regions_with_queries(&NativeRegionQueries::default())
+        .regions_with_queries(&region_queries(GeometryBackend::default()))
         .unwrap();
     assert_eq!(remaining.regions.len(), 1);
     near(remaining.regions[0].area_mm2, 400.);
