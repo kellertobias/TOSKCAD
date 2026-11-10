@@ -270,6 +270,32 @@ fn straight_prism(
     policy: GeometryPolicy,
 ) -> Result<Solid, ModelError> {
     let fail = |message: String| error(Some(id), message);
+    let mut frame = profile.frame;
+    let normal = frame.normal();
+    frame.origin = std::array::from_fn(|i| frame.origin[i] + normal[i] * sweep.start_offset);
+    let straight = || {
+        profile
+            .holes
+            .iter()
+            .flatten()
+            .all(|edge| matches!(edge, CurvedEdge2d::Line { .. }))
+    };
+    let linear = || {
+        // Derived sketch coordinates can exhaust rational intermediate
+        // products even when their planar geometry is well-conditioned.
+        let displacement = sweep.height.as_f64() * if sweep.reverse { -1. } else { 1. };
+        let mut profile = profile.clone();
+        profile.frame = frame;
+        Solid::rust_extrude_linear_named(
+            &profile,
+            normal.map(|value| value * displacement),
+            0.,
+            id,
+            origins,
+            policy,
+        )
+        .map_err(|cause| error(Some(id), cause))
+    };
     let mut rings = Vec::with_capacity(1 + profile.holes.len());
     let mut circles = vec![];
     let mut circle_origins = vec![];
@@ -310,8 +336,11 @@ fn straight_prism(
                 coordinate(a[1]).map_err(fail)?,
             ]);
         }
-        let area = signed_area(&points)
-            .map_err(|e| fail(format!("Rust polygon winding failed: {e:?}")))?;
+        let area = match signed_area(&points) {
+            Ok(area) => area,
+            Err(PolygonError::Arithmetic(ExactError::OutOfRange)) if straight() => return linear(),
+            Err(cause) => return Err(fail(format!("Rust polygon winding failed: {cause:?}"))),
+        };
         let reverse = (area.ratio().0 < 0) != (index > 0);
         if reverse {
             // Keep the first vertex and reverse the edges that start there.
@@ -331,28 +360,9 @@ fn straight_prism(
     }
     reversed.resize(origins.len(), false);
     side_origins.extend(circle_origins);
-    let mut frame = profile.frame;
-    let normal = frame.normal();
-    frame.origin = std::array::from_fn(|i| frame.origin[i] + normal[i] * sweep.start_offset);
-    let straight = circles.is_empty();
     let polygon = match PolygonPrism::with_circular_holes(rings, circles, sweep.height) {
         Ok(polygon) => polygon,
-        Err(PolygonError::Arithmetic(ExactError::OutOfRange)) if straight => {
-            // Derived sketch coordinates can exhaust rational intermediate
-            // products even when their planar geometry is well-conditioned.
-            let displacement = sweep.height.as_f64() * if sweep.reverse { -1. } else { 1. };
-            let mut profile = profile.clone();
-            profile.frame = frame;
-            return Solid::rust_extrude_linear_named(
-                &profile,
-                normal.map(|value| value * displacement),
-                0.,
-                id,
-                origins,
-                policy,
-            )
-            .map_err(|cause| error(Some(id), cause));
-        }
+        Err(PolygonError::Arithmetic(ExactError::OutOfRange)) if straight() => return linear(),
         Err(cause) => return Err(fail(format!("Rust polygon extrusion failed: {cause:?}"))),
     };
     Solid::from_polygon_prism_sweep(

@@ -136,11 +136,16 @@ fn saved_toolcase_floor_profiles_rebuild_and_round_trip_with_analytic_quarter_ar
 }
 
 #[test]
-fn saved_toolcase_ribs_rebuild_with_bounded_straight_sweeps() {
+fn saved_toolcase_ribs_and_nut_pockets_rebuild_with_bounded_straight_sweeps() {
     let document = toolcase();
     let features = document
         .entities()
-        .filter(|entity| entity.name == "Small drawer sliding rib extrusion")
+        .filter(|entity| {
+            matches!(
+                entity.name.as_str(),
+                "Small drawer sliding rib extrusion" | "M4 captive nut pocket · 7.4 AF extrusion"
+            )
+        })
         .map(|entity| entity.id)
         .collect::<Vec<_>>();
     assert!(!features.is_empty());
