@@ -1,4 +1,4 @@
-//! Exact orthographic profiles and bounded previews for an isolated round cylinder.
+//! Exact orthographic profiles and bounded previews for isolated round solids.
 
 use std::f64::consts::{FRAC_PI_2, PI, TAU};
 
@@ -73,6 +73,28 @@ pub fn project(
     hidden_lines: bool,
     detail: Option<Detail>,
 ) -> Result<Vec<Edge>, Error> {
+    project_circular(cylinder, None, hidden_lines, detail)
+}
+
+/// Orthographic edges for a cylindrical annulus with a coaxial through bore.
+pub fn project_annulus(
+    outer: Cylinder,
+    inner_radius: f64,
+    hidden_lines: bool,
+    detail: Option<Detail>,
+) -> Result<Vec<Edge>, Error> {
+    if !(1e-7..outer.radius).contains(&inner_radius) {
+        return Err(Error::Invalid);
+    }
+    project_circular(outer, Some(inner_radius), hidden_lines, detail)
+}
+
+fn project_circular(
+    cylinder: Cylinder,
+    bore: Option<f64>,
+    hidden_lines: bool,
+    detail: Option<Detail>,
+) -> Result<Vec<Edge>, Error> {
     let Cylinder {
         base,
         axis: [x, y, depth],
@@ -96,7 +118,7 @@ pub fn project(
     } else {
         (base, top)
     };
-    let mut edges = Vec::with_capacity(5);
+    let mut edges = Vec::with_capacity(if bore.is_some() { 11 } else { 5 });
     let mut add = |curve: Curve, hidden: bool| {
         if !hidden || hidden_lines {
             match (curve, detail) {
@@ -128,7 +150,19 @@ pub fn project(
             trim: [0., TAU],
         };
         add(Curve::Ellipse(rim), false);
-        add(Curve::Ellipse(Ellipse { center: far, ..rim }), true);
+        if let Some(inner) = bore {
+            // Both caps project to the same two circles along the axis.
+            add(
+                Curve::Ellipse(Ellipse {
+                    major: inner,
+                    minor: inner,
+                    ..rim
+                }),
+                false,
+            );
+        } else {
+            add(Curve::Ellipse(Ellipse { center: far, ..rim }), true);
+        }
         return Ok(edges);
     }
     let sign = if depth >= 0. { 1. } else { -1. };
@@ -170,6 +204,49 @@ pub fn project(
                 }),
                 hidden,
             );
+        }
+    }
+    if let Some(inner) = bore {
+        // A ray toward the eye from either concave tangent generator enters
+        // the material immediately. In a side view the bore cap rims also
+        // collapse onto subsegments of the already visible outer diameters.
+        for at in [-inner, inner] {
+            let a = shift(base, u, at);
+            let b = shift(top, u, at);
+            if a != b {
+                add(Curve::Line([a, b]), true);
+            }
+        }
+        if depth.abs() > ANGULAR_ROUNDOFF {
+            let rim = Ellipse {
+                center: near,
+                u,
+                v,
+                major: inner,
+                minor: inner * depth.abs().min(1.),
+                trim: [0., TAU],
+            };
+            add(Curve::Ellipse(rim), false);
+            let rim = Ellipse { center: far, ..rim };
+            // At the near cap a ray from far-rim angle t has its radial
+            // v component shifted by -height * projected / |depth|.
+            // The entire ray is in the bore exactly when that endpoint is
+            // in the inner disk, by convexity. Solving the disk inequality
+            // gives sin(t) >= the ratio below.
+            let ratio = height * projected / (2. * inner * depth.abs());
+            if ratio < 1. {
+                let start = ratio.asin();
+                let end = PI - start;
+                for (trim, hidden) in [
+                    ([0., start], true),
+                    ([start, end], false),
+                    ([end, TAU], true),
+                ] {
+                    add(Curve::Ellipse(Ellipse { trim, ..rim }), hidden);
+                }
+            } else {
+                add(Curve::Ellipse(rim), true);
+            }
         }
     }
     Ok(edges)
