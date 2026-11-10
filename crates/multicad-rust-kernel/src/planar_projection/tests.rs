@@ -270,7 +270,7 @@ fn open_face_crossing_cannot_publish_an_unbounded_hidden_interval() {
         point: [0., 0., 2.],
         normal: [0., 0., 1.],
         boundary: vec![[[1., -1.], [1., 1.]]],
-        circles: Vec::new(),
+        profiles: Vec::new(),
         bounds: Bounds::point([1., 1., 2.]).union(Bounds::point([1., -1., 2.])),
     };
     let line = Line::new([[0., 0., 0.], [2., 0., 0.]], 1e-7, [2, 3]).unwrap();

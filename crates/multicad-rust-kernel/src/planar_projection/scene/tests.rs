@@ -648,3 +648,274 @@ fn cavity_openings_must_fit_the_selected_face_and_leave_a_floor() {
         Err(ProjectionError::Invalid)
     );
 }
+
+fn slot_opening() -> StadiumOpening {
+    StadiumOpening {
+        body: 0,
+        face: 5,
+        centers: [[-2., 0.], [2., 0.]],
+        radius: 1.,
+        floor_depth: 2.,
+    }
+}
+
+#[test]
+fn stadium_mouth_splits_lines_at_straight_sides_and_semicircular_caps() {
+    let stock = rect([-5., -5., 5., 5.], 0., 5.);
+    let opening = slot_opening();
+    let lines = [
+        supplied_line(10, 3., 0.),
+        supplied_line(11, 3., 0.6),
+        supplied_line(12, 2., 1.),
+        supplied_line(13, 1., 0.),
+        supplied_line(14, 3., 1.5),
+        supplied_line(15, 1., 1.),
+        LineCandidate {
+            source: 16,
+            points: [[0., -4., 3.], [0., 4., 3.]],
+        },
+    ];
+    let (straight, rounds, curves) = project_scene_with_candidates(
+        &[],
+        &[],
+        SceneExtras {
+            blocker_bodies: &[stock],
+            lines: &lines,
+            stadium_openings: &[opening],
+            ..SceneExtras::default()
+        },
+        options(),
+    )
+    .unwrap();
+    assert!(straight.is_empty() && rounds.is_empty());
+    for (source, extent) in [(10, 3.), (11, 2.8), (12, 2.), (15, 2.)] {
+        let visible = supplied_lines(&curves, source, false);
+        assert_eq!(visible.len(), 1);
+        close(visible[0][0], -extent);
+        close(visible[0][1], extent);
+    }
+    for source in [13, 14] {
+        assert!(supplied_lines(&curves, source, false).is_empty());
+        assert_eq!(supplied_lines(&curves, source, true), [[-4., 4.]]);
+    }
+    let perpendicular = curves
+        .iter()
+        .filter(|segment| segment.source == 16 && !segment.edge.hidden)
+        .collect::<Vec<_>>();
+    assert_eq!(perpendicular.len(), 1);
+    assert_eq!(
+        perpendicular[0].edge.curve,
+        Curve::Line([[0., -1.], [0., 1.]])
+    );
+}
+
+#[test]
+fn stadium_profile_clips_rims_at_side_lines_and_cap_conics() {
+    let stock = rect([-5., -5., 5., 5.], 0., 5.);
+    let opening = slot_opening();
+    let rims = [
+        supplied_rim(20, [0.; 2], 1.5, 3.),
+        supplied_rim(21, [3., 0.], 1., 3.),
+        supplied_rim(22, [0.; 2], 0.5, 1.),
+        RimCandidate {
+            trim: [0., FRAC_PI_2],
+            ..supplied_rim(23, [2., 0.], 1., 2.)
+        },
+        RimCandidate {
+            trim: [3. * FRAC_PI_2, TAU],
+            ..supplied_rim(23, [2., 0.], 1., 2.)
+        },
+    ];
+    let (_, _, curves) = project_scene_with_candidates(
+        &[],
+        &[],
+        SceneExtras {
+            blocker_bodies: &[stock],
+            rims: &rims,
+            stadium_openings: &[opening],
+            ..SceneExtras::default()
+        },
+        options(),
+    )
+    .unwrap();
+    let angle = (2_f64 / 3.).asin();
+    intervals(
+        &circles(&curves, 20, [0.; 2]),
+        &[
+            (false, [0., angle]),
+            (true, [angle, PI - angle]),
+            (false, [PI - angle, PI + angle]),
+            (true, [PI + angle, TAU - angle]),
+            (false, [TAU - angle, TAU]),
+        ],
+    );
+    intervals(
+        &circles(&curves, 21, [3., 0.]),
+        &[
+            (true, [0., TAU / 3.]),
+            (false, [TAU / 3., 2. * TAU / 3.]),
+            (true, [2. * TAU / 3., TAU]),
+        ],
+    );
+    intervals(&circles(&curves, 22, [0.; 2]), &[(true, [0., TAU])]);
+    intervals(
+        &circles(&curves, 23, [2., 0.]),
+        &[(false, [0., FRAC_PI_2]), (false, [3. * FRAC_PI_2, TAU])],
+    );
+}
+
+#[test]
+fn rotated_stadium_and_circle_clearance_is_proved_against_every_face_boundary() {
+    let stock = rect([-8., -8., 8., 8.], 0., 5.);
+    let circle = FaceOpening {
+        body: 0,
+        face: 5,
+        center: [5., 0.],
+        radius: 0.5,
+        floor_depth: 2.,
+    };
+    let slot = StadiumOpening {
+        centers: [[-1.2, -1.6], [1.2, 1.6]],
+        ..slot_opening()
+    };
+    let line = LineCandidate {
+        source: 29,
+        points: [[-7., 0., 3.], [7., 0., 3.]],
+    };
+    let scene = |slots: &[StadiumOpening]| {
+        project_scene_with_candidates(
+            std::slice::from_ref(&stock),
+            &[],
+            SceneExtras {
+                openings: &[circle],
+                stadium_openings: slots,
+                lines: &[line],
+                ..SceneExtras::default()
+            },
+            options(),
+        )
+    };
+    let (_, _, curves) = scene(&[slot]).unwrap();
+    let visible = supplied_lines(&curves, 29, false);
+    assert_eq!(visible.len(), 2);
+    for (a, b) in visible.into_iter().flatten().zip([-1.25, 1.25, 4.5, 5.5]) {
+        close(a, b);
+    }
+    for invalid in [
+        StadiumOpening {
+            face: usize::MAX,
+            ..slot
+        },
+        StadiumOpening {
+            centers: [[0.; 2]; 2],
+            ..slot
+        },
+        StadiumOpening {
+            centers: [[2., 0.], [6., 0.]],
+            ..slot
+        },
+        StadiumOpening {
+            centers: [[-6., 6.], [-6., 7.5]],
+            ..slot
+        },
+    ] {
+        assert_eq!(scene(&[invalid]), Err(ProjectionError::Invalid));
+    }
+    let planar_hole = prism(
+        &[
+            &[[-8., -8.], [8., -8.], [8., 8.], [-8., 8.]],
+            &[[-1., -1.], [-1., 1.], [1., 1.], [1., -1.]],
+        ],
+        0.,
+        5.,
+    );
+    let opening = StadiumOpening {
+        face: 9,
+        centers: [[-4., 0.], [4., 0.]],
+        ..slot_opening()
+    };
+    assert_eq!(
+        project_scene_with_candidates(
+            &[planar_hole],
+            &[],
+            SceneExtras {
+                stadium_openings: &[opening],
+                ..SceneExtras::default()
+            },
+            options(),
+        ),
+        Err(ProjectionError::Invalid)
+    );
+}
+
+#[test]
+fn only_a_published_nearer_end_on_solid_claims_a_coincident_supplied_rim() {
+    let center = [10., -3.];
+    let radius = 2_f64;
+    let rim = supplied_rim(40, center, radius, 1.);
+    let pin = |origin: Point, axis: Point, bore| {
+        RoundOccluder::new(origin, axis, radius, 1., bore).unwrap()
+    };
+    let ahead = pin([10., -3., 2.], [0., 0., 1.], None);
+    let reversed = pin([10., -3., 3.], [0., 0., -1.], None);
+    let scene = |rims: &[RimCandidate],
+                 rounds: &[RoundOccluder],
+                 helpers: &[RoundOccluder],
+                 hidden_lines| {
+        project_scene_with_candidates(
+            &[],
+            rounds,
+            SceneExtras {
+                rims,
+                blocker_rounds: helpers,
+                ..SceneExtras::default()
+            },
+            Options {
+                hidden_lines,
+                ..options()
+            },
+        )
+        .unwrap()
+    };
+    for cap in [ahead, reversed] {
+        let (_, published, supplied) = scene(&[rim], &[cap], &[], false);
+        assert_eq!(published.len(), 1);
+        assert!(supplied.is_empty());
+        let (_, _, hidden) = scene(&[rim], &[cap], &[], true);
+        intervals(&circles(&hidden, 40, center), &[(true, [0., TAU])]);
+    }
+    let rounded = RimCandidate {
+        center: [10_f64.next_up(), -3.],
+        radius: radius.next_up(),
+        ..rim
+    };
+    assert!(scene(&[rounded], &[ahead], &[], false).2.is_empty());
+
+    let in_plane = pin([10., -3., 0.], [0., 0., 1.], None);
+    let within_tolerance = pin([10., -3., options().tolerance / 2.], [0., 0., 1.], None);
+    let annulus = pin([10., -3., 2.], [0., 0., 1.], Some(1.));
+    for foreground in [in_plane, within_tolerance, annulus] {
+        let (_, _, supplied) = scene(&[rim], &[foreground], &[], false);
+        intervals(&circles(&supplied, 40, center), &[(false, [0., TAU])]);
+    }
+    let (_, generated, supplied) = scene(&[rim], &[], &[ahead], false);
+    assert!(generated.is_empty());
+    intervals(&circles(&supplied, 40, center), &[(false, [0., TAU])]);
+
+    let shifted = RimCandidate {
+        center: [10.001, -3.],
+        ..rim
+    };
+    let (_, _, supplied) = scene(&[shifted], &[ahead], &[], false);
+    let cap_angle = (-0.001 / (2. * radius)).acos();
+    intervals(
+        &circles(&supplied, 40, shifted.center),
+        &[(false, [0., cap_angle]), (false, [TAU - cap_angle, TAU])],
+    );
+    let larger = RimCandidate {
+        radius: radius + 1e-5,
+        ..rim
+    };
+    let (_, _, supplied) = scene(&[larger], &[ahead], &[], false);
+    intervals(&circles(&supplied, 40, center), &[(false, [0., TAU])]);
+}

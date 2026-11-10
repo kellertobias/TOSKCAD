@@ -1,5 +1,6 @@
 use super::*;
 use crate::curved_projection::Ellipse;
+use crate::stadium::{Stadium, segments_distance};
 use std::f64::consts::TAU;
 
 /// Exact circular drawing edge at a constant view depth.
@@ -42,6 +43,18 @@ pub struct FaceOpening {
     pub floor_depth: f64,
 }
 
+/// A certified blind rounded-slot cavity aligned with the viewing direction.
+#[derive(Clone, Copy, Debug)]
+pub struct StadiumOpening {
+    /// Index in the drawing bodies followed by the blocker-only bodies.
+    pub body: usize,
+    /// Index of the outward planar face at the cavity mouth.
+    pub face: usize,
+    pub centers: [Point2; 2],
+    pub radius: f64,
+    pub floor_depth: f64,
+}
+
 /// Extra geometry for occlusion or explicit edge publication.
 #[derive(Default)]
 pub struct SceneExtras<'a> {
@@ -51,6 +64,7 @@ pub struct SceneExtras<'a> {
     pub blocker_bodies: &'a [Body],
     pub blocker_rounds: &'a [RoundOccluder],
     pub openings: &'a [FaceOpening],
+    pub stadium_openings: &'a [StadiumOpening],
 }
 
 fn bounded(values: impl IntoIterator<Item = f64>) -> bool {
@@ -123,10 +137,11 @@ pub(super) fn apply_openings(
     planes: &mut Vec<TrimmedPlane>,
     work: &mut Work,
 ) -> Result<(), ProjectionError> {
-    if extras.openings.is_empty() {
+    let count = extras.openings.len() + extras.stadium_openings.len();
+    if count == 0 {
         return Ok(());
     }
-    work.charge(extras.openings.len())?;
+    work.charge(count)?;
     let mut offset = 1;
     let stocks: Vec<_> = bodies
         .iter()
@@ -137,88 +152,80 @@ pub(super) fn apply_openings(
             entry
         })
         .collect();
-    let mut floors = Vec::with_capacity(extras.openings.len());
-    for opening in extras.openings {
-        let &(stock, offset) = stocks.get(opening.body).ok_or(ProjectionError::Invalid)?;
+    let circles = extras.openings.iter().map(|opening| {
+        Ok((
+            opening.body,
+            opening.face,
+            opening.floor_depth,
+            ProfileTrim::Circle {
+                center: opening.center,
+                radius: opening.radius,
+            },
+        ))
+    });
+    let stadiums = extras.stadium_openings.iter().map(|opening| {
+        let profile =
+            Stadium::new(opening.centers, opening.radius).map_err(|_| ProjectionError::Invalid)?;
+        Ok((
+            opening.body,
+            opening.face,
+            opening.floor_depth,
+            ProfileTrim::Stadium(profile),
+        ))
+    });
+    let mut floors = Vec::with_capacity(count);
+    for opening in circles.chain(stadiums) {
+        let (body, face_index, depth, profile) = opening?;
+        let centers = profile.centers();
+        let r = profile.radius();
+        let &(stock, offset) = stocks.get(body).ok_or(ProjectionError::Invalid)?;
         let face = stock
             .faces
-            .get(opening.face)
+            .get(face_index)
             .ok_or(ProjectionError::Invalid)?;
         if face.normal[2] <= 0.
             || face.normal[0].hypot(face.normal[1]) > 32. * f64::EPSILON
-            || !bounded(opening.center.into_iter().chain([opening.floor_depth]))
-            || !radius(opening.radius)
-            || opening.floor_depth >= face.point[2] - work.tolerance
+            || !bounded(centers.into_iter().flatten().chain([depth]))
+            || !radius(r)
+            || depth >= face.point[2] - work.tolerance
         {
             return Err(ProjectionError::Invalid);
         }
-        let id = offset + opening.face;
+        let id = offset + face_index;
         let index = planes
             .binary_search_by_key(&id, |plane| plane.id)
             .map_err(|_| ProjectionError::Invalid)?;
         let plane = &mut planes[index];
-        work.charge(plane.boundary.len() + plane.circles.len() + stock.edges.len())?;
+        work.charge(plane.boundary.len() + plane.profiles.len() + stock.edges.len())?;
         let stock_back = stock
             .edges
             .iter()
             .flatten()
             .map(|point| point[2])
             .fold(f64::INFINITY, f64::min);
-        if opening.floor_depth <= stock_back + work.tolerance
-            || !plane.contains(opening.center, work.tolerance)
-            || plane.boundary.iter().any(|&edge| {
-                segment_distance(opening.center, edge) <= opening.radius + work.tolerance
-            })
-            || plane.circles.iter().any(|circle| {
-                let [x, y] = sub(circle.center, opening.center);
-                x.hypot(y) <= circle.radius + opening.radius + work.tolerance
+        if depth <= stock_back + work.tolerance
+            || !plane.contains(centers[0], work.tolerance)
+            || plane
+                .boundary
+                .iter()
+                .any(|&edge| segments_distance(centers, edge) <= r + work.tolerance)
+            || plane.profiles.iter().any(|&other| {
+                segments_distance(centers, other.centers()) <= other.radius() + r + work.tolerance
             })
         {
             return Err(ProjectionError::Invalid);
         }
-        let circle = CircleTrim {
-            center: opening.center,
-            radius: opening.radius,
-        };
-        plane.circles.push(circle);
-        let [u, v] = opening.center;
-        let depth = opening.floor_depth;
-        let r = opening.radius;
+        plane.profiles.push(profile);
+        let [u, v] = centers[0];
         floors.push(TrimmedPlane {
             id: 0,
             point: [u, v, depth],
             normal: [0., 0., 1.],
             boundary: Vec::new(),
-            circles: vec![circle],
-            bounds: Bounds {
-                min: [u - r, v - r, depth],
-                max: [u + r, v + r, depth],
-            },
+            profiles: vec![profile],
+            bounds: profile.bounds(depth),
         });
     }
     planes.extend(floors);
     Ok(())
-}
-
-fn segment_distance(point: Point2, [a, b]: [Point2; 2]) -> f64 {
-    let axis = sub(b, a);
-    let offset = sub(point, a);
-    let length = dot(axis, axis);
-    let t = if length == 0. {
-        0.
-    } else {
-        (dot(offset, axis) / length).clamp(0., 1.)
-    };
-    (-t).mul_add(axis[0], offset[0])
-        .hypot((-t).mul_add(axis[1], offset[1]))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn clearance_to_a_degenerate_boundary_uses_its_point() {
-        assert_eq!(segment_distance([2., 3.], [[1., 3.]; 2]), 1.);
-    }
 }

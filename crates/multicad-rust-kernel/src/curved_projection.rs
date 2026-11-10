@@ -118,7 +118,7 @@ pub enum Error {
     Limit,
 }
 
-const ANGULAR_ROUNDOFF: f64 = 32. * f64::EPSILON;
+pub(crate) const ANGULAR_ROUNDOFF: f64 = 32. * f64::EPSILON;
 
 fn dot(a: Point, b: Point) -> f64 {
     a[0].mul_add(b[0], a[1] * b[1])

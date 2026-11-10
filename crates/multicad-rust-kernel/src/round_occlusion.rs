@@ -76,6 +76,31 @@ impl RoundOccluder {
         self.bounds
     }
 
+    pub(crate) fn covers_coincident_rim(&self, rim: Rim, tolerance: f64) -> bool {
+        if self.bore.is_some()
+            || self.projected > curved_projection::ANGULAR_ROUNDOFF
+            || rim.depth_sine != 0.
+        {
+            return false;
+        }
+        let same_coordinate = |a: f64, b: f64, scale: f64| {
+            (a - b).abs() <= 8. * f64::EPSILON * a.abs().max(b.abs()).max(scale)
+        };
+        if !same_coordinate(rim.ellipse.major, self.radius, 0.)
+            || !same_coordinate(rim.ellipse.minor, self.radius, 0.)
+        {
+            return false;
+        }
+        let near = if self.axis[2] > 0. {
+            std::array::from_fn(|i| self.axis[i].mul_add(self.height, self.base[i]))
+        } else {
+            self.base
+        };
+        let depth_guard = tolerance.max(16. * f64::EPSILON * near[2].abs().max(rim.depth.abs()));
+        near[2] - rim.depth > depth_guard
+            && (0..2).all(|i| same_coordinate(rim.ellipse.center[i], near[i], self.radius))
+    }
+
     pub(crate) fn drawing_edges(
         &self,
         hidden_lines: bool,

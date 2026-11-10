@@ -8,7 +8,9 @@ use crate::{
 
 mod candidates;
 use candidates::apply_openings;
-pub use candidates::{FaceOpening, LineCandidate, RimCandidate, SceneExtras, SpatialRimCandidate};
+pub use candidates::{
+    FaceOpening, LineCandidate, RimCandidate, SceneExtras, SpatialRimCandidate, StadiumOpening,
+};
 use std::f64::consts::PI;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -93,6 +95,7 @@ fn project_with_extras(
     let scene = Scene {
         index: index.as_ref(),
         rounds: blockers,
+        published_rounds: rounds.len(),
         options: &options,
     };
     let remaining = options.segment_limit - straight.len();
@@ -155,6 +158,7 @@ fn project_with_extras(
 struct Scene<'a> {
     index: Option<&'a Node>,
     rounds: &'a [RoundOccluder],
+    published_rounds: usize,
     options: &'a Options,
 }
 
@@ -256,7 +260,14 @@ impl Scene<'_> {
                 if edge.hidden {
                     emit(true, rim.trimmed(span))
                 } else {
-                    hide_rim(rim, self.index, self.rounds, source, work)?;
+                    hide_rim(
+                        rim,
+                        self.index,
+                        self.rounds,
+                        self.published_rounds,
+                        source,
+                        work,
+                    )?;
                     publish_spans(
                         &mut work.hidden,
                         span,
@@ -273,6 +284,7 @@ fn hide_rim(
     rim: Rim,
     index: Option<&Node>,
     rounds: &[RoundOccluder],
+    published_rounds: usize,
     source: Option<usize>,
     work: &mut Work,
 ) -> Result<(), ProjectionError> {
@@ -292,6 +304,16 @@ fn hide_rim(
         work.charge(1)?;
         let [min, max] = round.bounds();
         if Some(id) != source && (Bounds { min, max }).overlaps(bounds, work.tolerance) {
+            if source.is_none()
+                && id < published_rounds
+                && round.covers_coincident_rim(rim, work.tolerance)
+            {
+                // A published opaque cap owns the coincident silhouette at
+                // its nearer depth. Helper disks never claim supplied rims.
+                work.hidden.clear();
+                work.hidden.push(rim.ellipse.trim);
+                return Ok(());
+            }
             // Charge the bounded conic and cap root work even when no
             // resulting interval covers the candidate rim.
             work.charge(160)?;
@@ -324,8 +346,8 @@ impl TrimmedPlane {
             return Ok(());
         }
         let trim = rim.ellipse.trim;
-        let boundaries = self.boundary.len() + self.circles.len();
-        work.charge(boundaries + 79 * self.circles.len())?;
+        let boundaries = self.boundary.len() + self.profiles.len();
+        work.charge(self.boundary.len())?;
         work.crossings.clear();
         depths.level(threshold, trim, &mut work.crossings);
         for &[a, b] in &self.boundary {
@@ -338,10 +360,9 @@ impl TrimmedPlane {
             ])
             .level(0., trim, &mut work.crossings);
         }
-        for circle in &self.circles {
-            let [x, y] =
-                std::array::from_fn(|i| Harmonic([origin[i] - circle.center[i], cos[i], sin[i]]));
-            drawing_events::circle(x, y, circle.radius, trim, &mut work.crossings);
+        for &profile in &self.profiles {
+            work.charge(profile.rim_work())?;
+            profile.rim_cuts([origin, cos, sin], trim, &mut work.crossings);
         }
         work.charge((work.crossings.len() + 1).saturating_mul(boundaries))?;
         drawing_events::spans(
@@ -375,21 +396,23 @@ impl TrimmedPlane {
                 inside = !inside;
             }
         }
-        for circle in &self.circles {
-            let [x, y] = sub(point, circle.center);
-            let distance = x.hypot(y);
+        for &profile in &self.profiles {
+            let distance = profile.distance(point);
+            let radius = profile.radius();
             let roundoff = 16.
                 * f64::EPSILON
-                * circle.center[0]
-                    .abs()
-                    .max(circle.center[1].abs())
-                    .max(circle.radius);
-            if (distance - circle.radius).abs() <= roundoff {
+                * profile
+                    .centers()
+                    .into_iter()
+                    .flatten()
+                    .map(f64::abs)
+                    .fold(radius, f64::max);
+            if (distance - radius).abs() <= roundoff {
                 // A ray on the cylindrical wall cannot certify positive
                 // material coverage of the corresponding circular rim.
                 return false;
             }
-            if distance < circle.radius {
+            if distance < radius {
                 inside = !inside;
             }
         }

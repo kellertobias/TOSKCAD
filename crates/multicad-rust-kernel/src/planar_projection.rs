@@ -2,10 +2,12 @@
 
 use crate::round_occlusion::RoundOccluder;
 
+mod profile;
 mod scene;
+use profile::ProfileTrim;
 pub use scene::{
     FaceOpening, LineCandidate, RimCandidate, RoundSegment, SceneExtras, SceneProjection,
-    SpatialRimCandidate, project_scene, project_scene_with_candidates,
+    SpatialRimCandidate, StadiumOpening, project_scene, project_scene_with_candidates,
 };
 
 type Point = [f64; 3];
@@ -109,14 +111,8 @@ struct TrimmedPlane {
     point: Point,
     normal: Point,
     boundary: Vec<[Point2; 2]>,
-    circles: Vec<CircleTrim>,
+    profiles: Vec<ProfileTrim>,
     bounds: Bounds,
-}
-
-#[derive(Clone, Copy)]
-struct CircleTrim {
-    center: Point2,
-    radius: f64,
 }
 
 struct Line {
@@ -194,7 +190,7 @@ impl TrimmedPlane {
             let root = (span[1] - span[0]).mul_add((threshold - a) / (b - a), span[0]);
             span[usize::from(a > threshold)] = root;
         }
-        work.charge(self.boundary.len() + self.circles.len())?;
+        work.charge(self.boundary.len())?;
         work.crossings.clear();
         for edge in &self.boundary {
             let [[u0, v0], [u1, v1]] = edge.map(|point| line.coordinates(point));
@@ -208,12 +204,10 @@ impl TrimmedPlane {
                 work.add_hidden([u0.min(u1), u0.max(u1)], span);
             }
         }
-        for circle in &self.circles {
-            let [along, offset] = line.coordinates(circle.center);
-            let offset = offset.abs();
-            if offset < circle.radius {
-                let half = ((circle.radius - offset) * (circle.radius + offset)).sqrt();
-                work.crossings.extend([along - half, along + half]);
+        for &profile in &self.profiles {
+            work.charge(profile.line_work())?;
+            if let Some(interval) = profile.line_span(line, !self.boundary.is_empty()) {
+                work.crossings.extend(interval);
             }
         }
         work.crossings.sort_unstable_by(f64::total_cmp);
@@ -397,7 +391,7 @@ fn prepare<'a>(
                     point: face.point,
                     normal: face.normal.map(|n| n * face.normal[2].signum()),
                     boundary,
-                    circles: Vec::new(),
+                    profiles: Vec::new(),
                     bounds: bounds.expect("face has edges"),
                 });
             }
