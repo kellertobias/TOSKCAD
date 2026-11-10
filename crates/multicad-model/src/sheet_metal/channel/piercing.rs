@@ -56,12 +56,19 @@ pub(in crate::sheet_metal) fn append_profile(
         .developed
         .clone()
         .ok_or("The folded sheet has no verified development")?;
+    let invalid = |error: String| {
+        format!(
+            "Keep the cut inside one flat face, clear of its edges and bends. Check whether it overlaps an existing opening. {error}"
+        )
+    };
     developed.loops.push(developed_hole(&cut.outline)?);
-    developed.validate(policy.linear_tolerance_mm)?;
+    developed
+        .validate(policy.linear_tolerance_mm)
+        .map_err(invalid)?;
     let opening = opening(layout, cut.face, folded_outline, cut.origins.clone())?;
     let pierced = sheet
         .rust_pierce_normal_profile(&[opening], policy)
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| invalid(e.to_string()))?;
     Ok((pierced, developed))
 }
 

@@ -261,6 +261,12 @@ mod tests {
 
     #[test]
     fn c_channel_refuses_crossing_the_bend_and_recurring_openings() {
+        checks_invalid_channel_cuts(GeometryBackend::Rust);
+        #[cfg(feature = "occt")]
+        checks_invalid_channel_cuts(GeometryBackend::OpenCascade);
+    }
+
+    fn checks_invalid_channel_cuts(backend: GeometryBackend) {
         let document = project_file::read(
             &mut include_bytes!("../../../../examples/front-panel.tcd").as_slice(),
             Default::default(),
@@ -279,7 +285,9 @@ mod tests {
             omit_display: true,
             ..Default::default()
         };
-        let model = compiler.compile(&document, 0).unwrap();
+        let model = compiler
+            .compile_with_backend(&document, 0, backend, None)
+            .unwrap();
         let layout = &model.snapshot().sheet_layouts[&forming];
         let sheet = model.solid(forming).unwrap();
         let before = sheet.volume_mm3().unwrap();
@@ -304,7 +312,7 @@ mod tests {
                         holes: vec![],
                     },
                     developed: false,
-                    backend: GeometryBackend::OpenCascade,
+                    backend,
                 },
                 &origins,
                 compiler.policy,
