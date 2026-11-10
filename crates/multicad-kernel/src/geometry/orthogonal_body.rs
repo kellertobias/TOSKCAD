@@ -536,6 +536,23 @@ impl Solid {
         })
     }
 
+    /// Removing machining can only reduce the occupied stock. A probe
+    /// outside every stock cell has zero common volume with the machined body.
+    pub(crate) fn rust_machined_stock_clears(&self, probe: Bounds, tolerance: f64) -> bool {
+        let Some((body, frame)) = self.orthogonal_body() else {
+            return false;
+        };
+        body.has_curved_cuts()
+            && cardinal(frame)
+            && body.geometry.cells().iter().all(|&cell| {
+                let cell = transform_box(frame, cell);
+                (0..3).any(|axis| {
+                    cell.max[axis] + tolerance <= probe.min[axis]
+                        || probe.max[axis] + tolerance <= cell.min[axis]
+                })
+            })
+    }
+
     pub(super) fn orthogonal_cells(&self) -> Result<Option<Vec<Box3>>, GeometryError> {
         if let Some((body, frame)) = self.orthogonal_body()
             && cardinal(frame)

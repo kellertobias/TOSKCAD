@@ -598,20 +598,25 @@ impl Scenario {
             let Some(solid) = model.solid(c.member) else {
                 continue;
             };
-            if let Some(common) = guide.boolean(solid, BooleanOperation::Intersect, policy)? {
-                let volume = common.volume_mm3()?;
-                if volume > 1e-6 {
-                    out.push(Finding {
-                        kind: "guide_interference",
-                        subject: c.reference.clone(),
-                        message: format!(
-                            "{} reaches into the printed guide frame by {} mm³. Move the \
-                             component or open the frame.",
-                            c.reference,
-                            number(volume)
-                        ),
-                    });
-                }
+            let volume = if guide.uses_rust_geometry() {
+                guide.rust_occupied_overlap_volume(solid, policy)
+            } else {
+                guide
+                    .boolean(solid, BooleanOperation::Intersect, policy)
+                    .and_then(|common| common.map_or(Ok(0.), |solid| solid.volume_mm3()))
+            }
+            .map_err(|cause| format!("Guide interference for {}: {cause}", c.reference))?;
+            if volume > 1e-6 {
+                out.push(Finding {
+                    kind: "guide_interference",
+                    subject: c.reference.clone(),
+                    message: format!(
+                        "{} reaches into the printed guide frame by {} mm³. Move the \
+                         component or open the frame.",
+                        c.reference,
+                        number(volume)
+                    ),
+                });
             }
         }
         Ok(out)

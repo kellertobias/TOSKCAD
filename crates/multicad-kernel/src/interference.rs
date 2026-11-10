@@ -115,6 +115,15 @@ impl Solid {
         if (0..3).any(|i| left.min[i] >= right.max[i] || right.min[i] >= left.max[i]) {
             return Ok(0.);
         }
+        let tolerance = policy
+            .linear_tolerance_mm
+            .max(self.geometry_policy().linear_tolerance_mm)
+            .max(other.geometry_policy().linear_tolerance_mm);
+        if self.rust_machined_stock_clears(right, tolerance)
+            || other.rust_machined_stock_clears(left, tolerance)
+        {
+            return Ok(0.);
+        }
         let mut left = Vec::new();
         let mut right = Vec::new();
         match self

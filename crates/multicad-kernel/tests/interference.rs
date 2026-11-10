@@ -265,3 +265,47 @@ fn independent_native_owners_inspect_pairs_concurrently_without_source_mutation(
         worker.join().unwrap();
     }
 }
+
+#[test]
+fn rust_machined_frame_certifies_an_empty_window_from_stock_cells() {
+    use multicad_core::references::Origin;
+    let base = rust_stock([30, 20, 4], [0.; 3]);
+    let window = rust_stock([20, 10, 6], [5., 5., -1.]);
+    let frame = base
+        .boolean(&window, BooleanOperation::Subtract, p())
+        .unwrap()
+        .unwrap();
+    let hole_frame = PlaneFrame {
+        origin: [2.5, 10., -1.],
+        ..Default::default()
+    };
+    let drill = CircularPocketTool {
+        frame: hole_frame,
+        center_uv: [0.; 2],
+        radius_mm: 1.,
+        displacement_mm: [0., 0., 6.],
+        origin: Origin {
+            source: EntityId::new(),
+            role: "mounting hole".into(),
+        },
+    };
+    let drilled = frame
+        .rust_drill_circular_machining(&[drill], &[true], p())
+        .unwrap();
+    let clear = rust_stock([5, 3, 5], [8., 7., -0.5]);
+    let collision = rust_stock([5, 3, 5], [2., 7., -0.5]);
+    let [a, b] = [drilled.bounds().unwrap(), clear.bounds().unwrap()];
+    assert!((0..3).all(|axis| a.min[axis] < b.max[axis] && b.min[axis] < a.max[axis]));
+    near(
+        drilled.rust_occupied_overlap_volume(&clear, p()).unwrap(),
+        0.,
+    );
+    near(
+        clear.rust_occupied_overlap_volume(&drilled, p()).unwrap(),
+        0.,
+    );
+    let collision = drilled
+        .rust_occupied_overlap_volume(&collision, p())
+        .unwrap_err();
+    assert_eq!(collision.kind, GeometryErrorKind::Unsupported);
+}
