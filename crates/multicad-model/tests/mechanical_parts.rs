@@ -3,13 +3,14 @@ use multicad_core::{
     document::{Document, EntityId},
     exchange::*,
     model::{
-        self, MechanicalPartParameters, MechanicalPartRequest, PrimitiveFrame, ThreadParameters,
-        ThreadRepresentation, length,
+        self, MechanicalPartParameters, MechanicalPartRequest, PrimitiveFrame, ThreadFit,
+        ThreadHand, ThreadParameters, ThreadRepresentation, length,
     },
     project_file::{self, ProjectFile},
+    references::{GeometryIntent, Resolution, TopologyKind, resolve},
 };
 use multicad_kernel::{BooleanOperation, GeometryPolicy, RigidTransform, Solid};
-use multicad_model::{Compiler, EvaluationCache, export::Exporter};
+use multicad_model::{Compiler, EvaluationCache, GeometryBackend, export::Exporter};
 use std::f64::consts::PI;
 fn actor() -> Actor {
     Actor::local(Channel::Mcp)
@@ -67,6 +68,195 @@ fn probe(solid: &Solid, center: [f64; 3]) -> f64 {
         .unwrap()
         .map_or(0., |s| s.volume_mm3().unwrap())
         / size.powi(3)
+}
+
+#[test]
+fn rust_hex_nut_rebuilds_iso_and_din_m6_catalog_with_original_stock_face_intents() {
+    for file in ["nut-iso4032-2012-m6.tcd", "nut-din934-1987-m6.tcd"] {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../library")
+            .join(file);
+        let project = project_file::read(
+            &mut std::fs::File::open(path).unwrap(),
+            Default::default(),
+            &project_file::supported_capabilities(),
+        )
+        .unwrap()
+        .project;
+        let document = &project.document;
+        let rust = compiler()
+            .compile_with_backend(document, 0, GeometryBackend::Rust, None)
+            .unwrap_or_else(|e| panic!("{file}: {e}"));
+        let native = compiler().compile(document, 0).unwrap();
+        let (&part, &feature) = rust.snapshot().bodies.iter().next().unwrap();
+        assert_eq!(rust.snapshot().bodies.len(), 1);
+        assert_eq!(native.snapshot().bodies[&part], feature);
+        let nut = rust.solid(feature).unwrap();
+        let control = native.solid(feature).unwrap();
+        assert!(nut.uses_rust_geometry());
+        assert_eq!(nut.solid_count().unwrap(), 1);
+        let expected = control.volume_mm3().unwrap();
+        assert!(
+            (nut.volume_mm3().unwrap() - expected).abs() < 5e-4,
+            "{file}"
+        );
+        let a = nut.bounds().unwrap();
+        let b = control.bounds().unwrap();
+        for (a, b) in a
+            .min
+            .into_iter()
+            .chain(a.max)
+            .zip(b.min.into_iter().chain(b.max))
+        {
+            assert!((a - b).abs() < 2e-5, "{file}");
+        }
+        let parameters = model::read_mechanical_part(document, feature)
+            .unwrap()
+            .parameters;
+        let model::ResolvedMechanicalPart::HexNut { thread, .. } = parameters
+            .resolve(&multicad_core::parameters::evaluate(document).unwrap())
+            .unwrap()
+        else {
+            panic!("Expected catalog nut");
+        };
+        let r = thread.major_radius_mm - thread.profile.depth_mm / 2.;
+        for (point, material) in [
+            ([0., 0., 2.], false),
+            ([r, 0., 2.], false),
+            ([r, 0., 2.5], true),
+            ([4.8, 0., 2.], true),
+            ([5.2, 0., 2.], false),
+        ] {
+            assert_eq!(
+                nut.rust_thread_contains(point).unwrap(),
+                material,
+                "{file} {point:?}"
+            );
+            let native_material = probe(control, point);
+            assert!(
+                if material {
+                    native_material > 0.99
+                } else {
+                    native_material < 1e-5
+                },
+                "{file} {point:?}: native occupied fraction {native_material}"
+            );
+        }
+
+        let rust_topology = nut.topology_snapshot(feature, 0).unwrap();
+        let native_topology = control.topology_snapshot(feature, 0).unwrap();
+        let native_faces = control.faces().unwrap();
+        let rust_faces = nut.faces().unwrap();
+        let mut matched = 0;
+        for native_face in native_faces.iter().filter(|face| face.plane.is_some()) {
+            let element = native_topology
+                .elements
+                .iter()
+                .find(|element| {
+                    element.key.kind == TopologyKind::Face
+                        && element.key.ordinal == native_face.index
+                })
+                .unwrap();
+            let intent = GeometryIntent::capture(&native_topology, element.key).unwrap();
+            let Resolution::Resolved { key, .. } = resolve(&intent, &rust_topology, 0) else {
+                panic!(
+                    "{file}: native stock face origins {:?} did not resolve",
+                    element.origins
+                );
+            };
+            let face = rust_faces
+                .iter()
+                .find(|face| face.index == key.ordinal)
+                .unwrap();
+            let (origin, normal) = native_face.plane.unwrap();
+            let (point, actual_normal) = face.plane.unwrap();
+            let dot =
+                |a: [f64; 3], b: [f64; 3]| a.into_iter().zip(b).map(|(a, b)| a * b).sum::<f64>();
+            assert!((dot(normal, actual_normal) - 1.).abs() < 1e-10, "{file}");
+            assert!(
+                dot(std::array::from_fn(|i| point[i] - origin[i]), normal).abs() < 1e-6,
+                "{file}"
+            );
+            matched += 1;
+        }
+        assert_eq!(matched, 8, "{file}");
+    }
+}
+
+#[test]
+fn rust_hex_nut_retains_outer_face_intent_after_hand_edit_and_reopen() {
+    let mut session = session();
+    let mut source = nut(ThreadRepresentation::Modeled);
+    let MechanicalPartParameters::HexNut { thread, .. } = &mut source else {
+        unreachable!()
+    };
+    thread.fit = ThreadFit::Metric6HInternal;
+    thread.frame = PrimitiveFrame {
+        origin: [length(10.), length(20.), length(30.)],
+        u: [0., 1., 0.],
+        v: [0., 0., 1.],
+    };
+    let request = add(&mut session, "Rotated fitted M6 nut", source.clone());
+    let build = |document: &Document, revision| {
+        compiler()
+            .compile_with_backend(document, revision, GeometryBackend::Rust, None)
+            .unwrap()
+    };
+    let before = build(session.document(), 1);
+    let solid = before.solid(request.feature).unwrap();
+    let bounds = solid.bounds().unwrap();
+    assert_eq!(bounds.min[0..2], [10., 15.]);
+    assert_eq!(bounds.max[0..2], [15.2, 25.]);
+    assert!(!solid.rust_thread_contains([12., 20., 30.]).unwrap());
+    assert!(solid.rust_thread_contains([12., 24.9, 30.]).unwrap());
+    let original = solid.topology_snapshot(request.feature, 1).unwrap();
+    let outer = original
+        .elements
+        .iter()
+        .find(|element| {
+            element.key.kind == TopologyKind::Face
+                && element
+                    .origins
+                    .iter()
+                    .any(|origin| origin.role == "hardware.outer/0")
+        })
+        .unwrap();
+    let intent = GeometryIntent::capture(&original, outer.key).unwrap();
+    let MechanicalPartParameters::HexNut { thread, .. } = &mut source else {
+        unreachable!()
+    };
+    thread.hand = ThreadHand::Left;
+    let edit = model::prepare_mechanical_part_edit(&session, 1, actor(), request.feature, &source)
+        .unwrap();
+    session.commit(edit.prepared).unwrap();
+    let mut bytes = Vec::new();
+    project_file::write(
+        &ProjectFile::new(session.document().clone()).unwrap(),
+        &mut bytes,
+        Default::default(),
+    )
+    .unwrap();
+    let reopened = project_file::read(
+        &mut bytes.as_slice(),
+        Default::default(),
+        &project_file::supported_capabilities(),
+    )
+    .unwrap()
+    .project;
+    assert_eq!(
+        model::read_mechanical_part(&reopened.document, request.feature)
+            .unwrap()
+            .parameters,
+        source
+    );
+    let rebuilt = build(&reopened.document, 0);
+    let changed = rebuilt.solid(request.feature).unwrap();
+    assert_eq!(changed.bounds().unwrap(), bounds);
+    assert!((changed.volume_mm3().unwrap() - solid.volume_mm3().unwrap()).abs() < 1e-9);
+    let current = changed.topology_snapshot(request.feature, 0).unwrap();
+    assert!(
+        matches!(resolve(&intent, &current, 0), Resolution::Resolved { key, .. } if key == outer.key)
+    );
 }
 #[test]
 fn washer_and_rotated_bearing_envelopes_have_exact_mounting_dimensions_and_step_readbacks() {

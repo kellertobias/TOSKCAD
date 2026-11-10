@@ -55,7 +55,10 @@ fn rust_mcp_edits_and_reopens_a_modeled_m6_socket_screw() {
     };
     let h = open();
     let profiles = run(&h, "mechanical_part_profiles", json!({}));
-    assert_eq!(profiles["supported_geometry"], json!(["machine_screw"]));
+    assert_eq!(
+        profiles["supported_geometry"],
+        json!(["machine_screw", "hex_nut"])
+    );
     assert_eq!(
         profiles["active_geometry_support"]["head_drive_pairs"],
         json!([
@@ -107,6 +110,81 @@ fn rust_mcp_edits_and_reopens_a_modeled_m6_socket_screw() {
     );
     assert_eq!(&source["source"]["output"]["body"], part);
     assert_eq!(source["source"]["parameters"]["thread"]["hand"], "left");
+    assert_eq!(
+        run(&reopened, "evaluate_model", json!({}))["parts"][0],
+        original
+    );
+}
+
+#[test]
+fn rust_mcp_edits_and_reopens_a_modeled_m6_hex_nut() {
+    use multicad_mcp::Storage;
+    use multicad_model::GeometryBackend;
+
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("metric-nut.tcd");
+    ProjectStore
+        .save(
+            &path,
+            &multicad_core::project_file::ProjectFile::new(
+                Document::new("Rust M6 hex nut").unwrap(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    let open = || {
+        Headless::with_geometry_backend(
+            Workspace::project(path.clone(), Box::new(ProjectStore)).unwrap(),
+            Some(directory.path().into()),
+            false,
+            GeometryBackend::Rust,
+        )
+    };
+    let h = open();
+    let profiles = run(&h, "mechanical_part_profiles", json!({}));
+    assert_eq!(
+        profiles["active_geometry_support"]["hex_nut_metric_fits"],
+        json!(["nominal_basic", "metric_6h_internal"])
+    );
+    let request = json!({
+        "expected_revision":0,"name":"M6 × 1 hex nut","recipe":{
+            "kind":"hex_nut","across_flats":mm(10.),
+            "thread":{"major_diameter":mm(6.),"pitch":mm(1.),"length":mm(5.2),
+                "fit":"metric_6h_internal","representation":"modeled","minimum_wall":mm(1.)}
+        }
+    });
+    let before = h.document();
+    let mut invalid = request.clone();
+    invalid["recipe"]["across_flats"] = mm(7.);
+    assert!(dispatch(&h, &call(false), "set_mechanical_part", invalid).is_err());
+    assert_eq!(h.document(), before);
+    let created = run(&h, "set_mechanical_part", request);
+    let feature = &created["feature"];
+    let part = &created["part"];
+    let original = run(&h, "evaluate_model", json!({}))["parts"][0].clone();
+    assert_eq!(original["solid_count"], 1);
+    assert_eq!(original["bounds_mm"]["min"][0], -5.);
+    assert_eq!(original["bounds_mm"]["max"][0], 5.);
+    assert_eq!(original["bounds_mm"]["max"][2], 5.2);
+    let edited = run(
+        &h,
+        "set_mechanical_part",
+        json!({"expected_revision":1,"feature":feature,"recipe":{
+            "kind":"hex_nut","thread":{"hand":"left"}
+        }}),
+    );
+    assert_eq!(&edited["feature"], feature);
+    assert_eq!(&edited["part"], part);
+    run(&h, "save_project", json!({"expected_revision":2}));
+    drop(h);
+    let reopened = open();
+    let source = run(
+        &reopened,
+        "inspect_mechanical_part",
+        json!({"feature":feature}),
+    );
+    assert_eq!(source["resolved"]["fit"]["class"], "metric_6h_internal");
+    assert_eq!(source["resolved"]["hand"], "left");
     assert_eq!(
         run(&reopened, "evaluate_model", json!({}))["parts"][0],
         original

@@ -897,9 +897,71 @@ fn rust_export_worker_writes_watertight_metric_receivers_to_stl_and_3mf() {
 
 #[test]
 fn rust_export_worker_writes_one_closed_headed_screw_with_a_hex_socket_floor() {
-    let mut session = Session::new(Document::new("Headed screw exports").unwrap()).unwrap();
-    let request =
-        model::MechanicalPartRequest::new("M3 socket screw", model::default_machine_screw());
+    rust_export_hardware_mesh(model::default_machine_screw(), |triangles| {
+        assert_bounds(
+            bounds(triangles),
+            [[-2.84, -2.84, -3.], [2.84, 2.84, 10.]],
+            0.05,
+        );
+        let floor_area: f64 = triangles
+            .iter()
+            .filter(|points| points.iter().all(|p| (p[2] + 1.7).abs() < 1e-6))
+            .map(|[a, b, c]| {
+                ((b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])).abs() / 2.
+            })
+            .sum();
+        near(floor_area, 3_f64.sqrt() * 2.55_f64.powi(2) / 2., 1e-5);
+        assert!(
+            triangles
+                .iter()
+                .flatten()
+                .any(|p| (2. ..8.).contains(&p[2]) && p[0].hypot(p[1]) < 1.24)
+        );
+    });
+}
+
+#[test]
+fn rust_export_worker_writes_one_closed_hex_nut_with_an_open_threaded_bore() {
+    let parameters = model::MechanicalPartParameters::HexNut {
+        across_flats: length(10.),
+        thread: Box::new(model::ThreadParameters {
+            major_diameter: length(6.),
+            pitch: length(1.),
+            length: length(5.2),
+            fit: model::ThreadFit::Metric6HInternal,
+            ..Default::default()
+        }),
+    };
+    rust_export_hardware_mesh(parameters, |triangles| {
+        let corner = 10. / 3_f64.sqrt();
+        assert_bounds(
+            bounds(triangles),
+            [[-5., -corner, 0.], [5., corner, 5.2]],
+            1e-6,
+        );
+        assert!(
+            triangles
+                .iter()
+                .flatten()
+                .any(|p| (1. ..4.).contains(&p[2]) && p[0].hypot(p[1]) < 2.6)
+        );
+        // An axis ray must miss every triangle of both caps and the bore.
+        let cross = |a: [f64; 3], b: [f64; 3]| a[0] * b[1] - a[1] * b[0];
+        for &[a, b, c] in triangles {
+            let signed = [cross(a, b), cross(b, c), cross(c, a)];
+            assert!(
+                signed.iter().any(|area| *area < -1e-8) && signed.iter().any(|area| *area > 1e-8)
+            );
+        }
+    });
+}
+
+fn rust_export_hardware_mesh(
+    parameters: model::MechanicalPartParameters,
+    verify: impl Fn(&Triangles),
+) {
+    let mut session = Session::new(Document::new("Mechanical hardware exports").unwrap()).unwrap();
+    let request = model::MechanicalPartRequest::new("Hardware", parameters);
     let prepared = model::prepare_mechanical_part(&session, 0, actor(), &request).unwrap();
     session.commit(prepared.prepared).unwrap();
     let set = EntityId::new();
@@ -926,7 +988,7 @@ fn rust_export_worker_writes_one_closed_headed_screw_with_a_hex_socket_floor() {
         ExportWorker::with_geometry_backend(Exporter::default(), GeometryBackend::Rust).unwrap();
     worker.preview(document, revision, set, actor()).unwrap();
     let ExportResult::Preview(preview) = next_reply(&worker) else {
-        panic!("Expected screw mesh preview");
+        panic!("Expected hardware mesh preview");
     };
     let preview = preview.unwrap();
     assert!(preview.can_run(), "{:?}", preview.recipes);
@@ -935,7 +997,7 @@ fn rust_export_worker_writes_one_closed_headed_screw_with_a_hex_socket_floor() {
         .run(document, revision, &preview.key, directory.path(), actor())
         .unwrap();
     let ExportResult::Run(receipt) = next_reply(&worker) else {
-        panic!("Expected screw mesh export");
+        panic!("Expected hardware mesh export");
     };
     let receipt = receipt.unwrap();
     assert_eq!(receipt.files.len(), 2);
@@ -958,26 +1020,8 @@ fn rust_export_worker_writes_one_closed_headed_screw_with_a_hex_socket_floor() {
         };
         assert_eq!(triangles.len(), evidence.triangles);
         assert_closed_winding(&triangles);
-        assert_bounds(
-            bounds(&triangles),
-            [[-2.84, -2.84, -3.], [2.84, 2.84, 10.]],
-            0.05,
-        );
         near(volume(&triangles), evidence.mesh_volume_mm3, 0.001);
-        let floor_area: f64 = triangles
-            .iter()
-            .filter(|points| points.iter().all(|p| (p[2] + 1.7).abs() < 1e-6))
-            .map(|[a, b, c]| {
-                ((b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])).abs() / 2.
-            })
-            .sum();
-        near(floor_area, 3_f64.sqrt() * 2.55_f64.powi(2) / 2., 1e-5);
-        assert!(
-            triangles
-                .iter()
-                .flatten()
-                .any(|p| (2. ..8.).contains(&p[2]) && p[0].hypot(p[1]) < 1.24)
-        );
+        verify(&triangles);
     }
 }
 

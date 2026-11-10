@@ -7,7 +7,7 @@ use multicad_core::{
     document::EntityId,
     model::{
         MechanicalPartDefinition, MechanicalPartParameters, ResolvedMechanicalPart,
-        ResolvedScrewDrive, ResolvedScrewHead, ThreadMode,
+        ResolvedScrewDrive, ResolvedScrewHead, ResolvedThread, ThreadMode,
     },
     parameters::EvaluatedParameters,
     references::Origin,
@@ -403,31 +403,66 @@ pub(crate) fn build_rust(
     policy: GeometryPolicy,
 ) -> Result<Solid, ModelError> {
     let fail = |message| error(Some(feature), message);
-    let MechanicalPartParameters::MachineScrew {
-        thread: authored_thread,
-        ..
-    } = &source.parameters
-    else {
-        return Err(fail(
-            "Rust mechanical parts currently support modeled machine screws",
-        ));
+    let authored_thread = match &source.parameters {
+        MechanicalPartParameters::MachineScrew { thread, .. }
+        | MechanicalPartParameters::HexNut { thread, .. } => thread,
+        _ => {
+            return Err(fail(
+                "Rust mechanical parts currently support modeled machine screws and hex nuts",
+            ));
+        }
     };
     crate::threads::validate_rust_family(feature, authored_thread.family)?;
-    let ResolvedMechanicalPart::MachineScrew {
-        underhead_length_mm,
-        shank_radius_mm,
-        head,
-        drive,
-        thread,
-        ..
-    } = source
+    match source
         .parameters
         .resolve(evaluated)
         .map_err(|cause| error(Some(feature), cause))?
-    else {
-        unreachable!("Resolved an authored machine screw");
-    };
-    let (profile, root_radius, frame) = crate::threads::rust_profile(feature, &thread)?;
+    {
+        ResolvedMechanicalPart::MachineScrew {
+            underhead_length_mm,
+            shank_radius_mm,
+            head,
+            drive,
+            thread,
+            ..
+        } => rust_machine_screw(
+            feature,
+            underhead_length_mm,
+            shank_radius_mm,
+            head,
+            drive,
+            &thread,
+            policy,
+        ),
+        ResolvedMechanicalPart::HexNut {
+            across_flats_mm,
+            thread,
+        } => {
+            let (profile, _, frame) = crate::threads::rust_profile(feature, &thread)?;
+            Solid::rust_hex_nut(
+                profile,
+                across_flats_mm,
+                thread.minimum_wall_mm,
+                feature,
+                frame,
+                policy,
+            )
+            .map_err(|cause| error(Some(feature), cause))
+        }
+        _ => unreachable!("Resolved an authored machine screw or hex nut"),
+    }
+}
+
+fn rust_machine_screw(
+    feature: EntityId,
+    underhead_length_mm: f64,
+    shank_radius_mm: f64,
+    head: ResolvedScrewHead,
+    drive: ResolvedScrewDrive,
+    thread: &ResolvedThread,
+    policy: GeometryPolicy,
+) -> Result<Solid, ModelError> {
+    let (profile, root_radius, frame) = crate::threads::rust_profile(feature, thread)?;
     let head = match (head, drive) {
         (
             ResolvedScrewHead::SocketCap {
@@ -455,7 +490,8 @@ pub(crate) fn build_rust(
             height_mm,
         },
         _ => {
-            return Err(fail(
+            return Err(error(
+                Some(feature),
                 "Rust machine screws support a socket cap with a flat hex socket or an external hex head",
             ));
         }

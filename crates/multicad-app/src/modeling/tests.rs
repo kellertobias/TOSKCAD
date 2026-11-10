@@ -1745,6 +1745,58 @@ mod painted_default_screw {
     }
 
     #[test]
+    fn painted_rust_hex_nut_applies_with_open_bore_and_planar_flats() {
+        let factory = Backend::factory(GeometryBackend::Rust).unwrap();
+        let mut controller = ModelToolController::default();
+        controller.set_backend(factory());
+        let mut canonical = SceneFeed::default();
+        canonical.set_backend(factory());
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        let session = Session::new(Document::new("Painted Rust hex nut").unwrap()).unwrap();
+        let before = session.document().clone();
+        let mut painted = Painted {
+            ctx,
+            controller,
+            canonical,
+            session,
+            applied: vec![],
+            clock: Instant::now(),
+        };
+        painted.wait(true);
+        painted
+            .controller
+            .begin_mechanical_part(&painted.session, &Default::default(), Channel::Ui)
+            .unwrap();
+        painted.click("Plain washer");
+        painted.click("Hex nut");
+        painted.click("Modeled helix");
+        painted.click("Preview");
+        painted.wait(false);
+        assert_eq!(painted.session.document(), &before);
+        painted.click("Apply");
+        painted.wait(true);
+        let [created] = painted.applied.as_slice() else {
+            panic!("Expected one applied hex nut");
+        };
+        let source =
+            model::read_mechanical_part(painted.session.document(), created.feature).unwrap();
+        let model::MechanicalPartParameters::HexNut { thread, .. } = source.parameters else {
+            panic!("Expected the selected hex nut recipe");
+        };
+        assert_eq!(thread.representation, model::ThreadRepresentation::Modeled);
+        let scene = painted.canonical.visible().unwrap();
+        assert_eq!(scene.instances().len(), 1);
+        let ray = |origin, direction| viewport::Ray::new(origin, direction).unwrap();
+        assert!(scene.pick_face(ray([0., 0., 20.], [0., 0., -1.])).is_none());
+        let bore = scene.pick_face(ray([0., 0., 2.], [1., 0., 0.])).unwrap();
+        assert!((2.45..3.05).contains(&bore.point_mm[0]));
+        let flat = scene.pick_face(ray([10., 0.5, 2.], [-1., 0., 0.])).unwrap();
+        assert_eq!(flat.instance, created.body);
+        assert!((flat.point_mm[0] - 5.).abs() < 1e-6);
+    }
+
+    #[test]
     fn actual_default_m3_controls_measure_preview_unchanged_and_apply_to_canonical_ready() {
         let owner = Backend::runtime(GeometryBackend::OpenCascade).unwrap();
         let preview_records: Records = Default::default();

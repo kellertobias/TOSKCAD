@@ -926,13 +926,14 @@ fn parameters(
 pub(super) fn mechanical_part_profiles(_: &dyn Host, call: &Request, _: NoArgs) -> ToolResult {
     if call.backend == GeometryBackend::Rust {
         return Ok(json!({
-            "supported_geometry": ["machine_screw"],
+            "supported_geometry": ["machine_screw", "hex_nut"],
             "head_forms": ["socket_cap", "external_hex"],
             "drive_forms": ["hex_socket", "external_hex"],
             "active_geometry_support": {
                 "head_drive_pairs": [["socket_cap", "hex_socket"], ["external_hex", "external_hex"]],
                 "thread_families": ["iso_metric", "custom"],
                 "metric_fits": ["nominal_basic", "metric_6g_external"],
+                "hex_nut_metric_fits": ["nominal_basic", "metric_6h_internal"],
                 "representations": ["modeled"],
                 "plain_shank": "If present, its diameter must be at least the modeled thread crest diameter.",
                 "end_treatments": false,
@@ -940,7 +941,8 @@ pub(super) fn mechanical_part_profiles(_: &dyn Host, call: &Request, _: NoArgs) 
                 "mesh": true,
                 "step": false
             },
-            "machine_screw": "The underhead length runs from the head seat to the tip. Overall length adds the head height. The thread length is its extent ending at the tip, and its frame locates the underhead datum."
+            "machine_screw": "The underhead length runs from the head seat to the tip. Overall length adds the head height. The thread length is its extent ending at the tip, and its frame locates the underhead datum.",
+            "nut_thread": "Rust requires the modeled representation for hex nuts. The thread length sets the nut height."
         }));
     }
     Ok(json!({
