@@ -371,7 +371,7 @@ impl Model {
                 let overlap = match inverse {
                     Some(inverse) => other
                         .transformed(inverse)
-                        .and_then(|other| boxed.rust_occupied_overlap_volume(&other)),
+                        .and_then(|other| boxed.rust_occupied_overlap_volume(&other, self.policy)),
                     None => boxed
                         .boolean(other, BooleanOperation::Intersect, self.policy)
                         .and_then(|common| common.map(|solid| solid.volume_mm3()).transpose())

@@ -475,3 +475,22 @@ fn strip_sweep_refuses_nonvertical_and_ambiguous_profiles() {
     assert_eq!(sweep(&crossing, [1., 0., 0.]).unwrap_err(), Error::Invalid);
     assert_eq!(sweep(&ring, [2e7, 0., 0.]).unwrap_err(), Error::Limit);
 }
+
+#[test]
+fn transformed_convex_piece_rechecks_the_closed_outward_boundary() {
+    let piece = block([0.; 3], [2., 4., 3.]);
+    let rotated = piece
+        .transformed(
+            |[x, y, z]| [10. + 0.8 * x - 0.6 * y, 2. + 0.6 * x + 0.8 * y, z],
+            TOL,
+        )
+        .unwrap();
+    let union = Union::new(&[rotated], TOL).unwrap();
+    check_volume(union.volume_mm3(), 24.);
+    check_volume(union.bounds()[0][0], 7.6);
+    check_volume(union.bounds()[1][1], 6.4);
+    assert_eq!(
+        piece.transformed(|[x, y, z]| [-x, y, z], TOL).unwrap_err(),
+        Error::Invalid
+    );
+}

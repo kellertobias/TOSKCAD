@@ -59,6 +59,20 @@ pub struct ConvexPiece {
 }
 
 impl ConvexPiece {
+    /// Rebuild transformed face loops and revalidate their convex boundary.
+    pub fn transformed(
+        &self,
+        point: impl Fn([f64; 3]) -> [f64; 3],
+        tolerance_mm: f64,
+    ) -> Result<Self, Error> {
+        let faces = self
+            .faces
+            .iter()
+            .map(|face| face.iter().copied().map(&point).collect())
+            .collect();
+        Self::new(faces, tolerance_mm)
+    }
+
     /// Validate a closed convex polyhedron with outward-oriented planar loops.
     pub fn new(faces: Vec<Vec<Point>>, tolerance_mm: f64) -> Result<Self, Error> {
         validate_tolerance(tolerance_mm)?;

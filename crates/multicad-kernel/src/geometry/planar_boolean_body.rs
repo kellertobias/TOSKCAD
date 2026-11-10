@@ -16,6 +16,7 @@ type ConvexPart = (ConvexPiece, Vec<Option<usize>>);
 pub(crate) struct PlanarBooleanBody {
     pub(super) feature: EntityId,
     pub(super) geometry: Union,
+    material: Option<Vec<ConvexPiece>>,
     faces: Vec<Boundary>,
     edges: Vec<(Key, Vec<usize>)>,
 }
@@ -30,6 +31,59 @@ struct Boundary {
 struct SourcePart {
     operand: usize,
     faces: Vec<Option<usize>>,
+    normal_sign: f64,
+}
+
+#[derive(Default)]
+struct PlanarOperands {
+    pieces: Vec<ConvexPiece>,
+    sources: Vec<SourcePart>,
+    topologies: Vec<TopologySnapshot>,
+}
+
+fn planar_unsupported() -> GeometryError {
+    error(
+        "planar Boolean",
+        GeometryErrorKind::Unsupported,
+        "Rust planar Boolean requires certified positive convex material pieces",
+    )
+}
+
+fn planar_error(cause: Error) -> GeometryError {
+    let kind = if cause == Error::Limit {
+        GeometryErrorKind::Limit
+    } else {
+        GeometryErrorKind::InvalidResult
+    };
+    error(
+        "planar Boolean",
+        kind,
+        format!("Planar Boolean did not produce certified material: {cause:?}"),
+    )
+}
+
+impl PlanarOperands {
+    fn append(
+        &mut self,
+        solid: &Solid,
+        normal_sign: f64,
+        policy: GeometryPolicy,
+    ) -> Result<(), GeometryError> {
+        let topology = solid.rust_topology().ok_or_else(planar_unsupported)??;
+        for (piece, faces) in solid
+            .planar_convex_parts(&topology, policy)
+            .ok_or_else(planar_unsupported)?
+        {
+            self.pieces.push(piece);
+            self.sources.push(SourcePart {
+                operand: self.topologies.len(),
+                faces,
+                normal_sign,
+            });
+        }
+        self.topologies.push(topology);
+        Ok(())
+    }
 }
 
 fn subtract(a: Point, b: Point) -> Point {
@@ -202,32 +256,154 @@ impl Solid {
         policy: GeometryPolicy,
     ) -> Option<Vec<ConvexPart>> {
         let tolerance = policy.linear_tolerance_mm;
+        if let Some((body, frame)) = self.planar_boolean_body() {
+            return Some(
+                body.material_pieces(frame, tolerance)
+                    .ok()?
+                    .into_iter()
+                    .map(|piece| (piece, Vec::new()))
+                    .collect(),
+            );
+        }
         if let Some((body, frame)) = self.orthogonal_body() {
             if body.has_curved_cuts() {
                 return None;
             }
-            body.drawing_stock()
+            return body
+                .drawing_stock()
                 .cells
                 .iter()
                 .map(|&cell| {
-                    Some((
-                        ConvexPiece::new(cell_faces(cell, frame), tolerance).ok()?,
-                        Vec::new(),
-                    ))
+                    let piece = ConvexPiece::new(cell_faces(cell, frame), tolerance).ok()?;
+                    Some((piece, Vec::new()))
                 })
-                .collect()
-        } else {
-            let (faces, ancestry) = convex_faces(self, topology, policy)?;
-            match ConvexPiece::new(faces.clone(), tolerance) {
-                Ok(piece) => Some(vec![(piece, ancestry.into_iter().map(Some).collect())]),
-                Err(Error::Invalid)
-                    if self.polygon_prism().is_some() || self.linear_body().is_some() =>
-                {
-                    vertical_convex_parts(&faces, &ancestry, tolerance)
-                }
-                Err(_) => None,
+                .collect();
+        }
+        if let Some((faces, ancestry)) = convex_faces(self, topology, policy) {
+            if let Ok(piece) = ConvexPiece::new(faces.clone(), tolerance) {
+                return Some(vec![(piece, ancestry.into_iter().map(Some).collect())]);
+            }
+            if (self.polygon_prism().is_some() || self.linear_body().is_some())
+                && let Some(parts) = vertical_convex_parts(&faces, &ancestry, tolerance)
+            {
+                return Some(parts);
             }
         }
+        let cells = self.orthogonal_cells().ok()??;
+        cells
+            .into_iter()
+            .map(|cell| {
+                ConvexPiece::from_box(cell.min, cell.max, tolerance)
+                    .ok()
+                    .map(|piece| (piece, Vec::new()))
+            })
+            .collect()
+    }
+
+    fn append_planar_material(
+        &self,
+        pieces: &mut Vec<ConvexPiece>,
+        policy: GeometryPolicy,
+    ) -> Result<(), GeometryError> {
+        if let Some(compound) = self.rust_compound() {
+            for member in compound.members() {
+                member.append_planar_material(pieces, policy)?;
+            }
+        } else if let Some((body, frame)) = self.planar_boolean_body() {
+            pieces.extend(body.material_pieces(frame, policy.linear_tolerance_mm)?);
+        } else {
+            let topology = self.rust_topology().ok_or_else(planar_unsupported)??;
+            pieces.extend(
+                self.planar_convex_parts(&topology, policy)
+                    .ok_or_else(planar_unsupported)?
+                    .into_iter()
+                    .map(|(piece, _)| piece),
+            );
+        }
+        Ok(())
+    }
+
+    /// Exact positive common volume and bounds for the certified planar subset.
+    /// No geometry handle or display mesh is constructed for the caller.
+    pub fn rust_planar_intersection_metrics(
+        &self,
+        other: &Self,
+        policy: GeometryPolicy,
+    ) -> Result<Option<(f64, Bounds)>, GeometryError> {
+        let exact = |solid: &Self| GeometryPolicy {
+            boolean_fuzzy_mm: 0.,
+            ..solid.policy
+        };
+        if policy.boolean_fuzzy_mm != 0.
+            || exact(self) != policy
+            || exact(other) != policy
+            || !self.uses_rust_geometry()
+            || !other.uses_rust_geometry()
+        {
+            return Err(planar_unsupported());
+        }
+        let [a, b] = [self.bounds()?, other.bounds()?];
+        if (0..3).any(|i| a.max[i] <= b.min[i] || b.max[i] <= a.min[i]) {
+            return Ok(None);
+        }
+        let mut left = Vec::new();
+        let mut right = Vec::new();
+        self.append_planar_material(&mut left, policy)?;
+        other.append_planar_material(&mut right, policy)?;
+        Ok(Union::intersect(&left, &right, policy.linear_tolerance_mm)
+            .map_err(planar_error)?
+            .map(|union| {
+                let [min, max] = union.bounds();
+                (union.volume_mm3(), Bounds { min, max })
+            }))
+    }
+
+    pub fn rust_planar_intersection_volume(
+        &self,
+        other: &Self,
+        policy: GeometryPolicy,
+    ) -> Result<f64, GeometryError> {
+        Ok(self
+            .rust_planar_intersection_metrics(other, policy)?
+            .map_or(0., |(volume, _)| volume))
+    }
+
+    /// Subtract supported exact positive planar tools in a single evaluation.
+    pub fn rust_subtract_planar_tools(
+        &self,
+        tools: &[Self],
+        feature: EntityId,
+        policy: GeometryPolicy,
+    ) -> Result<Option<Self>, GeometryError> {
+        if policy.boolean_fuzzy_mm != 0.
+            || self.policy != policy
+            || tools.iter().any(|tool| tool.policy != policy)
+        {
+            return Err(planar_unsupported());
+        }
+        if tools.is_empty() {
+            return self.share().map(Some);
+        }
+        let mut operands = PlanarOperands::default();
+        operands.append(self, 1., policy)?;
+        let stock_count = operands.pieces.len();
+        for tool in tools {
+            operands.append(tool, -1., policy)?;
+        }
+        let (stock, cutting) = operands.pieces.split_at(stock_count);
+        Union::subtract(stock, cutting, policy.linear_tolerance_mm)
+            .map_err(planar_error)?
+            .map(|geometry| {
+                PlanarBooleanBody::build(
+                    geometry,
+                    operands.sources,
+                    &operands.topologies,
+                    feature,
+                    policy,
+                    None,
+                )
+            })
+            .transpose()
     }
 
     /// Join supported positive convex planar pieces with one shared Boolean.
@@ -253,47 +429,23 @@ impl Solid {
             return None;
         }
 
-        let tolerance = policy.linear_tolerance_mm;
-        let mut pieces = Vec::new();
-        let mut sources = Vec::new();
-        let mut topologies = Vec::new();
-        for (operand, solid) in solids.iter().enumerate() {
-            let topology = match solid.rust_topology()? {
-                Ok(topology) => topology,
-                Err(cause) => return Some(Err(cause)),
-            };
-            for (piece, ancestry) in solid.planar_convex_parts(&topology, policy)? {
-                pieces.push(piece);
-                sources.push(SourcePart {
-                    operand,
-                    faces: ancestry,
-                });
+        let mut operands = PlanarOperands::default();
+        for solid in solids {
+            if let Err(cause) = operands.append(solid, 1., policy) {
+                return (cause.kind != GeometryErrorKind::Unsupported).then_some(Err(cause));
             }
-            topologies.push(topology);
         }
-        let geometry = match Union::new(&pieces, tolerance) {
+        let geometry = match Union::new(&operands.pieces, policy.linear_tolerance_mm) {
             Ok(union) => union,
-            Err(Error::Limit) => {
-                return Some(Err(error(
-                    "planar union",
-                    GeometryErrorKind::Limit,
-                    "Planar Boolean exceeds its evaluation budget",
-                )));
-            }
-            Err(cause) => {
-                return Some(Err(error(
-                    "planar union",
-                    GeometryErrorKind::InvalidResult,
-                    format!("Planar Boolean did not produce a certified solid: {cause:?}"),
-                )));
-            }
+            Err(cause) => return Some(Err(planar_error(cause))),
         };
         Some(PlanarBooleanBody::build(
             geometry,
-            sources,
-            &topologies,
+            operands.sources,
+            &operands.topologies,
             feature,
             policy,
+            Some(operands.pieces),
         ))
     }
 
@@ -309,7 +461,7 @@ impl Solid {
         feature: EntityId,
         policy: GeometryPolicy,
     ) -> Result<Self, GeometryError> {
-        PlanarBooleanBody::build(geometry, Vec::new(), &[], feature, policy)
+        PlanarBooleanBody::build(geometry, Vec::new(), &[], feature, policy, None)
     }
 }
 
@@ -331,17 +483,58 @@ fn face_metrics(points: &[Point], normal: Point) -> (f64, Point) {
     )
 }
 
+fn component_origins(topology: &TopologySnapshot) -> Vec<Origin> {
+    let mut faces = topology
+        .elements
+        .iter()
+        .filter(|element| element.key.kind == TopologyKind::Face);
+    let Some(first) = faces.next() else {
+        return Vec::new();
+    };
+    let mut common: Vec<_> = first
+        .origins
+        .iter()
+        .filter(|origin| origin.role.starts_with("component/"))
+        .cloned()
+        .collect();
+    for face in faces {
+        common.retain(|origin| face.origins.contains(origin));
+    }
+    common
+}
+
 impl PlanarBooleanBody {
+    fn material_pieces(
+        &self,
+        frame: PlaneFrame,
+        tolerance: f64,
+    ) -> Result<Vec<ConvexPiece>, GeometryError> {
+        let material = self.material.as_ref().ok_or_else(planar_unsupported)?;
+        if frame == PlaneFrame::default() {
+            return Ok(material.clone());
+        }
+        material
+            .iter()
+            .map(|piece| {
+                piece
+                    .transformed(|point| position(frame, point), tolerance)
+                    .map_err(planar_error)
+            })
+            .collect()
+    }
+
     fn build(
         geometry: Union,
         sources: Vec<SourcePart>,
         topologies: &[TopologySnapshot],
         feature: EntityId,
         policy: GeometryPolicy,
+        material: Option<Vec<ConvexPiece>>,
     ) -> Result<Solid, GeometryError> {
         if feature.is_nil() {
-            return Err(input("Planar union needs a source feature"));
+            return Err(input("Planar Boolean needs a source feature"));
         }
+        let component_origins: Vec<_> = topologies.iter().map(component_origins).collect();
         let mut faces = Vec::with_capacity(geometry.faces().len());
         let mut edges = Vec::<(Key, Vec<usize>)>::new();
         let mut ordinals = BTreeMap::new();
@@ -356,7 +549,8 @@ impl PlanarBooleanBody {
                 source: feature,
                 role: format!("planar-boolean.face.{i}"),
             }];
-            let source = sources.get(raw.source).and_then(|part| {
+            let part = sources.get(raw.source);
+            let source = part.and_then(|part| {
                 let topology = &topologies[part.operand];
                 part.faces
                     .get(raw.source_face)
@@ -366,7 +560,7 @@ impl PlanarBooleanBody {
                     .or_else(|| {
                         let mut matching = topology.elements.iter().filter(|element| {
                             matches!(element.geometry, Some(AnalyticGeometry::Plane { frame })
-                        if dot(frame.normal(), raw.normal) > 1. - 1e-10
+                        if dot(frame.normal(), raw.normal) * part.normal_sign > 1. - 1e-10
                             && dot(raw.normal, subtract(points[0], frame.origin_mm)).abs()
                                 <= policy.linear_tolerance_mm)
                         });
@@ -378,6 +572,8 @@ impl PlanarBooleanBody {
             if let Some(source) = source {
                 origins.extend(source.origins.iter().cloned());
                 anchors.clone_from(&source.frames);
+            } else if let Some(part) = part {
+                origins.extend(component_origins[part.operand].iter().cloned());
             }
 
             let uses = raw
@@ -416,6 +612,7 @@ impl PlanarBooleanBody {
                 Rc::new(Self {
                     feature,
                     geometry,
+                    material,
                     faces,
                     edges,
                 }),

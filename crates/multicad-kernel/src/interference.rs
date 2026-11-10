@@ -60,7 +60,7 @@ impl Solid {
                 // The finite material distance already proves separation.
                 0.
             } else {
-                self.rust_occupied_overlap_volume(other)?
+                self.rust_occupied_overlap_volume(other, policy)?
             };
             return classify(volume, distance, contact_tolerance_mm);
         }
@@ -97,9 +97,13 @@ impl Solid {
         )
     }
 
-    /// Exact common volume of rectilinear Rust material in a shared frame.
+    /// Exact common volume of supported planar Rust material.
     /// Disjoint bounds also certify zero for other Rust geometry.
-    pub fn rust_occupied_overlap_volume(&self, other: &Self) -> Result<f64, GeometryError> {
+    pub fn rust_occupied_overlap_volume(
+        &self,
+        other: &Self,
+        policy: GeometryPolicy,
+    ) -> Result<f64, GeometryError> {
         if !self.uses_rust_geometry() || !other.uses_rust_geometry() {
             return Err(failure(
                 GeometryErrorKind::Unsupported,
@@ -113,8 +117,16 @@ impl Solid {
         }
         let mut left = Vec::new();
         let mut right = Vec::new();
-        self.append_rust_occupied_cells(&mut left)?;
-        other.append_rust_occupied_cells(&mut right)?;
+        match self
+            .append_rust_occupied_cells(&mut left)
+            .and_then(|_| other.append_rust_occupied_cells(&mut right))
+        {
+            Ok(()) => {}
+            Err(cause) if cause.kind == GeometryErrorKind::Unsupported => {
+                return self.rust_planar_intersection_volume(other, policy);
+            }
+            Err(cause) => return Err(cause),
+        }
         orthogonal::intersection_volume(&left, &right).map_err(|cause| match cause {
             BooleanError::Limit => failure(
                 GeometryErrorKind::Limit,

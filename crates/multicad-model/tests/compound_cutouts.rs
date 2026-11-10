@@ -3,7 +3,9 @@ use multicad_core::{
     document::{Document, EntityId},
     model::*,
 };
-use multicad_kernel::{GeometryPolicy, Solid};
+use multicad_kernel::{
+    BooleanOperation, GeometryPolicy, PlaneFrame, RigidTransform, Solid, rust_kernel::Rational,
+};
 use multicad_model::{Compiler, GeometryBackend};
 
 const BACKENDS: [GeometryBackend; 2] = [GeometryBackend::OpenCascade, GeometryBackend::Rust];
@@ -20,6 +22,10 @@ fn box_at(center: [f64; 2], width: f64, depth: f64) -> CompoundCutoutBox {
     })
 }
 fn fixture() -> (Session, CompoundCutoutRequest) {
+    fixture_with_outline([[0., 0.], [6000., 0.], [6000., 4000.], [0., 4000.]])
+}
+
+fn fixture_with_outline(outline: [[f64; 2]; 4]) -> (Session, CompoundCutoutRequest) {
     let mut session = Session::new(Document::new("Native compound shaft").unwrap()).unwrap();
     let mut receivers = vec![];
     for (name, z) in [("Ground", 0.), ("Upper", 3000.)] {
@@ -47,9 +53,7 @@ fn fixture() -> (Session, CompoundCutoutRequest) {
                 },
                 level,
                 kind: SlabKind::Slab,
-                outline: [[0., 0.], [6000., 0.], [6000., 4000.], [0., 4000.]]
-                    .map(|p| p.map(length))
-                    .to_vec(),
+                outline: outline.map(|p| p.map(length)).to_vec(),
                 thickness: None,
                 holes: vec![],
             },
@@ -504,6 +508,32 @@ fn overlapping_boxes_make_one_l_shaft_through_two_slabs_and_independent_step_rea
         near(readback.volume_mm3().unwrap(), expected);
         assert_eq!(readback.solid_count().unwrap(), 1);
     }
+    let rust = Compiler::default()
+        .compile_with_backend(
+            session.document(),
+            session.revision(),
+            GeometryBackend::Rust,
+            None,
+        )
+        .unwrap();
+    let hole_probe = Solid::rust_box(
+        EntityId::new().uuid_bits(),
+        [Rational::new(20, 1).unwrap(); 3],
+        PlaneFrame {
+            origin: [1800., 2000., -150.],
+            u: [0.8, 0.6, 0.],
+            v: [-0.6, 0.8, 0.],
+        },
+        GeometryPolicy::default(),
+    )
+    .unwrap();
+    assert!(
+        rust.solid(request.definition.receivers[0].target.body)
+            .unwrap()
+            .rust_planar_intersection_metrics(&hole_probe, GeometryPolicy::default())
+            .unwrap()
+            .is_none()
+    );
     request.definition.boxes.pop();
     let change = prepared(&session, &request);
     session.commit(change.prepared).unwrap();
@@ -559,21 +589,129 @@ fn disconnected_off_target_and_partial_slab_cuts_fail_native_preview_without_sou
 }
 
 #[test]
-fn rust_refuses_a_noncardinal_cutter_explicitly() {
-    let (session, mut request) = fixture();
+fn rotated_compound_cutouts_match_native_and_rebuild_chained_receivers() {
+    let (mut session, mut request) =
+        fixture_with_outline([[0., 0.], [6000., 0.], [6200., 4000.], [0., 4000.]]);
     request.definition.boxes[1].rectangle.rotation_deg = 10.;
-    let prepared = prepared(&session, &request);
-    let document = prepared.prepared.document();
+    let first = prepared(&session, &request);
+    session.commit(first.prepared).unwrap();
     let compiler = Compiler::default();
-    compiler
-        .compile_with_backend(document, 1, GeometryBackend::OpenCascade, None)
+    let [native, rust] = BACKENDS.map(|backend| {
+        compiler
+            .compile_with_backend(session.document(), session.revision(), backend, None)
+            .unwrap_or_else(|e| panic!("{backend:?}: {e}"))
+    });
+    let policy = compiler.policy;
+    let ground = &request.definition.receivers[0];
+    let base = ground.target.producer;
+    let cutter = request.feature;
+    let expected = native
+        .solid(base)
+        .unwrap()
+        .boolean(
+            native.solid(cutter).unwrap(),
+            BooleanOperation::Intersect,
+            policy,
+        )
+        .unwrap()
         .unwrap();
-    let Err(error) = compiler.compile_with_backend(document, 1, GeometryBackend::Rust, None) else {
-        panic!("Rust cannot prove a rotated compound cutter");
+    let (volume, bounds) = rust
+        .solid(base)
+        .unwrap()
+        .rust_planar_intersection_metrics(rust.solid(cutter).unwrap(), policy)
+        .unwrap()
+        .unwrap();
+    near(volume, expected.volume_mm3().unwrap());
+    let expected_bounds = expected.bounds().unwrap();
+    for i in 0..3 {
+        near(bounds.min[i], expected_bounds.min[i]);
+        near(bounds.max[i], expected_bounds.max[i]);
+    }
+    let pose = RigidTransform {
+        rotation: [[0.8, -0.6, 0.], [0.6, 0.8, 0.], [0., 0., 1.]],
+        translation_mm: [20., -40., 10.],
     };
-    assert_eq!(error.entity, Some(request.feature));
-    assert!(
-        error.message.contains("aligned to the world axes"),
-        "{error}"
+    let transformed_base = rust.solid(base).unwrap().transformed(pose).unwrap();
+    let transformed_cutter = rust.solid(cutter).unwrap().transformed(pose).unwrap();
+    near(
+        transformed_base
+            .rust_planar_intersection_volume(&transformed_cutter, policy)
+            .unwrap(),
+        volume,
     );
+    let topology = rust
+        .solid(ground.feature)
+        .unwrap()
+        .topology_snapshot(ground.feature, session.revision())
+        .unwrap();
+    for item in &request.definition.boxes {
+        let role = format!("component/{}", item.id);
+        assert!(topology.elements.iter().any(|face| {
+            face.key.kind == multicad_core::references::TopologyKind::Face
+                && face
+                    .origins
+                    .iter()
+                    .any(|origin| origin.source == cutter && origin.role == role)
+        }));
+    }
+    let measure = |session: &Session, receivers: &[CompoundCutoutReceiver]| {
+        let [native, rust] = BACKENDS.map(|backend| {
+            compiler
+                .compile_with_backend(session.document(), session.revision(), backend, None)
+                .unwrap_or_else(|e| panic!("{backend:?}: {e}"))
+        });
+        let temp = tempfile::tempdir().unwrap();
+        receivers
+            .iter()
+            .enumerate()
+            .map(|(i, receiver)| {
+                let actual = rust.solid(receiver.target.body).unwrap();
+                let expected = native.solid(receiver.target.body).unwrap();
+                assert!(actual.uses_rust_geometry());
+                assert_eq!(actual.solid_count().unwrap(), 1);
+                let volume = actual.volume_mm3().unwrap();
+                near(volume, expected.volume_mm3().unwrap());
+                let area = |solid: &Solid| {
+                    solid
+                        .faces()
+                        .unwrap()
+                        .iter()
+                        .map(|face| face.area_mm2)
+                        .sum::<f64>()
+                };
+                near(area(actual), area(expected));
+                let path = temp.path().join(format!("rotated-{i}.step"));
+                actual.write_step(&path).unwrap();
+                let readback = Solid::read_step(&path, GeometryPolicy::default()).unwrap();
+                near(readback.volume_mm3().unwrap(), volume);
+                volume
+            })
+            .collect::<Vec<_>>()
+    };
+    let first = measure(&session, &request.definition.receivers);
+    let second = CompoundCutoutRequest::new(
+        "Second penetration",
+        CompoundCutoutDefinition {
+            boxes: vec![box_at([4300., 2000.], 500., 500.)],
+            receivers: request
+                .definition
+                .receivers
+                .iter()
+                .map(|receiver| {
+                    CompoundCutoutReceiver::new(BodyInput {
+                        body: receiver.target.body,
+                        producer: receiver.feature,
+                    })
+                })
+                .collect(),
+            extent: CompoundCutoutExtent::ThroughReceivers,
+            levels: None,
+        },
+    );
+    let prepared = prepared(&session, &second);
+    session.commit(prepared.prepared).unwrap();
+    let second = measure(&session, &second.definition.receivers);
+    for (before, after) in first.into_iter().zip(second) {
+        near(before - after, 500. * 500. * 200.);
+    }
 }
