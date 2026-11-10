@@ -60,7 +60,7 @@ impl RevolutionAxis {
         let v = self.rotate_vector(sub(p, self.origin_mm), angle);
         std::array::from_fn(|i| self.origin_mm[i] + v[i])
     }
-    fn validate(
+    pub(crate) fn validate(
         self,
         profile: &CurvedProfile,
         angle: f64,

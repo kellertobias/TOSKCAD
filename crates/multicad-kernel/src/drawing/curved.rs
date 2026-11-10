@@ -25,6 +25,9 @@ fn projection_error(error: Error) -> GeometryError {
 }
 
 fn circular_dimensions(solid: &Solid) -> Option<(PlaneFrame, f64, f64, Option<f64>)> {
+    if let Some((body, frame)) = solid.revolution_body() {
+        return body.circular_sweep(frame);
+    }
     if let Some((body, frame)) = solid.annulus_body() {
         let geometry = &body.geometry;
         return Some((
