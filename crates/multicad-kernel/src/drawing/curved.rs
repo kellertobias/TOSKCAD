@@ -170,6 +170,7 @@ fn project_members(
     let mut rounds = Vec::new();
     let mut rounded = stadium::Shapes::default();
     let mut shell_faces = Vec::new();
+    let mut spatial_ellipses = Vec::new();
     let mut shell_tolerance = 0.0_f64;
     for (index, &(source, solid)) in members.iter().enumerate() {
         if solid.rounded_slot_body().is_some() {
@@ -186,6 +187,7 @@ fn project_members(
             shell_faces.extend(elevation.blockers);
             rounded.lines.extend(elevation.lines);
             rounded.rims.extend(elevation.rims);
+            spatial_ellipses.extend(elevation.spatial_ellipses);
             shell_tolerance = shell_tolerance.max(tolerance);
             continue;
         }
@@ -278,6 +280,7 @@ fn project_members(
             blocker_rounds: &rounded.rounds,
             lines: &rounded.lines,
             spatial_rims: &rounded.rims,
+            spatial_ellipses: &spatial_ellipses,
             intrinsic_hidden: &intrinsic_hidden,
             ..Default::default()
         },

@@ -506,6 +506,7 @@ impl Builder {
             band: None,
             chart_w: vec![],
             chart_edges: 0,
+            matched_quarter_rims: None,
         })
     }
 }

@@ -29,6 +29,19 @@ impl Shell {
         });
         let (mut angle_levels, grid) = sample_angles(&source_angles, steps);
 
+        // Miter legs run between equal angular intervals of circular and
+        // elliptical rims. Use the largest semiaxis for all paired strips so
+        // they share phase and respect the chord error on the oblique rim.
+        let (matched_edges, matched_steps) = self
+            .matched_quarter_rims
+            .map(|(edges, radius)| {
+                options
+                    .arc_segments(radius, FRAC_PI_2)
+                    .map(|steps| (edges, steps))
+            })
+            .transpose()?
+            .unwrap_or_default();
+
         let mut boundary_intervals = 0;
         let sampling = self
             .edges
@@ -44,6 +57,9 @@ impl Shell {
                             grid.partition_point(|&w| w <= a.min(b))
                                 ..grid.partition_point(|&w| w < a.max(b)),
                         )
+                    }
+                    Curve::Ellipse(arc) if index < matched_edges => {
+                        Samples::Circle(arc, matched_steps)
                     }
                     Curve::Ellipse(arc) => Samples::Circle(
                         arc,

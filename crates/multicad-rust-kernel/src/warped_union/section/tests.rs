@@ -111,6 +111,83 @@ fn area(loops: &[Vec<SectionEdge>], normal: Point) -> f64 {
         .sum()
 }
 
+fn circular_miter_fixture() -> Shell {
+    circular_miter([[0.; 3], [0., 0., 20.], [20., 0., 20.]], 2., TOL).unwrap()
+}
+
+fn disk_segment(offset: f64) -> f64 {
+    4. * (offset / 2.).acos() - offset * (4. - offset * offset).sqrt()
+}
+
+#[test]
+fn transverse_miter_sections_keep_the_shared_ellipse_crossings() {
+    let shell = circular_miter_fixture();
+    let straight = shell.section([0., 0., 10.], Z, TOL, 100).unwrap();
+    assert_eq!(straight.len(), 1);
+    assert!((area(&straight, Z) - 4. * std::f64::consts::PI).abs() < TOL);
+
+    let half_width = 3.75_f64.sqrt();
+    let loops = shell.section([0., 0., 20.5], Z, TOL, 100).unwrap();
+    assert_eq!(loops.len(), 1);
+    let expected = disk_segment(0.5) + 2. * 20.5 * half_width;
+    assert!((area(&loops, Z) - expected).abs() < TOL);
+    for y in [-half_width, half_width] {
+        assert!(
+            loops[0]
+                .iter()
+                .any(|edge| { length3(sub(edge.ends_mm[0], [-0.5, y, 20.5])) < TOL })
+        );
+    }
+}
+
+#[test]
+fn oblique_miter_section_joins_two_exact_ellipse_segments() {
+    let shell = circular_miter_fixture();
+    let normal = unit([0.5, 0., 1.]).unwrap();
+    let loops = shell.section([0., 0., 20.3], normal, TOL, 100).unwrap();
+    assert_eq!(loops.len(), 1);
+    let first = disk_segment(0.6);
+    let second = 4. * std::f64::consts::PI - first;
+    let expected = first * 1.25_f64.sqrt() + second * 5_f64.sqrt();
+    assert!((area(&loops, normal) - expected).abs() < TOL);
+    let mut joins = 0;
+    for edge in &loops[0] {
+        let Curve::Ellipse(arc) = edge.curve else {
+            panic!("only the two cylinder walls cross this section");
+        };
+        let [major, minor] = arc.ellipse().semiaxes_mm();
+        assert!((minor - 2.).abs() < TOL);
+        assert!(
+            (major - 5_f64.sqrt())
+                .abs()
+                .min((major - 2. * 5_f64.sqrt()).abs())
+                < TOL
+        );
+        let [x, _, z] = edge.ends_mm[0];
+        assert!((z + 0.5 * x - 20.3).abs() < TOL);
+        joins += usize::from((x + z - 20.).abs() < TOL);
+    }
+    assert_eq!(joins, 2);
+}
+
+#[test]
+fn a_cylinder_chart_rejects_unverified_or_double_tilted_rims() {
+    let mut shell = circular_miter_fixture();
+    let face = shell.faces[1].clone();
+    let [cap, _, trim, _] = *face.boundary.as_slice() else {
+        panic!("expected a ruled cylinder sector");
+    };
+    let inspect = |shell: &Shell| CylinderPatch::new(shell, &face, [0.; 3], Z, 2., TOL);
+    let certificate = shell.matched_quarter_rims.take();
+    assert!(matches!(inspect(&shell), Err(Error::Unsupported)));
+    shell.matched_quarter_rims = certificate;
+    shell.edges[cap.edge].curve = shell.edges[trim.edge].curve;
+    assert!(matches!(inspect(&shell), Err(Error::Unsupported)));
+    let invalid = Ellipse::new([0.; 3], Z, X, [3., 2.]).unwrap();
+    shell.edges[cap.edge].curve = Curve::Ellipse(EllipseArc::new(invalid, 0., FRAC_PI_2).unwrap());
+    assert!(matches!(inspect(&shell), Err(Error::Unsupported)));
+}
+
 #[test]
 fn section_follows_exact_bends_and_skips_web_and_flange_openings() {
     for up in [-1., 1.] {

@@ -178,11 +178,103 @@ fn refuses_inconsistent_incidence_and_unproved_trim_geometry() {
     assert_eq!(project(&shell), Some(Error::Unsupported));
     shell.faces.remove(0);
     assert_eq!(project(&shell), Some(Error::Invalid));
+}
 
-    let view = View::new([0.; 3], [X, Y, Z], TOL).unwrap();
-    let ellipse = Ellipse::new([0.; 3], Z, X, [2., 1.]).unwrap();
-    let arc = EllipseArc::new(ellipse, 0., FRAC_PI_2).unwrap();
-    assert_eq!(view.rims(0, arc).err(), Some(Error::Unsupported));
+#[test]
+fn projected_miter_ellipse_retains_the_exact_trim_and_depth() {
+    let q = std::f64::consts::FRAC_1_SQRT_2;
+    let ellipse = Ellipse::new([3., 4., 5.], Z, [q, q, 0.], [2., 1.]).unwrap();
+    let arc = EllipseArc::new(ellipse, 0.2, -1.4).unwrap();
+    let views = [
+        [X, Z, [0., -1., 0.]],
+        [X, [0., q, q], [0., -q, q]],
+        [X, Y, Z],
+    ];
+    for axes in views {
+        let view = View::new([0.; 3], axes, TOL).unwrap();
+        let candidates: Vec<_> = view.ellipses(42, arc).collect();
+        assert!(!candidates.is_empty());
+        for candidate in candidates {
+            assert_eq!(candidate.source, 42);
+            assert_eq!(candidate.ellipse.minor == 0., axes == views[0]);
+            let [a, b] = candidate.ellipse.trim;
+            for theta in [a, (a + b) * 0.5, b] {
+                let (sin, cos) = theta.sin_cos();
+                let [x, y] = std::array::from_fn(|i| {
+                    candidate.ellipse.center[i]
+                        + candidate.ellipse.major * candidate.ellipse.u[i] * cos
+                        + candidate.ellipse.minor * candidate.ellipse.v[i] * sin
+                });
+                let z = candidate.depth + candidate.depth_cosine * cos + candidate.depth_sine * sin;
+                let point =
+                    std::array::from_fn(|i| x * axes[0][i] + y * axes[1][i] + z * axes[2][i]);
+                let parameter = ellipse.parameter_at(point, TOL).unwrap();
+                let travel = (arc.start_rad() - parameter + TOL).rem_euclid(TAU);
+                assert!(travel < 1.4 + 2. * TOL, "{parameter} / {travel}");
+            }
+        }
+    }
+}
+
+#[test]
+fn circular_miter_projects_trimmed_silhouettes_and_analytic_visible_and_hidden_rims() {
+    use crate::{
+        curved_projection::Curve,
+        planar_projection::{Options, SceneExtras, project_scene_with_analytic_faces},
+    };
+
+    let shell = circular_miter([[0.; 3], [0., 0., 20.], [20., 0., 20.]], 2., TOL).unwrap();
+    let side = shell
+        .elevation([0.; 3], [X, Z, [0., -1., 0.]], 19, TOL, false)
+        .unwrap();
+    for [a, b] in [
+        [[-2., 0.], [-2., 22.]],
+        [[2., 0.], [2., 18.]],
+        [[-2., 22.], [20., 22.]],
+        [[2., 18.], [20., 18.]],
+    ] {
+        assert!(line_present(&side, [a, b].map(|[x, y]| [x, y, 0.])));
+    }
+    let q = std::f64::consts::FRAC_1_SQRT_2;
+    let oblique = shell
+        .elevation([0.; 3], [X, [0., q, q], [0., -q, q]], 19, TOL, false)
+        .unwrap();
+    let (_, _, edges) = project_scene_with_analytic_faces(
+        &[],
+        &[],
+        SceneExtras {
+            lines: &oblique.lines,
+            spatial_rims: &oblique.rims,
+            spatial_ellipses: &oblique.spatial_ellipses,
+            ..Default::default()
+        },
+        &oblique.blockers,
+        Options {
+            tolerance: TOL,
+            hidden_lines: true,
+            tangent_edges: false,
+            detail: None,
+            segment_limit: 1000,
+        },
+    )
+    .unwrap();
+    let mut coverage = [0.; 2];
+    for edge in edges {
+        assert_eq!(edge.source, 19);
+        if let Curve::Ellipse(ellipse) = edge.edge.curve
+            && ellipse.center[0].abs() <= TOL
+            && (ellipse.center[1] - 20. * q).abs() <= TOL
+        {
+            assert!((ellipse.major.powi(2) - (4. + 8_f64.sqrt())).abs() <= TOL);
+            assert!((ellipse.minor.powi(2) - (4. - 8_f64.sqrt())).abs() <= TOL);
+            coverage[usize::from(edge.edge.hidden)] += ellipse.trim[1] - ellipse.trim[0];
+        }
+    }
+    assert!(
+        coverage.into_iter().all(|sweep| sweep > TOL),
+        "{coverage:?}"
+    );
+    assert!((coverage.into_iter().sum::<f64>() - TAU).abs() <= TOL);
 }
 
 #[test]

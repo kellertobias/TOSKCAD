@@ -7,6 +7,7 @@ use std::{collections::BTreeMap, f64::consts::FRAC_PI_2};
 
 mod axial_cut;
 mod boss;
+mod circular_miter;
 mod cylinder_patch;
 mod elevation;
 mod mesh;
@@ -15,6 +16,7 @@ mod section;
 mod sheet;
 pub use axial_cut::{AxialCut, ConvexRecess, OpenBoreSide};
 pub use boss::Boss;
+pub use circular_miter::circular_miter;
 pub use elevation::Elevation;
 pub use section::{SectionClipPlane, SectionEdge, clip_section_loops};
 pub use sheet::{
@@ -95,6 +97,8 @@ pub struct Shell {
     band: Option<Band>,
     chart_w: Vec<f64>,
     chart_edges: usize,
+    /// Number and maximum radius of leading quarter-rim edges sharing a grid.
+    matched_quarter_rims: Option<(usize, f64)>,
 }
 
 impl Shell {
@@ -289,6 +293,7 @@ fn boundary(union: &Union, band: Option<Band>, tolerance_mm: f64) -> Result<Shel
         chart_w: band.map_or_else(Vec::new, |_| {
             union.vertices().iter().map(|p| p[2]).collect()
         }),
+        matched_quarter_rims: None,
     })
 }
 

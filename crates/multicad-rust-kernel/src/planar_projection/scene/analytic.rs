@@ -66,7 +66,7 @@ struct Cylinder {
     ray_radial: Point,
     projected: f64,
     axial_depth: f64,
-    height: f64,
+    end: [f64; 3],
     radius: f64,
     radial_ends: [Point2; 2],
     facing: f64,
@@ -197,6 +197,33 @@ impl AnalyticFace {
         outward: bool,
         tolerance: f64,
     ) -> Result<Option<Self>, ProjectionError> {
+        Self::cylinder_between(cap, axis, height, None, outward, tolerance)
+    }
+
+    /// Prepare a cylindrical sector from a perpendicular circle trim to a
+    /// tilted ellipse trim on the same cylinder.
+    pub fn tilted_cylinder(
+        cap: EllipseArc,
+        end: EllipseArc,
+        axis: Point,
+        outward: bool,
+        tolerance: f64,
+    ) -> Result<Option<Self>, ProjectionError> {
+        let height = dot(
+            sub(end.ellipse().center_mm(), cap.ellipse().center_mm()),
+            unit(axis),
+        );
+        Self::cylinder_between(cap, axis, height, Some(end), outward, tolerance)
+    }
+
+    fn cylinder_between(
+        cap: EllipseArc,
+        axis: Point,
+        height: f64,
+        end: Option<EllipseArc>,
+        outward: bool,
+        tolerance: f64,
+    ) -> Result<Option<Self>, ProjectionError> {
         let ellipse = cap.ellipse();
         let origin = ellipse.center_mm();
         validate(origin, axis, tolerance)?;
@@ -241,9 +268,54 @@ impl AnalyticFace {
             radial_ends.reverse();
         }
         let a = arc_bounds(cap);
-        let b = Bounds {
-            min: std::array::from_fn(|i| axis[i].mul_add(height, a.min[i])),
-            max: std::array::from_fn(|i| axis[i].mul_add(height, a.max[i])),
+        let (b, end) = if let Some(end) = end {
+            let ellipse = end.ellipse();
+            let normal = ellipse.normal();
+            let alignment = dot(normal, axis);
+            let [major, minor] = ellipse.semiaxes_mm();
+            let shift = sub(ellipse.center_mm(), origin);
+            if alignment.abs() <= ANGULAR
+                || length(cross(shift, axis)) > tolerance
+                || (minor - radius).abs() > tolerance
+                || (major * alignment.abs() - radius).abs() > tolerance
+                || dot(ellipse.minor_axis(), axis).abs() > ANGULAR
+            {
+                return Err(ProjectionError::Invalid);
+            }
+            let radial = |point| {
+                let delta = sub(point, origin);
+                [dot(delta, transverse), dot(delta, ray_radial)]
+            };
+            let start = cap.endpoints().map(radial);
+            let finish = end.endpoints().map(radial);
+            let matches = |points: [Point2; 2]| {
+                start
+                    .into_iter()
+                    .zip(points)
+                    .all(|([x, y], [u, v])| (x - u).hypot(y - v) <= tolerance)
+            };
+            let middle = radial(ellipse.point_at(end.start_rad() + end.sweep_rad() * 0.5));
+            let middle = middle.map(|value| value / radius);
+            if (!matches(finish) && !matches([finish[1], finish[0]]))
+                || cross2(radial_ends[0], middle) < -ANGULAR
+                || cross2(middle, radial_ends[1]) < -ANGULAR
+            {
+                return Err(ProjectionError::Invalid);
+            }
+            let y = -dot(normal, transverse) / alignment;
+            let q = -dot(normal, ray_radial) / alignment;
+            if height - radius * y.hypot(q) <= tolerance {
+                return Err(ProjectionError::Invalid);
+            }
+            (arc_bounds(end), [height, y, q])
+        } else {
+            (
+                Bounds {
+                    min: std::array::from_fn(|i| axis[i].mul_add(height, a.min[i])),
+                    max: std::array::from_fn(|i| axis[i].mul_add(height, a.max[i])),
+                },
+                [height, 0., 0.],
+            )
         };
         Ok(Some(Self {
             surface: Surface::Cylinder(Cylinder {
@@ -253,7 +325,7 @@ impl AnalyticFace {
                 ray_radial,
                 projected,
                 axial_depth,
-                height,
+                end,
                 radius,
                 radial_ends,
                 facing: if outward { 1. } else { -1. },
@@ -786,18 +858,20 @@ impl Cylinder {
         let depth = path
             .coordinate(self.origin, self.ray_radial)
             .offset((p * gap).max(roundoff));
-        if c == 0. {
-            for cap in [0., self.height] {
-                x.level(cap, span, &mut work.crossings);
-            }
-        } else {
-            work.charge(if path.harmonic { 160 } else { 16 })?;
-            for cap in [0., self.height] {
-                // The full projected cap ellipse supplies event boundaries.
-                // The ray test below restricts it to the correct arc and root.
-                x.offset(-p * cap).circle(
-                    y.scale(c),
-                    c.abs() * self.radius,
+        let [height, end_y, end_q] = self.end;
+        for [height, trim_y, trim_q] in [[0.; 3], self.end] {
+            // The cap station is h + a*y + b*q, where q is the signed
+            // radial depth of the first cylinder hit. At a crossing,
+            // X + C*q = 0. Eliminate q with q² + y² = r² for the events.
+            let position = x.combine(1., y, -p * trim_y).offset(-p * height);
+            let coefficient = c - p * trim_q;
+            if coefficient.abs() <= ANGULAR {
+                position.level(0., span, &mut work.crossings);
+            } else {
+                work.charge(if path.harmonic { 80 } else { 8 })?;
+                position.circle(
+                    y.scale(coefficient),
+                    coefficient.abs() * self.radius,
                     span,
                     &mut work.crossings,
                 );
@@ -821,7 +895,6 @@ impl Cylinder {
         }
         work.charge(work.crossings.len() + 1)?;
         let radial_roundoff = 16. * f64::EPSILON * self.radius;
-        let axial_limit = p * self.height;
         drawing_events::spans(
             &mut work.crossings,
             span,
@@ -838,6 +911,7 @@ impl Cylinder {
                 // Multiplying the station by p gives this expression without
                 // dividing by a potentially small projected axis length.
                 let axial = c.mul_add(hit, x.at(t));
+                let axial_limit = p * end_q.mul_add(hit, end_y.mul_add(y, height));
                 let radial = [y / self.radius, hit / self.radius];
                 (0. ..=axial_limit).contains(&axial)
                     && hit > depth.at(t)

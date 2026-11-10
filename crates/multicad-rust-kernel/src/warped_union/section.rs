@@ -1,6 +1,6 @@
-//! Plane sections of exact planar and axially trimmed circular shell faces.
+//! Plane sections of exact planar and trimmed cylindrical shell faces.
 use super::{
-    cylinder_patch::{ANGULAR, CylinderPatch, axis_offset},
+    cylinder_patch::{ANGULAR, CylinderPatch, axis_offset, tilted},
     *,
 };
 use crate::trim_curve::{Cylinder, Plane, PlaneCrossings, cylinder_plane};
@@ -35,8 +35,8 @@ struct Section {
 
 impl Shell {
     /// Intersect the boundary with a transverse cutting plane. Cylindrical
-    /// patches need circular cap trims and straight generators. Their section
-    /// curves are straight generators, circular arcs or exact ellipse arcs.
+    /// patches can have circular cap trims or one certified tilted miter rim.
+    /// Their section curves are straight generators, circles or exact ellipses.
     pub fn section(
         &self,
         origin_mm: Point,
@@ -54,12 +54,22 @@ impl Shell {
         let normal = unit(normal)?;
         let plane = Plane::new(origin_mm, normal).map_err(|_| Error::Invalid)?;
         let signed = |p| dot(sub(p, origin_mm), normal);
-        let distances: Vec<_> = self.vertices.iter().copied().map(signed).collect();
+        let mut distances: Vec<_> = self.vertices.iter().copied().map(signed).collect();
+        let shifted;
+        let shell = if distances.iter().any(|d| d.abs() <= tolerance_mm) {
+            // On a miter the quarter-rim vertices only partition a pair of
+            // analytic cylinders. Move those seams for this query without
+            // moving the cut or changing the solid's saved topology.
+            (shifted, distances) = self.repartition_circular_miter(signed, tolerance_mm)?;
+            &shifted
+        } else {
+            self
+        };
         if distances.iter().all(|&d| d > tolerance_mm)
             || distances.iter().all(|&d| d < -tolerance_mm)
         {
             // Ellipse extrema may lie outside the vertex projection.
-            let outside = self.edges.iter().all(|edge| match edge.curve {
+            let outside = shell.edges.iter().all(|edge| match edge.curve {
                 Curve::Line => true,
                 Curve::Ellipse(arc) => {
                     let [lo, hi] = arc.range_along(normal);
@@ -71,12 +81,7 @@ impl Shell {
                 return Ok(Vec::new());
             }
         }
-        // A vertex or an entire trim on the plane needs a regularized
-        // contact rule, distinct from the transverse crossing proof below.
-        if distances.iter().any(|d| d.abs() <= tolerance_mm) {
-            return Err(Error::Unsupported);
-        }
-        let hits = self
+        let hits = shell
             .edges
             .iter()
             .enumerate()
@@ -87,7 +92,7 @@ impl Shell {
                         if da.is_sign_positive() == db.is_sign_positive() {
                             Vec::new()
                         } else {
-                            let [a, b] = edge.vertices.map(|id| self.vertices[id]);
+                            let [a, b] = edge.vertices.map(|id| shell.vertices[id]);
                             vec![translate(a, sub(b, a), da / (da - db))]
                         }
                     }
@@ -111,7 +116,7 @@ impl Shell {
             hits,
             edges: BTreeMap::new(),
         };
-        for face in &self.faces {
+        for face in &shell.faces {
             match face.support {
                 Support::Plane { normal } => section.planar(face, normal)?,
                 Support::Cylinder {
@@ -120,7 +125,7 @@ impl Shell {
                     radius_mm,
                     outward,
                 } => section.cylinder(
-                    self,
+                    shell,
                     face,
                     axis_origin_mm,
                     axis_direction,
@@ -204,7 +209,7 @@ impl Section {
         }
         let patch = CylinderPatch::new(shell, face, axis_origin, axis, radius, self.tolerance)?;
         let cosine = dot(axis, self.normal);
-        if length3(cross(axis, self.normal)) <= ANGULAR {
+        if length3(cross(axis, self.normal)) <= ANGULAR && !tilted(patch.arcs[1].1, axis) {
             let (_, original) = patch.arcs[0];
             let cap = original.ellipse();
             let offset = dot(sub(self.origin, cap.center_mm()), self.normal) / cosine;
@@ -289,7 +294,8 @@ impl Section {
         let ellipse = cylinder_plane(cylinder, plane).map_err(|_| Error::Unsupported)?;
         let [(_, reference), (_, end)] = patch.arcs;
         let base = reference.ellipse();
-        let height = dot(sub(end.ellipse().center_mm(), base.center_mm()), axis);
+        let end_rim = end.ellipse();
+        let end_normal = end_rim.normal();
         let span = reference.sweep_rad().abs();
         let angular_tolerance = 4. * self.tolerance / radius + ANGULAR;
         let cosine = dot(axis, self.normal);
@@ -336,7 +342,10 @@ impl Section {
         for &[(start, first), (end, last)] in pairs {
             let angle =
                 reference.start_rad() + reference.sweep_rad().signum() * start.midpoint(end);
-            let offset = dot(sub(self.origin, base.point_at(angle)), self.normal) / cosine;
+            let radial_point = base.point_at(angle);
+            let height =
+                dot(sub(end_rim.center_mm(), radial_point), end_normal) / dot(end_normal, axis);
+            let offset = dot(sub(self.origin, radial_point), self.normal) / cosine;
             if offset <= height.min(0.) + self.tolerance
                 || offset >= height.max(0.) - self.tolerance
             {

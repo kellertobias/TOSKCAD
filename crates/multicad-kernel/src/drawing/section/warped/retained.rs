@@ -60,6 +60,13 @@ pub(in crate::drawing::section) fn project(
                     .rims
                     .extend(depth.clip_rim(rim).map_err(planar::projection_error)?);
             }
+            for ellipse in elevation.spatial_ellipses {
+                scene.ellipses.extend(
+                    depth
+                        .clip_ellipse(ellipse)
+                        .map_err(planar::projection_error)?,
+                );
+            }
             scene.blockers.extend(
                 elevation
                     .blockers

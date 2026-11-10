@@ -73,6 +73,49 @@ fn assert_spans(segments: &[RoundSegment], axis: usize, expected: &[(bool, Span)
 }
 
 #[test]
+fn tilted_cylinder_uses_the_first_hit_at_the_exact_miter_plane() {
+    let q = std::f64::consts::FRAC_1_SQRT_2;
+    let base = Ellipse::new([0.; 3], X, Y, [2.; 2]).unwrap();
+    let cap = EllipseArc::new(base, 0., FRAC_PI_2).unwrap();
+    let trim = |center, major, phase, sweep| {
+        let ellipse = Ellipse::new(center, [q, 0., -q], [q, 0., q], [major, 2.]).unwrap();
+        EllipseArc::new(ellipse, phase, sweep).unwrap()
+    };
+    let miter = trim([6., 0., 0.], 2. / q, -FRAC_PI_2, FRAC_PI_2);
+    let cylinder = AnalyticFace::tilted_cylinder(cap, miter, X, true, TOL)
+        .unwrap()
+        .unwrap();
+    // The front ray at y=1 hits at z=sqrt(3). The slanted boundary is
+    // x=6+z, so its occluding interval extends past the axis station 6.
+    assert_spans(
+        &line(&cylinder, [[-1., 1., 0.], [9., 1., 0.]]),
+        0,
+        &[
+            (false, [-1., 0.]),
+            (true, [0., 6. + 3_f64.sqrt()]),
+            (false, [6. + 3_f64.sqrt(), 9.]),
+        ],
+    );
+    assert_spans(
+        &line(&cylinder, [[-1., -1., 0.], [9., -1., 0.]]),
+        0,
+        &[(false, [-1., 9.])],
+    );
+    for invalid in [
+        trim([6., 0., 1.], 2. / q, -FRAC_PI_2, FRAC_PI_2),
+        trim([6., 0., 0.], 3., -FRAC_PI_2, FRAC_PI_2),
+        trim([6., 0., 0.], 2. / q, 0., FRAC_PI_2),
+        trim([6., 0., 0.], 2. / q, 0., 3. * FRAC_PI_2),
+        trim([1., 0., 0.], 2. / q, -FRAC_PI_2, FRAC_PI_2),
+    ] {
+        assert_eq!(
+            AnalyticFace::tilted_cylinder(cap, invalid, X, true, TOL).err(),
+            Some(ProjectionError::Invalid),
+        );
+    }
+}
+
+#[test]
 fn sheet_material_hides_a_line_except_through_its_rectangle_and_circle() {
     let face = AnalyticFace::plane(
         [0., 0., 2.],

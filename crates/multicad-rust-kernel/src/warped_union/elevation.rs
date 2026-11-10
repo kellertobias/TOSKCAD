@@ -1,12 +1,13 @@
 //! Produce physical HLR edges and exact blockers from a certified analytic shell.
 use super::{
-    cylinder_patch::{ANGULAR, CylinderPatch, axis_offset},
+    cylinder_patch::{ANGULAR, CylinderPatch, axis_offset, tilted},
     *,
 };
 use crate::{
     curved_projection,
     planar_projection::{
-        AnalyticFace, FaceTrim, LineCandidate, ProjectionError, SpatialRimCandidate,
+        AnalyticFace, FaceTrim, LineCandidate, ProjectionError, SpatialEllipseCandidate,
+        SpatialRimCandidate,
     },
 };
 use std::f64::consts::TAU;
@@ -17,14 +18,15 @@ pub struct Elevation {
     pub blockers: Vec<AnalyticFace>,
     pub lines: Vec<LineCandidate>,
     pub rims: Vec<SpatialRimCandidate>,
+    pub spatial_ellipses: Vec<SpatialEllipseCandidate>,
 }
 
 impl Shell {
     /// Prepare exact hidden-line inputs, without projecting mesh edges.
     ///
     /// The view axes are right-handed U, V and toward-viewer directions
-    /// in shell coordinates. Cylindrical walls need the same circular
-    /// cap trims and straight generators as exact sections.
+    /// in shell coordinates. Cylindrical walls have straight generators and
+    /// use circular rims or an exact tilted miter trim.
     pub fn elevation(
         &self,
         view_origin_mm: Point,
@@ -75,7 +77,6 @@ impl Shell {
                         tolerance_mm,
                     )?;
                     let [(_, cap), (_, end)] = patch.arcs;
-                    let axial = view.vector(axis_direction);
                     let events =
                         patch.silhouettes(self, view_axes[2], axis_direction, tolerance_mm)?;
                     for event in events.into_iter().flatten() {
@@ -89,13 +90,21 @@ impl Shell {
                     }
                     let span = sub(end.ellipse().center_mm(), cap.ellipse().center_mm());
                     let height = dot(span, axis_direction);
-                    AnalyticFace::cylinder(
-                        view.arc(cap, true)?,
-                        axial.map(|coordinate| coordinate * height.signum()),
-                        height.abs(),
-                        outward,
-                        tolerance_mm,
-                    )
+                    let axial = view
+                        .vector(axis_direction)
+                        .map(|coordinate| coordinate * height.signum());
+                    let cap = view.arc(cap, true)?;
+                    if tilted(end, axis_direction) {
+                        AnalyticFace::tilted_cylinder(
+                            cap,
+                            view.arc(end, true)?,
+                            axial,
+                            outward,
+                            tolerance_mm,
+                        )
+                    } else {
+                        AnalyticFace::cylinder(cap, axial, height.abs(), outward, tolerance_mm)
+                    }
                 }
             }
             .map_err(projection_error)?;
@@ -119,11 +128,19 @@ impl Shell {
                     source,
                     points: points.map(|point| view.point(point)),
                 }),
-                Curve::Ellipse(arc) => result.rims.extend(view.rims(source, arc)?),
+                Curve::Ellipse(arc) if noncircular(arc) => {
+                    result.spatial_ellipses.extend(view.ellipses(source, arc));
+                }
+                Curve::Ellipse(arc) => result.rims.extend(view.rims(source, arc)),
             }
         }
         Ok(result)
     }
+}
+
+fn noncircular(arc: EllipseArc) -> bool {
+    let [a, b] = arc.ellipse().semiaxes_mm();
+    a != b
 }
 
 fn projection_error(error: ProjectionError) -> Error {
@@ -196,16 +213,9 @@ impl View {
         }
     }
 
-    fn rims(
-        &self,
-        source: usize,
-        arc: EllipseArc,
-    ) -> Result<impl Iterator<Item = SpatialRimCandidate>, Error> {
+    fn rims(&self, source: usize, arc: EllipseArc) -> impl Iterator<Item = SpatialRimCandidate> {
         let ellipse = arc.ellipse();
-        let [radius, minor] = ellipse.semiaxes_mm();
-        if radius != minor {
-            return Err(Error::Unsupported);
-        }
+        let [radius, _] = ellipse.semiaxes_mm();
         let [u, v] = [ellipse.major_axis(), ellipse.minor_axis()].map(|basis| self.vector(basis));
         let inclination = u[2].hypot(v[2]);
         let [cos, sin] = if inclination <= ANGULAR {
@@ -229,7 +239,7 @@ impl View {
         let sweep = arc.sweep_rad();
         let lo = (arc.start_rad() + sweep.min(0.) - sin.atan2(cos)).rem_euclid(TAU);
         let hi = lo + sweep.abs();
-        Ok([[lo, hi.min(TAU)], [0., hi - TAU]]
+        [[lo, hi.min(TAU)], [0., hi - TAU]]
             .into_iter()
             .filter(|[a, b]| b - a > ANGULAR)
             .map(move |trim| SpatialRimCandidate {
@@ -244,7 +254,58 @@ impl View {
                 },
                 depth,
                 depth_sine: radius * minor[2],
-            }))
+            })
+    }
+
+    fn ellipses(
+        &self,
+        source: usize,
+        arc: EllipseArc,
+    ) -> impl Iterator<Item = SpatialEllipseCandidate> {
+        let ellipse = arc.ellipse();
+        let [u, v] = [ellipse.major_axis(), ellipse.minor_axis()].map(|axis| self.vector(axis));
+        let [major, minor] = ellipse.semiaxes_mm();
+        let [a, b] = [u.map(|x| major * x), v.map(|x| minor * x)];
+        // Diagonalize the screen Gram matrix, applying the same phase to the
+        // depth components so the projected trim retains its 3D position.
+        let aa = a[0].mul_add(a[0], a[1] * a[1]);
+        let bb = b[0].mul_add(b[0], b[1] * b[1]);
+        let ab = a[0].mul_add(b[0], a[1] * b[1]);
+        let phase = 0.5 * (2. * ab).atan2(aa - bb);
+        let (sin, cos) = phase.sin_cos();
+        let major_axis: Point = std::array::from_fn(|i| cos.mul_add(a[i], sin * b[i]));
+        let minor_axis: Point = std::array::from_fn(|i| (-sin).mul_add(a[i], cos * b[i]));
+        let major = major_axis[0].hypot(major_axis[1]);
+        let u = [major_axis[0] / major, major_axis[1] / major];
+        let perpendicular = [-u[1], u[0]];
+        let signed = minor_axis[0].mul_add(perpendicular[0], minor_axis[1] * perpendicular[1]);
+        let minor = if signed.abs() <= ANGULAR * major {
+            0.
+        } else {
+            signed.abs().min(major)
+        };
+        let v = perpendicular.map(|value| value * signed.signum());
+        let [x, y, depth] = self.point(ellipse.center_mm());
+        let sweep = arc.sweep_rad();
+        let lo = (arc.start_rad() + sweep.min(0.) - phase).rem_euclid(TAU);
+        let hi = lo + sweep.abs();
+        [[lo, hi.min(TAU)], [0., hi - TAU]]
+            .into_iter()
+            .filter(|[a, b]| b - a > ANGULAR)
+            .map(move |trim| SpatialEllipseCandidate {
+                source,
+                ellipse: curved_projection::Ellipse {
+                    center: [x, y],
+                    u,
+                    v,
+                    major,
+                    minor,
+                    trim,
+                },
+                depth,
+                depth_cosine: major_axis[2],
+                depth_sine: minor_axis[2],
+            })
     }
 }
 
@@ -320,8 +381,13 @@ impl CylinderPatch {
         let centers = [ellipse, other.ellipse()].map(Ellipse::center_mm);
         let silhouette = |sign| {
             let radial = radial.map(|coordinate| sign * coordinate);
-            let points =
+            let mut points =
                 centers.map(|center| std::array::from_fn(|i| radius.mul_add(radial[i], center[i])));
+            if tilted(other, axis) {
+                let normal = other.ellipse().normal();
+                let shift = -radius * dot(normal, radial) / dot(normal, axis);
+                points[1] = std::array::from_fn(|i| axis[i].mul_add(shift, points[1][i]));
+            }
             // Reuse a real edge when the silhouette coincides with its
             // generator. Two smooth neighboring sectors can then publish it once.
             for vertex in shell.edges[cap_edge].vertices {

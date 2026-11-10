@@ -1,4 +1,4 @@
-//! Check the rectangular angular/axial chart of a circular cylinder patch.
+//! Check the angular and axial chart of a bounded circular cylinder patch.
 use super::*;
 
 pub(super) const ANGULAR: f64 = 64. * f64::EPSILON;
@@ -35,22 +35,39 @@ impl CylinderPatch {
             };
             let ellipse = arc.ellipse();
             let [major, minor] = ellipse.semiaxes_mm();
-            if length3(cross(ellipse.normal(), axis)) > ANGULAR
-                || length3(axis_offset(ellipse.center_mm(), origin, axis)) > tolerance
-                || major != minor
-                || (major - radius).abs() > tolerance
+            if length3(axis_offset(ellipse.center_mm(), origin, axis)) > tolerance
+                || (minor - radius).abs() > tolerance
                 || arc.sweep_rad().abs() > FRAC_PI_2 + ANGULAR
             {
+                return Err(Error::Unsupported);
+            }
+            if tilted(arc, axis) {
+                let cosine = dot(ellipse.normal(), axis).abs();
+                // A tilted ellipse must project along the cylinder axis
+                // onto the supporting circle, at the same radial phase.
+                if shell.matched_quarter_rims.is_none()
+                    || cosine <= ANGULAR
+                    || (major * cosine - radius).abs() > tolerance
+                    || dot(ellipse.minor_axis(), axis).abs() > ANGULAR
+                {
+                    return Err(Error::Unsupported);
+                }
+            } else if major != minor {
                 return Err(Error::Unsupported);
             }
             Ok((edge, arc))
         });
         let [a, b] = arcs;
-        let arcs = [a?, b?];
+        let mut arcs = [a?, b?];
+        if tilted(arcs[0].1, axis) {
+            arcs.swap(0, 1);
+            if tilted(arcs[0].1, axis) {
+                return Err(Error::Unsupported);
+            }
+        }
         let rails = [b_rail.edge, d.edge];
-        // The existing closed four-edge ring connects each circular endpoint
-        // to the matching radial endpoint at the other cap. The short arc
-        // between the pair is unique, so the wall is a rectangular chart.
+        // Each rail connects matching angular endpoints on the two trims.
+        // Their short sweeps uniquely bound the wall between those generators.
         for edge in rails.map(|edge| shell.edges[edge]) {
             let [a, b] = edge.vertices.map(|i| shell.vertices[i]);
             let span = sub(b, a);
@@ -63,4 +80,8 @@ impl CylinderPatch {
         }
         Ok(Self { arcs, rails })
     }
+}
+
+pub(super) fn tilted(arc: EllipseArc, axis: Point) -> bool {
+    length3(cross(arc.ellipse().normal(), axis)) > ANGULAR
 }
