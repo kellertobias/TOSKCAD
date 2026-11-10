@@ -8,12 +8,14 @@ use crate::{
 
 mod analytic;
 mod candidates;
+mod depth;
 pub use analytic::{AnalyticFace, FaceTrim};
 use candidates::apply_openings;
 pub use candidates::{
     CircularOpeningEnd, FaceOpening, HiddenCandidate, LineCandidate, RimCandidate, SceneExtras,
     SpatialRimCandidate, StadiumOpening,
 };
+pub use depth::DepthRange;
 use std::f64::consts::PI;
 
 #[derive(Clone, Copy, Debug, PartialEq)]

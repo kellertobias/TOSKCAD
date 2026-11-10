@@ -18,6 +18,8 @@ pub enum FaceTrim {
 pub struct AnalyticFace {
     surface: Surface,
     bounds: Bounds,
+    // Actual limits, excluding caps that cannot cut this face's depth bounds.
+    depth: [Option<f64>; 2],
 }
 
 enum Surface {
@@ -164,6 +166,7 @@ impl AnalyticFace {
                 roundoff,
             }),
             bounds,
+            depth: [None; 2],
         }))
     }
 
@@ -239,7 +242,26 @@ impl AnalyticFace {
                 facing: if outward { 1. } else { -1. },
             }),
             bounds: a.union(b),
+            depth: [None; 2],
         }))
+    }
+
+    /// Keep only ray hits within a retained view-depth interval. This clips
+    /// the existing face; callers supply any newly exposed section caps.
+    pub fn retained(mut self, range: DepthRange) -> Option<Self> {
+        let [lo, hi] = [self.bounds.min[2], self.bounds.max[2]];
+        if range.near < lo || range.far.is_some_and(|far| far > hi) {
+            return None;
+        }
+        if let Some(far) = range.far.filter(|&far| far > lo) {
+            self.bounds.min[2] = far;
+            self.depth[0] = Some(far);
+        }
+        if range.near < hi {
+            self.bounds.max[2] = range.near;
+            self.depth[1] = Some(range.near);
+        }
+        Some(self)
     }
 
     pub(super) fn bounds(&self) -> Bounds {
@@ -290,8 +312,10 @@ impl AnalyticFace {
         let depth_gap = work.tolerance.max(roundoff);
         work.crossings.clear();
         match &self.surface {
-            Surface::Plane(plane) => plane.hide(path, span, depth_gap, work),
-            Surface::Cylinder(cylinder) => cylinder.hide(path, span, depth_gap, roundoff, work),
+            Surface::Plane(plane) => plane.hide(path, span, depth_gap, self.depth, work),
+            Surface::Cylinder(cylinder) => {
+                cylinder.hide(path, span, depth_gap, roundoff, self.depth, work)
+            }
         }
     }
 }
@@ -568,12 +592,27 @@ impl Plane {
         path: Path,
         span: Span,
         gap: f64,
+        limits: [Option<f64>; 2],
         work: &mut Work,
     ) -> Result<(), ProjectionError> {
         let depth = path.coordinate(self.origin, self.normal);
         let threshold = -gap * self.normal[2];
         let [u, v] = self.chart.map(|axis| path.coordinate(self.origin, axis));
         depth.level(threshold, span, &mut work.crossings);
+        let clip = (limits != [None; 2]).then(|| {
+            let [nx, ny, nz] = self.normal;
+            // The ray hit's relative depth times nz. Keeping the expression
+            // scaled avoids division for a nearly edge-on supporting plane.
+            let hit = path.coordinate(self.origin, [-nx, -ny, 0.]);
+            let limits = limits.map(|limit| limit.map(|z| (z - self.origin[2]) * nz));
+            for level in limits.into_iter().flatten() {
+                hit.level(level, span, &mut work.crossings);
+            }
+            (
+                hit,
+                limits[0].unwrap_or(f64::NEG_INFINITY)..=limits[1].unwrap_or(f64::INFINITY),
+            )
+        });
         for &boundary in &self.boundary {
             match boundary {
                 Boundary::Line([a, b]) => {
@@ -616,7 +655,11 @@ impl Plane {
             &mut work.crossings,
             span,
             |t| {
-                if depth.at(t) >= threshold {
+                if depth.at(t) >= threshold
+                    || clip
+                        .as_ref()
+                        .is_some_and(|(hit, range)| !range.contains(&hit.at(t)))
+                {
                     return false;
                 }
                 let point = [u.at(t), v.at(t)];
@@ -643,6 +686,7 @@ impl Cylinder {
         span: Span,
         gap: f64,
         roundoff: f64,
+        limits: [Option<f64>; 2],
         work: &mut Work,
     ) -> Result<(), ProjectionError> {
         work.charge(if path.harmonic { 90 } else { 12 })?;
@@ -677,6 +721,15 @@ impl Cylinder {
             y.level(coordinate, span, &mut work.crossings);
         }
         y.circle(depth, self.radius, span, &mut work.crossings);
+        // The ray's radial coordinate at a view-depth plane. At a clip
+        // crossing it lies on the full support circle; the midpoint test
+        // below still checks the correct root and the physical patch trims.
+        let clipped_radial =
+            limits.map(|limit| limit.map(|z| x.scale(-c).offset(p * (z - self.origin[2]))));
+        for level in clipped_radial.into_iter().flatten() {
+            work.charge(if path.harmonic { 80 } else { 8 })?;
+            y.circle(level, self.radius, span, &mut work.crossings);
+        }
         work.charge(work.crossings.len() + 1)?;
         let radial_roundoff = 16. * f64::EPSILON * self.radius;
         let axial_limit = p * self.height;
@@ -699,6 +752,8 @@ impl Cylinder {
                 let radial = [y / self.radius, hit / self.radius];
                 (0. ..=axial_limit).contains(&axial)
                     && hit > depth.at(t)
+                    && clipped_radial[0].is_none_or(|far| hit >= far.at(t))
+                    && clipped_radial[1].is_none_or(|near| hit <= near.at(t))
                     && cross2(self.radial_ends[0], radial) >= -ANGULAR
                     && cross2(radial, self.radial_ends[1]) >= -ANGULAR
             },
