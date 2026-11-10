@@ -232,3 +232,66 @@ fn placement_rejects_unknown_and_nonrigid_or_nonfinite_delta() {
     invalid.rotation[0][0] = 2.;
     assert!(scene.presentation_placement(id, invalid).is_err());
 }
+
+#[test]
+fn only_instanced_geometry_builds_its_picking_index_until_isolated() {
+    let shown = EntityId::new();
+    let hidden = EntityId::new();
+    let stamp = SceneStamp {
+        document: EntityId::new(),
+        revision: 2,
+        generation: 3,
+    };
+    let geometry = |id, z| {
+        Arc::new(
+            Geometry::new_deferred(
+                id,
+                vec![[0., 0., z], [2., 0., z], [0., 2., z], [90., 90., 90.]],
+                vec![0, 1, 2],
+                vec![0],
+                vec![],
+            )
+            .unwrap(),
+        )
+    };
+    let visible_geometry = geometry(shown, 0.);
+    let hidden_geometry = geometry(hidden, 1.);
+    let visible_size = visible_geometry.storage_bytes();
+    let hidden_size = hidden_geometry.storage_bytes();
+    let scene = Scene::new(
+        stamp,
+        vec![visible_geometry.clone(), hidden_geometry.clone()],
+        vec![Instance {
+            id: shown,
+            geometry: shown,
+            transform: Default::default(),
+            color: [1; 4],
+        }],
+    )
+    .unwrap();
+    assert!(visible_geometry.picking.get().is_some());
+    assert!(visible_geometry.storage_bytes() > visible_size);
+    assert!(hidden_geometry.picking.get().is_none());
+    assert_eq!(hidden_geometry.storage_bytes(), hidden_size);
+    assert_eq!(scene.world_bounds(), Some([[0., 0., 0.], [2., 2., 0.]]));
+    let before = hidden_geometry.bounds();
+    assert_eq!(before.min, [0., 0., 1.]);
+    assert_eq!(before.max, [2., 2., 1.]);
+    assert!(hidden_geometry.picking.get().is_none());
+    assert!(scene.reference_snapshots().contains_key(&hidden));
+
+    let ray = Ray::new([0.25, 0.25, 2.], [0., 0., -1.]).unwrap();
+    assert_eq!(scene.pick_face(ray).unwrap().geometry, shown);
+    assert!(hidden_geometry.picking.get().is_none());
+    let isolated = scene.isolated_source(hidden).unwrap();
+    assert!(hidden_geometry.picking.get().is_some());
+    assert!(hidden_geometry.storage_bytes() > hidden_size);
+    assert!(Arc::ptr_eq(
+        &isolated.geometries()[&hidden],
+        &hidden_geometry
+    ));
+    assert_eq!(isolated.world_bounds(), Some([before.min, before.max]));
+    let hit = isolated.pick_face(ray).unwrap();
+    assert_eq!(hit.geometry, hidden);
+    assert_eq!(hit.point_mm, [0.25, 0.25, 1.]);
+}

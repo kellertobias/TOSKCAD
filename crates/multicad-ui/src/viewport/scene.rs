@@ -4,7 +4,7 @@ use multicad_core::{
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
-    sync::Arc,
+    sync::{Arc, OnceLock},
 };
 mod fdm_review;
 pub use fdm_review::{AidReview, ExactContact, SurfacePoint};
@@ -185,6 +185,10 @@ struct Node {
     bounds: Bounds,
     children: Children,
 }
+struct PickingIndex {
+    nodes: Vec<Node>,
+    order: Vec<usize>,
+}
 /// Owned immutable mesh plus one shared triangle acceleration structure.
 pub struct Geometry {
     id: EntityId,
@@ -193,8 +197,8 @@ pub struct Geometry {
     triangle_faces: Vec<u32>,
     face_colors: BTreeMap<u32, [u8; 4]>,
     topology: Vec<TopologyElement>,
-    nodes: Vec<Node>,
-    order: Vec<usize>,
+    picking: OnceLock<PickingIndex>,
+    mesh_bounds: OnceLock<Bounds>,
     edges: Vec<DisplayEdge>,
     points: Vec<DisplayPoint>,
     display_error_mm: f64,
@@ -211,6 +215,21 @@ pub struct DisplayPoint {
 }
 impl Geometry {
     pub fn new(
+        id: EntityId,
+        vertices: Vec<Point>,
+        indices: Vec<u32>,
+        triangle_faces: Vec<u32>,
+        topology: Vec<TopologyElement>,
+    ) -> Result<Self, String> {
+        let geometry = Self::new_deferred(id, vertices, indices, triangle_faces, topology)?;
+        geometry.picking_index();
+        Ok(geometry)
+    }
+
+    /// Validate a mesh now and build its shared picking index when it enters
+    /// a scene as an instance. Uninstanced source meshes remain available for
+    /// inspection without paying to index their triangles.
+    pub fn new_deferred(
         id: EntityId,
         vertices: Vec<Point>,
         indices: Vec<u32>,
@@ -235,9 +254,10 @@ impl Geometry {
         let snapshot = TopologySnapshot {
             owner: id,
             revision: 0,
-            elements: topology.clone(),
+            elements: topology,
         };
         snapshot.validate()?;
+        let topology = snapshot.elements;
         let face_keys: BTreeSet<_> = topology
             .iter()
             .filter(|e| e.key.kind == TopologyKind::Face)
@@ -249,21 +269,19 @@ impl Geometry {
         {
             return Err("Display triangle refers to absent source face".into());
         }
-        let mut result = Self {
+        Ok(Self {
             id,
-            order: (0..triangle_faces.len()).collect(),
             vertices,
             indices,
             triangle_faces,
             face_colors: BTreeMap::new(),
             topology,
-            nodes: vec![],
+            picking: OnceLock::new(),
+            mesh_bounds: OnceLock::new(),
             edges: vec![],
             points: vec![],
             display_error_mm: 0.1,
-        };
-        result.build(0..result.order.len());
-        Ok(result)
+        })
     }
     pub fn id(&self) -> EntityId {
         self.id
@@ -401,7 +419,7 @@ impl Geometry {
         &self.points
     }
     pub(super) fn near_ray(&self, ray: Ray, radius: f64) -> bool {
-        let b = self.nodes[0].bounds;
+        let b = self.bounds();
         let r = radius + self.display_error_mm;
         Bounds {
             min: b.min.map(|v| v - r),
@@ -416,15 +434,38 @@ impl Geometry {
     fn triangle(&self, index: usize) -> [Point; 3] {
         std::array::from_fn(|i| self.vertices[self.indices[index * 3 + i] as usize])
     }
-    fn build(&mut self, range: std::ops::Range<usize>) -> usize {
+    fn bounds(&self) -> Bounds {
+        if let Some(picking) = self.picking.get() {
+            return picking.nodes[0].bounds;
+        }
+        *self.mesh_bounds.get_or_init(|| {
+            let mut bounds = Bounds::empty();
+            for &index in &self.indices {
+                bounds.include(self.vertices[index as usize]);
+            }
+            bounds
+        })
+    }
+    fn picking_index(&self) -> &PickingIndex {
+        self.picking.get_or_init(|| {
+            let count = self.triangle_faces.len();
+            let mut picking = PickingIndex {
+                nodes: vec![],
+                order: (0..count).collect(),
+            };
+            self.build(&mut picking, 0..count);
+            picking
+        })
+    }
+    fn build(&self, picking: &mut PickingIndex, range: std::ops::Range<usize>) -> usize {
         let mut bounds = Bounds::empty();
-        for i in &self.order[range.clone()] {
+        for i in &picking.order[range.clone()] {
             for p in self.triangle(*i) {
                 bounds.include(p)
             }
         }
-        let index = self.nodes.len();
-        self.nodes.push(Node {
+        let index = picking.nodes.len();
+        picking.nodes.push(Node {
             bounds,
             children: Children::Leaf(range.clone()),
         });
@@ -442,21 +483,22 @@ impl Geometry {
                     .map(|i| vertices[indices[t * 3 + i] as usize][axis])
                     .sum::<f64>()
             };
-            self.order[range.clone()]
+            picking.order[range.clone()]
                 .select_nth_unstable_by(middle, |a, b| center(*a).total_cmp(&center(*b)));
             let split = range.start + middle;
-            let a = self.build(range.start..split);
-            let b = self.build(split..range.end);
-            self.nodes[index].children = Children::Branch(a, b);
+            let a = self.build(picking, range.start..split);
+            let b = self.build(picking, split..range.end);
+            picking.nodes[index].children = Children::Branch(a, b);
         }
         index
     }
     fn hit(&self, ray: Ray, minimum: f64, limit: f64) -> Option<(f64, u32)> {
+        let picking = self.picking_index();
         let mut best = None;
         let mut limit = limit;
         let mut stack = vec![0];
         while let Some(index) = stack.pop() {
-            let node = &self.nodes[index];
+            let node = &picking.nodes[index];
             if node.bounds.hit(ray, limit).is_none() {
                 continue;
             }
@@ -466,7 +508,7 @@ impl Geometry {
                     stack.push(*a);
                 }
                 Children::Leaf(range) => {
-                    for triangle in &self.order[range.clone()] {
+                    for triangle in &picking.order[range.clone()] {
                         let [a, b, c] = self.triangle(*triangle);
                         let ab = sub(b, a);
                         let ac = sub(c, a);
@@ -503,8 +545,10 @@ impl Geometry {
             + self.indices.len() * 4
             + self.face_colors.len() * std::mem::size_of::<(u32, [u8; 4])>()
             + self.triangle_faces.len() * 4
-            + self.order.len() * std::mem::size_of::<usize>()
-            + self.nodes.len() * std::mem::size_of::<Node>()
+            + self.picking.get().map_or(0, |picking| {
+                picking.order.len() * std::mem::size_of::<usize>()
+                    + picking.nodes.len() * std::mem::size_of::<Node>()
+            })
             + self
                 .edges
                 .iter()
@@ -699,7 +743,7 @@ impl Scene {
         }
         let mut world = Bounds::empty();
         for instance in &instances {
-            let local = map[&instance.geometry].nodes[0].bounds;
+            let local = map[&instance.geometry].picking_index().nodes[0].bounds;
             for corner in 0..8 {
                 world.include(instance.transform.point(std::array::from_fn(|i| {
                     if corner & (1 << i) == 0 {
@@ -1579,7 +1623,7 @@ impl Scene {
             .leaves
             .iter()
             .find(|leaf| &leaf.path == path)?;
-        let local = self.geometries.get(&leaf.producer)?.nodes.first()?.bounds;
+        let local = self.geometries.get(&leaf.producer)?.bounds();
         let transform = Transform::from_rigid_pose(leaf.pose).ok()?;
         let mut world = Bounds::empty();
         for corner in 0..8 {
@@ -1599,7 +1643,7 @@ impl Scene {
     }
     pub fn instance_bounds(&self, id: EntityId) -> Option<[Point; 2]> {
         let instance = self.instances.iter().find(|i| i.id == id)?;
-        let local = self.geometries[&instance.geometry].nodes[0].bounds;
+        let local = self.geometries[&instance.geometry].bounds();
         let mut world = Bounds::empty();
         for corner in 0..8 {
             world.include(instance.transform.point(std::array::from_fn(|i| {

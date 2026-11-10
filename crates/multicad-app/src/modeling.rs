@@ -297,7 +297,7 @@ impl DisplayCache {
             return Ok(geometry);
         }
         let geometry = Arc::new(
-            viewport::Geometry::new(
+            viewport::Geometry::new_deferred(
                 id,
                 shape.mesh.vertices.as_chunks::<3>().0.to_vec(),
                 shape.mesh.indices.clone(),
