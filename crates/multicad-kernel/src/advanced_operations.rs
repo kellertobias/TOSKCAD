@@ -150,9 +150,8 @@ impl Solid {
         }
         Ok(faces.iter().map(|f| f.key.ordinal).collect())
     }
-    /// Positive thickness builds inward; negative builds outward. Closing a
-    /// completely hollow part without openings is accepted only when native
-    /// topology genuinely contains both closed shells in one solid.
+    /// Positive thickness builds inward; negative builds outward. Rust
+    /// handles one rectangular opening with sharp offset intersections.
     pub fn shell_named(
         &self,
         openings: &[TreatmentFace],
@@ -163,6 +162,9 @@ impl Solid {
         policy.validate()?;
         policy.length(thickness_mm.abs())?;
         let indices = self.selected_faces(openings, feature, true)?;
+        if self.uses_rust_geometry() {
+            return self.shell_rectangular(openings, thickness_mm, feature, policy);
+        }
         let handle = ffi::shell_solid(
             self.occt()?,
             &indices,

@@ -8,3 +8,5 @@ mod profiles;
 mod rust_mirror;
 #[path = "advanced/rust_patterns.rs"]
 mod rust_patterns;
+#[path = "advanced/rust_shell.rs"]
+mod rust_shell;

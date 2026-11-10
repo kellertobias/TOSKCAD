@@ -16,6 +16,7 @@ use std::collections::{BTreeMap, BTreeSet};
 mod mirror;
 mod plane_split;
 mod pockets;
+mod shell;
 pub(in crate::geometry) mod slots;
 
 type Point = [f64; 3];
@@ -93,6 +94,7 @@ struct Support {
 
 #[derive(Default)]
 struct Sources {
+    name_with_adjacent_faces: bool,
     faces: BTreeMap<PlaneKey, Vec<Support>>,
     edges: BTreeMap<LineKey, Vec<TopologyElement>>,
     vertices: BTreeMap<PointKey, Vec<TopologyElement>>,
@@ -994,6 +996,9 @@ fn inherit_lower_origins(
             }
         }
         item.origins.extend(source.origins.iter().cloned());
+    }
+    if sources.name_with_adjacent_faces {
+        item.origins.extend(item.boundary.iter().cloned());
     }
     Ok(())
 }
