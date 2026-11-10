@@ -20,9 +20,13 @@ struct State {
     reject: bool,
     cancellations: usize,
     evaluations: Vec<multicad_core::model::EvaluationOptions>,
+    fast_hardware_preview: bool,
 }
 struct ScriptedBackend(Arc<Mutex<State>>);
 impl SceneBackend for ScriptedBackend {
+    fn supports_fast_hardware_preview(&self) -> bool {
+        self.0.lock().unwrap().fast_hardware_preview
+    }
     fn request_evaluation(
         &mut self,
         document: &Document,
@@ -190,6 +194,114 @@ fn automatic_extrude_debounces_edits_and_accepts_only_the_confirmed_stamp() {
     controller.cancel();
     assert_eq!(session.document(), &before);
     assert_eq!(session.revision(), 0);
+}
+
+#[test]
+fn hardware_opens_immediately_and_only_the_latest_edit_can_confirm() {
+    use multicad_core::model::ModelEvaluationInfo;
+
+    for (fast_hardware_preview, delay) in [(false, 0.30), (true, 0.075)] {
+        let mut session = Session::new(Document::new("Hardware preview").unwrap()).unwrap();
+        let before = session.document().clone();
+        let resources = ProjectResources::default();
+        let state = Arc::new(Mutex::new(State {
+            fast_hardware_preview,
+            ..Default::default()
+        }));
+        let mut controller = ModelToolController::default();
+        controller.set_backend(Box::new(ScriptedBackend(state.clone())));
+        controller
+            .begin_mechanical_part(&session, &resources, Channel::Ui)
+            .unwrap();
+        let ctx = egui::Context::default();
+        let tick = |controller: &mut ModelToolController, session: &Session, time| {
+            ctx.run_ui(
+                egui::RawInput {
+                    time: Some(time),
+                    ..Default::default()
+                },
+                |ui| {
+                    controller.tick_auto_preview(ui, session, &resources, false);
+                },
+            )
+            .drop_without_applying_deltas();
+        };
+        let first_cancellations = state.lock().unwrap().cancellations;
+        assert!(controller.pending());
+        assert_eq!(state.lock().unwrap().requests.len(), 1);
+        tick(&mut controller, &session, 0.);
+        assert_eq!(state.lock().unwrap().cancellations, first_cancellations);
+        assert_eq!(state.lock().unwrap().requests.len(), 1);
+
+        let edit = |controller: &mut ModelToolController, session: &Session, diameter| {
+            let ModelRequest::MechanicalPart(mut request) = controller
+                .form
+                .as_ref()
+                .unwrap()
+                .request(session.document(), controller.capabilities())
+                .unwrap()
+            else {
+                panic!("Expected a hardware draft");
+            };
+            let model::MechanicalPartParameters::Washer {
+                outside_diameter, ..
+            } = &mut request.parameters
+            else {
+                panic!("Expected the default washer");
+            };
+            *outside_diameter = length(diameter);
+            let panel =
+                MechanicalPartPanel::new(*request, session.parameters().clone(), false).unwrap();
+            controller.form = Some(ModelForm::MechanicalPart(Box::new(panel)));
+        };
+        edit(&mut controller, &session, 8.);
+        tick(&mut controller, &session, 0.02);
+        assert!(controller.arm_confirmation(&session, &resources));
+        edit(&mut controller, &session, 9.);
+        tick(&mut controller, &session, 0.04);
+        assert!(controller.keyboard_confirm.is_none());
+        tick(&mut controller, &session, 0.04 + delay - 0.002);
+        assert_eq!(state.lock().unwrap().requests.len(), 1);
+        assert!(controller.arm_confirmation(&session, &resources));
+        tick(&mut controller, &session, 0.04 + delay + 0.002);
+        assert_eq!(state.lock().unwrap().requests.len(), 2);
+        assert_eq!(session.document(), &before);
+
+        let (document, _, stamp) = state.lock().unwrap().requests[1].clone();
+        reply(&state, 0);
+        controller.poll(&session, &resources);
+        assert!(!controller.confirmation_ready(&session, &resources));
+        let scene = native_scene(&document, stamp)
+            .as_ref()
+            .clone()
+            .with_model_evaluation(Arc::new(ModelEvaluationInfo {
+                source_hash: ContentHash::document(&document).unwrap(),
+                screw_connection_checks: vec![],
+                consumed_bodies: Default::default(),
+                cut_targets: vec![],
+            }))
+            .unwrap();
+        state.lock().unwrap().replies.push_back(SceneReply {
+            stamp,
+            result: Ok(Arc::new(scene)),
+        });
+        controller.poll(&session, &resources);
+        assert!(
+            controller.confirmation_ready(&session, &resources),
+            "{:?}",
+            controller.error()
+        );
+        let outputs = controller.apply(&mut session, &resources).unwrap();
+        let source = model::read_mechanical_part(session.document(), outputs[0].feature).unwrap();
+        let model::MechanicalPartParameters::Washer {
+            outside_diameter, ..
+        } = source.parameters
+        else {
+            panic!("Expected the final washer");
+        };
+        assert_eq!(outside_diameter, length(9.));
+        assert_eq!(session.revision(), 1);
+    }
 }
 #[test]
 fn abandoning_pending_native_preview_notifies_its_owner_and_rejects_late_replies() {

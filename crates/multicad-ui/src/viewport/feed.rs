@@ -29,6 +29,10 @@ pub struct SceneReply {
 pub trait SceneBackend {
     /// Accept a source snapshot for evaluation outside the UI event loop.
     fn request(&mut self, document: &Document, stamp: SceneStamp) -> Result<(), String>;
+    /// Whether hardware edits can use the short interactive preview debounce.
+    fn supports_fast_hardware_preview(&self) -> bool {
+        false
+    }
     /// Resource-aware providers receive immutable critical payloads and cache guards.
     /// Legacy source-only providers retain their explicit implementation.
     fn request_project(

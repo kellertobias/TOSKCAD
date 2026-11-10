@@ -27,6 +27,7 @@ mod tests;
 pub struct Backend {
     runtime: Result<Runtime<Arc<viewport::Scene>>, String>,
     expected: Option<(u64, SceneStamp)>,
+    geometry_backend: GeometryBackend,
 }
 impl Backend {
     fn runtime(backend: GeometryBackend) -> Result<Runtime<Arc<viewport::Scene>>, String> {
@@ -109,6 +110,7 @@ impl Backend {
         Self {
             runtime: Self::runtime(GeometryBackend::OpenCascade),
             expected: None,
+            geometry_backend: GeometryBackend::OpenCascade,
         }
     }
     /// Each backend publishes independently while exact geometry remains on
@@ -122,6 +124,7 @@ impl Backend {
             Box::new(Self {
                 runtime: owner.fork(),
                 expected: None,
+                geometry_backend: backend,
             })
         }))
     }
@@ -142,6 +145,9 @@ impl Backend {
     }
 }
 impl SceneBackend for Backend {
+    fn supports_fast_hardware_preview(&self) -> bool {
+        self.geometry_backend == GeometryBackend::Rust
+    }
     fn cancel(&mut self) {
         self.expected = None;
         if let Ok(runtime) = self.runtime.as_mut() {

@@ -765,7 +765,10 @@ impl ModelToolController {
                 session.parameters().clone(),
                 false,
             )?)),
-        )
+        )?;
+        // Keep the form open if its default washer preview reports an error.
+        let _ = self.preview(session, resources, channel);
+        Ok(())
     }
     pub fn begin_gear(
         &mut self,
@@ -2440,6 +2443,14 @@ impl ModelToolController {
                 | ModelForm::Scale(_)
                 | ModelForm::Revolve(_),
             ) => 0.075,
+            Some(ModelForm::MechanicalPart(_))
+                if self
+                    .backend
+                    .as_ref()
+                    .is_some_and(|backend| backend.supports_fast_hardware_preview()) =>
+            {
+                0.075
+            }
             Some(ModelForm::Extrude(_))
                 if self
                     .operations

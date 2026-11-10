@@ -1308,10 +1308,12 @@ fn shared_native_owner_reuses_default_screw_preview_for_authoritative_apply() {
     let mut preview = Backend {
         runtime: owner.fork(),
         expected: None,
+        geometry_backend: GeometryBackend::OpenCascade,
     };
     let mut canonical = Backend {
         runtime: owner.fork(),
         expected: None,
+        geometry_backend: GeometryBackend::OpenCascade,
     };
     let mut session = Session::new(Document::new("Default M3 shared owner").unwrap()).unwrap();
     let resources = Default::default();
@@ -1428,6 +1430,8 @@ fn app_backend_factory_keeps_candidate_and_canonical_publications_separate() {
     let factory = Backend::factory(GeometryBackend::OpenCascade).unwrap();
     let mut candidate = factory();
     let mut canonical = factory();
+    assert!(!candidate.supports_fast_hardware_preview());
+    assert!(Backend::factory(GeometryBackend::Rust).unwrap()().supports_fast_hardware_preview());
     let (session, _) = box_session();
     let stamp = SceneStamp {
         document: session.document().id(),
@@ -1784,6 +1788,9 @@ mod painted_default_screw {
             .controller
             .begin_mechanical_part(&painted.session, &Default::default(), Channel::Ui)
             .unwrap();
+        assert!(painted.controller.pending());
+        painted.wait(false);
+        assert_eq!(painted.session.document(), &before);
         painted.click("Plain washer");
         painted.click("Machine screw");
         painted.click("Preview");
@@ -1922,6 +1929,7 @@ mod painted_default_screw {
                 backend: Backend {
                     runtime: owner.fork(),
                     expected: None,
+                    geometry_backend: GeometryBackend::OpenCascade,
                 },
                 records,
             }) as Box<dyn SceneBackend>
