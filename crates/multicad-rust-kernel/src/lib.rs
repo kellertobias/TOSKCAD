@@ -1,6 +1,7 @@
 //! Bounded exact lengths and one analytic curve probe for the kernel study.
 
 pub mod annulus;
+pub mod chamfered_bores;
 pub mod circular_pockets;
 pub mod cosmetic_fastener;
 pub mod curved_projection;

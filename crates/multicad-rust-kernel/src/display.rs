@@ -12,8 +12,10 @@ use std::{
     ops::Range,
 };
 
+mod chamfered_bores;
 mod orthogonal_pockets;
 mod stadium;
+pub use chamfered_bores::chamfered_polygon_prism;
 pub use orthogonal_pockets::{pocketed_orthogonal, slotted_orthogonal};
 pub use stadium::stadium_prism;
 
@@ -110,6 +112,18 @@ impl Footprint {
         options: Tessellation,
     ) -> Result<(), MeshError> {
         let count = options.arc_segments(radius, TAU)?;
+        self.circle_samples([x, y], radius, face, hole, count, options)
+    }
+
+    fn circle_samples(
+        &mut self,
+        [x, y]: [f64; 2],
+        radius: f64,
+        face: u32,
+        hole: bool,
+        count: usize,
+        options: Tessellation,
+    ) -> Result<(), MeshError> {
         self.holes += usize::from(hole);
         let sweep = if hole { -TAU } else { TAU };
         self.ring(
@@ -275,24 +289,29 @@ pub fn polygon_prism(
 }
 
 fn polygon_footprint(prism: &PolygonPrism, options: Tessellation) -> Result<Footprint, MeshError> {
-    let mut footprint = Footprint::default();
-    let mut first_side = 2;
-    for (index, ring) in prism.rings().iter().enumerate() {
-        footprint.holes = index;
-        footprint.ring(
-            ring.iter()
-                .enumerate()
-                .map(|(i, &point)| (point.map(Rational::as_f64), first_side + i as u32)),
-            options,
-        )?;
-        first_side += ring.len() as u32;
-    }
+    let mut footprint = straight_footprint(prism, options)?;
+    let first_side = 2 + footprint.edges.len() as u32;
     for (i, hole) in prism.circular_holes().iter().enumerate() {
         footprint.circle(
             hole.center().map(Rational::as_f64),
             hole.radius().as_f64(),
             first_side + i as u32,
             true,
+            options,
+        )?;
+    }
+    Ok(footprint)
+}
+
+fn straight_footprint(prism: &PolygonPrism, options: Tessellation) -> Result<Footprint, MeshError> {
+    let mut footprint = Footprint::default();
+    for (index, ring) in prism.rings().iter().enumerate() {
+        footprint.holes = index;
+        let first_side = 2 + footprint.edges.len() as u32;
+        footprint.ring(
+            ring.iter()
+                .enumerate()
+                .map(|(i, &point)| (point.map(Rational::as_f64), first_side + i as u32)),
             options,
         )?;
     }
@@ -396,6 +415,16 @@ fn pocketed_cap(
         footprint.circle(pocket.center_mm, pocket.radius_mm, 0, true, options)?;
         *mouth = (offset + start)..(offset + footprint.points.len());
     }
+    append_cap(mesh, footprint, z, end)
+}
+
+fn append_cap(
+    mesh: &mut DisplayMesh,
+    footprint: Footprint,
+    z: f64,
+    end: bool,
+) -> Result<usize, MeshError> {
+    let offset = mesh.vertices.len() / 3;
     let region = triangulate_region(footprint.points, &footprint.edges, footprint.holes)?;
     mesh.vertices
         .extend(region.cdt.vertices().flat_map(|vertex| {
