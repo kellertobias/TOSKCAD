@@ -4,8 +4,10 @@ use crate::normal_sweep;
 use crate::revolution::{Sum, cross};
 use std::f64::consts::{FRAC_PI_2, PI, TAU};
 
+mod hub;
 mod involute;
 mod sweep;
+pub use hub::{Hub, HubExtension};
 pub use involute::{CubicSpline, Involute};
 
 type Point = [f64; 2];
@@ -63,6 +65,7 @@ pub struct Profile {
     height_mm: f64,
     root_radius_mm: f64,
     area_mm2: f64,
+    hub: Option<Hub>,
 }
 
 impl Profile {
@@ -100,6 +103,7 @@ impl Profile {
             height_mm: spec.face_width_mm,
             root_radius_mm: spec.root_radius_mm,
             area_mm2: area.value(),
+            hub: None,
         })
     }
 
@@ -120,7 +124,12 @@ impl Profile {
     }
 
     pub fn volume_mm3(&self) -> f64 {
-        self.area_mm2 * self.height_mm
+        let volume = self.area_mm2 * self.height_mm;
+        self.hub.map_or(volume, |hub| {
+            let bore = self.bore_radius_mm().unwrap_or(0.);
+            volume
+                + PI * (hub.radius_mm - bore) * (hub.radius_mm + bore) * self.extension_length_mm()
+        })
     }
 }
 

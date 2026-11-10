@@ -444,7 +444,7 @@ fn append_cap(
     Ok(offset)
 }
 
-fn wall(mesh: &mut DisplayMesh, [a, b]: [usize; 2], [c, d]: [usize; 2], face: u32) {
+pub(crate) fn wall(mesh: &mut DisplayMesh, [a, b]: [usize; 2], [c, d]: [usize; 2], face: u32) {
     mesh.triangle([a, b, d], face);
     mesh.triangle([a, d, c], face);
 }

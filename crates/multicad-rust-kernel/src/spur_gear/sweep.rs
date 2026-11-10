@@ -108,7 +108,15 @@ impl Profile {
     pub fn surface_area_mm2(&self) -> f64 {
         let perimeter = self.outline.iter().map(|e| e.edge.length_mm()).sum::<f64>()
             + self.bore.map_or(0., normal_sweep::Edge::length_mm);
-        2. * self.area_mm2 + perimeter * self.height_mm
+        let band_area = 2. * self.area_mm2 + perimeter * self.height_mm;
+        self.hub.map_or(band_area, |hub| {
+            // Each extended end cap replaces exactly the gear cap area
+            // consumed by the hub. Only the cylindrical walls add area.
+            band_area
+                + super::TAU
+                    * (hub.radius_mm + self.bore_radius_mm().unwrap_or(0.))
+                    * self.extension_length_mm()
+        })
     }
 
     /// Support of the swept material in a local 3D direction.
@@ -126,33 +134,60 @@ impl Profile {
             .iter()
             .map(|e| e.edge.support([x, y]))
             .fold(f64::NEG_INFINITY, f64::max);
-        (radial + (z * self.height_mm).max(0.)) * magnitude
+        let band = radial + (z * self.height_mm).max(0.);
+        let support = self.hub.map_or(band, |hub| {
+            let [low, high] = self.axial_bounds();
+            band.max(hub.radius_mm * x.hypot(y) + (z * low).max(z * high))
+        });
+        support * magnitude
     }
 
     pub fn bounds(&self) -> [[f64; 3]; 2] {
+        let [low, high] = self.axial_bounds();
         [
             [
                 -self.support([-1., 0., 0.]),
                 -self.support([0., -1., 0.]),
-                0.,
+                low,
             ],
-            [
-                self.support([1., 0., 0.]),
-                self.support([0., 1., 0.]),
-                self.height_mm,
-            ],
+            [self.support([1., 0., 0.]), self.support([0., 1., 0.]), high],
         ]
     }
 
     /// Mesh with cap face indices 0 and 1, then one face per outline edge
-    /// in authored order, followed by the optional bore wall.
+    /// in authored order, then the optional bore wall and any hub faces.
     pub fn mesh(&self, options: Tessellation) -> Result<DisplayMesh, MeshError> {
         options.check()?;
-        let bore = self.bore.and_then(normal_sweep::Edge::radius_mm);
+        let bore = self.bore_radius_mm();
+        let extensions = self.hub_extensions();
+        if let Some(ext) = extensions.iter().flatten().next() {
+            let outer = self.outline_samples(options, Some(ext.radius_mm))?;
+            return super::hub::mesh(self, extensions, ext.radius_mm, &outer, options);
+        }
+        let outer = self.outline_samples(options, bore)?;
+        let mut footprint = Footprint::default();
+        footprint.ring(outer.into_iter(), options)?;
+        if let Some(radius) = bore {
+            footprint.circle(
+                [0.; 2],
+                radius,
+                (self.outline.len() + 2) as u32,
+                true,
+                options,
+            )?;
+        }
+        footprint.tessellate(0., self.height_mm)
+    }
+
+    fn outline_samples(
+        &self,
+        options: Tessellation,
+        opening: Option<f64>,
+    ) -> Result<Vec<(Point, u32)>, MeshError> {
         // The exact outer rim never enters the root circle. Restrict
-        // chord sagitta so its samples cannot cross a near-root bore.
+        // chord sagitta so its samples cannot cross a near-root opening.
         let outer_options = Tessellation {
-            deflection: bore.map_or(options.deflection, |radius| {
+            deflection: opening.map_or(options.deflection, |radius| {
                 options.deflection.min((self.root_radius_mm - radius) / 2.)
             }),
             ..options
@@ -167,17 +202,6 @@ impl Profile {
             let face = (index + 2) as u32;
             outer.extend((0..count).map(|i| (entry.edge.point(i as f64 / count as f64), face)));
         }
-        let mut footprint = Footprint::default();
-        footprint.ring(outer.into_iter(), options)?;
-        if let Some(radius) = bore {
-            footprint.circle(
-                [0.; 2],
-                radius,
-                (self.outline.len() + 2) as u32,
-                true,
-                options,
-            )?;
-        }
-        footprint.tessellate(0., self.height_mm)
+        Ok(outer)
     }
 }

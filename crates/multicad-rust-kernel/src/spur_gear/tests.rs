@@ -556,3 +556,229 @@ fn detached_samples_respect_chord_and_angle_and_refuse_excess_work() {
         Err(MeshError::InvalidOptions)
     );
 }
+
+#[test]
+fn hub_extends_the_authored_band_with_one_continuous_bore() {
+    use crate::{display::Tessellation, manufacturing::certify};
+
+    let options = Tessellation {
+        deflection: 0.003,
+        angle: 0.15,
+        triangle_limit: 200_000,
+    };
+    let nominal = spec(20, 20.);
+    for (radius, axial_start_mm, axial_end_mm, bore_radius_mm) in [
+        (10., -3., 11., 2.),
+        (10., -3., 6., 0.),
+        (10., 3., 11., 2.),
+        (10., 0., 8., 2.),
+        (nominal.root_radius_mm - 0.001, -2., 6., 2.),
+        (2.001, -3., 11., 2.),
+    ] {
+        let source = Spec {
+            bore_radius_mm,
+            ..nominal
+        };
+        let base = Profile::new(source, MINIMUM, MAX_COORDINATE_MM).unwrap();
+        let hub = Hub {
+            radius_mm: radius,
+            axial_start_mm,
+            axial_end_mm,
+        };
+        let profile = base
+            .clone()
+            .with_hub(hub, MINIMUM, MAX_COORDINATE_MM)
+            .unwrap();
+        assert_eq!(profile.hub(), Some(hub));
+        let low = axial_start_mm.min(0.);
+        let high = axial_end_mm.max(nominal.face_width_mm);
+        assert_eq!(profile.axial_bounds(), [low, high]);
+        assert_eq!(
+            profile.bounds(),
+            [
+                [base.bounds()[0][0], base.bounds()[0][1], low],
+                [base.bounds()[1][0], base.bounds()[1][1], high],
+            ]
+        );
+        assert_eq!(profile.height_mm(), nominal.face_width_mm);
+        assert_eq!(profile.area_mm2(), base.area_mm2());
+        let added_height = high - low - nominal.face_width_mm;
+        close(
+            profile.volume_mm3(),
+            base.volume_mm3() + PI * (radius.powi(2) - bore_radius_mm.powi(2)) * added_height,
+            1e-9,
+        );
+        close(
+            profile.surface_area_mm2(),
+            base.surface_area_mm2() + TAU * (radius + bore_radius_mm) * added_height,
+            1e-9,
+        );
+        let direction = [0.3, -0.4, 12.];
+        close(
+            profile.support(direction),
+            base.support(direction).max(radius * 0.5 + high * 12.),
+            1e-11,
+        );
+        let direction = [0.3, -0.4, -12.];
+        close(
+            profile.support(direction),
+            base.support(direction).max(radius * 0.5 - low * 12.),
+            1e-11,
+        );
+
+        let mesh = profile.mesh(options).unwrap();
+        let proof = certify(&mesh).unwrap();
+        close(
+            proof.signed_volume_mm3,
+            profile.volume_mm3(),
+            profile.surface_area_mm2() * options.deflection,
+        );
+        if added_height == 0. {
+            assert_eq!(mesh, base.mesh(options).unwrap());
+            assert_eq!(profile.hub_extensions(), [None; 2]);
+            continue;
+        }
+
+        let bore_face = profile.outline().len() as u32 + 2;
+        let extensions = profile.hub_extensions();
+        let total_faces = bore_face as usize
+            + usize::from(bore_radius_mm > 0.)
+            + 2 * extensions.iter().flatten().count();
+        let mut seen = vec![false; total_faces];
+        let mut next_extension_face = bore_face + u32::from(bore_radius_mm > 0.);
+        for (i, ext) in extensions.into_iter().enumerate() {
+            let cap_z = [0., nominal.face_width_mm][i];
+            let outer_z = [low, high][i];
+            if let Some(ext) = ext {
+                assert_eq!(ext.radius_mm, radius);
+                assert_eq!(ext.gear_z_mm, cap_z);
+                assert_eq!(ext.end_z_mm, outer_z);
+                assert_eq!(ext.wall_face, next_extension_face);
+                assert_eq!(ext.cap_face, next_extension_face + 1);
+                next_extension_face += 2;
+            } else {
+                assert_eq!(cap_z, outer_z);
+            }
+        }
+
+        for (indices, &face) in mesh
+            .indices
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .zip(&mesh.face_indices)
+        {
+            seen[face as usize] = true;
+            let points = indices.map(|i| {
+                let i = 3 * i as usize;
+                [mesh.vertices[i], mesh.vertices[i + 1], mesh.vertices[i + 2]]
+            });
+            if face == bore_face && bore_radius_mm > 0. {
+                for [x, y, z] in points {
+                    close(x.hypot(y), bore_radius_mm, 1e-12);
+                    assert!(z == low || z == high);
+                }
+            }
+            for ext in extensions.iter().flatten() {
+                if face == ext.wall_face {
+                    for [x, y, z] in points {
+                        close(x.hypot(y), radius, 1e-12);
+                        assert!(z == ext.gear_z_mm || z == ext.end_z_mm);
+                    }
+                }
+                if face == ext.cap_face {
+                    assert!(points.iter().all(|p| p[2] == ext.end_z_mm));
+                }
+            }
+        }
+        assert!(seen.iter().all(|&found| found));
+    }
+}
+
+#[test]
+fn hub_input_step_and_tessellation_budget_are_explicit() {
+    use crate::{
+        display::{MeshError, Tessellation},
+        step::{StepError, write_spur_gear},
+    };
+
+    let base = Profile::new(spec(20, 20.), MINIMUM, MAX_COORDINATE_MM).unwrap();
+    let hub = Hub {
+        radius_mm: 10.,
+        axial_start_mm: -3.,
+        axial_end_mm: 11.,
+    };
+    for bad in [
+        Hub {
+            radius_mm: f64::NAN,
+            ..hub
+        },
+        Hub {
+            axial_start_mm: f64::NEG_INFINITY,
+            ..hub
+        },
+        Hub {
+            axial_start_mm: -MAX_COORDINATE_MM,
+            ..hub
+        },
+        Hub {
+            axial_end_mm: hub.axial_start_mm,
+            ..hub
+        },
+    ] {
+        assert_eq!(
+            base.clone().with_hub(bad, MINIMUM, MAX_COORDINATE_MM),
+            Err(Error::InvalidDimensions)
+        );
+    }
+    for bad in [
+        Hub {
+            radius_mm: 17.5,
+            ..hub
+        },
+        Hub {
+            radius_mm: 2.,
+            ..hub
+        },
+        Hub {
+            axial_start_mm: 9.,
+            axial_end_mm: 11.,
+            ..hub
+        },
+        Hub {
+            axial_start_mm: -MINIMUM / 2.,
+            ..hub
+        },
+    ] {
+        assert_eq!(
+            base.clone().with_hub(bad, MINIMUM, MAX_COORDINATE_MM),
+            Err(Error::InvalidProfile)
+        );
+    }
+    assert_eq!(
+        base.clone().with_hub(hub, 0., MAX_COORDINATE_MM),
+        Err(Error::InvalidDimensions)
+    );
+
+    let profile = base
+        .clone()
+        .with_hub(hub, MINIMUM, MAX_COORDINATE_MM)
+        .unwrap();
+    assert_eq!(
+        write_spur_gear(&profile, [0.; 3], [1., 0., 0.], [0., 1., 0.], TOLERANCE),
+        Err(StepError::Unsupported)
+    );
+    let options = Tessellation {
+        deflection: 0.01,
+        angle: 0.15,
+        triangle_limit: 50_000,
+    };
+    let base_triangles = base.mesh(options).unwrap().face_indices.len();
+    assert_eq!(
+        profile.mesh(Tessellation {
+            triangle_limit: base_triangles,
+            ..options
+        }),
+        Err(MeshError::BudgetExceeded)
+    );
+}

@@ -25,6 +25,13 @@ pub(super) fn encode(
     if !tolerance_mm.is_finite() || tolerance_mm <= 0. {
         return Err(StepError::InvalidGeometry);
     }
+    if profile
+        .hub_extensions()
+        .into_iter()
+        .any(|extension| extension.is_some())
+    {
+        return Err(StepError::Unsupported);
+    }
     let tolerance = tolerance_mm.min(SPUR_STEP_MAX_ERROR_MM);
     let outline = profile
         .outline()
