@@ -1,5 +1,6 @@
-//! Recognize a right extrusion by its complete, already validated boundary.
+//! Recognize swept solids by their complete, already validated boundaries.
 use super::*;
+use crate::linear_sweep::Sweep;
 use std::cmp::Ordering;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -8,6 +9,12 @@ pub enum ImportProfile {
         /// Exterior counterclockwise, followed by clockwise straight holes.
         rings: Vec<Vec<[f64; 2]>>,
         circular_holes: Vec<([f64; 2], f64)>,
+    },
+    LinearSweep {
+        /// Counterclockwise exterior and clockwise holes, paired with `top`.
+        base: Vec<Vec<[f64; 2]>>,
+        /// End sections in the base frame, including their in-plane offset.
+        top: Vec<Vec<[f64; 2]>>,
     },
     Cylinder {
         radius_mm: f64,
@@ -30,9 +37,8 @@ pub struct ImportSolid {
     pub profile: ImportProfile,
 }
 
-/// Decode a single right prism, full cylinder or coaxial annulus from a
-/// verified STEP shell.
-/// The entire shell must consist of two translated caps and their exact walls.
+/// Decode a single right prism, full cylinder, coaxial annulus or straight-edged
+/// linear sweep from a verified STEP shell. Every wall must join paired rims.
 pub fn read_import_solid(input: &str, tolerance_mm: f64) -> Result<(Readback, ImportSolid)> {
     let entities = parse_entities(input, tolerance_mm)?;
     let mut shell = Shell::new(&entities, tolerance_mm, true);
@@ -76,6 +82,12 @@ fn frame_axes(normal: Point, reference: Point) -> [Point; 2] {
     [u.map(zero), v.map(zero)]
 }
 
+struct Wall {
+    face: usize,
+    base: u32,
+    top: u32,
+}
+
 impl Shell<'_, '_> {
     fn indexed_edges(&self, face_count: usize) -> Vec<Vec<u32>> {
         let mut face_edges = vec![Vec::new(); face_count];
@@ -111,19 +123,25 @@ impl Shell<'_, '_> {
                 |direction: Point| [direction[2].abs(), direction[1].abs(), direction[0].abs()];
             compare(preference(b.1), preference(a.1)).then(compare(b.1, a.1))
         });
-        caps.into_iter().find_map(|(lower, direction, origin)| {
-            self.prism(faces, &face_edges, lower, direction, origin)
-        })
+        caps.iter()
+            .find_map(|&(lower, direction, origin)| {
+                self.prism(faces, &face_edges, lower, direction, origin)
+            })
+            .or_else(|| {
+                caps.into_iter().find_map(|(lower, direction, origin)| {
+                    self.linear_sweep(faces, &face_edges, lower, direction, origin)
+                })
+            })
     }
 
-    fn prism(
+    fn cap_walls(
         &self,
         faces: &[Face],
         face_edges: &[Vec<u32>],
         lower: usize,
         direction: Point,
         bottom: Point,
-    ) -> Option<ImportSolid> {
+    ) -> Option<(f64, Vec<Wall>)> {
         let mut walls = BTreeMap::new();
         for &edge in &face_edges[lower] {
             let wall = self.edges[&edge]
@@ -151,7 +169,7 @@ impl Shell<'_, '_> {
         if height_mm <= self.tolerance {
             return None;
         }
-        let sweep = direction.map(|v| v * height_mm);
+        let mut paired = Vec::with_capacity(walls.len());
         for (wall, bottom_edge) in walls {
             let mut upper_edges = face_edges[wall]
                 .iter()
@@ -160,15 +178,90 @@ impl Shell<'_, '_> {
             if upper_edges.next().is_some() {
                 return None;
             }
-            self.wall_matches(
-                &faces[wall],
-                &face_edges[wall],
-                bottom_edge,
-                top_edge,
-                sweep,
-            )?;
+            paired.push(Wall {
+                face: wall,
+                base: bottom_edge,
+                top: top_edge,
+            });
         }
-        self.profile(&face_edges[lower], lower, direction, height_mm)
+        Some((height_mm, paired))
+    }
+
+    fn prism(
+        &self,
+        faces: &[Face],
+        face_edges: &[Vec<u32>],
+        lower: usize,
+        direction: Point,
+        bottom: Point,
+    ) -> Option<ImportSolid> {
+        let (height_mm, walls) = self.cap_walls(faces, face_edges, lower, direction, bottom)?;
+        let sweep = direction.map(|v| v * height_mm);
+        for Wall { face, base, top } in walls {
+            self.wall_matches(&faces[face], &face_edges[face], base, top, sweep)?;
+        }
+        self.profile(&face_edges[lower], lower, direction, height_mm, None)
+    }
+
+    fn linear_sweep(
+        &self,
+        faces: &[Face],
+        face_edges: &[Vec<u32>],
+        lower: usize,
+        direction: Point,
+        bottom: Point,
+    ) -> Option<ImportSolid> {
+        let (height_mm, walls) = self.cap_walls(faces, face_edges, lower, direction, bottom)?;
+        let mut correspondence = BTreeMap::new();
+        for Wall { face, base, top } in walls {
+            for [a, b] in self.wall_generators(&faces[face], &face_edges[face], base, top)? {
+                // Each generator belongs to both walls incident to its base
+                // vertex, so both walls prove the same correspondence.
+                correspondence.insert(a, b);
+            }
+        }
+        self.profile(
+            &face_edges[lower],
+            lower,
+            direction,
+            height_mm,
+            Some(&correspondence),
+        )
+    }
+
+    fn wall_generators(
+        &self,
+        face: &Face,
+        edges: &[u32],
+        bottom: u32,
+        top: u32,
+    ) -> Option<[[u32; 2]; 2]> {
+        let base = &self.edges[&bottom];
+        let end = &self.edges[&top];
+        if !matches!(
+            (face, base.curve, end.curve),
+            (Face::Planar { .. }, Curve::Line, Curve::Line)
+        ) || edges.len() != 4
+        {
+            return None;
+        }
+        let mut bridges = edges.iter().filter(|&&id| id != bottom && id != top);
+        let pairs = [bridges.next()?, bridges.next()?].map(|bridge| {
+            let [a, b] = self.edges[bridge].vertices;
+            if base.vertices.contains(&a) {
+                [a, b]
+            } else {
+                [b, a]
+            }
+        });
+        let [[a, b], [c, d]] = pairs;
+        (base.vertices.contains(&a)
+            && end.vertices.contains(&b)
+            && base.vertices.contains(&c)
+            && end.vertices.contains(&d)
+            && a != c
+            && b != d)
+            .then_some(pairs)
     }
 
     fn wall_matches(
@@ -183,22 +276,11 @@ impl Shell<'_, '_> {
         let end = &self.edges[&top];
         let displaced = |a: Point, b: Point| length(sub(sub(b, a), sweep)) <= self.tolerance;
         match (face, base.curve, end.curve) {
-            (Face::Planar { .. }, Curve::Line, Curve::Line) if edges.len() == 4 => {
+            (Face::Planar { .. }, Curve::Line, Curve::Line) => {
                 // Each exact wall is bounded by the two cap edges and two
                 // generators. Their endpoints prove the whole planar quad.
-                let mut visited = BTreeSet::new();
-                for bridge in edges.iter().filter(|&&id| id != bottom && id != top) {
-                    let [a, b] = self.edges[bridge].vertices;
-                    let (a, b) = if base.vertices.contains(&a) {
-                        (a, b)
-                    } else {
-                        (b, a)
-                    };
-                    if !base.vertices.contains(&a)
-                        || !end.vertices.contains(&b)
-                        || !visited.insert(a)
-                        || !displaced(self.points[&a], self.points[&b])
-                    {
+                for [a, b] in self.wall_generators(face, edges, bottom, top)? {
+                    if !displaced(self.points[&a], self.points[&b]) {
                         return None;
                     }
                 }
@@ -223,6 +305,7 @@ impl Shell<'_, '_> {
         lower: usize,
         direction: Point,
         height_mm: f64,
+        correspondence: Option<&BTreeMap<u32, u32>>,
     ) -> Option<ImportSolid> {
         if let [id] = edges
             && let Curve::Circle(circle) = self.edges[id].curve
@@ -314,9 +397,13 @@ impl Shell<'_, '_> {
         let mut holes = Vec::new();
         while let Some((&start, _)) = successors.first_key_value() {
             let mut ring = Vec::new();
+            let mut end_ring = Vec::new();
             let mut current = start;
             loop {
                 ring.push(project(self.points[&current]));
+                if let Some(correspondence) = correspondence {
+                    end_ring.push(project(self.points[correspondence.get(&current)?]));
+                }
                 current = successors.remove(&current)?;
                 if current == start {
                     break;
@@ -328,30 +415,40 @@ impl Shell<'_, '_> {
                 .min_by(|(_, a), (_, b)| compare(**a, **b))?
                 .0;
             ring.rotate_left(least);
+            if correspondence.is_some() {
+                end_ring.rotate_left(least);
+            }
             if signed_area(&ring) > 0. {
-                if outer.replace(ring).is_some() {
+                if outer.replace((ring, end_ring)).is_some() {
                     return None;
                 }
             } else {
-                holes.push(ring);
+                holes.push((ring, end_ring));
             }
         }
-        holes.sort_unstable_by(|a, b| compare(a[0], b[0]));
-        let rings = std::iter::once(outer?).chain(holes).collect();
-        let mut circular_holes: Vec<_> = circles
-            .into_iter()
-            .map(|circle| (project(circle.center_mm), circle.radius_mm))
-            .collect();
-        circular_holes.sort_unstable_by(|a, b| compare(a.0, b.0).then(a.1.total_cmp(&b.1)));
+        holes.sort_unstable_by(|a, b| compare(a.0[0], b.0[0]));
+        let rings = std::iter::once(outer?).chain(holes);
+        let profile = if correspondence.is_some() {
+            let (base, top): (Vec<_>, Vec<_>) = rings.unzip();
+            Sweep::new(base.clone(), top.clone(), height_mm).ok()?;
+            ImportProfile::LinearSweep { base, top }
+        } else {
+            let mut circular_holes: Vec<_> = circles
+                .into_iter()
+                .map(|circle| (project(circle.center_mm), circle.radius_mm))
+                .collect();
+            circular_holes.sort_unstable_by(|a, b| compare(a.0, b.0).then(a.1.total_cmp(&b.1)));
+            ImportProfile::Polygon {
+                rings: rings.map(|(ring, _)| ring).collect(),
+                circular_holes,
+            }
+        };
         Some(ImportSolid {
             origin_mm,
             u,
             v,
             height_mm,
-            profile: ImportProfile::Polygon {
-                rings,
-                circular_holes,
-            },
+            profile,
         })
     }
 }

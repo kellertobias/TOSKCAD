@@ -91,6 +91,33 @@ fn wall_match_requires_the_entire_analytic_side() {
 }
 
 #[test]
+fn planar_wall_generators_ignore_edge_direction_and_require_a_closed_quad() {
+    let source = box_step();
+    let entities = parse_entities(&source, TOLERANCE).unwrap();
+    let mut shell = Shell::new(&entities, TOLERANCE, true);
+    let faces = shell.validated_faces().unwrap();
+    let edges = shell.indexed_edges(faces.len());
+    let wall = &edges[2];
+    let base = *wall.iter().find(|id| edges[0].contains(id)).unwrap();
+    let top = *wall.iter().find(|id| edges[1].contains(id)).unwrap();
+    let verify =
+        |shell: &Shell<'_, '_>, rim_edges| shell.wall_generators(&faces[2], rim_edges, base, top);
+    let expected = verify(&shell, wall).unwrap();
+    assert!(verify(&shell, &wall[..3]).is_none());
+    let curved = Face::Cylindrical {
+        seam: base,
+        flux: 1.,
+    };
+    assert!(shell.wall_generators(&curved, wall, base, top).is_none());
+    let bridge = wall.iter().find(|&&id| id != base && id != top).unwrap();
+    let vertices = &mut shell.edges.get_mut(bridge).unwrap().vertices;
+    vertices.swap(0, 1);
+    assert_eq!(verify(&shell, wall), Some(expected));
+    shell.edges.get_mut(bridge).unwrap().vertices = [expected[0][0], expected[1][1]];
+    assert!(verify(&shell, wall).is_none());
+}
+
+#[test]
 fn a_circular_rim_must_have_the_cap_winding() {
     let hole = Circle::new([n(4), n(4)], n(2)).unwrap();
     let stock = crate::polygon::PolygonPrism::with_circular_holes(
@@ -112,7 +139,7 @@ fn a_circular_rim_must_have_the_cap_winding() {
         .iter()
         .position(|face| matches!(face, Face::Planar { normal, .. } if normal[2] < 0.))
         .unwrap();
-    assert!(shell.profile(&edges[lower], lower, Z, 4.).is_some());
+    assert!(shell.profile(&edges[lower], lower, Z, 4., None).is_some());
     let circle = edges[lower]
         .iter()
         .find(|id| matches!(shell.edges[id].curve, Curve::Circle(_)))
@@ -120,7 +147,7 @@ fn a_circular_rim_must_have_the_cap_winding() {
     let rim = shell.edges.get_mut(circle).unwrap();
     let use_ = rim.uses.iter_mut().find(|use_| use_.face == lower).unwrap();
     use_.forward = !use_.forward;
-    assert!(shell.profile(&edges[lower], lower, Z, 4.).is_none());
+    assert!(shell.profile(&edges[lower], lower, Z, 4., None).is_none());
 }
 
 #[test]
@@ -134,15 +161,15 @@ fn circular_profile_recognition_is_order_independent_and_refuses_eccentric_bores
     let [outer, inner] = edges[0][..] else {
         panic!("expected two full lower rims")
     };
-    let expected = shell.profile(&[outer, inner], 0, Z, 4.);
+    let expected = shell.profile(&[outer, inner], 0, Z, 4., None);
     assert!(expected.is_some());
-    assert_eq!(shell.profile(&[inner, outer], 0, Z, 4.), expected);
+    assert_eq!(shell.profile(&[inner, outer], 0, Z, 4., None), expected);
     let edge = shell.edges.get_mut(&inner).unwrap();
     let Curve::Circle(ref mut circle) = edge.curve else {
         panic!("expected circular bore")
     };
     circle.center_mm[0] += 0.1;
-    assert!(shell.profile(&[outer, inner], 0, Z, 4.).is_none());
+    assert!(shell.profile(&[outer, inner], 0, Z, 4., None).is_none());
 }
 
 #[test]
@@ -154,7 +181,7 @@ fn profile_rejects_a_second_exterior_and_repeated_rim_start() {
     let edges = shell.indexed_edges(faces.len());
     let lower = &edges[0];
     let upper = &edges[1];
-    assert!(shell.profile(lower, 0, Z, 4.).is_some());
+    assert!(shell.profile(lower, 0, Z, 4., None).is_some());
     let reversed_start = |edge: &Edge| {
         edge.vertices[usize::from(
             edge.uses
@@ -178,12 +205,12 @@ fn profile_rejects_a_second_exterior_and_repeated_rim_start() {
         use_.forward = !use_.forward;
     }
     let two_outers: Vec<_> = lower.iter().chain(upper).copied().collect();
-    assert!(shell.profile(&two_outers, 0, Z, 4.).is_none());
+    assert!(shell.profile(&two_outers, 0, Z, 4., None).is_none());
     let next = shell.edges.get_mut(&lower[1]).unwrap();
     let previous = reversed_start(next);
     next.vertices
         .iter_mut()
         .filter(|vertex| **vertex == previous)
         .for_each(|vertex| *vertex = start);
-    assert!(shell.profile(lower, 0, Z, 4.).is_none());
+    assert!(shell.profile(lower, 0, Z, 4., None).is_none());
 }

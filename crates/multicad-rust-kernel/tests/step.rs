@@ -272,3 +272,76 @@ fn invalid_placed_circular_sweeps_refuse_nonpositive_or_overlapping_dimensions()
         );
     }
 }
+
+#[test]
+fn directed_draft_step_shares_planar_edges_and_retains_the_hole() {
+    use multicad_rust_kernel::{
+        linear_sweep::Sweep,
+        step::write_linear_sweep,
+        step_read::{ImportProfile, read_import_solid},
+    };
+
+    let sweep = Sweep::new(
+        vec![
+            vec![[0., 0.], [10., 0.], [10., 6.], [0., 6.]],
+            vec![[3., 2.], [3., 4.], [5., 4.], [5., 2.]],
+        ],
+        vec![
+            vec![[1., 2.], [13., 2.], [13., 10.], [1., 10.]],
+            vec![[5.5, 5.5], [5.5, 6.5], [6.5, 6.5], [6.5, 5.5]],
+        ],
+        5.,
+    )
+    .unwrap();
+    let placement = [10., -7., 4.];
+    let encoded = write_linear_sweep(&sweep, placement, Y, Z).unwrap();
+    assert_eq!(
+        encoded,
+        write_linear_sweep(&sweep, placement, Y, Z).unwrap()
+    );
+    closed_edges(&encoded, 24);
+    assert_eq!(count(&encoded, "ADVANCED_FACE"), 10);
+    assert_eq!(count(&encoded, "PLANE"), 10);
+    assert_eq!(count(&encoded, "FACE_BOUND"), 2);
+
+    let read = read_analytic_solid(&encoded, 1e-8).unwrap();
+    assert_eq!(read.solid_count, 1);
+    assert_eq!(read.face_count, 10);
+    assert_eq!(read.bounds_mm, [[10., -7., 4.], [15., 6., 14.]]);
+    assert_eq!(read.edges_mm.len(), 24);
+    assert!((read.volume_mm3 - 375.).abs() < 1e-8);
+
+    let rotation = 0.43_f64;
+    let tilted_u = [rotation.cos(), rotation.sin(), 0.];
+    for (u, v) in [(Y, Z), (tilted_u, Z)] {
+        let encoded = write_linear_sweep(&sweep, placement, u, v).unwrap();
+        let (expected, solid) = read_import_solid(&encoded, 1e-8).unwrap();
+        let ImportProfile::LinearSweep { base, top } = solid.profile else {
+            panic!("draft must retain paired sections");
+        };
+        assert_eq!(base.len(), 2);
+        assert_eq!(top.len(), 2);
+        let rebuilt = Sweep::new(base, top, solid.height_mm).unwrap();
+        assert!((rebuilt.volume_mm3() - 375.).abs() < 1e-8);
+        let encoded = write_linear_sweep(&rebuilt, solid.origin_mm, solid.u, solid.v).unwrap();
+        let read = read_analytic_solid(&encoded, 1e-8).unwrap();
+        assert_eq!(read.face_count, expected.face_count);
+        assert_eq!(read.edges_mm.len(), expected.edges_mm.len());
+        for (actual, expected) in read
+            .bounds_mm
+            .into_iter()
+            .flatten()
+            .zip(expected.bounds_mm.into_iter().flatten())
+        {
+            assert!((actual - expected).abs() < 1e-8);
+        }
+    }
+    assert_eq!(
+        write_linear_sweep(&sweep, ORIGIN, X, X),
+        Err(StepError::InvalidPlacement)
+    );
+    assert_eq!(
+        write_linear_sweep(&sweep, [1e100; 3], X, Y),
+        Err(StepError::InvalidGeometry)
+    );
+}

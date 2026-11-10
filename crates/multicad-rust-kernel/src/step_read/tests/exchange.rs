@@ -128,7 +128,7 @@ fn import_box_frame_ignores_record_and_shell_order() {
 }
 
 #[test]
-fn import_rejects_valid_shell_without_a_right_extrusion() {
+fn import_recognizes_oblique_shell_and_refuses_a_blind_pocket() {
     let cube = Box3 {
         min: [0.; 3],
         max: [3.; 3],
@@ -142,9 +142,13 @@ fn import_rejects_valid_shell_without_a_right_extrusion() {
         read_analytic_solid(&oblique, TOLERANCE).unwrap().volume_mm3,
         27.,
     );
+    let (_, recognized) = read_import_solid(&oblique, TOLERANCE).unwrap();
     assert_eq!(
-        read_import_solid(&oblique, TOLERANCE),
-        Err(ReadError::Unsupported)
+        recognized.profile,
+        ImportProfile::LinearSweep {
+            base: vec![vec![[0., 0.], [3., 0.], [3., 3.], [0., 3.]]],
+            top: vec![vec![[3., 3.], [6., 3.], [6., 6.], [3., 6.]]],
+        }
     );
 
     let tool = Box3 {

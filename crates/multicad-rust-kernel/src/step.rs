@@ -4,6 +4,7 @@ use crate::{
     Circle, Rational,
     annulus::Annulus,
     cylinder::AxialCylinder,
+    linear_sweep::Sweep,
     orthogonal_boundary::{Boundary, BoundaryFace, point_key},
     polygon::PolygonPrism,
     prism::Prism,
@@ -129,6 +130,66 @@ pub fn write_polygon_prism(
         Placement::new(origin, u, v)?,
         if reverse_sweep { -height } else { height },
     )
+}
+
+/// Write a planar sweep with a common boundary graph for its ruled faces.
+pub fn write_linear_sweep(
+    sweep: &Sweep,
+    origin: Point,
+    u: Point,
+    v: Point,
+) -> Result<String, StepError> {
+    let placement = Placement::new(origin, u, v)?;
+    let mut ranges = Vec::with_capacity(sweep.base().len());
+    let mut count = 0;
+    for ring in sweep.base() {
+        ranges.push(count..count + ring.len());
+        count += ring.len();
+    }
+    let height = sweep.height_mm();
+    let points = [sweep.base(), sweep.top()]
+        .into_iter()
+        .enumerate()
+        .flat_map(|(end, rings)| {
+            let placement = &placement;
+            rings
+                .iter()
+                .flatten()
+                .map(move |&point| placement.point_f64(point, end as f64 * height))
+        })
+        .collect();
+    let mut brep = BRep::new(points);
+    let mut faces = Vec::with_capacity(count + 2);
+    faces.push(brep.cap(
+        &ranges,
+        &[],
+        0,
+        placement.normal.map(|n| -n),
+        placement.u,
+        true,
+    )?);
+    faces.push(brep.cap(&ranges, &[], count, placement.normal, placement.u, false)?);
+    for (base, top) in sweep.base().iter().zip(sweep.top()) {
+        let offset = faces.len() - 2;
+        for (a, &[x, y]) in base.iter().enumerate() {
+            let b = (a + 1) % base.len();
+            let [next_x, next_y] = base[b];
+            let [top_x, top_y] = top[a];
+            // The direction vectors are formed before translation to avoid
+            // cancellation on small stock at a large model origin.
+            let local = [next_x - x, next_y - y, 0.];
+            let tangent = placement.vector(direction([0.; 3], local)?);
+            let generator = placement.vector(direction([0.; 3], [top_x - x, top_y - y, height])?);
+            let [a, b] = [a + offset, b + offset];
+            let bound = brep.bound(&[a, b, b + count, a + count], true)?;
+            let origin = brep.vertices[a].cartesian;
+            faces.push(
+                brep.file
+                    .face(&[bound], origin, cross(tangent, generator), tangent),
+            );
+        }
+    }
+    Ok(brep.file.finish_solid(&faces))
 }
 
 /// Write the exact +Z cylinder, using a horizontal unit vector for the seam.
@@ -323,9 +384,15 @@ impl Placement {
     }
 
     fn point(&self, [x, y]: [Rational; 2], z: f64) -> Point {
-        std::array::from_fn(|i| {
-            self.origin[i] + self.u[i] * x.as_f64() + self.v[i] * y.as_f64() + self.normal[i] * z
-        })
+        self.point_f64([x.as_f64(), y.as_f64()], z)
+    }
+
+    fn point_f64(&self, [x, y]: [f64; 2], z: f64) -> Point {
+        std::array::from_fn(|i| self.origin[i] + self.u[i] * x + self.v[i] * y + self.normal[i] * z)
+    }
+
+    fn vector(&self, [x, y, z]: Point) -> Point {
+        std::array::from_fn(|i| self.u[i] * x + self.v[i] * y + self.normal[i] * z)
     }
 }
 
