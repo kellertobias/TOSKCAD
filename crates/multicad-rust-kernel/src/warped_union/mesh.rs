@@ -165,12 +165,17 @@ fn mesh_boss(
         return Err(MeshError::UnresolvedBoundary);
     };
     let [a, b] = [base, end].map(|edge| &paths[edge.edge]);
-    if !base.forward || end.forward || a.len() != b.len() {
+    if base.forward == end.forward || a.len() != b.len() {
         return Err(MeshError::UnresolvedBoundary);
     }
     for (a, b) in a.windows(2).zip(b.windows(2)) {
-        mesh.triangle([a[0], a[1], b[1]], index);
-        mesh.triangle([a[0], b[1], b[0]], index);
+        let triangles = [[a[0], a[1], b[1]], [a[0], b[1], b[0]]];
+        for mut triangle in triangles {
+            if !base.forward {
+                triangle.swap(1, 2);
+            }
+            mesh.triangle(triangle, index);
+        }
     }
     Ok(())
 }

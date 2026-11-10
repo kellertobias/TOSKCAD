@@ -1,8 +1,34 @@
 use super::*;
 
+impl Chart {
+    fn record_axial_source(&mut self, tool: &Solid) -> Result<usize, GeometryError> {
+        let topology = tool
+            .rust_topology()
+            .ok_or_else(|| warped_error("axial source topology", warped_union::Error::Invalid))??;
+        let mut faces = Vec::new();
+        for (index, element) in topology.elements.iter().enumerate() {
+            if element.key.kind == TopologyKind::Face {
+                let ordinal = element.key.ordinal as usize;
+                if ordinal >= faces.len() {
+                    faces.resize(ordinal + 1, None);
+                }
+                faces[ordinal] = Some(index);
+            }
+        }
+        let source = self.axial_sources.len();
+        self.axial_sources.push(SourcePart {
+            operand: self.topologies.len(),
+            faces,
+        });
+        self.topologies.push(Rc::new(topology));
+        self.axial_bounds.push(tool.bounds()?);
+        Ok(source)
+    }
+}
+
 impl Solid {
-    /// Subtract exact planar cutters from a solid whose fillets use a
-    /// certified quarter-round height band.
+    /// Subtract certified planar and axial cutters while retaining exact
+    /// quarter-round and cylindrical surfaces.
     pub fn subtract_warped_tools(
         &self,
         tools: &[&Solid],
@@ -25,40 +51,73 @@ impl Solid {
             translation_mm: axes.map(|axis| -dot(axis, frame.origin)),
         };
         let mut chart = body.chart.clone()?;
-        let boss_bounds: Vec<_> = chart.bosses.iter().map(AuthoredBoss::bounds).collect();
         let tolerance = policy.linear_tolerance_mm;
-        for tool in tools {
-            let local = match tool.transformed(inverse) {
-                Ok(local) => local,
+        let local = match tools
+            .iter()
+            .map(|tool| tool.transformed(inverse))
+            .collect::<Result<Vec<_>, _>>()
+        {
+            Ok(local) => local,
+            Err(cause) => return Some(Err(cause)),
+        };
+        let axial_cut::Classified { planar, cuts } =
+            match axial_cut::classify(&local, &chart.bosses, tolerance) {
+                Ok(classified) => classified,
                 Err(cause) => return Some(Err(cause)),
             };
-            if !boss_bounds.is_empty() {
-                let bounds = match local.bounds() {
+        let curved_bounds: Vec<_> = chart
+            .bosses
+            .iter()
+            .map(AuthoredBoss::bounds)
+            .chain(chart.axial_bounds.iter().copied())
+            .collect();
+        for index in planar {
+            let tool = &local[index];
+            if !curved_bounds.is_empty() {
+                let bounds = match tool.bounds() {
                     Ok(bounds) => bounds,
                     Err(cause) => return Some(Err(cause)),
                 };
-                if boss_bounds.iter().any(|boss| {
+                if curved_bounds.iter().any(|region| {
                     (0..3).all(|i| {
-                        bounds.min[i] <= boss.max[i] + tolerance
-                            && boss.min[i] <= bounds.max[i] + tolerance
+                        bounds.min[i] <= region.max[i] + tolerance
+                            && region.min[i] <= bounds.max[i] + tolerance
                     })
                 }) {
                     return Some(Err(error(
                         "quarter-round Boolean",
                         GeometryErrorKind::Unsupported,
-                        "This cutter may intersect an attached cylinder",
+                        "This planar cutter may intersect an attached cylinder or axial cut",
                     )));
                 }
             }
-            if let Err(cause) = chart.append(&local, None, policy)? {
+            if let Err(cause) = chart.append(tool, None, policy)? {
                 return Some(Err(cause));
             }
+        }
+        for mut cut in cuts {
+            cut.source = match chart.record_axial_source(&local[cut.source]) {
+                Ok(source) => source,
+                Err(cause) => return Some(Err(cause)),
+            };
+            if let Some(recess) = &mut cut.recess {
+                recess.source = match chart.record_axial_source(&local[recess.source]) {
+                    Ok(source) => source,
+                    Err(cause) => return Some(Err(cause)),
+                };
+            }
+            chart.axial.push(cut);
         }
         let [stock, cutters] = [
             &chart.pieces[..chart.stock_count],
             &chart.pieces[chart.stock_count..],
         ];
-        let union = match Union::subtract(stock, cutters, tolerance) {
+        let union = if cutters.is_empty() {
+            Union::new(stock, tolerance).map(Some)
+        } else {
+            Union::subtract(stock, cutters, tolerance)
+        };
+        let union = match union {
             Ok(Some(union)) => union,
             Ok(None) => {
                 return Some(Err(error(

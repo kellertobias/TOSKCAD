@@ -5,9 +5,11 @@ use crate::{
 };
 use std::{collections::BTreeMap, f64::consts::FRAC_PI_2};
 
+mod axial_cut;
 mod boss;
 mod mesh;
 mod metrics;
+pub use axial_cut::{AxialCut, ConvexRecess};
 pub use boss::Boss;
 
 type Point = [f64; 3];

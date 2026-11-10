@@ -6,10 +6,11 @@ use multicad_core::references::{AnalyticGeometry, AnchoredFrame, ReferenceFrame,
 use multicad_rust_kernel::{
     display::Tessellation,
     planar_boolean::{self, ConvexPiece, Union},
-    warped_union::{self, Band, Boss, Curve, Shell, Support},
+    warped_union::{self, AxialCut, Band, Boss, Curve, Shell, Support},
 };
 use std::collections::BTreeSet;
 
+mod axial_cut;
 mod cut;
 mod operands;
 use super::planar_boolean_body::winding;
@@ -39,6 +40,9 @@ struct Chart {
     sources: Vec<SourcePart>,
     topologies: Vec<Rc<TopologySnapshot>>,
     bosses: Vec<AuthoredBoss>,
+    axial: Vec<AxialCut>,
+    axial_sources: Vec<SourcePart>,
+    axial_bounds: Vec<Bounds>,
 }
 
 #[derive(Clone)]
@@ -57,6 +61,9 @@ impl Chart {
             sources: Vec::new(),
             topologies: Vec::new(),
             bosses: Vec::new(),
+            axial: Vec::new(),
+            axial_sources: Vec::new(),
+            axial_bounds: Vec::new(),
         }
     }
 
@@ -169,7 +176,31 @@ impl Chart {
                 .attach_bosses(&bosses, tolerance)
                 .map_err(|cause| warped_error("cylindrical boss attachment", cause))?;
         }
+        if !self.axial.is_empty() {
+            let offset = self.sources.len() + self.bosses.len();
+            let mut cuts = self.axial.clone();
+            for cut in &mut cuts {
+                cut.source += offset;
+                if let Some(recess) = &mut cut.recess {
+                    recess.source += offset;
+                }
+            }
+            geometry = geometry
+                .cut_axial(&cuts, tolerance)
+                .map_err(|cause| warped_error("axial cut boundary", cause))?;
+        }
         WarpedUnionBody::build(geometry, self, feature, policy)
+    }
+
+    fn face_source(&self, source: usize) -> Option<&SourcePart> {
+        if let Some(part) = self.sources.get(source) {
+            return Some(part);
+        }
+        let source = source - self.sources.len();
+        if let Some(boss) = self.bosses.get(source) {
+            return Some(&boss.source);
+        }
+        self.axial_sources.get(source - self.bosses.len())
     }
 }
 
@@ -393,9 +424,8 @@ impl WarpedUnionBody {
         let mut anchors = Vec::with_capacity(geometry.faces().len());
         for (i, face) in geometry.faces().iter().enumerate() {
             let part = chart
-                .sources
-                .get(face.source)
-                .unwrap_or_else(|| &chart.bosses[face.source - chart.sources.len()].source);
+                .face_source(face.source)
+                .ok_or_else(|| warped_error("boundary provenance", warped_union::Error::Invalid))?;
             let topology = &chart.topologies[part.operand];
             let source = part
                 .faces

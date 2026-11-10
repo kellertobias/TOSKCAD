@@ -78,7 +78,7 @@ impl Shell {
         Ok(shell)
     }
 
-    fn oriented_vertices(&self, use_: OrientedEdge) -> [usize; 2] {
+    pub(super) fn oriented_vertices(&self, use_: OrientedEdge) -> [usize; 2] {
         let [a, b] = self.edges[use_.edge].vertices;
         if use_.forward { [a, b] } else { [b, a] }
     }
@@ -303,7 +303,7 @@ fn mouth(
 
 // A plane reaches a directional extremum on its boundary. On a cylindrical
 // patch, the objective is linear along each generator, so the same holds.
-fn face_range(shell: &Shell, face: &Face, direction: Point, datum: Point) -> [f64; 2] {
+pub(super) fn face_range(shell: &Shell, face: &Face, direction: Point, datum: Point) -> [f64; 2] {
     face.boundary
         .iter()
         .map(|use_| {
@@ -326,7 +326,7 @@ fn face_range(shell: &Shell, face: &Face, direction: Point, datum: Point) -> [f6
         })
 }
 
-fn perpendicular_axes(axis: Point) -> [Point; 2] {
+pub(super) fn perpendicular_axes(axis: Point) -> [Point; 2] {
     let least = (0..3)
         .min_by(|&a, &b| axis[a].abs().total_cmp(&axis[b].abs()))
         .expect("three axes");
@@ -336,12 +336,12 @@ fn perpendicular_axes(axis: Point) -> [Point; 2] {
     [u, cross(axis, u)]
 }
 
-struct Rim {
-    vertices: [usize; 4],
-    edges: [usize; 4],
+pub(super) struct Rim {
+    pub(super) vertices: [usize; 4],
+    pub(super) edges: [usize; 4],
 }
 
-fn append_rim(
+pub(super) fn append_rim(
     shell: &mut Shell,
     center: Point,
     [u, v, axis]: [Point; 3],
@@ -369,13 +369,13 @@ fn append_rim(
     Ok(Rim { vertices, edges })
 }
 
-fn append_edge(shell: &mut Shell, vertices: [usize; 2], curve: Curve) -> usize {
+pub(super) fn append_edge(shell: &mut Shell, vertices: [usize; 2], curve: Curve) -> usize {
     let edge = shell.edges.len();
     shell.edges.push(Edge { vertices, curve });
     edge
 }
 
-fn oriented(edge: usize, forward: bool) -> OrientedEdge {
+pub(super) fn oriented(edge: usize, forward: bool) -> OrientedEdge {
     OrientedEdge { edge, forward }
 }
 
