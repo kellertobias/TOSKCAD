@@ -15,7 +15,7 @@ use crate::{
 type Point = [f64; 2];
 type Trajectory = [Point; 2];
 
-const MAX_COORDINATE_MM: f64 = 1e7;
+pub(crate) const MAX_COORDINATE_MM: f64 = 1e7;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Error {
@@ -25,9 +25,9 @@ pub enum Error {
 }
 
 #[derive(Clone, Copy, Debug)]
-struct Cap {
-    area_mm2: f64,
-    centroid: Point,
+pub(crate) struct Cap {
+    pub(crate) area_mm2: f64,
+    pub(crate) centroid: Point,
 }
 
 impl Cap {
@@ -204,7 +204,7 @@ fn interpolate(a: Point, b: Point, t: f64) -> Point {
     std::array::from_fn(|i| (b[i] - a[i]).mul_add(t, a[i]))
 }
 
-fn validate_cap(rings: &[Vec<Point>], clearance: f64) -> Result<Cap, Error> {
+pub(crate) fn validate_cap(rings: &[Vec<Point>], clearance: f64) -> Result<Cap, Error> {
     let origin = rings[0][0];
     let mut totals = [Sum::default(); 3];
     for (index, ring) in rings.iter().enumerate() {

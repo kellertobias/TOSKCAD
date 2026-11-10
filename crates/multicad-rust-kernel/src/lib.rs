@@ -24,6 +24,7 @@ pub mod section_hatch;
 pub mod sketch_reference;
 pub mod step;
 pub mod step_read;
+pub mod trimmed_sweep;
 
 use std::cmp::Ordering;
 
