@@ -573,6 +573,43 @@ pub(crate) fn extrude(
         .map_err(|cause| error(Some(id), cause))
 }
 
+pub(crate) fn associative_curved_extrude(
+    id: EntityId,
+    mut profile: CurvedProfile,
+    origins: &[Origin],
+    start_offset: f64,
+    signed_height_mm: f64,
+    policy: GeometryPolicy,
+) -> Result<Solid, ModelError> {
+    if profile.holes.is_empty()
+        && let [CurvedEdge2d::Circle { center, radius_mm }] = profile.outer.as_slice()
+        && let [origin] = origins
+        && let Ok(height) = coordinate(signed_height_mm.abs())
+        && coordinate(*radius_mm).is_ok()
+    {
+        // Preserve the axial-cylinder body used by the ordinary distance
+        // extrusion so the result can still act as a cylindrical cutter.
+        return circular_prism(
+            id,
+            &profile,
+            *center,
+            *radius_mm,
+            origin,
+            StraightSweep {
+                height,
+                start_offset,
+                reverse: signed_height_mm < 0.,
+            },
+            policy,
+        );
+    }
+    let normal = profile.frame.normal();
+    profile.frame.origin =
+        std::array::from_fn(|i| profile.frame.origin[i] + normal[i] * start_offset);
+    Solid::rust_extrude_normal_profile_named(&profile, signed_height_mm, id, origins, policy)
+        .map_err(|cause| error(Some(id), cause))
+}
+
 pub(crate) fn stock_profile(
     id: EntityId,
     profile: &CurvedProfile,

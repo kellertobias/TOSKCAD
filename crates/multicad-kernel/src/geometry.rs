@@ -3,7 +3,7 @@
 use crate::{Mesh, Shape, ffi, mesh::valid_parts, rust_prism_topology::PlacedPolygon};
 use multicad_core::{
     document::EntityId,
-    references::{Origin, TopologySnapshot},
+    references::{Origin, ReferenceFrame, TopologySnapshot},
 };
 use multicad_rust_kernel::{
     Circle, Rational, cylinder::AxialCylinder, polygon::PolygonPrism, prism::Prism,
@@ -578,10 +578,12 @@ enum SolidBody {
     WarpedUnion(Rc<WarpedUnionBody>, PlaneFrame),
 }
 
+#[derive(Clone)]
 pub(crate) struct CylinderSketch {
     pub(crate) origin: Origin,
     pub(crate) center_uv: [f64; 2],
     pub(crate) reverse: bool,
+    pub(crate) cap_anchors: Option<[ReferenceFrame; 2]>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -774,6 +776,7 @@ impl Solid {
             origin,
             center_uv,
             reverse,
+            cap_anchors: None,
         };
         Self::build_axial_cylinder(cylinder, frame, Some(Rc::new(sketch)), policy)
     }

@@ -61,7 +61,7 @@ pub(crate) fn position(placement: PlaneFrame, local: [f64; 3]) -> [f64; 3] {
     std::array::from_fn(|i| placement.origin[i] + rotated[i])
 }
 
-fn place_frame(placement: PlaneFrame, local: ReferenceFrame) -> ReferenceFrame {
+pub(crate) fn place_frame(placement: PlaneFrame, local: ReferenceFrame) -> ReferenceFrame {
     frame(
         position(placement, local.origin_mm),
         direction(placement, local.u),
@@ -867,7 +867,10 @@ pub(crate) fn cylinder_snapshot(
             let [u, v] = sketch.center_uv;
             std::array::from_fn(|i| origin[i] - authored.u[i] * u - authored_v[i] * v)
         });
-        let anchor = frame(anchor_origin, authored.u, authored_v);
+        let anchor = sketch.and_then(|sketch| sketch.cap_anchors).map_or_else(
+            || frame(anchor_origin, authored.u, authored_v),
+            |anchors| place_frame(authored, anchors[cap]),
+        );
         build.face(cap, Some(support), Some(anchor), [2]);
         build.non_face(
             AnalyticGeometry::CircularArc {

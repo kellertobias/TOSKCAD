@@ -1,6 +1,6 @@
 use multicad_core::{
     commands::{Actor, Channel, Request, Session},
-    constraint_sketch::source::Source,
+    constraint_sketch::{Curve, CurveKind, source::Source},
     document::{Document, Entity, EntityData, EntityId, Mutation},
     model::{
         self, BodyInput, BooleanRequest, Direction, Extent, ExtrudeParameters, ExtrudeRequest,
@@ -11,6 +11,7 @@ use multicad_core::{
     sketch::Datum,
     sketch_regions,
 };
+use multicad_kernel::{GeometryPolicy, Solid};
 use multicad_model::{Compiler, GeometryBackend, Model, ModelError, ShapeSnapshot};
 fn actor() -> Actor {
     Actor::local(Channel::Mcp)
@@ -27,20 +28,38 @@ impl Fixture {
         Self::rectangle(false)
     }
     fn rectangle(with_hole: bool) -> Self {
+        Self::profile(usize::from(with_hole), |source| {
+            source.add_rectangle([0., 0.], [10., 6.]).unwrap();
+            if with_hole {
+                source.add_rectangle([3., 2.], [7., 4.]).unwrap();
+            }
+        })
+    }
+    fn circle() -> Self {
+        Self::profile(0, |source| {
+            let center = source.add_point([5., 4.]);
+            source.sketch.curves.push(Curve {
+                id: EntityId::new(),
+                construction: false,
+                kind: CurveKind::Circle {
+                    center,
+                    radius_mm: 2.,
+                },
+            });
+        })
+    }
+    fn profile(holes: usize, build: impl FnOnce(&mut Source)) -> Self {
         let (sketch, edits) = Source::create(Datum::Xy, "Terminated profile").unwrap();
         let mut doc = Document::new("Native terminations")
             .unwrap()
             .edited(&edits)
             .unwrap();
         let mut source = Source::read(&doc, sketch).unwrap().0;
-        source.add_rectangle([0., 0.], [10., 6.]).unwrap();
-        if with_hole {
-            source.add_rectangle([3., 2.], [7., 4.]).unwrap();
-        }
+        build(&mut source);
         let region = sketch_regions::extract(&source)
             .regions
             .into_iter()
-            .find(|region| region.holes.len() == usize::from(with_hole))
+            .find(|region| region.holes.len() == holes)
             .unwrap()
             .intent();
         doc = doc.edited(&source.replace(&doc, sketch).unwrap()).unwrap();
@@ -136,6 +155,242 @@ impl Fixture {
                 .unwrap();
         self.session.commit(prepared.prepared).unwrap();
         request
+    }
+}
+
+fn check_curved_step(solid: &Solid, feature: EntityId, volume: f64) {
+    let folder = tempfile::tempdir().unwrap();
+    let path = folder.path().join("termination.step");
+    solid.write_step(&path).unwrap();
+    let policy = GeometryPolicy::default();
+    let check = |readback: Solid| {
+        assert_eq!(readback.solid_count().unwrap(), 1);
+        near(readback.volume_mm3().unwrap(), volume);
+        let expected = solid.bounds().unwrap();
+        let actual = readback.bounds().unwrap();
+        for axis in 0..3 {
+            near(actual.min[axis], expected.min[axis]);
+            near(actual.max[axis], expected.max[axis]);
+        }
+    };
+    check(
+        Solid::import_rust_step(&std::fs::read_to_string(&path).unwrap(), feature, policy).unwrap(),
+    );
+    #[cfg(feature = "occt")]
+    check(Solid::read_step(&path, policy).unwrap());
+}
+
+#[test]
+fn rust_circular_extrusion_to_face_follows_the_reference_and_keeps_a_through_cut() {
+    let mut f = Fixture::circle();
+    let target = f.primitive(PrimitiveParameters::Box {
+        size: [length(12.), length(10.), length(8.)],
+        frame: Default::default(),
+    });
+    let initial = f.compile_rust().unwrap();
+    let target_shape = &initial.snapshot().shapes[&target.feature];
+    let target_cap = cap(target_shape, "cap.end");
+    let original_anchor = &target_cap.frames[0];
+    let mut intent = GeometryIntent::capture(&target_shape.topology, target_cap.key).unwrap();
+    intent.attachment = Some(Attachment {
+        anchor: original_anchor.origin.clone(),
+        offset_mm: [1.5, 2., 0.],
+        angle_rad: std::f64::consts::FRAC_PI_2,
+    });
+    f.request.parameters.extent = Extent::OneSided {
+        end: Termination::ToFace {
+            reference: intent.id,
+            offset: length(0.),
+        },
+    };
+    f.request.faces = vec![FaceInput {
+        source: target.feature,
+        intent,
+    }];
+    f.commit();
+    let tool = &f.request.outputs[0];
+    let boolean = BooleanRequest::new(
+        Operation::Cut,
+        BodyInput {
+            body: target.body,
+            producer: target.feature,
+        },
+        vec![BodyInput {
+            body: tool.body,
+            producer: tool.feature,
+        }],
+    );
+    let feature = tool.feature;
+    let prepared =
+        model::prepare_boolean(&f.session, f.session.revision(), actor(), &boolean).unwrap();
+    f.session.commit(prepared.prepared).unwrap();
+    for height in [8., 11.] {
+        if height != 8. {
+            let edit = model::prepare_primitive_edit(
+                &f.session,
+                f.session.revision(),
+                actor(),
+                target.feature,
+                &PrimitiveParameters::Box {
+                    size: [length(12.), length(10.), length(height)],
+                    frame: Default::default(),
+                },
+            )
+            .unwrap();
+            f.session.commit(edit.prepared).unwrap();
+        }
+        let rust = f.compile_rust().unwrap();
+        let solid = rust.solid(feature).unwrap();
+        assert!(solid.uses_rust_geometry());
+        let volume = std::f64::consts::PI * 4. * height;
+        near(solid.volume_mm3().unwrap(), volume);
+        near(f.shape(&rust).bounds.max[2], height);
+        let anchor = cap(f.shape(&rust), "cap.end").frames[0].frame;
+        let basis = original_anchor.frame;
+        for i in 0..3 {
+            near(
+                anchor.origin_mm[i],
+                basis.origin_mm[i]
+                    + 1.5 * basis.u[i]
+                    + 2. * basis.v[i]
+                    + if i == 2 { height - 8. } else { 0. },
+            );
+            near(anchor.u[i], basis.v[i]);
+            near(anchor.v[i], -basis.u[i]);
+        }
+        near(
+            rust.solid(boolean.feature).unwrap().volume_mm3().unwrap(),
+            120. * height - volume,
+        );
+        check_curved_step(solid, feature, volume);
+        #[cfg(feature = "occt")]
+        {
+            let native = f.compile();
+            f.compare_rust(&native);
+            near(
+                native.solid(boolean.feature).unwrap().volume_mm3().unwrap(),
+                120. * height - volume,
+            );
+        }
+    }
+}
+
+#[test]
+fn rust_circular_extrusion_to_plane_carries_its_cap_anchor_through_rigid_placement() {
+    let mut f = Fixture::circle();
+    let plane = f.plane(-9., 0., true);
+    let mut entity = f.session.document().get(plane).unwrap().clone();
+    let EntityData::Plane { origin_mm, .. } = &mut entity.data else {
+        panic!("Expected a construction plane");
+    };
+    *origin_mm = [3., 6., -9.];
+    f.apply(vec![Mutation::Replace(entity)]);
+    f.request.parameters.direction.reverse = true;
+    f.request.parameters.extent = Extent::OneSided {
+        end: Termination::ToPlane {
+            plane,
+            offset: length(0.),
+        },
+    };
+    f.commit();
+    let rust = f.compile_rust().unwrap();
+    let shape = f.shape(&rust);
+    let cap_end = cap(shape, "cap.end");
+    let anchor = cap_end.frames[0].frame;
+    assert_eq!(anchor.origin_mm, [3., 6., -9.]);
+    assert_eq!(anchor.u, [1., 0., 0.]);
+    assert_eq!(anchor.v, [0., -1., 0.]);
+    let placed = rust
+        .solid(shape.producer)
+        .unwrap()
+        .transformed(multicad_kernel::RigidTransform {
+            rotation: [[0., -1., 0.], [1., 0., 0.], [0., 0., 1.]],
+            translation_mm: [7., 8., 9.],
+        })
+        .unwrap();
+    let topology = placed.topology_snapshot(shape.producer, 0).unwrap();
+    let anchor = topology
+        .elements
+        .iter()
+        .find(|element| element.key == cap_end.key)
+        .unwrap()
+        .frames[0]
+        .frame;
+    assert_eq!(anchor.origin_mm, [1., 11., 0.]);
+    assert_eq!(anchor.u, [0., 1., 0.]);
+    assert_eq!(anchor.v, [1., 0., 0.]);
+    #[cfg(feature = "occt")]
+    f.compare_rust(&f.compile());
+}
+
+#[test]
+fn rust_arc_extrusion_between_parallel_caps_preserves_reverse_sides_and_step() {
+    let mut f = Fixture::profile(0, |source| {
+        let a = source.add_point([0., 0.]);
+        let b = source.add_point([8., 0.]);
+        let c = source.add_point([8., 6.]);
+        let d = source.add_point([0., 6.]);
+        let center = source.add_point([8., 3.]);
+        source.add_line(a, b);
+        source.sketch.curves.push(Curve {
+            id: EntityId::new(),
+            construction: false,
+            kind: CurveKind::Arc {
+                center,
+                start: b,
+                end: c,
+                clockwise: false,
+            },
+        });
+        source.add_line(c, d);
+        source.add_line(d, a);
+    });
+    let plane = f.plane(-8., 0., true);
+    f.request.parameters.start_offset = length(1.);
+    f.request.parameters.direction.reverse = true;
+    f.request.parameters.extent = Extent::TwoSided {
+        forward: Termination::ToPlane {
+            plane,
+            offset: length(2.),
+        },
+        backward: Termination::Distance {
+            distance: length(3.),
+        },
+    };
+    f.commit();
+    let rust = f.compile_rust().unwrap();
+    let shape = f.shape(&rust);
+    let volume = (48. + 4.5 * std::f64::consts::PI) * 14.;
+    near(shape.volume_mm3, volume);
+    near(shape.bounds.min[2], -10.);
+    near(shape.bounds.max[2], 4.);
+    near(cap(shape, "cap.start").frames[0].frame.origin_mm[2], 4.);
+    near(cap(shape, "cap.end").frames[0].frame.origin_mm[2], -10.);
+    check_curved_step(rust.solid(shape.producer).unwrap(), shape.producer, volume);
+    #[cfg(feature = "occt")]
+    f.compare_rust(&f.compile());
+}
+
+#[test]
+fn rust_curved_termination_refuses_sloped_caps_oblique_travel_or_reversed_extent() {
+    for (height, slope, elevation, message) in [
+        (8., 1e-9, 90., "parallel caps"),
+        (8., 0., 80., "normal travel"),
+        (-8., 0., 90., "sufficient material"),
+    ] {
+        let mut f = Fixture::circle();
+        let plane = f.plane(height, slope, false);
+        f.request.parameters.direction.elevation = angle(elevation);
+        f.request.parameters.extent = Extent::OneSided {
+            end: Termination::ToPlane {
+                plane,
+                offset: length(0.),
+            },
+        };
+        f.commit();
+        let error = f.compile_rust().err().expect("Unsupported curved cap");
+        assert_eq!(error.entity, Some(f.request.outputs[0].feature));
+        assert!(error.message.contains(message), "{error}");
     }
 }
 fn cap<'a>(shape: &'a ShapeSnapshot, role: &str) -> &'a multicad_core::references::TopologyElement {

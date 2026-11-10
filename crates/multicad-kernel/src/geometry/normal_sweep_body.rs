@@ -2,7 +2,7 @@
 use super::*;
 use crate::{
     CurvedEdge2d, CurvedProfile,
-    rust_prism_topology::{Builder, position},
+    rust_prism_topology::{Builder, place_frame, position},
 };
 use multicad_core::references::{
     AnalyticGeometry, AnchoredFrame, ReferenceFrame, TopologySnapshot,
@@ -24,6 +24,7 @@ pub(crate) struct NormalSweepBody {
     openings: Option<Rc<piercing::Openings>>,
     path_origin: Option<Origin>,
     stock_history: Option<Rc<fillet::StockHistory>>,
+    cap_anchors: Option<[ReferenceFrame; 2]>,
 }
 
 #[derive(Clone)]
@@ -37,6 +38,32 @@ struct Side {
 }
 
 impl Solid {
+    /// Retain the named cap frames of a normal profile sweep without changing
+    /// its geometric supports. The anchors follow later rigid placements.
+    pub fn with_rust_sweep_cap_anchors(
+        mut self,
+        caps: [PlaneFrame; 2],
+    ) -> Result<Self, GeometryError> {
+        let policy = self.policy;
+        let local = |placement, heights| local_cap_anchors(caps, placement, heights, policy);
+        match &mut self.body {
+            SolidBody::NormalSweep(body, placement) => {
+                let anchors = local(*placement, [0., body.z(true)])?;
+                Rc::make_mut(body).cap_anchors = Some(anchors);
+            }
+            SolidBody::AxialCylinder(cylinder, placement, Some(sketch)) => {
+                let anchors = local(*placement, [0., cylinder.height().as_f64()])?;
+                Rc::make_mut(sketch).cap_anchors = Some(anchors);
+            }
+            _ => {
+                return Err(input(
+                    "Authored cap frames require a Rust normal profile sweep",
+                ));
+            }
+        }
+        Ok(self)
+    }
+
     /// Extrude an analytic line-and-arc profile along the signed frame normal.
     pub fn rust_extrude_normal_profile_named(
         profile: &CurvedProfile,
@@ -146,6 +173,7 @@ impl Solid {
             openings: None,
             path_origin,
             stock_history: None,
+            cap_anchors: None,
         };
         let bounds = body.bounds(profile.frame);
         policy.point(bounds.min)?;
@@ -164,6 +192,32 @@ impl Solid {
             _ => None,
         }
     }
+}
+
+fn local_cap_anchors(
+    caps: [PlaneFrame; 2],
+    placement: PlaneFrame,
+    heights: [f64; 2],
+    policy: GeometryPolicy,
+) -> Result<[ReferenceFrame; 2], GeometryError> {
+    let axes = [placement.u, placement.v, placement.normal()];
+    let local = |point| axes.map(|axis| dot(axis, point));
+    let convert = |cap: PlaneFrame, height: f64| {
+        cap.checked(policy)?;
+        let delta = std::array::from_fn(|i| cap.origin[i] - placement.origin[i]);
+        let anchor = ReferenceFrame {
+            origin_mm: local(delta),
+            u: local(cap.u),
+            v: local(cap.v),
+        };
+        if (anchor.origin_mm[2] - height).abs() > policy.linear_tolerance_mm
+            || anchor.u[2].abs().max(anchor.v[2].abs()) > 1e-10
+        {
+            return Err(input("An authored cap frame must lie on its sweep cap"));
+        }
+        Ok(anchor)
+    };
+    Ok([convert(caps[0], heights[0])?, convert(caps[1], heights[1])?])
 }
 
 fn convert_edge(edge: &CurvedEdge2d) -> Result<Edge, GeometryError> {
@@ -409,10 +463,14 @@ impl NormalSweepBody {
         }
         let mut build = Builder::new(origins);
         for (cap, end) in [false, true].into_iter().enumerate() {
+            let anchor = self.cap_anchors.map_or_else(
+                || self.cap(frame, end, false),
+                |anchors| place_frame(frame, anchors[cap]),
+            );
             build.face(
                 cap,
                 Some(self.cap(frame, end, true)),
-                Some(self.cap(frame, end, false)),
+                Some(anchor),
                 2..self.sides.len() + 2,
             );
             for (index, side) in self.sides.iter().enumerate() {

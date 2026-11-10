@@ -6,7 +6,9 @@ use multicad_core::{
     references::{Origin, ReferenceAddress, ReferenceReport, Resolution},
     sketch,
 };
-use multicad_kernel::{BooleanOperation, CurvedProfile, GeometryPolicy, PlaneFrame, Solid};
+use multicad_kernel::{
+    BooleanOperation, CurvedEdge2d, CurvedProfile, GeometryPolicy, PlaneFrame, Solid,
+};
 use std::collections::BTreeMap;
 
 pub(crate) struct Extrusion<'a> {
@@ -238,6 +240,49 @@ impl Extrusion<'_> {
         };
         if self.interrupt.is_some_and(|interrupt| interrupt()) {
             return Err(self.failure("Model evaluation superseded"));
+        }
+        if std::iter::once(&profile.outer)
+            .chain(&profile.holes)
+            .flatten()
+            .any(|edge| !matches!(edge, CurvedEdge2d::Line { .. }))
+        {
+            let normal = profile.frame.normal();
+            let travel = |plane: PlaneFrame| {
+                let axis = plane.normal();
+                let transverse = cross(normal, axis);
+                // Allow roundoff in rigid frames without flattening a sloped cap.
+                if dot(transverse, transverse) > (16. * f64::EPSILON).powi(2) {
+                    return Err(self.failure("Curved associative extrusion needs parallel caps"));
+                }
+                let delta = std::array::from_fn(|i| plane.origin[i] - profile.frame.origin[i]);
+                let distance = dot(delta, axis) / dot(direction, axis);
+                Ok(distance)
+            };
+            if controls.direction[0] != 0. || controls.direction[1] != 0. {
+                return Err(self.failure("Curved associative extrusion needs normal travel"));
+            }
+            let back = start.map(travel).transpose()?.unwrap_or(0.);
+            let front = travel(end)?;
+            let minimum = self.policy.minimum_feature_mm;
+            let maximum = self.policy.maximum_coordinate_mm;
+            let valid = |distance: f64| (minimum..=maximum).contains(&distance);
+            if !valid(front) || (start.is_some() && !valid(-back)) {
+                return Err(self.failure(
+                    "Termination planes must leave sufficient material on each requested side",
+                ));
+            }
+            let sign = controls.direction[2];
+            let cap_anchors = [start.unwrap_or(profile.frame), end];
+            return crate::rust_backend::associative_curved_extrude(
+                self.feature,
+                profile,
+                origins,
+                sign * back,
+                sign * (front - back),
+                self.policy,
+            )?
+            .with_rust_sweep_cap_anchors(cap_anchors)
+            .map_err(|cause| self.failure(cause));
         }
         Solid::rust_extrude_to_planes_named(
             &profile,
