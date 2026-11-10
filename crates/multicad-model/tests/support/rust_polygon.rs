@@ -20,6 +20,45 @@ pub fn fixture_with_circle() -> (Session, EntityId, EntityId, EntityId) {
     build_fixture("6", true, Datum::Xz, 2.)
 }
 
+pub fn drafted_fixture() -> (Session, EntityId, ExtrudeParameters) {
+    let (sketch, edits) = Source::create(Datum::Xy, "Panel with a hole").unwrap();
+    let document = Document::new("Directed sketch extrusion")
+        .unwrap()
+        .edited(&edits)
+        .unwrap();
+    let mut source = Source::read(&document, sketch).unwrap().0;
+    source.add_rectangle([0., 0.], [12., 10.]).unwrap();
+    source.add_rectangle([4., 3.], [8., 7.]).unwrap();
+    let region = sketch_regions::extract(&source)
+        .regions
+        .into_iter()
+        .find(|region| region.holes.len() == 1)
+        .unwrap()
+        .intent();
+    let document = document
+        .edited(&source.replace(&document, sketch).unwrap())
+        .unwrap();
+    let mut session = Session::new(document).unwrap();
+    let parameters = ExtrudeParameters {
+        direction: model::Direction {
+            elevation: model::angle(45.),
+            ..Default::default()
+        },
+        start_offset: length(2.),
+        taper: model::angle(5.),
+        extent: Extent::OneSided {
+            end: Termination::Distance {
+                distance: length(-6.),
+            },
+        },
+    };
+    let request = ExtrudeRequest::new(sketch, vec![region], parameters.clone());
+    let prepared =
+        model::prepare_extrude(&session, 0, Actor::local(Channel::Mcp), &request).unwrap();
+    session.commit(prepared.prepared).unwrap();
+    (session, request.outputs[0].feature, parameters)
+}
+
 pub fn build_fixture(
     expression: &str,
     round_hole: bool,

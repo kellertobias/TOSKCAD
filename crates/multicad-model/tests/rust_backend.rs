@@ -697,6 +697,145 @@ fn a_scoped_rust_result_reuses_unchanged_tools_and_a_failed_edit_cannot_reuse_th
 }
 
 #[test]
+fn directed_draft_rebuilds_a_polygonal_hole_and_retains_cap_attachments() {
+    let (mut session, feature, mut parameters) = rust_polygon::drafted_fixture();
+    let anchor = Origin {
+        source: feature,
+        role: "cap.end".into(),
+    };
+    let rust = compile(&session, GeometryBackend::Rust);
+    let topology = &rust.snapshot().shapes[&feature].topology;
+    let key = topology
+        .elements
+        .iter()
+        .find(|element| element.key.kind == TopologyKind::Face && element.origins.contains(&anchor))
+        .unwrap()
+        .key;
+    let attachment = sketch::prepare_new(
+        &session,
+        session.revision(),
+        actor(),
+        "Attached to swept end",
+        CreationPlane::Face {
+            snapshot: topology,
+            key,
+            anchor: Some(&anchor),
+        },
+        PlaneOptions::default(),
+    )
+    .unwrap();
+    let plane = attachment.plane;
+    session.commit(attachment.prepared).unwrap();
+
+    let distance = |value| Termination::Distance {
+        distance: length(value),
+    };
+    let cases: [(Extent, bool, f64, f64, f64); 4] = [
+        (parameters.extent.clone(), false, 5., 0., -6.),
+        (parameters.extent.clone(), true, -5., 0., 6.),
+        (Extent::Symmetric { total: length(10.) }, false, 0., -5., 5.),
+        (
+            Extent::TwoSided {
+                forward: distance(7.),
+                backward: distance(3.),
+            },
+            false,
+            0.,
+            -3.,
+            7.,
+        ),
+    ];
+    for (index, (extent, reverse, taper, start, end)) in cases.into_iter().enumerate() {
+        if index > 0 {
+            parameters.extent = extent;
+            parameters.direction.reverse = reverse;
+            parameters.taper = model::angle(taper);
+            let edit = model::prepare_extrude_edit(
+                &session,
+                session.revision(),
+                actor(),
+                feature,
+                &parameters,
+            )
+            .unwrap();
+            session.commit(edit.prepared).unwrap();
+        }
+
+        let reopened = reopen(&session);
+        let rust = compile(&reopened, GeometryBackend::Rust);
+        let native = compile(&reopened, GeometryBackend::OpenCascade);
+        let actual = &rust.snapshot().shapes[&feature];
+        let expected = &native.snapshot().shapes[&feature];
+        let path_mm = (end - start).abs();
+        let normal_component = std::f64::consts::FRAC_1_SQRT_2;
+        // Offsetting the 12×10 outline by d and the 4×4 hole by -d gives area 104 + 60d.
+        let end_area = 104. + 60. * path_mm * taper.to_radians().tan();
+        near(
+            actual.volume_mm3,
+            path_mm * normal_component * 104_f64.midpoint(end_area),
+        );
+        near(actual.volume_mm3, expected.volume_mm3);
+        for (a, b) in actual
+            .bounds
+            .min
+            .into_iter()
+            .chain(actual.bounds.max)
+            .zip(expected.bounds.min.into_iter().chain(expected.bounds.max))
+        {
+            near(a, b);
+        }
+        let rust_faces = rust.solid(feature).unwrap().faces().unwrap();
+        let native_faces = native.solid(feature).unwrap().faces().unwrap();
+        assert_eq!(rust_faces.len(), 10);
+        for element in actual
+            .topology
+            .elements
+            .iter()
+            .filter(|element| element.key.kind == TopologyKind::Face)
+        {
+            let counterpart = expected
+                .topology
+                .elements
+                .iter()
+                .find(|e| e.key.kind == TopologyKind::Face && e.origins == element.origins)
+                .unwrap_or_else(|| panic!("native face missing for {:?}", element.origins));
+            let a = &rust_faces[element.key.ordinal as usize];
+            let b = &native_faces[counterpart.key.ordinal as usize];
+            near(a.area_mm2, b.area_mm2);
+            for (a, b) in a.center_mm.into_iter().zip(b.center_mm) {
+                near(a, b);
+            }
+        }
+        let cap = sketch::inspect_plane(
+            reopened.document(),
+            plane,
+            reopened.revision(),
+            Some(&rust.snapshot().references),
+        )
+        .unwrap();
+        near(cap.origin[0], normal_component * end);
+        near(cap.origin[1], 0.);
+        near(cap.origin[2], 2. + normal_component * end);
+    }
+
+    parameters.taper = model::angle(5.);
+    let candidate =
+        model::prepare_extrude_edit(&session, session.revision(), actor(), feature, &parameters)
+            .unwrap();
+    let failure = compiler()
+        .compile_with_backend(
+            candidate.prepared.document(),
+            session.revision() + 1,
+            GeometryBackend::Rust,
+            None,
+        )
+        .err()
+        .expect("A single-section sweep cannot build two-sided draft");
+    assert_eq!(failure.entity, Some(feature));
+    assert!(failure.message.contains("intermediate sweep section"));
+}
+
+#[test]
 fn straight_sketch_reopens_and_matches_native_faces_with_a_polygonal_hole() {
     let (mut session, height, feature, hole_edge) = rust_polygon::fixture();
     let saved = reopen(&session);

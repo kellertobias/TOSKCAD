@@ -4,7 +4,8 @@ use multicad_core::{
     constraint_sketch::Dimension,
     document::{Document, EntityData, EntityId},
     model::{
-        self, Extent, ExtrudeParameters, PrimitiveParameters, ResolvedExtrudeControls, Termination,
+        self, Extent, ExtrudeParameters, PrimitiveParameters, ResolvedExtent,
+        ResolvedExtrudeControls, ResolvedTermination, Termination,
     },
     parameters::EvaluatedParameters,
     references::Origin,
@@ -374,21 +375,79 @@ fn rounded_dimensions(profile: &CurvedProfile) -> Result<(Rational, Rational), S
     Ok((length_exact, radius_exact))
 }
 
+fn linear_sweep(
+    id: EntityId,
+    controls: &ResolvedExtrudeControls,
+    mut profile: CurvedProfile,
+    origins: &[Origin],
+    policy: GeometryPolicy,
+) -> Result<Solid, ModelError> {
+    use ResolvedTermination::Distance;
+
+    let (length, backward) = match controls.extent {
+        ResolvedExtent::OneSided {
+            end: Distance { distance_mm },
+        } => (distance_mm, 0.),
+        ResolvedExtent::Symmetric { total_mm } if controls.taper_rad == 0. => {
+            (total_mm, total_mm / 2.)
+        }
+        ResolvedExtent::TwoSided {
+            forward: Distance { distance_mm: front },
+            backward: Distance { distance_mm: back },
+        } if controls.taper_rad == 0. => (front + back, back),
+        ResolvedExtent::Symmetric { .. }
+        | ResolvedExtent::TwoSided {
+            forward: Distance { .. },
+            backward: Distance { .. },
+        } => {
+            return Err(error(
+                Some(id),
+                "Rust symmetric and two-sided draft requires an intermediate sweep section",
+            ));
+        }
+        _ => {
+            return Err(error(
+                Some(id),
+                "Rust directed and tapered extrusion requires distance terminations",
+            ));
+        }
+    };
+    let normal = profile.frame.normal();
+    let [u, v, n] = controls.direction;
+    let direction: [f64; 3] =
+        std::array::from_fn(|i| profile.frame.u[i] * u + profile.frame.v[i] * v + normal[i] * n);
+    profile.frame.origin = std::array::from_fn(|i| {
+        profile.frame.origin[i] + normal[i] * controls.start_offset_mm - direction[i] * backward
+    });
+    Solid::rust_extrude_linear_named(
+        &profile,
+        direction.map(|component| component * length),
+        controls.taper_rad,
+        id,
+        origins,
+        policy,
+    )
+    .map_err(|cause| error(Some(id), cause))
+}
+
 pub(crate) fn extrude(
     id: EntityId,
     source: &ExtrudeParameters,
     controls: &ResolvedExtrudeControls,
-    profile: &CurvedProfile,
+    profile: CurvedProfile,
     origins: &[Origin],
     parameters: &EvaluatedParameters,
     policy: GeometryPolicy,
 ) -> Result<Solid, ModelError> {
     let fail = |message: String| error(Some(id), message);
+    if controls.taper_rad != 0. || controls.direction[0] != 0. || controls.direction[1] != 0. {
+        return linear_sweep(id, controls, profile, origins, policy);
+    }
     if let [CurvedEdge2d::Circle { center, radius_mm }] = profile.outer.as_slice() {
         let sweep = straight_sweep(source, controls, parameters).map_err(fail)?;
         return match (profile.holes.as_slice(), origins) {
             ([], [origin]) => {
-                circular_prism(id, profile, *center, *radius_mm, origin, sweep, policy)
+                circular_prism(id, &profile, *center, *radius_mm, origin, sweep, policy)
             }
             ([hole], [outer, inner])
                 if let [
@@ -434,7 +493,7 @@ pub(crate) fn extrude(
         .all(|edge| matches!(edge, CurvedEdge2d::Line { .. }))
     {
         let sweep = straight_sweep(source, controls, parameters).map_err(fail)?;
-        return straight_prism(id, profile, origins, sweep, policy);
+        return straight_prism(id, &profile, origins, sweep, policy);
     }
     let Extent::OneSided {
         end: Termination::Distance { distance },
@@ -455,7 +514,7 @@ pub(crate) fn extrude(
             "Rust rounded panel extrusion requires zero start offset".into(),
         ));
     }
-    let (length, radius) = rounded_dimensions(profile).map_err(fail)?;
+    let (length, radius) = rounded_dimensions(&profile).map_err(fail)?;
     let mut prism = Prism::extrude(id.uuid_bits(), length, radius, height)
         .map_err(|e| fail(format!("Rust extrusion failed: {e:?}")))?;
     for (index, hole) in profile.holes.iter().enumerate() {

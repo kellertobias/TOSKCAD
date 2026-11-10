@@ -2289,6 +2289,41 @@ fn rust_model_worker_publishes_pickable_panel_and_isolates_preview_failures() {
 }
 
 #[test]
+fn rust_model_worker_picks_a_directed_draft_around_its_through_hole() {
+    let (session, feature, _) = rust_polygon::drafted_fixture();
+    let mut backend = Backend::factory(GeometryBackend::Rust).unwrap()();
+    let stamp = SceneStamp {
+        document: session.document().id(),
+        revision: session.revision(),
+        generation: 1,
+    };
+    backend.request(session.document(), stamp).unwrap();
+    let scene = wait_for_scene(&mut *backend).result.unwrap();
+    assert_eq!(scene.stamp(), stamp);
+    assert_eq!(scene.instances().len(), 1);
+
+    // Travel back along the oblique extrusion vector, looking at the end cap first.
+    let pick =
+        |x: f64, y| scene.pick_face(viewport::Ray::new([x - 10., y, -8.], [1., 0., 1.]).unwrap());
+    assert!(
+        pick(6., 5.).is_none(),
+        "ray must pass through both cap holes"
+    );
+    let cap = pick(2., 2.).unwrap();
+    let end = 2. - 6. * std::f64::consts::FRAC_1_SQRT_2;
+    for (a, b) in cap.point_mm.into_iter().zip([end, 2., end]) {
+        assert!((a - b).abs() < 1e-6, "{a} != {b}");
+    }
+    assert!(
+        cap.intent
+            .unwrap()
+            .origins
+            .iter()
+            .any(|origin| origin.source == feature && origin.role == "cap.end")
+    );
+}
+
+#[test]
 fn rust_model_worker_picks_a_sketch_extrusion_around_its_holes_and_notch() {
     let factory = Backend::factory(GeometryBackend::Rust).unwrap();
     let mut backend = factory();

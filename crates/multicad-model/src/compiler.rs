@@ -1016,7 +1016,7 @@ impl Compiler {
                             id,
                             &source.parameters,
                             &extent,
-                            &profile,
+                            profile,
                             &origins,
                             context.parameters(),
                             self.policy,
