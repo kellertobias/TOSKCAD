@@ -2022,13 +2022,74 @@ mod rust_panel;
 mod rust_polygon;
 
 fn wait_for_scene(backend: &mut dyn SceneBackend) -> SceneReply {
-    let deadline = Instant::now() + Duration::from_secs(10);
+    wait_for_scene_with_timeout(backend, Duration::from_secs(10))
+}
+
+fn wait_for_scene_with_timeout(backend: &mut dyn SceneBackend, timeout: Duration) -> SceneReply {
+    let deadline = Instant::now() + timeout;
     loop {
         if let Some(reply) = backend.poll() {
             return reply;
         }
         assert!(Instant::now() < deadline, "scene did not arrive");
         std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
+#[test]
+fn rust_model_worker_publishes_all_bundled_project_scenes() {
+    use multicad_ui::application::DocumentStorage;
+    use std::path::Path;
+
+    let examples = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples");
+    let scratch = tempfile::tempdir().unwrap();
+    let mut store = crate::files::ProjectStore::new(scratch.path().join("recovery"));
+    let mut worker = Backend::factory(GeometryBackend::Rust).unwrap()();
+    for (index, (name, expected_leaves)) in [
+        ("apartment.tcd", 95),
+        ("cabinet.tcd", 64),
+        ("front-panel.tcd", 13),
+        ("toolcase.tcd", 169),
+        ("welded-workbench.tcd", 20),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let loaded = store.open_project(&examples.join(name)).unwrap();
+        let document = &loaded.file.document;
+        let stamp = SceneStamp {
+            document: document.id(),
+            revision: 0,
+            generation: index as u64 + 1,
+        };
+        worker
+            .request_evaluation(
+                document,
+                &loaded.file.resources,
+                stamp,
+                &EvaluationOptions::default(),
+            )
+            .unwrap();
+        let reply = wait_for_scene_with_timeout(&mut *worker, Duration::from_secs(30));
+        let scene = reply
+            .result
+            .unwrap_or_else(|error| panic!("{name}: {error}"));
+        assert_eq!(scene.stamp(), stamp, "{name}");
+        assert!(scene.is_full_model(), "{name}");
+        let physical = scene.assembly_evaluation().unwrap();
+        assert_eq!(physical.leaves.len(), expected_leaves, "{name}");
+        for leaf in &physical.leaves {
+            let geometry = &scene.geometries()[&leaf.producer];
+            assert!(!geometry.indices().is_empty(), "{name} {}", leaf.component);
+            let [min, max] = scene.native_instance_bounds(leaf.path.root).unwrap();
+            assert!(
+                min.into_iter()
+                    .zip(max)
+                    .all(|(a, b)| a.is_finite() && b.is_finite() && a < b),
+                "{name} {}",
+                leaf.path.root
+            );
+        }
     }
 }
 
