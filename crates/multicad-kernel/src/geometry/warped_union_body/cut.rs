@@ -99,7 +99,12 @@ impl Solid {
             .bosses
             .iter()
             .map(AuthoredBoss::bounds)
-            .chain(chart.axial_bounds.iter().copied())
+            .chain(
+                chart
+                    .axial
+                    .iter()
+                    .map(|cut| cut.bounds(&chart.axial_bounds)),
+            )
             .collect();
         for index in planar {
             let tool = &local[index];
@@ -136,7 +141,10 @@ impl Solid {
                     Err(cause) => return Some(Err(cause)),
                 };
             }
-            chart.axial.push(cut);
+            chart.axial.push(AuthoredAxialCut {
+                cut,
+                open_side: None,
+            });
         }
         let [stock, cutters] = [
             &chart.pieces[..chart.stock_count],

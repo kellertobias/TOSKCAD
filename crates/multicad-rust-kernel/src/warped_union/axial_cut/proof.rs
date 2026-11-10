@@ -3,7 +3,12 @@ use crate::warped_union::boss::{face_range, perpendicular_axes};
 use std::f64::consts::TAU;
 
 impl Tube {
-    fn new(start: Point, end: Point, radius: f64, tolerance: f64) -> Result<Self, Error> {
+    pub(super) fn new(
+        start: Point,
+        end: Point,
+        radius: f64,
+        tolerance: f64,
+    ) -> Result<Self, Error> {
         if !radius.is_finite()
             || radius <= tolerance
             || start.into_iter().chain(end).any(|p| !p.is_finite())
@@ -76,7 +81,7 @@ impl Tube {
         })
     }
 
-    fn reversed(self) -> Self {
+    pub(super) fn reversed(self) -> Self {
         let [u, v, axis] = self.axes;
         Self {
             start: self.point(self.length),
@@ -85,7 +90,7 @@ impl Tube {
         }
     }
 
-    fn crossing(self, face: &Face, tolerance: f64) -> Option<(f64, bool, Point)> {
+    pub(super) fn crossing(self, face: &Face, tolerance: f64) -> Option<(f64, bool, Point)> {
         let Support::Plane { normal } = face.support else {
             return None;
         };
@@ -103,7 +108,7 @@ impl Tube {
         ))
     }
 
-    fn clears_face(self, shell: &Shell, face: &Face, tolerance: f64) -> bool {
+    pub(super) fn clears_face(self, shell: &Shell, face: &Face, tolerance: f64) -> bool {
         let [u, v, axis] = self.axes;
         match face.support {
             Support::Plane { normal } => {

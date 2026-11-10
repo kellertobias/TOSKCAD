@@ -6,7 +6,7 @@ use multicad_core::references::{AnalyticGeometry, AnchoredFrame, ReferenceFrame,
 use multicad_rust_kernel::{
     display::Tessellation,
     planar_boolean::{self, ConvexPiece, Union},
-    warped_union::{self, AxialCut, Band, Boss, Curve, Shell, Support},
+    warped_union::{self, AxialCut, Band, Boss, Curve, OpenBoreSide, Shell, Support},
 };
 use std::collections::BTreeSet;
 
@@ -42,7 +42,7 @@ struct Chart {
     sources: Vec<SourcePart>,
     topologies: Vec<Rc<TopologySnapshot>>,
     bosses: Vec<AuthoredBoss>,
-    axial: Vec<AxialCut>,
+    axial: Vec<AuthoredAxialCut>,
     axial_sources: Vec<SourcePart>,
     axial_bounds: Vec<Bounds>,
 }
@@ -52,6 +52,25 @@ struct AuthoredBoss {
     ends: [Point; 2],
     radius: f64,
     source: SourcePart,
+}
+
+#[derive(Clone)]
+struct AuthoredAxialCut {
+    cut: AxialCut,
+    open_side: Option<OpenBoreSide>,
+}
+
+impl AuthoredAxialCut {
+    fn bounds(&self, sources: &[Bounds]) -> Bounds {
+        let round = sources[self.cut.source];
+        self.cut.recess.as_ref().map_or(round, |recess| {
+            let wider = sources[recess.source];
+            Bounds {
+                min: std::array::from_fn(|i| round.min[i].min(wider.min[i])),
+                max: std::array::from_fn(|i| round.max[i].max(wider.max[i])),
+            }
+        })
+    }
 }
 
 impl Chart {
@@ -210,18 +229,30 @@ impl Chart {
                 .attach_bosses(&bosses, tolerance)
                 .map_err(|cause| warped_error("cylindrical boss attachment", cause))?;
         }
-        if !self.axial.is_empty() {
-            let offset = self.sources.len() + self.bosses.len();
-            let mut cuts = self.axial.clone();
-            for cut in &mut cuts {
-                cut.source += offset;
-                if let Some(recess) = &mut cut.recess {
-                    recess.source += offset;
-                }
+        let offset = self.sources.len() + self.bosses.len();
+        let mut cuts = Vec::new();
+        let mut open = Vec::new();
+        for authored in &self.axial {
+            let mut cut = authored.cut.clone();
+            cut.source += offset;
+            if let Some(recess) = &mut cut.recess {
+                recess.source += offset;
             }
+            if let Some(side) = authored.open_side {
+                open.push((cut, side));
+            } else {
+                cuts.push(cut);
+            }
+        }
+        if !cuts.is_empty() {
             geometry = geometry
                 .cut_axial(&cuts, tolerance)
                 .map_err(|cause| warped_error("axial cut boundary", cause))?;
+        }
+        for (cut, side) in open {
+            geometry = geometry
+                .cut_open_axial(&cut, side, tolerance)
+                .map_err(|cause| warped_error("open-sided bore", cause))?;
         }
         WarpedUnionBody::build(geometry, self, feature, policy)
     }

@@ -48,25 +48,19 @@ impl Solid {
         if contains(limit, stock) {
             return Some(base.share());
         }
-        if chart
-            .bosses
-            .iter()
-            .map(AuthoredBoss::bounds)
-            .chain(chart.axial_bounds.iter().copied())
-            .any(|bounds| {
-                !contains(
-                    limit,
-                    Box3 {
-                        min: bounds.min,
-                        max: bounds.max,
-                    },
-                )
-            })
-        {
+        if chart.bosses.iter().map(AuthoredBoss::bounds).any(|bounds| {
+            !contains(
+                limit,
+                Box3 {
+                    min: bounds.min,
+                    max: bounds.max,
+                },
+            )
+        }) {
             return Some(Err(error(
                 "quarter-round crop",
                 GeometryErrorKind::Unsupported,
-                "The crop could change an attached boss or axial cut",
+                "The crop could change an attached boss",
             )));
         }
         let forward = RigidTransform {
@@ -100,6 +94,57 @@ fn unsupported() -> GeometryError {
     )
 }
 
+fn crop_axial(
+    chart: &mut Chart,
+    stock: Box3,
+    limit: Box3,
+    tolerance: f64,
+) -> Result<(), GeometryError> {
+    let low: [bool; 3] = std::array::from_fn(|i| limit.min[i] > stock.min[i]);
+    let high: [bool; 3] = std::array::from_fn(|i| limit.max[i] < stock.max[i]);
+    let mut kept = Vec::with_capacity(chart.axial.len());
+    for mut tool in std::mem::take(&mut chart.axial) {
+        let bounds = tool.bounds(&chart.axial_bounds);
+        if (0..3).any(|i| {
+            (low[i] && bounds.max[i] <= limit.min[i]) || (high[i] && bounds.min[i] >= limit.max[i])
+        }) {
+            continue;
+        }
+        let axis = subtract(tool.cut.end_mm, tool.cut.start_mm);
+        for i in 0..3 {
+            let crosses_low = low[i] && bounds.min[i] < limit.min[i];
+            let crosses_high = high[i] && bounds.max[i] > limit.max[i];
+            if !crosses_low && !crosses_high {
+                continue;
+            }
+            if chart.band.is_some()
+                || tool.cut.recess.is_some()
+                || tool.open_side.is_some()
+                || (crosses_low && crosses_high)
+                || axis[i].abs() > tolerance
+            {
+                return Err(error(
+                    "planar crop",
+                    GeometryErrorKind::Unsupported,
+                    "The crop crosses an axial cut beyond the supported single side",
+                ));
+            }
+            let mut point_mm = [0.; 3];
+            let mut normal = [0.; 3];
+            point_mm[i] = if crosses_high {
+                limit.max[i]
+            } else {
+                limit.min[i]
+            };
+            normal[i] = if crosses_high { 1. } else { -1. };
+            tool.open_side = Some(OpenBoreSide { point_mm, normal });
+        }
+        kept.push(tool);
+    }
+    chart.axial = kept;
+    Ok(())
+}
+
 fn crop_chart(
     original: &Chart,
     crop: &Solid,
@@ -110,6 +155,7 @@ fn crop_chart(
     tolerance: f64,
 ) -> Result<Solid, GeometryError> {
     let mut chart = original.clone();
+    crop_axial(&mut chart, stock, limit, tolerance)?;
     let topology = crop.rust_topology().ok_or_else(unsupported)??;
     let crop_faces = crop.faces()?;
     let operand = chart.topologies.len();

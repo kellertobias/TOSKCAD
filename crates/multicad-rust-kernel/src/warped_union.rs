@@ -9,7 +9,7 @@ mod axial_cut;
 mod boss;
 mod mesh;
 mod metrics;
-pub use axial_cut::{AxialCut, ConvexRecess};
+pub use axial_cut::{AxialCut, ConvexRecess, OpenBoreSide};
 pub use boss::Boss;
 
 type Point = [f64; 3];

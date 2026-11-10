@@ -2,7 +2,9 @@
 use super::*;
 use std::f64::consts::PI;
 
+mod open;
 mod patch;
+pub use open::OpenBoreSide;
 mod proof;
 #[cfg(test)]
 mod tests;
