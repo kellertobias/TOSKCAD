@@ -112,6 +112,88 @@ fn rust_spur_axial_drawing_preserves_visible_flanks_and_bore() {
 }
 
 #[test]
+fn rust_spur_flank_projects_into_sketch_with_bounded_curve_error() {
+    use multicad_kernel::{
+        BRepSelection, CurvedEdge2d, GeometryErrorKind, PlaneFrame, SketchReferenceGeometry,
+        SketchReferenceMethod, rust_kernel::spur_gear::Involute,
+    };
+
+    let feature = EntityId::new();
+    let policy = GeometryPolicy::default();
+    let solid =
+        Solid::rust_spur_gear_named(normal(24, 0., GearSweep::Spur), feature, policy).unwrap();
+    let snapshot = solid.topology_snapshot(feature, 0).unwrap();
+    let edge = snapshot
+        .elements
+        .iter()
+        .find_map(|edge| match edge.geometry {
+            Some(AnalyticGeometry::InvoluteArc {
+                frame,
+                base_radius_mm,
+                parameters,
+            }) => Some((edge.key, frame, base_radius_mm, parameters)),
+            _ => None,
+        })
+        .unwrap();
+    let (key, frame, radius, [a, b]) = edge;
+    let pick = BRepSelection::Edge(key.ordinal);
+    let exact = Involute::new(radius, [a.min(b), a.max(b)], 0.).unwrap();
+    let exact = if a > b { exact.reversed() } else { exact };
+    let target = PlaneFrame::default();
+    let reference = |frame, method| solid.sketch_reference_geometry(pick, frame, method, policy);
+    let projected = reference(target, SketchReferenceMethod::Coplanar).unwrap();
+    assert!(!projected.coincident);
+    assert_eq!(projected.results[0].support, vec![key]);
+    let SketchReferenceGeometry::Curve(CurvedEdge2d::BSpline(spline)) =
+        &projected.results[0].geometry
+    else {
+        panic!("Expected a cubic projected flank");
+    };
+    for i in 0..=100 {
+        let t = f64::from(i) / 100.;
+        let [x, y] = exact.point(t);
+        let expected: [f64; 2] = std::array::from_fn(|axis| {
+            frame.origin_mm[axis] + x * frame.u[axis] + y * frame.v[axis]
+        });
+        let actual = spline.evaluate(t, policy).unwrap().point;
+        assert!(
+            (actual[0] - expected[0]).hypot(actual[1] - expected[1]) < policy.linear_tolerance_mm
+        );
+    }
+    assert!(
+        reference(target, SketchReferenceMethod::Intersect)
+            .unwrap()
+            .coincident
+    );
+    let offset = PlaneFrame {
+        origin: [0., 0., 1.],
+        ..target
+    };
+    let miss = reference(offset, SketchReferenceMethod::Intersect).unwrap();
+    assert!(!miss.coincident && miss.results.is_empty());
+    assert!(reference(offset, SketchReferenceMethod::Coplanar).is_err());
+    assert_eq!(
+        reference(offset, SketchReferenceMethod::Project)
+            .unwrap()
+            .results[0]
+            .geometry,
+        projected.results[0].geometry
+    );
+    let crossing = PlaneFrame {
+        origin: [spline.poles[0][0], 0., 0.],
+        u: [0., 1., 0.],
+        v: [0., 0., 1.],
+    };
+    assert_eq!(
+        reference(crossing, SketchReferenceMethod::Intersect)
+            .unwrap_err()
+            .kind,
+        GeometryErrorKind::Unsupported
+    );
+    assert!(reference(crossing, SketchReferenceMethod::Project).is_err());
+}
+
+#[test]
 fn intrinsic_hubs_extend_one_solid_and_one_continuous_bore_with_exact_face_ancestry() {
     for (beta, sweep) in [
         (0., GearSweep::Spur),

@@ -5,7 +5,7 @@ use crate::{
     BRepSelection, BSpline2d, CurvedEdge2d, GeometryError, GeometryErrorKind, GeometryPolicy,
     PlaneFrame, Solid, ffi,
 };
-use multicad_core::references::{AnalyticGeometry, TopologyKey, TopologyKind};
+use multicad_core::references::{AnalyticGeometry, ReferenceFrame, TopologyKey, TopologyKind};
 pub use multicad_rust_kernel::sketch_reference::Method as SketchReferenceMethod;
 use multicad_rust_kernel::sketch_reference::{self, Geometry, Outcome};
 #[derive(Clone, Debug, PartialEq)]
@@ -172,10 +172,12 @@ impl Solid {
         method: SketchReferenceMethod,
         policy: GeometryPolicy,
     ) -> Result<SketchReferenceCatalog, GeometryError> {
-        let unsupported = || GeometryError {
+        let unsupported = || {
+            GeometryError {
             operation: "sketch reference",
             kind: GeometryErrorKind::Unsupported,
-            message: "Rust sketch references support finite vertices and straight edges".into(),
+            message: "Rust sketch references support finite vertices and straight edges, and can project involute flanks".into(),
+        }
         };
         let (kind, ordinal) = match selection {
             BRepSelection::Vertex(index) => (TopologyKind::Vertex, index),
@@ -201,6 +203,24 @@ impl Solid {
             }
             (TopologyKind::Edge, Some(AnalyticGeometry::Line { a_mm, b_mm })) => {
                 sketch_reference::edge([a_mm, b_mm].map(local), method, tolerance)
+            }
+            (
+                TopologyKind::Edge,
+                Some(AnalyticGeometry::InvoluteArc {
+                    frame: source,
+                    base_radius_mm,
+                    parameters,
+                }),
+            ) => {
+                return involute_reference(
+                    source,
+                    base_radius_mm,
+                    parameters,
+                    frame,
+                    method,
+                    key,
+                    policy,
+                );
             }
             _ => return Err(unsupported()),
         }
@@ -237,4 +257,85 @@ impl Solid {
             coincident: outcome == Outcome::Coincident,
         })
     }
+}
+
+fn involute_reference(
+    source: ReferenceFrame,
+    radius: f64,
+    [a, b]: [f64; 2],
+    target: PlaneFrame,
+    method: SketchReferenceMethod,
+    key: TopologyKey,
+    policy: GeometryPolicy,
+) -> Result<SketchReferenceCatalog, GeometryError> {
+    use multicad_rust_kernel::spur_gear::{Edge, Involute};
+
+    let curve = Involute::new(radius, [a.min(b), a.max(b)], 0.)
+        .map_err(|_| error("Invalid Rust involute reference"))?;
+    let curve = if a > b { curve.reversed() } else { curve };
+    let dot = |a: [f64; 3], b: [f64; 3]| a.into_iter().zip(b).map(|(a, b)| a * b).sum::<f64>();
+    let n = target.normal();
+    let axial = [dot(source.u, n), dot(source.v, n)];
+    let delta = std::array::from_fn(|i| source.origin_mm[i] - target.origin[i]);
+    let offset = dot(delta, n);
+    let edge = Edge::Involute(curve);
+    let lo = offset - edge.support(axial.map(|v| -v));
+    let hi = offset + edge.support(axial);
+    let tolerance = policy.linear_tolerance_mm;
+    let coplanar = lo.abs().max(hi.abs()) <= tolerance;
+    if method == SketchReferenceMethod::Intersect {
+        if coplanar || lo > tolerance || hi < -tolerance {
+            return Ok(SketchReferenceCatalog {
+                results: vec![],
+                coincident: coplanar,
+            });
+        }
+        return Err(GeometryError {
+            operation: "sketch reference",
+            kind: GeometryErrorKind::Unsupported,
+            message: "Rust sketch references cannot yet isolate an involute plane intersection"
+                .into(),
+        });
+    }
+    if method == SketchReferenceMethod::Coplanar && !coplanar {
+        return Err(error(
+            "Selected involute is not coplanar with the sketch plane",
+        ));
+    }
+    if dot(source.normal(), n).abs() <= 1e-10 {
+        return Err(error("The involute projection collapses into a line"));
+    }
+    let spline = curve.cubic_spline(tolerance / 2.).map_err(|cause| {
+        error(format!(
+            "Cannot approximate the involute within sketch precision: {cause:?}"
+        ))
+    })?;
+    let axes = [target.u, target.v];
+    let poles = spline
+        .poles_mm
+        .into_iter()
+        .map(|[x, y]| {
+            let point = std::array::from_fn(|i| delta[i] + x * source.u[i] + y * source.v[i]);
+            axes.map(|axis| dot(point, axis))
+        })
+        .collect();
+    let curve = CurvedEdge2d::BSpline(BSpline2d {
+        degree: 3,
+        poles,
+        knots: spline.knots,
+        multiplicities: spline.multiplicities.into_iter().map(u32::from).collect(),
+        weights: None,
+    });
+    curve.data(policy, 0)?;
+    Ok(SketchReferenceCatalog {
+        results: vec![SketchReferenceResult {
+            geometry: SketchReferenceGeometry::Curve(curve),
+            support: vec![key],
+            source_parameter: None,
+            source_interval: Some([0., 1.]),
+            tangent: false,
+            crossing: None,
+        }],
+        coincident: false,
+    })
 }
