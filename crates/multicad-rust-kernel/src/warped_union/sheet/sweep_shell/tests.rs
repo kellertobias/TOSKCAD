@@ -150,32 +150,191 @@ fn exact_sweep_drawing_shell_keeps_stock_and_piercing_source_faces() {
     }
 }
 
-#[test]
-fn refuses_uncertified_arc_charts_invalid_tolerance_and_excess_stitching() {
-    let arc = |center, a, b| ProfileEdge::Arc {
+fn arc(center: [f64; 2], a: [f64; 2], b: [f64; 2]) -> ProfileEdge {
+    ProfileEdge::Arc {
         center,
         a,
         b,
         clockwise: false,
-    };
-    let stadium = Sweep::new(
-        vec![vec![
+    }
+}
+
+fn pierced_stock(profile: Vec<ProfileEdge>, sides: [usize; 2], origin: [f64; 3]) -> PiercedSweep {
+    let stock = Sweep::new(vec![profile], 3., TOL, MIN).unwrap();
+    PiercedSweep::new(
+        &stock,
+        vec![Piercing {
+            sides,
+            origin,
+            u: [1., 0., 0.],
+            v: [0., 0., 1.],
+            through: [0., 2., 0.],
+            outline: rectangle([0.8, 0.6]),
+        }],
+        TOL,
+        MIN,
+    )
+    .unwrap()
+}
+
+fn verify_host_faces(shell: &Shell, sources: [usize; 2]) {
+    for source in sources {
+        let [host] = shell
+            .faces()
+            .iter()
+            .filter(|face| face.source_face == source)
+            .collect::<Vec<_>>()[..]
+        else {
+            panic!("expected one authored straight host");
+        };
+        assert!(matches!(host.support, Support::Plane { .. }));
+        assert_eq!(host.holes.len(), 1);
+        assert_eq!(host.holes[0].len(), 4);
+    }
+    for source in 6..10 {
+        let [cut] = shell
+            .faces()
+            .iter()
+            .filter(|face| face.source_face == source)
+            .collect::<Vec<_>>()[..]
+        else {
+            panic!("expected one authored aperture wall");
+        };
+        assert!(matches!(cut.support, Support::Plane { .. }));
+        assert!(cut.holes.is_empty());
+    }
+}
+
+fn verify_arc_faces(shell: &Shell, source: usize, radius: f64, expected: f64, parts: usize) {
+    let faces = shell
+        .faces()
+        .iter()
+        .filter(|face| face.source_face == source);
+    assert_eq!(faces.clone().count(), parts);
+    let mut swept_area = 0.;
+    for face in faces {
+        let Support::Cylinder {
+            radius_mm,
+            outward: true,
+            ..
+        } = face.support
+        else {
+            panic!("expected outward cylinder");
+        };
+        close(radius_mm, radius);
+        let [arc, _, _, _] = face.boundary[..] else {
+            panic!("expected one regular sector");
+        };
+        let Curve::Ellipse(trim) = shell.edges()[arc.edge].curve else {
+            panic!("expected circular cap trim");
+        };
+        close(trim.ellipse().semiaxes_mm()[0], radius);
+        close(trim.ellipse().semiaxes_mm()[1], radius);
+        assert!(trim.sweep_rad().abs() <= FRAC_PI_2 + ANGULAR);
+        swept_area += face.area_mm2;
+    }
+    close(swept_area, 3. * radius * expected);
+}
+
+fn verify_oblique_rim(shell: &Shell, [cx, cy]: [f64; 2], radius: f64, expected: f64) {
+    let q = std::f64::consts::FRAC_1_SQRT_2;
+    let view = [[1., 0., 0.], [0., q, q], [0., -q, q]];
+    let elevation = shell.elevation([0.; 3], view, 4, TOL, false).unwrap();
+    let sweep = elevation
+        .rims
+        .iter()
+        .filter_map(|rim| {
+            let [x, y] = rim.ellipse.center;
+            if (x - cx).abs() > TOL || (y - cy * q).abs() > TOL || (rim.depth + cy * q).abs() > TOL
+            {
+                return None;
+            }
+            close(rim.ellipse.major, radius);
+            close(rim.ellipse.minor, radius * q);
+            close(rim.depth_sine.abs(), radius * q);
+            Some(rim.ellipse.trim[1] - rim.ellipse.trim[0])
+        })
+        .sum();
+    close(sweep, expected);
+}
+
+#[test]
+fn subdivided_semicircles_preserve_authored_piercings_and_exact_silhouettes() {
+    let pierced = pierced_stock(
+        vec![
             line([0., 0.], [4., 0.]),
             arc([4., 1.], [4., 0.], [4., 2.]),
             line([4., 2.], [0., 2.]),
             arc([0., 1.], [0., 2.], [0., 0.]),
-        ]],
-        3.,
-        TOL,
-        MIN,
-    )
-    .unwrap();
-    assert_eq!(
-        normal_sweep_shell(&stadium, false, TOL),
-        Err(Error::Unsupported)
+        ],
+        [0, 2],
+        [2., 0., 1.],
     );
+    for reverse in [false, true] {
+        let shell = pierced_sweep_shell(&pierced, reverse, TOL).unwrap();
+        close(shell.volume_mm3(), 3. * (8. + PI) - 2. * 0.8 * 0.6);
+        verify_host_faces(&shell, [2, 4]);
+        verify_arc_faces(&shell, 3, 1., PI, 2);
+        verify_arc_faces(&shell, 5, 1., PI, 2);
+        verify_oblique_rim(&shell, [4., 1.], 1., PI);
+
+        let z = if reverse { -3. } else { 3. };
+        let matching = |axes: [Point; 3], rail: [Point; 2]| {
+            let elevation = shell.elevation([0.; 3], axes, 4, TOL, true).unwrap();
+            elevation
+                .lines
+                .iter()
+                .filter(|line| [rail, [rail[1], rail[0]]].contains(&line.points))
+                .count()
+        };
+        let x = [1., 0., 0.];
+        let y = [0., 1., 0.];
+        assert_eq!(
+            matching([x, y, [0., 0., 1.]], [[5., 1., 0.], [5., 1., z]]),
+            0
+        );
+        assert_eq!(
+            matching([x, [0., 0., -1.], y], [[5., 0., 1.], [5., -z, 1.]]),
+            1
+        );
+    }
+}
+
+#[test]
+fn a_three_quarter_arc_keeps_both_later_straight_hosts() {
+    let pierced = pierced_stock(
+        vec![
+            arc([0.; 2], [2., 0.], [0., -2.]),
+            line([0., -2.], [6., -2.]),
+            line([6., -2.], [6., 0.]),
+            line([6., 0.], [2., 0.]),
+        ],
+        [1, 3],
+        [3., -2., 1.],
+    );
+    let shell = pierced_sweep_shell(&pierced, false, TOL).unwrap();
+    close(shell.volume_mm3(), 3. * (12. + 3. * PI) - 2. * 0.8 * 0.6);
+    verify_host_faces(&shell, [3, 5]);
+    verify_arc_faces(&shell, 2, 2., 1.5 * PI, 3);
+    verify_oblique_rim(&shell, [0.; 2], 2., 1.5 * PI);
+}
+
+#[test]
+fn a_complete_outer_circle_has_four_outward_patches_and_two_exact_rims() {
+    let center = [2., 5.];
+    let stock = Sweep::new(vec![vec![circle(center, 1.5, false)]], 3., TOL, MIN).unwrap();
+    let shell = normal_sweep_shell(&stock, false, TOL).unwrap();
+    assert_eq!(shell.faces().len(), 6);
+    close(shell.volume_mm3(), 3. * PI * 1.5_f64.powi(2));
+    verify_arc_faces(&shell, 2, 1.5, 2. * PI, 4);
+    verify_oblique_rim(&shell, center, 1.5, 2. * PI);
+}
+
+#[test]
+fn refuses_invalid_tolerance_and_excess_stitching() {
+    let stock = Sweep::new(vec![rectangle([10., 10.])], 3., TOL, MIN).unwrap();
     assert_eq!(
-        normal_sweep_shell(&stadium, false, f64::NAN),
+        normal_sweep_shell(&stock, false, f64::NAN),
         Err(Error::Invalid)
     );
 

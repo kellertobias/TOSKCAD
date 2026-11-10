@@ -1,9 +1,12 @@
-use super::{Curve, Edge, Error, Face, OrientedEdge, Point, Shell, Support, cross, dot, sub};
+use super::{
+    Curve, Edge, Error, Face, OrientedEdge, Point, Shell, Support, cross, cylinder_patch::ANGULAR,
+    dot, sub,
+};
 use crate::{
     normal_sweep::{CertifiedPiercing, Edge as ProfileEdge, PiercedSweep, Piercing, Sweep},
     trim_curve::{Ellipse, EllipseArc},
 };
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, f64::consts::FRAC_PI_2};
 
 mod sweep_shell;
 pub use sweep_shell::{normal_sweep_shell, pierced_sweep_shell};
@@ -259,6 +262,7 @@ struct Builder {
     by_ends: BTreeMap<[usize; 2], usize>,
     faces: Vec<Face>,
     tolerance: f64,
+    split_long_arcs: bool,
 }
 
 impl Builder {
@@ -269,6 +273,7 @@ impl Builder {
             by_ends: BTreeMap::new(),
             faces: Vec::new(),
             tolerance,
+            split_long_arcs: false,
         }
     }
 
@@ -357,34 +362,43 @@ impl Builder {
         let reversed = dot(cross(frame.u, frame.v), frame.direction) < 0.;
         let mut end_loops = [Vec::new(), Vec::new()];
         for (edge, source, omit) in edges {
+            let parts = if self.split_long_arcs && matches!(edge, ProfileEdge::Arc { .. }) {
+                quarter_parts(edge)
+            } else {
+                1
+            };
             for arc in segments(edge) {
-                let lifts = [0., height].map(|level| {
-                    let points = [arc.start(), arc.end()].map(|p| frame.point(p, level));
-                    let curve = curve(arc, frame, level)?;
-                    self.edge(points, curve)
-                });
-                let [bottom, top] = lifts;
-                let (bottom, top) = (bottom?, top?);
-                end_loops[0].push(bottom);
-                end_loops[1].push(top);
-                if !omit {
-                    let rail = |p| [0., height].map(|level| frame.point(p, level));
-                    let end = self.edge(rail(arc.end()), Curve::Line)?;
-                    let start = self.edge(rail(arc.start()), Curve::Line)?;
-                    let mut boundary = vec![bottom, end, reverse(top), reverse(start)];
-                    if reversed {
-                        reverse_loop(&mut boundary);
-                        boundary.rotate_right(1);
-                    }
-                    self.faces.push(Face {
-                        boundary,
-                        holes: vec![],
-                        support: side_support(arc, frame, reversed),
-                        point_mm: frame.point(arc.start(), 0.),
-                        area_mm2: arc.length_mm() * height,
-                        source: 0,
-                        source_face: source,
+                for i in 0..parts {
+                    let fraction = [i, i + 1].map(|j| j as f64 / parts as f64);
+                    let [a, b] = fraction.map(|t| arc.point(t));
+                    let lifts = [0., height].map(|level| {
+                        let points = [a, b].map(|p| frame.point(p, level));
+                        let curve = curve(arc, fraction, frame, level)?;
+                        self.edge(points, curve)
                     });
+                    let [bottom, top] = lifts;
+                    let (bottom, top) = (bottom?, top?);
+                    end_loops[0].push(bottom);
+                    end_loops[1].push(top);
+                    if !omit {
+                        let rail = |p| [0., height].map(|level| frame.point(p, level));
+                        let end = self.edge(rail(b), Curve::Line)?;
+                        let start = self.edge(rail(a), Curve::Line)?;
+                        let mut boundary = vec![bottom, end, reverse(top), reverse(start)];
+                        if reversed {
+                            reverse_loop(&mut boundary);
+                            boundary.rotate_right(1);
+                        }
+                        self.faces.push(Face {
+                            boundary,
+                            holes: vec![],
+                            support: side_support(arc, frame, reversed),
+                            point_mm: frame.point(a, 0.),
+                            area_mm2: arc.length_mm() * height / parts as f64,
+                            source: 0,
+                            source_face: source,
+                        });
+                    }
                 }
             }
         }
@@ -509,8 +523,19 @@ fn reverse_loop(ring: &mut [OrientedEdge]) {
     }
 }
 
-fn segments(edge: ProfileEdge) -> Vec<ProfileEdge> {
-    if let ProfileEdge::Circle {
+fn quarter_parts(edge: ProfileEdge) -> usize {
+    match edge {
+        ProfileEdge::Circle { .. } => 4,
+        ProfileEdge::Line { .. } => 1,
+        ProfileEdge::Arc { .. } => {
+            let sweep = edge.signed_sweep_rad().expect("arc sweep").abs();
+            (((sweep - ANGULAR) / FRAC_PI_2).ceil() as usize).max(1)
+        }
+    }
+}
+
+fn segments(edge: ProfileEdge) -> impl Iterator<Item = ProfileEdge> {
+    let parts = if let ProfileEdge::Circle {
         center,
         radius_mm: r,
         clockwise,
@@ -521,19 +546,26 @@ fn segments(edge: ProfileEdge) -> Vec<ProfileEdge> {
         if clockwise {
             points[1..].reverse();
         }
-        return (0..4)
-            .map(|i| ProfileEdge::Arc {
+        std::array::from_fn(|i| {
+            Some(ProfileEdge::Arc {
                 center,
                 a: points[i],
                 b: points[(i + 1) % 4],
                 clockwise,
             })
-            .collect();
-    }
-    vec![edge]
+        })
+    } else {
+        [Some(edge), None, None, None]
+    };
+    parts.into_iter().flatten()
 }
 
-fn curve(edge: ProfileEdge, frame: SweepFrame, level: f64) -> Result<Curve, Error> {
+fn curve(
+    edge: ProfileEdge,
+    fraction: [f64; 2],
+    frame: SweepFrame,
+    level: f64,
+) -> Result<Curve, Error> {
     let ProfileEdge::Arc { center, a, .. } = edge else {
         return Ok(Curve::Line);
     };
@@ -546,10 +578,13 @@ fn curve(edge: ProfileEdge, frame: SweepFrame, level: f64) -> Result<Curve, Erro
         [radius, radius],
     )
     .map_err(|_| Error::Invalid)?;
+    let sweep = edge.signed_sweep_rad().expect("arc sweep");
+    // Keep the authored circular support. Refitting rounded subdivision
+    // endpoints could shift the radius or phase at large coordinates.
     EllipseArc::new(
         ellipse,
-        v.atan2(u),
-        edge.signed_sweep_rad().expect("arc sweep"),
+        sweep.mul_add(fraction[0], v.atan2(u)),
+        sweep * (fraction[1] - fraction[0]),
     )
     .map(Curve::Ellipse)
     .map_err(|_| Error::Unsupported)
