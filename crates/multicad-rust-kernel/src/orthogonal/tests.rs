@@ -21,6 +21,32 @@ fn integer_ring(points: &[[i64; 2]]) -> Vec<[Rational; 2]> {
 }
 
 #[test]
+fn occupied_volume_counts_each_cell_once_and_keeps_positive_slivers() {
+    let a = cube([0.; 3], [10.; 3]);
+    let b = cube([5., 0., 0.], [15., 10., 10.]);
+    let probe = cube([8., 0., 0.], [12., 10., 10.]);
+    assert_eq!(intersection_volume(&[a, b], &[probe]).unwrap(), 400.);
+    assert_eq!(intersection_volume(&[a], &[b]).unwrap(), 500.);
+    assert_eq!(intersection_volume(&[a], &[]).unwrap(), 0.);
+    let touching = cube([10., 0., 0.], [11., 1., 1.]);
+    assert_eq!(intersection_volume(&[a], &[touching]).unwrap(), 0.);
+    let small = 10. - 1e-8;
+    let sliver = cube([small, 0., 0.], [11., 1., 1.]);
+    assert_eq!(intersection_volume(&[a], &[sliver]).unwrap(), 10. - small);
+}
+
+#[test]
+fn occupied_volume_rejects_limits_and_nonfinite_results() {
+    let a = cube([0.; 3], [10.; 3]);
+    let excessive = vec![a; MAX_CELLS + 1];
+    assert_eq!(intersection_volume(&excessive, &[a]), Err(BooleanError::Limit));
+    let invalid = cube([0.; 3], [0.; 3]);
+    assert_eq!(intersection_volume(&[a], &[invalid]), Err(BooleanError::Invalid));
+    let too_large = cube([0.; 3], [1e200; 3]);
+    assert_eq!(intersection_volume(&[too_large], &[too_large]), Err(BooleanError::Invalid));
+}
+
+#[test]
 fn rectilinear_prism_decomposition_keeps_straight_holes_and_signed_height() {
     let outer = integer_ring(&[[0, 0], [6, 0], [6, 2], [3, 2], [3, 5], [0, 5]]);
     let hole = [[1, 1], [1, 3], [2, 3], [2, 1]]

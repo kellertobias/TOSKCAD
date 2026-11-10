@@ -6,7 +6,7 @@ use crate::{Rational, polygon::PolygonPrism};
 use std::collections::{BTreeMap, BTreeSet};
 
 const MAX_GRID_POINTS: usize = 131_072;
-const MAX_CELLS: usize = 65_536;
+pub const MAX_CELLS: usize = 65_536;
 const MAX_QUADS: usize = 65_536;
 const MAX_COMPONENTS: u32 = 1_024;
 const UNVISITED: u32 = u32::MAX;
@@ -177,6 +177,33 @@ pub fn boolean(
         return Ok(None);
     }
     grid.boundary(&material, solid_count).map(Some)
+}
+
+/// Measure the common material of two unions without constructing result
+/// faces. Coincident planes and touching cells contribute no volume.
+pub fn intersection_volume(left: &[Box3], right: &[Box3]) -> Result<f64, BooleanError> {
+    if left.len() > MAX_CELLS || right.len() > MAX_CELLS {
+        return Err(BooleanError::Limit);
+    }
+    if left.is_empty() || right.is_empty() {
+        return Ok(0.);
+    }
+    let grid = Grid::new(left, right, 0.)?;
+    let left = grid.occupancy(left);
+    let right = grid.occupancy(right);
+    let mut volume = 0.;
+    for (index, (a, b)) in left.into_iter().zip(right).enumerate() {
+        if a > 0 && b > 0 {
+            let at = grid.coordinates(index);
+            let lo = grid.point(at);
+            let hi = grid.point(at.map(|i| i + 1));
+            volume += (0..3).map(|i| hi[i] - lo[i]).product::<f64>();
+        }
+    }
+    if !volume.is_finite() {
+        return Err(BooleanError::Invalid);
+    }
+    Ok(volume)
 }
 
 struct Grid {

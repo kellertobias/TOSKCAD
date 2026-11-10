@@ -6,11 +6,13 @@ pub mod display;
 pub mod manufacturing;
 pub mod orthogonal;
 pub mod orthogonal_boundary;
+pub mod planar_distance;
 pub mod planar_projection;
 pub mod planar_section;
 pub mod polygon;
 pub mod prism;
 pub mod section_hatch;
+pub mod sketch_reference;
 pub mod step;
 pub mod step_read;
 
