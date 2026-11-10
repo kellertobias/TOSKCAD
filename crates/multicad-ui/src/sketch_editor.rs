@@ -657,6 +657,13 @@ impl SketchEditor {
     pub fn has_model_backend(&self) -> bool {
         self.model.has_backend()
     }
+    pub(crate) fn committed_model_preview(
+        &self,
+        session: &Session,
+        resources: &multicad_core::project_file::ProjectResources,
+    ) -> Option<&std::sync::Arc<crate::viewport::Scene>> {
+        self.model.committed_preview(session, resources)
+    }
     pub fn poll_model(
         &mut self,
         session: &Session,

@@ -70,6 +70,7 @@ struct Candidate {
     proof: SceneProof,
     pending: bool,
     scene: Option<Arc<Scene>>,
+    evaluated_scene: Option<Arc<Scene>>,
     requires_info: bool,
     /// An FDM aid feature whose native placement review gates Apply.
     aid: Option<EntityId>,
@@ -106,6 +107,7 @@ struct Handoff {
     revision: u64,
     resources: ProjectResources,
     scene: Arc<Scene>,
+    evaluated_scene: Arc<Scene>,
     architecture_levels: std::sync::OnceLock<crate::architecture_view::Levels>,
 }
 #[derive(Default)]
@@ -1970,6 +1972,7 @@ impl ModelToolController {
             proof,
             pending: true,
             scene: None,
+            evaluated_scene: None,
             requires_info: matches!(
                 request,
                 ModelRequest::ExtrudeBoolean(_)
@@ -2126,24 +2129,27 @@ impl ModelToolController {
                         return Err("Native preview tool membership disagrees with the requested producer-version consumption".into());
                     }
                 }
-                VisibilityFilter::default().apply(
+                let visible = VisibilityFilter::default().apply(
                     &scene,
                     candidate.prepared.document(),
                     candidate.stamp.revision,
-                )
+                )?;
+                Ok((scene, visible))
             })();
             let candidate = self.candidate.as_mut().expect("matching candidate");
             candidate.pending = false;
             match result {
-                Ok(scene) => {
+                Ok((evaluated, scene)) => {
                     candidate.blocked = candidate
                         .aid
                         .and_then(|aid| super::fdm_aid::placement_block(&scene, aid));
                     candidate.scene = Some(scene);
+                    candidate.evaluated_scene = Some(evaluated);
                     self.error = None;
                 }
                 Err(error) => {
                     candidate.scene = None;
+                    candidate.evaluated_scene = None;
                     self.error = Some(error);
                 }
             }
@@ -2270,13 +2276,15 @@ impl ModelToolController {
                 // keep its chosen floor and wall instead of reseeding them.
                 self.begin_form_with_level_seed(session, resources, channel, form, false)?;
             }
-            // Keep the same checked geometry visible while the canonical lane
-            // rebuilds the new revision. It remains noninteractive/display-only.
+            // Keep the checked geometry visible until the canonical lane accepts it.
             self.handoff = Some(Handoff {
                 document: session.document().id(),
                 revision: session.revision(),
                 resources: resources.clone(),
                 scene,
+                evaluated_scene: candidate
+                    .evaluated_scene
+                    .expect("checked preview evaluation"),
                 architecture_levels: candidate.architecture_levels,
             });
             Ok(candidate.outputs)
@@ -2285,6 +2293,17 @@ impl ModelToolController {
             self.error = Some(error.clone());
         }
         result
+    }
+    pub(crate) fn committed_preview(
+        &self,
+        session: &Session,
+        resources: &ProjectResources,
+    ) -> Option<&Arc<Scene>> {
+        let handoff = self.handoff.as_ref()?;
+        (handoff.document == session.document().id()
+            && handoff.revision == session.revision()
+            && &handoff.resources == resources)
+            .then_some(&handoff.evaluated_scene)
     }
     pub fn display_scene(
         &self,
@@ -2310,8 +2329,8 @@ impl ModelToolController {
             })
             .map(|handoff| handoff.scene.clone())
     }
-    /// The viewport may still show checked geometry after Apply while its
-    /// canonical revision rebuilds. Both views use solid bounds for camera Fit.
+    /// The viewport may show checked geometry before canonical publication.
+    /// Both views use solid bounds for camera Fit.
     pub(crate) fn owns_display_scene(&self, scene: &Arc<Scene>) -> bool {
         self.candidate.as_ref().is_some_and(|candidate| {
             candidate

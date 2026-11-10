@@ -2852,6 +2852,17 @@ impl Application {
         }
         {
             let project = self.current_mut();
+            if let Some(preview) = project
+                .sketch
+                .committed_model_preview(&project.session, &project.resources)
+            {
+                let _ = project.scene.publish_committed_preview(
+                    project.session.document(),
+                    &project.resources,
+                    project.session.revision(),
+                    preview,
+                );
+            }
             project.scene.tick_project(
                 project.session.document(),
                 &project.resources,

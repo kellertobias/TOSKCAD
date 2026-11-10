@@ -279,12 +279,23 @@ fn only_matching_success_can_apply_exact_transaction_with_one_undo_and_handoff()
     let preview = controller
         .display_scene(&session, &Default::default())
         .unwrap();
+    assert!(
+        controller
+            .committed_preview(&session, &Default::default())
+            .is_none()
+    );
     let sent = state.lock().unwrap().requests[0].0.clone();
     let outputs = controller.apply(&mut session, &Default::default()).unwrap();
     assert_eq!(outputs.len(), 2);
     assert_eq!(session.document(), &sent);
     assert_eq!(session.revision(), 1);
     assert!(!controller.active());
+    assert!(Arc::ptr_eq(
+        &preview,
+        controller
+            .committed_preview(&session, &Default::default())
+            .unwrap()
+    ));
     assert_eq!(
         session.activity().last().unwrap().actor.channel,
         Channel::CommandLine

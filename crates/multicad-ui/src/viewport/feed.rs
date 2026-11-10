@@ -178,6 +178,70 @@ impl SceneFeed {
     pub fn retry(&mut self) {
         self.last_source = None;
     }
+    /// Publish a complete native preview whose evaluated source was committed.
+    /// The controller verifies the transaction and resources. The feed checks
+    /// the source and reference receipts again before enabling canonical picks.
+    pub(crate) fn publish_committed_preview(
+        &mut self,
+        document: &Document,
+        resources: &ProjectResources,
+        revision: u64,
+        preview: &Scene,
+    ) -> Option<()> {
+        let identity = (document.id(), revision);
+        let previous = preview.stamp();
+        if self.last_source == Some(identity)
+            || previous.document != identity.0
+            || previous.revision.checked_add(1) != Some(revision)
+        {
+            return None;
+        }
+        let backend = self.backend.as_mut()?;
+        let source = multicad_core::project_file::ContentHash::document(document).ok()?;
+        if preview.model_evaluation()?.source_hash != source {
+            return None;
+        }
+        let generation = self.generation.checked_add(1)?;
+        let stamp = SceneStamp {
+            document: identity.0,
+            revision,
+            generation,
+        };
+        let scene = Arc::new(preview.rebind_source(stamp, source)?);
+        let report = scene.native_reference_report(source)?.clone();
+        let driving = report.for_model(document).ok()?;
+        if !driving.all_resolved() {
+            return None;
+        }
+        self.store.begin(stamp).ok()?;
+        if !self
+            .reference_gate
+            .consider(revision, scene.clone(), driving)
+            .ok()?
+        {
+            return None;
+        }
+        self.store.publish(scene.clone()).ok()?;
+        backend.cancel();
+        self.generation = generation;
+        self.last_source = Some(identity);
+        self.requested_source = Some((document.clone(), resources.clone()));
+        self.expected = Some(stamp);
+        self.pending = false;
+        self.error = None;
+        self.source_valid = true;
+        self.refining = false;
+        self.quality_error = None;
+        self.requested_quality = None;
+        self.quality_unsupported = true;
+        self.references = Some(ReferenceEvaluation {
+            stamp,
+            report,
+            snapshots: OnceLock::new(),
+            candidate: scene,
+        });
+        Some(())
+    }
     pub fn tick(&mut self, document: &Document, revision: u64) {
         self.tick_at(document, revision, 0.);
     }
@@ -216,7 +280,7 @@ impl SceneFeed {
                 .and_then(|(_, scene)| {
                     let source =
                         multicad_core::project_file::ContentHash::document(document).ok()?;
-                    scene.rebind_presentation(stamp, source)
+                    scene.rebind_source(stamp, source)
                 });
             self.last_source = Some(source);
             self.expected = Some(stamp);
@@ -439,6 +503,68 @@ mod tests {
         fn poll(&mut self) -> Option<SceneReply> {
             self.reply.take()
         }
+    }
+
+    #[test]
+    fn committed_native_preview_publishes_without_rebuilding_and_rejects_stale_sources() {
+        let original = Document::new("Stock").unwrap();
+        let candidate = original
+            .edited(&[Mutation::Insert(Entity::new(
+                "New part",
+                EntityData::Group {},
+            ))])
+            .unwrap();
+        let resources = ProjectResources::default();
+        let requests = Rc::new(Cell::new(0));
+        let mut native = Backend {
+            requests: requests.clone(),
+            reply: None,
+        };
+        native
+            .request(
+                &candidate,
+                SceneStamp {
+                    document: candidate.id(),
+                    revision: 0,
+                    generation: 1,
+                },
+            )
+            .unwrap();
+        let preview = native.poll().unwrap().result.unwrap();
+        let mut feed = SceneFeed::default();
+        feed.set_backend(Box::new(native));
+        feed.tick(&original, 0);
+        assert_eq!(requests.get(), 2);
+        assert!(
+            feed.publish_committed_preview(&original, &resources, 1, &preview)
+                .is_none()
+        );
+        assert!(
+            feed.publish_committed_preview(&candidate, &resources, 2, &preview)
+                .is_none()
+        );
+        assert!(feed.is_current(original.id(), 0));
+
+        assert!(
+            feed.publish_committed_preview(&candidate, &resources, 1, &preview)
+                .is_some()
+        );
+        feed.tick_project(&candidate, &resources, 1, 0.);
+        assert_eq!(
+            requests.get(),
+            2,
+            "Apply must reuse the validated native preview"
+        );
+        assert!(feed.is_current(candidate.id(), 1));
+        assert!(!feed.pending());
+        let references = feed.references().unwrap();
+        assert_eq!(references.stamp.revision, 1);
+        assert_eq!(references.report.revision, 1);
+        assert!(references.snapshots.get().is_none());
+
+        feed.tick(&original, 2);
+        assert_eq!(requests.get(), 3, "Undo is evaluated on the canonical lane");
+        assert!(feed.is_current(original.id(), 2));
     }
 
     #[test]

@@ -593,37 +593,44 @@ pub(crate) struct DisplayLeafHit {
     pub path: multicad_core::model::OccurrencePath,
 }
 impl Scene {
-    /// The feed checks that only presentation data changed and that
-    /// resources are identical. Reuse immutable geometry and rebind the
-    /// receipts to the new source revision before exposing the scene.
-    pub(super) fn rebind_presentation(
+    /// Rebind immutable geometry and its receipts after the feed has proved
+    /// that the committed source is identical or only presentation changed.
+    pub(super) fn rebind_source(
         &self,
         stamp: SceneStamp,
         source: multicad_core::project_file::ContentHash,
     ) -> Option<Self> {
+        let info = self.model_evaluation.as_ref()?;
         if !self.is_full_model()
             || self.stamp.document != stamp.document
             || self.display_origin.is_some()
-            || self
-                .model_evaluation
-                .as_ref()
-                .is_none_or(|info| !info.cut_targets.is_empty())
+            || !info.cut_targets.is_empty()
         {
             return None;
         }
         let mut scene = self.clone();
         scene.stamp = stamp;
-        if let Some(info) = &mut scene.model_evaluation {
-            Arc::make_mut(info).source_hash = source;
-        }
-        if let Some(info) = &mut scene.assembly_evaluation {
-            Arc::make_mut(info).source_hash = source;
-        }
-        if let Some(info) = &mut scene.transfer_evaluation {
-            Arc::make_mut(info).source_hash = source;
-        }
-        if let Some(info) = &mut scene.native_bounds {
-            Arc::make_mut(info).source = source;
+        if info.source_hash != source {
+            if let Some(info) = &mut scene.model_evaluation {
+                Arc::make_mut(info).source_hash = source;
+            }
+            if let Some(info) = &mut scene.assembly_evaluation {
+                Arc::make_mut(info).source_hash = source;
+            }
+            if let Some(info) = &mut scene.transfer_evaluation {
+                Arc::make_mut(info).source_hash = source;
+            }
+            if let Some(info) = &mut scene.native_bounds {
+                Arc::make_mut(info).source = source;
+            }
+            if let Some(plan) = &mut scene.architecture_plan
+                && let Ok(plan) = Arc::make_mut(plan)
+            {
+                plan.source_hash = source;
+            }
+            if let Some(reviews) = &mut scene.fdm_reviews {
+                Arc::make_mut(reviews).source = source;
+            }
         }
         if let Some(info) = &mut scene.native_references {
             let info = Arc::make_mut(info);
@@ -633,14 +640,6 @@ impl Scene {
                 receipt.revision = stamp.revision;
                 receipt.source_hash = source;
             }
-        }
-        if let Some(plan) = &mut scene.architecture_plan
-            && let Ok(plan) = Arc::make_mut(plan)
-        {
-            plan.source_hash = source;
-        }
-        if let Some(reviews) = &mut scene.fdm_reviews {
-            Arc::make_mut(reviews).source = source;
         }
         Some(scene)
     }
