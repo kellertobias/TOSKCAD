@@ -1,4 +1,4 @@
-//! Regularized union of closed convex polyhedra, clipped against analytic planes.
+//! Regularized Booleans of closed convex polyhedra, clipped against analytic planes.
 //! An output face retains its supporting source face. Coplanar fragments can
 //! share subdivision edges, but interior faces and disconnected vertex links
 //! cannot survive the closed-shell proof.
@@ -10,6 +10,7 @@ use std::collections::BTreeMap;
 
 mod clipping;
 mod difference;
+mod intersection;
 mod shell;
 mod slab;
 mod verify_boundary;

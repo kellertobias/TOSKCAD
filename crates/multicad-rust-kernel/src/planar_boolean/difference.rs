@@ -125,43 +125,24 @@ impl CutBoundary {
 
     fn stock_side(
         &mut self,
-        mut fragments: Vec<Vec<Point>>,
+        fragments: Vec<Vec<Point>>,
         face_bounds: [Point; 2],
         side: Plane,
         stock: &[ConvexPiece],
     ) -> Result<Vec<Vec<Point>>, Error> {
-        let mut covered = Vec::new();
-        let mut covered_budget = MAX_INCIDENCES;
-        for piece in stock {
-            if fragments.is_empty() {
-                break;
-            }
-            if !clipping::bounds_overlap(face_bounds, piece.bounds, self.tolerance)
-                || piece
+        clipping::covered(
+            fragments,
+            stock,
+            face_bounds,
+            self.tolerance,
+            &mut self.budget,
+            |piece| {
+                !piece
                     .planes
                     .iter()
                     .any(|&plane| side.same_direction(plane, self.tolerance))
-            {
-                continue;
-            }
-            let mut remaining = Vec::new();
-            let mut fragment_budget = MAX_INCIDENCES;
-            for ring in fragments {
-                if let Some(inside) = clipping::partition(
-                    ring,
-                    &piece.planes,
-                    self.tolerance,
-                    &mut remaining,
-                    &mut self.budget,
-                    &mut fragment_budget,
-                )? {
-                    charge(&mut covered_budget, inside.len())?;
-                    covered.push(inside);
-                }
-            }
-            fragments = remaining;
-        }
-        Ok(covered)
+            },
+        )
     }
 }
 

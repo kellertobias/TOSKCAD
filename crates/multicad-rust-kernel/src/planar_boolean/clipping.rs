@@ -54,6 +54,45 @@ pub(super) fn bounds_overlap(a: [Point; 2], b: [Point; 2], tolerance: f64) -> bo
     (0..3).all(|i| a[0][i] <= b[1][i] + tolerance && b[0][i] <= a[1][i] + tolerance)
 }
 
+/// Find the coverage by a union of selected cells. Partition each fragment
+/// only until one cell owns it, so overlapping cells cannot duplicate faces.
+pub(super) fn covered(
+    mut fragments: Vec<Vec<Point>>,
+    pieces: &[ConvexPiece],
+    face_bounds: [Point; 2],
+    tolerance: f64,
+    budget: &mut usize,
+    eligible: impl Fn(&ConvexPiece) -> bool,
+) -> Result<Vec<Vec<Point>>, Error> {
+    let mut covered = Vec::new();
+    let mut covered_budget = MAX_INCIDENCES;
+    for piece in pieces {
+        if fragments.is_empty() {
+            break;
+        }
+        if !bounds_overlap(face_bounds, piece.bounds, tolerance) || !eligible(piece) {
+            continue;
+        }
+        let mut remaining = Vec::new();
+        let mut fragment_budget = MAX_INCIDENCES;
+        for ring in fragments {
+            if let Some(inside) = partition(
+                ring,
+                &piece.planes,
+                tolerance,
+                &mut remaining,
+                budget,
+                &mut fragment_budget,
+            )? {
+                charge(&mut covered_budget, inside.len())?;
+                covered.push(inside);
+            }
+        }
+        fragments = remaining;
+    }
+    Ok(covered)
+}
+
 pub(super) fn partition(
     polygon: Vec<Point>,
     planes: &[Plane],
