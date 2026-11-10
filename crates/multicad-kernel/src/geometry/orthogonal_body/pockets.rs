@@ -23,6 +23,9 @@ impl Solid {
             self.policy.minimum_feature_mm,
         )
         .map_err(circular_pocket_body::pocket_error)?;
+        if !body.slots.is_empty() {
+            body.validate_slots(&body.slots, &pockets, self.policy)?;
+        }
         let body = Rc::make_mut(body);
         body.pockets = pockets.into();
         body.pocket_origins = origins.into();
@@ -69,15 +72,28 @@ impl OrthogonalBody {
 
     pub(in crate::geometry) fn volume_mm3(&self) -> f64 {
         orthogonal_pockets::volume_mm3(&self.geometry, &self.pockets)
+            - multicad_rust_kernel::orthogonal_slots::removed_volume_mm3(&self.slots)
     }
 
     pub(in crate::geometry) fn supports_step(&self) -> bool {
-        step::supports_pocketed_orthogonal(&self.boundary, &self.pockets)
+        if self.slots.is_empty() {
+            step::supports_pocketed_orthogonal(&self.boundary, &self.pockets)
+        } else {
+            step::supports_slotted_orthogonal(&self.boundary, &self.pockets, &self.slots)
+        }
     }
 
     pub(in crate::geometry) fn step(&self, frame: PlaneFrame) -> Result<String, step::StepError> {
         let placed = |point| transform_point(frame, point);
-        if self.pockets.is_empty() {
+        if !self.slots.is_empty() {
+            step::write_slotted_orthogonal(
+                &self.geometry,
+                &self.boundary,
+                &self.pockets,
+                &self.slots,
+                &placed,
+            )
+        } else if self.pockets.is_empty() {
             step::write_orthogonal(&self.boundary, placed)
         } else {
             step::write_pocketed_orthogonal(&self.geometry, &self.boundary, &self.pockets, &placed)
@@ -96,12 +112,7 @@ impl OrthogonalBody {
         for pocket in self.pockets.iter() {
             let [mouth, floor] = self.pocket_frames(pocket);
             let area = pocket.area_mm2();
-            let cap = &mut faces[pocket.face];
-            cap.area_mm2 -= area;
-            let ratio = area / cap.area_mm2;
-            for (coordinate, center) in cap.center_mm.iter_mut().zip(mouth.origin_mm) {
-                *coordinate += (*coordinate - center) * ratio;
-            }
+            subtract_face_area(&mut faces[pocket.face], mouth.origin_mm, area);
             let wall = faces.len() as u32;
             faces.extend([
                 Face {

@@ -9,10 +9,12 @@ use multicad_rust_kernel::{
     orthogonal::{self, BooleanError, Box3, Operation, OrthogonalSolid},
     orthogonal_boundary::{self, Boundary, BoundaryError, BoundaryFace},
     orthogonal_pockets::OrthogonalPocket,
+    orthogonal_slots::OrthogonalSlot,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
 mod pockets;
+pub(in crate::geometry) mod slots;
 
 type Point = [f64; 3];
 type PointKey = [u64; 3];
@@ -29,8 +31,11 @@ pub(crate) struct OrthogonalBody {
     faces: Rc<[Face]>,
     loops: Rc<[Vec<Vec<EdgeUse>>]>,
     edge_count: u32,
+    vertex_count: u32,
     pockets: Rc<[OrthogonalPocket]>,
     pocket_origins: Rc<[Origin]>,
+    slots: Rc<[OrthogonalSlot]>,
+    slot_origins: Rc<[Origin]>,
 }
 
 struct Support {
@@ -51,6 +56,14 @@ fn key(point: Point) -> PointKey {
 
 fn subtract(a: Point, b: Point) -> Point {
     std::array::from_fn(|i| a[i] - b[i])
+}
+
+fn subtract_face_area(face: &mut Face, center: Point, area: f64) {
+    face.area_mm2 -= area;
+    let ratio = area / face.area_mm2;
+    for (coordinate, center) in face.center_mm.iter_mut().zip(center) {
+        *coordinate += (*coordinate - center) * ratio;
+    }
 }
 
 fn axis(normal: Point) -> usize {
@@ -158,6 +171,7 @@ impl Solid {
         if let Some((body, frame)) = self.orthogonal_body()
             && cardinal(frame)
             && body.pockets.is_empty()
+            && body.slots.is_empty()
         {
             return Ok(Some(
                 body.geometry
@@ -758,6 +772,7 @@ impl OrthogonalBody {
             Vec::new()
         };
         let edge_count = shared.edges.len() as u32;
+        let vertex_count = shared.vertices.len() as u32;
         let mut lower = Vec::new();
         for (i, ([a_mm, b_mm], adjacent)) in shared.edges.into_iter().enumerate() {
             let mut item = element(
@@ -811,8 +826,11 @@ impl OrthogonalBody {
             faces: faces.into(),
             loops: loops.into(),
             edge_count,
+            vertex_count,
             pockets: Rc::default(),
             pocket_origins: Rc::default(),
+            slots: Rc::default(),
+            slot_origins: Rc::default(),
         })
     }
 
@@ -826,9 +844,13 @@ impl OrthogonalBody {
                     .filter(|(_, pocket)| pocket.face == face as usize)
                     .map(|(i, _)| vec![(self.edge_count + 2 * i as u32, false)]),
             );
+            self.append_slot_openings(face as usize, &mut loops);
             return loops;
         }
         let pocket_face = face - self.faces.len() as u32;
+        if (pocket_face / 2) >= self.pockets.len() as u32 {
+            return self.slot_loops(face as usize);
+        }
         if pocket_face % 2 == 1 && (pocket_face / 2) < self.pockets.len() as u32 {
             vec![vec![(self.edge_count + pocket_face, false)]]
         } else {
@@ -846,6 +868,7 @@ impl OrthogonalBody {
         topology.owner = owner;
         topology.revision = revision;
         self.append_pocket_topology(&mut topology);
+        self.append_slot_topology(&mut topology);
         if frame != PlaneFrame::default() {
             for element in &mut topology.elements {
                 let point = |p| transform_point(frame, p);
@@ -862,7 +885,7 @@ impl OrthogonalBody {
                 }
             }
         }
-        if !self.pockets.is_empty() {
+        if !self.pockets.is_empty() || !self.slots.is_empty() {
             topology.validate()?;
         }
         Ok(topology)
@@ -871,6 +894,7 @@ impl OrthogonalBody {
     pub(super) fn faces(&self, frame: PlaneFrame) -> Vec<Face> {
         let mut faces = self.faces.to_vec();
         self.append_pocket_faces(&mut faces);
+        self.append_slot_faces(&mut faces);
         faces
             .into_iter()
             .map(|face| Face {
@@ -909,6 +933,18 @@ impl OrthogonalBody {
         options: multicad_rust_kernel::display::Tessellation,
         usage: MeshUse,
     ) -> Result<ffi::Mesh, GeometryError> {
+        if !self.slots.is_empty() {
+            return crate::rust_display::placed_mesh(
+                multicad_rust_kernel::display::slotted_orthogonal(
+                    &self.boundary,
+                    &self.pockets,
+                    &self.slots,
+                    options,
+                ),
+                frame,
+                false,
+            );
+        }
         if !self.pockets.is_empty() {
             return crate::rust_display::placed_mesh(
                 multicad_rust_kernel::display::pocketed_orthogonal(

@@ -64,25 +64,39 @@ pub(crate) fn face_origin(origin: &Origin, role: &str) -> Origin {
     }
 }
 
-pub(super) fn tool_start(
-    tool: &CircularPocketTool,
+pub(super) fn tool_point(
+    frame: PlaneFrame,
+    center_uv: [f64; 2],
+    radius_mm: f64,
+    displacement_mm: [f64; 3],
     policy: GeometryPolicy,
 ) -> Result<[f64; 3], GeometryError> {
-    tool.frame.checked(policy)?;
-    policy.length(tool.radius_mm)?;
-    policy.point(tool.displacement_mm)?;
-    let start = tool.frame.point(tool.center_uv);
-    let finish = std::array::from_fn(|i| start[i] + tool.displacement_mm[i]);
+    frame.checked(policy)?;
+    policy.length(radius_mm)?;
+    policy.point(displacement_mm)?;
+    let start = frame.point(center_uv);
+    let finish = std::array::from_fn(|i| start[i] + displacement_mm[i]);
     policy.point(start)?;
     policy.point(finish)?;
-    if length(cross(tool.frame.normal(), tool.displacement_mm))
-        > 1e-10 * length(tool.displacement_mm)
-    {
+    if length(cross(frame.normal(), displacement_mm)) > 1e-10 * length(displacement_mm) {
         return Err(input_error(
             "Circular pocket tool must travel normal to its profile",
         ));
     }
     Ok(start)
+}
+
+pub(super) fn tool_start(
+    tool: &CircularPocketTool,
+    policy: GeometryPolicy,
+) -> Result<[f64; 3], GeometryError> {
+    tool_point(
+        tool.frame,
+        tool.center_uv,
+        tool.radius_mm,
+        tool.displacement_mm,
+        policy,
+    )
 }
 
 impl Solid {
@@ -113,6 +127,15 @@ impl Solid {
                 "Rust blind drilling requires polygonal or orthogonal stock",
             ));
         };
+        let normal = stock.frame.normal();
+        if tools
+            .iter()
+            .any(|tool| length(cross(tool.frame.normal(), normal)) > 1e-10)
+        {
+            return self
+                .orthogonal_stock()?
+                .rust_drill_circular_pockets(tools, policy);
+        }
         if tools.len() > circular_pockets::pocket_capacity(&stock.prism) - stock.pockets.len() {
             return Err(budget_error());
         }
@@ -120,15 +143,13 @@ impl Solid {
         let mut origins = stock.pocket_origins.to_vec();
         let h = stock.prism.height().as_f64();
         let sign = if stock.reverse_sweep { -1. } else { 1. };
-        let normal = stock.frame.normal().map(|x| sign * x);
+        let normal = normal.map(|x| sign * x);
         let tolerance = policy.linear_tolerance_mm;
         for tool in tools {
             let start = tool_start(tool, policy)?;
             let travel = dot(tool.displacement_mm, normal);
             let sideways = std::array::from_fn(|i| tool.displacement_mm[i] - travel * normal[i]);
-            if length(cross(tool.frame.normal(), normal)) > 1e-10
-                || length(sideways) > 1e-10 * travel.abs()
-            {
+            if length(sideways) > 1e-10 * travel.abs() {
                 return Err(error(
                     OPERATION,
                     GeometryErrorKind::Unsupported,

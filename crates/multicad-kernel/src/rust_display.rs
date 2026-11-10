@@ -186,6 +186,9 @@ pub(crate) fn planar_loops(solid: &Solid, face: u32) -> Vec<Vec<(u32, bool)>> {
     if let Some((body, _)) = solid.revolution_body() {
         return body.planar_loops(face);
     }
+    if let Some((body, _)) = solid.rounded_slot_body() {
+        return body.planar_loops(face);
+    }
     let Some(prism) = solid.rust_prism() else {
         return vec![vec![(face, false)]];
     };
