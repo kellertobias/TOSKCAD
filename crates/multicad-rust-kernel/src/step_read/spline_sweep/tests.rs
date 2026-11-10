@@ -573,3 +573,279 @@ fn refuses_a_nonmonotone_cubic_even_when_its_endpoints_still_match() {
         ReadError::Unsupported,
     );
 }
+
+fn hub_profile(teeth: u32, bore: f64, lower: f64, upper: f64) -> Profile {
+    use crate::spur_gear::Hub;
+    profile(teeth, bore)
+        .with_hub(
+            Hub {
+                radius_mm: 12.,
+                axial_start_mm: lower,
+                axial_end_mm: upper,
+            },
+            1e-5,
+            1e7,
+        )
+        .unwrap()
+}
+
+#[test]
+fn independently_verifies_hub_extensions_and_a_continuous_bore() {
+    let normal = cross(U, V);
+    for (teeth, bore, lower, upper) in [
+        (20, 2., -3., 11.),
+        (20, 0., -3., 6.),
+        (64, 2., 3., 11.),
+        (20, 0., -4., 9.),
+    ] {
+        let gear = hub_profile(teeth, bore, lower, upper);
+        let source = write_spur_gear(&gear, ORIGIN, U, V, TOL).unwrap();
+        let actual = read_analytic_solid(&source, TOL).unwrap();
+        let extensions = gear.hub_extensions().into_iter().flatten().count();
+        assert_eq!(actual.solid_count, 1);
+        assert_eq!(
+            actual.face_count,
+            2 + gear.outline().len() + usize::from(bore > 0.) + 2 * extensions
+        );
+        assert_eq!(actual.splines.len(), 4 * teeth as usize);
+        assert_eq!(
+            actual.circles.len(),
+            2 * usize::from(bore > 0.) + 2 * extensions
+        );
+        assert!((actual.volume_mm3 - gear.volume_mm3()).abs() < 1e-5);
+        let expected: [Point; 2] = [false, true].map(|upper| {
+            std::array::from_fn(|i| {
+                let s = if upper { 1. } else { -1. };
+                ORIGIN[i] + s * gear.support([s * U[i], s * V[i], s * normal[i]])
+            })
+        });
+        for (actual, expected) in actual
+            .bounds_mm
+            .into_iter()
+            .flatten()
+            .zip(expected.into_iter().flatten())
+        {
+            assert!((actual - expected).abs() < TOL, "{actual} != {expected}");
+        }
+        let bore_levels: Vec<_> = actual
+            .circles
+            .iter()
+            .filter(|circle| circle.radius_mm == bore)
+            .map(|circle| dot(sub(circle.center_mm, ORIGIN), normal))
+            .collect();
+        if bore > 0. {
+            assert_eq!(bore_levels.len(), 2);
+            for (actual, expected) in bore_levels.into_iter().zip(gear.axial_bounds()) {
+                assert!((actual - expected).abs() < TOL);
+            }
+        } else {
+            assert!(bore_levels.is_empty());
+        }
+    }
+}
+
+#[test]
+fn independently_verifies_hub_in_a_compound() {
+    let mut writer = Writer::new();
+    let gear = hub_profile(20, 2., -3., 11.);
+    writer.append_spur_gear(&gear, ORIGIN, U, V, TOL).unwrap();
+    writer
+        .append_box([Rational::new(2, 1).unwrap(); 3], [100., 0., 0.], U, V)
+        .unwrap();
+    let source = writer.finish().unwrap();
+    let members = read_analytic_compound(&source, TOL).unwrap();
+    assert_eq!(members.len(), 2);
+    assert_eq!(members[0].circles.len(), 6);
+    assert!((members[0].volume_mm3 - gear.volume_mm3()).abs() < 1e-5);
+    assert!((members[1].volume_mm3 - 8.).abs() < TOL);
+}
+
+struct ParsedHub {
+    edges: Edges,
+    shoulders: [(Plane, FaceWire); 2],
+    ends: [Option<(Plane, FaceWire)>; 2],
+    walls: Vec<FaceWire>,
+    areas: [f64; 2],
+}
+
+fn reject_hub(edit: impl FnOnce(&mut ParsedHub), error: ReadError) {
+    let gear = hub_profile(20, 2., -3., 11.);
+    let source = write_spur_gear(&gear, ORIGIN, U, V, TOL).unwrap();
+    let f = Fixture::new(&source);
+    let mut reader = Shell::new(&f.records, TOL, true);
+    let mut edges = Edges::new();
+    let normal = cross(U, V);
+    let shoulders = [f.faces[0], f.faces[1]].map(|id| {
+        let face = read_face(&mut reader, id, &mut edges).unwrap();
+        (face_plane(&reader, &face).unwrap(), face)
+    });
+    let mut ends = [None, None];
+    let mut walls = Vec::new();
+    for &id in &f.faces[2..] {
+        let face = read_face(&mut reader, id, &mut edges).unwrap();
+        if let Some(plane) = normal_cap(&reader, &face, normal).unwrap() {
+            let side = usize::from(dot(plane.normal, normal) > 0.);
+            ends[side] = Some((plane, face));
+        } else {
+            walls.push(face);
+        }
+    }
+    let areas = shoulders
+        .each_ref()
+        .map(|(plane, face)| section::verify(&reader, &edges, plane, face).unwrap());
+    let mut fixture = ParsedHub {
+        edges,
+        shoulders,
+        ends,
+        walls,
+        areas,
+    };
+    edit(&mut fixture);
+    let result = hub::verify(
+        &reader,
+        &fixture.edges,
+        fixture
+            .shoulders
+            .each_ref()
+            .map(|(plane, face)| (plane, face)),
+        fixture.areas,
+        &fixture.ends,
+        &fixture.walls,
+        normal,
+        8.,
+    );
+    assert_eq!(result.err(), Some(error));
+}
+
+impl ParsedHub {
+    fn circle(&mut self, edge: u32) -> &mut CircleEdge {
+        let Geometry::Analytic(Curve::Circle(circle)) =
+            &mut self.edges.get_mut(&edge).unwrap().geometry
+        else {
+            panic!("fixture circle missing");
+        };
+        circle
+    }
+
+    fn outer(&self, end: usize) -> u32 {
+        self.ends[end].as_ref().unwrap().1.outer[0].edge
+    }
+
+    fn bore(&self, end: usize) -> u32 {
+        self.ends[end].as_ref().unwrap().1.hole.as_ref().unwrap()[0].edge
+    }
+}
+
+#[test]
+fn hub_requires_concentric_end_rings_outside_the_tooth_band() {
+    reject_hub(|f| f.shoulders[0].1.hole = None, ReadError::Invalid);
+    reject_hub(|f| f.areas[1] += 1., ReadError::Invalid);
+    reject_hub(
+        |f| {
+            let end = f.ends[1].as_mut().unwrap();
+            end.1.outer.clear();
+        },
+        ReadError::Unsupported,
+    );
+    reject_hub(
+        |f| {
+            let end = f.outer(1);
+            f.edges.get_mut(&end).unwrap().geometry = Geometry::Analytic(Curve::Line);
+        },
+        ReadError::Unsupported,
+    );
+    reject_hub(
+        |f| f.ends[1].as_mut().unwrap().1.outer[0].forward ^= true,
+        ReadError::Invalid,
+    );
+    reject_hub(
+        |f| {
+            let edge = f.outer(1);
+            f.circle(edge).center_mm[1] += 1.;
+        },
+        ReadError::Invalid,
+    );
+    reject_hub(
+        |f| {
+            let [outer, bore] = [f.outer(1), f.bore(1)];
+            f.ends[1].as_mut().unwrap().0.origin[1] += 1.;
+            for edge in [outer, bore] {
+                f.circle(edge).center_mm[1] += 1.;
+            }
+        },
+        ReadError::Invalid,
+    );
+    reject_hub(
+        |f| {
+            let [outer, bore] = [f.outer(1), f.bore(1)];
+            let normal = cross(U, V);
+            let move_in = |point: &mut Point| {
+                for i in 0..3 {
+                    point[i] -= 4. * normal[i];
+                }
+            };
+            move_in(&mut f.ends[1].as_mut().unwrap().0.origin);
+            for edge in [outer, bore] {
+                move_in(&mut f.circle(edge).center_mm);
+            }
+        },
+        ReadError::Invalid,
+    );
+    reject_hub(|f| f.circle(f.outer(1)).radius_mm += 1., ReadError::Invalid);
+}
+
+#[test]
+fn hub_requires_exactly_one_continuous_bore_and_all_supports() {
+    reject_hub(
+        |f| f.ends[1].as_mut().unwrap().1.hole = None,
+        ReadError::Invalid,
+    );
+    reject_hub(|f| f.circle(f.bore(1)).radius_mm += 1., ReadError::Invalid);
+    reject_hub(|f| f.circle(f.bore(1)).radius_mm = 12., ReadError::Invalid);
+    reject_hub(
+        |f| {
+            let edge = f.outer(0);
+            let wall = f
+                .walls
+                .iter_mut()
+                .find(|wall| wall.outer.iter().any(|use_| use_.edge == edge))
+                .unwrap();
+            wall.forward ^= true;
+        },
+        ReadError::Invalid,
+    );
+    reject_hub(
+        |f| {
+            let edge = f.outer(0);
+            f.walls
+                .retain(|wall| !wall.outer.iter().any(|use_| use_.edge == edge));
+        },
+        ReadError::Invalid,
+    );
+
+    reject_hub(
+        |f| {
+            let edge = f.shoulders[0].1.outer[0].edge;
+            let wall = f
+                .walls
+                .iter_mut()
+                .find(|wall| wall.outer.iter().any(|use_| use_.edge == edge))
+                .unwrap();
+            wall.forward ^= true;
+        },
+        ReadError::Invalid,
+    );
+
+    let gear = hub_profile(20, 2., -3., 11.);
+    let source = write_spur_gear(&gear, ORIGIN, U, V, TOL).unwrap();
+    let support = source
+        .lines()
+        .find(|line| line.contains("=CYLINDRICAL_SURFACE("))
+        .unwrap();
+    let (start, _) = support.rsplit_once(',').unwrap();
+    let changed = source.replacen(support, &format!("{start},3.0);"), 1);
+    assert_eq!(
+        read_analytic_solid(&changed, TOL).err(),
+        Some(ReadError::Invalid)
+    );
+}

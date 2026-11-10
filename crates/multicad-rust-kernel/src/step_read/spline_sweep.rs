@@ -1,6 +1,7 @@
 //! Verify bounded normal sweeps with cubic spline and analytic rim edges.
 use super::*;
 
+mod hub;
 mod section;
 
 struct FaceWire {
@@ -38,7 +39,7 @@ fn face_args(reader: &Shell<'_, '_>, id: u32) -> Result<(Vec<u32>, u32, bool)> {
 }
 
 pub(super) fn read_member(reader: &mut Shell<'_, '_>, ids: Vec<u32>) -> Result<Readback> {
-    if ids.len() < 5 || ids.len() > MAX_VERTICES + 3 {
+    if ids.len() < 5 || ids.len() > MAX_VERTICES + 7 {
         return Err(ReadError::Limit);
     }
     let first_spline_wall = ids
@@ -51,6 +52,7 @@ pub(super) fn read_member(reader: &mut Shell<'_, '_>, ids: Vec<u32>) -> Result<R
     let mut edges = Edges::new();
     let mut face_ids = BTreeSet::new();
     let mut caps = [None, None];
+    let mut ends = [None, None];
     let mut walls = Vec::new();
     for id in ids {
         if !face_ids.insert(id) {
@@ -59,7 +61,12 @@ pub(super) fn read_member(reader: &mut Shell<'_, '_>, ids: Vec<u32>) -> Result<R
         let face = read_face(reader, id, &mut edges)?;
         if let Some(cap) = normal_cap(reader, &face, normal)? {
             let side = usize::from(dot(cap.normal, normal) > 0.);
-            if caps[side].replace((cap, face)).is_some() {
+            let destination = if face.outer.len() == 1 {
+                &mut ends[side]
+            } else {
+                &mut caps[side]
+            };
+            if destination.replace((cap, face)).is_some() {
                 return Err(ReadError::Invalid);
             }
         } else {
@@ -79,6 +86,19 @@ pub(super) fn read_member(reader: &mut Shell<'_, '_>, ids: Vec<u32>) -> Result<R
     }
     let base_area = section::verify(reader, &edges, &base, &low)?;
     let top_area = section::verify(reader, &edges, &top, &high)?;
+    if ends.iter().any(Option::is_some) {
+        let (volume, seams) = hub::verify(
+            reader,
+            &edges,
+            [(&base, &low), (&top, &high)],
+            [base_area, top_area],
+            &ends,
+            &walls,
+            normal,
+            height,
+        )?;
+        return metrics(reader, edges, &seams, face_ids.len(), volume);
+    }
     if (base_area - top_area).abs() > reader.tolerance * base_area.sqrt().max(1.) * 32. {
         return Err(ReadError::Invalid);
     }
