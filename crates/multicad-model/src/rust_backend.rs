@@ -43,7 +43,10 @@ pub(crate) fn validate_document(
                     | (model::TRANSFORM_TYPE, model::TRANSFORM_SCHEMA)
                     | (model::ALIGN_TYPE, model::ALIGN_SCHEMA)
                     | (model::SLAB_TYPE, 1)
-                    | (model::WALL_TYPE, model::WALL_SCHEMA)
+                    | (
+                        model::WALL_TYPE,
+                        model::WALL_SCHEMA | model::LAYERED_WALL_SCHEMA
+                    )
                     | (model::THREAD_TYPE, model::THREAD_SCHEMA)
                     | (model::MECHANICAL_PART_TYPE, model::MECHANICAL_PART_SCHEMA)
                     | (
@@ -54,7 +57,10 @@ pub(crate) fn validate_document(
                     | (model::LOOSE_TENON_TYPE, model::LOOSE_TENON_SCHEMA)
                     | (model::MACHINING_CUT_TYPE, model::MACHINING_CUT_SCHEMA)
                     | (model::SHEET_TYPE, model::SHEET_SCHEMA)
-                    | (model::SHEET_PROFILE_CUT_TYPE, model::SHEET_PROFILE_CUT_SCHEMA)
+                    | (
+                        model::SHEET_PROFILE_CUT_TYPE,
+                        model::SHEET_PROFILE_CUT_SCHEMA
+                    )
                     | (model::MEMBER_TYPE, model::MEMBER_SCHEMA)
                     | (model::imports::STEP_BODY_TYPE, 1)
             ) =>

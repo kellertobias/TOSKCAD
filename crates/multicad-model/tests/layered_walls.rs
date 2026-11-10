@@ -10,7 +10,7 @@ use multicad_core::{
     },
 };
 use multicad_kernel::{GeometryPolicy, Solid, SolidPairRelation};
-use multicad_model::{Compiler, Model};
+use multicad_model::{Compiler, GeometryBackend, Model};
 use std::collections::{BTreeMap, BTreeSet};
 fn actor() -> Actor {
     Actor::local(Channel::Ui)
@@ -342,6 +342,49 @@ fn real_material_layers_and_openings_have_true_thickness_and_independent_step_re
     let parts = members(solid, wall.feature);
     assert_eq!(parts.len(), 5);
     assert_eq!(solid.solid_count().unwrap(), 5);
+    let rust = Compiler::default()
+        .compile_sources_with_backend(
+            session.document(),
+            session.revision(),
+            &[wall.feature],
+            GeometryBackend::Rust,
+            None,
+        )
+        .unwrap();
+    let rust_solid = rust.solid(wall.feature).unwrap();
+    assert!(rust_solid.uses_rust_geometry());
+    let rust_parts = members(rust_solid, wall.feature);
+    assert_eq!(
+        rust_parts.keys().collect::<Vec<_>>(),
+        parts.keys().collect::<Vec<_>>()
+    );
+    for (id, expected) in &parts {
+        let actual = &rust_parts[id];
+        near(
+            actual.volume_mm3().unwrap(),
+            expected.volume_mm3().unwrap(),
+            0.1,
+        );
+        let (a, b) = (actual.bounds().unwrap(), expected.bounds().unwrap());
+        for axis in 0..3 {
+            near(a.min[axis], b.min[axis], 1e-6);
+            near(a.max[axis], b.max[axis], 1e-6);
+        }
+    }
+    let rust_topology = rust_solid
+        .topology_snapshot(wall.feature, session.revision())
+        .unwrap();
+    let rust_materials = model::wall_face_materials(session.document(), &rust_topology).unwrap();
+    assert_eq!(
+        rust_materials
+            .values()
+            .map(|face| face.material)
+            .collect::<BTreeSet<_>>(),
+        assignments
+            .values()
+            .map(|face| face.material)
+            .collect::<BTreeSet<_>>()
+    );
     near(
         solid.volume_mm3().unwrap(),
         352.5 * (4000. * 2700. - 900. * 2100. - 500. * 1000.),

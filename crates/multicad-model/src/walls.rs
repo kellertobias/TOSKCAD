@@ -454,14 +454,15 @@ pub(crate) fn build(
     let plan = wall.plan().map_err(e)?;
     wall.check_openings(&plan).map_err(e)?;
     if backend == GeometryBackend::Rust
-        && (wall.layers.is_some()
-            || !wall.junctions.is_empty()
+        && (!wall.junctions.is_empty()
             || (has_diagonal_segments(&plan)
-                && (!wall.openings.is_empty() || !wall.cutouts.is_empty())))
+                && (wall.layers.is_some()
+                    || !wall.openings.is_empty()
+                    || !wall.cutouts.is_empty())))
     {
         return Err(error(
             Some(id),
-            "Rust wall geometry requires a uniform wall without junctions. Opening and chase cuts require axis-aligned segments",
+            "Rust wall geometry requires walls without junctions. Layers, openings and chases require axis-aligned segments",
         ));
     }
     if let Some(layers) = &wall.layers {

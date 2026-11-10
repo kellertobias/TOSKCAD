@@ -44,6 +44,32 @@ impl Solid {
             ));
         }
         let mut components = Vec::with_capacity(count as usize);
+        if self.uses_rust_geometry() {
+            if self.geometry_policy() != policy {
+                return Err(failure(
+                    GeometryErrorKind::Input,
+                    "Rust component extraction requires the source geometry policy",
+                ));
+            }
+            if let Some(compound) = self.rust_compound() {
+                for member in compound.members() {
+                    checkpoint()?;
+                    for mut child in member.solid_components_interruptible(policy, interrupt)? {
+                        child.rust_origins.extend(self.rust_origins.iter().cloned());
+                        components.push(child);
+                    }
+                }
+                checkpoint()?;
+                return Ok(components);
+            }
+            if count == 1 {
+                return Ok(vec![self.share()?]);
+            }
+            return Err(failure(
+                GeometryErrorKind::Unsupported,
+                "Rust component extraction requires independent compound members",
+            ));
+        }
         let mut sum = 0.;
         for index in 0..count {
             checkpoint()?;
