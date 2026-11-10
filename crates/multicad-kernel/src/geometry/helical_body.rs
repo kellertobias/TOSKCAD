@@ -9,6 +9,7 @@ use multicad_core::references::{
     TopologySnapshot,
 };
 use multicad_rust_kernel::{
+    headed_screw::Screw,
     helical_thread::{Spec, Thread, ThreadError},
     helical_thread_mesh,
 };
@@ -16,6 +17,8 @@ use std::{
     collections::BTreeSet,
     f64::consts::{PI, TAU},
 };
+
+mod screw;
 
 type Point = [f64; 3];
 const OPERATION: &str = "Rust helical thread";
@@ -26,11 +29,17 @@ const MAX_DISPLAY_EDGE_POINTS: usize = 500_000;
 pub(crate) struct HelicalBody {
     geometry: Thread,
     pub(super) feature: EntityId,
-    stock: Option<BoreStock>,
+    form: HelicalForm,
     // Exact face definitions are retained by phase and trim. These detached
     // area and centroid properties come from smooth per-band integrals.
     local_faces: Vec<(Point, f64)>,
     rails: Vec<f64>,
+}
+
+enum HelicalForm {
+    Shaft,
+    Bore(BoreStock),
+    Screw(Screw),
 }
 
 struct BoreStock {
@@ -79,7 +88,9 @@ impl Solid {
         frame: PlaneFrame,
         policy: GeometryPolicy,
     ) -> Result<Self, GeometryError> {
-        Self::rust_helical_body(spec, root_radius_mm, feature, frame, policy, None)
+        Self::rust_helical_body(spec, root_radius_mm, feature, frame, policy, |_| {
+            Ok(HelicalForm::Shaft)
+        })
     }
 
     /// Drill and thread through an entire coaxial Rust cylinder. The unchanged
@@ -171,7 +182,9 @@ impl Solid {
             reversed,
         };
         spec.length_mm = height;
-        Self::rust_helical_body(spec, None, feature, placed, policy, Some(stock))
+        Self::rust_helical_body(spec, None, feature, placed, policy, |_| {
+            Ok(HelicalForm::Bore(stock))
+        })
     }
 
     fn rust_helical_body(
@@ -180,7 +193,7 @@ impl Solid {
         feature: EntityId,
         frame: PlaneFrame,
         policy: GeometryPolicy,
-        stock: Option<BoreStock>,
+        form: impl FnOnce(Thread) -> Result<HelicalForm, GeometryError>,
     ) -> Result<Self, GeometryError> {
         policy.validate()?;
         frame.checked(policy)?;
@@ -235,7 +248,7 @@ impl Solid {
                 "Helical thread exceeds the turn budget",
             ),
         })?;
-        let placed = HelicalBody::new(geometry, feature, stock);
+        let placed = HelicalBody::new(geometry, feature, form(geometry)?);
         let bounds = placed.bounds(frame);
         policy.point(bounds.min)?;
         policy.point(bounds.max)?;
@@ -305,15 +318,16 @@ fn integral<const N: usize>(a: f64, b: f64, function: impl Fn(f64) -> [f64; N]) 
 }
 
 impl HelicalBody {
-    fn new(geometry: Thread, feature: EntityId, stock: Option<BoreStock>) -> Self {
+    fn new(geometry: Thread, feature: EntityId, form: HelicalForm) -> Self {
         let spec = geometry.spec();
         let breaks = geometry.profile_breaks();
         let height = spec.length_mm;
         let rate = geometry.helical_rate();
         let hole_area = geometry.volume_mm3() / height;
-        let cap_area = stock
-            .as_ref()
-            .map_or(hole_area, |stock| PI * stock.radius().powi(2) - hole_area);
+        let cap_area = match &form {
+            HelicalForm::Bore(stock) => PI * stock.radius().powi(2) - hole_area,
+            _ => hole_area,
+        };
         let half_twist = height / (2. * rate);
         let spin_average = half_twist.sin() / half_twist;
         let mut cap_moment = [0.; 2];
@@ -342,7 +356,11 @@ impl HelicalBody {
             }
         }
         let cap_center = |z: f64| {
-            let sign = if stock.is_some() { -1. } else { 1. };
+            let sign = if matches!(&form, HelicalForm::Bore(_)) {
+                -1.
+            } else {
+                1.
+            };
             let [x, y] = cap_moment.map(|moment| sign * moment / (3. * rate.abs() * cap_area));
             let (sin, cos) = (z / rate).sin_cos();
             [x * cos - y * sin, x * sin + y * cos, z]
@@ -354,8 +372,12 @@ impl HelicalBody {
             let y_mid = (x * sin + y * cos) * spin_average / area;
             ([x_mid, y_mid, height / 2.], area * height / rate.abs())
         }));
-        if let Some(stock) = &stock {
-            local_faces.push(([0., 0., height / 2.], TAU * stock.radius() * height));
+        match &form {
+            HelicalForm::Bore(stock) => {
+                local_faces.push(([0., 0., height / 2.], TAU * stock.radius() * height));
+            }
+            HelicalForm::Screw(screw) => screw::extend_face_properties(screw, &mut local_faces),
+            HelicalForm::Shaft => {}
         }
         let rails = (0..spec.starts)
             .flat_map(|period| {
@@ -367,22 +389,27 @@ impl HelicalBody {
         Self {
             geometry,
             feature,
-            stock,
+            form,
             local_faces,
             rails,
         }
     }
 
     pub(super) fn volume_mm3(&self) -> f64 {
-        self.stock.as_ref().map_or_else(
-            || self.geometry.volume_mm3(),
-            |stock| PI * stock.cylinder.volume_factor().as_f64() - self.geometry.volume_mm3(),
-        )
+        match &self.form {
+            HelicalForm::Shaft => self.geometry.volume_mm3(),
+            HelicalForm::Bore(stock) => {
+                PI * stock.cylinder.volume_factor().as_f64() - self.geometry.volume_mm3()
+            }
+            HelicalForm::Screw(screw) => screw.volume_mm3(),
+        }
     }
 
     fn contains(&self, local: Point, tolerance: f64) -> bool {
-        let Some(stock) = &self.stock else {
-            return self.geometry.contains(local, tolerance);
+        let stock = match &self.form {
+            HelicalForm::Shaft => return self.geometry.contains(local, tolerance),
+            HelicalForm::Screw(screw) => return screw.contains(local, tolerance),
+            HelicalForm::Bore(stock) => stock,
         };
         let [x, y, z] = local;
         let length = self.geometry.spec().length_mm;
@@ -396,16 +423,15 @@ impl HelicalBody {
     pub(super) fn bounds(&self, frame: PlaneFrame) -> Bounds {
         let normal = frame.normal();
         let support = |i: usize, sign: f64| {
-            self.stock.as_ref().map_or_else(
-                || {
-                    self.geometry
-                        .support([frame.u[i], frame.v[i], normal[i]].map(|x| x * sign))
-                },
-                |stock| {
+            let direction = [frame.u[i], frame.v[i], normal[i]].map(|x| x * sign);
+            match &self.form {
+                HelicalForm::Shaft => self.geometry.support(direction),
+                HelicalForm::Bore(stock) => {
                     stock.radius() * frame.u[i].hypot(frame.v[i])
                         + (sign * normal[i] * self.geometry.spec().length_mm).max(0.)
-                },
-            )
+                }
+                HelicalForm::Screw(screw) => screw.support(direction),
+            }
         };
         Bounds {
             min: std::array::from_fn(|i| frame.origin[i] - support(i, -1.)),
@@ -418,7 +444,7 @@ impl HelicalBody {
         ReferenceFrame {
             origin_mm: position(frame, [0., 0., z]),
             u: frame.u,
-            v: if index == 0 {
+            v: if index == 0 && !matches!(&self.form, HelicalForm::Screw(_)) {
                 frame.v.map(|v| -v)
             } else {
                 frame.v
@@ -427,11 +453,21 @@ impl HelicalBody {
     }
 
     pub(super) fn faces(&self, frame: PlaneFrame) -> Vec<Face> {
+        let screw_roles = match &self.form {
+            HelicalForm::Screw(screw) => screw.faces(),
+            _ => Vec::new(),
+        };
         self.local_faces
             .iter()
             .enumerate()
             .map(|(index, &(center, area_mm2))| {
-                let plane = (index < 2).then(|| self.cap_frame(frame, index));
+                let plane = if index < 2 {
+                    Some(self.cap_frame(frame, index))
+                } else if let HelicalForm::Screw(screw) = &self.form {
+                    screw::plane(screw, screw_roles[index], frame)
+                } else {
+                    None
+                };
                 Face {
                     index: index as u32,
                     plane: plane.map(|plane| (plane.origin_mm, plane.normal())),
@@ -447,6 +483,22 @@ impl HelicalBody {
             source: self.feature,
             role,
         }
+    }
+
+    fn cap_name(&self, cap: usize) -> &'static str {
+        if matches!(&self.form, HelicalForm::Screw(_)) {
+            ["screw.thread/start", "screw.thread/end"][cap]
+        } else {
+            CAP_NAMES[cap]
+        }
+    }
+
+    fn rim_origin(&self, cap: usize, rail: usize) -> Origin {
+        self.origin(format!(
+            "{}/rim/{}",
+            self.cap_name(cap),
+            self.rail_name(rail)
+        ))
     }
 
     fn band(&self, rail: usize) -> u32 {
@@ -502,8 +554,7 @@ impl HelicalBody {
         let count = self.rails.len();
         let rail_origin =
             |index| self.origin(format!("thread/{}/leading_rail", self.rail_name(index)));
-        let rim_origin =
-            |cap, index| self.origin(format!("{}/rim/{}", CAP_NAMES[cap], self.rail_name(index)));
+        let rim_origin = |cap, index| self.rim_origin(cap, index);
         let mut boundaries = vec![BTreeSet::new(); 2 + count];
         for i in 0..count {
             let band = self.band(i) as usize;
@@ -518,7 +569,7 @@ impl HelicalBody {
         let mut elements = Vec::with_capacity(2 + 6 * count);
         for (index, boundary) in boundaries.into_iter().enumerate() {
             let origin = self.origin(if index < 2 {
-                CAP_NAMES[index].into()
+                self.cap_name(index).into()
             } else {
                 let band = index - 2;
                 format!("thread/start/{}/{}", band / 4, BAND_NAMES[band % 4])
@@ -567,7 +618,8 @@ impl HelicalBody {
                     .flatten(),
             });
         }
-        for (cap, name) in CAP_NAMES.into_iter().enumerate() {
+        for cap in 0..2 {
+            let name = self.cap_name(cap);
             let z = cap as f64 * self.geometry.spec().length_mm;
             for (i, &phase) in self.rails.iter().enumerate() {
                 elements.push(TopologyElement {
@@ -586,7 +638,7 @@ impl HelicalBody {
                 });
             }
         }
-        if let Some(stock) = &self.stock {
+        if let HelicalForm::Bore(stock) = &self.form {
             let authored = stock.topology(frame, owner, revision)?;
             for mut element in authored.elements {
                 match element.key {
@@ -623,6 +675,9 @@ impl HelicalBody {
                     }
                 }
             }
+        }
+        if let HelicalForm::Screw(screw) = &self.form {
+            screw::extend_topology(self, screw, frame, &mut elements);
         }
         let snapshot = TopologySnapshot {
             owner,
@@ -694,13 +749,24 @@ impl HelicalBody {
                 points_mm,
             });
         }
-        if let Some(stock) = &self.stock {
-            let authored = stock.topology(frame, self.feature, 0)?;
-            let rims = crate::rust_display::edges(authored, deflection)?;
-            edges.extend(rims.into_iter().map(|mut edge| {
-                edge.index += (3 * count) as u32;
-                edge
-            }));
+        match &self.form {
+            HelicalForm::Bore(stock) => {
+                let authored = stock.topology(frame, self.feature, 0)?;
+                let rims = crate::rust_display::edges(authored, deflection)?;
+                edges.extend(rims.into_iter().map(|mut edge| {
+                    edge.index += (3 * count) as u32;
+                    edge
+                }));
+            }
+            HelicalForm::Screw(_) => {
+                let mut topology = self.topology(frame, self.feature, 0)?;
+                topology.elements.retain(|element| {
+                    element.key.kind == TopologyKind::Edge
+                        && element.key.ordinal >= (3 * count) as u32
+                });
+                edges.extend(crate::rust_display::edges(topology, deflection)?);
+            }
+            HelicalForm::Shaft => {}
         }
         Ok(edges)
     }
@@ -709,16 +775,17 @@ impl HelicalBody {
         &self,
         options: multicad_rust_kernel::display::Tessellation,
     ) -> f64 {
-        self.stock.as_ref().map_or_else(
-            || helical_thread_mesh::volume_error_bound(&self.geometry, options),
-            |stock| {
-                helical_thread_mesh::bore_volume_error_bound(
-                    &self.geometry,
-                    stock.radius(),
-                    options,
-                )
-            },
-        )
+        match &self.form {
+            HelicalForm::Shaft => helical_thread_mesh::volume_error_bound(&self.geometry, options),
+            HelicalForm::Bore(stock) => helical_thread_mesh::bore_volume_error_bound(
+                &self.geometry,
+                stock.radius(),
+                options,
+            ),
+            HelicalForm::Screw(screw) => {
+                helical_thread_mesh::screw_volume_error_bound(screw, options)
+            }
+        }
     }
 
     pub(super) fn mesh(
@@ -726,10 +793,13 @@ impl HelicalBody {
         frame: PlaneFrame,
         options: multicad_rust_kernel::display::Tessellation,
     ) -> Result<ffi::Mesh, GeometryError> {
-        let mesh = self.stock.as_ref().map_or_else(
-            || helical_thread_mesh::tessellate(&self.geometry, options),
-            |stock| helical_thread_mesh::tessellate_bore(&self.geometry, stock.radius(), options),
-        );
+        let mesh = match &self.form {
+            HelicalForm::Shaft => helical_thread_mesh::tessellate(&self.geometry, options),
+            HelicalForm::Bore(stock) => {
+                helical_thread_mesh::tessellate_bore(&self.geometry, stock.radius(), options)
+            }
+            HelicalForm::Screw(screw) => helical_thread_mesh::tessellate_screw(screw, options),
+        };
         crate::rust_display::placed_mesh(mesh, frame, false)
     }
 }

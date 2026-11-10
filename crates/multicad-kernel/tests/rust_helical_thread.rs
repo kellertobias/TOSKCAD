@@ -8,7 +8,12 @@ use multicad_core::{
 use multicad_kernel::{
     GeometryErrorKind, GeometryPolicy, HelicalThread, MeshOptions, PlaneFrame, RigidTransform,
     Solid,
-    rust_kernel::{Circle, cylinder::AxialCylinder, parse_length_mm},
+    rust_kernel::{
+        Circle,
+        cylinder::AxialCylinder,
+        headed_screw::{ScrewHead, ScrewSpec},
+        parse_length_mm,
+    },
 };
 
 fn metric(left_hand: bool, starts: u32) -> HelicalThread {
@@ -281,4 +286,135 @@ fn unsupported_stock_placement_and_insufficient_wall_fail_without_changing_stock
     }
     assert_eq!(stock.faces().unwrap().len(), 3);
     assert!((stock.volume_mm3().unwrap() - 360. * std::f64::consts::PI).abs() < 1e-9);
+}
+
+#[test]
+fn rotated_socket_screw_has_one_shell_and_analytic_socket_faces() {
+    let policy = GeometryPolicy::default();
+    let owner = EntityId::new();
+    let mut thread = metric(false, 1);
+    thread.length_mm = 12.;
+    let underhead = PlaneFrame {
+        origin: [-8., 3., 4.],
+        u: [0., 0., 1.],
+        v: [0., -1., 0.],
+    };
+    let spec = ScrewSpec {
+        head: ScrewHead::SocketCap {
+            radius_mm: 6.5,
+            height_mm: 8.,
+            socket_across_flats_mm: 6.,
+            socket_depth_mm: 4.,
+        },
+        shank_length_mm: 5.,
+        shank_radius_mm: 4.,
+    };
+    let screw = Solid::rust_machine_screw(thread, None, spec, owner, underhead, policy).unwrap();
+    let shaft = Solid::rust_helical_thread(thread, None, owner, underhead, policy).unwrap();
+    let head = std::f64::consts::PI * (6.5_f64.powi(2) * 8. + 4_f64.powi(2) * 5.);
+    let socket = 3_f64.sqrt() * 6_f64.powi(2) * 4. / 2.;
+    let expected = shaft.volume_mm3().unwrap() + head - socket;
+    assert!((screw.volume_mm3().unwrap() - expected).abs() < 1e-9);
+    let bounds = screw.bounds().unwrap();
+    assert_eq!(bounds.min, [-16., -3.5, -2.5]);
+    assert!((bounds.max[0] - 9.).abs() < 1e-10);
+    assert_eq!(bounds.max[1..], [9.5, 10.5]);
+    assert!(!screw.rust_thread_contains([-14., 3., 4.]).unwrap());
+    assert!(screw.rust_thread_contains([-14., 3., 9.]).unwrap());
+    assert!(screw.rust_thread_contains([-11., 3., 4.]).unwrap());
+    assert!(screw.rust_thread_contains([-6., 3., 4.]).unwrap());
+    let topology = screw.topology_snapshot(owner, 4).unwrap();
+    let named = |role| {
+        topology
+            .elements
+            .iter()
+            .find(|element| {
+                element.key.kind == TopologyKind::Face
+                    && element.origins.iter().any(|o| o.role == role)
+            })
+            .unwrap()
+    };
+    let floor = named("screw.socket/end");
+    let Some(AnalyticGeometry::Plane { frame }) = floor.geometry else {
+        panic!("Socket floor has no analytic plane");
+    };
+    assert_eq!(frame.origin_mm, [-12., 3., 4.]);
+    assert_eq!(frame.normal(), [-1., 0., 0.]);
+    assert_eq!(floor.boundary.len(), 6);
+    let shoulder = named("screw.thread/start");
+    assert_eq!(shoulder.boundary.len(), 6);
+    assert!(
+        shoulder
+            .boundary
+            .iter()
+            .all(|origin| !origin.role.ends_with("/crest"))
+    );
+    assert_eq!(screw.solid_count().unwrap(), 1);
+    assert!(!screw.supports_step_export());
+    let receipt = screw
+        .manufacturing_mesh_with_receipt(MeshOptions::default())
+        .unwrap();
+    assert_eq!(receipt.edge_pairs as usize * 2, receipt.mesh.indices.len());
+    let mesh_faces: std::collections::BTreeSet<_> = receipt.mesh.face_indices.into_iter().collect();
+    assert_eq!(mesh_faces, (0..17).collect());
+    assert!(screw.display_edges(0.05).unwrap().len() >= 35);
+}
+
+#[test]
+fn fully_threaded_hex_screw_preserves_head_seat_and_six_planar_wrench_faces() {
+    let owner = EntityId::new();
+    let policy = GeometryPolicy::default();
+    let mut thread = metric(true, 1);
+    thread.length_mm = 9.8;
+    let spec = ScrewSpec {
+        head: ScrewHead::ExternalHex {
+            across_flats_mm: 12.,
+            height_mm: 5.,
+        },
+        shank_length_mm: 0.,
+        shank_radius_mm: 4.,
+    };
+    let make = |thread| {
+        Solid::rust_machine_screw(thread, None, spec, owner, PlaneFrame::default(), policy).unwrap()
+    };
+    let screw = make(thread);
+    let before = screw.topology_snapshot(owner, 1).unwrap();
+    let seat = before
+        .elements
+        .iter()
+        .find(|element| {
+            element
+                .origins
+                .iter()
+                .any(|origin| origin.role == "screw.head/end")
+        })
+        .unwrap();
+    assert_eq!(seat.key.ordinal, 0);
+    let intent = GeometryIntent::capture(&before, seat.key).unwrap();
+    let changed = make(HelicalThread {
+        left_hand: false,
+        ..thread
+    });
+    let after = changed.topology_snapshot(owner, 2).unwrap();
+    assert!(
+        matches!(resolve(&intent, &after, 2), Resolution::Resolved { key, .. } if key == seat.key)
+    );
+    assert_eq!(
+        screw
+            .faces()
+            .unwrap()
+            .iter()
+            .filter(|face| face.plane.is_some())
+            .count(),
+        9
+    );
+    let bounds = screw.bounds().unwrap();
+    assert!((bounds.max[0] - 6.).abs() < 1e-10);
+    assert!((bounds.max[1] - 12. / 3_f64.sqrt()).abs() < 1e-10);
+    assert!(!screw.rust_thread_contains([6.2, 0., -2.]).unwrap());
+    assert!(screw.rust_thread_contains([0., 6.2, -2.]).unwrap());
+    let receipt = screw
+        .manufacturing_mesh_with_receipt(MeshOptions::default())
+        .unwrap();
+    assert_eq!(receipt.edge_pairs as usize * 2, receipt.mesh.indices.len());
 }
