@@ -21,6 +21,7 @@ use multicad_kernel::{
     BooleanOperation, CurvedEdge2d, CurvedProfile, GeometryPolicy, PlaneFrame, Solid,
 };
 
+mod channel;
 mod profile_cut;
 pub(crate) use profile_cut::{CutProfile, build_profile_cut};
 
@@ -155,11 +156,6 @@ pub(crate) fn build(
     let g = |e: multicad_kernel::GeometryError| error(Some(id), e);
     let source = model::read_sheet(document, id).map_err(e)?;
     let sheet = model::resolve_sheet(document, parameters, &source).map_err(e)?;
-    if backend == GeometryBackend::Rust && !sheet.flanges.is_empty() {
-        return Err(m(
-            "Rust sheet metal currently requires a flat blank without bends, hems or jogs".into(),
-        ));
-    }
     let (base, origins) = match &sheet.base {
         ResolvedBase::Rectangle {
             frame,
@@ -195,10 +191,7 @@ pub(crate) fn build(
     let n = base.frame.normal();
     let direction = if sheet.reverse { scale(n, -1.) } else { n };
     let t = sheet.thickness_mm;
-    let flanges = match backend {
-        GeometryBackend::OpenCascade => place_flanges(&base, &sheet.flanges).map_err(m)?,
-        GeometryBackend::Rust => Vec::new(),
-    };
+    let flanges = place_flanges(&base, &sheet.flanges).map_err(m)?;
     let mut layout = SheetLayout {
         forming_feature: id,
         frame: base.frame,
@@ -214,6 +207,23 @@ pub(crate) fn build(
         rust_base_origins: None,
     };
     if backend == GeometryBackend::Rust {
+        if let Some(flange) = layout.flanges.first() {
+            let ResolvedBase::Rectangle {
+                length_mm,
+                width_mm,
+                ..
+            } = sheet.base
+            else {
+                return Err(m("Rust formed sheet requires a rectangular base".into()));
+            };
+            let section_width = if flange.flange.edge % 2 == 0 {
+                width_mm
+            } else {
+                length_mm
+            };
+            let solid = channel::build(&mut layout, section_width, policy).map_err(m)?;
+            return Ok((solid, layout));
+        }
         layout.rust_base_origins = Some(origins);
         let solid = rebuild_rust_flat(&mut layout, id, policy)?;
         return Ok((solid, layout));
