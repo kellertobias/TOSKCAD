@@ -169,6 +169,121 @@ fn rust_stdio_rebuilds_and_reopens_geometry_through_the_real_cli() {
 }
 
 #[test]
+fn rust_stdio_helical_tube_cut_preserves_material_history_and_reopens() {
+    let directory = tempfile::tempdir().unwrap();
+    let project = directory.path().join("helical-tube-cut.tcd");
+    let arguments = ["--rust-model", "--project", project.to_str().unwrap()];
+    let mut client = Client::start(&arguments);
+    let sketch = client.ok(
+        "create_sketch",
+        json!({"expected_revision":0,"plane":"xy","name":"Helical seam stock profile"}),
+    )["sketch"]
+        .clone();
+    client.ok(
+        "sketch_add_circle",
+        json!({"expected_revision":1,"sketch":sketch,"center_mm":[0,0],"diameter":length(16.)}),
+    );
+    let stock = client.ok(
+        "extrude",
+        json!({"expected_revision":2,"sketch":sketch,"regions":[0],
+            "distance":length(30.),"operation":"new_body"}),
+    );
+    let part = &stock["created"][0]["part"];
+    let stock_feature = &stock["created"][0]["feature"];
+    let initial = client.ok("evaluate_model", json!({}));
+    let name = &initial["parts"][0]["name"];
+    assert_eq!(name.as_str(), Some("Extruded part 1"));
+    assert_eq!(initial["parts"][0]["feature"], *stock_feature);
+    close(
+        initial["parts"][0]["volume_mm3"].as_f64().unwrap(),
+        1920. * PI,
+    );
+
+    let created = client.ok(
+        "set_helical_tube_cut",
+        json!({"expected_revision":3,"target_part":part,"radius":length(0.6),
+            "pitch":length(2.),"path_height":length(15.),"start_height":length(16.2),
+            "start_angle":{"value":0,"unit":"deg"}}),
+    );
+    assert_eq!(created["revision"], 4);
+    assert_eq!(created["part"], *part);
+    assert_eq!(created["solid_count"], 1);
+    close(created["volume_mm3"].as_f64().unwrap(), 5841.816902505);
+    let cut = &created["feature"];
+    assert_ne!(cut, stock_feature);
+
+    let before = client.ok("evaluate_model", json!({}));
+    let refused = client.fail(
+        "set_helical_tube_cut",
+        json!({"expected_revision":4,"feature":cut,"radius":length(0.6),
+            "pitch":length(1.),"path_height":length(15.),"start_height":length(16.2),
+            "start_angle":{"value":0,"unit":"deg"}}),
+    );
+    assert_eq!(refused["code"], "model_failed");
+    assert!(
+        refused["message"]
+            .as_str()
+            .unwrap()
+            .contains("turn separation"),
+        "{refused}"
+    );
+    assert_eq!(client.revision(), 4);
+    let after_refusal = client.ok("evaluate_model", json!({}));
+    assert_eq!(after_refusal["source_hash"], before["source_hash"]);
+    assert_eq!(after_refusal["parts"], before["parts"]);
+
+    let mut edit = json!({"expected_revision":4,"feature":cut,"radius":length(0.6),
+        "pitch":length(2.),"path_height":length(15.),"start_height":length(16.6),
+        "start_angle":{"expression":"=90 deg","unit":"deg"}});
+    let edited = client.ok("set_helical_tube_cut", edit.clone());
+    assert_eq!(edited["revision"], 5);
+    assert_eq!(edited["part"], *part);
+    assert_eq!(edited["feature"], *cut);
+    assert_eq!(edited["solid_count"], 1);
+    close(edited["volume_mm3"].as_f64().unwrap(), 5847.325337067);
+    edit["start_angle"] = json!({"value":0,"unit":"mm"});
+    assert_eq!(
+        client.fail("set_helical_tube_cut", edit.clone())["code"],
+        "stale_revision"
+    );
+    edit["expected_revision"] = json!(5);
+    assert_eq!(
+        client.fail("set_helical_tube_cut", edit)["code"],
+        "invalid_request"
+    );
+    assert_eq!(client.revision(), 5);
+
+    client.ok("undo", json!({"expected_revision":5}));
+    close(client.part_volume(), 5841.816902505);
+    client.ok("redo", json!({"expected_revision":6}));
+    close(client.part_volume(), 5847.325337067);
+    let source = client.ok("get_entity", json!({"id":cut}))["entity"].clone();
+    assert!(source.to_string().contains("90 deg"), "{source}");
+    client.ok("save_project", json!({"expected_revision":7}));
+    drop(client);
+
+    let mut reopened = Client::start(&arguments);
+    assert_eq!(reopened.revision(), 0);
+    let reopened_model = reopened.ok("evaluate_model", json!({}));
+    let [body] = reopened_model["parts"].as_array().unwrap().as_slice() else {
+        panic!("expected one retained cylinder");
+    };
+    assert_eq!(body["part"], *part);
+    assert_eq!(body["name"], *name);
+    assert_eq!(body["feature"], *cut);
+    assert_eq!(body["solid_count"], 1);
+    assert_eq!(
+        body["bounds_mm"],
+        json!({"min":[-8.,-8.,0.],"max":[8.,8.,30.]})
+    );
+    close(body["volume_mm3"].as_f64().unwrap(), 5847.325337067);
+    assert_eq!(
+        reopened.ok("get_entity", json!({"id":cut}))["entity"],
+        source
+    );
+}
+
+#[test]
 fn rust_stdio_extrude_cut_keeps_an_imported_triangle_after_reopen() {
     let directory = tempfile::tempdir().unwrap();
     let project = directory.path().join("triangular-cut.tcd");
@@ -246,6 +361,7 @@ fn tool_discovery_is_complete_and_schemas_are_objects() {
         "set_sketch_dimension",
         "inspect_sketch",
         "extrude",
+        "set_helical_tube_cut",
         "evaluate_model",
         "undo",
         "redo",

@@ -64,6 +64,8 @@ use screw_connections::{
 mod gear_pairs;
 mod gears;
 mod guides;
+mod helical_tube_cut;
+use helical_tube_cut::{HelicalTubeCutArgs, set_helical_tube_cut};
 mod imports;
 mod levels;
 mod mechanical_parts;
@@ -335,6 +337,9 @@ tools! {
     "extrude" => Extrude, "Extrude regions", false,
         "Extrude regions of a sketch (indices from inspect_sketch at the same revision), or planar model faces (source feature and face ordinal from reference_candidates at the same revision; exact outer boundary and holes, persistent face reference), by a signed nonzero distance. Give either sketch with regions or faces. A negative distance extrudes the same magnitude opposite to the profile normal (for faces: into the body) without changing the operation. operation new_body creates parts; join, cut and intersect modify target_part. Curved, missing or ambiguous faces are refused and nothing changes. The candidate is evaluated natively before it commits.",
         extrude;
+    "set_helical_tube_cut" => HelicalTubeCutArgs, "Create or edit helical tube cut", false,
+        "Cut an exact cylinder with a right-handed circular tube centered on its outside radius. Use target_part to create or feature to edit; provide the complete typed recipe each time. Heights and start_angle are in the cylinder's local frame, with zero height at its bottom and phase zero at its authored seam. The tube must start between the caps, clear adjacent turns and exit completely through the top cap. Requires the Rust backend. A failed or cancelled candidate changes nothing.",
+        set_helical_tube_cut;
     "evaluate_model" => NoArgs, "Evaluate model", true,
         "Evaluate the complete model with the native kernel and report every final part (producing feature, solid count, volume in mm³, bounds in mm) and every placed instance (component, solid count, volume, bounds), plus reference diagnostics. Evaluation failures are returned as structured errors.",
         evaluate_model;
@@ -767,6 +772,9 @@ impl Quantity {
     }
     fn input(&self) -> Result<DimensionInput, ToolError> {
         self.length_unit()?;
+        self.scalar_input()
+    }
+    fn scalar_input(&self) -> Result<DimensionInput, ToolError> {
         match (self.value, &self.expression) {
             (Some(value), None) if value.is_finite() => Ok(DimensionInput::Literal {
                 value,
