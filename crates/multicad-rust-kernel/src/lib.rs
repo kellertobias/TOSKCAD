@@ -34,6 +34,7 @@ pub mod revolution_mesh;
 pub mod round_occlusion;
 pub mod section_hatch;
 pub mod sketch_reference;
+pub mod spur_gear;
 pub mod stadium;
 pub mod step;
 pub mod step_read;
