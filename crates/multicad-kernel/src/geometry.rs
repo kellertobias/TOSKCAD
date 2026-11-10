@@ -1,7 +1,10 @@
 //! Safe solid operations in millimeters. Display meshes are detached copies;
 //! callers rebuild exact solids from source rather than editing triangles.
 use crate::{Shape, ffi, rust_prism_topology::PlacedPolygon};
-use multicad_core::{document::EntityId, references::Origin};
+use multicad_core::{
+    document::EntityId,
+    references::{Origin, TopologySnapshot},
+};
 use multicad_rust_kernel::{
     Circle, Rational, cylinder::AxialCylinder, polygon::PolygonPrism, prism::Prism,
 };
@@ -459,6 +462,11 @@ pub struct DisplayEdge {
 pub struct DisplayVertex {
     pub index: u32,
     pub position_mm: [f64; 3],
+}
+pub struct TopologyDisplay {
+    pub topology: TopologySnapshot,
+    pub edges: Vec<DisplayEdge>,
+    pub vertices: Vec<DisplayVertex>,
 }
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct MeshOptions {
@@ -1622,18 +1630,52 @@ impl Solid {
         }
         Ok(receipt)
     }
-    pub fn display_edges(&self, deflection_mm: f64) -> Result<Vec<DisplayEdge>, GeometryError> {
+    /// Publish exact topology and its viewport overlays together. Pass no
+    /// deflection for topology alone, without sampling edges or vertices.
+    pub fn topology_with_display(
+        &self,
+        owner: EntityId,
+        revision: u64,
+        deflection_mm: Option<f64>,
+    ) -> Result<TopologyDisplay, GeometryError> {
+        let topology = self.topology_snapshot(owner, revision)?;
+        let (edges, vertices) = match deflection_mm {
+            None => (Vec::new(), Vec::new()),
+            Some(deflection) if self.uses_rust_geometry() => {
+                self.validate_display_deflection(deflection)?;
+                let edges = if let Some((body, frame)) = self.helical_body() {
+                    body.display_edges(frame, deflection)?
+                } else {
+                    crate::rust_display::edges(&topology, deflection)?
+                };
+                (edges, crate::rust_display::vertices(&topology))
+            }
+            Some(deflection) => (self.display_edges(deflection)?, self.display_vertices()?),
+        };
+        Ok(TopologyDisplay {
+            topology,
+            edges,
+            vertices,
+        })
+    }
+
+    fn validate_display_deflection(&self, deflection_mm: f64) -> Result<(), GeometryError> {
         if !deflection_mm.is_finite()
             || deflection_mm < 0.001
             || deflection_mm > self.policy.maximum_coordinate_mm
         {
             return Err(input("Invalid edge display deflection"));
         }
+        Ok(())
+    }
+
+    pub fn display_edges(&self, deflection_mm: f64) -> Result<Vec<DisplayEdge>, GeometryError> {
+        self.validate_display_deflection(deflection_mm)?;
         if let Some((body, frame)) = self.helical_body() {
             return body.display_edges(frame, deflection_mm);
         }
         if let Some(topology) = self.rust_topology() {
-            return crate::rust_display::edges(topology?, deflection_mm);
+            return crate::rust_display::edges(&topology?, deflection_mm);
         }
         let edges = ffi::display_edges(self.occt()?, deflection_mm)
             .map_err(|e| native("display edges", e))?;
@@ -1659,7 +1701,7 @@ impl Solid {
     }
     pub fn display_vertices(&self) -> Result<Vec<DisplayVertex>, GeometryError> {
         if let Some(topology) = self.rust_topology() {
-            return Ok(crate::rust_display::vertices(topology?));
+            return Ok(crate::rust_display::vertices(&topology?));
         }
         ffi::vertices(self.occt()?)
             .map_err(|e| native("display vertices", e))?

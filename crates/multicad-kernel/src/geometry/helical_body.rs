@@ -773,7 +773,7 @@ impl HelicalBody {
         match &self.form {
             HelicalForm::Bore(stock) => {
                 let authored = stock.topology(frame, self.feature, 0)?;
-                let rims = crate::rust_display::edges(authored, deflection)?;
+                let rims = crate::rust_display::edges(&authored, deflection)?;
                 edges.extend(rims.into_iter().map(|mut edge| {
                     edge.index += (3 * count) as u32;
                     edge
@@ -785,7 +785,7 @@ impl HelicalBody {
                     element.key.kind == TopologyKind::Edge
                         && element.key.ordinal >= (3 * count) as u32
                 });
-                edges.extend(crate::rust_display::edges(topology, deflection)?);
+                edges.extend(crate::rust_display::edges(&topology, deflection)?);
             }
             HelicalForm::Shaft => {}
         }

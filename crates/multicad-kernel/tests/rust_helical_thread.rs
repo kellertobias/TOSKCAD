@@ -88,8 +88,12 @@ fn facade_keeps_real_m8_material_and_analytic_topology_after_rigid_placement() {
             .count(),
         4
     );
-    assert_eq!(placed.display_edges(0.05).unwrap().len(), 12);
-    assert_eq!(placed.display_vertices().unwrap().len(), 8);
+    let display = placed.topology_with_display(owner, 3, Some(0.05)).unwrap();
+    assert_eq!(display.topology, topology);
+    assert_eq!(display.edges.len(), 12);
+    assert_eq!(display.edges, placed.display_edges(0.05).unwrap());
+    assert_eq!(display.vertices.len(), 8);
+    assert_eq!(display.vertices, placed.display_vertices().unwrap());
     assert_eq!(placed.solid_count().unwrap(), 1);
     assert!(!placed.supports_step_export());
     let scratch = tempfile::tempdir().unwrap();

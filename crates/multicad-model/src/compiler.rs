@@ -8,7 +8,7 @@ use multicad_core::{
 };
 use multicad_kernel::{
     Bounds, CurvedEdge2d, CurvedProfile, DisplayEdge, DisplayVertex, GeometryPolicy, Mesh,
-    MeshOptions, NativeRegionQueries, PlaneFrame, RevolutionAxis, Solid,
+    MeshOptions, NativeRegionQueries, PlaneFrame, RevolutionAxis, Solid, TopologyDisplay,
 };
 use multicad_solver::SketchEvaluationContext;
 use std::{
@@ -812,14 +812,22 @@ impl Compiler {
                     id,
                     &mut leaves,
                 )?;
-                let topology = solid
-                    .topology_snapshot(id, revision)
-                    .map_err(|e| error(Some(id), e))?;
-                multicad_core::model::wall_face_materials(document, &topology)
-                    .map_err(|e| error(Some(id), e))?;
                 timings.assembly_and_occurrence_ms +=
                     assembly_started.elapsed().as_secs_f64() * 1000.;
                 let publication_started = std::time::Instant::now();
+                let TopologyDisplay {
+                    topology,
+                    edges,
+                    vertices,
+                } = solid
+                    .topology_with_display(
+                        id,
+                        revision,
+                        (!self.omit_display).then_some(self.mesh.linear_deflection_mm),
+                    )
+                    .map_err(|e| error(Some(id), e))?;
+                multicad_core::model::wall_face_materials(document, &topology)
+                    .map_err(|e| error(Some(id), e))?;
                 let snapshot = ShapeSnapshot {
                     producer: id,
                     bounds: solid.bounds().map_err(|e| error(Some(id), e))?,
@@ -834,18 +842,8 @@ impl Compiler {
                     } else {
                         solid.mesh(self.mesh).map_err(|e| error(Some(id), e))?
                     }),
-                    edges: Arc::new(if self.omit_display {
-                        vec![]
-                    } else {
-                        solid
-                            .display_edges(self.mesh.linear_deflection_mm)
-                            .map_err(|e| error(Some(id), e))?
-                    }),
-                    vertices: Arc::new(if self.omit_display {
-                        vec![]
-                    } else {
-                        solid.display_vertices().map_err(|e| error(Some(id), e))?
-                    }),
+                    edges: Arc::new(edges),
+                    vertices: Arc::new(vertices),
                     topology: topology.clone(),
                 };
                 timings.shape_publication_ms += publication_started.elapsed().as_secs_f64() * 1000.;
@@ -1543,10 +1541,18 @@ impl Compiler {
                 }
             };
             checkpoint(interrupt)?;
-            let topology = solid
-                .topology_snapshot(id, revision)
-                .map_err(|e| error(Some(id), e))?;
             let publication_started = std::time::Instant::now();
+            let TopologyDisplay {
+                topology,
+                edges,
+                vertices,
+            } = solid
+                .topology_with_display(
+                    id,
+                    revision,
+                    (!self.omit_display).then_some(self.mesh.linear_deflection_mm),
+                )
+                .map_err(|e| error(Some(id), e))?;
             let snapshot = ShapeSnapshot {
                 producer: id,
                 bounds: solid.bounds().map_err(|e| error(Some(id), e))?,
@@ -1561,18 +1567,8 @@ impl Compiler {
                 } else {
                     solid.mesh(self.mesh).map_err(|e| error(Some(id), e))?
                 }),
-                edges: Arc::new(if self.omit_display {
-                    vec![]
-                } else {
-                    solid
-                        .display_edges(self.mesh.linear_deflection_mm)
-                        .map_err(|e| error(Some(id), e))?
-                }),
-                vertices: Arc::new(if self.omit_display {
-                    vec![]
-                } else {
-                    solid.display_vertices().map_err(|e| error(Some(id), e))?
-                }),
+                edges: Arc::new(edges),
+                vertices: Arc::new(vertices),
                 topology: topology.clone(),
             };
             timings.shape_publication_ms += publication_started.elapsed().as_secs_f64() * 1000.;

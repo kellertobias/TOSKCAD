@@ -77,14 +77,14 @@ fn point_on_arc(frame: ReferenceFrame, radius: f64, angle: f64) -> [f64; 3] {
 }
 
 pub(crate) fn edges(
-    topology: TopologySnapshot,
+    topology: &TopologySnapshot,
     deflection: f64,
 ) -> Result<Vec<DisplayEdge>, GeometryError> {
     const MAX_EDGE_POINTS: usize = 5_000_000;
     let mut total_points = 0;
     topology
         .elements
-        .into_iter()
+        .iter()
         .filter(|e| e.key.kind == TopologyKind::Edge)
         .map(|e| {
             let points_mm = match e.geometry {
@@ -134,10 +134,10 @@ pub(crate) fn edges(
         .collect()
 }
 
-pub(crate) fn vertices(topology: TopologySnapshot) -> Vec<DisplayVertex> {
+pub(crate) fn vertices(topology: &TopologySnapshot) -> Vec<DisplayVertex> {
     topology
         .elements
-        .into_iter()
+        .iter()
         .filter_map(|e| {
             let Some(AnalyticGeometry::Point { position_mm }) = e.geometry else {
                 return None;

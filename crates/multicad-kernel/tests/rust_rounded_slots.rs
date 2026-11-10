@@ -178,9 +178,13 @@ fn blind_mortise_keeps_its_floor_reference_when_a_round_hole_is_added() {
     let rust = rust
         .rust_drill_circular_pockets(std::slice::from_ref(&hole), policy)
         .unwrap();
-    let Resolution::Resolved { key, .. } =
-        resolve(&intent, &rust.topology_snapshot(owner, 2).unwrap(), 2)
-    else {
+    let display = rust.topology_with_display(owner, 2, Some(0.05)).unwrap();
+    assert_eq!(display.edges, rust.display_edges(0.05).unwrap());
+    assert_eq!(display.vertices, rust.display_vertices().unwrap());
+    let exact_only = rust.topology_with_display(owner, 2, None).unwrap();
+    assert_eq!(exact_only.topology, display.topology);
+    assert!(exact_only.edges.is_empty() && exact_only.vertices.is_empty());
+    let Resolution::Resolved { key, .. } = resolve(&intent, &display.topology, 2) else {
         panic!("mortise floor lost its identity after another cut");
     };
     exact_cap(
