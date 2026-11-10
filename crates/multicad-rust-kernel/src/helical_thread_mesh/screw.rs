@@ -1,9 +1,9 @@
-use super::{Builder, check_options, phase_strips, volume_error_bound};
+use super::{Builder, check_options, hex_side, phase_strips, volume_error_bound};
 use crate::{
     display::{DisplayMesh, MeshError, Tessellation},
     headed_screw::{Screw, ScrewFace, ScrewHead},
 };
-use std::f64::consts::{PI, TAU};
+use std::f64::consts::TAU;
 
 /// Mesh one connected screw shell using the same trimmed shaft rim at the
 /// attachment. Angular columns include the exact corners of the head or socket.
@@ -107,10 +107,6 @@ pub fn screw_volume_error_bound(screw: &Screw, options: Tessellation) -> f64 {
     };
     volume_error_bound(screw.thread(), options)
         + TAU * (head_wall + spec.shank_radius_mm * spec.shank_length_mm) * options.deflection
-}
-
-fn hex_side(angle: f64) -> u32 {
-    ((angle - PI / 6.).rem_euclid(TAU) / (TAU / 6.)).floor() as u32
 }
 
 struct HeadMesh<'a, 'thread> {

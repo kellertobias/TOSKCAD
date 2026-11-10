@@ -5,8 +5,12 @@
 use crate::{
     display::{DisplayMesh, MeshError, Tessellation},
     helical_thread::Thread,
+    hex_nut::Nut,
 };
-use std::{collections::HashMap, f64::consts::TAU};
+use std::{
+    collections::HashMap,
+    f64::consts::{PI, TAU},
+};
 
 mod screw;
 pub use screw::{screw_volume_error_bound, tessellate_screw};
@@ -31,30 +35,51 @@ pub fn tessellate_bore(
     {
         return Err(MeshError::InvalidOptions);
     }
-    tessellate_envelope(thread, Some(outer_radius_mm), options)
+    tessellate_envelope(
+        thread,
+        Some(BoreExterior::Cylinder(outer_radius_mm)),
+        options,
+    )
+}
+
+/// A hexagonal solid with a coaxial threaded through bore. Six exact planar
+/// wrench faces follow the cap and helical wall ordinals in corner order.
+pub fn tessellate_nut(nut: &Nut, options: Tessellation) -> Result<DisplayMesh, MeshError> {
+    tessellate_envelope(nut.thread(), Some(BoreExterior::Hex(nut)), options)
+}
+
+#[derive(Clone, Copy)]
+enum BoreExterior<'a> {
+    Cylinder(f64),
+    Hex(&'a Nut),
 }
 
 fn tessellate_envelope(
     thread: &Thread,
-    outer_radius: Option<f64>,
+    exterior: Option<BoreExterior<'_>>,
     options: Tessellation,
 ) -> Result<DisplayMesh, MeshError> {
     check_options(options)?;
     let major = thread.spec().major_radius_mm;
-    let radius = outer_radius.unwrap_or(major);
-    // The outer polygon's apothem must exceed every inner vertex radius,
-    // including cap rail intersections between the regular grid columns.
-    let deflection = outer_radius.map_or(options.deflection, |radius| {
-        options.deflection.min(2. * (radius - major))
-    });
+    let (radius, deflection, stride) = match exterior {
+        // Each inscribed cylindrical chord must clear the bore crest,
+        // including cap rail intersections between angular columns.
+        Some(BoreExterior::Cylinder(radius)) => {
+            (radius, options.deflection.min(2. * (radius - major)), 1.)
+        }
+        // A multiple of twelve angular steps includes every hex corner.
+        // The planar stock has no curvature to refine.
+        Some(BoreExterior::Hex(_)) => (major, options.deflection, 12.),
+        None => (major, options.deflection, 1.),
+    };
     let max_angle = (options.angle * 0.5).min((2. * deflection / radius).sqrt());
-    let angular_steps = (TAU / max_angle).ceil();
+    let angular_steps = (TAU / (stride * max_angle)).ceil() * stride;
     if angular_steps * 2. > options.triangle_limit as f64 {
         return Err(MeshError::BudgetExceeded);
     }
     let angular_steps = angular_steps as usize;
     let strips = phase_strips(thread, TAU / angular_steps as f64, options)?;
-    Builder::new(thread, angular_steps, strips, options).build(outer_radius)
+    Builder::new(thread, angular_steps, strips, options).build(exterior)
 }
 
 fn check_options(options: Tessellation) -> Result<(), MeshError> {
@@ -66,6 +91,10 @@ fn check_options(options: Tessellation) -> Result<(), MeshError> {
         return Err(MeshError::InvalidOptions);
     }
     Ok(())
+}
+
+fn hex_side(angle: f64) -> u32 {
+    ((angle - PI / 6.).rem_euclid(TAU) / (TAU / 6.)).floor() as u32
 }
 
 /// Bound volume deviation for the generated mesh. At equal depth, each
@@ -220,11 +249,11 @@ impl<'a> Builder<'a> {
         }
     }
 
-    fn build(mut self, outer_radius: Option<f64>) -> Result<DisplayMesh, MeshError> {
+    fn build(mut self, exterior: Option<BoreExterior<'_>>) -> Result<DisplayMesh, MeshError> {
         self.build_wall()?;
         let caps = std::mem::take(&mut self.caps);
-        if let Some(radius) = outer_radius {
-            self.add_bore(caps, radius)?;
+        if let Some(exterior) = exterior {
+            self.add_bore(caps, exterior)?;
         } else {
             for (cap, ring) in caps.into_iter().enumerate() {
                 self.add_cap(cap, ring)?;
@@ -290,7 +319,7 @@ impl<'a> Builder<'a> {
     fn add_bore(
         &mut self,
         [bottom, top]: [Vec<(f64, u32)>; 2],
-        radius: f64,
+        exterior: BoreExterior<'_>,
     ) -> Result<(), MeshError> {
         // Each rim point adds two cap triangles and one triangle on the
         // outer wall. Check the budget before allocating either outer rim.
@@ -300,14 +329,21 @@ impl<'a> Builder<'a> {
         for triangle in self.mesh.indices.as_chunks_mut::<3>().0 {
             triangle.swap(1, 2);
         }
-        let bottom = self.add_annular_cap(0, bottom, radius)?;
-        let top = self.add_annular_cap(1, top, radius)?;
-        let face = 2 + 4 * self.thread.spec().starts;
+        let bottom = self.add_annular_cap(0, bottom, exterior)?;
+        let top = self.add_annular_cap(1, top, exterior)?;
+        let first_face = 2 + 4 * self.thread.spec().starts;
         for column in 0..self.steps {
+            let face = match exterior {
+                BoreExterior::Cylinder(_) => first_face,
+                BoreExterior::Hex(_) => {
+                    let middle = TAU * (column as f64 + 0.5) / self.steps as f64;
+                    first_face + hex_side(middle)
+                }
+            };
             let low = &bottom.vertices[bottom.columns[column]..=bottom.columns[column + 1]];
             let high = &top.vertices[top.columns[column]..=top.columns[column + 1]];
             // The two rim subdivisions can differ. Both lie on the same
-            // planar cylinder chord, so split the panel on its diagonal.
+            // flat exterior panel, so split the panel on its diagonal.
             for &[a, b] in low.array_windows() {
                 self.triangle([a, b, high[high.len() - 1]], face)?;
             }
@@ -322,7 +358,7 @@ impl<'a> Builder<'a> {
         &mut self,
         cap: usize,
         mut ring: Vec<(f64, u32)>,
-        radius: f64,
+        exterior: BoreExterior<'_>,
     ) -> Result<BoreRim, MeshError> {
         Self::sort_ring(&mut ring)?;
         let mut columns = (0..self.steps)
@@ -339,12 +375,16 @@ impl<'a> Builder<'a> {
             let lo = TAU * self.fraction(column);
             let hi = TAU * self.fraction(column + 1);
             let middle = (lo + hi) * 0.5;
-            let apothem = radius * ((hi - lo) * 0.5).cos();
+            let half_chord_cos = ((hi - lo) * 0.5).cos();
             for &(angle, _) in &ring[first..end] {
-                // Place the new point on the outer chord along the same
-                // radial ray as the inner vertex. The inner wall stays
-                // inside the common angular grid's convex outer polygon.
-                let radial = apothem / (angle - middle).cos();
+                // The inner and outer vertices share the same radial ray.
+                // Hex corners divide columns, so every segment is planar.
+                let radial = match exterior {
+                    BoreExterior::Cylinder(radius) => {
+                        radius * half_chord_cos / (angle - middle).cos()
+                    }
+                    BoreExterior::Hex(nut) => nut.outer_radius(angle),
+                };
                 let (sin, cos) = angle.sin_cos();
                 outer.push(self.mesh.vertices.len() as u32 / 3);
                 self.mesh.vertices.extend([radial * cos, radial * sin, z]);

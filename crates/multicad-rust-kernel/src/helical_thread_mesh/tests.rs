@@ -202,6 +202,101 @@ fn bore_rejects_tangent_outer_stock_and_checks_final_triangle_budget() {
 }
 
 #[test]
+fn nut_keeps_six_exact_wrench_faces_and_one_watertight_through_bore() {
+    let options = Tessellation {
+        deflection: 0.02,
+        angle: 0.2,
+        ..options()
+    };
+    for (thread, across_flats) in [
+        (metric(false, 1, false, 6.5), 13.),
+        (metric(true, 3, true, 4.7), 8.002),
+    ] {
+        let nut = Nut::new(thread, across_flats).unwrap();
+        let mesh = tessellate_nut(&nut, options).unwrap();
+        let proof = manufacturing::certify(&mesh).unwrap();
+        assert_eq!(proof.vertex_links as usize, mesh.vertices.len() / 3);
+        assert_eq!(proof.edge_pairs as usize * 2, mesh.indices.len());
+        assert_eq!(
+            i64::from(proof.vertex_links) - i64::from(proof.edge_pairs)
+                + mesh.face_indices.len() as i64,
+            0
+        );
+
+        let length = thread.spec().length_mm;
+        let outer_area = 6. * (across_flats / 2.) * (across_flats / 3_f64.sqrt()) / 2.;
+        let expected = outer_area * length - thread.volume_mm3();
+        let error = (proof.signed_volume_mm3 - expected).abs();
+        assert!(error <= volume_error_bound(&thread, options));
+        assert!(error / expected < 0.015);
+
+        let first_wall = 2 + 4 * thread.spec().starts;
+        let faces: BTreeSet<_> = mesh.face_indices.iter().copied().collect();
+        assert_eq!(faces, (0..first_wall + 6).collect());
+        let mut wrench_areas = [0.; 6];
+        let vertices = mesh.vertices.as_chunks::<3>().0;
+        for (&face, &triangle) in mesh
+            .face_indices
+            .iter()
+            .zip(mesh.indices.as_chunks::<3>().0)
+        {
+            let [a, b, c] = triangle.map(|index| vertices[index as usize]);
+            let [u, v] = [b, c].map(|p| std::array::from_fn::<_, 3, _>(|i| p[i] - a[i]));
+            let normal = [
+                u[1] * v[2] - u[2] * v[1],
+                u[2] * v[0] - u[0] * v[2],
+                u[0] * v[1] - u[1] * v[0],
+            ];
+            match face {
+                0 => assert!(normal[2] < 0. && [a[2], b[2], c[2]] == [0.; 3]),
+                1 => assert!(normal[2] > 0. && [a[2], b[2], c[2]] == [length; 3]),
+                i if i < first_wall => {
+                    let center = [a[0] + b[0] + c[0], a[1] + b[1] + c[1]];
+                    assert!(normal[0] * center[0] + normal[1] * center[1] < 0.);
+                    for [x, y, z] in [a, b, c] {
+                        assert!((x.hypot(y) - thread.radius(y.atan2(x), z)).abs() < 1e-10);
+                    }
+                }
+                i => {
+                    let side = i - first_wall;
+                    let (sin, cos) = (TAU * f64::from(side + 1) / 6.).sin_cos();
+                    for [x, y, _] in [a, b, c] {
+                        assert!((cos * x + sin * y - across_flats / 2.).abs() < 1e-10);
+                    }
+                    let area = (normal[0] * cos + normal[1] * sin) / 2.;
+                    assert!(area > 0.);
+                    wrench_areas[side as usize] += area;
+                }
+            }
+        }
+        let face_area = across_flats / 3_f64.sqrt() * length;
+        assert!(
+            wrench_areas
+                .into_iter()
+                .all(|area| (area - face_area).abs() < 1e-9)
+        );
+    }
+}
+
+#[test]
+fn nut_checks_angular_and_completed_shell_budgets() {
+    let nut = Nut::new(metric(false, 1, false, 5.), 12.).unwrap();
+    let triangles = tessellate_nut(&nut, options()).unwrap().face_indices.len();
+    for triangle_limit in [24, triangles - 1] {
+        assert_eq!(
+            tessellate_nut(
+                &nut,
+                Tessellation {
+                    triangle_limit,
+                    ..options()
+                }
+            ),
+            Err(MeshError::BudgetExceeded)
+        );
+    }
+}
+
+#[test]
 fn screw_shell_keeps_hex_faces_and_coincident_shank_crests_watertight() {
     let options = Tessellation {
         deflection: 0.02,
@@ -416,7 +511,11 @@ fn phase_resolution_and_winding_guards_reject_partial_surfaces() {
     );
     assert_eq!(
         builder
-            .add_annular_cap(0, vec![(0., 0), (0.2, 1), (1., 2)], 5.)
+            .add_annular_cap(
+                0,
+                vec![(0., 0), (0.2, 1), (1., 2)],
+                BoreExterior::Cylinder(5.),
+            )
             .err(),
         Some(MeshError::UnresolvedBoundary)
     );

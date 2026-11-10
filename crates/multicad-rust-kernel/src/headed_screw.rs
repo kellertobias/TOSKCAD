@@ -90,13 +90,20 @@ pub fn hex_vertices(across_flats_mm: f64) -> [[f64; 2]; 6] {
     ]
 }
 
-fn hex_area(across_flats_mm: f64) -> f64 {
+pub(crate) fn hex_area(across_flats_mm: f64) -> f64 {
     3_f64.sqrt() * across_flats_mm.powi(2) / 2.
 }
 
-fn hex_radius(across_flats_mm: f64, theta: f64) -> f64 {
+pub(crate) fn hex_radius(across_flats_mm: f64, theta: f64) -> f64 {
     let offset = (theta + FRAC_PI_6).rem_euclid(FRAC_PI_3) - FRAC_PI_6;
     across_flats_mm * 0.5 / offset.cos()
+}
+
+pub(crate) fn hex_support(across_flats_mm: f64, [x, y]: [f64; 2]) -> f64 {
+    hex_vertices(across_flats_mm)
+        .into_iter()
+        .map(|[u, v]| x.mul_add(u, y * v))
+        .fold(f64::NEG_INFINITY, f64::max)
 }
 
 impl Screw {
@@ -228,10 +235,7 @@ impl Screw {
             ScrewHead::SocketCap { radius_mm, .. } => radial * radius_mm,
             ScrewHead::ExternalHex {
                 across_flats_mm, ..
-            } => hex_vertices(across_flats_mm)
-                .into_iter()
-                .map(|[u, v]| x.mul_add(u, y * v))
-                .fold(f64::NEG_INFINITY, f64::max),
+            } => hex_support(across_flats_mm, [x, y]),
         };
         let head = head_xy + (z * self.head_top_z()).max(z * self.head_seat_z());
         let mut support = self.thread.support(unit).max(head);
