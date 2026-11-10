@@ -2,7 +2,7 @@
 use super::*;
 use crate::headed_screw::hex_vertices;
 
-struct LineUse {
+pub(super) struct LineUse {
     oriented: EdgeRef,
     vertices: [u32; 2],
 }
@@ -26,11 +26,39 @@ pub(super) fn verify(
     let down = axis.map(|n| -n);
     let cap = check_axis(shell, plane, center, down, reference_dir)?;
     let points = hex_vertices(across_flats_mm);
-    let lower = hex_rim(shell, bottom, false, points.map(|p| world(p, -height_mm)))?;
-    let upper = hex_rim(shell, shoulder, true, points.map(|p| world(p, 0.)))?;
+    let lower = hex_rim(
+        shell,
+        bottom,
+        true,
+        false,
+        points.map(|p| world(p, -height_mm)),
+    )?;
+    let upper = hex_rim(shell, shoulder, true, true, points.map(|p| world(p, 0.)))?;
+    let area = walls_area(
+        shell,
+        &faces[1..],
+        [&lower, &upper],
+        cap.origin,
+        axis,
+        false,
+    )?;
+    let height = dot(sub(cap.origin, shoulder_center), cap.normal);
+    let volume = area * height;
+    require(volume.is_finite() && volume > 0.)?;
+    Ok(volume)
+}
+
+pub(super) fn walls_area(
+    shell: &mut Shell<'_, '_>,
+    faces: &[u32],
+    [lower, upper]: [&[LineUse]; 2],
+    origin: Point,
+    axis: Point,
+    cavity: bool,
+) -> Result<f64> {
     let mut rails = [[(0, false); 2]; 6];
     let mut area = 0.;
-    for (i, (&id, (lower, upper))) in faces[1..].iter().zip(lower.iter().zip(&upper)).enumerate() {
+    for (i, (&id, (lower, upper))) in faces.iter().zip(lower.iter().zip(upper)).enumerate() {
         let (surface, forward, bounds) = face(shell, id)?;
         let [bound] = bounds[..] else {
             return Err(ReadError::Invalid);
@@ -44,10 +72,10 @@ pub(super) fn verify(
             shell,
             self::plane(shell, surface)?,
             a,
-            cross(tangent, axis),
+            cross(tangent, axis).map(|n| if cavity { -n } else { n }),
             tangent,
         )?;
-        let edges = ring(shell, bound, true)?;
+        let edges = orient(&ring(shell, bound, true)?, !cavity);
         let [bottom, end_rail, top, start_rail] = edges[..] else {
             return Err(ReadError::Invalid);
         };
@@ -55,20 +83,20 @@ pub(super) fn verify(
         require(line(shell, end_rail)?.vertices == [end, upper.vertices[1]])?;
         require(line(shell, start_rail)?.vertices == [upper.vertices[0], start])?;
         rails[i] = [start_rail, end_rail];
-        area += dot(cross(sub(a, cap.origin), sub(b, cap.origin)), axis) / 2.;
+        area += dot(cross(sub(a, origin), sub(b, origin)), axis) / 2.;
     }
     require((0..6).all(|i| rails[i][1] == reversed(rails[(i + 1) % 6][0])))?;
-    let height = dot(sub(cap.origin, shoulder_center), cap.normal);
-    let volume = area * height;
-    require(volume.is_finite() && volume > 0.)?;
-    Ok(volume)
+    Ok(area)
 }
 
 fn reversed((edge, forward): EdgeRef) -> EdgeRef {
     (edge, !forward)
 }
 
-fn plane<'a, 'input>(shell: &'a Shell<'_, 'input>, id: u32) -> Result<&'a Value<'input>> {
+pub(super) fn plane<'a, 'input>(
+    shell: &'a Shell<'_, 'input>,
+    id: u32,
+) -> Result<&'a Value<'input>> {
     let [Value::String(_), axis] = shell.args(id, "PLANE")? else {
         return Err(ReadError::Invalid);
     };
@@ -85,13 +113,14 @@ fn line(shell: &mut Shell<'_, '_>, oriented: EdgeRef) -> Result<LineUse> {
     })
 }
 
-fn hex_rim(
+pub(super) fn hex_rim(
     shell: &mut Shell<'_, '_>,
     bound: u32,
+    exterior: bool,
     forward: bool,
     expected: [Point; 6],
 ) -> Result<Vec<LineUse>> {
-    let edges = ring(shell, bound, true)?;
+    let edges = ring(shell, bound, exterior)?;
     require(edges.len() == expected.len())?;
     // The bottom rim is oriented clockwise starting at corner 5. Normalize
     // it to the same first corner and counterclockwise order as the shoulder.
@@ -201,28 +230,13 @@ mod tests {
             },
         )
         .unwrap();
-        let socket = Screw::new(
-            *authored.thread(),
-            ScrewSpec {
-                head: ScrewHead::SocketCap {
-                    radius_mm: 5.,
-                    height_mm: 6.,
-                    socket_across_flats_mm: 5.,
-                    socket_depth_mm: 3.,
-                },
-                ..authored.spec()
-            },
-        )
-        .unwrap();
         let encoded = write(&authored).unwrap();
-        for unsupported in [partial, socket] {
-            assert!(!supports_helical_screw(&unsupported, origin, 1e-7));
-            assert_eq!(write(&unsupported), Err(StepError::Unsupported));
-            assert_eq!(
-                verify_helical_screw(&encoded, &unsupported, origin, u, v, 1e-7),
-                Err(ReadError::Unsupported)
-            );
-        }
+        assert!(!supports_helical_screw(&partial, origin, 1e-7));
+        assert_eq!(write(&partial), Err(StepError::Unsupported));
+        assert_eq!(
+            verify_helical_screw(&encoded, &partial, origin, u, v, 1e-7),
+            Err(ReadError::Unsupported)
+        );
         let thin_seat = Screw::new(
             *authored.thread(),
             ScrewSpec {

@@ -942,7 +942,7 @@ pub(super) fn mechanical_part_profiles(_: &dyn Host, call: &Request, _: NoArgs) 
                 "radial_taper": false,
                 "mesh": true,
                 "threaded_step": true,
-                "threaded_step_scope": "Fully threaded external-hex modeled screws with straight single-start threads with flat or circular roots, within the bounded spline budget",
+                "threaded_step_scope": "Fully threaded external-hex and hex-socket cap modeled screws with straight single-start threads with flat or circular roots, within the bounded spline budget",
                 "step_geometry": ["washer", "bearing_envelope", "machine_screw"]
             },
             "machine_screw": "The underhead length runs from the head seat to the tip. Overall length adds the head height. The thread length is its extent ending at the tip, and its frame locates the underhead datum.",

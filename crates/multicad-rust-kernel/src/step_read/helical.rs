@@ -10,6 +10,7 @@ use crate::{
 };
 
 mod hex_head;
+mod socket_head;
 mod volume;
 
 type EdgeRef = (u32, bool);
@@ -183,14 +184,14 @@ fn verify(
             let [Value::String(_), axis] = shell.args(surface, "PLANE")? else {
                 return Err(ReadError::Invalid);
             };
-            let positive = top || matches!(closure, Closure::HexHead { .. });
+            let positive = top || closure.is_screw();
             let cap_axis = normal.map(|n| if positive { n } else { -n });
             caps[end] = check_axis(shell, axis, world([0.; 2], z), cap_axis, u)?.origin;
             let expected = rings[end].map(|edge| (edge, true));
             require(
                 ring(shell, bounds[usize::from(hole)], !hole)? == orient(&expected, top == forward),
             )?;
-            if matches!(closure, Closure::HexHead { .. }) && !top {
+            if closure.is_screw() && !top {
                 shoulder = Some(bounds[0]);
             }
             if let Closure::Bore(radius) = closure {
@@ -228,6 +229,15 @@ fn verify(
                 caps[0],
                 [u, normal],
                 [across_flats_mm, height_mm],
+                world,
+            )?,
+            Closure::SocketHead(head) => socket_head::verify(
+                shell,
+                &faces[6..],
+                shoulder.ok_or(ReadError::Invalid)?,
+                caps[0],
+                [u, normal],
+                head,
                 world,
             )?,
         };

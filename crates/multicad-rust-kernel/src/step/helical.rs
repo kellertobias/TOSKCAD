@@ -16,6 +16,14 @@ const MAX_ERROR_MM: f64 = 1e-7;
 type Complex = [f64; 2];
 
 #[derive(Clone, Copy)]
+pub(crate) struct SocketHead {
+    pub(crate) radius_mm: f64,
+    pub(crate) height_mm: f64,
+    pub(crate) across_flats_mm: f64,
+    pub(crate) depth_mm: f64,
+}
+
+#[derive(Clone, Copy)]
 pub(crate) enum Closure {
     Shaft,
     Bore(f64),
@@ -23,6 +31,7 @@ pub(crate) enum Closure {
         across_flats_mm: f64,
         height_mm: f64,
     },
+    SocketHead(SocketHead),
 }
 
 impl Closure {
@@ -32,20 +41,33 @@ impl Closure {
 
     pub(crate) fn screw(screw: &Screw) -> Result<Self, StepError> {
         let spec = screw.spec();
-        let ScrewHead::ExternalHex {
-            across_flats_mm,
-            height_mm,
-        } = spec.head
-        else {
-            return Err(StepError::Unsupported);
-        };
         if spec.shank_length_mm != 0. {
             return Err(StepError::Unsupported);
         }
-        Ok(Self::HexHead {
-            across_flats_mm,
-            height_mm,
+        Ok(match spec.head {
+            ScrewHead::ExternalHex {
+                across_flats_mm,
+                height_mm,
+            } => Self::HexHead {
+                across_flats_mm,
+                height_mm,
+            },
+            ScrewHead::SocketCap {
+                radius_mm,
+                height_mm,
+                socket_across_flats_mm,
+                socket_depth_mm,
+            } => Self::SocketHead(SocketHead {
+                radius_mm,
+                height_mm,
+                across_flats_mm: socket_across_flats_mm,
+                depth_mm: socket_depth_mm,
+            }),
         })
+    }
+
+    pub(crate) fn is_screw(self) -> bool {
+        matches!(self, Self::HexHead { .. } | Self::SocketHead(_))
     }
 
     pub(crate) fn inside(self) -> bool {
@@ -53,7 +75,7 @@ impl Closure {
     }
 
     pub(crate) fn cap_hole(self, top: bool) -> bool {
-        self.inside() || (!top && matches!(self, Self::HexHead { .. }))
+        self.inside() || (!top && self.is_screw())
     }
 
     pub(crate) fn face_count(self) -> usize {
@@ -61,6 +83,7 @@ impl Closure {
             Self::Shaft => 6,
             Self::Bore(_) => 7,
             Self::HexHead { .. } => 13,
+            Self::SocketHead(_) => 15,
         }
     }
 
@@ -72,6 +95,7 @@ impl Closure {
                 across_flats_mm,
                 height_mm,
             } => (across_flats_mm / 3_f64.sqrt(), height_mm),
+            Self::SocketHead(head) => (head.radius_mm, head.height_mm),
         }
     }
 }
@@ -86,7 +110,7 @@ pub fn write_helical_screw(
     write_one(|writer| writer.append_helical_screw(screw, origin, u, v, tolerance_mm))
 }
 
-/// Whether a fully threaded external-hex screw fits the STEP proof.
+/// Whether a fully threaded hex-head or socket-cap screw fits the STEP proof.
 pub fn supports_helical_screw(screw: &Screw, origin: Point, tolerance_mm: f64) -> bool {
     Closure::screw(screw)
         .and_then(|closure| prepare(screw.thread(), closure, origin, tolerance_mm))
@@ -200,15 +224,16 @@ pub(super) fn encode(
     } else {
         None
     };
-    let hex_head = if let Closure::HexHead {
-        across_flats_mm,
-        height_mm,
-    } = closure
-    {
-        let trim = encode_hex_head(file, &placement, across_flats_mm, height_mm);
-        Some(trim?)
-    } else {
-        None
+    let head = match closure {
+        Closure::HexHead {
+            across_flats_mm,
+            height_mm,
+        } => {
+            let trim = encode_hex_head(file, &placement, across_flats_mm, height_mm);
+            Some(trim?)
+        }
+        Closure::SocketHead(socket) => Some(encode_socket_head(file, &placement, socket)?),
+        Closure::Shaft | Closure::Bore(_) => None,
     };
     for (end, cap) in cap_edges.into_iter().enumerate() {
         let top = end == 1;
@@ -228,12 +253,12 @@ pub(super) fn encode(
         if let Some(cylinder) = &cylinder {
             bounds.push(cylinder.cap_bound(file, top, true));
         }
-        if !top && let Some((shoulder, _)) = &hex_head {
+        if !top && let Some((shoulder, _)) = &head {
             bounds.push(*shoulder);
         }
         bounds.push(trim);
         let center = file.point(centers[end]);
-        let outward = top || matches!(closure, Closure::HexHead { .. });
+        let outward = top || closure.is_screw();
         let normal = placement
             .normal
             .map(|value| if outward { value } else { -value });
@@ -242,7 +267,7 @@ pub(super) fn encode(
     if let Some(cylinder) = &cylinder {
         faces.push(cylinder.wall(file, true));
     }
-    if let Some((_, head_faces)) = hex_head {
+    if let Some((_, head_faces)) = head {
         faces.extend(head_faces);
     }
     Ok(file.solid(&faces))
@@ -254,32 +279,84 @@ fn encode_hex_head(
     across_flats_mm: f64,
     height_mm: f64,
 ) -> Result<(Entity, Vec<Entity>), StepError> {
-    let hex = hex_vertices(across_flats_mm);
-    let mut head = BRep::new(
+    let ([bottom, shoulder], mut faces) =
+        encode_hex_prism(file, placement, across_flats_mm, [-height_mm, 0.], false)?;
+    let center = file.point(placement.point_f64([0.; 2], -height_mm));
+    let down = placement.normal.map(|n| -n);
+    faces.insert(0, file.face(&[bottom], center, down, placement.u));
+    Ok((shoulder, faces))
+}
+
+fn encode_socket_head(
+    file: &mut StepFile,
+    placement: &Placement,
+    head: SocketHead,
+) -> Result<(Entity, Vec<Entity>), StepError> {
+    let lower = -head.height_mm;
+    let floor = lower + head.depth_mm;
+    let center = |z| placement.point_f64([0.; 2], z);
+    let shell = CylindricalTrim::new(
         file,
-        [-height_mm, 0.]
+        [center(lower), center(0.)],
+        placement.normal,
+        placement.u,
+        head.radius_mm,
+    )?;
+    let ([socket, floor_bound], sides) =
+        encode_hex_prism(file, placement, head.across_flats_mm, [lower, floor], true)?;
+    let shoulder = shell.cap_bound(file, true, true);
+    let bottom = shell.cap_bound(file, false, true);
+    let down = placement.normal.map(|n| -n);
+    let end_face = file.face(&[bottom, socket], shell.centers[0], down, placement.u);
+    let wall = shell.wall(file, true);
+    let floor_center = file.point(center(floor));
+    let floor = file.face(&[floor_bound], floor_center, down, placement.u);
+    let mut faces = vec![end_face, wall, floor];
+    faces.extend(sides);
+    Ok((shoulder, faces))
+}
+
+fn encode_hex_prism(
+    file: &mut StepFile,
+    placement: &Placement,
+    across_flats_mm: f64,
+    depths: [f64; 2],
+    cavity: bool,
+) -> Result<([Entity; 2], Vec<Entity>), StepError> {
+    let hex = hex_vertices(across_flats_mm);
+    let mut prism = BRep::new(
+        file,
+        depths
             .into_iter()
             .flat_map(|z| hex.map(|point| placement.point_f64(point, z)))
             .collect(),
     );
-    let shoulder = head.bound(&[6, 7, 8, 9, 10, 11], true)?;
-    let bottom = head.bound(&[5, 4, 3, 2, 1, 0], true)?;
-    let bottom_center = head.file.point(placement.point_f64([0.; 2], -height_mm));
-    let mut faces = vec![head.file.face(
-        &[bottom],
-        bottom_center,
-        placement.normal.map(|n| -n),
-        placement.u,
-    )];
+    let rims = if cavity {
+        [
+            prism.bound(&[0, 1, 2, 3, 4, 5], false)?,
+            prism.bound(&[11, 10, 9, 8, 7, 6], true)?,
+        ]
+    } else {
+        [
+            prism.bound(&[5, 4, 3, 2, 1, 0], true)?,
+            prism.bound(&[6, 7, 8, 9, 10, 11], true)?,
+        ]
+    };
+    let mut faces = Vec::with_capacity(6);
     for i in 0..6 {
         let next = (i + 1) % 6;
-        let bound = head.bound(&[i, next, next + 6, i + 6], true)?;
-        let from = head.vertices[i];
-        let u = direction(from.point, head.vertices[next].point)?;
-        let normal = cross(u, placement.normal);
-        faces.push(head.file.face(&[bound], from.cartesian, normal, u));
+        let indices = if cavity {
+            [i, i + 6, next + 6, next]
+        } else {
+            [i, next, next + 6, i + 6]
+        };
+        let bound = prism.bound(&indices, true)?;
+        let from = prism.vertices[i];
+        let u = direction(from.point, prism.vertices[next].point)?;
+        let normal = cross(u, placement.normal).map(|n| if cavity { -n } else { n });
+        faces.push(prism.file.face(&[bound], from.cartesian, normal, u));
     }
-    Ok((shoulder, faces))
+    Ok((rims, faces))
 }
 
 pub(crate) struct ThreadSplines {
@@ -323,6 +400,9 @@ pub(crate) fn prepare(
         || matches!(closure, Closure::Bore(radius) if radius - major <= tolerance)
         || matches!(closure, Closure::HexHead { across_flats_mm, height_mm }
             if across_flats_mm / 2. - major <= tolerance || height_mm <= tolerance)
+        || matches!(closure, Closure::SocketHead(head) if head.radius_mm - major <= tolerance
+            || head.radius_mm - head.across_flats_mm / 3_f64.sqrt() <= tolerance
+            || head.depth_mm <= tolerance || head.height_mm - head.depth_mm <= tolerance)
     {
         return Err(StepError::Limit);
     }
@@ -624,6 +704,22 @@ mod tests {
             root_radius_mm: None,
         })
         .unwrap()
+    }
+
+    #[test]
+    fn socket_encoder_rejects_a_degenerate_outer_wall() {
+        let mut file = StepFile::new();
+        let placement = Placement::new([0.; 3], [1., 0., 0.], [0., 1., 0.]).unwrap();
+        let invalid = SocketHead {
+            radius_mm: 0.,
+            height_mm: 6.,
+            across_flats_mm: 5.,
+            depth_mm: 3.,
+        };
+        assert_eq!(
+            encode_socket_head(&mut file, &placement, invalid).err(),
+            Some(StepError::InvalidGeometry)
+        );
     }
 
     #[test]

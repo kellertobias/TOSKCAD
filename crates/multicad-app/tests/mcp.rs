@@ -711,6 +711,48 @@ fn export_m6_hex_screw(fit: &str) {
 }
 
 #[test]
+fn rust_stdio_exports_the_shipped_m6_socket_cap_with_its_recess() {
+    let directory = tempfile::tempdir().unwrap();
+    let project = directory.path().join("m6-socket.tcd");
+    std::fs::write(
+        &project,
+        include_bytes!("../../../library/screw-socket-m6-l20.tcd"),
+    )
+    .unwrap();
+    let args = [
+        "--rust-model",
+        "--project",
+        project.to_str().unwrap(),
+        "--export-dir",
+        directory.path().to_str().unwrap(),
+    ];
+    let mut client = Client::start(&args);
+    let result = client.ok("evaluate_model", json!({}));
+    let part = &result["parts"][0];
+    assert_eq!(part["solid_count"], 1);
+    assert_eq!(part["bounds_mm"]["max"][2], 20.);
+    let receipt = client.ok(
+        "export_step",
+        json!({"part": part["part"], "file_name": "socket.step"}),
+    );
+    let measured = receipt["readback_volume_mm3"].as_f64().unwrap();
+    close(measured, part["volume_mm3"].as_f64().unwrap());
+    let path = directory.path().join("socket.step");
+    let step = std::fs::read_to_string(&path).unwrap();
+    assert_eq!(step.matches("B_SPLINE_SURFACE_WITH_KNOTS").count(), 4);
+    assert_eq!(step.matches("CYLINDRICAL_SURFACE").count(), 1);
+    assert_eq!(step.matches("ADVANCED_FACE").count(), 15);
+    assert_eq!(step.matches("MANIFOLD_SOLID_BREP").count(), 1);
+    assert!(!step.contains("FACETED_BREP"));
+    if multicad_kernel::OCCT_LINKED {
+        let decoded = multicad_kernel::Shape::read_step(&path).unwrap();
+        assert!(decoded.valid().unwrap());
+        assert_eq!(multicad_kernel::Solid::step_solids(&path).unwrap().len(), 1);
+        close(decoded.volume().unwrap(), measured);
+    }
+}
+
+#[test]
 fn rust_stdio_exports_verified_spur_step_after_reopen() {
     export_spur_step_after_reopen(None);
 }
