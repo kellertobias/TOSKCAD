@@ -330,9 +330,18 @@ fn check_twisted_loft_drawing_worker(session: &mut Session, body: EntityId) {
         range: drawings::SectionRange::Depth { depth_mm: 2.5 },
         window: drawings::SectionWindow::default(),
     };
+    let mut oblique = ordinary.clone();
+    oblique.id = EntityId::new();
+    oblique.name = "Oblique depth section".into();
+    oblique.kind = drawings::ViewKind::Section {
+        offset_mm: 0.6,
+        range: drawings::SectionRange::Depth { depth_mm: 1.8 },
+        window: drawings::SectionWindow::default(),
+    };
+    let oblique_id = oblique.id;
     let ordinary_id = ordinary.id;
     let retained_id = retained.id;
-    page.views.extend([ordinary, retained]);
+    page.views.extend([ordinary, retained, oblique]);
     let page_id = page.id;
     let (_, prepared) = drawings::prepare_create(
         session,
@@ -376,7 +385,7 @@ fn check_twisted_loft_drawing_worker(session: &mut Session, body: EntityId) {
             .count(),
         2
     );
-    for (id, sections) in [(ordinary_id, 0), (retained_id, 4)] {
+    for (id, sections) in [(ordinary_id, 0), (retained_id, 4), (oblique_id, 4)] {
         let drawings::ViewEvaluation::Ready { vectors, .. } = &result.views[&id] else {
             panic!("{:?}", result.views[&id]);
         };
@@ -399,6 +408,20 @@ fn check_twisted_loft_drawing_worker(session: &mut Session, body: EntityId) {
             sections
         );
     }
+    let drawings::ViewEvaluation::Ready { vectors, .. } = &result.views[&oblique_id] else {
+        unreachable!("oblique depth section was checked above");
+    };
+    assert_eq!(
+        vectors
+            .iter()
+            .filter(|vector| vector.role == drawings::VectorRole::Section
+                && matches!(
+                    vector.curve,
+                    drawings::VectorCurve::BSpline { degree: 2, .. }
+                ))
+            .count(),
+        4
+    );
 }
 
 #[test]
