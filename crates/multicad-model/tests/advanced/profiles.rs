@@ -1773,6 +1773,36 @@ fn loft_polygon<const N: usize>(
     (ProfileSource { sketch, region }, curves)
 }
 
+#[cfg(feature = "occt")]
+#[test]
+fn native_twisted_polygon_loft_matches_integrated_section_area() {
+    let (mut session, _) = fixture();
+    let bottom = [[-2., -1.], [2., -1.], [2., 1.], [-2., 1.]];
+    let (sin, cos) = std::f64::consts::FRAC_PI_6.sin_cos();
+    let top = bottom.map(|[x, y]| [cos * x - sin * y + 1., sin * x + cos * y + 0.5]);
+    let [(first, start), (last, end)] = [
+        ("Bottom rectangle", 0., bottom),
+        ("Rotated top rectangle", 6., top),
+    ]
+    .map(|(name, z, outline)| loft_polygon(&mut session, name, z, outline));
+    let request = AdvancedRequest::new_body(
+        "Twisted rectangle",
+        AdvancedParameters::Loft(LoftParameters {
+            seams: vec![start[0], end[0]],
+            ..Default::default()
+        }),
+        vec![first, last],
+        None,
+    );
+    commit(&mut session, &request);
+    let model = compile(&session);
+    let solid = model.solid(request.body).unwrap();
+    assert_eq!(solid.solid_count().unwrap(), 1);
+    assert_eq!(solid.faces().unwrap().len(), 6);
+    // Integrate the determinant of (1 - t) I + t R across the height.
+    near(solid.volume_mm3().unwrap(), 6. * 8. * (2. + cos) / 3.);
+}
+
 fn notched_loft_footprints() -> [[[f64; 2]; 8]; 2] {
     [
         [

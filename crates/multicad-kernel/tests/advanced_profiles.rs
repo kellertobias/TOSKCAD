@@ -3,6 +3,63 @@ use multicad_kernel::*;
 fn p() -> GeometryPolicy {
     GeometryPolicy::default()
 }
+
+#[cfg(feature = "occt")]
+#[test]
+fn exact_bilinear_loft_step_reads_in_opencascade() {
+    use multicad_rust_kernel::{planar_boolean::NonplanarLoft, step::write_nonplanar_loft};
+
+    let low = [[-2., -1.], [2., -1.], [2., 1.], [-2., 1.]];
+    let (sin, cos) = std::f64::consts::FRAC_PI_6.sin_cos();
+    let high = low.map(|[x, y]| [cos * x - sin * y + 1., sin * x + cos * y + 0.5]);
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("twisted.step");
+    for clockwise in [false, true] {
+        let mut rings = [low, high];
+        if clockwise {
+            rings.iter_mut().for_each(|ring| ring.reverse());
+        }
+        let loft = NonplanarLoft::new([&rings[0], &rings[1]], 6., p().linear_tolerance_mm).unwrap();
+        let origin = [13., -7., 4.];
+        let u = [0.8, 0.6, 0.];
+        let v = [-0.36, 0.48, 0.8];
+        std::fs::write(&path, write_nonplanar_loft(&loft, origin, u, v).unwrap()).unwrap();
+        let solid = Solid::read_step(&path, p()).unwrap();
+        assert_eq!(solid.solid_count().unwrap(), 1);
+        let faces = solid.faces().unwrap();
+        assert_eq!(faces.len(), 6);
+        near(solid.volume_mm3().unwrap(), loft.volume_mm3());
+        let analytic_area = loft.cap_areas_mm2().into_iter().sum::<f64>()
+            + loft
+                .walls()
+                .map(|wall| wall.area_mm2().unwrap())
+                .sum::<f64>();
+        near(faces.iter().map(|face| face.area_mm2).sum(), analytic_area);
+        let placed = |[x, y, z]: [f64; 3]| {
+            PlaneFrame { origin, u, v }
+                .point([x, y])
+                .into_iter()
+                .zip([0.48, -0.64, 0.6])
+                .map(|(base, n)| base + n * z)
+                .collect::<Vec<_>>()
+        };
+        let points: Vec<_> = loft.rings().iter().flatten().copied().map(placed).collect();
+        let bounds = solid.bounds().unwrap();
+        for i in 0..3 {
+            near(
+                bounds.min[i],
+                points.iter().map(|p| p[i]).fold(f64::INFINITY, f64::min),
+            );
+            near(
+                bounds.max[i],
+                points
+                    .iter()
+                    .map(|p| p[i])
+                    .fold(f64::NEG_INFINITY, f64::max),
+            );
+        }
+    }
+}
 fn near(a: f64, b: f64) {
     assert!((a - b).abs() < 1e-5, "{a} != {b}");
 }
