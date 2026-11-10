@@ -739,6 +739,16 @@ impl Solid {
         self.orthogonal_boolean_with_tools(tools, BooleanOperation::Subtract, policy)
     }
 
+    /// Merge world-aligned rectilinear members in one exact grid evaluation.
+    pub fn rust_union_orthogonal_tools(
+        &self,
+        tools: &[Self],
+        policy: GeometryPolicy,
+    ) -> Result<Option<Self>, GeometryError> {
+        policy.validate()?;
+        self.orthogonal_boolean_with_tools(tools, BooleanOperation::Union, policy)
+    }
+
     fn orthogonal_boolean_with_tools(
         &self,
         tools: &[Self],

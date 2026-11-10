@@ -218,6 +218,15 @@ fn pattern(
         return Solid::compound_named(&members.iter().collect::<Vec<_>>(), feature, policy)
             .map_err(|e| error(Some(feature), e));
     }
+    if solid.uses_rust_geometry()
+        && let Some((first, rest)) = members.split_first()
+        && !rest.is_empty()
+    {
+        return first
+            .rust_union_orthogonal_tools(rest, policy)
+            .map_err(|e| error(Some(feature), e))?
+            .ok_or_else(|| error(Some(feature), "Pattern merge removed every solid"));
+    }
     let mut members = members.into_iter();
     let mut result = members
         .next()

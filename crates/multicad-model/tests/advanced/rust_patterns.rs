@@ -7,6 +7,79 @@ use multicad_core::{
 };
 use multicad_model::{Compiler, GeometryBackend};
 
+#[test]
+fn merged_linear_pattern_rebuilds_touching_and_separate_stock_in_one_union() {
+    let (mut session, input) = fixture();
+    apply_parameter(&mut session, "copies", "3");
+    let request = AdvancedRequest::on_body(
+        input,
+        AdvancedParameters::LinearPattern(LinearPatternParameters {
+            count: bound(&session, "copies", "count"),
+            step: [bound(&session, "pitch", "mm"), length(0.), length(0.)],
+            merge: true,
+        }),
+        vec![],
+    );
+    let authored =
+        model::prepare_advanced(&session, session.revision(), actor(), &request).unwrap();
+    session.commit(authored.prepared).unwrap();
+    let compiler = Compiler {
+        omit_display: true,
+        ..Default::default()
+    };
+
+    for (pitch, expected_volume, expected_solids, max_x) in [
+        ("20", 14000., 1, 70.),
+        ("30", 18000., 1, 90.),
+        ("40", 18000., 3, 110.),
+    ] {
+        apply_parameter(&mut session, "pitch", pitch);
+        let compile = |backend| {
+            compiler
+                .compile_with_backend(session.document(), session.revision(), backend, None)
+                .unwrap()
+        };
+        let rust = compile(GeometryBackend::Rust);
+        let solid = rust.solid(request.body).unwrap();
+        assert!(solid.uses_rust_geometry());
+        near(solid.volume_mm3().unwrap(), expected_volume);
+        assert_eq!(solid.solid_count().unwrap(), expected_solids);
+        let bounds = solid.bounds().unwrap();
+        assert_eq!(bounds.min, [0.; 3]);
+        assert_eq!(bounds.max, [max_x, 20., 10.]);
+        let shape = &rust.snapshot().shapes[&request.feature].topology;
+        for member in 0..3 {
+            let origin = Origin {
+                source: request.feature,
+                role: format!("member/{member}"),
+            };
+            assert!(
+                shape
+                    .elements
+                    .iter()
+                    .any(|element| element.origins.contains(&origin)),
+                "member {member} lost its source identity at pitch {pitch}"
+            );
+        }
+
+        if cfg!(feature = "occt") {
+            let native = compile(GeometryBackend::OpenCascade);
+            let solid = native.solid(request.body).unwrap();
+            near(solid.volume_mm3().unwrap(), expected_volume);
+            assert_eq!(solid.solid_count().unwrap(), expected_solids);
+            let native_bounds = solid.bounds().unwrap();
+            for (actual, expected) in bounds
+                .min
+                .into_iter()
+                .chain(bounds.max)
+                .zip(native_bounds.min.into_iter().chain(native_bounds.max))
+            {
+                near(actual, expected);
+            }
+        }
+    }
+}
+
 fn member_points(topology: &TopologySnapshot, member: &Origin) -> Vec<[f64; 3]> {
     topology
         .elements
