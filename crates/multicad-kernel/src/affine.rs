@@ -53,7 +53,7 @@ impl AffineTransform {
             cross(self.matrix[0], self.matrix[1]),
         ]
     }
-    fn determinant(self) -> f64 {
+    pub(crate) fn determinant(self) -> f64 {
         dot(self.matrix[0], cross(self.matrix[1], self.matrix[2]))
     }
     /// Matrix and inverse coefficients are bounded to 1e6. Positive determinant
@@ -88,7 +88,7 @@ impl AffineTransform {
     fn vector(self, v: [f64; 3]) -> [f64; 3] {
         self.matrix.map(|row| dot(row, v))
     }
-    fn point(self, p: [f64; 3]) -> [f64; 3] {
+    pub(crate) fn point(self, p: [f64; 3]) -> [f64; 3] {
         let p = self.vector(p);
         std::array::from_fn(|i| p[i] + self.translation_mm[i])
     }
@@ -154,6 +154,18 @@ impl Solid {
                 GeometryErrorKind::Input,
                 "Affine feature identity is nil",
             ));
+        }
+        if self.uses_rust_geometry() {
+            if self.geometry_policy() != policy {
+                return Err(failure(
+                    GeometryErrorKind::Unsupported,
+                    "Rust Scale requires the source geometry policy",
+                ));
+            }
+            if transform == AffineTransform::default() {
+                return self.share();
+            }
+            return self.rust_scale_planar(transform, feature, policy);
         }
         let matrix: Vec<_> = transform.matrix.into_iter().flatten().collect();
         let mut result = Self::adopt(

@@ -41,6 +41,7 @@ pub(crate) fn validate_document(
                     | (model::PRIMITIVE_TYPE, model::PRIMITIVE_SCHEMA)
                     | (model::BOOLEAN_TYPE, model::BOOLEAN_SCHEMA)
                     | (model::TRANSFORM_TYPE, model::TRANSFORM_SCHEMA)
+                    | (model::SCALE_TYPE, model::SCALE_SCHEMA)
                     | (model::ALIGN_TYPE, model::ALIGN_SCHEMA)
                     | (model::ADVANCED_TYPE, model::ADVANCED_SCHEMA)
                     | (

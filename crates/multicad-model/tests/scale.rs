@@ -2,14 +2,21 @@ use multicad_core::{
     commands::{Actor, Channel, Request, Session},
     constraint_sketch::Dimension,
     document::{Document, Entity, EntityData, EntityId, Mutation},
-    exchange::{self, SetDefinition},
+    exchange::{self, ExportReply, ExportResult, SetDefinition},
     model::*,
     parameters::BoundExpression,
     project_file::{self, FileLimits, ProjectFile},
 };
 use multicad_kernel::{Bounds, GeometryPolicy, Solid};
-use multicad_model::{Compiler, Model, export::Exporter};
-use std::{io::Cursor, path::Path};
+use multicad_model::{
+    Compiler, GeometryBackend, Model,
+    export::{ExportWorker, Exporter},
+};
+use std::{
+    io::Cursor,
+    path::Path,
+    time::{Duration, Instant},
+};
 fn actor() -> Actor {
     Actor::local(Channel::Mcp)
 }
@@ -103,6 +110,20 @@ fn reopen(s: &Session) -> Session {
     assert_eq!(read.project.document, *s.document());
     Session::new(read.project.document).unwrap()
 }
+fn export_reply(worker: &ExportWorker) -> ExportReply {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if let Some(reply) = worker.poll() {
+            return reply;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "Scale STEP worker did not finish"
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
 fn bound(s: &Session) -> ScaleParameters {
     let expression = BoundExpression::bind(s.document(), "=$factor", "ratio", None).unwrap();
     ScaleParameters {
@@ -260,28 +281,41 @@ fn nonuniform_instance_scale_changes_only_owned_geometry_and_has_one_world_pose_
     )
     .unwrap();
     s.commit(prepared).unwrap();
-    let exporter = Exporter::default();
-    let preview = exporter
-        .preview(s.document(), s.revision(), set, &actor(), None)
+    let backend = GeometryBackend::default();
+    let worker = ExportWorker::with_geometry_backend(Exporter::default(), backend).unwrap();
+    worker
+        .preview(s.document(), s.revision(), set, actor())
         .unwrap();
+    let ExportResult::Preview(preview) = export_reply(&worker).result else {
+        panic!("expected STEP preview");
+    };
+    let preview = preview.unwrap();
     assert!(preview.can_run());
     assert_eq!(preview.artifacts.len(), 3);
     let root = tempfile::tempdir().unwrap();
-    let receipt = exporter
+    worker
         .run(
             s.document(),
             s.revision(),
             &preview.key,
             root.path(),
-            &actor(),
-            None,
+            actor(),
         )
         .unwrap();
+    let ExportResult::Run(receipt) = export_reply(&worker).result else {
+        panic!("expected STEP publication");
+    };
+    let receipt = receipt.unwrap();
     assert_eq!(receipt.files.len(), 3);
     let mut volumes = vec![];
     for file in &receipt.files {
         let path = Path::new(&receipt.directory).join(&file.artifact.output.filename);
-        let solid = Solid::read_step(&path, GeometryPolicy::default()).unwrap();
+        let solid = if backend == GeometryBackend::Rust {
+            let text = std::fs::read_to_string(path).unwrap();
+            Solid::import_rust_step(&text, EntityId::new(), GeometryPolicy::default()).unwrap()
+        } else {
+            Solid::read_step(&path, GeometryPolicy::default()).unwrap()
+        };
         assert_eq!(solid.solid_count().unwrap(), 1);
         volumes.push(solid.volume_mm3().unwrap());
     }
@@ -519,4 +553,171 @@ fn an_existing_face_aligned_occurrence_retains_its_rigid_driver_chain_when_scale
         expected(old_bounds.min),
         expected(old_bounds.max),
     );
+}
+
+#[test]
+fn saved_rotated_axis_scale_preserves_every_authored_boundary_intent() {
+    use multicad_core::references::{
+        self, Attachment, GeometryIntent, Origin, Resolution, TopologyKind,
+    };
+
+    let (mut session, part, _, _, _) = fixture();
+    let compiler = Compiler {
+        omit_display: true,
+        ..Default::default()
+    };
+    let before = compiler
+        .compile_with_backend(
+            session.document(),
+            session.revision(),
+            GeometryBackend::Rust,
+            None,
+        )
+        .unwrap();
+    let original = &before.snapshot().shapes[&part.feature].topology;
+    let mut intents = original
+        .elements
+        .iter()
+        .map(|element| GeometryIntent::capture(original, element.key).unwrap())
+        .collect::<Vec<_>>();
+    let cap = Origin {
+        source: part.feature,
+        role: "cap.end".into(),
+    };
+    let cap_index = intents
+        .iter()
+        .position(|intent| intent.kind == TopologyKind::Face && intent.origins.contains(&cap))
+        .unwrap();
+    intents[cap_index].attachment = Some(Attachment {
+        anchor: cap,
+        offset_mm: [0.; 3],
+        angle_rad: 0.,
+    });
+    let c = 0.5_f64.sqrt();
+    let parameters = ScaleParameters {
+        factors: [2., 3., 0.5].map(ratio),
+        pivot: [3., 4., 5.].map(length),
+        axes: [[c, c, 0.], [-c, c, 0.], [0., 0., 1.]],
+    };
+    let request = ScaleBatchRequest::new(
+        session.document(),
+        vec![ScaleTarget::Part {
+            input: BodyInput {
+                body: part.body,
+                producer: part.feature,
+            },
+        }],
+        parameters.clone(),
+        false,
+    )
+    .unwrap();
+    let prepared = prepare_scale_batch(&session, session.revision(), actor(), &request).unwrap();
+    let feature = prepared.outputs[0].feature;
+    session.commit(prepared.prepared).unwrap();
+    let reopened = reopen(&session);
+    assert_eq!(
+        read_scale(reopened.document(), feature).unwrap().parameters,
+        parameters
+    );
+    let rust = compiler
+        .compile_with_backend(reopened.document(), 0, GeometryBackend::Rust, None)
+        .unwrap();
+    let shape = &rust.snapshot().shapes[&feature];
+    assert!(rust.solid(feature).unwrap().uses_rust_geometry());
+    bounds(shape.bounds, [-4., -5.5, 2.5], [2.5, 3., 4.5]);
+    near(shape.volume_mm3, 72.);
+    assert_eq!(shape.topology.elements.len(), original.elements.len());
+    for intent in &intents {
+        assert!(matches!(
+            references::resolve(intent, &shape.topology, 0),
+            Resolution::Resolved { .. }
+        ));
+    }
+    let Resolution::Resolved {
+        frame: Some(cap), ..
+    } = references::resolve(&intents[cap_index], &shape.topology, 0)
+    else {
+        panic!("scaled cap lost its saved frame")
+    };
+    bounds(
+        Bounds {
+            min: cap.origin_mm,
+            max: cap.origin_mm,
+        },
+        [-2.5, -4.5, 4.5],
+        [-2.5, -4.5, 4.5],
+    );
+    #[cfg(feature = "occt")]
+    {
+        let native = compiler
+            .compile_with_backend(reopened.document(), 0, GeometryBackend::OpenCascade, None)
+            .unwrap();
+        let shape = &native.snapshot().shapes[&feature];
+        bounds(shape.bounds, [-4., -5.5, 2.5], [2.5, 3., 4.5]);
+        near(shape.volume_mm3, 72.);
+        let Resolution::Resolved {
+            frame: Some(native_cap),
+            ..
+        } = references::resolve(&intents[cap_index], &shape.topology, 0)
+        else {
+            panic!("native cap lost its saved frame")
+        };
+        for (a, b) in cap.origin_mm.into_iter().chain(cap.u).chain(cap.v).zip(
+            native_cap
+                .origin_mm
+                .into_iter()
+                .chain(native_cap.u)
+                .chain(native_cap.v),
+        ) {
+            near(a, b);
+        }
+    }
+}
+
+#[test]
+fn rust_scale_refuses_curved_stock_without_changing_the_source() {
+    let mut session = Session::new(Document::new("Curved Scale refusal").unwrap()).unwrap();
+    let cylinder = PrimitiveRequest::new(
+        "Round stock",
+        PrimitiveParameters::Cylinder {
+            radius: length(5.),
+            height: length(10.),
+            frame: Default::default(),
+        },
+    );
+    let prepared = prepare_primitive(&session, 0, actor(), &cylinder).unwrap();
+    session.commit(prepared.prepared).unwrap();
+    let original = session.document().clone();
+    let request = ScaleBatchRequest::new(
+        session.document(),
+        vec![ScaleTarget::Part {
+            input: BodyInput {
+                body: cylinder.body,
+                producer: cylinder.feature,
+            },
+        }],
+        ScaleParameters {
+            factors: [2., 1., 3.].map(ratio),
+            ..Default::default()
+        },
+        false,
+    )
+    .unwrap();
+    let prepared = prepare_scale_batch(&session, session.revision(), actor(), &request).unwrap();
+    let error = Compiler::default()
+        .compile_with_backend(
+            prepared.prepared.document(),
+            session.revision() + 1,
+            GeometryBackend::Rust,
+            None,
+        )
+        .err()
+        .expect("unsupported geometry must fail preview");
+    assert_eq!(error.entity, Some(prepared.outputs[0].feature));
+    assert!(
+        error.message.contains("straight planar"),
+        "{}",
+        error.message
+    );
+    assert_eq!(session.document(), &original);
 }

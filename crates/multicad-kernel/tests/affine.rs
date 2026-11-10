@@ -322,3 +322,102 @@ fn general_affine_keeps_supplied_small_off_axis_coefficients() {
     near(scaled.bounds().unwrap().max[0], maximum);
     near(scaled.volume_mm3().unwrap(), 6000.);
 }
+
+#[test]
+fn rust_affine_preserves_oblique_convex_sweep_ancestry_and_native_metrics() {
+    let policy = GeometryPolicy::default();
+    let feature = EntityId::new();
+    let points = [[0., 0.], [4., 0.], [0., 3.]];
+    let profile = CurvedProfile {
+        frame: PlaneFrame::default(),
+        outer: points
+            .into_iter()
+            .zip(points.into_iter().cycle().skip(1))
+            .map(|(a, b)| CurvedEdge2d::Line { a, b })
+            .collect(),
+        holes: vec![],
+    };
+    let origins: Vec<_> = (0..3)
+        .map(|index| Origin {
+            source: feature,
+            role: format!("profile/{index}"),
+        })
+        .collect();
+    let sweep = [1., -2., 5.];
+    let source =
+        Solid::rust_extrude_linear_named(&profile, sweep, 0., feature, &origins, policy).unwrap();
+    let authored = source.topology_snapshot(feature, 0).unwrap();
+    let transform = AffineTransform {
+        matrix: [[2.5, -0.5, 0.], [-0.5, 2.5, 0.], [0., 0., 0.5]],
+        translation_mm: [-2.5, -4.5, 2.5],
+    };
+    let output = EntityId::new();
+    let rust = source
+        .affine_transformed_named(transform, output, policy)
+        .unwrap();
+    let snapshot = rust.topology_snapshot(output, 1).unwrap();
+    assert!(rust.uses_rust_geometry());
+    assert_eq!(counts(&snapshot), [5, 9, 6]);
+    near(rust.volume_mm3().unwrap(), 90.);
+    for element in &authored.elements {
+        let intent = GeometryIntent::capture(&authored, element.key).unwrap();
+        assert!(matches!(
+            resolve(&intent, &snapshot, 1),
+            Resolution::Resolved { .. }
+        ));
+    }
+    let manufacturing = rust
+        .manufacturing_mesh_with_receipt(MeshOptions::default())
+        .unwrap();
+    assert!(!manufacturing.mesh.indices.is_empty());
+    assert_eq!(source.topology_snapshot(feature, 0).unwrap(), authored);
+    if OCCT_LINKED {
+        let native =
+            Solid::extrude_curved_profile_vector_named(&profile, sweep, feature, &origins, policy)
+                .unwrap()
+                .affine_transformed_named(transform, output, policy)
+                .unwrap();
+        let expected = native.bounds().unwrap();
+        bounds(&rust, expected.min, expected.max);
+        near(rust.volume_mm3().unwrap(), native.volume_mm3().unwrap());
+        let native_topology = native.topology_snapshot(output, 1).unwrap();
+        let native_faces = native.faces().unwrap();
+        let rust_faces = rust.faces().unwrap();
+        for element in authored
+            .elements
+            .iter()
+            .filter(|e| e.key.kind == TopologyKind::Face)
+        {
+            let intent = GeometryIntent::capture(&authored, element.key).unwrap();
+            let resolve_face = |topology| {
+                let Resolution::Resolved { key, .. } = resolve(&intent, topology, 1) else {
+                    panic!("Scaled source face lost its identity");
+                };
+                key.ordinal
+            };
+            let area = |faces: &[Face], index| {
+                faces
+                    .iter()
+                    .find(|face| face.index == index)
+                    .unwrap()
+                    .area_mm2
+            };
+            near(
+                area(&rust_faces, resolve_face(&snapshot)),
+                area(&native_faces, resolve_face(&native_topology)),
+            );
+        }
+    }
+    let tiny = AffineTransform {
+        matrix: [[1e-6, 0., 0.], [0., 1e-6, 0.], [0., 0., 1e-6]],
+        ..Default::default()
+    };
+    assert_eq!(
+        source
+            .affine_transformed_named(tiny, output, policy)
+            .err()
+            .unwrap()
+            .kind,
+        GeometryErrorKind::Input
+    );
+}

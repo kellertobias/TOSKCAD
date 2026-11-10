@@ -9,6 +9,8 @@ use multicad_rust_kernel::{
 };
 use std::collections::{BTreeMap, BTreeSet};
 
+mod scale;
+
 type Point = [f64; 3];
 type Key = [usize; 2];
 type ConvexPart = (ConvexPiece, Vec<Option<usize>>);
@@ -17,6 +19,7 @@ pub(crate) struct PlanarBooleanBody {
     pub(super) feature: EntityId,
     pub(super) geometry: Union,
     material: Option<Vec<ConvexPiece>>,
+    scaled_ancestry: Option<scale::Ancestry>,
     faces: Vec<Boundary>,
     edges: Vec<(Key, Vec<usize>)>,
 }
@@ -613,6 +616,7 @@ impl PlanarBooleanBody {
                     feature,
                     geometry,
                     material,
+                    scaled_ancestry: None,
                     faces,
                     edges,
                 }),
@@ -719,6 +723,9 @@ impl PlanarBooleanBody {
             );
         }
         let mut elements = builder.into_elements();
+        if let Some(ancestry) = &self.scaled_ancestry {
+            ancestry.restore(&mut elements);
+        }
         for element in elements
             .iter_mut()
             .filter(|e| e.key.kind == TopologyKind::Face)
