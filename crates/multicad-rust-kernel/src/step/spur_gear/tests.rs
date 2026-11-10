@@ -109,3 +109,96 @@ fn spline_rejects_collapsed_edges_and_uncertifiable_world_rounding() {
         Err(StepError::Limit)
     ));
 }
+
+fn with_hub(base: Profile, start: f64, end: f64) -> Profile {
+    base.with_hub(
+        crate::spur_gear::Hub {
+            radius_mm: 10.,
+            axial_start_mm: start,
+            axial_end_mm: end,
+        },
+        1e-5,
+        1e7,
+    )
+    .unwrap()
+}
+
+#[test]
+fn spur_hub_step_shares_each_full_circle_and_extends_the_bore_once() {
+    for (start, end, bore) in [(-3., 6., 0.), (3., 11., 2.), (-3., 11., 2.)] {
+        let gear = with_hub(profile(20, bore), start, end);
+        let extension_count = gear.hub_extensions().iter().flatten().count();
+        let bore_count = usize::from(bore > 0.);
+        let step = write_spur_gear(&gear, ORIGIN, U, V, SPUR_STEP_MAX_ERROR_MM).unwrap();
+        assert_eq!(step.matches("=CLOSED_SHELL(").count(), 1);
+        assert_eq!(step.matches("=SURFACE_OF_LINEAR_EXTRUSION(").count(), 40);
+        assert_eq!(
+            step.matches("=CYLINDRICAL_SURFACE(").count(),
+            80 + bore_count + extension_count
+        );
+        assert_eq!(
+            step.matches("=ADVANCED_FACE(").count(),
+            2 + gear.outline().len() + bore_count + 2 * extension_count
+        );
+        assert_eq!(
+            step.matches("=FACE_BOUND(").count(),
+            2 * bore_count + extension_count
+        );
+        let full_circles: Vec<_> = step
+            .lines()
+            .filter_map(|line| {
+                let (id, args) = line.split_once("=EDGE_CURVE(")?;
+                let mut args = args.split(',');
+                args.next()?;
+                let a = args.next()?;
+                let b = args.next()?;
+                (a == b).then_some(id)
+            })
+            .collect();
+        assert_eq!(full_circles.len(), 2 * (bore_count + extension_count));
+        for circle in full_circles {
+            for sense in [".T.", ".F."] {
+                let suffix = format!(",{circle},{sense});");
+                assert_eq!(
+                    step.lines()
+                        .filter(|line| line.contains("=ORIENTED_EDGE(") && line.ends_with(&suffix))
+                        .count(),
+                    1
+                );
+            }
+        }
+    }
+
+    let base = profile(20, 2.);
+    let contained = with_hub(base.clone(), 1., 7.);
+    assert_eq!(
+        write_spur_gear(&base, ORIGIN, U, V, SPUR_STEP_MAX_ERROR_MM),
+        write_spur_gear(&contained, ORIGIN, U, V, SPUR_STEP_MAX_ERROR_MM)
+    );
+}
+
+#[test]
+fn collapsed_hub_at_world_coordinates_does_not_commit_partial_step() {
+    let mut writer = Writer::new();
+    let base = profile(20, 2.);
+    writer
+        .append_spur_gear(&base, ORIGIN, U, V, SPUR_STEP_MAX_ERROR_MM)
+        .unwrap();
+    for bore in [0., 2.] {
+        let gear = with_hub(profile(20, bore), -3., 11.);
+        assert_eq!(
+            writer.append_spur_gear(
+                &gear,
+                [0., 0., 1e18],
+                [1., 0., 0.],
+                [0., 1., 0.],
+                SPUR_STEP_MAX_ERROR_MM,
+            ),
+            Err(StepError::InvalidGeometry)
+        );
+    }
+    assert_eq!(
+        writer.finish(),
+        write_spur_gear(&base, ORIGIN, U, V, SPUR_STEP_MAX_ERROR_MM)
+    );
+}

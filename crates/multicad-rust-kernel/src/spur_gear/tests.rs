@@ -696,11 +696,8 @@ fn hub_extends_the_authored_band_with_one_continuous_bore() {
 }
 
 #[test]
-fn hub_input_step_and_tessellation_budget_are_explicit() {
-    use crate::{
-        display::{MeshError, Tessellation},
-        step::{StepError, write_spur_gear},
-    };
+fn hub_input_and_tessellation_budget_are_explicit() {
+    use crate::display::{MeshError, Tessellation};
 
     let base = Profile::new(spec(20, 20.), MINIMUM, MAX_COORDINATE_MM).unwrap();
     let hub = Hub {
@@ -764,10 +761,6 @@ fn hub_input_step_and_tessellation_budget_are_explicit() {
         .clone()
         .with_hub(hub, MINIMUM, MAX_COORDINATE_MM)
         .unwrap();
-    assert_eq!(
-        write_spur_gear(&profile, [0.; 3], [1., 0., 0.], [0., 1., 0.], TOLERANCE),
-        Err(StepError::Unsupported)
-    );
     let options = Tessellation {
         deflection: 0.01,
         angle: 0.15,

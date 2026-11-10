@@ -139,6 +139,32 @@ pub(super) fn encode_rings(
     placement: Placement,
     reverse: bool,
 ) -> Result<Entity, StepError> {
+    encode_rings_with_trims(
+        file,
+        rings,
+        height,
+        piercings,
+        placement,
+        reverse,
+        EndTrims::default(),
+    )
+}
+
+#[derive(Default)]
+pub(super) struct EndTrims {
+    pub(super) holes: [Option<Entity>; 2],
+    pub(super) faces: Vec<Entity>,
+}
+
+pub(super) fn encode_rings_with_trims(
+    file: &mut StepFile,
+    rings: &mut dyn Iterator<Item = Vec<ProfileEdge>>,
+    height: f64,
+    piercings: &[CertifiedPiercing],
+    placement: Placement,
+    reverse: bool,
+    trims: EndTrims,
+) -> Result<Entity, StepError> {
     let levels = if reverse { [-height, 0.] } else { [0., height] };
     let normal = placement.normal;
     let openings = pierced_sweep::encode_openings(file, piercings, &placement, reverse)?;
@@ -239,12 +265,16 @@ pub(super) fn encode_rings(
             walls.push(face);
         }
     }
+    for (cap, hole) in caps.iter_mut().zip(trims.holes) {
+        cap.extend(hole);
+    }
     let mut faces = vec![
         file.face(&caps[0], supports[0], normal.map(|n| -n), placement.u),
         file.face(&caps[1], supports[1], normal, placement.u),
     ];
     faces.extend(walls);
     faces.extend(openings.walls);
+    faces.extend(trims.faces);
     Ok(file.solid(&faces))
 }
 
