@@ -29,7 +29,7 @@
 use multicad_core::{
     commands::{Actor, Channel, Prepared, Request, Session},
     document::{Document, Entity, EntityData, EntityId, Placement},
-    drawings::*,
+    drawings::{self, *},
     inspection::GeometryReference,
     materials::*,
     model::{
@@ -48,9 +48,11 @@ use std::path::{Path, PathBuf};
 
 pub type Error = Box<dyn std::error::Error>;
 pub const DOCUMENT_NAME: &str = "Apartment with workshop";
+pub const REFERENCE_NOTE: &str =
+    "Workshop: these objects are pinned references to the bundled example projects";
 pub const DESCRIPTION: &str = "Apartment demo: a single-level apartment of about 10.3 × 8.3 m \
 with a living room, kitchen, bedroom and workshop, built from editable walls, doors, windows and \
-a floor slab. The workshop holds pinned references to the shipped cabinet and welded workbench examples; \
+a floor slab. The workshop holds pinned references to the shipped cabinet and workbench examples; \
 each reference keeps its source file, revision and scale and reports a changed or missing source. \
 The drawing book has a dimensioned 1:50 floor plan with room names, hatched wall cuts and door \
 swings, a furnished 3D view and a workshop sheet. Layout demo only: no building-code, egress or \
@@ -977,10 +979,7 @@ fn build_drawings(s: &mut Scenario) -> Result<(), Error> {
     ];
 
     let shop_page = &mut pages[2];
-    let mut lines = vec![note(
-        [20., 20.],
-        "Workshop: the objects below are pinned references to shipped example projects, not copies",
-    )];
+    let mut lines = vec![note([20., 20.], REFERENCE_NOTE)];
     let document = s.session.document();
     for (i, r) in s.references.iter().enumerate() {
         let record = symbols::read_instance(document, r.instance)?;
@@ -1046,8 +1045,48 @@ fn part_color(document: &Document, part: EntityId) -> [u8; 4] {
 /// workshop are visible: every Part and every reference leaf in its
 /// material color, flat-shaded.
 pub fn render_preview(s: &Scenario) -> Result<ColorImage, Error> {
-    let document = s.session.document();
-    let model = Compiler::default().compile(document, s.session.revision())?;
+    render_document_preview(&s.session)
+}
+/// Render the canonical floor-plan sources, including refreshed project pins.
+pub fn render_document_preview(session: &Session) -> Result<ColorImage, Error> {
+    let document = session.document();
+    let model = Compiler::default().compile(document, session.revision())?;
+    let walls = multicad_core::model::walls(document)
+        .map(|e| multicad_core::model::read_wall(document, e.id).map(|w| w.output.body))
+        .collect::<Result<Vec<_>, _>>()?;
+    let book = drawings::books(document)
+        .next()
+        .ok_or("Drawing book missing")?;
+    let plan = drawings::read(document, book)?
+        .pages
+        .into_iter()
+        .find(|p| p.number == PAGES[0])
+        .ok_or("Floor plan missing")?;
+    let ViewSource::Model { entities: sources } =
+        &plan.views.first().ok_or("Floor plan view missing")?.source
+    else {
+        return Err("Floor plan must use model sources".into());
+    };
+    let mut roots = vec![];
+    for (_, source) in symbols::project_sources(document)? {
+        roots.extend(
+            symbols::instances(document, source.definition)?
+                .into_iter()
+                .map(|(_, instance)| instance.instance),
+        );
+    }
+    let mut parts: Vec<_> = sources
+        .iter()
+        .filter(|id| !roots.contains(id))
+        .copied()
+        .collect();
+    parts.push(
+        document
+            .entities()
+            .find(|e| e.name == "Floor slab" && matches!(e.data, EntityData::Part { .. }))
+            .ok_or("Floor slab missing")?
+            .id,
+    );
     let toward = normalize([-0.8, -1.3, 1.9]);
     let right = normalize(cross([0., 0., 1.], toward));
     let up = cross(toward, right);
@@ -1076,16 +1115,16 @@ pub fn render_preview(s: &Scenario) -> Result<ColorImage, Error> {
             }
             Ok(())
         };
-    let mut parts = s.walls.to_vec();
-    parts.push(s.slab);
-    parts.extend(&s.furniture);
     for part in &parts {
-        let feature = model.snapshot().bodies[part];
+        let feature = *model
+            .snapshot()
+            .bodies
+            .get(part)
+            .ok_or("Preview source is not a native Part")?;
         let solid = model.solid(feature).ok_or("Part has no solid")?;
-        let clip = s.walls.contains(part).then_some(1200.);
+        let clip = walls.contains(part).then_some(1200.);
         add(solid, part_color(document, *part), clip)?;
     }
-    let roots: Vec<_> = s.references.iter().map(|r| r.instance).collect();
     for (path, leaf) in &model.snapshot().leaf_occurrences {
         if !roots.contains(&path.root) {
             continue;
@@ -1199,6 +1238,9 @@ pub fn finish(s: &mut Scenario) -> Result<(), Error> {
     checked(&mut s.session, prepared)
 }
 
+#[path = "apartment_demo/refresh.rs"]
+mod refresh;
+
 /// The native container bytes of the current document.
 pub fn archive(session: &Session) -> Result<Vec<u8>, Error> {
     let mut bytes = vec![];
@@ -1217,6 +1259,13 @@ mod files;
 
 #[cfg(not(test))]
 fn main() -> Result<(), Error> {
+    let arguments: Vec<_> = std::env::args_os().skip(1).collect();
+    if let [flag, input, output] = arguments.as_slice()
+        && flag == "--refresh-references"
+    {
+        return refresh::run(std::path::Path::new(input), std::path::Path::new(output));
+    }
+
     use multicad_ui::{application::DocumentStorage, storage::SaveMode};
     let path = std::env::args_os().nth(1).ok_or(
         "Usage: cargo run -p multicad-app --example apartment_demo -- NEW_FILE.tcd (for example examples/apartment.tcd)",

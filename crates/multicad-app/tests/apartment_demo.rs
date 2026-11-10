@@ -2,7 +2,7 @@
 //! through the native project store with its name, description and
 //! preview; four named rooms are bounded by editable walls with door and
 //! window openings over one floor slab; the workshop holds a pinned
-//! reference to the shipped welded workbench that keeps its source, revision
+//! reference to the shipped workbench with a welded frame that keeps its source, revision
 //! and scale; the drawing book shows a dimensioned plan with room names, a
 //! fitted 3D view and a workshop sheet; a copy saved elsewhere still
 //! resolves the reference through the installed examples, a missing source
@@ -88,12 +88,12 @@ fn near(a: f64, b: f64) {
 fn check_workbench(session: &Session) {
     let model = compile(session);
     let (lo, hi, count) = bounds(&model, workbench(session.document()));
-    assert_eq!(count, 20, "every bench Part is a referenced leaf");
+    assert_eq!(count, 32, "every bench Part is a referenced leaf");
     let [x, y, _] = demo::WORKBENCH_PLACEMENT.translation_mm;
     near(lo[0], x);
-    near(lo[1], y);
+    near(lo[1], y - 205.);
     near(hi[0] - lo[0], 1500.);
-    near(hi[1] - lo[1], 1000.);
+    near(hi[1] - lo[1], 1205.);
     near(hi[2] - lo[2], 900.);
     let shop = ROOMS[3].1;
     assert!(lo[0] >= shop[0] && hi[0] <= shop[2] && lo[1] >= shop[1] && hi[1] <= shop[3]);
@@ -157,7 +157,10 @@ fn shipped_file_opens_with_rooms_walls_openings_and_both_workshop_references() {
     assert_eq!(records.len(), 2);
     for (path, name) in [
         ("cabinet.tcd", None),
-        ("welded-workbench.tcd", Some("Welded steel workbench")),
+        (
+            "welded-workbench.tcd",
+            Some("Workbench with a welded frame"),
+        ),
     ] {
         let source = open_project(&examples().join(path)).unwrap();
         let (_, record) = records.iter().find(|(_, r)| r.path == path).unwrap();
@@ -398,7 +401,7 @@ fn walls_and_the_reference_stay_editable_through_save_and_reopen() {
         .unwrap();
     demo::checked(&mut session, prepared).unwrap();
     let (lo, _, count) = bounds(&compile(&session), bench);
-    assert_eq!(count, 20);
+    assert_eq!(count, 32);
     near(lo[0], 5_450.);
 
     let directory = tempfile::tempdir().unwrap();
@@ -483,7 +486,7 @@ fn generator_rebuilds_the_shipped_project() {
                     .iter()
                     .filter_map(|a| match &a.kind {
                         AnnotationKind::Note { text, position_mm } => {
-                            Some(format!("{text} @ {position_mm:?}"))
+                            Some((text.clone(), *position_mm))
                         }
                         _ => None,
                     })
@@ -500,7 +503,26 @@ fn generator_rebuilds_the_shipped_project() {
             })
             .collect::<Vec<_>>()
     };
-    assert_eq!(pages(fresh), pages(&shipped));
+    let (fresh_pages, shipped_pages) = (pages(fresh), pages(&shipped));
+    assert_eq!(fresh_pages.len(), shipped_pages.len());
+    for ((number, title, views, notes), (saved_number, saved_title, saved_views, saved_notes)) in
+        fresh_pages.into_iter().zip(shipped_pages)
+    {
+        assert_eq!(
+            (number, title, views),
+            (saved_number, saved_title, saved_views)
+        );
+        assert_eq!(notes.len(), saved_notes.len());
+        for ((text, position), (saved_text, saved_position)) in notes.into_iter().zip(saved_notes) {
+            assert_eq!(text, saved_text);
+            for (value, saved) in position.into_iter().zip(saved_position) {
+                assert!(
+                    (value - saved).abs() <= 1e-9,
+                    "Note position differs: {value} vs {saved} mm"
+                );
+            }
+        }
+    }
     let (a, b) = (
         project_file::info::read(fresh).unwrap(),
         project_file::info::read(&shipped).unwrap(),

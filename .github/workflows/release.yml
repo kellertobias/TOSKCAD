@@ -23,6 +23,8 @@ jobs:
   regression:
     name: Native regression suites
     uses: ./.github/workflows/native-regression.yml
+    with:
+      packaging_runs_full_workspace: true
 
   metadata:
     name: Select build/release version
@@ -68,21 +70,45 @@ jobs:
       - run: npm test
       - run: node mockup/verify.mjs
 
+  windows_generators:
+    name: Windows example generator regression
+    needs: metadata
+    runs-on: windows-2025
+    timeout-minutes: 360
+    env:
+      MULTICAD_RELEASE_VERSION: ${{ needs.metadata.outputs.version }}
+      MULTICAD_BUILD_COMMIT: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24"
+      - run: rustup show active-toolchain
+      - run: node tools/foundation-deps.mjs
+      - name: Regenerate every matching shipped example
+        run: node tools/native-test-shard.mjs generators
+
   build:
     name: Build and test / ${{ matrix.target }}
     needs: metadata
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 120
+    timeout-minutes: ${{ matrix.timeout_minutes }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - os: ubuntu-24.04
             target: linux-x64
+            timeout_minutes: 180
           - os: macos-15
             target: macos-arm64
+            timeout_minutes: 180
           - os: windows-2025
             target: windows-x64
+            timeout_minutes: 360
     env:
       MULTICAD_RELEASE_VERSION: ${{ needs.metadata.outputs.version }}
     steps:
@@ -102,6 +128,8 @@ jobs:
       - name: Test, build, smoke-check and archive the exact version
         run: node tools/package-release.mjs build "$env:MULTICAD_RELEASE_VERSION"
         if: runner.os == 'Windows'
+        env:
+          MULTICAD_NATIVE_TEST_SHARD: remaining
       - name: Test, build, smoke-check and archive the exact version
         run: node tools/package-release.mjs build "$MULTICAD_RELEASE_VERSION"
         if: runner.os != 'Windows'
@@ -115,7 +143,7 @@ jobs:
 
   release:
     name: Mint GitHub tag and hosted release
-    needs: [metadata, quality, build, foundation, regression]
+    needs: [metadata, quality, build, foundation, regression, windows_generators]
     if: >-
       github.event_name == 'push' && github.ref == 'refs/heads/main' &&
       needs.metadata.outputs.release == 'true' &&

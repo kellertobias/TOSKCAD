@@ -659,7 +659,7 @@ mod tests {
             .unwrap();
             let entries = Arc::new(Mutex::new(Vec::new()));
             app.set_recent_store(Box::new(Recents(entries.clone())));
-            let path = PathBuf::from("/private/tmp/recent-fixture.multicad");
+            let path = std::env::temp_dir().join("recent-fixture.multicad");
             app.load_path(path.clone()).unwrap();
             assert!(
                 entries.lock().unwrap().is_empty(),
@@ -732,7 +732,7 @@ mod tests {
         for _ in 0..6 {
             frame(&mut app, &mut time);
         }
-        app.load_path(PathBuf::from("/private/tmp/delayed-recent.multicad"))
+        app.load_path(std::env::temp_dir().join("delayed-recent.multicad"))
             .unwrap();
         for index in 0..8 {
             let delay = frame(&mut app, &mut time);
@@ -758,7 +758,7 @@ mod tests {
     fn reopened_files_and_local_tabs_recall_their_mode_and_workspace_without_source_edits() {
         let entries = Arc::new(Mutex::new(vec![
             RecentProject {
-                path: PathBuf::from("/private/tmp/recall-a.multicad"),
+                path: std::env::temp_dir().join("recall-a.multicad"),
                 title: "A".into(),
                 last_opened_unix_ms: 1,
                 view: Some(RecentView {
@@ -768,7 +768,7 @@ mod tests {
                 }),
             },
             RecentProject {
-                path: PathBuf::from("/private/tmp/recall-b.multicad"),
+                path: std::env::temp_dir().join("recall-b.multicad"),
                 title: "B".into(),
                 last_opened_unix_ms: 2,
                 view: Some(RecentView {
@@ -786,7 +786,7 @@ mod tests {
         .unwrap();
         app.set_recent_store(Box::new(Recents(entries.clone())));
         drain(&mut app);
-        app.load_path(PathBuf::from("/private/tmp/recall-a.multicad"))
+        app.load_path(std::env::temp_dir().join("recall-a.multicad"))
             .unwrap();
         drain(&mut app);
         assert_eq!(app.mode, Mode::Model);
@@ -794,7 +794,7 @@ mod tests {
         app.mode = Mode::Drawings;
         app.tab = 0;
         app.remember_current_view();
-        app.load_path(PathBuf::from("/private/tmp/recall-b.multicad"))
+        app.load_path(std::env::temp_dir().join("recall-b.multicad"))
             .unwrap();
         drain(&mut app);
         assert_eq!((app.mode, app.tab), (Mode::Parameters, 0));
@@ -818,7 +818,7 @@ mod tests {
         reopened.set_recent_store(Box::new(Recents(entries)));
         drain(&mut reopened);
         reopened
-            .load_path(PathBuf::from("/private/tmp/recall-a.multicad"))
+            .load_path(std::env::temp_dir().join("recall-a.multicad"))
             .unwrap();
         drain(&mut reopened);
         assert_eq!(reopened.mode, Mode::Drawings);
@@ -875,7 +875,7 @@ mod tests {
         }))
         .unwrap();
         app.recents.push(RecentProject {
-            path: PathBuf::from("/private/tmp/old-workspace.multicad"),
+            path: std::env::temp_dir().join("old-workspace.multicad"),
             title: "Old workspace".into(),
             last_opened_unix_ms: 1,
             view: Some(RecentView {
@@ -884,7 +884,7 @@ mod tests {
                 ..Default::default()
             }),
         });
-        app.load_path(PathBuf::from("/private/tmp/old-workspace.multicad"))
+        app.load_path(std::env::temp_dir().join("old-workspace.multicad"))
             .unwrap();
         drain(&mut app);
         assert_eq!(app.mode, Mode::Model);
@@ -907,7 +907,7 @@ mod tests {
                 self.base.record(entry)
             }
         }
-        let path = PathBuf::from("/private/tmp/slow-history.multicad");
+        let path = std::env::temp_dir().join("slow-history.multicad");
         let (session, levels, _, _) = crate::architecture_view::tests::building();
         let saved_context = crate::architecture_view::Recall {
             plan: true,

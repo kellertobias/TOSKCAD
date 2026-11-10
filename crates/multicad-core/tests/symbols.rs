@@ -717,3 +717,62 @@ fn ordinary_move_copy_materializes_independent_symbols_and_rekeys_private_pose_b
     );
     assert!(s.document().edited(&[Mutation::Insert(alias)]).is_err());
 }
+
+#[test]
+fn boolean_symbol_remaps_target_tools_and_history_without_reusing_source_ids() {
+    let mut source = Session::new(Document::new("Bored housing").unwrap()).unwrap();
+    let mut bodies = vec![];
+    for name in ["Housing", "Bore"] {
+        let r = PrimitiveRequest::new(
+            name,
+            PrimitiveParameters::Box {
+                size: [length(20.), length(10.), length(8.)],
+                frame: Default::default(),
+            },
+        );
+        let p = prepare_primitive(&source, source.revision(), actor(), &r).unwrap();
+        source.commit(p.prepared).unwrap();
+        bodies.push(BodyInput {
+            body: r.body,
+            producer: r.feature,
+        });
+    }
+    let cut = BooleanRequest::new(Operation::Cut, bodies[0].clone(), vec![bodies[1].clone()]);
+    let p = prepare_boolean(&source, source.revision(), actor(), &cut).unwrap();
+    source.commit(p.prepared).unwrap();
+    let definition = project_definition(
+        source.document(),
+        &std::collections::BTreeSet::from([bodies[1].body]),
+    )
+    .unwrap();
+    let (mut host, id) = host(&definition);
+    let placed = SymbolPlaceRequest::new(
+        host.document(),
+        id,
+        "Housing",
+        BTreeMap::new(),
+        Placement::default(),
+    )
+    .unwrap();
+    let p = prepare_place(&host, host.revision(), actor(), &placed).unwrap();
+    host.commit(p.prepared).unwrap();
+    validate(host.document()).unwrap();
+    read_assembly(host.document(), placed.wrapper_metadata).unwrap();
+    let mapped = read_boolean(host.document(), placed.ids[&cut.feature]).unwrap();
+    assert_eq!(mapped.target.body, placed.ids[&bodies[0].body]);
+    assert_eq!(mapped.target.producer, placed.ids[&bodies[0].producer]);
+    assert_eq!(mapped.tools[0].body, placed.ids[&bodies[1].body]);
+    assert_eq!(mapped.tools[0].producer, placed.ids[&bodies[1].producer]);
+    assert_eq!(mapped.output.body, mapped.target.body);
+    mapped.target.resolve_producer(host.document()).unwrap();
+    mapped.tools[0].resolve_producer(host.document()).unwrap();
+    for old in [
+        cut.feature,
+        bodies[0].body,
+        bodies[1].body,
+        bodies[0].producer,
+        bodies[1].producer,
+    ] {
+        assert_ne!(old, placed.ids[&old]);
+    }
+}

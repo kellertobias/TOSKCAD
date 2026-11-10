@@ -1,0 +1,664 @@
+{
+  "area_mm2": 40755.374033919914,
+  "bends": [
+    {
+      "allowance_mm": 3.392920065876977,
+      "angle_deg": 90,
+      "direction": "down",
+      "edge": 0,
+      "flange": 0,
+      "id": "flange.0.bend.0",
+      "inside_radius_mm": 1.5,
+      "length_mm": 260,
+      "line_mm": [
+        [
+          0,
+          -1.6964600329384885
+        ],
+        [
+          260,
+          -1.6964600329384885
+        ]
+      ],
+      "order": 0,
+      "zone_mm": [
+        0,
+        3.392920065876977
+      ]
+    },
+    {
+      "allowance_mm": 3.392920065876977,
+      "angle_deg": 90,
+      "direction": "down",
+      "edge": 2,
+      "flange": 1,
+      "id": "flange.1.bend.0",
+      "inside_radius_mm": 1.5,
+      "length_mm": 260,
+      "line_mm": [
+        [
+          260,
+          81.69646003293849
+        ],
+        [
+          0,
+          81.69646003293849
+        ]
+      ],
+      "order": 1,
+      "zone_mm": [
+        0,
+        3.392920065876977
+      ]
+    }
+  ],
+  "cut": {
+    "frame": {
+      "origin_mm": [
+        0,
+        0,
+        0
+      ],
+      "u": [
+        1,
+        0,
+        0
+      ],
+      "v": [
+        0,
+        0,
+        1
+      ]
+    },
+    "loops": [
+      {
+        "edges": [
+          {
+            "a": [
+              0,
+              -43.39292006587698
+            ],
+            "b": [
+              260,
+              -43.39292006587698
+            ],
+            "kind": "line"
+          },
+          {
+            "a": [
+              260,
+              -43.39292006587698
+            ],
+            "b": [
+              260,
+              0
+            ],
+            "kind": "line"
+          },
+          {
+            "a": [
+              260,
+              0
+            ],
+            "b": [
+              260,
+              80
+            ],
+            "kind": "line"
+          },
+          {
+            "a": [
+              260,
+              80
+            ],
+            "b": [
+              260,
+              123.39292006587698
+            ],
+            "kind": "line"
+          },
+          {
+            "a": [
+              260,
+              123.39292006587698
+            ],
+            "b": [
+              0,
+              123.39292006587698
+            ],
+            "kind": "line"
+          },
+          {
+            "a": [
+              0,
+              123.39292006587698
+            ],
+            "b": [
+              0,
+              80
+            ],
+            "kind": "line"
+          },
+          {
+            "a": [
+              0,
+              80
+            ],
+            "b": [
+              0,
+              0
+            ],
+            "kind": "line"
+          },
+          {
+            "a": [
+              0,
+              0
+            ],
+            "b": [
+              0,
+              -43.39292006587698
+            ],
+            "kind": "line"
+          }
+        ],
+        "outer": true
+      },
+      {
+        "edges": [
+          {
+            "a": [
+              34,
+              27.5
+            ],
+            "b": [
+              34,
+              52.5
+            ],
+            "kind": "line"
+          },
+          {
+            "a": [
+              34,
+              52.5
+            ],
+            "b": [
+              106,
+              52.5
+            ],
+            "kind": "line"
+          },
+          {
+            "a": [
+              106,
+              52.5
+            ],
+            "b": [
+              106,
+              27.5
+            ],
+            "kind": "line"
+          },
+          {
+            "a": [
+              106,
+              27.5
+            ],
+            "b": [
+              34,
+              27.5
+            ],
+            "kind": "line"
+          }
+        ],
+        "outer": false
+      },
+      {
+        "edges": [
+          {
+            "a": [
+              156.25,
+              55
+            ],
+            "b": [
+              156.25,
+              55
+            ],
+            "center": [
+              150,
+              55
+            ],
+            "kind": "arc",
+            "sweep_rad": -6.283185307179586
+          }
+        ],
+        "outer": false
+      },
+      {
+        "edges": [
+          {
+            "a": [
+              191.25,
+              55
+            ],
+            "b": [
+              191.25,
+              55
+            ],
+            "center": [
+              185,
+              55
+            ],
+            "kind": "arc",
+            "sweep_rad": -6.283185307179586
+          }
+        ],
+        "outer": false
+      },
+      {
+        "edges": [
+          {
+            "a": [
+              226.25,
+              55
+            ],
+            "b": [
+              226.25,
+              55
+            ],
+            "center": [
+              220,
+              55
+            ],
+            "kind": "arc",
+            "sweep_rad": -6.283185307179586
+          }
+        ],
+        "outer": false
+      },
+      {
+        "edges": [
+          {
+            "a": [
+              156.25,
+              25
+            ],
+            "b": [
+              156.25,
+              25
+            ],
+            "center": [
+              150,
+              25
+            ],
+            "kind": "arc",
+            "sweep_rad": -6.283185307179586
+          }
+        ],
+        "outer": false
+      },
+      {
+        "edges": [
+          {
+            "a": [
+              191.25,
+              25
+            ],
+            "b": [
+              191.25,
+              25
+            ],
+            "center": [
+              185,
+              25
+            ],
+            "kind": "arc",
+            "sweep_rad": -6.283185307179586
+          }
+        ],
+        "outer": false
+      },
+      {
+        "edges": [
+          {
+            "a": [
+              226.25,
+              25
+            ],
+            "b": [
+              226.25,
+              25
+            ],
+            "center": [
+              220,
+              25
+            ],
+            "kind": "arc",
+            "sweep_rad": -6.283185307179586
+          }
+        ],
+        "outer": false
+      },
+      {
+        "edges": [
+          {
+            "a": [
+              34.20000000000001,
+              24.5
+            ],
+            "b": [
+              34.20000000000001,
+              24.5
+            ],
+            "center": [
+              32.50000000000001,
+              24.5
+            ],
+            "kind": "arc",
+            "sweep_rad": -6.283185307179586
+          }
+        ],
+        "outer": false
+      },
+      {
+        "edges": [
+          {
+            "a": [
+              109.20000000000002,
+              24.5
+            ],
+            "b": [
+              109.20000000000002,
+              24.5
+            ],
+            "center": [
+              107.50000000000001,
+              24.5
+            ],
+            "kind": "arc",
+            "sweep_rad": -6.283185307179586
+          }
+        ],
+        "outer": false
+      },
+      {
+        "edges": [
+          {
+            "a": [
+              109.20000000000002,
+              55.5
+            ],
+            "b": [
+              109.20000000000002,
+              55.5
+            ],
+            "center": [
+              107.50000000000001,
+              55.5
+            ],
+            "kind": "arc",
+            "sweep_rad": -6.283185307179586
+          }
+        ],
+        "outer": false
+      },
+      {
+        "edges": [
+          {
+            "a": [
+              34.20000000000001,
+              55.5
+            ],
+            "b": [
+              34.20000000000001,
+              55.5
+            ],
+            "center": [
+              32.50000000000001,
+              55.5
+            ],
+            "kind": "arc",
+            "sweep_rad": -6.283185307179586
+          }
+        ],
+        "outer": false
+      },
+      {
+        "edges": [
+          {
+            "a": [
+              9.7,
+              -23.39292006587698
+            ],
+            "b": [
+              9.7,
+              -23.39292006587698
+            ],
+            "center": [
+              8,
+              -23.39292006587698
+            ],
+            "kind": "arc",
+            "sweep_rad": -6.283185307179586
+          }
+        ],
+        "outer": false
+      },
+      {
+        "edges": [
+          {
+            "a": [
+              253.7,
+              -23.39292006587698
+            ],
+            "b": [
+              253.7,
+              -23.39292006587698
+            ],
+            "center": [
+              252,
+              -23.39292006587698
+            ],
+            "kind": "arc",
+            "sweep_rad": -6.283185307179586
+          }
+        ],
+        "outer": false
+      },
+      {
+        "edges": [
+          {
+            "a": [
+              253.7,
+              103.39292006587698
+            ],
+            "b": [
+              253.7,
+              103.39292006587698
+            ],
+            "center": [
+              252,
+              103.39292006587698
+            ],
+            "kind": "arc",
+            "sweep_rad": -6.283185307179586
+          }
+        ],
+        "outer": false
+      },
+      {
+        "edges": [
+          {
+            "a": [
+              9.7,
+              103.39292006587698
+            ],
+            "b": [
+              9.7,
+              103.39292006587698
+            ],
+            "center": [
+              8,
+              103.39292006587698
+            ],
+            "kind": "arc",
+            "sweep_rad": -6.283185307179586
+          }
+        ],
+        "outer": false
+      }
+    ]
+  },
+  "diagnostics": [
+    {
+      "kind": "tooling",
+      "message": "No press-brake, die, punch or springback data is defined: bend feasibility, angle compensation and the bending sequence are not verified",
+      "scope": "needs_data",
+      "subject": null
+    }
+  ],
+  "drills": [
+    {
+      "center_mm": [
+        150,
+        55
+      ],
+      "diameter_mm": 12.5,
+      "id": "cutout.1"
+    },
+    {
+      "center_mm": [
+        185,
+        55
+      ],
+      "diameter_mm": 12.5,
+      "id": "cutout.2"
+    },
+    {
+      "center_mm": [
+        220,
+        55
+      ],
+      "diameter_mm": 12.5,
+      "id": "cutout.3"
+    },
+    {
+      "center_mm": [
+        150,
+        25
+      ],
+      "diameter_mm": 12.5,
+      "id": "cutout.4"
+    },
+    {
+      "center_mm": [
+        185,
+        25
+      ],
+      "diameter_mm": 12.5,
+      "id": "cutout.5"
+    },
+    {
+      "center_mm": [
+        220,
+        25
+      ],
+      "diameter_mm": 12.5,
+      "id": "cutout.6"
+    },
+    {
+      "center_mm": [
+        32.50000000000001,
+        24.5
+      ],
+      "diameter_mm": 3.4,
+      "id": "fastener.0.0"
+    },
+    {
+      "center_mm": [
+        107.50000000000001,
+        24.5
+      ],
+      "diameter_mm": 3.4,
+      "id": "fastener.0.1"
+    },
+    {
+      "center_mm": [
+        107.50000000000001,
+        55.5
+      ],
+      "diameter_mm": 3.4,
+      "id": "fastener.0.2"
+    },
+    {
+      "center_mm": [
+        32.50000000000001,
+        55.5
+      ],
+      "diameter_mm": 3.4,
+      "id": "fastener.0.3"
+    },
+    {
+      "center_mm": [
+        8,
+        -23.39292006587698
+      ],
+      "diameter_mm": 3.4,
+      "id": "fastener.1.0"
+    },
+    {
+      "center_mm": [
+        252,
+        -23.39292006587698
+      ],
+      "diameter_mm": 3.4,
+      "id": "fastener.1.1"
+    },
+    {
+      "center_mm": [
+        252,
+        103.39292006587698
+      ],
+      "diameter_mm": 3.4,
+      "id": "fastener.2.0"
+    },
+    {
+      "center_mm": [
+        8,
+        103.39292006587698
+      ],
+      "diameter_mm": 3.4,
+      "id": "fastener.2.1"
+    }
+  ],
+  "feature": "02edb275-401c-485c-aeae-14d6f030b139",
+  "frame": {
+    "origin_mm": [
+      0,
+      0,
+      0
+    ],
+    "u": [
+      1,
+      0,
+      0
+    ],
+    "v": [
+      0,
+      0,
+      1
+    ]
+  },
+  "k_factor": 0.44,
+  "k_factor_source": "part",
+  "name": "Front panel sheet",
+  "part": "2c8664e9-f27a-414d-ab7e-6a5a07b56608",
+  "revision": 0,
+  "scope": "Developed from the sheet feature with the stated K-factor and inside radii. Cut loops are closed (outer counterclockwise, openings clockwise) in base-frame millimeters. The bend order follows the feature order and is not a press-brake sequence. Rule-of-thumb diagnostics are not machine or process approval.",
+  "size_mm": [
+    260,
+    166.78584013175396
+  ],
+  "thickness_mm": 1.5,
+  "units": "mm"
+}

@@ -1,6 +1,6 @@
 const motion = !matchMedia('(prefers-reduced-motion: reduce)').matches;
 if (motion) {
-  const targets = document.querySelectorAll('.brand, nav a, .wordmark, h1, .intro p, .action, .section-head h2, .section-head p, .workflow h2, .workflow p, .workflow dl > div, .development h2, .development-copy p, .resource-links a, footer > *');
+  const targets = document.querySelectorAll('.brand, nav a, .wordmark, .application figure > a, .application h3, .application figcaption > p, .supporting-shot, h1, .intro p, .action, .section-head h2, .section-head p, .workflow h2, .workflow p, .workflow dl > div, .development h2, .development-copy p, .resource-links a, footer > *');
   const observer = new IntersectionObserver(entries => {
     entries.forEach(entry => {
       if (!entry.isIntersecting) return;
@@ -15,30 +15,34 @@ if (motion) {
 }
 
 const preview = document.querySelector('.image-preview');
-const imageLinks = [...document.querySelectorAll('.application a[href]')].filter(link => link.querySelector('img'));
+const imageLinks = [...document.querySelectorAll('.application a[href], .hero-shot')].filter(link => link.querySelector('img'));
+const gallery = [...new Map(imageLinks.map(link => [link.href, link])).values()];
 const previewImage = preview.querySelector('img');
 const caption = preview.querySelector('#preview-caption');
 const zoom = preview.querySelector('[data-preview="zoom"]');
+const download = preview.querySelector('[data-preview="download"]');
 let imageIndex = 0;
 let opener;
 function showImage(index) {
-  imageIndex = (index + imageLinks.length) % imageLinks.length;
-  const link = imageLinks[imageIndex];
+  imageIndex = (index + gallery.length) % gallery.length;
+  const link = gallery[imageIndex];
   const image = link.querySelector('img');
   previewImage.src = link.href;
   previewImage.alt = image.alt;
-  caption.textContent = (link.querySelector('span')?.textContent || link.closest('figure').querySelector('h3').textContent).replace(/ ↗$/, '');
+  download.href = link.href;
+  download.download = new URL(link.href).pathname.split('/').pop();
+  caption.textContent = (link.querySelector('span')?.textContent || link.closest('figure')?.querySelector('.project-name')?.textContent || link.closest('figure')?.querySelector('h3')?.textContent || image.alt).replace(/ ↗$/, '');
   preview.classList.toggle('is-drawing', new URL(link.href).pathname.endsWith('.svg'));
   preview.classList.remove('is-zoomed');
   zoom.setAttribute('aria-pressed', 'false');
   preview.querySelector('.preview-image').scrollTo(0, 0);
 }
-for (const [index, link] of imageLinks.entries()) {
+for (const link of imageLinks) {
   link.addEventListener('click', event => {
     if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
     event.preventDefault();
     opener = link;
-    showImage(index);
+    showImage(gallery.findIndex(image => image.href === link.href));
     preview.showModal();
     document.documentElement.style.overflow = 'hidden';
   });

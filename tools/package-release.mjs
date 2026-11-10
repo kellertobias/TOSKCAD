@@ -4,6 +4,7 @@ import {existsSync,mkdirSync,mkdtempSync,readFileSync,readdirSync,realpathSync,r
 import {dirname,join,resolve} from 'node:path';
 import {fileURLToPath,pathToFileURL} from 'node:url';
 import {requireCommit,requireVersion} from './release-policy.mjs';
+import {packageTestArguments} from './native-test-shard.mjs';
 import {assembleRuntime,auditRuntime,collectNotices,createSourceTree,nativeSourceHash} from './native-package.mjs';
 export {assembleRuntime} from './native-package.mjs';
 
@@ -47,10 +48,11 @@ export async function buildPackage(version){
   const commit=requireCommit(run('git',['rev-parse','HEAD']));
   const target=`${{darwin:'macos',win32:'windows',linux:'linux'}[process.platform]}-${process.arch}`;
   if(!targets.includes(target))throw new Error(`Unsupported packaging host: ${target}`);
+  const testArgs=packageTestArguments(process.env.MULTICAD_NATIVE_TEST_SHARD??'full');
   const env={...process.env,MULTICAD_RELEASE_VERSION:version,MULTICAD_BUILD_COMMIT:commit};
   run(process.execPath,[join(root,'tools/foundation-deps.mjs')],{stdio:'inherit'});
   run('cargo',['fetch','--locked'],{stdio:'inherit'});
-  run('cargo',['test','--workspace','--locked'],{env,stdio:'inherit'});
+  run('cargo',testArgs,{env,stdio:'inherit'});
   // Clean shipped workspace products; immutable target/compiler-aware native
   // cache and package-manager dependency caches remain reusable.
   run('cargo',['clean','--release','-p','multicad-app','-p','multicad-ui','-p','multicad-core','-p','multicad-kernel','-p','multicad-solver'],{stdio:'inherit'});

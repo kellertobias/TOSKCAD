@@ -1,4 +1,6 @@
 #include "bridge.hpp"
+static_assert(__cplusplus >= 201703L,
+              "The CXX adapter requires C++17; MSVC also needs /Zc:__cplusplus");
 #include "multicad-kernel-proof/src/lib.rs.h"
 #include <BRepAlgoAPI_Cut.hxx>
 #include <BRepBuilderAPI_MakeFace.hxx>

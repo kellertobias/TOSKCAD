@@ -1,4 +1,4 @@
-//! The shipped welded workbench demo (CAD-183), `examples/welded-workbench.tcd`:
+//! The shipped workbench with a welded frame (CAD-183), `examples/welded-workbench.tcd`:
 //! it opens through the native project store with its name, description and
 //! preview; the frame, welds, worktop and its 10 × 10 hole grid come from the
 //! canonical model; drawings and schedules agree with it; parameter edits
@@ -188,14 +188,45 @@ fn check_bench(session: &Session) {
 
     // The worktop: one beech panel resting on the frame top.
     let cuts = m.cut_list(doc).unwrap();
-    assert_eq!(cuts.len(), 1);
-    let top = &cuts[0];
+    assert_eq!(cuts.len(), 3, "worktop and both wooden vise jaws");
+    let top = cuts.iter().find(|c| c.name == "Worktop").unwrap();
     assert_eq!(top.name, "Worktop");
     near(top.cut.thickness_mm, demo::TOP_MM, 1e-9);
     near(top.cut.finished_mm[0], length, 1e-6);
     near(top.cut.finished_mm[1], depth, 1e-6);
     assert!(top.issues.is_empty(), "{:?}", top.issues);
     let worktop = top.part;
+    let fixed = named(doc, "Vise fixed jaw");
+    let moving = named(doc, "Vise moving jaw");
+    let part_bounds = |id| m.solid(m.snapshot().bodies[&id]).unwrap().bounds().unwrap();
+    let fixed_bounds = part_bounds(fixed);
+    let moving_bounds = part_bounds(moving);
+    near(
+        fixed_bounds.min[1] - moving_bounds.max[1],
+        value(doc, "vise_opening"),
+        1e-6,
+    );
+    near(fixed_bounds.max[2], frame + demo::TOP_MM, 1e-6);
+    near(moving_bounds.max[2], frame + demo::TOP_MM, 1e-6);
+    for rod in ["Vise left guide rod", "Vise right guide rod"] {
+        let rod = named(doc, rod);
+        for jaw in [fixed, moving, named(doc, "Vise guide housing")] {
+            let overlap = m
+                .solid(m.snapshot().bodies[&rod])
+                .unwrap()
+                .boolean(
+                    m.solid(m.snapshot().bodies[&jaw]).unwrap(),
+                    BooleanOperation::Intersect,
+                    Default::default(),
+                )
+                .unwrap();
+            assert!(
+                overlap.is_none_or(|s| s.volume_mm3().unwrap() < 1e-6),
+                "guide rods must pass through the modeled bores"
+            );
+        }
+    }
+
     let solid = |part: EntityId| m.solid(m.snapshot().bodies[&part]).unwrap();
     // The worktop rests on the frame top: rails and tabs end at its
     // underside, and it covers the frame with the overhang all round.

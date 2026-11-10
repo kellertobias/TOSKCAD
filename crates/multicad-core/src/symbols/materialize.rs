@@ -56,10 +56,25 @@ pub(super) fn generated(
         ));
     }
     let source_root = value.ids[&def.root];
+    let mut consumed = BTreeSet::new();
+    for entity in def.template.entities() {
+        if let EntityData::Feature {
+            definition,
+            suppressed: false,
+            ..
+        } = &entity.data
+            && definition.type_id == crate::model::BOOLEAN_TYPE
+        {
+            consumed.extend(
+                crate::model::BooleanDefinition::from_definition(definition)?.consumed_bodies(),
+            );
+        }
+    }
+    // Consumed tools remain as producer metadata, not physical occurrences.
     let parts = def
         .template
         .entities()
-        .filter(|e| matches!(e.data, EntityData::Part { .. }))
+        .filter(|e| matches!(e.data, EntityData::Part { .. }) && !consumed.contains(&e.id))
         .map(|e| value.ids[&e.id])
         .collect::<Vec<_>>();
     let assembly = AssemblyDefinition {

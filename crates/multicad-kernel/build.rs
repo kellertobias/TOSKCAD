@@ -3,7 +3,9 @@ fn main() {
     let mut build = cxx_build::bridge("src/lib.rs");
     // The adapter throws C++ exceptions; MSVC needs unwind semantics for them.
     if std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc") {
-        build.flag("/EHsc");
+        // CXX enables default scalar initialization through __cplusplus.
+        // MSVC reports C++98 without this, even with /std:c++17.
+        build.flag("/EHsc").flag("/Zc:__cplusplus");
     }
     build
         .file("src/bridge.cpp")

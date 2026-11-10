@@ -3736,13 +3736,46 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
         app.current_mut().sketch.toggle_transform();
-        shortcut_frame(&ctx, &mut app, vec![]);
-        let sketch = &app.current().sketch;
-        let rect = sketch.viewport_rect.unwrap();
-        let end = sketch
-            .camera
-            .project([62. / sketch.camera.scale, 0., 0.], rect);
-        let start = egui::pos2(end[0], end[1]);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        // Undo invalidates the solved sketch. Wait for the worker to publish
+        // the actual handle before sending input to it.
+        let start = loop {
+            let output = ctx.run_ui(
+                egui::RawInput {
+                    focused: true,
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1360., 860.),
+                    )),
+                    ..Default::default()
+                },
+                |ui| app.show(ui),
+            );
+            let sketch = &app.current().sketch;
+            let rect = sketch.viewport_rect.unwrap();
+            let end = sketch
+                .camera
+                .project([62. / sketch.camera.scale, 0., 0.], rect);
+            let expected = egui::pos2(end[0], end[1]);
+            let handle = output.shapes.iter().find_map(|shape| match &shape.shape {
+                egui::Shape::Circle(circle)
+                    if circle.fill == egui::Color32::LIGHT_RED
+                        && circle.center.distance(expected) < 0.01 =>
+                {
+                    Some(circle.center)
+                }
+                _ => None,
+            });
+            output.drop_without_applying_deltas();
+            if let Some(handle) = handle {
+                break handle;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "Solved sketch transform handle did not appear"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        };
         let before = app.current().session.document().clone();
         shortcut_frame(
             &ctx,

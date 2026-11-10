@@ -1,11 +1,16 @@
 name: Native regression suites
 
 # Read-only build/test evidence on three operating systems. No publication,
-# credentials, tags or tracked-file changes. Each suite is a named step so a
-# failure identifies the area (file recovery, cancellation, exporters, ...)
-# before the full workspace run; logs and headless budget reports are kept.
+# credentials, tags or tracked-file changes. Named suites identify failures in
+# file recovery, cancellation, exporters and other areas. The caller separately
+# gates the complete workspace; logs and headless budget reports are kept.
 on:
   workflow_call:
+    inputs:
+      packaging_runs_full_workspace:
+        description: The caller separately gates every platform on the complete workspace suite
+        type: boolean
+        default: false
   workflow_dispatch:
 
 permissions:
@@ -15,17 +20,20 @@ jobs:
   regression:
     name: Native regression / ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 120
+    timeout-minutes: ${{ matrix.timeout_minutes }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - os: ubuntu-24.04
             target: linux-x64
+            timeout_minutes: 120
           - os: macos-15
             target: macos-arm64
+            timeout_minutes: 120
           - os: windows-2025
             target: windows-x64
+            timeout_minutes: 180
     env:
       CARGO_BUILD_JOBS: "4"
       CARGO_TERM_COLOR: always
@@ -49,6 +57,8 @@ jobs:
         run: node tools/foundation-deps.mjs
       - name: Build every workspace target
         run: cargo build --workspace --all-targets --locked
+      - name: Canonical KiCad model path resolution
+        run: cargo test -p multicad-model --lib --locked forward_slash_models_resolve_beside_a_canonical_board_directory
       - name: Project file round trip, recovery, compatibility and damage (scenario projects)
         run: "cargo test -p multicad-app --locked --no-fail-fast --bin multicad files::"
       - name: Project container codec and recovery identity
@@ -79,6 +89,7 @@ jobs:
           cargo test -p multicad-app --locked --no-fail-fast
           --test mcp --test cli --test shared_workflow
       - name: Complete workspace tests
+        if: ${{ !inputs.packaging_runs_full_workspace }}
         run: cargo test --workspace --locked --no-fail-fast
       - name: Headless budget smoke (dev profile, one run; not a performance result)
         if: success() || failure()

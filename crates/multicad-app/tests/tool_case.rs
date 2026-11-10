@@ -622,7 +622,10 @@ fn deliverables_are_validated_by_independent_readers() {
         assert!(info.contains("Pages:           1"), "{info}");
         assert!(info.contains("(A3)"), "{info}");
     }
-    if let Some(text) = tool("pdftotext", &[pdf_path.to_str().unwrap(), "-"]) {
+    if let Some(text) = tool(
+        "pdftotext",
+        &["-enc", "UTF-8", pdf_path.to_str().unwrap(), "-"],
+    ) {
         for needle in [
             "Panel cut list",
             "Tool case left side",
@@ -630,7 +633,7 @@ fn deliverables_are_validated_by_independent_readers() {
             "Ø3",
             "300",
         ] {
-            assert!(text.contains(needle), "PDF text lacks {needle}");
+            assert!(text.contains(needle), "PDF text lacks {needle}: {text:?}");
         }
     }
     let dxf_path = drawing

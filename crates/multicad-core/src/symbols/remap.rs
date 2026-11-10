@@ -43,6 +43,9 @@ fn provider(d: &Definition) -> Result<(), DocumentError> {
         model::GEAR_PAIR_TYPE => {
             model::GearPairDefinition::from_definition(d)?;
         }
+        model::BOOLEAN_TYPE => {
+            model::BooleanDefinition::from_definition(d)?;
+        }
         model::EXTRUDE_TYPE => {
             model::ExtrudeDefinition::from_definition(d)?;
         }
