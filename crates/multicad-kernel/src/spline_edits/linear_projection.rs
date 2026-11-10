@@ -291,10 +291,10 @@ mod tests {
     #[test]
     fn higher_degree_has_an_explicit_unsupported_diagnostic() {
         let spline = CurvedEdge2d::BSpline(BSpline2d {
-            degree: 2,
-            poles: vec![[0., 0.], [4., 2.], [6., 0.]],
+            degree: 4,
+            poles: vec![[0., 0.], [4., 2.], [6., 0.], [7., 0.], [8., 1.]],
             knots: vec![2., 10.],
-            multiplicities: vec![3, 3],
+            multiplicities: vec![5, 5],
             weights: None,
         });
         assert_eq!(

@@ -4,6 +4,7 @@
 use crate::elementary_curves::ElementaryCurve;
 use crate::{BSpline2d, CurvedEdge2d, GeometryError, GeometryErrorKind, GeometryPolicy, ffi};
 
+mod bernstein_projection;
 mod linear_projection;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -34,16 +35,36 @@ impl CurvedEdge2d {
         point: [f64; 2],
         policy: GeometryPolicy,
     ) -> Result<Vec<CurveProjection2d>, GeometryError> {
+        self.project_parameters_with_provider(point, policy, crate::OCCT_LINKED)
+    }
+
+    pub(crate) fn rust_project_parameters(
+        &self,
+        point: [f64; 2],
+        policy: GeometryPolicy,
+    ) -> Result<Vec<CurveProjection2d>, GeometryError> {
+        self.project_parameters_with_provider(point, policy, false)
+    }
+
+    fn project_parameters_with_provider(
+        &self,
+        point: [f64; 2],
+        policy: GeometryPolicy,
+        native_splines: bool,
+    ) -> Result<Vec<CurveProjection2d>, GeometryError> {
         policy.point([point[0], point[1], 0.])?;
         if let Self::BSpline(spline) = self {
             if spline.degree == 1 {
                 return linear_projection::project(spline, point, policy);
             }
-            if !cfg!(feature = "occt") {
+            if !native_splines {
+                if (2..=3).contains(&spline.degree) {
+                    return bernstein_projection::project(spline, point, policy);
+                }
                 spline.validate(policy)?;
                 return Err(failure(
                     GeometryErrorKind::Unsupported,
-                    "Rust spline projection currently supports degree-one curves",
+                    "Rust spline projection currently supports splines up to degree three",
                 ));
             }
         }

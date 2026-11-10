@@ -53,14 +53,6 @@ impl NativeRegionQueries {
         queries.native_splines = false;
         Ok(queries)
     }
-    fn require_curve(&self, curve: &ExactCurve) -> Result<(), QueryError> {
-        if !self.native_splines && matches!(curve, ExactCurve::BSpline { .. }) {
-            return Err(error(
-                "Rust sketch queries currently support straight and circular curves",
-            ));
-        }
-        Ok(())
-    }
     fn policy(&self, tolerance: f64) -> Result<GeometryPolicy, QueryError> {
         let policy = GeometryPolicy {
             linear_tolerance_mm: tolerance,
@@ -129,14 +121,15 @@ impl RegionQueries for NativeRegionQueries {
         point_mm: [f64; 2],
         tolerance_mm: f64,
     ) -> Result<Vec<CurveProjection>, QueryError> {
-        if !matches!(curve, ExactCurve::BSpline { basis, .. } if basis.degree == 1) {
-            self.require_curve(curve)?;
-        }
         let policy = self.policy(tolerance_mm)?;
-        let native = Self::curve(curve);
-        let [first, last] = native.domain(policy).map_err(error)?;
-        native
-            .project_parameters(point_mm, policy)
+        let curve = Self::curve(curve);
+        let [first, last] = curve.domain(policy).map_err(error)?;
+        let projections = if self.native_splines {
+            curve.project_parameters(point_mm, policy)
+        } else {
+            curve.rust_project_parameters(point_mm, policy)
+        };
+        projections
             .map_err(error)?
             .into_iter()
             .map(|p| {
@@ -451,7 +444,7 @@ mod tests {
         assert!(
             queries
                 .project_parameters(&spline, [1., 0.], tolerance)
-                .is_err()
+                .is_ok()
         );
         assert!(queries.intersections(&spline, &circle, tolerance).is_err());
         assert!(queries.self_intersections(&spline, tolerance).is_err());
