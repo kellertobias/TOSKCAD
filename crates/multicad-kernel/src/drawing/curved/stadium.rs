@@ -12,7 +12,7 @@ type Point = [f64; 3];
 const ANGULAR_TOLERANCE: f64 = 32. * f64::EPSILON;
 
 #[derive(Default)]
-pub(super) struct Shapes {
+pub(in crate::drawing) struct Shapes {
     pub bodies: Vec<Body>,
     pub rounds: Vec<RoundOccluder>,
     pub lines: Vec<LineCandidate>,
@@ -20,7 +20,7 @@ pub(super) struct Shapes {
 }
 
 impl Shapes {
-    pub(super) fn add(
+    pub(in crate::drawing) fn add(
         &mut self,
         solid: &Solid,
         source: usize,

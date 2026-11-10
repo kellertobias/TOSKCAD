@@ -361,10 +361,23 @@ fn retained_section_suppresses_a_rear_cut_only_with_complete_opaque_cover() {
             .iter()
             .any(|vector| vector.source_index == 1 && vector.role == VectorRole::Section)
     );
-    assert_eq!(
-        project_drawing(&[input(&solid), input(&cover(4))], options)
-            .unwrap_err()
-            .kind,
-        GeometryErrorKind::Unsupported
-    );
+    let partial = project_drawing(&[input(&solid), input(&cover(4))], options).unwrap();
+    let mut sweep = 0.;
+    for vector in &partial {
+        if let VectorCurve::Ellipse {
+            center,
+            major_mm,
+            minor_mm,
+            start_rad,
+            end_rad,
+            ..
+        } = vector.curve
+        {
+            assert_eq!((vector.source_index, vector.role), (0, VectorRole::Visible));
+            assert_eq!((center, major_mm, minor_mm), ([9., 6.], 2., 2.));
+            assert!(vector.preview_mm.iter().all(|point| point[0] >= 9. - 1e-8));
+            sweep += end_rad - start_rad;
+        }
+    }
+    assert!((sweep - PI).abs() < 1e-8);
 }

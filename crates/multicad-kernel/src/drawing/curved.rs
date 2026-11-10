@@ -8,7 +8,7 @@ use multicad_rust_kernel::{
 
 mod opaque;
 mod pockets;
-mod stadium;
+pub(super) mod stadium;
 
 fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
     a.into_iter().zip(b).map(|(x, y)| x * y).sum()
@@ -83,7 +83,7 @@ fn projection_cylinder(solid: &Solid, frame: PlaneFrame) -> Option<(Cylinder, Op
     ))
 }
 
-fn round_occluder(
+pub(super) fn round_occluder(
     solid: &Solid,
     frame: PlaneFrame,
 ) -> Result<Option<RoundOccluder>, GeometryError> {
@@ -132,7 +132,7 @@ pub(super) fn project_scene(
 
 fn project_members(
     members: &[(usize, &Solid)],
-    mut options: DrawingProjection,
+    options: DrawingProjection,
 ) -> Result<Vec<ProjectedVector>, GeometryError> {
     let mut planar_members = Vec::new();
     let mut round_sources = Vec::new();
@@ -173,7 +173,7 @@ fn project_members(
             openings.extend(proxy.openings);
         }
     }
-    let (lines, round_edges, supplied) = planar_projection::project_scene_with_candidates(
+    let projection = planar_projection::project_scene_with_candidates(
         &bodies,
         &rounds,
         planar_projection::SceneExtras {
@@ -183,6 +183,7 @@ fn project_members(
             blocker_rounds: &rounded.rounds,
             lines: &rounded.lines,
             spatial_rims: &rounded.rims,
+            stadium_openings: &[],
         },
         planar_projection::Options {
             tolerance,
@@ -195,6 +196,15 @@ fn project_members(
     )
     .map_err(planar::projection_error)?;
 
+    publish_scene(projection, options, &planar_sources, &round_sources)
+}
+
+pub(super) fn publish_scene(
+    (lines, round_edges, supplied): planar_projection::SceneProjection,
+    mut options: DrawingProjection,
+    planar_sources: &[usize],
+    round_sources: &[usize],
+) -> Result<Vec<ProjectedVector>, GeometryError> {
     let mut output: Vec<_> = lines
         .into_iter()
         .map(|line| {

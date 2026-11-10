@@ -37,6 +37,13 @@ pub(crate) struct BlindOpening {
     pub(crate) depth: f64,
 }
 
+pub(crate) struct BlindSlot {
+    pub(crate) centers: [Point; 2],
+    pub(crate) normal: Point,
+    pub(crate) radius: f64,
+    pub(crate) depth: f64,
+}
+
 #[derive(Clone)]
 pub(crate) struct OrthogonalBody {
     pub(super) feature: EntityId,
@@ -192,10 +199,18 @@ impl Solid {
 
     /// Pair each certified blind opening with its uncut stock face.
     pub(crate) fn drawing_circular_stock(&self) -> Option<(Self, Vec<BlindOpening>)> {
-        let (body, openings) = match &self.body {
-            SolidBody::Orthogonal(stock, frame)
-                if stock.slots.is_empty() && !stock.pockets.is_empty() =>
-            {
+        if !self.has_circular_drawing_stock() {
+            return None;
+        }
+        let (stock, circles, _) = self.drawing_machined_stock()?;
+        Some((stock, circles))
+    }
+
+    pub(crate) fn drawing_machined_stock(
+        &self,
+    ) -> Option<(Self, Vec<BlindOpening>, Vec<BlindSlot>)> {
+        let (body, openings, slots) = match &self.body {
+            SolidBody::Orthogonal(stock, frame) if stock.has_curved_cuts() => {
                 let openings = stock
                     .pockets
                     .iter()
@@ -207,10 +222,26 @@ impl Solid {
                         depth: pocket.depth_mm,
                     })
                     .collect();
+                let slots = stock
+                    .slots
+                    .iter()
+                    .map(|slot| BlindSlot {
+                        centers: slot.centers_mm.map(|point| transform_point(*frame, point)),
+                        normal: transform_vector(*frame, stock.boundary.faces[slot.face].normal),
+                        radius: slot.radius_mm,
+                        depth: slot.depth_mm,
+                    })
+                    .collect();
                 let mut stock = (**stock).clone();
                 stock.pockets = Rc::from([]);
                 stock.pocket_origins = Rc::from([]);
-                (SolidBody::Orthogonal(Rc::new(stock), *frame), openings)
+                stock.slots = Rc::from([]);
+                stock.slot_origins = Rc::from([]);
+                (
+                    SolidBody::Orthogonal(Rc::new(stock), *frame),
+                    openings,
+                    slots,
+                )
             }
             SolidBody::PolygonPrism(stock) if !stock.pockets.is_empty() => {
                 let sign = if stock.reverse_sweep { -1. } else { 1. };
@@ -236,7 +267,11 @@ impl Solid {
                 let mut stock = (**stock).clone();
                 stock.pockets = Rc::from([]);
                 stock.pocket_origins = Rc::from([]);
-                (SolidBody::PolygonPrism(Rc::new(stock)), openings)
+                (
+                    SolidBody::PolygonPrism(Rc::new(stock)),
+                    openings,
+                    Vec::new(),
+                )
             }
             _ => return None,
         };
@@ -248,6 +283,7 @@ impl Solid {
                 rust_origins: vec![],
             },
             openings,
+            slots,
         ))
     }
 

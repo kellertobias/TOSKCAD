@@ -4,6 +4,7 @@ use multicad_core::materials::HatchPattern;
 use multicad_rust_kernel::{planar_section, section_hatch};
 
 mod annulus;
+mod end_on;
 mod machined;
 mod retained;
 pub(super) use annulus::project_circular;
@@ -22,7 +23,12 @@ pub(super) fn project(
             return machined::project(solids, options, depth);
         }
         if !options.hidden_lines && !options.tangent_edges {
-            return retained::project(solids, options, depth);
+            return match retained::project(solids, options, depth) {
+                Err(error) if error.kind == GeometryErrorKind::Unsupported => {
+                    end_on::project(solids, options, depth)
+                }
+                result => result,
+            };
         }
     }
     project_planar(solids, options, depth)

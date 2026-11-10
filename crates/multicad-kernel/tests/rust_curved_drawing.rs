@@ -1,11 +1,12 @@
 use multicad_core::{
     document::EntityId,
     drawings::{VectorCurve, VectorRole},
+    references::Origin,
 };
 use multicad_kernel::{
-    BooleanOperation, DrawingProjection, DrawingSolid, GeometryErrorKind, PlaneFrame,
-    ProjectedVector, RigidTransform, Solid, project_drawing,
-    rust_kernel::{Circle, Rational, cylinder::AxialCylinder},
+    BooleanOperation, CircularPocketTool, DrawingProjection, DrawingSolid, GeometryErrorKind,
+    GeometryPolicy, PlaneFrame, ProjectedVector, RigidTransform, Solid, project_drawing,
+    rust_kernel::{Circle, Rational, cylinder::AxialCylinder, polygon::PolygonPrism},
 };
 use std::f64::consts::TAU;
 
@@ -478,5 +479,85 @@ fn transverse_annulus_section_depth_distinguishes_cut_retained_and_empty_views()
     assert_eq!(
         unsupported.unwrap_err().kind,
         GeometryErrorKind::Unsupported
+    );
+}
+
+#[test]
+fn retained_section_shows_an_exact_blind_opening_where_the_cut_crosses_it() {
+    let policy = GeometryPolicy::default();
+    let owner = EntityId::new();
+    let int = |value| Rational::new(value, 1).unwrap();
+    let ring = [[0, 0], [20, 0], [20, 16], [0, 16]].map(|point| point.map(int));
+    let origins: [Origin; 4] = std::array::from_fn(|i| Origin {
+        source: owner,
+        role: format!("test.edge.{i}"),
+    });
+    let stock = Solid::from_polygon_prism(
+        PolygonPrism::new(vec![ring.to_vec()], int(12)).unwrap(),
+        PlaneFrame::default(),
+        owner,
+        &origins,
+        &[false; 4],
+        policy,
+    )
+    .unwrap()
+    .rust_drill_circular_pockets(
+        &[CircularPocketTool {
+            frame: PlaneFrame {
+                origin: [0., 0., 13.],
+                ..Default::default()
+            },
+            center_uv: [10., 8.],
+            radius_mm: 2.,
+            displacement_mm: [0., 0., -5.],
+            origin: Origin {
+                source: owner,
+                role: "test.blind-opening".into(),
+            },
+        }],
+        policy,
+    )
+    .unwrap();
+    let cut = project(
+        &stock,
+        DrawingProjection {
+            section_offset_mm: Some(10.),
+            ..Default::default()
+        },
+    );
+    for role in [VectorRole::Visible, VectorRole::Section] {
+        let vectors = cut
+            .iter()
+            .filter(|vector| vector.role == role)
+            .collect::<Vec<_>>();
+        assert_eq!(vectors.len(), 5);
+        let rims = vectors
+            .iter()
+            .filter(|v| {
+                matches!(
+                    v.curve,
+                    VectorCurve::Ellipse {
+                        center: [10., 8.],
+                        major_mm: 2.,
+                        minor_mm: 2.,
+                        ..
+                    }
+                )
+            })
+            .count();
+        assert_eq!(rims, 1);
+    }
+    let below_floor = project(
+        &stock,
+        DrawingProjection {
+            section_offset_mm: Some(7.),
+            ..Default::default()
+        },
+    );
+    assert_eq!(below_floor.len(), 8);
+    assert!(
+        below_floor
+            .iter()
+            .all(|v| matches!(v.curve, VectorCurve::Line { .. }))
     );
 }
