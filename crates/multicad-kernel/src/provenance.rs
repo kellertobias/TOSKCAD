@@ -902,7 +902,9 @@ impl Solid {
         revision: u64,
     ) -> Result<TopologySnapshot, GeometryError> {
         if self.uses_rust_geometry() {
-            let mut snapshot = if let Some(placed) = self.polygon_prism() {
+            let mut snapshot = if let Some((body, frame)) = self.helical_body() {
+                body.topology(frame, owner, revision)?
+            } else if let Some(placed) = self.polygon_prism() {
                 placed.snapshot(owner, revision).map_err(failure)?
             } else if let Some((cylinder, frame)) = self.axial_cylinder_frame() {
                 crate::rust_prism_topology::cylinder_snapshot(

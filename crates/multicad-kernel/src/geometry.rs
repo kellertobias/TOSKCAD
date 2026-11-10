@@ -7,9 +7,11 @@ use multicad_rust_kernel::{
 };
 use std::path::Path;
 use std::rc::Rc;
+mod helical_body;
 mod orthogonal_body;
 mod rust_compound;
 mod step_import;
+use helical_body::HelicalBody;
 use orthogonal_body::OrthogonalBody;
 use rust_compound::RustCompound;
 
@@ -483,6 +485,7 @@ enum SolidBody {
     Prism(Rc<Prism>, PlaneFrame),
     PolygonPrism(Rc<PlacedPolygon>),
     AxialCylinder(Rc<AxialCylinder>, PlaneFrame, Option<Rc<CylinderSketch>>),
+    Helical(Rc<HelicalBody>, PlaneFrame),
     RustCompound(Rc<RustCompound>),
     Orthogonal(Rc<OrthogonalBody>, PlaneFrame),
 }
@@ -826,6 +829,7 @@ impl Solid {
             SolidBody::AxialCylinder(cylinder, frame, sketch) => {
                 SolidBody::AxialCylinder(Rc::clone(cylinder), *frame, sketch.clone())
             }
+            SolidBody::Helical(body, frame) => SolidBody::Helical(Rc::clone(body), *frame),
             SolidBody::RustCompound(compound) => SolidBody::RustCompound(Rc::clone(compound)),
             SolidBody::Orthogonal(body, frame) => SolidBody::Orthogonal(Rc::clone(body), *frame),
             SolidBody::Occt(shape) => {
@@ -1067,6 +1071,9 @@ impl Solid {
                     transform.frame(*frame),
                     sketch.clone(),
                 ),
+                SolidBody::Helical(body, frame) => {
+                    SolidBody::Helical(Rc::clone(body), transform.frame(*frame))
+                }
                 SolidBody::RustCompound(compound) => {
                     SolidBody::RustCompound(compound.transformed(transform, self.policy)?)
                 }
@@ -1097,6 +1104,9 @@ impl Solid {
         Ok(result)
     }
     pub fn volume_mm3(&self) -> Result<f64, GeometryError> {
+        if let Some((body, _)) = self.helical_body() {
+            return Ok(body.geometry.volume_mm3());
+        }
         if let Some((body, _)) = self.orthogonal_body() {
             return Ok(body.geometry.volume_mm3());
         }
@@ -1127,6 +1137,9 @@ impl Solid {
         ffi::solid_count(self.occt()?).map_err(|e| native("solid count", e))
     }
     pub fn bounds(&self) -> Result<Bounds, GeometryError> {
+        if let Some((body, frame)) = self.helical_body() {
+            return Ok(body.bounds(frame));
+        }
         if let Some((body, frame)) = self.orthogonal_body() {
             return Ok(body.bounds(frame));
         }
@@ -1215,6 +1228,9 @@ impl Solid {
         crate::planar_contours::extract(self, face, frame, self.policy)
     }
     pub fn faces(&self) -> Result<Vec<Face>, GeometryError> {
+        if let Some((body, frame)) = self.helical_body() {
+            return Ok(body.faces(frame));
+        }
         if let Some((body, frame)) = self.orthogonal_body() {
             return Ok(body.faces(frame));
         }
@@ -1269,12 +1285,16 @@ impl Solid {
             && (1..=5_000_000).contains(&options.maximum_triangles)
     }
 
-    fn rust_mesh(&self, options: MeshOptions, usage: MeshUse) -> Result<ffi::Mesh, GeometryError> {
-        let rust_options = multicad_rust_kernel::display::Tessellation {
+    fn rust_mesh_options(options: MeshOptions) -> multicad_rust_kernel::display::Tessellation {
+        multicad_rust_kernel::display::Tessellation {
             deflection: options.linear_deflection_mm,
             angle: options.angular_deflection_rad,
             triangle_limit: options.maximum_triangles as usize,
-        };
+        }
+    }
+
+    fn rust_mesh(&self, options: MeshOptions, usage: MeshUse) -> Result<ffi::Mesh, GeometryError> {
+        let rust_options = Self::rust_mesh_options(options);
         match &self.body {
             SolidBody::Prism(prism, frame) => crate::rust_display::placed_mesh(
                 multicad_rust_kernel::display::rust_prism(prism, rust_options),
@@ -1300,6 +1320,7 @@ impl Solid {
                 }
                 Ok(mesh)
             }
+            SolidBody::Helical(body, frame) => body.mesh(*frame, rust_options),
             SolidBody::RustCompound(compound) => compound.mesh(options, usage),
             SolidBody::Orthogonal(body, frame) => {
                 body.mesh(*frame, options.maximum_triangles, usage)
@@ -1388,20 +1409,7 @@ impl Solid {
             )
         })?;
         let exact_volume = self.volume_mm3()?;
-        let mut surface_area = 0.;
-        let mut curved_area = 0.;
-        for face in self.faces()? {
-            surface_area += face.area_mm2;
-            if face.plane.is_none() {
-                curved_area += face.area_mm2;
-            }
-        }
-        // For the supported extruded curves, arc/chord area loss is bounded
-        // by sagitta times arc length. Multiplying by the sweep height gives
-        // chord deviation times curved wall area. Planar faces add roundoff only.
-        let volume_tolerance = options.linear_deflection_mm * curved_area
-            + self.policy.linear_tolerance_mm * surface_area * 2.
-            + exact_volume * 1e-10;
+        let volume_tolerance = self.rust_mesh_volume_tolerance(options, exact_volume)?;
         if !volume_tolerance.is_finite()
             || (proof.signed_volume_mm3 - exact_volume).abs() > volume_tolerance
         {
@@ -1434,6 +1442,41 @@ impl Solid {
             removed_meshing_internal_vertices: 0,
             remeshed_without_internal_constraints: false,
         })
+    }
+
+    fn rust_mesh_volume_tolerance(
+        &self,
+        options: MeshOptions,
+        exact_volume: f64,
+    ) -> Result<f64, GeometryError> {
+        if let Some(compound) = self.rust_compound() {
+            return compound.members().try_fold(0., |total, member| {
+                Ok(total + member.rust_mesh_volume_tolerance(options, member.volume_mm3()?)?)
+            });
+        }
+        let mut surface_area = 0.;
+        let mut curved_area = 0.;
+        for face in self.faces()? {
+            surface_area += face.area_mm2;
+            if face.plane.is_none() {
+                curved_area += face.area_mm2;
+            }
+        }
+        let chord_error = if let Some((body, _)) = self.helical_body() {
+            multicad_rust_kernel::helical_thread_mesh::volume_error_bound(
+                &body.geometry,
+                Self::rust_mesh_options(options),
+            )
+        } else {
+            // Arc/chord area loss is bounded by sagitta times arc length.
+            // Extruding this loss bounds volume by the curved wall area.
+            options.linear_deflection_mm * curved_area
+        };
+        Ok(
+            chord_error
+                + self.policy.linear_tolerance_mm * surface_area * 2.
+                + exact_volume * 1e-10,
+        )
     }
 
     pub fn manufacturing_mesh_with_receipt(
@@ -1487,6 +1530,9 @@ impl Solid {
         {
             return Err(input("Invalid edge display deflection"));
         }
+        if let Some((body, frame)) = self.helical_body() {
+            return body.display_edges(frame, deflection_mm);
+        }
         if let Some(topology) = self.rust_topology() {
             return crate::rust_display::edges(topology?, deflection_mm);
         }
@@ -1536,6 +1582,7 @@ impl Solid {
             SolidBody::PolygonPrism(placed) => placed.feature,
             SolidBody::Prism(prism, _) => EntityId::from_uuid_bits(prism.feature()),
             SolidBody::AxialCylinder(cylinder, ..) => EntityId::from_uuid_bits(cylinder.feature()),
+            SolidBody::Helical(body, _) => body.feature,
             SolidBody::RustCompound(compound) => compound.feature,
             SolidBody::Orthogonal(body, _) => body.feature,
             SolidBody::Occt(_) => return None,
@@ -1547,7 +1594,7 @@ impl Solid {
         match &self.body {
             SolidBody::Occt(_) | SolidBody::PolygonPrism(_) | SolidBody::AxialCylinder(..) => true,
             SolidBody::Prism(prism, _) => prism.rounded_end().is_none(),
-            SolidBody::RustCompound(_) => false,
+            SolidBody::RustCompound(_) | SolidBody::Helical(..) => false,
             SolidBody::Orthogonal(body, _) => body.boundary.supports_step(),
         }
     }
@@ -1560,6 +1607,13 @@ impl Solid {
             return ffi::write_step(&shape.0, path_text).map_err(|e| native("write STEP", e));
         }
         let operation = "write STEP";
+        if self.helical_body().is_some() {
+            return Err(error(
+                operation,
+                GeometryErrorKind::Unsupported,
+                "STEP export of Rust helical surfaces is unavailable",
+            ));
+        }
         if !self.supports_step_export() {
             return Err(error(
                 operation,
@@ -1585,7 +1639,9 @@ impl Solid {
                     step::write_placed_cylinder(cylinder, frame.origin, frame.u, frame.v)
                 }
             }
-            SolidBody::RustCompound(_) => unreachable!("STEP support checked above"),
+            SolidBody::RustCompound(_) | SolidBody::Helical(..) => {
+                unreachable!("STEP support checked above")
+            }
             SolidBody::Orthogonal(body, frame) => step::write_orthogonal(&body.boundary, |point| {
                 crate::rust_prism_topology::position(*frame, point)
             }),
