@@ -225,37 +225,103 @@ fn rust_spur_reports_unavailable_geometry_before_recipe_commit() {
     let draft = model::prepare_gear(&session, 0, actor(), &request).unwrap();
     session.commit(draft.prepared).unwrap();
     let baseline = session.document().clone();
-    for (parameters, diagnostic) in [
-        (
-            GearParameters {
-                hub: Some(GearHub {
-                    diameter: length(18.),
-                    axial_start: length(-3.),
-                    axial_end: length(2.),
-                }),
-                ..request.parameters.clone()
-            },
-            "without a hub",
-        ),
-        (
-            GearParameters {
-                family: GearFamily::Helical,
-                hand: GearHand::Right,
-                helix_angle: angle(15.),
-                ..request.parameters.clone()
-            },
-            "external spur gear or a straight rack",
-        ),
-    ] {
-        let draft =
-            model::prepare_gear_edit(&session, 1, actor(), request.feature, &parameters).unwrap();
-        let error = Compiler::default()
-            .compile_with_backend(draft.prepared.document(), 2, GeometryBackend::Rust, None)
-            .err()
-            .unwrap();
-        assert!(error.to_string().contains(diagnostic), "{error}");
-        assert_eq!(session.document(), &baseline);
+    let parameters = GearParameters {
+        family: GearFamily::Helical,
+        hand: GearHand::Right,
+        helix_angle: angle(15.),
+        ..request.parameters
+    };
+    let draft =
+        model::prepare_gear_edit(&session, 1, actor(), request.feature, &parameters).unwrap();
+    let error = Compiler::default()
+        .compile_with_backend(draft.prepared.document(), 2, GeometryBackend::Rust, None)
+        .err()
+        .unwrap();
+    assert!(
+        error
+            .to_string()
+            .contains("external spur gear or a straight rack"),
+        "{error}"
+    );
+    assert_eq!(session.document(), &baseline);
+}
+
+#[test]
+fn rust_spur_hub_extends_the_bore_and_keeps_native_face_roles() {
+    let (mut session, mut request) = fixture();
+    request.parameters.frame = PrimitiveFrame::default();
+    let feature = request.feature;
+    let draft = model::prepare_gear(&session, 0, actor(), &request).unwrap();
+    session.commit(draft.prepared).unwrap();
+    let compiler = Compiler::default();
+    let plain = compiler
+        .compile_with_backend(session.document(), 1, GeometryBackend::Rust, None)
+        .unwrap();
+    request.parameters.hub = Some(GearHub {
+        diameter: length(18.),
+        axial_start: length(-3.),
+        axial_end: length(8.),
+    });
+    let draft =
+        model::prepare_gear_edit(&session, 1, actor(), feature, &request.parameters).unwrap();
+    session.commit(draft.prepared).unwrap();
+    let build = |backend| {
+        compiler
+            .compile_with_backend(session.document(), 2, backend, None)
+            .unwrap()
+    };
+    let rust = build(GeometryBackend::Rust);
+    let solid = rust.solid(feature).unwrap();
+    let volume = solid.volume_mm3().unwrap();
+    let added = 6. * std::f64::consts::PI * (81. - 16.);
+    near(
+        volume - plain.solid(feature).unwrap().volume_mm3().unwrap(),
+        added,
+        1e-8,
+    );
+    let bounds = solid.bounds().unwrap();
+    near(bounds.min[2], -3., 1e-8);
+    near(bounds.max[2], 8., 1e-8);
+    let topology = &rust.snapshot().shapes[&feature].topology;
+    let role = |role: &'static str| {
+        topology.elements.iter().filter(move |element| {
+            element.key.kind == TopologyKind::Face
+                && element
+                    .origins
+                    .iter()
+                    .any(|origin| origin.source == feature && origin.role == role)
+        })
+    };
+    assert_eq!(role("gear/hub.side").count(), 2);
+    assert_eq!(role("gear/hub.end.start").count(), 1);
+    assert_eq!(role("gear/hub.end.end").count(), 1);
+    let bore = role("gear/bore").next().unwrap().key.ordinal;
+    let faces = solid.faces().unwrap();
+    near(
+        faces[bore as usize].area_mm2,
+        std::f64::consts::TAU * 4. * 11.,
+        1e-8,
+    );
+    solid
+        .manufacturing_mesh_with_receipt(Default::default())
+        .unwrap();
+    #[cfg(feature = "occt")]
+    {
+        let native = build(GeometryBackend::OpenCascade);
+        let reference = native.solid(feature).unwrap();
+        near(volume, reference.volume_mm3().unwrap(), 1e-4);
+        near(
+            faces.iter().map(|face| face.area_mm2).sum(),
+            reference
+                .faces()
+                .unwrap()
+                .iter()
+                .map(|face| face.area_mm2)
+                .sum(),
+            1e-4,
+        );
     }
+    assert!(!solid.supports_step_export());
 }
 
 #[test]

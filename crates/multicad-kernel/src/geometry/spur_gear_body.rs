@@ -7,8 +7,9 @@ use crate::{
 use multicad_core::references::{AnalyticGeometry, ReferenceFrame, TopologySnapshot};
 use multicad_rust_kernel::{
     normal_sweep,
-    spur_gear::{Edge, Profile, Spec, ToothRole},
+    spur_gear::{Edge, Error, Hub, Profile, Spec, ToothRole},
 };
+use std::f64::consts::{PI, TAU};
 
 pub(crate) struct SpurGearBody {
     pub(super) profile: Profile,
@@ -23,11 +24,11 @@ impl Solid {
     ) -> Result<Self, GeometryError> {
         const OPERATION: &str = "spur gear";
         policy.validate()?;
-        if spec.sweep != GearSweep::Spur || spec.hub.is_some() || spec.twist_rad_per_mm != 0. {
+        if spec.sweep != GearSweep::Spur || spec.twist_rad_per_mm != 0. {
             return Err(error(
                 OPERATION,
                 GeometryErrorKind::Unsupported,
-                "Rust spur gears require a straight external tooth band without a hub",
+                "Rust spur gears require a straight external tooth band",
             ));
         }
         if feature.is_nil() {
@@ -48,10 +49,25 @@ impl Solid {
             policy.minimum_feature_mm,
             policy.maximum_coordinate_mm,
         )
+        .and_then(|profile| {
+            if let Some(hub) = spec.hub {
+                profile.with_hub(
+                    Hub {
+                        radius_mm: hub.radius_mm,
+                        axial_start_mm: hub.axial_start_mm,
+                        axial_end_mm: hub.axial_end_mm,
+                    },
+                    policy.minimum_feature_mm,
+                    policy.maximum_coordinate_mm,
+                )
+            } else {
+                Ok(profile)
+            }
+        })
         .map_err(|cause| {
             error(
                 OPERATION,
-                if cause == multicad_rust_kernel::spur_gear::Error::Limit {
+                if cause == Error::Limit {
                     GeometryErrorKind::Limit
                 } else {
                     GeometryErrorKind::Input
@@ -111,34 +127,101 @@ impl SpurGearBody {
     }
 
     fn cap(&self, frame: PlaneFrame, index: usize) -> ReferenceFrame {
+        let z = index as f64 * self.profile.height_mm();
+        Self::cap_at(frame, index, z)
+    }
+
+    fn cap_at(frame: PlaneFrame, index: usize, z: f64) -> ReferenceFrame {
         ReferenceFrame {
-            origin_mm: position(frame, [0., 0., index as f64 * self.profile.height_mm()]),
+            origin_mm: position(frame, [0., 0., z]),
             u: frame.u,
             v: frame.v.map(|v| if index == 0 { -v } else { v }),
         }
     }
 
+    pub(crate) fn hub_end_on_rim(
+        &self,
+        frame: PlaneFrame,
+        facing_upper_cap: bool,
+    ) -> Option<(AnalyticGeometry, bool)> {
+        let extensions = self.profile.hub_extensions();
+        let near = usize::from(facing_upper_cap);
+        let far = 1 - near;
+        let (hub, hidden) = extensions[near]
+            .map(|hub| (hub, false))
+            .or_else(|| extensions[far].map(|hub| (hub, true)))?;
+        let outward = Self::cap_at(frame, near, hub.end_z_mm);
+        Some((hub_circle(outward, hub.radius_mm), hidden))
+    }
+
+    fn hub_end_area(&self, radius: f64) -> f64 {
+        let bore = self
+            .profile
+            .bore()
+            .and_then(normal_sweep::Edge::radius_mm)
+            .unwrap_or(0.);
+        PI * (radius - bore) * (radius + bore)
+    }
+
     pub(super) fn faces(&self, frame: PlaneFrame) -> Vec<Face> {
         let height = self.profile.height_mm();
-        (0..2)
-            .map(|index| {
+        let extensions = self.profile.hub_extensions();
+        extensions
+            .into_iter()
+            .enumerate()
+            .map(|(index, extension)| {
                 let cap = self.cap(frame, index);
                 Face {
                     index: index as u32,
                     plane: Some((cap.origin_mm, cap.normal())),
                     center_mm: cap.origin_mm,
-                    area_mm2: self.profile.area_mm2(),
+                    area_mm2: self.profile.area_mm2()
+                        - extension.map_or(0., |hub| self.hub_end_area(hub.radius_mm)),
                 }
             })
             .chain(self.sides().enumerate().map(|(i, edge)| {
                 let [x, y] = edge.centroid();
+                let [start, end] = if i < self.profile.outline().len() {
+                    [0., height]
+                } else {
+                    self.profile.axial_bounds()
+                };
                 Face {
                     index: i as u32 + 2,
                     plane: side_plane(frame, edge).map(|plane| (plane.origin_mm, plane.normal())),
-                    center_mm: position(frame, [x, y, height / 2.]),
-                    area_mm2: edge.length_mm() * height,
+                    center_mm: position(frame, [x, y, (start + end) / 2.]),
+                    area_mm2: edge.length_mm() * (end - start),
                 }
             }))
+            .chain(
+                extensions
+                    .into_iter()
+                    .enumerate()
+                    .filter_map(|(index, extension)| {
+                        let hub = extension?;
+                        let cap = Self::cap_at(frame, index, hub.end_z_mm);
+                        Some([
+                            Face {
+                                index: hub.wall_face,
+                                plane: None,
+                                center_mm: position(
+                                    frame,
+                                    [0., 0., (hub.gear_z_mm + hub.end_z_mm) / 2.],
+                                ),
+                                area_mm2: TAU
+                                    * hub.radius_mm
+                                    * (hub.gear_z_mm - hub.end_z_mm).abs(),
+                            },
+                            Face {
+                                index: hub.cap_face,
+                                plane: Some((cap.origin_mm, cap.normal())),
+                                center_mm: cap.origin_mm,
+                                area_mm2: self.hub_end_area(hub.radius_mm),
+                            },
+                        ])
+                    })
+                    .flatten(),
+            )
             .collect()
     }
 
@@ -150,7 +233,8 @@ impl SpurGearBody {
     ) -> TopologySnapshot {
         let outline = self.profile.outline();
         let count = outline.len();
-        let side_count = count + usize::from(self.profile.bore().is_some());
+        let bore = self.profile.bore().map(|_| count + 2);
+        let extensions = self.profile.hub_extensions();
         let origin = |role| {
             vec![Origin {
                 source: self.feature,
@@ -170,21 +254,48 @@ impl SpurGearBody {
             ))
         }))
         .chain(self.profile.bore().map(|_| origin("gear/bore".into())))
+        .chain(
+            extensions
+                .into_iter()
+                .enumerate()
+                .filter_map(|(i, hub)| {
+                    hub.map(|_| {
+                        [
+                            origin("gear/hub.side".into()),
+                            origin(
+                                if i == 0 {
+                                    "gear/hub.end.start"
+                                } else {
+                                    "gear/hub.end.end"
+                                }
+                                .into(),
+                            ),
+                        ]
+                    })
+                })
+                .flatten(),
+        )
         .collect();
         let mut build = Builder::new(origins);
         let at = |xy: [f64; 2], cap: usize| {
             position(frame, [xy[0], xy[1], cap as f64 * self.profile.height_mm()])
         };
-        for cap in 0..2 {
+        for (cap, extension) in extensions.into_iter().enumerate() {
             let plane = self.cap(frame, cap);
-            build.face(cap, Some(plane), Some(plane), 2..2 + side_count);
+            let cap_neighbor = extension.map(|hub| hub.wall_face as usize).or(bore);
+            build.face(
+                cap,
+                Some(plane),
+                Some(plane),
+                (2..2 + count).chain(cap_neighbor),
+            );
             let rim_frame = ReferenceFrame {
                 v: frame.v,
                 ..plane
             };
             for (i, edge) in self.sides().enumerate() {
-                build.non_face(rim(edge, rim_frame), &[cap, i + 2]);
                 if i < count {
+                    build.non_face(rim(edge, rim_frame), &[cap, i + 2]);
                     let prev = (i + count - 1) % count;
                     build.non_face(
                         AnalyticGeometry::Point {
@@ -192,7 +303,32 @@ impl SpurGearBody {
                         },
                         &[cap, prev + 2, i + 2],
                     );
+                } else {
+                    let (bore_cap, bore_frame) = extension.map_or((cap, rim_frame), |hub| {
+                        (
+                            hub.cap_face as usize,
+                            ReferenceFrame {
+                                v: frame.v,
+                                ..Self::cap_at(frame, cap, hub.end_z_mm)
+                            },
+                        )
+                    });
+                    build.non_face(rim(edge, bore_frame), &[bore_cap, i + 2]);
                 }
+            }
+            if let Some(hub) = extension {
+                let wall = hub.wall_face as usize;
+                let end = hub.cap_face as usize;
+                let outer = Self::cap_at(frame, cap, hub.end_z_mm);
+                build.face(wall, None, None, [cap, end]);
+                build.face(
+                    end,
+                    Some(outer),
+                    Some(outer),
+                    std::iter::once(wall).chain(bore),
+                );
+                build.non_face(hub_circle(plane, hub.radius_mm), &[cap, wall]);
+                build.non_face(hub_circle(outer, hub.radius_mm), &[wall, end]);
             }
         }
         for (i, edge) in self.sides().enumerate() {
@@ -211,7 +347,15 @@ impl SpurGearBody {
                     &[prev, side],
                 );
             } else {
-                build.face(side, None, None, [0, 1]);
+                build.face(
+                    side,
+                    None,
+                    None,
+                    extensions
+                        .into_iter()
+                        .enumerate()
+                        .map(|(i, hub)| hub.map_or(i, |hub| hub.cap_face as usize)),
+                );
             }
         }
         TopologySnapshot {
@@ -219,6 +363,15 @@ impl SpurGearBody {
             revision,
             elements: build.into_elements(),
         }
+    }
+}
+
+fn hub_circle(frame: ReferenceFrame, radius_mm: f64) -> AnalyticGeometry {
+    AnalyticGeometry::CircularArc {
+        frame,
+        radius_mm,
+        start_rad: 0.,
+        sweep_rad: TAU,
     }
 }
 

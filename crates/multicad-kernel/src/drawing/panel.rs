@@ -29,6 +29,14 @@ pub(super) fn project_spur_gear(
         let mut planar = Vec::new();
         let mut vectors = Vec::new();
         let mut points = 0usize;
+        if let Some((rim, hidden)) = body.hub_end_on_rim(frame, dot(axis, toward_viewer) > 0.)
+            && (!hidden || options.hidden_lines)
+        {
+            planar.push(Edge {
+                hidden,
+                curve: screen.curve(Some(rim))?,
+            });
+        }
         for (edge, geometry) in body.end_on_rims(frame) {
             match edge {
                 spur_gear::Edge::Planar(_) => {

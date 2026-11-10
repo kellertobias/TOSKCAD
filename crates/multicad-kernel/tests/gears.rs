@@ -112,6 +112,57 @@ fn rust_spur_axial_drawing_preserves_visible_flanks_and_bore() {
 }
 
 #[test]
+fn rust_spur_axial_view_marks_the_far_side_hub_hidden() {
+    use multicad_core::drawings::{VectorCurve, VectorRole};
+    use multicad_kernel::{DrawingProjection, DrawingSolid, PlaneFrame, project_drawing};
+
+    let spec = InvoluteGear {
+        hub: Some(GearHub {
+            radius_mm: 8.,
+            axial_start_mm: -3.,
+            axial_end_mm: 2.,
+        }),
+        ..normal(24, 0., GearSweep::Spur)
+    };
+    let solid =
+        Solid::rust_spur_gear_named(spec, EntityId::new(), GeometryPolicy::default()).unwrap();
+    let inputs = [DrawingSolid {
+        solid: &solid,
+        hatch: None,
+    }];
+    for (reverse, hidden_lines, expected) in [
+        (false, false, None),
+        (false, true, Some(VectorRole::Hidden)),
+        (true, false, Some(VectorRole::Visible)),
+        (true, true, Some(VectorRole::Visible)),
+    ] {
+        let frame = PlaneFrame {
+            v: [0., if reverse { -1. } else { 1. }, 0.],
+            ..Default::default()
+        };
+        let vectors = project_drawing(
+            &inputs,
+            DrawingProjection {
+                frame,
+                hidden_lines,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let hub = vectors
+            .iter()
+            .filter_map(|vector| {
+                matches!(vector.curve, VectorCurve::Ellipse {
+                center: [0., 0.], major_mm: 8., minor_mm: 8., start_rad: 0., end_rad, ..
+            } if end_rad == TAU)
+                .then_some(vector.role)
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(hub, expected.into_iter().collect::<Vec<_>>());
+    }
+}
+
+#[test]
 fn rust_spur_flank_projects_into_sketch_with_bounded_curve_error() {
     use multicad_kernel::{
         BRepSelection, CurvedEdge2d, GeometryErrorKind, PlaneFrame, SketchReferenceGeometry,
