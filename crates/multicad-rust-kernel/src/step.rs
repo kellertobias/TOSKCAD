@@ -18,9 +18,11 @@ use crate::{
 use std::{collections::BTreeMap, fmt, fmt::Write, ops::Range};
 
 mod normal_sweep;
+mod pierced_sweep;
 mod stadium;
 mod writer;
 pub use normal_sweep::write_normal_sweep;
+pub use pierced_sweep::write_pierced_normal_sweep;
 use stadium::StadiumTrim;
 pub use stadium::write_stadium_prism;
 use writer::write_one;

@@ -52,7 +52,7 @@ impl Shell<'_, '_> {
             .map(|use_| use_.face)
     }
 
-    fn opposite_line(&self, edges: &[u32], edge: u32) -> Option<u32> {
+    pub(super) fn opposite_line(&self, edges: &[u32], edge: u32) -> Option<u32> {
         let first = &self.edges[&edge].vertices;
         let mut opposed = edges.iter().copied().filter(|id| {
             let candidate = &self.edges[id];

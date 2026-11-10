@@ -244,7 +244,28 @@ impl Writer {
         reverse_sweep: bool,
     ) -> Result<(), StepError> {
         let placement = Placement::new(origin, u, v)?;
-        self.append(|file| normal_sweep::encode(file, sweep, placement, reverse_sweep))
+        self.append(|file| normal_sweep::encode(file, sweep, &[], placement, reverse_sweep))
+    }
+
+    /// Append an exact normal sweep with certified paired through-openings.
+    pub fn append_pierced_normal_sweep(
+        &mut self,
+        pierced: &crate::normal_sweep::PiercedSweep,
+        origin: Point,
+        u: Point,
+        v: Point,
+        reverse_sweep: bool,
+    ) -> Result<(), StepError> {
+        let placement = Placement::new(origin, u, v)?;
+        self.append(|file| {
+            normal_sweep::encode(
+                file,
+                pierced.sweep(),
+                pierced.openings(),
+                placement,
+                reverse_sweep,
+            )
+        })
     }
 
     pub fn append_trimmed_sweep(

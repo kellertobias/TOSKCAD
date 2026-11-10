@@ -289,14 +289,16 @@ impl NormalSweepBody {
         writer: &mut multicad_rust_kernel::step::Writer,
         frame: PlaneFrame,
     ) -> Result<(), multicad_rust_kernel::step::StepError> {
-        if !self.supports_step() {
-            return Err(multicad_rust_kernel::step::StepError::Unsupported);
+        if let Some(openings) = &self.openings {
+            return writer.append_pierced_normal_sweep(
+                &openings.geometry,
+                frame.origin,
+                frame.u,
+                frame.v,
+                self.reverse,
+            );
         }
         writer.append_normal_sweep(&self.sweep, frame.origin, frame.u, frame.v, self.reverse)
-    }
-
-    pub(super) fn supports_step(&self) -> bool {
-        !self.has_piercings()
     }
 
     pub(crate) fn has_piercings(&self) -> bool {

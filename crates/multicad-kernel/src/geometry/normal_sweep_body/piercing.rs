@@ -14,7 +14,7 @@ pub struct SweepOpening {
 }
 
 pub(super) struct Openings {
-    geometry: PiercedSweep,
+    pub(super) geometry: PiercedSweep,
     origins: Vec<Vec<Origin>>,
 }
 
@@ -108,10 +108,6 @@ impl Solid {
             });
             origins.push(curve_origins);
         }
-        let mut unique = BTreeSet::new();
-        if !origins.iter().flatten().all(|origin| unique.insert(origin)) {
-            return Err(input("Sweep openings need distinct authored edge origins"));
-        }
         let geometry = PiercedSweep::new(
             &body.sweep,
             specs,
@@ -129,11 +125,38 @@ impl Solid {
                 format!("Sweep openings do not fit their paired walls: {cause:?}"),
             )
         })?;
+        self.with_certified_sweep_openings(geometry, origins)
+    }
+
+    pub(in crate::geometry) fn with_certified_sweep_openings(
+        &self,
+        geometry: PiercedSweep,
+        origins: Vec<Vec<Origin>>,
+    ) -> Result<Self, GeometryError> {
+        let (body, placement) = self
+            .normal_sweep_body()
+            .ok_or_else(|| input("A certified sweep opening requires a normal-swept solid"))?;
+        if geometry.sweep() != &body.sweep
+            || geometry.openings().len() != origins.len()
+            || geometry
+                .openings()
+                .iter()
+                .zip(&origins)
+                .any(|(opening, origins)| opening.spec().outline.len() != origins.len())
+        {
+            return Err(input(
+                "Certified sweep openings must match the exact source stock and contour origins",
+            ));
+        }
+        let mut unique = BTreeSet::new();
+        if !origins.iter().flatten().all(|origin| unique.insert(origin)) {
+            return Err(input("Sweep openings need distinct authored edge origins"));
+        }
         let mut body = body.clone();
         body.openings = Some(Rc::new(Openings { geometry, origins }));
         Ok(Self {
             body: SolidBody::NormalSweep(Rc::new(body), placement),
-            policy,
+            policy: self.policy,
             provenance: vec![],
             rust_origins: self.rust_origins.clone(),
         })

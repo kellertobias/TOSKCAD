@@ -16,6 +16,14 @@ pub(super) struct PartialCylinder {
     outward: bool,
 }
 
+pub(super) struct IndexedSweep {
+    pub(super) origin_mm: Point,
+    pub(super) u: Point,
+    pub(super) v: Point,
+    pub(super) sweep: Sweep,
+    pub(super) ordinals: Vec<u32>,
+}
+
 impl PartialCylinder {
     pub(super) fn flux(&self, anchor: Point) -> f64 {
         let sign = if self.outward { 1. } else { -1. };
@@ -79,6 +87,25 @@ impl Shell<'_, '_> {
         direction: Point,
         height_mm: f64,
     ) -> Option<ImportSolid> {
+        let indexed = self.indexed_normal_sweep_profile(ids, lower, direction, height_mm)?;
+        Some(ImportSolid {
+            origin_mm: indexed.origin_mm,
+            u: indexed.u,
+            v: indexed.v,
+            height_mm,
+            profile: ImportProfile::NormalSweep {
+                sweep: indexed.sweep,
+            },
+        })
+    }
+
+    pub(super) fn indexed_normal_sweep_profile(
+        &self,
+        ids: &[u32],
+        lower: usize,
+        direction: Point,
+        height_mm: f64,
+    ) -> Option<IndexedSweep> {
         let [u, v] = frame_axes(direction, reference_axis(direction));
         let origin_mm = ids
             .iter()
@@ -115,8 +142,8 @@ impl Shell<'_, '_> {
             };
             let curve = self.profile_edge(&directed, &plane).ok()?;
             if matches!(curve, ProfileEdge::Circle { .. }) {
-                rings.push(vec![curve]);
-            } else if successors.insert(start, (end, curve)).is_some() {
+                rings.push(vec![(id, curve)]);
+            } else if successors.insert(start, (end, id, curve)).is_some() {
                 return None;
             }
         }
@@ -124,8 +151,8 @@ impl Shell<'_, '_> {
             let mut current = start;
             let mut ring = Vec::new();
             loop {
-                let (next, edge) = successors.remove(&current)?;
-                ring.push(edge);
+                let (next, id, edge) = successors.remove(&current)?;
+                ring.push((id, edge));
                 if next == start {
                     break;
                 }
@@ -133,17 +160,23 @@ impl Shell<'_, '_> {
             }
             rings.push(ring);
         }
-        let exterior = rings
+        let (mut ordinals, mut profile): (Vec<Vec<u32>>, Vec<Vec<ProfileEdge>>) = rings
+            .into_iter()
+            .map(|ring| ring.into_iter().unzip())
+            .unzip();
+        let exterior = profile
             .iter()
             .position(|ring| crate::normal_sweep::signed_area(ring) > 0.)?;
-        rings.swap(0, exterior);
-        let sweep = Sweep::new(rings, height_mm, self.tolerance, self.tolerance.next_up()).ok()?;
-        Some(ImportSolid {
+        ordinals.swap(0, exterior);
+        profile.swap(0, exterior);
+        let sweep =
+            Sweep::new(profile, height_mm, self.tolerance, self.tolerance.next_up()).ok()?;
+        Some(IndexedSweep {
             origin_mm,
             u,
             v,
-            height_mm,
-            profile: ImportProfile::NormalSweep { sweep },
+            sweep,
+            ordinals: ordinals.into_iter().flatten().collect(),
         })
     }
 

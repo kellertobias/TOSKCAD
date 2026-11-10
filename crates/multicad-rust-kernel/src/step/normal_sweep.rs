@@ -1,5 +1,5 @@
 use super::*;
-use crate::normal_sweep::{Edge, Sweep};
+use crate::normal_sweep::{CertifiedPiercing, Edge, Sweep};
 
 /// Write a mixed profile sweep as planar and partial cylindrical faces.
 pub fn write_normal_sweep(
@@ -100,16 +100,21 @@ impl Rim {
 pub(super) fn encode(
     file: &mut StepFile,
     sweep: &Sweep,
+    piercings: &[CertifiedPiercing],
     placement: Placement,
     reverse: bool,
 ) -> Result<Entity, StepError> {
     let height = sweep.height_mm();
     let levels = if reverse { [-height, 0.] } else { [0., height] };
     let normal = placement.normal;
+    let openings = pierced_sweep::encode_openings(file, piercings, &placement, reverse)?;
     let supports = levels.map(|z| file.point(placement.point_f64([0.; 2], z)));
     let mut caps = [Vec::new(), Vec::new()];
     let mut walls = Vec::new();
+    let mut side_ordinal = 0;
     for (index, ring) in sweep.rings().iter().enumerate() {
+        let ring_ordinal = side_ordinal;
+        side_ordinal += ring.len();
         let outer = index == 0;
         if let [
             Edge::Circle {
@@ -176,8 +181,12 @@ pub(super) fn encode(
                 file.face_on(&[bound], cylinder, !clockwise)
             } else {
                 let tangent = direction(low.vertices[i].point, low.vertices[next].point)?;
+                let mut boundaries = vec![bound];
+                if let Some(holes) = openings.holes.get(&(ring_ordinal + i)) {
+                    boundaries.extend(holes);
+                }
                 file.face(
-                    &[bound],
+                    &boundaries,
                     low.vertices[i].cartesian,
                     cross(tangent, normal),
                     tangent,
@@ -191,6 +200,7 @@ pub(super) fn encode(
         file.face(&caps[1], supports[1], normal, placement.u),
     ];
     faces.extend(walls);
+    faces.extend(openings.walls);
     Ok(file.solid(&faces))
 }
 

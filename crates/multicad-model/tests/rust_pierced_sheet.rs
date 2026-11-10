@@ -5,6 +5,7 @@ use multicad_core::{
     model::{self, Cutout, CutoutFace, CutoutShape, length},
     project_file,
 };
+use multicad_kernel::{GeometryPolicy, Solid};
 use multicad_model::{
     Compiler, GeometryBackend,
     export::sheet_dxf::{SheetDxfLayers, encode_developed},
@@ -66,6 +67,20 @@ fn saved_front_panel_keeps_all_folded_openings_and_develops_them_into_dxf() {
         .manufacturing_mesh_with_receipt(Default::default())
         .unwrap();
     assert!(!receipt.mesh.indices.is_empty());
+    let temporary = tempfile::tempdir().unwrap();
+    let path = temporary.path().join("pierced-front-panel.step");
+    solid.write_step(&path).unwrap();
+    let policy = GeometryPolicy::default();
+    for imported in [
+        Solid::read_step(&path, policy).unwrap(),
+        Solid::import_rust_step(&std::fs::read_to_string(&path).unwrap(), feature, policy).unwrap(),
+    ] {
+        assert_eq!(
+            imported.faces().unwrap().len(),
+            solid.faces().unwrap().len()
+        );
+        near(imported.volume_mm3().unwrap(), solid.volume_mm3().unwrap());
+    }
 
     let [developed, expected] = [&rust, &native].map(|m| m.unfold(&document, part).unwrap());
     assert_eq!(developed.bends, expected.bends);

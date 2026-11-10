@@ -287,10 +287,7 @@ fn certify(
             .all(|(&a, &b)| {
                 let [a, b] = [a, b].map(|edge| sub(edge.end(), edge.start()));
                 dot(a, b).abs() <= ANGULAR * length(a) * length(b)
-            }) =>
-        {
-            ()
-        }
+            }) => (),
         _ => return Err(invalid),
     }
     opening.outline = ring.clone();

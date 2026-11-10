@@ -156,72 +156,32 @@ impl Solid {
         let dimension = |value| convert(value, policy.linear_tolerance_mm);
         match profile {
             ImportProfile::NormalSweep { sweep } => {
-                let mut origins = Vec::new();
-                let mut wires = sweep.rings().iter().map(|ring| {
-                    ring.iter()
-                        .map(|&edge| {
-                            let (curve, origin) = match edge {
-                                SweepEdge::Line { a, b } => (
-                                    CurvedEdge2d::Line { a, b },
-                                    straight_origin(feature, frame, a, b),
-                                ),
-                                SweepEdge::Arc {
-                                    center,
-                                    a,
-                                    b,
-                                    clockwise,
-                                } => {
-                                    let mut endpoints = [frame.point(a), frame.point(b)];
-                                    endpoints.sort_unstable_by(compare_points);
-                                    let origin = feature_origin(
-                                        feature,
-                                        "arc",
-                                        endpoints
-                                            .into_iter()
-                                            .flatten()
-                                            .chain(frame.point(edge.point(0.5))),
-                                    );
-                                    (
-                                        CurvedEdge2d::Arc {
-                                            center,
-                                            a,
-                                            b,
-                                            clockwise,
-                                        },
-                                        origin,
+                Self::from_imported_normal_sweep(&sweep, frame, feature, policy)
+            }
+            ImportProfile::PiercedNormalSweep { sweep } => {
+                let stock =
+                    Self::from_imported_normal_sweep(sweep.sweep(), frame, feature, policy)?;
+                let origins = sweep
+                    .openings()
+                    .iter()
+                    .map(|opening| {
+                        opening
+                            .spec()
+                            .outline
+                            .iter()
+                            .map(|edge| {
+                                let coordinates = [0., 0.5, 1.].into_iter().flat_map(|t| {
+                                    crate::rust_prism_topology::position(
+                                        frame,
+                                        opening.point(edge.point(t), false),
                                     )
-                                }
-                                SweepEdge::Circle {
-                                    center, radius_mm, ..
-                                } => {
-                                    let origin = feature_origin(
-                                        feature,
-                                        "circle",
-                                        frame.point(center).into_iter().chain([radius_mm]),
-                                    );
-                                    (CurvedEdge2d::Circle { center, radius_mm }, origin)
-                                }
-                            };
-                            origins.push(origin);
-                            curve
-                        })
-                        .collect()
-                });
-                let outer = wires
-                    .next()
-                    .ok_or_else(|| invalid("STEP normal sweep has no outer ring"))?;
-                let holes = wires.collect();
-                Self::rust_extrude_normal_profile_named(
-                    &CurvedProfile {
-                        frame,
-                        outer,
-                        holes,
-                    },
-                    height_mm,
-                    feature,
-                    &origins,
-                    policy,
-                )
+                                });
+                                feature_origin(feature, "sweep-opening", coordinates)
+                            })
+                            .collect()
+                    })
+                    .collect();
+                stock.with_certified_sweep_openings(sweep, origins)
             }
             ImportProfile::Orthogonal { solid } => {
                 Self::from_imported_orthogonal(solid, frame, feature, policy)
@@ -434,6 +394,80 @@ impl Solid {
                 stock.with_polygon_pockets(pockets, origins)
             }
         }
+    }
+
+    fn from_imported_normal_sweep(
+        sweep: &multicad_rust_kernel::normal_sweep::Sweep,
+        frame: PlaneFrame,
+        feature: EntityId,
+        policy: GeometryPolicy,
+    ) -> Result<Self, GeometryError> {
+        let mut origins = Vec::new();
+        let mut wires = sweep.rings().iter().map(|ring| {
+            ring.iter()
+                .map(|&edge| {
+                    let (curve, origin) = match edge {
+                        SweepEdge::Line { a, b } => (
+                            CurvedEdge2d::Line { a, b },
+                            straight_origin(feature, frame, a, b),
+                        ),
+                        SweepEdge::Arc {
+                            center,
+                            a,
+                            b,
+                            clockwise,
+                        } => {
+                            let mut endpoints = [frame.point(a), frame.point(b)];
+                            endpoints.sort_unstable_by(compare_points);
+                            let origin = feature_origin(
+                                feature,
+                                "arc",
+                                endpoints
+                                    .into_iter()
+                                    .flatten()
+                                    .chain(frame.point(edge.point(0.5))),
+                            );
+                            (
+                                CurvedEdge2d::Arc {
+                                    center,
+                                    a,
+                                    b,
+                                    clockwise,
+                                },
+                                origin,
+                            )
+                        }
+                        SweepEdge::Circle {
+                            center, radius_mm, ..
+                        } => {
+                            let origin = feature_origin(
+                                feature,
+                                "circle",
+                                frame.point(center).into_iter().chain([radius_mm]),
+                            );
+                            (CurvedEdge2d::Circle { center, radius_mm }, origin)
+                        }
+                    };
+                    origins.push(origin);
+                    curve
+                })
+                .collect()
+        });
+        let outer = wires
+            .next()
+            .ok_or_else(|| invalid("STEP normal sweep has no outer ring"))?;
+        let holes = wires.collect();
+        Self::rust_extrude_normal_profile_named(
+            &CurvedProfile {
+                frame,
+                outer,
+                holes,
+            },
+            sweep.height_mm(),
+            feature,
+            &origins,
+            policy,
+        )
     }
 
     fn from_imported_polygon(

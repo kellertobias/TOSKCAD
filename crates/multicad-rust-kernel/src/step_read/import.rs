@@ -10,6 +10,7 @@ use std::cmp::Ordering;
 mod chamfered;
 use chamfered::{Bore, canonical_bores};
 mod orthogonal;
+mod pierced;
 mod pocketed;
 use pocketed::{PocketRim, canonical_pockets};
 
@@ -48,6 +49,9 @@ pub enum ImportProfile {
     },
     NormalSweep {
         sweep: normal_sweep::Sweep,
+    },
+    PiercedNormalSweep {
+        sweep: normal_sweep::PiercedSweep,
     },
     Orthogonal {
         /// Certified material and directed boundary in the local frame.
@@ -115,6 +119,7 @@ fn recognize_member(shell: &Shell<'_, '_>, faces: &[Face]) -> Result<(Readback, 
     let solid = match shell
         .recognize(faces)
         .or_else(|| shell.pocketed_polygon(faces))
+        .or_else(|| shell.pierced_normal_sweep(faces))
     {
         Some(solid) => solid,
         None => shell.orthogonal(faces)?,
