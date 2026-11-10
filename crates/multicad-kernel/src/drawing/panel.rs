@@ -5,8 +5,10 @@ use multicad_rust_kernel::curved_projection::{Curve, Edge, Ellipse};
 use std::{collections::BTreeMap, f64::consts::TAU};
 
 mod chamfered;
+mod normal_sweep;
 mod spline;
 pub(super) use chamfered::project_chamfered_bores;
+pub(super) use normal_sweep::project_normal_sweep;
 pub(super) use spline::{contains_spline_sweep, project_spline_sweep};
 
 type Point = [f64; 2];
@@ -106,46 +108,6 @@ pub(super) fn project_spur_gear(
         vectors.extend(curved::publish(planar, remaining, 0)?);
         Ok(vectors)
     })())
-}
-
-pub(super) fn project_normal_sweep(
-    input: &DrawingSolid<'_>,
-    options: DrawingProjection,
-) -> Option<Result<Vec<ProjectedVector>, GeometryError>> {
-    let (body, frame) = input.solid.normal_sweep_body()?;
-    let [u, v, toward_viewer] = planar::view_axes(options.frame);
-    let axis = frame.normal();
-    if dot(axis, u).hypot(dot(axis, v)) > 32. * f64::EPSILON {
-        return None;
-    }
-    if options.detail.is_some() {
-        return Some(Err(err(
-            GeometryErrorKind::Unsupported,
-            "Rust face-on normal-sweep projection does not yet support a detail crop",
-        )));
-    }
-    if options.hidden_lines && body.has_piercings() {
-        return Some(Err(err(
-            GeometryErrorKind::Unsupported,
-            "Rust face-on sweep projection does not yet support hidden through-cut edges",
-        )));
-    }
-    let screen = Screen {
-        origin: options.frame.origin,
-        axes: [u, v],
-        toward_viewer,
-    };
-    // The rear cap and every axial seam project onto the visible cap.
-    let edges = body
-        .end_on_rims(frame)
-        .map(|rim| {
-            Ok(Edge {
-                hidden: false,
-                curve: screen.curve(Some(rim))?,
-            })
-        })
-        .collect::<Result<Vec<_>, _>>();
-    Some(edges.and_then(|edges| curved::publish(edges, options, 0)))
 }
 
 pub(super) fn project(

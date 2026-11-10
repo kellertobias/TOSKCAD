@@ -310,10 +310,6 @@ impl NormalSweepBody {
         writer.append_normal_sweep(&self.sweep, frame.origin, frame.u, frame.v, self.reverse)
     }
 
-    pub(crate) fn has_piercings(&self) -> bool {
-        self.openings.is_some()
-    }
-
     pub(crate) fn planar_loops(&self, face: u32) -> Vec<Vec<(u32, bool)>> {
         let count = self.sides.len() as u32;
         if face < 2 {

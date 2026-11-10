@@ -211,6 +211,18 @@ impl NormalSweepBody {
         }
     }
 
+    pub(crate) fn drawing_piercings(
+        &self,
+        placement: PlaneFrame,
+    ) -> impl Iterator<Item = ([ReferenceFrame; 2], &[Edge])> {
+        self.cut_iter().map(move |opening| {
+            (
+                [false, true].map(|end| self.cut_frame(placement, opening.spec, end)),
+                opening.spec.outline.as_slice(),
+            )
+        })
+    }
+
     pub(super) fn pierced_volume(&self) -> Option<f64> {
         self.openings
             .as_ref()
