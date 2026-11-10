@@ -1,6 +1,6 @@
 use multicad_core::{document::EntityId, project_file, references::AnalyticGeometry};
 use multicad_kernel::Solid;
-use multicad_model::{Compiler, GeometryBackend};
+use multicad_model::{Compiler, GeometryBackend, export::verify_rust_step_shape};
 
 #[test]
 fn saved_toolcase_drawer_keeps_exact_floor_fillet_intersections() {
@@ -56,23 +56,31 @@ fn saved_toolcase_drawer_keeps_exact_floor_fillet_intersections() {
         assert!(actual.supports_step_export());
         let path = scratch.path().join(format!("drawer-{feature}.step"));
         actual.write_step(&path).unwrap();
-        assert!(
-            std::fs::read_to_string(&path)
-                .unwrap()
-                .contains("=ELLIPSE(")
-        );
-        let independent = Solid::read_step(&path, compiler.policy).unwrap();
-        assert_eq!(independent.solid_count().unwrap(), 1);
-        near(
-            independent.volume_mm3().unwrap(),
-            expected.volume_mm3().unwrap(),
-        );
-        near(area(&independent), area(expected));
-        let exported = independent.bounds().unwrap();
-        for i in 0..3 {
-            near(exported.min[i], b.min[i]);
-            near(exported.max[i], b.max[i]);
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("=ELLIPSE("));
+        for independent in [
+            Solid::read_step(&path, compiler.policy).unwrap(),
+            Solid::import_rust_step(&content, feature, compiler.policy).unwrap(),
+        ] {
+            assert_eq!(independent.solid_count().unwrap(), 1);
+            near(
+                independent.volume_mm3().unwrap(),
+                expected.volume_mm3().unwrap(),
+            );
+            near(area(&independent), area(expected));
+            let exported = independent.bounds().unwrap();
+            for i in 0..3 {
+                near(exported.min[i], b.min[i]);
+                near(exported.max[i], b.max[i]);
+            }
         }
+        let receipt = verify_rust_step_shape(
+            &path,
+            &rust.snapshot().shapes[&feature],
+            compiler.policy.linear_tolerance_mm,
+        )
+        .unwrap();
+        near(receipt, actual.volume_mm3().unwrap());
     }
     for feature in features {
         let actual = rust.solid(feature).unwrap();

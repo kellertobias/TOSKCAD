@@ -9,17 +9,62 @@ pub(super) fn read_members<T>(
     single: bool,
     member: impl Fn(&Shell<'_, '_>, &[Face]) -> Result<T>,
 ) -> Result<Vec<T>> {
+    read_members_by(input, tolerance, allow_circles, single, |shell, id, _| {
+        let faces = shell.validate_faces(shell.member_faces(id)?)?;
+        member(shell, &faces)
+    })
+}
+
+pub(super) fn read_members_with_warped<T>(
+    input: &str,
+    tolerance: f64,
+    single: bool,
+    member: impl Fn(&Shell<'_, '_>, &[Face]) -> Result<T>,
+    warped_member: impl Fn(Readback, ImportedWarped) -> T,
+) -> Result<Vec<T>> {
+    read_members_by(input, tolerance, true, single, |shell, id, has_ellipses| {
+        let regular = shell
+            .member_faces(id)
+            .and_then(|face_ids| shell.validate_faces(face_ids))
+            .and_then(|faces| member(shell, &faces));
+        match regular {
+            Err(ReadError::Invalid | ReadError::Unsupported) if has_ellipses => {
+                // The independent verifier accepts only its own complete
+                // chart class, and does not reuse a partially parsed shell.
+                let mut clean = Shell::new(shell.entities, shell.tolerance, true);
+                match warped::read_member(&mut clean, id) {
+                    Ok((readback, import)) => Ok(warped_member(readback, import)),
+                    Err(ReadError::Limit) => Err(ReadError::Limit),
+                    Err(_) => regular,
+                }
+            }
+            _ => regular,
+        }
+    })
+}
+
+pub(super) fn read_members_by<T>(
+    input: &str,
+    tolerance: f64,
+    allow_circles: bool,
+    single: bool,
+    member: impl Fn(&mut Shell<'_, '_>, u32, bool) -> Result<T>,
+) -> Result<Vec<T>> {
     let entities = parse_entities(input, tolerance)?;
     let solids = Shell::new(&entities, tolerance, allow_circles).represented_solids(single)?;
     let topology_count = count_flat_topology(entities.values().flatten())?;
+    let has_ellipses = allow_circles
+        && entities
+            .values()
+            .any(|items| matches!(items.as_slice(), [item] if item.name == "ELLIPSE"));
     let mut owners = BTreeMap::new();
     let members = solids
         .into_iter()
         .map(|id| {
             let mut shell = Shell::new(&entities, tolerance, allow_circles);
-            let faces = shell.validate_faces(shell.member_faces(id)?)?;
+            let result = member(&mut shell, id, has_ellipses)?;
             claim_topology(&shell, id, &mut owners)?;
-            member(&shell, &faces)
+            Ok(result)
         })
         .collect::<Result<Vec<_>>>()?;
     if owners.len() != topology_count {

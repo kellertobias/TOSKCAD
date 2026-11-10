@@ -12,6 +12,7 @@ mod clipping;
 mod difference;
 mod shell;
 mod slab;
+mod verify_boundary;
 mod vertical_profile;
 pub use slab::Slab;
 pub use vertical_profile::{ProfileFace, ProfilePiece};

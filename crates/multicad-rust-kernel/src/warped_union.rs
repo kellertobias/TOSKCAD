@@ -66,7 +66,7 @@ pub struct Face {
     pub source_face: usize,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Shell {
     vertices: Vec<Point>,
     edges: Vec<Edge>,

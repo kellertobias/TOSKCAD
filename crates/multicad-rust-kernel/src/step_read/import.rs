@@ -90,6 +90,9 @@ pub enum ImportProfile {
         inner_radius_mm: f64,
         outer_radius_mm: f64,
     },
+    WarpedUnion {
+        shell: crate::warped_union::Shell,
+    },
     AxialProfileStack {
         stack: crate::axial_profile_stack::ProfileStack,
     },
@@ -115,9 +118,15 @@ pub struct ImportSolid {
 /// Decode a single analytic extrusion or rectilinear solid from a verified
 /// STEP shell. Orthogonal solids can contain blind and through pockets.
 pub fn read_import_solid(input: &str, tolerance_mm: f64) -> Result<(Readback, ImportSolid)> {
-    compound::read_members(input, tolerance_mm, true, true, recognize_member)?
-        .pop()
-        .ok_or(ReadError::Invalid)
+    compound::read_members_with_warped(
+        input,
+        tolerance_mm,
+        true,
+        recognize_member,
+        recognize_warped,
+    )?
+    .pop()
+    .ok_or(ReadError::Invalid)
 }
 
 /// Decode the independent analytic members of one flat advanced BREP representation.
@@ -125,7 +134,33 @@ pub fn read_import_compound(
     input: &str,
     tolerance_mm: f64,
 ) -> Result<Vec<(Readback, ImportSolid)>> {
-    compound::read_members(input, tolerance_mm, true, false, recognize_member)
+    compound::read_members_with_warped(
+        input,
+        tolerance_mm,
+        false,
+        recognize_member,
+        recognize_warped,
+    )
+}
+
+fn recognize_warped(readback: Readback, imported: ImportedWarped) -> (Readback, ImportSolid) {
+    let ImportedWarped {
+        shell,
+        origin_mm,
+        u,
+        v,
+    } = imported;
+    let [lo, hi] = shell.bounds_mm();
+    (
+        readback,
+        ImportSolid {
+            origin_mm,
+            u,
+            v,
+            height_mm: hi[2] - lo[2],
+            profile: ImportProfile::WarpedUnion { shell },
+        },
+    )
 }
 
 fn recognize_member(shell: &Shell<'_, '_>, faces: &[Face]) -> Result<(Readback, ImportSolid)> {

@@ -78,6 +78,28 @@ fn member_signature(readback: &Readback) -> ContentHash {
     for entry in edges.into_iter().flatten() {
         bytes.extend(entry.to_le_bytes());
     }
+    let mut ellipses = readback
+        .ellipses
+        .iter()
+        .map(|arc| {
+            let geometry = arc.ellipse();
+            let mut ends = arc.endpoints();
+            ends.sort_unstable_by(compare_points);
+            ends.into_iter()
+                .flatten()
+                .chain(geometry.center_mm())
+                .chain(unsigned_normal(geometry.major_axis()))
+                .chain(geometry.semiaxes_mm())
+                .chain(geometry.point_at(arc.start_rad() + arc.sweep_rad() * 0.5))
+                .chain([arc.sweep_rad().abs()])
+                .map(|value| if value == 0. { 0 } else { value.to_bits() })
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    ellipses.sort_unstable();
+    for entry in ellipses.into_iter().flatten() {
+        bytes.extend(entry.to_le_bytes());
+    }
     ContentHash::of(&bytes)
 }
 
@@ -131,7 +153,8 @@ impl Solid {
             end[1] += readback.edges_mm.len()
                 + readback.circles.len()
                 + readback.semicircles.len()
-                + readback.arcs.len();
+                + readback.arcs.len()
+                + readback.ellipses.len();
             ends.push(end);
         }
         let mut members = vec![Vec::new(); readbacks.len()];

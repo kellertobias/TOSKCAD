@@ -1,6 +1,6 @@
 use multicad_core::{document::EntityId, project_file, references::AnalyticGeometry};
 use multicad_kernel::Solid;
-use multicad_model::{Compiler, GeometryBackend};
+use multicad_model::{Compiler, GeometryBackend, export::verify_rust_step_shape};
 
 #[test]
 fn saved_toolcase_drawer_cuts_front_pull_and_lead_ins_without_losing_fillet_geometry() {
@@ -59,11 +59,25 @@ fn saved_toolcase_drawer_cuts_front_pull_and_lead_ins_without_losing_fillet_geom
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("drawer.step");
     actual.write_step(&path).unwrap();
-    let imported = Solid::read_step(&path, compiler.policy).unwrap();
-    assert_eq!(imported.solid_count().unwrap(), 1);
+    let content = std::fs::read_to_string(&path).unwrap();
+    for imported in [
+        Solid::read_step(&path, compiler.policy).unwrap(),
+        Solid::import_rust_step(&content, feature, compiler.policy).unwrap(),
+    ] {
+        assert_eq!(imported.solid_count().unwrap(), 1);
+        near(
+            imported.volume_mm3().unwrap(),
+            expected.volume_mm3().unwrap(),
+        );
+        near(area(&imported), area(expected));
+    }
     near(
-        imported.volume_mm3().unwrap(),
+        verify_rust_step_shape(
+            &path,
+            &rust.snapshot().shapes[&feature],
+            compiler.policy.linear_tolerance_mm,
+        )
+        .unwrap(),
         expected.volume_mm3().unwrap(),
     );
-    near(area(&imported), area(expected));
 }

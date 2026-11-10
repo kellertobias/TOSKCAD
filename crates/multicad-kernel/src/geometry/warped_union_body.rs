@@ -22,7 +22,7 @@ pub(crate) struct WarpedUnionBody {
     pub(super) geometry: Shell,
     origins: Vec<Vec<Origin>>,
     anchors: Vec<Vec<AnchoredFrame>>,
-    chart: Chart,
+    chart: Option<Chart>,
 }
 
 #[derive(Clone)]
@@ -223,6 +223,41 @@ impl Solid {
             _ => None,
         }
     }
+
+    pub(super) fn from_imported_warped_union(
+        geometry: Shell,
+        frame: PlaneFrame,
+        feature: EntityId,
+        policy: GeometryPolicy,
+    ) -> Result<Self, GeometryError> {
+        let origins: Vec<_> = (0..geometry.faces().len())
+            .map(|i| {
+                vec![Origin {
+                    source: feature,
+                    role: format!("step.warped-face.{i}"),
+                }]
+            })
+            .collect();
+        let result = Self {
+            body: SolidBody::WarpedUnion(
+                Rc::new(WarpedUnionBody {
+                    feature,
+                    geometry,
+                    anchors: vec![Vec::new(); origins.len()],
+                    origins,
+                    chart: None,
+                }),
+                frame,
+            ),
+            policy,
+            provenance: vec![],
+            rust_origins: vec![],
+        };
+        let bounds = result.bounds()?;
+        policy.point(bounds.min)?;
+        policy.point(bounds.max)?;
+        Ok(result)
+    }
 }
 
 impl WarpedUnionBody {
@@ -286,7 +321,7 @@ impl WarpedUnionBody {
                     geometry,
                     origins,
                     anchors,
-                    chart,
+                    chart: Some(chart),
                 }),
                 PlaneFrame::default(),
             ),

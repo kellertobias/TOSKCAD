@@ -24,7 +24,7 @@ impl Solid {
             rotation: axes,
             translation_mm: axes.map(|axis| -dot(axis, frame.origin)),
         };
-        let mut chart = body.chart.clone();
+        let mut chart = body.chart.clone()?;
         for tool in tools {
             let local = match tool.transformed(inverse) {
                 Ok(local) => local,

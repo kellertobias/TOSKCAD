@@ -10,6 +10,7 @@ use multicad_rust_kernel::orthogonal_pockets::OrthogonalPocket;
 use multicad_rust_kernel::step_read::{
     self, ArcEdge, CircleEdge, ImportProfile, ImportSolid, ReadError, Readback, SemicircleEdge,
 };
+use multicad_rust_kernel::trim_curve::{Ellipse, EllipseArc};
 use std::f64::consts::{PI, TAU};
 mod compound;
 
@@ -160,6 +161,9 @@ impl Solid {
             }
             ImportProfile::AxialProfileStack { stack } => {
                 Self::from_imported_axial_stack(stack, frame, feature, policy)
+            }
+            ImportProfile::WarpedUnion { shell } => {
+                Self::from_imported_warped_union(shell, frame, feature, policy)
             }
             ImportProfile::CylindricalRevolution { meridian } => {
                 let axis = frame.normal();
@@ -631,6 +635,32 @@ fn match_arcs(expected: &[ArcEdge], actual: &[ArcEdge], tolerance: f64) -> bool 
     })
 }
 
+fn match_ellipses(expected: &[EllipseArc], actual: &[EllipseArc], tolerance: f64) -> bool {
+    let midpoint = |arc: EllipseArc| {
+        arc.ellipse()
+            .point_at(arc.start_rad() + arc.sweep_rad() * 0.5)
+    };
+    let axis_error = |a: Point, b: Point| max_error(a, b).min(max_error(a, b.map(|c| -c)));
+    match_round_edges(expected, actual, tolerance, |&a, &b| {
+        let [ellipse, other] = [a, b].map(EllipseArc::ellipse);
+        let [major, minor] = ellipse.semiaxes_mm();
+        let [other_major, other_minor] = other.semiaxes_mm();
+        let [a0, a1] = a.endpoints();
+        let [b0, b1] = b.endpoints();
+        let ends = max_error(a0, b0)
+            .max(max_error(a1, b1))
+            .min(max_error(a0, b1).max(max_error(a1, b0)));
+        max_error(ellipse.center_mm(), other.center_mm())
+            .max((major - other_major).abs())
+            .max((minor - other_minor).abs())
+            .max(axis_error(ellipse.major_axis(), other.major_axis()) * major)
+            .max(axis_error(ellipse.normal(), other.normal()) * major)
+            .max((a.sweep_rad().abs() - b.sweep_rad().abs()).abs() * major)
+            .max(max_error(midpoint(a), midpoint(b)))
+            .max(ends)
+    })
+}
+
 fn match_round_edges<T>(
     expected: &[T],
     actual: &[T],
@@ -731,6 +761,7 @@ fn verify(
         && readback.circles.is_empty()
         && readback.semicircles.is_empty()
         && readback.arcs.is_empty()
+        && readback.ellipses.is_empty()
     {
         // The pure reader has already proved equality of every oriented
         // boundary patch. The rebuilt shell consolidates coplanar source
@@ -770,6 +801,7 @@ fn compare_topology<'a>(
     let mut circles = Vec::new();
     let mut semicircles = Vec::new();
     let mut arcs = Vec::new();
+    let mut ellipses = Vec::new();
     let mut faces = 0;
     for element in elements {
         match (element.key.kind, element.geometry) {
@@ -836,6 +868,25 @@ fn compare_topology<'a>(
                     sweep_rad: sweep_rad.abs(),
                 });
             }
+            (
+                TopologyKind::Edge,
+                Some(AnalyticGeometry::EllipticArc {
+                    frame,
+                    semiaxes_mm,
+                    start_rad,
+                    sweep_rad,
+                }),
+            ) => {
+                let Ok(ellipse) =
+                    Ellipse::new(frame.origin_mm, frame.normal(), frame.u, semiaxes_mm)
+                else {
+                    return false;
+                };
+                let Ok(arc) = EllipseArc::new(ellipse, start_rad, sweep_rad) else {
+                    return false;
+                };
+                ellipses.push(arc);
+            }
             (TopologyKind::Edge, _) => {
                 return false;
             }
@@ -848,6 +899,7 @@ fn compare_topology<'a>(
         && match_circles(&readback.circles, &circles, tolerance)
         && match_semicircles(&readback.semicircles, &semicircles, tolerance)
         && match_arcs(&readback.arcs, &arcs, tolerance)
+        && match_ellipses(&readback.ellipses, &ellipses, tolerance)
 }
 
 #[cfg(test)]
