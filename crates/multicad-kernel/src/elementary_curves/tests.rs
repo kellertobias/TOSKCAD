@@ -1,5 +1,6 @@
 use super::*;
 use crate::{BSpline2d, GeometryPolicy};
+#[cfg(feature = "occt")]
 use std::f64::consts::FRAC_PI_2;
 
 fn near(actual: f64, expected: f64) {
@@ -11,11 +12,13 @@ fn near_point(actual: Point, expected: Point) {
     near(actual[1], expected[1]);
 }
 
+#[cfg(feature = "occt")]
 fn point3([x, y]: Point) -> ffi::Point3 {
     ffi::Point3 { x, y, z: 0. }
 }
 
 #[test]
+#[cfg(feature = "occt")]
 fn public_curve_evaluation_matches_occt_for_both_arc_directions_and_finite_endpoints() {
     let policy = GeometryPolicy::default();
     for edge in [
@@ -58,6 +61,7 @@ fn public_curve_evaluation_matches_occt_for_both_arc_directions_and_finite_endpo
 }
 
 #[test]
+#[cfg(feature = "occt")]
 fn finite_projection_preserves_parameters_and_equal_endpoint_candidates() {
     let policy = GeometryPolicy::default();
     let line = CurvedEdge2d::Line {
@@ -153,6 +157,7 @@ fn splines_keep_their_authored_parameter_domain() {
 }
 
 #[test]
+#[cfg(feature = "occt")]
 fn rational_spline_points_and_derivatives_match_occt_across_nonuniform_knots() {
     let policy = GeometryPolicy::default();
     let spline = BSpline2d {

@@ -1,4 +1,5 @@
 use super::*;
+#[cfg(feature = "occt")]
 use crate::{BooleanOperation, CurvedEdge2d, CurvedProfile, PlaneFrame, RigidTransform};
 use multicad_core::model::{self, MetricFitEngagement, ThreadFit, ThreadMode};
 fn fitted_source(fit: ThreadFit, length: f64, mode: ThreadMode) -> model::ResolvedThread {
@@ -128,6 +129,7 @@ fn fitted_root_key_covers_every_native_bit_kind_policy_and_source() {
     assert!(!symmetric_root(&asymmetric));
 }
 #[test]
+#[cfg(feature = "occt")]
 fn fitted_root_forced_fresh_generation_preserves_roundtrip_roles_without_retention() {
     ffi::reset_thread_factory_cache().unwrap();
     let result =
@@ -148,6 +150,7 @@ fn fitted_root_forced_fresh_generation_preserves_roundtrip_roles_without_retenti
     );
     assert!(result.volume_mm3 > 0. && result.face_count > 0);
 }
+#[cfg(feature = "occt")]
 fn material(s: &Solid, point: [f64; 3]) -> f64 {
     let edge: f64 = 0.00002;
     let cube = Solid::box_solid([edge; 3], Default::default())
@@ -162,6 +165,7 @@ fn material(s: &Solid, point: [f64; 3]) -> f64 {
         .map_or(0., |s| s.volume_mm3().unwrap())
         / edge.powi(3)
 }
+#[cfg(feature = "occt")]
 fn root_probes(s: &Solid, spec: RootRoundedHelicalThread) {
     let cr = spec.profile.major_radius_mm - spec.profile.depth_mm + spec.root_radius_mm;
     for angle in [-0.4_f64, 0., 0.4] {
@@ -179,6 +183,7 @@ fn root_probes(s: &Solid, spec: RootRoundedHelicalThread) {
         }
     }
 }
+#[cfg(feature = "occt")]
 fn analytic_volume(profile: HelicalThread, round: Option<f64>) -> f64 {
     let r = profile.major_radius_mm;
     let root = r - profile.depth_mm;
@@ -206,6 +211,7 @@ fn analytic_volume(profile: HelicalThread, round: Option<f64>) -> f64 {
     };
     std::f64::consts::PI * profile.length_mm / profile.pitch_mm * integral
 }
+#[cfg(feature = "occt")]
 fn volume_matches(shape: &Solid, expected: f64, policy: GeometryPolicy) {
     let actual = shape.volume_mm3().unwrap();
     let area = shape
@@ -219,6 +225,7 @@ fn volume_matches(shape: &Solid, expected: f64, policy: GeometryPolicy) {
         "native/analytic {actual}/{expected}"
     );
 }
+#[cfg(feature = "occt")]
 fn flat_probes(shape: &Solid, spec: HelicalThread) {
     for (relative, boundary) in [
         (0., spec.major_radius_mm),
@@ -236,6 +243,7 @@ fn flat_probes(shape: &Solid, spec: HelicalThread) {
         }
     }
 }
+#[cfg(feature = "occt")]
 fn same_topology(a: &Solid, b: &Solid, owner: EntityId) {
     let a = a.topology_snapshot(owner, 0).unwrap();
     let b = b.topology_snapshot(owner, 0).unwrap();
@@ -247,6 +255,7 @@ fn same_topology(a: &Solid, b: &Solid, owner: EntityId) {
     }
 }
 #[test]
+#[cfg(feature = "occt")]
 fn fitted_registered_assets_preserve_native_mass_profiles_step_and_owner_lifetimes() {
     let policy = GeometryPolicy::default();
     let spec = root_spec();
@@ -429,6 +438,7 @@ fn fitted_registered_assets_preserve_native_mass_profiles_step_and_owner_lifetim
 }
 
 #[test]
+#[cfg(feature = "occt")]
 fn fitted_short_and_long_registered_roots_match_fresh_geometry_and_step() {
     let policy = GeometryPolicy::default();
     let directory = tempfile::tempdir().unwrap();

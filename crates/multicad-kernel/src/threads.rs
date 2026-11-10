@@ -543,7 +543,7 @@ impl Solid {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "occt"))]
 mod factory_tests {
     #[test]
     fn tapered_meridian_frames_keep_global_phase_across_native_segments_and_hands() {

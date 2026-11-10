@@ -336,7 +336,7 @@ impl Solid {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "occt"))]
 mod compound_property_tests {
     use super::*;
     use crate::{HelicalThread, ffi};

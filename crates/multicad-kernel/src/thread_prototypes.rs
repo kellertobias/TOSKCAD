@@ -111,6 +111,7 @@ fn registered_entry(
 }
 #[cfg(test)]
 mod registered {
+    #[cfg(feature = "occt")]
     pub(super) fn matches(data: &super::ffi::ThreadData, policy: super::GeometryPolicy) -> bool {
         super::registered_entry(data, policy).is_some()
     }
@@ -487,6 +488,7 @@ fn generate_impl(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "occt")]
     fn default_spec() -> HelicalThread {
         let multicad_core::model::MechanicalPartParameters::MachineScrew { thread, .. } =
             multicad_core::model::default_machine_screw()
@@ -512,6 +514,7 @@ mod tests {
         }
     }
     #[test]
+    #[cfg(feature = "occt")]
     fn compiled_default_m3_matches_only_exact_native_input_policy_and_current_sources() {
         let policy = GeometryPolicy::default();
         let data = default_spec().checked(policy).unwrap();
@@ -592,9 +595,11 @@ mod tests {
         assert!(restore(BREP, &wrong_receipt, policy).is_err());
     }
     #[test]
+    #[cfg(feature = "occt")]
     fn loaded_prototype_and_fresh_construction_preserve_native_face_intents_for_new_owners() {
         compare_recipe(default_spec());
     }
+    #[cfg(feature = "occt")]
     fn compare_recipe(spec: HelicalThread) {
         let policy = GeometryPolicy::default();
         let owner = EntityId::new();
@@ -678,6 +683,7 @@ mod tests {
                 .all(|origin| origin.source == other)
         );
     }
+    #[cfg(feature = "occt")]
     fn catalog_specs() -> Vec<(String, HelicalThread)> {
         use multicad_core::{document::EntityData, model, parameters, project_file, symbols};
         let library = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../library");
@@ -739,6 +745,7 @@ mod tests {
             .collect()
     }
     #[test]
+    #[cfg(feature = "occt")]
     fn all_nineteen_actual_catalog_recipes_load_cold_from_fifteen_exact_native_prototypes() {
         let recipes = catalog_specs();
         assert_eq!(recipes.len(), 19);
@@ -767,6 +774,7 @@ mod tests {
         );
     }
     #[test]
+    #[cfg(feature = "occt")]
     fn catalog_m2_5_partial_m3_and_m10_retain_fresh_native_intents_step_and_source_immutability() {
         let recipes = catalog_specs();
         for filename in [

@@ -1228,7 +1228,7 @@ impl Solid {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "occt"))]
 mod exclusive_owner_tests {
     use super::*;
     #[test]

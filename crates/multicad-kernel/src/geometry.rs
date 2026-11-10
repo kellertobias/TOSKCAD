@@ -2140,7 +2140,7 @@ impl Solid {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "occt"))]
 mod bounds_tests {
     use super::*;
     use crate::{AffineTransform, CurvedEdge2d, CurvedProfile, RevolutionAxis};
@@ -2259,7 +2259,7 @@ mod bounds_tests {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "occt"))]
 mod volume_cache_tests {
     use super::*;
     use crate::{AffineTransform, HelicalThread};
@@ -2399,7 +2399,7 @@ mod volume_cache_tests {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "occt"))]
 mod face_cache_tests {
     use super::*;
     fn count(s: &Solid) -> u64 {
@@ -2659,7 +2659,7 @@ mod face_cache_tests {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "occt"))]
 mod exact_geometry_digest_tests {
     use super::*;
     use multicad_core::document::EntityId;
