@@ -6,8 +6,8 @@ use crate::{ModelError, error};
 use multicad_core::{
     document::EntityId,
     model::{
-        MechanicalPartDefinition, ResolvedMechanicalPart, ResolvedScrewDrive, ResolvedScrewHead,
-        ThreadMode,
+        MechanicalPartDefinition, MechanicalPartParameters, ResolvedMechanicalPart,
+        ResolvedScrewDrive, ResolvedScrewHead, ThreadMode,
     },
     parameters::EvaluatedParameters,
     references::Origin,
@@ -16,6 +16,7 @@ use multicad_core::{
 use multicad_kernel::{
     BooleanOperation, CurvedEdge2d, CurvedProfile, GeometryPolicy, PlaneFrame, RigidTransform,
     Solid,
+    rust_kernel::headed_screw::{ScrewHead, ScrewSpec},
 };
 
 use std::{cell::RefCell, collections::BTreeMap};
@@ -394,6 +395,86 @@ pub(crate) fn build(
         .map_err(|e| error(Some(feature), e))?;
     build_resolved(feature, resolved, policy)
 }
+
+pub(crate) fn build_rust(
+    feature: EntityId,
+    source: &MechanicalPartDefinition,
+    evaluated: &EvaluatedParameters,
+    policy: GeometryPolicy,
+) -> Result<Solid, ModelError> {
+    let fail = |message| error(Some(feature), message);
+    let MechanicalPartParameters::MachineScrew {
+        thread: authored_thread,
+        ..
+    } = &source.parameters
+    else {
+        return Err(fail(
+            "Rust mechanical parts currently support modeled machine screws",
+        ));
+    };
+    crate::threads::validate_rust_family(feature, authored_thread.family)?;
+    let ResolvedMechanicalPart::MachineScrew {
+        underhead_length_mm,
+        shank_radius_mm,
+        head,
+        drive,
+        thread,
+        ..
+    } = source
+        .parameters
+        .resolve(evaluated)
+        .map_err(|cause| error(Some(feature), cause))?
+    else {
+        unreachable!("Resolved an authored machine screw");
+    };
+    let (profile, root_radius, frame) = crate::threads::rust_profile(feature, &thread)?;
+    let head = match (head, drive) {
+        (
+            ResolvedScrewHead::SocketCap {
+                radius_mm,
+                height_mm,
+            },
+            ResolvedScrewDrive::HexSocket {
+                across_flats_mm,
+                depth_mm,
+            },
+        ) => ScrewHead::SocketCap {
+            radius_mm,
+            height_mm,
+            socket_across_flats_mm: across_flats_mm,
+            socket_depth_mm: depth_mm,
+        },
+        (
+            ResolvedScrewHead::ExternalHex {
+                across_flats_mm,
+                height_mm,
+            },
+            ResolvedScrewDrive::ExternalHex,
+        ) => ScrewHead::ExternalHex {
+            across_flats_mm,
+            height_mm,
+        },
+        _ => {
+            return Err(fail(
+                "Rust machine screws support a socket cap with a flat hex socket or an external hex head",
+            ));
+        }
+    };
+    Solid::rust_machine_screw(
+        profile,
+        root_radius,
+        ScrewSpec {
+            head,
+            shank_length_mm: underhead_length_mm - thread.length_mm,
+            shank_radius_mm,
+        },
+        feature,
+        frame,
+        policy,
+    )
+    .map_err(|cause| error(Some(feature), cause))
+}
+
 pub(super) fn build_resolved(
     feature: EntityId,
     resolved: ResolvedMechanicalPart,

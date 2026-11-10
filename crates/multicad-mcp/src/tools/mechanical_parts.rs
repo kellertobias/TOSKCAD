@@ -18,6 +18,7 @@ use multicad_core::{
     sketch::Datum,
     symbols,
 };
+use multicad_model::GeometryBackend;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -922,7 +923,26 @@ fn parameters(
     p.resolve(eval)?;
     Ok(p)
 }
-pub(super) fn mechanical_part_profiles(_: &dyn Host, _: &Request, _: NoArgs) -> ToolResult {
+pub(super) fn mechanical_part_profiles(_: &dyn Host, call: &Request, _: NoArgs) -> ToolResult {
+    if call.backend == GeometryBackend::Rust {
+        return Ok(json!({
+            "supported_geometry": ["machine_screw"],
+            "head_forms": ["socket_cap", "external_hex"],
+            "drive_forms": ["hex_socket", "external_hex"],
+            "active_geometry_support": {
+                "head_drive_pairs": [["socket_cap", "hex_socket"], ["external_hex", "external_hex"]],
+                "thread_families": ["iso_metric", "custom"],
+                "metric_fits": ["nominal_basic", "metric_6g_external"],
+                "representations": ["modeled"],
+                "plain_shank": "If present, its diameter must be at least the modeled thread crest diameter.",
+                "end_treatments": false,
+                "radial_taper": false,
+                "mesh": true,
+                "step": false
+            },
+            "machine_screw": "The underhead length runs from the head seat to the tip. Overall length adds the head height. The thread length is its extent ending at the tip, and its frame locates the underhead datum."
+        }));
+    }
     Ok(json!({
         "supported_geometry": ["washer", "hex_nut", "bearing_envelope", "machine_screw", "wood_screw"],
         "head_forms": ["socket_cap", "external_hex", "pan", "button", "countersunk"],

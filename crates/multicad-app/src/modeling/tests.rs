@@ -1697,6 +1697,54 @@ mod painted_default_screw {
     }
 
     #[test]
+    fn painted_rust_machine_screw_has_a_real_socket_and_applies_as_one_part() {
+        let factory = Backend::factory(GeometryBackend::Rust).unwrap();
+        let mut controller = ModelToolController::default();
+        controller.set_backend(factory());
+        let mut canonical = SceneFeed::default();
+        canonical.set_backend(factory());
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        let session = Session::new(Document::new("Painted Rust socket screw").unwrap()).unwrap();
+        let before = session.document().clone();
+        let mut painted = Painted {
+            ctx,
+            controller,
+            canonical,
+            session,
+            applied: vec![],
+            clock: Instant::now(),
+        };
+        painted.wait(true);
+        painted
+            .controller
+            .begin_mechanical_part(&painted.session, &Default::default(), Channel::Ui)
+            .unwrap();
+        painted.click("Plain washer");
+        painted.click("Machine screw");
+        painted.click("Preview");
+        painted.wait(false);
+        assert_eq!(painted.session.document(), &before);
+        painted.click("Apply");
+        painted.wait(true);
+        let [created] = painted.applied.as_slice() else {
+            panic!("Expected one applied machine screw");
+        };
+        let source =
+            model::read_mechanical_part(painted.session.document(), created.feature).unwrap();
+        assert_eq!(source.parameters, model::default_machine_screw());
+        assert_eq!(source.output.body, created.body);
+        let scene = painted.canonical.visible().unwrap();
+        assert_eq!(scene.instances().len(), 1);
+        for (x, y, z) in [(0., 0., -1.7), (0., 1.35, -1.7), (1.35, 0., -3.)] {
+            let ray = viewport::Ray::new([x, y, -10.], [0., 0., 1.]).unwrap();
+            let hit = scene.pick_face(ray).unwrap();
+            assert_eq!(hit.instance, created.body);
+            assert!((hit.point_mm[2] - z).abs() < 1e-5, "{:?}", hit.point_mm);
+        }
+    }
+
+    #[test]
     fn actual_default_m3_controls_measure_preview_unchanged_and_apply_to_canonical_ready() {
         let owner = Backend::runtime(GeometryBackend::OpenCascade).unwrap();
         let preview_records: Records = Default::default();

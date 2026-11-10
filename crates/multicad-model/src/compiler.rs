@@ -1115,12 +1115,11 @@ impl Compiler {
                     let source = model::read_mechanical_part(document, id)
                         .map_err(|e| error(Some(id), e))?;
                     let started = std::time::Instant::now();
-                    let solid = crate::mechanical_parts::build(
-                        id,
-                        &source,
-                        context.parameters(),
-                        self.policy,
-                    )?;
+                    let build = match backend {
+                        GeometryBackend::Rust => crate::mechanical_parts::build_rust,
+                        GeometryBackend::OpenCascade => crate::mechanical_parts::build,
+                    };
+                    let solid = build(id, &source, context.parameters(), self.policy)?;
                     timings.hardware_construction_ms += started.elapsed().as_secs_f64() * 1000.;
                     solid
                 }

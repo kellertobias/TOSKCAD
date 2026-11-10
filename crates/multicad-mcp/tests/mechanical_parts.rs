@@ -30,6 +30,89 @@ fn run(h: &Headless, name: &str, args: Value) -> Value {
 fn mm(value: f64) -> Value {
     json!({"value":value,"unit":"mm"})
 }
+
+#[test]
+fn rust_mcp_edits_and_reopens_a_modeled_m6_socket_screw() {
+    use multicad_mcp::Storage;
+    use multicad_model::GeometryBackend;
+
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("socket-screw.tcd");
+    let document = Document::new("Rust M6 socket screw").unwrap();
+    ProjectStore
+        .save(
+            &path,
+            &multicad_core::project_file::ProjectFile::new(document).unwrap(),
+        )
+        .unwrap();
+    let open = || {
+        Headless::with_geometry_backend(
+            Workspace::project(path.clone(), Box::new(ProjectStore)).unwrap(),
+            Some(directory.path().into()),
+            false,
+            GeometryBackend::Rust,
+        )
+    };
+    let h = open();
+    let profiles = run(&h, "mechanical_part_profiles", json!({}));
+    assert_eq!(profiles["supported_geometry"], json!(["machine_screw"]));
+    assert_eq!(
+        profiles["active_geometry_support"]["head_drive_pairs"],
+        json!([
+            ["socket_cap", "hex_socket"],
+            ["external_hex", "external_hex"]
+        ])
+    );
+    let create = json!({
+        "expected_revision":0,"name":"M6 × 1 socket screw",
+        "recipe":{"kind":"machine_screw","underhead_length":mm(10.),"shank_diameter":mm(6.),
+            "head":{"kind":"socket_cap","diameter":mm(10.),"height":mm(6.)},
+            "drive":{"kind":"hex_socket","across_flats":mm(5.),"depth":mm(3.)},
+            "thread":{"major_diameter":mm(6.),"pitch":mm(1.),"length":mm(6.5),"fit":"metric_6g_external"}}
+    });
+    let before = h.document();
+    let cancelled = dispatch(&h, &call(true), "set_mechanical_part", create.clone()).unwrap_err();
+    assert_eq!(cancelled.code, "cancelled");
+    let mut invalid = create.clone();
+    invalid["recipe"]["thread"]["representation"] = json!("cosmetic_envelope");
+    let rejected = dispatch(&h, &call(false), "set_mechanical_part", invalid).unwrap_err();
+    assert_eq!(rejected.code, "model_failed");
+    assert!(
+        rejected
+            .message
+            .contains("requires the Modeled representation")
+    );
+    assert_eq!(h.document(), before);
+    let created = run(&h, "set_mechanical_part", create);
+    let feature = &created["feature"];
+    let part = &created["part"];
+    let original = run(&h, "evaluate_model", json!({}))["parts"][0].clone();
+    assert_eq!(original["solid_count"], 1);
+    assert_eq!(original["bounds_mm"]["min"], json!([-5., -5., -6.]));
+    assert_eq!(original["bounds_mm"]["max"], json!([5., 5., 10.]));
+    let edit = run(
+        &h,
+        "set_mechanical_part",
+        json!({"expected_revision":1,"feature":feature,"recipe":{"kind":"machine_screw","thread":{"hand":"left"}}}),
+    );
+    assert_eq!(&edit["feature"], feature);
+    assert_eq!(&edit["part"], part);
+    run(&h, "save_project", json!({"expected_revision":2}));
+    drop(h);
+    let reopened = open();
+    let source = run(
+        &reopened,
+        "inspect_mechanical_part",
+        json!({"feature":feature}),
+    );
+    assert_eq!(&source["source"]["output"]["body"], part);
+    assert_eq!(source["source"]["parameters"]["thread"]["hand"], "left");
+    assert_eq!(
+        run(&reopened, "evaluate_model", json!({}))["parts"][0],
+        original
+    );
+}
+
 #[test]
 fn native_washer_edit_history_and_step_keep_one_parametric_part() {
     let dir = tempfile::tempdir().unwrap();
@@ -186,8 +269,8 @@ fn stale_cancelled_unsupported_ambiguous_and_native_invalid_requests_change_noth
     assert_eq!(h.document(), before);
 }
 
-struct WasherProjectStore;
-impl multicad_mcp::Storage for WasherProjectStore {
+struct ProjectStore;
+impl multicad_mcp::Storage for ProjectStore {
     fn open(
         &mut self,
         path: &std::path::Path,
@@ -352,14 +435,14 @@ fn configured_washer_keeps_nominal_facts_through_owner_overrides_mcp_history_and
     assert_ne!(feature, request.feature);
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("configured-washer.tcd");
-    WasherProjectStore
+    ProjectStore
         .save(
             &path,
             &ProjectFile::new(consuming.document().clone()).unwrap(),
         )
         .unwrap();
     let h = Headless::new(
-        Workspace::project(path.clone(), Box::new(WasherProjectStore)).unwrap(),
+        Workspace::project(path.clone(), Box::new(ProjectStore)).unwrap(),
         Some(dir.path().into()),
         false,
     );
@@ -414,7 +497,7 @@ fn configured_washer_keeps_nominal_facts_through_owner_overrides_mcp_history_and
     assert_eq!(h.document(), after_edit);
     run(&h, "save_project", json!({"expected_revision":3}));
     let reopened = Headless::new(
-        Workspace::project(path, Box::new(WasherProjectStore)).unwrap(),
+        Workspace::project(path, Box::new(ProjectStore)).unwrap(),
         Some(dir.path().into()),
         false,
     );
@@ -496,7 +579,7 @@ fn both_machine_screw_heads_and_thread_extents_keep_native_drives_history_saved_
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("screw.tcd");
             let h = Headless::new(
-                Workspace::project(path.clone(), Box::new(WasherProjectStore)).unwrap(),
+                Workspace::project(path.clone(), Box::new(ProjectStore)).unwrap(),
                 Some(dir.path().into()),
                 false,
             );
@@ -552,7 +635,7 @@ fn both_machine_screw_heads_and_thread_extents_keep_native_drives_history_saved_
             assert_eq!(h.document(), changed);
             run(&h, "save_project", json!({"expected_revision":4}));
             let reopened = Headless::new(
-                Workspace::project(path, Box::new(WasherProjectStore)).unwrap(),
+                Workspace::project(path, Box::new(ProjectStore)).unwrap(),
                 Some(dir.path().into()),
                 false,
             );

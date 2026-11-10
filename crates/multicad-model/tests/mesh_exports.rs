@@ -895,6 +895,92 @@ fn rust_export_worker_writes_watertight_metric_receivers_to_stl_and_3mf() {
     rust_export_metric_thread(true);
 }
 
+#[test]
+fn rust_export_worker_writes_one_closed_headed_screw_with_a_hex_socket_floor() {
+    let mut session = Session::new(Document::new("Headed screw exports").unwrap()).unwrap();
+    let request =
+        model::MechanicalPartRequest::new("M3 socket screw", model::default_machine_screw());
+    let prepared = model::prepare_mechanical_part(&session, 0, actor(), &request).unwrap();
+    session.commit(prepared.prepared).unwrap();
+    let set = EntityId::new();
+    let definition = SetDefinition {
+        recipes: [MeshFormat::Stl, MeshFormat::ThreeMf]
+            .into_iter()
+            .map(|format| mesh(format, LengthUnit::Millimeter, HierarchyMode::SeparateParts))
+            .collect(),
+        ..Default::default()
+    };
+    let prepared = prepare_set(
+        &session,
+        session.revision(),
+        actor(),
+        set,
+        "Manufacturing",
+        &definition,
+    )
+    .unwrap();
+    session.commit(prepared).unwrap();
+    let document = session.document();
+    let revision = session.revision();
+    let worker =
+        ExportWorker::with_geometry_backend(Exporter::default(), GeometryBackend::Rust).unwrap();
+    worker.preview(document, revision, set, actor()).unwrap();
+    let ExportResult::Preview(preview) = next_reply(&worker) else {
+        panic!("Expected screw mesh preview");
+    };
+    let preview = preview.unwrap();
+    assert!(preview.can_run(), "{:?}", preview.recipes);
+    let directory = tempfile::tempdir().unwrap();
+    worker
+        .run(document, revision, &preview.key, directory.path(), actor())
+        .unwrap();
+    let ExportResult::Run(receipt) = next_reply(&worker) else {
+        panic!("Expected screw mesh export");
+    };
+    let receipt = receipt.unwrap();
+    assert_eq!(receipt.files.len(), 2);
+    for file in &receipt.files {
+        let artifact = &file.artifact;
+        assert_eq!(artifact.producer, request.feature);
+        assert_eq!(artifact.solid_count, 1);
+        let evidence = artifact.mesh.as_ref().unwrap();
+        assert_eq!((evidence.objects, evidence.build_items), (1, 1));
+        let name = &artifact.output.filename;
+        let bytes = std::fs::read(Path::new(&receipt.directory).join(name)).unwrap();
+        let triangles = if name.ends_with(".stl") {
+            parse_stl(&bytes).1
+        } else {
+            assert!(name.ends_with(".3mf"));
+            let entries = unzip(&bytes);
+            let package = parse_3mf(&entries["3D/3dmodel.model"]);
+            assert_eq!((package.objects.len(), package.items.len()), (1, 1));
+            package.placed(0)
+        };
+        assert_eq!(triangles.len(), evidence.triangles);
+        assert_closed_winding(&triangles);
+        assert_bounds(
+            bounds(&triangles),
+            [[-2.84, -2.84, -3.], [2.84, 2.84, 10.]],
+            0.05,
+        );
+        near(volume(&triangles), evidence.mesh_volume_mm3, 0.001);
+        let floor_area: f64 = triangles
+            .iter()
+            .filter(|points| points.iter().all(|p| (p[2] + 1.7).abs() < 1e-6))
+            .map(|[a, b, c]| {
+                ((b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])).abs() / 2.
+            })
+            .sum();
+        near(floor_area, 3_f64.sqrt() * 2.55_f64.powi(2) / 2., 1e-5);
+        assert!(
+            triangles
+                .iter()
+                .flatten()
+                .any(|p| (2. ..8.).contains(&p[2]) && p[0].hypot(p[1]) < 1.24)
+        );
+    }
+}
+
 fn rust_export_metric_thread(internal: bool) {
     use model::{BodyInput, ThreadHand, ThreadMode, ThreadParameters, ThreadRequest};
 

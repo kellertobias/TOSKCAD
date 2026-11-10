@@ -143,18 +143,40 @@ pub(crate) fn build_rust(
             "Rust thread geometry does not yet support external receiving cuts",
         ));
     }
-    if !matches!(
-        source.parameters.family,
-        ThreadFamily::IsoMetric | ThreadFamily::Custom
-    ) {
-        return Err(fail(
-            "Rust thread geometry currently supports ISO metric and straight custom profiles",
-        ));
-    }
+    validate_rust_family(feature, source.parameters.family)?;
     let thread = source
         .parameters
         .resolve(parameters, source.mode)
-        .map_err(|error| crate::error(Some(feature), error))?;
+        .map_err(|cause| error(Some(feature), cause))?;
+    let (spec, root_radius, frame) = rust_profile(feature, &thread)?;
+    let solid = if source.mode == ThreadMode::CutInternal {
+        let target = receiving_target(feature, source, solids)?
+            .ok_or_else(|| fail("Receiving thread has no target predecessor"))?;
+        target.rust_cut_internal_thread(spec, thread.minimum_wall_mm, feature, frame, policy)
+    } else {
+        Solid::rust_helical_thread(spec, root_radius, feature, frame, policy)
+    };
+    solid.map_err(|cause| error(Some(feature), cause))
+}
+
+pub(crate) fn validate_rust_family(
+    feature: EntityId,
+    family: ThreadFamily,
+) -> Result<(), ModelError> {
+    if !matches!(family, ThreadFamily::IsoMetric | ThreadFamily::Custom) {
+        return Err(error(
+            Some(feature),
+            "Rust thread geometry currently supports ISO metric and straight custom profiles",
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) fn rust_profile(
+    feature: EntityId,
+    thread: &ResolvedThread,
+) -> Result<(HelicalThread, Option<f64>, PlaneFrame), ModelError> {
+    let fail = |message| error(Some(feature), message);
     if thread.representation != ThreadRepresentation::Modeled {
         return Err(fail(
             "Rust thread geometry currently requires the Modeled representation",
@@ -170,29 +192,18 @@ pub(crate) fn build_rust(
             "Rust thread geometry requires an untapered profile without crest rounding",
         ));
     }
-    let spec = helical_spec(&thread);
-    let frame = PlaneFrame {
-        origin: thread.frame.origin,
-        u: thread.frame.u,
-        v: thread.frame.v,
-    };
-    let solid = if source.mode == ThreadMode::CutInternal {
-        let target = receiving_target(feature, source, solids)?
-            .ok_or_else(|| fail("Receiving thread has no target predecessor"))?;
-        target.rust_cut_internal_thread(spec, thread.minimum_wall_mm, feature, frame, policy)
-    } else {
-        Solid::rust_helical_thread(
-            spec,
-            thread
-                .metric_fit
-                .as_ref()
-                .and_then(|fit| fit.external_root_radius_mm),
-            feature,
-            frame,
-            policy,
-        )
-    };
-    solid.map_err(|cause| error(Some(feature), cause))
+    Ok((
+        helical_spec(thread),
+        thread
+            .metric_fit
+            .as_ref()
+            .and_then(|fit| fit.external_root_radius_mm),
+        PlaneFrame {
+            origin: thread.frame.origin,
+            u: thread.frame.u,
+            v: thread.frame.v,
+        },
+    ))
 }
 
 /// Reuse the same native thread and receiving-wall checks inside a typed
