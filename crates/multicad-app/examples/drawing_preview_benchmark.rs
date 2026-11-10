@@ -24,6 +24,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         source_hash: multicad_core::project_file::ContentHash::document(doc)?,
     };
     let uncached = std::env::args_os().any(|a| a == "--uncached");
+    let dump_vectors = std::env::args_os().any(|a| a == "--dump-vectors");
     let geometry = if std::env::args_os().any(|a| a == "--rust-model") {
         GeometryBackend::Rust
     } else {
@@ -61,6 +62,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                     std::thread::sleep(Duration::from_millis(1));
                 };
+                let milliseconds = start.elapsed().as_secs_f64() * 1000.;
                 let vectors: usize = result
                     .views
                     .values()
@@ -74,13 +76,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 } else {
                     assert_eq!(first_results.get(&page.id), Some(&result));
                 }
-                println!(
-                    "{}",
-                    serde_json::json!({"backend":format!("{geometry:?}"),"pass":pass,
-                    "page":page.number,"views":result.views.len(),
-                    "ready":result.views.values().all(|v| matches!(v, ViewEvaluation::Ready {..})),
-                    "vectors":vectors,"milliseconds":start.elapsed().as_secs_f64()*1000.})
-                );
+                let mut row = serde_json::json!({
+                    "backend": format!("{geometry:?}"),
+                    "pass": pass,
+                    "page": page.number,
+                    "views": result.views.len(),
+                    "ready": result.views.values().all(|v| matches!(v, ViewEvaluation::Ready {..})),
+                    "vectors": vectors,
+                    "milliseconds": milliseconds,
+                });
+                if dump_vectors && pass == 0 {
+                    row["view_results"] = serde_json::to_value(
+                        page.views
+                            .iter()
+                            .map(|view| (view, result.views.get(&view.id)))
+                            .collect::<Vec<_>>(),
+                    )?;
+                }
+                println!("{row}");
             }
         }
     }
