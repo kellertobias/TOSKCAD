@@ -266,11 +266,7 @@ fn rust_step_reimport_and_reopen_preserve_the_part_and_exact_geometry() {
     assert_eq!(saved.encoding, StepEncoding::RustStep);
     assert_eq!(saved.solids[0].brep, changed);
 
-    for backend in [
-        GeometryBackend::Rust,
-        #[cfg(feature = "occt")]
-        GeometryBackend::OpenCascade,
-    ] {
+    let verify = |backend| {
         let model = Compiler::default()
             .compile_with_backend(&opened.document, 0, backend, None)
             .unwrap();
@@ -278,7 +274,10 @@ fn rust_step_reimport_and_reopen_preserve_the_part_and_exact_geometry() {
         near(rebuilt.volume_mm3().unwrap(), 9000.);
         assert_eq!(rebuilt.bounds().unwrap().min, [5., 6., 7.]);
         assert_eq!(rebuilt.bounds().unwrap().max, [20., 26., 37.]);
-    }
+    };
+    verify(GeometryBackend::Rust);
+    #[cfg(feature = "occt")]
+    verify(GeometryBackend::OpenCascade);
 }
 
 #[test]
