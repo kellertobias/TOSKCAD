@@ -225,7 +225,15 @@ fn native_fillet_switches_to_chamfer_and_rebuilds_bound_geometry_through_undo_an
         .unwrap()
         .write_step(&step)
         .unwrap();
+    #[cfg(feature = "occt")]
     let readback = multicad_kernel::Solid::read_step(&step, Default::default()).unwrap();
+    #[cfg(not(feature = "occt"))]
+    let readback = multicad_kernel::Solid::import_rust_step(
+        &std::fs::read_to_string(&step).unwrap(),
+        request.feature,
+        Default::default(),
+    )
+    .unwrap();
     near(readback.volume_mm3().unwrap(), 7980.);
     std::fs::remove_file(step).unwrap();
 }
@@ -706,6 +714,13 @@ fn rust_box_fillet_preserves_planar_references_and_analytic_step_after_edit() {
                 .unwrap()
                 .contains("CYLINDRICAL_SURFACE")
         );
+        let reimported = multicad_kernel::Solid::import_rust_step(
+            &std::fs::read_to_string(&path).unwrap(),
+            fillet.feature,
+            Default::default(),
+        )
+        .unwrap();
+        near(reimported.volume_mm3().unwrap(), expected);
         #[cfg(feature = "occt")]
         {
             let native = Compiler::default()
