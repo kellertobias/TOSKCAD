@@ -12,6 +12,30 @@ use std::{collections::HashMap, f64::consts::TAU};
 /// triangle. Angular deflection bounds the variation of the exact normal
 /// within each smooth triangle, without smoothing across profile creases.
 pub fn tessellate(thread: &Thread, options: Tessellation) -> Result<DisplayMesh, MeshError> {
+    tessellate_envelope(thread, None, options)
+}
+
+/// A cylindrical solid with a coaxial threaded through bore. The inner
+/// wall uses the thread face ordinals, followed by the outer cylinder.
+pub fn tessellate_bore(
+    thread: &Thread,
+    outer_radius_mm: f64,
+    options: Tessellation,
+) -> Result<DisplayMesh, MeshError> {
+    if !outer_radius_mm.is_finite()
+        || outer_radius_mm > 1e7
+        || outer_radius_mm - thread.spec().major_radius_mm <= 64. * f64::EPSILON * outer_radius_mm
+    {
+        return Err(MeshError::InvalidOptions);
+    }
+    tessellate_envelope(thread, Some(outer_radius_mm), options)
+}
+
+fn tessellate_envelope(
+    thread: &Thread,
+    outer_radius: Option<f64>,
+    options: Tessellation,
+) -> Result<DisplayMesh, MeshError> {
     if !options.deflection.is_finite()
         || options.deflection <= 0.
         || !(0.01..=1.).contains(&options.angle)
@@ -19,16 +43,21 @@ pub fn tessellate(thread: &Thread, options: Tessellation) -> Result<DisplayMesh,
     {
         return Err(MeshError::InvalidOptions);
     }
-    let spec = thread.spec();
-    let max_angle =
-        (options.angle * 0.5).min((2. * options.deflection / spec.major_radius_mm).sqrt());
+    let major = thread.spec().major_radius_mm;
+    let radius = outer_radius.unwrap_or(major);
+    // The outer polygon's apothem must exceed every inner vertex radius,
+    // including cap rail intersections between the regular grid columns.
+    let deflection = outer_radius.map_or(options.deflection, |radius| {
+        options.deflection.min(2. * (radius - major))
+    });
+    let max_angle = (options.angle * 0.5).min((2. * deflection / radius).sqrt());
     let angular_steps = (TAU / max_angle).ceil();
     if angular_steps * 2. > options.triangle_limit as f64 {
         return Err(MeshError::BudgetExceeded);
     }
     let angular_steps = angular_steps as usize;
     let strips = phase_strips(thread, TAU / angular_steps as f64, options)?;
-    Builder::new(thread, angular_steps, strips, options).build()
+    Builder::new(thread, angular_steps, strips, options).build(outer_radius)
 }
 
 /// Bound volume deviation for the generated mesh. At equal depth, each
@@ -43,6 +72,17 @@ pub fn volume_error_bound(thread: &Thread, options: Tessellation) -> f64 {
     let max_slope = thread.maximum_profile_slope();
     let radial_error = options.deflection + thread.helical_rate().abs() * max_slope * angular_error;
     TAU * spec.major_radius_mm * spec.length_mm * radial_error
+}
+
+/// The hole keeps the external thread's error bound. The inscribed outer
+/// polygon's radial deficit is at most the specified chord deflection.
+pub fn bore_volume_error_bound(
+    thread: &Thread,
+    outer_radius_mm: f64,
+    options: Tessellation,
+) -> f64 {
+    volume_error_bound(thread, options)
+        + TAU * outer_radius_mm * thread.spec().length_mm * options.deflection
 }
 
 #[derive(Clone, Copy)]
@@ -116,6 +156,11 @@ struct Corner {
     z: f64,
 }
 
+struct BoreRim {
+    vertices: Vec<u32>,
+    columns: Vec<usize>,
+}
+
 struct Builder<'a> {
     thread: &'a Thread,
     steps: usize,
@@ -167,7 +212,7 @@ impl<'a> Builder<'a> {
         }
     }
 
-    fn build(mut self) -> Result<DisplayMesh, MeshError> {
+    fn build(mut self, outer_radius: Option<f64>) -> Result<DisplayMesh, MeshError> {
         let per_period = self.strips.len() as i64;
         for column in 0..self.steps {
             let a = self.advance(column);
@@ -195,17 +240,27 @@ impl<'a> Builder<'a> {
                 }
             }
         }
-        for (cap, ring) in std::mem::take(&mut self.caps).into_iter().enumerate() {
-            self.add_cap(cap, ring)?;
+        let caps = std::mem::take(&mut self.caps);
+        if let Some(radius) = outer_radius {
+            self.add_bore(caps, radius)?;
+        } else {
+            for (cap, ring) in caps.into_iter().enumerate() {
+                self.add_cap(cap, ring)?;
+            }
         }
         Ok(self.mesh)
     }
 
-    fn add_cap(&mut self, cap: usize, mut ring: Vec<(f64, u32)>) -> Result<(), MeshError> {
+    fn sort_ring(ring: &mut [(f64, u32)]) -> Result<(), MeshError> {
         ring.sort_unstable_by(|a, b| a.0.total_cmp(&b.0));
         if ring.len() < 3 || !ring.windows(2).all(|pair| pair[0].0 < pair[1].0) {
             return Err(MeshError::UnresolvedBoundary);
         }
+        Ok(())
+    }
+
+    fn add_cap(&mut self, cap: usize, mut ring: Vec<(f64, u32)>) -> Result<(), MeshError> {
+        Self::sort_ring(&mut ring)?;
         let center = self.mesh.vertices.len() as u32 / 3;
         self.mesh.vertices.extend([0., 0., self.cap_z(cap)]);
         for (&(_, a), &(_, b)) in ring.iter().zip(ring.iter().cycle().skip(1)) {
@@ -217,6 +272,83 @@ impl<'a> Builder<'a> {
             self.triangle(triangle, cap as u32)?;
         }
         Ok(())
+    }
+
+    fn add_bore(
+        &mut self,
+        [bottom, top]: [Vec<(f64, u32)>; 2],
+        radius: f64,
+    ) -> Result<(), MeshError> {
+        // Each rim point adds two cap triangles and one triangle on the
+        // outer wall. Check the budget before allocating either outer rim.
+        if self.mesh.face_indices.len() + 3 * (bottom.len() + top.len()) > self.limit {
+            return Err(MeshError::BudgetExceeded);
+        }
+        for triangle in self.mesh.indices.as_chunks_mut::<3>().0 {
+            triangle.swap(1, 2);
+        }
+        let bottom = self.add_annular_cap(0, bottom, radius)?;
+        let top = self.add_annular_cap(1, top, radius)?;
+        let face = 2 + 4 * self.thread.spec().starts;
+        for column in 0..self.steps {
+            let low = &bottom.vertices[bottom.columns[column]..=bottom.columns[column + 1]];
+            let high = &top.vertices[top.columns[column]..=top.columns[column + 1]];
+            // The two rim subdivisions can differ. Both lie on the same
+            // planar cylinder chord, so split the panel on its diagonal.
+            for &[a, b] in low.array_windows() {
+                self.triangle([a, b, high[high.len() - 1]], face)?;
+            }
+            for &[a, b] in high.array_windows() {
+                self.triangle([low[0], b, a], face)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn add_annular_cap(
+        &mut self,
+        cap: usize,
+        mut ring: Vec<(f64, u32)>,
+        radius: f64,
+    ) -> Result<BoreRim, MeshError> {
+        Self::sort_ring(&mut ring)?;
+        let mut columns = (0..self.steps)
+            .map(|column| {
+                let angle = TAU * self.fraction(column);
+                ring.binary_search_by(|sample| sample.0.total_cmp(&angle))
+                    .map_err(|_| MeshError::UnresolvedBoundary)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        columns.push(ring.len());
+        let mut outer = Vec::with_capacity(ring.len() + 1);
+        let z = self.cap_z(cap);
+        for (column, &[first, end]) in columns.array_windows().enumerate() {
+            let lo = TAU * self.fraction(column);
+            let hi = TAU * self.fraction(column + 1);
+            let middle = (lo + hi) * 0.5;
+            let apothem = radius * ((hi - lo) * 0.5).cos();
+            for &(angle, _) in &ring[first..end] {
+                // Place the new point on the outer chord along the same
+                // radial ray as the inner vertex. The inner wall stays
+                // inside the common angular grid's convex outer polygon.
+                let radial = apothem / (angle - middle).cos();
+                let (sin, cos) = angle.sin_cos();
+                outer.push(self.mesh.vertices.len() as u32 / 3);
+                self.mesh.vertices.extend([radial * cos, radial * sin, z]);
+            }
+        }
+        outer.push(outer[0]);
+        for (i, (&(_, a), &(_, b))) in ring.iter().zip(ring.iter().cycle().skip(1)).enumerate() {
+            let [c, d] = [outer[i], outer[i + 1]];
+            for [a, b, c] in [[a, c, d], [a, d, b]] {
+                let triangle = if cap == 0 { [a, c, b] } else { [a, b, c] };
+                self.triangle(triangle, cap as u32)?;
+            }
+        }
+        Ok(BoreRim {
+            vertices: outer,
+            columns,
+        })
     }
 
     fn advance(&self, column: usize) -> f64 {
