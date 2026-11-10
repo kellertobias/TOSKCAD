@@ -16,6 +16,7 @@ pub(crate) mod bore_treatment;
 pub(crate) mod circular_pocket_body;
 mod cosmetic_fastener_body;
 mod helical_body;
+mod helical_tube_body;
 mod herringbone_body;
 mod linear_body;
 mod normal_sweep_body;
@@ -36,6 +37,8 @@ pub use circular_pocket_body::CircularPocketTool;
 use cosmetic_fastener_body::CosmeticFastenerBody;
 use helical_body::HelicalBody;
 pub use helical_body::{BlindThreadCut, BlindThreadMating};
+pub use helical_tube_body::HelicalTube;
+use helical_tube_body::HelicalTubeBody;
 use herringbone_body::HerringboneBody;
 use linear_body::LinearBody;
 use normal_sweep_body::NormalSweepBody;
@@ -558,6 +561,7 @@ enum SolidBody {
     Annulus(Rc<AnnulusBody>, PlaneFrame),
     CosmeticFastener(Rc<CosmeticFastenerBody>, PlaneFrame),
     Helical(Rc<HelicalBody>, PlaneFrame),
+    HelicalTubeCut(Rc<HelicalTubeBody>, PlaneFrame),
     Linear(Rc<LinearBody>, PlaneFrame),
     Revolved(Rc<RevolutionBody>, PlaneFrame),
     RoundedSlot(Rc<RoundedSlotBody>, PlaneFrame),
@@ -921,6 +925,9 @@ impl Solid {
                 SolidBody::CosmeticFastener(Rc::clone(body), *frame)
             }
             SolidBody::Helical(body, frame) => SolidBody::Helical(Rc::clone(body), *frame),
+            SolidBody::HelicalTubeCut(body, frame) => {
+                SolidBody::HelicalTubeCut(Rc::clone(body), *frame)
+            }
             SolidBody::Linear(body, frame) => SolidBody::Linear(Rc::clone(body), *frame),
             SolidBody::Revolved(body, frame) => SolidBody::Revolved(Rc::clone(body), *frame),
             SolidBody::RoundedSlot(body, frame) => SolidBody::RoundedSlot(Rc::clone(body), *frame),
@@ -1184,6 +1191,9 @@ impl Solid {
                 SolidBody::Helical(body, frame) => {
                     SolidBody::Helical(Rc::clone(body), transform.frame(*frame))
                 }
+                SolidBody::HelicalTubeCut(body, frame) => {
+                    SolidBody::HelicalTubeCut(Rc::clone(body), transform.frame(*frame))
+                }
                 SolidBody::CosmeticFastener(body, frame) => {
                     SolidBody::CosmeticFastener(Rc::clone(body), transform.frame(*frame))
                 }
@@ -1253,6 +1263,9 @@ impl Solid {
         Ok(result)
     }
     pub fn volume_mm3(&self) -> Result<f64, GeometryError> {
+        if let Some((body, _)) = self.helical_tube_cut_body() {
+            return Ok(body.cut.volume_mm3());
+        }
         if let Some((body, _)) = self.torus_body() {
             return Ok(body.geometry.volume_mm3());
         }
@@ -1340,6 +1353,9 @@ impl Solid {
         ffi::solid_count(self.occt()?).map_err(|e| native("solid count", e))
     }
     pub fn bounds(&self) -> Result<Bounds, GeometryError> {
+        if let Some((body, frame)) = self.helical_tube_cut_body() {
+            return body.bounds(frame);
+        }
         if let Some((body, frame)) = self.torus_body() {
             return Ok(body.bounds(frame));
         }
@@ -1473,6 +1489,9 @@ impl Solid {
         crate::planar_contours::extract(self, face, frame, self.policy)
     }
     pub fn faces(&self) -> Result<Vec<Face>, GeometryError> {
+        if let Some((body, frame)) = self.helical_tube_cut_body() {
+            return Ok(body.faces(frame));
+        }
         if let Some((body, frame)) = self.torus_body() {
             return Ok(vec![body.face(frame)]);
         }
@@ -1626,6 +1645,9 @@ impl Solid {
                 false,
             ),
             SolidBody::Helical(body, frame) => body.mesh(*frame, rust_options),
+            SolidBody::HelicalTubeCut(body, frame) => {
+                crate::rust_display::placed_mesh(body.cut.mesh(rust_options), *frame, false)
+            }
             SolidBody::CosmeticFastener(body, frame) => match usage {
                 MeshUse::Display => body.mesh(*frame, rust_options),
                 MeshUse::Manufacturing => Err(error(
@@ -1933,6 +1955,9 @@ impl Solid {
         if let Some((body, frame)) = self.herringbone_body() {
             return body.sample_rail(frame, ordinal, options);
         }
+        if let Some((body, frame)) = self.helical_tube_cut_body() {
+            return body.sample_edge(frame, ordinal, options);
+        }
         let (member, local) = self.rust_compound()?.edge_source(ordinal)?;
         member.sample_non_analytic_edge(local, options)
     }
@@ -1963,6 +1988,7 @@ impl Solid {
             SolidBody::AxialCylinder(cylinder, ..) => EntityId::from_uuid_bits(cylinder.feature()),
             SolidBody::Annulus(body, _) => body.feature,
             SolidBody::Helical(body, _) => body.feature,
+            SolidBody::HelicalTubeCut(body, _) => body.feature,
             SolidBody::CosmeticFastener(body, _) => body.feature,
             SolidBody::Linear(body, _) => body.feature,
             SolidBody::Revolved(body, _) => body.feature,
@@ -2011,7 +2037,7 @@ impl Solid {
             SolidBody::Herringbone(body, frame) => {
                 standalone && body.supports_step(*frame, self.policy)
             }
-            SolidBody::CosmeticFastener(..) => false,
+            SolidBody::CosmeticFastener(..) | SolidBody::HelicalTubeCut(..) => false,
             SolidBody::WarpedUnion(body, _) => {
                 multicad_rust_kernel::step::supports_warped_union(&body.geometry)
             }
@@ -2176,7 +2202,9 @@ impl Solid {
             SolidBody::Torus(body, frame) => {
                 writer.append_torus(body.geometry, frame.origin, frame.u, frame.v)
             }
-            SolidBody::CosmeticFastener(..) => Err(step::StepError::Unsupported),
+            SolidBody::CosmeticFastener(..) | SolidBody::HelicalTubeCut(..) => {
+                Err(step::StepError::Unsupported)
+            }
             SolidBody::Orthogonal(body, frame) => body.append_step(writer, *frame),
             SolidBody::Occt(_) => unreachable!("native STEP dispatched above"),
         }
