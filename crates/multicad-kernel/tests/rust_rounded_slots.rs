@@ -1,11 +1,13 @@
 use multicad_core::{
     document::EntityId,
+    drawings::VectorRole,
     manufacturing::PlanarEdge,
     references::{GeometryIntent, Origin, Resolution, TopologyKind, resolve},
 };
 use multicad_kernel::{
-    BooleanOperation, CircularPocketTool, CurvedEdge2d, CurvedProfile, GeometryPolicy, MeshOptions,
-    PlaneFrame, RoundedSlotTool, Solid, rust_kernel::Rational,
+    BooleanOperation, CircularPocketTool, CurvedEdge2d, CurvedProfile, DrawingProjection,
+    DrawingSolid, GeometryPolicy, MeshOptions, PlaneFrame, RoundedSlotTool, Solid, project_drawing,
+    rust_kernel::Rational,
 };
 use std::f64::consts::PI;
 
@@ -13,6 +15,74 @@ const AREA: f64 = 16. + 4. * PI;
 
 fn near(actual: f64, expected: f64) {
     assert!((actual - expected).abs() < 2e-6, "{actual} != {expected}");
+}
+
+#[test]
+fn rounded_extrusion_projects_exact_edge_on_lines_without_virtual_seams() {
+    let policy = GeometryPolicy::default();
+    let owner = EntityId::new();
+    let frame = PlaneFrame {
+        origin: [0.; 3],
+        u: [0., 1., 0.],
+        v: [0., 0., 1.],
+    };
+    let rust = Solid::rust_extrude_rounded_slot(
+        frame,
+        [[0., 0.], [4., 0.]],
+        2.,
+        5.,
+        owner,
+        std::array::from_fn(|edge| Origin {
+            source: owner,
+            role: format!("profile.{edge}"),
+        }),
+        policy,
+    )
+    .unwrap();
+    let drawing = |solid| {
+        project_drawing(
+            &[DrawingSolid { solid, hatch: None }],
+            DrawingProjection::default(),
+        )
+        .unwrap()
+    };
+    let native =
+        Solid::extrude_curved_profile_vector(&profile(frame), [5., 0., 0.], policy).unwrap();
+    for geometry in [drawing(&rust), drawing(&native)] {
+        let mut extents: [Vec<[f64; 2]>; 4] = std::array::from_fn(|_| Vec::new());
+        for edge in geometry {
+            assert_eq!(edge.role, VectorRole::Visible);
+            assert!(edge.preview_mm.len() > 1);
+            let side = [(0, 0.), (0, 5.), (1, -2.), (1, 6.)]
+                .into_iter()
+                .position(|(axis, position)| {
+                    edge.preview_mm
+                        .iter()
+                        .all(|point| (point[axis] - position).abs() < 1e-6)
+                })
+                .unwrap_or_else(|| panic!("Unexpected internal projected seam {:?}", edge.curve));
+            let positions = edge
+                .preview_mm
+                .iter()
+                .map(|point| point[usize::from(side < 2)]);
+            let span = positions.fold([f64::INFINITY, f64::NEG_INFINITY], |[lo, hi], value| {
+                [lo.min(value), hi.max(value)]
+            });
+            assert!(span[1] > span[0]);
+            extents[side].push(span);
+        }
+        for (i, mut spans) in extents.into_iter().enumerate() {
+            spans.sort_unstable_by(|a, b| a[0].total_cmp(&b[0]));
+            let expected = if i < 2 { [-2., 6.] } else { [0., 5.] };
+            near(spans[0][0], expected[0]);
+            let mut reached = expected[0];
+            for [lo, hi] in spans {
+                assert!(lo <= reached + 1e-6);
+                reached = reached.max(hi);
+            }
+            near(reached, expected[1]);
+        }
+    }
 }
 
 fn compare(actual: &Solid, expected: &Solid) {

@@ -178,7 +178,7 @@ pub fn project_drawing(
         }
         if solids
             .iter()
-            .any(|input| curved::contains_round(input.solid))
+            .any(|input| curved::needs_curved_scene(input.solid))
         {
             return curved::project_scene(solids, options);
         }

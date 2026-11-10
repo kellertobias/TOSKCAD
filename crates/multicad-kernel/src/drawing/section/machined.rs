@@ -13,6 +13,9 @@ pub(super) fn needs_analytic_section(solid: &Solid) -> bool {
     solid
         .orthogonal_body()
         .is_some_and(|(body, _)| body.has_curved_cuts())
+        || solid
+            .polygon_prism()
+            .is_some_and(|body| !body.pockets.is_empty())
         || solid.rounded_slot_body().is_some()
         || curved::is_round(solid)
         || solid
@@ -144,6 +147,12 @@ impl SectionOutput {
         if depth < ends[0] - tolerance || depth > ends[1] + tolerance {
             return Ok(());
         }
+        let promoted = solid
+            .polygon_prism()
+            .filter(|body| !body.pockets.is_empty())
+            .map(|_| solid.orthogonal_stock())
+            .transpose()?;
+        let solid = promoted.as_ref().unwrap_or(solid);
         if let Some((body, placement)) = solid.orthogonal_body()
             && body.has_curved_cuts()
         {

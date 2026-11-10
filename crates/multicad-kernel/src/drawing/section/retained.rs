@@ -36,6 +36,48 @@ pub(super) fn project(
         .iter()
         .map(|input| input.solid.geometry_policy().linear_tolerance_mm)
         .fold(GeometryPolicy::default().linear_tolerance_mm, f64::max);
+    let scene = adapt_scene(solids, options, depth, tolerance)?;
+    let projection = Options {
+        depth_mm: depth,
+        far_mm: options.section_depth_mm.map(|range| depth - range),
+        windows_mm: [options.section_u_mm, options.section_v_mm],
+        tolerance_mm: tolerance,
+        segment_limit: (options.maximum_curves as usize).min(options.maximum_points as usize / 2),
+    };
+    let visible = if scene.along_v.is_empty() {
+        retained_section::project(&scene.along_u, projection)
+    } else {
+        retained_section::project_crossed(&scene.along_u, &scene.along_v, projection)
+    }
+    .map_err(planar::projection_error)?;
+    options.maximum_curves -= visible.len() as u32;
+    options.maximum_points -= 2 * visible.len() as u32;
+    options.section_only = true;
+    options.section_depth_mm = None;
+    let mut output: Vec<_> = visible
+        .into_iter()
+        .map(|segment| planar::line(segment.source, VectorRole::Visible, segment.ends))
+        .collect();
+    output.extend(machined::project_members(
+        scene.cut_members,
+        options,
+        depth,
+    )?);
+    Ok(output)
+}
+
+struct Scene<'a> {
+    along_u: Vec<Body>,
+    along_v: Vec<Body>,
+    cut_members: Vec<(usize, DrawingSolid<'a>)>,
+}
+
+fn adapt_scene<'a>(
+    solids: &[DrawingSolid<'a>],
+    options: DrawingProjection,
+    depth: f64,
+    tolerance: f64,
+) -> Result<Scene<'a>, GeometryError> {
     let visible_region = Region {
         windows: [
             options.section_u_mm,
@@ -52,10 +94,15 @@ pub(super) fn project(
     let members = projection_members(solids);
     let blockers = opaque_cells(&members, options.frame, visible_region)?;
     let remaining = Cell::new(OCCLUSION_BUDGET);
-    let mut bodies = Vec::new();
+    let mut along_u = Vec::new();
+    let mut along_v = Vec::new();
+    let blockers_v: Vec<_> = blockers
+        .iter()
+        .map(|&(owner, cell)| (owner, transpose_box(cell)))
+        .collect();
     let mut cut_members = Vec::new();
+    let world = Alignment::new(PlaneFrame::default(), options.frame, false);
     for (member, &(source, solid)) in members.iter().enumerate() {
-        let world = Alignment::new(PlaneFrame::default(), options.frame);
         let bounds = solid.bounds()?;
         let projected = world.bounds(Box3 {
             min: bounds.min,
@@ -71,8 +118,24 @@ pub(super) fn project(
             near: depth,
             remaining: &remaining,
         };
-        let body = adapt(solid, source, options.frame, scope)?;
-        bodies.push(body);
+        match adapt(solid, source, options.frame, false, scope) {
+            Ok(body) => along_u.push(body),
+            Err(error) if error.kind == GeometryErrorKind::Unsupported => {
+                let [u, v, z] = visible_region.windows;
+                let scope = Scope {
+                    region: Region {
+                        windows: [v, u, z],
+                        tolerance,
+                    },
+                    blockers: &blockers_v,
+                    member,
+                    near: depth,
+                    remaining: &remaining,
+                };
+                along_v.push(adapt(solid, source, options.frame, true, scope)?);
+            }
+            Err(error) => return Err(error),
+        }
         if projected.min[2] < depth - tolerance && projected.max[2] > depth + tolerance {
             cut_members.push((
                 source,
@@ -83,28 +146,11 @@ pub(super) fn project(
             ));
         }
     }
-    let visible = retained_section::project(
-        &bodies,
-        Options {
-            depth_mm: depth,
-            far_mm: options.section_depth_mm.map(|range| depth - range),
-            windows_mm: [options.section_u_mm, options.section_v_mm],
-            tolerance_mm: tolerance,
-            segment_limit: (options.maximum_curves as usize)
-                .min(options.maximum_points as usize / 2),
-        },
-    )
-    .map_err(planar::projection_error)?;
-    options.maximum_curves -= visible.len() as u32;
-    options.maximum_points -= 2 * visible.len() as u32;
-    options.section_only = true;
-    options.section_depth_mm = None;
-    let mut output: Vec<_> = visible
-        .into_iter()
-        .map(|segment| planar::line(segment.source, VectorRole::Visible, segment.ends))
-        .collect();
-    output.extend(machined::project_members(cut_members, options, depth)?);
-    Ok(output)
+    Ok(Scene {
+        along_u,
+        along_v,
+        cut_members,
+    })
 }
 
 #[derive(Clone, Copy)]
@@ -176,6 +222,14 @@ fn section_limit() -> GeometryError {
     )
 }
 
+fn transpose_box(Box3 { min, max }: Box3) -> Box3 {
+    let transpose = |[u, v, depth]: Point| [v, u, depth];
+    Box3 {
+        min: transpose(min),
+        max: transpose(max),
+    }
+}
+
 fn opaque_cells(
     members: &[(usize, &Solid)],
     view: PlaneFrame,
@@ -196,7 +250,7 @@ fn opaque_cells(
         } else {
             continue;
         };
-        let alignment = Alignment::new(frame, view);
+        let alignment = Alignment::new(frame, view, false);
         if alignment.rectilinear() {
             if cells.len() > 100_000usize.saturating_sub(blockers.len()) {
                 return Err(section_limit());
@@ -221,8 +275,11 @@ struct Alignment {
 }
 
 impl Alignment {
-    fn new(local: PlaneFrame, view: PlaneFrame) -> Self {
-        let screen = planar::view_axes(view);
+    fn new(local: PlaneFrame, view: PlaneFrame, transposed: bool) -> Self {
+        let mut screen = planar::view_axes(view);
+        if transposed {
+            screen.swap(0, 1);
+        }
         let into_view = |vector| screen.map(|axis| dot(axis, vector));
         Self {
             origin: into_view(subtract(local.origin, view.origin)),
@@ -289,6 +346,7 @@ fn adapt(
     solid: &Solid,
     source: usize,
     view: PlaneFrame,
+    transposed: bool,
     scope: Scope<'_>,
 ) -> Result<Body, GeometryError> {
     let mut result = Body {
@@ -298,7 +356,7 @@ fn adapt(
         positive: Vec::new(),
     };
     if let Some((stock, frame)) = solid.orthogonal_body() {
-        let alignment = Alignment::new(frame, view);
+        let alignment = Alignment::new(frame, view, transposed);
         if !alignment.rectilinear() {
             return Err(unsupported());
         }
@@ -351,7 +409,7 @@ fn adapt(
         .polygon_prism()
         .filter(|placed| !placed.pockets.is_empty())
     {
-        let alignment = Alignment::new(placed.frame, view);
+        let alignment = Alignment::new(placed.frame, view, transposed);
         if !alignment.rectilinear() {
             return Err(unsupported());
         }
@@ -391,7 +449,7 @@ fn adapt(
         return Ok(result);
     }
     if let Some((cells, frame)) = solid.drawing_rectilinear_cells()? {
-        let alignment = Alignment::new(frame, view);
+        let alignment = Alignment::new(frame, view, transposed);
         if !alignment.rectilinear() {
             return Err(unsupported());
         }
@@ -401,7 +459,7 @@ fn adapt(
         return Ok(result);
     }
     if let Some((body, frame)) = solid.rounded_slot_body() {
-        let alignment = Alignment::new(frame, view);
+        let alignment = Alignment::new(frame, view, transposed);
         if !alignment.along_u(2) {
             return Err(unsupported());
         }
@@ -416,7 +474,7 @@ fn adapt(
         return Ok(result);
     }
     if let Some((frame, radius, height, bore)) = curved::circular_dimensions(solid) {
-        let alignment = Alignment::new(frame, view);
+        let alignment = Alignment::new(frame, view, transposed);
         if !alignment.along_u(2) {
             return Err(unsupported());
         }

@@ -106,7 +106,7 @@ impl Solid {
         Ok(self)
     }
 
-    pub(in crate::geometry) fn orthogonal_stock(&self) -> Result<Self, GeometryError> {
+    pub(crate) fn orthogonal_stock(&self) -> Result<Self, GeometryError> {
         if self.orthogonal_body().is_some() {
             return self.share();
         }
@@ -115,9 +115,11 @@ impl Solid {
                 SolidBody::Prism(Rc::clone(prism), PlaneFrame::default()),
                 *frame,
             ),
-            SolidBody::PolygonPrism(placed) if placed.pockets.is_empty() => {
+            SolidBody::PolygonPrism(placed) => {
                 let mut stock = (**placed).clone();
                 stock.frame = PlaneFrame::default();
+                stock.pockets = Rc::from([]);
+                stock.pocket_origins = Rc::from([]);
                 (SolidBody::PolygonPrism(Rc::new(stock)), placed.frame)
             }
             SolidBody::Linear(body, frame) => (
@@ -144,13 +146,45 @@ impl Solid {
         )
         .map_err(operation_error)?
         .ok_or_else(|| unsupported_slot("Orthogonal stock has no material"))?;
-        let body = OrthogonalBody::build(feature, geometry, Some(sources))?;
-        Ok(Self {
-            body: SolidBody::Orthogonal(Rc::new(body), frame),
+        let body = Rc::new(OrthogonalBody::build(feature, geometry, Some(sources))?);
+        let result = Self {
+            body: SolidBody::Orthogonal(Rc::clone(&body), frame),
             policy: self.policy,
             provenance: vec![],
             rust_origins: vec![],
-        })
+        };
+        let Some(stock) = self
+            .polygon_prism()
+            .filter(|stock| !stock.pockets.is_empty())
+        else {
+            return Ok(result);
+        };
+        let sign = if stock.reverse_sweep { -1. } else { 1. };
+        let height = stock.prism.height().as_f64();
+        let pockets = stock
+            .pockets
+            .iter()
+            .map(|pocket| {
+                let level = sign * pocket.mouth_z_mm(height);
+                let normal = [0., 0., if pocket.end { sign } else { -sign }];
+                let face = body
+                    .boundary
+                    .faces
+                    .iter()
+                    .position(|face| face.normal == normal && face.rings[0][0][2] == level)
+                    .ok_or_else(|| {
+                        unsupported_slot("Cannot recover the stock cap for an existing blind bore")
+                    })?;
+                Ok(OrthogonalPocket {
+                    face,
+                    center_mm: [pocket.center_mm[0], pocket.center_mm[1], level],
+                    radius_mm: pocket.radius_mm,
+                    depth_mm: pocket.depth_mm,
+                })
+            })
+            .collect::<Result<Vec<_>, GeometryError>>()?;
+        drop(body);
+        result.with_orthogonal_pockets(pockets, stock.pocket_origins.to_vec())
     }
 }
 

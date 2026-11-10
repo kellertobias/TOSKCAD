@@ -30,6 +30,7 @@ pub(crate) struct DrawingStock<'a> {
 }
 
 pub(crate) struct BlindOpening {
+    pub(crate) face: usize,
     pub(crate) center: Point,
     pub(crate) normal: Point,
     pub(crate) radius: f64,
@@ -181,8 +182,15 @@ fn operation_error(cause: BooleanError) -> GeometryError {
 }
 
 impl Solid {
-    /// Pair the certified cylindrical voids with their uncut stock. A drawing
-    /// caller must prove that replacing the voids preserves the requested view.
+    pub(crate) fn has_circular_drawing_stock(&self) -> bool {
+        self.orthogonal_body()
+            .is_some_and(|(body, _)| body.slots.is_empty() && !body.pockets.is_empty())
+            || self
+                .polygon_prism()
+                .is_some_and(|body| !body.pockets.is_empty())
+    }
+
+    /// Pair each certified blind opening with its uncut stock face.
     pub(crate) fn drawing_circular_stock(&self) -> Option<(Self, Vec<BlindOpening>)> {
         let (body, openings) = match &self.body {
             SolidBody::Orthogonal(stock, frame)
@@ -192,6 +200,7 @@ impl Solid {
                     .pockets
                     .iter()
                     .map(|pocket| BlindOpening {
+                        face: pocket.face,
                         center: transform_point(*frame, pocket.center_mm),
                         normal: transform_vector(*frame, stock.boundary.faces[pocket.face].normal),
                         radius: pocket.radius_mm,
@@ -213,6 +222,7 @@ impl Solid {
                         let [x, y] = pocket.center_mm;
                         let normal_sign = if pocket.end { sign } else { -sign };
                         BlindOpening {
+                            face: usize::from(pocket.end),
                             center: transform_point(
                                 stock.frame,
                                 [x, y, sign * pocket.mouth_z_mm(height)],
@@ -271,11 +281,18 @@ impl Solid {
         Ok(None)
     }
 
-    /// When every blind opening is edge-on, the first material hit along a
-    /// view ray is unchanged. The cut never reaches a front-facing stock face.
+    /// Edge-on and directly back-facing blind openings leave the first
+    /// material hit unchanged because they never reach a front-facing face.
     /// The stripped body is valid only for visible-line projection.
     pub(crate) fn stock_for_visible_projection(&self, toward_viewer: Point) -> Option<Self> {
-        let perpendicular = |normal| dot(normal, toward_viewer).abs() <= 32. * f64::EPSILON;
+        let preserves_front = |normal| {
+            let facing = dot(normal, toward_viewer);
+            facing.abs() <= 32. * f64::EPSILON
+                || (facing < 0.
+                    && cross(normal, toward_viewer)
+                        .into_iter()
+                        .all(|component| component.abs() <= 32. * f64::EPSILON))
+        };
         let body = match &self.body {
             SolidBody::Orthogonal(stock, frame)
                 if stock.has_curved_cuts()
@@ -285,7 +302,7 @@ impl Solid {
                         .map(|pocket| pocket.face)
                         .chain(stock.slots.iter().map(|slot| slot.face))
                         .all(|face| {
-                            perpendicular(transform_vector(
+                            preserves_front(transform_vector(
                                 *frame,
                                 stock.boundary.faces[face].normal,
                             ))
@@ -299,7 +316,15 @@ impl Solid {
                 SolidBody::Orthogonal(Rc::new(stock), *frame)
             }
             SolidBody::PolygonPrism(stock)
-                if !stock.pockets.is_empty() && perpendicular(stock.frame.normal()) =>
+                if !stock.pockets.is_empty()
+                    && stock.pockets.iter().all(|pocket| {
+                        let normal = stock.frame.normal();
+                        preserves_front(if pocket.end != stock.reverse_sweep {
+                            normal
+                        } else {
+                            normal.map(|value| -value)
+                        })
+                    }) =>
             {
                 let mut stock = (**stock).clone();
                 stock.pockets = Rc::from([]);

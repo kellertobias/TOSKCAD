@@ -6,7 +6,9 @@ use multicad_rust_kernel::{
     round_occlusion::RoundOccluder,
 };
 
+mod opaque;
 mod pockets;
+mod stadium;
 
 fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
     a.into_iter().zip(b).map(|(x, y)| x * y).sum()
@@ -56,11 +58,13 @@ pub(super) fn is_round(solid: &Solid) -> bool {
     circular_dimensions(solid).is_some()
 }
 
-pub(super) fn contains_round(solid: &Solid) -> bool {
+pub(super) fn needs_curved_scene(solid: &Solid) -> bool {
     is_round(solid)
+        || solid.has_circular_drawing_stock()
+        || solid.rounded_slot_body().is_some()
         || solid
             .rust_compound()
-            .is_some_and(|compound| compound.members().any(contains_round))
+            .is_some_and(|compound| compound.members().any(needs_curved_scene))
 }
 
 fn projection_cylinder(solid: &Solid, frame: PlaneFrame) -> Option<(Cylinder, Option<f64>)> {
@@ -102,34 +106,9 @@ fn round_occluder(
     .map_err(planar::projection_error)
 }
 
-fn screen_bounds(solid: &Solid, frame: PlaneFrame) -> Result<[[f64; 3]; 2], GeometryError> {
-    let bounds = solid.bounds()?;
-    let axes = planar::view_axes(frame);
-    Ok([false, true].map(|upper| {
-        axes.map(|axis| {
-            let corner = std::array::from_fn(|i| {
-                let coordinate = if upper == (axis[i] >= 0.) {
-                    bounds.max[i]
-                } else {
-                    bounds.min[i]
-                };
-                coordinate - frame.origin[i]
-            });
-            dot(corner, axis)
-        })
-    }))
-}
-
-struct SceneMember<'a> {
-    source: usize,
-    solid: &'a Solid,
-    bounds: [[f64; 3]; 2],
-    round: Option<RoundOccluder>,
-}
-
 pub(super) fn project_scene(
     solids: &[DrawingSolid<'_>],
-    mut options: DrawingProjection,
+    options: DrawingProjection,
 ) -> Result<Vec<ProjectedVector>, GeometryError> {
     if let [input] = solids
         && is_round(input.solid)
@@ -137,52 +116,74 @@ pub(super) fn project_scene(
         return project(input, options, 0);
     }
 
-    let members = projection_members(solids)
-        .into_iter()
-        .map(|(source, solid)| {
-            let round = round_occluder(solid, options.frame)?;
-            let bounds = if let Some(round) = round {
-                round.bounds()
+    let members = projection_members(solids);
+    match project_members(&members, options) {
+        Err(error) if error.kind == GeometryErrorKind::Unsupported && !options.hidden_lines => {
+            let visible = opaque::visible_members(&members, options.frame)?;
+            if visible.len() == members.len() {
+                Err(error)
             } else {
-                screen_bounds(solid, options.frame)?
-            };
-            Ok(SceneMember {
-                source,
-                solid,
-                bounds,
-                round,
-            })
-        })
-        .collect::<Result<Vec<_>, GeometryError>>()?;
+                project_members(&visible, options)
+            }
+        }
+        result => result,
+    }
+}
 
+fn project_members(
+    members: &[(usize, &Solid)],
+    mut options: DrawingProjection,
+) -> Result<Vec<ProjectedVector>, GeometryError> {
     let mut planar_members = Vec::new();
     let mut round_sources = Vec::new();
     let mut rounds = Vec::new();
-    let mut checks = 0;
-    for (index, member) in members.iter().enumerate() {
-        if let Some(round) = member.round {
-            round_sources.push(member.source);
+    let mut rounded = stadium::Shapes::default();
+    for &(source, solid) in members {
+        if solid.rounded_slot_body().is_some() {
+            rounded.add(solid, source, options)?;
+        } else if let Some(round) = round_occluder(solid, options.frame)? {
+            round_sources.push(source);
             rounds.push(round);
         } else {
             let proxy = if options.hidden_lines {
                 None
             } else {
-                pockets::stock(index, &members, options, &mut checks)?
+                pockets::stock(solid, source, planar_members.len(), options)?
             };
-            planar_members.push((member, proxy));
+            planar_members.push((source, solid, proxy));
         }
     }
     let inputs: Vec<_> = planar_members
         .iter()
-        .map(|(member, proxy)| DrawingSolid {
-            solid: proxy.as_ref().map_or(member.solid, |(stock, _)| stock),
+        .map(|(_, solid, proxy)| DrawingSolid {
+            solid: proxy.as_ref().map_or(*solid, |stock| &stock.solid),
             hatch: None,
         })
         .collect();
     let (bodies, tolerance) = planar::prepare(&inputs, options.frame)?;
-    let (lines, round_edges) = planar_projection::project_scene(
+    let mut rims = Vec::new();
+    let mut openings = Vec::new();
+    let planar_sources: Vec<_> = planar_members
+        .iter()
+        .map(|(source, _, _)| *source)
+        .collect();
+    for (_, _, proxy) in planar_members {
+        if let Some(proxy) = proxy {
+            rims.extend(proxy.rims);
+            openings.extend(proxy.openings);
+        }
+    }
+    let (lines, round_edges, supplied) = planar_projection::project_scene_with_candidates(
         &bodies,
         &rounds,
+        planar_projection::SceneExtras {
+            rims: &rims,
+            openings: &openings,
+            blocker_bodies: &rounded.bodies,
+            blocker_rounds: &rounded.rounds,
+            lines: &rounded.lines,
+            spatial_rims: &rounded.rims,
+        },
         planar_projection::Options {
             tolerance,
             hidden_lines: options.hidden_lines,
@@ -198,7 +199,7 @@ pub(super) fn project_scene(
         .into_iter()
         .map(|line| {
             planar::line(
-                planar_members[line.source].0.source,
+                planar_sources[line.source],
                 if line.hidden {
                     VectorRole::Hidden
                 } else {
@@ -223,10 +224,8 @@ pub(super) fn project_scene(
     for segment in round_edges {
         add(round_sources[segment.source], vec![segment.edge])?;
     }
-    for (member, proxy) in planar_members {
-        if let Some((_, edges)) = proxy {
-            add(member.source, edges)?;
-        }
+    for segment in supplied {
+        add(segment.source, vec![segment.edge])?;
     }
     output.sort_by_key(|vector| vector.source_index);
     Ok(output)
