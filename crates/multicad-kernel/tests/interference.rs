@@ -19,7 +19,10 @@ fn rust_stock(size: [i64; 3], offset: [f64; 3]) -> Solid {
     Solid::rust_box(
         EntityId::new().uuid_bits(),
         size.map(|n| rust_kernel::Rational::new(n, 1).unwrap()),
-        PlaneFrame { origin: offset, ..Default::default() },
+        PlaneFrame {
+            origin: offset,
+            ..Default::default()
+        },
         p(),
     )
     .unwrap()
@@ -29,10 +32,30 @@ fn rust_stock(size: [i64; 3], offset: [f64; 3]) -> Solid {
 fn rust_pair_verifies_gap_contact_interference_and_containment() {
     let a = rust_stock([10; 3], [0.; 3]);
     for (b, expected, volume, clearance) in [
-        (rust_stock([10; 3], [10.5, 0., 0.]), SolidPairRelation::Separated, 0., 0.5),
-        (rust_stock([10; 3], [10.; 3]), SolidPairRelation::ContactWithinTolerance, 0., 0.),
-        (rust_stock([10; 3], [5., 0., 0.]), SolidPairRelation::Overlapping, 500., 0.),
-        (rust_stock([2; 3], [2.; 3]), SolidPairRelation::Overlapping, 8., 0.),
+        (
+            rust_stock([10; 3], [10.5, 0., 0.]),
+            SolidPairRelation::Separated,
+            0.,
+            0.5,
+        ),
+        (
+            rust_stock([10; 3], [10.; 3]),
+            SolidPairRelation::ContactWithinTolerance,
+            0.,
+            0.,
+        ),
+        (
+            rust_stock([10; 3], [5., 0., 0.]),
+            SolidPairRelation::Overlapping,
+            500.,
+            0.,
+        ),
+        (
+            rust_stock([2; 3], [2.; 3]),
+            SolidPairRelation::Overlapping,
+            8.,
+            0.,
+        ),
     ] {
         let result = a.inspect_pair(&b, 1e-7, p()).unwrap();
         assert_eq!(result.relation, expected);
@@ -41,14 +64,20 @@ fn rust_pair_verifies_gap_contact_interference_and_containment() {
         assert!(!result.minimum_distance.witnesses.is_empty());
     }
     let mixed = Solid::box_solid([10.; 3], p()).unwrap();
-    assert_eq!(a.inspect_pair(&mixed, 1e-7, p()).unwrap_err().kind, GeometryErrorKind::Unsupported);
+    assert_eq!(
+        a.inspect_pair(&mixed, 1e-7, p()).unwrap_err().kind,
+        GeometryErrorKind::Unsupported
+    );
 }
 
 #[test]
 fn rust_pair_does_not_fill_cavities_or_double_count_compound_members() {
     let box_ = rust_stock([20; 3], [0.; 3]);
     let cavity = rust_stock([8; 3], [6.; 3]);
-    let hollow = box_.boolean(&cavity, BooleanOperation::Subtract, p()).unwrap().unwrap();
+    let hollow = box_
+        .boolean(&cavity, BooleanOperation::Subtract, p())
+        .unwrap()
+        .unwrap();
     let probe = rust_stock([4; 3], [8.; 3]);
     let clear = hollow.inspect_pair(&probe, 1e-7, p()).unwrap();
     assert_eq!(clear.relation, SolidPairRelation::Separated);
@@ -70,7 +99,10 @@ fn rust_pair_certifies_rotated_clearance_even_when_world_bounds_overlap() {
     let rotation = [[d, -d, 0.], [d, d, 0.], [0., 0., 1.]];
     let measure = |solid: Solid| {
         let a = solid
-            .transformed(RigidTransform { rotation, ..Default::default() })
+            .transformed(RigidTransform {
+                rotation,
+                ..Default::default()
+            })
             .unwrap();
         let b = moved(&a, [-3. * d, 3. * d, 0.]);
         let [a_box, b_box] = [&a, &b].map(|body| body.bounds().unwrap());
@@ -81,7 +113,10 @@ fn rust_pair_certifies_rotated_clearance_even_when_world_bounds_overlap() {
     let native = measure(Solid::box_solid([10., 2., 2.], p()).unwrap());
     assert_eq!(rust.relation, SolidPairRelation::Separated);
     near(rust.minimum_distance.distance_mm, 1.);
-    near(rust.minimum_distance.distance_mm, native.minimum_distance.distance_mm);
+    near(
+        rust.minimum_distance.distance_mm,
+        native.minimum_distance.distance_mm,
+    );
     near(rust.common_volume_mm3, 0.);
 }
 #[test]

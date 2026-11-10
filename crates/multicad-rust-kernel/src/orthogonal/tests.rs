@@ -39,11 +39,20 @@ fn occupied_volume_counts_each_cell_once_and_keeps_positive_slivers() {
 fn occupied_volume_rejects_limits_and_nonfinite_results() {
     let a = cube([0.; 3], [10.; 3]);
     let excessive = vec![a; MAX_CELLS + 1];
-    assert_eq!(intersection_volume(&excessive, &[a]), Err(BooleanError::Limit));
+    assert_eq!(
+        intersection_volume(&excessive, &[a]),
+        Err(BooleanError::Limit)
+    );
     let invalid = cube([0.; 3], [0.; 3]);
-    assert_eq!(intersection_volume(&[a], &[invalid]), Err(BooleanError::Invalid));
+    assert_eq!(
+        intersection_volume(&[a], &[invalid]),
+        Err(BooleanError::Invalid)
+    );
     let too_large = cube([0.; 3], [1e200; 3]);
-    assert_eq!(intersection_volume(&[too_large], &[too_large]), Err(BooleanError::Invalid));
+    assert_eq!(
+        intersection_volume(&[too_large], &[too_large]),
+        Err(BooleanError::Invalid)
+    );
 }
 
 #[test]

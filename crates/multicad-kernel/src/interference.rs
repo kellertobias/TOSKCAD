@@ -54,7 +54,8 @@ impl Solid {
             ));
         }
         if self.uses_rust_geometry() {
-            let distance = self.minimum_distance(BRepSelection::Whole, other, BRepSelection::Whole)?;
+            let distance =
+                self.minimum_distance(BRepSelection::Whole, other, BRepSelection::Whole)?;
             let volume = if distance.distance_mm > contact_tolerance_mm {
                 // The finite material distance already proves separation.
                 0.

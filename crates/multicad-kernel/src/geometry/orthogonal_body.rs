@@ -164,10 +164,12 @@ impl Solid {
         {
             return Ok(orthogonal::prism_cells(&placed.prism, placed.reverse_sweep)
                 .map_err(operation_error)?
-                .map(|cells| cells
-                    .into_iter()
-                    .map(|cell| transform_box(placed.frame, cell))
-                    .collect()));
+                .map(|cells| {
+                    cells
+                        .into_iter()
+                        .map(|cell| transform_box(placed.frame, cell))
+                        .collect()
+                }));
         }
         if let Some((prism, frame)) = self.rust_prism_frame()
             && cardinal(frame)
