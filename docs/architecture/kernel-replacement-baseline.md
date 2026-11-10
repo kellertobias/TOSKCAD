@@ -2,6 +2,8 @@
 
 The baseline for the Rust kernel study is MultiCAD commit `0d63338a1e88a53e322ced3418dcccc5dbdfe9f0` with statically linked OCCT 7.9.3. This document records the current contract and the first comparison fixture. The production solver, geometry backend, canonical document, and saved file format use the existing implementations. [Kernel replacement plan](https://plans.tokenet.de/CAD/290)
 
+The [Rust kernel qualification matrix](rust-kernel-qualification.md) records the pinned candidate fixtures and open cutover checks.
+
 ## Current geometry contract
 
 The model compiler consumes the Rust `Solid` façade. `Solid` owns a thread-confined OCCT handle. The shared Rust document records feature inputs and semantic references. Native operation history supplies candidates for those references after a rebuild. The renderer uses disposable meshes, while manufacturing export evaluates source geometry through its own checks. [Kernel façade](../../crates/multicad-kernel/src/geometry.rs) · [Compiler](../../crates/multicad-model/src/compiler.rs) · [Geometry policy](0006-geometry-policy.md)
