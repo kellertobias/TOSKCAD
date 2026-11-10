@@ -30,8 +30,8 @@ pub struct SheetFlangeOpening<'a> {
     pub outline: &'a [(ProfileEdge, usize)],
 }
 
-/// Join rectangular stock and up to two opposite flange sweeps at full shared
-/// root faces. All edges and wall supports remain analytic.
+/// Join rectangular stock and up to four separated flange sweeps at full
+/// shared root faces. All edges and wall supports remain analytic.
 pub fn formed_sheet(
     web: &[SheetWebEdge],
     holes: &[Vec<(ProfileEdge, usize)>],
@@ -53,7 +53,7 @@ pub fn formed_sheet(
     )
 }
 
-/// Join a web and opposite flange sweeps with certified through openings.
+/// Join a web and separated flange sweeps with certified through openings.
 /// A nonempty `openings` slice supplies one list per flange in flange order.
 #[allow(clippy::too_many_arguments)]
 pub fn formed_sheet_with_openings(
@@ -69,7 +69,7 @@ pub fn formed_sheet_with_openings(
     if !openings.is_empty() && openings.len() != flanges.len() {
         return Err(Error::Invalid);
     }
-    if flanges.is_empty() || flanges.len() > 2 || web.len() > 32 {
+    if flanges.is_empty() || flanges.len() > 4 || web.len() > 36 {
         return Err(Error::Unsupported);
     }
     let thickness = signed_thickness.abs();
@@ -94,7 +94,7 @@ pub fn formed_sheet_with_openings(
     let mut builder = Builder::new(tolerance);
     let mut volume = base.volume_mm3();
     let mut bounds = web_frame.bounds(&base);
-    let mut hinges = Vec::new();
+    let mut prior_flanges = Vec::<(SweepFrame, Sweep)>::with_capacity(flanges.len());
     for (index, flange) in flanges.iter().enumerate() {
         let mut matches = web.iter().filter(|edge| edge.flange == Some(index));
         let hinge = matches.next().ok_or(Error::Invalid)?;
@@ -110,12 +110,9 @@ pub fn formed_sheet_with_openings(
             edge.ends
                 .iter()
                 .any(|&[x, y]| dot(sub([x, y, 0.], a), outward) > tolerance)
-        }) || hinges.iter().any(|&(previous, normal)| {
-            dot(normal, outward) > -1. + 1e-12 || dot(sub(previous, a), outward) >= -minimum
         }) {
             return Err(Error::Unsupported);
         }
-        hinges.push((a, outward));
         let section = checked_sweep(&[flange.section], width, tolerance, minimum)?;
         let (&root, walls) = section.rings()[0].split_last().ok_or(Error::Invalid)?;
         let (root_a, root_b) = ([0., thickness], [0., 0.]);
@@ -140,6 +137,16 @@ pub fn formed_sheet_with_openings(
             v: up,
             direction: along,
         };
+        // Each flange lies on its own outward side. If either entire sweep
+        // clears the other's hinge plane, that plane separates the material.
+        // Adjacent rectangular edges then need clearance at the shared corner
+        // on only one side, while opposite roots keep their existing clearance.
+        if prior_flanges.iter().any(|(other, sweep)| {
+            !frame.clears_hinge(&section, *other, minimum)
+                && !other.clears_hinge(sweep, frame, minimum)
+        }) {
+            return Err(Error::Unsupported);
+        }
         let omit = (0..flange.section.len()).map(|i| i == walls.len());
         let first_wall = builder.faces.len();
         builder.sweep(&[flange.section], &section, frame, flange.ends, omit)?;
@@ -154,6 +161,7 @@ pub fn formed_sheet_with_openings(
             bounds[0][i] = bounds[0][i].min(flange_bounds[0][i]);
             bounds[1][i] = bounds[1][i].max(flange_bounds[1][i]);
         }
+        prior_flanges.push((frame, section));
     }
     if web
         .iter()
@@ -218,6 +226,13 @@ impl SweepFrame {
 
     fn coordinates(self, vector: Point) -> Point {
         [self.u, self.v, self.direction].map(|axis| dot(axis, vector))
+    }
+
+    fn clears_hinge(self, sweep: &Sweep, hinge: Self, minimum: f64) -> bool {
+        let outward = hinge.u;
+        let furthest =
+            dot(sub(self.origin, hinge.origin), outward) + sweep.support(self.coordinates(outward));
+        furthest < -minimum
     }
 
     fn bounds(self, sweep: &Sweep) -> [Point; 2] {
@@ -817,6 +832,169 @@ mod tests {
         );
     }
 
+    fn web_from_corners(corners: &[[f64; 2]], roots: &[(usize, usize)]) -> Vec<SheetWebEdge> {
+        corners
+            .iter()
+            .zip(corners.iter().cycle().skip(1))
+            .enumerate()
+            .map(|(i, (&a, &b))| SheetWebEdge {
+                ends: [a, b],
+                source: i,
+                flange: roots
+                    .iter()
+                    .find_map(|&(edge, flange)| (edge == i).then_some(flange)),
+            })
+            .collect()
+    }
+
+    fn upward_section() -> Vec<(ProfileEdge, usize)> {
+        let arc = |a, b, clockwise| ProfileEdge::Arc {
+            center: [0., 2.],
+            a,
+            b,
+            clockwise,
+        };
+        [
+            arc([0., 0.], [2., 2.], false),
+            line([2., 2.], [2., 4.]),
+            line([2., 4.], [1., 4.]),
+            line([1., 4.], [1., 2.]),
+            arc([1., 2.], [0., 1.], true),
+            line([0., 1.], [0., 0.]),
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(i, edge)| (edge, i + 40))
+        .collect()
+    }
+
+    fn four_flange_web(inset_long_sides: bool, relief_depth: f64) -> Vec<SheetWebEdge> {
+        let corners = [[0., 0.], [10., 0.], [10., 8.], [0., 8.]];
+        let mut web = Vec::new();
+        for (flange, (&a, &b)) in corners
+            .iter()
+            .zip(corners.iter().cycle().skip(1))
+            .enumerate()
+        {
+            let [dx, dy]: [f64; 2] = std::array::from_fn(|i| b[i] - a[i]);
+            let length = dx.hypot(dy);
+            let [u, v] = [dx / length, dy / length];
+            let place = |[s, q]: [f64; 2]| [a[0] + u * s + v * q, a[1] + v * s - u * q];
+            let inset = flange % 2 == 1 || inset_long_sides;
+            let contour = if inset {
+                vec![
+                    [0., 0.],
+                    [0.5, 0.],
+                    [0.5, -relief_depth],
+                    [1.5, -relief_depth],
+                    [1.5, 0.],
+                    [length - 1.5, 0.],
+                    [length - 1.5, -relief_depth],
+                    [length - 0.5, -relief_depth],
+                    [length - 0.5, 0.],
+                    [length, 0.],
+                ]
+            } else {
+                vec![[0., 0.], [length, 0.]]
+            };
+            let root = if inset { 4 } else { 0 };
+            for (i, pair) in contour.windows(2).enumerate() {
+                web.push(SheetWebEdge {
+                    ends: [place(pair[0]), place(pair[1])],
+                    source: web.len(),
+                    flange: (i == root).then_some(flange),
+                });
+            }
+        }
+        web
+    }
+
+    #[test]
+    fn four_adjacent_flange_pairs_keep_open_corners_and_opposite_bend_directions() {
+        let down = section();
+        let up = upward_section();
+        let flanges = [&down, &up, &down, &up]
+            .into_iter()
+            .enumerate()
+            .map(|(i, section)| SheetFlange {
+                section,
+                ends: [2 * i + 60, 2 * i + 61],
+            })
+            .collect::<Vec<_>>();
+        for (inset_long_sides, edges, relieved_area, span) in
+            [(false, 20, 1., 30.), (true, 36, 2., 24.)]
+        {
+            let web = four_flange_web(inset_long_sides, 0.25);
+            assert_eq!(web.len(), edges);
+            let volume = 80. - relieved_area + span * (2. + 3. * std::f64::consts::FRAC_PI_4);
+            for (thickness, z) in [(1., [-3., 4.]), (-1., [-4., 3.])] {
+                let shell =
+                    formed_sheet(&web, &[], [80, 81], &flanges, thickness, TOL, MIN).unwrap();
+                assert_eq!(shell.solid_count(), 1);
+                assert_eq!(shell.bounds_mm(), [[-2., -2., z[0]], [12., 10., z[1]]]);
+                assert!((shell.volume_mm3() - volume).abs() < TOL);
+                assert_eq!(
+                    shell
+                        .faces()
+                        .iter()
+                        .filter(|face| matches!(face.support, Support::Cylinder { .. }))
+                        .count(),
+                    8,
+                );
+                let mesh = shell
+                    .mesh(Tessellation {
+                        deflection: 0.001,
+                        angle: 0.07,
+                        triangle_limit: 6000,
+                    })
+                    .unwrap();
+                let proof = crate::manufacturing::certify(&mesh).unwrap();
+                assert!((proof.signed_volume_mm3 - volume).abs() < 0.1);
+            }
+        }
+        // At 0.5 mm depth, neighboring reliefs touch at an inner corner.
+        let touching_reliefs = four_flange_web(true, 0.5);
+        assert_eq!(
+            formed_sheet(&touching_reliefs, &[], [80, 81], &flanges, 1., TOL, MIN),
+            Err(Error::Invalid),
+        );
+    }
+
+    #[test]
+    fn adjacent_root_contact_and_relief_eroding_a_neighbor_fail_closed() {
+        let section = section();
+        let flanges = [[60, 61], [62, 63]].map(|ends| SheetFlange {
+            section: &section,
+            ends,
+        });
+        let touching = web_from_corners(
+            &[[0., 0.], [10., 0.], [10., 8.], [0., 8.]],
+            &[(0, 0), (1, 1)],
+        );
+        assert_eq!(
+            formed_sheet(&touching, &[], [80, 81], &flanges, 1., TOL, MIN),
+            Err(Error::Unsupported),
+        );
+        // A relief flush with the corner overlaps the previous root's
+        // outline. It cannot be spliced into a full-root welded shell.
+        let eroded = web_from_corners(
+            &[
+                [0., 0.],
+                [10., 0.],
+                [9.5, 0.],
+                [9.5, 1.5],
+                [10., 1.5],
+                [10., 8.],
+                [0., 8.],
+            ],
+            &[(0, 0), (4, 1)],
+        );
+        assert_eq!(
+            formed_sheet(&eroded, &[], [80, 81], &flanges, 1., TOL, MIN),
+            Err(Error::Invalid),
+        );
+    }
+
     #[test]
     fn malformed_spans_and_sections_are_refused() {
         let web = web();
@@ -842,10 +1020,7 @@ mod tests {
         let mut adjacent = web.clone();
         adjacent[5].flange = None;
         adjacent[3].flange = Some(1);
-        assert_eq!(
-            build(&adjacent, &[flange(), flange()]),
-            Err(Error::Unsupported)
-        );
+        assert!(build(&adjacent, &[flange(), flange()]).is_ok());
         let mut diagonal = web.clone();
         diagonal[1].ends[0][1] = 1.;
         diagonal[0].ends[1][1] = 1.;
