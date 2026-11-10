@@ -4,7 +4,7 @@ use multicad_core::{
     model::{self, CutTargetProbeResult, Operation},
     project_file::ContentHash,
     references::{self, Origin, ReferenceReport, TopologySnapshot},
-    sketch_regions::{AnalyticQueries, Extraction, RegionIntent, RegionQueries},
+    sketch_regions::{Extraction, RegionIntent, RegionQueries},
 };
 use multicad_kernel::{
     Bounds, CurvedEdge2d, CurvedProfile, DisplayEdge, DisplayVertex, GeometryPolicy, Mesh,
@@ -713,15 +713,15 @@ impl Compiler {
         let mut cached = cache.map(|cache| {
             crate::eval_cache::Session::new(cache, self, backend, document, context.parameters())
         });
-        let native_queries = NativeRegionQueries::new(self.policy).map_err(|e| error(None, e))?;
+        let geometry_queries = match backend {
+            GeometryBackend::OpenCascade => NativeRegionQueries::new(self.policy),
+            GeometryBackend::Rust => NativeRegionQueries::analytic(self.policy),
+        }
+        .map_err(|e| error(None, e))?;
         let mut profiles = Profiles {
             references: None,
             context: &context,
-            queries: if backend == GeometryBackend::Rust {
-                &AnalyticQueries
-            } else {
-                &native_queries
-            },
+            queries: &geometry_queries,
             body_heads: &bodies,
             policy: self.policy,
             cache: BTreeMap::new(),

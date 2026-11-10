@@ -1,5 +1,5 @@
-//! Exact worker-side sketch predicates. This service retains only policy data;
-//! native curve/face handles are created and dropped on the calling thread.
+//! Exact worker-side sketch predicates. Elementary curves share their Rust
+//! parameter operations. Native spline calls stay on the calling thread.
 use crate::{
     BSpline2d, CurvePointLocation, CurvedEdge2d, CurvedProfile, GeometryError, GeometryPolicy,
 };
@@ -8,9 +8,18 @@ use multicad_core::sketch_regions::{
     Region, RegionQueries, SplineContinuation,
 };
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug)]
 pub struct NativeRegionQueries {
     policy: GeometryPolicy,
+    native_splines: bool,
+}
+impl Default for NativeRegionQueries {
+    fn default() -> Self {
+        Self {
+            policy: GeometryPolicy::default(),
+            native_splines: true,
+        }
+    }
 }
 fn error(e: impl std::fmt::Display) -> QueryError {
     QueryError {
@@ -31,7 +40,24 @@ impl NativeRegionQueries {
     }
     pub fn new(policy: GeometryPolicy) -> Result<Self, GeometryError> {
         policy.validate()?;
-        Ok(Self { policy })
+        Ok(Self {
+            policy,
+            native_splines: true,
+        })
+    }
+    /// Use the same normalized parameter contract without a native spline provider.
+    pub fn analytic(policy: GeometryPolicy) -> Result<Self, GeometryError> {
+        let mut queries = Self::new(policy)?;
+        queries.native_splines = false;
+        Ok(queries)
+    }
+    fn require_curve(&self, curve: &ExactCurve) -> Result<(), QueryError> {
+        if !self.native_splines && matches!(curve, ExactCurve::BSpline { .. }) {
+            return Err(error(
+                "Rust sketch queries currently support straight and circular curves",
+            ));
+        }
+        Ok(())
     }
     fn policy(&self, tolerance: f64) -> Result<GeometryPolicy, QueryError> {
         let policy = GeometryPolicy {
@@ -101,6 +127,7 @@ impl RegionQueries for NativeRegionQueries {
         point_mm: [f64; 2],
         tolerance_mm: f64,
     ) -> Result<Vec<CurveProjection>, QueryError> {
+        self.require_curve(curve)?;
         let policy = self.policy(tolerance_mm)?;
         let native = Self::curve(curve);
         let [first, last] = native.domain(policy).map_err(error)?;
@@ -137,6 +164,7 @@ impl RegionQueries for NativeRegionQueries {
         to: f64,
         tolerance_mm: f64,
     ) -> Result<ExactCurve, QueryError> {
+        self.require_curve(curve)?;
         if !from.is_finite() || !to.is_finite() || from < 0. || to > 1. || from >= to {
             return Err(error(
                 "Exact segment needs increasing normalized parameters inside [0,1]",
@@ -192,6 +220,7 @@ impl RegionQueries for NativeRegionQueries {
         max_length_mm: f64,
         tolerance_mm: f64,
     ) -> Result<SplineContinuation, QueryError> {
+        self.require_curve(curve)?;
         let policy = self.policy(tolerance_mm)?;
         let CurvedEdge2d::BSpline(s) = Self::curve(curve) else {
             return Err(error(
@@ -244,7 +273,10 @@ impl RegionQueries for NativeRegionQueries {
         b: &ExactCurve,
         tolerance_mm: f64,
     ) -> Result<CurveHits, QueryError> {
-        if !matches!(a, ExactCurve::BSpline { .. }) && !matches!(b, ExactCurve::BSpline { .. }) {
+        if !self.native_splines
+            || (!matches!(a, ExactCurve::BSpline { .. })
+                && !matches!(b, ExactCurve::BSpline { .. }))
+        {
             return AnalyticQueries.intersections(a, b, tolerance_mm);
         }
         let hits = Self::curve(a)
@@ -260,7 +292,7 @@ impl RegionQueries for NativeRegionQueries {
         curve: &ExactCurve,
         tolerance_mm: f64,
     ) -> Result<CurveHits, QueryError> {
-        if !matches!(curve, ExactCurve::BSpline { .. }) {
+        if !self.native_splines || !matches!(curve, ExactCurve::BSpline { .. }) {
             return AnalyticQueries.self_intersections(curve, tolerance_mm);
         }
         let curve = Self::curve(curve);
@@ -291,9 +323,10 @@ impl RegionQueries for NativeRegionQueries {
         })
     }
     fn signed_area(&self, edges: &[Edge], tolerance_mm: f64) -> Result<f64, QueryError> {
-        if !edges
-            .iter()
-            .any(|e| matches!(e.curve, ExactCurve::BSpline { .. }))
+        if !self.native_splines
+            || !edges
+                .iter()
+                .any(|e| matches!(e.curve, ExactCurve::BSpline { .. }))
         {
             return AnalyticQueries.signed_area(edges, tolerance_mm);
         }
@@ -307,9 +340,10 @@ impl RegionQueries for NativeRegionQueries {
         point: [f64; 2],
         tolerance_mm: f64,
     ) -> Result<PointLocation, QueryError> {
-        if !edges
-            .iter()
-            .any(|e| matches!(e.curve, ExactCurve::BSpline { .. }))
+        if !self.native_splines
+            || !edges
+                .iter()
+                .any(|e| matches!(e.curve, ExactCurve::BSpline { .. }))
         {
             return AnalyticQueries.classify_boundary(edges, point, tolerance_mm);
         }
@@ -323,5 +357,53 @@ impl RegionQueries for NativeRegionQueries {
                 CurvePointLocation::Inside => PointLocation::Inside,
             },
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use multicad_core::constraint_sketch::SplineBasis;
+
+    #[test]
+    fn rust_sketch_queries_reuse_exact_round_parameters_and_refuse_splines() {
+        let tolerance = GeometryPolicy::default().linear_tolerance_mm;
+        let queries = NativeRegionQueries::analytic(GeometryPolicy::default()).unwrap();
+        let circle = ExactCurve::Circle {
+            center: [0.; 2],
+            radius_mm: 4.,
+        };
+        let arc = queries.curve_segment(&circle, 0., 0.5, tolerance).unwrap();
+        assert!(matches!(arc, ExactCurve::Arc { a, b, clockwise: false, .. }
+            if a == [4., 0.] && (b[0] + 4.).abs() < tolerance && b[1].abs() < tolerance));
+        let projected = queries
+            .project_parameters(&arc, [0., 7.], tolerance)
+            .unwrap();
+        assert_eq!(projected.len(), 1);
+        assert!((projected[0].parameter - 0.5).abs() < tolerance);
+        assert!((projected[0].distance_mm - 3.).abs() < tolerance);
+
+        let spline = ExactCurve::BSpline {
+            poles: vec![[0., 0.], [2., 3.], [5., 0.]],
+            basis: SplineBasis {
+                degree: 2,
+                knots: vec![0., 1.],
+                multiplicities: vec![3, 3],
+                weights: None,
+            },
+        };
+        assert!(queries.curve_segment(&spline, 0., 0.5, tolerance).is_err());
+        assert!(
+            queries
+                .project_parameters(&spline, [1., 0.], tolerance)
+                .is_err()
+        );
+        assert!(queries.intersections(&spline, &circle, tolerance).is_err());
+        assert!(queries.self_intersections(&spline, tolerance).is_err());
+        assert!(
+            queries
+                .spline_continuation(&spline, true, 1., tolerance)
+                .is_err()
+        );
     }
 }
