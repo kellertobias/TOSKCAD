@@ -218,9 +218,8 @@ fn input_limits_and_inconsistent_conic_ports_are_rejected() {
 
 #[test]
 fn close_crossings_short_material_spans_and_reversed_ports_fail_closed() {
-    let rectangle = |x, [a, b]: [f64; 2]| {
-        polygon(&[[-1., a, 0.], [x, a, 0.], [x, b, 0.], [-1., b, 0.]])
-    };
+    let rectangle =
+        |x, [a, b]: [f64; 2]| polygon(&[[-1., a, 0.], [x, a, 0.], [x, b, 0.], [-1., b, 0.]]);
     let cut = [plane([0.; 3], X)];
     let close = vec![rectangle(1., [0., 2.]), rectangle(1., [2. + TOL / 2., 4.])];
     assert_eq!(

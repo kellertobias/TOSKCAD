@@ -561,6 +561,36 @@ fn check_retained_section(sheet: &Solid) {
     assert!(bend.iter().any(|v| v.role == VectorRole::Section
         && matches!(v.curve, VectorCurve::Ellipse { major_mm, .. } if (major_mm - 3.).abs() < 1e-7)
         && v.preview_mm.iter().any(|p| (p[0] + 2.).abs() < 1e-7)));
+
+    let web = render(DrawingProjection {
+        section_offset_mm: Some(7.),
+        section_only: true,
+        ..options
+    })
+    .unwrap();
+    let web_floor = web
+        .iter()
+        .flat_map(|v| &v.preview_mm)
+        .map(|p| p[1])
+        .fold(f64::INFINITY, f64::min);
+    let window_floor = web_floor + 0.75;
+    let through_bore = render(DrawingProjection {
+        section_offset_mm: Some(24.),
+        section_depth_mm: Some(6.),
+        section_u_mm: Some([84., 96.]),
+        section_v_mm: Some([window_floor, web_floor + 2.]),
+        ..options
+    })
+    .unwrap();
+    assert!(
+        through_bore.iter().any(|vector| {
+            matches!(vector.role, VectorRole::Visible | VectorRole::Hidden)
+                && matches!(vector.curve, VectorCurve::Line { a, b }
+                    if [a[1], b[1]].iter().all(|v| (*v - window_floor).abs() < 1e-6)
+                    && a[0].min(b[0]) >= 86. - 1e-6 && a[0].max(b[0]) <= 94. + 1e-6)
+        }),
+        "Side bore profile did not project onto the window edge: {through_bore:?}"
+    );
 }
 
 fn check_oblique_web_aperture(sheet: &Solid, witness: &Solid) {
