@@ -103,13 +103,14 @@ impl ModelToolController {
                 Some(EntityData::Sketch { .. })
             )
         }) || paths.iter().any(|p| {
-            p.curves.len() != 1
+            p.curves.is_empty()
+                || p.curves.len() > SketchPathSource::MAX_SEGMENTS
                 || !matches!(
                     session.document().get(p.sketch).map(|e| &e.data),
                     Some(EntityData::Sketch { .. })
                 )
         }) {
-            return Err("Sketch choices must belong to this source and paths must contain one authored line each".into());
+            return Err("Sketch choices must belong to this source and paths must contain 1–64 authored lines".into());
         }
         let guard = session.stamp();
         if let Some(ModelForm::Advanced(panel)) = &mut self.form {

@@ -20,6 +20,9 @@ pub struct SketchPathSource {
     /// Ordered authored straight-curve identities; first-to-last direction is explicit.
     pub curves: Vec<EntityId>,
 }
+impl SketchPathSource {
+    pub const MAX_SEGMENTS: usize = 64;
+}
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AdvancedDefinition {
@@ -121,7 +124,7 @@ impl AdvancedDefinition {
         if let Some(path) = &self.path
             && (path.sketch.is_nil()
                 || path.curves.is_empty()
-                || path.curves.len() > 64
+                || path.curves.len() > SketchPathSource::MAX_SEGMENTS
                 || path.curves.iter().any(|id| id.is_nil())
                 || path.curves.iter().collect::<BTreeSet<_>>().len() != path.curves.len())
         {

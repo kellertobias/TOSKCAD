@@ -5,11 +5,12 @@ use crate::{
     viewport::{PickFilter, PickOptions, Scene, SceneFeed, Selection},
 };
 use multicad_core::{
+    constraint_sketch::{Curve, CurveKind},
     model::{ProfileSource, SketchPathSource},
     project_file::ProjectResources,
     references::{self, GeometryIntent, Resolution, TopologyKind},
 };
-use std::sync::Arc;
+use std::{collections::BTreeMap, sync::Arc};
 
 impl SketchEditor {
     pub(super) fn refresh_advanced_sketch_context(
@@ -54,25 +55,10 @@ impl SketchEditor {
                         region: region.intent(),
                     }),
             );
-            paths.extend(
-                presentation
-                    .evaluated
-                    .canonical()
-                    .sketch
-                    .curves
-                    .iter()
-                    .filter(|curve| {
-                        !curve.construction
-                            && matches!(
-                                curve.kind,
-                                multicad_core::constraint_sketch::CurveKind::Line { .. }
-                            )
-                    })
-                    .map(|curve| SketchPathSource {
-                        sketch,
-                        curves: vec![curve.id],
-                    }),
-            );
+            paths.extend(path_choices(
+                sketch,
+                &presentation.evaluated.canonical().sketch.curves,
+            ));
         }
         self.model
             .set_advanced_sketch_context(session, profiles, paths)?;
@@ -247,4 +233,59 @@ impl SketchEditor {
                 ordinal: key.ordinal,
             }));
     }
+}
+
+fn path_choices(sketch: EntityId, curves: &[Curve]) -> Vec<SketchPathSource> {
+    #[derive(Default)]
+    struct Joint {
+        incoming: usize,
+        outgoing: usize,
+        next: Option<(EntityId, EntityId)>,
+    }
+
+    let lines: Vec<_> = curves
+        .iter()
+        .filter_map(|curve| match curve.kind {
+            CurveKind::Line { start, end } if !curve.construction => Some((curve.id, start, end)),
+            _ => None,
+        })
+        .collect();
+    let mut joints = BTreeMap::<_, Joint>::new();
+    for &(curve, start, end) in &lines {
+        let source = joints.entry(start).or_default();
+        source.outgoing += 1;
+        source.next = Some((curve, end));
+        joints.entry(end).or_default().incoming += 1;
+    }
+
+    let mut choices = Vec::with_capacity(lines.len());
+    for (curve, start, mut end) in lines {
+        choices.push(SketchPathSource {
+            sketch,
+            curves: vec![curve],
+        });
+        let first = &joints[&start];
+        if first.incoming != 0 || first.outgoing != 1 {
+            continue;
+        }
+        let mut chain = vec![curve];
+        while chain.len() < SketchPathSource::MAX_SEGMENTS {
+            let joint = &joints[&end];
+            match (joint.incoming, joint.outgoing, joint.next) {
+                (1, 1, Some((curve, next))) => {
+                    chain.push(curve);
+                    end = next;
+                }
+                _ => break,
+            }
+        }
+        let last = &joints[&end];
+        if chain.len() > 1 && last.incoming == 1 && last.outgoing == 0 {
+            choices.push(SketchPathSource {
+                sketch,
+                curves: chain,
+            });
+        }
+    }
+    choices
 }

@@ -164,24 +164,29 @@ if ui.button("Remove section").clicked(){remove=Some(index);}});
     fn show_path(&mut self, ui: &mut egui::Ui, document: &Document) -> bool {
         ui.separator();
         ui.strong("Ordered path segments");
-        ui.small("Add connected straight segments from one solved sketch in traversal order. Arcs, splines and closed paths are unsupported.");
+        ui.small(
+            "Use an open chain of straight lines from one sketch in their authored direction.",
+        );
+        let mut changed = self.show_path_chains(ui, document);
         let mut add = None;
         controls::inspector_combo(ui, "advanced-path-choice")
             .selected_text("Add path segment")
             .show_ui(ui, |ui| {
                 for (index, p) in self.paths.iter().enumerate() {
-                    let valid = p.curves.len() == 1
-                        && self.path.as_ref().is_none_or(|selected| {
-                            selected.sketch == p.sketch && !selected.curves.contains(&p.curves[0])
-                        });
+                    let [curve] = p.curves.as_slice() else {
+                        continue;
+                    };
+                    let valid = self.path.as_ref().is_none_or(|selected| {
+                        selected.sketch == p.sketch
+                            && selected.curves.len() < SketchPathSource::MAX_SEGMENTS
+                            && !selected.curves.contains(curve)
+                    });
                     let label = format!(
                         "{} · {}",
                         document
                             .get(p.sketch)
                             .map_or("Missing path sketch", |e| e.name.as_str()),
-                        p.curves
-                            .first()
-                            .map_or("No curve".into(), |id| curve_label(document, p.sketch, *id))
+                        curve_label(document, p.sketch, *curve)
                     );
                     if ui.add_enabled(valid, egui::Button::new(label)).clicked() {
                         add = Some(index);
@@ -189,7 +194,6 @@ if ui.button("Remove section").clicked(){remove=Some(index);}});
                     }
                 }
             });
-        let mut changed = false;
         if let Some(index) = add {
             let candidate = &self.paths[index];
             if let Some(path) = &mut self.path {
@@ -248,5 +252,42 @@ if ui.button("Remove section").clicked(){remove=Some(index);}});
             }
         }
         changed
+    }
+
+    fn show_path_chains(&mut self, ui: &mut egui::Ui, document: &Document) -> bool {
+        if !self.paths.iter().any(|path| path.curves.len() > 1) {
+            return false;
+        }
+        let mut choice = None;
+        controls::inspector_combo(ui, "advanced-path-chain")
+            .selected_text("Choose connected path")
+            .show_ui(ui, |ui| {
+                for (index, path) in self.paths.iter().enumerate() {
+                    let [first, .., last] = path.curves.as_slice() else {
+                        continue;
+                    };
+                    let label = format!(
+                        "{} · {} → {} ({} segments)",
+                        document
+                            .get(path.sketch)
+                            .map_or("Missing path sketch", |e| e.name.as_str()),
+                        curve_label(document, path.sketch, *first),
+                        curve_label(document, path.sketch, *last),
+                        path.curves.len()
+                    );
+                    if ui
+                        .add_enabled(self.path.as_ref() != Some(path), egui::Button::new(label))
+                        .clicked()
+                    {
+                        choice = Some(index);
+                        ui.close();
+                    }
+                }
+            });
+        if let Some(index) = choice {
+            self.path = Some(self.paths[index].clone());
+            return true;
+        }
+        false
     }
 }

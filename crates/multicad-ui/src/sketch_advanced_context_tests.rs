@@ -415,3 +415,56 @@ fn solved_choices_reach_sweep_and_loft_inspectors_and_source_changes_reject_old_
     assert_eq!(h.session.revision(), 1);
     assert_eq!(h.session.activity().count(), 1);
 }
+
+#[test]
+fn sweep_inspector_previews_and_saves_a_whole_connected_path_in_traversal_order() {
+    let mut h = Host::new();
+    let mut path = Source::read(h.session.document(), h.path).unwrap().0;
+    let CurveKind::Line { end: bend, .. } = path.sketch.curves[0].kind else {
+        panic!("the first authored curve is a line");
+    };
+    let end = path.add_point([25., 30.]);
+    path.add_constraint(ConstraintKind::Fix { point: end });
+    let second = path.add_line(bend, end);
+    path.sketch.curves.swap(0, 2);
+    let edits = path.replace(h.session.document(), h.path).unwrap();
+    h.session = Session::new(h.session.document().edited(&edits).unwrap()).unwrap();
+    h.settle();
+
+    h.begin(AdvancedKind::Sweep);
+    h.click("Section profile");
+    h.click("First circle · profile 1 (1 boundary curves)");
+    h.dismiss_popup();
+    h.click("Choose connected path");
+    h.click("Path · Curve 3 → Curve 1 (2 segments)");
+    h.dismiss_popup();
+    h.ready();
+    assert_eq!(h.session.revision(), 0);
+    assert!(
+        h.editor
+            .model
+            .display_scene(&h.session, &Default::default())
+            .is_some()
+    );
+    h.click("Apply");
+    assert_eq!(h.session.revision(), 1);
+    let feature = h
+        .session
+        .document()
+        .entities()
+        .find(|entity| {
+            matches!(&entity.data, EntityData::Feature { definition, .. }
+                if definition.type_id == multicad_core::model::ADVANCED_TYPE)
+        })
+        .unwrap();
+    let (definition, _) =
+        multicad_core::model::read_advanced(h.session.document(), feature.id).unwrap();
+    assert_eq!(definition.profiles[0].sketch, h.sections[0]);
+    assert_eq!(
+        definition.path,
+        Some(multicad_core::model::SketchPathSource {
+            sketch: h.path,
+            curves: vec![h.path_curve, second],
+        })
+    );
+}
