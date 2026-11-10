@@ -1521,7 +1521,8 @@ impl Compiler {
                             ));
                         }
                     };
-                    let mut result: Option<Solid> = None;
+                    let mut operands = Vec::with_capacity(source.tools.len() + 1);
+                    operands.push(target);
                     for input in &source.tools {
                         checkpoint(interrupt)?;
                         input
@@ -1530,9 +1531,26 @@ impl Compiler {
                         let tool = solids.get(&input.producer).ok_or_else(|| {
                             error(Some(id), "Boolean tool has no current exact solid")
                         })?;
-                        result=Some(result.as_ref().unwrap_or(target).boolean(tool,operation,self.policy).map_err(|e|error(Some(id),e))?.ok_or_else(||error(Some(id),"Boolean removed all material; no output body can be committed"))?);
+                        operands.push(tool);
                     }
-                    let solid = result.ok_or_else(|| error(Some(id), "Boolean requires a tool"))?;
+                    let coaxial = (backend == GeometryBackend::Rust
+                        && operation == multicad_kernel::BooleanOperation::Union)
+                        .then(|| Solid::union_coaxial_cylinders(&operands, id, self.policy))
+                        .flatten();
+                    let solid = if let Some(coaxial) = coaxial {
+                        coaxial.map_err(|e| error(Some(id), e))?
+                    } else {
+                        let mut result: Option<Solid> = None;
+                        for &tool in &operands[1..] {
+                            checkpoint(interrupt)?;
+                            let next = result.as_ref().unwrap_or(target)
+                                .boolean(tool, operation, self.policy)
+                                .map_err(|e| error(Some(id), e))?
+                                .ok_or_else(|| error(Some(id), "Boolean removed all material; no output body can be committed"))?;
+                            result = Some(next);
+                        }
+                        result.ok_or_else(|| error(Some(id), "Boolean requires a tool"))?
+                    };
                     if solid.solid_count().map_err(|e| error(Some(id), e))? != 1 {
                         return Err(error(
                             Some(id),

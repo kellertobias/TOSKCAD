@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::{CurvedEdge2d, CurvedProfile, RevolutionAxis, rust_prism_topology::position};
-use multicad_core::references::ReferenceFrame;
+use multicad_core::references::{AnchoredFrame, ReferenceFrame};
 use multicad_rust_kernel::{
     revolution::{Error as RevolutionError, Revolution},
     revolution_mesh,
@@ -10,6 +10,7 @@ use multicad_rust_kernel::{
 use std::collections::BTreeSet;
 
 mod topology;
+mod union;
 
 type Point = [f64; 3];
 type MeridianPoint = [f64; 2];
@@ -25,6 +26,8 @@ pub(crate) struct RevolutionBody {
 
 struct MeridianSegment {
     origin: Origin,
+    inherited: Vec<Origin>,
+    inherited_frames: Vec<AnchoredFrame>,
     authored_start: MeridianPoint,
 }
 
@@ -138,6 +141,8 @@ impl Solid {
                 .iter()
                 .map(|&authored_start| MeridianSegment {
                     authored_start,
+                    inherited: vec![],
+                    inherited_frames: vec![],
                     origin: next_origin
                         .next()
                         .expect("profile origin count checked")

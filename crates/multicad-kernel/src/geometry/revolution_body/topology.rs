@@ -2,7 +2,7 @@
 
 use super::*;
 use multicad_core::references::{
-    AnalyticGeometry, AnchoredFrame, TopologyElement, TopologyKey, TopologyKind, TopologySnapshot,
+    AnalyticGeometry, TopologyElement, TopologyKey, TopologyKind, TopologySnapshot,
 };
 
 pub(super) struct RingEdges {
@@ -135,7 +135,10 @@ impl RevolutionBody {
                 let mut face = element(
                     TopologyKind::Face,
                     ordinal,
-                    BTreeSet::from([side.clone(), segment.origin.clone()]),
+                    [side.clone(), segment.origin.clone()]
+                        .into_iter()
+                        .chain(segment.inherited.iter().cloned())
+                        .collect(),
                     plane.map(|frame| AnalyticGeometry::Plane { frame }),
                 );
                 if plane.is_some() {
@@ -153,6 +156,15 @@ impl RevolutionBody {
                             v: world_direction(frame, cross([0., 0., 1.], u)),
                         },
                     });
+                    face.frames
+                        .extend(segment.inherited_frames.iter().map(|anchor| AnchoredFrame {
+                            origin: anchor.origin.clone(),
+                            frame: ReferenceFrame {
+                                origin_mm: position(frame, anchor.frame.origin_mm),
+                                u: world_direction(frame, anchor.frame.u),
+                                v: world_direction(frame, anchor.frame.v),
+                            },
+                        }));
                 }
                 elements.push(face);
             }
