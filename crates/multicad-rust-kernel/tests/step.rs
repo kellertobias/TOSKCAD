@@ -255,3 +255,20 @@ fn step_rejects_invalid_or_degenerate_placements() {
         Err(StepError::InvalidGeometry)
     );
 }
+
+#[test]
+fn invalid_placed_circular_sweeps_refuse_nonpositive_or_overlapping_dimensions() {
+    use multicad_rust_kernel::step::{StepError, write_placed_circular_sweep};
+    for (outer, inner, height) in [
+        (4., Some(4.), 3.),
+        (4., Some(5.), 3.),
+        (4., Some(f64::NAN), 3.),
+        (0., None, 3.),
+        (4., None, -1.),
+    ] {
+        assert_eq!(
+            write_placed_circular_sweep(outer, inner, height, [0.; 3], [1., 0., 0.], [0., 1., 0.]),
+            Err(StepError::InvalidGeometry),
+        );
+    }
+}

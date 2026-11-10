@@ -154,10 +154,14 @@ pub fn write_placed_cylinder(
     reference: Point,
     side: Point,
 ) -> Result<String, StepError> {
-    let placement = Placement::new(bottom, reference, side)?;
-    let height = cylinder.height().as_f64();
-    let top = std::array::from_fn(|i| bottom[i] + placement.normal[i] * height);
-    write_circular_between(placement, top, cylinder.circle().radius().as_f64(), None)
+    write_placed_circular_sweep(
+        cylinder.circle().radius().as_f64(),
+        None,
+        cylinder.height().as_f64(),
+        bottom,
+        reference,
+        side,
+    )
 }
 
 /// Write a coaxial annulus as two trimmed planar caps and two analytic
@@ -168,14 +172,36 @@ pub fn write_placed_annulus(
     reference: Point,
     side: Point,
 ) -> Result<String, StepError> {
-    let placement = Placement::new(bottom, reference, side)?;
-    let top = std::array::from_fn(|i| bottom[i] + placement.normal[i] * annulus.height_mm());
-    write_circular_between(
-        placement,
-        top,
+    write_placed_circular_sweep(
         annulus.outer_radius_mm(),
         Some(annulus.inner_radius_mm()),
+        annulus.height_mm(),
+        bottom,
+        reference,
+        side,
     )
+}
+
+/// Encode an exact full circular sweep with an optional concentric bore.
+pub fn write_placed_circular_sweep(
+    outer_radius: f64,
+    inner_radius: Option<f64>,
+    height: f64,
+    bottom: Point,
+    reference: Point,
+    side: Point,
+) -> Result<String, StepError> {
+    if ![outer_radius, height]
+        .into_iter()
+        .chain(inner_radius)
+        .all(|v| v.is_finite() && v > 0.)
+        || inner_radius.is_some_and(|inner| inner >= outer_radius)
+    {
+        return Err(StepError::InvalidGeometry);
+    }
+    let placement = Placement::new(bottom, reference, side)?;
+    let top = std::array::from_fn(|i| bottom[i] + placement.normal[i] * height);
+    write_circular_between(placement, top, outer_radius, inner_radius)
 }
 
 fn write_circular_between(
