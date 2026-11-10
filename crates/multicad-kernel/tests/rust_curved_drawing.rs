@@ -344,12 +344,48 @@ fn disjoint_round_and_planar_sources_share_the_view_and_global_output_budget() {
         );
     }
     let overlapping = box_at(0.);
-    assert_eq!(
-        project_drawing(&sources(&overlapping), options)
-            .unwrap_err()
-            .kind,
-        GeometryErrorKind::Unsupported,
-    );
+    let overlap = project_drawing(&sources(&overlapping), options).unwrap();
+    assert!(overlap.iter().any(|v| v.source_index == 0));
+    assert!(overlap.iter().any(|v| v.source_index == 1));
+}
+
+#[test]
+fn planar_foreground_splits_the_circular_rim_at_both_straight_sides() {
+    let cylinder = stock();
+    let int = |n| Rational::new(n, 1).unwrap();
+    let blocker = Solid::rust_box(
+        EntityId::new().uuid_bits(),
+        [int(2), int(14), int(2)],
+        PlaneFrame {
+            origin: [-1., -7., 14.],
+            ..Default::default()
+        },
+        Default::default(),
+    )
+    .unwrap();
+    let sources = [&cylinder, &blocker].map(|solid| DrawingSolid { solid, hatch: None });
+    for hidden_lines in [false, true] {
+        let vectors = project_drawing(
+            &sources,
+            DrawingProjection {
+                hidden_lines,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let coverage = |point, role| {
+            vectors.iter().any(|vector| {
+                vector.source_index == 0 && vector.role == role && on_curve(point, &vector.curve)
+            })
+        };
+        for x in [-5., 5.] {
+            assert!(coverage([x, 0.], VectorRole::Visible));
+        }
+        for y in [-5., 5.] {
+            assert!(!coverage([0., y], VectorRole::Visible));
+            assert_eq!(coverage([0., y], VectorRole::Hidden), hidden_lines);
+        }
+    }
 }
 
 #[test]

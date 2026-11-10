@@ -25,12 +25,32 @@ pub(super) fn project(
     options: DrawingProjection,
     depth: f64,
 ) -> Result<Vec<ProjectedVector>, GeometryError> {
+    project_members(
+        solids.iter().enumerate().map(|(source, input)| {
+            (
+                source,
+                DrawingSolid {
+                    solid: input.solid,
+                    hatch: input.hatch,
+                },
+            )
+        }),
+        options,
+        depth,
+    )
+}
+
+pub(super) fn project_members<'a>(
+    members: impl IntoIterator<Item = (usize, DrawingSolid<'a>)>,
+    options: DrawingProjection,
+    depth: f64,
+) -> Result<Vec<ProjectedVector>, GeometryError> {
     let mut output = SectionOutput {
         options,
         vectors: Vec::new(),
         hatch_budget: section_hatch::Budget::default(),
     };
-    for (source, input) in solids.iter().enumerate() {
+    for (source, input) in members {
         output.body(input.solid, input.hatch, source, depth)?;
     }
     Ok(output.vectors)

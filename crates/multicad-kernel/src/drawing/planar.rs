@@ -24,17 +24,9 @@ pub(super) fn project(
     solids: &[DrawingSolid<'_>],
     options: DrawingProjection,
 ) -> Result<Vec<ProjectedVector>, GeometryError> {
-    project_scene(solids, &[], options)
-}
-
-pub(super) fn project_scene(
-    solids: &[DrawingSolid<'_>],
-    rounds: &[multicad_rust_kernel::round_occlusion::RoundOccluder],
-    options: DrawingProjection,
-) -> Result<Vec<ProjectedVector>, GeometryError> {
     if options.hidden_lines {
         let (bodies, tolerance) = prepare(solids, options.frame)?;
-        return project_with_rounds(&bodies, rounds, options, tolerance);
+        return project_bodies(&bodies, options, tolerance);
     }
     let toward_viewer = view_axes(options.frame)[2];
     let members = projection_members(solids);
@@ -51,7 +43,7 @@ pub(super) fn project_scene(
         })
         .collect();
     let (bodies, tolerance) = prepare(&inputs, options.frame)?;
-    let mut output = project_with_rounds(&bodies, rounds, options, tolerance)?;
+    let mut output = project_bodies(&bodies, options, tolerance)?;
     for vector in &mut output {
         vector.source_index = members[vector.source_index].0;
     }
@@ -63,18 +55,8 @@ pub(super) fn project_bodies(
     options: DrawingProjection,
     tolerance: f64,
 ) -> Result<Vec<ProjectedVector>, GeometryError> {
-    project_with_rounds(bodies, &[], options, tolerance)
-}
-
-fn project_with_rounds(
-    bodies: &[Body],
-    rounds: &[multicad_rust_kernel::round_occlusion::RoundOccluder],
-    options: DrawingProjection,
-    tolerance: f64,
-) -> Result<Vec<ProjectedVector>, GeometryError> {
-    let projected = planar_projection::project_with_rounds(
+    let projected = planar_projection::project(
         bodies,
-        rounds,
         Options {
             tolerance,
             hidden_lines: options.hidden_lines,

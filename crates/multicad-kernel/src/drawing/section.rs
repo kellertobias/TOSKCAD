@@ -5,6 +5,7 @@ use multicad_rust_kernel::{planar_section, section_hatch};
 
 mod annulus;
 mod machined;
+mod retained;
 pub(super) use annulus::project_circular;
 
 pub(super) fn project(
@@ -12,13 +13,17 @@ pub(super) fn project(
     options: DrawingProjection,
     depth: f64,
 ) -> Result<Vec<ProjectedVector>, GeometryError> {
-    if options.section_only
-        && options.detail.is_none()
+    if options.detail.is_none()
         && solids
             .iter()
             .any(|input| machined::needs_analytic_section(input.solid))
     {
-        return machined::project(solids, options, depth);
+        if options.section_only {
+            return machined::project(solids, options, depth);
+        }
+        if !options.hidden_lines && !options.tangent_edges {
+            return retained::project(solids, options, depth);
+        }
     }
     project_planar(solids, options, depth)
 }

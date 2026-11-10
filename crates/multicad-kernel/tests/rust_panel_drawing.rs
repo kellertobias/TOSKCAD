@@ -328,3 +328,43 @@ fn exact_section_retains_both_recess_profiles_and_hatches_only_material() {
     }
     assert!(hatches > 16);
 }
+
+#[test]
+fn retained_section_suppresses_a_rear_cut_only_with_complete_opaque_cover() {
+    let solid = with_front_mortise();
+    let policy = GeometryPolicy::default();
+    let cover = |width| {
+        Solid::rust_box(
+            EntityId::new().uuid_bits(),
+            [width, 6, 2].map(|value| Rational::new(value, 1).unwrap()),
+            PlaneFrame {
+                origin: [2., 3., 12.5],
+                ..Default::default()
+            },
+            policy,
+        )
+        .unwrap()
+    };
+    let options = DrawingProjection {
+        section_offset_mm: Some(13.),
+        section_depth_mm: Some(7.),
+        ..Default::default()
+    };
+    let visible = project_drawing(&[input(&solid), input(&cover(10))], options).unwrap();
+    assert!(
+        visible
+            .iter()
+            .all(|vector| matches!(vector.curve, VectorCurve::Line { .. }))
+    );
+    assert!(
+        visible
+            .iter()
+            .any(|vector| vector.source_index == 1 && vector.role == VectorRole::Section)
+    );
+    assert_eq!(
+        project_drawing(&[input(&solid), input(&cover(4))], options)
+            .unwrap_err()
+            .kind,
+        GeometryErrorKind::Unsupported
+    );
+}

@@ -6,7 +6,7 @@ use multicad_core::{
 use multicad_kernel::{
     BooleanOperation, DrawingProjection, DrawingSolid, GeometryErrorKind, GeometryPolicy,
     PlaneFrame, ProjectedVector, Solid, project_drawing,
-    rust_kernel::{Circle, Rational, cylinder::AxialCylinder, polygon::PolygonPrism},
+    rust_kernel::{Rational, polygon::PolygonPrism},
 };
 
 fn n(value: i64) -> Rational {
@@ -195,20 +195,13 @@ fn orthogonal_boolean_hole_preserves_the_trimmed_opening() {
 #[test]
 fn unsupported_geometry_and_over_budget_output_fail_atomically() {
     let box_ = rust_box([10, 10, 3], PlaneFrame::default());
-    let circle = Circle::new([n(0); 2], n(4)).unwrap();
-    let body = AxialCylinder::new(EntityId::new().uuid_bits(), circle, n(0), n(10)).unwrap();
-    let cylinder =
-        Solid::from_axial_cylinder(body, PlaneFrame::default(), Default::default()).unwrap();
     let native = Solid::box_solid([5., 5., 3.], GeometryPolicy::default()).unwrap();
-    for (inputs, options) in [
-        (sources(&[&cylinder, &box_]), DrawingProjection::default()),
-        (sources(&[&box_, &native]), DrawingProjection::default()),
-    ] {
-        assert_eq!(
-            project_drawing(&inputs, options).unwrap_err().kind,
-            GeometryErrorKind::Unsupported
-        );
-    }
+    assert_eq!(
+        project_drawing(&sources(&[&box_, &native]), DrawingProjection::default())
+            .unwrap_err()
+            .kind,
+        GeometryErrorKind::Unsupported
+    );
     assert_eq!(
         project_drawing(
             &sources(&[&box_]),

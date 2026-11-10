@@ -2,8 +2,11 @@
 use super::*;
 use multicad_rust_kernel::{
     curved_projection::{self, Curve, Cylinder, Detail, Error},
+    planar_projection,
     round_occlusion::RoundOccluder,
 };
+
+mod pockets;
 
 fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
     a.into_iter().zip(b).map(|(x, y)| x * y).sum()
@@ -117,6 +120,13 @@ fn screen_bounds(solid: &Solid, frame: PlaneFrame) -> Result<[[f64; 3]; 2], Geom
     }))
 }
 
+struct SceneMember<'a> {
+    source: usize,
+    solid: &'a Solid,
+    bounds: [[f64; 3]; 2],
+    round: Option<RoundOccluder>,
+}
+
 pub(super) fn project_scene(
     solids: &[DrawingSolid<'_>],
     mut options: DrawingProjection,
@@ -126,72 +136,97 @@ pub(super) fn project_scene(
     {
         return project(input, options, 0);
     }
-    let mut planar_sources = Vec::new();
-    let mut planar_solids = Vec::new();
-    let mut curved = Vec::new();
-    let mut regions = Vec::new();
-    for (source, solid) in projection_members(solids) {
-        let input = DrawingSolid { solid, hatch: None };
-        if let Some(round) = round_occluder(input.solid, options.frame)? {
-            regions.push((round.bounds(), true));
-            curved.push((source, input, round));
-        } else {
-            regions.push((screen_bounds(input.solid, options.frame)?, false));
-            planar_sources.push(source);
-            planar_solids.push(input);
-        }
-    }
-    regions.sort_unstable_by(|a, b| a.0[0][0].total_cmp(&b.0[0][0]));
-    let tolerance = GeometryPolicy::default().linear_tolerance_mm;
-    for (i, ([a_min, a_max], a_round)) in regions.iter().copied().enumerate() {
-        for ([b_min, b_max], b_round) in regions[i + 1..].iter().copied() {
-            if b_min[0] > a_max[0] + tolerance {
-                break;
-            }
-            if (!a_round && !b_round)
-                || a_min[1] > b_max[1] + tolerance
-                || b_min[1] > a_max[1] + tolerance
-            {
-                continue;
-            }
-            // Straight edges can be split against exact curved material.
-            // Until round edges also carry depth, prove the round is in front
-            // everywhere in the overlap before publishing its own edge trims.
-            let separated = if a_round {
-                !b_round && a_min[2] > b_max[2] + tolerance
+
+    let members = projection_members(solids)
+        .into_iter()
+        .map(|(source, solid)| {
+            let round = round_occluder(solid, options.frame)?;
+            let bounds = if let Some(round) = round {
+                round.bounds()
             } else {
-                b_min[2] > a_max[2] + tolerance
+                screen_bounds(solid, options.frame)?
             };
-            if !separated {
-                return Err(err(
-                    GeometryErrorKind::Unsupported,
-                    "Rust projection cannot yet resolve round edges behind overlapping geometry",
-                ));
-            }
+            Ok(SceneMember {
+                source,
+                solid,
+                bounds,
+                round,
+            })
+        })
+        .collect::<Result<Vec<_>, GeometryError>>()?;
+
+    let mut planar_members = Vec::new();
+    let mut round_sources = Vec::new();
+    let mut rounds = Vec::new();
+    let mut checks = 0;
+    for (index, member) in members.iter().enumerate() {
+        if let Some(round) = member.round {
+            round_sources.push(member.source);
+            rounds.push(round);
+        } else {
+            let proxy = if options.hidden_lines {
+                None
+            } else {
+                pockets::stock(index, &members, options, &mut checks)?
+            };
+            planar_members.push((member, proxy));
         }
     }
-    let rounds: Vec<_> = curved.iter().map(|(_, _, round)| *round).collect();
-    let mut output = if planar_solids.is_empty() {
-        Vec::new()
-    } else {
-        planar::project_scene(&planar_solids, &rounds, options)?
-    };
-    for vector in &mut output {
-        vector.source_index = planar_sources[vector.source_index];
-    }
-    options.maximum_curves -= output.len() as u32;
-    options.maximum_points -= output
+    let inputs: Vec<_> = planar_members
         .iter()
-        .map(|vector| vector.preview_mm.len() as u32)
-        .sum::<u32>();
-    for (source, input, _) in curved {
-        let projected = project(&input, options, source)?;
+        .map(|(member, proxy)| DrawingSolid {
+            solid: proxy.as_ref().map_or(member.solid, |(stock, _)| stock),
+            hatch: None,
+        })
+        .collect();
+    let (bodies, tolerance) = planar::prepare(&inputs, options.frame)?;
+    let (lines, round_edges) = planar_projection::project_scene(
+        &bodies,
+        &rounds,
+        planar_projection::Options {
+            tolerance,
+            hidden_lines: options.hidden_lines,
+            tangent_edges: options.tangent_edges,
+            detail: options.detail,
+            segment_limit: (options.maximum_curves as usize)
+                .min(options.maximum_points as usize / 2),
+        },
+    )
+    .map_err(planar::projection_error)?;
+
+    let mut output: Vec<_> = lines
+        .into_iter()
+        .map(|line| {
+            planar::line(
+                planar_members[line.source].0.source,
+                if line.hidden {
+                    VectorRole::Hidden
+                } else {
+                    VectorRole::Visible
+                },
+                line.ends,
+            )
+        })
+        .collect();
+    options.maximum_curves -= output.len() as u32;
+    options.maximum_points -= 2 * output.len() as u32;
+    let mut add = |source, edges| -> Result<(), GeometryError> {
+        let projected = publish(edges, options, source)?;
         options.maximum_curves -= projected.len() as u32;
         options.maximum_points -= projected
             .iter()
             .map(|vector| vector.preview_mm.len() as u32)
             .sum::<u32>();
         output.extend(projected);
+        Ok(())
+    };
+    for segment in round_edges {
+        add(round_sources[segment.source], vec![segment.edge])?;
+    }
+    for (member, proxy) in planar_members {
+        if let Some((_, edges)) = proxy {
+            add(member.source, edges)?;
+        }
     }
     output.sort_by_key(|vector| vector.source_index);
     Ok(output)

@@ -22,6 +22,20 @@ type PlaneKey = (usize, u64, bool);
 type LineKey = (usize, PointKey);
 type EdgeUse = (u32, bool);
 
+pub(crate) struct DrawingStock<'a> {
+    pub(crate) cells: &'a [Box3],
+    pub(crate) faces: &'a [BoundaryFace],
+    pub(crate) pockets: &'a [OrthogonalPocket],
+    pub(crate) slots: &'a [OrthogonalSlot],
+}
+
+pub(crate) struct BlindOpening {
+    pub(crate) center: Point,
+    pub(crate) normal: Point,
+    pub(crate) radius: f64,
+    pub(crate) depth: f64,
+}
+
 #[derive(Clone)]
 pub(crate) struct OrthogonalBody {
     pub(super) feature: EntityId,
@@ -167,6 +181,96 @@ fn operation_error(cause: BooleanError) -> GeometryError {
 }
 
 impl Solid {
+    /// Pair the certified cylindrical voids with their uncut stock. A drawing
+    /// caller must prove that replacing the voids preserves the requested view.
+    pub(crate) fn drawing_circular_stock(&self) -> Option<(Self, Vec<BlindOpening>)> {
+        let (body, openings) = match &self.body {
+            SolidBody::Orthogonal(stock, frame)
+                if stock.slots.is_empty() && !stock.pockets.is_empty() =>
+            {
+                let openings = stock
+                    .pockets
+                    .iter()
+                    .map(|pocket| BlindOpening {
+                        center: transform_point(*frame, pocket.center_mm),
+                        normal: transform_vector(*frame, stock.boundary.faces[pocket.face].normal),
+                        radius: pocket.radius_mm,
+                        depth: pocket.depth_mm,
+                    })
+                    .collect();
+                let mut stock = (**stock).clone();
+                stock.pockets = Rc::from([]);
+                stock.pocket_origins = Rc::from([]);
+                (SolidBody::Orthogonal(Rc::new(stock), *frame), openings)
+            }
+            SolidBody::PolygonPrism(stock) if !stock.pockets.is_empty() => {
+                let sign = if stock.reverse_sweep { -1. } else { 1. };
+                let height = stock.prism.height().as_f64();
+                let openings = stock
+                    .pockets
+                    .iter()
+                    .map(|pocket| {
+                        let [x, y] = pocket.center_mm;
+                        let normal_sign = if pocket.end { sign } else { -sign };
+                        BlindOpening {
+                            center: transform_point(
+                                stock.frame,
+                                [x, y, sign * pocket.mouth_z_mm(height)],
+                            ),
+                            normal: stock.frame.normal().map(|value| value * normal_sign),
+                            radius: pocket.radius_mm,
+                            depth: pocket.depth_mm,
+                        }
+                    })
+                    .collect();
+                let mut stock = (**stock).clone();
+                stock.pockets = Rc::from([]);
+                stock.pocket_origins = Rc::from([]);
+                (SolidBody::PolygonPrism(Rc::new(stock)), openings)
+            }
+            _ => return None,
+        };
+        Some((
+            Self {
+                body,
+                policy: self.policy,
+                provenance: vec![],
+                rust_origins: vec![],
+            },
+            openings,
+        ))
+    }
+
+    pub(crate) fn drawing_rectilinear_cells(
+        &self,
+    ) -> Result<Option<(Vec<Box3>, PlaneFrame)>, GeometryError> {
+        if let Some(placed) = self.polygon_prism()
+            && placed.pockets.is_empty()
+        {
+            return Ok(orthogonal::prism_cells(&placed.prism, placed.reverse_sweep)
+                .map_err(operation_error)?
+                .map(|cells| (cells, placed.frame)));
+        }
+        if let Some((prism, frame)) = self.rust_prism_frame()
+            && prism.rounded_end().is_none()
+            && prism.inner_loops().len() == 0
+        {
+            return Ok(Some((
+                vec![Box3 {
+                    min: [0.; 3],
+                    max: prism.dimensions().map(Rational::as_f64),
+                }],
+                frame,
+            )));
+        }
+        if let Some((body, frame)) = self.linear_body()
+            && let Some(Bounds { min, max }) = body.orthogonal_box(PlaneFrame::default())
+        {
+            return Ok(Some((vec![Box3 { min, max }], frame)));
+        }
+        Ok(None)
+    }
+
     /// When every blind opening is edge-on, the first material hit along a
     /// view ray is unchanged. The cut never reaches a front-facing stock face.
     /// The stripped body is valid only for visible-line projection.
@@ -707,6 +811,15 @@ fn imported_origin(
 }
 
 impl OrthogonalBody {
+    pub(crate) fn drawing_stock(&self) -> DrawingStock<'_> {
+        DrawingStock {
+            cells: self.geometry.cells(),
+            faces: &self.boundary.faces,
+            pockets: &self.pockets,
+            slots: &self.slots,
+        }
+    }
+
     pub(crate) fn has_curved_cuts(&self) -> bool {
         !self.pockets.is_empty() || !self.slots.is_empty()
     }
