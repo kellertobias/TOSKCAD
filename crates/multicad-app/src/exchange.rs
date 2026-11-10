@@ -301,6 +301,106 @@ mod tests {
         assert_eq!(session.document(), &before);
     }
     #[test]
+    fn rust_workspace_publishes_exact_round_and_rounded_pockets() {
+        use multicad_kernel::{
+            CircularPocketTool, GeometryPolicy, PlaneFrame, RoundedSlotTool, Solid,
+            rust_kernel::{Rational, step_read},
+        };
+
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("machined-panel.step");
+        let policy = GeometryPolicy::default();
+        let feature = EntityId::new();
+        let origin = |role: &str| multicad_core::references::Origin {
+            source: feature,
+            role: role.into(),
+        };
+        let frame = PlaneFrame {
+            origin: [0., 0., 13.],
+            ..Default::default()
+        };
+        let stock = Solid::rust_box(
+            feature.uuid_bits(),
+            [20, 16, 12].map(|n| Rational::new(n, 1).unwrap()),
+            PlaneFrame::default(),
+            policy,
+        )
+        .unwrap()
+        .rust_drill_rounded_slots(
+            &[RoundedSlotTool {
+                frame,
+                centers_uv: [[5., 6.], [9., 6.]],
+                radius_mm: 2.,
+                displacement_mm: [0., 0., -5.],
+                origin: origin("mortise"),
+            }],
+            policy,
+        )
+        .unwrap()
+        .rust_drill_circular_pockets(
+            &[CircularPocketTool {
+                frame,
+                center_uv: [14., 10.],
+                radius_mm: 1.,
+                displacement_mm: [0., 0., -4.],
+                origin: origin("drill"),
+            }],
+            policy,
+        )
+        .unwrap();
+        stock.write_step(&source).unwrap();
+        let file =
+            multicad_model::imports::read_step_file_with_backend(&source, GeometryBackend::Rust)
+                .unwrap();
+        let mut session = Session::new(Document::new("Rust STEP publication").unwrap()).unwrap();
+        let import = model::imports::prepare_step_import(
+            &session,
+            session.revision(),
+            Actor::local(Channel::Ui),
+            &file,
+        )
+        .unwrap();
+        session.commit(import.model.prepared).unwrap();
+        let mut workspace = ExportWorkspace::default();
+        workspace
+            .set_backend(Box::new(Backend::with_geometry_backend(
+                GeometryBackend::Rust,
+            )))
+            .unwrap();
+        create_step_set(&mut workspace, &mut session);
+        preview_step_set(&mut workspace, &mut session);
+        let output = tempfile::tempdir().unwrap();
+        workspace
+            .execute(
+                &mut session,
+                ExportTool::Run,
+                output.path().to_str(),
+                Channel::Ui,
+            )
+            .unwrap();
+        settle(&mut workspace, &session);
+        let (notice, error) = workspace.take_notice().unwrap();
+        assert!(!error && notice.contains("Exported 1 file"), "{notice}");
+        let bundle = std::fs::read_dir(output.path())
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        let published = std::fs::read_dir(bundle)
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .find(|path| path.extension().is_some_and(|ext| ext == "step"))
+            .unwrap();
+        let text = std::fs::read_to_string(&published).unwrap();
+        let readback = step_read::read_analytic_solid(&text, policy.linear_tolerance_mm).unwrap();
+        assert_eq!(readback.semicircles.len(), 4);
+        assert_eq!(readback.circles.len(), 2);
+        let independent = Solid::read_step(&published, policy).unwrap();
+        assert!((independent.volume_mm3().unwrap() - stock.volume_mm3().unwrap()).abs() < 1e-6);
+    }
+
+    #[test]
     fn rust_workspace_requests_exact_planar_faces_through_the_export_backend() {
         use multicad_ui::exchange::ExportBackend;
         let mut session = Session::new(Document::new("Rust planar catalog").unwrap()).unwrap();

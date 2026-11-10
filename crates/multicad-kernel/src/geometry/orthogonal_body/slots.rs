@@ -46,10 +46,10 @@ impl Solid {
         if tools.is_empty() {
             return self.share();
         }
-        let mut result = self.orthogonal_stock()?;
-        let SolidBody::Orthogonal(body, frame) = &mut result.body else {
-            unreachable!("stock was converted to an orthogonal solid");
-        };
+        let result = self.orthogonal_stock()?;
+        let (body, frame) = result
+            .orthogonal_body()
+            .expect("stock was converted to an orthogonal solid");
         if tools.len()
             > orthogonal_slots::slot_capacity(&body.geometry)
                 .saturating_sub(body.slots.len() + body.pockets.len())
@@ -87,12 +87,23 @@ impl Solid {
             slots.push(slot);
             origins.push(tool.origin.clone());
         }
+        result.with_orthogonal_slots(slots, origins)
+    }
+
+    pub(in crate::geometry) fn with_orthogonal_slots(
+        mut self,
+        slots: Vec<OrthogonalSlot>,
+        origins: Vec<Origin>,
+    ) -> Result<Self, GeometryError> {
+        let SolidBody::Orthogonal(body, _) = &mut self.body else {
+            return Err(unsupported_slot("Rounded slots require orthogonal stock"));
+        };
         circular_pocket_body::check_origins(slots.len(), &origins)?;
-        body.validate_slots(&slots, &body.pockets, policy)?;
+        body.validate_slots(&slots, &body.pockets, self.policy)?;
         let body = Rc::make_mut(body);
         body.slots = slots.into();
         body.slot_origins = origins.into();
-        Ok(result)
+        Ok(self)
     }
 
     pub(in crate::geometry) fn orthogonal_stock(&self) -> Result<Self, GeometryError> {

@@ -172,6 +172,84 @@ mod tests {
     }
 
     #[test]
+    fn rust_step_tenon_reopens_with_exact_caps_after_the_source_is_deleted() {
+        use multicad_core::{
+            document::EntityId, manufacturing::PlanarEdge, references::TopologyKind,
+        };
+        use multicad_kernel::{
+            GeometryPolicy, MeshOptions, PlaneFrame,
+            rust_kernel::{stadium::Stadium, step::write_stadium_prism},
+        };
+        use std::f64::consts::PI;
+
+        let scratch = tempfile::tempdir().unwrap();
+        let source_path = scratch.path().join("tenon.step");
+        let frame = PlaneFrame {
+            origin: [5., -2., 4.],
+            u: [0., 1., 0.],
+            v: [0., 0., 1.],
+        };
+        let profile = Stadium::new([[0., 0.], [4., 0.]], 2.).unwrap();
+        let source =
+            write_stadium_prism(&profile, 8., frame.origin, frame.u, frame.v, false).unwrap();
+        std::fs::write(&source_path, source).unwrap();
+        let mut session = Session::new(Document::new("Rounded STEP import").unwrap()).unwrap();
+        let mut import = check_import(&session, &source_path, Target::New);
+        assert_eq!(
+            import.report(),
+            Some(&Report::StepNew { parts: 1 }),
+            "{:?}",
+            import.checked()
+        );
+        assert!(matches!(
+            import.apply(&mut session),
+            Ok(Outcome::Applied { .. })
+        ));
+        let body = step_bodies(session.document()).next().unwrap().id;
+        let mut store = crate::files::ProjectStore::new(scratch.path().join("recovery"));
+        let project_path = scratch.path().join("tenon.tcd");
+        store
+            .save_project(
+                &project_path,
+                &ProjectFile::new(session.document().clone()).unwrap(),
+                SaveMode::Create,
+            )
+            .unwrap();
+        std::fs::remove_file(source_path).unwrap();
+        let document = store.open_project(&project_path).unwrap().file.document;
+        let model = Compiler::default()
+            .compile_with_backend(&document, 0, GeometryBackend::Rust, None)
+            .unwrap();
+        let solid = model.solid(body).unwrap();
+        assert!(solid.uses_rust_geometry());
+        let tolerance = GeometryPolicy::default().linear_tolerance_mm;
+        assert!((solid.volume_mm3().unwrap() - profile.area_mm2() * 8.).abs() <= tolerance);
+        solid
+            .manufacturing_mesh_with_receipt(MeshOptions::default())
+            .unwrap();
+        let cap = solid
+            .topology_snapshot(EntityId::new(), 0)
+            .unwrap()
+            .elements
+            .into_iter()
+            .find(|item| {
+                item.key.kind == TopologyKind::Face
+                    && item.frames.iter().any(|cap| {
+                        (cap.frame.origin_mm[0] - frame.origin[0]).abs() <= tolerance
+                            && cap.frame.normal()[0].abs() > 0.99
+                    })
+            })
+            .expect("Imported cap retained its analytic frame");
+        let contours = solid.planar_face_contours(cap.key.ordinal, frame).unwrap();
+        assert!((contours.area_mm2() - profile.area_mm2()).abs() <= tolerance);
+        let arcs = contours.loops[0]
+            .edges
+            .iter()
+            .filter(|edge| matches!(edge, PlanarEdge::Arc { sweep_rad, .. } if (sweep_rad.abs() - PI).abs() <= tolerance));
+        assert_eq!(arcs.count(), 2);
+    }
+
+    #[test]
     fn unsupported_step_units_do_not_fall_back_to_native_or_change_the_project() {
         let scratch = tempfile::tempdir().unwrap();
         let path = scratch.path().join("centimetres.step");

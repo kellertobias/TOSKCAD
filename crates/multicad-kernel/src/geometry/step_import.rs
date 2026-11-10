@@ -1,9 +1,11 @@
 //! Rebuild independently verified STEP boundaries as analytic Rust solids.
 use super::*;
 use multicad_core::{project_file::ContentHash, references::AnalyticGeometry};
+use multicad_rust_kernel::orthogonal_pockets::OrthogonalPocket;
 use multicad_rust_kernel::step_read::{
-    self, CircleEdge, ImportProfile, ImportSolid, ReadError, Readback,
+    self, CircleEdge, ImportProfile, ImportSolid, ReadError, Readback, SemicircleEdge,
 };
+use std::f64::consts::{PI, TAU};
 
 type Point = [f64; 3];
 type Segment = [Point; 2];
@@ -65,13 +67,35 @@ fn feature_origin(
 
 fn straight_origin(feature: EntityId, frame: PlaneFrame, a: [f64; 2], b: [f64; 2]) -> Origin {
     let mut points = [frame.point(a), frame.point(b)];
-    points.sort_unstable_by(|a, b| {
-        a.iter()
-            .zip(b)
-            .find_map(|(a, b)| (a != b).then(|| a.total_cmp(b)))
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
+    points.sort_unstable_by(compare_points);
     feature_origin(feature, "edge", points.into_iter().flatten())
+}
+
+fn compare_points(a: &Point, b: &Point) -> std::cmp::Ordering {
+    a.iter()
+        .zip(b)
+        .find_map(|(a, b)| (a != b).then(|| a.total_cmp(b)))
+        .unwrap_or(std::cmp::Ordering::Equal)
+}
+
+fn pocket_origins(
+    feature: EntityId,
+    frame: PlaneFrame,
+    pockets: &[OrthogonalPocket],
+) -> Vec<Origin> {
+    pockets
+        .iter()
+        .map(|pocket| {
+            let center = crate::rust_prism_topology::position(frame, pocket.center_mm);
+            feature_origin(
+                feature,
+                "pocket",
+                center
+                    .into_iter()
+                    .chain([pocket.radius_mm, pocket.depth_mm]),
+            )
+        })
+        .collect()
 }
 
 impl Solid {
@@ -96,7 +120,9 @@ impl Solid {
         })?;
         let orthogonal = matches!(
             &imported.profile,
-            ImportProfile::Orthogonal { .. } | ImportProfile::PocketedOrthogonal { .. }
+            ImportProfile::Orthogonal { .. }
+                | ImportProfile::PocketedOrthogonal { .. }
+                | ImportProfile::SlottedOrthogonal { .. }
         );
         let solid = Self::from_imported_step(imported, feature, policy)?;
         verify(&solid, &readback, feature, tolerance, orthogonal)?;
@@ -127,21 +153,65 @@ impl Solid {
                 Self::from_imported_orthogonal(solid, frame, feature, policy)
             }
             ImportProfile::PocketedOrthogonal { solid, pockets } => {
-                let origins = pockets
+                let origins = pocket_origins(feature, frame, &pockets);
+                Self::from_imported_orthogonal(solid, frame, feature, policy)?
+                    .with_orthogonal_pockets(pockets, origins)
+            }
+            ImportProfile::SlottedOrthogonal {
+                solid,
+                pockets,
+                slots,
+            } => {
+                let circle_origins = pocket_origins(feature, frame, &pockets);
+                let slot_origins = slots
                     .iter()
-                    .map(|pocket| {
-                        let center = crate::rust_prism_topology::position(frame, pocket.center_mm);
+                    .map(|slot| {
+                        let mut centers = slot
+                            .centers_mm
+                            .map(|point| crate::rust_prism_topology::position(frame, point));
+                        centers.sort_unstable_by(compare_points);
                         feature_origin(
                             feature,
-                            "pocket",
-                            center
+                            "slot",
+                            centers
                                 .into_iter()
-                                .chain([pocket.radius_mm, pocket.depth_mm]),
+                                .flatten()
+                                .chain([slot.radius_mm, slot.depth_mm]),
                         )
                     })
                     .collect();
                 Self::from_imported_orthogonal(solid, frame, feature, policy)?
-                    .with_orthogonal_pockets(pockets, origins)
+                    .with_orthogonal_pockets(pockets, circle_origins)?
+                    .with_orthogonal_slots(slots, slot_origins)
+            }
+            ImportProfile::Stadium { profile } => {
+                let corners = profile.corners();
+                let centers = profile.centers();
+                let origins = std::array::from_fn(|index| {
+                    let a = corners[index];
+                    let b = corners[(index + 1) % 4];
+                    if index.is_multiple_of(2) {
+                        return straight_origin(feature, frame, a, b);
+                    }
+                    let center = frame.point(centers[usize::from(index == 1)]);
+                    feature_origin(
+                        feature,
+                        "semicircle",
+                        center
+                            .into_iter()
+                            .chain(frame.point(a))
+                            .chain(frame.point(b)),
+                    )
+                });
+                Self::rust_extrude_rounded_slot(
+                    frame,
+                    centers,
+                    profile.radius_mm(),
+                    height_mm,
+                    feature,
+                    origins,
+                    policy,
+                )
             }
             ImportProfile::LinearSweep { base, top } => {
                 let edges = base
@@ -313,19 +383,53 @@ fn max_error(a: Point, b: Point) -> f64 {
 }
 
 fn match_circles(expected: &[CircleEdge], actual: &[CircleEdge], tolerance: f64) -> bool {
+    match_round_edges(expected, actual, tolerance, circle_error)
+}
+
+fn circle_error(rim: &CircleEdge, candidate: &CircleEdge) -> f64 {
+    let normal = max_error(rim.normal, candidate.normal)
+        .min(max_error(rim.normal, candidate.normal.map(|axis| -axis)));
+    max_error(rim.center_mm, candidate.center_mm)
+        .max((rim.radius_mm - candidate.radius_mm).abs())
+        .max(normal * rim.radius_mm)
+}
+
+fn match_semicircles(
+    expected: &[SemicircleEdge],
+    actual: &[SemicircleEdge],
+    tolerance: f64,
+) -> bool {
+    let circle = |rim: &SemicircleEdge| CircleEdge {
+        center_mm: rim.center_mm,
+        normal: rim.normal,
+        radius_mm: rim.radius_mm,
+    };
+    match_round_edges(expected, actual, tolerance, |rim, candidate| {
+        circle_error(&circle(rim), &circle(candidate))
+            .max(max_error(rim.radial_mid, candidate.radial_mid) * rim.radius_mm)
+    })
+}
+
+fn match_round_edges<T>(
+    expected: &[T],
+    actual: &[T],
+    tolerance: f64,
+    deviation: impl Fn(&T, &T) -> f64,
+) -> bool {
     if expected.len() != actual.len() {
         return false;
     }
     let mut matched = vec![false; actual.len()];
     expected.iter().all(|rim| {
-        let hit = actual.iter().enumerate().find(|(i, candidate)| {
-            !matched[*i]
-                && max_error(rim.center_mm, candidate.center_mm) <= tolerance
-                && (rim.radius_mm - candidate.radius_mm).abs() <= tolerance
-                && cross(rim.normal, candidate.normal)
-                    .iter()
-                    .all(|v| v.abs() * rim.radius_mm <= tolerance)
-        });
+        let hit = actual
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| !matched[*i])
+            .filter_map(|(i, candidate)| {
+                let error = deviation(rim, candidate);
+                (error <= tolerance).then_some((i, error))
+            })
+            .min_by(|(_, a), (_, b)| a.total_cmp(b));
         if let Some((i, _)) = hit {
             matched[i] = true;
             true
@@ -335,29 +439,47 @@ fn match_circles(expected: &[CircleEdge], actual: &[CircleEdge], tolerance: f64)
     })
 }
 
-fn match_lines(expected: &[Segment], actual: &[Segment], tolerance: f64) -> bool {
-    if expected.len() != actual.len() {
+fn same_segments(
+    actual: &[Segment],
+    expected: &[Segment],
+    bounds: [[f64; 3]; 2],
+    tolerance: f64,
+) -> bool {
+    if actual.len() != expected.len() {
         return false;
     }
-    let mut indexed: Vec<_> = actual
+    // Index both directions by the largest spatial extent. This avoids an
+    // all-pairs comparison without relying on input order or edge winding.
+    let axis = (0..3)
+        .max_by(|&a, &b| (bounds[1][a] - bounds[0][a]).total_cmp(&(bounds[1][b] - bounds[0][b])))
+        .expect("three axes");
+    let mut ordered: Vec<_> = actual
         .iter()
+        .copied()
         .enumerate()
-        .flat_map(|(i, &[a, b])| [(i, [a, b]), (i, [b, a])])
+        .flat_map(|(i, [a, b])| [(i, [a, b]), (i, [b, a])])
         .collect();
-    indexed.sort_unstable_by(|(_, a), (_, b)| a[0][0].total_cmp(&b[0][0]));
-    let mut matched = vec![false; actual.len()];
-    expected.iter().all(|&[a, b]| {
-        let start = indexed.partition_point(|(_, points)| points[0][0] < a[0] - tolerance);
-        let hit = indexed[start..]
+    ordered.sort_unstable_by(|a, b| a.1[0][axis].total_cmp(&b.1[0][axis]));
+    let mut used = vec![false; actual.len()];
+    expected.iter().all(|edge| {
+        let x = edge[0][axis];
+        let first = ordered.partition_point(|(_, p)| p[0][axis] < x - tolerance);
+        let hit = ordered[first..]
             .iter()
-            .take_while(|(_, points)| points[0][0] <= a[0] + tolerance)
-            .filter_map(|&(index, [p, q])| {
-                let error = max_error(a, p).max(max_error(b, q));
-                (!matched[index] && error <= tolerance).then_some((index, error))
+            .take_while(|(_, p)| p[0][axis] <= x + tolerance)
+            .filter(|(i, _)| !used[*i])
+            .filter_map(|(i, p)| {
+                let error = p
+                    .iter()
+                    .flatten()
+                    .zip(edge.iter().flatten())
+                    .map(|(a, b)| (a - b).abs())
+                    .fold(0., f64::max);
+                (error <= tolerance).then_some((*i, error))
             })
             .min_by(|(_, a), (_, b)| a.total_cmp(b));
-        if let Some((index, _)) = hit {
-            matched[index] = true;
+        if let Some((i, _)) = hit {
+            used[i] = true;
             true
         } else {
             false
@@ -384,16 +506,46 @@ fn verify(
             "Rebuilt STEP solid differs from the imported bounds or volume",
         ));
     }
-    if orthogonal && readback.circles.is_empty() {
+    if orthogonal && readback.circles.is_empty() && readback.semicircles.is_empty() {
         // The pure reader has already proved equality of every oriented
         // boundary patch. The rebuilt shell consolidates coplanar source
         // faces and collinear edges, so record counts can differ.
         return Ok(());
     }
+    let topology = solid.topology_snapshot(feature, 0)?;
+    if !compare_topology(&topology, readback, tolerance * 2., orthogonal) {
+        return Err(invalid(
+            "Rebuilt STEP extrusion differs from the imported analytic topology",
+        ));
+    }
+    Ok(())
+}
+
+impl Solid {
+    /// Compare an independently read STEP shell with the exact topology being
+    /// published. Straight edges and both types of circular trim must match.
+    pub fn step_topology_matches(
+        topology: &TopologySnapshot,
+        readback: &Readback,
+        tolerance: f64,
+    ) -> bool {
+        tolerance.is_finite()
+            && tolerance > 0.
+            && compare_topology(topology, readback, tolerance, false)
+    }
+}
+
+fn compare_topology(
+    topology: &TopologySnapshot,
+    readback: &Readback,
+    tolerance: f64,
+    allow_consolidation: bool,
+) -> bool {
     let mut lines = Vec::new();
     let mut circles = Vec::new();
+    let mut semicircles = Vec::new();
     let mut faces = 0;
-    for element in solid.topology_snapshot(feature, 0)?.elements {
+    for element in &topology.elements {
         use multicad_core::references::TopologyKind;
         match (element.key.kind, element.geometry) {
             (TopologyKind::Face, _) => faces += 1,
@@ -408,27 +560,131 @@ fn verify(
                     sweep_rad,
                     ..
                 }),
-            ) if (sweep_rad.abs() - std::f64::consts::TAU).abs() < 1e-9 => {
+            ) if (sweep_rad.abs() - TAU).abs() < 1e-9 => {
                 circles.push(CircleEdge {
                     center_mm: frame.origin_mm,
                     normal: frame.normal(),
                     radius_mm,
                 });
             }
+            (
+                TopologyKind::Edge,
+                Some(AnalyticGeometry::CircularArc {
+                    frame,
+                    radius_mm,
+                    start_rad,
+                    sweep_rad,
+                }),
+            ) if (sweep_rad.abs() - PI).abs() < 1e-9 => {
+                let (sin, cos) = (start_rad + sweep_rad * 0.5).sin_cos();
+                semicircles.push(SemicircleEdge {
+                    center_mm: frame.origin_mm,
+                    normal: frame.normal(),
+                    radius_mm,
+                    radial_mid: std::array::from_fn(|i| cos * frame.u[i] + sin * frame.v[i]),
+                });
+            }
             (TopologyKind::Edge, _) => {
-                return Err(invalid("Rebuilt STEP extrusion has an unexpected edge"));
+                return false;
             }
             (TopologyKind::Vertex, _) => {}
         }
     }
-    if (!orthogonal
-        && (faces != readback.face_count
-            || !match_lines(&readback.edges_mm, &lines, tolerance * 2.)))
-        || !match_circles(&readback.circles, &circles, tolerance * 2.)
-    {
-        return Err(invalid(
-            "Rebuilt STEP extrusion differs from the imported analytic topology",
+    (allow_consolidation
+        || (faces == readback.face_count
+            && same_segments(&readback.edges_mm, &lines, readback.bounds_mm, tolerance)))
+        && match_circles(&readback.circles, &circles, tolerance)
+        && match_semicircles(&readback.semicircles, &semicircles, tolerance)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn step_edge_match_is_unordered_and_cannot_reuse_or_move_a_boundary() {
+        let bounds = [[0., 0., 0.], [8., 4., 2.]];
+        let a = [[0., 0., 0.], [8., 0., 0.]];
+        let b = [[8., 0., 0.], [8., 4., 0.]];
+        let reversed_with_noise = [[8. + 1e-8, 0., 0.], [0., 0., 0.]];
+        assert!(same_segments(
+            &[b, reversed_with_noise],
+            &[a, b],
+            bounds,
+            1e-7
+        ));
+        assert!(!same_segments(
+            &[b, reversed_with_noise],
+            &[a, a],
+            bounds,
+            1e-7
+        ));
+        assert!(!same_segments(&[b], &[a, b], bounds, 1e-7));
+        let moved = [[8., 0., 0.], [8., 3., 0.]];
+        assert!(!same_segments(&[a, moved], &[a, b], bounds, 1e-7));
+    }
+
+    #[test]
+    fn step_edge_match_prefers_the_closest_of_nearby_boundaries() {
+        let bounds = [[0., 0., 0.], [8., 4., 2.]];
+        let edge = |x| [[x, 0., 0.], [x, 4., 0.]];
+        let [a, b, c] = [edge(1.), edge(1.0075), edge(1.015)];
+        assert!(same_segments(&[a, b, c], &[b, c, a], bounds, 0.01));
+    }
+
+    #[test]
+    fn step_circle_match_rejects_shifted_bores_and_compares_unsigned_axes() {
+        let expected = CircleEdge {
+            center_mm: [2., 4., 6.],
+            normal: [0., 1., 0.],
+            radius_mm: 1.25,
+        };
+        let reversed = CircleEdge {
+            normal: [0., -1., 0.],
+            ..expected
+        };
+        assert!(match_circles(&[reversed], &[expected], 1e-7));
+        for changed in [
+            CircleEdge {
+                center_mm: [2., 4., 7.],
+                ..expected
+            },
+            CircleEdge {
+                normal: [0., 0., 1.],
+                ..expected
+            },
+            CircleEdge {
+                radius_mm: 1.5,
+                ..expected
+            },
+        ] {
+            assert!(!match_circles(&[changed], &[expected], 1e-7));
+        }
+    }
+
+    #[test]
+    fn step_semicircle_match_distinguishes_opposite_halves() {
+        let expected = SemicircleEdge {
+            center_mm: [2., 4., 6.],
+            normal: [0., 0., 1.],
+            radius_mm: 1.25,
+            radial_mid: [0., 1., 0.],
+        };
+        let opposite = SemicircleEdge {
+            radial_mid: [0., -1., 0.],
+            ..expected
+        };
+        assert!(match_semicircles(&[expected], &[expected], 1e-7));
+        assert!(!match_semicircles(&[expected], &[opposite], 1e-7));
+        assert!(match_semicircles(
+            &[expected, opposite],
+            &[opposite, expected],
+            1e-7
+        ));
+        assert!(!match_semicircles(
+            &[expected, opposite],
+            &[opposite, opposite],
+            1e-7
         ));
     }
-    Ok(())
 }

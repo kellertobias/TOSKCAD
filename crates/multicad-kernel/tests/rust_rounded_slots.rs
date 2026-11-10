@@ -83,6 +83,24 @@ fn exchange(shape: &Solid, expected: &Solid, policy: GeometryPolicy) {
     let path = scratch.path().join("rounded.step");
     shape.write_step(&path).unwrap();
     compare(&Solid::read_step(&path, policy).unwrap(), expected);
+    let independent = scratch.path().join("independent.step");
+    expected.write_step(&independent).unwrap();
+    for path in [path, independent] {
+        let feature = EntityId::new();
+        let source = std::fs::read_to_string(&path).unwrap();
+        let imported = Solid::import_rust_step(&source, feature, policy)
+            .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+        assert!(imported.uses_rust_geometry());
+        compare(&imported, expected);
+        imported
+            .manufacturing_mesh_with_receipt(MeshOptions::default())
+            .unwrap();
+        let reopened = Solid::import_rust_step(&source, feature, policy).unwrap();
+        assert_eq!(
+            reopened.topology_snapshot(feature, 0).unwrap(),
+            imported.topology_snapshot(feature, 0).unwrap()
+        );
+    }
 }
 
 #[test]

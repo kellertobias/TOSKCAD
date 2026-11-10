@@ -3,7 +3,7 @@ use multicad_core::{
     commands::Actor,
     exchange::{WrittenFile, filename_token},
     project_file::ContentHash,
-    references::{AnalyticGeometry, TopologyKind, TopologySnapshot},
+    references::TopologySnapshot,
 };
 use multicad_kernel::{Solid, rust_kernel::step_read};
 use serde::{Deserialize, Serialize};
@@ -152,8 +152,6 @@ fn verify_step_dimensions(
     Ok(())
 }
 
-type Segment = [[f64; 3]; 2];
-
 /// Check one Rust-authored STEP against the same analytic edges, bounds,
 /// volume and solid count required for an export set.
 pub fn verify_rust_step_shape(
@@ -244,44 +242,7 @@ fn read_rust_step(
             format!("Rust STEP readback rejected the solid: {e:?}"),
         )
     })?;
-    let mut faces = 0;
-    let mut edges = Vec::new();
-    let mut circles = Vec::new();
-    for element in &topology.elements {
-        match element.key.kind {
-            TopologyKind::Face => faces += 1,
-            TopologyKind::Edge => match element.geometry {
-                Some(AnalyticGeometry::Line { a_mm, b_mm }) => edges.push([a_mm, b_mm]),
-                Some(AnalyticGeometry::CircularArc {
-                    frame,
-                    radius_mm,
-                    sweep_rad,
-                    ..
-                }) if (sweep_rad.abs() - std::f64::consts::TAU).abs() <= 1e-9 => {
-                    circles.push(step_read::CircleEdge {
-                        center_mm: frame.origin_mm,
-                        normal: frame.normal(),
-                        radius_mm,
-                    });
-                }
-                _ => {
-                    return Err(invalid(
-                        "Rust STEP source contains an unsupported edge".into(),
-                    ));
-                }
-            },
-            TopologyKind::Vertex => {}
-        }
-    }
-    if readback.face_count != faces
-        || !same_segments(
-            &readback.edges_mm,
-            &edges,
-            readback.bounds_mm,
-            tolerance * 2.,
-        )
-        || !same_circles(&readback.circles, &circles, tolerance * 2.)
-    {
+    if !Solid::step_topology_matches(topology, &readback, tolerance * 2.) {
         return Err(invalid(
             "STEP readback differs from the source face count or analytic edges".into(),
         ));
@@ -289,102 +250,6 @@ fn read_rust_step(
     Ok(readback)
 }
 
-fn same_segments(
-    actual: &[Segment],
-    expected: &[Segment],
-    bounds: [[f64; 3]; 2],
-    tolerance: f64,
-) -> bool {
-    if actual.len() != expected.len() {
-        return false;
-    }
-    // Index both directions by the largest spatial extent. This avoids an
-    // all-pairs comparison without relying on input order or edge winding.
-    let axis = (0..3)
-        .max_by(|&a, &b| (bounds[1][a] - bounds[0][a]).total_cmp(&(bounds[1][b] - bounds[0][b])))
-        .expect("three axes");
-    let mut ordered: Vec<_> = actual
-        .iter()
-        .copied()
-        .enumerate()
-        .flat_map(|(i, [a, b])| [(i, [a, b]), (i, [b, a])])
-        .collect();
-    ordered.sort_unstable_by(|a, b| a.1[0][axis].total_cmp(&b.1[0][axis]));
-    let mut used = vec![false; actual.len()];
-    expected.iter().all(|edge| {
-        let x = edge[0][axis];
-        let first = ordered.partition_point(|(_, p)| p[0][axis] < x - tolerance);
-        let hit = ordered[first..]
-            .iter()
-            .take_while(|(_, p)| p[0][axis] <= x + tolerance)
-            .filter(|(i, _)| !used[*i])
-            .filter_map(|(i, p)| {
-                let error = p
-                    .iter()
-                    .flatten()
-                    .zip(edge.iter().flatten())
-                    .map(|(a, b)| (a - b).abs())
-                    .fold(0., f64::max);
-                (error <= tolerance).then_some((*i, error))
-            })
-            .min_by(|(_, a), (_, b)| a.total_cmp(b));
-        if let Some((i, _)) = hit {
-            used[i] = true;
-            true
-        } else {
-            false
-        }
-    })
-}
-
-fn same_circles(
-    actual: &[step_read::CircleEdge],
-    expected: &[step_read::CircleEdge],
-    tolerance: f64,
-) -> bool {
-    if actual.len() != expected.len() {
-        return false;
-    }
-    let mut used = vec![false; actual.len()];
-    expected.iter().all(|circle| {
-        let hit = actual
-            .iter()
-            .enumerate()
-            .filter(|(i, _)| !used[*i])
-            .filter_map(|(i, candidate)| {
-                let center = candidate
-                    .center_mm
-                    .into_iter()
-                    .zip(circle.center_mm)
-                    .map(|(a, b)| (a - b).abs())
-                    .fold(0., f64::max);
-                let normal = [1., -1.]
-                    .map(|sign| {
-                        candidate
-                            .normal
-                            .into_iter()
-                            .zip(circle.normal)
-                            .map(|(a, b)| (a - sign * b).abs())
-                            .fold(0., f64::max)
-                    })
-                    .into_iter()
-                    .fold(f64::INFINITY, f64::min);
-                let error = center
-                    .max((candidate.radius_mm - circle.radius_mm).abs())
-                    .max(normal * circle.radius_mm);
-                (error <= tolerance).then_some((i, error))
-            })
-            .min_by(|(_, a), (_, b)| a.total_cmp(b));
-        if let Some((i, _)) = hit {
-            used[i] = true;
-            true
-        } else {
-            false
-        }
-    })
-}
-/// Read a written OBJ, 3MF, STL or GLB back and compare it with the generated bytes,
-/// the exact solid's world bounds and the tessellated volume.
 fn verify_mesh(
     written: &[u8],
     expected: &[u8],
@@ -677,70 +542,4 @@ fn verify_csv(written: &[u8], evidence: &ScheduleEvidence) -> Result<(), String>
         return Err("Schedule CSV readback differs from the planned kind, revision or size".into());
     }
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{same_circles, same_segments, step_read::CircleEdge};
-
-    #[test]
-    fn step_edge_match_is_unordered_and_cannot_reuse_or_move_a_boundary() {
-        let bounds = [[0., 0., 0.], [8., 4., 2.]];
-        let a = [[0., 0., 0.], [8., 0., 0.]];
-        let b = [[8., 0., 0.], [8., 4., 0.]];
-        let reversed_with_noise = [[8. + 1e-8, 0., 0.], [0., 0., 0.]];
-        assert!(same_segments(
-            &[b, reversed_with_noise],
-            &[a, b],
-            bounds,
-            1e-7
-        ));
-        assert!(!same_segments(
-            &[b, reversed_with_noise],
-            &[a, a],
-            bounds,
-            1e-7
-        ));
-        assert!(!same_segments(&[b], &[a, b], bounds, 1e-7));
-        let moved = [[8., 0., 0.], [8., 3., 0.]];
-        assert!(!same_segments(&[a, moved], &[a, b], bounds, 1e-7));
-    }
-
-    #[test]
-    fn step_edge_match_prefers_the_closest_of_nearby_boundaries() {
-        let bounds = [[0., 0., 0.], [8., 4., 2.]];
-        let edge = |x| [[x, 0., 0.], [x, 4., 0.]];
-        let [a, b, c] = [edge(1.), edge(1.0075), edge(1.015)];
-        assert!(same_segments(&[a, b, c], &[b, c, a], bounds, 0.01));
-    }
-
-    #[test]
-    fn step_circle_match_rejects_shifted_bores_and_compares_unsigned_axes() {
-        let expected = CircleEdge {
-            center_mm: [2., 4., 6.],
-            normal: [0., 1., 0.],
-            radius_mm: 1.25,
-        };
-        let reversed = CircleEdge {
-            normal: [0., -1., 0.],
-            ..expected
-        };
-        assert!(same_circles(&[reversed], &[expected], 1e-7));
-        for changed in [
-            CircleEdge {
-                center_mm: [2., 4., 7.],
-                ..expected
-            },
-            CircleEdge {
-                normal: [0., 0., 1.],
-                ..expected
-            },
-            CircleEdge {
-                radius_mm: 1.5,
-                ..expected
-            },
-        ] {
-            assert!(!same_circles(&[changed], &[expected], 1e-7));
-        }
-    }
 }
