@@ -1302,6 +1302,7 @@ impl Compiler {
                         policy: self.policy,
                     },
                     id,
+                    backend,
                 )?,
                 (model::SHEET_TYPE, model::SHEET_SCHEMA) => {
                     let (solid, layout) = crate::sheet_metal::build(

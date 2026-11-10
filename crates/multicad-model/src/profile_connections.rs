@@ -1,6 +1,6 @@
-//! Native solids for item Line 8 mounting recipes. Access bores deliberately
+//! Solids for item Line 8 mounting recipes. Access bores deliberately
 //! cross interrupted stock, so they use a stepped cutter with retained proof.
-use crate::{ModelError, error};
+use crate::{GeometryBackend, ModelError, error};
 use multicad_core::{
     document::{Document, EntityId},
     model::{
@@ -13,17 +13,23 @@ use multicad_core::{
         ThreadMode, ThreadParameters, length,
     },
     parameters::EvaluatedParameters,
-    references::{ReferenceFrame, TopologySnapshot},
+    references::{AnalyticGeometry, Origin, ReferenceFrame, TopologySnapshot},
 };
 use multicad_kernel::{
-    BooleanOperation, CurvedEdge2d, CurvedProfile, GeometryPolicy, PlaneFrame, RevolutionAxis,
-    RigidTransform, Solid,
+    BooleanOperation, CircularPocketTool, CurvedEdge2d, CurvedProfile, EdgeTreatment,
+    GeometryPolicy, PlaneFrame, RevolutionAxis, RigidTransform, Solid, TreatmentEdge,
 };
 use std::{collections::BTreeMap, f64::consts::TAU};
 
 const SHEET_MM: f64 = 5.0;
 const NUT_THREAD_MM: f64 = 4.1;
 const BORE_RADIUS_MM: f64 = 4.9;
+const BORE_MOUTH_RADIUS_MM: f64 = 8.04;
+const BORE_OVERTRAVEL_MM: f64 = 0.02;
+const PLATE_PITCH_MM: f64 = 40.;
+const PLATE_WIDTH_MM: f64 = 80.;
+const PLATE_DEPTH_MM: f64 = 40.;
+const HARDWARE_CLEARANCE_VOLUME_MM3: f64 = 0.001;
 // Assembly engineering clearance, independent of catalog and ISO fit classes.
 const THREAD_RADIAL_CLEARANCE_MM: f64 = 0.08;
 const THREAD_AXIAL_CLEARANCE_MM: f64 = 0.04;
@@ -37,6 +43,12 @@ fn sub(a: Point, b: Point) -> Point {
 }
 fn scale(v: Point, factor: f64) -> Point {
     v.map(|x| x * factor)
+}
+fn dot(a: Point, b: Point) -> f64 {
+    a.into_iter().zip(b).map(|(a, b)| a * b).sum()
+}
+fn magnitude([x, y, z]: Point) -> f64 {
+    x.hypot(y).hypot(z)
 }
 fn shift(frame: ReferenceFrame, distance: f64) -> ReferenceFrame {
     ReferenceFrame {
@@ -71,6 +83,19 @@ fn rotated(frame: ReferenceFrame, angle: f64) -> ReferenceFrame {
         u: add(scale(frame.u, c), scale(frame.v, s)),
         v: add(scale(frame.u, -s), scale(frame.v, c)),
         ..frame
+    }
+}
+
+fn joining_plate_frame([a, b]: [ReferenceFrame; 2]) -> ReferenceFrame {
+    let u = scale(sub(b.origin_mm, a.origin_mm), 1. / PLATE_PITCH_MM);
+    let v = cross(a.normal(), u);
+    ReferenceFrame {
+        origin_mm: sub(
+            sub(a.origin_mm, scale(u, PLATE_PITCH_MM / 2.)),
+            scale(v, PLATE_DEPTH_MM / 2.),
+        ),
+        u,
+        v,
     }
 }
 
@@ -136,7 +161,7 @@ impl Builder<'_> {
     fn check_clear(&self, a: &Solid, b: &Solid, message: &str) -> Result<(), ModelError> {
         if let Some(overlap) =
             self.checked(a.boolean(b, BooleanOperation::Intersect, self.inputs.policy))?
-            && self.checked(overlap.volume_mm3())? > 0.001
+            && self.checked(overlap.volume_mm3())? > HARDWARE_CLEARANCE_VOLUME_MM3
         {
             return Err(self.fail(message));
         }
@@ -144,15 +169,16 @@ impl Builder<'_> {
     }
 
     fn countersink(&self, frame: ReferenceFrame) -> Result<Solid, ModelError> {
-        let top = shift(frame, -SHEET_MM - 0.02);
-        let radius = 8.04;
+        let top = shift(frame, -SHEET_MM - BORE_OVERTRAVEL_MM);
+        let radius = BORE_MOUTH_RADIUS_MM;
         let taper_end = radius - BORE_RADIUS_MM;
+        let depth = SHEET_MM + 2. * BORE_OVERTRAVEL_MM;
         let outline = [
             [0.0, 0.0],
             [radius, 0.0],
             [BORE_RADIUS_MM, taper_end],
-            [BORE_RADIUS_MM, SHEET_MM + 0.04],
-            [0.0, SHEET_MM + 0.04],
+            [BORE_RADIUS_MM, depth],
+            [0.0, depth],
         ];
         self.checked(Solid::revolve_curved_profile(
             &CurvedProfile {
@@ -179,7 +205,6 @@ impl Builder<'_> {
         mount: ProfileConnectionFrames,
     ) -> Result<Solid, ModelError> {
         let [a, b] = mount.sites;
-        let normal = a.normal();
         let mut plate = if kind == ProfileConnectionKind::AngleBracket {
             let corner = sub(a.origin_mm, scale(b.normal(), 20.0));
             let leg = |face: ReferenceFrame, other: ReferenceFrame| {
@@ -201,15 +226,9 @@ impl Builder<'_> {
             ))?
             .ok_or_else(|| self.fail("Angle bracket legs do not meet at their bend"))?
         } else {
-            let u = scale(sub(b.origin_mm, a.origin_mm), 1.0 / 40.0);
-            let v = cross(normal, u);
             self.cuboid(
-                ReferenceFrame {
-                    origin_mm: sub(sub(a.origin_mm, scale(u, 20.0)), scale(v, 20.0)),
-                    u,
-                    v,
-                },
-                [80.0, 40.0, SHEET_MM],
+                joining_plate_frame(mount.sites),
+                [PLATE_WIDTH_MM, PLATE_DEPTH_MM, SHEET_MM],
             )?
         };
         for frame in mount.fasteners {
@@ -218,6 +237,113 @@ impl Builder<'_> {
                 &self.countersink(frame)?,
                 "Countersink removed the joining part",
             )?;
+        }
+        Ok(plate)
+    }
+
+    fn rust_joining_plate(&self, mount: ProfileConnectionFrames) -> Result<Solid, ModelError> {
+        let frame = joining_plate_frame(mount.sites);
+        self.checked(frame.validate())?;
+        let policy = self.inputs.policy;
+        let normal = frame.normal();
+        let outer = [
+            [0., 0.],
+            [PLATE_WIDTH_MM, 0.],
+            [PLATE_WIDTH_MM, PLATE_DEPTH_MM],
+            [0., PLATE_DEPTH_MM],
+        ];
+        // A Line 8 groove datum is an outward support plane of the full
+        // member section. A corner check therefore proves clearance of the
+        // plate enclosure, including for rigidly placed profile occurrences.
+        let tolerance = policy.linear_tolerance_mm;
+        let penetration =
+            tolerance.min(HARDWARE_CLEARANCE_VOLUME_MM3 / (2. * PLATE_WIDTH_MM * PLATE_DEPTH_MM));
+        for site in mount.sites {
+            for point in outer.map(|uv| plane(frame).point(uv)) {
+                for point in [point, add(point, scale(normal, SHEET_MM))] {
+                    if dot(sub(point, site.origin_mm), site.normal()) < -penetration {
+                        return Err(self.fail(
+                            "Joining plate cannot be certified clear of the retained profile surfaces",
+                        ));
+                    }
+                }
+            }
+        }
+
+        let mut tools = Vec::with_capacity(2);
+        let mut countersinks = Vec::with_capacity(2);
+        for (i, axis) in mount.fasteners.into_iter().enumerate() {
+            let inward = axis.normal();
+            if dot(normal, inward) >= 0. || magnitude(cross(normal, inward)) > 1e-12 {
+                return Err(self.fail(
+                    "Rust joining plate countersinks require axes perpendicular to the plate",
+                ));
+            }
+            let top = shift(axis, -SHEET_MM - BORE_OVERTRAVEL_MM);
+            let entry = dot(sub(top.origin_mm, frame.origin_mm), normal) - SHEET_MM;
+            let chamfer = BORE_MOUTH_RADIUS_MM - BORE_RADIUS_MM - entry;
+            if !(0. ..2. * BORE_OVERTRAVEL_MM).contains(&entry)
+                || chamfer <= 0.
+                || chamfer >= SHEET_MM
+            {
+                return Err(self.fail(
+                    "The joining plate countersink tool must cut through both plate surfaces",
+                ));
+            }
+            tools.push(CircularPocketTool {
+                frame: plane(top),
+                center_uv: [0., 0.],
+                radius_mm: BORE_RADIUS_MM,
+                displacement_mm: scale(inward, SHEET_MM + 2. * BORE_OVERTRAVEL_MM),
+                origin: Origin {
+                    source: self.feature,
+                    role: format!("joining_plate.bore.{i}"),
+                },
+            });
+            countersinks.push((add(top.origin_mm, scale(inward, entry)), chamfer));
+        }
+        let profile = CurvedProfile {
+            frame: plane(frame),
+            outer: polygon(&outer),
+            holes: vec![],
+        };
+        let origins: Vec<_> = (0..profile.outer.len())
+            .map(|i| Origin {
+                source: self.feature,
+                role: format!("joining_plate.outline.{i}"),
+            })
+            .collect();
+        let blank =
+            crate::rust_backend::stock_profile(self.feature, &profile, &origins, SHEET_MM, policy)?;
+        let mut plate =
+            self.checked(blank.rust_drill_circular_machining(&tools, &[true; 2], policy))?;
+        for (i, (mouth, distance_mm)) in countersinks.into_iter().enumerate() {
+            let snapshot =
+                self.checked(plate.topology_snapshot(self.feature, self.inputs.revision))?;
+            let edge = snapshot
+                .elements
+                .iter()
+                .find(|element| {
+                    matches!(
+                        element.geometry,
+                        Some(AnalyticGeometry::CircularArc { frame, radius_mm, .. })
+                            if magnitude(sub(frame.origin_mm, mouth)) <= tolerance
+                                && (radius_mm - BORE_RADIUS_MM).abs() <= tolerance
+                    )
+                })
+                .ok_or_else(|| self.fail("Joining plate lost the intended countersink mouth"))?;
+            plate = self.checked(plate.treat_edges_named(
+                &[TreatmentEdge {
+                    key: edge.key,
+                    origin: Origin {
+                        source: self.feature,
+                        role: format!("joining_plate.countersink.{i}"),
+                    },
+                }],
+                EdgeTreatment::Chamfer { distance_mm },
+                self.feature,
+                policy,
+            ))?;
         }
         Ok(plate)
     }
@@ -451,7 +577,11 @@ fn cross(a: Point, b: Point) -> Point {
     ]
 }
 
-pub(crate) fn build(inputs: Inputs<'_>, feature: EntityId) -> Result<Solid, ModelError> {
+pub(crate) fn build(
+    inputs: Inputs<'_>,
+    feature: EntityId,
+    backend: GeometryBackend,
+) -> Result<Solid, ModelError> {
     let builder = Builder { inputs, feature };
     let ctx = &builder.inputs;
     let output = builder.checked(model::read_profile_connection_output(ctx.document, feature))?;
@@ -469,6 +599,30 @@ pub(crate) fn build(inputs: Inputs<'_>, feature: EntityId) -> Result<Solid, Mode
         ctx.revision,
         ctx.snapshots,
     ))?;
+    if backend == GeometryBackend::Rust {
+        return match output.geometry {
+            ProfileOutputKind::AccessBores { .. } => Err(builder.fail(
+                "Rust profile connections do not yet support stepped access bores across interrupted stock",
+            )),
+            ProfileOutputKind::Part { index } => match request.kind.roles()[index] {
+                ProfilePartRole::Connector(_) => match request.kind {
+                    ProfileConnectionKind::JoiningPlate => builder.rust_joining_plate(frames),
+                    ProfileConnectionKind::AngleBracket => Err(builder.fail(
+                        "Rust profile connections do not yet support countersinks on both angle bracket legs",
+                    )),
+                    ProfileConnectionKind::UniversalEnd => Err(builder.fail(
+                        "Rust profile connections do not yet support the intersecting barrel screw passage and head seat",
+                    )),
+                },
+                ProfilePartRole::Screw(_) => Err(builder.fail(
+                    "Rust profile connections do not yet support the required modeled screw head and socket",
+                )),
+                ProfilePartRole::Nut(_) => Err(builder.fail(
+                    "Rust profile connections do not yet support the modeled tap and crown relief of the Line 8 nut",
+                )),
+            },
+        };
+    }
     let ProfileOutputKind::Part { index } = output.geometry else {
         let ProfileOutputKind::AccessBores { target } = output.geometry else {
             unreachable!()

@@ -9,7 +9,8 @@ use multicad_core::{
     },
     project_file::{self, ProjectFile},
 };
-use multicad_model::{Compiler, Model, schedules::BomOptions};
+use multicad_kernel::{GeometryPolicy, Solid};
+use multicad_model::{Compiler, GeometryBackend, Model, schedules::BomOptions};
 
 fn actor() -> Actor {
     Actor::local(Channel::Ui)
@@ -105,6 +106,112 @@ fn compile(document: &Document, revision: u64) -> Result<Model, multicad_model::
 }
 
 #[test]
+fn joining_plate_uses_exact_rust_bores_and_countersinks_on_rotated_profile_stock() {
+    let rotate = |[x, y, z]: [f64; 3]| [0.8 * x - 0.6 * y, 0.6 * x + 0.8 * y, z];
+    let (mut session, members) = prepare_members(
+        [
+            ([0., 0., 0.], [100., 0., 0.]),
+            ([0., 40., 0.], [100., 40., 0.]),
+        ]
+        .map(|(a, b)| (rotate(a), rotate(b))),
+    );
+    let request = ProfileConnectionRequest::new(
+        "Joining plate",
+        ProfileConnectionKind::JoiningPlate,
+        groove(&members[0], ProfileGrooveSide::MaxY, 40.),
+        groove(&members[1], ProfileGrooveSide::MaxY, 40.),
+    );
+    let draft =
+        model::prepare_profile_connection(&session, session.revision(), actor(), &request).unwrap();
+    let connector = draft.outputs[0].feature;
+    let screw = draft.outputs[1].feature;
+    let nut = draft.outputs[2].feature;
+    session.commit(draft.prepared).unwrap();
+    let compiler = Compiler::default();
+    let scoped = |feature, backend| {
+        compiler.compile_sources_with_backend(
+            session.document(),
+            session.revision(),
+            &[feature],
+            backend,
+            None,
+        )
+    };
+    let [native, rust] = [GeometryBackend::OpenCascade, GeometryBackend::Rust]
+        .map(|backend| scoped(connector, backend).unwrap_or_else(|e| panic!("{backend:?}: {e}")));
+    let actual = rust.solid(connector).unwrap();
+    let expected = native.solid(connector).unwrap();
+    assert!(actual.uses_rust_geometry());
+    assert_eq!(actual.solid_count().unwrap(), 1);
+    let near = |a: f64, b: f64| assert!((a - b).abs() < 1e-6, "{a} differs from {b}");
+    let compare = |actual: &Solid| {
+        near(actual.volume_mm3().unwrap(), expected.volume_mm3().unwrap());
+        let area = |solid: &Solid| {
+            solid
+                .faces()
+                .unwrap()
+                .iter()
+                .map(|face| face.area_mm2)
+                .sum::<f64>()
+        };
+        near(area(actual), area(expected));
+        let (actual, expected) = (actual.bounds().unwrap(), expected.bounds().unwrap());
+        for i in 0..3 {
+            near(actual.min[i], expected.min[i]);
+            near(actual.max[i], expected.max[i]);
+        }
+    };
+    compare(actual);
+    let topology = actual
+        .topology_snapshot(connector, session.revision())
+        .unwrap();
+    let radii: Vec<_> = topology
+        .elements
+        .iter()
+        .filter_map(|element| match element.geometry {
+            Some(multicad_core::references::AnalyticGeometry::CircularArc {
+                radius_mm, ..
+            }) => Some(radius_mm),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(radii.len(), 6);
+    assert_eq!(
+        radii
+            .iter()
+            .filter(|&&radius| (radius - 4.9).abs() < 1e-9)
+            .count(),
+        4
+    );
+    assert_eq!(
+        radii
+            .iter()
+            .filter(|&&radius| (radius - 8.02).abs() < 1e-9)
+            .count(),
+        2
+    );
+    for member in members {
+        let stock = rust.solid(member.feature).unwrap();
+        assert!(stock.uses_rust_geometry());
+        near(
+            stock.volume_mm3().unwrap(),
+            native.solid(member.feature).unwrap().volume_mm3().unwrap(),
+        );
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("joining-plate.step");
+    actual.write_step(&path).unwrap();
+    compare(&Solid::read_step(&path, GeometryPolicy::default()).unwrap());
+    let text = std::fs::read_to_string(path).unwrap();
+    compare(&Solid::import_rust_step(&text, connector, GeometryPolicy::default()).unwrap());
+
+    for (feature, expected) in [(screw, "modeled screw head"), (nut, "modeled tap")] {
+        let error = scoped(feature, GeometryBackend::Rust).err().unwrap();
+        assert!(error.to_string().contains(expected), "{error}");
+    }
+}
+
+#[test]
 fn angle_and_flat_connections_create_five_parts_and_never_machine_the_profiles() {
     use ProfileConnectionKind::{AngleBracket, JoiningPlate};
     use ProfileGrooveSide::{MaxX, MaxY};
@@ -143,6 +250,22 @@ fn angle_and_flat_connections_create_five_parts_and_never_machine_the_profiles()
         let native = compile(draft.prepared.document(), session.revision() + 1).unwrap();
         assert_eq!(native.snapshot().leaf_occurrences.len(), 7);
         assert_eq!(draft.outputs.len(), 5);
+        if kind == AngleBracket {
+            let error = Compiler::default()
+                .compile_sources_with_backend(
+                    draft.prepared.document(),
+                    session.revision() + 1,
+                    &[draft.outputs[0].feature],
+                    GeometryBackend::Rust,
+                    None,
+                )
+                .err()
+                .unwrap();
+            assert!(
+                error.to_string().contains("both angle bracket legs"),
+                "{error}"
+            );
+        }
         for member in &members {
             let id = member.member.output.body;
             assert_eq!(original.get(id), draft.prepared.document().get(id));
@@ -210,6 +333,20 @@ fn paired_end_connection_machines_only_the_host_and_survives_reopen_and_undo() {
     let host = members[0].member.output.body;
     let cut = native.snapshot().bodies[&host];
     assert_ne!(cut, members[0].feature);
+    let error = Compiler::default()
+        .compile_sources_with_backend(
+            draft.prepared.document(),
+            session.revision() + 1,
+            &[cut],
+            GeometryBackend::Rust,
+            None,
+        )
+        .err()
+        .unwrap();
+    assert!(
+        error.to_string().contains("stepped access bores"),
+        "{error}"
+    );
     assert_eq!(native.solid(cut).unwrap().solid_count().unwrap(), 1);
     let volume = |feature| native.solid(feature).unwrap().volume_mm3().unwrap();
     assert!(volume(members[0].feature) - volume(cut) > 100.);
