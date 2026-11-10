@@ -16,6 +16,8 @@ pub mod planar_projection;
 pub mod planar_section;
 pub mod polygon;
 pub mod prism;
+pub mod revolution;
+pub mod revolution_mesh;
 pub mod section_hatch;
 pub mod sketch_reference;
 pub mod step;

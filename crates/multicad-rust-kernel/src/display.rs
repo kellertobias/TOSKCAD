@@ -25,14 +25,14 @@ pub struct DisplayMesh {
 }
 
 impl DisplayMesh {
-    fn triangle(&mut self, [a, b, c]: [usize; 3], face: u32) {
+    pub(crate) fn triangle(&mut self, [a, b, c]: [usize; 3], face: u32) {
         self.indices.extend([a as u32, b as u32, c as u32]);
         self.face_indices.push(face);
     }
 }
 
 impl Tessellation {
-    fn check(self) -> Result<(), MeshError> {
+    pub(crate) fn check(self) -> Result<(), MeshError> {
         if !self.deflection.is_finite()
             || self.deflection <= 0.
             || !(0.01..=1.).contains(&self.angle)
@@ -43,9 +43,13 @@ impl Tessellation {
         Ok(())
     }
 
-    fn arc_segments(self, radius: f64, sweep: f64) -> Result<usize, MeshError> {
+    pub(crate) fn maximum_arc_angle(self, radius: f64) -> f64 {
         let sagitta_angle = 4. * (self.deflection / (2. * radius)).sqrt().min(1.).asin();
-        let segments = (sweep.abs() / self.angle.min(sagitta_angle)).ceil();
+        self.angle.min(sagitta_angle)
+    }
+
+    pub(crate) fn arc_segments(self, radius: f64, sweep: f64) -> Result<usize, MeshError> {
+        let segments = (sweep.abs() / self.maximum_arc_angle(radius)).ceil();
         if segments > self.triangle_limit as f64 {
             return Err(MeshError::BudgetExceeded);
         }
@@ -105,57 +109,10 @@ impl Footprint {
 
     fn tessellate(self, bottom: f64, top: f64) -> Result<DisplayMesh, MeshError> {
         let count = self.points.len();
-        let mut conflicts = false;
-        let cdt = ConstrainedDelaunayTriangulation::<Point2<f64>>::try_bulk_load_cdt(
-            self.points,
-            self.edges.clone(),
-            |_| conflicts = true,
-        )
-        .map_err(|_| MeshError::UnresolvedBoundary)?;
-        if conflicts || cdt.num_vertices() != count || cdt.num_constraints() != self.edges.len() {
-            return Err(MeshError::UnresolvedBoundary);
-        }
-        let get_edge = |[a, b]: [usize; 2]| {
-            cdt.get_edge_from_neighbors(
-                FixedVertexHandle::from_index(a),
-                FixedVertexHandle::from_index(b),
-            )
-        };
-        // All rings are oriented with material on the left. Walk the connected
-        // material region through the dual graph without crossing constraints.
-        let seed = get_edge(self.edges[0])
-            .and_then(|edge| edge.face().as_inner())
-            .ok_or(MeshError::UnresolvedBoundary)?;
-        let mut included = vec![false; cdt.num_all_faces()];
-        included[seed.index()] = true;
-        let mut queue = vec![seed];
-        let mut caps = Vec::new();
-        while let Some(face) = queue.pop() {
-            caps.push(face.vertices().map(|vertex| vertex.index()));
-            for edge in face.adjacent_edges() {
-                if !edge.is_constraint_edge() {
-                    let neighbor = edge
-                        .rev()
-                        .face()
-                        .as_inner()
-                        .ok_or(MeshError::UnresolvedBoundary)?;
-                    if !included[neighbor.index()] {
-                        included[neighbor.index()] = true;
-                        queue.push(neighbor);
-                    }
-                }
-            }
-        }
-        // This also catches an entire sampled hole outside the exterior ring
-        // when its constraints do not cross any other constraints.
-        let separates_material = self.edges.iter().all(|edge| {
-            get_edge(*edge).is_some_and(|edge| {
-                included[edge.face().index()] && !included[edge.rev().face().index()]
-            })
-        });
-        if !separates_material || caps.len() != count + 2 * self.holes - 2 {
-            return Err(MeshError::UnresolvedBoundary);
-        }
+        let RegionTriangulation {
+            cdt,
+            triangles: caps,
+        } = triangulate_region(self.points, &self.edges, self.holes)?;
 
         let mut mesh = DisplayMesh {
             vertices: Vec::with_capacity(count * 6),
@@ -178,6 +135,75 @@ impl Footprint {
         }
         Ok(mesh)
     }
+}
+
+pub(crate) struct RegionTriangulation {
+    cdt: ConstrainedDelaunayTriangulation<Point2<f64>>,
+    pub(crate) triangles: Vec<[usize; 3]>,
+}
+
+pub(crate) fn triangulate_region(
+    points: Vec<Point2<f64>>,
+    edges: &[[usize; 2]],
+    holes: usize,
+) -> Result<RegionTriangulation, MeshError> {
+    let count = points.len();
+    let mut conflicts = false;
+    let cdt = ConstrainedDelaunayTriangulation::<Point2<f64>>::try_bulk_load_cdt(
+        points,
+        edges.to_vec(),
+        |_| conflicts = true,
+    )
+    .map_err(|_| MeshError::UnresolvedBoundary)?;
+    if conflicts || cdt.num_vertices() != count || cdt.num_constraints() != edges.len() {
+        return Err(MeshError::UnresolvedBoundary);
+    }
+    let get_edge = |[a, b]: [usize; 2]| {
+        cdt.get_edge_from_neighbors(
+            FixedVertexHandle::from_index(a),
+            FixedVertexHandle::from_index(b),
+        )
+    };
+    // All rings are oriented with material on the left. Walk the connected
+    // material region through the dual graph without crossing constraints.
+    let seed = get_edge(edges[0])
+        .and_then(|edge| edge.face().as_inner())
+        .ok_or(MeshError::UnresolvedBoundary)?;
+    let mut included = vec![false; cdt.num_all_faces()];
+    included[seed.index()] = true;
+    let mut queue = vec![seed];
+    let mut caps = Vec::new();
+    while let Some(face) = queue.pop() {
+        caps.push(face.vertices().map(|vertex| vertex.index()));
+        for edge in face.adjacent_edges() {
+            if !edge.is_constraint_edge() {
+                let neighbor = edge
+                    .rev()
+                    .face()
+                    .as_inner()
+                    .ok_or(MeshError::UnresolvedBoundary)?;
+                if !included[neighbor.index()] {
+                    included[neighbor.index()] = true;
+                    queue.push(neighbor);
+                }
+            }
+        }
+    }
+    // This also catches an entire sampled hole outside the exterior ring
+    // when its constraints do not cross any other constraints.
+    let separates_material = edges.iter().all(|edge| {
+        get_edge(*edge).is_some_and(|edge| {
+            included[edge.face().index()] && !included[edge.rev().face().index()]
+        })
+    });
+    if !separates_material || caps.len() != count + 2 * holes - 2 {
+        return Err(MeshError::UnresolvedBoundary);
+    }
+
+    Ok(RegionTriangulation {
+        cdt,
+        triangles: caps,
+    })
 }
 
 fn prism_once(prism: &Prism, options: Tessellation) -> Result<DisplayMesh, MeshError> {
