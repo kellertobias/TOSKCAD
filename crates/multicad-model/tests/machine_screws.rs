@@ -340,6 +340,39 @@ fn screw_edits_invalidate_cache_keep_identity_and_reopen_in_an_independent_sessi
 }
 
 #[test]
+fn rust_cosmetic_socket_caps_and_hex_heads_keep_the_same_metric_envelopes() {
+    let mut s = session();
+    let screws = [false, true].map(|hex| {
+        let mut source = parameters(hex, true, false, true);
+        let MechanicalPartParameters::MachineScrew { thread, .. } = &mut source else {
+            unreachable!();
+        };
+        thread.representation = ThreadRepresentation::CosmeticEnvelope;
+        add(&mut s, source)
+    });
+    let rust = Compiler::default()
+        .compile_with_backend(
+            s.document(),
+            s.revision(),
+            multicad_model::GeometryBackend::Rust,
+            None,
+        )
+        .unwrap();
+    let native = compiler().compile(s.document(), s.revision()).unwrap();
+    for screw in screws {
+        let expected = native.solid(screw.feature).unwrap();
+        let actual = rust.solid(screw.feature).unwrap();
+        assert_screw_volumes(actual, expected, expected.volume_mm3().unwrap());
+        let bounds = actual.bounds().unwrap();
+        let expected_bounds = expected.bounds().unwrap();
+        for axis in 0..3 {
+            assert!((bounds.min[axis] - expected_bounds.min[axis]).abs() < 1e-6);
+            assert!((bounds.max[axis] - expected_bounds.max[axis]).abs() < 1e-6);
+        }
+    }
+}
+
+#[test]
 fn cosmetic_screw_threads_are_refused_by_step_mesh_and_print_manufacturing_paths() {
     let mut s = session();
     let mut p = parameters(false, false, false, false);

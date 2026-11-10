@@ -904,6 +904,8 @@ impl Solid {
         if self.uses_rust_geometry() {
             let mut snapshot = if let Some((body, frame)) = self.helical_body() {
                 body.topology(frame, owner, revision)?
+            } else if let Some((body, frame)) = self.cosmetic_fastener_body() {
+                body.topology(frame, owner, revision)?
             } else if let Some((body, frame)) = self.linear_body() {
                 body.topology(frame, owner, revision)
             } else if let Some((body, frame)) = self.revolution_body() {

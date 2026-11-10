@@ -2,6 +2,7 @@
 
 pub mod annulus;
 pub mod circular_pockets;
+pub mod cosmetic_fastener;
 pub mod curved_projection;
 pub mod cylinder;
 pub mod display;

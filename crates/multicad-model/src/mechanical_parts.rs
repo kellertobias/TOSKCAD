@@ -7,7 +7,7 @@ use multicad_core::{
     document::EntityId,
     model::{
         MechanicalPartDefinition, MechanicalPartParameters, ResolvedMechanicalPart,
-        ResolvedScrewDrive, ResolvedScrewHead, ResolvedThread, ThreadMode,
+        ResolvedScrewDrive, ResolvedScrewHead, ResolvedThread, ThreadMode, ThreadRepresentation,
     },
     parameters::EvaluatedParameters,
     references::Origin,
@@ -16,7 +16,10 @@ use multicad_core::{
 use multicad_kernel::{
     BooleanOperation, CurvedEdge2d, CurvedProfile, GeometryPolicy, PlaneFrame, RigidTransform,
     Solid,
-    rust_kernel::headed_screw::{ScrewHead, ScrewSpec},
+    rust_kernel::{
+        cosmetic_fastener::Countersunk,
+        headed_screw::{ScrewHead, ScrewSpec},
+    },
 };
 
 use std::{cell::RefCell, collections::BTreeMap};
@@ -432,6 +435,19 @@ pub(crate) fn build_rust(
             across_flats_mm,
             thread,
         } => {
+            if thread.representation == ThreadRepresentation::CosmeticEnvelope {
+                let frame = rust_cosmetic_frame(feature, &thread)?;
+                return Solid::rust_cosmetic_hex_nut(
+                    across_flats_mm,
+                    thread.major_radius_mm - thread.profile.depth_mm,
+                    thread.length_mm,
+                    thread.minimum_wall_mm + thread.profile.depth_mm,
+                    feature,
+                    frame,
+                    policy,
+                )
+                .map_err(|cause| error(Some(feature), cause));
+            }
             let (profile, _, frame) = crate::threads::rust_profile(feature, &thread)?;
             Solid::rust_hex_nut(
                 profile,
@@ -469,9 +485,26 @@ pub(crate) fn build_rust(
         .map_err(|cause| error(Some(feature), cause)),
         _ => Err(error(
             Some(feature),
-            "Rust mechanical parts currently support washers, bearing envelopes, modeled machine screws and modeled hex nuts",
+            "Rust mechanical parts currently support washers, bearing envelopes, machine screws and hex nuts",
         )),
     }
+}
+
+fn rust_cosmetic_frame(
+    feature: EntityId,
+    thread: &ResolvedThread,
+) -> Result<PlaneFrame, ModelError> {
+    if thread.profile.radial_taper != 0. || thread.end_treatments.is_some() {
+        return Err(error(
+            Some(feature),
+            "Rust cosmetic fasteners require a cylindrical thread envelope without end treatments",
+        ));
+    }
+    Ok(PlaneFrame {
+        origin: thread.frame.origin,
+        u: thread.frame.u,
+        v: thread.frame.v,
+    })
 }
 
 fn rust_machine_screw(
@@ -483,40 +516,69 @@ fn rust_machine_screw(
     thread: &ResolvedThread,
     policy: GeometryPolicy,
 ) -> Result<Solid, ModelError> {
-    let (profile, root_radius, frame) = crate::threads::rust_profile(feature, thread)?;
-    let head = match (head, drive) {
-        (
-            ResolvedScrewHead::SocketCap {
+    let legacy_head = rust_legacy_head(&head, &drive);
+    if thread.representation == ThreadRepresentation::CosmeticEnvelope {
+        let frame = rust_cosmetic_frame(feature, thread)?;
+        if shank_radius_mm != thread.major_radius_mm {
+            return Err(error(
+                Some(feature),
+                "Rust cosmetic screws require matching shank and thread envelope diameters",
+            ));
+        }
+        if let Some(head) = legacy_head {
+            return Solid::rust_cosmetic_headed_screw(
+                head,
+                shank_radius_mm,
+                underhead_length_mm,
+                feature,
+                frame,
+                policy,
+            )
+            .map_err(|cause| error(Some(feature), cause));
+        }
+        let (
+            ResolvedScrewHead::Countersunk {
                 radius_mm,
                 height_mm,
+                included_angle_deg,
+                edge_chamfer_mm,
+                neck_radius_mm: 0.,
             },
             ResolvedScrewDrive::HexSocket {
                 across_flats_mm,
                 depth_mm,
             },
-        ) => ScrewHead::SocketCap {
-            radius_mm,
-            height_mm,
-            socket_across_flats_mm: across_flats_mm,
-            socket_depth_mm: depth_mm,
-        },
-        (
-            ResolvedScrewHead::ExternalHex {
-                across_flats_mm,
-                height_mm,
-            },
-            ResolvedScrewDrive::ExternalHex,
-        ) => ScrewHead::ExternalHex {
-            across_flats_mm,
-            height_mm,
-        },
-        _ => {
+        ) = (head, drive)
+        else {
             return Err(error(
                 Some(feature),
-                "Rust machine screws support a socket cap with a flat hex socket or an external hex head",
+                "Rust cosmetic screws support external hex heads or socket-cap and straight countersunk heads with flat hex sockets",
             ));
-        }
-    };
+        };
+        return Solid::rust_cosmetic_countersunk_screw(
+            Countersunk {
+                head_radius_mm: radius_mm,
+                head_height_mm: height_mm,
+                included_angle_deg,
+                edge_chamfer_mm,
+                shaft_radius_mm: shank_radius_mm,
+                shaft_length_mm: underhead_length_mm,
+                socket_across_flats_mm: across_flats_mm,
+                socket_depth_mm: depth_mm,
+            },
+            feature,
+            frame,
+            policy,
+        )
+        .map_err(|cause| error(Some(feature), cause));
+    }
+    let (profile, root_radius, frame) = crate::threads::rust_profile(feature, thread)?;
+    let head = legacy_head.ok_or_else(|| {
+        error(
+            Some(feature),
+            "Rust machine screws support a socket cap with a flat hex socket or an external hex head",
+        )
+    })?;
     Solid::rust_machine_screw(
         profile,
         root_radius,
@@ -530,6 +592,37 @@ fn rust_machine_screw(
         policy,
     )
     .map_err(|cause| error(Some(feature), cause))
+}
+
+fn rust_legacy_head(head: &ResolvedScrewHead, drive: &ResolvedScrewDrive) -> Option<ScrewHead> {
+    Some(match (head, drive) {
+        (
+            ResolvedScrewHead::SocketCap {
+                radius_mm,
+                height_mm,
+            },
+            ResolvedScrewDrive::HexSocket {
+                across_flats_mm,
+                depth_mm,
+            },
+        ) => ScrewHead::SocketCap {
+            radius_mm: *radius_mm,
+            height_mm: *height_mm,
+            socket_across_flats_mm: *across_flats_mm,
+            socket_depth_mm: *depth_mm,
+        },
+        (
+            ResolvedScrewHead::ExternalHex {
+                across_flats_mm,
+                height_mm,
+            },
+            ResolvedScrewDrive::ExternalHex,
+        ) => ScrewHead::ExternalHex {
+            across_flats_mm: *across_flats_mm,
+            height_mm: *height_mm,
+        },
+        _ => return None,
+    })
 }
 
 pub(super) fn build_resolved(

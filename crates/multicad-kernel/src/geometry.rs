@@ -12,6 +12,7 @@ use std::path::Path;
 use std::rc::Rc;
 mod annulus_body;
 pub(crate) mod circular_pocket_body;
+mod cosmetic_fastener_body;
 mod helical_body;
 mod linear_body;
 mod orthogonal_body;
@@ -21,6 +22,7 @@ mod rust_compound;
 mod step_import;
 use annulus_body::AnnulusBody;
 pub use circular_pocket_body::CircularPocketTool;
+use cosmetic_fastener_body::CosmeticFastenerBody;
 use helical_body::HelicalBody;
 use linear_body::LinearBody;
 use orthogonal_body::OrthogonalBody;
@@ -533,6 +535,7 @@ enum SolidBody {
     PolygonPrism(Rc<PlacedPolygon>),
     AxialCylinder(Rc<AxialCylinder>, PlaneFrame, Option<Rc<CylinderSketch>>),
     Annulus(Rc<AnnulusBody>, PlaneFrame),
+    CosmeticFastener(Rc<CosmeticFastenerBody>, PlaneFrame),
     Helical(Rc<HelicalBody>, PlaneFrame),
     Linear(Rc<LinearBody>, PlaneFrame),
     Revolved(Rc<RevolutionBody>, PlaneFrame),
@@ -883,6 +886,9 @@ impl Solid {
                 SolidBody::AxialCylinder(Rc::clone(cylinder), *frame, sketch.clone())
             }
             SolidBody::Annulus(body, frame) => SolidBody::Annulus(Rc::clone(body), *frame),
+            SolidBody::CosmeticFastener(body, frame) => {
+                SolidBody::CosmeticFastener(Rc::clone(body), *frame)
+            }
             SolidBody::Helical(body, frame) => SolidBody::Helical(Rc::clone(body), *frame),
             SolidBody::Linear(body, frame) => SolidBody::Linear(Rc::clone(body), *frame),
             SolidBody::Revolved(body, frame) => SolidBody::Revolved(Rc::clone(body), *frame),
@@ -1127,6 +1133,9 @@ impl Solid {
                 SolidBody::Helical(body, frame) => {
                     SolidBody::Helical(Rc::clone(body), transform.frame(*frame))
                 }
+                SolidBody::CosmeticFastener(body, frame) => {
+                    SolidBody::CosmeticFastener(Rc::clone(body), transform.frame(*frame))
+                }
                 SolidBody::Linear(body, frame) => {
                     SolidBody::Linear(Rc::clone(body), transform.frame(*frame))
                 }
@@ -1166,6 +1175,9 @@ impl Solid {
         Ok(result)
     }
     pub fn volume_mm3(&self) -> Result<f64, GeometryError> {
+        if let Some((body, _)) = self.cosmetic_fastener_body() {
+            return Ok(body.geometry.volume_mm3());
+        }
         if let Some((body, _)) = self.rounded_slot_body() {
             return Ok(body.volume_mm3());
         }
@@ -1214,6 +1226,9 @@ impl Solid {
         ffi::solid_count(self.occt()?).map_err(|e| native("solid count", e))
     }
     pub fn bounds(&self) -> Result<Bounds, GeometryError> {
+        if let Some((body, frame)) = self.cosmetic_fastener_body() {
+            return Ok(body.bounds(frame));
+        }
         if let Some((body, frame)) = self.rounded_slot_body() {
             return Ok(body.bounds(frame));
         }
@@ -1317,6 +1332,9 @@ impl Solid {
         crate::planar_contours::extract(self, face, frame, self.policy)
     }
     pub fn faces(&self) -> Result<Vec<Face>, GeometryError> {
+        if let Some((body, frame)) = self.cosmetic_fastener_body() {
+            return Ok(body.faces(frame));
+        }
         if let Some((body, frame)) = self.rounded_slot_body() {
             return Ok(body.faces(frame));
         }
@@ -1434,6 +1452,14 @@ impl Solid {
                 false,
             ),
             SolidBody::Helical(body, frame) => body.mesh(*frame, rust_options),
+            SolidBody::CosmeticFastener(body, frame) => match usage {
+                MeshUse::Display => body.mesh(*frame, rust_options),
+                MeshUse::Manufacturing => Err(error(
+                    "manufacturing mesh",
+                    GeometryErrorKind::Unsupported,
+                    "Cosmetic thread envelopes require modeled thread geometry for manufacturing",
+                )),
+            },
             SolidBody::Linear(body, frame) => {
                 crate::rust_display::placed_mesh(body.mesh(rust_options), *frame, false)
             }
@@ -1741,6 +1767,7 @@ impl Solid {
             SolidBody::AxialCylinder(cylinder, ..) => EntityId::from_uuid_bits(cylinder.feature()),
             SolidBody::Annulus(body, _) => body.feature,
             SolidBody::Helical(body, _) => body.feature,
+            SolidBody::CosmeticFastener(body, _) => body.feature,
             SolidBody::Linear(body, _) => body.feature,
             SolidBody::Revolved(body, _) => body.feature,
             SolidBody::RoundedSlot(body, _) => body.feature,
@@ -1761,7 +1788,7 @@ impl Solid {
             | SolidBody::RoundedSlot(..) => true,
             SolidBody::Prism(prism, _) => prism.rounded_end().is_none(),
             SolidBody::RustCompound(compound) => compound.members().all(Self::supports_step_export),
-            SolidBody::Helical(..) => false,
+            SolidBody::Helical(..) | SolidBody::CosmeticFastener(..) => false,
             SolidBody::Revolved(body, frame) => body.circular_sweep(*frame).is_some(),
             SolidBody::Orthogonal(body, _) => body.supports_step(),
         }
@@ -1865,7 +1892,9 @@ impl Solid {
                 }
                 Ok(())
             }
-            SolidBody::Helical(..) => Err(step::StepError::Unsupported),
+            SolidBody::Helical(..) | SolidBody::CosmeticFastener(..) => {
+                Err(step::StepError::Unsupported)
+            }
             SolidBody::Orthogonal(body, frame) => body.append_step(writer, *frame),
             SolidBody::Occt(_) => unreachable!("native STEP dispatched above"),
         }
