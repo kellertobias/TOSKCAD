@@ -18,6 +18,133 @@ fn near(a: f64, b: f64) {
     assert!((a - b).abs() < 1e-8, "{a} != {b}");
 }
 
+#[test]
+fn exact_boundary_joins_and_surface_integrals_cover_the_five_supports() {
+    let cut = Cut::new(spec(16.2), TOLERANCE).unwrap();
+    near(cut.spec().pitch_mm, 2.);
+    let [bottom, top, wall, cavity, floor] = cut.face_properties();
+    // Composite Simpson reference over each independently clipped support.
+    for (actual, expected) in [bottom, top, wall, cavity, floor].iter().zip([
+        201.06192982974676,
+        187.2908434248715,
+        1091.4369582882518,
+        623.065016500919,
+        0.5654724518572009,
+    ]) {
+        near(actual.area_mm2, expected);
+        assert!(actual.center_mm.into_iter().all(f64::is_finite));
+    }
+    assert_eq!(bottom.center_mm, [0.; 3]);
+    near(top.center_mm[2], 30.);
+    near(floor.center_mm[2], 16.2);
+    assert!((0. ..30.).contains(&wall.center_mm[2]));
+    assert!((16.2..30.).contains(&cavity.center_mm[2]));
+
+    use BoundaryEdge::*;
+    let minus = Rail { positive: false };
+    let plus = Rail { positive: true };
+    let [floor_origin, radial, transverse] = {
+        let (origin, u, v) = cut.floor_frame();
+        [origin, u, v]
+    };
+    near(floor_origin[2], 16.2);
+    near(
+        radial.into_iter().zip(transverse).map(|(a, b)| a * b).sum(),
+        0.,
+    );
+    for edge in [
+        Bottom,
+        TopRim,
+        FloorRim,
+        FloorCylinder,
+        TopCavity,
+        minus,
+        plus,
+    ] {
+        let [a, b] = cut.edge_domain(edge);
+        assert!(b > a && cut.edge_second_derivative_bound(edge) > 0.);
+        for t in [a, a.midpoint(b), b] {
+            assert_eq!(
+                cut.classify(cut.edge_point(edge, t)),
+                Ok(Location::Boundary),
+                "{edge:?} at {t}"
+            );
+        }
+    }
+    for (a, ai, b, bi) in [
+        (minus, 0, FloorRim, 1),
+        (plus, 0, FloorRim, 0),
+        (minus, 0, FloorCylinder, 0),
+        (plus, 0, FloorCylinder, 1),
+        (minus, 1, TopCavity, 1),
+        (plus, 1, TopCavity, 0),
+        (minus, 1, TopRim, 1),
+        (plus, 1, TopRim, 0),
+    ] {
+        let pa = cut.edge_point(a, cut.edge_domain(a)[ai]);
+        let pb = cut.edge_point(b, cut.edge_domain(b)[bi]);
+        for (a, b) in pa.into_iter().zip(pb) {
+            near(a, b);
+        }
+    }
+    let steep = Cut::new(
+        Spec {
+            tube_radius_mm: 2.,
+            pitch_mm: 7.5,
+            path_height_mm: 22.,
+            ..spec(16.2)
+        },
+        TOLERANCE,
+    )
+    .unwrap();
+    assert!(steep.face_properties()[4].area_mm2 > 6.);
+}
+
+#[test]
+fn tilted_support_shrinks_when_the_stock_maximum_lies_inside_the_opening() {
+    let cut = Cut::new(spec(16.2), TOLERANCE).unwrap();
+    assert_eq!(cut.support_upper_mm([0., 0., 1.]), Ok(30.));
+    assert_eq!(cut.support_upper_mm([0., 0., -1.]), Ok(0.));
+    assert_eq!(cut.support_upper_mm([1., 0., 0.]), Ok(8.));
+    assert_eq!(cut.support_upper_mm([2., 0., 0.]), Err(Error::InvalidInput));
+    let [a, b] = cut.cylinder_trims().map(|branch| branch.azimuth_rad[1]);
+    let (sin, cos) = a.midpoint(b).sin_cos();
+    let q = std::f64::consts::FRAC_1_SQRT_2;
+    let direction = [q * cos, q * sin, q];
+    assert_eq!(
+        cut.support_upper_with_budget(direction, 0),
+        Err(Error::Limit)
+    );
+    let bound = cut.support_upper_mm(direction).unwrap();
+    let stock = q * 38.;
+    assert!(bound < stock - 0.01, "{bound} vs {stock}");
+    let support = |edge| {
+        let [a, b] = cut.edge_domain(edge);
+        (0..=4096)
+            .map(|i| {
+                let p = cut.edge_point(edge, (b - a).mul_add(i as f64 / 4096., a));
+                p.into_iter()
+                    .zip(direction)
+                    .map(|(coordinate, axis)| coordinate * axis)
+                    .sum::<f64>()
+            })
+            .fold(f64::NEG_INFINITY, f64::max)
+    };
+    let sampled = [
+        BoundaryEdge::TopRim,
+        BoundaryEdge::TopCavity,
+        BoundaryEdge::Rail { positive: false },
+        BoundaryEdge::Rail { positive: true },
+    ]
+    .into_iter()
+    .map(support)
+    .fold(f64::NEG_INFINITY, f64::max);
+    assert!(
+        sampled <= bound && bound - sampled < 1e-4,
+        "{sampled} vs {bound}"
+    );
+}
+
 fn point(cut: Cut, theta: f64, x: f64, y: f64) -> [f64; 3] {
     let (s, c) = (theta + cut.spec.start_angle_rad).sin_cos();
     let radial = cut.spec.stock_radius_mm + x;

@@ -1,7 +1,13 @@
 //! Coaxial cylinder minus a circular normal-profile helical tube.
 //! Provides analytic material queries and trim extents for a bounded class.
+mod mesh;
+
 use crate::prism::Location;
 use std::f64::consts::{PI, TAU};
+
+mod boundary;
+pub use boundary::{BoundaryEdge, FaceProperties};
+mod support;
 
 const MAX_LENGTH_MM: f64 = 1e7;
 const MAX_TURNS: f64 = 256.;
