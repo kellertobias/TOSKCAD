@@ -13,12 +13,20 @@ pub(in crate::drawing) fn project_normal_sweep(
     options: DrawingProjection,
 ) -> Option<Result<Vec<ProjectedVector>, GeometryError>> {
     let (body, frame) = input.solid.normal_sweep_body()?;
+    let mut alternate = None;
+    if curved::warped::needs_sweep_shell(frame, options) {
+        let result = curved::project_scene(std::slice::from_ref(input), options);
+        if !matches!(&result, Err(error) if error.kind == GeometryErrorKind::Unsupported) {
+            return Some(result);
+        }
+        alternate = Some(result);
+    }
     let [u, v, toward_viewer] = planar::view_axes(options.frame);
     let axis = frame.normal();
     let axial = dot(axis, u).hypot(dot(axis, v)) <= 32. * f64::EPSILON;
     let transverse = dot(axis, toward_viewer).abs() <= 32. * f64::EPSILON;
     if !axial && !transverse {
-        return None;
+        return alternate;
     }
     if options.detail.is_some() {
         return Some(Err(err(

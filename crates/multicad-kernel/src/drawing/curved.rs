@@ -14,7 +14,7 @@ mod pockets;
 mod shadows;
 pub(super) mod stadium;
 mod stepped;
-mod warped;
+pub(super) mod warped;
 
 fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
     a.into_iter().zip(b).map(|(x, y)| x * y).sum()
@@ -159,16 +159,19 @@ fn project_members(
             rounded.add(solid, source, options)?;
             continue;
         }
-        if channel::add(solid, source, options, &mut rounded)? {
-            continue;
-        }
-        if let Some((shell, placement)) = solid.drawing_warped_shell() {
-            let tolerance = solid.geometry_policy().linear_tolerance_mm;
-            let elevation = warped::elevation(shell, placement, source, tolerance, options)?;
+        let tolerance = solid.geometry_policy().linear_tolerance_mm;
+        let elevation = match warped::for_projection(solid, source, tolerance, options)? {
+            Some(elevation) => Some(elevation),
+            None => machined::oblique_stock(solid, source, options)?,
+        };
+        if let Some(elevation) = elevation {
             shell_faces.extend(elevation.blockers);
             rounded.lines.extend(elevation.lines);
             rounded.rims.extend(elevation.rims);
             shell_tolerance = shell_tolerance.max(tolerance);
+            continue;
+        }
+        if channel::add(solid, source, options, &mut rounded)? {
             continue;
         }
         if let Some(round) = round_occluder(solid, options.frame)? {

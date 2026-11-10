@@ -261,6 +261,19 @@ impl NormalSweepBody {
         (self.sweep.rings(), self.z(true))
     }
 
+    pub(crate) fn drawing_shell(
+        &self,
+        tolerance: f64,
+    ) -> Result<multicad_rust_kernel::warped_union::Shell, multicad_rust_kernel::warped_union::Error>
+    {
+        use multicad_rust_kernel::warped_union::{normal_sweep_shell, pierced_sweep_shell};
+
+        match &self.openings {
+            Some(openings) => pierced_sweep_shell(&openings.geometry, self.reverse, tolerance),
+            None => normal_sweep_shell(&self.sweep, self.reverse, tolerance),
+        }
+    }
+
     pub(crate) fn drawing_rims(
         &self,
         frame: PlaneFrame,

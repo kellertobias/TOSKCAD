@@ -11,6 +11,9 @@ use std::f64::consts::TAU;
 const ANGULAR: f64 = 32. * f64::EPSILON;
 type Point = [f64; 3];
 
+mod oblique;
+pub(super) use oblique::oblique_stock;
+
 struct Screen {
     axes: [Point; 3],
     origin: Point,
@@ -146,28 +149,33 @@ pub(super) fn stock(
 pub(super) fn hex_stock(
     solid: &Solid,
     source: usize,
-    body: usize,
+    body_index: usize,
     options: DrawingProjection,
 ) -> Result<Option<Stock<Body>>, GeometryError> {
-    let Some((fastener, frame)) = solid.cosmetic_fastener_body() else {
+    let Some((body, cut)) = hex_geometry(solid, options) else {
         return Ok(None);
     };
-    let Some([width, radius, low, high]) = fastener.straight_hex_bore() else {
-        return Ok(None);
-    };
+    let mut result = stock_with_cuts(body, 1);
+    cut.append(&mut result, source, body_index)?;
+    Ok(Some(result))
+}
+
+fn hex_geometry(solid: &Solid, options: DrawingProjection) -> Option<(Body, Cut)> {
+    let (fastener, frame) = solid.cosmetic_fastener_body()?;
+    let [width, radius, low, high] = fastener.straight_hex_bore()?;
     let screen = Screen::new(options.frame);
     let point = |p| screen.point(crate::rust_prism_topology::position(frame, p));
     let axis = screen.vector(unit(frame.normal()));
     let [bottom, top] = [low, high].map(|z| hex_vertices(width).map(|[x, y]| point([x, y, z])));
-    let mut result = stock_with_cuts(hex_prism(bottom, top, axis), 1);
-    Cut {
-        faces: [Some(0), Some(1)],
-        centers: [low, high].map(|z| point([0., 0., z])),
-        outward: axis.map(|v| -v),
-        radius,
-    }
-    .append(&mut result, source, body)?;
-    Ok(Some(result))
+    Some((
+        hex_prism(bottom, top, axis),
+        Cut {
+            faces: [Some(0), Some(1)],
+            centers: [low, high].map(|z| point([0., 0., z])),
+            outward: axis.map(|v| -v),
+            radius,
+        },
+    ))
 }
 
 fn hex_prism(bottom: [Point; 6], top: [Point; 6], axis: Point) -> Body {
@@ -197,7 +205,7 @@ fn hex_prism(bottom: [Point; 6], top: [Point; 6], axis: Point) -> Body {
         Face {
             point: bottom[i],
             normal,
-            edges: vec![i, i + 6, i + 12, next + 12],
+            edges: vec![i, next + 12, i + 6, i + 12],
         }
     }));
     Body { edges, faces }
