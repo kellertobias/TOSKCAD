@@ -673,3 +673,173 @@ fn world_origin_axes_respect_solid_depth_in_both_projections() {
         }
     }
 }
+
+#[test]
+#[ignore = "Requires an available GPU; run explicitly on physical hardware"]
+fn gpu_uploads_only_drawn_geometry_and_reuses_buffers_through_visibility_and_resize() {
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+    let adapter =
+        wait(instance.request_adapter(&Default::default())).expect("GPU adapter required");
+    println!("Physical GPU check: {:?}", adapter.get_info());
+    let (device, queue) = wait(adapter.request_device(&Default::default())).unwrap();
+    let mut renderer = Renderer::new(&device, wgpu::TextureFormat::Rgba8Unorm);
+    let [shared, hidden, history] = std::array::from_fn(|_| EntityId::new());
+    let triangle = |id, size: f64| {
+        Arc::new(
+            Geometry::new(
+                id,
+                vec![[-size, -size, 0.], [size, -size, 0.], [0., size, 0.]],
+                vec![0, 1, 2],
+                vec![0],
+                vec![],
+            )
+            .unwrap(),
+        )
+    };
+    let [shared_geometry, hidden_geometry, history_geometry] =
+        [shared, hidden, history].map(|id| triangle(id, 16.0));
+    let placed = |geometry, translation_mm, color| Instance {
+        id: EntityId::new(),
+        geometry,
+        transform: Transform::from_placement(Placement {
+            translation_mm,
+            ..Default::default()
+        })
+        .unwrap(),
+        color,
+    };
+    let instances = vec![
+        placed(shared, [-45., 0., 0.], [240, 30, 30, 255]),
+        placed(shared, [0., 0., 0.], [240, 30, 30, 255]),
+        placed(hidden, [45., 0., 0.], [30, 240, 30, 255]),
+    ];
+    let visible = BTreeSet::from([instances[0].id, instances[1].id]);
+    let stamp = SceneStamp {
+        document: EntityId::new(),
+        revision: 0,
+        generation: 0,
+    };
+    let scene = |second: Arc<Geometry>| {
+        Arc::new(
+            Scene::new(
+                stamp,
+                vec![shared_geometry.clone(), second, history_geometry.clone()],
+                instances.clone(),
+            )
+            .unwrap(),
+        )
+    };
+    let full = scene(hidden_geometry.clone());
+    let subset = full.visible_subset(&visible).unwrap();
+    assert_eq!(subset.geometries().len(), 3);
+    let view = View {
+        camera: Camera {
+            target: [0.; 3],
+            yaw: 0.,
+            pitch: std::f32::consts::FRAC_PI_2,
+            scale: 2.,
+            perspective: false,
+        },
+        size: egui::vec2(256., 256.),
+        selection: None,
+        style: DisplayStyle::Filled,
+        section: None,
+        origin_axes: false,
+    };
+    let (color, depth, readback) = targets(&device);
+    let prepare =
+        |renderer: &mut Renderer, scene, view| renderer.prepare(&device, &queue, scene, view);
+    let pixels = |renderer: &Renderer| {
+        capture(
+            &device,
+            &queue,
+            renderer,
+            &color,
+            &depth,
+            &readback,
+            DisplayStyle::Filled,
+        )
+    };
+
+    prepare(&mut renderer, &subset, view.clone());
+    assert_eq!(
+        renderer.meshes.keys().copied().collect::<Vec<_>>(),
+        [shared]
+    );
+    assert_eq!(renderer.draws.len(), 1);
+    assert_eq!(renderer.draws[0].count, 2);
+    let shared_buffer = renderer.meshes[&shared].vertices.clone();
+    let hidden_pixels = pixels(&renderer);
+    assert!(
+        hidden_pixels
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .any(|pixel| pixel[0] > 70)
+    );
+
+    prepare(&mut renderer, &full, view.clone());
+    assert_eq!(renderer.meshes.len(), 2);
+    assert!(!renderer.meshes.contains_key(&history));
+    let hidden_buffer = renderer.meshes[&hidden].vertices.clone();
+    let shown_pixels = pixels(&renderer);
+    assert!(
+        shown_pixels
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .any(|pixel| pixel[1] > 70)
+    );
+    assert_ne!(shown_pixels, hidden_pixels);
+    prepare(&mut renderer, &subset, view.clone());
+    assert_eq!(renderer.meshes[&hidden].vertices, hidden_buffer);
+    assert_eq!(pixels(&renderer), hidden_pixels);
+    prepare(&mut renderer, &full, view.clone());
+    assert_eq!(renderer.meshes[&hidden].vertices, hidden_buffer);
+    assert_eq!(pixels(&renderer), shown_pixels);
+
+    let selected = View {
+        selection: Some(Selection::Part(instances[0].id)),
+        ..view.clone()
+    };
+    prepare(&mut renderer, &full, selected.clone());
+    let selected_pixels = pixels(&renderer);
+    assert_ne!(selected_pixels, shown_pixels);
+    let placements: Vec<_> = renderer
+        .draws
+        .iter()
+        .map(|draw| draw.instances.clone())
+        .collect();
+    prepare(
+        &mut renderer,
+        &full,
+        View {
+            size: egui::vec2(192., 224.),
+            ..selected
+        },
+    );
+    assert_ne!(pixels(&renderer), selected_pixels);
+    assert_eq!(renderer.meshes[&shared].vertices, shared_buffer);
+    assert_eq!(renderer.meshes[&hidden].vertices, hidden_buffer);
+    assert!(
+        renderer
+            .draws
+            .iter()
+            .zip(placements)
+            .all(|(draw, previous)| draw.instances == previous)
+    );
+
+    let changed_geometry = triangle(hidden, 12.0);
+    let changed = scene(changed_geometry.clone());
+    let changed_subset = changed.visible_subset(&visible).unwrap();
+    prepare(&mut renderer, &changed_subset, view.clone());
+    assert!(!renderer.meshes.contains_key(&hidden));
+    prepare(&mut renderer, &changed, view);
+    assert!(Arc::ptr_eq(
+        &renderer.meshes[&hidden].source,
+        &changed_geometry
+    ));
+    assert_ne!(renderer.meshes[&hidden].vertices, hidden_buffer);
+    assert_eq!(renderer.meshes[&shared].vertices, shared_buffer);
+    assert!(!renderer.meshes.contains_key(&history));
+}

@@ -245,16 +245,24 @@ impl Renderer {
         if !self.scene.as_ref().is_some_and(|s| Arc::ptr_eq(s, scene))
             || self.selection != selection
         {
-            self.meshes
-                .retain(|id, _| scene.geometries().contains_key(id));
-            for (id, geometry) in scene.geometries() {
-                if self
-                    .meshes
+            let mut groups: BTreeMap<EntityId, Vec<_>> = BTreeMap::new();
+            for instance in scene.instances() {
+                groups.entry(instance.geometry).or_default().push(instance);
+            }
+            // Retain unchanged meshes for parts already drawn, even when
+            // hidden. Reference and history geometry stays on the CPU until
+            // a draw instance actually needs it.
+            self.meshes.retain(|id, mesh| {
+                scene
+                    .geometries()
                     .get(id)
-                    .is_some_and(|m| Arc::ptr_eq(&m.source, geometry))
-                {
+                    .is_some_and(|geometry| Arc::ptr_eq(&mesh.source, geometry))
+            });
+            for id in groups.keys() {
+                if self.meshes.contains_key(id) {
                     continue;
                 }
+                let geometry = &scene.geometries()[id];
                 let mut bytes = Vec::with_capacity(geometry.indices().len() * 32);
                 for (triangle, face) in geometry
                     .indices()
@@ -312,10 +320,6 @@ impl Renderer {
                 );
             }
             self.draws.clear();
-            let mut groups: BTreeMap<EntityId, Vec<_>> = BTreeMap::new();
-            for instance in scene.instances() {
-                groups.entry(instance.geometry).or_default().push(instance);
-            }
             for (id, instances) in groups {
                 let mut bytes = Vec::with_capacity(instances.len() * 80);
                 let mut records = 0;
