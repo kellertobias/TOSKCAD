@@ -239,8 +239,15 @@ fn unsupported_and_invalid_operations_leave_the_rust_body_intact() {
             .kind,
         GeometryErrorKind::Unsupported
     );
+    let cap_bore = body
+        .subtract_rust_prism_cylinder(id, cutter, integer(0), integer(9))
+        .unwrap();
+    near(
+        body.volume_mm3().unwrap() - cap_bore.volume_mm3().unwrap(),
+        std::f64::consts::PI * 4. * 4. * 8.,
+    );
     assert_eq!(
-        body.subtract_rust_prism_cylinder(id, cutter, integer(0), integer(9))
+        body.subtract_rust_prism_cylinder(id, cutter, integer(1), integer(9))
             .err()
             .unwrap()
             .kind,
