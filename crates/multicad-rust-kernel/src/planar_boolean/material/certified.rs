@@ -10,6 +10,11 @@ enum Operation {
     Subtract,
 }
 
+struct Operand<'a> {
+    boundary: &'a Union,
+    pieces: &'a [ConvexPiece],
+}
+
 struct Work<'a> {
     remaining: usize,
     interrupt: Option<&'a dyn Fn() -> bool>,
@@ -167,19 +172,14 @@ fn charge_cells(pieces: &[ConvexPiece], work: &mut Work<'_>) -> Result<(), Error
     Ok(())
 }
 
-fn operation(
-    operands: &[&CutMaterial],
+fn emit_boundary(
+    operands: &[Operand<'_>],
     tolerance: f64,
     op: Operation,
     work: &mut Work<'_>,
-) -> Result<Option<CutMaterial>, Error> {
+) -> Result<Option<Union>, Error> {
     validate_tolerance(tolerance)?;
-    if operands.len() < 2 {
-        return Err(Error::Invalid);
-    }
-    if operands.len() > MAX_PIECES {
-        return Err(Error::Limit);
-    }
+    validate_operand_len(operands.len())?;
     // Every certificate already has at most MAX_PIECES cells. Bound the
     // operand count before summing, so this preflight cannot overflow usize.
     let count: usize = operands.iter().map(|operand| operand.pieces.len()).sum();
@@ -206,7 +206,7 @@ fn operation(
         .iter()
         .map(|operand| {
             work.check()?;
-            convex_charts(&operand.boundary, &mut work.remaining, work.interrupt)
+            convex_charts(operand.boundary, &mut work.remaining, work.interrupt)
         })
         .collect::<Result<Vec<_>, Error>>()?;
     let mut boundary = shell::Boundary::new(tolerance);
@@ -223,7 +223,7 @@ fn operation(
                             fragments,
                             chart,
                             chart.support,
-                            &other.pieces,
+                            other.pieces,
                             [false, true],
                             precision,
                             work,
@@ -243,7 +243,7 @@ fn operation(
                     Operation::Union => outside(
                         fragments,
                         chart,
-                        &other.pieces,
+                        other.pieces,
                         [other_index > source, false],
                         precision,
                         work,
@@ -251,7 +251,7 @@ fn operation(
                     Operation::Subtract if source == 0 => outside(
                         fragments,
                         chart,
-                        &other.pieces,
+                        other.pieces,
                         [false, true],
                         precision,
                         work,
@@ -259,7 +259,7 @@ fn operation(
                     Operation::Subtract if other_index != 0 => outside(
                         fragments,
                         chart,
-                        &other.pieces,
+                        other.pieces,
                         [other_index > source, false],
                         precision,
                         work,
@@ -269,7 +269,7 @@ fn operation(
                             fragments,
                             chart,
                             chart.support,
-                            &other.pieces,
+                            other.pieces,
                             [true, false],
                             precision,
                             work,
@@ -282,7 +282,7 @@ fn operation(
                             covered,
                             chart,
                             opposite,
-                            &other.pieces,
+                            other.pieces,
                             [true, false],
                             precision,
                             work,
@@ -316,6 +316,27 @@ fn operation(
     }
     boundary.split_edges(&mut work.remaining)?;
     let boundary = Union::from_boundary(boundary)?;
+    work.check()?;
+    Ok(Some(boundary))
+}
+
+fn operation(
+    operands: &[&CutMaterial],
+    tolerance: f64,
+    op: Operation,
+    work: &mut Work<'_>,
+) -> Result<Option<CutMaterial>, Error> {
+    validate_operand_len(operands.len())?;
+    let views: Vec<_> = operands
+        .iter()
+        .map(|operand| Operand {
+            boundary: &operand.boundary,
+            pieces: &operand.pieces,
+        })
+        .collect();
+    let Some(boundary) = emit_boundary(&views, tolerance, op, work)? else {
+        return Ok(None);
+    };
     let pieces = recover(operands, op, tolerance, work)?;
     verify_cells_with_interrupt(
         &boundary,
@@ -326,6 +347,63 @@ fn operation(
     )?;
     work.check()?;
     Ok(Some(CutMaterial { boundary, pieces }))
+}
+
+fn validate_operand_len(count: usize) -> Result<(), Error> {
+    if count < 2 {
+        return Err(Error::Invalid);
+    }
+    if count > MAX_PIECES {
+        return Err(Error::Limit);
+    }
+    Ok(())
+}
+
+pub(super) fn raw_intersection(
+    left: &[ConvexPiece],
+    right: &[ConvexPiece],
+    tolerance: f64,
+    budget: usize,
+) -> Result<Option<Union>, Error> {
+    validate_cells(left, tolerance)?;
+    validate_cells(right, tolerance)?;
+    if left.len() + right.len() > MAX_PIECES {
+        return Err(Error::Limit);
+    }
+    let mut work = Work::new(None);
+    work.remaining = budget;
+    let mut make = |pieces: &[ConvexPiece]| -> Result<Union, Error> {
+        charge_cells(pieces, &mut work)?;
+        let exterior =
+            clipping::exterior_with_interrupt(pieces, tolerance, &mut work.remaining, None)?;
+        Union::from_boundary(exterior)
+    };
+    let a = make(left)?;
+    let b = make(right)?;
+    // Construct source views from precisely these raw cells; do not invent
+    // material certificates or impose output-cell recovery on boundary queries.
+    let views = [
+        Operand {
+            boundary: &a,
+            pieces: left,
+        },
+        Operand {
+            boundary: &b,
+            pieces: right,
+        },
+    ];
+    let Some(mut result) = emit_boundary(&views, tolerance, Operation::Intersect, &mut work)?
+    else {
+        return Ok(None);
+    };
+    let inputs = [&a, &b];
+    for face in &mut result.faces {
+        let operand = face.source;
+        let original = &inputs[operand].faces[face.source_face];
+        face.source = original.source + if operand == 0 { 0 } else { left.len() };
+        face.source_face = original.source_face;
+    }
+    Ok(Some(result))
 }
 
 /// Coincident ownership is a property of original EXPOSED finite patches.

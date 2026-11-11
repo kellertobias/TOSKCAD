@@ -2,6 +2,64 @@ use super::*;
 
 const TOL: f64 = 1e-7;
 
+#[test]
+fn restored_cut_cells_do_not_hide_a_new_intersection_boundary() {
+    let certificate = |pieces: &[ConvexPiece]| {
+        let boundary = Union::new(pieces, TOL).unwrap();
+        CutMaterial::certify_existing(&boundary, pieces, TOL).unwrap()
+    };
+    let [a, b, c, d] = [[0.; 3], [4., 0., 0.], [0., 4., 0.], [0., 0., 4.]];
+    let tetra = certificate(&[ConvexPiece::new(
+        vec![vec![a, c, b], vec![a, b, d], vec![a, d, c], vec![b, c, d]],
+        TOL,
+    )
+    .unwrap()]);
+    let first = certificate(&[block([1., 0., 0.], [5., 1., 1.])]);
+    let second = certificate(&[block([1.5, 0., 0.], [4., 1., 1.])]);
+    let common = CutMaterial::intersect_certified(&[&tetra, &first, &second], TOL)
+        .unwrap()
+        .unwrap();
+    let slot = certificate(&[block([1.5, 0., 0.], [1.75, 1., 1.])]);
+    let cut = CutMaterial::subtract_certified(&[&common, &slot], TOL)
+        .unwrap()
+        .unwrap();
+    let restored = CutMaterial::union_certified(&[&cut, &slot], TOL).unwrap();
+    let last = [block([1.75, 0., 0.], [4., 1., 1.])];
+    let raw = Union::intersect(restored.pieces(), &last, TOL)
+        .unwrap()
+        .unwrap();
+    volume(&raw, 1.25);
+    for face in raw.faces() {
+        let original = if face.source < restored.pieces().len() {
+            &restored.pieces()[face.source]
+        } else {
+            &last[face.source - restored.pieces().len()]
+        };
+        let support = original.planes[face.source_face];
+        assert!(dot(support.normal, face.normal) > 1. - 1e-12);
+        assert!(
+            face.vertices
+                .iter()
+                .all(|&i| support.distance(raw.vertices()[i]).abs() < TOL)
+        );
+    }
+}
+
+#[test]
+fn raw_boundary_query_retains_its_larger_output_than_cell_recovery_budget() {
+    let vertical: Vec<_> = (0..17)
+        .map(|i| block([i as f64 * 2., 0., 0.], [i as f64 * 2. + 1., 34., 1.]))
+        .collect();
+    let horizontal: Vec<_> = (0..17)
+        .map(|i| block([0., i as f64 * 2., 0.], [34., i as f64 * 2. + 1., 1.]))
+        .collect();
+    let common = Union::intersect(&vertical, &horizontal, TOL)
+        .unwrap()
+        .unwrap();
+    assert_eq!(common.solid_count(), 289);
+    volume(&common, 289.);
+}
+
 fn block(min: Point, max: Point) -> ConvexPiece {
     ConvexPiece::from_box(min, max, TOL).unwrap()
 }
@@ -178,9 +236,8 @@ fn refuses_ambiguous_near_contact_and_caps_work() {
         Union::intersect(&vec![left[0].clone(); MAX_PIECES], &right, TOL),
         Err(Error::Limit)
     );
-    let mut boundary = shell::Boundary::new(TOL);
     assert_eq!(
-        add_faces(&left, &left, 0, TOL, &mut boundary, &mut 0),
+        material::raw_intersection(&left, &left, TOL, 0),
         Err(Error::Limit)
     );
 }

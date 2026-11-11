@@ -3,6 +3,15 @@ use super::*;
 mod certified;
 mod intersection;
 
+pub(super) fn raw_intersection(
+    left: &[ConvexPiece],
+    right: &[ConvexPiece],
+    tolerance: f64,
+    budget: usize,
+) -> Result<Option<Union>, Error> {
+    certified::raw_intersection(left, right, tolerance, budget)
+}
+
 /// Positive cells independently checked against a certified planar boundary.
 #[derive(Clone, Debug)]
 pub struct CutMaterial {
