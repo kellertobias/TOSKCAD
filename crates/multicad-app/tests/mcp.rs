@@ -1104,7 +1104,25 @@ fn rust_stdio_exports_verified_unified_shafts_and_receiving_threads_after_reopen
     }
 }
 
+#[test]
+fn rust_stdio_exports_sourced_lead_and_buttress_pairs_after_reopen() {
+    for (family, diameter, pitch) in [
+        ("trapezoidal", length(10.), 2.),
+        ("acme", json!({"value":0.375,"unit":"in"}), 25.4 / 12.),
+        ("buttress", length(20.), 4.),
+    ] {
+        export_thread_pair(family, diameter, pitch);
+    }
+}
+
 fn export_thread_pair(family: &str, diameter: Value, pitch: f64) {
+    let sourced_lead = matches!(family, "trapezoidal" | "acme" | "buttress");
+    let physical_length = if sourced_lead { 3.37 * pitch } else { 3.7 };
+    let stock_radius = match family {
+        "trapezoidal" | "acme" => 8.,
+        "buttress" => 14.,
+        _ => 4.5,
+    };
     let directory = tempfile::tempdir().unwrap();
     let project = directory.path().join("thread.tcd");
     let exports = directory.path().join("exports");
@@ -1119,11 +1137,16 @@ fn export_thread_pair(family: &str, diameter: Value, pitch: f64) {
     let mut client = Client::start(&arguments);
     let mut shaft_arguments = json!({
         "expected_revision": 0, "name": "Threaded shaft", "family": family,
-        "major_diameter": diameter, "pitch": length(pitch), "length": length(3.7),
-        "origin": [length(15.), length(0.), length(0.)],
+        "major_diameter": diameter, "pitch": length(pitch), "length": length(physical_length),
+        "origin": [length(40.), length(0.), length(0.)],
     });
-    if family != "iso_metric" {
+    if matches!(family, "unc" | "unf") {
         shaft_arguments["fit"] = json!("unified_2a");
+    }
+    if family == "buttress" {
+        shaft_arguments["buttress"] = json!({
+            "series":"bis_4696_nominal_2004", "load_flank_side":"negative_axis_side",
+        });
     }
     let shaft = client.ok("set_thread", shaft_arguments)["part"].clone();
     let sketch = client.ok(
@@ -1137,24 +1160,29 @@ fn export_thread_pair(family: &str, diameter: Value, pitch: f64) {
         "sketch_add_circle",
         json!({
             "expected_revision": 2, "sketch": sketch, "center_mm": [0., 0.],
-            "diameter": length(9.),
+            "diameter": length(2. * stock_radius),
         }),
     );
     let stock = client.ok(
         "extrude",
         json!({
             "expected_revision": 3, "sketch": sketch, "regions": [0],
-            "distance": length(3.7), "operation": "new_body",
+            "distance": length(physical_length), "operation": "new_body",
         }),
     )["created"][0]["part"]
         .clone();
     let mut receiver_arguments = json!({
         "expected_revision": 4, "name": "Through receiver", "family": family,
         "mode": "cut_internal", "target_part": stock, "hand": "left",
-        "major_diameter": diameter, "pitch": length(pitch), "length": length(3.7),
+        "major_diameter": diameter, "pitch": length(pitch), "length": length(physical_length),
     });
-    if family != "iso_metric" {
+    if matches!(family, "unc" | "unf") {
         receiver_arguments["fit"] = json!("unified_2b");
+    }
+    if family == "buttress" {
+        receiver_arguments["buttress"] = json!({
+            "series":"bis_4696_nominal_2004", "load_flank_side":"positive_axis_side",
+        });
     }
     let receiver = client.ok("set_thread", receiver_arguments)["part"].clone();
     client.ok("save_project", json!({"expected_revision": 5}));
