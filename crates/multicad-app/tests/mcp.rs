@@ -1681,6 +1681,144 @@ fn rust_stdio_exports_saved_twisted_gear_compound_parts() {
     }
 }
 
+#[test]
+fn rust_stdio_exports_saved_enclosed_voids_without_filling_the_cavity() {
+    use multicad_core::{
+        commands::{Actor, Channel, Session},
+        document::Document,
+        model::{
+            self, BodyInput, BooleanRequest, Operation, PrimitiveFrame, PrimitiveParameters,
+            PrimitiveRequest,
+        },
+        project_file::{self, ProjectFile},
+    };
+    for posed in [false, true] {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("enclosed-void.tcd");
+        let frame = if posed {
+            multicad_kernel::PlaneFrame {
+                origin: [80., 60., 20.],
+                u: [0.8, 0.6, 0.],
+                v: [-0.36, 0.48, 0.8],
+            }
+        } else {
+            Default::default()
+        };
+        let point = |p: [f64; 3]| {
+            std::array::from_fn(|i| {
+                frame.origin[i] + frame.u[i] * p[0] + frame.v[i] * p[1] + frame.normal()[i] * p[2]
+            })
+        };
+        let actor = Actor::local(Channel::Ui);
+        let mut session = Session::new(Document::new("Saved enclosed cavity").unwrap()).unwrap();
+        let mut bodies = Vec::new();
+        for (name, size, origin) in [
+            ("Exterior", [15., 10., 8.], [0.; 3]),
+            ("Cavity", [5., 4., 3.], [2., 3., 1.]),
+        ] {
+            let request = PrimitiveRequest::new(
+                name,
+                PrimitiveParameters::Box {
+                    size: size.map(model::length),
+                    frame: PrimitiveFrame {
+                        origin: point(origin).map(model::length),
+                        u: frame.u,
+                        v: frame.v,
+                    },
+                },
+            );
+            session
+                .commit(
+                    model::prepare_primitive(&session, session.revision(), actor.clone(), &request)
+                        .unwrap()
+                        .prepared,
+                )
+                .unwrap();
+            bodies.push(BodyInput {
+                body: request.body,
+                producer: request.feature,
+            });
+        }
+        let cut = BooleanRequest::new(Operation::Cut, bodies[0].clone(), vec![bodies[1].clone()]);
+        session
+            .commit(
+                model::prepare_boolean(&session, session.revision(), actor, &cut)
+                    .unwrap()
+                    .prepared,
+            )
+            .unwrap();
+        let mut bytes = Vec::new();
+        project_file::write(
+            &ProjectFile::new(session.document().clone()).unwrap(),
+            &mut bytes,
+            Default::default(),
+        )
+        .unwrap();
+        std::fs::write(&path, &bytes).unwrap();
+        let mut client = Client::start(&[
+            "--rust-model",
+            "--project",
+            path.to_str().unwrap(),
+            "--export-dir",
+            directory.path().to_str().unwrap(),
+        ]);
+        let revision = client.revision();
+        let evaluation = client.ok("evaluate_model", json!({}));
+        let parts = evaluation["parts"].as_array().unwrap();
+        assert_eq!(parts.len(), 1);
+        assert_eq!(parts[0]["part"], cut.target.body.to_string());
+        assert_eq!(parts[0]["solid_count"], 1);
+        close(parts[0]["volume_mm3"].as_f64().unwrap(), 1140.);
+        let receipt = client.ok(
+            "export_step",
+            json!({"part":cut.target.body,"file_name":"cavity.step"}),
+        );
+        assert_eq!(receipt["revision"], revision);
+        close(receipt["model_volume_mm3"].as_f64().unwrap(), 1140.);
+        close(receipt["readback_volume_mm3"].as_f64().unwrap(), 1140.);
+        let output = directory.path().join("cavity.step");
+        let source = std::fs::read_to_string(&output).unwrap();
+        assert_eq!(source.matches("BREP_WITH_VOIDS(").count(), 1);
+        assert_eq!(source.matches("ORIENTED_CLOSED_SHELL(").count(), 1);
+        assert!(!directory.path().join(".cavity.step.partial.step").exists());
+        let imported = multicad_kernel::Solid::import_rust_step(
+            &source,
+            multicad_core::document::EntityId::new(),
+            Default::default(),
+        )
+        .unwrap();
+        assert_eq!(imported.solid_count().unwrap(), 1);
+        close(imported.volume_mm3().unwrap(), 1140.);
+        let probe = multicad_kernel::Solid::rust_box(
+            multicad_core::document::EntityId::new().uuid_bits(),
+            [5, 4, 3].map(|n| multicad_kernel::rust_kernel::Rational::new(n, 1).unwrap()),
+            multicad_kernel::PlaneFrame {
+                origin: point([2., 3., 1.]),
+                ..frame
+            },
+            Default::default(),
+        )
+        .unwrap();
+        close(
+            imported
+                .rust_occupied_overlap_volume(&probe, Default::default())
+                .unwrap(),
+            0.,
+        );
+        if multicad_kernel::OCCT_LINKED {
+            let native = multicad_kernel::Shape::read_step(&output).unwrap();
+            assert!(native.valid().unwrap());
+            assert_eq!(
+                multicad_kernel::Solid::step_solids(&output).unwrap().len(),
+                1
+            );
+            close(native.volume().unwrap(), 1140.);
+        }
+        assert_eq!(client.revision(), revision);
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+    }
+}
+
 fn twisted_pair_stdio_roundtrip(family: &str, hub: bool) {
     let directory = tempfile::tempdir().unwrap();
     let project = directory.path().join(format!("continuous-{family}.tcd"));
