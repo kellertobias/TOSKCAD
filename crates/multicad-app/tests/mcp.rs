@@ -1033,6 +1033,17 @@ fn app_bridge_relays_stdio_to_a_listening_window_and_fails_clearly_without_one()
 
 #[test]
 fn rust_stdio_exports_verified_metric_shaft_and_receiving_thread_after_reopen() {
+    export_thread_pair("iso_metric", length(6.), 1.);
+}
+
+#[test]
+fn rust_stdio_exports_verified_unified_shafts_and_receiving_threads_after_reopen() {
+    for (family, pitch) in [("unc", 25.4 / 20.), ("unf", 25.4 / 28.)] {
+        export_thread_pair(family, json!({"value":0.25,"unit":"in"}), pitch);
+    }
+}
+
+fn export_thread_pair(family: &str, diameter: Value, pitch: f64) {
     let directory = tempfile::tempdir().unwrap();
     let project = directory.path().join("thread.tcd");
     let exports = directory.path().join("exports");
@@ -1045,15 +1056,15 @@ fn rust_stdio_exports_verified_metric_shaft_and_receiving_thread_after_reopen() 
         exports.to_str().unwrap(),
     ];
     let mut client = Client::start(&arguments);
-    let shaft = client.ok(
-        "set_thread",
-        json!({
-            "expected_revision": 0, "name": "M6 shaft", "family": "iso_metric",
-            "major_diameter": length(6.), "pitch": length(1.), "length": length(3.7),
-            "origin": [length(15.), length(0.), length(0.)],
-        }),
-    )["part"]
-        .clone();
+    let mut shaft_arguments = json!({
+        "expected_revision": 0, "name": "Threaded shaft", "family": family,
+        "major_diameter": diameter, "pitch": length(pitch), "length": length(3.7),
+        "origin": [length(15.), length(0.), length(0.)],
+    });
+    if family != "iso_metric" {
+        shaft_arguments["fit"] = json!("unified_2a");
+    }
+    let shaft = client.ok("set_thread", shaft_arguments)["part"].clone();
     let sketch = client.ok(
         "create_sketch",
         json!({
@@ -1076,15 +1087,15 @@ fn rust_stdio_exports_verified_metric_shaft_and_receiving_thread_after_reopen() 
         }),
     )["created"][0]["part"]
         .clone();
-    let receiver = client.ok(
-        "set_thread",
-        json!({
-            "expected_revision": 4, "name": "M6 through receiver", "family": "iso_metric",
-            "mode": "cut_internal", "target_part": stock, "hand": "left",
-            "major_diameter": length(6.), "pitch": length(1.), "length": length(3.7),
-        }),
-    )["part"]
-        .clone();
+    let mut receiver_arguments = json!({
+        "expected_revision": 4, "name": "Through receiver", "family": family,
+        "mode": "cut_internal", "target_part": stock, "hand": "left",
+        "major_diameter": diameter, "pitch": length(pitch), "length": length(3.7),
+    });
+    if family != "iso_metric" {
+        receiver_arguments["fit"] = json!("unified_2b");
+    }
+    let receiver = client.ok("set_thread", receiver_arguments)["part"].clone();
     client.ok("save_project", json!({"expected_revision": 5}));
     drop(client);
 

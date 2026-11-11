@@ -163,10 +163,13 @@ pub(crate) fn validate_rust_family(
     feature: EntityId,
     family: ThreadFamily,
 ) -> Result<(), ModelError> {
-    if !matches!(family, ThreadFamily::IsoMetric | ThreadFamily::Custom) {
+    if !matches!(
+        family,
+        ThreadFamily::IsoMetric | ThreadFamily::Unc | ThreadFamily::Unf | ThreadFamily::Custom
+    ) {
         return Err(error(
             Some(feature),
-            "Rust thread geometry currently supports ISO metric and straight custom profiles",
+            "Rust thread geometry supports ISO metric, sourced UNC/UNF and straight custom profiles",
         ));
     }
     Ok(())
