@@ -7,6 +7,12 @@ use std::f64::consts::{FRAC_PI_2, TAU};
 
 mod piercing;
 mod validation;
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CapError {
+    Geometry(Error),
+    Limit,
+    Cancelled,
+}
 pub use piercing::{CertifiedPiercing, PiercedSweep, Piercing};
 
 type Point = [f64; 2];
@@ -331,6 +337,37 @@ impl Sweep {
         tolerance_mm: f64,
         minimum_mm: f64,
     ) -> Result<Self, Error> {
+        Self::parameters(&rings, height_mm, tolerance_mm, minimum_mm, MAX_VERTICES)?;
+        validation::validate(&mut rings, tolerance_mm, minimum_mm)?;
+        Self::from_validated(rings, height_mm, minimum_mm)
+    }
+    pub(crate) fn relief_cap(
+        mut rings: Vec<Vec<Edge>>,
+        height_mm: f64,
+        tolerance_mm: f64,
+        minimum_mm: f64,
+        interrupt: Option<&dyn Fn() -> bool>,
+    ) -> Result<Self, CapError> {
+        Self::parameters(&rings, height_mm, tolerance_mm, minimum_mm, 16_384)
+            .map_err(CapError::Geometry)?;
+        validation::controlled::validate(&mut rings, tolerance_mm, minimum_mm, interrupt)?;
+        if interrupt.is_some_and(|f| f()) {
+            return Err(CapError::Cancelled);
+        }
+        let result =
+            Self::from_validated(rings, height_mm, minimum_mm).map_err(CapError::Geometry)?;
+        if interrupt.is_some_and(|f| f()) {
+            return Err(CapError::Cancelled);
+        }
+        Ok(result)
+    }
+    fn parameters(
+        rings: &[Vec<Edge>],
+        height_mm: f64,
+        tolerance_mm: f64,
+        minimum_mm: f64,
+        limit: usize,
+    ) -> Result<(), Error> {
         if !tolerance_mm.is_finite()
             || tolerance_mm < 0.
             || !minimum_mm.is_finite()
@@ -341,15 +378,20 @@ impl Sweep {
         if !height_mm.is_finite() || height_mm < minimum_mm {
             return Err(Error::InvalidHeight);
         }
-        if height_mm > MAX_DIMENSION_MM || rings.iter().map(Vec::len).sum::<usize>() > MAX_VERTICES
-        {
+        if height_mm > MAX_DIMENSION_MM || rings.iter().map(Vec::len).sum::<usize>() > limit {
             return Err(Error::Limit);
         }
-        let [first, ..] = rings.as_slice() else {
+        if rings.is_empty() || rings[0].is_empty() {
             return Err(Error::InvalidProfile);
-        };
-        let origin = first.first().ok_or(Error::InvalidProfile)?.start();
-        validation::validate(&mut rings, tolerance_mm, minimum_mm)?;
+        }
+        Ok(())
+    }
+    fn from_validated(
+        rings: Vec<Vec<Edge>>,
+        height_mm: f64,
+        minimum_mm: f64,
+    ) -> Result<Self, Error> {
+        let origin = rings[0][0].start();
         let mut totals = [Sum::default(); 3];
         for (i, ring) in rings.iter().enumerate() {
             let moments = ring_moments(ring, origin);

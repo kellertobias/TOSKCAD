@@ -1,4 +1,5 @@
 use super::*;
+pub(super) mod controlled;
 
 #[derive(Clone, Copy)]
 struct Line {
@@ -257,7 +258,11 @@ fn normalize(ring: &mut [Edge], slack: f64) -> Result<(), Error> {
     Ok(())
 }
 
-pub(super) fn validate(rings: &mut [Vec<Edge>], tolerance: f64, minimum: f64) -> Result<(), Error> {
+fn normalize_all(
+    rings: &mut [Vec<Edge>],
+    tolerance: f64,
+    minimum: f64,
+) -> Result<(f64, f64), Error> {
     let mut scale = 1_f64;
     for edge in rings.iter().flatten() {
         for component in coordinates(*edge).into_iter().flatten() {
@@ -296,6 +301,11 @@ pub(super) fn validate(rings: &mut [Vec<Edge>], tolerance: f64, minimum: f64) ->
             }
         }
     }
+    Ok((slack, roundoff))
+}
+
+pub(super) fn validate(rings: &mut [Vec<Edge>], tolerance: f64, minimum: f64) -> Result<(), Error> {
+    let (slack, roundoff) = normalize_all(rings, tolerance, minimum)?;
     let bounds: Vec<Vec<Bounds>> = rings
         .iter()
         .map(|ring| ring.iter().copied().map(Bounds::of).collect())

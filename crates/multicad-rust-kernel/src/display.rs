@@ -175,7 +175,7 @@ impl Footprint {
 }
 
 pub(crate) struct RegionTriangulation {
-    cdt: ConstrainedDelaunayTriangulation<Point2<f64>>,
+    pub(crate) cdt: ConstrainedDelaunayTriangulation<Point2<f64>>,
     pub(crate) triangles: Vec<[usize; 3]>,
 }
 
