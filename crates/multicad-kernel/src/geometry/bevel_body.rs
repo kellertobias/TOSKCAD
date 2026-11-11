@@ -75,6 +75,22 @@ impl Solid {
         })
     }
 
+    /// Validate the decoded bevel shell and integrate its STEP volume in mm³.
+    pub fn verify_bevel_step(
+        &self,
+        source: &str,
+    ) -> Option<Result<f64, multicad_rust_kernel::step_read::ReadError>> {
+        let (body, frame) = self.bevel_body()?;
+        Some(multicad_rust_kernel::step_read::verify_bevel(
+            source,
+            &body.geometry,
+            frame.origin,
+            frame.u,
+            frame.v,
+            self.policy.linear_tolerance_mm,
+        ))
+    }
+
     pub(crate) fn bevel_body(&self) -> Option<(&BevelBody, PlaneFrame)> {
         match &self.body {
             SolidBody::Bevel(body, frame) => Some((body, *frame)),

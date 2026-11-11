@@ -13,6 +13,7 @@ use std::{
     collections::BTreeMap,
     f64::consts::{PI, TAU},
 };
+mod rust_bevel;
 mod rust_spur;
 
 pub(crate) use rust_spur::validate as validate_rust;
