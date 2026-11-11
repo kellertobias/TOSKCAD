@@ -15,6 +15,7 @@ use std::{
 };
 mod rust_bevel;
 mod rust_spur;
+mod rust_worm;
 
 pub(crate) use rust_spur::validate as validate_rust;
 
