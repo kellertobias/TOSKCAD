@@ -13,6 +13,7 @@ use multicad_core::{
         length,
     },
 };
+#[cfg(feature = "occt")]
 use multicad_kernel::Solid;
 use multicad_model::{
     Compiler, GeometryBackend,
