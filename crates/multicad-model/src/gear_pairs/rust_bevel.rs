@@ -21,7 +21,10 @@ fn check(
                 .map(|w| GearEngagementWitness {
                     distance_mm: w.distance_mm,
                     kind: "rust_bevel_flank_witness",
-                    faces: None,
+                    faces: a
+                        .bevel_face_at(w.points_mm[0])
+                        .zip(b.bevel_face_at(w.points_mm[1]))
+                        .map(|(p, q)| [p, q]),
                     points_mm: w.points_mm,
                 })
                 .ok_or_else(|| {

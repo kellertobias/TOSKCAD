@@ -744,6 +744,35 @@ impl Bevel {
         best
     }
 
+    /// Sector and side piece whose cone through the apex carries a side-face
+    /// point given in local coordinates. Root lands lie beyond the fillet
+    /// center azimuth; along a flank the polar angle orders the pieces.
+    pub fn side_piece_at(&self, point: Point) -> Option<(u32, Piece)> {
+        let length = norm(point);
+        let direction = scale(point, 1. / length);
+        let gamma = direction[2].clamp(-1., 1.).acos();
+        let teeth = self.spec.teeth;
+        let pitch = TAU / f64::from(teeth);
+        let phi = direction[1].atan2(direction[0]);
+        let turns = (phi / pitch).round();
+        let local = phi - turns * pitch;
+        let sector = (turns as i64).rem_euclid(i64::from(teeth)) as u32;
+        let left = local < 0.;
+        let side = |l: Piece, r: Piece| if left { l } else { r };
+        let piece = if local.abs() > self.center_phi {
+            side(Piece::RootLeft, Piece::RootRight)
+        } else if gamma <= self.touch_gamma {
+            side(Piece::FilletLeft, Piece::FilletRight)
+        } else if self.meridian && gamma <= self.spec.base_cone_angle_rad {
+            side(Piece::MeridianLeft, Piece::MeridianRight)
+        } else if gamma < self.spec.tip_cone_angle_rad - 1e-12 {
+            side(Piece::InvoluteLeft, Piece::InvoluteRight)
+        } else {
+            Piece::Tip
+        };
+        (length > 0.).then_some((sector, piece))
+    }
+
     /// Tooth center direction of one sector on the pitch cone.
     pub fn pitch_direction(&self, sector: u32) -> Point {
         polar(

@@ -7,7 +7,7 @@ use crate::{
 use multicad_core::references::{AnalyticGeometry, ReferenceFrame};
 use multicad_rust_kernel::{
     bevel_gear::{
-        Bevel, Error, Face as BevelFace, Shape, Spec, Topology,
+        Bevel, Error, Face as BevelFace, FaceKind, Shape, Spec, Topology,
         clearance::{self, Placement, ResultKind, Witness},
     },
     display::{MeshError, Tessellation},
@@ -96,6 +96,17 @@ impl Solid {
             SolidBody::Bevel(body, frame) => Some((body, *frame)),
             _ => None,
         }
+    }
+
+    /// Evaluation-local side face ordinal of a placed Rust bevel at a
+    /// boundary point, such as an engagement witness.
+    pub fn bevel_face_at(&self, point_mm: [f64; 3]) -> Option<u32> {
+        let (body, frame) = self.bevel_body()?;
+        let offset: [f64; 3] = std::array::from_fn(|i| point_mm[i] - frame.origin[i]);
+        let local = [frame.u, frame.v, frame.normal()]
+            .map(|axis| (0..3).map(|i| axis[i] * offset[i]).sum::<f64>());
+        let (sector, piece) = body.geometry.side_piece_at(local)?;
+        Some(body.topology.face(sector, FaceKind::Side(piece)))
     }
 
     /// Prove positive clearance or a strict common interior point for two

@@ -449,3 +449,23 @@ fn sliver_meridians_are_absorbed_by_an_exactly_tangent_fillet() {
             .unwrap();
     assert!((decoded - gear.volume_mm3()).abs() / decoded < 1e-8);
 }
+
+#[test]
+fn side_pieces_are_recovered_from_points_on_every_sector() {
+    for gear in [
+        gear(spec(1., 24, 64, 2., 0., 0.2)),
+        gear(spec(2., 32, 24, 6., 4., 0.2)),
+    ] {
+        for sector in [0, 5, gear.teeth() - 1] {
+            for &piece in gear.pieces() {
+                let sample = gear.sample(piece, 0.5);
+                let p = gear.rotate(
+                    sector,
+                    gear.point(End::Heel, sample.direction, sample.gamma),
+                );
+                assert_eq!(gear.side_piece_at(p), Some((sector, piece)), "{piece:?}");
+            }
+        }
+        assert_eq!(gear.side_piece_at([0.; 3]), None);
+    }
+}
