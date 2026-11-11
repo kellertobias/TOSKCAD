@@ -46,6 +46,7 @@ pub enum Error {
     Invalid,
     Unresolved,
     Limit,
+    Cancelled,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -185,6 +186,16 @@ impl Union {
     }
 
     pub fn new(pieces: &[ConvexPiece], tolerance_mm: f64) -> Result<Self, Error> {
+        Self::new_with_interrupt(pieces, tolerance_mm, None)
+    }
+
+    /// Regularize exposed raw-cell faces with cooperative cancellation between
+    /// bounded clipping work items; successful labels match `new` exactly.
+    pub fn new_with_interrupt(
+        pieces: &[ConvexPiece],
+        tolerance_mm: f64,
+        interrupt: Option<&dyn Fn() -> bool>,
+    ) -> Result<Self, Error> {
         validate_tolerance(tolerance_mm)?;
         if pieces.is_empty() {
             return Err(Error::Invalid);
@@ -192,7 +203,13 @@ impl Union {
         if pieces.len() > MAX_PIECES {
             return Err(Error::Limit);
         }
-        Self::from_boundary(clipping::exterior(pieces, tolerance_mm, MAX_WORK)?)
+        let mut budget = MAX_WORK;
+        let boundary =
+            clipping::exterior_with_interrupt(pieces, tolerance_mm, &mut budget, interrupt)?;
+        checkpoint(interrupt)?;
+        let boundary = Self::from_boundary(boundary)?;
+        checkpoint(interrupt)?;
+        Ok(boundary)
     }
 
     fn from_boundary(
@@ -331,6 +348,14 @@ fn cross([x, y, z]: Point, [u, v, w]: Point) -> Point {
 fn charge(budget: &mut usize, cost: usize) -> Result<(), Error> {
     *budget = budget.checked_sub(cost).ok_or(Error::Limit)?;
     Ok(())
+}
+
+fn checkpoint(interrupt: Option<&dyn Fn() -> bool>) -> Result<(), Error> {
+    if interrupt.is_some_and(|interrupt| interrupt()) {
+        Err(Error::Cancelled)
+    } else {
+        Ok(())
+    }
 }
 
 #[cfg(test)]

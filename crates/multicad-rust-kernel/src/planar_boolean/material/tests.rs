@@ -229,7 +229,14 @@ fn offset_tool_keeps_a_whole_half_space_before_cutting() {
         46.,
     );
     assert_eq!(
-        subtract_cell(stock[0].clone(), &tool[0], TOL, &mut 0, &mut Vec::new()),
+        subtract_cell_with_interrupt(
+            stock[0].clone(),
+            &tool[0],
+            TOL,
+            &mut 0,
+            &mut Vec::new(),
+            None
+        ),
         Err(Error::Limit)
     );
 }
@@ -241,14 +248,17 @@ fn coverage_skips_disjoint_coplanar_faces_and_charges_for_partitioning() {
     let reference = Union::new(std::slice::from_ref(&far), TOL).unwrap();
     let both = Union::new(&[near, far], TOL).unwrap();
     let mut budget = MAX_WORK;
-    assert_eq!(covers(&reference, &both, TOL, &mut budget), Ok(()));
     assert_eq!(
-        covers(&reference, &reference, TOL, &mut 0),
+        covers_with_interrupt(&reference, &both, TOL, &mut budget, None),
+        Ok(())
+    );
+    assert_eq!(
+        covers_with_interrupt(&reference, &reference, TOL, &mut 0, None),
         Err(Error::Limit)
     );
     let mut budget = reference.faces()[0].vertices.len();
     assert_eq!(
-        covers(&reference, &reference, TOL, &mut budget),
+        covers_with_interrupt(&reference, &reference, TOL, &mut budget, None),
         Err(Error::Limit)
     );
     // Admit both exact convex chart sets and the first matching patch; the
@@ -260,7 +270,7 @@ fn coverage_skips_disjoint_coplanar_faces_and_charges_for_partitioning() {
         .sum::<usize>()
         + reference.faces()[0].vertices.len();
     assert_eq!(
-        covers(&reference, &reference, TOL, &mut budget),
+        covers_with_interrupt(&reference, &reference, TOL, &mut budget, None),
         Err(Error::Limit)
     );
 }

@@ -57,13 +57,24 @@ fn recover_common(
     Ok(pieces)
 }
 
-fn common_cell(
-    mut piece: ConvexPiece,
+pub(super) fn common_cell(
+    piece: ConvexPiece,
     other: &ConvexPiece,
     tolerance: f64,
     budget: &mut usize,
 ) -> Result<Option<ConvexPiece>, Error> {
+    common_cell_with_interrupt(piece, other, tolerance, budget, None)
+}
+
+pub(super) fn common_cell_with_interrupt(
+    mut piece: ConvexPiece,
+    other: &ConvexPiece,
+    tolerance: f64,
+    budget: &mut usize,
+    interrupt: Option<&dyn Fn() -> bool>,
+) -> Result<Option<ConvexPiece>, Error> {
     for &plane in &other.planes {
+        checkpoint(interrupt)?;
         charge(
             budget,
             piece.faces.iter().map(Vec::len).sum::<usize>() * piece.faces.len(),
@@ -76,7 +87,7 @@ fn common_cell(
     Ok(Some(piece))
 }
 
-fn vertex_identity(piece: &ConvexPiece) -> Vec<[u64; 3]> {
+pub(super) fn vertex_identity(piece: &ConvexPiece) -> Vec<[u64; 3]> {
     piece
         .faces
         .iter()

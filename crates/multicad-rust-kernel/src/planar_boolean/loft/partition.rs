@@ -26,7 +26,7 @@ pub(super) fn loft(
         });
         match material {
             Ok(cells) => return Ok(cells),
-            Err(Error::Limit) => failure = Error::Limit,
+            Err(cause @ (Error::Limit | Error::Cancelled)) => failure = cause,
             Err(Error::Invalid | Error::Unresolved) => {}
         }
     }

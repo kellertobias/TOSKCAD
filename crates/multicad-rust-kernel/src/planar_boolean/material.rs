@@ -1,5 +1,6 @@
 use super::*;
 
+mod certified;
 mod intersection;
 
 /// Positive cells independently checked against a certified planar boundary.
@@ -18,19 +19,7 @@ impl CutMaterial {
         pieces: &[ConvexPiece],
         tolerance: f64,
     ) -> Result<Self, Error> {
-        validate_tolerance(tolerance)?;
-        if pieces.is_empty() {
-            return Err(Error::Invalid);
-        }
-        if pieces.len() > MAX_PIECES {
-            return Err(Error::Limit);
-        }
-        let mut budget = MAX_WORK;
-        verify_cells(boundary, pieces, tolerance, &mut budget)?;
-        Ok(Self {
-            boundary: boundary.clone(),
-            pieces: pieces.to_vec(),
-        })
+        Self::certify_existing_with_interrupt(boundary, pieces, tolerance, None)
     }
 
     pub fn boundary(&self) -> &Union {
@@ -50,30 +39,7 @@ impl CutMaterial {
         tools: &[ConvexPiece],
         tolerance: f64,
     ) -> Result<Self, Error> {
-        validate_tolerance(tolerance)?;
-        if stock.is_empty() || tools.is_empty() {
-            return Err(Error::Invalid);
-        }
-        if stock.len().saturating_add(tools.len()) > MAX_PIECES {
-            return Err(Error::Limit);
-        }
-        let mut budget = MAX_WORK;
-        let mut pieces = stock.to_vec();
-        for tool in tools {
-            let mut remaining = Vec::new();
-            for piece in pieces {
-                subtract_cell(piece, tool, tolerance, &mut budget, &mut remaining)?;
-                if remaining.len() > MAX_PIECES {
-                    return Err(Error::Limit);
-                }
-            }
-            pieces = remaining;
-        }
-        verify_cells(boundary, &pieces, tolerance, &mut budget)?;
-        Ok(Self {
-            boundary: boundary.clone(),
-            pieces,
-        })
+        Self::recover_with_interrupt(boundary, stock, tools, tolerance, None)
     }
 
     /// Carry both certified representations through a placement.
@@ -111,13 +77,15 @@ impl CutMaterial {
     }
 }
 
-fn subtract_cell(
+fn subtract_cell_with_interrupt(
     piece: ConvexPiece,
     tool: &ConvexPiece,
     tolerance: f64,
     budget: &mut usize,
     output: &mut Vec<ConvexPiece>,
+    interrupt: Option<&dyn Fn() -> bool>,
 ) -> Result<(), Error> {
+    checkpoint(interrupt)?;
     if !clipping::bounds_overlap(piece.bounds, tool.bounds, tolerance) {
         output.push(piece);
         return Ok(());
@@ -125,6 +93,7 @@ fn subtract_cell(
     let mut interior = piece.clone();
     let mut outside = Vec::new();
     for &plane in &tool.planes {
+        checkpoint(interrupt)?;
         charge(
             budget,
             interior.faces.iter().map(Vec::len).sum::<usize>() * interior.faces.len(),
@@ -255,18 +224,51 @@ fn verify_cells(
     tolerance: f64,
     budget: &mut usize,
 ) -> Result<(), Error> {
-    let rebuilt = Union::new(pieces, tolerance)?;
-    covers(boundary, &rebuilt, tolerance, budget)?;
-    covers(&rebuilt, boundary, tolerance, budget)
+    verify_cells_with_interrupt(boundary, pieces, tolerance, budget, None)
 }
 
-fn covers(a: &Union, b: &Union, tolerance: f64, budget: &mut usize) -> Result<(), Error> {
-    let a_charts = convex_charts(a, budget)?;
-    let b_charts = convex_charts(b, budget)?;
+fn verify_cells_with_interrupt(
+    boundary: &Union,
+    pieces: &[ConvexPiece],
+    tolerance: f64,
+    budget: &mut usize,
+    interrupt: Option<&dyn Fn() -> bool>,
+) -> Result<(), Error> {
+    validate_cells(pieces, tolerance)?;
+    let rebuilt = Union::from_boundary(clipping::exterior_with_interrupt(
+        pieces, tolerance, budget, interrupt,
+    )?)?;
+    checkpoint(interrupt)?;
+    covers_with_interrupt(boundary, &rebuilt, tolerance, budget, interrupt)?;
+    covers_with_interrupt(&rebuilt, boundary, tolerance, budget, interrupt)
+}
+
+fn validate_cells(pieces: &[ConvexPiece], tolerance: f64) -> Result<(), Error> {
+    validate_tolerance(tolerance)?;
+    if pieces.is_empty() {
+        return Err(Error::Invalid);
+    }
+    if pieces.len() > MAX_PIECES {
+        return Err(Error::Limit);
+    }
+    Ok(())
+}
+
+fn covers_with_interrupt(
+    a: &Union,
+    b: &Union,
+    tolerance: f64,
+    budget: &mut usize,
+    interrupt: Option<&dyn Fn() -> bool>,
+) -> Result<(), Error> {
+    let a_charts = convex_charts(a, budget, interrupt)?;
+    let b_charts = convex_charts(b, budget, interrupt)?;
     let precision = precision(a.bounds.into_iter().chain(b.bounds), tolerance);
     for face in &a_charts {
+        checkpoint(interrupt)?;
         let mut fragments = vec![face.ring.clone()];
         for patch in &b_charts {
+            checkpoint(interrupt)?;
             charge(budget, patch.ring.len())?;
             if !face.support.same_direction(patch.support, precision) {
                 continue;
@@ -294,6 +296,7 @@ fn covers(a: &Union, b: &Union, tolerance: f64, budget: &mut usize) -> Result<()
             let mut remaining = Vec::new();
             let mut fragment_budget = MAX_INCIDENCES;
             for fragment in fragments {
+                checkpoint(interrupt)?;
                 clipping::partition(
                     fragment,
                     &planes,
@@ -319,13 +322,19 @@ struct ConvexChart {
     ring: Vec<Point>,
     support: Plane,
     bounds: [Point; 2],
+    ordinal: usize,
 }
 
 /// Exact planar subdivisions for clipping/coverage only. No new boundary
 /// samples or ancestry are introduced; all charts retain the authored face.
-fn convex_charts(boundary: &Union, budget: &mut usize) -> Result<Vec<ConvexChart>, Error> {
+fn convex_charts(
+    boundary: &Union,
+    budget: &mut usize,
+    interrupt: Option<&dyn Fn() -> bool>,
+) -> Result<Vec<ConvexChart>, Error> {
     let mut charts = Vec::new();
-    for face in &boundary.faces {
+    for (ordinal, face) in boundary.faces.iter().enumerate() {
+        checkpoint(interrupt)?;
         let count = face.vertices.len();
         charge(budget, count)?;
         let rings: Vec<Vec<Point>> = if shell::is_concave(&boundary.vertices, face) {
@@ -353,6 +362,7 @@ fn convex_charts(boundary: &Union, budget: &mut usize) -> Result<Vec<ConvexChart
                 bounds: bounds(ring.iter().copied()),
                 ring,
                 support,
+                ordinal,
             });
         }
     }
