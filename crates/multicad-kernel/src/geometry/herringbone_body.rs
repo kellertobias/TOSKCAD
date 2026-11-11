@@ -192,6 +192,10 @@ impl HerringboneBody {
         self.geometry.profile()
     }
 
+    pub(crate) fn phase_at(&self, z: f64) -> f64 {
+        self.geometry.phase_at(z)
+    }
+
     pub(crate) fn section(&self, frame: PlaneFrame, z: f64, outward: f64) -> ReferenceFrame {
         let (sin, cos) = self.geometry.phase_at(z).sin_cos();
         ReferenceFrame {

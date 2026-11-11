@@ -5,9 +5,11 @@ use multicad_rust_kernel::curved_projection::{Curve, Edge, Ellipse};
 use std::{collections::BTreeMap, f64::consts::TAU};
 
 mod chamfered;
+mod herringbone_projection;
 mod normal_sweep;
 mod spline;
 pub(super) use chamfered::project_chamfered_bores;
+pub(super) use herringbone_projection::project_herringbone;
 pub(super) use normal_sweep::{project_normal_sweep, transverse_rails};
 pub(super) use spline::{contains_spline_sweep, project_spline_sweep};
 

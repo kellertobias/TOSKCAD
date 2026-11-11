@@ -582,6 +582,78 @@ fn rust_herringbone_sections_rotate_the_tooth_profile_and_preserve_the_bore() {
     assert_eq!(mirrored.len(), middle.len());
     assert!(cut(9., PlaneFrame::default(), None, None).is_empty());
 
+    let projection =
+        |options| project_drawing(&[DrawingSolid { solid, hatch: None }], options).unwrap();
+    let tip_span = |edges: &[multicad_kernel::ProjectedVector]| {
+        edges
+            .iter()
+            .filter_map(|edge| match edge.curve {
+                VectorCurve::Ellipse {
+                    major_mm,
+                    start_rad,
+                    end_rad,
+                    ..
+                } if edge.role != VectorRole::Hidden
+                    && (major_mm - gear.tip_radius_mm).abs() < 1e-8 =>
+                {
+                    Some(end_rad - start_rad)
+                }
+                _ => None,
+            })
+            .sum::<f64>()
+    };
+    let cap_span = tip_span(&end);
+    let projected = projection(DrawingProjection {
+        hidden_lines: true,
+        ..Default::default()
+    });
+    let sweep = gear.twist_rad_per_mm.abs();
+    let expected = |length: f64| {
+        (cap_span + f64::from(gear.teeth) * sweep * length).min(std::f64::consts::TAU)
+    };
+    near(tip_span(&projected), expected(4.), 1e-8);
+    assert!(tip_span(&projected) > cap_span);
+    assert!(projected.iter().any(|edge| edge.role == VectorRole::Hidden));
+    assert!(
+        projected.iter().any(|edge| edge.role == VectorRole::Visible
+            && matches!(edge.curve, VectorCurve::Line { .. }))
+    );
+    let retained = projection(DrawingProjection {
+        section_offset_mm: Some(6.),
+        section_depth_mm: Some(1.),
+        ..Default::default()
+    });
+    near(tip_span(&retained), expected(1.), 1e-8);
+    assert!(retained.iter().any(|edge| edge.role == VectorRole::Section));
+    assert!(retained.iter().any(|edge| edge.role == VectorRole::Visible));
+    assert!(retained.iter().all(|edge| edge.role != VectorRole::Hidden));
+    let reversed = projection(DrawingProjection {
+        frame: PlaneFrame {
+            v: [0., -1., 0.],
+            ..Default::default()
+        },
+        ..Default::default()
+    });
+    near(tip_span(&reversed), expected(4.), 1e-8);
+    assert!(
+        projection(DrawingProjection {
+            section_offset_mm: Some(10.),
+            section_depth_mm: Some(1.),
+            ..Default::default()
+        })
+        .is_empty()
+    );
+    assert!(
+        project_drawing(
+            &[DrawingSolid { solid, hatch: None }],
+            DrawingProjection {
+                maximum_curves: 1,
+                ..Default::default()
+            }
+        )
+        .is_err()
+    );
+
     let hatch = DrawingHatch {
         angle_rad: 0.,
         spacing_mm: 1.,

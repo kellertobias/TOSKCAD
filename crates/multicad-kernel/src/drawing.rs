@@ -197,6 +197,12 @@ pub fn project_drawing(
         {
             return torus::project(input, frame, torus.radii_mm(), options);
         }
+        if !options.section_only
+            && let [input] = solids
+            && let Some(projection) = panel::project_herringbone(input, options)
+        {
+            return projection;
+        }
         if !options.section_only && solids.iter().any(|input| contains_herringbone(input.solid)) {
             return Err(err(
                 GeometryErrorKind::Unsupported,
