@@ -1180,6 +1180,25 @@ mod tests {
             range: drawings::SectionRange::SectionOnly,
             window: Default::default(),
         };
+        let projection = EntityId::new();
+        page.views.push(drawings::DrawingView {
+            id: projection,
+            name: "Axial gear projection".into(),
+            kind: drawings::ViewKind::Projection,
+            hidden_lines: true,
+            ..page.views[0].clone()
+        });
+        let retained = EntityId::new();
+        page.views.push(drawings::DrawingView {
+            id: retained,
+            name: "Axial gear depth section".into(),
+            kind: drawings::ViewKind::Section {
+                offset_mm: 6.,
+                range: drawings::SectionRange::Depth { depth_mm: 1. },
+                window: Default::default(),
+            },
+            ..page.views[0].clone()
+        });
         let (_, prepared) = drawings::prepare_create(
             &session,
             session.revision(),
@@ -1213,6 +1232,16 @@ mod tests {
                 ..
             }
         )));
+        let ViewEvaluation::Ready { vectors, .. } = &result.views[&projection] else {
+            panic!("{:?}", result.views[&projection]);
+        };
+        assert!(vectors.iter().any(|edge| edge.role == VectorRole::Visible));
+        assert!(vectors.iter().any(|edge| edge.role == VectorRole::Hidden));
+        let ViewEvaluation::Ready { vectors, .. } = &result.views[&retained] else {
+            panic!("{:?}", result.views[&retained]);
+        };
+        assert!(vectors.iter().any(|edge| edge.role == VectorRole::Section));
+        assert!(vectors.iter().any(|edge| edge.role == VectorRole::Visible));
     }
 
     #[test]
