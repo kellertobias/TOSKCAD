@@ -102,7 +102,9 @@ impl Solid {
     }
 
     /// Exact common volume of supported planar Rust material.
-    /// Disjoint bounds also certify zero for other Rust geometry.
+    /// Disjoint bounds also certify zero for other Rust geometry. Retained
+    /// factored construction and the strict STEP reader's bounded contact
+    /// canonicalization are reused before general world-space clipping.
     pub fn rust_occupied_overlap_volume(
         &self,
         other: &Self,
@@ -130,6 +132,9 @@ impl Solid {
             || other.rust_machined_stock_clears(left, tolerance)
         {
             return Ok(0.);
+        }
+        if let Some(result) = self.rust_factored_orthogonal_overlap(other) {
+            return result;
         }
         let mut left = Vec::new();
         let mut right = Vec::new();

@@ -14,6 +14,7 @@ use multicad_rust_kernel::{
 use std::collections::{BTreeMap, BTreeSet};
 
 mod draft;
+mod intersection;
 mod mirror;
 mod plane_split;
 mod pockets;
@@ -80,6 +81,9 @@ pub(crate) struct OrthogonalBody {
     loops: Rc<[Vec<Vec<EdgeUse>>]>,
     edge_count: u32,
     vertex_count: u32,
+    // Present only after the strict orthogonal STEP reconstruction proof.
+    // Fresh geometry builds reset it; shared proper placements retain it.
+    imported_roundoff_mm: Option<f64>,
     pockets: Rc<[OrthogonalPocket]>,
     pocket_origins: Rc<[Origin]>,
     through_bores: Rc<[OrthogonalThroughBore]>,
@@ -830,8 +834,20 @@ impl Solid {
         if geometry.solid_count() != 1 {
             return Err(invalid("Orthogonal STEP import must produce one solid"));
         }
-        let body = OrthogonalBody::build(feature, geometry, None)?;
+        let mut body = OrthogonalBody::build(feature, geometry, None)?;
         let bounds = body.bounds(frame);
+        // The strict orthogonal reader proved reconstruction within twice
+        // min(32 EPS * input scale, tolerance/16). Bound the unknown original
+        // scale by the reconstructed scale plus that same reconstruction error.
+        let scale = bounds
+            .min
+            .into_iter()
+            .chain(bounds.max)
+            .map(f64::abs)
+            .fold(1., f64::max);
+        let roundoff = (32. * f64::EPSILON * scale / (1. - 64. * f64::EPSILON))
+            .min(policy.linear_tolerance_mm / 16.);
+        body.imported_roundoff_mm = Some(2. * roundoff);
         policy.point(bounds.min)?;
         policy.point(bounds.max)?;
         Ok(Self {
@@ -1263,6 +1279,7 @@ impl OrthogonalBody {
             loops: loops.into(),
             edge_count,
             vertex_count,
+            imported_roundoff_mm: None,
             pockets: Rc::default(),
             pocket_origins: Rc::default(),
             through_bores: Rc::default(),
