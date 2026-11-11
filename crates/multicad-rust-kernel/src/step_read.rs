@@ -3,10 +3,12 @@
 //! and normal sweeps with clamped cubic trims. The reader verifies each shell
 //! and integrates its boundary without tessellating it.
 
+mod bevel;
 mod compound;
 mod curve;
 mod helical;
 mod herringbone;
+pub use bevel::verify_bevel;
 pub use helical::{verify_helical_screw, verify_helical_thread};
 pub use herringbone::verify_herringbone;
 mod import;
