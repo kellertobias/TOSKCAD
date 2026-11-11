@@ -107,7 +107,7 @@ impl Solid {
                         _ => None,
                     };
                     let Some(source) = source else {
-                        return MeridianSegment {
+                        return Ok(MeridianSegment {
                             origin: Origin {
                                 source: feature,
                                 role: "draft.axis".into(),
@@ -116,7 +116,7 @@ impl Solid {
                             inherited: vec![],
                             inherited_frames: vec![],
                             authored_start: a,
-                        };
+                        });
                     };
                     let origin = source
                         .origins
@@ -128,26 +128,24 @@ impl Solid {
                     if i == 0 {
                         inherited.push(selection.origin.clone());
                     }
-                    MeridianSegment {
+                    Ok(MeridianSegment {
                         origin,
                         direct_identity: true,
                         inherited,
                         inherited_frames: source
                             .frames
                             .iter()
-                            .map(|anchor| AnchoredFrame {
-                                origin: anchor.origin.clone(),
-                                frame: ReferenceFrame {
-                                    origin_mm: local(frame, anchor.frame.origin_mm),
-                                    u: vector(anchor.frame.u),
-                                    v: vector(anchor.frame.v),
-                                },
+                            .map(|anchor| {
+                                Ok(AnchoredFrame {
+                                    origin: anchor.origin.clone(),
+                                    frame: local_attachment(frame, anchor.frame, policy)?,
+                                })
                             })
-                            .collect(),
+                            .collect::<Result<Vec<_>, GeometryError>>()?,
                         authored_start: a,
-                    }
+                    })
                 })
-                .collect();
+                .collect::<Result<Vec<_>, GeometryError>>()?;
             let rings = topology::ring_edges(&geometry);
             let retained_rim_boundaries = [0, 1]
                 .into_iter()

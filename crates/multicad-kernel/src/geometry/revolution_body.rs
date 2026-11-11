@@ -60,6 +60,51 @@ fn local(frame: PlaneFrame, point: Point) -> Point {
     [frame.u, frame.v, frame.normal()].map(|axis| dot(axis, delta))
 }
 
+// Attachment charts may retain distant authored UV origins. Checked frames
+// admit small metric residuals, so projecting onto their axes is not an inverse.
+// Keep geometric admission/projection separate from this lossless chart storage.
+fn local_attachment(
+    frame: PlaneFrame,
+    anchor: ReferenceFrame,
+    policy: GeometryPolicy,
+) -> Result<ReferenceFrame, GeometryError> {
+    let axes = [frame.u, frame.v, frame.normal()];
+    let cofactors = [
+        cross(axes[1], axes[2]),
+        cross(axes[2], axes[0]),
+        cross(axes[0], axes[1]),
+    ];
+    let determinant = dot(axes[0], cofactors[0]);
+    let inverse = cofactors.map(|row| row.map(|value| value / determinant));
+    let stored = ReferenceFrame {
+        origin_mm: inverse.map(|row| dot(row, difference(anchor.origin_mm, frame.origin))),
+        u: inverse.map(|row| dot(row, anchor.u)),
+        v: inverse.map(|row| dot(row, anchor.v)),
+    };
+    let recovered = ReferenceFrame {
+        origin_mm: position(frame, stored.origin_mm),
+        u: world_direction(frame, stored.u),
+        v: world_direction(frame, stored.v),
+    };
+    if [
+        (anchor.origin_mm, recovered.origin_mm),
+        (anchor.u, recovered.u),
+        (anchor.v, recovered.v),
+    ]
+    .into_iter()
+    .any(|(original, actual)| {
+        let residual = norm(difference(actual, original));
+        !residual.is_finite() || residual > policy.linear_tolerance_mm
+    }) {
+        return Err(error(
+            OPERATION,
+            GeometryErrorKind::Unsupported,
+            "Circular attachment chart cannot preserve the authored frame within model tolerance",
+        ));
+    }
+    Ok(stored)
+}
+
 fn world_direction(frame: PlaneFrame, direction: Point) -> Point {
     let basis = [frame.u, frame.v, frame.normal()];
     std::array::from_fn(|i| dot(direction, basis.map(|axis| axis[i])))

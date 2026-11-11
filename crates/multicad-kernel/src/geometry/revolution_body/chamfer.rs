@@ -115,11 +115,13 @@ impl Solid {
                         let anchors = source
                             .frames
                             .iter()
-                            .map(|anchor| AnchoredFrame {
-                                origin: anchor.origin.clone(),
-                                frame: local_frame(frame, anchor.frame),
+                            .map(|anchor| {
+                                Ok(AnchoredFrame {
+                                    origin: anchor.origin.clone(),
+                                    frame: local_attachment(frame, anchor.frame, policy)?,
+                                })
                             })
-                            .collect();
+                            .collect::<Result<Vec<_>, GeometryError>>()?;
                         (primary, source.origins.iter().cloned().collect(), anchors)
                     } else if a[0] == 0. && b[0] == 0. {
                         (
@@ -142,15 +144,15 @@ impl Solid {
                             vec![],
                         )
                     };
-                    MeridianSegment {
+                    Ok(MeridianSegment {
                         origin,
                         direct_identity: true,
                         inherited,
                         inherited_frames,
                         authored_start: a,
-                    }
+                    })
                 })
-                .collect();
+                .collect::<Result<Vec<_>, GeometryError>>()?;
             let body = RevolutionBody {
                 rings: topology::ring_edges(&geometry),
                 geometry,
@@ -179,14 +181,5 @@ impl Solid {
                 .map_err(|message| failure(GeometryErrorKind::InvalidResult, message))?;
             Ok(result)
         })())
-    }
-}
-
-fn local_frame(frame: PlaneFrame, anchor: ReferenceFrame) -> ReferenceFrame {
-    let axes = [frame.u, frame.v, frame.normal()];
-    ReferenceFrame {
-        origin_mm: local(frame, anchor.origin_mm),
-        u: axes.map(|axis| dot(axis, anchor.u)),
-        v: axes.map(|axis| dot(axis, anchor.v)),
     }
 }

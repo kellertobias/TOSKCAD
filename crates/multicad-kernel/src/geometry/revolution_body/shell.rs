@@ -164,8 +164,8 @@ fn build(
         .iter()
         .copied()
         .zip(points.iter().copied().cycle().skip(1))
-        .map(|(a, b)| segment(surface(a, b), a, &faces, feature, frame, height))
-        .collect();
+        .map(|(a, b)| segment(surface(a, b), a, &faces, feature, frame, height, policy))
+        .collect::<Result<Vec<_>, GeometryError>>()?;
     let body = RevolutionBody {
         rings: topology::ring_edges(&geometry),
         geometry,
@@ -204,7 +204,8 @@ fn segment(
     feature: EntityId,
     frame: PlaneFrame,
     height: f64,
-) -> MeridianSegment {
+    policy: GeometryPolicy,
+) -> Result<MeridianSegment, GeometryError> {
     let mut result = MeridianSegment {
         origin: Origin {
             source: feature,
@@ -216,7 +217,7 @@ fn segment(
         authored_start,
     };
     let Some(surface) = surface else {
-        return result;
+        return Ok(result);
     };
     result.origin.role = surface.role.into();
     result.direct_identity = surface.plane.is_some();
@@ -249,7 +250,7 @@ fn segment(
             }
             result.inherited_frames.push(AnchoredFrame {
                 origin: derived.clone(),
-                frame: local_anchor(frame, anchor),
+                frame: local_attachment(frame, anchor, policy)?,
             });
         }
         result.inherited.push(derived);
@@ -260,18 +261,9 @@ fn segment(
         };
         result.inherited_frames.push(AnchoredFrame {
             origin: opening.clone(),
-            frame: local_anchor(frame, support),
+            frame: local_attachment(frame, support, policy)?,
         });
         result.inherited.push(opening);
     }
-    result
-}
-
-fn local_anchor(frame: PlaneFrame, anchor: ReferenceFrame) -> ReferenceFrame {
-    let axes = [frame.u, frame.v, frame.normal()];
-    ReferenceFrame {
-        origin_mm: local(frame, anchor.origin_mm),
-        u: axes.map(|axis| dot(axis, anchor.u)),
-        v: axes.map(|axis| dot(axis, anchor.v)),
-    }
+    Ok(result)
 }
