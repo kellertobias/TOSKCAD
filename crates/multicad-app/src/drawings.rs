@@ -902,6 +902,85 @@ mod tests {
     }
 
     #[test]
+    fn rust_drawing_worker_keeps_the_torus_bore_open_in_an_assembly() {
+        use drawings::{VectorCurve, VectorRole, ViewEvaluation};
+        use multicad_core::{
+            constraint_sketch::{Curve, CurveKind, source::Source},
+            sketch::Datum,
+            sketch_regions,
+        };
+
+        let (sketch, edits) = Source::create(Datum::Xz, "Torus section").unwrap();
+        let document = Document::new("Torus drawing")
+            .unwrap()
+            .edited(&edits)
+            .unwrap();
+        let mut source = Source::read(&document, sketch).unwrap().0;
+        let center = source.add_point([5., 0.]);
+        source.sketch.curves.push(Curve {
+            id: EntityId::new(),
+            construction: false,
+            kind: CurveKind::Circle {
+                center,
+                radius_mm: 1.,
+            },
+        });
+        let region = sketch_regions::extract(&source).regions[0].intent();
+        let document = document
+            .edited(&source.replace(&document, sketch).unwrap())
+            .unwrap();
+        let mut session = Session::new(document).unwrap();
+        let actor = Actor::local(Channel::Ui);
+        let torus = model::RevolveRequest::new(sketch, vec![region], Default::default());
+        let torus_body = torus.outputs[0].body;
+        let prepared =
+            model::prepare_revolve(&session, session.revision(), actor.clone(), &torus).unwrap();
+        session.commit(prepared.prepared).unwrap();
+        let stock = PrimitiveRequest::new(
+            "Stock",
+            PrimitiveParameters::Box {
+                size: [16., 1., 1.].map(length),
+                frame: PrimitiveFrame {
+                    origin: [-8., 0., -4.].map(length),
+                    ..Default::default()
+                },
+            },
+        );
+        let prepared =
+            model::prepare_primitive(&session, session.revision(), actor.clone(), &stock).unwrap();
+        session.commit(prepared.prepared).unwrap();
+
+        let mut page = projection_page(torus_body);
+        page.views[0].source = drawings::ViewSource::Model {
+            entities: vec![torus_body, stock.body],
+        };
+        page.views[0].hidden_lines = true;
+        let id = page.views[0].id;
+        let (_, prepared) = drawings::prepare_create(
+            &session,
+            session.revision(),
+            actor,
+            "Drawing",
+            Some(page.clone()),
+        )
+        .unwrap();
+        session.commit(prepared).unwrap();
+        let mut backend = Backend::with_cache_and_backend(None, GeometryBackend::Rust);
+        let result = preview(&mut backend, &session, page.id);
+        let ViewEvaluation::Ready { vectors, .. } = &result.views[&id] else {
+            panic!("{:?}", result.views[&id]);
+        };
+        assert!(vectors.iter().any(|v| v.source == torus_body
+            && v.role == VectorRole::Visible
+            && matches!(v.curve, VectorCurve::Ellipse { major_mm: 4., .. })));
+        assert!(vectors.iter().any(|v| v.source == stock.body
+            && v.role == VectorRole::Visible
+            && matches!(v.curve, VectorCurve::Line { a,b }
+                if [a,b].into_iter().all(|p| p[1].abs() < 1e-8)
+                    && (a[0].min(b[0])+4.).abs() < 1e-6 && (a[0].max(b[0])-4.).abs() < 1e-6)));
+    }
+
+    #[test]
     fn rust_drawing_worker_publishes_curved_projection_and_detail_together() {
         use drawings::{VectorCurve, VectorRole, ViewEvaluation};
 
