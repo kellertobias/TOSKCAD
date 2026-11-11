@@ -1034,6 +1034,22 @@ mod tests {
             kind: drawings::ViewKind::Projection,
             ..page.views.last().unwrap().clone()
         });
+        let retained_oblique_id = EntityId::new();
+        page.views.push(drawings::DrawingView {
+            id: retained_oblique_id,
+            name: "Torus retained oblique section".into(),
+            frame: multicad_core::references::ReferenceFrame {
+                origin_mm: [0.; 3],
+                u: [0.1, 0., 0.99_f64.sqrt()],
+                v: [0., 1., 0.],
+            },
+            kind: drawings::ViewKind::Section {
+                offset_mm: -1.8,
+                range: drawings::SectionRange::Depth { depth_mm: 1.4 },
+                window: Default::default(),
+            },
+            ..page.views.last().unwrap().clone()
+        });
         let (_, prepared) = drawings::prepare_create(
             &session,
             session.revision(),
@@ -1119,6 +1135,17 @@ mod tests {
                         .any(|[u, v]| (u - expected).abs() < 1e-8 && v.abs() < 1e-8)
             }));
         }
+        let ViewEvaluation::Ready { vectors, .. } = &result.views[&retained_oblique_id] else {
+            panic!("{:?}", result.views[&retained_oblique_id]);
+        };
+        assert!(vectors.iter().any(|edge| edge.role == VectorRole::Section));
+        assert!(vectors.iter().any(|edge| {
+            edge.role == VectorRole::Visible
+                && edge
+                    .preview_mm
+                    .iter()
+                    .any(|[u, v]| (u + 0.736).hypot(v + 4.159) < 0.05)
+        }));
     }
 
     #[test]
