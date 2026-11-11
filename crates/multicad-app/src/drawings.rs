@@ -970,6 +970,25 @@ mod tests {
             },
             ..page.views[0].clone()
         });
+        let transverse_id = EntityId::new();
+        page.views.push(drawings::DrawingView {
+            id: transverse_id,
+            name: "Torus transverse section".into(),
+            source: drawings::ViewSource::Model {
+                entities: vec![torus_body],
+            },
+            frame: multicad_core::references::ReferenceFrame {
+                origin_mm: [0.; 3],
+                u: [0., 1., 0.],
+                v: [0., 0., 1.],
+            },
+            kind: drawings::ViewKind::Section {
+                offset_mm: 0.,
+                range: drawings::SectionRange::SectionOnly,
+                window: Default::default(),
+            },
+            ..page.views[0].clone()
+        });
         let (_, prepared) = drawings::prepare_create(
             &session,
             session.revision(),
@@ -1001,6 +1020,17 @@ mod tests {
                             if (major_mm - radius).abs() < 1e-8)));
                 }
             }
+        }
+        let ViewEvaluation::Ready { vectors, .. } = &result.views[&transverse_id] else {
+            panic!("{:?}", result.views[&transverse_id]);
+        };
+        assert_eq!(vectors.len(), 2);
+        for expected in [-5., 5.] {
+            assert!(vectors.iter().any(|v| v.source == torus_body
+                && v.role == VectorRole::Section
+                && matches!(v.curve, VectorCurve::Ellipse {
+                    center: [x, y], major_mm: 1., minor_mm: 1., ..
+                } if x == expected && y == 0.)));
         }
     }
 
