@@ -110,6 +110,16 @@ fn rust_worms_and_wheels_match_native_solids() {
         assert!(rust.display_edges(0.01).unwrap().len() >= 12);
         let placed = rust.transformed(transform).unwrap();
         assert_eq!(placed.volume_mm3().unwrap(), rust.volume_mm3().unwrap());
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("worm.step");
+        placed.write_step(&path).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        let decoded = placed.verify_worm_step(&text).unwrap().unwrap();
+        let volume = rust.volume_mm3().unwrap();
+        assert!(
+            (decoded - volume).abs() / volume < 1e-8,
+            "{decoded} {volume}"
+        );
         if !multicad_kernel::OCCT_LINKED {
             continue;
         }
@@ -120,6 +130,14 @@ fn rust_worms_and_wheels_match_native_solids() {
             feature,
             1e-6,
             &format!("worm m{m} L{length} b{bore}"),
+        );
+        let imported = multicad_kernel::Shape::read_step(&path).unwrap();
+        assert!(imported.valid().unwrap());
+        assert_eq!(Solid::step_solids(&path).unwrap().len(), 1);
+        let read = imported.volume().unwrap();
+        assert!((read - volume).abs() / volume < 1e-6, "{read} {volume}");
+        println!(
+            "{{\"case\":\"worm m{m} b{bore} STEP\",\"rust_decoded_volume\":{decoded},\"occt_step_volume\":{read}}}"
         );
         let [pb, qb] = [
             placed.bounds().unwrap(),
@@ -148,6 +166,13 @@ fn rust_worms_and_wheels_match_native_solids() {
             .validate()
             .unwrap();
         assert!(!rust.manufacturing_mesh(options).unwrap().indices.is_empty());
+        assert!(rust.display_edges(0.01).unwrap().len() >= 23 * teeth as usize);
+        let directory = tempfile::tempdir().unwrap();
+        assert!(
+            rust.write_step(&directory.path().join("wheel.step"))
+                .is_err()
+        );
+        assert!(rust.verify_worm_step("").is_none());
         if !multicad_kernel::OCCT_LINKED {
             continue;
         }

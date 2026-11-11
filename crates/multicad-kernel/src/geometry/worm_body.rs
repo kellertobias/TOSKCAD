@@ -369,17 +369,57 @@ fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
 
+impl Solid {
+    /// Validate the decoded Rust worm shell and integrate its STEP volume in
+    /// mm³. Generated wheels have no Rust STEP shell yet.
+    pub fn verify_worm_step(
+        &self,
+        source: &str,
+    ) -> Option<Result<f64, multicad_rust_kernel::step_read::ReadError>> {
+        let (body, frame) = self.worm_body()?;
+        let WormGeometry::Worm(worm) = &body.geometry else {
+            return None;
+        };
+        Some(multicad_rust_kernel::step_read::verify_za_worm(
+            source,
+            worm,
+            frame.origin,
+            frame.u,
+            frame.v,
+            self.policy.linear_tolerance_mm,
+        ))
+    }
+}
+
 impl WormBody {
-    pub(super) fn supports_step(&self, _frame: PlaneFrame, _policy: GeometryPolicy) -> bool {
-        false
+    pub(super) fn supports_step(&self, frame: PlaneFrame, policy: GeometryPolicy) -> bool {
+        match &self.geometry {
+            WormGeometry::Worm(worm) => multicad_rust_kernel::step::supports_za_worm(
+                worm,
+                frame.origin,
+                frame.u,
+                frame.v,
+                policy.linear_tolerance_mm,
+            ),
+            WormGeometry::Wheel(_) => false,
+        }
     }
 
     pub(super) fn append_step(
         &self,
-        _writer: &mut multicad_rust_kernel::step::Writer,
-        _frame: PlaneFrame,
-        _policy: GeometryPolicy,
+        writer: &mut multicad_rust_kernel::step::Writer,
+        frame: PlaneFrame,
+        policy: GeometryPolicy,
     ) -> Result<(), multicad_rust_kernel::step::StepError> {
-        Err(multicad_rust_kernel::step::StepError::Unsupported)
+        match &self.geometry {
+            WormGeometry::Worm(worm) => writer.append_za_worm(
+                worm,
+                frame.origin,
+                frame.u,
+                frame.v,
+                policy.linear_tolerance_mm,
+            ),
+            WormGeometry::Wheel(_) => Err(multicad_rust_kernel::step::StepError::Unsupported),
+        }
     }
 }

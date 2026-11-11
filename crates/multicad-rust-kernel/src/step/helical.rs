@@ -29,6 +29,8 @@ pub(crate) struct SocketHead {
 pub(crate) enum Closure {
     Shaft,
     Bore(f64),
+    /// External thread with a coaxial through bore of this radius.
+    Hollow(f64),
     HexHead {
         across_flats_mm: f64,
         height_mm: f64,
@@ -39,6 +41,19 @@ pub(crate) enum Closure {
 impl Closure {
     pub(crate) fn stock(radius: Option<f64>) -> Self {
         radius.map_or(Self::Shaft, Self::Bore)
+    }
+
+    pub(crate) fn hollow(radius: Option<f64>) -> Self {
+        radius.map_or(Self::Shaft, Self::Hollow)
+    }
+
+    /// Radius and outward sense of the closing cylinder wall.
+    pub(crate) fn cylinder(self) -> Option<(f64, bool)> {
+        match self {
+            Self::Bore(radius) => Some((radius, true)),
+            Self::Hollow(radius) => Some((radius, false)),
+            _ => None,
+        }
     }
 
     pub(crate) fn screw(screw: &Screw) -> Result<Self, StepError> {
@@ -97,7 +112,7 @@ impl Closure {
     pub(crate) fn face_count(self) -> usize {
         match self {
             Self::Shaft => 6,
-            Self::Bore(_) => 7,
+            Self::Bore(_) | Self::Hollow(_) => 7,
             Self::HexHead { .. } => 13,
             Self::SocketHead(head) => 15 + 2 * usize::from(head.shank_length_mm > 0.),
         }
@@ -105,7 +120,7 @@ impl Closure {
 
     fn radial_and_axial_extent(self, major_radius_mm: f64) -> (f64, f64) {
         match self {
-            Self::Shaft => (major_radius_mm, 0.),
+            Self::Shaft | Self::Hollow(_) => (major_radius_mm, 0.),
             Self::Bore(radius) => (radius, 0.),
             Self::HexHead {
                 across_flats_mm,
@@ -244,9 +259,9 @@ pub(super) fn encode(
     }
 
     let centers = [0., height].map(|z| placement.point_f64([0.; 2], z));
-    let cylinder = if let Closure::Bore(radius) = closure {
+    let cylinder = if let Some((radius, outward)) = closure.cylinder() {
         let trim = CylindricalTrim::new(file, centers, placement.normal, placement.u, radius);
-        Some(trim?)
+        Some((trim?, outward))
     } else {
         None
     };
@@ -259,7 +274,7 @@ pub(super) fn encode(
             Some(trim?)
         }
         Closure::SocketHead(socket) => Some(encode_socket_head(file, &placement, socket)?),
-        Closure::Shaft | Closure::Bore(_) => None,
+        Closure::Shaft | Closure::Bore(_) | Closure::Hollow(_) => None,
     };
     for (end, cap) in cap_edges.into_iter().enumerate() {
         let top = end == 1;
@@ -280,8 +295,8 @@ pub(super) fn encode(
         };
         let trim = file.bound(&edges, !closure.cap_hole(top));
         let mut bounds = Vec::with_capacity(2);
-        if let Some(cylinder) = &cylinder {
-            bounds.push(cylinder.cap_bound(file, top, true));
+        if let Some((cylinder, outward)) = &cylinder {
+            bounds.push(cylinder.cap_bound(file, top, *outward));
         }
         if !top
             && shank.is_none()
@@ -297,8 +312,8 @@ pub(super) fn encode(
             .map(|value| if outward { value } else { -value });
         faces.push(file.face(&bounds, center, normal, placement.u));
     }
-    if let Some(cylinder) = &cylinder {
-        faces.push(cylinder.wall(file, true));
+    if let Some((cylinder, outward)) = &cylinder {
+        faces.push(cylinder.wall(file, *outward));
     }
     if let Some((head_seat, head_faces)) = head {
         if let Some(shank) = shank {
@@ -423,6 +438,8 @@ pub(crate) fn prepare(
     if !tolerance_mm.is_finite()
         || tolerance_mm <= 0.
         || matches!(closure, Closure::Bore(r) if !r.is_finite() || r <= spec.major_radius_mm)
+        || matches!(closure, Closure::Hollow(r)
+            if !r.is_finite() || r <= 0. || r >= spec.major_radius_mm - spec.depth_mm)
     {
         return Err(StepError::InvalidGeometry);
     }
@@ -443,6 +460,8 @@ pub(crate) fn prepare(
     if 128. * f64::EPSILON * scale > tolerance / 2.
         || spec.major_radius_mm - spec.depth_mm <= tolerance
         || matches!(closure, Closure::Bore(radius) if radius - major <= tolerance)
+        || matches!(closure, Closure::Hollow(radius)
+            if radius <= tolerance || major - spec.depth_mm - radius <= tolerance)
         || matches!(closure, Closure::HexHead { across_flats_mm, height_mm }
             if across_flats_mm / 2. - major <= tolerance || height_mm <= tolerance)
         || matches!(closure, Closure::SocketHead(head) if head.radius_mm - major <= tolerance

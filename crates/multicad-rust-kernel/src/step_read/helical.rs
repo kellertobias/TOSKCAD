@@ -59,7 +59,7 @@ pub(super) fn step_error(error: StepError) -> ReadError {
     }
 }
 
-fn verify(
+pub(super) fn verify(
     input: &str,
     thread: &Thread,
     closure: Closure,
@@ -187,7 +187,8 @@ fn verify(
             let top = end == 1;
             let (surface, outward, bounds) = face(shell, *face_id)?;
             let hole = closure.cap_hole(top);
-            require(outward && bounds.len() == 1 + usize::from(hole))?;
+            let inner = matches!(closure, Closure::Hollow(_));
+            require(outward && bounds.len() == 1 + usize::from(hole || inner))?;
             let [Value::String(_), axis] = shell.args(surface, "PLANE")? else {
                 return Err(ReadError::Invalid);
             };
@@ -196,7 +197,7 @@ fn verify(
             caps[end] = check_axis(shell, axis, world([0.; 2], z), cap_axis, u)?.origin;
             let mut expected = rings[end].map(|edge| (edge, true));
             let actual = orient(
-                &ring(shell, bounds[usize::from(hole)], !hole)?,
+                &ring(shell, bounds[usize::from(hole || inner)], !hole)?,
                 top == forward,
             );
             if !top && shank_length.is_some() {
@@ -213,12 +214,12 @@ fn verify(
                 shoulder = Some(bounds[0]);
             }
             require(actual == expected)?;
-            if let Closure::Bore(radius) = closure {
-                let rim = ring(shell, bounds[0], true)?;
+            if let Some((radius, outer)) = closure.cylinder() {
+                let rim = ring(shell, bounds[0], outer)?;
                 let [(edge, sense)] = rim[..] else {
                     return Err(ReadError::Invalid);
                 };
-                require(sense == top)?;
+                require(sense == (top == outer))?;
                 shell.edge(edge)?;
                 let Curve::Circle(circle) = shell.edges[&edge].curve else {
                     return Err(ReadError::Invalid);
@@ -233,10 +234,17 @@ fn verify(
         }
         let outside_volume = match closure {
             Closure::Shaft => 0.,
-            Closure::Bore(radius) => {
-                let (radius, axis) =
-                    check_cylinder(shell, faces[6], cylinder_rims, radius, [origin, normal, u])?;
-                std::f64::consts::PI * radius * radius * dot(sub(caps[1], caps[0]), axis)
+            Closure::Bore(radius) | Closure::Hollow(radius) => {
+                let outer = matches!(closure, Closure::Bore(_));
+                let (radius, axis) = check_cylinder(
+                    shell,
+                    faces[6],
+                    cylinder_rims,
+                    (radius, outer),
+                    [origin, normal, u],
+                )?;
+                let sign = if outer { 1. } else { -1. };
+                sign * std::f64::consts::PI * radius * radius * dot(sub(caps[1], caps[0]), axis)
             }
             Closure::HexHead {
                 across_flats_mm,
@@ -409,14 +417,14 @@ fn check_cylinder(
     shell: &mut Shell<'_, '_>,
     id: u32,
     rims: [u32; 2],
-    radius: f64,
+    (radius, outward): (f64, bool),
     [origin, normal, u]: [Point; 3],
 ) -> Result<(f64, Point)> {
     let (surface, forward, bounds) = face(shell, id)?;
     let [bound] = bounds[..] else {
         return Err(ReadError::Invalid);
     };
-    require(forward)?;
+    require(forward == outward)?;
     let [Value::String(_), axis, Value::Number(r)] = shell.args(surface, "CYLINDRICAL_SURFACE")?
     else {
         return Err(ReadError::Invalid);
@@ -426,15 +434,20 @@ fn check_cylinder(
     let axis = check_axis(shell, axis, origin, normal, u)?.normal;
     let uses = ring(shell, bound, true)?;
     let [
-        (bottom, true),
+        (bottom, bottom_sense),
         (seam, true),
-        (top, false),
+        (top, top_sense),
         (repeated, false),
     ] = uses[..]
     else {
         return Err(ReadError::Invalid);
     };
-    require([bottom, top] == rims && seam == repeated)?;
+    require(
+        [bottom, top] == rims
+            && seam == repeated
+            && bottom_sense == outward
+            && top_sense != outward,
+    )?;
     let seam_ends = shell.edge(seam)?;
     require(
         matches!(shell.edges[&seam].curve, Curve::Line)

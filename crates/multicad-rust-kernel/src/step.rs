@@ -19,7 +19,10 @@ use std::{collections::BTreeMap, fmt, fmt::Write, ops::Range};
 
 mod axial_stack;
 mod bevel_gear;
+mod worm_gear;
 pub use bevel_gear::{supports_bevel, write_bevel};
+pub(crate) use worm_gear::thread_frame as worm_thread_frame;
+pub use worm_gear::{supports_za_worm, write_za_worm};
 mod cubic_trim;
 mod cylindrical_revolution;
 pub(crate) mod helical;
