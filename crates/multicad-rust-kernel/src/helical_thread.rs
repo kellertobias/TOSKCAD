@@ -2,6 +2,9 @@
 
 use std::f64::consts::{FRAC_PI_2, PI, TAU};
 
+mod prefix;
+pub use prefix::AxialPrefix;
+
 const MAX_DIMENSION_MM: f64 = 1e7;
 
 #[derive(Clone, Copy, Debug, PartialEq)]

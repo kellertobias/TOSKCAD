@@ -687,13 +687,14 @@ pub(super) fn thread_profiles(_: &dyn Host, call: &Request, _: NoArgs) -> ToolRe
     if rust {
         report["active_geometry_support"] = json!({
             "modes": ["new_external", "cut_internal"],
-            "internal_receiving_stock": "coaxial solid cylinder over the full thread length",
+            "internal_receiving_stock": "One coaxial solid cylinder entered from either cap; partial-depth tools retain a floor and overrun tools are restricted to stock",
+            "requested_tool_length_is_preserved": true,
             "representations": ["modeled", "cosmetic_envelope"],
             "cosmetic_scope": "new_external only; receiving cuts require modeled geometry",
             "end_treatments": false,
             "radial_taper": false,
             "step": true,
-            "step_scope": "Standalone straight modeled shafts with one to eight starts, flat or circular roots, and through threads in round stock, within the bounded spline budget",
+            "step_scope": "Standalone straight modeled shafts with one to eight starts, flat or circular roots, and cap-entry blind or through threads in round stock, within the bounded spline budget",
             "manufacturing_mesh": true,
             "reference_data_includes_other_backends": true
         });
@@ -701,7 +702,7 @@ pub(super) fn thread_profiles(_: &dyn Host, call: &Request, _: NoArgs) -> ToolRe
             "ISO metric supports nominal basic and listed historical 6g external and 6H internal fits. UNC/UNF use sourced 2A/2B fits. Straight custom, Trapezoidal, Acme and Buttress profiles use nominal basic dimensions."
         );
         report["manufacturing"] = json!(
-            "Modeled external shafts and internal through bores support certified mesh and STEP output within the bounded geometry budget. Cosmetic envelopes are refused for manufacturing output."
+            "Modeled external shafts and cap-entry cylindrical receivers support certified mesh and STEP output within the bounded geometry budget. Source tool length is retained; manufacturing output contains only material within the stock. Cosmetic envelopes are refused for manufacturing output."
         );
     }
     Ok(report)
@@ -712,7 +713,7 @@ pub(super) fn inspect_thread(host: &dyn Host, _: &Request, args: InspectThreadAr
     let source = model::read_thread(&document, feature)?;
     let resolved = source.parameters.resolve(&evaluated, source.mode)?;
     Ok(
-        json!({"revision":revision,"thread":feature,"part":source.output.body,"source":source,"resolved":{"nominal_major_diameter_mm":2.*resolved.nominal_major_radius_mm,"nominal_pitch_diameter_mm":resolved.nominal_pitch_diameter_mm,"actual_pitch_diameter_mm":resolved.actual_pitch_diameter_mm,"fit":resolved.fit,"pipe":resolved.pipe,"npt":resolved.npt,"lead_screw":resolved.lead_screw,"buttress":resolved.buttress,"round":resolved.round,"metric_fit":resolved.metric_fit,"metric_fit_engagement":resolved.metric_fit_engagement,"physical_length_mm":resolved.length_mm,"end_treatments":resolved.end_treatments,"major_radius_mm":resolved.major_radius_mm,"pitch_mm":resolved.pitch_mm,"lead_mm":resolved.lead_mm,"starts":resolved.starts,"hand":resolved.hand,"representation":resolved.representation,"representation_parameter":source.parameters.representation_parameter,"profile":{"depth_mm":resolved.profile.depth_mm,"crest_width_mm":resolved.profile.crest_width_mm,"rounding_radius_mm":resolved.profile.rounding_radius_mm,"radial_taper":resolved.profile.radial_taper,"lower_flank_deg":resolved.profile.lower_flank_deg,"upper_flank_deg":resolved.profile.upper_flank_deg}},"scope":"Canonical source and resolved construction dimensions; nominal pitch diameter is basic, actual_pitch_diameter_mm and fit describe sourced fitted construction, not a measured or certified manufactured thread; use evaluate_model for current native geometry"}),
+        json!({"revision":revision,"thread":feature,"part":source.output.body,"source":source,"resolved":{"nominal_major_diameter_mm":2.*resolved.nominal_major_radius_mm,"nominal_pitch_diameter_mm":resolved.nominal_pitch_diameter_mm,"actual_pitch_diameter_mm":resolved.actual_pitch_diameter_mm,"fit":resolved.fit,"pipe":resolved.pipe,"npt":resolved.npt,"lead_screw":resolved.lead_screw,"buttress":resolved.buttress,"round":resolved.round,"metric_fit":resolved.metric_fit,"metric_fit_engagement":resolved.metric_fit_engagement,"physical_length_mm":resolved.length_mm,"end_treatments":resolved.end_treatments,"major_radius_mm":resolved.major_radius_mm,"pitch_mm":resolved.pitch_mm,"lead_mm":resolved.lead_mm,"starts":resolved.starts,"hand":resolved.hand,"representation":resolved.representation,"representation_parameter":source.parameters.representation_parameter,"profile":{"depth_mm":resolved.profile.depth_mm,"crest_width_mm":resolved.profile.crest_width_mm,"rounding_radius_mm":resolved.profile.rounding_radius_mm,"radial_taper":resolved.profile.radial_taper,"lower_flank_deg":resolved.profile.lower_flank_deg,"upper_flank_deg":resolved.profile.upper_flank_deg}},"scope":"Canonical source and resolved construction dimensions; nominal pitch diameter is basic, actual_pitch_diameter_mm and fit describe sourced fitted construction, not a measured or certified manufactured thread; use evaluate_model for current evaluated geometry"}),
     )
 }
 pub(super) fn set_thread(host: &dyn Host, call: &Request, args: ThreadArgs) -> ToolResult {

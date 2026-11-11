@@ -11,7 +11,7 @@ use multicad_core::references::{
 use multicad_rust_kernel::{
     headed_screw::Screw,
     helical_receiver::Receiver,
-    helical_thread::{Spec, Thread, ThreadError},
+    helical_thread::{AxialPrefix, Spec, Thread, ThreadError},
     helical_thread_mesh,
     hex_nut::Nut,
 };
@@ -49,6 +49,15 @@ fn imported_request(spec: Spec) -> HelicalThread {
     }
 }
 
+/// Source-tool and occupied material intervals in the retained receiving frame.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ReceivingThreadIntervals {
+    pub frame: PlaneFrame,
+    pub requested_tool_length_mm: f64,
+    pub physical_thread_length_mm: f64,
+    pub stock_length_mm: f64,
+}
+
 pub(crate) struct HelicalBody {
     geometry: Thread,
     pub(super) feature: EntityId,
@@ -73,6 +82,7 @@ struct BoreStock {
     frame_in_thread: stock_frame::StoredFrame,
     sketch: Option<Rc<CylinderSketch>>,
     reversed: bool,
+    prefix: Option<Box<AxialPrefix>>,
 }
 
 impl BoreStock {
@@ -192,6 +202,7 @@ impl Solid {
                         frame_in_thread: stock_frame::StoredFrame::identity(),
                         sketch: None,
                         reversed: false,
+                        prefix: None,
                     }))
                 } else {
                     Ok(HelicalForm::Shaft)
@@ -401,9 +412,30 @@ impl Solid {
         )
     }
 
+    /// For cylindrical receivers, report tool length separately from occupied
+    /// material. STEP imports recover only material, so their tool length equals it.
+    pub fn rust_receiving_thread_intervals(&self) -> Option<ReceivingThreadIntervals> {
+        let (body, frame) = self.helical_body()?;
+        let HelicalForm::Bore(stock) = &body.form else {
+            return None;
+        };
+        Some(ReceivingThreadIntervals {
+            frame,
+            requested_tool_length_mm: stock
+                .prefix
+                .as_ref()
+                .map_or(body.geometry.spec().length_mm, |prefix| {
+                    prefix.tool().spec().length_mm
+                }),
+            physical_thread_length_mm: body.geometry.spec().length_mm,
+            stock_length_mm: stock.length(),
+        })
+    }
+
     /// Cut the requested cap-entry thread interval in coaxial cylindrical stock.
-    /// A partial-depth cut retains its solid floor; the original outer wall and
-    /// cap attachment frames retain their authored origins.
+    /// A partial-depth cut retains its solid floor; an overrun uses the tool's
+    /// certified prefix inside stock. The original outer wall and cap attachment
+    /// frames retain their authored origins.
     pub fn rust_cut_internal_thread(
         &self,
         spec: HelicalThread,
@@ -438,14 +470,13 @@ impl Solid {
             || policy.boolean_fuzzy_mm != 0.
             || !spec.length_mm.is_finite()
             || spec.length_mm <= 0.
-            || spec.length_mm > height
             || (alignment.abs() - 1.).abs() > 1e-10
             || distance(start, frame.origin) > policy.linear_tolerance_mm
         {
             return Err(error(
                 OPERATION,
                 GeometryErrorKind::Unsupported,
-                "A cylindrical receiving thread must enter a coaxial stock cap and remain inside its exact stock interval",
+                "A cylindrical receiving thread must enter a coaxial stock cap under the same exact geometry policy",
             ));
         }
         policy.length(spec.length_mm)?;
@@ -493,6 +524,22 @@ impl Solid {
             ));
         }
         let radius = cylinder.circle().radius().as_f64();
+        let prefix = if spec.length_mm > height {
+            Some(
+                checked_thread(spec, None, policy)?
+                    .axial_prefix(height)
+                    .map(Box::new)
+                    .map_err(|_| {
+                        error(
+                            OPERATION,
+                            GeometryErrorKind::Limit,
+                            "Receiving stock is too short for the certified thread prefix",
+                        )
+                    })?,
+            )
+        } else {
+            None
+        };
         let stock = BoreStock {
             cylinder: **cylinder,
             frame_in_thread: stock_frame::store(
@@ -506,10 +553,19 @@ impl Solid {
             )?,
             sketch: sketch.clone(),
             reversed,
+            prefix,
         };
-        Self::rust_helical_body(spec, None, feature, placed, policy, |_| {
-            Ok(HelicalForm::Bore(stock))
-        })
+        if let Some(prefix) = &stock.prefix {
+            // Publish the retained prefix data directly. No normalized axial
+            // parameter or recomputed profile can alter the source root law.
+            Self::publish_helical_geometry(*prefix.material(), feature, placed, policy, |_| {
+                Ok(HelicalForm::Bore(stock))
+            })
+        } else {
+            Self::rust_helical_body(spec, None, feature, placed, policy, |_| {
+                Ok(HelicalForm::Bore(stock))
+            })
+        }
     }
 
     fn rust_helical_body(
@@ -529,50 +585,22 @@ impl Solid {
                 "Thread feature identity must not be nil",
             ));
         }
-        if spec.radial_taper != 0. {
-            return Err(error(
-                OPERATION,
-                GeometryErrorKind::Unsupported,
-                "Rust helical bodies require a cylindrical profile",
-            ));
+        let geometry = checked_thread(spec, root_radius_mm, policy)?;
+        Self::publish_helical_geometry(geometry, feature, frame, policy, form)
+    }
+
+    fn publish_helical_geometry(
+        geometry: Thread,
+        feature: EntityId,
+        frame: PlaneFrame,
+        policy: GeometryPolicy,
+        form: impl FnOnce(Thread) -> Result<HelicalForm, GeometryError>,
+    ) -> Result<Self, GeometryError> {
+        policy.validate()?;
+        frame.checked(policy)?;
+        if feature.is_nil() {
+            return Err(input("Thread feature identity must not be nil"));
         }
-        for length in [
-            spec.major_radius_mm,
-            spec.pitch_mm,
-            spec.length_mm,
-            spec.depth_mm,
-            spec.crest_width_mm,
-        ] {
-            policy.length(length)?;
-        }
-        policy.length(spec.major_radius_mm - spec.depth_mm)?;
-        if let Some(radius) = root_radius_mm {
-            policy.length(radius)?;
-        }
-        let geometry = Thread::new(Spec {
-            major_radius_mm: spec.major_radius_mm,
-            pitch_mm: spec.pitch_mm,
-            length_mm: spec.length_mm,
-            depth_mm: spec.depth_mm,
-            crest_width_mm: spec.crest_width_mm,
-            lower_flank_deg: spec.lower_flank_deg,
-            upper_flank_deg: spec.upper_flank_deg,
-            starts: spec.starts,
-            left_hand: spec.left_hand,
-            root_radius_mm,
-        })
-        .map_err(|cause| match cause {
-            ThreadError::Invalid => error(
-                OPERATION,
-                GeometryErrorKind::Input,
-                "Invalid finite helical profile",
-            ),
-            ThreadError::Limit => error(
-                OPERATION,
-                GeometryErrorKind::Limit,
-                "Helical thread exceeds the turn budget",
-            ),
-        })?;
         let placed = HelicalBody::new(geometry, feature, form(geometry)?);
         frame.checked_metric_bounds(placed.bounds(PlaneFrame::default()), policy)?;
         let bounds = placed.bounds(frame);
@@ -692,6 +720,57 @@ fn integral<const N: usize>(a: f64, b: f64, function: impl Fn(f64) -> [f64; N]) 
         }
     }
     result
+}
+
+fn checked_thread(
+    spec: HelicalThread,
+    root_radius_mm: Option<f64>,
+    policy: GeometryPolicy,
+) -> Result<Thread, GeometryError> {
+    if spec.radial_taper != 0. {
+        return Err(error(
+            OPERATION,
+            GeometryErrorKind::Unsupported,
+            "Rust helical bodies require a cylindrical profile",
+        ));
+    }
+    for length in [
+        spec.major_radius_mm,
+        spec.pitch_mm,
+        spec.length_mm,
+        spec.depth_mm,
+        spec.crest_width_mm,
+    ] {
+        policy.length(length)?;
+    }
+    policy.length(spec.major_radius_mm - spec.depth_mm)?;
+    if let Some(radius) = root_radius_mm {
+        policy.length(radius)?;
+    }
+    Thread::new(Spec {
+        major_radius_mm: spec.major_radius_mm,
+        pitch_mm: spec.pitch_mm,
+        length_mm: spec.length_mm,
+        depth_mm: spec.depth_mm,
+        crest_width_mm: spec.crest_width_mm,
+        lower_flank_deg: spec.lower_flank_deg,
+        upper_flank_deg: spec.upper_flank_deg,
+        starts: spec.starts,
+        left_hand: spec.left_hand,
+        root_radius_mm,
+    })
+    .map_err(|cause| match cause {
+        ThreadError::Invalid => error(
+            OPERATION,
+            GeometryErrorKind::Input,
+            "Invalid finite helical profile",
+        ),
+        ThreadError::Limit => error(
+            OPERATION,
+            GeometryErrorKind::Limit,
+            "Helical thread exceeds the turn budget",
+        ),
+    })
 }
 
 impl HelicalBody {

@@ -43,7 +43,7 @@ use bevel_body::BevelBody;
 pub use circular_pocket_body::CircularPocketTool;
 use cosmetic_fastener_body::CosmeticFastenerBody;
 use helical_body::HelicalBody;
-pub use helical_body::{BlindThreadCut, BlindThreadMating};
+pub use helical_body::{BlindThreadCut, BlindThreadMating, ReceivingThreadIntervals};
 pub use helical_tube_body::HelicalTube;
 use helical_tube_body::HelicalTubeBody;
 use herringbone_body::HerringboneBody;

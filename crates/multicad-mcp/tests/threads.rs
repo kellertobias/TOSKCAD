@@ -334,7 +334,10 @@ fn rust_mcp_cuts_and_reopens_a_metric_receiver_and_refuses_invalid_stock() {
         "major_diameter":mm(6.),"pitch":mm(1.),"length":mm(6.6),"fit":"metric_6h_internal",
         "minimum_wall":mm(1.)
     });
-    for (field, value) in [("length", mm(7.)), ("minimum_wall", mm(2.1))] {
+    for (field, value) in [
+        ("origin", json!([mm(0.1), mm(0.), mm(0.)])),
+        ("minimum_wall", mm(2.1)),
+    ] {
         let mut invalid = request.clone();
         invalid[field] = value;
         let rejected = dispatch(&h, &call(false), "set_thread", invalid).unwrap_err();
@@ -455,18 +458,35 @@ fn unc_and_unf_mcp_pairs_keep_fits_through_partial_edits_history_saved_reopen_an
             false,
             multicad_model::GeometryBackend::Rust,
         );
-        for length in [4.5, 4. - 1e-8] {
-            let failure = dispatch(
-                &bounded,
-                &call(false),
-                "set_thread",
-                json!({"expected_revision":0,"thread":internal["thread"],"length":mm(length)}),
-            )
-            .unwrap_err();
-            assert_eq!(failure.code, "model_failed");
-            assert_eq!(bounded.document(), unchanged);
-            assert_eq!(h.document(), unchanged);
-        }
+        let failure = dispatch(
+            &bounded,
+            &call(false),
+            "set_thread",
+            json!({"expected_revision":0,"thread":internal["thread"],"length":mm(4.-1e-8)}),
+        )
+        .unwrap_err();
+        assert_eq!(failure.code, "model_failed");
+        assert_eq!(bounded.document(), unchanged);
+        assert_eq!(h.document(), unchanged);
+        run(
+            &bounded,
+            "set_thread",
+            json!({"expected_revision":0,"thread":internal["thread"],"length":mm(4.5)}),
+        );
+        let clipped = run(
+            &bounded,
+            "inspect_thread",
+            json!({"thread":internal["thread"]}),
+        );
+        assert_eq!(clipped["resolved"]["physical_length_mm"], 4.5);
+        let geometry = run(&bounded, "evaluate_model", json!({}));
+        let receiver = geometry["parts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["part"] == internal["part"])
+            .unwrap();
+        assert_eq!(receiver["bounds_mm"]["max"][2], 4.);
         assert_eq!(
             dispatch(
                 &h,

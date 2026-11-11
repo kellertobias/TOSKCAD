@@ -82,6 +82,10 @@ fn cap_entry_receivers_preserve_floor_source_attachments_and_exact_exchange() {
                 }
 
                 assert_eq!(threaded.faces().unwrap().len(), 8);
+                let intervals = threaded.rust_receiving_thread_intervals().unwrap();
+                assert_eq!(intervals.requested_tool_length_mm, 2.5);
+                assert_eq!(intervals.physical_thread_length_mm, 2.5);
+                assert_eq!(intervals.stock_length_mm, 4.);
                 let snapshot = threaded.topology_snapshot(owner, 1).unwrap();
                 for e in &before.elements {
                     if e.key.kind == TopologyKind::Face {
@@ -174,7 +178,7 @@ fn cap_entry_receivers_preserve_floor_source_attachments_and_exact_exchange() {
                     }
                 }
                 assert_eq!(source.topology_snapshot(owner, 0).unwrap(), before);
-                for length in [4.1, 4. - 1e-8] {
+                for length in [129., 4. - 1e-8] {
                     let mut invalid = profile(left);
                     invalid.length_mm = length;
                     assert!(

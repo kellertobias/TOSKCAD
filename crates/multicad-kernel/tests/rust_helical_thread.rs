@@ -291,7 +291,10 @@ fn unsupported_stock_placement_and_insufficient_wall_fail_without_changing_stock
                 length_mm: 12.,
                 ..spec
             },
-            PlaneFrame::default(),
+            PlaneFrame {
+                origin: [0., 0., 1.],
+                ..Default::default()
+            },
         ),
         (
             spec,

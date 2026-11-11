@@ -1117,15 +1117,27 @@ fn rust_stdio_exports_sourced_lead_and_buttress_pairs_after_reopen() {
 
 #[test]
 fn rust_stdio_exports_partial_metric_unc_and_unf_receivers_with_their_floor() {
-    export_thread_pair_with_floor("iso_metric", length(6.), 1., 1.5);
+    export_thread_pair_with_stock_extra("iso_metric", length(6.), 1., 1.5);
     for (family, pitch) in [("unc", 25.4 / 20.), ("unf", 25.4 / 28.)] {
-        export_thread_pair_with_floor(family, json!({"value":0.25,"unit":"in"}), pitch, 1.5);
+        export_thread_pair_with_stock_extra(family, json!({"value":0.25,"unit":"in"}), pitch, 1.5);
+    }
+}
+#[test]
+fn rust_stdio_keeps_overrun_tool_lengths_while_exporting_only_the_receiving_stock() {
+    export_thread_pair_with_stock_extra("iso_metric", length(6.), 1., -1.5);
+    for (family, pitch) in [("unc", 25.4 / 20.), ("unf", 25.4 / 28.)] {
+        export_thread_pair_with_stock_extra(family, json!({"value":0.25,"unit":"in"}), pitch, -1.5);
     }
 }
 fn export_thread_pair(family: &str, diameter: Value, pitch: f64) {
-    export_thread_pair_with_floor(family, diameter, pitch, 0.);
+    export_thread_pair_with_stock_extra(family, diameter, pitch, 0.);
 }
-fn export_thread_pair_with_floor(family: &str, diameter: Value, pitch: f64, floor_mm: f64) {
+fn export_thread_pair_with_stock_extra(
+    family: &str,
+    diameter: Value,
+    pitch: f64,
+    stock_extra_mm: f64,
+) {
     let sourced_lead = matches!(family, "trapezoidal" | "acme" | "buttress");
     let physical_length = if sourced_lead { 3.37 * pitch } else { 3.7 };
     let stock_radius = match family {
@@ -1177,7 +1189,7 @@ fn export_thread_pair_with_floor(family: &str, diameter: Value, pitch: f64, floo
         "extrude",
         json!({
             "expected_revision": 3, "sketch": sketch, "regions": [0],
-            "distance": length(physical_length+floor_mm), "operation": "new_body",
+            "distance": length(physical_length+stock_extra_mm), "operation": "new_body",
         }),
     )["created"][0]["part"]
         .clone();
@@ -1189,7 +1201,7 @@ fn export_thread_pair_with_floor(family: &str, diameter: Value, pitch: f64, floo
     if matches!(family, "unc" | "unf") {
         receiver_arguments["fit"] = json!("unified_2b");
     }
-    if floor_mm > 0. && family == "iso_metric" {
+    if stock_extra_mm != 0. && family == "iso_metric" {
         receiver_arguments["fit"] = json!("metric_6h_internal");
     }
     if family == "buttress" {
@@ -1197,13 +1209,31 @@ fn export_thread_pair_with_floor(family: &str, diameter: Value, pitch: f64, floo
             "series":"bis_4696_nominal_2004", "load_flank_side":"positive_axis_side",
         });
     }
-    let receiver = client.ok("set_thread", receiver_arguments)["part"].clone();
+    let receiver_result = client.ok("set_thread", receiver_arguments);
+    let receiver = receiver_result["part"].clone();
+    if stock_extra_mm < 0. {
+        let inspection = client.ok(
+            "inspect_thread",
+            json!({"thread":receiver_result["thread"]}),
+        );
+        assert_eq!(
+            inspection["resolved"]["physical_length_mm"],
+            physical_length
+        );
+    }
     client.ok("save_project", json!({"expected_revision": 5}));
     drop(client);
 
     let saved = std::fs::read(&project).unwrap();
     let mut reopened = Client::start(&arguments);
     let model = reopened.ok("evaluate_model", json!({}));
+    if stock_extra_mm < 0. {
+        let source = reopened.ok(
+            "inspect_thread",
+            json!({"thread":receiver_result["thread"]}),
+        );
+        assert_eq!(source["resolved"]["physical_length_mm"], physical_length);
+    }
     for (part, name, stock_wall) in [
         (shaft, "shaft.step", false),
         (receiver, "receiver.step", true),
@@ -1224,8 +1254,15 @@ fn export_thread_pair_with_floor(family: &str, diameter: Value, pitch: f64, floo
         assert_eq!(step.contains("CYLINDRICAL_SURFACE"), stock_wall);
         assert_eq!(step.matches("MANIFOLD_SOLID_BREP").count(), 1);
         assert!(!step.contains("FACETED_BREP"));
-        if stock_wall && floor_mm > 0. {
-            assert_eq!(step.matches("ADVANCED_FACE").count(), 8);
+        if stock_wall && stock_extra_mm != 0. {
+            assert_eq!(
+                exact["bounds_mm"]["max"][2],
+                physical_length + stock_extra_mm
+            );
+            assert_eq!(
+                step.matches("ADVANCED_FACE").count(),
+                if stock_extra_mm > 0. { 8 } else { 7 }
+            );
             let imported = multicad_kernel::Solid::import_rust_step(
                 &step,
                 multicad_core::document::EntityId::new(),
@@ -1233,15 +1270,23 @@ fn export_thread_pair_with_floor(family: &str, diameter: Value, pitch: f64, floo
             )
             .unwrap();
             assert!(!imported.rust_thread_contains([0., 0., 0.2]).unwrap());
-            assert!(
-                imported
-                    .rust_thread_contains([0., 0., physical_length + floor_mm / 2.])
-                    .unwrap()
-            );
+            if stock_extra_mm > 0. {
+                assert!(
+                    imported
+                        .rust_thread_contains([0., 0., physical_length + stock_extra_mm / 2.])
+                        .unwrap()
+                );
+            } else {
+                assert!(
+                    !imported
+                        .rust_thread_contains([0., 0., physical_length + stock_extra_mm - 0.2])
+                        .unwrap()
+                );
+            }
         }
     }
     assert_eq!(std::fs::read(&project).unwrap(), saved);
-    if floor_mm > 0. {
+    if stock_extra_mm != 0. {
         drop(reopened);
         let imported_project = directory.path().join("imported-receiver.tcd");
         let args = [
