@@ -716,3 +716,129 @@ fn mirrored_primitive_and_authored_cylinders_remain_exact_chamfer_draft_and_shel
         }
     }
 }
+
+#[test]
+fn cylinder_mirror_certifies_extreme_authored_caps_in_the_world_frame() {
+    let policy = GeometryPolicy::default();
+    for (profile, uv) in [
+        (
+            PlaneFrame {
+                origin: [-1e7, 0., 0.],
+                u: [(1_f64 + 8e-11).sqrt(), 0., 0.],
+                v: [0., 1., 0.],
+            },
+            [1e7, 0.],
+        ),
+        (
+            PlaneFrame {
+                origin: [-1e7, -1e7, 0.],
+                u: [1., 0., 0.],
+                v: [8e-11, 1., 0.],
+            },
+            [1e7, 1e7],
+        ),
+    ] {
+        for height in [-3., 3.] {
+            let owner = EntityId::new();
+            let source = cylinder_source(
+                owner,
+                profile,
+                uv,
+                height,
+                true,
+                Origin {
+                    source: owner,
+                    role: "circle".into(),
+                },
+                policy,
+            );
+            let before = source.topology_snapshot(owner, 0).unwrap();
+            let before_bounds = source.bounds().unwrap();
+            let before_volume = source.volume_mm3().unwrap();
+            for plane in [
+                PlaneFrame::default(),
+                PlaneFrame {
+                    origin: [3., -2., 7.],
+                    u: [0.8, 0., -0.6],
+                    v: [0., 1., 0.],
+                },
+            ] {
+                let mirrored = source
+                    .mirrored_named(plane, EntityId::new(), policy)
+                    .unwrap();
+                let after = mirrored.topology_snapshot(owner, 1).unwrap();
+                let twice = mirrored
+                    .mirrored_named(plane, EntityId::new(), policy)
+                    .unwrap();
+                let restored = twice.topology_snapshot(owner, 2).unwrap();
+                let close = |actual: [f64; 3], expected: [f64; 3]| {
+                    let delta = std::array::from_fn::<_, 3, _>(|i| actual[i] - expected[i]);
+                    assert!(
+                        delta[0].hypot(delta[1]).hypot(delta[2]) <= policy.linear_tolerance_mm,
+                        "{actual:?} != {expected:?}"
+                    );
+                };
+                for old in before
+                    .elements
+                    .iter()
+                    .filter(|e| e.key.kind == TopologyKind::Face && e.key.ordinal < 2)
+                {
+                    let current = after.elements.iter().find(|e| e.key == old.key).unwrap();
+                    let back = restored.elements.iter().find(|e| e.key == old.key).unwrap();
+                    for anchor in &old.frames {
+                        let now = current
+                            .frames
+                            .iter()
+                            .find(|a| a.origin == anchor.origin)
+                            .unwrap()
+                            .frame;
+                        let recovered = back
+                            .frames
+                            .iter()
+                            .find(|a| a.origin == anchor.origin)
+                            .unwrap()
+                            .frame;
+                        close(
+                            now.origin_mm,
+                            reflected(plane, anchor.frame.origin_mm, true),
+                        );
+                        close(now.u, reflected(plane, anchor.frame.u, false));
+                        close(now.v, reflected(plane, anchor.frame.v, false).map(|x| -x));
+                        close(recovered.origin_mm, anchor.frame.origin_mm);
+                        close(recovered.u, anchor.frame.u);
+                        close(recovered.v, anchor.frame.v);
+                    }
+                }
+                near(mirrored.volume_mm3().unwrap(), before_volume);
+                close(twice.bounds().unwrap().min, before_bounds.min);
+                close(twice.bounds().unwrap().max, before_bounds.max);
+                let directory = tempfile::tempdir().unwrap();
+                let path = directory.path().join("extreme-circular-mirror.step");
+                mirrored.write_step(&path).unwrap();
+                let imported = Solid::import_rust_step(
+                    &std::fs::read_to_string(&path).unwrap(),
+                    EntityId::new(),
+                    policy,
+                )
+                .unwrap();
+                near(imported.volume_mm3().unwrap(), before_volume);
+                close(
+                    imported.bounds().unwrap().min,
+                    mirrored.bounds().unwrap().min,
+                );
+                close(
+                    imported.bounds().unwrap().max,
+                    mirrored.bounds().unwrap().max,
+                );
+                if OCCT_LINKED {
+                    let native = Solid::read_step(&path, policy).unwrap();
+                    near(native.volume_mm3().unwrap(), before_volume);
+                    close(native.bounds().unwrap().min, mirrored.bounds().unwrap().min);
+                    close(native.bounds().unwrap().max, mirrored.bounds().unwrap().max);
+                }
+                assert_eq!(source.topology_snapshot(owner, 0).unwrap(), before);
+                assert_eq!(source.bounds().unwrap(), before_bounds);
+            }
+        }
+    }
+}

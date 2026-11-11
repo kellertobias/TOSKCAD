@@ -60,18 +60,48 @@ impl CircularReflection {
         std::array::from_fn(|i| reflected[i] + self.offset * self.normal[i])
     }
 
-    fn anchor(&self, anchor: ReferenceFrame) -> ReferenceFrame {
+    fn anchor(
+        &self,
+        anchor: ReferenceFrame,
+        policy: GeometryPolicy,
+    ) -> Result<ReferenceFrame, GeometryError> {
         let reflected = ReferenceFrame {
             origin_mm: self.point(anchor.origin_mm),
             u: self.vector(anchor.u),
             v: self.vector(anchor.v).map(|value| -value),
         };
         let delta = std::array::from_fn(|i| reflected.origin_mm[i] - self.placed.origin[i]);
-        ReferenceFrame {
+        let stored = ReferenceFrame {
             origin_mm: self.inverse.map(|row| dot(row, delta)),
             u: self.inverse.map(|row| dot(row, reflected.u)),
             v: self.inverse.map(|row| dot(row, reflected.v)),
+        };
+        let axes = [self.placed.u, self.placed.v, self.placed.normal()];
+        let vector =
+            |local: [f64; 3]| std::array::from_fn(|i| (0..3).map(|j| axes[j][i] * local[j]).sum());
+        let recovered = ReferenceFrame {
+            origin_mm: position(self.placed, stored.origin_mm),
+            u: vector(stored.u),
+            v: vector(stored.v),
+        };
+        if [
+            (reflected.origin_mm, recovered.origin_mm),
+            (reflected.u, recovered.u),
+            (reflected.v, recovered.v),
+        ]
+        .into_iter()
+        .any(|(expected, actual)| {
+            let residual = std::array::from_fn::<_, 3, _>(|i| actual[i] - expected[i]);
+            let distance = residual[0].hypot(residual[1]).hypot(residual[2]);
+            !distance.is_finite() || distance > policy.linear_tolerance_mm
+        }) {
+            return Err(error(
+                "mirror",
+                GeometryErrorKind::Unsupported,
+                "Circular Mirror cannot preserve the reflected attachment within model tolerance",
+            ));
         }
+        Ok(stored)
     }
 }
 
@@ -88,7 +118,7 @@ impl Solid {
             let authored_v = frame
                 .v
                 .map(|value| if body.reverse { -value } else { value });
-            let anchors = std::array::from_fn(|cap| {
+            let anchors: [_; 2] = std::array::from_fn(|cap| {
                 let center = position(
                     frame,
                     [
@@ -101,15 +131,16 @@ impl Solid {
                         },
                     ],
                 );
-                reflection.anchor(body.cap_anchor(frame, cap, center, authored_v))
+                reflection.anchor(body.cap_anchor(frame, cap, center, authored_v), policy)
             });
+            let [start, end] = anchors;
             let mirrored = AnnulusBody {
                 geometry: body.geometry,
                 feature: body.feature,
                 wall_origins: body.wall_origins.clone(),
                 center_uv: body.center_uv,
                 reverse: !body.reverse,
-                cap_anchors: Some(anchors),
+                cap_anchors: Some([start?, end?]),
             };
             let result = Self {
                 body: SolidBody::Annulus(Rc::new(mirrored), reflection.placed),
@@ -152,7 +183,7 @@ impl Solid {
                                     && element.key.ordinal == cap as u32
                             })
                             .expect("validated circular cap");
-                        *anchor = reflection.anchor(source.frames[0].frame);
+                        *anchor = reflection.anchor(source.frames[0].frame, policy)?;
                     }
                     Ok(Rc::new(crate::geometry::CylinderSketch {
                         origin: sketch.origin.clone(),
