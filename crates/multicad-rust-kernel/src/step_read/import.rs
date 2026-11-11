@@ -47,6 +47,12 @@ pub enum ImportProfile {
         stock_radius_mm: f64,
         stock_length_mm: f64,
     },
+    /// Exact externally threaded prefix followed by untouched cylindrical stock.
+    ThreadedShaft {
+        spec: crate::helical_thread::Spec,
+        stock_radius_mm: f64,
+        stock_length_mm: f64,
+    },
     HelicalNut {
         spec: crate::helical_thread::Spec,
         across_flats_mm: f64,

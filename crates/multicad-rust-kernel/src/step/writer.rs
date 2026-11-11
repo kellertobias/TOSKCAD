@@ -227,6 +227,29 @@ impl Writer {
         self.append(|file| super::worm_gear::encode_wheel(file, wheel, placement, tolerance_mm))
     }
 
+    pub fn append_threaded_shaft(
+        &mut self,
+        shaft: &crate::threaded_shaft::Shaft,
+        origin: Point,
+        u: Point,
+        v: Point,
+        tolerance_mm: f64,
+    ) -> Result<(), StepError> {
+        let placement = Placement::new(origin, u, v)?;
+        self.append(|file| {
+            helical::encode(
+                file,
+                shaft.thread(),
+                helical::Closure::ExternalStock {
+                    radius_mm: shaft.radius_mm(),
+                    stock_length_mm: shaft.stock_length_mm(),
+                },
+                placement,
+                tolerance_mm,
+            )
+        })
+    }
+
     pub fn append_helical_receiver(
         &mut self,
         receiver: &crate::helical_receiver::Receiver,

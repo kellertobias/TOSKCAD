@@ -33,6 +33,10 @@ pub(crate) enum Closure {
         radius_mm: f64,
         stock_length_mm: f64,
     },
+    ExternalStock {
+        radius_mm: f64,
+        stock_length_mm: f64,
+    },
     /// External thread with a coaxial through bore of this radius.
     Hollow(f64),
     HexHead {
@@ -130,6 +134,9 @@ impl Closure {
     pub(crate) fn stock_length(self, thread_length: f64) -> f64 {
         if let Self::BlindBore {
             stock_length_mm, ..
+        }
+        | Self::ExternalStock {
+            stock_length_mm, ..
         } = self
         {
             stock_length_mm
@@ -137,10 +144,13 @@ impl Closure {
             thread_length
         }
     }
-    pub(crate) fn face_count(self, bands: usize) -> usize {
+    pub(crate) fn face_count(self, bands: usize, major: f64) -> usize {
         match self {
             Self::Shaft => bands + 2,
             Self::BlindBore { .. } => bands + 4,
+            Self::ExternalStock { radius_mm, .. } => {
+                bands + 3 + if radius_mm == major { bands / 4 } else { 1 }
+            }
             Self::Bore(_) | Self::Hollow(_) => bands + 3,
             Self::HexHead { .. } => bands + 9,
             Self::HexNut(_) => bands + 8,
@@ -154,6 +164,9 @@ impl Closure {
             Self::Bore(radius)
             | Self::BlindBore {
                 radius_mm: radius, ..
+            }
+            | Self::ExternalStock {
+                radius_mm: radius, ..
             } => (radius, 0.),
             Self::HexNut(width) => (width / 3_f64.sqrt(), 0.),
             Self::HexHead {
@@ -163,6 +176,32 @@ impl Closure {
             Self::SocketHead(head) => (head.radius_mm, head.height_mm + head.shank_length_mm),
         }
     }
+}
+
+pub fn write_threaded_shaft(
+    shaft: &crate::threaded_shaft::Shaft,
+    origin: Point,
+    u: Point,
+    v: Point,
+    tolerance_mm: f64,
+) -> Result<String, StepError> {
+    write_one(|writer| writer.append_threaded_shaft(shaft, origin, u, v, tolerance_mm))
+}
+pub fn supports_threaded_shaft(
+    shaft: &crate::threaded_shaft::Shaft,
+    origin: Point,
+    tolerance_mm: f64,
+) -> bool {
+    prepare(
+        shaft.thread(),
+        Closure::ExternalStock {
+            radius_mm: shaft.radius_mm(),
+            stock_length_mm: shaft.stock_length_mm(),
+        },
+        origin,
+        tolerance_mm,
+    )
+    .is_ok()
 }
 
 pub fn write_helical_receiver(
@@ -263,6 +302,29 @@ pub(super) fn encode(
     placement: Placement,
     tolerance_mm: f64,
 ) -> Result<Entity, StepError> {
+    if let Closure::ExternalStock {
+        radius_mm,
+        stock_length_mm,
+    } = closure
+    {
+        let norm = |[x, y, z]: Point| x.hypot(y).hypot(z);
+        let unit = |p: Point| {
+            let n = norm(p);
+            p.map(|v| v / n)
+        };
+        let normal = unit(placement.normal);
+        let v = unit(cross(normal, unit(placement.u)));
+        let u = cross(v, normal);
+        // STEP directions are normalized by its frame semantics. Bound the
+        // complete retained stock, not only the much smaller thread nets.
+        // Preparation separately reserves 128 eps * scale for arithmetic.
+        let residual = norm(std::array::from_fn(|i| placement.u[i] - u[i])) * radius_mm
+            + norm(std::array::from_fn(|i| placement.v[i] - v[i])) * radius_mm
+            + norm(std::array::from_fn(|i| placement.normal[i] - normal[i])) * stock_length_mm;
+        if !residual.is_finite() || residual > tolerance_mm.min(MAX_ERROR_MM) / 8. {
+            return Err(StepError::InvalidPlacement);
+        }
+    }
     let ThreadSplines {
         bands,
         axial,
@@ -295,11 +357,33 @@ pub(super) fn encode(
             curve(file, &axial, [bottom, top], &mut poles)
         })
         .collect::<Vec<_>>();
+    let external = if let Closure::ExternalStock {
+        radius_mm,
+        stock_length_mm,
+    } = closure
+    {
+        if radius_mm == spec.major_radius_mm {
+            let trim = tangent::external(
+                file,
+                &placement,
+                thread,
+                stock_length_mm,
+                (0..spec.starts as usize)
+                    .map(|k| [rings[1][4 * k], rings[1][4 * k + 3]])
+                    .collect(),
+            );
+            Some(trim?)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
     let shank = closure
         .tangent_shank()
         .map(|length| tangent::encode(file, &placement, thread, length, [rings[0][0], rings[0][3]]))
         .transpose()?;
-    let mut faces = Vec::with_capacity(closure.face_count(bands.len()));
+    let mut faces = Vec::with_capacity(closure.face_count(bands.len(), spec.major_radius_mm));
     let mut cap_edges = [
         Vec::with_capacity(bands.len()),
         Vec::with_capacity(bands.len()),
@@ -308,6 +392,12 @@ pub(super) fn encode(
     for (i, band) in bands.iter().enumerate() {
         let next = (i + 1) % bands.len();
         let rims = [0, 1].map(|end| {
+            if end == 1
+                && i % 4 == 3
+                && let Some(external) = &external
+            {
+                return external.crests[i / 4];
+            }
             if end == 0
                 && i == 3
                 && let Some(shank) = &shank
@@ -341,9 +431,23 @@ pub(super) fn encode(
     }
 
     let centers = [0., height].map(|z| placement.point_f64([0.; 2], z));
-    let cylinder = if let Some((radius, outward)) = closure.cylinder() {
-        let stock_centers =
-            [0., closure.stock_length(height)].map(|z| placement.point_f64([0.; 2], z));
+    let cylinder_spec = if let Closure::ExternalStock {
+        radius_mm,
+        stock_length_mm,
+    } = closure
+    {
+        if external.is_none() {
+            Some((radius_mm, true, [height, stock_length_mm]))
+        } else {
+            None
+        }
+    } else {
+        closure
+            .cylinder()
+            .map(|(radius, outward)| (radius, outward, [0., closure.stock_length(height)]))
+    };
+    let cylinder = if let Some((radius, outward, ends)) = cylinder_spec {
+        let stock_centers = ends.map(|z| placement.point_f64([0.; 2], z));
         let trim = CylindricalTrim::new(file, stock_centers, placement.normal, placement.u, radius);
         Some((trim?, outward))
     } else {
@@ -361,6 +465,7 @@ pub(super) fn encode(
         Closure::Shaft
         | Closure::Bore(_)
         | Closure::BlindBore { .. }
+        | Closure::ExternalStock { .. }
         | Closure::Hollow(_)
         | Closure::HexNut(_) => None,
     };
@@ -375,8 +480,33 @@ pub(super) fn encode(
     } else {
         None
     };
+    let mut extra_shoulders = Vec::new();
     for (end, cap) in cap_edges.into_iter().enumerate() {
         let top = end == 1;
+        if top && let Some(external) = &external {
+            for (k, part) in cap.chunks_exact(4).enumerate() {
+                let uses = [
+                    (part[0], true),
+                    (part[1], true),
+                    (part[2], true),
+                    (external.complements[k], false),
+                ];
+                let wire = if spec.left_hand {
+                    uses.map(|(e, s)| file.oriented_edge(e, s))
+                } else {
+                    [3, 2, 1, 0].map(|i| file.oriented_edge(uses[i].0, !uses[i].1))
+                };
+                let bound = file.bound(&wire, true);
+                let center = file.point(centers[1]);
+                let face = file.face(&[bound], center, placement.normal.map(|n| -n), placement.u);
+                if k == 0 {
+                    faces.push(face);
+                } else {
+                    extra_shoulders.push(face);
+                }
+            }
+            continue;
+        }
         let ring_forward = top == forward;
         let mut uses = cap.into_iter().map(|edge| (edge, true)).collect::<Vec<_>>();
         if !top && let Some(shank) = &shank {
@@ -392,12 +522,14 @@ pub(super) fn encode(
                 .map(|(edge, sense)| file.oriented_edge(edge, !sense))
                 .collect::<Vec<_>>()
         };
-        let trim = file.bound(&edges, !closure.cap_hole(top));
+        let outside = matches!(closure, Closure::ExternalStock { .. });
+        let trim = file.bound(&edges, !closure.cap_hole(top) && !(outside && top));
         let mut bounds = Vec::with_capacity(2);
         if let Some((cylinder, outward)) = &cylinder
             && !(top && closure.is_blind_bore())
+            && !(outside && !top)
         {
-            bounds.push(cylinder.cap_bound(file, top, *outward));
+            bounds.push(cylinder.cap_bound(file, top && !outside, *outward));
         }
         if let Some((rims, _)) = &hex {
             bounds.push(rims[end]);
@@ -410,19 +542,24 @@ pub(super) fn encode(
         }
         bounds.push(trim);
         let center = file.point(centers[end]);
-        let outward = closure.cap_positive(top);
+        let outward = closure.cap_positive(top) && !outside;
         let normal = placement
             .normal
             .map(|value| if outward { value } else { -value });
         faces.push(file.face(&bounds, center, normal, placement.u));
     }
+    faces.extend(extra_shoulders);
     if let Some((cylinder, outward)) = &cylinder {
         faces.push(cylinder.wall(file, *outward));
-        if closure.is_blind_bore() {
+        if closure.is_blind_bore() || matches!(closure, Closure::ExternalStock { .. }) {
             let bound = cylinder.cap_bound(file, true, true);
             let center = file.point(placement.point_f64([0.; 2], closure.stock_length(height)));
             faces.push(file.face(&[bound], center, placement.normal, placement.u));
         }
+    }
+    if let Some(external) = external {
+        faces.push(external.wall);
+        faces.push(external.far_cap);
     }
     if let Some((_, walls)) = hex {
         faces.extend(walls);
@@ -547,7 +684,11 @@ pub(crate) fn prepare(
     if spec.starts != 1
         && !matches!(
             closure,
-            Closure::Shaft | Closure::Bore(_) | Closure::HexNut(_) | Closure::BlindBore { .. }
+            Closure::Shaft
+                | Closure::Bore(_)
+                | Closure::HexNut(_)
+                | Closure::BlindBore { .. }
+                | Closure::ExternalStock { .. }
         )
     {
         return Err(StepError::Unsupported);
@@ -556,6 +697,7 @@ pub(crate) fn prepare(
         || tolerance_mm <= 0.
         || matches!(closure, Closure::Bore(r) if !r.is_finite() || r <= spec.major_radius_mm)
         || matches!(closure, Closure::BlindBore { radius_mm,stock_length_mm } if crate::helical_receiver::Receiver::new(*thread,radius_mm,stock_length_mm).is_err())
+        || matches!(closure, Closure::ExternalStock {radius_mm,stock_length_mm} if crate::threaded_shaft::Shaft::new(*thread,radius_mm,stock_length_mm).is_err())
         || matches!(closure, Closure::HexNut(width) if !width.is_finite() || width / 2. <= spec.major_radius_mm)
         || matches!(closure, Closure::Hollow(r)
             if !r.is_finite() || r <= 0. || r >= spec.major_radius_mm - spec.depth_mm)
@@ -580,6 +722,7 @@ pub(crate) fn prepare(
         || spec.major_radius_mm - spec.depth_mm <= tolerance
         || matches!(closure, Closure::Bore(radius) if radius - major <= tolerance)
         || matches!(closure, Closure::BlindBore { radius_mm,stock_length_mm } if radius_mm-major<=tolerance || stock_length_mm-height<=tolerance)
+        || matches!(closure, Closure::ExternalStock {radius_mm,stock_length_mm} if (radius_mm!=major && radius_mm-major<=tolerance) || stock_length_mm-height<=tolerance)
         || matches!(closure, Closure::HexNut(width) if width / 2. - major <= tolerance)
         || matches!(closure, Closure::Hollow(radius)
             if radius <= tolerance || major - spec.depth_mm - radius <= tolerance)
@@ -653,8 +796,12 @@ pub(crate) fn prepare(
     if bands.iter().any(|band| !band.advances_angle(-hand)) {
         return Err(StepError::Limit);
     }
-    if closure.tangent_shank().is_some() {
-        check_shank_clearance(&bands[..3], major)?;
+    if closure.tangent_shank().is_some()
+        || matches!(closure,Closure::ExternalStock {radius_mm,..} if radius_mm==major)
+    {
+        for part in bands.chunks_exact(4) {
+            check_shank_clearance(&part[..3], major)?;
+        }
     }
     let poles = bands.iter().map(|band| band.poles.len()).sum::<usize>();
     if poles > (MAX_STEP_ENTITIES / 2) / axial.poles.len() {
@@ -953,6 +1100,50 @@ mod tests {
         assert_eq!(
             encode_socket_head(&mut file, &placement, invalid).err(),
             Some(StepError::InvalidGeometry)
+        );
+    }
+
+    #[test]
+    fn external_encoder_rejects_unrepresentable_tangent_and_collapsed_cylinder_charts() {
+        let source = thread(2, false);
+        let big = Thread::new(crate::helical_thread::Spec {
+            major_radius_mm: 1e4,
+            ..source.spec()
+        })
+        .unwrap();
+        let mut file = StepFile::new();
+        let placement = Placement::new([0.; 3], [1. + 4e-11, 0., 0.], [0., 1., 0.]).unwrap();
+        assert!(
+            encode(
+                &mut file,
+                &big,
+                Closure::ExternalStock {
+                    radius_mm: 1e4,
+                    stock_length_mm: 5.
+                },
+                placement,
+                1e-7
+            )
+            .is_err()
+        );
+        let placement = Placement {
+            origin: [0.; 3],
+            u: [0.; 3],
+            v: [0.; 3],
+            normal: [0.; 3],
+        };
+        assert!(
+            encode(
+                &mut file,
+                &source,
+                Closure::ExternalStock {
+                    radius_mm: 4.,
+                    stock_length_mm: 5.
+                },
+                placement,
+                1e-7
+            )
+            .is_err()
         );
     }
 

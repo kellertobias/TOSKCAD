@@ -9,6 +9,7 @@ use crate::{
     },
 };
 
+mod external;
 mod hex_head;
 mod socket_head;
 mod tangent_shank;
@@ -52,6 +53,26 @@ pub fn verify_helical_receiver(
         Closure::BlindBore {
             radius_mm: receiver.radius_mm(),
             stock_length_mm: receiver.stock_length_mm(),
+        },
+        [origin, u, v],
+        tolerance,
+    )
+}
+
+pub fn verify_threaded_shaft(
+    input: &str,
+    shaft: &crate::threaded_shaft::Shaft,
+    origin: Point,
+    u: Point,
+    v: Point,
+    tolerance: f64,
+) -> Result<f64> {
+    verify(
+        input,
+        shaft.thread(),
+        Closure::ExternalStock {
+            radius_mm: shaft.radius_mm(),
+            stock_length_mm: shaft.stock_length_mm(),
         },
         [origin, u, v],
         tolerance,
@@ -128,6 +149,10 @@ pub(super) fn verify_member(
                 Closure::BlindBore {
                     stock_length_mm, ..
                 } => stock_length_mm,
+                Closure::ExternalStock {
+                    radius_mm,
+                    stock_length_mm,
+                } => radius_mm.max(stock_length_mm),
                 Closure::HexNut(width) => width,
                 Closure::HexHead {
                     across_flats_mm,
@@ -151,7 +176,7 @@ pub(super) fn verify_member(
     let forward = thread.spec().left_hand != closure.inside();
     let faces = shell.member_faces(id)?;
     let count = splines.bands.len();
-    require(faces.len() == closure.face_count(count))?;
+    require(faces.len() == closure.face_count(count, thread.spec().major_radius_mm))?;
     let mut rings: [Vec<u32>; 2] = std::array::from_fn(|_| vec![0; count]);
     let mut rails = vec![[0; 2]; count];
     let mut corners = vec![[[0; 2]; 2]; count];
@@ -237,6 +262,12 @@ pub(super) fn verify_member(
                 // The circular crest is verified with the shank wall.
                 continue;
             }
+            if cap == 1
+                && i % 4 == 3
+                && matches!(closure,Closure::ExternalStock {radius_mm,..} if radius_mm==thread.spec().major_radius_mm)
+            {
+                continue;
+            }
             let z = [0., height][cap];
             let axial = splines.axial.poles[if cap == 0 {
                 0
@@ -265,6 +296,9 @@ pub(super) fn verify_member(
     let mut hex_rims = [0; 2];
     let mut tangent = None;
     for (end, (face_id, z)) in faces[count..count + 2].iter().zip([0., height]).enumerate() {
+        if matches!(closure, Closure::ExternalStock { .. }) {
+            continue;
+        }
         let top = end == 1;
         let (surface, outward, bounds) = face(shell, *face_id)?;
         let hole = closure.cap_hole(top);
@@ -324,6 +358,19 @@ pub(super) fn verify_member(
         }
     }
     let outside_volume = match closure {
+        Closure::ExternalStock {
+            radius_mm,
+            stock_length_mm,
+        } => external::verify(
+            proof,
+            shell,
+            &faces[count..],
+            thread,
+            [radius_mm, stock_length_mm],
+            &rings,
+            &corners,
+            [origin, u, v],
+        )?,
         Closure::Shaft => 0.,
         Closure::Bore(radius) | Closure::Hollow(radius) => {
             let outer = matches!(closure, Closure::Bore(_));

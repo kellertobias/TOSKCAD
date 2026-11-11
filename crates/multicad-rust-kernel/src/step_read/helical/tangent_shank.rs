@@ -93,7 +93,7 @@ pub(super) fn verify(
     Ok((head_rim, plane.origin, volume))
 }
 
-fn arc(
+pub(super) fn arc(
     shell: &mut Shell<'_, '_>,
     edge: u32,
     vertices: [u32; 2],

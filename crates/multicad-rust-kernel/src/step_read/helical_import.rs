@@ -12,6 +12,8 @@ pub use headed::helical_screw_import_matches;
 mod cylindrical_closure;
 mod receiver;
 pub use receiver::helical_receiver_import_matches;
+mod external;
+pub use external::threaded_shaft_import_matches;
 mod nut;
 pub use nut::helical_nut_import_matches;
 use std::f64::consts::TAU;
@@ -40,17 +42,27 @@ pub(super) fn read_member(
         }
         count += 1;
     }
-    if !count.is_multiple_of(4) || !matches!(faces.len() - count, 2 | 3 | 4 | 8 | 9 | 11 | 13) {
+    if !count.is_multiple_of(4)
+        || !(matches!(faces.len() - count, 2 | 3 | 4 | 8 | 9 | 11 | 13)
+            || faces.len() - count == count / 4 + 3)
+    {
         return Ok(None);
     }
     if count > 32 {
         return Err(ReadError::Limit);
     }
     let starts = (count / 4) as u32;
-    let headed = matches!(faces.len() - count, 9 | 11 | 13);
+    let tail = faces.len() - count;
+    let entry_bounds = face(shell, faces[count])?.2.len();
+    let shoulder_bounds = face(shell, faces[count + 1])?.2.len();
+    let external =
+        entry_bounds == 1 && (tail == 4 || (tail == starts as usize + 3 && shoulder_bounds == 1));
+    let tangent_external = external && shoulder_bounds == 1;
+    let external_shoulders = if tangent_external { starts as usize } else { 1 };
+    let headed = !external && matches!(faces.len() - count, 9 | 11 | 13);
     let shank = faces.len() - count == 13;
-    let is_receiver = faces.len() - count == 4;
-    let is_nut = faces.len() - count == 8;
+    let is_receiver = !external && faces.len() - count == 4;
+    let is_nut = !external && faces.len() - count == 8;
     let mut grids = Vec::with_capacity(4);
     let mut radial = Vec::with_capacity(4);
     let mut axial = None;
@@ -95,8 +107,8 @@ pub(super) fn read_member(
     };
     let bottom = plane(faces[count])?;
     let top = plane(faces[count + 1])?;
-    let far = if is_receiver {
-        Some(plane(faces[count + 3])?)
+    let far = if is_receiver || external {
+        Some(plane(*faces.last().ok_or(ReadError::Invalid)?)?)
     } else {
         None
     };
@@ -123,8 +135,13 @@ pub(super) fn read_member(
         let point = shell.point(*ids.first().ok_or(ReadError::Invalid)?)?;
         Ok(length(sub(point, origin)))
     };
-    let major = if shank {
-        let (surface, forward, _) = face(shell, faces[count + 2])?;
+    let major = if shank || tangent_external {
+        let offset = if tangent_external {
+            external_shoulders + 1
+        } else {
+            2
+        };
+        let (surface, forward, _) = face(shell, faces[count + offset])?;
         require(forward)?;
         let [Value::String(_), _, Value::Number(radius)] =
             shell.args(surface, "CYLINDRICAL_SURFACE")?
@@ -169,8 +186,9 @@ pub(super) fn read_member(
             [lower_run.atan().to_degrees(), upper_run.atan().to_degrees()],
         )
     };
-    let stock = if matches!(faces.len() - count, 3 | 4) {
-        let (surface, outward, _) = face(shell, faces[count + 2])?;
+    let stock = if external || matches!(faces.len() - count, 3 | 4) {
+        let offset = if external { external_shoulders + 1 } else { 2 };
+        let (surface, outward, _) = face(shell, faces[count + offset])?;
         require(outward)?;
         let [Value::String(_), _, Value::Number(radius)] =
             shell.args(surface, "CYLINDRICAL_SURFACE")?
@@ -190,7 +208,7 @@ pub(super) fn read_member(
         lower_flank_deg: flank_degrees[0],
         upper_flank_deg: flank_degrees[1],
         starts,
-        left_hand: first.1 != (stock.is_some() || is_nut),
+        left_hand: first.1 != ((!external && stock.is_some()) || is_nut),
         root_radius_mm: root_radius,
     })
     .map_err(|e| match e {
@@ -233,7 +251,7 @@ pub(super) fn read_member(
         None
     };
     let receiver = if is_receiver {
-        let far = far.ok_or(ReadError::Invalid)?;
+        let far = far.as_ref().ok_or(ReadError::Invalid)?;
         let length = headed::Chart::new([origin, u, v])?.local(far.origin)[2];
         Some(
             crate::helical_receiver::Receiver::new(
@@ -249,8 +267,29 @@ pub(super) fn read_member(
     } else {
         None
     };
-    let stock_height = receiver.as_ref().map_or(height, |r| r.stock_length_mm());
-    let closure = if let Some(receiver) = &receiver {
+    let shaft = if external {
+        let far = far.as_ref().ok_or(ReadError::Invalid)?;
+        let length = headed::Chart::new([origin, u, v])?.local(far.origin)[2];
+        Some(
+            crate::threaded_shaft::Shaft::new(thread, stock.ok_or(ReadError::Invalid)?, length)
+                .map_err(|e| match e {
+                    crate::helical_thread::ThreadError::Invalid => ReadError::Invalid,
+                    crate::helical_thread::ThreadError::Limit => ReadError::Limit,
+                })?,
+        )
+    } else {
+        None
+    };
+    let stock_height = shaft.as_ref().map_or_else(
+        || receiver.as_ref().map_or(height, |r| r.stock_length_mm()),
+        |s| s.stock_length_mm(),
+    );
+    let closure = if let Some(shaft) = &shaft {
+        Closure::ExternalStock {
+            radius_mm: shaft.radius_mm(),
+            stock_length_mm: shaft.stock_length_mm(),
+        }
+    } else if let Some(receiver) = &receiver {
         Closure::BlindBore {
             radius_mm: receiver.radius_mm(),
             stock_length_mm: receiver.stock_length_mm(),
@@ -272,6 +311,9 @@ pub(super) fn read_member(
         Some(shell.tolerance.min(1e-7) / 16.),
     )?;
     let support = |direction: Point| {
+        if let Some(shaft) = &shaft {
+            return shaft.support(direction);
+        }
         stock.map_or_else(
             || {
                 nut.as_ref().map_or_else(
@@ -297,7 +339,11 @@ pub(super) fn read_member(
     });
     let circles = stock.map_or_else(Vec::new, |radius| {
         [
-            origin,
+            if external {
+                std::array::from_fn(|i| origin[i] + n[i] * height)
+            } else {
+                origin
+            },
             std::array::from_fn(|i| origin[i] + n[i] * stock_height),
         ]
         .map(|center_mm| CircleEdge {
@@ -305,7 +351,9 @@ pub(super) fn read_member(
             normal: n,
             radius_mm: radius,
         })
-        .to_vec()
+        .into_iter()
+        .skip(usize::from(tangent_external))
+        .collect()
     });
     let readback = Readback {
         bounds_mm: bounds,
@@ -326,7 +374,13 @@ pub(super) fn read_member(
             u,
             v,
             height_mm: stock_height,
-            profile: if let Some(receiver) = receiver {
+            profile: if let Some(shaft) = shaft {
+                ImportProfile::ThreadedShaft {
+                    spec: thread.spec(),
+                    stock_radius_mm: shaft.radius_mm(),
+                    stock_length_mm: shaft.stock_length_mm(),
+                }
+            } else if let Some(receiver) = receiver {
                 ImportProfile::HelicalReceiver {
                     spec: receiver.thread().spec(),
                     stock_radius_mm: receiver.radius_mm(),
