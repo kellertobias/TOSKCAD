@@ -10,12 +10,12 @@ impl Solid {
         feature: EntityId,
         policy: GeometryPolicy,
     ) -> Result<Self, GeometryError> {
-        let [opening] = openings else {
+        if openings.is_empty() {
             return Err(shell_error(
                 GeometryErrorKind::Unsupported,
-                "Rust Shell requires exactly one opening face",
+                "Rust Shell requires at least one opening face",
             ));
-        };
+        }
         if self.policy != policy {
             return Err(shell_error(
                 GeometryErrorKind::Unsupported,
@@ -51,17 +51,21 @@ impl Solid {
         {
             return Err(unsupported_stock());
         }
-        let (&(open_axis, _, open_positive), _) = faces
-            .iter()
-            .find(|(_, supports)| supports[0].face.key == opening.key)
-            .ok_or_else(unsupported_stock)?;
+        let mut selected = BTreeMap::new();
+        for opening in openings {
+            let (&(axis, _, positive), _) = faces
+                .iter()
+                .find(|(_, supports)| supports[0].face.key == opening.key)
+                .ok_or_else(unsupported_stock)?;
+            selected.insert((axis, positive), opening);
+        }
 
         let mut shifted = stock;
         for i in 0..3 {
-            if i != open_axis || open_positive {
+            if !selected.contains_key(&(i, false)) {
                 shifted.min[i] += thickness;
             }
-            if i != open_axis || !open_positive {
+            if !selected.contains_key(&(i, true)) {
                 shifted.max[i] -= thickness;
             }
         }
@@ -89,7 +93,7 @@ impl Solid {
                 .expect("one checked support")
                 .face;
             let normal = cardinal_normal(axis, positive);
-            if face.key == opening.key {
+            if let Some(opening) = selected.get(&(axis, positive)) {
                 let frame = offset_face(&mut face, [0.; 3], false);
                 face.frames.push(AnchoredFrame {
                     origin: opening.origin.clone(),
