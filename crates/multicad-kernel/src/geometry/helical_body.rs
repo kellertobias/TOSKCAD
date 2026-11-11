@@ -446,6 +446,7 @@ impl Solid {
     ) -> Result<Self, GeometryError> {
         policy.validate()?;
         frame.checked(policy)?;
+        let tool = checked_thread(spec, None, policy)?;
         let SolidBody::AxialCylinder(cylinder, stock_frame, sketch) = &self.body else {
             return Err(error(
                 OPERATION,
@@ -523,20 +524,16 @@ impl Solid {
                 "The receiving thread cannot retain its declared axial interval",
             ));
         }
+        stock_frame::certify_tool_placement(frame, placed, &tool, policy)?;
         let radius = cylinder.circle().radius().as_f64();
         let prefix = if spec.length_mm > height {
-            Some(
-                checked_thread(spec, None, policy)?
-                    .axial_prefix(height)
-                    .map(Box::new)
-                    .map_err(|_| {
-                        error(
-                            OPERATION,
-                            GeometryErrorKind::Limit,
-                            "Receiving stock is too short for the certified thread prefix",
-                        )
-                    })?,
-            )
+            Some(tool.axial_prefix(height).map(Box::new).map_err(|_| {
+                error(
+                    OPERATION,
+                    GeometryErrorKind::Limit,
+                    "Receiving stock is too short for the certified thread prefix",
+                )
+            })?)
         } else {
             None
         };
@@ -562,7 +559,7 @@ impl Solid {
                 Ok(HelicalForm::Bore(stock))
             })
         } else {
-            Self::rust_helical_body(spec, None, feature, placed, policy, |_| {
+            Self::publish_helical_geometry(tool, feature, placed, policy, |_| {
                 Ok(HelicalForm::Bore(stock))
             })
         }

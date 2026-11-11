@@ -219,3 +219,38 @@ pub(super) fn store_anchors(
     }
     Ok(result)
 }
+
+/// Certify the complete authored tool map before replacing its requested chart
+/// with the coaxial receiving chart. Axial agreement alone does not bound the
+/// displacement of a wide tool's radial domain.
+pub(super) fn certify_tool_placement(
+    requested: PlaneFrame,
+    placed: PlaneFrame,
+    tool: &Thread,
+    policy: GeometryPolicy,
+) -> Result<(), GeometryError> {
+    let spec = tool.spec();
+    let extents = [spec.major_radius_mm, spec.major_radius_mm, spec.length_mm];
+    let bounds = Bounds {
+        min: [-spec.major_radius_mm, -spec.major_radius_mm, 0.],
+        max: extents,
+    };
+    requested.checked_metric_bounds(bounds, policy)?;
+    placed.checked_metric_bounds(bounds, policy)?;
+    let mut residual = difference_bound(requested.origin, placed.origin);
+    for ((a, b), extent) in [requested.u, requested.v, requested.normal()]
+        .into_iter()
+        .zip([placed.u, placed.v, placed.normal()])
+        .zip(extents)
+    {
+        residual = (residual + (difference_bound(a, b) * extent).next_up()).next_up();
+    }
+    if !residual.is_finite() || residual > policy.linear_tolerance_mm / 16. {
+        return Err(error(
+            OPERATION,
+            GeometryErrorKind::Unsupported,
+            "Receiving thread cannot preserve its requested tool placement over the full authored interval",
+        ));
+    }
+    Ok(())
+}
