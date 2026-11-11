@@ -12,6 +12,7 @@ use std::{collections::BTreeSet, f64::consts::TAU};
 
 mod fillet;
 mod piercing;
+mod profile_depth;
 pub use piercing::SweepOpening;
 
 #[derive(Clone)]
@@ -237,7 +238,7 @@ fn local_cap_anchors(
     Ok([convert(caps[0], heights[0])?, convert(caps[1], heights[1])?])
 }
 
-fn convert_edge(edge: &CurvedEdge2d) -> Result<Edge, GeometryError> {
+pub(super) fn convert_edge(edge: &CurvedEdge2d) -> Result<Edge, GeometryError> {
     match *edge {
         CurvedEdge2d::Line { a, b } => Ok(Edge::Line { a, b }),
         CurvedEdge2d::Arc {

@@ -237,6 +237,9 @@ impl Solid {
         };
         frame.checked(policy)?;
         match profile {
+            ImportProfile::NormalRelief { relief } => {
+                Self::from_imported_normal_relief(relief, frame, feature, policy)
+            }
             ImportProfile::HelicalThread {
                 spec,
                 stock_radius_mm,

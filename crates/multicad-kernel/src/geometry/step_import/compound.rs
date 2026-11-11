@@ -27,6 +27,16 @@ fn unsigned_normal(normal: Point) -> Point {
 // members. An update must not bind a face to a different shell just because
 // its shell was moved to the same list position.
 fn member_signature(readback: &Readback, imported: &ImportSolid) -> ContentHash {
+    if let ImportProfile::NormalRelief { relief } = &imported.profile {
+        return super::super::normal_relief_body::imported_signature(
+            relief,
+            PlaneFrame {
+                origin: imported.origin_mm,
+                u: imported.u,
+                v: imported.v,
+            },
+        );
+    }
     let lines = readback.edges_mm.iter().map(|&points| {
         let mut points = points;
         points.sort_unstable_by(compare_points);
@@ -476,6 +486,14 @@ fn match_leaf(leaf: &Solid, members: &[(Readback, Option<ImportSolid>)], toleran
         return false;
     }
     if let Some(profile) = profile {
+        if let Some((body, frame)) = leaf.normal_relief_body() {
+            return step_read::normal_relief_import_matches(
+                profile,
+                &body.geometry,
+                [frame.origin, frame.u, frame.v],
+                tolerance,
+            );
+        }
         return leaf.matches_imported_helical_thread(profile, tolerance)
             || leaf.matches_helical_cut_profile(profile);
     }

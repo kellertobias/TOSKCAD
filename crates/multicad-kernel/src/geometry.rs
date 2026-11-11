@@ -22,6 +22,7 @@ mod helical_tube_body;
 mod herringbone_body;
 mod linear_body;
 mod nonplanar_loft_body;
+mod normal_relief_body;
 mod normal_sweep_body;
 mod orthogonal_body;
 mod parallel_cylinder;
@@ -49,6 +50,8 @@ use helical_tube_body::HelicalTubeBody;
 use herringbone_body::HerringboneBody;
 use linear_body::LinearBody;
 use nonplanar_loft_body::NonplanarLoftBody;
+use normal_relief_body::NormalReliefBody;
+pub use normal_relief_body::NormalReliefMotif;
 use normal_sweep_body::NormalSweepBody;
 pub use normal_sweep_body::SweepOpening;
 use orthogonal_body::OrthogonalBody;
@@ -622,6 +625,7 @@ enum SolidBody {
     Revolved(Rc<RevolutionBody>, PlaneFrame),
     RoundedSlot(Rc<RoundedSlotBody>, PlaneFrame),
     NormalSweep(Rc<NormalSweepBody>, PlaneFrame),
+    NormalRelief(Rc<NormalReliefBody>, PlaneFrame),
     NonplanarLoft(Rc<NonplanarLoftBody>, PlaneFrame),
     SplineSweep(Rc<SplineSweepBody>, PlaneFrame),
     SpurGear(Rc<SpurGearBody>, PlaneFrame),
@@ -1050,6 +1054,9 @@ impl Solid {
             SolidBody::Revolved(body, frame) => SolidBody::Revolved(Rc::clone(body), *frame),
             SolidBody::RoundedSlot(body, frame) => SolidBody::RoundedSlot(Rc::clone(body), *frame),
             SolidBody::NormalSweep(body, frame) => SolidBody::NormalSweep(Rc::clone(body), *frame),
+            SolidBody::NormalRelief(body, frame) => {
+                SolidBody::NormalRelief(Rc::clone(body), *frame)
+            }
             SolidBody::SplineSweep(body, frame) => SolidBody::SplineSweep(Rc::clone(body), *frame),
             SolidBody::SpurGear(body, frame) => SolidBody::SpurGear(Rc::clone(body), *frame),
             SolidBody::Herringbone(body, frame) => SolidBody::Herringbone(Rc::clone(body), *frame),
@@ -1404,6 +1411,11 @@ impl Solid {
                     frame.checked_metric_bounds(body.bounds(PlaneFrame::default()), self.policy)?;
                     SolidBody::NormalSweep(Rc::clone(body), frame)
                 }
+                SolidBody::NormalRelief(body, frame) => {
+                    let frame = transform.frame(*frame);
+                    frame.checked_metric_bounds(body.bounds(PlaneFrame::default()), self.policy)?;
+                    SolidBody::NormalRelief(Rc::clone(body), frame)
+                }
                 SolidBody::SpurGear(body, frame) => {
                     SolidBody::SpurGear(Rc::clone(body), transform.frame(*frame))
                 }
@@ -1516,6 +1528,9 @@ impl Solid {
         if let Some((body, _)) = self.axial_stack_body() {
             return Ok(body.volume_mm3());
         }
+        if let Some((body, _)) = self.normal_relief_body() {
+            return Ok(body.volume_mm3());
+        }
         if let Some((body, _)) = self.normal_sweep_body() {
             return Ok(body.volume_mm3());
         }
@@ -1616,6 +1631,9 @@ impl Solid {
             return Ok(body.bounds(frame));
         }
         if let Some((body, frame)) = self.axial_stack_body() {
+            return Ok(body.bounds(frame));
+        }
+        if let Some((body, frame)) = self.normal_relief_body() {
             return Ok(body.bounds(frame));
         }
         if let Some((body, frame)) = self.normal_sweep_body() {
@@ -1764,6 +1782,9 @@ impl Solid {
             return body.faces(frame);
         }
         if let Some((body, frame)) = self.axial_stack_body() {
+            return Ok(body.faces(frame));
+        }
+        if let Some((body, frame)) = self.normal_relief_body() {
             return Ok(body.faces(frame));
         }
         if let Some((body, frame)) = self.normal_sweep_body() {
@@ -1916,6 +1937,7 @@ impl Solid {
             SolidBody::RoundedCylinder(body, frame) => body.mesh(*frame, rust_options),
             SolidBody::RoundedSlot(body, frame) => body.mesh(*frame, rust_options),
             SolidBody::NormalSweep(body, frame) => body.mesh(*frame, rust_options),
+            SolidBody::NormalRelief(body, frame) => body.mesh(*frame, rust_options),
             SolidBody::SplineSweep(body, frame) => body.mesh(*frame, rust_options),
             SolidBody::SpurGear(body, frame) => {
                 crate::rust_display::placed_mesh(body.profile.mesh(rust_options), *frame, false)
@@ -2264,6 +2286,7 @@ impl Solid {
             SolidBody::Revolved(body, _) => body.feature,
             SolidBody::RoundedSlot(body, _) => body.feature,
             SolidBody::NormalSweep(body, _) => body.feature,
+            SolidBody::NormalRelief(body, _) => body.feature,
             SolidBody::SplineSweep(body, _) => body.feature,
             SolidBody::SpurGear(body, _) => body.feature,
             SolidBody::Herringbone(body, _) => body.feature,
@@ -2289,6 +2312,7 @@ impl Solid {
 
     fn supports_step_shell(&self, standalone: bool) -> bool {
         match &self.body {
+            SolidBody::NormalRelief(..) => true,
             SolidBody::Occt(_)
             | SolidBody::PolygonPrism(_)
             | SolidBody::AxialCylinder(..)
@@ -2385,6 +2409,7 @@ impl Solid {
     ) -> Result<(), multicad_rust_kernel::step::StepError> {
         use multicad_rust_kernel::step;
         match &self.body {
+            SolidBody::NormalRelief(body, frame) => body.append_step(writer, *frame),
             SolidBody::PolygonPrism(placed) => {
                 if let Some(treatments) = &placed.bore_treatments {
                     writer.append_chamfered_polygon_prism(

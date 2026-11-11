@@ -88,6 +88,7 @@ pub(crate) fn validate_document(
                     | (model::MEMBER_TYPE, model::MEMBER_SCHEMA)
                     | (model::PROFILE_CONNECTION_OUTPUT_TYPE, 1)
                     | (model::AID_TYPE, model::AID_SCHEMA)
+                    | (model::SURFACE_STRUCTURE_TYPE, 1)
                     | (model::imports::STEP_BODY_TYPE, 1)
                     | (model::TRANSFER_TYPE, 1)
                     | (model::imports::BOARD_TYPE, 1)

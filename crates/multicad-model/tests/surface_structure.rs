@@ -63,10 +63,14 @@ fn face(model: &Model, input: &BodyInput, axis: [f64; 3]) -> (GeometryIntent, Re
         .faces()
         .unwrap()
         .into_iter()
-        .find(|f| {
+        .filter(|f| {
             f.plane.is_some_and(|(_, n)| {
                 n.into_iter().zip(axis).map(|(a, b)| a * b).sum::<f64>() > 1. - 1e-8
             })
+        })
+        .max_by(|a, b| {
+            let support = |p: [f64; 3]| p.into_iter().zip(axis).map(|(p, n)| p * n).sum::<f64>();
+            support(a.center_mm).total_cmp(&support(b.center_mm))
         })
         .unwrap();
     let element = shape
@@ -92,6 +96,11 @@ fn candidate(
 }
 
 fn material(solid: &Solid, center: [f64; 3]) -> bool {
+    match solid.rust_normal_relief_contains(center) {
+        Ok(material) => return material,
+        Err(cause) if cause.kind == multicad_kernel::GeometryErrorKind::Unsupported => {}
+        Err(cause) => panic!("{cause}"),
+    }
     let policy = GeometryPolicy::default();
     let size = 0.02;
     let probe = Solid::box_solid([size; 3], policy)
@@ -133,7 +142,8 @@ fn raised_builtin_patterns_change_native_material_and_keep_the_part_identity() {
         (Stipple, 8. * PI * 0.88_f64.powi(2)),
     ] {
         request.parameters.pattern = pattern;
-        let model = candidate(&session, &request).unwrap();
+        let model = candidate(&session, &request)
+            .unwrap_or_else(|e| panic!("{:?}: {e}", request.parameters.pattern));
         assert_eq!(session.document(), &original);
         assert_eq!(
             model.snapshot().bodies[&request.input.body],
@@ -200,7 +210,8 @@ fn recessed_height_map_preserves_tones_and_refuses_breakthrough_or_internal_void
             ..Default::default()
         },
     };
-    let model = candidate(&session, &request).unwrap();
+    let model = candidate(&session, &request)
+        .unwrap_or_else(|e| panic!("{:?}: {e}", request.parameters.pattern));
     let solid = model.solid(request.feature).unwrap();
     near(
         solid.volume_mm3().unwrap(),
@@ -296,7 +307,8 @@ fn exact_face_openings_and_adjacent_swept_windows_are_respected() {
             ..Default::default()
         },
     };
-    let model = candidate(&session, &request).unwrap();
+    let model = candidate(&session, &request)
+        .unwrap_or_else(|e| panic!("{:?}: {e}", request.parameters.pattern));
     near(
         model.solid(request.feature).unwrap().volume_mm3().unwrap(),
         8000. - 2. * 3. * 6. * 0.9,

@@ -1325,6 +1325,7 @@ impl Compiler {
                         policy: self.policy,
                     },
                     context.parameters(),
+                    backend,
                     interrupt,
                 )?,
                 (model::PROFILE_CONNECTION_OUTPUT_TYPE, 1) => crate::profile_connections::build(

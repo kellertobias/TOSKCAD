@@ -47,6 +47,7 @@ fn curved(edge: &PlanarEdge) -> CurvedEdge2d {
 }
 
 pub(crate) struct ResolvedFaceProfile {
+    pub face_index: u32,
     pub profile: CurvedProfile,
     pub origins: Vec<Origin>,
     pub bounds_mm: [[f64; 2]; 2],
@@ -168,6 +169,7 @@ impl FaceProfileInputs<'_> {
             .bounds_mm()
             .ok_or_else(|| self.failure("The native planar face has no finite boundary extent"))?;
         Ok(ResolvedFaceProfile {
+            face_index: key.ordinal,
             profile: CurvedProfile {
                 frame: plane,
                 outer,
