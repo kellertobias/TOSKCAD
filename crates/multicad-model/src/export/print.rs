@@ -1138,7 +1138,7 @@ impl Exporter {
         actor: &Actor,
         interrupt: Option<&dyn Fn() -> bool>,
     ) -> Result<PrintPreview, ExportError> {
-        self.with_backend(GeometryBackend::OpenCascade, None)
+        self.with_backend(GeometryBackend::default(), None)
             .print_preview(document, revision, request, actor, interrupt)
     }
 
@@ -1151,7 +1151,7 @@ impl Exporter {
         actor: &Actor,
         interrupt: Option<&dyn Fn() -> bool>,
     ) -> Result<PrintPreview, ExportError> {
-        self.with_backend(GeometryBackend::OpenCascade, None)
+        self.with_backend(GeometryBackend::default(), None)
             .print_plate_preview(document, revision, plate, actor, interrupt)
     }
 
@@ -1167,7 +1167,7 @@ impl Exporter {
         actor: &Actor,
         interrupt: Option<&dyn Fn() -> bool>,
     ) -> Result<PrintReceipt, ExportError> {
-        self.with_backend(GeometryBackend::OpenCascade, None)
+        self.with_backend(GeometryBackend::default(), None)
             .write_print(
                 document, revision, request, expected, path, actor, interrupt,
             )
@@ -1185,7 +1185,7 @@ impl Exporter {
         actor: &Actor,
         interrupt: Option<&dyn Fn() -> bool>,
     ) -> Result<PrintReceipt, ExportError> {
-        self.with_backend(GeometryBackend::OpenCascade, None)
+        self.with_backend(GeometryBackend::default(), None)
             .write_print_plate(document, revision, plate, expected, path, actor, interrupt)
     }
 }
@@ -1306,7 +1306,7 @@ pub struct PrintWorker {
 const MAX_OUTSTANDING: usize = 4;
 impl PrintWorker {
     pub fn new(exporter: Exporter) -> Result<Self, String> {
-        Self::with_geometry_backend(exporter, GeometryBackend::OpenCascade)
+        Self::with_geometry_backend(exporter, GeometryBackend::default())
     }
     pub fn with_geometry_backend(
         exporter: Exporter,

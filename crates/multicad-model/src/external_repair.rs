@@ -129,7 +129,7 @@ impl Compiler {
             actor,
             set,
             resources,
-            GeometryBackend::OpenCascade,
+            GeometryBackend::default(),
             interrupt,
         )
     }

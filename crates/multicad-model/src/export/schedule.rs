@@ -72,7 +72,7 @@ impl Exporter {
         target: Option<ScheduleTarget<'_>>,
         interrupt: Option<&dyn Fn() -> bool>,
     ) -> Result<ScheduleReceipt, ExportError> {
-        self.with_backend(GeometryBackend::OpenCascade, None)
+        self.with_backend(GeometryBackend::default(), None)
             .schedule(document, revision, spec, target, interrupt)
     }
 }

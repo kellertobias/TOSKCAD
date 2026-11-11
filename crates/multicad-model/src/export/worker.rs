@@ -162,7 +162,7 @@ pub struct ExportWorker {
 }
 impl ExportWorker {
     pub fn new(exporter: Exporter) -> Result<Self, String> {
-        Self::with_geometry_backend(exporter, GeometryBackend::OpenCascade)
+        Self::with_geometry_backend(exporter, GeometryBackend::default())
     }
     pub fn with_geometry_backend(
         exporter: Exporter,

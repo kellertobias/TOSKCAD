@@ -579,7 +579,7 @@ impl Exporter {
         actor: &Actor,
         interrupt: Option<&dyn Fn() -> bool>,
     ) -> Result<ExportPreview, ExportError> {
-        self.with_backend(GeometryBackend::OpenCascade, None)
+        self.with_backend(GeometryBackend::default(), None)
             .preview(document, revision, set, actor, interrupt)
     }
 
@@ -592,7 +592,7 @@ impl Exporter {
         actor: &Actor,
         interrupt: Option<&dyn Fn() -> bool>,
     ) -> Result<RunReceipt, ExportError> {
-        self.with_backend(GeometryBackend::OpenCascade, None)
+        self.with_backend(GeometryBackend::default(), None)
             .run(document, revision, expected, root, actor, interrupt)
     }
 }

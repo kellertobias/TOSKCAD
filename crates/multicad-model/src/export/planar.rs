@@ -117,7 +117,7 @@ impl Exporter {
         scope: &Scope,
         interrupt: Option<&dyn Fn() -> bool>,
     ) -> Result<PlanarCatalog, ExportError> {
-        self.with_backend(GeometryBackend::OpenCascade, None)
+        self.with_backend(GeometryBackend::default(), None)
             .planar_catalog(document, revision, scope, interrupt)
     }
 }

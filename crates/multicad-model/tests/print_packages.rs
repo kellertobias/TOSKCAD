@@ -753,10 +753,16 @@ fn arranged_plate_reopens_as_shared_3mf_items_and_stl_in_bed_coordinates() {
     };
     for (index, object) in ready.objects.iter().enumerate() {
         verify_bounds(object.bounds_mm, expected[index]);
-        assert_eq!(
-            object.plate_pose.unwrap().rotation,
-            plate.placements[index].rotation()
-        );
+        for (actual, expected) in object
+            .plate_pose
+            .unwrap()
+            .rotation
+            .into_iter()
+            .flatten()
+            .zip(plate.placements[index].rotation().into_iter().flatten())
+        {
+            near(actual, expected, 1e-15);
+        }
         near(object.volume_mm3, 8000., 1e-6);
     }
 
@@ -964,7 +970,7 @@ fn rust_print_worker_validates_and_writes_a_saved_plate_with_placed_parts() {
     assert!(ready.provider.contains("mesh-files.rust-certified."));
     assert_eq!(ready.objects[0].bounds_mm, [[0., 0., 0.], [8., 12., 3.]]);
     assert_eq!(ready.objects[1].bounds_mm, [[8., 8., 0.], [20., 16., 3.]]);
-    let native = Exporter::default()
+    let default = Exporter::default()
         .print_plate_preview(
             session.document(),
             session.revision(),
@@ -973,7 +979,11 @@ fn rust_print_worker_validates_and_writes_a_saved_plate_with_placed_parts() {
             None,
         )
         .unwrap();
-    assert_ne!(native.key, ready.key);
+    if multicad_kernel::OCCT_LINKED {
+        assert_ne!(default.key, ready.key);
+    } else {
+        assert_eq!(default.key, ready.key);
+    }
 
     let directory = tempfile::tempdir().unwrap();
     let target = directory.path().join("plate.3mf");
@@ -993,10 +1003,15 @@ fn rust_print_worker_validates_and_writes_a_saved_plate_with_placed_parts() {
         };
         result
     };
-    assert_eq!(
-        write(&plate, &native.key).unwrap_err().kind,
-        ErrorKind::Stale
-    );
+    if multicad_kernel::OCCT_LINKED {
+        assert_eq!(
+            write(&plate, &default.key).unwrap_err().kind,
+            ErrorKind::Stale
+        );
+    }
+    let mut stale = ready.key.clone();
+    stale.source.revision += 1;
+    assert_eq!(write(&plate, &stale).unwrap_err().kind, ErrorKind::Stale);
     assert!(listing(directory.path()).is_empty());
 
     let mut colliding = plate.clone();

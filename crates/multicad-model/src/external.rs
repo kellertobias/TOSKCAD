@@ -175,7 +175,7 @@ impl Compiler {
             document,
             revision,
             query,
-            GeometryBackend::OpenCascade,
+            GeometryBackend::default(),
             interrupt,
         )
     }
@@ -283,7 +283,7 @@ impl Compiler {
             actor,
             request,
             false,
-            GeometryBackend::OpenCascade,
+            GeometryBackend::default(),
             interrupt,
         )
     }
@@ -299,7 +299,7 @@ impl Compiler {
             actor,
             request,
             true,
-            GeometryBackend::OpenCascade,
+            GeometryBackend::default(),
             interrupt,
         )
     }
@@ -363,7 +363,7 @@ impl Compiler {
             actor,
             sketch,
             reference,
-            GeometryBackend::OpenCascade,
+            GeometryBackend::default(),
             interrupt,
         )
     }

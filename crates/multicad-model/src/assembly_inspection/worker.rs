@@ -54,7 +54,7 @@ pub struct AssemblyInspectionWorker {
 }
 impl AssemblyInspectionWorker {
     pub fn new(compiler: Compiler) -> Result<Self, String> {
-        Self::with_geometry_backend(compiler, GeometryBackend::OpenCascade)
+        Self::with_geometry_backend(compiler, GeometryBackend::default())
     }
 
     pub fn with_geometry_backend(

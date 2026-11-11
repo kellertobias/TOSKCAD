@@ -143,7 +143,7 @@ pub fn sample_assembly_range(
         compiler,
         document,
         query,
-        GeometryBackend::OpenCascade,
+        GeometryBackend::default(),
         interrupt,
     )
 }

@@ -87,7 +87,7 @@ impl Exporter {
             revision,
             scene_id,
             stem,
-            GeometryBackend::OpenCascade,
+            GeometryBackend::default(),
             interrupt,
         )
     }
