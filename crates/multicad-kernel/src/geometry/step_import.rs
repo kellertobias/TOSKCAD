@@ -244,6 +244,18 @@ impl Solid {
                 spec,
                 stock_radius_mm,
             } => Self::import_helical_thread(spec, stock_radius_mm, frame, feature, policy),
+            ImportProfile::ThreadEndRelief {
+                tool_spec,
+                material_length_mm,
+                neck_radius_mm,
+            } => Self::import_thread_end_relief(
+                tool_spec,
+                material_length_mm,
+                neck_radius_mm,
+                frame,
+                feature,
+                policy,
+            ),
             ImportProfile::ThreadedShaft {
                 spec,
                 stock_radius_mm,

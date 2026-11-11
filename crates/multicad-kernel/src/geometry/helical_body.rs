@@ -21,6 +21,7 @@ use std::{
 };
 
 mod blind;
+mod end_relief;
 mod external;
 use external::ExternalStock;
 mod boundary;
@@ -73,6 +74,7 @@ pub(crate) struct HelicalBody {
 
 enum HelicalForm {
     Shaft,
+    EndRelief(multicad_rust_kernel::thread_end_relief::Relief),
     External(Box<ExternalStock>),
     Bore(BoreStock),
     Blind(BlindStock),
@@ -378,6 +380,14 @@ impl Solid {
                 tolerance,
             );
         }
+        if let HelicalForm::EndRelief(relief) = &body.form {
+            return multicad_rust_kernel::step_read::thread_end_relief_import_matches(
+                imported,
+                relief,
+                [frame.origin, frame.u, frame.v],
+                tolerance,
+            );
+        }
         if let HelicalForm::Screw(screw) = &body.form {
             return multicad_rust_kernel::step_read::helical_screw_import_matches(
                 imported,
@@ -646,6 +656,16 @@ impl Solid {
                 self.policy.linear_tolerance_mm,
             ));
         }
+        if let HelicalForm::EndRelief(relief) = &body.form {
+            return Some(multicad_rust_kernel::step_read::verify_thread_end_relief(
+                source,
+                relief,
+                frame.origin,
+                frame.u,
+                frame.v,
+                self.policy.linear_tolerance_mm,
+            ));
+        }
         if let HelicalForm::Screw(screw) = &body.form {
             return Some(multicad_rust_kernel::step_read::verify_helical_screw(
                 source,
@@ -876,6 +896,9 @@ impl HelicalBody {
             HelicalForm::Nut(nut) => nut::extend_face_properties(nut, &mut local_faces),
             HelicalForm::Screw(screw) => screw::extend_face_properties(screw, &mut local_faces),
             HelicalForm::Shaft => {}
+            HelicalForm::EndRelief(relief) => {
+                end_relief::extend_properties(relief, &mut local_faces)
+            }
             HelicalForm::External(stock) => stock.extend_properties(geometry, &mut local_faces),
         }
         let rails = (0..spec.starts)
@@ -900,7 +923,7 @@ impl HelicalBody {
         match &self.form {
             HelicalForm::Shaft => Some(None),
             HelicalForm::External(stock) if stock.partial.is_none() => Some(None),
-            HelicalForm::External(_) => None,
+            HelicalForm::External(_) | HelicalForm::EndRelief(_) => None,
             HelicalForm::Bore(stock) if stock.receiver(self.geometry).is_none() => {
                 Some(Some(stock.radius()))
             }
@@ -913,7 +936,10 @@ impl HelicalBody {
         self.step_stock().is_some()
             || matches!(
                 self.form,
-                HelicalForm::Nut(_) | HelicalForm::Bore(_) | HelicalForm::External(_)
+                HelicalForm::Nut(_)
+                    | HelicalForm::Bore(_)
+                    | HelicalForm::External(_)
+                    | HelicalForm::EndRelief(_)
             )
             || matches!(&self.form, HelicalForm::Screw(screw)
             if match screw.spec().head {
@@ -927,6 +953,13 @@ impl HelicalBody {
         {
             return multicad_rust_kernel::step::supports_threaded_shaft(
                 shaft,
+                frame.origin,
+                policy.linear_tolerance_mm,
+            );
+        }
+        if let HelicalForm::EndRelief(relief) = &self.form {
+            return multicad_rust_kernel::step::supports_thread_end_relief(
+                relief,
                 frame.origin,
                 policy.linear_tolerance_mm,
             );
@@ -981,6 +1014,15 @@ impl HelicalBody {
                 policy.linear_tolerance_mm,
             );
         }
+        if let HelicalForm::EndRelief(relief) = &self.form {
+            return writer.append_thread_end_relief(
+                relief,
+                frame.origin,
+                frame.u,
+                frame.v,
+                policy.linear_tolerance_mm,
+            );
+        }
         if let HelicalForm::Screw(screw) = &self.form {
             return writer.append_helical_screw(
                 screw,
@@ -1026,6 +1068,7 @@ impl HelicalBody {
     pub(super) fn volume_mm3(&self) -> f64 {
         match &self.form {
             HelicalForm::Shaft => self.geometry.volume_mm3(),
+            HelicalForm::EndRelief(relief) => relief.volume_mm3(),
             HelicalForm::External(stock) => stock.volume(self.geometry),
             HelicalForm::Bore(stock) => {
                 PI * stock.radius() * stock.radius() * stock.length() - self.geometry.volume_mm3()
@@ -1039,6 +1082,7 @@ impl HelicalBody {
     fn contains(&self, local: Point, tolerance: f64) -> bool {
         let stock = match &self.form {
             HelicalForm::Shaft => return self.geometry.contains(local, tolerance),
+            HelicalForm::EndRelief(relief) => return relief.contains(local, tolerance),
             HelicalForm::External(stock) => return stock.contains(self.geometry, local, tolerance),
             HelicalForm::Screw(screw) => return screw.contains(local, tolerance),
             HelicalForm::Nut(nut) => return nut.contains(local, tolerance),
@@ -1071,6 +1115,7 @@ impl HelicalBody {
             let direction = [frame.u[i], frame.v[i], normal[i]].map(|x| x * sign);
             match &self.form {
                 HelicalForm::Shaft => self.geometry.support(direction),
+                HelicalForm::EndRelief(relief) => relief.support(direction),
                 HelicalForm::External(stock) => stock.support(self.geometry, direction),
                 HelicalForm::Bore(stock) => {
                     stock.radius() * frame.u[i].hypot(frame.v[i])
@@ -1120,6 +1165,9 @@ impl HelicalBody {
                 let plane = if index < 2 {
                     let cap = self.cap_frame(frame, index);
                     Some((cap.origin_mm, cap.normal()))
+                } else if let HelicalForm::EndRelief(relief) = &self.form {
+                    end_relief::plane(relief, index, frame)
+                        .map(|plane| (plane.origin_mm, plane.normal()))
                 } else if let HelicalForm::External(stock) = &self.form {
                     stock
                         .plane(index, frame)
@@ -1160,7 +1208,9 @@ impl HelicalBody {
     }
 
     fn cap_name(&self, cap: usize) -> &'static str {
-        if matches!(&self.form, HelicalForm::External(_)) {
+        if matches!(&self.form, HelicalForm::EndRelief(_)) {
+            ["cap.start", "thread.end-relief/shoulder"][cap]
+        } else if matches!(&self.form, HelicalForm::External(_)) {
             [
                 "connection.external/thread.entry",
                 "connection.external/thread.limit",
@@ -1391,6 +1441,9 @@ impl HelicalBody {
         if let HelicalForm::External(stock) = &self.form {
             stock.extend_topology(self, frame, owner, revision, count, &mut elements)?;
         }
+        if let HelicalForm::EndRelief(relief) = &self.form {
+            end_relief::extend_topology(self, relief, frame, &mut elements);
+        }
         if let Some(identity) = &self.import_identity {
             let stamp = |old: &Origin| Origin {
                 source: self.feature,
@@ -1491,7 +1544,10 @@ impl HelicalBody {
                     edge
                 }));
             }
-            HelicalForm::Screw(_) | HelicalForm::Nut(_) | HelicalForm::External(_) => {
+            HelicalForm::Screw(_)
+            | HelicalForm::Nut(_)
+            | HelicalForm::External(_)
+            | HelicalForm::EndRelief(_) => {
                 let mut topology = self.topology(frame, self.feature, 0)?;
                 topology.elements.retain(|element| {
                     element.key.kind == TopologyKind::Edge
@@ -1509,6 +1565,9 @@ impl HelicalBody {
         options: multicad_rust_kernel::display::Tessellation,
     ) -> f64 {
         match &self.form {
+            HelicalForm::EndRelief(relief) => {
+                helical_thread_mesh::end_relief_volume_error_bound(relief, options)
+            }
             HelicalForm::External(stock) => stock.partial.map_or_else(
                 || helical_thread_mesh::volume_error_bound(&self.geometry, options),
                 |shaft| helical_thread_mesh::shaft_volume_error_bound(&shaft, options),
@@ -1539,6 +1598,9 @@ impl HelicalBody {
     ) -> Result<Mesh, GeometryError> {
         let mesh = match &self.form {
             HelicalForm::Shaft => helical_thread_mesh::tessellate(&self.geometry, options),
+            HelicalForm::EndRelief(relief) => {
+                helical_thread_mesh::tessellate_end_relief(relief, options)
+            }
             HelicalForm::External(stock) => stock.partial.map_or_else(
                 || helical_thread_mesh::tessellate(&self.geometry, options),
                 |shaft| helical_thread_mesh::tessellate_shaft(&shaft, options),

@@ -156,6 +156,31 @@ pub(crate) fn build_rust(
             "Rust external receiving cuts require a modeled thread; cosmetic receiving envelopes are not yet certified",
         ));
     }
+    let terminal = thread
+        .end_treatments
+        .as_ref()
+        .filter(|ends| ends.start_chamfer_radial_depth_mm != 0. || ends.end_relief_length_mm != 0.);
+    if let Some(ends) = terminal {
+        if source.mode != ThreadMode::NewExternal
+            || source.parameters.family != ThreadFamily::IsoMetric
+            || ends.start_chamfer_radial_depth_mm != 0.
+        {
+            return Err(fail(
+                "Rust end treatments currently support only ISO metric NewExternal terminal cylindrical relief with a flat entry",
+            ));
+        }
+        let (spec, root_radius, frame) = rust_profile_geometry(feature, &thread)?;
+        return Solid::rust_helical_thread_end_relief(
+            spec,
+            root_radius,
+            ends.end_relief_length_mm,
+            ends.end_relief_radial_depth_mm,
+            feature,
+            frame,
+            policy,
+        )
+        .map_err(|cause| error(Some(feature), cause));
+    }
     let (spec, root_radius, frame) = rust_profile(feature, &thread)?;
     let solid = if source.mode == ThreadMode::CutInternal {
         let target = receiving_target(feature, source, solids)?
@@ -209,9 +234,23 @@ pub(crate) fn rust_profile(
             "Rust thread geometry currently requires the Modeled representation",
         ));
     }
-    if thread.end_treatments.is_some() {
+    if thread.end_treatments.as_ref().is_some_and(|ends| {
+        ends.start_chamfer_radial_depth_mm != 0. || ends.end_relief_length_mm != 0.
+    }) {
         return Err(fail(
-            "Rust thread geometry does not yet support end treatments",
+            "This Rust thread workflow does not support nontrivial end treatments",
+        ));
+    }
+    rust_profile_geometry(feature, thread)
+}
+fn rust_profile_geometry(
+    feature: EntityId,
+    thread: &ResolvedThread,
+) -> Result<(HelicalThread, Option<f64>, PlaneFrame), ModelError> {
+    let fail = |message| error(Some(feature), message);
+    if thread.representation != ThreadRepresentation::Modeled {
+        return Err(fail(
+            "Rust thread geometry currently requires the Modeled representation",
         ));
     }
     if thread.profile.radial_taper != 0. || thread.profile.rounding_radius_mm.is_some() {

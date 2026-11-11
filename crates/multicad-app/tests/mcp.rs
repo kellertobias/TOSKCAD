@@ -3132,3 +3132,78 @@ fn rust_stdio_external_receiving_threads_preserve_stock_edit_export_and_reopen()
     );
     close(again["readback_volume_mm3"].as_f64().unwrap(), edited);
 }
+
+#[test]
+fn rust_stdio_metric_terminal_relief_edit_history_export_and_reopen() {
+    let directory = tempfile::tempdir().unwrap();
+    let project = directory.path().join("metric-relief.tcd");
+    let args = [
+        "--rust-model",
+        "--project",
+        project.to_str().unwrap(),
+        "--export-dir",
+        directory.path().to_str().unwrap(),
+    ];
+    // Create an actual canonical project before starting the normal stdio app.
+    {
+        use multicad_core::{
+            document::Document,
+            project_file::{self, ProjectFile},
+        };
+        let mut bytes = vec![];
+        project_file::write(
+            &ProjectFile::new(Document::new("Metric relief").unwrap()).unwrap(),
+            &mut bytes,
+            Default::default(),
+        )
+        .unwrap();
+        std::fs::write(&project, bytes).unwrap();
+    }
+    let mut client = Client::start(&args);
+    let revision = client.revision();
+    let treatment = |w: f64| json!({"start":"flat_cut","end":{"cylindrical_relief":{"length":length(w),"radial_depth":length(0.1)}}});
+    let created=client.ok("set_thread",json!({"expected_revision":revision,"name":"M6 relief","major_diameter":length(6.),"pitch":length(1.),"length":length(6.6),"fit":"metric_6g_external","end_treatments":treatment(0.6)}));
+    let first = client.part_volume();
+    let revision = client.revision();
+    client.ok("set_thread",json!({"expected_revision":revision,"thread":created["thread"],"end_treatments":treatment(1.1)}));
+    let edited = client.part_volume();
+    assert!(edited < first);
+    let inspected = client.ok("inspect_thread", json!({"thread":created["thread"]}));
+    close(
+        inspected["resolved"]["physical_length_mm"]
+            .as_f64()
+            .unwrap(),
+        6.6,
+    );
+    close(
+        inspected["resolved"]["end_treatments"]["end_relief_length_mm"]
+            .as_f64()
+            .unwrap(),
+        1.1,
+    );
+    let revision = client.revision();
+    client.ok("undo", json!({"expected_revision":revision}));
+    close(client.part_volume(), first);
+    let revision = client.revision();
+    client.ok("redo", json!({"expected_revision":revision}));
+    close(client.part_volume(), edited);
+    let revision = client.revision();
+    client.fail("set_thread",json!({"expected_revision":revision,"thread":created["thread"],"end_treatments":{"start":{"chamfer45":{"radial_depth":length(0.2)}},"end":"flat_cut"}}));
+    assert_eq!(client.revision(), revision);
+    close(client.part_volume(), edited);
+    let receipt = client.ok(
+        "export_step",
+        json!({"part":created["part"],"file_name":"relief.step"}),
+    );
+    close(receipt["readback_volume_mm3"].as_f64().unwrap(), edited);
+    let revision = client.revision();
+    client.ok("save_project", json!({"expected_revision":revision}));
+    drop(client);
+    let mut reopened = Client::start(&args);
+    close(reopened.part_volume(), edited);
+    let receipt = reopened.ok(
+        "export_step",
+        json!({"part":created["part"],"file_name":"relief-again.step"}),
+    );
+    close(receipt["readback_volume_mm3"].as_f64().unwrap(), edited);
+}
