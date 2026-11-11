@@ -135,6 +135,34 @@ fn member_signature(readback: &Readback, imported: &ImportSolid) -> ContentHash 
             bytes.extend(if value == 0. { 0. } else { value }.to_le_bytes());
         }
     }
+    if let ImportProfile::HelicalThread {
+        spec,
+        stock_radius_mm,
+    } = imported.profile
+    {
+        bytes.extend(b"helical-thread");
+        for value in imported
+            .origin_mm
+            .into_iter()
+            .chain(imported.u)
+            .chain(imported.v)
+            .chain([
+                spec.major_radius_mm,
+                spec.pitch_mm,
+                spec.length_mm,
+                spec.depth_mm,
+                spec.crest_width_mm,
+                spec.lower_flank_deg,
+                spec.upper_flank_deg,
+                spec.starts as f64,
+                f64::from(spec.left_hand),
+                spec.root_radius_mm.unwrap_or(0.),
+                stock_radius_mm.unwrap_or(0.),
+            ])
+        {
+            bytes.extend(if value == 0. { 0. } else { value }.to_le_bytes());
+        }
+    }
     ContentHash::of(&bytes)
 }
 
@@ -347,7 +375,8 @@ fn match_leaf(leaf: &Solid, members: &[(Readback, Option<ImportSolid>)], toleran
         return false;
     }
     if let Some(profile) = profile {
-        return leaf.matches_helical_cut_profile(profile);
+        return leaf.matches_imported_helical_thread(profile, tolerance)
+            || leaf.matches_helical_cut_profile(profile);
     }
     leaf.rust_topology().is_some_and(|topology| {
         topology.is_ok_and(|topology| {

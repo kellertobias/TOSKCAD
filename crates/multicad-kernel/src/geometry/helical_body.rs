@@ -40,6 +40,7 @@ pub(crate) struct HelicalBody {
     // area and centroid properties come from smooth per-band integrals.
     local_faces: Vec<(Point, f64)>,
     rails: Vec<f64>,
+    import_identity: Option<Origin>,
 }
 
 enum HelicalForm {
@@ -114,6 +115,111 @@ impl Solid {
         Self::rust_helical_body(spec, root_radius_mm, feature, frame, policy, |_| {
             Ok(HelicalForm::Shaft)
         })
+    }
+
+    pub(super) fn import_helical_thread(
+        spec: Spec,
+        stock: Option<f64>,
+        frame: PlaneFrame,
+        feature: EntityId,
+        policy: GeometryPolicy,
+    ) -> Result<Self, GeometryError> {
+        let request = HelicalThread {
+            major_radius_mm: spec.major_radius_mm,
+            pitch_mm: spec.pitch_mm,
+            length_mm: spec.length_mm,
+            depth_mm: spec.depth_mm,
+            crest_width_mm: spec.crest_width_mm,
+            lower_flank_deg: spec.lower_flank_deg,
+            upper_flank_deg: spec.upper_flank_deg,
+            radial_taper: 0.,
+            starts: spec.starts,
+            left_hand: spec.left_hand,
+        };
+        let mut solid = Self::rust_helical_body(
+            request,
+            spec.root_radius_mm,
+            feature,
+            frame,
+            policy,
+            |_| {
+                if let Some(radius) = stock {
+                    policy.length(radius - spec.major_radius_mm)?;
+                    let q = |value| {
+                        rational_coordinate(value,policy.linear_tolerance_mm).ok_or_else(||error(OPERATION,GeometryErrorKind::Unsupported,"Imported receiver dimensions cannot be certified as exact coordinates"))
+                    };
+                    let zero = Rational::new(0, 1).expect("zero");
+                    let circle = Circle::new([zero; 2], q(radius)?)
+                        .map_err(|_| input("Invalid imported receiver circle"))?;
+                    // Keep synthetic receiver stock distinct from its threading
+                    // feature so retained cap-anchor origins cannot collide.
+                    let stock_bits = feature.uuid_bits() ^ u128::MAX;
+                    let cylinder = AxialCylinder::new(
+                        if stock_bits == 0 { 1 } else { stock_bits },
+                        circle,
+                        zero,
+                        q(spec.length_mm)?,
+                    )
+                    .map_err(|_| input("Invalid imported receiver cylinder"))?;
+                    Ok(HelicalForm::Bore(BoreStock {
+                        cylinder,
+                        frame_in_thread: PlaneFrame::default(),
+                        sketch: None,
+                        reversed: false,
+                    }))
+                } else {
+                    Ok(HelicalForm::Shaft)
+                }
+            },
+        )?;
+        let identity = super::step_import::feature_origin(
+            feature,
+            "helical-material",
+            frame
+                .origin
+                .into_iter()
+                .chain(frame.u)
+                .chain(frame.v)
+                .chain([
+                    spec.major_radius_mm,
+                    spec.pitch_mm,
+                    spec.length_mm,
+                    spec.depth_mm,
+                    spec.crest_width_mm,
+                    spec.lower_flank_deg,
+                    spec.upper_flank_deg,
+                    spec.starts as f64,
+                    f64::from(spec.left_hand),
+                    spec.root_radius_mm.unwrap_or(0.),
+                    stock.unwrap_or(0.),
+                ]),
+        );
+        let SolidBody::Helical(body, _) = &mut solid.body else {
+            unreachable!()
+        };
+        Rc::get_mut(body)
+            .expect("new unshared imported body")
+            .import_identity = Some(identity);
+        Ok(solid)
+    }
+    pub(super) fn matches_imported_helical_thread(
+        &self,
+        imported: &multicad_rust_kernel::step_read::ImportSolid,
+        tolerance: f64,
+    ) -> bool {
+        let Some((body, frame)) = self.helical_body() else {
+            return false;
+        };
+        let Some(stock) = body.step_stock() else {
+            return false;
+        };
+        multicad_rust_kernel::step_read::helical_import_matches(
+            imported,
+            &body.geometry,
+            stock,
+            [frame.origin, frame.u, frame.v],
+            tolerance,
+        )
     }
 
     /// Drill and thread through an entire coaxial Rust cylinder. The unchanged
@@ -451,6 +557,7 @@ impl HelicalBody {
             form,
             local_faces,
             rails,
+            import_identity: None,
         }
     }
 
@@ -463,6 +570,9 @@ impl HelicalBody {
         }
     }
 
+    pub(super) fn has_bare_step_closure(&self) -> bool {
+        self.step_stock().is_some()
+    }
     pub(super) fn supports_step(&self, frame: PlaneFrame, policy: GeometryPolicy) -> bool {
         if let HelicalForm::Screw(screw) = &self.form {
             return multicad_rust_kernel::step::supports_helical_screw(
@@ -839,6 +949,19 @@ impl HelicalBody {
         }
         if let HelicalForm::Nut(nut) = &self.form {
             nut::extend_topology(self, nut, frame, &mut elements);
+        }
+        if let Some(identity) = &self.import_identity {
+            let stamp = |old: &Origin| Origin {
+                source: self.feature,
+                role: format!("{}/{}/{}", identity.role, old.source, old.role),
+            };
+            for element in &mut elements {
+                element.origins = element.origins.iter().map(stamp).collect();
+                element.boundary = element.boundary.iter().map(stamp).collect();
+                for anchor in &mut element.frames {
+                    anchor.origin = stamp(&anchor.origin);
+                }
+            }
         }
         let snapshot = TopologySnapshot {
             owner,

@@ -198,6 +198,10 @@ impl Solid {
         };
         frame.checked(policy)?;
         match profile {
+            ImportProfile::HelicalThread {
+                spec,
+                stock_radius_mm,
+            } => Self::import_helical_thread(spec, stock_radius_mm, frame, feature, policy),
             ImportProfile::Sphere { radius_mm } => {
                 Self::rust_sphere_named(radius_mm, frame, feature, policy)
             }
@@ -906,10 +910,10 @@ fn verify(
     orthogonal: bool,
 ) -> Result<(), GeometryError> {
     verify_step_metrics(solid, readback, tolerance)?;
-    if solid.helical_tube_cut_body().is_some() {
-        // ImportProfile::HelicalTubeCut is produced only after the reader
-        // verifies the oriented loops, every edge and the cavity support.
-        // STEP splits the rim and adds a cylindrical seam to that boundary.
+    if solid.helical_body().is_some() || solid.helical_tube_cut_body().is_some() {
+        // Typed helical imports are produced only after complete analytic
+        // control-net/support and oriented edge-incidence proofs. Their exact
+        // rebuilt feature can partition the same physical boundary differently.
         return Ok(());
     }
     if orthogonal

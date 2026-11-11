@@ -66,6 +66,28 @@ pub(super) fn verify(
     [origin, u, v]: [Point; 3],
     tolerance: f64,
 ) -> Result<f64> {
+    let mut volumes = compound::read_members_by(input, tolerance, true, true, |shell, id, _| {
+        verify_member(shell, id, thread, closure, [origin, u, v], None)
+    })?;
+    volumes.pop().ok_or(ReadError::Invalid)
+}
+
+pub(super) fn verify_member(
+    shell: &mut Shell<'_, '_>,
+    id: u32,
+    thread: &Thread,
+    closure: Closure,
+    [origin, u, v]: [Point; 3],
+    import_error: Option<f64>,
+) -> Result<f64> {
+    let tolerance = shell.tolerance;
+    let proof = Proof {
+        error: import_error,
+        extent: thread
+            .spec()
+            .major_radius_mm
+            .max(closure.cylinder().map_or(0., |(r, _)| r)),
+    };
     let splines = prepare(thread, closure, origin, tolerance).map_err(step_error)?;
     let normal = cross(u, v);
     let axis = unit(normal)?;
@@ -76,220 +98,220 @@ pub(super) fn verify(
     let height = thread.spec().length_mm;
     let shank_length = closure.tangent_shank();
     let forward = thread.spec().left_hand != closure.inside();
-    let mut volumes = compound::read_members_by(input, tolerance, true, true, |shell, id, _| {
-        let faces = shell.member_faces(id)?;
-        require(faces.len() == closure.face_count())?;
-        let mut rings = [[0; 4]; 2];
-        let mut rails = [[0; 2]; 4];
-        let mut corners = [[[0; 2]; 2]; 4];
-        let mut flux = 0.;
-        for (i, radial) in splines.bands.iter().enumerate() {
-            let (surface, outward, bounds) = face(shell, faces[i])?;
-            let [bound] = bounds[..] else {
-                return Err(ReadError::Invalid);
-            };
-            require(outward == forward)?;
-            let [
-                Value::String(_),
-                Value::Number(d1),
-                Value::Number(d2),
-                grid,
-                Value::Enum("UNSPECIFIED"),
-                Value::Enum("F"),
-                Value::Enum("F"),
-                Value::Enum("F"),
-                radial_mults,
-                axial_mults,
-                radial_knots,
-                axial_knots,
-                Value::Enum("UNSPECIFIED"),
-            ] = shell.args(surface, "B_SPLINE_SURFACE_WITH_KNOTS")?
-            else {
-                return Err(ReadError::Invalid);
-            };
-            require(*d1 == DEGREE as f64 && *d2 == DEGREE as f64)?;
-            knots(radial_mults, radial_knots, radial)?;
-            knots(axial_mults, axial_knots, &splines.axial)?;
-            let Value::List(rows) = grid else {
-                return Err(ReadError::Invalid);
-            };
-            require(rows.len() == radial.poles.len())?;
-            let controls = rows
-                .iter()
-                .zip(&radial.poles)
-                .map(|(row, &radial)| {
-                    poles(
-                        shell,
-                        row,
-                        splines
-                            .axial
-                            .poles
-                            .iter()
-                            .zip(&splines.heights)
-                            .map(|(&axial, &z)| world(product(radial, axial), z)),
-                    )
-                })
-                .collect::<Result<Vec<_>>>()?;
-            flux += quadrature.spline_flux(&controls, origin, axis);
-
-            let uses = ring(shell, bound, true)?;
-            let uses = orient(&uses, forward);
-            let [(start, true), (next, true), (end, false), (previous, false)] = uses[..] else {
-                return Err(ReadError::Invalid);
-            };
-            rings[0][i] = start;
-            rings[1][i] = end;
-            rails[i] = [previous, next];
-            let [a, b] = [0, radial.poles.len() - 1];
-            for (j, (rail, p)) in [(previous, radial.poles[a]), (next, radial.poles[b])]
-                .into_iter()
-                .enumerate()
-            {
-                corners[i][j] = spline_edge(
+    let faces = shell.member_faces(id)?;
+    require(faces.len() == closure.face_count())?;
+    let mut rings = [[0; 4]; 2];
+    let mut rails = [[0; 2]; 4];
+    let mut corners = [[[0; 2]; 2]; 4];
+    let mut flux = 0.;
+    for (i, radial) in splines.bands.iter().enumerate() {
+        let (surface, outward, bounds) = face(shell, faces[i])?;
+        let [bound] = bounds[..] else {
+            return Err(ReadError::Invalid);
+        };
+        require(outward == forward)?;
+        let [
+            Value::String(_),
+            Value::Number(d1),
+            Value::Number(d2),
+            grid,
+            Value::Enum("UNSPECIFIED"),
+            Value::Enum("F"),
+            Value::Enum("F"),
+            Value::Enum("F"),
+            radial_mults,
+            axial_mults,
+            radial_knots,
+            axial_knots,
+            Value::Enum("UNSPECIFIED"),
+        ] = shell.args(surface, "B_SPLINE_SURFACE_WITH_KNOTS")?
+        else {
+            return Err(ReadError::Invalid);
+        };
+        require(*d1 == DEGREE as f64 && *d2 == DEGREE as f64)?;
+        proof.knots(radial_mults, radial_knots, radial)?;
+        proof.knots(axial_mults, axial_knots, &splines.axial)?;
+        let Value::List(rows) = grid else {
+            return Err(ReadError::Invalid);
+        };
+        require(rows.len() == radial.poles.len())?;
+        let controls = rows
+            .iter()
+            .zip(&radial.poles)
+            .map(|(row, &radial)| {
+                proof.poles(
                     shell,
-                    rail,
-                    &splines.axial,
+                    row,
                     splines
                         .axial
                         .poles
                         .iter()
                         .zip(&splines.heights)
-                        .map(|(&axial, &z)| world(product(p, axial), z)),
-                )?;
-            }
-            for (cap, &rim) in [start, end].iter().enumerate() {
-                if cap == 0 && i == 3 && shank_length.is_some() {
-                    // The circular crest is verified with the shank wall.
-                    continue;
-                }
-                let z = [0., height][cap];
-                let axial = splines.axial.poles[if cap == 0 {
-                    0
-                } else {
-                    splines.axial.poles.len() - 1
-                }];
-                let endpoints = spline_edge(
-                    shell,
-                    rim,
-                    radial,
-                    radial.poles.iter().map(|&p| world(product(p, axial), z)),
-                )?;
-                require(endpoints == [corners[i][0][cap], corners[i][1][cap]])?;
-            }
-        }
-        require((0..4).all(|i| rails[i][1] == rails[(i + 1) % 4][0]))?;
+                        .map(|(&axial, &z)| world(product(radial, axial), z)),
+                )
+            })
+            .collect::<Result<Vec<_>>>()?;
+        flux += quadrature.spline_flux(&controls, origin, axis);
 
-        let mut cylinder_rims = [0; 2];
-        let mut caps = [[0.; 3]; 2];
-        let mut shoulder = None;
-        let mut tangent = None;
-        for (end, (face_id, z)) in faces[4..6].iter().zip([0., height]).enumerate() {
-            let top = end == 1;
-            let (surface, outward, bounds) = face(shell, *face_id)?;
-            let hole = closure.cap_hole(top);
-            let inner = matches!(closure, Closure::Hollow(_));
-            require(outward && bounds.len() == 1 + usize::from(hole || inner))?;
-            let [Value::String(_), axis] = shell.args(surface, "PLANE")? else {
+        let uses = ring(shell, bound, true)?;
+        let uses = orient(&uses, forward);
+        let [(start, true), (next, true), (end, false), (previous, false)] = uses[..] else {
+            return Err(ReadError::Invalid);
+        };
+        rings[0][i] = start;
+        rings[1][i] = end;
+        rails[i] = [previous, next];
+        let [a, b] = [0, radial.poles.len() - 1];
+        for (j, (rail, p)) in [(previous, radial.poles[a]), (next, radial.poles[b])]
+            .into_iter()
+            .enumerate()
+        {
+            corners[i][j] = spline_edge(
+                proof,
+                shell,
+                rail,
+                &splines.axial,
+                &controls[if j == 0 { a } else { b }],
+                splines
+                    .axial
+                    .poles
+                    .iter()
+                    .zip(&splines.heights)
+                    .map(|(&axial, &z)| world(product(p, axial), z)),
+            )?;
+        }
+        for (cap, &rim) in [start, end].iter().enumerate() {
+            if cap == 0 && i == 3 && shank_length.is_some() {
+                // The circular crest is verified with the shank wall.
+                continue;
+            }
+            let z = [0., height][cap];
+            let axial = splines.axial.poles[if cap == 0 {
+                0
+            } else {
+                splines.axial.poles.len() - 1
+            }];
+            let endpoints = spline_edge(
+                proof,
+                shell,
+                rim,
+                radial,
+                &controls
+                    .iter()
+                    .map(|row| row[if cap == 0 { 0 } else { row.len() - 1 }])
+                    .collect::<Vec<_>>(),
+                radial.poles.iter().map(|&p| world(product(p, axial), z)),
+            )?;
+            require(endpoints == [corners[i][0][cap], corners[i][1][cap]])?;
+        }
+    }
+    require((0..4).all(|i| rails[i][1] == rails[(i + 1) % 4][0]))?;
+
+    let mut cylinder_rims = [0; 2];
+    let mut caps = [[0.; 3]; 2];
+    let mut shoulder = None;
+    let mut tangent = None;
+    for (end, (face_id, z)) in faces[4..6].iter().zip([0., height]).enumerate() {
+        let top = end == 1;
+        let (surface, outward, bounds) = face(shell, *face_id)?;
+        let hole = closure.cap_hole(top);
+        let inner = matches!(closure, Closure::Hollow(_));
+        require(outward && bounds.len() == 1 + usize::from(hole || inner))?;
+        let [Value::String(_), axis] = shell.args(surface, "PLANE")? else {
+            return Err(ReadError::Invalid);
+        };
+        let positive = top || closure.is_screw();
+        let cap_axis = normal.map(|n| if positive { n } else { -n });
+        caps[end] = proof
+            .axis(shell, axis, world([0.; 2], z), cap_axis, u)?
+            .origin;
+        let mut expected = rings[end].map(|edge| (edge, true));
+        let actual = orient(
+            &ring(shell, bounds[usize::from(hole || inner)], !hole)?,
+            top == forward,
+        );
+        if !top && shank_length.is_some() {
+            let [_, _, _, (complement, false)] = actual[..] else {
                 return Err(ReadError::Invalid);
             };
-            let positive = top || closure.is_screw();
-            let cap_axis = normal.map(|n| if positive { n } else { -n });
-            caps[end] = check_axis(shell, axis, world([0.; 2], z), cap_axis, u)?.origin;
-            let mut expected = rings[end].map(|edge| (edge, true));
-            let actual = orient(
-                &ring(shell, bounds[usize::from(hole || inner)], !hole)?,
-                top == forward,
-            );
-            if !top && shank_length.is_some() {
-                let [_, _, _, (complement, false)] = actual[..] else {
-                    return Err(ReadError::Invalid);
-                };
-                expected[3] = (complement, false);
-                tangent = Some(tangent_shank::Junction {
-                    crest: rings[0][3],
-                    complement,
-                    corners: [corners[0][0][0], corners[3][0][0]],
-                });
-            } else if closure.is_screw() && !top {
-                shoulder = Some(bounds[0]);
-            }
-            require(actual == expected)?;
-            if let Some((radius, outer)) = closure.cylinder() {
-                let rim = ring(shell, bounds[0], outer)?;
-                let [(edge, sense)] = rim[..] else {
-                    return Err(ReadError::Invalid);
-                };
-                require(sense == (top == outer))?;
-                shell.edge(edge)?;
-                let Curve::Circle(circle) = shell.edges[&edge].curve else {
-                    return Err(ReadError::Invalid);
-                };
-                require(
-                    circle.center_mm == world([0.; 2], z)
-                        && length(sub(circle.normal, normal)) < 1e-10
-                        && circle.radius_mm == radius,
-                )?;
-                cylinder_rims[end] = edge;
-            }
+            expected[3] = (complement, false);
+            tangent = Some(tangent_shank::Junction {
+                crest: rings[0][3],
+                complement,
+                corners: [corners[0][0][0], corners[3][0][0]],
+            });
+        } else if closure.is_screw() && !top {
+            shoulder = Some(bounds[0]);
         }
-        let outside_volume = match closure {
-            Closure::Shaft => 0.,
-            Closure::Bore(radius) | Closure::Hollow(radius) => {
-                let outer = matches!(closure, Closure::Bore(_));
-                let (radius, axis) = check_cylinder(
-                    shell,
-                    faces[6],
-                    cylinder_rims,
-                    (radius, outer),
-                    [origin, normal, u],
-                )?;
-                let sign = if outer { 1. } else { -1. };
-                sign * std::f64::consts::PI * radius * radius * dot(sub(caps[1], caps[0]), axis)
-            }
-            Closure::HexHead {
-                across_flats_mm,
-                height_mm,
-            } => hex_head::verify(
+        require(actual == expected)?;
+        if let Some((radius, outer)) = closure.cylinder() {
+            let rim = ring(shell, bounds[0], outer)?;
+            let [(edge, sense)] = rim[..] else {
+                return Err(ReadError::Invalid);
+            };
+            require(sense == (top == outer))?;
+            shell.edge(edge)?;
+            let Curve::Circle(circle) = shell.edges[&edge].curve else {
+                return Err(ReadError::Invalid);
+            };
+            require(
+                proof.equal(circle.center_mm, world([0.; 2], z))
+                    && length(sub(circle.normal, normal)) < proof.angular()
+                    && circle.radius_mm == radius,
+            )?;
+            cylinder_rims[end] = edge;
+        }
+    }
+    let outside_volume = match closure {
+        Closure::Shaft => 0.,
+        Closure::Bore(radius) | Closure::Hollow(radius) => {
+            let outer = matches!(closure, Closure::Bore(_));
+            let (radius, axis) = check_cylinder_with_proof(
+                proof,
                 shell,
-                &faces[6..],
-                shoulder.ok_or(ReadError::Invalid)?,
-                caps[0],
-                [u, normal],
-                [across_flats_mm, height_mm],
-                world,
-            )?,
-            Closure::SocketHead(head) => {
-                let (rim, seat, shank_volume, offset) = if let Some(length) = shank_length {
-                    let joint = tangent.ok_or(ReadError::Invalid)?;
-                    let (rim, seat, volume) = tangent_shank::verify(
-                        shell,
-                        [faces[6], faces[7]],
-                        joint,
-                        thread,
-                        length,
-                        [origin, u, v],
-                    )?;
-                    (rim, seat, volume, 8)
-                } else {
-                    (shoulder.ok_or(ReadError::Invalid)?, caps[0], 0., 6)
-                };
-                let head_volume = socket_head::verify(
+                faces[6],
+                cylinder_rims,
+                (radius, outer),
+                [origin, normal, u],
+            )?;
+            let sign = if outer { 1. } else { -1. };
+            sign * std::f64::consts::PI * radius * radius * dot(sub(caps[1], caps[0]), axis)
+        }
+        Closure::HexHead {
+            across_flats_mm,
+            height_mm,
+        } => hex_head::verify(
+            shell,
+            &faces[6..],
+            shoulder.ok_or(ReadError::Invalid)?,
+            caps[0],
+            [u, normal],
+            [across_flats_mm, height_mm],
+            world,
+        )?,
+        Closure::SocketHead(head) => {
+            let (rim, seat, shank_volume, offset) = if let Some(length) = shank_length {
+                let joint = tangent.ok_or(ReadError::Invalid)?;
+                let (rim, seat, volume) = tangent_shank::verify(
                     shell,
-                    &faces[offset..],
-                    rim,
-                    seat,
-                    [u, normal],
-                    head,
-                    world,
+                    [faces[6], faces[7]],
+                    joint,
+                    thread,
+                    length,
+                    [origin, u, v],
                 )?;
-                head_volume + shank_volume
-            }
-        };
-        let volume = outside_volume + if forward { flux } else { -flux };
-        require(volume.is_finite() && volume > 0.)?;
-        Ok(volume)
-    })?;
-    volumes.pop().ok_or(ReadError::Invalid)
+                (rim, seat, volume, 8)
+            } else {
+                (shoulder.ok_or(ReadError::Invalid)?, caps[0], 0., 6)
+            };
+            let head_volume =
+                socket_head::verify(shell, &faces[offset..], rim, seat, [u, normal], head, world)?;
+            head_volume + shank_volume
+        }
+    };
+    let volume = outside_volume + if forward { flux } else { -flux };
+    require(volume.is_finite() && volume > 0.)?;
+    Ok(volume)
 }
 
 pub(super) fn require(condition: bool) -> Result<()> {
@@ -336,6 +358,84 @@ pub(super) fn ring(shell: &Shell<'_, '_>, id: u32, exterior: bool) -> Result<Vec
     Ok(orient(&edges, forward))
 }
 
+#[derive(Clone, Copy)]
+struct Proof {
+    error: Option<f64>,
+    extent: f64,
+}
+impl Proof {
+    fn angular(self) -> f64 {
+        self.error.map_or(1e-10, |e| (e / self.extent).min(1e-10))
+    }
+    fn equal(self, a: Point, b: Point) -> bool {
+        self.error
+            .map_or(a == b, |error| length(sub(a, b)) <= error)
+    }
+    fn knots(self, mult: &Value<'_>, knots_value: &Value<'_>, expected: &Spline) -> Result<()> {
+        if self.error.is_none() {
+            return knots(mult, knots_value, expected);
+        }
+        let (Value::List(mult), Value::List(knots)) = (mult, knots_value) else {
+            return Err(ReadError::Invalid);
+        };
+        require(mult.len() == expected.knots.len() && knots.len() == expected.knots.len())?;
+        let mut previous = f64::NEG_INFINITY;
+        for (i, (m, k)) in mult.iter().zip(knots).enumerate() {
+            let Value::Number(k) = k else {
+                return Err(ReadError::Invalid);
+            };
+            require(
+                k.is_finite()
+                    && *k > previous
+                    && *m
+                        == Value::Number(
+                            (DEGREE + usize::from(i == 0 || i + 1 == knots.len())) as f64,
+                        ),
+            )?;
+            previous = *k;
+        }
+        Ok(())
+    }
+    fn poles(
+        self,
+        shell: &Shell<'_, '_>,
+        actual: &Value<'_>,
+        expected: impl Iterator<Item = Point>,
+    ) -> Result<Vec<Point>> {
+        if self.error.is_none() {
+            return poles(shell, actual, expected);
+        }
+        let ids = refs(actual)?;
+        let mut points = Vec::with_capacity(ids.len());
+        for (i, expected) in expected.enumerate() {
+            let point = shell.point(*ids.get(i).ok_or(ReadError::Invalid)?)?;
+            require(self.equal(point, expected))?;
+            points.push(point);
+        }
+        require(points.len() == ids.len())?;
+        Ok(points)
+    }
+    fn axis(
+        self,
+        shell: &Shell<'_, '_>,
+        id: &Value<'_>,
+        origin: Point,
+        normal: Point,
+        u: Point,
+    ) -> Result<Plane> {
+        if self.error.is_none() {
+            return check_axis(shell, id, origin, normal, u);
+        }
+        let frame = shell.placement(reference(id)?)?;
+        require(
+            self.equal(frame.origin, origin)
+                && length(sub(frame.normal, normal)) < self.angular()
+                && length(sub(frame.u, u)) < self.angular(),
+        )?;
+        Ok(frame)
+    }
+}
+
 fn knots(mult: &Value<'_>, knots: &Value<'_>, expected: &Spline) -> Result<()> {
     let (Value::List(mult), Value::List(knots)) = (mult, knots) else {
         return Err(ReadError::Invalid);
@@ -366,9 +466,11 @@ pub(super) fn poles(
 }
 
 fn spline_edge(
+    proof: Proof,
     shell: &mut Shell<'_, '_>,
     id: u32,
     spline: &Spline,
+    boundary: &[Point],
     points: impl Iterator<Item = Point>,
 ) -> Result<[u32; 2]> {
     let [Value::String(_), a, b, curve, Value::Enum("T")] = shell.args(id, "EDGE_CURVE")? else {
@@ -390,8 +492,9 @@ fn spline_edge(
         return Err(ReadError::Invalid);
     };
     require(*d == DEGREE as f64 && a != b)?;
-    knots(mult, segments, spline)?;
-    let points = poles(shell, controls, points)?;
+    proof.knots(mult, segments, spline)?;
+    let points = proof.poles(shell, controls, points)?;
+    require(points == boundary)?;
     let [start, end] = [points[0], points[points.len() - 1]];
     require(start == shell.vertex(a)? && end == shell.vertex(b)? && start != end)?;
     Ok([a, b])
@@ -420,6 +523,27 @@ fn check_cylinder(
     (radius, outward): (f64, bool),
     [origin, normal, u]: [Point; 3],
 ) -> Result<(f64, Point)> {
+    check_cylinder_with_proof(
+        Proof {
+            error: None,
+            extent: 1.,
+        },
+        shell,
+        id,
+        rims,
+        (radius, outward),
+        [origin, normal, u],
+    )
+}
+
+fn check_cylinder_with_proof(
+    proof: Proof,
+    shell: &mut Shell<'_, '_>,
+    id: u32,
+    rims: [u32; 2],
+    (radius, outward): (f64, bool),
+    [origin, normal, u]: [Point; 3],
+) -> Result<(f64, Point)> {
     let (surface, forward, bounds) = face(shell, id)?;
     let [bound] = bounds[..] else {
         return Err(ReadError::Invalid);
@@ -431,7 +555,7 @@ fn check_cylinder(
     };
     let measured_radius = *r;
     require(measured_radius == radius)?;
-    let axis = check_axis(shell, axis, origin, normal, u)?.normal;
+    let axis = proof.axis(shell, axis, origin, normal, u)?.normal;
     let uses = ring(shell, bound, true)?;
     let [
         (bottom, bottom_sense),

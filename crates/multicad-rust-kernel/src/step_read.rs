@@ -9,6 +9,8 @@ mod box_void;
 mod compound;
 mod curve;
 mod helical;
+mod helical_import;
+pub use helical_import::helical_import_matches;
 mod herringbone;
 pub use authored_compound::{ExpectedStepMember, VerifiedStepMember, verify_authored_compound};
 mod worm;
@@ -122,8 +124,9 @@ pub fn read_analytic_compound(input: &str, tolerance_mm: f64) -> Result<Vec<Read
 }
 
 /// Verify the members of one flat advanced BREP representation in file order.
-/// Independently reconstructed helical tube cuts also carry their placement
-/// and analytic source. Other members only require analytic readback.
+/// Independently reconstructed bare threads, through-threaded receivers and
+/// helical tube cuts also carry their placement and analytic source. Other
+/// members only require analytic readback.
 pub fn read_analytic_compound_with_helical_cuts(
     input: &str,
     tolerance_mm: f64,

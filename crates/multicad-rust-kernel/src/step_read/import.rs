@@ -28,6 +28,11 @@ use pocketed::{PocketRim, canonical_pockets};
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum ImportProfile {
+    /// Independently inferred and completely verified one-start analytic thread.
+    HelicalThread {
+        spec: crate::helical_thread::Spec,
+        stock_radius_mm: Option<f64>,
+    },
     Polygon {
         /// Exterior counterclockwise, followed by clockwise straight holes.
         rings: Vec<Vec<[f64; 2]>>,

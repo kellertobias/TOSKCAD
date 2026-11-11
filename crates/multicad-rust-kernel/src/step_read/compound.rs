@@ -26,6 +26,9 @@ pub(super) fn read_import_members(
             if let Some(rounded) = rounded_cylinder::recognize_member(shell, id, &face_ids)? {
                 return Ok(rounded);
             }
+            if let Some(thread) = helical_import::read_member(shell, id, &face_ids)? {
+                return Ok(thread);
+            }
             if let Some(cut) = import::read_helical_cut_member(shell, &face_ids)? {
                 return Ok(cut);
             }
@@ -83,6 +86,9 @@ pub(super) fn read_analytic_member(
     }
     if let Some((proof, _)) = rounded_cylinder::recognize_member(shell, id, &faces)? {
         return Ok((proof, None));
+    }
+    if let Some((proof, thread)) = helical_import::read_member(shell, id, &faces)? {
+        return Ok((proof, Some(thread)));
     }
     if let Some((proof, cut)) = import::read_helical_cut_member(shell, &faces)? {
         return Ok((proof, Some(cut)));

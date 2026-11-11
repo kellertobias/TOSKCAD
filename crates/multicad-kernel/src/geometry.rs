@@ -2160,7 +2160,8 @@ impl Solid {
                 .members()
                 .all(|member| member.supports_step_shell(false)),
             SolidBody::Helical(body, frame) => {
-                standalone && body.supports_step(*frame, self.policy)
+                (standalone || body.has_bare_step_closure())
+                    && body.supports_step(*frame, self.policy)
             }
             SolidBody::Herringbone(body, frame) => body.supports_step(*frame, self.policy),
             SolidBody::Bevel(body, frame) => standalone && body.supports_step(*frame, self.policy),
