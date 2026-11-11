@@ -241,6 +241,10 @@ impl Solid {
                 spec,
                 stock_radius_mm,
             } => Self::import_helical_thread(spec, stock_radius_mm, frame, feature, policy),
+            ImportProfile::HelicalNut {
+                spec,
+                across_flats_mm,
+            } => Self::import_helical_nut(spec, across_flats_mm, frame, feature, policy),
             ImportProfile::HelicalScrew { spec, screw } => {
                 Self::import_helical_screw(spec, screw, frame, feature, policy)
             }

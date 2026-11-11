@@ -38,6 +38,23 @@ pub fn verify_helical_thread(
     )
 }
 
+pub fn verify_helical_nut(
+    input: &str,
+    nut: &crate::hex_nut::Nut,
+    origin: Point,
+    u: Point,
+    v: Point,
+    tolerance: f64,
+) -> Result<f64> {
+    verify(
+        input,
+        nut.thread(),
+        Closure::HexNut(nut.across_flats_mm()),
+        [origin, u, v],
+        tolerance,
+    )
+}
+
 /// Verify and integrate an authored analytic headed screw STEP.
 pub fn verify_helical_screw(
     input: &str,
@@ -88,6 +105,7 @@ pub(super) fn verify_member(
             .major_radius_mm
             .max(closure.cylinder().map_or(0., |(r, _)| r))
             .max(match closure {
+                Closure::HexNut(width) => width,
                 Closure::HexHead {
                     across_flats_mm,
                     height_mm,
@@ -221,6 +239,7 @@ pub(super) fn verify_member(
     let mut cylinder_rims = [0; 2];
     let mut caps = [[0.; 3]; 2];
     let mut shoulder = None;
+    let mut hex_rims = [0; 2];
     let mut tangent = None;
     for (end, (face_id, z)) in faces[count..count + 2].iter().zip([0., height]).enumerate() {
         let top = end == 1;
@@ -258,6 +277,9 @@ pub(super) fn verify_member(
             shoulder = Some(bounds[0]);
         }
         require(actual == expected)?;
+        if matches!(closure, Closure::HexNut(_)) {
+            hex_rims[end] = bounds[0];
+        }
         if let Some((radius, outer)) = closure.cylinder() {
             let rim = ring(shell, bounds[0], outer)?;
             let [(edge, sense)] = rim[..] else {
@@ -290,6 +312,35 @@ pub(super) fn verify_member(
             )?;
             let sign = if outer { 1. } else { -1. };
             sign * std::f64::consts::PI * radius * radius * dot(sub(caps[1], caps[0]), axis)
+        }
+        Closure::HexNut(width) => {
+            let hex = crate::headed_screw::hex_vertices(width);
+            let lower = hex_head::hex_rim(
+                proof,
+                shell,
+                hex_rims[0],
+                true,
+                false,
+                hex.map(|p| world(p, 0.)),
+            )?;
+            let upper = hex_head::hex_rim(
+                proof,
+                shell,
+                hex_rims[1],
+                true,
+                true,
+                hex.map(|p| world(p, height)),
+            )?;
+            let area = hex_head::walls_area(
+                proof,
+                shell,
+                &faces[count + 2..],
+                [&lower, &upper],
+                origin,
+                normal,
+                false,
+            )?;
+            area * dot(sub(caps[1], caps[0]), axis)
         }
         Closure::HexHead {
             across_flats_mm,

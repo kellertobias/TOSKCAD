@@ -271,6 +271,57 @@ impl Solid {
         Ok(solid)
     }
 
+    pub(super) fn import_helical_nut(
+        spec: Spec,
+        across_flats_mm: f64,
+        frame: PlaneFrame,
+        feature: EntityId,
+        policy: GeometryPolicy,
+    ) -> Result<Self, GeometryError> {
+        policy.length(across_flats_mm / 2. - spec.major_radius_mm)?;
+        let mut solid = Self::rust_helical_body(
+            imported_request(spec),
+            spec.root_radius_mm,
+            feature,
+            frame,
+            policy,
+            |thread| {
+                Nut::new(thread, across_flats_mm)
+                    .map(HelicalForm::Nut)
+                    .map_err(|_| input("Invalid imported threaded hex nut"))
+            },
+        )?;
+        let identity = super::step_import::feature_origin(
+            feature,
+            "helical-nut-material",
+            frame
+                .origin
+                .into_iter()
+                .chain(frame.u)
+                .chain(frame.v)
+                .chain([
+                    spec.major_radius_mm,
+                    spec.pitch_mm,
+                    spec.length_mm,
+                    spec.depth_mm,
+                    spec.crest_width_mm,
+                    spec.lower_flank_deg,
+                    spec.upper_flank_deg,
+                    spec.starts as f64,
+                    f64::from(spec.left_hand),
+                    spec.root_radius_mm.unwrap_or(0.),
+                    across_flats_mm,
+                ]),
+        );
+        let SolidBody::Helical(body, _) = &mut solid.body else {
+            unreachable!()
+        };
+        Rc::get_mut(body)
+            .expect("new unshared imported nut")
+            .import_identity = Some(identity);
+        Ok(solid)
+    }
+
     pub(super) fn matches_imported_helical_thread(
         &self,
         imported: &multicad_rust_kernel::step_read::ImportSolid,
@@ -283,6 +334,14 @@ impl Solid {
             return multicad_rust_kernel::step_read::helical_screw_import_matches(
                 imported,
                 screw,
+                [frame.origin, frame.u, frame.v],
+                tolerance,
+            );
+        }
+        if let HelicalForm::Nut(nut) = &body.form {
+            return multicad_rust_kernel::step_read::helical_nut_import_matches(
+                imported,
+                nut,
                 [frame.origin, frame.u, frame.v],
                 tolerance,
             );
@@ -495,6 +554,16 @@ impl Solid {
                 self.policy.linear_tolerance_mm,
             ));
         }
+        if let HelicalForm::Nut(nut) = &body.form {
+            return Some(multicad_rust_kernel::step_read::verify_helical_nut(
+                source,
+                nut,
+                frame.origin,
+                frame.u,
+                frame.v,
+                self.policy.linear_tolerance_mm,
+            ));
+        }
         let radius = body.step_stock()?;
         Some(multicad_rust_kernel::step_read::verify_helical_thread(
             source,
@@ -654,6 +723,7 @@ impl HelicalBody {
 
     pub(super) fn has_importable_step_closure(&self) -> bool {
         self.step_stock().is_some()
+            || matches!(self.form, HelicalForm::Nut(_))
             || matches!(&self.form, HelicalForm::Screw(screw)
             if match screw.spec().head {
                 multicad_rust_kernel::headed_screw::ScrewHead::ExternalHex { .. } => screw.spec().shank_length_mm == 0.,
@@ -664,6 +734,13 @@ impl HelicalBody {
         if let HelicalForm::Screw(screw) = &self.form {
             return multicad_rust_kernel::step::supports_helical_screw(
                 screw,
+                frame.origin,
+                policy.linear_tolerance_mm,
+            );
+        }
+        if let HelicalForm::Nut(nut) = &self.form {
+            return multicad_rust_kernel::step::supports_helical_nut(
+                nut,
                 frame.origin,
                 policy.linear_tolerance_mm,
             );
@@ -687,6 +764,15 @@ impl HelicalBody {
         if let HelicalForm::Screw(screw) = &self.form {
             return writer.append_helical_screw(
                 screw,
+                frame.origin,
+                frame.u,
+                frame.v,
+                policy.linear_tolerance_mm,
+            );
+        }
+        if let HelicalForm::Nut(nut) = &self.form {
+            return writer.append_helical_nut(
+                nut,
                 frame.origin,
                 frame.u,
                 frame.v,

@@ -36,6 +36,7 @@ pub(crate) enum Closure {
         height_mm: f64,
     },
     SocketHead(SocketHead),
+    HexNut(f64),
 }
 
 impl Closure {
@@ -92,7 +93,7 @@ impl Closure {
     }
 
     pub(crate) fn inside(self) -> bool {
-        matches!(self, Self::Bore(_))
+        matches!(self, Self::Bore(_) | Self::HexNut(_))
     }
 
     pub(crate) fn tangent_shank(self) -> Option<f64> {
@@ -114,6 +115,7 @@ impl Closure {
             Self::Shaft => bands + 2,
             Self::Bore(_) | Self::Hollow(_) => bands + 3,
             Self::HexHead { .. } => bands + 9,
+            Self::HexNut(_) => bands + 8,
             Self::SocketHead(head) => bands + 11 + 2 * usize::from(head.shank_length_mm > 0.),
         }
     }
@@ -122,6 +124,7 @@ impl Closure {
         match self {
             Self::Shaft | Self::Hollow(_) => (major_radius_mm, 0.),
             Self::Bore(radius) => (radius, 0.),
+            Self::HexNut(width) => (width / 3_f64.sqrt(), 0.),
             Self::HexHead {
                 across_flats_mm,
                 height_mm,
@@ -129,6 +132,25 @@ impl Closure {
             Self::SocketHead(head) => (head.radius_mm, head.height_mm + head.shank_length_mm),
         }
     }
+}
+
+pub fn write_helical_nut(
+    nut: &crate::hex_nut::Nut,
+    origin: Point,
+    u: Point,
+    v: Point,
+    tolerance_mm: f64,
+) -> Result<String, StepError> {
+    write_one(|writer| writer.append_helical_nut(nut, origin, u, v, tolerance_mm))
+}
+pub fn supports_helical_nut(nut: &crate::hex_nut::Nut, origin: Point, tolerance_mm: f64) -> bool {
+    prepare(
+        nut.thread(),
+        Closure::HexNut(nut.across_flats_mm()),
+        origin,
+        tolerance_mm,
+    )
+    .is_ok()
 }
 
 pub fn write_helical_screw(
@@ -277,7 +299,18 @@ pub(super) fn encode(
             Some(trim?)
         }
         Closure::SocketHead(socket) => Some(encode_socket_head(file, &placement, socket)?),
-        Closure::Shaft | Closure::Bore(_) | Closure::Hollow(_) => None,
+        Closure::Shaft | Closure::Bore(_) | Closure::Hollow(_) | Closure::HexNut(_) => None,
+    };
+    let hex = if let Closure::HexNut(width) = closure {
+        Some(encode_hex_prism(
+            file,
+            &placement,
+            width,
+            [0., height],
+            false,
+        )?)
+    } else {
+        None
     };
     for (end, cap) in cap_edges.into_iter().enumerate() {
         let top = end == 1;
@@ -301,6 +334,9 @@ pub(super) fn encode(
         if let Some((cylinder, outward)) = &cylinder {
             bounds.push(cylinder.cap_bound(file, top, *outward));
         }
+        if let Some((rims, _)) = &hex {
+            bounds.push(rims[end]);
+        }
         if !top
             && shank.is_none()
             && let Some((shoulder, _)) = &head
@@ -317,6 +353,9 @@ pub(super) fn encode(
     }
     if let Some((cylinder, outward)) = &cylinder {
         faces.push(cylinder.wall(file, *outward));
+    }
+    if let Some((_, walls)) = hex {
+        faces.extend(walls);
     }
     if let Some((head_seat, head_faces)) = head {
         if let Some(shank) = shank {
@@ -435,12 +474,18 @@ pub(crate) fn prepare(
     tolerance_mm: f64,
 ) -> Result<ThreadSplines, StepError> {
     let spec = thread.spec();
-    if spec.starts != 1 && !matches!(closure, Closure::Shaft | Closure::Bore(_)) {
+    if spec.starts != 1
+        && !matches!(
+            closure,
+            Closure::Shaft | Closure::Bore(_) | Closure::HexNut(_)
+        )
+    {
         return Err(StepError::Unsupported);
     }
     if !tolerance_mm.is_finite()
         || tolerance_mm <= 0.
         || matches!(closure, Closure::Bore(r) if !r.is_finite() || r <= spec.major_radius_mm)
+        || matches!(closure, Closure::HexNut(width) if !width.is_finite() || width / 2. <= spec.major_radius_mm)
         || matches!(closure, Closure::Hollow(r)
             if !r.is_finite() || r <= 0. || r >= spec.major_radius_mm - spec.depth_mm)
     {
@@ -463,6 +508,7 @@ pub(crate) fn prepare(
     if 128. * f64::EPSILON * scale > tolerance / 2.
         || spec.major_radius_mm - spec.depth_mm <= tolerance
         || matches!(closure, Closure::Bore(radius) if radius - major <= tolerance)
+        || matches!(closure, Closure::HexNut(width) if width / 2. - major <= tolerance)
         || matches!(closure, Closure::Hollow(radius)
             if radius <= tolerance || major - spec.depth_mm - radius <= tolerance)
         || matches!(closure, Closure::HexHead { across_flats_mm, height_mm }
@@ -1036,3 +1082,6 @@ mod tests {
         ));
     }
 }
+
+#[cfg(test)]
+mod nut_tests;

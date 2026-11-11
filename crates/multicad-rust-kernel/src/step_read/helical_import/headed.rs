@@ -44,13 +44,13 @@ pub(super) fn hex(
     })
 }
 
-struct Chart {
+pub(super) struct Chart {
     origin: Point,
     rows: [Point; 3],
     determinant: f64,
 }
 impl Chart {
-    fn new([origin, u, v]: [Point; 3]) -> Result<Self> {
+    pub(super) fn new([origin, u, v]: [Point; 3]) -> Result<Self> {
         let n = cross(u, v);
         let rows = [cross(v, n), cross(n, u), cross(u, v)];
         let determinant = dot(u, rows[0]);
@@ -61,7 +61,7 @@ impl Chart {
             determinant,
         })
     }
-    fn local(&self, point: Point) -> Point {
+    pub(super) fn local(&self, point: Point) -> Point {
         self.rows
             .map(|row| dot(row, sub(point, self.origin)) / self.determinant)
     }

@@ -2633,3 +2633,59 @@ fn rust_stdio_saved_multistart_lead_screw_exports_keep_starts_hands_and_history(
         close(reopened.part_volume(), imported.volume_mm3().unwrap());
     }
 }
+
+#[test]
+fn rust_stdio_exports_imports_and_reopens_a_modeled_m6_6h_hex_nut() {
+    let directory = tempfile::tempdir().unwrap();
+    let project = directory.path().join("m6-nut.tcd");
+    let args = [
+        "--rust-model",
+        "--project",
+        project.to_str().unwrap(),
+        "--export-dir",
+        directory.path().to_str().unwrap(),
+    ];
+    let mut client = Client::start(&args);
+    let nut = client.ok("set_mechanical_part", json!({
+        "expected_revision":0,"name":"Modeled M6 6H nut",
+        "recipe":{"kind":"hex_nut","across_flats":length(10.),
+            "thread":{"family":"iso_metric","fit":"metric_6h_internal","major_diameter":length(6.),"pitch":length(1.),"length":length(5.2),"hand":"left","representation":"modeled"}}
+    }));
+    let volume = client.part_volume();
+    client.ok("save_project", json!({"expected_revision":1}));
+    drop(client);
+    let mut client = Client::start(&args);
+    let receipt = client.ok(
+        "export_step",
+        json!({"part":nut["part"],"file_name":"nut.step"}),
+    );
+    close(receipt["readback_volume_mm3"].as_f64().unwrap(), volume);
+    let text = std::fs::read_to_string(directory.path().join("nut.step")).unwrap();
+    assert_eq!(text.matches("ADVANCED_FACE").count(), 12);
+    assert_eq!(text.matches("B_SPLINE_SURFACE_WITH_KNOTS").count(), 4);
+    assert!(!text.contains("FACETED_BREP"));
+    drop(client);
+    let imported_project = directory.path().join("imported-nut.tcd");
+    let args = [
+        "--rust-model",
+        "--project",
+        imported_project.to_str().unwrap(),
+        "--export-dir",
+        directory.path().to_str().unwrap(),
+    ];
+    let mut importer = Client::start(&args);
+    let imported = importer.ok(
+        "import_step",
+        json!({"expected_revision":0,"file_name":"nut.step"}),
+    );
+    close(importer.part_volume(), volume);
+    importer.ok("save_project", json!({"expected_revision":1}));
+    drop(importer);
+    let mut reopened = Client::start(&args);
+    close(reopened.part_volume(), volume);
+    let receipt = reopened.ok(
+        "export_step",
+        json!({"part":imported["parts"][0],"file_name":"nut-reexport.step"}),
+    );
+    close(receipt["readback_volume_mm3"].as_f64().unwrap(), volume);
+}

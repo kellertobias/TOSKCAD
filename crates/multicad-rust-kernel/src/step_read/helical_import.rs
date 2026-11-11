@@ -9,6 +9,8 @@ use crate::{
 use helical::{face, require};
 mod headed;
 pub use headed::helical_screw_import_matches;
+mod nut;
+pub use nut::helical_nut_import_matches;
 use std::f64::consts::TAU;
 
 pub(super) fn read_member(
@@ -35,7 +37,7 @@ pub(super) fn read_member(
         }
         count += 1;
     }
-    if !count.is_multiple_of(4) || !matches!(faces.len() - count, 2 | 3 | 9 | 11 | 13) {
+    if !count.is_multiple_of(4) || !matches!(faces.len() - count, 2 | 3 | 8 | 9 | 11 | 13) {
         return Ok(None);
     }
     if count > 32 {
@@ -44,6 +46,7 @@ pub(super) fn read_member(
     let starts = (count / 4) as u32;
     let headed = matches!(faces.len() - count, 9 | 11 | 13);
     let shank = faces.len() - count == 13;
+    let is_nut = faces.len() - count == 8;
     let mut grids = Vec::with_capacity(4);
     let mut radial = Vec::with_capacity(4);
     let mut axial = None;
@@ -178,7 +181,7 @@ pub(super) fn read_member(
         lower_flank_deg: flank_degrees[0],
         upper_flank_deg: flank_degrees[1],
         starts,
-        left_hand: first.1 != stock.is_some(),
+        left_hand: first.1 != (stock.is_some() || is_nut),
         root_radius_mm: root_radius,
     })
     .map_err(|e| match e {
@@ -215,10 +218,19 @@ pub(super) fn read_member(
     } else {
         None
     };
-    let closure = screw
-        .as_ref()
-        .map_or_else(|| Ok(Closure::stock(stock)), Closure::screw)
-        .map_err(helical::step_error)?;
+    let nut = if is_nut {
+        Some(nut::read(shell, faces[count], &thread, [origin, u, v])?)
+    } else {
+        None
+    };
+    let closure = if let Some(nut) = &nut {
+        Closure::HexNut(nut.across_flats_mm())
+    } else {
+        screw
+            .as_ref()
+            .map_or_else(|| Ok(Closure::stock(stock)), Closure::screw)
+            .map_err(helical::step_error)?
+    };
     let volume = helical::verify_member(
         shell,
         solid,
@@ -230,9 +242,14 @@ pub(super) fn read_member(
     let support = |direction: Point| {
         stock.map_or_else(
             || {
-                screw.as_ref().map_or_else(
-                    || thread.support(direction),
-                    |screw| screw.support(direction),
+                nut.as_ref().map_or_else(
+                    || {
+                        screw.as_ref().map_or_else(
+                            || thread.support(direction),
+                            |screw| screw.support(direction),
+                        )
+                    },
+                    |nut| nut.support(direction),
                 )
             },
             |radius| radius * direction[0].hypot(direction[1]) + (height * direction[2]).max(0.),
@@ -272,16 +289,22 @@ pub(super) fn read_member(
             u,
             v,
             height_mm: height,
-            profile: screw.map_or_else(
-                || ImportProfile::HelicalThread {
+            profile: if let Some(nut) = nut {
+                ImportProfile::HelicalNut {
                     spec: thread.spec(),
-                    stock_radius_mm: stock,
-                },
-                |screw| ImportProfile::HelicalScrew {
+                    across_flats_mm: nut.across_flats_mm(),
+                }
+            } else if let Some(screw) = screw {
+                ImportProfile::HelicalScrew {
                     spec: thread.spec(),
                     screw: screw.spec(),
-                },
-            ),
+                }
+            } else {
+                ImportProfile::HelicalThread {
+                    spec: thread.spec(),
+                    stock_radius_mm: stock,
+                }
+            },
         },
     )))
 }

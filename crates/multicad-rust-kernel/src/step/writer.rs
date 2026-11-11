@@ -214,6 +214,19 @@ impl Writer {
         })
     }
 
+    pub fn append_helical_nut(
+        &mut self,
+        nut: &crate::hex_nut::Nut,
+        origin: Point,
+        u: Point,
+        v: Point,
+        tolerance_mm: f64,
+    ) -> Result<(), StepError> {
+        let placement = Placement::new(origin, u, v)?;
+        let closure = helical::Closure::HexNut(nut.across_flats_mm());
+        self.append(|file| helical::encode(file, nut.thread(), closure, placement, tolerance_mm))
+    }
+
     pub fn append_helical_screw(
         &mut self,
         screw: &crate::headed_screw::Screw,

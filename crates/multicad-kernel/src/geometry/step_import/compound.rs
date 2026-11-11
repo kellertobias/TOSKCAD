@@ -163,6 +163,34 @@ fn member_signature(readback: &Readback, imported: &ImportSolid) -> ContentHash 
             bytes.extend(if value == 0. { 0. } else { value }.to_le_bytes());
         }
     }
+    if let ImportProfile::HelicalNut {
+        spec,
+        across_flats_mm,
+    } = imported.profile
+    {
+        bytes.extend(b"helical-nut");
+        for value in imported
+            .origin_mm
+            .into_iter()
+            .chain(imported.u)
+            .chain(imported.v)
+            .chain([
+                spec.major_radius_mm,
+                spec.pitch_mm,
+                spec.length_mm,
+                spec.depth_mm,
+                spec.crest_width_mm,
+                spec.lower_flank_deg,
+                spec.upper_flank_deg,
+                spec.starts as f64,
+                f64::from(spec.left_hand),
+                spec.root_radius_mm.unwrap_or(0.),
+                across_flats_mm,
+            ])
+        {
+            bytes.extend(if value == 0. { 0. } else { value }.to_le_bytes());
+        }
+    }
     if let ImportProfile::HelicalScrew { spec, screw } = imported.profile {
         bytes.extend(b"helical-screw");
         let head = match screw.head {

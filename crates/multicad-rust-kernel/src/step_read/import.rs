@@ -38,6 +38,11 @@ pub enum ImportProfile {
         spec: crate::helical_thread::Spec,
         screw: crate::headed_screw::ScrewSpec,
     },
+    /// Full hexagonal exterior and independently certified internal thread.
+    HelicalNut {
+        spec: crate::helical_thread::Spec,
+        across_flats_mm: f64,
+    },
     Polygon {
         /// Exterior counterclockwise, followed by clockwise straight holes.
         rings: Vec<Vec<[f64; 2]>>,
