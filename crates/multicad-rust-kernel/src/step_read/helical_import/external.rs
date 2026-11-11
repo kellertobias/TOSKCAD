@@ -2,62 +2,6 @@
 use super::*;
 use crate::threaded_shaft::Shaft;
 
-fn up_sum(a: f64, b: f64) -> f64 {
-    (a + b).next_up()
-}
-fn up_product(a: f64, b: f64) -> f64 {
-    (a * b).next_up()
-}
-fn difference(a: f64, b: f64) -> [f64; 2] {
-    let s = a - b;
-    let part = s - a;
-    [s, (a - (s - part)) + (-b - part)]
-}
-/// Bound the exact real sum of products of the supplied finite f64 values.
-/// Subnormal product residuals get one outward ulp even when FMA rounds zero.
-fn expression_bound(terms: impl IntoIterator<Item = (f64, f64)>) -> f64 {
-    let mut value = 0.;
-    let mut error = 0.;
-    for (a, b) in terms {
-        let product = a * b;
-        let sum = value + product;
-        if !sum.is_finite() {
-            return f64::INFINITY;
-        }
-        let part = sum - value;
-        let residual = (value - (sum - part)) + (product - part);
-        error = up_sum(
-            error,
-            up_sum(a.mul_add(b, -product).abs().next_up(), residual.abs()),
-        );
-        value = sum;
-    }
-    up_sum(value.abs(), error)
-}
-fn vector_difference(a: Point, b: Point) -> f64 {
-    (0..3).fold(0., |bound, i| {
-        up_sum(bound, expression_bound([(a[i], 1.), (b[i], -1.)]))
-    })
-}
-fn endpoint_error(a: [Point; 2], b: [Point; 2], la: f64, lb: f64) -> f64 {
-    let [length, low_length] = difference(la, lb);
-    (0..3).fold(0., |bound, i| {
-        let [origin, low_origin] = difference(a[0][i], b[0][i]);
-        let [axis, low_axis] = difference(a[1][i], b[1][i]);
-        up_sum(
-            bound,
-            expression_bound([
-                (origin, 1.),
-                (low_origin, 1.),
-                (axis, la),
-                (low_axis, la),
-                (b[1][i], length),
-                (b[1][i], low_length),
-            ]),
-        )
-    })
-}
-
 pub fn threaded_shaft_import_matches(
     imported: &ImportSolid,
     shaft: &Shaft,
@@ -92,32 +36,17 @@ pub fn threaded_shaft_import_matches(
     if !helical_import_matches(&thread, shaft.thread(), None, frame, tolerance) {
         return false;
     }
-    let [origin, u, v] = frame;
-    let na = cross(u, v);
-    let nb = cross(imported.u, imported.v);
-    let ends = [shaft.thread().spec().length_mm, shaft.stock_length_mm()];
-    let candidate_ends = [spec.length_mm, stock_length_mm];
-    let center_error = ends
-        .into_iter()
-        .zip(candidate_ends)
-        .map(|(a, b)| endpoint_error([origin, na], [imported.origin_mm, nb], a, b))
-        .fold(0., f64::max);
-    let radius = shaft.radius_mm();
-    let frame_error = up_product(
-        radius.max(stock_radius_mm),
-        up_sum(
-            vector_difference(u, imported.u),
-            vector_difference(v, imported.v),
-        ),
-    );
-    let radius_error = expression_bound([(radius, 1.), (stock_radius_mm, -1.)]);
-    let radius_scale = up_sum(
-        vector_difference(imported.u, [0.; 3]),
-        vector_difference(imported.v, [0.; 3]),
-    );
-    let error = up_sum(
-        center_error,
-        up_sum(frame_error, up_product(radius_error, radius_scale)),
+    let error = super::cylindrical_closure::error(
+        super::cylindrical_closure::Cylinder {
+            frame,
+            radius_mm: shaft.radius_mm(),
+            axial_mm: [shaft.thread().spec().length_mm, shaft.stock_length_mm()],
+        },
+        super::cylindrical_closure::Cylinder {
+            frame: [imported.origin_mm, imported.u, imported.v],
+            radius_mm: stock_radius_mm,
+            axial_mm: [spec.length_mm, stock_length_mm],
+        },
     );
     error.is_finite() && error <= tolerance / 8.
 }
@@ -186,6 +115,9 @@ mod tests {
         changed = source.clone();
         changed.u = [0., 1., 0.];
         assert!(!matches(&changed));
+        changed = source.clone();
+        changed.origin_mm[0] += 0.01;
+        assert!(!matches(&changed));
         let large = Shaft::new(*body.thread(), 1e6, 5.).unwrap();
         changed = source.clone();
         changed.profile = ImportProfile::ThreadedShaft {
@@ -232,9 +164,6 @@ mod tests {
         assert!(!threaded_shaft_import_matches(
             &imported, &body, frame, 1e-10
         ));
-        assert!(expression_bound([(1e16, 1.), (1., 1.), (-1e16, 1.)]) >= 1.);
-        assert!(expression_bound([(f64::from_bits(1), 0.5)]) > 0.);
-        assert_eq!(expression_bound([(f64::MAX, 2.)]), f64::INFINITY);
     }
 
     #[test]
