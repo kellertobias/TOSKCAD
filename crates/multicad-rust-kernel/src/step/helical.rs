@@ -484,7 +484,7 @@ pub(super) fn encode(
     for (end, cap) in cap_edges.into_iter().enumerate() {
         let top = end == 1;
         if top && let Some(external) = &external {
-            for (k, part) in cap.chunks_exact(4).enumerate() {
+            for (k, part) in cap.as_chunks::<4>().0.iter().enumerate() {
                 let uses = [
                     (part[0], true),
                     (part[1], true),
@@ -799,7 +799,7 @@ pub(crate) fn prepare(
     if closure.tangent_shank().is_some()
         || matches!(closure,Closure::ExternalStock {radius_mm,..} if radius_mm==major)
     {
-        for part in bands.chunks_exact(4) {
+        for part in bands.as_chunks::<4>().0 {
             check_shank_clearance(&part[..3], major)?;
         }
     }

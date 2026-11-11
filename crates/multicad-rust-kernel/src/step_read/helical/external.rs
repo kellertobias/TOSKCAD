@@ -7,8 +7,7 @@ pub(super) fn verify(
     faces: &[u32],
     thread: &Thread,
     [radius, stock_length]: [f64; 2],
-    rings: &[Vec<u32>; 2],
-    corners: &[[[u32; 2]; 2]],
+    (rings, corners): (&[Vec<u32>; 2], &[[[u32; 2]; 2]]),
     [origin, u, v]: [Point; 3],
 ) -> Result<f64> {
     let spec = thread.spec();

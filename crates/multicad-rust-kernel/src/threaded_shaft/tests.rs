@@ -101,6 +101,42 @@ fn invalid_dimensions_and_mesh_work_refuse_without_mutating_source() {
         Err(crate::display::MeshError::BudgetExceeded)
     );
     assert_eq!(body, shaft(false, 1, true, false));
+    let options = Tessellation {
+        triangle_limit: 200_000,
+        ..options
+    };
+    let near = Shaft::new(
+        *body.thread(),
+        body.radius_mm() + 1e-12,
+        body.stock_length_mm(),
+    )
+    .unwrap();
+    assert_eq!(
+        helical_thread_mesh::tessellate_shaft(&near, options),
+        Err(crate::display::MeshError::BudgetExceeded)
+    );
+    let thin = Shaft::new(
+        *body.thread(),
+        body.radius_mm(),
+        body.thread().spec().length_mm + 1e-12,
+    )
+    .unwrap();
+    let mesh = helical_thread_mesh::tessellate_shaft(&thin, options).unwrap();
+    assert!(manufacturing::certify(&mesh).is_ok());
+    assert!(thin.contains(
+        [
+            body.radius_mm(),
+            0.,
+            (thin.stock_length_mm() + body.thread().spec().length_mm) / 2.
+        ],
+        0.
+    ));
+    for candidate in [&near, &thin] {
+        assert_eq!(
+            crate::step::write_threaded_shaft(candidate, [0.; 3], [1., 0., 0.], [0., 1., 0.], 1e-7),
+            Err(crate::step::StepError::Limit)
+        );
+    }
 }
 
 #[test]
