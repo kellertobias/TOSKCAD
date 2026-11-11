@@ -577,7 +577,29 @@ mod tests {
             let line = text.lines().find(|line| line.starts_with(&normal)).unwrap();
             text.replacen(line, &format!("{normal}('',(0.,0.,{axis_z:.1}));"), 1)
         };
+        let empty_cylinder_wall_loop = {
+            let entities = parse_entities(&step, 1e-7).unwrap();
+            let shell = Shell::new(&entities, 1e-7, true);
+            let faces = shell
+                .member_faces(shell.represented_solids(true).unwrap()[0])
+                .unwrap();
+            let wall = faces
+                .into_iter()
+                .find(|&id| {
+                    let (surface, _, _) = face(&shell, id).unwrap();
+                    shell.simple(surface).unwrap().name == "CYLINDRICAL_SURFACE"
+                })
+                .unwrap();
+            let (_, _, bounds) = face(&shell, wall).unwrap();
+            let (_, wire, _) = shell.bound(bounds[0], false).unwrap();
+            let old = step
+                .lines()
+                .find(|line| line.starts_with(&format!("#{wire}=")))
+                .unwrap();
+            step.replacen(old, &format!("#{wire}=EDGE_LOOP('',());"), 1)
+        };
         for changed in [
+            empty_cylinder_wall_loop,
             rewrite(&step, "ADVANCED_FACE", 0, wrong_bounds),
             rewrite(&step, "ADVANCED_FACE", 6, wrong_bounds),
             rewrite(&step, "ADVANCED_FACE", 0, |_| "ADVANCED_FACE('');".into()),

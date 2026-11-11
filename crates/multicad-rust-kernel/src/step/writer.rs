@@ -9,7 +9,7 @@ use crate::{
 pub const MAX_COMPOUND_SOLIDS: usize = 1024;
 
 /// Append independently closed analytic solids in world coordinates. Each
-/// member keeps its own shell and topology in the final representation.
+/// member keeps its boundary shells and topology in the final representation.
 pub struct Writer {
     file: StepFile,
     solids: Vec<Entity>,
@@ -629,8 +629,14 @@ impl Writer {
         }
         let placement = Placement::new(origin, u, v)?;
         let previous = (self.solids.len(), self.file.data.len(), self.file.next);
-        if previous.0 + union.shell_count() > MAX_COMPOUND_SOLIDS {
+        if previous.0 + union.solid_count() > MAX_COMPOUND_SOLIDS {
             return Err(StepError::Limit);
+        }
+        if union.shell_count() != union.solid_count() {
+            let faces = box_void::union_faces(union);
+            return self.append(|file| {
+                box_void::encode(file, &faces, &|[x, y, z]| placement.point_f64([x, y], z))
+            });
         }
         for shell in union.shells() {
             if let Err(error) =

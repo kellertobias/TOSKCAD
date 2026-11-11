@@ -557,3 +557,57 @@ fn mixed_compound_keeps_placed_stadiums_and_machined_stock_as_separate_shells() 
         expected.map(|member| read_analytic_solid(&member, 1e-7).unwrap())
     );
 }
+
+#[test]
+fn enclosed_box_void_consumes_one_logical_capacity_slot() {
+    use crate::{
+        orthogonal::{Box3, Operation, boolean},
+        planar_boolean::{ConvexPiece, Union},
+    };
+    let geometry = boolean(
+        &[Box3 {
+            min: [0.; 3],
+            max: [15., 10., 8.],
+        }],
+        &[Box3 {
+            min: [2., 3., 1.],
+            max: [7., 7., 4.],
+        }],
+        Operation::Subtract,
+        1e-7,
+    )
+    .unwrap()
+    .unwrap();
+    let pieces = geometry
+        .cells()
+        .iter()
+        .map(|cell| ConvexPiece::from_box(cell.min, cell.max, 1e-7).unwrap())
+        .collect::<Vec<_>>();
+    let union = Union::new(&pieces, 1e-7).unwrap();
+    let mut writer = Writer::new();
+    writer.solids.resize(MAX_COMPOUND_SOLIDS - 1, Entity(1));
+    writer
+        .append_planar_union(&union, [0.; 3], [1., 0., 0.], [0., 1., 0.])
+        .unwrap();
+    assert_eq!(writer.solids.len(), MAX_COMPOUND_SOLIDS);
+    let before = writer.file.data.clone();
+    assert_eq!(
+        writer.append_planar_union(&union, [0.; 3], [1., 0., 0.], [0., 1., 0.]),
+        Err(StepError::Limit)
+    );
+    assert_eq!(writer.file.data, before);
+}
+
+#[test]
+fn invalid_prism_placement_cannot_publish_or_change_an_existing_member() {
+    let prism = Prism::rectangular(1, size()).unwrap();
+    let mut writer = Writer::new();
+    writer.append_box(size(), ORIGIN, X, Y).unwrap();
+    let before = writer.file.data.clone();
+    assert_eq!(
+        writer.append_rectangular_prism(&prism, ORIGIN, [0.; 3], Y),
+        Err(StepError::InvalidPlacement)
+    );
+    assert_eq!(writer.file.data, before);
+    assert_eq!(writer.solids.len(), 1);
+}

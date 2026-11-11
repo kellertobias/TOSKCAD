@@ -2,19 +2,6 @@
 
 use super::*;
 
-pub(super) fn read_members<T>(
-    input: &str,
-    tolerance: f64,
-    allow_circles: bool,
-    single: bool,
-    member: impl Fn(&Shell<'_, '_>, &[Face]) -> Result<T>,
-) -> Result<Vec<T>> {
-    read_members_by(input, tolerance, allow_circles, single, |shell, id, _| {
-        let faces = shell.validate_faces(shell.member_faces(id)?)?;
-        member(shell, &faces)
-    })
-}
-
 pub(super) fn read_import_members(
     input: &str,
     tolerance: f64,
@@ -26,6 +13,9 @@ pub(super) fn read_import_members(
         true,
         single,
         |shell, id, may_be_warped| {
+            if let Some(member) = box_void::read_member(shell, id)? {
+                return Ok(member);
+            }
             let face_ids = shell.member_faces(id)?;
             if let Some(sphere) = sphere::read_member(shell, &face_ids)? {
                 return Ok(sphere);
@@ -78,6 +68,9 @@ pub(super) fn read_analytic_member(
     id: u32,
     may_be_warped: bool,
 ) -> Result<(Readback, Option<ImportSolid>)> {
+    if let Some((readback, _)) = box_void::read_member(shell, id)? {
+        return Ok((readback, None));
+    }
     let faces = shell.member_faces(id)?;
     if let Some((proof, _)) = sphere::read_member(shell, &faces)? {
         return Ok((proof, None));

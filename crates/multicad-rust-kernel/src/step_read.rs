@@ -5,6 +5,7 @@
 
 mod authored_compound;
 mod bevel;
+mod box_void;
 mod compound;
 mod curve;
 mod helical;
@@ -130,13 +131,15 @@ fn read(input: &str, tolerance_mm: f64, allow_circles: bool) -> Result<Readback>
     let mut members = if allow_circles {
         compound::read_analytic(input, tolerance_mm, true)?
     } else {
-        compound::read_members(input, tolerance_mm, false, true, readback_member)?
+        compound::read_members_by(input, tolerance_mm, false, true, |shell, id, _| {
+            if let Some((readback, _)) = box_void::read_member(shell, id)? {
+                return Ok(readback);
+            }
+            let faces = shell.validate_faces(shell.member_faces(id)?)?;
+            shell.readback(&faces)
+        })?
     };
     members.pop().ok_or(ReadError::Invalid)
-}
-
-fn readback_member(shell: &Shell<'_, '_>, faces: &[Face]) -> Result<Readback> {
-    shell.readback(faces)
 }
 
 fn parse_entities(input: &str, tolerance_mm: f64) -> Result<BTreeMap<u32, Vec<Entity<'_>>>> {
@@ -440,7 +443,7 @@ impl<'a, 'input> Shell<'a, 'input> {
                 "AXIS2_PLACEMENT_3D" => {
                     self.placement(id)?;
                 }
-                "MANIFOLD_SOLID_BREP" => solids.push(id),
+                "MANIFOLD_SOLID_BREP" | "BREP_WITH_VOIDS" => solids.push(id),
                 _ => return Err(ReadError::Unsupported),
             }
         }

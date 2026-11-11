@@ -3,9 +3,11 @@
 use super::*;
 use crate::planar_boolean::Union;
 
-/// Whether every shell can be written as an independent outward STEP solid.
+/// Whether the boundary has outward solids or one certified rectangular cavity.
 pub fn supports_planar_union(union: &Union) -> bool {
-    union.shell_count() == union.solid_count()
+    (union.shell_count() == union.solid_count()
+        || crate::orthogonal_boundary::box_void::recognize(&box_void::union_faces(union), 0.)
+            .is_some())
         && union
             .faces()
             .iter()
@@ -238,7 +240,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_a_hidden_cavity_shell_instead_of_claiming_one_closed_boundary() {
+    fn exports_an_enclosed_box_cavity_as_one_solid() {
         let union = Union::new(
             &[
                 block([0., 0., 0.], [3., 3., 1.]),
@@ -255,10 +257,10 @@ mod tests {
         assert_eq!(union.shell_count(), 2);
         assert!((union.shells()[0].signed_volume_mm3 - 27.).abs() < TOL);
         assert!((union.shells()[1].signed_volume_mm3 + 1.).abs() < TOL);
-        assert!(!supports_planar_union(&union));
-        assert_eq!(
-            write_planar_union(&union, [0.; 3], U, V),
-            Err(StepError::Unsupported)
-        );
+        assert!(supports_planar_union(&union));
+        let text = write_planar_union(&union, [0.; 3], U, V).unwrap();
+        let read = read_planar_solid(&text, TOL).unwrap();
+        assert_eq!(read.solid_count, 1);
+        assert!((read.volume_mm3 - 26.).abs() < TOL);
     }
 }

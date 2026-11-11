@@ -76,10 +76,10 @@ fn separate_components_and_cavities_remain_separate_shells() {
     assert_eq!(boundary.faces.len(), 12);
     assert_eq!(boundary.shell_count, 2);
     assert_eq!(cut.solid_count(), 1);
-    assert_eq!(
-        write_orthogonal(&boundary, unchanged),
-        Err(StepError::Unsupported)
-    );
+    let text = write_orthogonal(&boundary, unchanged).unwrap();
+    let read = read_planar_solid(&text, 1e-7).unwrap();
+    assert_eq!(read.solid_count, 1);
+    assert!((read.volume_mm3 - cut.volume_mm3()).abs() < 1e-7);
 
     let tangent = box_([5.; 3], [6.; 3]);
     let joined = solid(&[stock()], &[tangent], Operation::Union);

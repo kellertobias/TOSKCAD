@@ -901,7 +901,6 @@ fn unsupported_geometry_or_context_is_rejected() {
         ),
         step.replace("GLOBAL_UNIT_ASSIGNED_CONTEXT", "OTHER_CONTEXT"),
         step.replace("ADVANCED_BREP_SHAPE_REPRESENTATION", "SHAPE_REPRESENTATION"),
-        step.replace("MANIFOLD_SOLID_BREP", "BREP_WITH_VOIDS"),
         step.replace("CLOSED_SHELL", "OPEN_SHELL"),
         step.replace("=LINE(", "=CIRCLE("),
         step.replace("=PLANE(", "=CYLINDRICAL_SURFACE("),
@@ -928,6 +927,13 @@ fn unsupported_geometry_or_context_is_rejected() {
 #[test]
 fn malformed_solid_reference_chain_is_rejected() {
     let step = box_step();
+    assert_eq!(
+        read_planar_solid(
+            &step.replace("MANIFOLD_SOLID_BREP", "BREP_WITH_VOIDS"),
+            TOLERANCE
+        ),
+        Err(ReadError::Invalid)
+    );
     for (kind, args) in [
         ("ADVANCED_BREP_SHAPE_REPRESENTATION", "''"),
         ("MANIFOLD_SOLID_BREP", "''"),

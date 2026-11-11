@@ -24,6 +24,7 @@ use std::{
 
 mod axial_stack;
 mod bevel_gear;
+mod box_void;
 mod worm_gear;
 pub use bevel_gear::{supports_bevel, write_bevel};
 pub(crate) use worm_gear::thread_frame as worm_thread_frame;
@@ -114,6 +115,8 @@ fn supports_orthogonal_cuts(
     through: &[OrthogonalThroughBore],
 ) -> bool {
     boundary.supports_step()
+        && (boundary.shell_count == 1
+            || (pockets.is_empty() && slots.is_empty() && through.is_empty()))
         && pockets
             .iter()
             .all(|pocket| pocket.face < boundary.faces.len())
@@ -179,6 +182,20 @@ fn encode_orthogonal(
     through: &[OrthogonalThroughBore],
     transform: &dyn Fn(Point) -> Point,
 ) -> Result<Entity, StepError> {
+    if boundary.shell_count != 1 {
+        if !pockets.is_empty() || !slots.is_empty() || !through.is_empty() {
+            return Err(StepError::Unsupported);
+        }
+        let faces = boundary
+            .faces
+            .iter()
+            .map(|face| crate::orthogonal::OrientedFace {
+                normal: face.normal,
+                rings: face.rings.clone(),
+            })
+            .collect::<Vec<_>>();
+        return box_void::encode(file, &faces, transform);
+    }
     let mut points = Vec::new();
     let mut indices = BTreeMap::new();
     for point in boundary.faces.iter().flat_map(|face| &face.rings).flatten() {

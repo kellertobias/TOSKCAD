@@ -3,6 +3,8 @@
 use crate::orthogonal::BoundaryQuad;
 use std::collections::{BTreeMap, BTreeSet};
 
+pub(crate) mod box_void;
+
 const MAX_QUADS: usize = 200_000;
 type Point = [f64; 3];
 type Edge = [usize; 2];
@@ -22,9 +24,9 @@ pub struct Boundary {
 }
 
 impl Boundary {
-    /// The STEP profile supports a single connected shell with bounded wires.
+    /// The STEP profile supports one shell or one proved rectangular cavity.
     pub fn supports_step(&self) -> bool {
-        self.shell_count == 1
+        (self.shell_count == 1 || box_void::boundary(self).is_some())
             && self.faces.len() >= 4
             && self.faces.iter().all(|face| {
                 face.rings.iter().map(Vec::len).sum::<usize>() <= crate::polygon::MAX_VERTICES
