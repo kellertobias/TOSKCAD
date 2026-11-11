@@ -1155,6 +1155,67 @@ mod tests {
     }
 
     #[test]
+    fn rust_drawing_worker_sections_a_continuous_herringbone_gear() {
+        use drawings::{VectorCurve, VectorRole, ViewEvaluation};
+        let mut session = Session::new(Document::new("Herringbone drawing").unwrap()).unwrap();
+        let actor = Actor::local(Channel::Ui);
+        let gear = model::GearRequest::new(
+            "Chevron",
+            model::GearParameters {
+                family: model::GearFamily::Herringbone,
+                hand: model::GearHand::Right,
+                helix_angle: model::angle(25.),
+                face_width: length(8.),
+                bore_diameter: length(8.),
+                ..Default::default()
+            },
+        );
+        let prepared =
+            model::prepare_gear(&session, session.revision(), actor.clone(), &gear).unwrap();
+        session.commit(prepared.prepared).unwrap();
+        let mut page = projection_page(gear.body);
+        let id = page.views[0].id;
+        page.views[0].kind = drawings::ViewKind::Section {
+            offset_mm: 4.,
+            range: drawings::SectionRange::SectionOnly,
+            window: Default::default(),
+        };
+        let (_, prepared) = drawings::prepare_create(
+            &session,
+            session.revision(),
+            actor,
+            "Gear section",
+            Some(page.clone()),
+        )
+        .unwrap();
+        session.commit(prepared).unwrap();
+        let mut worker = Backend::with_cache_and_backend(None, GeometryBackend::Rust);
+        let result = preview(&mut worker, &session, page.id);
+        let ViewEvaluation::Ready { vectors, .. } = &result.views[&id] else {
+            panic!("{:?}", result.views[&id]);
+        };
+        assert!(
+            vectors
+                .iter()
+                .all(|edge| edge.role == VectorRole::Section && edge.source == gear.body)
+        );
+        assert!(
+            vectors
+                .iter()
+                .any(|edge| matches!(edge.curve, VectorCurve::BSpline { degree: 3, .. }))
+        );
+        assert!(vectors.iter().any(|edge| matches!(
+            edge.curve,
+            VectorCurve::Ellipse {
+                center: [0., 0.],
+                major_mm: 4.,
+                minor_mm: 4.,
+                ..
+            }
+        )));
+    }
+
+    #[test]
     fn rust_drawing_worker_publishes_curved_projection_and_detail_together() {
         use drawings::{VectorCurve, VectorRole, ViewEvaluation};
 
