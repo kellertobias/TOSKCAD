@@ -1,6 +1,8 @@
 use super::*;
 
-/// Positive cells independently checked against the authored boundary of a cut.
+mod intersection;
+
+/// Positive cells independently checked against a certified planar boundary.
 #[derive(Clone, Debug)]
 pub struct CutMaterial {
     pub(super) boundary: Union,
@@ -8,6 +10,10 @@ pub struct CutMaterial {
 }
 
 impl CutMaterial {
+    pub fn boundary(&self) -> &Union {
+        &self.boundary
+    }
+
     pub fn pieces(&self) -> &[ConvexPiece] {
         &self.pieces
     }
