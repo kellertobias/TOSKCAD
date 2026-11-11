@@ -483,10 +483,10 @@ fn rust_worm_drawings_follow_exact_axial_visibility_and_sections() {
         section_depth_mm: Some(1.),
         ..view
     };
-    assert_eq!(
-        draw(&worm, shallow).unwrap_err().kind,
-        GeometryErrorKind::Unsupported
-    );
+    // Shallower than one pitch: exact, with a section and the far outline.
+    let shallow = draw(&worm, shallow).unwrap();
+    assert!(shallow.iter().any(|edge| edge.role == VectorRole::Section));
+    assert!(shallow.iter().any(|edge| edge.role == VectorRole::Visible));
     assert!(
         draw(
             &worm,
@@ -548,10 +548,6 @@ fn rust_worm_drawings_follow_exact_axial_visibility_and_sections() {
     assert!(
         wheel_area > 0.85 * disk && wheel_area < disk,
         "{wheel_area}"
-    );
-    assert_eq!(
-        draw(&wheel, view).unwrap_err().kind,
-        GeometryErrorKind::Unsupported
     );
     let both = project_drawing(
         &[
@@ -709,4 +705,220 @@ fn matched_worm_and_wheel_build_and_step_export_latency() {
         "{{\"case\":\"worm build and STEP latency\",\"rust_worm_build_ms\":{},\"native_worm_build_ms\":{},\"rust_wheel_build_ms\":{},\"native_wheel_build_ms\":{},\"rust_worm_step_ms\":{},\"native_worm_step_ms\":{},\"rust_wheel_step_ms\":{},\"native_wheel_step_ms\":{}}}",
         builds[0], builds[1], builds[2], builds[3], exports[0], exports[1], exports[2], exports[3]
     );
+}
+
+#[test]
+fn rust_wheel_views_match_native_hidden_lines_both_ways() {
+    for (spec, all) in [
+        (
+            GeneratedZaWormWheel {
+                teeth: 40,
+                axial_module_mm: 1.,
+                face_width_mm: 1.5,
+                bore_radius_mm: 4.,
+                pitch_thinning_mm: 0.04,
+            },
+            true,
+        ),
+        (
+            GeneratedZaWormWheel {
+                teeth: 64,
+                axial_module_mm: 2.,
+                face_width_mm: 1.,
+                bore_radius_mm: 6.,
+                pitch_thinning_mm: 0.2,
+            },
+            false,
+        ),
+    ] {
+        compare_wheel_views(spec, all);
+    }
+}
+
+fn compare_wheel_views(spec: GeneratedZaWormWheel, all: bool) {
+    use multicad_core::drawings::VectorRole;
+    use multicad_kernel::{DrawingProjection, DrawingSolid, PlaneFrame, project_drawing};
+    let policy = GeometryPolicy::default();
+    let feature = EntityId::new();
+    let wheel = Solid::rust_generated_za_worm_wheel_named(spec, feature, policy).unwrap();
+    let draw = |solid: &Solid, options: DrawingProjection| {
+        project_drawing(&[DrawingSolid { solid, hatch: None }], options).unwrap()
+    };
+    let base = DrawingProjection {
+        hidden_lines: true,
+        chord_tolerance_mm: 0.002,
+        ..Default::default()
+    };
+    let below = PlaneFrame {
+        v: [0., -1., 0.],
+        ..Default::default()
+    };
+    let cases = [
+        ("top", base),
+        (
+            "bottom",
+            DrawingProjection {
+                frame: below,
+                ..base
+            },
+        ),
+        (
+            "visible only",
+            DrawingProjection {
+                hidden_lines: false,
+                ..base
+            },
+        ),
+        (
+            "retained",
+            DrawingProjection {
+                section_offset_mm: Some(0.2),
+                ..base
+            },
+        ),
+        (
+            "depth",
+            DrawingProjection {
+                section_offset_mm: Some(0.2),
+                section_depth_mm: Some(0.6),
+                ..base
+            },
+        ),
+    ];
+    let mut rust = Vec::new();
+    for (name, options) in cases.into_iter().take(if all { 5 } else { 2 }) {
+        let started = std::time::Instant::now();
+        let projected = draw(&wheel, options);
+        println!(
+            "{{\"case\":\"wheel z{} view {name} latency\",\"rust_ms\":{}}}",
+            spec.teeth,
+            started.elapsed().as_secs_f64() * 1e3
+        );
+        assert!(
+            projected
+                .iter()
+                .any(|edge| edge.role == VectorRole::Visible),
+            "{name}"
+        );
+        assert_eq!(
+            projected.iter().any(|edge| edge.role == VectorRole::Hidden),
+            options.hidden_lines,
+            "{name}"
+        );
+        rust.push((name, options, projected));
+    }
+    if !multicad_kernel::OCCT_LINKED {
+        return;
+    }
+    let native = Solid::generated_za_worm_wheel_named(spec, feature, policy).unwrap();
+    // Every Rust line lies on a native line of the same role. Native lines
+    // may also lie under a coincident Rust line of another role: the far
+    // bore under the near bore, or a cut edge drawn as a section line.
+    let all = vec![VectorRole::Visible, VectorRole::Hidden, VectorRole::Section];
+    let roles = [
+        (VectorRole::Visible, vec![VectorRole::Visible], all.clone()),
+        (VectorRole::Hidden, vec![VectorRole::Hidden], all.clone()),
+        (VectorRole::Section, vec![VectorRole::Section], all),
+    ];
+    for (name, options, projected) in rust {
+        let reference = draw(&native, options);
+        for (role, same, any) in &roles {
+            let forward = preview_distance(&projected, *role, &reference, same);
+            let backward = preview_distance(&reference, *role, &projected, any);
+            println!(
+                "{{\"case\":\"wheel z{} view {name}\",\"role\":\"{role:?}\",\"rust_to_native_mm\":{forward},\"native_to_rust_mm\":{backward}}}",
+                spec.teeth
+            );
+            assert!(forward < 0.005 && backward < 0.005, "{name} {role:?}");
+        }
+    }
+}
+
+/// Every Rust line lies on a native line of the same role, and every native
+/// line lies on a Rust line of some role (coincident lines may differ).
+fn assert_views_match(
+    label: &str,
+    rust: &Solid,
+    native: &Solid,
+    cases: &[(&str, multicad_kernel::DrawingProjection)],
+) {
+    use multicad_core::drawings::VectorRole;
+    use multicad_kernel::{DrawingSolid, project_drawing};
+    let draw = |solid: &Solid, options| {
+        project_drawing(&[DrawingSolid { solid, hatch: None }], options).unwrap()
+    };
+    let all = [VectorRole::Visible, VectorRole::Hidden, VectorRole::Section];
+    for &(name, options) in cases {
+        let [projected, reference] = [rust, native].map(|solid| draw(solid, options));
+        for role in all {
+            let forward = preview_distance(&projected, role, &reference, &[role]);
+            let backward = preview_distance(&reference, role, &projected, &all);
+            println!(
+                "{{\"case\":\"{label} {name}\",\"role\":\"{role:?}\",\"rust_to_native_mm\":{forward},\"native_to_rust_mm\":{backward}}}"
+            );
+            assert!(
+                forward < 0.005 && backward < 0.005,
+                "{label} {name} {role:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn rust_worm_views_match_native_hidden_lines_at_any_depth() {
+    use multicad_kernel::{DrawingProjection, PlaneFrame};
+    if !multicad_kernel::OCCT_LINKED {
+        return;
+    }
+    let policy = GeometryPolicy::default();
+    let spec = ZaWorm {
+        axial_module_mm: 1.,
+        threaded_length_mm: 20.,
+        bore_radius_mm: 2.,
+        axial_thinning_mm: 0.04,
+    };
+    let feature = EntityId::new();
+    let rust = Solid::rust_za_worm_named(spec, feature, policy).unwrap();
+    let native = Solid::za_worm_named(spec, feature, policy).unwrap();
+    let base = DrawingProjection {
+        hidden_lines: true,
+        chord_tolerance_mm: 0.002,
+        ..Default::default()
+    };
+    let below = PlaneFrame {
+        v: [0., -1., 0.],
+        ..Default::default()
+    };
+    let depth = |offset: f64, depth: Option<f64>, frame: PlaneFrame| DrawingProjection {
+        frame,
+        section_offset_mm: Some(offset),
+        section_depth_mm: depth,
+        ..base
+    };
+    let cases = [
+        ("top", base),
+        (
+            "bottom",
+            DrawingProjection {
+                frame: below,
+                ..base
+            },
+        ),
+        ("retained", depth(1.3, None, PlaneFrame::default())),
+        ("depth pitch", depth(1.3, Some(5.), PlaneFrame::default())),
+        ("depth shallow", depth(1.3, Some(1.), PlaneFrame::default())),
+        ("depth shallow below", depth(2.1, Some(0.7), below)),
+        (
+            "retained near end",
+            depth(-8.5, None, PlaneFrame::default()),
+        ),
+        (
+            "shallow visible only",
+            DrawingProjection {
+                hidden_lines: false,
+                ..depth(4.2, Some(1.9), PlaneFrame::default())
+            },
+        ),
+    ];
+    assert_views_match("worm", &rust, &native, &cases);
 }

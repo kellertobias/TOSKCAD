@@ -40,6 +40,11 @@ impl Interval {
         Self::new(lo.next_down().next_down(), hi.next_up().next_up())
     }
 
+    /// Arc tangent, increasing, from the platform libm.
+    pub(crate) fn atan(self) -> Self {
+        Self::library(self.lo.atan(), self.hi.atan())
+    }
+
     /// Largest magnitude of any enclosed value.
     pub(crate) fn magnitude(self) -> f64 {
         self.lo.abs().max(self.hi.abs())

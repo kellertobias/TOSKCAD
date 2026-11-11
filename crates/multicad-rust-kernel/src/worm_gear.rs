@@ -13,6 +13,7 @@ pub mod clearance;
 mod interval;
 mod jet;
 mod section;
+mod visibility;
 pub mod wheel;
 pub(crate) mod wheel_bounds;
 pub(crate) mod wheel_fit;
@@ -20,6 +21,7 @@ mod wheel_mesh;
 mod wheel_topology;
 pub mod worm;
 
+pub use visibility::{ViewCurve, ViewError};
 pub use wheel::{Wheel, WheelSpec};
 pub use worm::{Worm, WormSpec};
 

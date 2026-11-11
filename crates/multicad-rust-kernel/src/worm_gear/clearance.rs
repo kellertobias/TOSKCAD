@@ -109,7 +109,7 @@ impl<'a> Field<'a> {
         // Proven derivative bounds: every node moves at most `motion` per
         // unit height, and a chord of profile parameter length `1/NODES`
         // stays within `bend / (8 NODES²)` of its arc.
-        let [motion, bend] = wheel.section_bounds().ok_or(Error::Limit)?;
+        let [motion, bend, _] = wheel.section_bounds().ok_or(Error::Limit)?;
         Ok(Self {
             wheel,
             stations,

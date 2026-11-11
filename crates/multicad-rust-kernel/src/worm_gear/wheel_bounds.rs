@@ -71,6 +71,39 @@ impl Wheel {
         Series([c, -lean / rate])
     }
 
+    /// Whether `∂g/∂r < 0` holds on the whole cutter range at every height,
+    /// for the minus and plus flank, so each exit radius is unique.
+    pub(crate) fn exit_monotone(&self) -> [bool; 2] {
+        *self.exit_monotone.get(|| {
+            type S = Series<Interval, 2>;
+            let h = self.half_width();
+            [1., -1.].map(|side| {
+                cells(-h, h, 64).all(|cell| {
+                    let rate =
+                        |r: Interval| self.exit_gap(S::variable(r), S::lift(cell), side).0[1];
+                    // Bisect cutter-range cells whose enclosure does not yet
+                    // prove the sign, down to a bounded depth.
+                    let mut pending: Vec<(Interval, u32)> =
+                        cells(WORM_ROOT, CUTTER_TIP, MONOTONE_CELLS)
+                            .map(|r| (r, 0))
+                            .collect();
+                    let mut proven = true;
+                    while let Some((r, depth)) = pending.pop().filter(|_| proven) {
+                        if rate(r).hi >= 0. {
+                            proven = depth < MONOTONE_DEPTH;
+                            let mid = (r.lo + r.hi) / 2.;
+                            pending.extend([
+                                (Interval::new(r.lo, mid), depth + 1),
+                                (Interval::new(mid, r.hi), depth + 1),
+                            ]);
+                        }
+                    }
+                    proven
+                })
+            })
+        })
+    }
+
     /// Taylor coefficients of the exit radius enclosed over a height cell.
     pub(crate) fn crossing_enclosure<const N: usize>(
         &self,
@@ -79,21 +112,9 @@ impl Wheel {
     ) -> Option<Series<Interval, N>> {
         type S = Series<Interval, 2>;
         let rate = |r: Interval| self.exit_gap(S::variable(r), S::lift(cell), side).0[1];
-        // Bisect cutter-range cells whose enclosure does not yet prove the
-        // sign, down to a bounded depth.
-        let mut pending: Vec<(Interval, u32)> = cells(WORM_ROOT, CUTTER_TIP, MONOTONE_CELLS)
-            .map(|r| (r, 0))
-            .collect();
-        while let Some((r, depth)) = pending.pop() {
-            if rate(r).hi >= 0. {
-                (depth < MONOTONE_DEPTH).then_some(())?;
-                let mid = (r.lo + r.hi) / 2.;
-                pending.extend([
-                    (Interval::new(r.lo, mid), depth + 1),
-                    (Interval::new(mid, r.hi), depth + 1),
-                ]);
-            }
-        }
+        let h = self.half_width();
+        let proven = self.exit_monotone()[usize::from(side < 0.)];
+        (cell.lo >= -h && cell.hi <= h && proven).then_some(())?;
         let mid = (cell.lo + cell.hi) / 2.;
         let center = self.crossing(mid, side);
         let reach = self.crossing_slope(mid, side).0[1].abs() * (cell.hi - cell.lo) / 2. + 1e-12;
@@ -177,16 +198,17 @@ impl Wheel {
         Some(bounds)
     }
 
-    /// Upper bounds of `|∂P/∂v|` and `|∂²P/∂u²|` over every generating
+    /// Upper bounds of `|∂P/∂v|`, `|∂²P/∂u²|` and `|∂²P/∂v²|` over every generating
     /// patch, in module units.
-    pub(crate) fn section_bounds(&self) -> Option<[f64; 2]> {
+    pub(crate) fn section_bounds(&self) -> Option<[f64; 3]> {
         *self.section_bounds.get(|| self.compute_section_bounds())
     }
 
-    fn compute_section_bounds(&self) -> Option<[f64; 2]> {
-        let mut result = [0_f64; 2];
+    fn compute_section_bounds(&self) -> Option<[f64; 3]> {
+        let mut result = [0_f64; 3];
         for piece in PIECES {
-            let bounds = self.patch_bounds::<4, 3, 2>(piece, [[0, 1], [2, 0]], SECTION_CELLS)?;
+            let bounds =
+                self.patch_bounds::<4, 4, 3>(piece, [[0, 1], [2, 0], [0, 2]], SECTION_CELLS)?;
             for (slot, [x, y]) in result.iter_mut().zip(bounds) {
                 *slot = slot.max(x.hypot(y));
             }
@@ -335,7 +357,7 @@ mod tests {
     #[test]
     fn derivative_bounds_dominate_dense_differences() {
         let wheel = wheel(spec(1., 40, 1.5, 4., 0.05));
-        let [motion, bend] = wheel.section_bounds().unwrap();
+        let [motion, bend, _] = wheel.section_bounds().unwrap();
         let h = wheel.half_width();
         let mut sampled = [0_f64; 2];
         for piece in PIECES {
