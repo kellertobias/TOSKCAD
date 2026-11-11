@@ -320,3 +320,119 @@ fn rust_worm_pairs_certify_saved_edited_motion_and_refuse_wrong_poses() {
     assert_eq!(proof.cycle_drive_angles_rad, moved.cycle_drive_angles_rad);
     assert!((readback.solid(wheel).unwrap().volume_mm3().unwrap() - narrower).abs() < 1e-9);
 }
+
+#[test]
+fn rust_worm_pair_members_draw_along_their_placed_axes() {
+    use multicad_core::drawings::{VectorCurve, VectorRole};
+    use multicad_kernel::{DrawingProjection, DrawingSolid, PlaneFrame, project_drawing};
+    let session = Session::new(Document::new("Rust worm drawing").unwrap()).unwrap();
+    let request = GearPairRequest::new(
+        "ZA pair",
+        members(40., 1.5, 0.03).map(|p| GearRequest::new("ZA member", p)),
+    );
+    let draft = model::prepare_gear_pair(&session, 0, actor(), &request).unwrap();
+    let compiled = Compiler {
+        omit_display: true,
+        ..Compiler::default()
+    }
+    .compile_with_backend(draft.prepared.document(), 1, GeometryBackend::Rust, None)
+    .unwrap();
+    let [worm, wheel] = request.outputs.instances;
+    // A view frame whose normal is the placed axis through an end plane.
+    let axial = |solid: &Solid| {
+        let (point, normal) = solid
+            .faces()
+            .unwrap()
+            .into_iter()
+            .find_map(|face| face.plane)
+            .unwrap();
+        let helper = if normal[0].abs() < 0.9 {
+            [1., 0., 0.]
+        } else {
+            [0., 1., 0.]
+        };
+        let dot: f64 = (0..3).map(|i| helper[i] * normal[i]).sum();
+        let u: [f64; 3] = std::array::from_fn(|i| helper[i] - dot * normal[i]);
+        let length = u.iter().map(|x| x * x).sum::<f64>().sqrt();
+        let u = u.map(|x| x / length);
+        let v = [
+            normal[1] * u[2] - normal[2] * u[1],
+            normal[2] * u[0] - normal[0] * u[2],
+            normal[0] * u[1] - normal[1] * u[0],
+        ];
+        PlaneFrame {
+            origin: point,
+            u,
+            v,
+        }
+    };
+    let worm_solid = compiled.solid(worm).unwrap();
+    let frame = axial(worm_solid);
+    let view = project_drawing(
+        &[DrawingSolid {
+            solid: worm_solid,
+            hatch: None,
+        }],
+        DrawingProjection {
+            frame,
+            hidden_lines: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let circles = |role: VectorRole| {
+        view.iter()
+            .filter(|edge| edge.role == role)
+            .filter_map(|edge| match edge.curve {
+                VectorCurve::Ellipse { major_mm, .. } => Some(major_mm),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    // Crest radius 6 m and bore radius 1 mm are visible; the root circle
+    // outside the near root land is hidden.
+    let mut visible = circles(VectorRole::Visible);
+    visible.sort_by(f64::total_cmp);
+    assert_eq!(visible.len(), 2);
+    assert!((visible[0] - 1.).abs() < 1e-9 && (visible[1] - 6.).abs() < 1e-9);
+    assert_eq!(circles(VectorRole::Hidden).len(), 1);
+    let wheel_solid = compiled.solid(wheel).unwrap();
+    let cut = project_drawing(
+        &[DrawingSolid {
+            solid: wheel_solid,
+            hatch: None,
+        }],
+        DrawingProjection {
+            frame: axial(wheel_solid),
+            section_offset_mm: Some(-0.75),
+            section_only: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert!(cut.len() > 40 && cut.iter().all(|edge| edge.role == VectorRole::Section));
+    // The placed wheel viewed along its axis has visible near-face and
+    // far-side lines and hidden far-side lines.
+    let wheel_view = project_drawing(
+        &[DrawingSolid {
+            solid: wheel_solid,
+            hatch: None,
+        }],
+        DrawingProjection {
+            frame: axial(wheel_solid),
+            hidden_lines: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let count = |role: VectorRole| wheel_view.iter().filter(|edge| edge.role == role).count();
+    assert!(count(VectorRole::Visible) > 400 && count(VectorRole::Hidden) > 400);
+    let tip = wheel_view
+        .iter()
+        .filter(|edge| {
+            edge.role == VectorRole::Visible
+                && matches!(edge.curve, VectorCurve::Ellipse { major_mm, .. } if (major_mm - 21.).abs() < 1e-9)
+        })
+        .count();
+    assert!(tip >= 80, "{tip}");
+}

@@ -28,7 +28,7 @@ mod box_void;
 mod worm_gear;
 pub use bevel_gear::{supports_bevel, write_bevel};
 pub(crate) use worm_gear::thread_frame as worm_thread_frame;
-pub use worm_gear::{supports_za_worm, write_za_worm};
+pub use worm_gear::{supports_worm_wheel, supports_za_worm, write_worm_wheel, write_za_worm};
 mod cubic_trim;
 mod cylindrical_revolution;
 pub(crate) mod helical;

@@ -22,7 +22,7 @@ pub use helical::{
     verify_helical_nut, verify_helical_receiver, verify_helical_screw, verify_helical_thread,
 };
 pub use herringbone::verify_herringbone;
-pub use worm::verify_za_worm;
+pub use worm::{verify_worm_wheel, verify_za_worm};
 mod import;
 mod mixed;
 mod nonplanar_loft;

@@ -214,6 +214,19 @@ impl Writer {
         })
     }
 
+    /// Append a generated worm wheel with certified polynomial flank charts.
+    pub fn append_worm_wheel(
+        &mut self,
+        wheel: &crate::worm_gear::Wheel,
+        origin: Point,
+        u: Point,
+        v: Point,
+        tolerance_mm: f64,
+    ) -> Result<(), StepError> {
+        let placement = Placement::new(origin, u, v)?;
+        self.append(|file| super::worm_gear::encode_wheel(file, wheel, placement, tolerance_mm))
+    }
+
     pub fn append_helical_receiver(
         &mut self,
         receiver: &crate::helical_receiver::Receiver,

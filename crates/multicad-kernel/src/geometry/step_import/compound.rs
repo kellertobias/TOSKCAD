@@ -378,10 +378,13 @@ impl Solid {
         self.rust_compound()?;
         let mut leaves = Vec::new();
         self.step_leaf_members(&mut leaves);
-        if !leaves
-            .iter()
-            .any(|leaf| leaf.herringbone_body().is_some() || leaf.normal_relief_body().is_some())
-        {
+        let authored = |leaf: &Solid| {
+            leaf.normal_relief_body().is_some()
+                || leaf.herringbone_body().is_some()
+                || leaf.bevel_body().is_some()
+                || leaf.worm_body().is_some()
+        };
+        if !leaves.iter().any(|leaf| authored(leaf)) {
             return None;
         }
         Some((|| {
@@ -404,6 +407,17 @@ impl Solid {
                         u: frame.u,
                         v: frame.v,
                     });
+                } else if let Some((body, frame)) = leaf.bevel_body() {
+                    member_counts.push(1);
+                    expected.push(ExpectedStepMember::Bevel {
+                        gear: &body.geometry,
+                        origin: frame.origin,
+                        u: frame.u,
+                        v: frame.v,
+                    });
+                } else if let Some(member) = leaf.expected_worm_member() {
+                    member_counts.push(1);
+                    expected.push(member);
                 } else {
                     let count = leaf.planar_boolean_body().map_or_else(
                         || {
@@ -421,17 +435,29 @@ impl Solid {
                 step_read::verify_authored_compound(input, &expected, tolerance)?.into_iter();
             let mut result = (0_u32, 0_f64, [[f64::INFINITY; 3], [f64::NEG_INFINITY; 3]]);
             for (leaf, member_count) in leaves.into_iter().zip(member_counts) {
-                let (count, volume, bounds) = if leaf.normal_relief_body().is_some() {
-                    let Some(VerifiedStepMember::NormalRelief { volume_mm3 }) = decoded.next()
-                    else {
-                        return Err(ReadError::Invalid);
-                    };
-                    let bounds = leaf.bounds().map_err(|_| ReadError::Invalid)?;
-                    (1, volume_mm3, [bounds.min, bounds.max])
-                } else if leaf.herringbone_body().is_some() {
-                    let Some(VerifiedStepMember::TwistedGear { volume_mm3 }) = decoded.next()
-                    else {
-                        return Err(ReadError::Invalid);
+                let (count, volume, bounds) = if authored(leaf) {
+                    let relief = leaf.normal_relief_body().is_some();
+                    let volume_mm3 = match (decoded.next(), leaf.worm_body(), leaf.bevel_body()) {
+                        (Some(VerifiedStepMember::NormalRelief { volume_mm3 }), None, None)
+                            if relief =>
+                        {
+                            volume_mm3
+                        }
+                        (Some(VerifiedStepMember::TwistedGear { volume_mm3 }), None, None)
+                            if !relief =>
+                        {
+                            volume_mm3
+                        }
+                        (Some(VerifiedStepMember::Bevel { volume_mm3 }), None, Some(_))
+                        | (
+                            Some(
+                                VerifiedStepMember::Worm { volume_mm3 }
+                                | VerifiedStepMember::WormWheel { volume_mm3 },
+                            ),
+                            Some(_),
+                            None,
+                        ) => volume_mm3,
+                        _ => return Err(ReadError::Invalid),
                     };
                     let bounds = leaf.bounds().map_err(|_| ReadError::Invalid)?;
                     (1, volume_mm3, [bounds.min, bounds.max])

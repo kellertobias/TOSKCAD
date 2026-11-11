@@ -135,6 +135,83 @@ fn mixed_compounds_verify_each_placed_twisted_gear_and_decode_the_analytic_slots
 }
 
 #[test]
+fn bevel_slots_verify_each_placed_pair_member_beside_other_members() {
+    use crate::bevel_gear::{Bevel, tests::spec};
+    let pinion = Bevel::new(spec(2., 24, 32, 6., 4., 0.2), 1e-3, 1e7).unwrap();
+    let wheel = Bevel::new(spec(2., 32, 24, 6., 0., 0.2), 1e-3, 1e7).unwrap();
+    let twisted = gear(true, 1., 2.);
+    let frames = [
+        [[10., -20., 30.], [0.8, 0., -0.6], V],
+        [[10., -20., 30.], [0., 0.6, 0.8], [1., 0., 0.]],
+        [[-40., 0., 0.], U, V],
+    ];
+    let mut writer = Writer::new();
+    writer.append_box([number(4); 3], [0.; 3], U, V).unwrap();
+    for (gear, [origin, u, v]) in [&pinion, &wheel].into_iter().zip(frames) {
+        writer.append_bevel(gear, origin, u, v, TOLERANCE).unwrap();
+    }
+    let [origin, u, v] = frames[2];
+    writer
+        .append_herringbone(&twisted, origin, u, v, TOLERANCE)
+        .unwrap();
+    let source = writer.finish().unwrap();
+    let bevel = |gear, [origin, u, v]: [Point; 3]| ExpectedStepMember::Bevel { gear, origin, u, v };
+    let specification = [
+        ExpectedStepMember::Analytic,
+        bevel(&pinion, frames[0]),
+        bevel(&wheel, frames[1]),
+        expected(&twisted, frames[2]),
+    ];
+    let verified = verify_authored_compound(&source, &specification, TOLERANCE).unwrap();
+    let [
+        VerifiedStepMember::Analytic { readback, .. },
+        VerifiedStepMember::Bevel { volume_mm3: first },
+        VerifiedStepMember::Bevel { volume_mm3: second },
+        VerifiedStepMember::TwistedGear { volume_mm3: third },
+    ] = verified.as_slice()
+    else {
+        panic!("expected stock, both bevels and the twisted gear");
+    };
+    assert_eq!(readback.volume_mm3, 64.);
+    for (actual, expected) in [
+        (*first, pinion.volume_mm3()),
+        (*second, wheel.volume_mm3()),
+        (*third, twisted.volume_mm3()),
+    ] {
+        assert!(
+            (actual - expected).abs() / expected < 1e-8,
+            "{actual} {expected}"
+        );
+    }
+    // Swapped members or placements cannot certify the same file.
+    for wrong in [
+        [
+            ExpectedStepMember::Analytic,
+            bevel(&wheel, frames[1]),
+            bevel(&pinion, frames[0]),
+            expected(&twisted, frames[2]),
+        ],
+        [
+            ExpectedStepMember::Analytic,
+            bevel(&pinion, frames[1]),
+            bevel(&wheel, frames[0]),
+            expected(&twisted, frames[2]),
+        ],
+        [
+            ExpectedStepMember::Analytic,
+            bevel(&pinion, frames[0]),
+            expected(&twisted, frames[2]),
+            bevel(&wheel, frames[1]),
+        ],
+    ] {
+        assert!(verify_authored_compound(&source, &wrong, TOLERANCE).is_err());
+    }
+    // A single-solid bevel proof rejects the compound.
+    let [origin, u, v] = frames[0];
+    assert!(crate::step_read::verify_bevel(&source, &pinion, origin, u, v, TOLERANCE).is_err());
+}
+
+#[test]
 fn analytic_slots_keep_the_independently_reconstructed_helical_cut() {
     let cut = Cut::new(
         CutSpec {
@@ -229,4 +306,78 @@ fn duplicate_members_shared_shells_and_orphan_topology_fail_the_whole_proof() {
         assert_ne!(invalid, source);
         assert!(verify_authored_compound(&invalid, &specification, TOLERANCE).is_err());
     }
+}
+
+#[test]
+fn worm_pairs_verify_each_member_beside_analytic_slots() {
+    use crate::worm_gear::{wheel::tests::spec as wheel_spec, worm::tests::spec as worm_spec};
+    let worm = Worm::new(worm_spec(1., 20., 2., 0.04), 1e-3).unwrap();
+    let wheel = Wheel::new(wheel_spec(1., 40, 1.5, 4., 0.04), 1e-3, 1e7).unwrap();
+    // Worm axis along wheel +Y at center distance 25, wheel tilted.
+    let worm_frame = [[25., 0., 0.], [1., 0., 0.], [0., 0., -1.]];
+    let wheel_frame = [[0.; 3], [0.8, 0.6, 0.], [-0.6, 0.8, 0.]];
+    let mut writer = Writer::new();
+    writer
+        .append_za_worm(
+            &worm,
+            worm_frame[0],
+            worm_frame[1],
+            worm_frame[2],
+            TOLERANCE,
+        )
+        .unwrap();
+    writer.append_box([number(4); 3], [40.; 3], U, V).unwrap();
+    writer
+        .append_worm_wheel(
+            &wheel,
+            wheel_frame[0],
+            wheel_frame[1],
+            wheel_frame[2],
+            TOLERANCE,
+        )
+        .unwrap();
+    let source = writer.finish().unwrap();
+    let [o, u, v] = worm_frame;
+    let [p, q, r] = wheel_frame;
+    let members = [
+        ExpectedStepMember::Worm {
+            worm: &worm,
+            origin: o,
+            u,
+            v,
+        },
+        ExpectedStepMember::Analytic,
+        ExpectedStepMember::WormWheel {
+            wheel: &wheel,
+            origin: p,
+            u: q,
+            v: r,
+        },
+    ];
+    let verified = verify_authored_compound(&source, &members, TOLERANCE).unwrap();
+    let [
+        VerifiedStepMember::Worm { volume_mm3: a },
+        VerifiedStepMember::Analytic { readback, .. },
+        VerifiedStepMember::WormWheel { volume_mm3: b },
+    ] = verified.as_slice()
+    else {
+        panic!("{verified:?}");
+    };
+    assert!((a - worm.volume_mm3()).abs() / a < 1e-8, "{a}");
+    assert!((b - wheel.volume_mm3()).abs() / b < 1e-8, "{b}");
+    assert!((readback.volume_mm3 - 64.).abs() < 1e-9);
+    // Swapped expectations and a moved wheel are refused.
+    let swapped = [members[2], members[1], members[0]];
+    assert!(verify_authored_compound(&source, &swapped, TOLERANCE).is_err());
+    let moved = [
+        members[0],
+        members[1],
+        ExpectedStepMember::WormWheel {
+            wheel: &wheel,
+            origin: [0., 0., 1.],
+            u: q,
+            v: r,
+        },
+    ];
+    assert!(verify_authored_compound(&source, &moved, TOLERANCE).is_err());
 }

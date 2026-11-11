@@ -196,34 +196,34 @@ fn rust_stdio_creates_drives_reopens_and_exports_a_za_worm_pair() {
         first["parts"].as_array().unwrap().len(),
         second["parts"].as_array().unwrap().len()
     );
-    // The worm exports a verified Rust STEP shell.
-    let exported = reopened.ok(
-        "export_step",
-        json!({"part":created["members"][1]["part"],"file_name":"worm.step"}),
-    );
-    let model = exported["model_volume_mm3"].as_f64().unwrap();
-    let measured = exported["readback_volume_mm3"].as_f64().unwrap();
-    close(measured, model, 1e-8);
-    let path = directory.path().join("worm.step");
-    let text = std::fs::read_to_string(&path).unwrap();
-    assert_eq!(text.matches("MANIFOLD_SOLID_BREP").count(), 1);
-    assert!(text.contains("B_SPLINE_SURFACE_WITH_KNOTS") && text.contains("CYLINDRICAL_SURFACE"));
-    if multicad_kernel::OCCT_LINKED {
-        let read = multicad_kernel::Shape::read_step(&path).unwrap();
-        assert!(read.valid().unwrap());
-        close(read.volume().unwrap(), measured, 1e-7);
+    // The worm and the generated wheel export verified Rust STEP shells.
+    for (index, member, name) in [(1, "worm", "worm.step"), (0, "wheel", "wheel.step")] {
+        let started = std::time::Instant::now();
+        let exported = reopened.ok(
+            "export_step",
+            json!({"part":created["members"][index]["part"],"file_name":name}),
+        );
+        let elapsed_ms = started.elapsed().as_secs_f64() * 1e3;
+        let model = exported["model_volume_mm3"].as_f64().unwrap();
+        let measured = exported["readback_volume_mm3"].as_f64().unwrap();
+        close(measured, model, 1e-8);
+        let path = directory.path().join(name);
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(text.matches("MANIFOLD_SOLID_BREP").count(), 1);
+        assert!(
+            text.contains("B_SPLINE_SURFACE_WITH_KNOTS") && text.contains("CYLINDRICAL_SURFACE")
+        );
+        let mut native = None;
+        if multicad_kernel::OCCT_LINKED {
+            let read = multicad_kernel::Shape::read_step(&path).unwrap();
+            assert!(read.valid().unwrap());
+            close(read.volume().unwrap(), measured, 1e-7);
+            native = read.volume().ok();
+        }
+        println!(
+            "{}",
+            json!({"member":member,"model_volume_mm3":model,"rust_readback_volume_mm3":measured,"occt_volume_mm3":native,"export_ms":elapsed_ms,"bytes":text.len()})
+        );
     }
-    println!(
-        "{}",
-        json!({"member":"worm","model_volume_mm3":model,"rust_readback_volume_mm3":measured})
-    );
-    // The generated wheel has no Rust STEP shell yet and says so.
-    let (failed, reason) = reopened.call(
-        "export_step",
-        json!({"part":created["members"][0]["part"],"file_name":"wheel.step"}),
-    );
-    println!("{}", json!({"wheel_step_refused":failed,"message":reason}));
-    assert!(failed, "{reason}");
-    assert!(!directory.path().join("wheel.step").exists());
     assert_eq!(std::fs::read(project).unwrap(), bytes);
 }

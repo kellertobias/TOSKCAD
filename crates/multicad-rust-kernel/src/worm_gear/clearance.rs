@@ -10,8 +10,11 @@
 //! The wheel distance bound uses exact boundary nodes at axial stations. The
 //! section boundary moves at most `lipschitz` per unit height between
 //! stations, so a planar gap `d` bounds the spatial gap by
-//! `d / sqrt(1 + lipschitz²)`. The motion and chord bounds are sampled on a
-//! dense grid and inflated, not derived symbolically.
+//! `d / sqrt(1 + lipschitz²)`. Both the motion constant and the chord
+//! sagitta come from interval Taylor bounds of the patch derivatives over
+//! the whole patch domain (`wheel_bounds.rs`): a chord between profile
+//! parameters `Δ` apart deviates from its arc by at most
+//! `Δ²/8 · max |∂²P/∂u²|`.
 use super::wheel::{PIECES, Wheel};
 use super::worm::Worm;
 use super::*;
@@ -86,7 +89,7 @@ enum Probe {
 }
 
 impl<'a> Field<'a> {
-    fn new(wheel: &'a Wheel) -> Self {
+    fn new(wheel: &'a Wheel) -> Result<Self, Error> {
         let h = wheel.half_width();
         let stations: Vec<f64> = (0..=STATIONS)
             .map(|j| -h + 2. * h * j as f64 / STATIONS as f64)
@@ -103,35 +106,17 @@ impl<'a> Field<'a> {
             points
         };
         let nodes: Vec<_> = stations.iter().map(|&v| chain(v, NODES)).collect();
-        // Sampled section motion and chord sagitta, inflated by half.
-        let mut lipschitz = 0_f64;
-        let mut chord = 0_f64;
-        let step = 2. * h / STATIONS as f64;
-        for (j, &v) in stations.iter().enumerate().step_by(8) {
-            let fine = chain(v, 2 * NODES);
-            for (i, pair) in nodes[j].windows(2).enumerate() {
-                let middle = fine[2 * i + 1];
-                let chord_mid = [
-                    (pair[0][0] + pair[1][0]) / 2.,
-                    (pair[0][1] + pair[1][1]) / 2.,
-                ];
-                chord = chord.max((middle[0] - chord_mid[0]).hypot(middle[1] - chord_mid[1]));
-            }
-            let next = chain((v + step / 4.).min(h), NODES);
-            let dv = (v + step / 4.).min(h) - v;
-            if dv > 0. {
-                for (a, b) in nodes[j].iter().zip(&next) {
-                    lipschitz = lipschitz.max((a[0] - b[0]).hypot(a[1] - b[1]) / dv);
-                }
-            }
-        }
-        Self {
+        // Proven derivative bounds: every node moves at most `motion` per
+        // unit height, and a chord of profile parameter length `1/NODES`
+        // stays within `bend / (8 NODES²)` of its arc.
+        let [motion, bend, _] = wheel.section_bounds().ok_or(Error::Limit)?;
+        Ok(Self {
             wheel,
             stations,
             nodes,
-            lipschitz: 1.5 * lipschitz + 1e-6,
-            chord: 2. * chord + 1e-12,
-        }
+            lipschitz: motion,
+            chord: bend / (8. * (NODES * NODES) as f64) + 1e-12,
+        })
     }
 
     /// Classify a local wheel point given in mm. Outside the convex blank
@@ -362,7 +347,7 @@ fn certify_within(
     {
         return Err(Error::Invalid);
     }
-    let field = Field::new(wheel);
+    let field = Field::new(wheel)?;
     let spec = worm.thread().spec();
     let rate = worm.thread().helical_rate();
     let major = spec.major_radius_mm;
