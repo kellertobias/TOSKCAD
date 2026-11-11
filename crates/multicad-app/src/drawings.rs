@@ -956,6 +956,20 @@ mod tests {
         };
         page.views[0].hidden_lines = true;
         let id = page.views[0].id;
+        let section_id = EntityId::new();
+        page.views.push(drawings::DrawingView {
+            id: section_id,
+            name: "Torus and stock depth section".into(),
+            kind: drawings::ViewKind::Section {
+                offset_mm: 0.6,
+                range: drawings::SectionRange::Depth { depth_mm: 4.7 },
+                window: drawings::SectionWindow {
+                    u_mm: Some([-9., 9.]),
+                    v_mm: None,
+                },
+            },
+            ..page.views[0].clone()
+        });
         let (_, prepared) = drawings::prepare_create(
             &session,
             session.revision(),
@@ -967,17 +981,27 @@ mod tests {
         session.commit(prepared).unwrap();
         let mut backend = Backend::with_cache_and_backend(None, GeometryBackend::Rust);
         let result = preview(&mut backend, &session, page.id);
-        let ViewEvaluation::Ready { vectors, .. } = &result.views[&id] else {
-            panic!("{:?}", result.views[&id]);
-        };
-        assert!(vectors.iter().any(|v| v.source == torus_body
-            && v.role == VectorRole::Visible
-            && matches!(v.curve, VectorCurve::Ellipse { major_mm: 4., .. })));
-        assert!(vectors.iter().any(|v| v.source == stock.body
-            && v.role == VectorRole::Visible
-            && matches!(v.curve, VectorCurve::Line { a,b }
-                if [a,b].into_iter().all(|p| p[1].abs() < 1e-8)
-                    && (a[0].min(b[0])+4.).abs() < 1e-6 && (a[0].max(b[0])-4.).abs() < 1e-6)));
+        for view in [id, section_id] {
+            let ViewEvaluation::Ready { vectors, .. } = &result.views[&view] else {
+                panic!("{:?}", result.views[&view]);
+            };
+            assert!(vectors.iter().any(|v| v.source == torus_body
+                && v.role == VectorRole::Visible
+                && matches!(v.curve, VectorCurve::Ellipse { major_mm: 4., .. })));
+            assert!(vectors.iter().any(|v| v.source == stock.body
+                && v.role == VectorRole::Visible
+                && matches!(v.curve, VectorCurve::Line { a,b }
+                    if [a,b].into_iter().all(|p| p[1].abs() < 1e-8)
+                        && (a[0].min(b[0])+4.).abs() < 1e-6 && (a[0].max(b[0])-4.).abs() < 1e-6)));
+            if view == section_id {
+                for radius in [4.2, 5.8] {
+                    assert!(vectors.iter().any(|v| v.source == torus_body
+                        && v.role == VectorRole::Section
+                        && matches!(v.curve, VectorCurve::Ellipse { major_mm, .. }
+                            if (major_mm - radius).abs() < 1e-8)));
+                }
+            }
+        }
     }
 
     #[test]
