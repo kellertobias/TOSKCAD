@@ -89,6 +89,26 @@ fn terminal_neck_retains_source_phase_root_intent_and_one_manufacturing_shell() 
                     .unwrap();
                     assert_eq!(imported.intent(), None);
                     assert_eq!(imported.volume_mm3(), body.volume_mm3());
+                    for [o, u, v] in [
+                        [[0.; 3], [1., 0., 0.], [0., 1., 0.]],
+                        [[2., -3., 4.], [0.8, 0.6, 0.], [-0.36, 0.48, 0.8]],
+                    ] {
+                        let step =
+                            crate::step::write_thread_end_relief(&body, o, u, v, 1e-7).unwrap();
+                        let volume =
+                            crate::step_read::verify_thread_end_relief(&step, &body, o, u, v, 1e-7)
+                                .unwrap();
+                        assert!((volume - body.volume_mm3()).abs() < 1e-6);
+                        let (metrics, imported) =
+                            crate::step_read::read_import_solid(&step, 1e-7).unwrap();
+                        assert!((metrics.volume_mm3 - body.volume_mm3()).abs() < 1e-6);
+                        assert!(crate::step_read::thread_end_relief_import_matches(
+                            &imported,
+                            &body,
+                            [o, u, v],
+                            1e-7
+                        ));
+                    }
                 }
             }
         }
@@ -115,6 +135,27 @@ fn canonical_maximum_width_keeps_literal_rounded_station_instead_of_clamping() {
         )
         .is_ok()
     );
+    let text =
+        crate::step::write_thread_end_relief(&body, [0.; 3], [1., 0., 0.], [0., 1., 0.], 1e-7)
+            .unwrap();
+    assert!(
+        crate::step_read::verify_thread_end_relief(
+            &text,
+            &body,
+            [0.; 3],
+            [1., 0., 0.],
+            [0., 1., 0.],
+            1e-7
+        )
+        .is_ok()
+    );
+    let (_, imported) = crate::step_read::read_import_solid(&text, 1e-7).unwrap();
+    assert!(crate::step_read::thread_end_relief_import_matches(
+        &imported,
+        &body,
+        [[0.; 3], [1., 0., 0.], [0., 1., 0.]],
+        1e-7
+    ));
 }
 #[test]
 fn invalid_or_unresolved_reliefs_leave_tool_and_mesh_budget_intact() {
@@ -163,4 +204,37 @@ fn invalid_or_unresolved_reliefs_leave_tool_and_mesh_budget_intact() {
         );
     }
     assert_eq!(*body.source_thread(), source);
+    assert!(crate::step::supports_thread_end_relief(
+        &body, [0.; 3], 1e-7
+    ));
+    assert!(!crate::step::supports_thread_end_relief(
+        &body, [0.; 3], 1e-16
+    ));
+    let tiny = Relief::from_material(
+        source,
+        source.spec().length_mm - 1e-8,
+        body.neck_radius_mm(),
+    )
+    .unwrap();
+    let mut writer = crate::step::Writer::new();
+    writer
+        .append_thread_end_relief(&body, [0.; 3], [1., 0., 0.], [0., 1., 0.], 1e-7)
+        .unwrap();
+    assert_eq!(
+        writer.append_thread_end_relief(&tiny, [0.; 3], [1., 0., 0.], [0., 1., 0.], 1e-7),
+        Err(crate::step::StepError::Limit)
+    );
+    assert_eq!(
+        writer.append_thread_end_relief(&body, [0.; 3], [1., 0., 0.], [0., 1., 0.], f64::NAN),
+        Err(crate::step::StepError::InvalidGeometry)
+    );
+    writer
+        .append_thread_end_relief(&body, [10., 0., 0.], [1., 0., 0.], [0., 1., 0.], 1e-7)
+        .unwrap();
+    assert_eq!(
+        crate::step_read::read_import_compound(&writer.finish().unwrap(), 1e-7)
+            .unwrap()
+            .len(),
+        2
+    );
 }

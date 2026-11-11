@@ -12,6 +12,8 @@ pub use headed::helical_screw_import_matches;
 mod cylindrical_closure;
 mod receiver;
 pub use receiver::helical_receiver_import_matches;
+mod end_relief;
+pub use end_relief::thread_end_relief_import_matches;
 mod external;
 pub use external::threaded_shaft_import_matches;
 mod nut;
@@ -55,13 +57,28 @@ pub(super) fn read_member(
     let tail = faces.len() - count;
     let entry_bounds = face(shell, faces[count])?.2.len();
     let shoulder_bounds = face(shell, faces[count + 1])?.2.len();
-    let external =
-        entry_bounds == 1 && (tail == 4 || (tail == starts as usize + 3 && shoulder_bounds == 1));
+    let plane = |id| -> Result<Plane> {
+        let (surface, forward, _) = face(shell, id)?;
+        require(forward)?;
+        let [Value::String(_), axis] = shell.args(surface, "PLANE")? else {
+            return Err(ReadError::Invalid);
+        };
+        shell.placement(reference(axis)?)
+    };
+    let bottom = plane(faces[count])?;
+    let top = plane(faces[count + 1])?;
+    let is_end_relief = entry_bounds == 1
+        && tail == 4
+        && shoulder_bounds == 2
+        && dot(bottom.normal, top.normal) < 0.;
+    let external = entry_bounds == 1
+        && !is_end_relief
+        && (tail == 4 || (tail == starts as usize + 3 && shoulder_bounds == 1));
     let tangent_external = external && shoulder_bounds == 1;
     let external_shoulders = if tangent_external { starts as usize } else { 1 };
     let headed = !external && matches!(faces.len() - count, 9 | 11 | 13);
     let shank = faces.len() - count == 13;
-    let is_receiver = !external && faces.len() - count == 4;
+    let is_receiver = !external && !is_end_relief && faces.len() - count == 4;
     let is_nut = !external && faces.len() - count == 8;
     let mut grids = Vec::with_capacity(4);
     let mut radial = Vec::with_capacity(4);
@@ -97,17 +114,7 @@ pub(super) fn read_member(
         }
         grids.push(rows);
     }
-    let plane = |id| -> Result<Plane> {
-        let (surface, forward, _) = face(shell, id)?;
-        require(forward)?;
-        let [Value::String(_), axis] = shell.args(surface, "PLANE")? else {
-            return Err(ReadError::Invalid);
-        };
-        shell.placement(reference(axis)?)
-    };
-    let bottom = plane(faces[count])?;
-    let top = plane(faces[count + 1])?;
-    let far = if is_receiver || external {
+    let far = if is_receiver || external || is_end_relief {
         Some(plane(*faces.last().ok_or(ReadError::Invalid)?)?)
     } else {
         None
@@ -199,22 +206,35 @@ pub(super) fn read_member(
     } else {
         None
     };
-    let thread = Thread::new(Spec {
+    let full_length = if is_end_relief {
+        headed::Chart::new([origin, u, v])?.local(far.as_ref().ok_or(ReadError::Invalid)?.origin)[2]
+    } else {
+        height
+    };
+    let tool = Thread::new(Spec {
         major_radius_mm: major,
         pitch_mm: pitch,
-        length_mm: height,
+        length_mm: full_length,
         depth_mm: depth,
         crest_width_mm: 2. * phase_start,
         lower_flank_deg: flank_degrees[0],
         upper_flank_deg: flank_degrees[1],
         starts,
-        left_hand: first.1 != ((!external && stock.is_some()) || is_nut),
+        left_hand: first.1 != ((!external && !is_end_relief && stock.is_some()) || is_nut),
         root_radius_mm: root_radius,
     })
     .map_err(|e| match e {
         crate::helical_thread::ThreadError::Invalid => ReadError::Invalid,
         crate::helical_thread::ThreadError::Limit => ReadError::Limit,
     })?;
+    let thread = if is_end_relief {
+        *tool
+            .positive_axial_prefix(height)
+            .map_err(|_| ReadError::Invalid)?
+            .material()
+    } else {
+        tool
+    };
     // Clamped C0 degree-11 segments are Bézier patches. Per-control world
     // residual bounds the complete patch under piecewise affine chart maps;
     // independent knot lengths do not change a segment's geometric image.
@@ -280,11 +300,33 @@ pub(super) fn read_member(
     } else {
         None
     };
-    let stock_height = shaft.as_ref().map_or_else(
-        || receiver.as_ref().map_or(height, |r| r.stock_length_mm()),
-        |s| s.stock_length_mm(),
+    let end_relief = if is_end_relief {
+        Some(
+            crate::thread_end_relief::Relief::from_material(
+                tool,
+                height,
+                stock.ok_or(ReadError::Invalid)?,
+            )
+            .map_err(|_| ReadError::Invalid)?,
+        )
+    } else {
+        None
+    };
+    let stock_height = end_relief.as_ref().map_or_else(
+        || {
+            shaft.as_ref().map_or_else(
+                || receiver.as_ref().map_or(height, |r| r.stock_length_mm()),
+                |s| s.stock_length_mm(),
+            )
+        },
+        |r| r.full_length_mm(),
     );
-    let closure = if let Some(shaft) = &shaft {
+    let closure = if let Some(relief) = &end_relief {
+        Closure::TerminalRelief {
+            neck_radius_mm: relief.neck_radius_mm(),
+            full_length_mm: relief.full_length_mm(),
+        }
+    } else if let Some(shaft) = &shaft {
         Closure::ExternalStock {
             radius_mm: shaft.radius_mm(),
             stock_length_mm: shaft.stock_length_mm(),
@@ -311,6 +353,9 @@ pub(super) fn read_member(
         Some(shell.tolerance.min(1e-7) / 16.),
     )?;
     let support = |direction: Point| {
+        if let Some(relief) = &end_relief {
+            return relief.support(direction);
+        }
         if let Some(shaft) = &shaft {
             return shaft.support(direction);
         }
@@ -339,7 +384,7 @@ pub(super) fn read_member(
     });
     let circles = stock.map_or_else(Vec::new, |radius| {
         [
-            if external {
+            if external || is_end_relief {
                 std::array::from_fn(|i| origin[i] + n[i] * height)
             } else {
                 origin
@@ -374,7 +419,13 @@ pub(super) fn read_member(
             u,
             v,
             height_mm: stock_height,
-            profile: if let Some(shaft) = shaft {
+            profile: if let Some(relief) = end_relief {
+                ImportProfile::ThreadEndRelief {
+                    tool_spec: relief.source_thread().spec(),
+                    material_length_mm: relief.material_length_mm(),
+                    neck_radius_mm: relief.neck_radius_mm(),
+                }
+            } else if let Some(shaft) = shaft {
                 ImportProfile::ThreadedShaft {
                     spec: thread.spec(),
                     stock_radius_mm: shaft.radius_mm(),
@@ -415,15 +466,6 @@ pub fn helical_import_matches(
     [origin, u, v]: [Point; 3],
     tolerance: f64,
 ) -> bool {
-    let frame_valid = |[origin, u, v]: [Point; 3]| {
-        origin.into_iter().chain(u).chain(v).all(f64::is_finite)
-            && (dot(u, u) - 1.).abs() <= 1e-10
-            && (dot(v, v) - 1.).abs() <= 1e-10
-            && dot(u, v).abs() <= 1e-10
-    };
-    if !frame_valid([origin, u, v]) || !frame_valid([imported.origin_mm, imported.u, imported.v]) {
-        return false;
-    }
     let ImportProfile::HelicalThread {
         spec,
         stock_radius_mm,
@@ -434,8 +476,38 @@ pub fn helical_import_matches(
     let Ok(other) = Thread::new(spec) else {
         return false;
     };
-    if spec.length_mm != imported.height_mm
-        || spec.starts != thread.spec().starts
+    if spec.length_mm != imported.height_mm {
+        return false;
+    }
+    thread_nets_match(
+        thread,
+        &other,
+        [stock, stock_radius_mm],
+        [[origin, u, v], [imported.origin_mm, imported.u, imported.v]],
+        tolerance,
+    )
+}
+
+// Both arguments are validated source laws or certified exact restrictions.
+// No external DTO may bypass the public constructor's original tool budget.
+fn thread_nets_match(
+    thread: &Thread,
+    other: &Thread,
+    [stock, stock_radius_mm]: [Option<f64>; 2],
+    [[origin, u, v], [other_origin, other_u, other_v]]: [[Point; 3]; 2],
+    tolerance: f64,
+) -> bool {
+    let spec = other.spec();
+    let frame_valid = |[origin, u, v]: [Point; 3]| {
+        origin.into_iter().chain(u).chain(v).all(f64::is_finite)
+            && (dot(u, u) - 1.).abs() <= 1e-10
+            && (dot(v, v) - 1.).abs() <= 1e-10
+            && dot(u, v).abs() <= 1e-10
+    };
+    if !frame_valid([origin, u, v]) || !frame_valid([other_origin, other_u, other_v]) {
+        return false;
+    }
+    if spec.starts != thread.spec().starts
         || spec.left_hand != thread.spec().left_hand
         || spec.root_radius_mm.is_some() != thread.spec().root_radius_mm.is_some()
         || stock.is_some() != stock_radius_mm.is_some()
@@ -450,12 +522,12 @@ pub fn helical_import_matches(
     }
     if let Some((a, b)) = stock.zip(stock_radius_mm) {
         let na = cross(u, v);
-        let nb = cross(imported.u, imported.v);
+        let nb = cross(other_u, other_v);
         let end_a = std::array::from_fn(|i| origin[i] + na[i] * thread.spec().length_mm);
-        let end_b = std::array::from_fn(|i| imported.origin_mm[i] + nb[i] * spec.length_mm);
-        let closure_error = length(sub(origin, imported.origin_mm)).max(length(sub(end_a, end_b)))
-            + a.max(b) * (length(sub(u, imported.u)) + length(sub(v, imported.v)))
-            + (a - b).abs() * (length(imported.u) + length(imported.v));
+        let end_b = std::array::from_fn(|i| other_origin[i] + nb[i] * spec.length_mm);
+        let closure_error = length(sub(origin, other_origin)).max(length(sub(end_a, end_b)))
+            + a.max(b) * (length(sub(u, other_u)) + length(sub(v, other_v)))
+            + (a - b).abs() * (length(other_u) + length(other_v));
         if !closure_error.is_finite() || closure_error > tolerance / 8. {
             return false;
         }
@@ -465,9 +537,9 @@ pub fn helical_import_matches(
         return false;
     };
     let Ok(b) = crate::step::helical::prepare(
-        &other,
+        other,
         Closure::stock(stock_radius_mm),
-        imported.origin_mm,
+        other_origin,
         tolerance,
     ) else {
         return false;
@@ -493,7 +565,7 @@ pub fn helical_import_matches(
                 .zip(b.axial.poles.iter().zip(&b.heights))
             {
                 let a = world(origin, u, v, ra, aa, az);
-                let b = world(imported.origin_mm, imported.u, imported.v, rb, ba, bz);
+                let b = world(other_origin, other_u, other_v, rb, ba, bz);
                 let error = length(sub(a, b));
                 if !error.is_finite() || error > tolerance / 8. {
                     return false;

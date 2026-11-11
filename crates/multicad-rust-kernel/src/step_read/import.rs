@@ -28,6 +28,12 @@ use pocketed::{PocketRim, canonical_pockets};
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum ImportProfile {
+    /// Independently proved helical prefix, upward shoulder and terminal neck.
+    ThreadEndRelief {
+        tool_spec: crate::helical_thread::Spec,
+        material_length_mm: f64,
+        neck_radius_mm: f64,
+    },
     NormalRelief {
         relief: crate::normal_relief::Relief,
     },

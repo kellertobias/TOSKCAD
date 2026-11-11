@@ -9,6 +9,7 @@ use crate::{
     },
 };
 
+mod end_relief;
 mod external;
 mod hex_head;
 mod socket_head;
@@ -53,6 +54,26 @@ pub fn verify_helical_receiver(
         Closure::BlindBore {
             radius_mm: receiver.radius_mm(),
             stock_length_mm: receiver.stock_length_mm(),
+        },
+        [origin, u, v],
+        tolerance,
+    )
+}
+
+pub fn verify_thread_end_relief(
+    input: &str,
+    relief: &crate::thread_end_relief::Relief,
+    origin: Point,
+    u: Point,
+    v: Point,
+    tolerance: f64,
+) -> Result<f64> {
+    verify(
+        input,
+        relief.material_thread(),
+        Closure::TerminalRelief {
+            neck_radius_mm: relief.neck_radius_mm(),
+            full_length_mm: relief.full_length_mm(),
         },
         [origin, u, v],
         tolerance,
@@ -153,6 +174,7 @@ pub(super) fn verify_member(
                     radius_mm,
                     stock_length_mm,
                 } => radius_mm.max(stock_length_mm),
+                Closure::TerminalRelief { full_length_mm, .. } => full_length_mm,
                 Closure::HexNut(width) => width,
                 Closure::HexHead {
                     across_flats_mm,
@@ -296,7 +318,10 @@ pub(super) fn verify_member(
     let mut hex_rims = [0; 2];
     let mut tangent = None;
     for (end, (face_id, z)) in faces[count..count + 2].iter().zip([0., height]).enumerate() {
-        if matches!(closure, Closure::ExternalStock { .. }) {
+        if matches!(
+            closure,
+            Closure::ExternalStock { .. } | Closure::TerminalRelief { .. }
+        ) {
             continue;
         }
         let top = end == 1;
@@ -358,6 +383,18 @@ pub(super) fn verify_member(
         }
     }
     let outside_volume = match closure {
+        Closure::TerminalRelief {
+            neck_radius_mm,
+            full_length_mm,
+        } => end_relief::verify(
+            proof,
+            shell,
+            &faces[count..],
+            thread,
+            [neck_radius_mm, full_length_mm],
+            &rings,
+            [origin, u, v],
+        )?,
         Closure::ExternalStock {
             radius_mm,
             stock_length_mm,

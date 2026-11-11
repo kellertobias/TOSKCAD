@@ -37,6 +37,10 @@ pub(crate) enum Closure {
         radius_mm: f64,
         stock_length_mm: f64,
     },
+    TerminalRelief {
+        neck_radius_mm: f64,
+        full_length_mm: f64,
+    },
     /// External thread with a coaxial through bore of this radius.
     Hollow(f64),
     HexHead {
@@ -137,6 +141,10 @@ impl Closure {
         }
         | Self::ExternalStock {
             stock_length_mm, ..
+        }
+        | Self::TerminalRelief {
+            full_length_mm: stock_length_mm,
+            ..
         } = self
         {
             stock_length_mm
@@ -147,7 +155,7 @@ impl Closure {
     pub(crate) fn face_count(self, bands: usize, major: f64) -> usize {
         match self {
             Self::Shaft => bands + 2,
-            Self::BlindBore { .. } => bands + 4,
+            Self::BlindBore { .. } | Self::TerminalRelief { .. } => bands + 4,
             Self::ExternalStock { radius_mm, .. } => {
                 bands + 3 + if radius_mm == major { bands / 4 } else { 1 }
             }
@@ -160,7 +168,7 @@ impl Closure {
 
     fn radial_and_axial_extent(self, major_radius_mm: f64) -> (f64, f64) {
         match self {
-            Self::Shaft | Self::Hollow(_) => (major_radius_mm, 0.),
+            Self::Shaft | Self::Hollow(_) | Self::TerminalRelief { .. } => (major_radius_mm, 0.),
             Self::Bore(radius)
             | Self::BlindBore {
                 radius_mm: radius, ..
@@ -176,6 +184,32 @@ impl Closure {
             Self::SocketHead(head) => (head.radius_mm, head.height_mm + head.shank_length_mm),
         }
     }
+}
+
+pub fn write_thread_end_relief(
+    relief: &crate::thread_end_relief::Relief,
+    origin: Point,
+    u: Point,
+    v: Point,
+    tolerance_mm: f64,
+) -> Result<String, StepError> {
+    write_one(|writer| writer.append_thread_end_relief(relief, origin, u, v, tolerance_mm))
+}
+pub fn supports_thread_end_relief(
+    relief: &crate::thread_end_relief::Relief,
+    origin: Point,
+    tolerance_mm: f64,
+) -> bool {
+    prepare(
+        relief.material_thread(),
+        Closure::TerminalRelief {
+            neck_radius_mm: relief.neck_radius_mm(),
+            full_length_mm: relief.full_length_mm(),
+        },
+        origin,
+        tolerance_mm,
+    )
+    .is_ok()
 }
 
 pub fn write_threaded_shaft(
@@ -302,11 +336,17 @@ pub(super) fn encode(
     placement: Placement,
     tolerance_mm: f64,
 ) -> Result<Entity, StepError> {
-    if let Closure::ExternalStock {
-        radius_mm,
-        stock_length_mm,
-    } = closure
-    {
+    let closure_extents = match closure {
+        Closure::ExternalStock {
+            radius_mm,
+            stock_length_mm,
+        } => Some((radius_mm, stock_length_mm)),
+        Closure::TerminalRelief { full_length_mm, .. } => {
+            Some((thread.spec().major_radius_mm, full_length_mm))
+        }
+        _ => None,
+    };
+    if let Some((radius_mm, stock_length_mm)) = closure_extents {
         let norm = |[x, y, z]: Point| x.hypot(y).hypot(z);
         let unit = |p: Point| {
             let n = norm(p);
@@ -442,9 +482,17 @@ pub(super) fn encode(
             None
         }
     } else {
-        closure
-            .cylinder()
-            .map(|(radius, outward)| (radius, outward, [0., closure.stock_length(height)]))
+        if let Closure::TerminalRelief {
+            neck_radius_mm,
+            full_length_mm,
+        } = closure
+        {
+            Some((neck_radius_mm, true, [height, full_length_mm]))
+        } else {
+            closure
+                .cylinder()
+                .map(|(radius, outward)| (radius, outward, [0., closure.stock_length(height)]))
+        }
     };
     let cylinder = if let Some((radius, outward, ends)) = cylinder_spec {
         let stock_centers = ends.map(|z| placement.point_f64([0.; 2], z));
@@ -466,6 +514,7 @@ pub(super) fn encode(
         | Closure::Bore(_)
         | Closure::BlindBore { .. }
         | Closure::ExternalStock { .. }
+        | Closure::TerminalRelief { .. }
         | Closure::Hollow(_)
         | Closure::HexNut(_) => None,
     };
@@ -523,13 +572,18 @@ pub(super) fn encode(
                 .collect::<Vec<_>>()
         };
         let outside = matches!(closure, Closure::ExternalStock { .. });
+        let relief = matches!(closure, Closure::TerminalRelief { .. });
         let trim = file.bound(&edges, !closure.cap_hole(top) && !(outside && top));
         let mut bounds = Vec::with_capacity(2);
         if let Some((cylinder, outward)) = &cylinder
             && !(top && closure.is_blind_bore())
-            && !(outside && !top)
+            && !((outside || relief) && !top)
         {
-            bounds.push(cylinder.cap_bound(file, top && !outside, *outward));
+            if relief {
+                bounds.push(circular_bound(file, cylinder.rims[0], false, false));
+            } else {
+                bounds.push(cylinder.cap_bound(file, top && !outside, *outward));
+            }
         }
         if let Some((rims, _)) = &hex {
             bounds.push(rims[end]);
@@ -551,7 +605,12 @@ pub(super) fn encode(
     faces.extend(extra_shoulders);
     if let Some((cylinder, outward)) = &cylinder {
         faces.push(cylinder.wall(file, *outward));
-        if closure.is_blind_bore() || matches!(closure, Closure::ExternalStock { .. }) {
+        if closure.is_blind_bore()
+            || matches!(
+                closure,
+                Closure::ExternalStock { .. } | Closure::TerminalRelief { .. }
+            )
+        {
             let bound = cylinder.cap_bound(file, true, true);
             let center = file.point(placement.point_f64([0.; 2], closure.stock_length(height)));
             faces.push(file.face(&[bound], center, placement.normal, placement.u));
@@ -689,6 +748,7 @@ pub(crate) fn prepare(
                 | Closure::HexNut(_)
                 | Closure::BlindBore { .. }
                 | Closure::ExternalStock { .. }
+                | Closure::TerminalRelief { .. }
         )
     {
         return Err(StepError::Unsupported);
@@ -698,6 +758,7 @@ pub(crate) fn prepare(
         || matches!(closure, Closure::Bore(r) if !r.is_finite() || r <= spec.major_radius_mm)
         || matches!(closure, Closure::BlindBore { radius_mm,stock_length_mm } if crate::helical_receiver::Receiver::new(*thread,radius_mm,stock_length_mm).is_err())
         || matches!(closure, Closure::ExternalStock {radius_mm,stock_length_mm} if crate::threaded_shaft::Shaft::new(*thread,radius_mm,stock_length_mm).is_err())
+        || matches!(closure,Closure::TerminalRelief {neck_radius_mm,full_length_mm} if !neck_radius_mm.is_finite() || neck_radius_mm<=0. || neck_radius_mm>=thread.root_radius_mm() || !full_length_mm.is_finite() || full_length_mm<=spec.length_mm || full_length_mm>1e7)
         || matches!(closure, Closure::HexNut(width) if !width.is_finite() || width / 2. <= spec.major_radius_mm)
         || matches!(closure, Closure::Hollow(r)
             if !r.is_finite() || r <= 0. || r >= spec.major_radius_mm - spec.depth_mm)
@@ -723,6 +784,7 @@ pub(crate) fn prepare(
         || matches!(closure, Closure::Bore(radius) if radius - major <= tolerance)
         || matches!(closure, Closure::BlindBore { radius_mm,stock_length_mm } if radius_mm-major<=tolerance || stock_length_mm-height<=tolerance)
         || matches!(closure, Closure::ExternalStock {radius_mm,stock_length_mm} if (radius_mm!=major && radius_mm-major<=tolerance) || stock_length_mm-height<=tolerance)
+        || matches!(closure,Closure::TerminalRelief {neck_radius_mm,full_length_mm} if neck_radius_mm<=tolerance || thread.root_radius_mm()-neck_radius_mm<=tolerance || full_length_mm-height<=tolerance)
         || matches!(closure, Closure::HexNut(width) if width / 2. - major <= tolerance)
         || matches!(closure, Closure::Hollow(radius)
             if radius <= tolerance || major - spec.depth_mm - radius <= tolerance)

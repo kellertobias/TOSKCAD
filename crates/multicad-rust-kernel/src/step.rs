@@ -57,8 +57,9 @@ pub use cylindrical_revolution::{
 };
 pub use helical::{
     supports_helical_nut, supports_helical_receiver, supports_helical_screw,
-    supports_helical_thread, supports_threaded_shaft, write_helical_nut, write_helical_receiver,
-    write_helical_screw, write_helical_thread, write_threaded_shaft,
+    supports_helical_thread, supports_thread_end_relief, supports_threaded_shaft,
+    write_helical_nut, write_helical_receiver, write_helical_screw, write_helical_thread,
+    write_thread_end_relief, write_threaded_shaft,
 };
 pub use nonplanar_loft::write_nonplanar_loft;
 pub use normal_relief::write_normal_relief;
