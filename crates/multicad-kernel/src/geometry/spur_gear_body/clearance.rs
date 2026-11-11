@@ -36,7 +36,7 @@ impl Solid {
             ));
         }
         let placements = coaxial_placements(
-            "Rust spur interference",
+            (OPERATION, "Rust spur interference"),
             policy,
             [af, bf],
             profiles.map(|profile| {
@@ -68,14 +68,14 @@ pub(in crate::geometry) type Support<'a> = Box<dyn Fn([f64; 3]) -> f64 + 'a>;
 /// Project two placed straight tooth bands onto the first band's transverse
 /// plane, enclosing any axial drift within the policy tolerance.
 pub(in crate::geometry) fn coaxial_placements(
-    label: &str,
+    (operation, label): (&'static str, &str),
     policy: GeometryPolicy,
     [af, bf]: [PlaneFrame; 2],
     bands: [(f64, Support<'_>); 2],
 ) -> Result<[Placement; 2], GeometryError> {
     let unsupported = |message: &str| {
         error(
-            OPERATION,
+            operation,
             GeometryErrorKind::Unsupported,
             format!("{label} {message}"),
         )

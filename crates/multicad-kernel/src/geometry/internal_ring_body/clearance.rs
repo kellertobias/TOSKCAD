@@ -34,7 +34,7 @@ impl Solid {
             ));
         }
         let placements = coaxial_placements(
-            "Rust internal pair interference",
+            (PAIR, "Rust internal pair interference"),
             policy,
             [rf, gf],
             [
