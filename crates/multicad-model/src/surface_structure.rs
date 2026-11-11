@@ -317,7 +317,7 @@ impl Builder<'_> {
         size: [f64; 2],
     ) -> Result<bool, ModelError> {
         use multicad_kernel::rust_kernel::{
-            normal_relief::{Error, Kind, Relief},
+            normal_relief::{Error, Relief},
             normal_sweep::{Edge, Sweep, signed_area},
         };
         let convert = |curve: &CurvedEdge2d| -> Result<Edge, ModelError> {
@@ -379,15 +379,8 @@ impl Builder<'_> {
         // The shared finite-cap certificate proves the complete padded window
         // is strictly inside the stock and disjoint from every existing hole.
         // Its separate combined-edge budget includes a maximum-size source.
-        match Relief::new_with_interrupt(
-            base,
-            vec![motif],
-            Kind::Raised,
-            tolerance,
-            minimum,
-            self.interrupt,
-        ) {
-            Ok(_) => Ok(true),
+        match Relief::certify_footprints(&base, &[motif], tolerance, minimum, self.interrupt) {
+            Ok(()) => Ok(true),
             Err(Error::Cancelled) => Err(self.fail("Surface window was superseded")),
             Err(Error::Limit) => {
                 Err(self.fail("Surface window containment exceeds the certified work budget"))
@@ -497,6 +490,17 @@ pub(crate) fn build(
         return Err(builder.fail("A nonzero motif height is below the native minimum feature. Increase the physical relief height."));
     }
     let raised = settings.direction == SurfaceStructureDirection::Raised;
+    let identity_family = match &settings.pattern {
+        SurfaceStructurePattern::Ribs => "ribs".into(),
+        SurfaceStructurePattern::Waves => "waves".into(),
+        SurfaceStructurePattern::Stipple => "stipple".into(),
+        SurfaceStructurePattern::HeightMap {
+            width,
+            height,
+            repeat,
+            ..
+        } => format!("height/{width}/{height}/{}/{}", repeat[0], repeat[1]),
+    };
     let floor = MIN_RECESS_FLOOR_MM.max(policy.minimum_feature_mm);
     let bond = policy
         .minimum_feature_mm
@@ -617,7 +621,7 @@ pub(crate) fn build(
                         height_mm: motif.height_mm,
                         origin: Origin {
                             source: id,
-                            role: format!("surface/{}/{}", face.id, motif.index),
+                            role: format!("surface/{}/{identity_family}/{}", face.id, motif.index),
                         },
                     })
                 })

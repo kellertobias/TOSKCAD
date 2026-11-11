@@ -189,22 +189,38 @@ impl Solid {
         )
         .map_err(|_| invalid())?;
         let graph = geometry.boundary();
-        let whole = imported_signature(&geometry, frame);
+        let mut identities = BTreeSet::new();
         let labels = (0..graph.faces.len())
             .map(|i| {
                 let bytes = face_key(graph, i, frame)
                     .into_iter()
                     .flat_map(u64::to_le_bytes)
                     .collect::<Vec<_>>();
-                Labels {
-                    origins: BTreeSet::from([Origin {
-                        source: feature,
-                        role: format!("step.relief/{whole}/{}", ContentHash::of(&bytes)),
-                    }]),
-                    anchors: vec![],
+                let origin = Origin {
+                    source: feature,
+                    role: format!("step.relief/v1/{}", ContentHash::of(&bytes)),
+                };
+                if !identities.insert(origin.clone()) {
+                    return Err(invalid());
                 }
+                let anchors = canonical_anchor(graph, i, frame)
+                    .map(|anchor| {
+                        Ok(AnchoredFrame {
+                            origin: origin.clone(),
+                            frame: super::super::revolution_body::local_attachment(
+                                frame, anchor, policy,
+                            )?,
+                        })
+                    })
+                    .transpose()?
+                    .into_iter()
+                    .collect();
+                Ok(Labels {
+                    origins: BTreeSet::from([origin]),
+                    anchors,
+                })
             })
-            .collect();
+            .collect::<Result<Vec<_>, GeometryError>>()?;
         let edge_map = physical_edge_map(&geometry)?;
         let body = NormalReliefBody {
             geometry,
@@ -223,4 +239,54 @@ impl Solid {
             rust_origins: vec![],
         })
     }
+}
+
+// A persistent planar datum follows physical boundary geometry, independent of
+// the arbitrary parameter axes or periodic seam chosen by the STEP writer.
+fn canonical_anchor(
+    graph: &multicad_rust_kernel::normal_relief::Boundary,
+    index: usize,
+    frame: PlaneFrame,
+) -> Option<ReferenceFrame> {
+    let face = &graph.faces[index];
+    let Surface::Plane { u, v, .. } = face.surface else {
+        return None;
+    };
+    let n = vector(frame, cross(u, v));
+    let length = dot(n, n).sqrt();
+    let n = n.map(|v| v / length);
+    let seed = (0..3)
+        .min_by(|&a, &b| n[a].abs().total_cmp(&n[b].abs()))
+        .unwrap();
+    let mut axis = [0.; 3];
+    axis[seed] = 1.;
+    let u = std::array::from_fn(|i| axis[i] - n[i] * n[seed]);
+    let length = dot(u, u).sqrt();
+    let u = u.map(|v| v / length);
+    let mut anchors = Vec::new();
+    for edge in face.loops.iter().flatten() {
+        let curve = graph.edges[edge.edge].curve;
+        match curve {
+            Curve::Profile {
+                edge: Edge::Circle { center, .. },
+                z_mm,
+            } => anchors.push(position(frame, [center[0], center[1], z_mm])),
+            _ => anchors.extend([
+                position(frame, curve.point(0.)),
+                position(frame, curve.point(1.)),
+            ]),
+        }
+    }
+    anchors.sort_by(|a, b| {
+        a.iter()
+            .zip(b)
+            .map(|(a, b)| a.total_cmp(b))
+            .find(|o| !o.is_eq())
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    Some(ReferenceFrame {
+        origin_mm: *anchors.first()?,
+        u,
+        v: cross(n, u),
+    })
 }

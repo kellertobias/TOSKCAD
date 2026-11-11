@@ -25,10 +25,10 @@ fn curved(edge: &PlanarEdge) -> CurvedEdge2d {
         PlanarEdge::Line { a, b } => CurvedEdge2d::Line { a, b },
         PlanarEdge::Arc {
             a,
+            b,
             center,
             sweep_rad,
-            ..
-        } if (sweep_rad.abs() - std::f64::consts::TAU).abs() < 1e-9 => CurvedEdge2d::Circle {
+        } if a == b && sweep_rad.abs() == std::f64::consts::TAU => CurvedEdge2d::Circle {
             center,
             radius_mm: (a[0] - center[0]).hypot(a[1] - center[1]),
         },
@@ -142,9 +142,15 @@ impl FaceProfileInputs<'_> {
                 frame.v
             },
         };
-        let sourced = solid
-            .planar_face_contours_with_sources(key.ordinal, plane)
-            .map_err(|e| self.failure(format!("Profile face boundary is unsupported: {e}")))?;
+        let sourced = match solid
+            .rust_retained_cap_contours(key.ordinal, plane)
+            .map_err(|e| self.failure(format!("Profile source chart is unsupported: {e}")))?
+        {
+            Some(contours) => contours,
+            None => solid
+                .planar_face_contours_with_sources(key.ordinal, plane)
+                .map_err(|e| self.failure(format!("Profile face boundary is unsupported: {e}")))?,
+        };
         let mut outer = None;
         let mut holes = vec![];
         let mut keys = vec![];
@@ -230,5 +236,30 @@ impl FaceProfileInputs<'_> {
                 role: format!("profile.face.edge.{i}"),
             })
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn near_full_arc_keeps_its_finite_gap_in_a_large_face_profile() {
+        let radius = 10_000_000.;
+        let sweep = std::f64::consts::TAU - 5e-10;
+        let a = [radius, 0.];
+        let b = [radius * sweep.cos(), radius * sweep.sin()];
+        let converted = curved(&PlanarEdge::Arc {
+            a,
+            b,
+            center: [0.; 2],
+            sweep_rad: sweep,
+        });
+        assert!(matches!(converted,CurvedEdge2d::Arc { a:x,b:y,.. } if x==a && y==b));
+        assert!((b[1] - a[1]).abs() > 0.001);
+        for sweep_rad in [std::f64::consts::TAU, -std::f64::consts::TAU] {
+            assert!(
+                matches!(curved(&PlanarEdge::Arc { a,b:a,center:[0.;2],sweep_rad }),CurvedEdge2d::Circle { radius_mm,.. } if radius_mm==radius)
+            );
+        }
     }
 }

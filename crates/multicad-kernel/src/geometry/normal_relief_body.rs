@@ -12,6 +12,7 @@ use multicad_core::{
 use multicad_rust_kernel::normal_relief::{Curve, FaceRole, Relief, Surface};
 use std::collections::BTreeSet;
 mod imported;
+mod source;
 pub(super) use imported::imported_signature;
 
 #[derive(Clone, Debug)]
@@ -69,13 +70,16 @@ impl Solid {
                 "Relief needs the exact policy and a retained normal cap",
             ));
         }
-        let (height, opposite) = constant_column(self, face, cap)?.ok_or_else(|| {
+        let retained = source::retained_source(self, face, cap)?.ok_or_else(|| {
             fail(
                 GeometryErrorKind::Unsupported,
-                "Relief requires unchanged material behind its selected face",
+                "Relief requires an unchanged retained source cap and chart",
             )
         })?;
-        let sourced = self.planar_face_contours_with_sources(face, cap)?;
+        let height = retained.depth_mm;
+        let opposite = retained.opposite;
+        let frame = retained.base_frame;
+        let sourced = retained.contours;
         let mut loops = sourced
             .contours
             .loops
@@ -99,10 +103,10 @@ impl Solid {
                     PlanarEdge::Line { a, b } => CurvedEdge2d::Line { a, b },
                     PlanarEdge::Arc {
                         a,
+                        b,
                         center,
                         sweep_rad,
-                        ..
-                    } if (sweep_rad.abs() - std::f64::consts::TAU).abs() < 1e-9 => {
+                    } if a == b && sweep_rad.abs() == std::f64::consts::TAU => {
                         CurvedEdge2d::Circle {
                             center,
                             radius_mm: (a[0] - center[0]).hypot(a[1] - center[1]),
@@ -215,11 +219,6 @@ impl Solid {
                 },
             )
         })?;
-        let normal = cap.normal();
-        let frame = PlaneFrame {
-            origin: std::array::from_fn(|i| cap.origin[i] - normal[i] * height),
-            ..cap
-        };
         let source = self.topology_snapshot(feature, 0)?;
         let labels = face_labels(
             &geometry, &source, face, opposite, &edge_keys, motifs, feature, frame, policy,
@@ -241,6 +240,16 @@ impl Solid {
             provenance: vec![],
             rust_origins: self.rust_origins.clone(),
         })
+    }
+
+    /// Exact intrinsic contours for an unchanged, canonically placed source
+    /// cap. Other charts or modified stock require a separate contour provider.
+    pub fn rust_retained_cap_contours(
+        &self,
+        face: u32,
+        frame: PlaneFrame,
+    ) -> Result<Option<crate::planar_contours::SourcedPlanarContours>, GeometryError> {
+        Ok(source::retained_source(self, face, frame)?.map(|source| source.contours))
     }
 
     /// Query retained analytic material, independently of the display mesh.
@@ -272,6 +281,23 @@ impl Solid {
             SolidBody::NormalRelief(body, frame) => Some((body, *frame)),
             _ => None,
         }
+    }
+
+    /// Verify complete emitted supports, finite trims and shared incidence
+    /// against this exact relief, independently of blind import classification.
+    pub fn verify_normal_relief_step(
+        &self,
+        input: &str,
+    ) -> Option<Result<f64, multicad_rust_kernel::step_read::ReadError>> {
+        let (body, frame) = self.normal_relief_body()?;
+        Some(multicad_rust_kernel::step_read::verify_normal_relief(
+            input,
+            &body.geometry,
+            frame.origin,
+            frame.u,
+            frame.v,
+            self.policy.linear_tolerance_mm,
+        ))
     }
 }
 
@@ -561,7 +587,12 @@ fn face_labels(
                     (None, format!("{}/cap", motifs[motif].origin.role))
                 }
                 FaceRole::MotifWall { motif, edge } => {
-                    (None, format!("{}/wall/{edge}", motifs[motif].origin.role))
+                    // Generated segmentation can change after a pitch edit.
+                    // Retain a wall only when its complete finite source curve
+                    // has an unchanged correspondence, never by ordinal alone.
+                    let curve = geometry.motifs()[motif].rings()[0][edge];
+                    let stamp = ContentHash::of(format!("{curve:?}").as_bytes());
+                    (None, format!("{}/wall/{stamp}", motifs[motif].origin.role))
                 }
             };
             let mut origins = original.map(|f| f.origins.clone()).unwrap_or_default();
@@ -586,56 +617,6 @@ fn face_labels(
             Ok(Labels { origins, anchors })
         })
         .collect()
-}
-
-fn constant_column(
-    stock: &Solid,
-    selected: u32,
-    frame: PlaneFrame,
-) -> Result<Option<(f64, u32)>, GeometryError> {
-    let box_stock = stock
-        .rust_prism()
-        .is_some_and(|p| p.rounded_end().is_none() && p.inner_loops().len() == 0);
-    if !box_stock {
-        return if selected < 2 {
-            Ok(stock
-                .rust_prismatic_cap_depth(frame)?
-                .map(|depth| (depth, 1 - selected)))
-        } else {
-            Ok(None)
-        };
-    }
-    let faces = stock.faces()?;
-    let Some(source) = faces.iter().find(|f| f.index == selected) else {
-        return Ok(None);
-    };
-    let Some((_, outward)) = source.plane else {
-        return Ok(None);
-    };
-    let normal = frame.normal();
-    if cross(normal, outward) != [0.; 3] || dot(normal, outward) <= 0. {
-        return Ok(None);
-    }
-    let square = dot(normal, normal);
-    let mut parallel = Vec::new();
-    for face in faces {
-        if let Some((point, n)) = face.plane
-            && cross(normal, n) == [0.; 3]
-        {
-            parallel.push((
-                dot(std::array::from_fn(|i| point[i] - frame.origin[i]), normal) / square,
-                face.index,
-            ));
-        }
-    }
-    if parallel.len() != 2 {
-        return Ok(None);
-    }
-    parallel.sort_by(|a, b| a.0.total_cmp(&b.0));
-    Ok(
-        (parallel[1] == (0., selected) && parallel[0].0.is_finite() && parallel[0].0 < 0.)
-            .then_some((-parallel[0].0, parallel[0].1)),
-    )
 }
 
 fn physical_edge_map(geometry: &Relief) -> Result<Vec<Option<u32>>, GeometryError> {

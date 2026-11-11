@@ -2788,3 +2788,175 @@ fn rust_stdio_exports_imports_and_reopens_a_modeled_m6_6h_hex_nut() {
     );
     close(receipt["readback_volume_mm3"].as_f64().unwrap(), volume);
 }
+
+#[test]
+fn rust_stdio_previews_exports_and_reopens_exact_surface_patterns_transactionally() {
+    use multicad_core::{
+        commands::{Actor, Channel, Session},
+        document::{Document, EntityId},
+        model::{
+            self, PrimitiveParameters, PrimitiveRequest, SurfaceStructureDirection,
+            SurfaceStructureParameters, SurfaceStructurePattern, SurfaceStructureRequest,
+        },
+        project_file::{self, ProjectFile},
+    };
+    let directory = tempfile::tempdir().unwrap();
+    let project = directory.path().join("surface-pattern.tcd");
+    let mut session = Session::new(Document::new("Exact surface pattern").unwrap()).unwrap();
+    let stock = PrimitiveRequest::new(
+        "Coupon",
+        PrimitiveParameters::Box {
+            size: [40., 30., 4.].map(model::length),
+            frame: Default::default(),
+        },
+    );
+    let prepared =
+        model::prepare_primitive(&session, 0, Actor::local(Channel::Ui), &stock).unwrap();
+    session.commit(prepared.prepared).unwrap();
+    let mut bytes = vec![];
+    project_file::write(
+        &ProjectFile::new(session.document().clone()).unwrap(),
+        &mut bytes,
+        Default::default(),
+    )
+    .unwrap();
+    std::fs::write(&project, &bytes).unwrap();
+    let arguments = [
+        "--rust-model",
+        "--project",
+        project.to_str().unwrap(),
+        "--export-dir",
+        directory.path().to_str().unwrap(),
+    ];
+    let mut client = Client::start(&arguments);
+    let candidates = client.ok(
+        "reference_candidates",
+        json!({"source":stock.feature,"kind":"face"}),
+    );
+    let top = candidates["elements"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| {
+            let frame = &row["geometry"]["frame"];
+            let n = frame["u"][0].as_f64().unwrap_or(0.) * frame["v"][1].as_f64().unwrap_or(0.)
+                - frame["u"][1].as_f64().unwrap_or(0.) * frame["v"][0].as_f64().unwrap_or(0.);
+            n > 0.99 && frame["origin_mm"][2].as_f64() == Some(4.)
+        })
+        .unwrap()["element"]["ordinal"]
+        .clone();
+    let captured = client.ok(
+        "capture_surface_structure_faces",
+        json!({"expected_revision":0,"part":stock.body,"producer":stock.feature,"faces":[top]}),
+    );
+    let request = SurfaceStructureRequest {
+        feature: EntityId::new(),
+        input: serde_json::from_value(captured["input"].clone()).unwrap(),
+        faces: serde_json::from_value(captured["faces"].clone()).unwrap(),
+        parameters: SurfaceStructureParameters {
+            pattern: SurfaceStructurePattern::Stipple,
+            amplitude: model::length(0.6),
+            pitch: model::length(4.),
+            size: [16., 8.].map(model::length),
+            ..Default::default()
+        },
+    };
+    let expected = 4800. + 8. * PI * 0.88_f64.powi(2) * 0.6;
+    let preview = client.ok(
+        "preview_surface_structure",
+        json!({"expected_revision":0,"request":request}),
+    );
+    close(preview["volume_mm3"].as_f64().unwrap(), expected);
+    assert_eq!(client.revision(), 0);
+    close(client.part_volume(), 4800.);
+    client.ok(
+        "set_surface_structure",
+        json!({"expected_revision":0,"request":request}),
+    );
+    let revision = client.revision();
+    close(client.part_volume(), expected);
+    let mut invalid = request.clone();
+    invalid.parameters.direction = SurfaceStructureDirection::Recessed;
+    invalid.parameters.amplitude = model::length(4.);
+    client.fail(
+        "set_surface_structure",
+        json!({"expected_revision":revision,"request":invalid}),
+    );
+    assert_eq!(client.revision(), revision);
+    close(client.part_volume(), expected);
+    assert_eq!(std::fs::read(&project).unwrap(), bytes);
+    let receipt = client.ok(
+        "export_step",
+        json!({"part":stock.body,"file_name":"surface-pattern.step"}),
+    );
+    close(receipt["model_volume_mm3"].as_f64().unwrap(), expected);
+    close(receipt["readback_volume_mm3"].as_f64().unwrap(), expected);
+    let text = std::fs::read_to_string(directory.path().join("surface-pattern.step")).unwrap();
+    let imported =
+        multicad_kernel::Solid::import_rust_step(&text, request.feature, Default::default())
+            .unwrap();
+    close(imported.volume_mm3().unwrap(), expected);
+    client.ok("undo", json!({"expected_revision":revision}));
+    close(client.part_volume(), 4800.);
+    let revision = client.revision();
+    client.ok("redo", json!({"expected_revision":revision}));
+    close(client.part_volume(), expected);
+    let revision = client.revision();
+    client.ok("save_project", json!({"expected_revision":revision}));
+    drop(client);
+    let mut reopened = Client::start(&arguments);
+    close(reopened.part_volume(), expected);
+    let inspected = reopened.ok(
+        "inspect_surface_structure",
+        json!({"feature":request.feature}),
+    );
+    assert_eq!(inspected["request"], json!(request));
+    for (pattern, direction, delta) in [
+        (
+            SurfaceStructurePattern::Ribs,
+            SurfaceStructureDirection::Raised,
+            0.6 * 2. * 16. * 1.8,
+        ),
+        (
+            SurfaceStructurePattern::Waves,
+            SurfaceStructureDirection::Raised,
+            0.6 * 2. * 16. * 1.2,
+        ),
+        (
+            SurfaceStructurePattern::HeightMap {
+                width: 2,
+                height: 2,
+                samples: vec![0, 127, 192, 255],
+                repeat: [1, 1],
+            },
+            SurfaceStructureDirection::Recessed,
+            -0.6 * (0.9 * 8.) * (0.9 * 4.) * (127. + 192. + 255.) / 255.,
+        ),
+    ] {
+        let mut edited = request.clone();
+        edited.parameters.pattern = pattern;
+        edited.parameters.direction = direction;
+        let revision = reopened.revision();
+        reopened.ok(
+            "set_surface_structure",
+            json!({"expected_revision":revision,"request":edited}),
+        );
+        close(reopened.part_volume(), 4800. + delta);
+        let receipt = reopened.ok(
+            "export_step",
+            json!({"part":stock.body,"file_name":"edited-surface-pattern.step"}),
+        );
+        close(receipt["model_volume_mm3"].as_f64().unwrap(), 4800. + delta);
+        close(
+            receipt["readback_volume_mm3"].as_f64().unwrap(),
+            4800. + delta,
+        );
+        let imported = multicad_kernel::Solid::import_rust_step(
+            &std::fs::read_to_string(directory.path().join("edited-surface-pattern.step")).unwrap(),
+            request.feature,
+            Default::default(),
+        )
+        .unwrap();
+        close(imported.volume_mm3().unwrap(), 4800. + delta);
+    }
+}

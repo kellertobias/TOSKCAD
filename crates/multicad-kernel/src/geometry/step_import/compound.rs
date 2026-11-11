@@ -358,9 +358,18 @@ impl Solid {
         remaining.is_empty()
     }
 
-    /// Verify a flat compound containing authored twisted gears and analytic
-    /// members, preserving the STEP writer's order and source placements.
+    /// Compatibility entry point for callers of the original gear-only proof.
     pub fn verify_twisted_step_compound(
+        &self,
+        input: &str,
+        tolerance: f64,
+    ) -> Option<std::result::Result<StepCompoundMetrics, ReadError>> {
+        self.verify_authored_step_compound(input, tolerance)
+    }
+
+    /// Verify authored curved boundaries and analytic members independently,
+    /// preserving the STEP writer's member order and source placements.
+    pub fn verify_authored_step_compound(
         &self,
         input: &str,
         tolerance: f64,
@@ -369,14 +378,25 @@ impl Solid {
         self.rust_compound()?;
         let mut leaves = Vec::new();
         self.step_leaf_members(&mut leaves);
-        if !leaves.iter().any(|leaf| leaf.herringbone_body().is_some()) {
+        if !leaves
+            .iter()
+            .any(|leaf| leaf.herringbone_body().is_some() || leaf.normal_relief_body().is_some())
+        {
             return None;
         }
         Some((|| {
             let mut expected = Vec::new();
             let mut member_counts = Vec::with_capacity(leaves.len());
             for leaf in &leaves {
-                if let Some((body, frame)) = leaf.herringbone_body() {
+                if let Some((body, frame)) = leaf.normal_relief_body() {
+                    member_counts.push(1);
+                    expected.push(ExpectedStepMember::NormalRelief {
+                        relief: &body.geometry,
+                        origin: frame.origin,
+                        u: frame.u,
+                        v: frame.v,
+                    });
+                } else if let Some((body, frame)) = leaf.herringbone_body() {
                     member_counts.push(1);
                     expected.push(ExpectedStepMember::TwistedGear {
                         gear: &body.geometry,
@@ -401,7 +421,14 @@ impl Solid {
                 step_read::verify_authored_compound(input, &expected, tolerance)?.into_iter();
             let mut result = (0_u32, 0_f64, [[f64::INFINITY; 3], [f64::NEG_INFINITY; 3]]);
             for (leaf, member_count) in leaves.into_iter().zip(member_counts) {
-                let (count, volume, bounds) = if leaf.herringbone_body().is_some() {
+                let (count, volume, bounds) = if leaf.normal_relief_body().is_some() {
+                    let Some(VerifiedStepMember::NormalRelief { volume_mm3 }) = decoded.next()
+                    else {
+                        return Err(ReadError::Invalid);
+                    };
+                    let bounds = leaf.bounds().map_err(|_| ReadError::Invalid)?;
+                    (1, volume_mm3, [bounds.min, bounds.max])
+                } else if leaf.herringbone_body().is_some() {
                     let Some(VerifiedStepMember::TwistedGear { volume_mm3 }) = decoded.next()
                     else {
                         return Err(ReadError::Invalid);
