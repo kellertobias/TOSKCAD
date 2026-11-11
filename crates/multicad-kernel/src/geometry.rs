@@ -1414,7 +1414,7 @@ impl Solid {
             ));
         }
         if let Some((cylinder, _)) = self.axial_cylinder_frame() {
-            return Ok(std::f64::consts::PI * cylinder.volume_factor().as_f64());
+            return Ok(cylinder.volume_mm3());
         }
         if let Some(prism) = self.rust_prism() {
             return Ok(prism.volume().as_f64());

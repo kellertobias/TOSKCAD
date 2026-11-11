@@ -512,9 +512,7 @@ impl HelicalBody {
     pub(super) fn volume_mm3(&self) -> f64 {
         match &self.form {
             HelicalForm::Shaft => self.geometry.volume_mm3(),
-            HelicalForm::Bore(stock) => {
-                PI * stock.cylinder.volume_factor().as_f64() - self.geometry.volume_mm3()
-            }
+            HelicalForm::Bore(stock) => stock.cylinder.volume_mm3() - self.geometry.volume_mm3(),
             HelicalForm::Blind(stock) => stock.volume_mm3(self.geometry),
             HelicalForm::Nut(nut) => nut.volume_mm3(),
             HelicalForm::Screw(screw) => screw.volume_mm3(),
