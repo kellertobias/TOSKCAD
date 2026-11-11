@@ -101,6 +101,7 @@ pub struct Wheel {
     slope: f64,
     span: f64,
     pub(crate) section_bounds: Cache<Option<[f64; 2]>>,
+    pub(crate) remainders: Cache<Option<Box<[super::wheel_bounds::Remainder; 5]>>>,
 }
 
 pub(crate) fn turn<T: Real>([x, y]: [T; 2], angle: T) -> [T; 2] {
@@ -150,6 +151,7 @@ impl Wheel {
             slope: super::worm::slope(),
             span: PI / f64::from(teeth),
             section_bounds: Cache::default(),
+            remainders: Cache::default(),
         };
         wheel.check(minimum_mm)?;
         Ok(wheel)

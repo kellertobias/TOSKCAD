@@ -30,6 +30,15 @@ use super::wheel::{CUTTER_TIP, PIECES, Piece, WORM_ROOT, Wheel, turn};
 
 /// Profile and height cells for the section motion and bending bounds.
 const SECTION_CELLS: [usize; 2] = [32, 64];
+/// Profile and height cells for coefficients along the profile and across
+/// the width. Narrow height cells keep high-order enclosures tight.
+const U_FIT_CELLS: [usize; 2] = [8, 16];
+const V_FIT_CELLS: [usize; 2] = [8, 128];
+/// Highest profile degree, below the STEP and OCCT B-spline limit of 25.
+pub(crate) const MAX_U_DEGREE: usize = 24;
+const U_ORDERS: usize = MAX_U_DEGREE + 2;
+/// Degree of each span across the face width.
+pub(crate) const V_DEGREE: usize = 8;
 /// Cutter-range cells proving a unique exit radius.
 const MONOTONE_CELLS: usize = 16;
 const MONOTONE_DEPTH: u32 = 6;
@@ -184,6 +193,107 @@ impl Wheel {
         }
         Some(result)
     }
+
+    /// Largest Taylor coefficient magnitudes `|F_k|` of one patch along `u`
+    /// (or along `v` when `along_v`), per coordinate in a frame rotated by a
+    /// fixed angle, over the whole patch domain. A fixed rotation keeps the
+    /// Euclidean length of every interpolation remainder.
+    fn directional<const N: usize>(&self, piece: Piece, along_v: bool) -> Option<[[f64; 2]; N]> {
+        type S<const N: usize> = Series<Interval, N>;
+        let h = self.half_width();
+        let base = self
+            .polar_patch(piece, 0.5, 0., self.crossing(0., side(piece)))
+            .1;
+        let [u_cells, v_cells] = if along_v { V_FIT_CELLS } else { U_FIT_CELLS };
+        let mut bounds = [[0_f64; 2]; N];
+        for v in cells(-h, h, v_cells) {
+            let exit = self.exit::<N>(piece, v)?;
+            for u in cells(0., 1., u_cells) {
+                let (q, angle) = if along_v {
+                    self.polar_patch(piece, S::lift(u), S::variable(v), exit)
+                } else {
+                    self.polar_patch(piece, S::variable(u), S::lift(v), S::lift(exit.0[0]))
+                };
+                let point = turn(q, angle - S::constant(base));
+                for (k, bound) in bounds.iter_mut().enumerate() {
+                    for c in 0..2 {
+                        bound[c] = bound[c].max(point[c].0[k].magnitude());
+                    }
+                }
+            }
+        }
+        Some(bounds)
+    }
+
+    /// Taylor coefficient bounds of every patch for interpolation remainders.
+    pub(crate) fn remainders(&self) -> Option<&[Remainder; 5]> {
+        self.remainders
+            .get(|| self.compute_remainders().map(Box::new))
+            .as_deref()
+    }
+
+    fn compute_remainders(&self) -> Option<[Remainder; 5]> {
+        let mut result = Vec::with_capacity(5);
+        for piece in PIECES {
+            result.push(Remainder {
+                u: self.directional(piece, false)?,
+                v: self.directional(piece, true)?,
+                half_width: self.half_width(),
+            });
+        }
+        result.try_into().ok()
+    }
+}
+
+/// Upper bound of the Lebesgue constant of degree-`n` interpolation at the
+/// Chebyshev points `cos(jπ/n)` (Trefethen, Approximation Theory and
+/// Approximation Practice, Theorem 15.2).
+pub(crate) fn lebesgue(n: usize) -> f64 {
+    2. / std::f64::consts::PI * ((n + 1) as f64).ln() + 1.
+}
+
+/// Chebyshev points of the second kind on `[0, 1]`, endpoints included.
+pub(crate) fn lobatto(n: usize) -> Vec<f64> {
+    (0..=n)
+        .map(|j| {
+            // Reflect so both halves round identically and the ends are exact.
+            let k = j.min(n - j);
+            let x = (1. - (std::f64::consts::PI * k as f64 / n as f64).cos()) / 2.;
+            if k == j { x } else { 1. - x }
+        })
+        .collect()
+}
+
+/// Remainder of degree-`n` interpolation at `lobatto(n)` mapped to an
+/// interval of half-length `ℓ`, given `max |F_(n+1)|` in the same variable.
+/// The node polynomial on `[-1, 1]` is `(x² - 1) U_(n-1)(x) / 2^(n-1)`,
+/// whose magnitude is `|sin θ sin nθ| / 2^(n-1) ≤ 2^(1-n)` with `x = cos θ`,
+/// so the Cauchy remainder is at most `ℓ^(n+1) 2^(1-n) max |F_(n+1)|`.
+fn interpolation_error(n: usize, half_length: f64, coefficient: [f64; 2]) -> f64 {
+    half_length.powi(n as i32 + 1) * 2_f64.powi(1 - n as i32) * coefficient[0].hypot(coefficient[1])
+}
+
+/// Proven Taylor coefficient bounds of one generating patch, module units.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Remainder {
+    u: [[f64; 2]; U_ORDERS],
+    v: [[f64; 2]; V_DEGREE + 2],
+    half_width: f64,
+}
+
+impl Remainder {
+    /// Tensor interpolation error in module units for one span of degree
+    /// `nu` along the profile and `spans` spans of degree `V_DEGREE` across
+    /// the width. With `I = I_u I_v`, `f - I f = (f - I_u f) + I_u (f - I_v f)`
+    /// and `|I_u g| ≤ Λ_u max |g|`.
+    pub(crate) fn bound(&self, nu: usize, spans: usize) -> f64 {
+        let across = interpolation_error(
+            V_DEGREE,
+            self.half_width / spans as f64,
+            self.v[V_DEGREE + 1],
+        );
+        interpolation_error(nu, 0.5, self.u[nu + 1]) + lebesgue(nu) * across
+    }
 }
 
 #[cfg(test)]
@@ -253,6 +363,14 @@ mod tests {
                 }
             }
         }
+        for r in wheel.remainders().unwrap() {
+            // More degree and more spans only tighten the remainder.
+            assert!(r.bound(16, 2) < r.bound(12, 1) && r.bound(24, 8) < r.bound(16, 2));
+            assert!(r.bound(24, 8) < 1e-9, "{}", r.bound(24, 8));
+        }
+        assert!(lebesgue(16) < 3.);
+        let nodes = lobatto(2);
+        assert!(nodes[0] == 0. && (nodes[1] - 0.5).abs() < 1e-15 && nodes[2] == 1.);
         assert!(
             motion >= sampled[0] && motion < 1.5 * sampled[0],
             "{motion} {sampled:?}"

@@ -168,14 +168,34 @@ fn rust_worms_and_wheels_match_native_solids() {
         assert!(!rust.manufacturing_mesh(options).unwrap().indices.is_empty());
         assert!(rust.display_edges(0.01).unwrap().len() >= 23 * teeth as usize);
         let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("wheel.step");
+        let placed = rust.transformed(transform).unwrap();
+        let started = std::time::Instant::now();
+        placed.write_step(&path).unwrap();
+        let written = started.elapsed();
+        let text = std::fs::read_to_string(&path).unwrap();
+        let decoded = placed.verify_worm_step(&text).unwrap().unwrap();
+        let volume = rust.volume_mm3().unwrap();
         assert!(
-            rust.write_step(&directory.path().join("wheel.step"))
-                .is_err()
+            (decoded - volume).abs() / volume < 1e-8,
+            "{decoded} {volume}"
         );
-        assert!(rust.verify_worm_step("").is_none());
+        // The proof belongs to this placement and wheel.
+        assert!(rust.verify_worm_step(&text).unwrap().is_err());
+        assert!(rust.verify_worm_step("").unwrap().is_err());
         if !multicad_kernel::OCCT_LINKED {
             continue;
         }
+        let imported = multicad_kernel::Shape::read_step(&path).unwrap();
+        assert!(imported.valid().unwrap());
+        assert_eq!(Solid::step_solids(&path).unwrap().len(), 1);
+        let read = imported.volume().unwrap();
+        assert!((read - volume).abs() / volume < 1e-6, "{read} {volume}");
+        println!(
+            "{{\"case\":\"wheel m{m} z{teeth} b{bore} STEP\",\"bytes\":{},\"write_ms\":{},\"rust_decoded_volume\":{decoded},\"occt_step_volume\":{read},\"rust_volume\":{volume}}}",
+            text.len(),
+            written.as_secs_f64() * 1e3
+        );
         let native = Solid::generated_za_worm_wheel_named(spec, feature, policy).unwrap();
         // The native wheel interpolates each generating patch within its
         // certified polynomial bound; the Rust wheel is exact.
