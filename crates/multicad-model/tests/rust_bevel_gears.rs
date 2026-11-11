@@ -93,10 +93,7 @@ fn rust_bevel_pairs_match_native_members_and_certify_saved_edited_motion() {
             .validate()
             .unwrap();
     }
-    assert!(
-        roles(rust.solid(a).unwrap(), a)
-            .contains("bevel/tooth/0/spherical_involute.left")
-    );
+    assert!(roles(rust.solid(a).unwrap(), a).contains("bevel/tooth/0/spherical_involute.left"));
 
     // A half-pitch error puts teeth into teeth; a large offset loses mesh.
     let half = PI / 32.;
