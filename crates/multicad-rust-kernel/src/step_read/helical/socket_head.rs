@@ -48,7 +48,7 @@ pub(super) fn verify(
         shell,
         faces[1],
         [lower_rim, upper_rim],
-        head.radius_mm,
+        (head.radius_mm, true),
         [bottom.origin, axis, reference],
     )?;
 

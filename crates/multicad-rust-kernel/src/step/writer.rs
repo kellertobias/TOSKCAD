@@ -179,6 +179,28 @@ impl Writer {
         })
     }
 
+    /// Append a ZA worm placed by its local frame (origin, u, v).
+    pub fn append_za_worm(
+        &mut self,
+        worm: &crate::worm_gear::Worm,
+        origin: Point,
+        u: Point,
+        v: Point,
+        tolerance_mm: f64,
+    ) -> Result<(), StepError> {
+        let [origin, u, v] = super::worm_gear::thread_frame(worm, [origin, u, v]);
+        let placement = Placement::new(origin, u, v)?;
+        self.append(|file| {
+            helical::encode(
+                file,
+                worm.thread(),
+                helical::Closure::hollow(worm.bore_radius_mm()),
+                placement,
+                tolerance_mm,
+            )
+        })
+    }
+
     pub fn append_helical_screw(
         &mut self,
         screw: &crate::headed_screw::Screw,

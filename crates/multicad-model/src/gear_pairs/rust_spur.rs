@@ -54,6 +54,13 @@ pub(crate) fn validate(
         let resolved = model::resolve_gear_pair_parameters(document, evaluated, &source.parameters)
             .map_err(|e| error(Some(pair), e))?;
         let family = resolved.gears[0].family();
+        if family == GearFamily::Worm {
+            reports.insert(
+                pair,
+                super::rust_worm::validate(&inputs, pair, &source, &resolved)?,
+            );
+            continue;
+        }
         if family == GearFamily::Bevel {
             reports.insert(
                 pair,

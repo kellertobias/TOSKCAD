@@ -249,6 +249,7 @@ fn read_rust_step(
         .verify_helical_step(source)
         .or_else(|| solid.verify_herringbone_step(source))
         .or_else(|| solid.verify_bevel_step(source))
+        .or_else(|| solid.verify_worm_step(source))
     {
         let volume = proof.map_err(readback_error)?;
         // The verified boundary gives the source bounds within its uniform

@@ -80,6 +80,24 @@ pub(crate) fn open_blind_cavity(
     ))
 }
 
+/// Outward external wall with both cap rims as counterclockwise vertex rings,
+/// for callers that close the planar ends themselves.
+pub(crate) fn open_wall(
+    thread: &Thread,
+    options: Tessellation,
+) -> Result<(DisplayMesh, [Vec<u32>; 2]), MeshError> {
+    let mut builder = envelope_builder(thread, None, options)?;
+    builder.build_wall()?;
+    let mut rings = std::mem::take(&mut builder.caps);
+    for ring in &mut rings {
+        Builder::sort_ring(ring)?;
+    }
+    Ok((
+        builder.mesh,
+        rings.map(|ring| ring.into_iter().map(|(_, vertex)| vertex).collect()),
+    ))
+}
+
 fn envelope_builder<'a>(
     thread: &'a Thread,
     exterior: Option<BoreExterior<'_>>,
