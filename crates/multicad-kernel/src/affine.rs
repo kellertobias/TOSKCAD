@@ -165,6 +165,24 @@ impl Solid {
             if transform == AffineTransform::default() {
                 return self.share();
             }
+            if let Some(compound) = self.rust_compound()
+                && self.solid_count()? > 1
+            {
+                // Keep member grouping and ancestry; publish the compound only
+                // after every leaf has accepted the exact transform.
+                let members = compound
+                    .members()
+                    .map(|member| member.affine_transformed_named(transform, feature, policy))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let mut result = Self::make_rust_compound(
+                    &members.iter().collect::<Vec<_>>(),
+                    feature,
+                    policy,
+                    None,
+                )?;
+                result.rust_origins = self.rust_origins.clone();
+                return Ok(result);
+            }
             return self.rust_scale_planar(transform, feature, policy);
         }
         let matrix: Vec<_> = transform.matrix.into_iter().flatten().collect();
