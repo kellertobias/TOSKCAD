@@ -1156,13 +1156,22 @@ mod tests {
 
     #[test]
     fn rust_drawing_worker_sections_a_continuous_herringbone_gear() {
+        twisted_gear_drawing_worker(model::GearFamily::Herringbone);
+    }
+
+    #[test]
+    fn rust_drawing_worker_sections_a_helical_gear() {
+        twisted_gear_drawing_worker(model::GearFamily::Helical);
+    }
+
+    fn twisted_gear_drawing_worker(family: model::GearFamily) {
         use drawings::{VectorCurve, VectorRole, ViewEvaluation};
         let mut session = Session::new(Document::new("Herringbone drawing").unwrap()).unwrap();
         let actor = Actor::local(Channel::Ui);
         let gear = model::GearRequest::new(
             "Chevron",
             model::GearParameters {
-                family: model::GearFamily::Herringbone,
+                family,
                 hand: model::GearHand::Right,
                 helix_angle: model::angle(25.),
                 face_width: length(8.),
