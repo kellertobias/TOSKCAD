@@ -1,4 +1,4 @@
-//! Bounded spline surfaces for a straight single-start helical thread.
+//! Bounded spline surfaces for every start of a straight helical thread.
 use super::*;
 use crate::{
     headed_screw::{Screw, ScrewHead, hex_vertices},
@@ -109,12 +109,12 @@ impl Closure {
         self.inside() || (!top && self.is_screw() && self.tangent_shank().is_none())
     }
 
-    pub(crate) fn face_count(self) -> usize {
+    pub(crate) fn face_count(self, bands: usize) -> usize {
         match self {
-            Self::Shaft => 6,
-            Self::Bore(_) | Self::Hollow(_) => 7,
-            Self::HexHead { .. } => 13,
-            Self::SocketHead(head) => 15 + 2 * usize::from(head.shank_length_mm > 0.),
+            Self::Shaft => bands + 2,
+            Self::Bore(_) | Self::Hollow(_) => bands + 3,
+            Self::HexHead { .. } => bands + 9,
+            Self::SocketHead(head) => bands + 11 + 2 * usize::from(head.shank_length_mm > 0.),
         }
     }
 
@@ -220,8 +220,11 @@ pub(super) fn encode(
         .tangent_shank()
         .map(|length| tangent::encode(file, &placement, thread, length, [rings[0][0], rings[0][3]]))
         .transpose()?;
-    let mut faces = Vec::with_capacity(closure.face_count());
-    let mut cap_edges = [Vec::with_capacity(4), Vec::with_capacity(4)];
+    let mut faces = Vec::with_capacity(closure.face_count(bands.len()));
+    let mut cap_edges = [
+        Vec::with_capacity(bands.len()),
+        Vec::with_capacity(bands.len()),
+    ];
     let forward = spec.left_hand != closure.inside();
     for (i, band) in bands.iter().enumerate() {
         let next = (i + 1) % bands.len();
@@ -432,7 +435,7 @@ pub(crate) fn prepare(
     tolerance_mm: f64,
 ) -> Result<ThreadSplines, StepError> {
     let spec = thread.spec();
-    if spec.starts != 1 {
+    if spec.starts != 1 && !matches!(closure, Closure::Shaft | Closure::Bore(_)) {
         return Err(StepError::Unsupported);
     }
     if !tolerance_mm.is_finite()
@@ -487,37 +490,48 @@ pub(crate) fn prepare(
         |_| [upper, lower].map(|phase| thread.radius_at_phase(phase)),
     );
     let radii = [major, root_radii[0], root_radii[1], major, major];
-    let mut bands = phase
-        .windows(2)
-        .zip(radii.windows(2))
-        .enumerate()
-        .map(|(band, (p, r))| {
-            if band == 1
-                && let Some(circle) = circle
+    let mut bands = Vec::with_capacity(4 * spec.starts as usize);
+    for start_index in 0..spec.starts {
+        let shift = f64::from(start_index) * spec.pitch_mm;
+        let shifted = phase.map(|phase| phase + shift);
+        for (band, (p, r)) in shifted.windows(2).zip(radii.windows(2)).enumerate() {
+            let spline = if band == 1
+                && let Some(mut circle) = circle
             {
-                return Spline::rounded_root(
+                circle.phase += shift;
+                Spline::rounded_root(
                     circle,
                     [p[0], p[1]],
                     [r[0], r[1]],
                     rate.abs(),
                     -hand,
                     tolerance / 8.,
-                );
-            }
-            Spline::new(
-                p[0] / rate.abs(),
-                p[1] / rate.abs(),
-                [r[0], r[1]],
-                -hand,
-                tolerance / 8.,
-            )
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    // Both sides of the wrap use the same physical control point. The
-    // difference between these periodic endpoints is only roundoff.
+                )?
+            } else {
+                Spline::new(
+                    p[0] / rate.abs(),
+                    p[1] / rate.abs(),
+                    [r[0], r[1]],
+                    -hand,
+                    tolerance / 8.,
+                )?
+            };
+            bands.push(spline);
+        }
+    }
+    // Every start is part of one continuous transverse material boundary.
+    // Reuse actual endpoint poles at all joins, not merely the global wrap,
+    // so independent evaluation rounding cannot create unmatched seam wires.
+    for i in 1..bands.len() {
+        bands[i].poles[0] = *bands[i - 1].poles.last().expect("nonempty spline");
+    }
     let seam = bands[0].poles[0];
-    let last_band = bands.last_mut().expect("four analytic bands");
-    *last_band.poles.last_mut().expect("nonempty spline") = seam;
+    *bands
+        .last_mut()
+        .expect("analytic bands")
+        .poles
+        .last_mut()
+        .expect("nonempty spline") = seam;
     if bands.iter().any(|band| !band.advances_angle(-hand)) {
         return Err(StepError::Limit);
     }
@@ -922,10 +936,13 @@ mod tests {
                 assert!(verify(&changed).is_err());
             }
         }
-        assert_eq!(
-            write(&thread(2, false), None, 1e-7),
+        let multiple = thread(2, false);
+        let multiple_step = write(&multiple, None, 1e-7).unwrap();
+        assert!(crate::step_read::read_import_solid(&multiple_step, 1e-7).is_ok());
+        assert!(matches!(
+            prepare(&multiple, Closure::Hollow(1.), origin, 1e-7),
             Err(StepError::Unsupported)
-        );
+        ));
         assert_eq!(
             write(&thread(1, false), Some(3.), 1e-7),
             Err(StepError::InvalidGeometry)
@@ -977,5 +994,45 @@ mod tests {
         })
         .unwrap();
         assert_eq!(write(&wide, None, 1e-7).err(), Some(StepError::Limit));
+    }
+    #[test]
+    fn unresolved_shifted_flank_or_rounded_root_never_collapses_into_a_false_thread() {
+        let tiny = Thread::new(Spec {
+            major_radius_mm: 1.,
+            pitch_mm: 1.,
+            length_mm: 1.,
+            depth_mm: 2e-16,
+            crest_width_mm: 4e-16,
+            lower_flank_deg: 80.,
+            upper_flank_deg: 1.,
+            starts: 2,
+            left_hand: false,
+            root_radius_mm: None,
+        })
+        .unwrap();
+        assert!(matches!(
+            prepare(&tiny, Closure::Shaft, [0.; 3], 1e-7),
+            Err(StepError::Limit)
+        ));
+        // The original root has distinct valid tangencies. Adding the next
+        // start's pitch loses enough phase precision that its lower endpoint
+        // lies beyond the circle chart; exporting must refuse that geometry.
+        let rounded = Thread::new(Spec {
+            major_radius_mm: 1.1538127035505954,
+            pitch_mm: 1.,
+            length_mm: 1.,
+            depth_mm: 0.15381270355059526,
+            crest_width_mm: 0.125,
+            lower_flank_deg: 1.,
+            upper_flank_deg: 80.,
+            starts: 2,
+            left_hand: false,
+            root_radius_mm: Some(8.002582779285636e-16),
+        })
+        .unwrap();
+        assert!(matches!(
+            prepare(&rounded, Closure::Shaft, [0.; 3], 1e-7),
+            Err(StepError::Limit)
+        ));
     }
 }

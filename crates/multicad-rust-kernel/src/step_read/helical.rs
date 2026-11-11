@@ -99,10 +99,11 @@ pub(super) fn verify_member(
     let shank_length = closure.tangent_shank();
     let forward = thread.spec().left_hand != closure.inside();
     let faces = shell.member_faces(id)?;
-    require(faces.len() == closure.face_count())?;
-    let mut rings = [[0; 4]; 2];
-    let mut rails = [[0; 2]; 4];
-    let mut corners = [[[0; 2]; 2]; 4];
+    let count = splines.bands.len();
+    require(faces.len() == closure.face_count(count))?;
+    let mut rings: [Vec<u32>; 2] = std::array::from_fn(|_| vec![0; count]);
+    let mut rails = vec![[0; 2]; count];
+    let mut corners = vec![[[0; 2]; 2]; count];
     let mut flux = 0.;
     for (i, radial) in splines.bands.iter().enumerate() {
         let (surface, outward, bounds) = face(shell, faces[i])?;
@@ -205,13 +206,13 @@ pub(super) fn verify_member(
             require(endpoints == [corners[i][0][cap], corners[i][1][cap]])?;
         }
     }
-    require((0..4).all(|i| rails[i][1] == rails[(i + 1) % 4][0]))?;
+    require((0..count).all(|i| rails[i][1] == rails[(i + 1) % count][0]))?;
 
     let mut cylinder_rims = [0; 2];
     let mut caps = [[0.; 3]; 2];
     let mut shoulder = None;
     let mut tangent = None;
-    for (end, (face_id, z)) in faces[4..6].iter().zip([0., height]).enumerate() {
+    for (end, (face_id, z)) in faces[count..count + 2].iter().zip([0., height]).enumerate() {
         let top = end == 1;
         let (surface, outward, bounds) = face(shell, *face_id)?;
         let hole = closure.cap_hole(top);
@@ -225,7 +226,10 @@ pub(super) fn verify_member(
         caps[end] = proof
             .axis(shell, axis, world([0.; 2], z), cap_axis, u)?
             .origin;
-        let mut expected = rings[end].map(|edge| (edge, true));
+        let mut expected = rings[end]
+            .iter()
+            .map(|&edge| (edge, true))
+            .collect::<Vec<_>>();
         let actual = orient(
             &ring(shell, bounds[usize::from(hole || inner)], !hole)?,
             top == forward,
@@ -269,7 +273,7 @@ pub(super) fn verify_member(
             let (radius, axis) = check_cylinder_with_proof(
                 proof,
                 shell,
-                faces[6],
+                faces[count + 2],
                 cylinder_rims,
                 (radius, outer),
                 [origin, normal, u],
@@ -631,6 +635,10 @@ mod tests {
         .unwrap();
         assert_eq!(
             verify_helical_thread(&step, &many, radius, origin, u, v, 1e-7),
+            Err(ReadError::Invalid)
+        );
+        assert_eq!(
+            super::verify(&step, &many, Closure::Hollow(1.), [origin, u, v], 1e-7),
             Err(ReadError::Unsupported)
         );
         assert_eq!(

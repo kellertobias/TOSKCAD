@@ -1,4 +1,4 @@
-//! Independently infer an authored one-start thread from its complete spline
+//! Independently infer an authored thread from its complete spline
 //! shell, then prove every Bernstein net and shared physical boundary.
 use super::*;
 use crate::{
@@ -13,7 +13,7 @@ pub(super) fn read_member(
     solid: u32,
     faces: &[u32],
 ) -> Result<Option<(Readback, ImportSolid)>> {
-    if !matches!(faces.len(), 6 | 7) {
+    if faces.len() < 6 {
         return Ok(None);
     }
     let first = face(shell, faces[0])?;
@@ -24,6 +24,21 @@ pub(super) fn read_member(
     {
         return Ok(None);
     }
+    let mut count = 0usize;
+    for &id in faces {
+        let (surface, _, _) = face(shell, id)?;
+        if shell.simple(surface)?.name != "B_SPLINE_SURFACE_WITH_KNOTS" {
+            break;
+        }
+        count += 1;
+    }
+    if !count.is_multiple_of(4) || !matches!(faces.len() - count, 2 | 3) {
+        return Ok(None);
+    }
+    if count > 32 {
+        return Err(ReadError::Limit);
+    }
+    let starts = (count / 4) as u32;
     let mut grids = Vec::with_capacity(4);
     let mut radial = Vec::with_capacity(4);
     let mut axial = None;
@@ -66,8 +81,8 @@ pub(super) fn read_member(
         };
         shell.placement(reference(axis)?)
     };
-    let bottom = plane(faces[4])?;
-    let top = plane(faces[5])?;
+    let bottom = plane(faces[count])?;
+    let top = plane(faces[count + 1])?;
     let origin = bottom.origin;
     let u = bottom.u;
     let v = bottom.v.map(|n| -n);
@@ -83,7 +98,7 @@ pub(super) fn read_member(
     let [start, spin] = axial.ok_or(ReadError::Invalid)?;
     require(start == 0. && spin > 0.)?;
     let rate = height / spin;
-    let pitch = TAU * rate;
+    let pitch = TAU * rate / f64::from(starts);
     let radius = |band: usize, last: bool| -> Result<f64> {
         let rows = grids[band];
         let row = &rows[if last { rows.len() - 1 } else { 0 }];
@@ -111,8 +126,8 @@ pub(super) fn read_member(
     } else {
         (major - upper_radius, None)
     };
-    let stock = if faces.len() == 7 {
-        let (surface, outward, _) = face(shell, faces[6])?;
+    let stock = if faces.len() == count + 3 {
+        let (surface, outward, _) = face(shell, faces[count + 2])?;
         require(outward)?;
         let [Value::String(_), _, Value::Number(radius)] =
             shell.args(surface, "CYLINDRICAL_SURFACE")?
@@ -131,7 +146,7 @@ pub(super) fn read_member(
         crest_width_mm: 2. * phase_start,
         lower_flank_deg: lower_run.atan().to_degrees(),
         upper_flank_deg: upper_run.atan().to_degrees(),
-        starts: 1,
+        starts,
         left_hand: first.1 != stock.is_some(),
         root_radius_mm: root_radius,
     })
@@ -228,6 +243,7 @@ pub fn helical_import_matches(
         return false;
     };
     if spec.length_mm != imported.height_mm
+        || spec.starts != thread.spec().starts
         || spec.left_hand != thread.spec().left_hand
         || spec.root_radius_mm.is_some() != thread.spec().root_radius_mm.is_some()
         || stock.is_some() != stock_radius_mm.is_some()
@@ -412,14 +428,14 @@ mod rejection_tests {
             ),
         }
     }
-    fn ids(text: &str, name: &str) -> Vec<u32> {
+    pub(super) fn ids(text: &str, name: &str) -> Vec<u32> {
         parse_entities(text, 1e-7)
             .unwrap()
             .iter()
             .filter_map(|(&id, parts)| matches!(parts.as_slice(),[e] if e.name==name).then_some(id))
             .collect()
     }
-    fn edit(text: &str, id: u32, change: impl FnOnce(&mut Entity<'_>)) -> String {
+    pub(super) fn edit(text: &str, id: u32, change: impl FnOnce(&mut Entity<'_>)) -> String {
         let mut entities = parse_entities(text, 1e-7).unwrap();
         let e = &mut entities.get_mut(&id).unwrap()[0];
         change(e);
@@ -437,7 +453,7 @@ mod rejection_tests {
             1,
         )
     }
-    fn bad(text: &str) {
+    pub(super) fn bad(text: &str) {
         assert!(read_import_solid(text, 1e-7).is_err());
         assert!(read_analytic_solid(text, 1e-7).is_err());
     }
@@ -461,7 +477,7 @@ mod rejection_tests {
             .map(|n| n.parse().unwrap())
             .collect()
     }
-    fn rows(value: &Value<'_>) -> Vec<Vec<u32>> {
+    pub(super) fn rows(value: &Value<'_>) -> Vec<Vec<u32>> {
         render(value)
             .strip_prefix("((")
             .unwrap()
@@ -670,6 +686,11 @@ mod rejection_tests {
             spec.starts = 2;
         }
         assert!(!helical_import_matches(&wrong, &source, None, frame, 1e-7));
+        let mut distant = original.clone();
+        distant.origin_mm = [1e11, 0., 0.];
+        assert!(!helical_import_matches(
+            &distant, &source, None, frame, 1e-7
+        ));
         let mut wrong = original.clone();
         wrong.height_mm = 10.;
         if let ImportProfile::HelicalThread { spec, .. } = &mut wrong.profile {
@@ -789,5 +810,188 @@ mod more_tests {
             [[0.; 3], [1., 0., 0.], [0., 1., 0.]],
             1e-7
         ));
+    }
+}
+#[cfg(test)]
+mod multistart_tests {
+    use super::*;
+    #[test]
+    fn every_start_is_a_proved_shared_closed_shell_in_both_hands_and_poses() {
+        for starts in 2..=8 {
+            for left_hand in [false, true] {
+                for stock in [None, Some(5.)] {
+                    for rounded in [false, true] {
+                        let f = 1. / (4. * 3_f64.sqrt());
+                        let crest = 0.13;
+                        let thread = Thread::new(Spec {
+                            major_radius_mm: 3.,
+                            pitch_mm: 1.,
+                            length_mm: 3.7,
+                            depth_mm: if rounded {
+                                (1. - crest) * 3_f64.sqrt() / 2. - f
+                            } else {
+                                0.5
+                            },
+                            crest_width_mm: crest,
+                            lower_flank_deg: 30.,
+                            upper_flank_deg: 30.,
+                            starts,
+                            left_hand,
+                            root_radius_mm: rounded.then_some(f),
+                        })
+                        .unwrap();
+                        for (origin, u, v) in [
+                            ([0.; 3], [1., 0., 0.], [0., 1., 0.]),
+                            ([17., -8., 13.], [0.8, 0.6, 0.], [-0.36, 0.48, 0.8]),
+                        ] {
+                            let text = crate::step::write_helical_thread(
+                                &thread, stock, origin, u, v, 1e-7,
+                            )
+                            .unwrap();
+                            let volume =
+                                verify_helical_thread(&text, &thread, stock, origin, u, v, 1e-7)
+                                    .unwrap();
+                            let expected = stock.map_or(thread.volume_mm3(), |r| {
+                                std::f64::consts::PI * r * r * 3.7 - thread.volume_mm3()
+                            });
+                            assert!((volume - expected).abs() < 1e-5);
+                            let (proof, imported) = read_import_solid(&text, 1e-7).unwrap();
+                            assert_eq!(
+                                proof.face_count,
+                                4 * starts as usize + 2 + usize::from(stock.is_some())
+                            );
+                            assert!(
+                                matches!(imported.profile,ImportProfile::HelicalThread{spec,..} if spec.starts==starts&&spec.left_hand==left_hand)
+                            );
+                            assert!(helical_import_matches(
+                                &imported,
+                                &thread,
+                                stock,
+                                [origin, u, v],
+                                1e-7
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+#[cfg(test)]
+mod multistart_failures {
+    use super::rejection_tests::{bad, edit, ids, rows as reference_list_rows};
+    use super::*;
+    fn thread(starts: u32, rounded: bool, major: f64, height: f64) -> Thread {
+        let f = 1. / (4. * 3_f64.sqrt());
+        let crest = 0.13;
+        Thread::new(Spec {
+            major_radius_mm: major,
+            pitch_mm: 1.,
+            length_mm: height,
+            depth_mm: if rounded {
+                (1. - crest) * 3_f64.sqrt() / 2. - f
+            } else {
+                0.5
+            },
+            crest_width_mm: crest,
+            lower_flank_deg: 30.,
+            upper_flank_deg: 30.,
+            starts,
+            left_hand: false,
+            root_radius_mm: rounded.then_some(f),
+        })
+        .unwrap()
+    }
+    #[test]
+    fn every_start_and_its_shared_cap_wires_must_be_present_and_verified() {
+        let source = thread(2, false, 3., 3.7);
+        let text = crate::step::write_helical_thread(
+            &source,
+            None,
+            [0.; 3],
+            [1., 0., 0.],
+            [0., 1., 0.],
+            1e-7,
+        )
+        .unwrap();
+        let parsed = parse_entities(&text, 1e-7).unwrap();
+        let surfaces = ids(&text, "B_SPLINE_SURFACE_WITH_KNOTS");
+        // Repoint a complete second-start surface at the wrong world controls.
+        let first_grid = reference_list_rows(&parsed[&surfaces[0]][0].args[3]);
+        bad(&edit(&text, surfaces[4], |e| {
+            e.args[3] = Value::List(
+                first_grid
+                    .into_iter()
+                    .map(|row| Value::List(row.into_iter().map(Value::Reference).collect()))
+                    .collect(),
+            )
+        }));
+        // A missing periodic strip cannot be silently interpreted as fewer starts.
+        let shell = ids(&text, "CLOSED_SHELL")[0];
+        let faces = refs(&parsed[&shell][0].args[1]).unwrap();
+        bad(&edit(&text, shell, |e| {
+            e.args[1] = Value::List(faces[1..].iter().copied().map(Value::Reference).collect())
+        }));
+        // Declaring nine complete start blocks exceeds current canonical admission.
+        let largest = thread(8, false, 3., 3.7);
+        let eight = crate::step::write_helical_thread(
+            &largest,
+            None,
+            [0.; 3],
+            [1., 0., 0.],
+            [0., 1., 0.],
+            1e-7,
+        )
+        .unwrap();
+        let parsed = parse_entities(&eight, 1e-7).unwrap();
+        let shell = ids(&eight, "CLOSED_SHELL")[0];
+        let faces = refs(&parsed[&shell][0].args[1]).unwrap();
+        let oversized = faces[..32]
+            .iter()
+            .chain(&faces[..4])
+            .chain(&faces[32..])
+            .copied()
+            .map(Value::Reference)
+            .collect();
+        let oversized = edit(&eight, shell, |e| e.args[1] = Value::List(oversized));
+        assert_eq!(
+            read_import_solid(&oversized, 1e-7).unwrap_err(),
+            ReadError::Limit
+        );
+        assert!(read_import_solid(&text, 1e-7).is_ok());
+    }
+    #[test]
+    fn total_all_start_pole_budget_refuses_atomically_and_writer_can_recover() {
+        let normal = thread(2, false, 3., 3.7);
+        let large = thread(8, true, 1e4, 112.);
+        let mut writer = crate::step::Writer::new();
+        writer
+            .append_helical_thread(&normal, None, [0.; 3], [1., 0., 0.], [0., 1., 0.], 1e-7)
+            .unwrap();
+        assert_eq!(
+            writer.append_helical_thread(
+                &large,
+                None,
+                [20., 0., 0.],
+                [1., 0., 0.],
+                [0., 1., 0.],
+                1e-7
+            ),
+            Err(crate::step::StepError::Limit)
+        );
+        writer
+            .append_helical_thread(
+                &normal,
+                None,
+                [20., 0., 0.],
+                [1., 0., 0.],
+                [0., 1., 0.],
+                1e-7,
+            )
+            .unwrap();
+        let text = writer.finish().unwrap();
+        let imported = read_import_compound(&text, 1e-7).unwrap();
+        assert_eq!(imported.len(), 2);
+        assert_eq!(text.matches("MANIFOLD_SOLID_BREP").count(), 2);
     }
 }

@@ -135,14 +135,28 @@ fn manufacturing_mesh_keeps_all_real_face_ordinals_and_closed_indexed_shells() {
         GeometryPolicy::default(),
     )
     .unwrap();
-    assert!(!compound.supports_step_export());
+    assert!(compound.supports_step_export());
     let directory = tempfile::tempdir().unwrap();
-    let step = directory.path().join("existing.step");
+    let step = directory.path().join("multiple-starts.step");
+    compound.write_step(&step).unwrap();
+    let imported = Solid::import_rust_step(
+        &std::fs::read_to_string(&step).unwrap(),
+        EntityId::new(),
+        GeometryPolicy::default(),
+    )
+    .unwrap();
+    assert_eq!(imported.solid_count().unwrap(), 2);
+    assert!((imported.volume_mm3().unwrap() - compound.volume_mm3().unwrap()).abs() < 1e-5);
+    // A different, genuinely unprovable world placement still preserves an
+    // existing export when STEP precision admission refuses it.
+    let distant = source
+        .transformed(RigidTransform {
+            translation_mm: [9e6, 0., 0.],
+            ..Default::default()
+        })
+        .unwrap();
     std::fs::write(&step, b"previous export").unwrap();
-    assert_eq!(
-        compound.write_step(&step).unwrap_err().kind,
-        GeometryErrorKind::Unsupported
-    );
+    assert!(distant.write_step(&step).is_err());
     assert_eq!(std::fs::read(&step).unwrap(), b"previous export");
     let options = MeshOptions {
         linear_deflection_mm: 0.05,

@@ -28,7 +28,7 @@ use pocketed::{PocketRim, canonical_pockets};
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum ImportProfile {
-    /// Independently inferred and completely verified one-start analytic thread.
+    /// Independently inferred and completely verified analytic thread with every start retained.
     HelicalThread {
         spec: crate::helical_thread::Spec,
         stock_radius_mm: Option<f64>,

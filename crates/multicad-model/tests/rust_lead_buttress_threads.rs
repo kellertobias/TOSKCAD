@@ -1,6 +1,6 @@
 use multicad_core::{
     commands::{Actor, Channel, Session},
-    document::Document,
+    document::{Document, EntityId},
     model::{
         self, BodyInput, ButtressLoadFlankSide, PrimitiveParameters, PrimitiveRequest,
         ThreadFamily, ThreadHand, ThreadMode, ThreadParameters, ThreadRequest, length,
@@ -210,12 +210,6 @@ fn sourced_lead_and_asymmetric_root_pairs_keep_geometry_phase_history_and_step()
             }
             let folder = tempfile::tempdir().unwrap();
             let path = folder.path().join("thread.step");
-            if r.starts != 1 {
-                let error = solid.write_step(&path).unwrap_err();
-                assert_eq!(error.kind, multicad_kernel::GeometryErrorKind::Unsupported);
-                assert!(!path.exists());
-                continue;
-            }
             solid
                 .write_step(&path)
                 .unwrap_or_else(|e| panic!("STEP case{index} internal{internal}: {e}"));
@@ -224,6 +218,14 @@ fn sourced_lead_and_asymmetric_root_pairs_keep_geometry_phase_history_and_step()
                 .unwrap()
                 .unwrap();
             assert!((verified - solid.volume_mm3().unwrap()).abs() < 1e-3);
+            let imported = multicad_kernel::Solid::import_rust_step(
+                &std::fs::read_to_string(&path).unwrap(),
+                EntityId::new(),
+                Default::default(),
+            )
+            .unwrap();
+            assert!((imported.volume_mm3().unwrap() - solid.volume_mm3().unwrap()).abs() < 1e-3);
+
             #[cfg(feature = "occt")]
             {
                 match multicad_kernel::Solid::read_step(&path, Default::default()) {

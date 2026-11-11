@@ -2490,3 +2490,89 @@ fn rust_stdio_edits_and_exports_a_saved_cylinder_fillet_transactionally() {
     let mut reopened = Client::start(&arguments);
     close(reopened.part_volume(), expected(3.));
 }
+
+#[test]
+fn rust_stdio_saved_multistart_lead_screw_exports_keep_starts_hands_and_history() {
+    for (family, diameter, pitch, starts, hand) in [
+        ("trapezoidal", length(10.), 2., 2, "left"),
+        (
+            "acme",
+            json!({"value":0.375,"unit":"in"}),
+            25.4 / 12.,
+            3,
+            "right",
+        ),
+    ] {
+        let directory = tempfile::tempdir().unwrap();
+        let project = directory.path().join("multistart.tcd");
+        let arguments = [
+            "--rust-model",
+            "--project",
+            project.to_str().unwrap(),
+            "--export-dir",
+            directory.path().to_str().unwrap(),
+        ];
+        let mut client = Client::start(&arguments);
+        let shaft=client.ok("set_thread",json!({"expected_revision":0,"name":"Sourced multiple-start shaft","family":family,"major_diameter":diameter,"pitch":length(pitch),"length":length(3.37*pitch),"starts":starts,"hand":hand}));
+        let part = shaft["part"].clone();
+        let feature = shaft["thread"].clone();
+        client.ok("save_project", json!({"expected_revision":1}));
+        drop(client);
+        let mut client = Client::start(&arguments);
+        let inspected = client.ok("inspect_thread", json!({"thread":feature}));
+        assert_eq!(inspected["resolved"]["starts"], starts);
+        assert_eq!(inspected["source"]["parameters"]["family"], family);
+        let changed = if starts == 2 { 3 } else { 2 };
+        client.ok(
+            "set_thread",
+            json!({"expected_revision":0,"thread":feature,"starts":changed}),
+        );
+        assert_eq!(
+            client.ok("inspect_thread", json!({"thread":feature}))["resolved"]["starts"],
+            changed
+        );
+        client.ok("undo", json!({"expected_revision":1}));
+        assert_eq!(
+            client.ok("inspect_thread", json!({"thread":feature}))["resolved"]["starts"],
+            starts
+        );
+        client.ok("redo", json!({"expected_revision":2}));
+        let revision = client.revision();
+        client.fail(
+            "set_thread",
+            json!({"expected_revision":revision,"thread":feature,"starts":9}),
+        );
+        assert_eq!(client.revision(), revision);
+        let receipt = client.ok(
+            "export_step",
+            json!({"part":part,"file_name":"multiple.step"}),
+        );
+        close(
+            receipt["model_volume_mm3"].as_f64().unwrap(),
+            receipt["readback_volume_mm3"].as_f64().unwrap(),
+        );
+        let text = std::fs::read_to_string(directory.path().join("multiple.step")).unwrap();
+        assert_eq!(
+            text.matches("B_SPLINE_SURFACE_WITH_KNOTS").count(),
+            4 * changed
+        );
+        let imported = multicad_kernel::Solid::import_rust_step(
+            &text,
+            multicad_core::document::EntityId::new(),
+            Default::default(),
+        )
+        .unwrap();
+        close(
+            imported.volume_mm3().unwrap(),
+            receipt["model_volume_mm3"].as_f64().unwrap(),
+        );
+        client.ok("save_project", json!({"expected_revision":revision}));
+        drop(client);
+        let mut reopened = Client::start(&arguments);
+        assert_eq!(
+            reopened.ok("inspect_thread", json!({"thread":feature}))["resolved"]["starts"],
+            changed
+        );
+        close(reopened.part_volume(), imported.volume_mm3().unwrap());
+    }
+}
