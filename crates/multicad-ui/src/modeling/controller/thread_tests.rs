@@ -151,11 +151,9 @@ fn actual_native_receiving_failure_never_enables_apply_or_changes_the_document()
     wait(&mut controller, &session);
     assert!(!controller.can_apply(&session, &Default::default()));
     assert!(
-        controller
-            .error()
-            .is_some_and(|e| {
-                e.contains("wall") && (e.contains("minimum") || e.contains("insufficient"))
-            }),
+        controller.error().is_some_and(|e| {
+            e.contains("wall") && (e.contains("minimum") || e.contains("insufficient"))
+        }),
         "{:?}",
         controller.error()
     );
