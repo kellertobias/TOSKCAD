@@ -329,7 +329,7 @@ tools! {
         "Remove a sketch text element. Features that used its regions report that their profile changed. Commits one transaction.",
         sketch_remove_text;
     "set_sketch_dimension" => SetDimension, "Set sketch dimension", false,
-        "Change the value of an existing driving dimension constraint to a literal or parameter formula. The sketch is re-solved; a failed solve changes nothing.",
+        "Change an existing driving dimension to a literal or parameter formula. Re-solves the sketch and validates affected modeling consumers before committing or queueing owner review. Failed solves, invalid downstream geometry, cancellation and stale revisions change nothing; unrelated unfinished parts are excluded.",
         set_sketch_dimension;
     "inspect_sketch" => SketchArgs, "Inspect sketch", true,
         "Solve a sketch and report its state, degrees of freedom, conflicts, solved points, curves, constraints, text elements (with their derived glyph contour curve IDs) and the exact closed regions (with index and area in mm²) usable by extrude.",
@@ -1305,6 +1305,54 @@ fn list_parameters(host: &dyn Host, _: &Request, _: NoArgs) -> ToolResult {
     })
 }
 
+/// Prove consumers of an edited source outside the document owner. Source-only
+/// edits remain possible while unrelated modeling work is unfinished.
+fn preflight_affected_consumers(
+    call: &Request,
+    prepared: &Prepared,
+    source: EntityId,
+    expected_revision: u64,
+) -> Result<(), ToolError> {
+    let document = prepared.document();
+    let roots: Vec<_> = document
+        .affected([source])?
+        .into_iter()
+        .filter(|id| {
+            matches!(
+                document.get(*id).map(|entity| &entity.data),
+                Some(
+                    EntityData::Feature {
+                        suppressed: false,
+                        ..
+                    } | EntityData::Instance { .. }
+                        | EntityData::Plane {
+                            anchor: Some(_),
+                            ..
+                        }
+                )
+            )
+        })
+        .collect();
+    let compiler = Compiler {
+        omit_display: true,
+        ..Default::default()
+    };
+    let interrupt = || call.cancelled();
+    // Source admission is bounded to 128 roots per request. Batches preserve
+    // isolation from unfinished unrelated Parts even for larger source edits.
+    for roots in roots.chunks(128) {
+        call.finish(compiler.compile_sources_with_backend(
+            document,
+            expected_revision.saturating_add(1),
+            roots,
+            call.backend,
+            Some(&interrupt),
+        ))
+        .map_err(|error| error.at_revision(expected_revision))?;
+    }
+    Ok(())
+}
+
 fn set_parameter(host: &dyn Host, call: &Request, args: SetParameter) -> ToolResult {
     let expected_revision = args.expected_revision;
     let unit = args.unit.clone();
@@ -1368,43 +1416,7 @@ fn set_parameter(host: &dyn Host, call: &Request, args: SetParameter) -> ToolRes
     })??;
     // Parameter expressions can change any downstream modeling recipe. Prove
     // only their consumers, outside the document owner and before commit/review.
-    let document = prepared.document();
-    let roots: Vec<_> = document
-        .affected([parameter])?
-        .into_iter()
-        .filter(|id| {
-            matches!(
-                document.get(*id).map(|entity| &entity.data),
-                Some(
-                    EntityData::Feature {
-                        suppressed: false,
-                        ..
-                    } | EntityData::Instance { .. }
-                        | EntityData::Plane {
-                            anchor: Some(_),
-                            ..
-                        }
-                )
-            )
-        })
-        .collect();
-    let compiler = Compiler {
-        omit_display: true,
-        ..Default::default()
-    };
-    let interrupt = || call.cancelled();
-    // Source admission is bounded to 128 roots per request. Batches preserve
-    // isolation from unfinished unrelated Parts even for larger parameter edits.
-    for roots in roots.chunks(128) {
-        call.finish(compiler.compile_sources_with_backend(
-            document,
-            expected_revision.saturating_add(1),
-            roots,
-            call.backend,
-            Some(&interrupt),
-        ))
-        .map_err(|error| error.at_revision(expected_revision))?;
-    }
+    preflight_affected_consumers(call, &prepared, parameter, expected_revision)?;
     let call = call.clone();
     with(host, move |target| {
         revision_guard(target, expected_revision)?;
@@ -1572,17 +1584,18 @@ fn sketch_add_circle(host: &dyn Host, call: &Request, args: AddCircle) -> ToolRe
 }
 
 fn set_sketch_dimension(host: &dyn Host, call: &Request, args: SetDimension) -> ToolResult {
-    let call = call.clone();
+    let expected_revision = args.expected_revision;
+    let prepare_call = call.clone();
     let sketch = id(&args.sketch)?;
     let constraint = id(&args.constraint)?;
     let input = args.value.input()?;
-    with(host, move |target| {
+    let preview = with(host, move |target| {
         revision_guard(target, args.expected_revision)?;
         sketch_entity(target, sketch)?;
         let edit = multicad_solver::prepare_dimension(
             target.session(),
             args.expected_revision,
-            call.actor.clone(),
+            prepare_call.actor.clone(),
             sketch,
             None,
             &DimensionRequest {
@@ -1594,6 +1607,12 @@ fn set_sketch_dimension(host: &dyn Host, call: &Request, args: SetDimension) -> 
         let Some(preview) = edit.preview else {
             return Err(solve_failure(sketch, &edit.evaluation.diagnostics));
         };
+        Ok::<_, ToolError>(preview)
+    })??;
+    preflight_affected_consumers(call, &preview, sketch, expected_revision)?;
+    let call = call.clone();
+    with(host, move |target| {
+        revision_guard(target, expected_revision)?;
         let revision = commit(target, &call, preview)?;
         Ok(json!({ "revision": revision, "sketch": sketch, "constraint": constraint }))
     })?

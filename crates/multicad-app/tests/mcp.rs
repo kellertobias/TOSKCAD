@@ -1979,6 +1979,163 @@ fn rust_stdio_edits_and_exports_a_saved_cylinder_chamfer_transactionally() {
     close(reopened.part_volume(), expected(3.));
 }
 
+#[test]
+fn rust_stdio_dimension_edit_preserves_completed_chamfer_on_failure_and_reopens_valid_edit() {
+    use multicad_core::{
+        commands::{Actor, Channel, Session},
+        constraint_sketch::{ConstraintKind, Curve, CurveKind, source::Source},
+        document::{Document, EntityId},
+        model::{
+            self, BodyInput, EdgeTreatmentParameters, EdgeTreatmentProfile, EdgeTreatmentRequest,
+            Extent, ExtrudeParameters, ExtrudeRequest, Termination,
+        },
+        project_file::{self, ProjectFile},
+        references::{GeometryIntent, TopologyKind},
+        sketch::Datum,
+        sketch_regions,
+    };
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("dimension-chamfer.tcd");
+    let (sketch, edits) = Source::create(Datum::Xy, "Driving circle").unwrap();
+    let document = Document::new("Dimension transaction")
+        .unwrap()
+        .edited(&edits)
+        .unwrap();
+    let mut source = Source::read(&document, sketch).unwrap().0;
+    let center = source.add_point([0., 0.]);
+    let circle = EntityId::new();
+    source.sketch.curves.push(Curve {
+        id: circle,
+        construction: false,
+        kind: CurveKind::Circle {
+            center,
+            radius_mm: 10.,
+        },
+    });
+    source.add_constraint(ConstraintKind::Fix { point: center });
+    let dimension = source.add_constraint(ConstraintKind::Diameter {
+        curve: circle,
+        dimension: model::length(20.),
+    });
+    let region = sketch_regions::extract(&source).regions[0].intent();
+    let document = document
+        .edited(&source.replace(&document, sketch).unwrap())
+        .unwrap();
+    let mut session = Session::new(document).unwrap();
+    let actor = Actor::local(Channel::Ui);
+    let extrusion = ExtrudeRequest::new(
+        sketch,
+        vec![region],
+        ExtrudeParameters {
+            extent: Extent::OneSided {
+                end: Termination::Distance {
+                    distance: model::length(20.),
+                },
+            },
+            ..Default::default()
+        },
+    );
+    session
+        .commit(
+            model::prepare_extrude(&session, session.revision(), actor.clone(), &extrusion)
+                .unwrap()
+                .prepared,
+        )
+        .unwrap();
+    let output = &extrusion.outputs[0];
+    let compiled = multicad_model::Compiler::default()
+        .compile_with_backend(
+            session.document(),
+            session.revision(),
+            multicad_model::GeometryBackend::Rust,
+            None,
+        )
+        .unwrap();
+    let topology = &compiled.snapshot().shapes[&output.feature].topology;
+    let rim = topology
+        .elements
+        .iter()
+        .find(|element| element.key.kind == TopologyKind::Edge && element.key.ordinal == 0)
+        .unwrap();
+    let treatment = EdgeTreatmentRequest::new(
+        BodyInput {
+            body: output.body,
+            producer: output.feature,
+        },
+        EdgeTreatmentParameters {
+            profile: EdgeTreatmentProfile::Chamfer,
+            size: model::length(2.),
+        },
+        vec![GeometryIntent::capture(topology, rim.key).unwrap()],
+    );
+    session
+        .commit(
+            model::prepare_edge_treatment(&session, session.revision(), actor, &treatment)
+                .unwrap()
+                .prepared,
+        )
+        .unwrap();
+    let mut bytes = vec![];
+    project_file::write(
+        &ProjectFile::new(session.document().clone()).unwrap(),
+        &mut bytes,
+        Default::default(),
+    )
+    .unwrap();
+    std::fs::write(&path, &bytes).unwrap();
+    let arguments = [
+        "--rust-model",
+        "--project",
+        path.to_str().unwrap(),
+        "--export-dir",
+        directory.path().to_str().unwrap(),
+    ];
+    let mut client = Client::start(&arguments);
+    let expected = |diameter: f64| {
+        let radius = diameter / 2.;
+        PI * (radius * radius * 20. - 2. * (2. * radius - 4. / 3.))
+    };
+    close(client.part_volume(), expected(20.));
+    let inspected = client.ok("inspect_sketch", json!({"sketch": sketch}));
+    assert_eq!(inspected["solve"]["state"], "FullyConstrained");
+    let failure = client.fail("set_sketch_dimension", json!({"expected_revision": 0, "sketch": sketch, "constraint": dimension, "value": length(2.)}));
+    assert_eq!(failure["code"], "model_failed");
+    assert_eq!(failure["current_revision"], 0);
+    assert_eq!(failure["involved"], json!([treatment.feature]));
+    assert_eq!(client.revision(), 0);
+    assert_eq!(std::fs::read(&path).unwrap(), bytes);
+    close(client.part_volume(), expected(20.));
+    let reply = client.ok("set_sketch_dimension", json!({"expected_revision": 0, "sketch": sketch, "constraint": dimension, "value": length(24.)}));
+    assert_eq!(reply["revision"], 1);
+    close(client.part_volume(), expected(24.));
+    client.ok("undo", json!({"expected_revision": 1}));
+    close(client.part_volume(), expected(20.));
+    client.ok("redo", json!({"expected_revision": 2}));
+    close(client.part_volume(), expected(24.));
+    client.ok("save_project", json!({"expected_revision": 3}));
+    assert_ne!(std::fs::read(&path).unwrap(), bytes);
+    client.ok(
+        "export_step",
+        json!({"part": output.body, "file_name": "dimension-chamfer.step"}),
+    );
+    let imported = multicad_kernel::Solid::import_rust_step(
+        &std::fs::read_to_string(directory.path().join("dimension-chamfer.step")).unwrap(),
+        treatment.feature,
+        Default::default(),
+    )
+    .unwrap();
+    close(imported.volume_mm3().unwrap(), expected(24.));
+    assert_eq!(imported.solid_count().unwrap(), 1);
+    drop(client);
+    let mut reopened = Client::start(&arguments);
+    close(reopened.part_volume(), expected(24.));
+    let inspected = reopened.ok("inspect_sketch", json!({"sketch": sketch}));
+    close(
+        inspected["regions"][0]["area_mm2"].as_f64().unwrap(),
+        144. * PI,
+    );
+}
+
 fn twisted_pair_stdio_roundtrip(family: &str, hub: bool) {
     let directory = tempfile::tempdir().unwrap();
     let project = directory.path().join(format!("continuous-{family}.tcd"));
