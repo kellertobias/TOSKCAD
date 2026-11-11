@@ -185,8 +185,29 @@ fn rejects_missing_and_duplicate_topology_or_invalid_cap_geometry() {
     );
     damaged(
         |f| {
-            let p = f.id(f.id(f.cap_plane(1), 1), 1);
-            f.edit(p)[1] = Value::List([22., 0., 40.].map(Value::Number).into());
+            let axis = f.id(f.cap_plane(1), 1);
+            let point = f.records.keys().next_back().copied().unwrap() + 1;
+            f.records.insert(
+                point,
+                vec![Entity {
+                    name: "CARTESIAN_POINT",
+                    args: vec![
+                        Value::String(""),
+                        Value::List([22., 0., 40.].map(Value::Number).into()),
+                    ],
+                }],
+            );
+            // Keep the cap's displaced support separate from the shared
+            // circle and vertex coordinates so rim validation still succeeds.
+            f.edit(axis)[1] = Value::Reference(point);
+        },
+        ReadError::Invalid,
+    );
+    damaged(
+        |f| {
+            let base_origin = f.id(f.id(f.cap_plane(0), 1), 1);
+            let top_axis = f.id(f.cap_plane(1), 1);
+            f.edit(top_axis)[1] = Value::Reference(base_origin);
         },
         ReadError::Invalid,
     );
@@ -368,6 +389,12 @@ fn rejects_invalid_face_edge_and_extrusion_records() {
 
 #[test]
 fn rejects_duplicate_outer_bounds_and_unequal_cap_areas() {
+    damaged(
+        |f| {
+            f.edit(f.faces[0])[2] = Value::Reference(f.extrusions[0]);
+        },
+        ReadError::Invalid,
+    );
     damaged(
         |f| {
             let inner = f.list(f.faces[0], 1)[1];

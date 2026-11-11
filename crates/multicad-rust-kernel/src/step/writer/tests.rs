@@ -9,6 +9,150 @@ fn size() -> [Rational; 3] {
 }
 
 #[test]
+fn point_interning_preserves_exact_coordinates_and_separate_topology() {
+    let mut file = StepFile::new();
+    let point = [0., 1., 2.];
+    let first = file.point(point);
+    assert_eq!(file.point([-0., 1., 2.]).0, first.0);
+    let near = [0., f64::from_bits(1_f64.to_bits() + 1), 2.];
+    assert_ne!(file.point(near).0, first.0);
+    let a = file.vertex(point);
+    let b = file.vertex(point);
+    assert_eq!(a.cartesian.0, b.cartesian.0);
+    assert_ne!(a.vertex.0, b.vertex.0);
+    assert_eq!(file.data.matches("=CARTESIAN_POINT(").count(), 2);
+    assert!(!file.data.contains("-0.0000000000000000E0"));
+
+    let write = || {
+        let mut writer = Writer::new();
+        writer.append_box(size(), ORIGIN, X, Y).unwrap();
+        writer.append_box(size(), [-0.; 3], X, Y).unwrap();
+        writer.finish().unwrap()
+    };
+    let source = write();
+    assert_eq!(source, write());
+    assert_eq!(source.matches("=CARTESIAN_POINT(").count(), 8);
+    assert_eq!(source.matches("=VERTEX_POINT(").count(), 16);
+    let members = crate::step_read::read_analytic_compound(&source, 1e-7).unwrap();
+    assert_eq!(members.len(), 2);
+    assert!(members.iter().all(|member| member.volume_mm3 == 315.));
+}
+
+#[test]
+fn failed_appends_forget_interned_points_before_retrying_the_same_geometry() {
+    let mut writer = Writer::new();
+    writer.append_box(size(), ORIGIN, X, Y).unwrap();
+    let existing_points = writer.file.points.len();
+    let next = writer.file.next;
+    let retry_origin: Point = [42., 43., 44.];
+    for _ in 0..2 {
+        assert_eq!(
+            writer.append(|file| {
+                file.point(ORIGIN);
+                file.vertex(retry_origin);
+                Err(StepError::InvalidGeometry)
+            }),
+            Err(StepError::InvalidGeometry),
+        );
+        assert_eq!(writer.file.points.len(), existing_points);
+        assert_eq!(writer.file.next, next);
+        assert!(
+            !writer
+                .file
+                .points
+                .contains_key(&retry_origin.map(f64::to_bits))
+        );
+    }
+    writer.append_box(size(), retry_origin, X, Y).unwrap();
+    let actual = writer.finish().unwrap();
+    let mut expected = Writer::new();
+    expected.append_box(size(), ORIGIN, X, Y).unwrap();
+    expected.append_box(size(), retry_origin, X, Y).unwrap();
+    assert_eq!(actual, expected.finish().unwrap());
+    let members = crate::step_read::read_analytic_compound(&actual, 1e-7).unwrap();
+    assert_eq!(members.len(), 2);
+    assert_eq!(members[1].bounds_mm, [retry_origin, [47., 50., 53.]]);
+}
+
+#[test]
+fn canonical_hubbed_twenty_four_thirty_six_pair_fits_the_shared_exchange_budget() {
+    use crate::{
+        spur_gear::{Hub, Spec, herringbone::Herringbone},
+        step_read::{ExpectedStepMember, VerifiedStepMember, verify_authored_compound},
+    };
+    use std::{f64::consts::PI, time::Instant};
+
+    let beta = 15_f64.to_radians();
+    let pressure = (20_f64.to_radians().tan() / beta.cos()).atan();
+    let module = 2. / beta.cos();
+    let gears = [24, 36].map(|teeth| {
+        let pitch = f64::from(teeth) * module / 2.;
+        Herringbone::new(
+            Spec {
+                teeth,
+                pitch_radius_mm: pitch,
+                base_radius_mm: pitch * pressure.cos(),
+                tip_radius_mm: pitch + 2.,
+                root_radius_mm: pitch - 2.5,
+                root_fillet_radius_mm: 0.4,
+                half_base_angle_rad: (PI * module / 2. - 0.05) / (2. * pitch) + pressure.tan()
+                    - pressure,
+                face_width_mm: 4.,
+                bore_radius_mm: 4.,
+            },
+            if teeth == 24 { 1. } else { -1. } * beta.tan() / pitch,
+            1e-5,
+            1e7,
+        )
+        .unwrap()
+        .with_hub(
+            Hub {
+                radius_mm: 8.,
+                axial_start_mm: -2.,
+                axial_end_mm: 6.,
+            },
+            1e-5,
+            1e7,
+        )
+        .unwrap()
+    });
+    let center = 30. * module;
+    let (sin, cos) = (PI + PI / 36.).sin_cos();
+    let frames = [
+        [[12., 23., 34.], [0., 1., 0.], [0., 0., 1.]],
+        [[12., 23. + center, 34.], [0., cos, sin], [0., -sin, cos]],
+    ];
+    let mut writer = Writer::new();
+    let start = Instant::now();
+    for (gear, [origin, u, v]) in gears.iter().zip(frames) {
+        writer.append_herringbone(gear, origin, u, v, 1e-7).unwrap();
+    }
+    let points = writer.file.points.len();
+    let entities = writer.file.next - 1;
+    let source = writer.finish().unwrap();
+    let write_time = start.elapsed();
+    let expected = gears
+        .iter()
+        .zip(frames)
+        .map(|(gear, [origin, u, v])| ExpectedStepMember::TwistedGear { gear, origin, u, v })
+        .collect::<Vec<_>>();
+    let start = Instant::now();
+    let verified = verify_authored_compound(&source, &expected, 1e-7).unwrap();
+    for (proof, gear) in verified.iter().zip(&gears) {
+        let VerifiedStepMember::TwistedGear { volume_mm3 } = proof else {
+            panic!("expected the authored gear proof");
+        };
+        assert!((volume_mm3 - gear.volume_mm3()).abs() < 1e-5);
+    }
+    assert_eq!(verified.len(), 2);
+    eprintln!(
+        "Canonical pair STEP {} bytes, {points} unique points, {entities} entities, write {write_time:?}, verify {:?}",
+        source.len(),
+        start.elapsed()
+    );
+}
+
+#[test]
 fn orthogonal_through_bores_share_two_stock_mouths_and_coexist_with_blind_pockets() {
     use crate::{
         orthogonal::{Box3, Operation, boolean},

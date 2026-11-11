@@ -15,7 +15,12 @@ use crate::{
     prism::Prism,
     trimmed_sweep::TrimmedSweep,
 };
-use std::{collections::BTreeMap, fmt, fmt::Write, ops::Range};
+use std::{
+    collections::{BTreeMap, HashMap},
+    fmt,
+    fmt::Write,
+    ops::Range,
+};
 
 mod axial_stack;
 mod cubic_trim;
@@ -750,6 +755,7 @@ impl fmt::Display for Coordinates {
 struct StepFile {
     data: String,
     next: usize,
+    points: HashMap<[u64; 3], Entity>,
 }
 
 impl StepFile {
@@ -764,6 +770,7 @@ impl StepFile {
         Self {
             data: data.into(),
             next: 1,
+            points: HashMap::new(),
         }
     }
 
@@ -775,7 +782,14 @@ impl StepFile {
     }
 
     fn point(&mut self, point: Point) -> Entity {
-        self.entity(format_args!("CARTESIAN_POINT('',{})", Coordinates(point)))
+        let point = point.map(|value| if value == 0. { 0. } else { value });
+        let key = point.map(f64::to_bits);
+        if let Some(&entity) = self.points.get(&key) {
+            return entity;
+        }
+        let entity = self.entity(format_args!("CARTESIAN_POINT('',{})", Coordinates(point)));
+        self.points.insert(key, entity);
+        entity
     }
 
     fn vertex(&mut self, point: Point) -> Vertex {

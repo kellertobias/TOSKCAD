@@ -48,7 +48,7 @@ impl Writer {
             return Err(StepError::InvalidGeometry);
         }
         self.file.finish(self.solids);
-        if count > 1 && exceeds_readback_budget(&self.file) {
+        if exceeds_readback_budget(&self.file) {
             return Err(StepError::Limit);
         }
         Ok(self.file.data)
@@ -59,15 +59,12 @@ impl Writer {
         &mut self,
         encode: impl FnOnce(&mut StepFile) -> Result<Entity, StepError>,
     ) -> Result<(), StepError> {
-        let compound = !self.solids.is_empty();
-        if self.solids.len() == MAX_COMPOUND_SOLIDS
-            || (compound && exceeds_readback_budget(&self.file))
-        {
+        if self.solids.len() == MAX_COMPOUND_SOLIDS || exceeds_readback_budget(&self.file) {
             return Err(StepError::Limit);
         }
         let previous = (self.file.data.len(), self.file.next);
         let encoded = encode(&mut self.file).and_then(|solid| {
-            if compound && exceeds_readback_budget(&self.file) {
+            if exceeds_readback_budget(&self.file) {
                 Err(StepError::Limit)
             } else {
                 Ok(solid)
@@ -81,6 +78,7 @@ impl Writer {
             Err(error) => {
                 self.file.data.truncate(previous.0);
                 self.file.next = previous.1;
+                self.file.points.retain(|_, entity| entity.0 < previous.1);
                 Err(error)
             }
         }

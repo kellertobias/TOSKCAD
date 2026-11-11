@@ -53,19 +53,23 @@ fn bounded_writer_keeps_one_shell_and_shared_three_station_boundaries() {
         bore_radius_mm: 4.,
     };
     let gear = Herringbone::new(spec, beta.tan() / pitch, 1e-5, 1e7).unwrap();
+    let many_pressure = 10_f64.to_radians();
+    let many_pitch = 64. * module;
+    let many_twist = beta.tan() / many_pitch;
     let many = Herringbone::new(
         Spec {
-            teeth: 48,
-            pitch_radius_mm: 2. * spec.pitch_radius_mm,
-            base_radius_mm: 2. * spec.base_radius_mm,
-            tip_radius_mm: 2. * spec.pitch_radius_mm + 2.,
-            root_radius_mm: 2. * spec.pitch_radius_mm - 2.5,
-            half_base_angle_rad: (std::f64::consts::PI * module / 2. - 0.05) / (4. * pitch)
-                + pressure.tan()
-                - pressure,
+            teeth: 128,
+            pitch_radius_mm: many_pitch,
+            base_radius_mm: many_pitch * many_pressure.cos(),
+            tip_radius_mm: many_pitch + 2.,
+            root_radius_mm: many_pitch - 2.5,
+            face_width_mm: 0.99 * std::f64::consts::PI / many_twist,
+            half_base_angle_rad: (std::f64::consts::PI * module / 2. - 0.05) / (2. * many_pitch)
+                + many_pressure.tan()
+                - many_pressure,
             ..spec
         },
-        beta.tan() / (2. * pitch),
+        many_twist,
         1e-5,
         1e7,
     )

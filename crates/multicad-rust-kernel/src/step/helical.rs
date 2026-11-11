@@ -941,6 +941,22 @@ mod tests {
             ..thread(1, false).spec()
         })
         .unwrap();
-        assert_eq!(write(&long, None, 1e-7), Err(StepError::Limit));
+        let encoded = write(&long, None, 1e-7).unwrap();
+        let volume =
+            crate::step_read::verify_helical_thread(&encoded, &long, None, origin, u, v, 1e-7)
+                .unwrap();
+        assert!((volume - long.volume_mm3()).abs() < 2e-4);
+        let wide = Thread::new(Spec {
+            major_radius_mm: 2000.,
+            pitch_mm: 1000.,
+            length_mm: 124_000.,
+            depth_mm: 500.,
+            crest_width_mm: 125.,
+            lower_flank_deg: 1.,
+            upper_flank_deg: 1.,
+            ..long.spec()
+        })
+        .unwrap();
+        assert_eq!(write(&wide, None, 1e-7).err(), Some(StepError::Limit));
     }
 }

@@ -113,6 +113,11 @@ fn unsupported_extensions_are_separate_from_corruption() {
 
 #[test]
 fn large_or_deep_inputs_stop_at_the_parser_budget() {
+    eprintln!(
+        "STEP parser storage per value {} bytes, per entity {} bytes; limits {MAX_BYTES} bytes, {MAX_ENTITIES} entities, {MAX_VALUES} values",
+        std::mem::size_of::<Value<'_>>(),
+        std::mem::size_of::<Entity<'_>>(),
+    );
     assert_eq!(parse(&" ".repeat(MAX_BYTES + 1)), Err(ReadError::Limit));
     assert_eq!(parse(&document("#4294967296=A();")), Err(ReadError::Limit));
     assert_eq!(
