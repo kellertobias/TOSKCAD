@@ -4,7 +4,7 @@ const TOL: f64 = 1e-7;
 const MIN: f64 = 1e-5;
 const X: Point = [1., 0., 0.];
 const Y: Point = [0., 1., 0.];
-fn rectangle(min: Point2, max: Point2) -> Vec<ProfileEdge> {
+pub(super) fn rectangle(min: Point2, max: Point2) -> Vec<ProfileEdge> {
     let p = [min, [max[0], min[1]], max, [min[0], max[1]]];
     (0..4)
         .map(|i| ProfileEdge::Line {
@@ -13,7 +13,7 @@ fn rectangle(min: Point2, max: Point2) -> Vec<ProfileEdge> {
         })
         .collect()
 }
-fn fixture(kind: Kind) -> Relief {
+pub(super) fn fixture(kind: Kind) -> Relief {
     let base = Sweep::new(
         vec![
             rectangle([0.; 2], [20., 16.]),
@@ -244,4 +244,50 @@ fn all_192_motifs_have_independent_full_graph_proof_and_blind_import() {
         started.elapsed(),
         text.len()
     );
+}
+#[test]
+fn compound_member_order_and_header_names_do_not_change_full_boundary_matching() {
+    let relief = fixture(Kind::Raised);
+    let mut writer = crate::step::Writer::new();
+    for origin in [[0.; 3], [40., 20., 30.]] {
+        writer.append_normal_relief(&relief, origin, X, Y).unwrap();
+    }
+    let text = writer
+        .finish()
+        .unwrap()
+        .replace("MultiCAD", "untrusted foreign label");
+    let mut decoded = read_import_compound(&text, TOL).unwrap();
+    decoded.reverse();
+    for origin in [[0.; 3], [40., 20., 30.]] {
+        assert_eq!(
+            decoded
+                .iter()
+                .filter(|(_, body)| normal_relief_import_matches(
+                    body,
+                    &relief,
+                    [origin, X, Y],
+                    TOL
+                ))
+                .count(),
+            1
+        );
+    }
+    assert!(verify_normal_relief(&text, &relief, [0.; 3], X, Y, TOL).is_err());
+}
+#[test]
+fn modified_supports_trim_geometry_and_incidence_are_rejected_before_import() {
+    let relief = fixture(Kind::Raised);
+    let text = crate::step::write_normal_relief(&relief, [0.; 3], X, Y).unwrap();
+    let changes = [
+        ("CIRCLE('',", "CYLINDRICAL_SURFACE('',"),
+        ("CYLINDRICAL_SURFACE('',", "CONICAL_SURFACE('',"),
+        ("ORIENTED_EDGE('',*,*,", "ORIENTED_EDGE('',#999999,*,"),
+        ("FACE_OUTER_BOUND('',", "VERTEX_LOOP('',"),
+    ];
+    for (before, after) in changes {
+        assert!(text.contains(before));
+        let malformed = text.replacen(before, after, 1);
+        assert!(verify_normal_relief(&malformed, &relief, [0.; 3], X, Y, TOL).is_err());
+        assert!(read_import_solid(&malformed, TOL).is_err());
+    }
 }

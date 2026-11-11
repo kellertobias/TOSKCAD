@@ -3,17 +3,16 @@ fn curve(curve: ReliefCurve, frame: Frame) -> Curve {
     let ReliefCurve::Profile { edge, z_mm } = curve else {
         return Curve::Line;
     };
-    let Some(radius) = edge.radius_mm() else {
-        return Curve::Line;
-    };
-    let (center, clockwise) = match edge {
+    let (center, clockwise, radius) = match edge {
+        ProfileEdge::Line { .. } => return Curve::Line,
         ProfileEdge::Circle {
+            center,
+            clockwise,
+            radius_mm,
+        } => (center, clockwise, radius_mm),
+        ProfileEdge::Arc {
             center, clockwise, ..
-        }
-        | ProfileEdge::Arc {
-            center, clockwise, ..
-        } => (center, clockwise),
-        ProfileEdge::Line { .. } => unreachable!("radius implies circle"),
+        } => (center, clockwise, edge.radius_mm().expect("arc radius")),
     };
     let center_mm = frame.world([center[0], center[1], z_mm]);
     let normal = unit(frame.axes[2])
@@ -168,6 +167,90 @@ fn matches(actual: &Relief, af: Frame, expected: &Relief, ef: Frame, tolerance: 
     }
     require(faces.is_empty())
 }
+fn pocketed(imported: &ImportSolid, frame: Frame, tolerance: f64) -> Result<(Relief, Frame)> {
+    use crate::normal_sweep::Sweep;
+    let ImportProfile::PocketedPolygon {
+        rings,
+        circular_holes,
+        pockets,
+    } = &imported.profile
+    else {
+        return Err(ReadError::Unsupported);
+    };
+    require(
+        !pockets.is_empty()
+            && pockets.len() <= crate::normal_relief::MAX_MOTIFS
+            && tolerance.is_finite()
+            && tolerance > 0.,
+    )?;
+    let end = pockets[0].end;
+    require(pockets.iter().all(|p| p.end == end))?;
+    let mut count = circular_holes.len();
+    for ring in rings {
+        count = count.checked_add(ring.len()).ok_or(ReadError::Limit)?;
+    }
+    require(count <= crate::polygon::MAX_VERTICES)?;
+    let point = |[x, y]: Point2| [x, if end { y } else { -y }];
+    let mut profile = rings
+        .iter()
+        .map(|ring| {
+            let mut points = ring.iter().copied().map(point).collect::<Vec<_>>();
+            if !end {
+                points.reverse();
+            }
+            points
+                .iter()
+                .copied()
+                .zip(points.iter().copied().cycle().skip(1))
+                .map(|(a, b)| ProfileEdge::Line { a, b })
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    profile.extend(circular_holes.iter().map(|&(center, radius_mm)| {
+        vec![ProfileEdge::Circle {
+            center: point(center),
+            radius_mm,
+            clockwise: true,
+        }]
+    }));
+    let minimum = tolerance.next_up();
+    let base = Sweep::new(profile, imported.height_mm, tolerance, minimum)
+        .map_err(|_| ReadError::Invalid)?;
+    let motifs = pockets
+        .iter()
+        .map(|p| {
+            Sweep::new(
+                vec![vec![ProfileEdge::Circle {
+                    center: point(p.center_mm),
+                    radius_mm: p.radius_mm,
+                    clockwise: false,
+                }]],
+                p.depth_mm,
+                tolerance,
+                minimum,
+            )
+            .map_err(|_| ReadError::Invalid)
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let relief = Relief::new(
+        base,
+        motifs,
+        crate::normal_relief::Kind::Recessed,
+        tolerance,
+        minimum,
+    )
+    .map_err(|_| ReadError::Invalid)?;
+    let frame = if end {
+        frame
+    } else {
+        Frame::new(
+            frame.world([0., 0., imported.height_mm]),
+            frame.axes[0],
+            frame.axes[1].map(|v| -v),
+        )?
+    };
+    Ok((relief, frame))
+}
 /// Compare independently decoded relief against a complete expected world
 /// boundary. Entity/face ordering is immaterial; ambiguous matches refuse.
 pub fn normal_relief_import_matches(
@@ -176,13 +259,21 @@ pub fn normal_relief_import_matches(
     frame: [Point; 3],
     tolerance: f64,
 ) -> bool {
-    let ImportProfile::NormalRelief { relief } = &imported.profile else {
-        return false;
-    };
     let result = (|| {
         let actual = Frame::new(imported.origin_mm, imported.u, imported.v)?;
         let expected_frame = Frame::new(frame[0], frame[1], frame[2])?;
-        matches(relief, actual, expected, expected_frame, tolerance)
+        match &imported.profile {
+            ImportProfile::NormalRelief { relief } => {
+                matches(relief, actual, expected, expected_frame, tolerance)
+            }
+            ImportProfile::PocketedPolygon { .. } => {
+                let (relief, actual) = pocketed(imported, actual, tolerance)?;
+                matches(&relief, actual, expected, expected_frame, tolerance)
+            }
+            _ => Err(ReadError::Unsupported),
+        }
     })();
     result.is_ok()
 }
+#[cfg(test)]
+mod tests;

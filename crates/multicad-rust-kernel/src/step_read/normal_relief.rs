@@ -91,40 +91,15 @@ fn cyclic(mut wire: Wire) -> Wire {
     wire
 }
 fn loops(shell: &Shell<'_, '_>, id: u32, work: &mut Work) -> Result<Vec<Wire>> {
-    let [Value::String(_), bounds, _, _] = shell.args(id, "ADVANCED_FACE")? else {
-        return Err(ReadError::Invalid);
-    };
-    let bounds = refs(bounds)?;
+    let (_, _, bounds) = helical::face(shell, id)?;
     work.charge(bounds.len())?;
     bounds
         .into_iter()
         .map(|bound| {
-            let (_, wire, forward) = shell.bound(bound, false)?;
-            let [Value::String(_), edges] = shell.args(wire, "EDGE_LOOP")? else {
-                return Err(ReadError::Invalid);
-            };
-            let edges = refs(edges)?;
-            work.charge(edges.len())?;
-            let mut result = edges
-                .into_iter()
-                .map(|edge| {
-                    let [
-                        Value::String(_),
-                        Value::Derived,
-                        Value::Derived,
-                        id,
-                        orientation,
-                    ] = shell.args(edge, "ORIENTED_EDGE")?
-                    else {
-                        return Err(ReadError::Invalid);
-                    };
-                    Ok((reference(id)?, sense(orientation)? == forward))
-                })
-                .collect::<Result<Wire>>()?;
-            if !forward {
-                result.reverse();
-            }
-            Ok(result)
+            let exterior = shell.bound(bound, false)?.0;
+            let ring = helical::ring(shell, bound, exterior)?;
+            work.charge(ring.len())?;
+            Ok(ring)
         })
         .collect()
 }

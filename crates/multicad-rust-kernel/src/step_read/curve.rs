@@ -210,7 +210,7 @@ impl Shell<'_, '_> {
         )
     }
 
-    fn cylinder(&self, surface: u32) -> Result<(Plane, f64)> {
+    pub(super) fn cylinder(&self, surface: u32) -> Result<(Plane, f64)> {
         let [Value::String(_), placement, Value::Number(radius)] =
             self.args(surface, "CYLINDRICAL_SURFACE")?
         else {

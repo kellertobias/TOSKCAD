@@ -11,10 +11,7 @@ fn planar(face: &Face) -> Option<(Point, Point)> {
 }
 fn outer_loops(shell: &Shell<'_, '_>, id: u32, work: &mut Work) -> Result<Vec<Wire>> {
     let mut wires = loops(shell, id, work)?;
-    let [Value::String(_), bounds, _, _] = shell.args(id, "ADVANCED_FACE")? else {
-        return Err(ReadError::Invalid);
-    };
-    let bounds = refs(bounds)?;
+    let (_, _, bounds) = helical::face(shell, id)?;
     let mut outer = None;
     for (i, id) in bounds.into_iter().enumerate() {
         if shell.bound(id, wires.len() == 1)?.0 {
@@ -134,10 +131,8 @@ fn infer(
     let mut planar_faces = Vec::new();
     for (index, face) in faces.iter().enumerate() {
         if planar(face).is_some() {
-            let [Value::String(_), bounds, _, _] = shell.args(ids[index], "ADVANCED_FACE")? else {
-                return Err(ReadError::Invalid);
-            };
-            let count = refs(bounds)?.len();
+            let (_, _, bounds) = helical::face(shell, ids[index])?;
+            let count = bounds.len();
             work.charge(count)?;
             planar_faces.push((count, index));
         }
@@ -161,13 +156,10 @@ fn infer(
     require(bottom.next().is_none())?;
     let (origin, _) = planar(bottom_face).expect("selected opposite plane");
     let height = dot(sub(top_origin, origin), axis);
-    let [Value::String(_), _, surface, _] = shell.args(ids[top], "ADVANCED_FACE")? else {
-        return Err(ReadError::Invalid);
-    };
-    let [Value::String(_), placement] = shell.args(reference(surface)?, "PLANE")? else {
-        return Err(ReadError::Invalid);
-    };
-    let plane = shell.placement(reference(placement)?)?;
+    let (surface, _, _) = helical::face(shell, ids[top])?;
+    let plane_args = shell.args(surface, "PLANE")?;
+    let placement = reference(plane_args.get(1).ok_or(ReadError::Invalid)?)?;
+    let plane = shell.placement(placement)?;
     let frame = Frame::new(origin, plane.u, cross(axis, plane.u))?;
     let epsilon = shell.tolerance / 16.;
     let base_rings = outer_loops(shell, ids[bottom_index], work)?
@@ -229,13 +221,7 @@ fn infer(
         shell.tolerance,
         minimum,
     )
-    .map_err(|e| {
-        if e == crate::normal_relief::Error::Limit {
-            ReadError::Limit
-        } else {
-            ReadError::Invalid
-        }
-    })?;
+    .map_err(relief_error)?;
     proof::verify(shell, ids, faces, readback, &relief, frame, work)?;
     Ok(ImportSolid {
         origin_mm: origin,
@@ -245,15 +231,33 @@ fn infer(
         profile: ImportProfile::NormalRelief { relief },
     })
 }
+fn relief_error(error: crate::normal_relief::Error) -> ReadError {
+    if error == crate::normal_relief::Error::Limit {
+        ReadError::Limit
+    } else {
+        ReadError::Invalid
+    }
+}
 pub(super) fn recognize(
     shell: &Shell<'_, '_>,
     ids: &[u32],
     faces: &[Face],
     readback: &Readback,
 ) -> Result<Option<ImportSolid>> {
-    match infer(shell, ids, faces, readback, &mut Work(MAX_WORK)) {
+    recognize_with_work(shell, ids, faces, readback, &mut Work(MAX_WORK))
+}
+fn recognize_with_work(
+    shell: &Shell<'_, '_>,
+    ids: &[u32],
+    faces: &[Face],
+    readback: &Readback,
+    work: &mut Work,
+) -> Result<Option<ImportSolid>> {
+    match infer(shell, ids, faces, readback, work) {
         Ok(body) => Ok(Some(body)),
         Err(ReadError::Limit) => Err(ReadError::Limit),
         Err(_) => Ok(None),
     }
 }
+#[cfg(test)]
+mod tests;

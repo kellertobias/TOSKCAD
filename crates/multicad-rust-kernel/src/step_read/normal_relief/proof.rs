@@ -57,20 +57,19 @@ fn curve_matches(
     let ReliefCurve::Profile { edge, z_mm } = expected else {
         return matches!(actual, Curve::Line);
     };
-    let Some(radius) = edge.radius_mm() else {
-        return matches!(actual, Curve::Line);
+    let (xy, clockwise, radius) = match edge {
+        ProfileEdge::Line { .. } => return matches!(actual, Curve::Line),
+        ProfileEdge::Circle {
+            center,
+            clockwise,
+            radius_mm,
+        } => (center, clockwise, radius_mm),
+        ProfileEdge::Arc {
+            center, clockwise, ..
+        } => (center, clockwise, edge.radius_mm().expect("arc radius")),
     };
     let Some((center, axis, r, sweep)) = circle(actual) else {
         return false;
-    };
-    let (xy, clockwise) = match edge {
-        ProfileEdge::Circle {
-            center, clockwise, ..
-        }
-        | ProfileEdge::Arc {
-            center, clockwise, ..
-        } => (center, clockwise),
-        ProfileEdge::Line { .. } => unreachable!("radius implies circular edge"),
     };
     let axis = axis.map(|v| if forward { v } else { -v });
     let expected_axis = frame.axes[2].map(|v| if clockwise { -v } else { v });
@@ -146,9 +145,7 @@ fn support(
     epsilon: f64,
     extent: f64,
 ) -> Result<()> {
-    let [Value::String(_), _, surface, forward] = shell.args(id, "ADVANCED_FACE")? else {
-        return Err(ReadError::Invalid);
-    };
+    let (surface, forward, _) = helical::face(shell, id)?;
     match (actual, expected) {
         (
             Face::Planar {
@@ -174,15 +171,10 @@ fn support(
                 outward,
             },
         ) => {
-            let [Value::String(_), placement, Value::Number(radius)] =
-                shell.args(reference(surface)?, "CYLINDRICAL_SURFACE")?
-            else {
-                return Err(ReadError::Invalid);
-            };
-            let plane = shell.placement(reference(placement)?)?;
+            let (plane, radius) = shell.cylinder(surface)?;
             let expected_axis = unit(frame.vector(axis))?;
             require(
-                sense(forward)? == outward
+                forward == outward
                     && (radius - radius_mm).abs() <= epsilon
                     && length(cross(plane.normal, expected_axis)) * extent.max(radius_mm)
                         <= epsilon
@@ -251,3 +243,6 @@ pub(super) fn verify(
     let volume_error = shell.tolerance * relief.surface_area_mm2().max(1.);
     require((readback.volume_mm3 - relief.volume_mm3()).abs() <= volume_error)
 }
+
+#[cfg(test)]
+mod tests;
