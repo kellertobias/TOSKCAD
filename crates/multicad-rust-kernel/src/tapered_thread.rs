@@ -4,12 +4,19 @@
 //! Its transported horizontal heading therefore changes along a conical spine.
 //! NPT's axial-flat and BSPT's meridian laws are deliberately outside this API.
 use crate::helical_thread::{Spec, Thread as StraightThread, ThreadError};
-mod interval;
+mod bivariate;
+pub(crate) mod interval;
+mod law;
 mod mass;
 mod mesh;
+mod series;
 mod support;
+mod tensor;
 use interval::{I, J};
 pub use mesh::{tessellate, tessellate_with_interrupt};
+pub use tensor::{
+    MANUFACTURING_DEGREE, ManufacturingTensor, ManufacturingTensors, TaylorEnclosure,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Error {
@@ -190,45 +197,11 @@ impl Thread {
         self.transport_j(piece, J::d(d), J::z(z))
     }
     fn transport_j(&self, piece: usize, d: J, z: J) -> Transport {
-        let s = self.spec();
-        let k = J::constant(self.taper);
-        let root = J::constant(self.source.root_radius_mm());
-        let h = J::constant(self.source.helical_rate());
-        let rs = root - k * J::constant(self.source.lead_mm());
-        let rc = root + k * (z - d);
-        let g = k * h;
-        let den = (rs * rs + g * g).sqrt() * (rc * rc + g * g).sqrt();
-        let sin = g * k * (z - d + J::constant(self.source.lead_mm())) / den;
-        // rs and rc are positive, so the heading difference has positive
-        // cosine. Its unit-circle identity removes a near-unit quotient.
-        let cos = (J::constant(1.) - sin * sin).sqrt();
-        let f = match piece {
-            0 => {
-                J::constant(s.major_radius_mm)
-                    + (d + J::constant(s.crest_width_mm / 2.)) / J::constant(self.slopes[0])
-            }
-            1 => J::constant(s.major_radius_mm),
-            _ => {
-                J::constant(s.major_radius_mm)
-                    - (d - J::constant(s.crest_width_mm / 2.)) / J::constant(self.slopes[1])
-            }
-        };
-        let q = f - root + k * d;
-        let core = root + k * z;
-        let legacy = f + k * z;
-        let cosine_loss = -sin * sin / (J::constant(1.) + cos);
-        let re = legacy + q * cosine_loss;
-        let im = q * sin;
-        let phase = d - h * (im / re).atan();
-        let correction = J::constant(2.) * rc * q * cosine_loss;
-        let radius = (legacy * legacy + correction).sqrt();
-        // Preserve the exact cancellation of the common k*z term before
-        // interval evaluation; neither support nor roots need a fuzzy fit.
-        let excess = (f - root) * (legacy + core) + correction;
+        let p = law::evaluate(self, piece, d, z);
         Transport {
-            phase,
-            radius,
-            excess,
+            phase: d - J::constant(self.source.helical_rate()) * (p.im / p.re).atan(),
+            radius: p.radius_squared.sqrt(),
+            excess: p.excess,
         }
     }
     fn prove(&self, piece: usize, d: I, z: I, depth: u32, w: &mut Work<'_>) -> Result<(), Error> {

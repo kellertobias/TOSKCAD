@@ -35,11 +35,13 @@ mod rounded_cylinder;
 mod sphere;
 mod spline;
 mod spline_sweep;
+pub(crate) mod tapered_thread;
 mod torus;
 pub use rounded_cylinder::{
     ImportedRoundedCylinder, read_rounded_cylinder, read_rounded_cylinder_compound,
 };
 pub use spline::SplineEdge;
+pub use tapered_thread::verify_tapered_thread;
 mod stadium;
 mod warped;
 

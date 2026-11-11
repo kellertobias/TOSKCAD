@@ -1,7 +1,7 @@
 //! Directed enclosures used by the retained Custom transport proof.
 use std::ops::{Add, Div, Mul, Neg, Sub};
 #[derive(Clone, Copy, Debug)]
-pub(super) struct I {
+pub(crate) struct I {
     pub lo: f64,
     pub hi: f64,
 }

@@ -192,6 +192,18 @@ impl Writer {
         })
     }
 
+    pub fn append_tapered_thread(
+        &mut self,
+        thread: &crate::tapered_thread::Thread,
+        origin: Point,
+        u: Point,
+        v: Point,
+        tolerance: f64,
+    ) -> Result<(), StepError> {
+        let placement = Placement::new(origin, u, v)?;
+        self.append(|file| tapered_thread::encode(file, thread, placement, tolerance))
+    }
+
     /// Append a ZA worm placed by its local frame (origin, u, v).
     pub fn append_za_worm(
         &mut self,
