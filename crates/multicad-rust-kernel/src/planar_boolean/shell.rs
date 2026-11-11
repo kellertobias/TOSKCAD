@@ -272,7 +272,7 @@ pub(super) fn mesh(
     Ok(mesh)
 }
 
-fn is_concave(vertices: &[Point], face: &Face) -> bool {
+pub(super) fn is_concave(vertices: &[Point], face: &Face) -> bool {
     let points = || face.vertices.iter().map(|&id| vertices[id]);
     points()
         .zip(points().cycle().skip(1))

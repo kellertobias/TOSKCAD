@@ -10,6 +10,29 @@ pub struct CutMaterial {
 }
 
 impl CutMaterial {
+    /// Certify supplied positive cells against an existing authoritative
+    /// boundary. Preserve every original boundary face and source label;
+    /// cell partition walls never become published ancestry.
+    pub fn certify_existing(
+        boundary: &Union,
+        pieces: &[ConvexPiece],
+        tolerance: f64,
+    ) -> Result<Self, Error> {
+        validate_tolerance(tolerance)?;
+        if pieces.is_empty() {
+            return Err(Error::Invalid);
+        }
+        if pieces.len() > MAX_PIECES {
+            return Err(Error::Limit);
+        }
+        let mut budget = MAX_WORK;
+        verify_cells(boundary, pieces, tolerance, &mut budget)?;
+        Ok(Self {
+            boundary: boundary.clone(),
+            pieces: pieces.to_vec(),
+        })
+    }
+
     pub fn boundary(&self) -> &Union {
         &self.boundary
     }
@@ -238,39 +261,30 @@ fn verify_cells(
 }
 
 fn covers(a: &Union, b: &Union, tolerance: f64, budget: &mut usize) -> Result<(), Error> {
+    let a_charts = convex_charts(a, budget)?;
+    let b_charts = convex_charts(b, budget)?;
     let precision = precision(a.bounds.into_iter().chain(b.bounds), tolerance);
-    for face in &a.faces {
-        let ring: Vec<_> = face.vertices.iter().map(|&i| a.vertices[i]).collect();
-        let bounds_a = bounds(ring.iter().copied());
-        let support = Plane {
-            normal: face.normal,
-            point: ring[0],
-        };
-        let mut fragments = vec![ring];
-        for patch in &b.faces {
-            charge(budget, patch.vertices.len())?;
-            if !support.same_direction(
-                Plane {
-                    normal: patch.normal,
-                    point: b.vertices[patch.vertices[0]],
-                },
-                precision,
-            ) {
+    for face in &a_charts {
+        let mut fragments = vec![face.ring.clone()];
+        for patch in &b_charts {
+            charge(budget, patch.ring.len())?;
+            if !face.support.same_direction(patch.support, precision) {
                 continue;
             }
-            let patch_ring: Vec<_> = patch.vertices.iter().map(|&i| b.vertices[i]).collect();
-            if !clipping::bounds_overlap(bounds_a, bounds(patch_ring.iter().copied()), precision)
-                || patch_ring
+            if !clipping::bounds_overlap(face.bounds, patch.bounds, precision)
+                || patch
+                    .ring
                     .iter()
-                    .any(|&point| support.distance(point).abs() > precision)
+                    .any(|&point| face.support.distance(point).abs() > precision)
             {
                 continue;
             }
-            let planes: Vec<_> = patch_ring
+            let planes: Vec<_> = patch
+                .ring
                 .iter()
-                .zip(patch_ring.iter().cycle().skip(1))
+                .zip(patch.ring.iter().cycle().skip(1))
                 .map(|(&point, &next)| {
-                    let normal = cross(sub(next, point), patch.normal);
+                    let normal = cross(sub(next, point), patch.support.normal);
                     Plane {
                         point,
                         normal: scale(normal, norm(normal).recip()),
@@ -299,6 +313,50 @@ fn covers(a: &Union, b: &Union, tolerance: f64, budget: &mut usize) -> Result<()
         }
     }
     Ok(())
+}
+
+struct ConvexChart {
+    ring: Vec<Point>,
+    support: Plane,
+    bounds: [Point; 2],
+}
+
+/// Exact planar subdivisions for clipping/coverage only. No new boundary
+/// samples or ancestry are introduced; all charts retain the authored face.
+fn convex_charts(boundary: &Union, budget: &mut usize) -> Result<Vec<ConvexChart>, Error> {
+    let mut charts = Vec::new();
+    for face in &boundary.faces {
+        let count = face.vertices.len();
+        charge(budget, count)?;
+        let rings: Vec<Vec<Point>> = if shell::is_concave(&boundary.vertices, face) {
+            charge(budget, count.checked_mul(count).ok_or(Error::Limit)?)?;
+            shell::triangulate_face(&boundary.vertices, face)
+                .map_err(|_| Error::Unresolved)?
+                .into_iter()
+                .map(|triangle| triangle.map(|i| boundary.vertices[i]).to_vec())
+                .collect()
+        } else {
+            vec![
+                face.vertices
+                    .iter()
+                    .map(|&i| boundary.vertices[i])
+                    .collect(),
+            ]
+        };
+        for ring in rings {
+            charge(budget, ring.len())?;
+            let support = Plane {
+                normal: face.normal,
+                point: ring[0],
+            };
+            charts.push(ConvexChart {
+                bounds: bounds(ring.iter().copied()),
+                ring,
+                support,
+            });
+        }
+    }
+    Ok(charts)
 }
 
 #[cfg(test)]

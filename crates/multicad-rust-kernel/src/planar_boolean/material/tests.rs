@@ -11,6 +11,88 @@ fn close(a: f64, b: f64) {
 }
 
 #[test]
+fn existing_concave_boundary_keeps_logical_faces_and_original_labels() {
+    let points = [
+        [0., 0.],
+        [6., 0.],
+        [6., 5.],
+        [4., 5.],
+        [4., 2.],
+        [2., 2.],
+        [2., 5.],
+        [0., 5.],
+    ];
+    let lower: Vec<_> = points.map(|[x, y]| [x, y, 0.]).into();
+    let upper: Vec<_> = points.map(|[x, y]| [x, y, 2.]).into();
+    let mut rings = vec![lower.iter().rev().copied().collect(), upper.clone()];
+    rings.extend((0..points.len()).map(|i| {
+        let j = (i + 1) % points.len();
+        vec![lower[i], lower[j], upper[j], upper[i]]
+    }));
+    let boundary = Union::from_planar_rings(&rings, TOL).unwrap();
+    let pieces = [
+        cube([0.; 3], [6., 2., 2.]),
+        cube([0., 2., 0.], [2., 5., 2.]),
+        cube([4., 2., 0.], [6., 5., 2.]),
+    ];
+    let certificate = CutMaterial::certify_existing(&boundary, &pieces, TOL).unwrap();
+    assert_eq!(certificate.boundary(), &boundary);
+    assert_eq!(certificate.boundary().faces().len(), 10);
+    close(certificate.boundary().volume_mm3(), 48.);
+}
+
+#[test]
+fn existing_certificate_checks_occupied_location_cavities_and_input_limits_atomically() {
+    let block = cube([0.; 3], [8.; 3]);
+    let whole = Union::new(std::slice::from_ref(&block), TOL).unwrap();
+    assert_eq!(
+        CutMaterial::certify_existing(&whole, &[], TOL).unwrap_err(),
+        Error::Invalid
+    );
+    assert_eq!(
+        CutMaterial::certify_existing(&whole, std::slice::from_ref(&block), f64::NAN).unwrap_err(),
+        Error::Invalid
+    );
+    assert_eq!(
+        CutMaterial::certify_existing(&whole, &vec![block.clone(); MAX_PIECES + 1], TOL)
+            .unwrap_err(),
+        Error::Limit
+    );
+    let shifted = cube([16.; 3], [24.; 3]);
+    assert_eq!(
+        CutMaterial::certify_existing(&whole, &[shifted], TOL).unwrap_err(),
+        Error::Unresolved
+    );
+    let redundant = CutMaterial::certify_existing(
+        &whole,
+        &[block.clone(), block.clone(), cube([1.; 3], [2.; 3])],
+        TOL,
+    )
+    .unwrap();
+    assert_eq!(redundant.boundary(), &whole);
+    let hole = [cube([2.; 3], [6.; 3])];
+    let boundary = Union::subtract(std::slice::from_ref(&block), &hole, TOL)
+        .unwrap()
+        .unwrap();
+    let cells = CutMaterial::recover(&boundary, std::slice::from_ref(&block), &hole, TOL).unwrap();
+    assert_eq!(
+        CutMaterial::certify_existing(&boundary, cells.pieces(), TOL)
+            .unwrap()
+            .boundary(),
+        &boundary
+    );
+    assert_eq!(
+        CutMaterial::certify_existing(&boundary, std::slice::from_ref(&block), TOL).unwrap_err(),
+        Error::Unresolved
+    );
+    assert!(CutMaterial::certify_existing(&whole, std::slice::from_ref(&block), TOL).is_ok());
+    assert_eq!(
+        verify_cells(&whole, std::slice::from_ref(&block), TOL, &mut 0),
+        Err(Error::Limit)
+    );
+}
+
+#[test]
 fn recovers_a_cavity_and_uses_only_exposed_ancestry_for_a_second_cut() {
     let stock = [cube([0.; 3], [8.; 3])];
     let first = [cube([2.; 3], [6.; 3])];
@@ -165,6 +247,18 @@ fn coverage_skips_disjoint_coplanar_faces_and_charges_for_partitioning() {
         Err(Error::Limit)
     );
     let mut budget = reference.faces()[0].vertices.len();
+    assert_eq!(
+        covers(&reference, &reference, TOL, &mut budget),
+        Err(Error::Limit)
+    );
+    // Admit both exact convex chart sets and the first matching patch; the
+    // remaining budget must then fail inside polygon partitioning itself.
+    let mut budget = reference
+        .faces()
+        .iter()
+        .map(|f| 4 * f.vertices.len())
+        .sum::<usize>()
+        + reference.faces()[0].vertices.len();
     assert_eq!(
         covers(&reference, &reference, TOL, &mut budget),
         Err(Error::Limit)
