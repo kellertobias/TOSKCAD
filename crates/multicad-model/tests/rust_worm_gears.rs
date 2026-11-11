@@ -183,6 +183,15 @@ fn rust_worm_pairs_certify_saved_edited_motion_and_refuse_wrong_poses() {
             .unwrap();
         let oracle = &native.gear_pair_checks()[&request.pair];
         assert_eq!(oracle.cycle_drive_angles_rad, report.cycle_drive_angles_rad);
+        println!(
+            "{{\"rust_cycle_ms\":{},\"rust_current_ms\":{},\"native_cycle_ms\":{},\"native_current_ms\":{},\"rust_witness_mm\":{},\"native_witness_mm\":{}}}",
+            report.sampled_cycle_ms,
+            report.current_pose_ms,
+            oracle.sampled_cycle_ms,
+            oracle.current_pose_ms,
+            witness.distance_mm,
+            oracle.current_engagement.as_ref().unwrap().distance_mm
+        );
         for instance in [worm, wheel] {
             let [r, n] = [&rust, &native].map(|c| c.solid(instance).unwrap().volume_mm3().unwrap());
             assert!((r - n).abs() / n < 1e-6, "{r} {n}");
