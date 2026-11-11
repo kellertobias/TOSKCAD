@@ -541,6 +541,11 @@ impl Solid {
         curves: &[Origin],
         policy: GeometryPolicy,
     ) -> Result<Self, GeometryError> {
+        if !crate::OCCT_LINKED {
+            return crate::geometry::construction::profile(
+                profile, height_mm, feature, curves, policy,
+            );
+        }
         if feature.is_nil() {
             return Err(failure("Feature identity is nil"));
         }
@@ -870,6 +875,9 @@ impl Solid {
         feature: EntityId,
         policy: GeometryPolicy,
     ) -> Result<Self, GeometryError> {
+        if !crate::OCCT_LINKED {
+            return crate::geometry::construction::named_box(size_mm, feature, policy);
+        }
         policy.validate()?;
         if size_mm.iter().any(|v| {
             !v.is_finite() || *v < policy.minimum_feature_mm || *v > policy.maximum_coordinate_mm
@@ -895,6 +903,126 @@ impl Solid {
             policy,
         )
     }
+    /// Anonymous constructors have geometry, but no authored persistent names.
+    /// Keep that metadata separate from the body's private construction IDs.
+    pub(crate) fn without_authored_provenance(mut self) -> Result<Self, GeometryError> {
+        let snapshot = self.topology_snapshot(EntityId::new(), 0)?;
+        self.provenance = snapshot
+            .elements
+            .into_iter()
+            .map(|element| empty(element.key))
+            .collect();
+        self.rust_origins.clear();
+        Ok(self)
+    }
+
+    pub(crate) fn has_authored_metadata_override(&self) -> bool {
+        self.uses_rust_geometry()
+            && !self.provenance.is_empty()
+            && self
+                .provenance
+                .iter()
+                .all(|element| element.geometry.is_none())
+    }
+
+    pub(crate) fn has_unattributed_topology(&self) -> bool {
+        self.has_authored_metadata_override()
+            && self.rust_origins.is_empty()
+            && self
+                .provenance
+                .iter()
+                .all(|element| element.origins.is_empty() && element.frames.is_empty())
+    }
+
+    pub(crate) fn transformed_author_metadata(
+        &self,
+        transform: RigidTransform,
+    ) -> Vec<TopologyElement> {
+        if !self.has_authored_metadata_override() {
+            return vec![];
+        }
+        self.provenance
+            .iter()
+            .cloned()
+            .map(|mut element| {
+                for anchor in &mut element.frames {
+                    anchor.frame = transformed(anchor.frame, transform);
+                }
+                element
+            })
+            .collect()
+    }
+
+    // Unnamed operations can inherit real authored sources, but private IDs of
+    // anonymous constructor operands must never become persistent identities.
+    pub(crate) fn retain_authored_boolean_sources(
+        mut self,
+        sources: &[&Self],
+    ) -> Result<Self, GeometryError> {
+        if !sources
+            .iter()
+            .any(|source| source.has_authored_metadata_override())
+        {
+            return Ok(self);
+        }
+        let owner = EntityId::new();
+        let mut published = BTreeSet::new();
+        let mut private_sources = BTreeSet::new();
+        for source in sources {
+            let visible = source.topology_snapshot(owner, 0)?;
+            let source_origins: BTreeSet<_> = visible
+                .elements
+                .into_iter()
+                .flat_map(|element| element.origins)
+                .collect();
+            if source.has_authored_metadata_override() {
+                let mut raw = source.share()?;
+                raw.provenance.clear();
+                private_sources.extend(
+                    raw.topology_snapshot(owner, 0)?
+                        .elements
+                        .into_iter()
+                        .flat_map(|element| element.origins)
+                        .map(|origin| origin.source)
+                        .filter(|id| !source_origins.iter().any(|origin| origin.source == *id)),
+                );
+            }
+            published.extend(source_origins);
+        }
+        let private_ids: Vec<_> = private_sources.iter().map(ToString::to_string).collect();
+        let retained = |origin: &Origin| {
+            !private_sources.contains(&origin.source)
+                && !origin
+                    .role
+                    .split('/')
+                    .any(|part| private_ids.iter().any(|id| part == id))
+        };
+        self.provenance = self
+            .topology_snapshot(owner, 0)?
+            .elements
+            .into_iter()
+            .map(|mut element| {
+                element.origins.retain(retained);
+                element.boundary.retain(retained);
+                if !element
+                    .origins
+                    .iter()
+                    .any(|origin| published.contains(origin))
+                {
+                    element.origins.clear();
+                    element.boundary.clear();
+                }
+                element
+                    .frames
+                    .retain(|anchor| element.origins.contains(&anchor.origin));
+                element.geometry = None;
+                element
+            })
+            .collect();
+        self.rust_origins.clear();
+        Ok(self)
+    }
+
     /// Evaluation data: source Links persist intent, never these local ordinals.
     pub fn topology_snapshot(
         &self,
@@ -963,6 +1091,26 @@ impl Solid {
                     .expect("checked Rust body")
                     .topology(owner, revision)?
             };
+            if self.has_authored_metadata_override() {
+                let metadata: BTreeMap<_, _> = self
+                    .provenance
+                    .iter()
+                    .map(|element| (element.key, element))
+                    .collect();
+                if metadata.len() != snapshot.elements.len() {
+                    return Err(failure(
+                        "Authored topology metadata does not match the body",
+                    ));
+                }
+                for element in &mut snapshot.elements {
+                    let source = metadata
+                        .get(&element.key)
+                        .ok_or_else(|| failure("Authored topology metadata key is missing"))?;
+                    element.origins.clone_from(&source.origins);
+                    element.boundary.clone_from(&source.boundary);
+                    element.frames.clone_from(&source.frames);
+                }
+            }
             if !self.rust_origins.is_empty() {
                 for element in &mut snapshot.elements {
                     for origin in &self.rust_origins {

@@ -20,7 +20,7 @@ impl Default for NativeRegionQueries {
     fn default() -> Self {
         Self {
             policy: GeometryPolicy::default(),
-            native_splines: true,
+            native_splines: crate::OCCT_LINKED,
         }
     }
 }
@@ -43,6 +43,22 @@ impl NativeRegionQueries {
     }
     pub fn new(policy: GeometryPolicy) -> Result<Self, GeometryError> {
         policy.validate()?;
+        Ok(Self {
+            policy,
+            native_splines: crate::OCCT_LINKED,
+        })
+    }
+    /// Require OpenCascade explicitly, including in independent comparison
+    /// fixtures. Availability-based constructors never impersonate this path.
+    pub fn native(policy: GeometryPolicy) -> Result<Self, GeometryError> {
+        policy.validate()?;
+        if !crate::OCCT_LINKED {
+            return Err(GeometryError {
+                operation: "sketch queries",
+                kind: crate::GeometryErrorKind::Unsupported,
+                message: "OpenCascade sketch queries are unavailable in this build".into(),
+            });
+        }
         Ok(Self {
             policy,
             native_splines: true,
@@ -401,6 +417,35 @@ impl RegionQueries for NativeRegionQueries {
 mod tests {
     use super::*;
     use multicad_core::constraint_sketch::SplineBasis;
+
+    #[test]
+    fn default_queries_use_available_geometry_and_explicit_native_never_falls_back() {
+        let queries = NativeRegionQueries::default();
+        assert_eq!(queries.native_splines, crate::OCCT_LINKED);
+        let curve = ExactCurve::BSpline {
+            poles: vec![[0., 0.], [2., 0.]],
+            basis: SplineBasis {
+                degree: 1,
+                knots: vec![0., 1.],
+                multiplicities: vec![2, 2],
+                weights: Some(vec![1., 1.]),
+            },
+        };
+        let hits = queries.project_parameters(&curve, [1., 1.], 1e-7).unwrap();
+        assert!(
+            hits.iter()
+                .any(|hit| (hit.point_mm[0] - 1.).abs() < 1e-7 && hit.point_mm[1].abs() < 1e-7)
+        );
+        let explicit = NativeRegionQueries::native(GeometryPolicy::default());
+        if crate::OCCT_LINKED {
+            assert!(explicit.unwrap().native_splines);
+        } else {
+            assert_eq!(
+                explicit.unwrap_err().kind,
+                crate::GeometryErrorKind::Unsupported
+            );
+        }
+    }
 
     #[test]
     fn rust_sketch_projection_normalizes_authored_linear_spline_parameters() {

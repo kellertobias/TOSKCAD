@@ -146,6 +146,19 @@ impl Solid {
         feature: EntityId,
         policy: GeometryPolicy,
     ) -> Result<Self, GeometryError> {
+        let result = self.affine_geometry(transform, feature, policy)?;
+        if self.has_unattributed_topology() {
+            return result.without_authored_provenance();
+        }
+        Ok(result)
+    }
+
+    fn affine_geometry(
+        &self,
+        transform: AffineTransform,
+        feature: EntityId,
+        policy: GeometryPolicy,
+    ) -> Result<Self, GeometryError> {
         policy.validate()?;
         transform.validate()?;
         policy.point(transform.translation_mm)?;

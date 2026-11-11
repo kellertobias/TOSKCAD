@@ -496,6 +496,18 @@ impl Solid {
         height_mm: f64,
         policy: GeometryPolicy,
     ) -> Result<Self, GeometryError> {
+        if !crate::OCCT_LINKED {
+            profile.checked(policy)?;
+            let feature = EntityId::new();
+            let origins = crate::geometry::construction::origins(
+                feature,
+                profile.outer.len() + profile.holes.iter().map(Vec::len).sum::<usize>(),
+            );
+            return crate::geometry::construction::normal(
+                profile, height_mm, feature, &origins, policy,
+            )?
+            .without_authored_provenance();
+        }
         Self::extrude_curved_profile_vector(
             profile,
             profile.frame.normal().map(|n| n * height_mm),
@@ -539,6 +551,21 @@ impl Solid {
         budget: ProfileBudget,
     ) -> Result<Self, GeometryError> {
         let c = profile.checked_for(policy, budget)?;
+        if !crate::OCCT_LINKED {
+            let feature = EntityId::new();
+            let origins = crate::geometry::construction::origins(
+                feature,
+                profile.outer.len() + profile.holes.iter().map(Vec::len).sum::<usize>(),
+            );
+            return crate::geometry::construction::vector(
+                profile,
+                displacement_mm,
+                feature,
+                &origins,
+                policy,
+            )?
+            .without_authored_provenance();
+        }
         policy.point(displacement_mm)?;
         let length = displacement_mm
             .into_iter()
@@ -583,6 +610,12 @@ impl Solid {
         origins: &[Origin],
         policy: GeometryPolicy,
     ) -> Result<Self, GeometryError> {
+        if !crate::OCCT_LINKED {
+            profile.checked(policy)?;
+            return crate::geometry::construction::normal(
+                profile, height_mm, feature, origins, policy,
+            );
+        }
         Self::extrude_curved_profile_vector_named(
             profile,
             profile.frame.normal().map(|n| n * height_mm),
@@ -635,6 +668,16 @@ impl Solid {
         policy: GeometryPolicy,
         budget: ProfileBudget,
     ) -> Result<Self, GeometryError> {
+        if !crate::OCCT_LINKED {
+            profile.checked_for(policy, budget)?;
+            return crate::geometry::construction::vector(
+                profile,
+                displacement_mm,
+                feature,
+                origins,
+                policy,
+            );
+        }
         let edges: Vec<_> = profile
             .outer
             .iter()

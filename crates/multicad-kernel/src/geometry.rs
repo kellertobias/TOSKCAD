@@ -15,6 +15,7 @@ mod axial_stack_body;
 mod bevel_body;
 pub(crate) mod bore_treatment;
 pub(crate) mod circular_pocket_body;
+pub(crate) mod construction;
 mod cosmetic_fastener_body;
 mod helical_body;
 mod helical_tube_body;
@@ -1064,6 +1065,10 @@ impl Solid {
         Ok(solid)
     }
     pub fn box_solid(size_mm: [f64; 3], policy: GeometryPolicy) -> Result<Self, GeometryError> {
+        if !crate::OCCT_LINKED {
+            return construction::box_solid(size_mm, EntityId::new(), policy)?
+                .without_authored_provenance();
+        }
         policy.validate()?;
         for v in size_mm {
             policy.length(v)?;
@@ -1080,6 +1085,10 @@ impl Solid {
         height_mm: f64,
         policy: GeometryPolicy,
     ) -> Result<Self, GeometryError> {
+        if !crate::OCCT_LINKED {
+            return construction::cylinder(frame, radius_mm, height_mm, EntityId::new(), policy)?
+                .without_authored_provenance();
+        }
         policy.validate()?;
         policy.length(radius_mm)?;
         policy.length(height_mm)?;
@@ -1095,6 +1104,20 @@ impl Solid {
         height_mm: f64,
         policy: GeometryPolicy,
     ) -> Result<Self, GeometryError> {
+        if !crate::OCCT_LINKED {
+            let feature = EntityId::new();
+            return construction::profile(
+                profile,
+                height_mm,
+                feature,
+                &construction::origins(
+                    feature,
+                    profile.outer.len() + profile.holes.iter().map(Vec::len).sum::<usize>(),
+                ),
+                policy,
+            )?
+            .without_authored_provenance();
+        }
         policy.validate()?;
         policy.length(height_mm.abs())?;
         let (frame, edges, offsets) = profile.checked(policy)?;
@@ -1106,6 +1129,17 @@ impl Solid {
         )
     }
     pub fn boolean(
+        &self,
+        other: &Self,
+        operation: BooleanOperation,
+        policy: GeometryPolicy,
+    ) -> Result<Option<Self>, GeometryError> {
+        self.boolean_geometry(other, operation, policy)?
+            .map(|result| result.retain_authored_boolean_sources(&[self, other]))
+            .transpose()
+    }
+
+    fn boolean_geometry(
         &self,
         other: &Self,
         operation: BooleanOperation,
@@ -1319,7 +1353,7 @@ impl Solid {
             let result = Self {
                 body,
                 policy: self.policy,
-                provenance: vec![],
+                provenance: self.transformed_author_metadata(transform),
                 rust_origins: self.rust_origins.clone(),
             };
             let bounds = result.bounds()?;

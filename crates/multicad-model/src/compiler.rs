@@ -764,7 +764,7 @@ impl Compiler {
             crate::eval_cache::Session::new(cache, self, backend, document, context.parameters())
         });
         let geometry_queries = match backend {
-            GeometryBackend::OpenCascade => NativeRegionQueries::new(self.policy),
+            GeometryBackend::OpenCascade => NativeRegionQueries::native(self.policy),
             GeometryBackend::Rust => NativeRegionQueries::analytic(self.policy),
         }
         .map_err(|e| error(None, e))?;

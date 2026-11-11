@@ -783,7 +783,7 @@ impl PlanarBooleanBody {
                             matching.next().is_none().then_some(face)
                         })
                 });
-                if let Some(source) = source {
+                if let Some(source) = source.filter(|source| !source.origins.is_empty()) {
                     source_boundaries[i] = Some((
                         source.boundary.clone(),
                         part.map_or(1., |part| part.normal_sign),
@@ -1118,6 +1118,11 @@ impl PlanarBooleanBody {
                         v: vector(frame, anchor.frame.v),
                     },
                 }));
+            if self.scaled_ancestry.is_some() {
+                element
+                    .frames
+                    .retain(|anchor| element.origins.contains(&anchor.origin));
+            }
         }
         TopologySnapshot {
             owner,

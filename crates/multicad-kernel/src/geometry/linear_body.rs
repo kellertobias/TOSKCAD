@@ -313,8 +313,30 @@ impl Solid {
         origins: &[Origin],
         policy: GeometryPolicy,
     ) -> Result<Self, GeometryError> {
-        let end = if taper_rad == 0. {
+        if taper_rad == 0. {
             profile.checked(policy)?;
+        }
+        Self::rust_extrude_linear_validated_named(
+            profile,
+            displacement_mm,
+            taper_rad,
+            feature,
+            origins,
+            policy,
+        )
+    }
+
+    /// The caller has checked the profile against its appropriate interactive
+    /// or manufacturing budget. The owned Sweep still certifies the geometry.
+    pub(crate) fn rust_extrude_linear_validated_named(
+        profile: &CurvedProfile,
+        displacement_mm: Point,
+        taper_rad: f64,
+        feature: EntityId,
+        origins: &[Origin],
+        policy: GeometryPolicy,
+    ) -> Result<Self, GeometryError> {
+        let end = if taper_rad == 0. {
             None
         } else {
             Some(taper::end_profile(

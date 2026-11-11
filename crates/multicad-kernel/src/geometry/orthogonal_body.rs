@@ -909,6 +909,7 @@ fn support_origins(
 ) -> Result<(BTreeSet<Origin>, Vec<AnchoredFrame>), GeometryError> {
     let mut origins = BTreeSet::new();
     let mut frames = BTreeMap::<Origin, Option<ReferenceFrame>>::new();
+    let mut matched = false;
     for support in sources {
         let mut found = false;
         'search: for &patch in patches {
@@ -923,6 +924,7 @@ fn support_origins(
             }
         }
         if found {
+            matched = true;
             origins.extend(support.face.origins.iter().cloned());
             for anchor in &support.face.frames {
                 let mut frame = anchor.frame;
@@ -939,6 +941,11 @@ fn support_origins(
                     .or_insert(Some(frame));
             }
         }
+    }
+    if !matched {
+        return Err(invalid(
+            "Orthogonal Boolean could not certify source face ancestry",
+        ));
     }
     let frames = frames
         .into_iter()
@@ -1155,11 +1162,6 @@ impl OrthogonalBody {
                     .map_or(&[][..], Vec::as_slice);
                 let (origins, frames) =
                     support_origins(face.normal, &patches, face_sources, &mut budget)?;
-                if origins.is_empty() {
-                    return Err(invalid(
-                        "Orthogonal Boolean could not certify source face ancestry",
-                    ));
-                }
                 (origins, frames)
             } else {
                 let mut points: Vec<_> = face.rings.iter().flatten().copied().map(key).collect();
@@ -1236,7 +1238,12 @@ impl OrthogonalBody {
             item.boundary = adjacent_origins(&adjacent);
             if let Some(sources) = sources {
                 inherit_lower_origins(&mut item, sources, &mut budget)?;
-                name_intersection(&mut item, feature, &adjacent, &signatures, 2, "edge");
+                if adjacent
+                    .iter()
+                    .all(|&face| !elements[face].origins.is_empty())
+                {
+                    name_intersection(&mut item, feature, &adjacent, &signatures, 2, "edge");
+                }
             } else {
                 let mut endpoints = [key(a_mm), key(b_mm)];
                 endpoints.sort_unstable();
@@ -1256,7 +1263,12 @@ impl OrthogonalBody {
             item.boundary = adjacent_origins(&adjacent);
             if let Some(sources) = sources {
                 inherit_lower_origins(&mut item, sources, &mut budget)?;
-                name_intersection(&mut item, feature, &adjacent, &signatures, 3, "vertex");
+                if adjacent
+                    .iter()
+                    .all(|&face| !elements[face].origins.is_empty())
+                {
+                    name_intersection(&mut item, feature, &adjacent, &signatures, 3, "vertex");
+                }
             } else {
                 item.origins
                     .insert(imported_origin(feature, "vertex", [key(position_mm)]));
