@@ -1,6 +1,9 @@
 //! Finite analytic cylinders along +Z, with an exact circular cross section.
 use crate::{Circle, Error, Rational};
 
+mod point_distance;
+pub use point_distance::PointDistance;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct AxialCylinder {
     feature: u128,
