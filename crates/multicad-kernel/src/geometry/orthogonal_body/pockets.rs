@@ -21,6 +21,10 @@ impl Solid {
         through: Vec<OrthogonalThroughBore>,
         through_origins: Vec<Origin>,
     ) -> Result<Self, GeometryError> {
+        let authored = self
+            .has_authored_metadata_override()
+            .then(|| self.share())
+            .transpose()?;
         let SolidBody::Orthogonal(body, _) = &mut self.body else {
             return Err(invalid("Circular pockets require orthogonal stock"));
         };
@@ -49,12 +53,27 @@ impl Solid {
             }
             body.validate_slots(&body.slots, &pockets, self.policy)?;
         }
+        // The old override names the old boundary. Rebuild it after the cut,
+        // retaining public source identities and only newly authored cutters.
+        let generated: Vec<_> = pocket_origins
+            .iter()
+            .chain(&through_origins)
+            .filter(|origin| {
+                !body.pocket_origins.contains(origin) && !body.through_origins.contains(origin)
+            })
+            .cloned()
+            .collect();
         let body = Rc::make_mut(body);
         body.pockets = pockets.into();
         body.pocket_origins = pocket_origins.into();
         body.through_bores = through.into();
         body.through_origins = through_origins.into();
-        Ok(self)
+        if let Some(source) = authored {
+            self.provenance.clear();
+            self.retain_authored_sources_with_generated(&[&source], &generated)
+        } else {
+            Ok(self)
+        }
     }
 
     pub(crate) fn rust_transfer_rectilinear_cut(

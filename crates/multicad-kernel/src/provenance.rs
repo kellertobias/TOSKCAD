@@ -956,8 +956,16 @@ impl Solid {
     // Unnamed operations can inherit real authored sources, but private IDs of
     // anonymous constructor operands must never become persistent identities.
     pub(crate) fn retain_authored_boolean_sources(
+        self,
+        sources: &[&Self],
+    ) -> Result<Self, GeometryError> {
+        self.retain_authored_sources_with_generated(sources, &[])
+    }
+
+    pub(crate) fn retain_authored_sources_with_generated(
         mut self,
         sources: &[&Self],
+        generated: &[Origin],
     ) -> Result<Self, GeometryError> {
         if !sources
             .iter()
@@ -966,7 +974,7 @@ impl Solid {
             return Ok(self);
         }
         let owner = EntityId::new();
-        let mut published = BTreeSet::new();
+        let mut published: BTreeSet<_> = generated.iter().cloned().collect();
         let mut private_sources = BTreeSet::new();
         for source in sources {
             let visible = source.topology_snapshot(owner, 0)?;
