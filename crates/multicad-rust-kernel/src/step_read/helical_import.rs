@@ -35,14 +35,15 @@ pub(super) fn read_member(
         }
         count += 1;
     }
-    if !count.is_multiple_of(4) || !matches!(faces.len() - count, 2 | 3 | 9 | 11) {
+    if !count.is_multiple_of(4) || !matches!(faces.len() - count, 2 | 3 | 9 | 11 | 13) {
         return Ok(None);
     }
     if count > 32 {
         return Err(ReadError::Limit);
     }
     let starts = (count / 4) as u32;
-    let headed = matches!(faces.len() - count, 9 | 11);
+    let headed = matches!(faces.len() - count, 9 | 11 | 13);
+    let shank = faces.len() - count == 13;
     let mut grids = Vec::with_capacity(4);
     let mut radial = Vec::with_capacity(4);
     let mut axial = None;
@@ -110,7 +111,18 @@ pub(super) fn read_member(
         let point = shell.point(*ids.first().ok_or(ReadError::Invalid)?)?;
         Ok(length(sub(point, origin)))
     };
-    let major = radius(3, false)?;
+    let major = if shank {
+        let (surface, forward, _) = face(shell, faces[count + 2])?;
+        require(forward)?;
+        let [Value::String(_), _, Value::Number(radius)] =
+            shell.args(surface, "CYLINDRICAL_SURFACE")?
+        else {
+            return Err(ReadError::Invalid);
+        };
+        *radius
+    } else {
+        radius(3, false)?
+    };
     let upper_radius = radius(0, true)?;
     let lower_radius = radius(2, false)?;
     let phase_start = radial[0][0] * rate;
@@ -119,16 +131,31 @@ pub(super) fn read_member(
     let phase_crest = radial[2][1] * rate;
     let upper_run = (phase_upper - phase_start) / (major - upper_radius);
     let lower_run = (phase_crest - phase_lower) / (major - lower_radius);
-    let (depth, root_radius) = if radial[1][0] < 0. {
+    let (depth, root_radius, flank_degrees) = if radial[1][0] < 0. {
         let [a, b] = radial[1];
         require(
             a < 0. && b > 0. && a > -std::f64::consts::FRAC_PI_2 && b < std::f64::consts::FRAC_PI_2,
         )?;
         let f = (phase_lower - phase_upper) / (b.sin() - a.sin());
-        let center = upper_radius + f * a.cos();
-        (major - center + f, Some(f))
+        // The circular-root trim directly carries both tangent angles.
+        // Reconstruct their consistent depth in this intrinsic chart rather
+        // than subtracting radii obtained from distant world coordinates.
+        let lower = std::f64::consts::FRAC_PI_2 - b;
+        let upper = std::f64::consts::FRAC_PI_2 + a;
+        let half = (lower + upper) / 2.;
+        let tilt = (upper - lower) / 2.;
+        let intersection = (pitch - 2. * phase_start) / (lower.tan() + upper.tan());
+        (
+            intersection - f * (tilt.cos() / half.sin() - 1.),
+            Some(f),
+            [lower.to_degrees(), upper.to_degrees()],
+        )
     } else {
-        (major - upper_radius, None)
+        (
+            major - upper_radius,
+            None,
+            [lower_run.atan().to_degrees(), upper_run.atan().to_degrees()],
+        )
     };
     let stock = if faces.len() == count + 3 {
         let (surface, outward, _) = face(shell, faces[count + 2])?;
@@ -148,8 +175,8 @@ pub(super) fn read_member(
         length_mm: height,
         depth_mm: depth,
         crest_width_mm: 2. * phase_start,
-        lower_flank_deg: lower_run.atan().to_degrees(),
-        upper_flank_deg: upper_run.atan().to_degrees(),
+        lower_flank_deg: flank_degrees[0],
+        upper_flank_deg: flank_degrees[1],
         starts,
         left_hand: first.1 != stock.is_some(),
         root_radius_mm: root_radius,
@@ -171,13 +198,18 @@ pub(super) fn read_member(
                 [origin, u, v],
             )?
         } else {
+            let length = if shank {
+                headed::shank_length(shell, faces[count + 3], [origin, u, v])?
+            } else {
+                0.
+            };
+            let start = count + 2 + 2 * usize::from(shank);
             headed::socket(
                 shell,
-                faces[count + 2..]
-                    .try_into()
-                    .expect("nine socket head faces"),
+                faces[start..].try_into().expect("nine socket head faces"),
                 &thread,
                 [origin, u, v],
+                length,
             )?
         })
     } else {

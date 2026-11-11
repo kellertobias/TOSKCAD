@@ -213,7 +213,7 @@ impl Solid {
         feature: EntityId,
         policy: GeometryPolicy,
     ) -> Result<Self, GeometryError> {
-        let mut solid = Self::rust_machine_screw(
+        let mut solid = Self::rust_machine_screw_at_thread_frame(
             imported_request(spec),
             spec.root_radius_mm,
             screw,
@@ -656,9 +656,11 @@ impl HelicalBody {
 
     pub(super) fn has_importable_step_closure(&self) -> bool {
         self.step_stock().is_some()
-            || matches!(&self.form,
-            HelicalForm::Screw(screw) if screw.spec().shank_length_mm == 0.
-                && matches!(screw.spec().head, multicad_rust_kernel::headed_screw::ScrewHead::ExternalHex { .. } | multicad_rust_kernel::headed_screw::ScrewHead::SocketCap { .. }))
+            || matches!(&self.form, HelicalForm::Screw(screw)
+            if match screw.spec().head {
+                multicad_rust_kernel::headed_screw::ScrewHead::ExternalHex { .. } => screw.spec().shank_length_mm == 0.,
+                multicad_rust_kernel::headed_screw::ScrewHead::SocketCap { .. } => true,
+            })
     }
     pub(super) fn supports_step(&self, frame: PlaneFrame, policy: GeometryPolicy) -> bool {
         if let HelicalForm::Screw(screw) = &self.form {

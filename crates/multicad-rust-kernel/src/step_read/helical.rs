@@ -307,6 +307,7 @@ pub(super) fn verify_member(
             let (rim, seat, shank_volume, offset) = if let Some(length) = shank_length {
                 let joint = tangent.ok_or(ReadError::Invalid)?;
                 let (rim, seat, volume) = tangent_shank::verify(
+                    proof,
                     shell,
                     [faces[6], faces[7]],
                     joint,

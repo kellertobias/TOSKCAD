@@ -19,6 +19,15 @@ fn source(left_hand: bool, frame: PlaneFrame, owner: EntityId) -> Solid {
     )
 }
 fn source_with_head(left_hand: bool, frame: PlaneFrame, owner: EntityId, head: ScrewHead) -> Solid {
+    source_with_shank(left_hand, frame, owner, head, 0.)
+}
+fn source_with_shank(
+    left_hand: bool,
+    frame: PlaneFrame,
+    owner: EntityId,
+    head: ScrewHead,
+    shank_length_mm: f64,
+) -> Solid {
     Solid::rust_machine_screw(
         HelicalThread {
             major_radius_mm: 3.,
@@ -35,7 +44,7 @@ fn source_with_head(left_hand: bool, frame: PlaneFrame, owner: EntityId, head: S
         None,
         ScrewSpec {
             head,
-            shank_length_mm: 0.,
+            shank_length_mm,
             shank_radius_mm: 3.,
         },
         owner,
@@ -300,4 +309,174 @@ fn independent_socket_head_import_keeps_recess_geometry_references_mesh_and_nati
             }
         }
     }
+}
+
+#[test]
+fn independent_partial_socket_import_keeps_retained_thread_frame_tangency_and_mesh() {
+    let policy = GeometryPolicy::default();
+    let head = ScrewHead::SocketCap {
+        radius_mm: 5.5,
+        height_mm: 4.,
+        socket_across_flats_mm: 4.,
+        socket_depth_mm: 2.,
+    };
+    let scratch = tempfile::tempdir().unwrap();
+    for left in [false, true] {
+        for length in [0.3, 2.25] {
+            for frame in [
+                PlaneFrame::default(),
+                PlaneFrame {
+                    origin: [3.3, -7.1, 11.2],
+                    u: [0.8, 0.6, 0.],
+                    v: [-0.36, 0.48, 0.8],
+                },
+            ] {
+                let original = source_with_shank(left, frame, EntityId::new(), head, length);
+                let path = scratch.path().join("partial.step");
+                original.write_step(&path).unwrap();
+                let text = std::fs::read_to_string(&path).unwrap();
+                let (_, decoded) = multicad_kernel::rust_kernel::step_read::read_import_solid(
+                    &text,
+                    policy.linear_tolerance_mm,
+                )
+                .unwrap();
+                let owner = EntityId::new();
+                let imported = Solid::import_rust_step(&text, owner, policy).unwrap();
+                assert_eq!(imported.faces().unwrap().len(), 17);
+                assert!(
+                    (imported.volume_mm3().unwrap() - original.volume_mm3().unwrap()).abs() < 1e-6
+                );
+                imported
+                    .manufacturing_mesh_with_receipt(Default::default())
+                    .unwrap();
+                let before = imported.topology_snapshot(owner, 0).unwrap();
+                assert!(before.elements.iter().any(|e|matches!(e.geometry,Some(AnalyticGeometry::Plane{frame}) if frame.origin_mm==decoded.origin_mm)));
+                let face = before
+                    .elements
+                    .iter()
+                    .find(|e| {
+                        e.key.kind == TopologyKind::Face
+                            && e.origins.iter().any(|o| o.role.contains("screw.shank"))
+                    })
+                    .unwrap();
+                let intent = GeometryIntent::capture(&before, face.key).unwrap();
+                let reread = Solid::import_rust_step(
+                    &text.replace("MultiCAD", "independent source"),
+                    owner,
+                    policy,
+                )
+                .unwrap();
+                assert!(matches!(
+                    resolve(&intent, &reread.topology_snapshot(owner, 1).unwrap(), 1),
+                    Resolution::Resolved { .. }
+                ));
+                let changed = source_with_shank(left, frame, EntityId::new(), head, length + 0.25);
+                changed.write_step(&path).unwrap();
+                let changed = Solid::import_rust_step(
+                    &std::fs::read_to_string(&path).unwrap(),
+                    owner,
+                    policy,
+                )
+                .unwrap();
+                assert!(!matches!(
+                    resolve(&intent, &changed.topology_snapshot(owner, 2).unwrap(), 2),
+                    Resolution::Resolved { .. }
+                ));
+                let compound = Solid::compound_named(
+                    &[
+                        &original,
+                        &source(
+                            !left,
+                            PlaneFrame {
+                                origin: [20., 0., 0.],
+                                ..Default::default()
+                            },
+                            EntityId::new(),
+                        ),
+                    ],
+                    EntityId::new(),
+                    policy,
+                )
+                .unwrap();
+                compound.write_step(&path).unwrap();
+                let imported_compound = Solid::import_rust_step(
+                    &std::fs::read_to_string(&path).unwrap(),
+                    owner,
+                    policy,
+                )
+                .unwrap();
+                assert_eq!(imported_compound.solid_count().unwrap(), 2);
+                imported_compound.write_step(&path).unwrap();
+                if OCCT_LINKED {
+                    imported.write_step(&path).unwrap();
+                    let native = Solid::read_step(&path, policy).unwrap();
+                    assert_eq!(native.solid_count().unwrap(), 1);
+                    assert!(
+                        (native.volume_mm3().unwrap() - imported.volume_mm3().unwrap()).abs()
+                            < 1e-5
+                    );
+                    let area =
+                        |s: &Solid| s.faces().unwrap().iter().map(|f| f.area_mm2).sum::<f64>();
+                    assert!((area(&native) - area(&imported)).abs() < 1e-5);
+                    let [a, b] = [native.bounds().unwrap(), imported.bounds().unwrap()];
+                    for (a, b) in a
+                        .min
+                        .into_iter()
+                        .chain(a.max)
+                        .zip(b.min.into_iter().chain(b.max))
+                    {
+                        assert!((a - b).abs() < 2e-6);
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn independent_long_shank_keeps_decoded_thread_origin_without_round_trip_offset() {
+    use multicad_kernel::rust_kernel::{
+        headed_screw::Screw,
+        helical_thread::{Spec, Thread},
+        step,
+    };
+    let geometry = Thread::new(Spec {
+        major_radius_mm: 3.,
+        pitch_mm: 1.,
+        length_mm: 3.7,
+        depth_mm: 5. * 3_f64.sqrt() / 16.,
+        crest_width_mm: 0.125,
+        lower_flank_deg: 30.,
+        upper_flank_deg: 30.,
+        starts: 1,
+        left_hand: false,
+        root_radius_mm: None,
+    })
+    .unwrap();
+    let screw = Screw::new(
+        geometry,
+        ScrewSpec {
+            head: ScrewHead::SocketCap {
+                radius_mm: 5.5,
+                height_mm: 4.,
+                socket_across_flats_mm: 4.,
+                socket_depth_mm: 2.,
+            },
+            shank_length_mm: 1e6,
+            shank_radius_mm: 3.,
+        },
+    )
+    .unwrap();
+    let origin = [0.1, 0.2, 0.1];
+    let text = step::write_helical_screw(&screw, origin, [1., 0., 0.], [0., 1., 0.], 1e-7).unwrap();
+    let owner = EntityId::new();
+    let solid = Solid::import_rust_step(&text, owner, GeometryPolicy::default()).unwrap();
+    let snapshot = solid.topology_snapshot(owner, 0).unwrap();
+    assert!(snapshot.elements.iter().any(
+        |e| matches!(e.geometry,Some(AnalyticGeometry::Plane{frame}) if frame.origin_mm==origin)
+    ));
+    assert!((solid.volume_mm3().unwrap() - screw.volume_mm3()).abs() < 1e-5);
+    solid
+        .manufacturing_mesh_with_receipt(Default::default())
+        .unwrap();
 }

@@ -19,13 +19,17 @@ fn compile(s: &Session) -> multicad_model::Model {
 }
 #[test]
 fn saved_hex_screw_edits_and_history_retain_blind_step_importable_geometry() {
-    saved_screw(true);
+    saved_screw(true, false);
 }
 #[test]
 fn saved_socket_screw_edits_and_history_retain_blind_step_importable_geometry() {
-    saved_screw(false);
+    saved_screw(false, false);
 }
-fn saved_screw(hex: bool) {
+#[test]
+fn saved_partial_socket_screw_edits_and_history_retain_blind_step_importable_geometry() {
+    saved_screw(false, true);
+}
+fn saved_screw(hex: bool, partial: bool) {
     let actor = || Actor::local(Channel::Mcp);
     let mut s = Session::new(Document::new("Importable modeled hex screw").unwrap()).unwrap();
     let mut parameters = model::default_machine_screw();
@@ -63,7 +67,10 @@ fn saved_screw(hex: bool) {
     *shank_diameter = length(6.);
     thread.major_diameter = length(6.);
     thread.pitch = length(1.);
-    thread.length = length(8.);
+    thread.length = length(if partial { 4. } else { 8. });
+    if partial {
+        thread.fit = model::ThreadFit::NominalBasic;
+    }
     thread.representation = ThreadRepresentation::Modeled;
     let request = MechanicalPartRequest::new("M6 hex", parameters.clone());
     s.commit(
@@ -73,20 +80,27 @@ fn saved_screw(hex: bool) {
     )
     .unwrap();
     let original = s.document().clone();
-    let MechanicalPartParameters::MachineScrew { head, .. } = &mut parameters else {
-        panic!()
-    };
-    *head = if hex {
-        ScrewHead::ExternalHex {
-            across_flats: length(10.),
-            height: length(5.),
-        }
+    if partial {
+        let MechanicalPartParameters::MachineScrew { thread, .. } = &mut parameters else {
+            panic!()
+        };
+        thread.length = length(5.);
     } else {
-        ScrewHead::SocketCap {
-            diameter: length(11.),
-            height: length(5.),
-        }
-    };
+        let MechanicalPartParameters::MachineScrew { head, .. } = &mut parameters else {
+            panic!()
+        };
+        *head = if hex {
+            ScrewHead::ExternalHex {
+                across_flats: length(10.),
+                height: length(5.),
+            }
+        } else {
+            ScrewHead::SocketCap {
+                diameter: length(11.),
+                height: length(5.),
+            }
+        };
+    }
     s.commit(
         model::prepare_mechanical_part_edit(
             &s,
@@ -131,5 +145,14 @@ fn saved_screw(hex: bool) {
     )
     .unwrap();
     assert!((imported.volume_mm3().unwrap() - source.volume_mm3().unwrap()).abs() < 1e-6);
-    assert_eq!(imported.faces().unwrap().len(), if hex { 13 } else { 15 });
+    assert_eq!(
+        imported.faces().unwrap().len(),
+        if hex {
+            13
+        } else if partial {
+            17
+        } else {
+            15
+        }
+    );
 }

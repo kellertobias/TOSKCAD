@@ -1,7 +1,7 @@
 //! Infer candidate head dimensions from physical finite face boundaries.
 use super::*;
 mod socket;
-pub(super) use socket::socket;
+pub(super) use socket::{shank_length, socket};
 
 pub(super) fn hex(
     shell: &mut Shell<'_, '_>,
@@ -95,7 +95,30 @@ pub fn helical_screw_import_matches(
     let ImportProfile::HelicalScrew { spec, screw } = imported.profile else {
         return false;
     };
-    if source.spec().shank_length_mm != 0. || screw.shank_length_mm != 0. {
+    let [la, lb] = [source.spec().shank_length_mm, screw.shank_length_mm];
+    if (la == 0.) != (lb == 0.) || la < 0. || lb < 0. {
+        return false;
+    }
+    if la > 0.
+        && (!matches!(source.spec().head, ScrewHead::SocketCap { .. })
+            || !matches!(screw.head, ScrewHead::SocketCap { .. }))
+    {
+        return false;
+    }
+    let frames = [[origin, u, v], [imported.origin_mm, imported.u, imported.v]];
+    if la > 0.
+        && (!circles_match(
+            [source.spec().shank_radius_mm, screw.shank_radius_mm],
+            [0., 0.],
+            frames,
+            tolerance,
+        ) || !circles_match(
+            [source.spec().shank_radius_mm, screw.shank_radius_mm],
+            [-la, -lb],
+            frames,
+            tolerance,
+        ))
+    {
         return false;
     }
     let thread_profile = ImportSolid {
@@ -114,7 +137,6 @@ pub fn helical_screw_import_matches(
     ) {
         return false;
     }
-    let frames = [[origin, u, v], [imported.origin_mm, imported.u, imported.v]];
     let (af, heights) = match (source.spec().head, screw.head) {
         (
             ScrewHead::ExternalHex {
@@ -140,12 +162,15 @@ pub fn helical_screw_import_matches(
                 socket_depth_mm: db,
             },
         ) => {
-            if !circles_match([ra, rb], [0., 0.], frames, tolerance)
-                || !circles_match([ra, rb], [-ha, -hb], frames, tolerance)
+            if !circles_match([ra, rb], [-la, -lb], frames, tolerance)
+                || !circles_match([ra, rb], [-la - ha, -lb - hb], frames, tolerance)
             {
                 return false;
             }
-            ([a, b], [(-ha, -hb), (-ha + da, -hb + db)])
+            (
+                [a, b],
+                [(-la - ha, -lb - hb), (-la - ha + da, -lb - hb + db)],
+            )
         }
         _ => return false,
     };

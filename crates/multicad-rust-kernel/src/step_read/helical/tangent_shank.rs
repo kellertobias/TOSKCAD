@@ -8,6 +8,7 @@ pub(super) struct Junction {
 }
 
 pub(super) fn verify(
+    proof: Proof,
     shell: &mut Shell<'_, '_>,
     [wall, seat]: [u32; 2],
     joint: Junction,
@@ -30,8 +31,7 @@ pub(super) fn verify(
         [last, first],
         origin,
         arc_axis,
-        radius,
-        (start + spec.pitch_mm - crest) / rate.abs(),
+        (proof, radius, (start + spec.pitch_mm - crest) / rate.abs()),
     )?;
     arc(
         shell,
@@ -39,8 +39,7 @@ pub(super) fn verify(
         [first, last],
         origin,
         arc_axis,
-        radius,
-        (crest - start) / rate.abs(),
+        (proof, radius, (crest - start) / rate.abs()),
     )?;
 
     let (surface, forward, bounds) = face(shell, seat)?;
@@ -49,7 +48,7 @@ pub(super) fn verify(
     };
     require(forward)?;
     let center = std::array::from_fn(|i| origin[i] + axis[i] * -length_mm);
-    let plane = check_axis(shell, hex_head::plane(shell, surface)?, center, axis, u)?;
+    let plane = proof.axis(shell, hex_head::plane(shell, surface)?, center, axis, u)?;
     let lower = socket_head::circle_rim(
         shell,
         shank_rim,
@@ -57,13 +56,7 @@ pub(super) fn verify(
         false,
         plane.origin,
         axis,
-        (
-            Proof {
-                error: None,
-                extent: 1.,
-            },
-            radius,
-        ),
+        (proof, radius),
     )?;
 
     let (surface, forward, bounds) = face(shell, wall)?;
@@ -78,7 +71,7 @@ pub(super) fn verify(
     };
     let measured_radius = *measured_radius;
     require(measured_radius == radius)?;
-    let cylinder = check_axis(shell, placement, plane.origin, axis, reference)?;
+    let cylinder = proof.axis(shell, placement, plane.origin, axis, reference)?;
     let edges = ring(shell, bound, true)?;
     let [(bottom, true), (seam, true), top_a, top_b, (other, false)] = edges[..] else {
         return Err(ReadError::Invalid);
@@ -106,8 +99,7 @@ fn arc(
     vertices: [u32; 2],
     center: Point,
     normal: Point,
-    radius: f64,
-    sweep: f64,
+    (proof, radius, sweep): (Proof, f64, f64),
 ) -> Result<()> {
     let [Value::String(_), from, to, curve, Value::Enum("T")] = shell.args(edge, "EDGE_CURVE")?
     else {
@@ -121,14 +113,23 @@ fn arc(
     };
     require(*measured == radius)?;
     let axis = shell.placement(reference(placement)?)?;
-    require(axis.origin == center && length(sub(axis.normal, normal)) < 1e-10)?;
+    require(
+        proof.equal(axis.origin, center) && length(sub(axis.normal, normal)) < proof.angular(),
+    )?;
     let (sin, cos) = sweep.sin_cos();
     let expected = [
         std::array::from_fn(|i| center[i] + radius * axis.u[i]),
         std::array::from_fn(|i| center[i] + radius * (cos * axis.u[i] + sin * axis.v[i])),
     ];
     for (vertex, expected) in vertices.into_iter().zip(expected) {
-        require(length(sub(shell.vertex(vertex)?, expected)) <= shell.tolerance)?;
+        let actual = shell.vertex(vertex)?;
+        require(
+            proof
+                .error
+                .map_or(length(sub(actual, expected)) <= shell.tolerance, |_| {
+                    proof.equal(actual, expected)
+                }),
+        )?;
     }
     Ok(())
 }
@@ -224,6 +225,10 @@ mod tests {
 
         let lower_edge = ring(&reader, seat_bounds[1], false).unwrap()[0].0;
         let lower_circle = edge_geometry(lower_edge)[2];
+        let crest_axis = reference(&reader.args(crest_circle, "CIRCLE").unwrap()[1]).unwrap();
+        let crest_placement = reader.args(crest_axis, "AXIS2_PLACEMENT_3D").unwrap();
+        let normal = reference(&crest_placement[2]).unwrap();
+        let reference_direction = reference(&crest_placement[3]).unwrap();
         for (id, record) in [
             (
                 complement_use,
@@ -239,6 +244,8 @@ mod tests {
                     "EDGE_CURVE('',#{complement_start},#{complement_end},#{complement_circle},.F.);"
                 ),
             ),
+            (normal, "DIRECTION('',(0.,0.,1.));".into()),
+            (reference_direction, "DIRECTION('',(0.,1.,0.));".into()),
             (lower_circle, "CIRCLE('');".into()),
             (crest_circle, "CIRCLE('');".into()),
             (faces[6], format!("ADVANCED_FACE('',(),#{wall},.T.);")),
@@ -259,6 +266,7 @@ mod tests {
                 Err(ReadError::Invalid),
                 "altered record {id}: {record}"
             );
+            assert!(crate::step_read::read_import_solid(&changed, 1e-7).is_err());
         }
     }
 }

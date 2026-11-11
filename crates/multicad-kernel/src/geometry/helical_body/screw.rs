@@ -6,6 +6,12 @@ use super::{
 };
 use multicad_rust_kernel::headed_screw::{ScrewFace, ScrewHead, ScrewSpec};
 
+#[derive(Clone, Copy)]
+enum MountingFrame {
+    Underhead(PlaneFrame),
+    Thread(PlaneFrame),
+}
+
 impl Solid {
     /// Build a screw in its canonical underhead mounting frame. The thread,
     /// optional plain shank and recessed or hex head share one boundary.
@@ -17,6 +23,43 @@ impl Solid {
         underhead: PlaneFrame,
         policy: GeometryPolicy,
     ) -> Result<Self, GeometryError> {
+        Self::machine_screw_in_frame(
+            spec,
+            root_radius_mm,
+            screw,
+            feature,
+            MountingFrame::Underhead(underhead),
+            policy,
+        )
+    }
+
+    pub(super) fn rust_machine_screw_at_thread_frame(
+        spec: HelicalThread,
+        root_radius_mm: Option<f64>,
+        screw: ScrewSpec,
+        feature: EntityId,
+        frame: PlaneFrame,
+        policy: GeometryPolicy,
+    ) -> Result<Self, GeometryError> {
+        Self::machine_screw_in_frame(
+            spec,
+            root_radius_mm,
+            screw,
+            feature,
+            MountingFrame::Thread(frame),
+            policy,
+        )
+    }
+
+    fn machine_screw_in_frame(
+        spec: HelicalThread,
+        root_radius_mm: Option<f64>,
+        screw: ScrewSpec,
+        feature: EntityId,
+        mounting: MountingFrame,
+        policy: GeometryPolicy,
+    ) -> Result<Self, GeometryError> {
+        let (MountingFrame::Underhead(underhead) | MountingFrame::Thread(underhead)) = mounting;
         policy.validate()?;
         underhead.checked(policy)?;
         policy.length(screw.shank_radius_mm)?;
@@ -50,9 +93,12 @@ impl Solid {
                 "The plain shank radius must cover the full thread crest",
             ));
         }
-        let frame = PlaneFrame {
-            origin: position(underhead, [0., 0., screw.shank_length_mm]),
-            ..underhead
+        let frame = match mounting {
+            MountingFrame::Thread(frame) => frame,
+            MountingFrame::Underhead(underhead) => PlaneFrame {
+                origin: position(underhead, [0., 0., screw.shank_length_mm]),
+                ..underhead
+            },
         };
         Self::rust_helical_body(spec, root_radius_mm, feature, frame, policy, |thread| {
             Screw::new(thread, screw)

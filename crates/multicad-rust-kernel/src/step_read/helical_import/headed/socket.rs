@@ -5,21 +5,15 @@ pub(in super::super) fn socket(
     faces: &[u32; 9],
     thread: &Thread,
     frame: [Point; 3],
+    shank_length_mm: f64,
 ) -> Result<Screw> {
     let chart = Chart::new(frame)?;
-    let plane = |id| -> Result<(Plane, Vec<u32>)> {
-        let (surface, forward, bounds) = face(shell, id)?;
-        require(forward)?;
-        let [Value::String(_), placement] = shell.args(surface, "PLANE")? else {
-            return Err(ReadError::Invalid);
-        };
-        Ok((shell.placement(reference(placement)?)?, bounds))
-    };
-    let (bottom, bounds) = plane(faces[0])?;
+    let (bottom, bounds) = plane(shell, faces[0])?;
     require(bounds.len() == 2)?;
-    let (floor, _) = plane(faces[2])?;
-    let height = -chart.local(bottom.origin)[2];
-    let depth = chart.local(floor.origin)[2] + height;
+    let (floor, _) = plane(shell, faces[2])?;
+    let below = -chart.local(bottom.origin)[2];
+    let height = below - shank_length_mm;
+    let depth = chart.local(floor.origin)[2] + below;
     let (cylinder, forward, _) = face(shell, faces[1])?;
     require(forward)?;
     let [Value::String(_), _, Value::Number(radius)] =
@@ -45,7 +39,7 @@ pub(in super::super) fn socket(
                 socket_across_flats_mm: 2. * half_width,
                 socket_depth_mm: depth,
             },
-            shank_length_mm: 0.,
+            shank_length_mm,
             shank_radius_mm: thread.spec().major_radius_mm,
         },
     )
@@ -55,10 +49,33 @@ pub(in super::super) fn socket(
     })
 }
 
+fn plane(shell: &Shell<'_, '_>, id: u32) -> Result<(Plane, Vec<u32>)> {
+    let (surface, forward, bounds) = face(shell, id)?;
+    require(forward)?;
+    let [Value::String(_), placement] = shell.args(surface, "PLANE")? else {
+        return Err(ReadError::Invalid);
+    };
+    Ok((shell.placement(reference(placement)?)?, bounds))
+}
+pub(in super::super) fn shank_length(
+    shell: &Shell<'_, '_>,
+    seat: u32,
+    frame: [Point; 3],
+) -> Result<f64> {
+    let (seat, bounds) = plane(shell, seat)?;
+    require(bounds.len() == 2)?;
+    let length = -Chart::new(frame)?.local(seat.origin)[2];
+    require(length.is_finite() && length > 0.)?;
+    Ok(length)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     fn screw(left_hand: bool, rounded: bool) -> Screw {
+        screw_with_shank(left_hand, rounded, 0.)
+    }
+    fn screw_with_shank(left_hand: bool, rounded: bool, shank_length_mm: f64) -> Screw {
         let root = rounded.then_some(1. / (4. * 3_f64.sqrt()));
         let thread = Thread::new(Spec {
             major_radius_mm: 3.,
@@ -82,7 +99,7 @@ mod tests {
                     socket_across_flats_mm: 4.,
                     socket_depth_mm: 2.,
                 },
-                shank_length_mm: 0.,
+                shank_length_mm,
                 shank_radius_mm: 3.,
             },
         )
@@ -219,6 +236,131 @@ mod tests {
                             ..read.clone()
                         };
                         assert!(!helical_screw_import_matches(&wrong, &screw, frame, 1e-7));
+                    }
+                }
+            }
+        }
+    }
+    #[test]
+    fn independent_partial_shanks_keep_all_tangent_arcs_roots_hands_and_retained_charts() {
+        for left in [false, true] {
+            for rounded in [false, true] {
+                for length in [0.5, 2., 10.] {
+                    let screw = screw_with_shank(left, rounded, length);
+                    for frame in [
+                        [[0.; 3], [1., 0., 0.], [0., 1., 0.]],
+                        [[3.3, -7.1, 11.2], [0.8, 0.6, 0.], [-0.36, 0.48, 0.8]],
+                        [[1e6, -5e5, 3e5], [0.8, 0.6, 0.], [-0.36, 0.48, 0.8]],
+                    ] {
+                        let [o, u, v] = frame;
+                        let text = crate::step::write_helical_screw(&screw, o, u, v, 1e-7).unwrap();
+                        eprintln!(
+                            "shank left={left} rounded={rounded} length={length} origin={o:?}"
+                        );
+                        let (metrics, read) =
+                            crate::step_read::read_import_solid(&text, 1e-7).unwrap();
+                        if !left && !rounded && length == 0.5 && o == [0.; 3] {
+                            let data = parse_entities(&text, 1e-7).unwrap();
+                            let reader = Shell::new(&data, 1e-7, true);
+                            let solid = reader.represented_solids(true).unwrap()[0];
+                            let faces = reader.member_faces(solid).unwrap();
+                            let (seat, _, _) = face(&reader, faces[7]).unwrap();
+                            let placement =
+                                reference(&reader.args(seat, "PLANE").unwrap()[1]).unwrap();
+                            let center = reference(
+                                &reader.args(placement, "AXIS2_PLACEMENT_3D").unwrap()[1],
+                            )
+                            .unwrap();
+                            let malformed =
+                                super::super::super::rejection_tests::edit(&text, center, |e| {
+                                    e.args[1] = Value::List(vec![
+                                        Value::Number(0.),
+                                        Value::Number(0.),
+                                        Value::Number(0.25),
+                                    ])
+                                });
+                            assert!(crate::step_read::read_import_solid(&malformed, 1e-7).is_err());
+                            for actual in [
+                                ScrewSpec {
+                                    shank_radius_mm: 3.25,
+                                    ..screw.spec()
+                                },
+                                ScrewSpec {
+                                    shank_length_mm: 0.75,
+                                    ..screw.spec()
+                                },
+                                ScrewSpec {
+                                    shank_length_mm: -1.,
+                                    ..screw.spec()
+                                },
+                            ] {
+                                let wrong = ImportSolid {
+                                    profile: ImportProfile::HelicalScrew {
+                                        spec: screw.thread().spec(),
+                                        screw: actual,
+                                    },
+                                    ..read.clone()
+                                };
+                                assert!(!helical_screw_import_matches(&wrong, &screw, frame, 1e-7));
+                            }
+                            let hex = Screw::new(
+                                *screw.thread(),
+                                ScrewSpec {
+                                    head: ScrewHead::ExternalHex {
+                                        across_flats_mm: 10.,
+                                        height_mm: 4.,
+                                    },
+                                    ..screw.spec()
+                                },
+                            )
+                            .unwrap();
+                            let wrong = ImportSolid {
+                                profile: ImportProfile::HelicalScrew {
+                                    spec: hex.thread().spec(),
+                                    screw: hex.spec(),
+                                },
+                                ..read.clone()
+                            };
+                            assert!(!helical_screw_import_matches(&wrong, &hex, frame, 1e-7));
+                            let long = Screw::new(
+                                *screw.thread(),
+                                ScrewSpec {
+                                    shank_length_mm: 40_000.,
+                                    ..screw.spec()
+                                },
+                            )
+                            .unwrap();
+                            let mut noisy = ImportSolid {
+                                profile: ImportProfile::HelicalScrew {
+                                    spec: long.thread().spec(),
+                                    screw: long.spec(),
+                                },
+                                ..read.clone()
+                            };
+                            assert!(helical_screw_import_matches(&noisy, &long, frame, 1e-7));
+                            noisy.u[0] = (1. + 8e-11_f64).sqrt();
+                            let only_thread = ImportSolid {
+                                profile: ImportProfile::HelicalThread {
+                                    spec: long.thread().spec(),
+                                    stock_radius_mm: None,
+                                },
+                                ..noisy.clone()
+                            };
+                            assert!(helical_import_matches(
+                                &only_thread,
+                                long.thread(),
+                                None,
+                                frame,
+                                1e-7
+                            ));
+                            assert!(!helical_screw_import_matches(&noisy, &long, frame, 1e-7));
+                        }
+                        assert_eq!(metrics.face_count, 17);
+                        assert!((metrics.volume_mm3 - screw.volume_mm3()).abs() < 1e-6);
+                        assert!(helical_screw_import_matches(&read, &screw, frame, 1e-7));
+                        assert!(
+                            matches!(read.profile, ImportProfile::HelicalScrew { screw: actual, .. } if (actual.shank_length_mm - length).abs() < 1e-8)
+                        );
                     }
                 }
             }
