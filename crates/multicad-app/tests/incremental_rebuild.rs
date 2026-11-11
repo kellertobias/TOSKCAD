@@ -136,10 +136,21 @@ fn scenario_edit(
         name,
     );
     let again = cache.last_compile().clone();
-    assert_eq!(
-        again.evaluated, first.uncacheable,
-        "{name}: an unchanged recompile re-ran a cacheable feature"
-    );
+    if again.reused_full_model {
+        assert!(
+            again.evaluated.is_empty(),
+            "{name}: retained model ran geometry"
+        );
+        assert_eq!(
+            again.reused, first.evaluated,
+            "{name}: retained model lost features"
+        );
+    } else {
+        assert_eq!(
+            again.evaluated, first.uncacheable,
+            "{name}: an unchanged recompile re-ran a cacheable feature"
+        );
+    }
     edit_parameter(&mut session, parameter, value).unwrap();
     let (edited, revision) = (session.document().clone(), session.revision());
     same(
