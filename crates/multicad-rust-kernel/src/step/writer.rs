@@ -214,6 +214,29 @@ impl Writer {
         })
     }
 
+    pub fn append_helical_receiver(
+        &mut self,
+        receiver: &crate::helical_receiver::Receiver,
+        origin: Point,
+        u: Point,
+        v: Point,
+        tolerance_mm: f64,
+    ) -> Result<(), StepError> {
+        let placement = Placement::new(origin, u, v)?;
+        self.append(|file| {
+            helical::encode(
+                file,
+                receiver.thread(),
+                helical::Closure::BlindBore {
+                    radius_mm: receiver.radius_mm(),
+                    stock_length_mm: receiver.stock_length_mm(),
+                },
+                placement,
+                tolerance_mm,
+            )
+        })
+    }
+
     pub fn append_helical_nut(
         &mut self,
         nut: &crate::hex_nut::Nut,

@@ -334,7 +334,7 @@ fn rust_mcp_cuts_and_reopens_a_metric_receiver_and_refuses_invalid_stock() {
         "major_diameter":mm(6.),"pitch":mm(1.),"length":mm(6.6),"fit":"metric_6h_internal",
         "minimum_wall":mm(1.)
     });
-    for (field, value) in [("length", mm(5.)), ("minimum_wall", mm(2.1))] {
+    for (field, value) in [("length", mm(7.)), ("minimum_wall", mm(2.1))] {
         let mut invalid = request.clone();
         invalid[field] = value;
         let rejected = dispatch(&h, &call(false), "set_thread", invalid).unwrap_err();
@@ -448,6 +448,37 @@ fn unc_and_unf_mcp_pairs_keep_fits_through_partial_edits_history_saved_reopen_an
                 .unwrap()
                 > actual
         );
+        let unchanged = h.document();
+        let bounded = Headless::with_geometry_backend(
+            Workspace::new(unchanged.clone()).unwrap(),
+            None,
+            false,
+            multicad_model::GeometryBackend::Rust,
+        );
+        for length in [4.5, 4. - 1e-8] {
+            let failure = dispatch(
+                &bounded,
+                &call(false),
+                "set_thread",
+                json!({"expected_revision":0,"thread":internal["thread"],"length":mm(length)}),
+            )
+            .unwrap_err();
+            assert_eq!(failure.code, "model_failed");
+            assert_eq!(bounded.document(), unchanged);
+            assert_eq!(h.document(), unchanged);
+        }
+        assert_eq!(
+            dispatch(
+                &h,
+                &call(true),
+                "set_thread",
+                json!({"expected_revision":2,"thread":internal["thread"],"length":mm(3.)})
+            )
+            .unwrap_err()
+            .code,
+            "cancelled"
+        );
+        assert_eq!(h.document(), unchanged);
         let before_edit = h.document();
         let prior = model::read_thread(&before_edit, shaft).unwrap();
         run(
@@ -493,10 +524,16 @@ fn unc_and_unf_mcp_pairs_keep_fits_through_partial_edits_history_saved_reopen_an
             let solid =
                 multicad_kernel::Solid::read_step(&dir.path().join(name), Default::default())
                     .unwrap();
+            let text = std::fs::read_to_string(dir.path().join(name)).unwrap();
             assert!(
-                solid.faces().unwrap().len() > 6,
-                "modeled output retains native helical faces"
+                text.contains("B_SPLINE_SURFACE_WITH_KNOTS"),
+                "modeled output retains actual helical surfaces"
             );
+            assert_eq!(
+                solid.faces().unwrap().len(),
+                text.matches("ADVANCED_FACE").count()
+            );
+            assert_eq!(solid.solid_count().unwrap(), 1);
         }
         let history = run(&h, "history", json!({}));
         assert!(history.to_string().contains("mcp:threads"));

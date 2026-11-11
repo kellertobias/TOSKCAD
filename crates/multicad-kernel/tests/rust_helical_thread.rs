@@ -288,7 +288,7 @@ fn unsupported_stock_placement_and_insufficient_wall_fail_without_changing_stock
         (spec, displaced),
         (
             HelicalThread {
-                length_mm: 8.,
+                length_mm: 12.,
                 ..spec
             },
             PlaneFrame::default(),

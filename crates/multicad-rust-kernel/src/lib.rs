@@ -11,6 +11,7 @@ pub mod cylinder;
 pub mod display;
 mod drawing_events;
 pub mod headed_screw;
+pub mod helical_receiver;
 pub mod helical_thread;
 pub mod helical_thread_mesh;
 pub mod helical_tube_cut;

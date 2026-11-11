@@ -39,6 +39,11 @@ pub enum ImportProfile {
         screw: crate::headed_screw::ScrewSpec,
     },
     /// Full hexagonal exterior and independently certified internal thread.
+    HelicalReceiver {
+        spec: crate::helical_thread::Spec,
+        stock_radius_mm: f64,
+        stock_length_mm: f64,
+    },
     HelicalNut {
         spec: crate::helical_thread::Spec,
         across_flats_mm: f64,

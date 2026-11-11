@@ -9,6 +9,8 @@ use crate::{
 use helical::{face, require};
 mod headed;
 pub use headed::helical_screw_import_matches;
+mod receiver;
+pub use receiver::helical_receiver_import_matches;
 mod nut;
 pub use nut::helical_nut_import_matches;
 use std::f64::consts::TAU;
@@ -37,7 +39,7 @@ pub(super) fn read_member(
         }
         count += 1;
     }
-    if !count.is_multiple_of(4) || !matches!(faces.len() - count, 2 | 3 | 8 | 9 | 11 | 13) {
+    if !count.is_multiple_of(4) || !matches!(faces.len() - count, 2 | 3 | 4 | 8 | 9 | 11 | 13) {
         return Ok(None);
     }
     if count > 32 {
@@ -46,6 +48,7 @@ pub(super) fn read_member(
     let starts = (count / 4) as u32;
     let headed = matches!(faces.len() - count, 9 | 11 | 13);
     let shank = faces.len() - count == 13;
+    let is_receiver = faces.len() - count == 4;
     let is_nut = faces.len() - count == 8;
     let mut grids = Vec::with_capacity(4);
     let mut radial = Vec::with_capacity(4);
@@ -91,6 +94,11 @@ pub(super) fn read_member(
     };
     let bottom = plane(faces[count])?;
     let top = plane(faces[count + 1])?;
+    let far = if is_receiver {
+        Some(plane(faces[count + 3])?)
+    } else {
+        None
+    };
     let origin = bottom.origin;
     let u = bottom.u;
     let v = bottom.v.map(|n| if headed { n } else { -n });
@@ -160,7 +168,7 @@ pub(super) fn read_member(
             [lower_run.atan().to_degrees(), upper_run.atan().to_degrees()],
         )
     };
-    let stock = if faces.len() == count + 3 {
+    let stock = if matches!(faces.len() - count, 3 | 4) {
         let (surface, outward, _) = face(shell, faces[count + 2])?;
         require(outward)?;
         let [Value::String(_), _, Value::Number(radius)] =
@@ -223,7 +231,30 @@ pub(super) fn read_member(
     } else {
         None
     };
-    let closure = if let Some(nut) = &nut {
+    let receiver = if is_receiver {
+        let far = far.ok_or(ReadError::Invalid)?;
+        let length = headed::Chart::new([origin, u, v])?.local(far.origin)[2];
+        Some(
+            crate::helical_receiver::Receiver::new(
+                thread,
+                stock.ok_or(ReadError::Invalid)?,
+                length,
+            )
+            .map_err(|e| match e {
+                crate::helical_thread::ThreadError::Invalid => ReadError::Invalid,
+                crate::helical_thread::ThreadError::Limit => ReadError::Limit,
+            })?,
+        )
+    } else {
+        None
+    };
+    let stock_height = receiver.as_ref().map_or(height, |r| r.stock_length_mm());
+    let closure = if let Some(receiver) = &receiver {
+        Closure::BlindBore {
+            radius_mm: receiver.radius_mm(),
+            stock_length_mm: receiver.stock_length_mm(),
+        }
+    } else if let Some(nut) = &nut {
         Closure::HexNut(nut.across_flats_mm())
     } else {
         screw
@@ -252,7 +283,9 @@ pub(super) fn read_member(
                     |nut| nut.support(direction),
                 )
             },
-            |radius| radius * direction[0].hypot(direction[1]) + (height * direction[2]).max(0.),
+            |radius| {
+                radius * direction[0].hypot(direction[1]) + (stock_height * direction[2]).max(0.)
+            },
         )
     };
     let bounds = [-1., 1.].map(|sign| {
@@ -262,13 +295,16 @@ pub(super) fn read_member(
         })
     });
     let circles = stock.map_or_else(Vec::new, |radius| {
-        [origin, top.origin]
-            .map(|center_mm| CircleEdge {
-                center_mm,
-                normal: n,
-                radius_mm: radius,
-            })
-            .to_vec()
+        [
+            origin,
+            std::array::from_fn(|i| origin[i] + n[i] * stock_height),
+        ]
+        .map(|center_mm| CircleEdge {
+            center_mm,
+            normal: n,
+            radius_mm: radius,
+        })
+        .to_vec()
     });
     let readback = Readback {
         bounds_mm: bounds,
@@ -288,8 +324,14 @@ pub(super) fn read_member(
             origin_mm: origin,
             u,
             v,
-            height_mm: height,
-            profile: if let Some(nut) = nut {
+            height_mm: stock_height,
+            profile: if let Some(receiver) = receiver {
+                ImportProfile::HelicalReceiver {
+                    spec: receiver.thread().spec(),
+                    stock_radius_mm: receiver.radius_mm(),
+                    stock_length_mm: receiver.stock_length_mm(),
+                }
+            } else if let Some(nut) = nut {
                 ImportProfile::HelicalNut {
                     spec: thread.spec(),
                     across_flats_mm: nut.across_flats_mm(),

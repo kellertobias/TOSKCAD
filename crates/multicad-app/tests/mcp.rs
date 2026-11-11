@@ -1115,7 +1115,17 @@ fn rust_stdio_exports_sourced_lead_and_buttress_pairs_after_reopen() {
     }
 }
 
+#[test]
+fn rust_stdio_exports_partial_metric_unc_and_unf_receivers_with_their_floor() {
+    export_thread_pair_with_floor("iso_metric", length(6.), 1., 1.5);
+    for (family, pitch) in [("unc", 25.4 / 20.), ("unf", 25.4 / 28.)] {
+        export_thread_pair_with_floor(family, json!({"value":0.25,"unit":"in"}), pitch, 1.5);
+    }
+}
 fn export_thread_pair(family: &str, diameter: Value, pitch: f64) {
+    export_thread_pair_with_floor(family, diameter, pitch, 0.);
+}
+fn export_thread_pair_with_floor(family: &str, diameter: Value, pitch: f64, floor_mm: f64) {
     let sourced_lead = matches!(family, "trapezoidal" | "acme" | "buttress");
     let physical_length = if sourced_lead { 3.37 * pitch } else { 3.7 };
     let stock_radius = match family {
@@ -1167,7 +1177,7 @@ fn export_thread_pair(family: &str, diameter: Value, pitch: f64) {
         "extrude",
         json!({
             "expected_revision": 3, "sketch": sketch, "regions": [0],
-            "distance": length(physical_length), "operation": "new_body",
+            "distance": length(physical_length+floor_mm), "operation": "new_body",
         }),
     )["created"][0]["part"]
         .clone();
@@ -1178,6 +1188,9 @@ fn export_thread_pair(family: &str, diameter: Value, pitch: f64) {
     });
     if matches!(family, "unc" | "unf") {
         receiver_arguments["fit"] = json!("unified_2b");
+    }
+    if floor_mm > 0. && family == "iso_metric" {
+        receiver_arguments["fit"] = json!("metric_6h_internal");
     }
     if family == "buttress" {
         receiver_arguments["buttress"] = json!({
@@ -1211,8 +1224,49 @@ fn export_thread_pair(family: &str, diameter: Value, pitch: f64) {
         assert_eq!(step.contains("CYLINDRICAL_SURFACE"), stock_wall);
         assert_eq!(step.matches("MANIFOLD_SOLID_BREP").count(), 1);
         assert!(!step.contains("FACETED_BREP"));
+        if stock_wall && floor_mm > 0. {
+            assert_eq!(step.matches("ADVANCED_FACE").count(), 8);
+            let imported = multicad_kernel::Solid::import_rust_step(
+                &step,
+                multicad_core::document::EntityId::new(),
+                Default::default(),
+            )
+            .unwrap();
+            assert!(!imported.rust_thread_contains([0., 0., 0.2]).unwrap());
+            assert!(
+                imported
+                    .rust_thread_contains([0., 0., physical_length + floor_mm / 2.])
+                    .unwrap()
+            );
+        }
     }
     assert_eq!(std::fs::read(&project).unwrap(), saved);
+    if floor_mm > 0. {
+        drop(reopened);
+        let imported_project = directory.path().join("imported-receiver.tcd");
+        let args = [
+            "--rust-model",
+            "--project",
+            imported_project.to_str().unwrap(),
+            "--export-dir",
+            exports.to_str().unwrap(),
+        ];
+        let mut importer = Client::start(&args);
+        let result = importer.ok(
+            "import_step",
+            json!({"expected_revision":0,"file_name":"receiver.step"}),
+        );
+        let volume = importer.part_volume();
+        importer.ok("save_project", json!({"expected_revision":1}));
+        drop(importer);
+        let mut imported = Client::start(&args);
+        close(imported.part_volume(), volume);
+        let receipt = imported.ok(
+            "export_step",
+            json!({"part":result["parts"][0],"file_name":"receiver-reexport.step"}),
+        );
+        close(receipt["readback_volume_mm3"].as_f64().unwrap(), volume);
+    }
 }
 
 #[test]

@@ -29,6 +29,10 @@ pub(crate) struct SocketHead {
 pub(crate) enum Closure {
     Shaft,
     Bore(f64),
+    BlindBore {
+        radius_mm: f64,
+        stock_length_mm: f64,
+    },
     /// External thread with a coaxial through bore of this radius.
     Hollow(f64),
     HexHead {
@@ -51,7 +55,10 @@ impl Closure {
     /// Radius and outward sense of the closing cylinder wall.
     pub(crate) fn cylinder(self) -> Option<(f64, bool)> {
         match self {
-            Self::Bore(radius) => Some((radius, true)),
+            Self::Bore(radius)
+            | Self::BlindBore {
+                radius_mm: radius, ..
+            } => Some((radius, true)),
             Self::Hollow(radius) => Some((radius, false)),
             _ => None,
         }
@@ -93,7 +100,10 @@ impl Closure {
     }
 
     pub(crate) fn inside(self) -> bool {
-        matches!(self, Self::Bore(_) | Self::HexNut(_))
+        matches!(
+            self,
+            Self::Bore(_) | Self::HexNut(_) | Self::BlindBore { .. }
+        )
     }
 
     pub(crate) fn tangent_shank(self) -> Option<f64> {
@@ -107,12 +117,30 @@ impl Closure {
     }
 
     pub(crate) fn cap_hole(self, top: bool) -> bool {
-        self.inside() || (!top && self.is_screw() && self.tangent_shank().is_none())
+        (self.inside() && !(top && self.is_blind_bore()))
+            || (!top && self.is_screw() && self.tangent_shank().is_none())
     }
 
+    pub(crate) fn is_blind_bore(self) -> bool {
+        matches!(self, Self::BlindBore { .. })
+    }
+    pub(crate) fn cap_positive(self, top: bool) -> bool {
+        (top && !self.is_blind_bore()) || self.is_screw()
+    }
+    pub(crate) fn stock_length(self, thread_length: f64) -> f64 {
+        if let Self::BlindBore {
+            stock_length_mm, ..
+        } = self
+        {
+            stock_length_mm
+        } else {
+            thread_length
+        }
+    }
     pub(crate) fn face_count(self, bands: usize) -> usize {
         match self {
             Self::Shaft => bands + 2,
+            Self::BlindBore { .. } => bands + 4,
             Self::Bore(_) | Self::Hollow(_) => bands + 3,
             Self::HexHead { .. } => bands + 9,
             Self::HexNut(_) => bands + 8,
@@ -123,7 +151,10 @@ impl Closure {
     fn radial_and_axial_extent(self, major_radius_mm: f64) -> (f64, f64) {
         match self {
             Self::Shaft | Self::Hollow(_) => (major_radius_mm, 0.),
-            Self::Bore(radius) => (radius, 0.),
+            Self::Bore(radius)
+            | Self::BlindBore {
+                radius_mm: radius, ..
+            } => (radius, 0.),
             Self::HexNut(width) => (width / 3_f64.sqrt(), 0.),
             Self::HexHead {
                 across_flats_mm,
@@ -132,6 +163,32 @@ impl Closure {
             Self::SocketHead(head) => (head.radius_mm, head.height_mm + head.shank_length_mm),
         }
     }
+}
+
+pub fn write_helical_receiver(
+    receiver: &crate::helical_receiver::Receiver,
+    origin: Point,
+    u: Point,
+    v: Point,
+    tolerance_mm: f64,
+) -> Result<String, StepError> {
+    write_one(|writer| writer.append_helical_receiver(receiver, origin, u, v, tolerance_mm))
+}
+pub fn supports_helical_receiver(
+    receiver: &crate::helical_receiver::Receiver,
+    origin: Point,
+    tolerance_mm: f64,
+) -> bool {
+    prepare(
+        receiver.thread(),
+        Closure::BlindBore {
+            radius_mm: receiver.radius_mm(),
+            stock_length_mm: receiver.stock_length_mm(),
+        },
+        origin,
+        tolerance_mm,
+    )
+    .is_ok()
 }
 
 pub fn write_helical_nut(
@@ -285,7 +342,9 @@ pub(super) fn encode(
 
     let centers = [0., height].map(|z| placement.point_f64([0.; 2], z));
     let cylinder = if let Some((radius, outward)) = closure.cylinder() {
-        let trim = CylindricalTrim::new(file, centers, placement.normal, placement.u, radius);
+        let stock_centers =
+            [0., closure.stock_length(height)].map(|z| placement.point_f64([0.; 2], z));
+        let trim = CylindricalTrim::new(file, stock_centers, placement.normal, placement.u, radius);
         Some((trim?, outward))
     } else {
         None
@@ -299,7 +358,11 @@ pub(super) fn encode(
             Some(trim?)
         }
         Closure::SocketHead(socket) => Some(encode_socket_head(file, &placement, socket)?),
-        Closure::Shaft | Closure::Bore(_) | Closure::Hollow(_) | Closure::HexNut(_) => None,
+        Closure::Shaft
+        | Closure::Bore(_)
+        | Closure::BlindBore { .. }
+        | Closure::Hollow(_)
+        | Closure::HexNut(_) => None,
     };
     let hex = if let Closure::HexNut(width) = closure {
         Some(encode_hex_prism(
@@ -331,7 +394,9 @@ pub(super) fn encode(
         };
         let trim = file.bound(&edges, !closure.cap_hole(top));
         let mut bounds = Vec::with_capacity(2);
-        if let Some((cylinder, outward)) = &cylinder {
+        if let Some((cylinder, outward)) = &cylinder
+            && !(top && closure.is_blind_bore())
+        {
             bounds.push(cylinder.cap_bound(file, top, *outward));
         }
         if let Some((rims, _)) = &hex {
@@ -345,7 +410,7 @@ pub(super) fn encode(
         }
         bounds.push(trim);
         let center = file.point(centers[end]);
-        let outward = top || closure.is_screw();
+        let outward = closure.cap_positive(top);
         let normal = placement
             .normal
             .map(|value| if outward { value } else { -value });
@@ -353,6 +418,11 @@ pub(super) fn encode(
     }
     if let Some((cylinder, outward)) = &cylinder {
         faces.push(cylinder.wall(file, *outward));
+        if closure.is_blind_bore() {
+            let bound = cylinder.cap_bound(file, true, true);
+            let center = file.point(placement.point_f64([0.; 2], closure.stock_length(height)));
+            faces.push(file.face(&[bound], center, placement.normal, placement.u));
+        }
     }
     if let Some((_, walls)) = hex {
         faces.extend(walls);
@@ -477,7 +547,7 @@ pub(crate) fn prepare(
     if spec.starts != 1
         && !matches!(
             closure,
-            Closure::Shaft | Closure::Bore(_) | Closure::HexNut(_)
+            Closure::Shaft | Closure::Bore(_) | Closure::HexNut(_) | Closure::BlindBore { .. }
         )
     {
         return Err(StepError::Unsupported);
@@ -485,6 +555,7 @@ pub(crate) fn prepare(
     if !tolerance_mm.is_finite()
         || tolerance_mm <= 0.
         || matches!(closure, Closure::Bore(r) if !r.is_finite() || r <= spec.major_radius_mm)
+        || matches!(closure, Closure::BlindBore { radius_mm,stock_length_mm } if crate::helical_receiver::Receiver::new(*thread,radius_mm,stock_length_mm).is_err())
         || matches!(closure, Closure::HexNut(width) if !width.is_finite() || width / 2. <= spec.major_radius_mm)
         || matches!(closure, Closure::Hollow(r)
             if !r.is_finite() || r <= 0. || r >= spec.major_radius_mm - spec.depth_mm)
@@ -501,13 +572,14 @@ pub(crate) fn prepare(
         + outer_radius
         + below
         + major * spin
-        + height
+        + closure.stock_length(height)
         + 1.;
     // Reserve room for floating-point and decimal STEP representation after
     // rotating/translating the polynomial poles.
     if 128. * f64::EPSILON * scale > tolerance / 2.
         || spec.major_radius_mm - spec.depth_mm <= tolerance
         || matches!(closure, Closure::Bore(radius) if radius - major <= tolerance)
+        || matches!(closure, Closure::BlindBore { radius_mm,stock_length_mm } if radius_mm-major<=tolerance || stock_length_mm-height<=tolerance)
         || matches!(closure, Closure::HexNut(width) if width / 2. - major <= tolerance)
         || matches!(closure, Closure::Hollow(radius)
             if radius <= tolerance || major - spec.depth_mm - radius <= tolerance)

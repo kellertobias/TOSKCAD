@@ -38,6 +38,26 @@ pub fn verify_helical_thread(
     )
 }
 
+pub fn verify_helical_receiver(
+    input: &str,
+    receiver: &crate::helical_receiver::Receiver,
+    origin: Point,
+    u: Point,
+    v: Point,
+    tolerance: f64,
+) -> Result<f64> {
+    verify(
+        input,
+        receiver.thread(),
+        Closure::BlindBore {
+            radius_mm: receiver.radius_mm(),
+            stock_length_mm: receiver.stock_length_mm(),
+        },
+        [origin, u, v],
+        tolerance,
+    )
+}
+
 pub fn verify_helical_nut(
     input: &str,
     nut: &crate::hex_nut::Nut,
@@ -105,6 +125,9 @@ pub(super) fn verify_member(
             .major_radius_mm
             .max(closure.cylinder().map_or(0., |(r, _)| r))
             .max(match closure {
+                Closure::BlindBore {
+                    stock_length_mm, ..
+                } => stock_length_mm,
                 Closure::HexNut(width) => width,
                 Closure::HexHead {
                     across_flats_mm,
@@ -250,7 +273,7 @@ pub(super) fn verify_member(
         let [Value::String(_), axis] = shell.args(surface, "PLANE")? else {
             return Err(ReadError::Invalid);
         };
-        let positive = top || closure.is_screw();
+        let positive = closure.cap_positive(top);
         let cap_axis = normal.map(|n| if positive { n } else { -n });
         caps[end] = proof
             .axis(shell, axis, world([0.; 2], z), cap_axis, u)?
@@ -280,7 +303,9 @@ pub(super) fn verify_member(
         if matches!(closure, Closure::HexNut(_)) {
             hex_rims[end] = bounds[0];
         }
-        if let Some((radius, outer)) = closure.cylinder() {
+        if let Some((radius, outer)) = closure.cylinder()
+            && !(top && closure.is_blind_bore())
+        {
             let rim = ring(shell, bounds[0], outer)?;
             let [(edge, sense)] = rim[..] else {
                 return Err(ReadError::Invalid);
@@ -312,6 +337,40 @@ pub(super) fn verify_member(
             )?;
             let sign = if outer { 1. } else { -1. };
             sign * std::f64::consts::PI * radius * radius * dot(sub(caps[1], caps[0]), axis)
+        }
+        Closure::BlindBore {
+            radius_mm,
+            stock_length_mm,
+        } => {
+            let (surface, forward, bounds) = face(shell, faces[count + 3])?;
+            require(forward && bounds.len() == 1)?;
+            let [Value::String(_), axis] = shell.args(surface, "PLANE")? else {
+                return Err(ReadError::Invalid);
+            };
+            let cap = proof.axis(shell, axis, world([0.; 2], stock_length_mm), normal, u)?;
+            let rim = ring(shell, bounds[0], true)?;
+            let [(edge, true)] = rim[..] else {
+                return Err(ReadError::Invalid);
+            };
+            shell.edge(edge)?;
+            let Curve::Circle(circle) = shell.edges[&edge].curve else {
+                return Err(ReadError::Invalid);
+            };
+            require(
+                proof.equal(circle.center_mm, world([0.; 2], stock_length_mm))
+                    && length(sub(circle.normal, normal)) < proof.angular()
+                    && circle.radius_mm == radius_mm,
+            )?;
+            cylinder_rims[1] = edge;
+            let (radius, axis) = check_cylinder_with_proof(
+                proof,
+                shell,
+                faces[count + 2],
+                cylinder_rims,
+                (radius_mm, true),
+                [origin, normal, u],
+            )?;
+            std::f64::consts::PI * radius * radius * dot(sub(cap.origin, caps[0]), axis)
         }
         Closure::HexNut(width) => {
             let hex = crate::headed_screw::hex_vertices(width);
