@@ -35,15 +35,18 @@ pub fn helical_receiver_import_matches(
     if !helical_import_matches(&thread, receiver.thread(), None, frame, tolerance) {
         return false;
     }
-    let [origin, u, v] = frame;
-    let na = cross(u, v);
-    let nb = cross(imported.u, imported.v);
-    let a = std::array::from_fn(|i| origin[i] + na[i] * receiver.stock_length_mm());
-    let b = std::array::from_fn(|i| imported.origin_mm[i] + nb[i] * stock_length_mm);
-    let radius = receiver.radius_mm();
-    let error = length(sub(origin, imported.origin_mm)).max(length(sub(a, b)))
-        + radius.max(stock_radius_mm) * (length(sub(u, imported.u)) + length(sub(v, imported.v)))
-        + (radius - stock_radius_mm).abs() * (length(imported.u) + length(imported.v));
+    let error = super::cylindrical_closure::error(
+        super::cylindrical_closure::Cylinder {
+            frame,
+            radius_mm: receiver.radius_mm(),
+            axial_mm: [0., receiver.stock_length_mm()],
+        },
+        super::cylindrical_closure::Cylinder {
+            frame: [imported.origin_mm, imported.u, imported.v],
+            radius_mm: stock_radius_mm,
+            axial_mm: [0., stock_length_mm],
+        },
+    );
     error.is_finite() && error <= tolerance / 8.
 }
 
@@ -124,6 +127,11 @@ mod tests {
         assert!(!helical_receiver_import_matches(
             &wrong, &receiver, frame, 1e-7
         ));
+        wrong = imported.clone();
+        wrong.origin_mm[0] += 0.01;
+        assert!(!helical_receiver_import_matches(
+            &wrong, &receiver, frame, 1e-7
+        ));
         let large = Receiver::new(*receiver.thread(), 1e6, 4.).unwrap();
         wrong = imported.clone();
         wrong.profile = ImportProfile::HelicalReceiver {
@@ -135,6 +143,39 @@ mod tests {
         wrong.u[0] += 4e-14;
         assert!(!helical_receiver_import_matches(
             &wrong, &large, frame, 1e-7
+        ));
+    }
+    #[test]
+    fn blind_receiver_far_cap_identity_retains_low_components_before_world_rounding() {
+        let source = receiver();
+        let height: f64 = 1e7;
+        let lower = height.next_down();
+        let origin = [0., 0., (height - lower) / 2.];
+        assert_eq!(origin[2] + height, origin[2] + lower);
+        let receiver = Receiver::new(*source.thread(), source.radius_mm(), height).unwrap();
+        let frame = [origin, [1., 0., 0.], [0., 1., 0.]];
+        let mut imported = ImportSolid {
+            origin_mm: origin,
+            u: frame[1],
+            v: frame[2],
+            height_mm: height,
+            profile: ImportProfile::HelicalReceiver {
+                spec: receiver.thread().spec(),
+                stock_radius_mm: receiver.radius_mm(),
+                stock_length_mm: height,
+            },
+        };
+        assert!(helical_receiver_import_matches(
+            &imported, &receiver, frame, 1e-10
+        ));
+        imported.height_mm = lower;
+        imported.profile = ImportProfile::HelicalReceiver {
+            spec: receiver.thread().spec(),
+            stock_radius_mm: receiver.radius_mm(),
+            stock_length_mm: lower,
+        };
+        assert!(!helical_receiver_import_matches(
+            &imported, &receiver, frame, 1e-10
         ));
     }
     #[test]
