@@ -228,10 +228,15 @@ pub fn project_drawing(
                 "Rust worm and worm-wheel drawings support one placed gear at a time",
             ));
         }
+        if let [input] = solids
+            && let Some(projection) = panel::project_bevel(input, options)
+        {
+            return projection;
+        }
         if solids.iter().any(|input| contains_bevel(input.solid)) {
             return Err(err(
                 GeometryErrorKind::Unsupported,
-                "Rust exact drawing projection for spherical bevel gears is unavailable",
+                "Rust bevel drawing supports one gear at a time; scene occlusion is unavailable",
             ));
         }
         if !options.section_only && solids.iter().any(|input| contains_herringbone(input.solid)) {

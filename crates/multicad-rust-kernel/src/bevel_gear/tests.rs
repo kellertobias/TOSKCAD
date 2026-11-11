@@ -367,3 +367,105 @@ fn invalid_dimensions_profiles_limits_and_budgets_are_refused() {
     assert_eq!(gear.spec(), good);
     assert_eq!(gear.teeth(), 24);
 }
+
+#[test]
+fn sliver_meridians_are_absorbed_by_an_exactly_tangent_fillet() {
+    let minimum = 1e-3;
+    let base = spec(1., 24, 64, 2., 0., 0.2);
+    let distance = base.outer_cone_distance_mm;
+    let root = base.root_cone_angle_rad;
+    let beta = base.base_cone_angle_rad;
+    // Meridian length on the unit sphere for a fillet radius in mm.
+    let length = |fillet: f64| {
+        let rho = (fillet / distance).asin();
+        beta - ((root + rho).cos() / rho.cos()).acos()
+    };
+    let (mut lo, mut hi) = (base.root_fillet_radius_mm, distance * 0.5);
+    let target = 0.5 * minimum / distance;
+    for _ in 0..200 {
+        let middle = (lo + hi) / 2.;
+        if length(middle) > target {
+            lo = middle;
+        } else {
+            hi = middle;
+        }
+    }
+    let sliver = Spec {
+        root_fillet_radius_mm: lo,
+        ..base
+    };
+    assert!(length(lo) > 0. && length(lo) < minimum / distance);
+    let gear = Bevel::new(sliver, minimum, 1e7).unwrap();
+    assert!(!gear.has_meridian());
+    assert!(
+        gear.pieces()
+            .iter()
+            .all(|p| !matches!(p, Piece::MeridianLeft | Piece::MeridianRight))
+    );
+    // The fillet ends exactly where the involute leaves the base cone.
+    for (fillet, involute) in [
+        (Piece::FilletLeft, Piece::InvoluteLeft),
+        (Piece::FilletRight, Piece::InvoluteRight),
+    ] {
+        let (a, b) = if fillet == Piece::FilletLeft {
+            (gear.sample(fillet, 1.), gear.sample(involute, 0.))
+        } else {
+            (gear.sample(fillet, 0.), gear.sample(involute, 1.))
+        };
+        assert!(norm(sub(a.direction, b.direction)) < 1e-12);
+        assert!((a.gamma - beta).abs() < 1e-12);
+        // Both leave the joint in the meridian direction.
+        let tangent = |d: Point, u: Point| {
+            let radial = sub(d, scale(u, dot(d, u)));
+            scale(radial, 1. / norm(radial))
+        };
+        let along = |s: &Sample| {
+            let polar = [
+                s.gamma.cos() * s.phi.cos(),
+                s.gamma.cos() * s.phi.sin(),
+                -s.gamma.sin(),
+            ];
+            dot(tangent(s.derivative, s.direction), polar).abs()
+        };
+        assert!((along(&a) - 1.).abs() < 1e-9);
+    }
+    // The absorbed fillet stays within the derived radius bound and the
+    // solid remains watertight with its exact volume.
+    let effective = gear.rounding.sin() * distance;
+    assert!(effective > lo && effective - lo <= minimum * beta.sin() / root.sin());
+    let mesh = gear.mesh(options(0.002)).unwrap();
+    let proof = manufacturing::certify(&mesh).unwrap();
+    assert!((proof.signed_volume_mm3 - gear.volume_mm3()).abs() / gear.volume_mm3() < 2e-4);
+    let roles: std::collections::BTreeSet<_> = gear
+        .topology()
+        .faces
+        .iter()
+        .map(|face| face.role())
+        .collect();
+    assert!(roles.iter().all(|role| !role.contains("meridian")));
+    let text = crate::step::write_bevel(&gear, [0.; 3], [1., 0., 0.], [0., 1., 0.], 1e-6).unwrap();
+    let decoded =
+        crate::step_read::verify_bevel(&text, &gear, [0.; 3], [1., 0., 0.], [0., 1., 0.], 1e-6)
+            .unwrap();
+    assert!((decoded - gear.volume_mm3()).abs() / decoded < 1e-8);
+}
+
+#[test]
+fn side_pieces_are_recovered_from_points_on_every_sector() {
+    for gear in [
+        gear(spec(1., 24, 64, 2., 0., 0.2)),
+        gear(spec(2., 32, 24, 6., 4., 0.2)),
+    ] {
+        for sector in [0, 5, gear.teeth() - 1] {
+            for &piece in gear.pieces() {
+                let sample = gear.sample(piece, 0.5);
+                let p = gear.rotate(
+                    sector,
+                    gear.point(End::Heel, sample.direction, sample.gamma),
+                );
+                assert_eq!(gear.side_piece_at(p), Some((sector, piece)), "{piece:?}");
+            }
+        }
+        assert_eq!(gear.side_piece_at([0.; 3]), None);
+    }
+}

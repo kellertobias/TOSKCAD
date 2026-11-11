@@ -259,8 +259,11 @@ impl Solid {
         self.rust_compound()?;
         let mut leaves = Vec::new();
         self.step_leaf_members(&mut leaves);
-        let authored =
-            |leaf: &Solid| leaf.herringbone_body().is_some() || leaf.worm_body().is_some();
+        let authored = |leaf: &Solid| {
+            leaf.herringbone_body().is_some()
+                || leaf.bevel_body().is_some()
+                || leaf.worm_body().is_some()
+        };
         if !leaves.iter().any(|leaf| authored(leaf)) {
             return None;
         }
@@ -271,6 +274,14 @@ impl Solid {
                 if let Some((body, frame)) = leaf.herringbone_body() {
                     member_counts.push(1);
                     expected.push(ExpectedStepMember::TwistedGear {
+                        gear: &body.geometry,
+                        origin: frame.origin,
+                        u: frame.u,
+                        v: frame.v,
+                    });
+                } else if let Some((body, frame)) = leaf.bevel_body() {
+                    member_counts.push(1);
+                    expected.push(ExpectedStepMember::Bevel {
                         gear: &body.geometry,
                         origin: frame.origin,
                         u: frame.u,
@@ -297,14 +308,16 @@ impl Solid {
             let mut result = (0_u32, 0_f64, [[f64::INFINITY; 3], [f64::NEG_INFINITY; 3]]);
             for (leaf, member_count) in leaves.into_iter().zip(member_counts) {
                 let (count, volume, bounds) = if authored(leaf) {
-                    let volume_mm3 = match (decoded.next(), leaf.worm_body()) {
-                        (Some(VerifiedStepMember::TwistedGear { volume_mm3 }), None)
+                    let volume_mm3 = match (decoded.next(), leaf.worm_body(), leaf.bevel_body()) {
+                        (Some(VerifiedStepMember::TwistedGear { volume_mm3 }), None, None)
+                        | (Some(VerifiedStepMember::Bevel { volume_mm3 }), None, Some(_))
                         | (
                             Some(
                                 VerifiedStepMember::Worm { volume_mm3 }
                                 | VerifiedStepMember::WormWheel { volume_mm3 },
                             ),
                             Some(_),
+                            None,
                         ) => volume_mm3,
                         _ => return Err(ReadError::Invalid),
                     };

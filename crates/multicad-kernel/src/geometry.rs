@@ -2289,7 +2289,7 @@ impl Solid {
                     && body.supports_step(*frame, self.policy)
             }
             SolidBody::Herringbone(body, frame) => body.supports_step(*frame, self.policy),
-            SolidBody::Bevel(body, frame) => standalone && body.supports_step(*frame, self.policy),
+            SolidBody::Bevel(body, frame) => body.supports_step(*frame, self.policy),
             SolidBody::Worm(body, frame) => body.supports_step(*frame, self.policy),
             SolidBody::HelicalTubeCut(body, frame) => {
                 multicad_rust_kernel::step::supports_helical_tube_cut(

@@ -70,9 +70,11 @@ fn rust_bevel_pairs_match_native_members_and_certify_saved_edited_motion() {
         ..Compiler::default()
     };
     let document = draft.prepared.document();
+    let started = std::time::Instant::now();
     let rust = compiler
         .compile_with_backend(document, 1, GeometryBackend::Rust, None)
         .unwrap();
+    let rust_compile_ms = started.elapsed().as_secs_f64() * 1e3;
     let report = &rust.gear_pair_checks()[&request.pair];
     assert_eq!(report.cycle_drive_angles_rad.len(), 9);
     assert!(report.current_pose_checked && report.bevel.is_some());
@@ -81,6 +83,30 @@ fn rust_bevel_pairs_match_native_members_and_certify_saved_edited_motion() {
         witness.distance_mm > 0. && witness.distance_mm <= 0.1 + 1e-5,
         "{witness:?}"
     );
+    // The witness names one actual flank face on each member.
+    let [first, second] = witness.faces.expect("witness flank faces");
+    for (instance, face) in [
+        (request.outputs.instances[0], first),
+        (request.outputs.instances[1], second),
+    ] {
+        let snapshot = rust
+            .solid(instance)
+            .unwrap()
+            .topology_snapshot(instance, 0)
+            .unwrap();
+        let element = snapshot
+            .elements
+            .iter()
+            .find(|e| e.key.kind == TopologyKind::Face && e.key.ordinal == face)
+            .unwrap();
+        assert!(
+            element
+                .origins
+                .iter()
+                .any(|o| o.role.contains("spherical_involute") || o.role.contains("fillet")),
+            "{element:?}"
+        );
+    }
     let [a, b] = request.outputs.instances;
     let feature = request.parameters.gears[0];
     for instance in [a, b] {
@@ -167,11 +193,21 @@ fn rust_bevel_pairs_match_native_members_and_certify_saved_edited_motion() {
     assert_eq!(error.kind, GeometryErrorKind::Unsupported);
 
     if multicad_kernel::OCCT_LINKED {
+        let started = std::time::Instant::now();
         let native = compiler
             .compile_with_backend(document, 1, GeometryBackend::OpenCascade, None)
             .unwrap();
+        let native_compile_ms = started.elapsed().as_secs_f64() * 1e3;
         let oracle = &native.gear_pair_checks()[&request.pair];
         assert_eq!(oracle.cycle_drive_angles_rad, report.cycle_drive_angles_rad);
+        // Matched timing of one cold compile and its pair proof stages.
+        println!(
+            "{{\"rust_compile_ms\":{rust_compile_ms},\"native_compile_ms\":{native_compile_ms},\"rust_cycle_ms\":{},\"rust_current_ms\":{},\"native_cycle_ms\":{},\"native_current_ms\":{}}}",
+            report.sampled_cycle_ms,
+            report.current_pose_ms,
+            oracle.sampled_cycle_ms,
+            oracle.current_pose_ms
+        );
         for instance in [a, b] {
             let [r, n] = [&rust, &native].map(|c| c.solid(instance).unwrap().volume_mm3().unwrap());
             assert!((r - n).abs() / n < 1e-7, "{r} {n}");

@@ -1,6 +1,7 @@
 //! Validate every emitted shell against its expected member in file order.
 use super::*;
 use crate::{
+    bevel_gear::Bevel,
     spur_gear::herringbone::Herringbone,
     worm_gear::{Wheel, Worm},
 };
@@ -12,6 +13,12 @@ pub enum ExpectedStepMember<'a> {
     Analytic,
     TwistedGear {
         gear: &'a Herringbone,
+        origin: Point,
+        u: Point,
+        v: Point,
+    },
+    Bevel {
+        gear: &'a Bevel,
         origin: Point,
         u: Point,
         v: Point,
@@ -38,6 +45,9 @@ pub enum VerifiedStepMember {
         imported: Option<Box<ImportSolid>>,
     },
     TwistedGear {
+        volume_mm3: f64,
+    },
+    Bevel {
         volume_mm3: f64,
     },
     Worm {
@@ -79,6 +89,11 @@ pub fn verify_authored_compound(
                         tolerance,
                     )?;
                     Ok(VerifiedStepMember::TwistedGear { volume_mm3 })
+                }
+                ExpectedStepMember::Bevel { gear, origin, u, v } => {
+                    let volume_mm3 =
+                        bevel::verify_member(shell, solid, gear, [*origin, *u, *v], tolerance)?;
+                    Ok(VerifiedStepMember::Bevel { volume_mm3 })
                 }
                 ExpectedStepMember::Worm { worm, origin, u, v } => {
                     let volume_mm3 =
