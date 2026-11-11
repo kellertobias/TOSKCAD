@@ -6,6 +6,7 @@ use crate::{
 
 mod boundary;
 mod mesh;
+pub(crate) mod precision;
 #[cfg(test)]
 mod tests;
 pub use boundary::{Boundary, BoundaryEdge, BoundaryFace, Curve, EdgeUse, FaceRole, Surface};
@@ -66,7 +67,65 @@ fn perimeter(sweep: &Sweep) -> f64 {
         .map(|edge| edge.length_mm())
         .sum()
 }
+fn combined_rings(
+    base: &Sweep,
+    motifs: &[Sweep],
+    tolerance_mm: f64,
+    minimum_mm: f64,
+    interrupt: Option<&dyn Fn() -> bool>,
+) -> Result<Vec<Vec<Edge>>, Error> {
+    check(interrupt)?;
+    if motifs.is_empty()
+        || !tolerance_mm.is_finite()
+        || tolerance_mm <= 0.
+        || !minimum_mm.is_finite()
+        || minimum_mm <= tolerance_mm
+    {
+        return Err(Error::Invalid);
+    }
+    if motifs.len() > MAX_MOTIFS {
+        return Err(Error::Limit);
+    }
+    let count = base.rings().iter().map(Vec::len).sum::<usize>()
+        + motifs
+            .iter()
+            .flat_map(Sweep::rings)
+            .map(Vec::len)
+            .sum::<usize>();
+    if count > MAX_CAP_EDGES {
+        return Err(Error::Limit);
+    }
+    let mut rings = base.rings().to_vec();
+    for motif in motifs {
+        check(interrupt)?;
+        if motif.rings().len() != 1 {
+            return Err(Error::Invalid);
+        }
+        rings.push(
+            motif.rings()[0]
+                .iter()
+                .rev()
+                .map(|edge| edge.reversed())
+                .collect(),
+        );
+    }
+    Ok(rings)
+}
 impl Relief {
+    /// Prove strict XY containment/disjointness with all existing base holes.
+    /// This creates no wall graph and applies no raised/recessed depth law.
+    pub fn certify_footprints(
+        base: &Sweep,
+        motifs: &[Sweep],
+        tolerance_mm: f64,
+        minimum_mm: f64,
+        interrupt: Option<&dyn Fn() -> bool>,
+    ) -> Result<(), Error> {
+        let rings = combined_rings(base, motifs, tolerance_mm, minimum_mm, interrupt)?;
+        Sweep::relief_cap(rings, minimum_mm, tolerance_mm, minimum_mm, interrupt)
+            .map(|_| ())
+            .map_err(cap_error)
+    }
     pub fn new(
         base: Sweep,
         motifs: Vec<Sweep>,
@@ -84,28 +143,7 @@ impl Relief {
         minimum_mm: f64,
         interrupt: Option<&dyn Fn() -> bool>,
     ) -> Result<Self, Error> {
-        check(interrupt)?;
-        if motifs.is_empty()
-            || !tolerance_mm.is_finite()
-            || tolerance_mm <= 0.
-            || !minimum_mm.is_finite()
-            || minimum_mm <= tolerance_mm
-        {
-            return Err(Error::Invalid);
-        }
-        if motifs.len() > MAX_MOTIFS {
-            return Err(Error::Limit);
-        }
-        let count = base.rings().iter().map(Vec::len).sum::<usize>()
-            + motifs
-                .iter()
-                .flat_map(Sweep::rings)
-                .map(Vec::len)
-                .sum::<usize>();
-        if count > MAX_CAP_EDGES {
-            return Err(Error::Limit);
-        }
-        let mut rings = base.rings().to_vec();
+        let rings = combined_rings(&base, &motifs, tolerance_mm, minimum_mm, interrupt)?;
         let mut boundary_error = 0_f64;
         for motif in &motifs {
             check(interrupt)?;
@@ -125,16 +163,13 @@ impl Relief {
             if level.abs() + error.abs() > 1e7 {
                 return Err(Error::Limit);
             }
-            rings.push(
-                motif.rings()[0]
-                    .iter()
-                    .rev()
-                    .map(|edge| edge.reversed())
-                    .collect(),
-            );
         }
         for edge in rings.iter().flatten() {
             check(interrupt)?;
+            if let Edge::Line { a, b } = *edge {
+                let error = precision::line_error(a, b)?;
+                boundary_error = boundary_error.max(error);
+            }
             if let Some(radius) = edge.radius_mm() {
                 let scale = edge
                     .start()

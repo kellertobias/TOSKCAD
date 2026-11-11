@@ -1,6 +1,9 @@
 //! Analytic cap relief with one shared entity for every physical trim.
 use super::*;
-use crate::normal_relief::{Curve, Relief, Surface};
+use crate::normal_relief::{
+    Curve, Relief, Surface,
+    precision::{add_up, dot_error, mul_up, product_error},
+};
 use crate::normal_sweep::Edge;
 pub fn write_normal_relief(
     relief: &Relief,
@@ -30,41 +33,6 @@ pub(super) fn encode(
     )
     .map_err(|_| StepError::Unsupported)?;
     encode_shell(file, relief, &placement)
-}
-fn add_up(a: f64, b: f64) -> f64 {
-    let value = a + b;
-    let part = value - a;
-    let error = (a - (value - part)) + (b - part);
-    if error > 0. { value.next_up() } else { value }
-}
-fn mul_up(a: f64, b: f64) -> f64 {
-    let value = a * b;
-    if a != 0. && b != 0. && value.abs() < 1e-280 || a.mul_add(b, -value) > 0. {
-        value.next_up()
-    } else {
-        value
-    }
-}
-fn product_error(a: f64, b: f64, p: f64) -> f64 {
-    let error = a.mul_add(b, -p).abs();
-    if a != 0. && b != 0. && p.abs() < 1e-280 {
-        error.next_up()
-    } else {
-        error
-    }
-}
-fn dot_error(a: Point, b: Point, target: f64) -> f64 {
-    let mut value = -target;
-    let mut error = 0.;
-    for i in 0..3 {
-        let p = a[i] * b[i];
-        error = add_up(error, product_error(a[i], b[i], p));
-        let sum = value + p;
-        let part = sum - value;
-        error = add_up(error, ((value - (sum - part)) + (p - part)).abs());
-        value = sum;
-    }
-    add_up(value.abs(), error)
 }
 fn evaluation_error(placement: &Placement, p: Point) -> f64 {
     let axes = [placement.u, placement.v, placement.normal];

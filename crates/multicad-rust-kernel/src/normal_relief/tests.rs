@@ -552,3 +552,77 @@ fn step_precision_and_cached_boundary_failures_roll_back_the_writer() {
     // without losing a nonzero product merely because it underflows f64.
     write_normal_relief(&relief, origin, [1., 1e-200, 0.], [-1e-200, 1., 0.]).unwrap();
 }
+
+#[test]
+fn long_oblique_wall_chart_needs_a_physical_precision_receipt() {
+    let triangle = vec![
+        Edge::Line {
+            a: [0., 0.],
+            b: [1e7, 9999999.1],
+        },
+        Edge::Line {
+            a: [1e7, 9999999.1],
+            b: [0., 1e7],
+        },
+        Edge::Line {
+            a: [0., 1e7],
+            b: [0., 0.],
+        },
+    ];
+    let base = Sweep::new(vec![triangle], 4., 1e-13, 1e-12).unwrap();
+    let motif = Sweep::new(vec![rectangle([1., 3.], [2., 4.])], 1., 1e-13, 1e-12).unwrap();
+    assert_eq!(
+        Relief::new(
+            base.clone(),
+            vec![motif.clone()],
+            Kind::Raised,
+            1e-13,
+            1e-12
+        )
+        .err(),
+        Some(Error::Unresolved)
+    );
+    let admitted = Relief::new(base, vec![motif], Kind::Raised, 1e-6, 1e-5).unwrap();
+    assert!(admitted.boundary_error_mm() > 1e-10 && admitted.boundary_error_mm() < 1e-6 / 32.);
+}
+
+#[test]
+fn footprint_certificate_ignores_depth_and_preserves_source_profiles() {
+    let base = Sweep::new(
+        vec![
+            rectangle([0., 0.], [20., 20.]),
+            circle([10., 10.], 2., true),
+        ],
+        1e7,
+        TOL,
+        MIN,
+    )
+    .unwrap();
+    let motif = Sweep::new(vec![rectangle([2., 2.], [4., 4.])], 1e7, TOL, MIN).unwrap();
+    let before = (base.clone(), motif.clone());
+    assert_eq!(
+        Relief::new(base.clone(), vec![motif.clone()], Kind::Raised, TOL, MIN).err(),
+        Some(Error::Limit)
+    );
+    Relief::certify_footprints(&base, std::slice::from_ref(&motif), TOL, MIN, None).unwrap();
+    let hole = Sweep::new(vec![rectangle([9., 9.], [11., 11.])], 1., TOL, MIN).unwrap();
+    assert_eq!(
+        Relief::certify_footprints(&base, &[hole], TOL, MIN, None),
+        Err(Error::Invalid)
+    );
+    assert_eq!(
+        Relief::certify_footprints(
+            &base,
+            std::slice::from_ref(&motif),
+            TOL,
+            MIN,
+            Some(&|| true)
+        ),
+        Err(Error::Cancelled)
+    );
+    assert_eq!((base, motif), before);
+    assert_eq!(
+        precision::line_error([0., 0.], [1e-320, 1e-320]),
+        Err(Error::Unresolved)
+    );
+}
