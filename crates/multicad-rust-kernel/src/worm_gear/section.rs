@@ -385,6 +385,10 @@ mod tests {
         let below = worm
             .axial_view([-2.1, -1.4], false, false, 1e-3, 1_000_000)
             .unwrap();
+        let hidden_below = worm
+            .axial_view([-2.1, -1.4], true, true, 1e-3, 1_000_000)
+            .unwrap();
+        assert!(count(&hidden_below, true) > count(&below, true));
         let far = |view: &[ViewCurve], z: f64, hidden: bool| {
             view.iter()
                 .filter(|curve| {
@@ -400,16 +404,15 @@ mod tests {
         // The crest circle shows only where the crest meets the slab.
         let crest = |view: &[ViewCurve]| {
             view.iter()
-                .find_map(|curve| match curve {
+                .filter_map(|curve| match curve {
                     ViewCurve::Arc {
                         radius_mm,
                         sweep_rad,
-                        hidden: false,
                         ..
-                    } if *radius_mm == 6. => Some(*sweep_rad),
-                    _ => None,
+                    } => (*radius_mm == 6.).then_some(*sweep_rad),
+                    ViewCurve::Polyline { .. } => None,
                 })
-                .unwrap()
+                .sum::<f64>()
         };
         assert_eq!(crest(&full), TAU);
         assert!(crest(&shallow) < TAU && crest(&shallow) > 1.);
