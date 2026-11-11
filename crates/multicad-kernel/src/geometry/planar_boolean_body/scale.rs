@@ -1,7 +1,9 @@
-//! Affine reconstruction of one certified convex planar shell.
+//! Indexed affine maps and exact admission for straight planar stock.
 use super::*;
 use crate::AffineTransform;
 use multicad_core::references::TopologyElement;
+
+pub(super) mod concave;
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum BoundaryKey {
@@ -32,7 +34,7 @@ fn failure(kind: GeometryErrorKind, message: &str) -> GeometryError {
 fn unsupported() -> GeometryError {
     failure(
         GeometryErrorKind::Unsupported,
-        "Rust Scale currently requires one convex solid with straight planar boundaries",
+        "Rust Scale requires supported straight planar stock with one wire per source face",
     )
 }
 
@@ -162,6 +164,9 @@ impl Solid {
         }
         if self.solid_count()? != 1 {
             return Err(unsupported());
+        }
+        if let Some(result) = self.rust_scale_simple_concave(transform, feature, policy)? {
+            return Ok(result);
         }
         let mut topology = self.rust_topology().ok_or_else(unsupported)??;
         let (faces, ancestry) = convex_faces(self, &topology, policy).ok_or_else(unsupported)?;

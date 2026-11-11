@@ -494,3 +494,40 @@ fn transformed_convex_piece_rechecks_the_closed_outward_boundary() {
         Error::Invalid
     );
 }
+
+#[test]
+fn public_planar_ring_constructor_retains_concave_faces_and_checks_its_inputs() {
+    let lower = [
+        [0., 0., 0.],
+        [6., 0., 0.],
+        [6., 5., 0.],
+        [4., 5., 0.],
+        [4., 2., 0.],
+        [2., 2., 0.],
+        [2., 5., 0.],
+        [0., 5., 0.],
+    ];
+    let upper = lower.map(|[x, y, _]| [x, y, 4.]);
+    let mut rings = vec![lower.into_iter().rev().collect(), upper.to_vec()];
+    for i in 0..lower.len() {
+        let j = (i + 1) % lower.len();
+        rings.push(vec![lower[i], lower[j], upper[j], upper[i]]);
+    }
+    let actual = Union::from_planar_rings(&rings, TOL).unwrap();
+    assert_eq!(actual.faces().len(), 10);
+    assert_eq!(actual.faces()[0].vertices.len(), 8);
+    assert_eq!(actual.faces()[1].vertices.len(), 8);
+    check_volume(actual.volume_mm3(), 96.);
+    assert_eq!(
+        Union::from_planar_rings(&rings, f64::NAN),
+        Err(Error::Invalid)
+    );
+    assert_eq!(
+        Union::from_planar_rings(&rings[..9], TOL),
+        Err(Error::Unresolved)
+    );
+    assert!(
+        Union::from_planar_rings(&[vec![[0.; 3]; crate::polygon::MAX_VERTICES + 1]], TOL).is_err()
+    );
+    assert!(Union::from_planar_rings(&rings, TOL).is_ok());
+}

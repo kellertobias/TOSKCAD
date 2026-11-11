@@ -177,6 +177,13 @@ pub struct Union {
 }
 
 impl Union {
+    /// Certify one closed outward planar shell while retaining each supplied
+    /// face ring. Concave simple faces are supported; faces with holes require
+    /// a multi-wire boundary contract and are not represented by this API.
+    pub fn from_planar_rings(rings: &[Vec<Point>], tolerance_mm: f64) -> Result<Self, Error> {
+        Self::verify_boundary(rings, tolerance_mm)
+    }
+
     pub fn new(pieces: &[ConvexPiece], tolerance_mm: f64) -> Result<Self, Error> {
         validate_tolerance(tolerance_mm)?;
         if pieces.is_empty() {
