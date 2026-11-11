@@ -2,7 +2,7 @@
 use super::*;
 use crate::{
     HelicalThread,
-    rust_prism_topology::{cylinder_snapshot, position},
+    rust_prism_topology::{cylinder_snapshot_dimensions, position},
 };
 use multicad_core::references::{
     AnalyticGeometry, AnchoredFrame, ReferenceFrame, TopologyElement, TopologyKey, TopologyKind,
@@ -78,7 +78,9 @@ enum HelicalForm {
 }
 
 struct BoreStock {
-    cylinder: AxialCylinder,
+    source_feature: EntityId,
+    radius_mm: f64,
+    length_mm: f64,
     frame_in_thread: stock_frame::StoredFrame,
     sketch: Option<Rc<CylinderSketch>>,
     reversed: bool,
@@ -87,13 +89,13 @@ struct BoreStock {
 
 impl BoreStock {
     fn length(&self) -> f64 {
-        self.cylinder.height().as_f64()
+        self.length_mm
     }
     fn receiver(&self, thread: Thread) -> Option<Receiver> {
         Receiver::new(thread, self.radius(), self.length()).ok()
     }
     fn radius(&self) -> f64 {
-        self.cylinder.circle().radius().as_f64()
+        self.radius_mm
     }
 
     fn topology(
@@ -103,8 +105,9 @@ impl BoreStock {
         revision: u64,
     ) -> Result<TopologySnapshot, GeometryError> {
         let placed = self.frame_in_thread.placed(frame);
-        cylinder_snapshot(
-            &self.cylinder,
+        cylinder_snapshot_dimensions(
+            self.source_feature,
+            [self.radius(), self.length()],
             placed,
             self.sketch.as_deref(),
             owner,
@@ -172,33 +175,22 @@ impl Solid {
         policy: GeometryPolicy,
     ) -> Result<Self, GeometryError> {
         let request = imported_request(spec);
-        let mut solid = Self::rust_helical_body(
-            request,
-            spec.root_radius_mm,
-            feature,
-            frame,
-            policy,
-            |_| {
+        let mut solid =
+            Self::rust_helical_body(request, spec.root_radius_mm, feature, frame, policy, |_| {
                 if let Some(radius) = stock {
                     policy.length(radius - spec.major_radius_mm)?;
-                    let q = |value| {
-                        rational_coordinate(value,policy.linear_tolerance_mm).ok_or_else(||error(OPERATION,GeometryErrorKind::Unsupported,"Imported receiver dimensions cannot be certified as exact coordinates"))
-                    };
-                    let zero = Rational::new(0, 1).expect("zero");
-                    let circle = Circle::new([zero; 2], q(radius)?)
-                        .map_err(|_| input("Invalid imported receiver circle"))?;
-                    // Keep synthetic receiver stock distinct from its threading
-                    // feature so retained cap-anchor origins cannot collide.
+                    // The inferred through topology couples stock H to the exact
+                    // retained thread interval. Decimal approximation would invent
+                    // an unproved floor when the inferred scalar is one ulp lower.
                     let stock_bits = feature.uuid_bits() ^ u128::MAX;
-                    let cylinder = AxialCylinder::new(
-                        if stock_bits == 0 { 1 } else { stock_bits },
-                        circle,
-                        zero,
-                        q(stock_length)?,
-                    )
-                    .map_err(|_| input("Invalid imported receiver cylinder"))?;
                     Ok(HelicalForm::Bore(BoreStock {
-                        cylinder,
+                        source_feature: EntityId::from_uuid_bits(if stock_bits == 0 {
+                            1
+                        } else {
+                            stock_bits
+                        }),
+                        radius_mm: radius,
+                        length_mm: stock_length,
                         frame_in_thread: stock_frame::StoredFrame::identity(),
                         sketch: None,
                         reversed: false,
@@ -207,8 +199,7 @@ impl Solid {
                 } else {
                     Ok(HelicalForm::Shaft)
                 }
-            },
-        )?;
+            })?;
         let identity = super::step_import::feature_origin(
             feature,
             if stock_length == spec.length_mm {
@@ -538,7 +529,9 @@ impl Solid {
             None
         };
         let stock = BoreStock {
-            cylinder: **cylinder,
+            source_feature: EntityId::from_uuid_bits(cylinder.feature()),
+            radius_mm: radius,
+            length_mm: height,
             frame_in_thread: stock_frame::store(
                 placed,
                 stock_frame,
@@ -979,7 +972,9 @@ impl HelicalBody {
     pub(super) fn volume_mm3(&self) -> f64 {
         match &self.form {
             HelicalForm::Shaft => self.geometry.volume_mm3(),
-            HelicalForm::Bore(stock) => stock.cylinder.volume_mm3() - self.geometry.volume_mm3(),
+            HelicalForm::Bore(stock) => {
+                PI * stock.radius() * stock.radius() * stock.length() - self.geometry.volume_mm3()
+            }
             HelicalForm::Blind(stock) => stock.volume_mm3(self.geometry),
             HelicalForm::Nut(nut) => nut.volume_mm3(),
             HelicalForm::Screw(screw) => screw.volume_mm3(),

@@ -832,7 +832,27 @@ pub(crate) fn cylinder_snapshot(
     owner: EntityId,
     revision: u64,
 ) -> Result<TopologySnapshot, String> {
-    let source = EntityId::from_uuid_bits(cylinder.feature());
+    cylinder_snapshot_dimensions(
+        EntityId::from_uuid_bits(cylinder.feature()),
+        [
+            cylinder.circle().radius().as_f64(),
+            cylinder.height().as_f64(),
+        ],
+        authored,
+        sketch,
+        owner,
+        revision,
+    )
+}
+
+pub(crate) fn cylinder_snapshot_dimensions(
+    source: EntityId,
+    [radius_mm, height_mm]: [f64; 2],
+    authored: PlaneFrame,
+    sketch: Option<&CylinderSketch>,
+    owner: EntityId,
+    revision: u64,
+) -> Result<TopologySnapshot, String> {
     let side_role = sketch.map_or_else(
         || "side.cylinder".into(),
         |sketch| format!("side/{}/{}", sketch.origin.source, sketch.origin.role),
@@ -860,8 +880,7 @@ pub(crate) fn cylinder_snapshot(
         next_edge: 0,
         next_vertex: 0,
     };
-    let radius_mm = cylinder.circle().radius().as_f64();
-    for (cap, z) in [0., cylinder.height().as_f64()].into_iter().enumerate() {
+    for (cap, z) in [0., height_mm].into_iter().enumerate() {
         let origin = position(authored, [0., 0., z]);
         let outward_v = if cap == 0 {
             authored.v.map(|x| -x)
