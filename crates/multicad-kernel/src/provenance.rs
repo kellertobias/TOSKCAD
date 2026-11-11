@@ -1050,6 +1050,8 @@ impl Solid {
                 body.topology(frame, owner, revision)
             } else if let Some((body, frame)) = self.spur_gear_body() {
                 body.topology(frame, owner, revision)
+            } else if let Some((body, frame)) = self.internal_ring_body() {
+                body.topology(frame, owner, revision)
             } else if let Some((body, frame)) = self.sphere_body() {
                 body.topology(frame, owner, revision)
             } else if let Some((body, frame)) = self.rounded_cylinder_body() {

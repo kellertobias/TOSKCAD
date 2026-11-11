@@ -20,6 +20,7 @@ mod cosmetic_fastener_body;
 mod helical_body;
 mod helical_tube_body;
 mod herringbone_body;
+mod internal_ring_body;
 mod linear_body;
 mod nonplanar_loft_body;
 mod normal_relief_body;
@@ -48,6 +49,7 @@ pub use helical_body::{BlindThreadCut, BlindThreadMating, ReceivingThreadInterva
 pub use helical_tube_body::HelicalTube;
 use helical_tube_body::HelicalTubeBody;
 use herringbone_body::HerringboneBody;
+use internal_ring_body::InternalRingBody;
 use linear_body::LinearBody;
 use nonplanar_loft_body::NonplanarLoftBody;
 use normal_relief_body::NormalReliefBody;
@@ -629,6 +631,7 @@ enum SolidBody {
     NonplanarLoft(Rc<NonplanarLoftBody>, PlaneFrame),
     SplineSweep(Rc<SplineSweepBody>, PlaneFrame),
     SpurGear(Rc<SpurGearBody>, PlaneFrame),
+    InternalRing(Rc<InternalRingBody>, PlaneFrame),
     Herringbone(Rc<HerringboneBody>, PlaneFrame),
     Bevel(Rc<BevelBody>, PlaneFrame),
     Worm(Rc<WormBody>, PlaneFrame),
@@ -1059,6 +1062,9 @@ impl Solid {
             }
             SolidBody::SplineSweep(body, frame) => SolidBody::SplineSweep(Rc::clone(body), *frame),
             SolidBody::SpurGear(body, frame) => SolidBody::SpurGear(Rc::clone(body), *frame),
+            SolidBody::InternalRing(body, frame) => {
+                SolidBody::InternalRing(Rc::clone(body), *frame)
+            }
             SolidBody::Herringbone(body, frame) => SolidBody::Herringbone(Rc::clone(body), *frame),
             SolidBody::Bevel(body, frame) => SolidBody::Bevel(Rc::clone(body), *frame),
             SolidBody::Worm(body, frame) => SolidBody::Worm(Rc::clone(body), *frame),
@@ -1419,6 +1425,9 @@ impl Solid {
                 SolidBody::SpurGear(body, frame) => {
                     SolidBody::SpurGear(Rc::clone(body), transform.frame(*frame))
                 }
+                SolidBody::InternalRing(body, frame) => {
+                    SolidBody::InternalRing(Rc::clone(body), transform.frame(*frame))
+                }
                 SolidBody::Herringbone(body, frame) => {
                     SolidBody::Herringbone(Rc::clone(body), transform.frame(*frame))
                 }
@@ -1506,6 +1515,9 @@ impl Solid {
         }
         if let Some((body, _)) = self.spur_gear_body() {
             return Ok(body.profile.volume_mm3());
+        }
+        if let Some((body, _)) = self.internal_ring_body() {
+            return Ok(body.ring.volume_mm3());
         }
         if let Some((body, _)) = self.herringbone_body() {
             return Ok(body.geometry.volume_mm3());
@@ -1610,6 +1622,9 @@ impl Solid {
             return Ok(body.bounds(frame));
         }
         if let Some((body, frame)) = self.spur_gear_body() {
+            return Ok(body.bounds(frame));
+        }
+        if let Some((body, frame)) = self.internal_ring_body() {
             return Ok(body.bounds(frame));
         }
         if let Some((body, frame)) = self.herringbone_body() {
@@ -1761,6 +1776,9 @@ impl Solid {
             return Ok(vec![body.face(frame)]);
         }
         if let Some((body, frame)) = self.spur_gear_body() {
+            return Ok(body.faces(frame));
+        }
+        if let Some((body, frame)) = self.internal_ring_body() {
             return Ok(body.faces(frame));
         }
         if let Some((body, frame)) = self.herringbone_body() {
@@ -1941,6 +1959,9 @@ impl Solid {
             SolidBody::SplineSweep(body, frame) => body.mesh(*frame, rust_options),
             SolidBody::SpurGear(body, frame) => {
                 crate::rust_display::placed_mesh(body.profile.mesh(rust_options), *frame, false)
+            }
+            SolidBody::InternalRing(body, frame) => {
+                crate::rust_display::placed_mesh(body.ring.mesh(rust_options), *frame, false)
             }
             SolidBody::Herringbone(body, frame) => {
                 crate::rust_display::placed_mesh(body.geometry.mesh(rust_options), *frame, false)
@@ -2289,6 +2310,7 @@ impl Solid {
             SolidBody::NormalRelief(body, _) => body.feature,
             SolidBody::SplineSweep(body, _) => body.feature,
             SolidBody::SpurGear(body, _) => body.feature,
+            SolidBody::InternalRing(body, _) => body.feature,
             SolidBody::Herringbone(body, _) => body.feature,
             SolidBody::Bevel(body, _) => body.feature,
             SolidBody::Worm(body, _) => body.feature,
@@ -2322,6 +2344,7 @@ impl Solid {
             | SolidBody::NonplanarLoft(..)
             | SolidBody::SplineSweep(..)
             | SolidBody::SpurGear(..)
+            | SolidBody::InternalRing(..)
             | SolidBody::AxialStack(..)
             | SolidBody::Sphere(..)
             | SolidBody::Torus(..)
@@ -2467,6 +2490,13 @@ impl Solid {
             SolidBody::Worm(body, frame) => body.append_step(writer, *frame, self.policy),
             SolidBody::SpurGear(body, frame) => writer.append_spur_gear(
                 &body.profile,
+                frame.origin,
+                frame.u,
+                frame.v,
+                self.policy.linear_tolerance_mm,
+            ),
+            SolidBody::InternalRing(body, frame) => writer.append_internal_ring(
+                &body.ring,
                 frame.origin,
                 frame.u,
                 frame.v,
