@@ -12,6 +12,7 @@
 pub mod clearance;
 mod interval;
 mod jet;
+mod section;
 pub mod wheel;
 pub(crate) mod wheel_bounds;
 pub(crate) mod wheel_fit;

@@ -126,6 +126,34 @@ impl Solid {
         Self::rust_worm_body(WormGeometry::Wheel(wheel), feature, policy)
     }
 
+    /// The placed Rust worm of this solid.
+    pub(crate) fn rust_worm(&self) -> Option<(&Worm, PlaneFrame)> {
+        match self.worm_body()? {
+            (
+                WormBody {
+                    geometry: WormGeometry::Worm(worm),
+                    ..
+                },
+                frame,
+            ) => Some((worm, frame)),
+            _ => None,
+        }
+    }
+
+    /// The placed Rust generated wheel of this solid.
+    pub(crate) fn rust_worm_wheel(&self) -> Option<(&Wheel, PlaneFrame)> {
+        match self.worm_body()? {
+            (
+                WormBody {
+                    geometry: WormGeometry::Wheel(wheel),
+                    ..
+                },
+                frame,
+            ) => Some((wheel, frame)),
+            _ => None,
+        }
+    }
+
     pub(crate) fn worm_body(&self) -> Option<(&WormBody, PlaneFrame)> {
         match &self.body {
             SolidBody::Worm(body, frame) => Some((body, *frame)),

@@ -398,7 +398,7 @@ impl Wheel {
     }
 
     /// Material area of sector 0 at a section and its first moments.
-    fn sector_section(&self, v: f64) -> [f64; 3] {
+    pub(crate) fn sector_section(&self, v: f64) -> [f64; 3] {
         let section = self.section(v);
         let blank = self.blank();
         let bore = self.spec.bore_radius_mm / self.spec.axial_module_mm;

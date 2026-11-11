@@ -607,7 +607,9 @@ mod tests {
             ("EDGE_CURVE", |l| l.replacen(".T.);", ".F.);", 1)),
             ("CIRCLE", widened),
             ("B_SPLINE_CURVE_WITH_KNOTS", widened),
-            ("B_SPLINE_CURVE_WITH_KNOTS", |l| l.replacen("KNOTS('',", "KNOTS('',1", 1)),
+            ("B_SPLINE_CURVE_WITH_KNOTS", |l| {
+                l.replacen("KNOTS('',", "KNOTS('',1", 1)
+            }),
             ("B_SPLINE_SURFACE_WITH_KNOTS", widened),
             ("PLANE", widened),
             ("CYLINDRICAL_SURFACE", widened),
