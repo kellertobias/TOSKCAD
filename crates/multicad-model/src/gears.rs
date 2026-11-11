@@ -145,10 +145,13 @@ pub(crate) fn build_rust(
         NativeSpecification::Rotary(spec) if spec.sweep == GearSweep::Chevron => {
             Solid::rust_herringbone_named(spec, feature, policy)
         }
+        NativeSpecification::Rotary(spec) if spec.sweep == GearSweep::Helical => {
+            Solid::rust_helical_gear_named(spec, feature, policy)
+        }
         _ => {
             return Err(error(
                 Some(feature),
-                "Rust gear geometry currently requires an external spur gear, a continuous herringbone, or a straight rack",
+                "Rust gear geometry currently requires an external spur gear, a helical gear, a continuous herringbone, or a straight rack",
             ));
         }
     };

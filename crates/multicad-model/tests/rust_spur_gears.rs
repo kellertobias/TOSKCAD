@@ -46,6 +46,223 @@ fn near_point(actual: [f64; 3], expected: [f64; 3], tolerance: f64) {
 }
 
 #[test]
+fn rust_helical_gears_keep_the_full_twist_and_survive_saved_edits() {
+    use multicad_core::{
+        drawings::{VectorCurve, VectorRole},
+        project_file::{self, FileLimits, ProjectFile},
+    };
+    use multicad_kernel::{DrawingProjection, DrawingSolid, project_drawing};
+
+    for hand in [GearHand::Left, GearHand::Right] {
+        let (mut session, mut request) = fixture();
+        request.parameters = GearParameters {
+            family: GearFamily::Helical,
+            hand,
+            helix_angle: angle(25.),
+            face_width: length(8.),
+            bore_diameter: length(8.),
+            ..Default::default()
+        };
+        let prepared = model::prepare_gear(&session, 0, actor(), &request).unwrap();
+        session.commit(prepared.prepared).unwrap();
+        let compiler = Compiler::default();
+        let build = |session: &Session, backend| {
+            compiler
+                .compile_with_backend(session.document(), session.revision(), backend, None)
+                .unwrap()
+        };
+        let rust = build(&session, GeometryBackend::Rust);
+        let solid = rust.solid(request.feature).unwrap();
+        assert_eq!(solid.solid_count().unwrap(), 1);
+        assert!(solid.uses_rust_geometry());
+        let topology = &rust.snapshot().shapes[&request.feature].topology;
+        topology.validate().unwrap();
+        assert!(
+            !rust.snapshot().shapes[&request.feature]
+                .mesh
+                .indices
+                .is_empty()
+        );
+        let model::ResolvedGearGeometry::Rotary(resolved) = request
+            .parameters
+            .resolve_geometry(session.parameters())
+            .unwrap()
+        else {
+            panic!("Expected helical gear geometry");
+        };
+        let section = |depth| {
+            project_drawing(
+                &[DrawingSolid { solid, hatch: None }],
+                DrawingProjection {
+                    section_offset_mm: Some(depth),
+                    section_only: true,
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+        };
+        let start = section(0.);
+        let end = section(8.);
+        let (sin, cos) = (resolved.twist_rad_per_mm * 8.).sin_cos();
+        let mut flanks = 0;
+        for (a, b) in start.iter().zip(&end) {
+            if let (VectorCurve::BSpline { poles: a, .. }, VectorCurve::BSpline { poles: b, .. }) =
+                (&a.curve, &b.curve)
+            {
+                flanks += 1;
+                for (&[x, y], &[u, v]) in a.iter().zip(b) {
+                    near(u, x * cos - y * sin, 1e-8);
+                    near(v, x * sin + y * cos, 1e-8);
+                }
+            }
+        }
+        assert_eq!(flanks, resolved.teeth * 2);
+        let tip_span = |vectors: &[multicad_kernel::ProjectedVector]| {
+            vectors
+                .iter()
+                .filter_map(|vector| match vector.curve {
+                    VectorCurve::Ellipse {
+                        major_mm,
+                        start_rad,
+                        end_rad,
+                        ..
+                    } if vector.role != VectorRole::Hidden
+                        && (major_mm - resolved.tip_radius_mm).abs() < 1e-8 =>
+                    {
+                        Some(end_rad - start_rad)
+                    }
+                    _ => None,
+                })
+                .sum::<f64>()
+        };
+        let projection = project_drawing(
+            &[DrawingSolid { solid, hatch: None }],
+            DrawingProjection {
+                hidden_lines: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let expected = (tip_span(&start)
+            + f64::from(resolved.teeth) * resolved.twist_rad_per_mm.abs() * 8.)
+            .min(std::f64::consts::TAU);
+        near(tip_span(&projection), expected, 1e-8);
+        assert!(
+            projection
+                .iter()
+                .any(|vector| vector.role == VectorRole::Hidden)
+        );
+        let faces = solid.faces().unwrap();
+        let wall_count = (faces.len() - 3) / 2;
+        let (sin, cos) = (resolved.twist_rad_per_mm * 4.).sin_cos();
+        for (lower, upper) in faces[2..2 + wall_count]
+            .iter()
+            .zip(&faces[2 + wall_count..2 + wall_count * 2])
+        {
+            let [x, y, z] = lower.center_mm;
+            near_point(
+                upper.center_mm,
+                [x * cos - y * sin, x * sin + y * cos, z + 4.],
+                1e-8,
+            );
+            near(upper.area_mm2, lower.area_mm2, 1e-8);
+        }
+        let mesh = solid
+            .manufacturing_mesh_with_receipt(Default::default())
+            .unwrap();
+        assert!(!mesh.mesh.indices.is_empty());
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("helical.step");
+        solid.write_step(&path).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        let verified = solid.verify_herringbone_step(&text).unwrap().unwrap();
+        near(verified, solid.volume_mm3().unwrap(), 1e-5);
+        #[cfg(feature = "occt")]
+        {
+            let native = build(&session, GeometryBackend::OpenCascade);
+            let reference = native.solid(request.feature).unwrap();
+            near(
+                solid.volume_mm3().unwrap(),
+                reference.volume_mm3().unwrap(),
+                2e-4,
+            );
+            near(
+                faces.iter().map(|face| face.area_mm2).sum(),
+                reference
+                    .faces()
+                    .unwrap()
+                    .iter()
+                    .map(|face| face.area_mm2)
+                    .sum(),
+                2e-4,
+            );
+            near_point(
+                solid.bounds().unwrap().min,
+                reference.bounds().unwrap().min,
+                1e-5,
+            );
+            near_point(
+                solid.bounds().unwrap().max,
+                reference.bounds().unwrap().max,
+                1e-5,
+            );
+            let imported = multicad_kernel::Shape::read_step(&path).unwrap();
+            assert!(imported.valid().unwrap());
+            near(imported.volume().unwrap(), verified, 2e-4);
+        }
+        request.parameters.helix_angle = angle(20.);
+        request.parameters.face_width = length(10.);
+        let edited = model::prepare_gear_edit(
+            &session,
+            session.revision(),
+            actor(),
+            request.feature,
+            &request.parameters,
+        )
+        .unwrap();
+        session.commit(edited.prepared).unwrap();
+        let updated = build(&session, GeometryBackend::Rust);
+        for (before, after) in topology.elements.iter().zip(
+            &updated.snapshot().shapes[&request.feature]
+                .topology
+                .elements,
+        ) {
+            assert_eq!(before.key, after.key);
+            assert_eq!(before.origins, after.origins);
+        }
+        let mut bytes = Vec::new();
+        project_file::write(
+            &ProjectFile::new(session.document().clone()).unwrap(),
+            &mut bytes,
+            FileLimits::default(),
+        )
+        .unwrap();
+        let reopened = project_file::read(
+            &mut bytes.as_slice(),
+            FileLimits::default(),
+            &project_file::supported_capabilities(),
+        )
+        .unwrap();
+        let reopened = compiler
+            .compile_with_backend(&reopened.project.document, 0, GeometryBackend::Rust, None)
+            .unwrap();
+        near(
+            reopened
+                .solid(request.feature)
+                .unwrap()
+                .volume_mm3()
+                .unwrap(),
+            updated
+                .solid(request.feature)
+                .unwrap()
+                .volume_mm3()
+                .unwrap(),
+            1e-9,
+        );
+    }
+}
+
+#[test]
 fn rust_spur_gears_preserve_involute_geometry_placement_and_face_origins() {
     for (teeth, bore_mm) in [(24, 8.), (40, 0.)] {
         let (mut session, mut request) = fixture();
@@ -241,9 +458,10 @@ fn rust_spur_reports_unavailable_geometry_before_recipe_commit() {
     };
     let before = committed();
     let parameters = GearParameters {
-        family: GearFamily::Helical,
+        family: GearFamily::DoubleHelical,
         hand: GearHand::Right,
         helix_angle: angle(15.),
+        center_gap: length(1.),
         ..request.parameters
     };
     let draft =
@@ -361,15 +579,34 @@ fn rust_spur_hub_extends_the_bore_and_keeps_native_face_roles() {
 
 #[test]
 fn rust_spur_pair_certifies_authored_motion_and_reopens_with_the_same_proof() {
+    rotary_pair_roundtrip(GearFamily::Spur);
+}
+
+#[test]
+fn rust_helical_pair_certifies_full_depth_motion_and_reopens_with_the_same_proof() {
+    rotary_pair_roundtrip(GearFamily::Helical);
+}
+
+fn rotary_pair_roundtrip(family: GearFamily) {
     use multicad_core::project_file::{self, FileLimits, ProjectFile};
     use multicad_kernel::{
         BooleanOperation, RigidTransform, rust_kernel::spur_gear::clearance::ResultKind,
     };
 
-    let (mut session, pinion) = fixture();
+    let (mut session, mut pinion) = fixture();
+    if family == GearFamily::Helical {
+        pinion.parameters.family = family;
+        pinion.parameters.hand = GearHand::Right;
+        pinion.parameters.helix_angle = angle(15.);
+    }
     let wheel = GearRequest::new(
         "Spur wheel",
         GearParameters {
+            hand: if family == GearFamily::Helical {
+                GearHand::Left
+            } else {
+                GearHand::None
+            },
             teeth: Dimension::Literal {
                 value: 36.,
                 unit: "count".into(),
@@ -396,7 +633,12 @@ fn rust_spur_pair_certifies_authored_motion_and_reopens_with_the_same_proof() {
         .compile_with_backend(document, 1, GeometryBackend::Rust, None)
         .unwrap();
     let report = &rust.gear_pair_checks()[&request.pair];
-    assert_eq!(report.center_distance_mm, 60.);
+    let center = if family == GearFamily::Helical {
+        60. / 15_f64.to_radians().cos()
+    } else {
+        60.
+    };
+    near(report.center_distance_mm, center, 1e-10);
     assert_eq!(report.cycle_drive_angles_rad.len(), 9);
     assert!(report.current_pose_checked);
     assert_eq!(report.maximum_overlap_volume_mm3, 0.);
@@ -408,17 +650,17 @@ fn rust_spur_pair_certifies_authored_motion_and_reopens_with_the_same_proof() {
     let (sin, cos) = phase.sin_cos();
     let wrong = RigidTransform {
         rotation: [[cos, -sin, 0.], [sin, cos, 0.], [0., 0., 1.]],
-        translation_mm: [60. * (1. - cos), -60. * sin, 0.],
+        translation_mm: [center * (1. - cos), -center * sin, 0.],
     };
     let wrong_rust = rust.solid(b).unwrap().transformed(wrong).unwrap();
-    assert_eq!(
-        rust.solid(a)
-            .unwrap()
-            .certify_rust_spur_pair(&wrong_rust, compiler.policy, None)
-            .unwrap(),
-        ResultKind::CommonInterior
-    );
-    if multicad_kernel::OCCT_LINKED {
+    let a_solid = rust.solid(a).unwrap();
+    let collision = if family == GearFamily::Helical {
+        a_solid.certify_rust_herringbone_pair(&wrong_rust, compiler.policy, None)
+    } else {
+        a_solid.certify_rust_spur_pair(&wrong_rust, compiler.policy, None)
+    };
+    assert_eq!(collision.unwrap(), ResultKind::CommonInterior);
+    if multicad_kernel::OCCT_LINKED && family == GearFamily::Spur {
         let native = compiler
             .compile_with_backend(document, 1, GeometryBackend::OpenCascade, None)
             .unwrap();

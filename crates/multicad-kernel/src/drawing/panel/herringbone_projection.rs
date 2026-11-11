@@ -42,7 +42,8 @@ pub(in crate::drawing) fn project_herringbone(
     let middle = height / 2.;
     let near_phase = body.phase_at(near_z);
     let far_phase = body.phase_at(far_z);
-    let seam = (near_z.min(far_z)..near_z.max(far_z)).contains(&middle)
+    let seam = !body.is_helical()
+        && (near_z.min(far_z)..near_z.max(far_z)).contains(&middle)
         && near_z != middle
         && far_z != middle;
     let seam_phase = body.phase_at(middle);

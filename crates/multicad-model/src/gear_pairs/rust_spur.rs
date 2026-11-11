@@ -11,7 +11,7 @@ fn check(
     policy: GeometryPolicy,
     interrupt: Option<&dyn Fn() -> bool>,
 ) -> Result<(), ModelError> {
-    let result = if family == GearFamily::Herringbone {
+    let result = if matches!(family, GearFamily::Herringbone | GearFamily::Helical) {
         a.certify_rust_herringbone_pair(b, policy, interrupt)
     } else {
         a.certify_rust_spur_pair(b, policy, interrupt)
@@ -55,7 +55,10 @@ pub(crate) fn validate(
             .map_err(|e| error(Some(pair), e))?;
         let family = resolved.gears[0].family();
         if shifted_engagement(document, source.parameters.gears)
-            || !matches!(family, GearFamily::Spur | GearFamily::Herringbone)
+            || !matches!(
+                family,
+                GearFamily::Spur | GearFamily::Herringbone | GearFamily::Helical
+            )
             || resolved.gears.iter().any(|gear| {
                 !gear.rotary().is_some_and(|rotary| {
                     rotary.family == family
@@ -66,7 +69,7 @@ pub(crate) fn validate(
         {
             return Err(error(
                 Some(pair),
-                "Rust gear-pair interference requires unshifted external spur or continuous herringbone members without hubs",
+                "Rust gear-pair interference requires unshifted external spur, helical or continuous herringbone members without hubs",
             ));
         }
         let [a, b] = source.parameters.gears;
@@ -135,6 +138,8 @@ pub(crate) fn validate(
             maximum_overlap_volume_mm3: 0.,
             scope: if family == GearFamily::Herringbone {
                 "Rust full-axial positive-clearance certificates for the current pose and nine sampled phases of one unshifted continuous herringbone tooth cycle. Continuous motion, strength and manufacturing fit are outside this check."
+            } else if family == GearFamily::Helical {
+                "Rust full-axial positive-clearance certificates for the current pose and nine sampled phases of one unshifted helical tooth cycle. Continuous motion, strength and manufacturing fit are outside this check."
             } else {
                 "Rust positive-clearance certificates for the current pose and nine sampled phases over one unshifted external spur tooth cycle. Continuous motion, strength and manufacturing fit are outside this check."
             },

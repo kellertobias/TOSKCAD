@@ -31,19 +31,41 @@ impl Solid {
         feature: EntityId,
         policy: GeometryPolicy,
     ) -> Result<Self, GeometryError> {
-        const OPERATION: &str = "herringbone gear";
+        Self::rust_twisted_gear_named(spec, feature, policy, GearSweep::Chevron)
+    }
+
+    pub fn rust_helical_gear_named(
+        spec: InvoluteGear,
+        feature: EntityId,
+        policy: GeometryPolicy,
+    ) -> Result<Self, GeometryError> {
+        Self::rust_twisted_gear_named(spec, feature, policy, GearSweep::Helical)
+    }
+
+    fn rust_twisted_gear_named(
+        spec: InvoluteGear,
+        feature: EntityId,
+        policy: GeometryPolicy,
+        required_sweep: GearSweep,
+    ) -> Result<Self, GeometryError> {
+        const OPERATION: &str = "twisted gear";
         policy.validate()?;
-        if spec.sweep != GearSweep::Chevron || spec.hub.is_some() {
+        if spec.sweep != required_sweep || spec.hub.is_some() {
             return Err(error(
                 OPERATION,
                 GeometryErrorKind::Unsupported,
-                "Rust herringbone requires continuous tooth bands without a hub",
+                "Rust twisted gear requires the requested continuous tooth bands without a hub",
             ));
         }
         if feature.is_nil() {
-            return Err(input("Herringbone feature identity must not be nil"));
+            return Err(input("Twisted gear feature identity must not be nil"));
         }
-        let geometry = Herringbone::new(
+        let construct = if required_sweep == GearSweep::Helical {
+            Herringbone::new_helical
+        } else {
+            Herringbone::new
+        };
+        let geometry = construct(
             Spec {
                 teeth: spec.teeth,
                 pitch_radius_mm: spec.pitch_radius_mm,
@@ -67,7 +89,7 @@ impl Solid {
                 } else {
                     GeometryErrorKind::Input
                 },
-                format!("Invalid analytic herringbone profile: {cause:?}"),
+                format!("Invalid analytic twisted gear profile: {cause:?}"),
             )
         })?;
         let topology = geometry.topology();
@@ -79,7 +101,7 @@ impl Solid {
             return Err(error(
                 OPERATION,
                 GeometryErrorKind::InvalidResult,
-                "Invalid herringbone face area",
+                "Invalid twisted gear face area",
             ));
         }
         Ok(Self {
@@ -194,6 +216,10 @@ impl HerringboneBody {
 
     pub(crate) fn phase_at(&self, z: f64) -> f64 {
         self.geometry.phase_at(z)
+    }
+
+    pub(crate) fn is_helical(&self) -> bool {
+        self.geometry.is_helical()
     }
 
     pub(crate) fn section(&self, frame: PlaneFrame, z: f64, outward: f64) -> ReferenceFrame {

@@ -59,19 +59,13 @@ fn transverse_metrics(edge: Edge, rate: f64) -> ([f64; 2], f64) {
 pub(super) fn local_faces(gear: &Herringbone, topology: &Topology) -> Vec<Face> {
     let height = gear.profile().height_mm();
     let rate = gear.twist_rad_per_mm();
-    let phase = gear.phase_at(height / 2.) / 2.;
-    let (sin, cos) = phase.sin_cos();
-    let mean = sin / phase;
     let wall = gear
         .profile()
         .outline()
         .iter()
         .map(|entry| {
             let ([x, y], length) = transverse_metrics(entry.edge, rate);
-            (
-                [mean * (cos * x - sin * y), mean * (sin * x + cos * y)],
-                length * height / 2.,
-            )
+            ([x, y], length * height / 2.)
         })
         .collect::<Vec<_>>();
     topology
@@ -91,7 +85,19 @@ pub(super) fn local_faces(gear: &Herringbone, topology: &Topology) -> Vec<Face> 
                 GearFace::Tooth { band, .. } => {
                     let [lo, hi] = band.axial_interval_mm(height);
                     let ([x, y], area) = wall[(i - 2) % wall.len()];
-                    (None, [x, y, (lo + hi) / 2.], area)
+                    let phases = [lo, hi].map(|z| gear.phase_at(z));
+                    let half = (phases[1] - phases[0]) / 2.;
+                    let mean = half.sin() / half;
+                    let (sin, cos) = phases[0].midpoint(phases[1]).sin_cos();
+                    (
+                        None,
+                        [
+                            mean * (cos * x - sin * y),
+                            mean * (sin * x + cos * y),
+                            lo.midpoint(hi),
+                        ],
+                        area,
+                    )
                 }
                 GearFace::Bore => {
                     let radius = gear
