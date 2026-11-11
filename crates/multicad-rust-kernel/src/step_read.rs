@@ -655,7 +655,7 @@ impl<'a, 'input> Shell<'a, 'input> {
         let mut outer = None;
         let mut holes = Vec::new();
         let implicit_outer = bounds.len() == 1;
-        let mut remaining_vertices = MAX_VERTICES;
+        let mut remaining_vertices = crate::linear_sweep::MAX_PROFILE_VERTICES;
         for id in bounds {
             let (exterior, wire, forward) = self.bound(id, implicit_outer)?;
             let traversals = self.traversals(wire, forward, face, remaining_vertices)?;

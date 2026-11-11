@@ -822,7 +822,13 @@ impl Shell<'_, '_> {
             }
             PlanarMatch::Ruled(height_mm, _) => {
                 let (base, top): (Vec<_>, Vec<_>) = rings.unzip();
-                Sweep::new(base.clone(), top.clone(), height_mm).ok()?;
+                Sweep::with_profile_budget(
+                    base.clone(),
+                    top.clone(),
+                    height_mm,
+                    crate::linear_sweep::MAX_PROFILE_VERTICES,
+                )
+                .ok()?;
                 (height_mm, ImportProfile::LinearSweep { base, top })
             }
             PlanarMatch::Chamfered(height_mm, bores) => {

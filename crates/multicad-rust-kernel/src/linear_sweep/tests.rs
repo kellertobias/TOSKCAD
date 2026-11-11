@@ -207,3 +207,54 @@ fn containment_uses_the_exact_coordinates_at_either_cap() {
     assert!(solid.contains([0.1, 0.5, 2.], 0.));
     assert!(!solid.contains([0.1 - 1e-12, 0.5, 2.], 0.));
 }
+
+#[test]
+fn explicit_profile_budget_preserves_the_complete_large_manufacturing_boundary() {
+    let mut ring = vec![[0., 0.], [4093., 0.]];
+    ring.extend((0..4094).rev().map(|i| [i as f64, 4. + (i % 2) as f64]));
+    assert_eq!(ring.len(), 4096);
+    let base = vec![ring];
+    assert_eq!(
+        Sweep::new(base.clone(), base.clone(), 2.).unwrap_err(),
+        Error::Limit
+    );
+    let solid = Sweep::with_profile_budget(base.clone(), base.clone(), 2., 4096).unwrap();
+    assert_eq!(solid.base(), base);
+    assert_eq!(solid.top(), base);
+    assert_eq!(solid.base()[0].len(), 4096);
+    let twice_area = base[0]
+        .iter()
+        .zip(base[0].iter().cycle().skip(1))
+        .map(|(a, b)| a[0] * b[1] - a[1] * b[0])
+        .sum::<f64>();
+    near(solid.volume_mm3(), twice_area);
+    let mesh = crate::linear_sweep_mesh::tessellate(
+        &solid,
+        crate::display::Tessellation {
+            deflection: 0.1,
+            angle: 0.3,
+            triangle_limit: 200_000,
+        },
+    )
+    .unwrap();
+    assert_eq!(mesh.vertices.len(), 2 * 4096 * 3);
+    assert_eq!(mesh.indices.len() / 3, 4 * 4096 - 4);
+    let mut too_many = base;
+    too_many[0].push([-1., 2.]);
+    assert_eq!(
+        Sweep::with_profile_budget(too_many.clone(), too_many, 2., 4096).unwrap_err(),
+        Error::Limit
+    );
+    for budget in [0, 4097] {
+        assert_eq!(
+            Sweep::with_profile_budget(
+                vec![rectangle([0., 0.], [2., 3.])],
+                vec![rectangle([0., 0.], [2., 3.])],
+                1.,
+                budget
+            )
+            .unwrap_err(),
+            Error::Limit
+        );
+    }
+}

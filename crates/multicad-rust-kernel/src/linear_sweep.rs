@@ -16,6 +16,8 @@ type Point = [f64; 2];
 type Trajectory = [Point; 2];
 
 pub(crate) const MAX_COORDINATE_MM: f64 = 1e7;
+/// Maximum total vertices in an explicitly budgeted straight profile sweep.
+pub const MAX_PROFILE_VERTICES: usize = 4096;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Error {
@@ -55,6 +57,20 @@ impl Sweep {
     /// The exterior ring is counterclockwise and hole rings are clockwise,
     /// as viewed from +Z. The sweep preserves the input ring and vertex order.
     pub fn new(base: Vec<Vec<Point>>, top: Vec<Vec<Point>>, height_mm: f64) -> Result<Self, Error> {
+        Self::with_profile_budget(base, top, height_mm, MAX_VERTICES)
+    }
+
+    /// Apply the same geometric proof to a caller-bounded profile of at most
+    /// 4096 vertices. The default constructor retains its 1024-vertex budget.
+    pub fn with_profile_budget(
+        base: Vec<Vec<Point>>,
+        top: Vec<Vec<Point>>,
+        height_mm: f64,
+        vertex_limit: usize,
+    ) -> Result<Self, Error> {
+        if vertex_limit == 0 || vertex_limit > MAX_PROFILE_VERTICES {
+            return Err(Error::Limit);
+        }
         if !height_mm.is_finite() || height_mm <= 0. {
             return Err(Error::InvalidHeight);
         }
@@ -67,7 +83,7 @@ impl Sweep {
         {
             return Err(Error::InvalidProfile);
         }
-        if height_mm > MAX_COORDINATE_MM || base.iter().map(Vec::len).sum::<usize>() > MAX_VERTICES
+        if height_mm > MAX_COORDINATE_MM || base.iter().map(Vec::len).sum::<usize>() > vertex_limit
         {
             return Err(Error::Limit);
         }

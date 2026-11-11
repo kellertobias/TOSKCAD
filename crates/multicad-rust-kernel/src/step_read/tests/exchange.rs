@@ -1111,7 +1111,10 @@ fn degenerate_and_nonmanifold_references_are_rejected() {
     let oversized_loop = arguments(
         &step,
         "EDGE_LOOP",
-        &format!("'',({})", vec![base_loop; 1025].join(",")),
+        &format!(
+            "'',({})",
+            vec![base_loop; crate::linear_sweep::MAX_PROFILE_VERTICES + 1].join(",")
+        ),
     );
     assert_eq!(
         read_planar_solid(&oversized_loop, TOLERANCE),

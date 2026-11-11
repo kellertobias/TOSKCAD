@@ -680,8 +680,13 @@ impl Solid {
                     .map(|(&a, &b)| (straight_origin(feature, frame, a, b), false))
             })
             .collect();
-        let sweep = multicad_rust_kernel::linear_sweep::Sweep::new(base, top, height_mm)
-            .map_err(|cause| invalid(format!("Invalid STEP linear sweep: {cause:?}")))?;
+        let sweep = multicad_rust_kernel::linear_sweep::Sweep::with_profile_budget(
+            base,
+            top,
+            height_mm,
+            multicad_rust_kernel::linear_sweep::MAX_PROFILE_VERTICES,
+        )
+        .map_err(|cause| invalid(format!("Invalid STEP linear sweep: {cause:?}")))?;
         Self::from_linear_sweep(sweep, frame, feature, edges, [0.; 2], false, policy)
     }
 
@@ -713,12 +718,13 @@ impl Solid {
         let prism =
             match PolygonPrism::with_circular_holes(exact_rings, holes, dimension(height_mm)?) {
                 Ok(prism) => prism,
-                Err(PolygonError::Arithmetic(RationalError::OutOfRange))
-                    if allow_linear_fallback && circular_holes.is_empty() =>
-                {
+                Err(
+                    PolygonError::Arithmetic(RationalError::OutOfRange) | PolygonError::VertexLimit,
+                ) if allow_linear_fallback && circular_holes.is_empty() => {
                     // The independent reader proved a straight planar sweep.
-                    // Retain its original coordinates when rational products
-                    // overflow, and still run the full analytic readback checks.
+                    // Preserve all coordinates when rational products overflow
+                    // or this wire exceeds the smaller exact polygon budget.
+                    // The bounded sweep and full readback proof still govern admission.
                     return Self::from_imported_linear_sweep(
                         rings.to_vec(),
                         rings.to_vec(),

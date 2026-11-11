@@ -379,7 +379,13 @@ impl Solid {
             base.push(a_points);
             top.push(b_points);
         }
-        let geometry = Sweep::new(base, top, height).map_err(|cause| match cause {
+        let geometry = Sweep::with_profile_budget(
+            base,
+            top,
+            height,
+            multicad_rust_kernel::linear_sweep::MAX_PROFILE_VERTICES,
+        )
+        .map_err(|cause| match cause {
             SweepError::InvalidProfile => {
                 input("Linear extrusion changes the profile topology or has invalid straight wires")
             }
