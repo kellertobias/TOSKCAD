@@ -13,6 +13,7 @@ use multicad_rust_kernel::{
 };
 use std::collections::{BTreeMap, BTreeSet};
 
+mod components;
 mod draft;
 mod intersection;
 mod mirror;
@@ -1126,6 +1127,15 @@ impl OrthogonalBody {
         geometry: OrthogonalSolid,
         sources: Option<&Sources>,
     ) -> Result<Self, GeometryError> {
+        Self::build_with_budget(feature, geometry, sources, &mut 2_000_000)
+    }
+
+    fn build_with_budget(
+        feature: EntityId,
+        geometry: OrthogonalSolid,
+        sources: Option<&Sources>,
+        budget: &mut usize,
+    ) -> Result<Self, GeometryError> {
         let boundary =
             orthogonal_boundary::build(geometry.quads()).map_err(|cause| match cause {
                 BoundaryError::Limit => limit("Orthogonal boundary exceeds its topology budget"),
@@ -1136,7 +1146,6 @@ impl OrthogonalBody {
             edge_index: BTreeMap::new(),
             vertices: BTreeMap::new(),
         };
-        let mut budget = 2_000_000;
         let mut faces = Vec::with_capacity(boundary.faces.len());
         let mut elements = Vec::with_capacity(boundary.faces.len());
         let mut loops = Vec::with_capacity(boundary.faces.len());
@@ -1161,7 +1170,7 @@ impl OrthogonalBody {
                     .get(&plane_key(face.normal, origin))
                     .map_or(&[][..], Vec::as_slice);
                 let (origins, frames) =
-                    support_origins(face.normal, &patches, face_sources, &mut budget)?;
+                    support_origins(face.normal, &patches, face_sources, budget)?;
                 (origins, frames)
             } else {
                 let mut points: Vec<_> = face.rings.iter().flatten().copied().map(key).collect();
@@ -1237,7 +1246,7 @@ impl OrthogonalBody {
             );
             item.boundary = adjacent_origins(&adjacent);
             if let Some(sources) = sources {
-                inherit_lower_origins(&mut item, sources, &mut budget)?;
+                inherit_lower_origins(&mut item, sources, budget)?;
                 if adjacent
                     .iter()
                     .all(|&face| !elements[face].origins.is_empty())
@@ -1262,7 +1271,7 @@ impl OrthogonalBody {
             let adjacent: Vec<_> = adjacent.into_iter().collect();
             item.boundary = adjacent_origins(&adjacent);
             if let Some(sources) = sources {
-                inherit_lower_origins(&mut item, sources, &mut budget)?;
+                inherit_lower_origins(&mut item, sources, budget)?;
                 if adjacent
                     .iter()
                     .all(|&face| !elements[face].origins.is_empty())

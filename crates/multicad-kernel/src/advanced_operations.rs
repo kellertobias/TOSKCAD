@@ -65,6 +65,9 @@ impl Solid {
             if count == 1 {
                 return Ok(vec![self.share()?]);
             }
+            if let Some(result) = self.rust_orthogonal_components(interrupt) {
+                return result;
+            }
             return Err(failure(
                 GeometryErrorKind::Unsupported,
                 "Rust component extraction requires independent compound members",

@@ -589,13 +589,21 @@ impl LinearBody {
     /// Exact local rectangle with an unchanged section. The caller must
     /// establish a cardinal placement before treating these bounds as stock.
     pub(super) fn orthogonal_box(&self, frame: PlaneFrame) -> Option<Bounds> {
-        let Geometry::Ruled(sweep) = &self.geometry else {
+        let (rings, straight) = match &self.geometry {
+            Geometry::Ruled(sweep) => (sweep.base(), sweep.base() == sweep.top()),
+            Geometry::Trimmed { sweep, .. } => (
+                sweep.rings(),
+                sweep.direction() == [0., 0., 1.]
+                    && sweep
+                        .travel_coefficients()
+                        .iter()
+                        .all(|law| law[1] == 0. && law[2] == 0.),
+            ),
+        };
+        let [ring] = rings else {
             return None;
         };
-        let [ring] = sweep.base() else {
-            return None;
-        };
-        if ring.len() != 4 || sweep.base() != sweep.top() {
+        if ring.len() != 4 || !straight {
             return None;
         }
         let [x0, x1] = ring
