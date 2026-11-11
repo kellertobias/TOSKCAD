@@ -209,11 +209,8 @@ mod tests {
                 / 2.
         };
         let exact = 40. * wheel.sector_section(0.3)[0] + std::f64::consts::PI * 16.;
-        assert!(
-            (area(&rings[0]) - exact).abs() / exact < 1e-4,
-            "{}",
-            area(&rings[0])
-        );
+        let outline = area(&rings[0]);
+        assert!((outline - exact).abs() / exact < 1e-4, "{outline}");
         assert!(area(&rings[1]) < 0.);
         let solid = Wheel::new(wheel_spec(1., 32, 1., 0., 0.), 1e-3, 1e7).unwrap();
         assert_eq!(solid.section_rings(0., 1e-2, 100_000).unwrap().len(), 1);
