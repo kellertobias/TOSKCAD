@@ -174,7 +174,46 @@ fn near_interiors(a: Edge, b: Edge, clearance: f64) -> bool {
     }
 }
 
+// Enclose determinants of the retained endpoint coordinates, before unit-vector
+// normalization. A fixed angular cutoff cannot prove that long near-parallel
+// source segments do not cross. Uncertain signs deliberately refuse admission.
+fn line_separation(a: Edge, b: Edge) -> bool {
+    fn difference(a: [f64; 2], b: [f64; 2]) -> [f64; 2] {
+        [(a[0] - b[1]).next_down(), (a[1] - b[0]).next_up()]
+    }
+    fn product(a: [f64; 2], b: [f64; 2]) -> [f64; 2] {
+        let values = [a[0] * b[0], a[0] * b[1], a[1] * b[0], a[1] * b[1]];
+        [
+            values.into_iter().fold(f64::INFINITY, f64::min).next_down(),
+            values
+                .into_iter()
+                .fold(f64::NEG_INFINITY, f64::max)
+                .next_up(),
+        ]
+    }
+    let orientation = |edge: Edge, p: Point| {
+        let a = edge.start();
+        let b = edge.end();
+        let d: [[f64; 2]; 2] = std::array::from_fn(|i| difference([b[i]; 2], [a[i]; 2]));
+        let q: [[f64; 2]; 2] = std::array::from_fn(|i| difference([p[i]; 2], [a[i]; 2]));
+        difference(product(d[0], q[1]), product(d[1], q[0]))
+    };
+    let same_side = |edge: Edge, other: Edge| {
+        let a = orientation(edge, other.start());
+        let b = orientation(edge, other.end());
+        a[0] > 0. && b[0] > 0. || a[1] < 0. && b[1] < 0.
+    };
+    same_side(a, b) || same_side(b, a)
+}
 pub(super) fn clear_pair(a: Edge, b: Edge, joins: &[Point], slack: f64, roundoff: f64) -> bool {
+    if joins.is_empty() && a.round().is_none() && b.round().is_none() {
+        if !Bounds::of(a).overlaps(Bounds::of(b), slack) {
+            return true;
+        }
+        if !line_separation(a, b) {
+            return false;
+        }
+    }
     let hits = match (a.round(), b.round()) {
         (None, None) => line_hits(Line::of(a), Line::of(b), slack),
         (None, Some(round)) => line_round_hits(Line::of(a), round, slack, roundoff),
@@ -402,5 +441,32 @@ mod tests {
         assert!(!clear(half, line([-3., 1.], [3., 1.]), &[]));
         assert!(clear(disk, circle([0.25, 0.], 1.), &[]));
         assert!(!clear(disk, circle([1.25, 0.], 1.), &[]));
+    }
+}
+
+#[cfg(test)]
+mod line_interval_regression {
+    use super::*;
+    #[test]
+    fn separated_collinear_segments_have_no_fabricated_contact() {
+        let line = |a, b| Line::of(Edge::Line { a, b });
+        let hits = line_hits(line([0., 0.], [1., 1.]), line([3., 3.], [4., 4.]), 1e-7);
+        assert!(!hits.overlap && hits.points.into_iter().all(|p| p.is_none()));
+    }
+    #[test]
+    fn long_nearly_parallel_crossing_source_lines_are_not_a_valid_profile() {
+        let l = 9e6;
+        let p = [[-l, -l], [l, l], [l, l - 1.15e-7], [-l, -l + 1.3e-7]];
+        let ring = (0..4)
+            .map(|i| Edge::Line {
+                a: p[i],
+                b: p[(i + 1) % 4],
+            })
+            .collect::<Vec<_>>();
+        let source = Sweep::new(vec![ring], 1., 1e-10, 1e-9);
+        assert!(
+            source.is_err(),
+            "crossing long source lines were accepted: {source:?}"
+        );
     }
 }
