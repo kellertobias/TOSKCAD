@@ -115,6 +115,13 @@ fn contains_bevel(solid: &Solid) -> bool {
             .is_some_and(|compound| compound.members().any(contains_bevel))
 }
 
+fn contains_worm(solid: &Solid) -> bool {
+    solid.worm_body().is_some()
+        || solid
+            .rust_compound()
+            .is_some_and(|compound| compound.members().any(contains_worm))
+}
+
 fn contains_herringbone(solid: &Solid) -> bool {
     solid.herringbone_body().is_some()
         || solid
@@ -209,6 +216,12 @@ pub fn project_drawing(
             && let Some(projection) = panel::project_herringbone(input, options)
         {
             return projection;
+        }
+        if solids.iter().any(|input| contains_worm(input.solid)) {
+            return Err(err(
+                GeometryErrorKind::Unsupported,
+                "Rust exact drawing projection for ZA worms and generated worm wheels is unavailable",
+            ));
         }
         if solids.iter().any(|input| contains_bevel(input.solid)) {
             return Err(err(

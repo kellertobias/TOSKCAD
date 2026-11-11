@@ -33,6 +33,7 @@ mod spur_gear_body;
 mod step_import;
 mod torus_body;
 mod warped_union_body;
+mod worm_body;
 use annulus_body::AnnulusBody;
 use axial_stack_body::AxialStackBody;
 use bevel_body::BevelBody;
@@ -58,6 +59,7 @@ use spline_sweep_body::SplineSweepBody;
 use spur_gear_body::SpurGearBody;
 use torus_body::TorusBody;
 use warped_union_body::WarpedUnionBody;
+use worm_body::WormBody;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GeometryErrorKind {
@@ -575,6 +577,7 @@ enum SolidBody {
     SpurGear(Rc<SpurGearBody>, PlaneFrame),
     Herringbone(Rc<HerringboneBody>, PlaneFrame),
     Bevel(Rc<BevelBody>, PlaneFrame),
+    Worm(Rc<WormBody>, PlaneFrame),
     Sphere(Rc<SphereBody>, PlaneFrame),
     Torus(Rc<TorusBody>, PlaneFrame),
     AxialStack(Rc<AxialStackBody>, PlaneFrame),
@@ -945,6 +948,7 @@ impl Solid {
             SolidBody::SpurGear(body, frame) => SolidBody::SpurGear(Rc::clone(body), *frame),
             SolidBody::Herringbone(body, frame) => SolidBody::Herringbone(Rc::clone(body), *frame),
             SolidBody::Bevel(body, frame) => SolidBody::Bevel(Rc::clone(body), *frame),
+            SolidBody::Worm(body, frame) => SolidBody::Worm(Rc::clone(body), *frame),
             SolidBody::Sphere(body, frame) => SolidBody::Sphere(Rc::clone(body), *frame),
             SolidBody::Torus(body, frame) => SolidBody::Torus(Rc::clone(body), *frame),
             SolidBody::AxialStack(body, frame) => SolidBody::AxialStack(Rc::clone(body), *frame),
@@ -1234,6 +1238,9 @@ impl Solid {
                 SolidBody::Bevel(body, frame) => {
                     SolidBody::Bevel(Rc::clone(body), transform.frame(*frame))
                 }
+                SolidBody::Worm(body, frame) => {
+                    SolidBody::Worm(Rc::clone(body), transform.frame(*frame))
+                }
                 SolidBody::Sphere(body, frame) => {
                     SolidBody::Sphere(Rc::clone(body), transform.frame(*frame))
                 }
@@ -1299,6 +1306,9 @@ impl Solid {
         }
         if let Some((body, _)) = self.bevel_body() {
             return Ok(body.geometry.volume_mm3());
+        }
+        if let Some((body, _)) = self.worm_body() {
+            return Ok(body.volume_mm3());
         }
         if let Some((body, _)) = self.warped_union_body() {
             return Ok(body.volume_mm3());
@@ -1394,6 +1404,9 @@ impl Solid {
             return Ok(body.bounds(frame));
         }
         if let Some((body, frame)) = self.bevel_body() {
+            return Ok(body.bounds(frame));
+        }
+        if let Some((body, frame)) = self.worm_body() {
             return Ok(body.bounds(frame));
         }
         if let Some((body, frame)) = self.warped_union_body() {
@@ -1536,6 +1549,9 @@ impl Solid {
             return Ok(body.faces(frame));
         }
         if let Some((body, frame)) = self.bevel_body() {
+            return Ok(body.faces(frame));
+        }
+        if let Some((body, frame)) = self.worm_body() {
             return Ok(body.faces(frame));
         }
         if let Some((body, frame)) = self.warped_union_body() {
@@ -1707,6 +1723,7 @@ impl Solid {
                 crate::rust_display::placed_mesh(body.geometry.mesh(rust_options), *frame, false)
             }
             SolidBody::Bevel(body, frame) => body.mesh(*frame, rust_options),
+            SolidBody::Worm(body, frame) => body.mesh(*frame, rust_options),
             SolidBody::Sphere(body, frame) => {
                 crate::rust_display::placed_mesh(body.geometry.mesh(rust_options), *frame, false)
             }
@@ -1999,6 +2016,9 @@ impl Solid {
         if let Some((body, frame)) = self.bevel_body() {
             return body.sample_edge(frame, ordinal, options);
         }
+        if let Some((body, frame)) = self.worm_body() {
+            return body.sample_edge(frame, ordinal, options);
+        }
         if let Some((body, frame)) = self.helical_tube_cut_body() {
             return body.sample_edge(frame, ordinal, options);
         }
@@ -2042,6 +2062,7 @@ impl Solid {
             SolidBody::SpurGear(body, _) => body.feature,
             SolidBody::Herringbone(body, _) => body.feature,
             SolidBody::Bevel(body, _) => body.feature,
+            SolidBody::Worm(body, _) => body.feature,
             SolidBody::Sphere(body, _) => body.feature,
             SolidBody::Torus(body, _) => body.feature,
             SolidBody::AxialStack(body, _) => body.feature,
@@ -2085,6 +2106,7 @@ impl Solid {
                 standalone && body.supports_step(*frame, self.policy)
             }
             SolidBody::Bevel(body, frame) => standalone && body.supports_step(*frame, self.policy),
+            SolidBody::Worm(body, frame) => standalone && body.supports_step(*frame, self.policy),
             SolidBody::HelicalTubeCut(body, frame) => {
                 multicad_rust_kernel::step::supports_helical_tube_cut(
                     body.cut,
@@ -2201,6 +2223,7 @@ impl Solid {
             ),
             SolidBody::Herringbone(body, frame) => body.append_step(writer, *frame, self.policy),
             SolidBody::Bevel(body, frame) => body.append_step(writer, *frame, self.policy),
+            SolidBody::Worm(body, frame) => body.append_step(writer, *frame, self.policy),
             SolidBody::SpurGear(body, frame) => writer.append_spur_gear(
                 &body.profile,
                 frame.origin,
