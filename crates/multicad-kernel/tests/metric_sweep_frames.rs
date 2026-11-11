@@ -231,8 +231,19 @@ fn small_metric_frames_preserve_mesh_and_proper_frames_exchange() {
             }
         }
         let proper = make(kind, 10, PlaneFrame::default()).unwrap();
-        // The noisy axial-stack tangency roundtrip is tracked separately:
-        // these guards preserve admission, without changing STEP incidence.
+        if matches!(kind, Kind::Stack) {
+            let path = directory.path().join("preserved-stack.step");
+            std::fs::write(&path, b"previous file").unwrap();
+            assert_eq!(
+                source.write_step(&path).unwrap_err().kind,
+                GeometryErrorKind::Unsupported
+            );
+            assert_eq!(std::fs::read(&path).unwrap(), b"previous file");
+            assert_eq!(source.bounds().unwrap(), bounds);
+        }
+        // A resolved affine stretch cannot preserve the stack's tangent
+        // circles and shared planar wires in analytic STEP. Refusal preserves
+        // the existing file; a proper frame remains independently readable.
         let candidates = if matches!(kind, Kind::Stack) {
             vec![&proper]
         } else {

@@ -18,6 +18,31 @@ pub(super) fn encode(
     placement: Placement,
     stack: &ProfileStack,
 ) -> Result<Entity, StepError> {
+    // Circle directions in STEP are normalized, while shared vertices retain
+    // their placed coordinates. In particular, a nearly rigid chart can turn
+    // an exact tangent contact into a failed finite wire. Prove the actual
+    // serialized shell at its original construction tolerance before touching
+    // the destination member; neither document axes nor contact tolerances
+    // are modified. The reader's entity/work budgets also bound this proof.
+    if stack
+        .edges()
+        .iter()
+        .any(|edge| matches!(edge.curve, Curve::Arc { .. }))
+    {
+        let mut candidate = StepFile::new();
+        let solid = encode_shell(&mut candidate, &placement, stack)?;
+        candidate.finish(vec![solid]);
+        crate::step_read::read_import_solid(&candidate.data, stack.tolerance_mm())
+            .map_err(|_| StepError::Unsupported)?;
+    }
+    encode_shell(file, &placement, stack)
+}
+
+fn encode_shell(
+    file: &mut StepFile,
+    placement: &Placement,
+    stack: &ProfileStack,
+) -> Result<Entity, StepError> {
     let placed = |[x, y, z]: Point| placement.point_f64([x, y], z);
     let vertices: Vec<_> = stack
         .vertices()
@@ -103,6 +128,149 @@ mod tests {
         axial_profile_stack::{Operand, Profile},
         step_read::read_analytic_solid,
     };
+
+    #[test]
+    fn affine_circle_charts_refuse_atomically_and_proper_charts_retry() {
+        for size in [1., 1e-3] {
+            let stack = ProfileStack::union(
+                &[
+                    Operand {
+                        span_mm: [-10. * size, size],
+                        profile: Profile::Rectangle {
+                            min: [-size; 2],
+                            max: [size; 2],
+                        },
+                    },
+                    Operand {
+                        span_mm: [0., 2. * size],
+                        profile: Profile::Circle {
+                            center: [0.; 2],
+                            radius_mm: size,
+                        },
+                    },
+                ],
+                size * 1e-9,
+                size * 1e-5,
+            )
+            .unwrap();
+            let rectangular = ProfileStack::union(
+                &[Operand {
+                    span_mm: [0., size],
+                    profile: Profile::Rectangle {
+                        min: [-size; 2],
+                        max: [size; 2],
+                    },
+                }],
+                size * 1e-9,
+                size * 1e-5,
+            )
+            .unwrap();
+            let rectangular_step = write_axial_profile_stack(
+                &rectangular,
+                [0.; 3],
+                [1. + 4e-11, 0., 0.],
+                [0., 1., 0.],
+            )
+            .unwrap();
+            assert!(crate::step_read::read_analytic_solid(&rectangular_step, size * 1e-9).is_ok());
+            let mut writer = Writer::new();
+            let dimensions = [3, 4, 5].map(|v| Rational::new(v, 1).unwrap());
+            writer
+                .append_box(dimensions, [0.; 3], [1., 0., 0.], [0., 1., 0.])
+                .unwrap();
+            for (u, v) in [
+                ([1. + 4e-11, 0., 0.], [0., 1., 0.]),
+                ([1., 0., 0.], [0., 1. + 4e-11, 0.]),
+            ] {
+                assert_eq!(
+                    write_axial_profile_stack(&stack, [0.; 3], u, v),
+                    Err(StepError::Unsupported)
+                );
+                assert_eq!(
+                    writer.append_axial_profile_stack(&stack, [0.; 3], u, v),
+                    Err(StepError::Unsupported)
+                );
+            }
+            for (u, v) in [
+                ([1., 0., 0.], [0., 1., 0.]),
+                ([0.8, 0.6, 0.], [-0.36, 0.48, 0.8]),
+            ] {
+                let text = write_axial_profile_stack(&stack, [0.; 3], u, v).unwrap();
+                let (read, _) = crate::step_read::read_import_solid(&text, size * 1e-9).unwrap();
+                assert_eq!(read.face_count, stack.faces().len());
+                assert!((read.volume_mm3 / stack.volume_mm3() - 1.).abs() < 1e-8);
+            }
+            writer
+                .append_axial_profile_stack(&stack, [0.; 3], [1., 0., 0.], [0., 1., 0.])
+                .unwrap();
+            let mut expected = Writer::new();
+            expected
+                .append_box(dimensions, [0.; 3], [1., 0., 0.], [0., 1., 0.])
+                .unwrap();
+            expected
+                .append_axial_profile_stack(&stack, [0.; 3], [1., 0., 0.], [0., 1., 0.])
+                .unwrap();
+            assert_eq!(writer.finish().unwrap(), expected.finish().unwrap());
+        }
+    }
+
+    #[test]
+    fn circular_exchange_uses_actual_size_and_original_tolerance() {
+        let mut rejected = false;
+        for size in [1e-3, 1., 5e6] {
+            for tolerance in [1e-7, 1e-9] {
+                let stack = ProfileStack::union(
+                    &[
+                        Operand {
+                            span_mm: [0., size],
+                            profile: Profile::Rectangle {
+                                min: [-size; 2],
+                                max: [size; 2],
+                            },
+                        },
+                        Operand {
+                            span_mm: [0., 2. * size],
+                            profile: Profile::Circle {
+                                center: [0.; 2],
+                                radius_mm: size,
+                            },
+                        },
+                    ],
+                    tolerance,
+                    1e-4,
+                )
+                .unwrap();
+                for residual in [0., 2e-15, 4e-11] {
+                    let result = write_axial_profile_stack(
+                        &stack,
+                        [0.; 3],
+                        [1. + residual, 0., 0.],
+                        [0., 1., 0.],
+                    );
+                    if residual == 0. {
+                        assert!(result.is_ok(), "proper size={size}, tolerance={tolerance}");
+                    }
+                    match result {
+                        Ok(text) => {
+                            let (read, _) = crate::step_read::read_import_solid(&text, tolerance)
+                                .expect(
+                                    "every admitted file has independently proved finite incidence",
+                                );
+                            assert_eq!(read.face_count, stack.faces().len());
+                        }
+                        Err(error) => {
+                            assert!(matches!(
+                                error,
+                                StepError::Unsupported | StepError::InvalidGeometry
+                            ));
+                            rejected = true;
+                        }
+                    }
+                }
+            }
+        }
+        assert!(rejected);
+    }
 
     #[test]
     fn tilted_stack_preserves_tangent_patches_and_exact_cylindrical_faces() {

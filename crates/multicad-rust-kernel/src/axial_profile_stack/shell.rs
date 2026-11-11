@@ -238,6 +238,7 @@ pub(super) fn build(
         }
     }
     Ok(ProfileStack {
+        tolerance_mm: tolerance,
         bounds,
         volume,
         vertices: builder.vertices,

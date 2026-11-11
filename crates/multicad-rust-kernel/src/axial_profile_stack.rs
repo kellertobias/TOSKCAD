@@ -79,6 +79,7 @@ pub struct Face {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct ProfileStack {
+    tolerance_mm: f64,
     bounds: [Point; 2],
     volume: f64,
     vertices: Vec<Point>,
@@ -190,6 +191,10 @@ impl ProfileStack {
         }
         let shapes = Profiles::new(circle, rectangle, minimum_mm)?;
         shell::build(&shapes, &slabs, tolerance_mm, minimum_mm)
+    }
+
+    pub(crate) fn tolerance_mm(&self) -> f64 {
+        self.tolerance_mm
     }
 
     pub fn bounds_mm(&self) -> [Point; 2] {
