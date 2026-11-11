@@ -1375,7 +1375,9 @@ impl Solid {
                     SolidBody::Annulus(Rc::clone(body), frame)
                 }
                 SolidBody::Helical(body, frame) => {
-                    SolidBody::Helical(Rc::clone(body), transform.frame(*frame))
+                    let frame = transform.frame(*frame);
+                    frame.checked_metric_bounds(body.bounds(PlaneFrame::default()), self.policy)?;
+                    SolidBody::Helical(Rc::clone(body), frame)
                 }
                 SolidBody::HelicalTubeCut(body, frame) => {
                     SolidBody::HelicalTubeCut(Rc::clone(body), transform.frame(*frame))

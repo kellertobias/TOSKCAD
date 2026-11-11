@@ -461,6 +461,7 @@ impl Solid {
             ),
         })?;
         let placed = HelicalBody::new(geometry, feature, form(geometry)?);
+        frame.checked_metric_bounds(placed.bounds(PlaneFrame::default()), policy)?;
         let bounds = placed.bounds(frame);
         policy.point(bounds.min)?;
         policy.point(bounds.max)?;
