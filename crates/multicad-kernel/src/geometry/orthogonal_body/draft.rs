@@ -1,4 +1,4 @@
-//! One planar side of a rectangular prism drafted about a cardinal neutral plane.
+//! Planar sides of a rectangular prism drafted about a cardinal neutral plane.
 use super::*;
 use crate::TreatmentFace;
 use multicad_rust_kernel::linear_sweep::Sweep;
@@ -13,12 +13,6 @@ impl Solid {
         feature: EntityId,
         policy: GeometryPolicy,
     ) -> Result<Self, GeometryError> {
-        let [selection] = faces else {
-            return Err(draft_error(
-                GeometryErrorKind::Unsupported,
-                "Rust Draft requires exactly one selected side face",
-            ));
-        };
         if self.policy != policy {
             return Err(draft_error(
                 GeometryErrorKind::Unsupported,
@@ -67,25 +61,31 @@ impl Solid {
         if supports.len() != 6 {
             return Err(unsupported_stock());
         }
-        let (&(side, positive), _) = supports
-            .iter()
-            .find(|(_, item)| item.key == selection.key)
-            .ok_or_else(unsupported_stock)?;
-        if side == up {
-            return Err(draft_error(
-                GeometryErrorKind::Unsupported,
-                "Rust Draft requires a side face parallel to the pull direction",
-            ));
+        let mut selected = BTreeMap::new();
+        for selection in faces {
+            let (&(side, positive), _) = supports
+                .iter()
+                .find(|(_, item)| item.key == selection.key)
+                .ok_or_else(unsupported_stock)?;
+            if side == up {
+                return Err(draft_error(
+                    GeometryErrorKind::Unsupported,
+                    "Rust Draft requires side faces parallel to the pull direction",
+                ));
+            }
+            selected.insert((side, positive), selection);
         }
         let u = (up + 1) % 3;
         let v = (up + 2) % 3;
         let chart = [u, v];
-        let sign = if positive { 1. } else { -1. };
-        let slope = -sign * pull[up] * angle.tan();
         let section = |level| {
             let mut ranges = chart.map(|i| [0., stock.max[i] - stock.min[i]]);
-            let changing = usize::from(side == v);
-            ranges[changing][usize::from(positive)] += slope * (level - neutral.origin[up]);
+            for &(side, positive) in selected.keys() {
+                let sign = if positive { 1. } else { -1. };
+                let slope = -sign * pull[up] * angle.tan();
+                let changing = usize::from(side == v);
+                ranges[changing][usize::from(positive)] += slope * (level - neutral.origin[up]);
+            }
             if ranges
                 .iter()
                 .any(|range| range[1] - range[0] < policy.minimum_feature_mm)
@@ -123,7 +123,7 @@ impl Solid {
         .map(|key| {
             let item = supports.remove(&key).expect("six distinct box faces");
             let mut origins = item.origins;
-            if item.key == selection.key {
+            if let Some(selection) = selected.get(&key) {
                 origins.insert(selection.origin.clone());
             }
             origins.into_iter().collect()
