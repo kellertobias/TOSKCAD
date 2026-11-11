@@ -17,6 +17,7 @@ fn sloped_caps_on_an_oblique_prism_preserve_the_hole_and_analytic_properties() {
     let sweep = TrimmedSweep::new(rings.clone(), direction, travels, 1.).unwrap();
     assert_eq!(sweep.rings(), rings);
     assert_eq!(sweep.direction(), direction);
+    assert_eq!(sweep.travel_coefficients(), travels);
     close(sweep.travel(false, [10., 0.]), 0.);
     close(sweep.travel(true, [0., 8.]), 4.8);
     close(sweep.volume_mm3(), 327.36);

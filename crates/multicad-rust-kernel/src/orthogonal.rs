@@ -44,6 +44,7 @@ pub enum BooleanError {
 #[derive(Clone, Debug, PartialEq)]
 pub struct OrthogonalSolid {
     cells: Vec<Box3>,
+    cell_components: Vec<u32>,
     quads: Vec<BoundaryQuad>,
     bounds: Box3,
     volume_mm3: f64,
@@ -70,6 +71,42 @@ impl OrthogonalSolid {
 
     pub fn solid_count(&self) -> u32 {
         self.solid_count
+    }
+
+    /// Copy each proved face-connected material component. The cell labels
+    /// come from the original exact occupancy graph; nested bounding boxes
+    /// and cavity shells never substitute for that graph.
+    pub fn components(&self) -> Vec<Self> {
+        let mut result: Vec<_> = (0..self.solid_count)
+            .map(|_| Self {
+                cells: vec![],
+                cell_components: vec![],
+                quads: vec![],
+                bounds: Box3 {
+                    min: [f64::INFINITY; 3],
+                    max: [f64::NEG_INFINITY; 3],
+                },
+                volume_mm3: 0.,
+                solid_count: 1,
+            })
+            .collect();
+        for (&cell, &component) in self.cells.iter().zip(&self.cell_components) {
+            let output = &mut result[component as usize];
+            output.cells.push(cell);
+            output.cell_components.push(0);
+            for i in 0..3 {
+                output.bounds.min[i] = output.bounds.min[i].min(cell.min[i]);
+                output.bounds.max[i] = output.bounds.max[i].max(cell.max[i]);
+            }
+            output.volume_mm3 += (0..3).map(|i| cell.max[i] - cell.min[i]).product::<f64>();
+        }
+        for quad in &self.quads {
+            result[quad.component as usize].quads.push(BoundaryQuad {
+                component: 0,
+                ..*quad
+            });
+        }
+        result
     }
 }
 
@@ -352,6 +389,7 @@ impl Grid {
         solid_count: u32,
     ) -> Result<OrthogonalSolid, BooleanError> {
         let mut cells = Vec::new();
+        let mut cell_components = Vec::new();
         let mut quads = Vec::new();
         let mut links = BTreeMap::<(u32, usize), VertexLink>::new();
         let mut bounds = Box3 {
@@ -375,6 +413,7 @@ impl Grid {
             }
             volume_mm3 += (0..3).map(|i| max[i] - min[i]).product::<f64>();
             cells.push(Box3 { min, max });
+            cell_components.push(label - 1);
             for axis in 0..3 {
                 for positive in [false, true] {
                     if self
@@ -410,6 +449,7 @@ impl Grid {
         }
         Ok(OrthogonalSolid {
             cells,
+            cell_components,
             quads,
             bounds,
             volume_mm3,

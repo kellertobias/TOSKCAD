@@ -144,6 +144,12 @@ impl TrimmedSweep {
         evaluate(self.caps[usize::from(end)].travel, uv)
     }
 
+    /// The retained affine cap laws, without inferring them from rounded
+    /// evaluated normals or point differences.
+    pub fn travel_coefficients(&self) -> [Travel; 2] {
+        self.caps.map(|cap| cap.travel)
+    }
+
     pub fn point(&self, end: bool, uv: Uv) -> Point {
         position(self.direction, uv, self.travel(end, uv))
     }

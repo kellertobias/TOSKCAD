@@ -12,6 +12,38 @@ fn apply(left: &[Box3], right: &[Box3], op: Operation) -> OrthogonalSolid {
     boolean(left, right, op, 1e-7).unwrap().unwrap()
 }
 
+#[test]
+fn exact_component_labels_keep_a_cavity_and_nested_independent_material_separate() {
+    let cavity = apply(
+        &[cube([0.; 3], [10.; 3])],
+        &[cube([1.; 3], [9.; 3])],
+        Operation::Subtract,
+    );
+    let island = cube([2.; 3], [3.; 3]);
+    let mut material = cavity.cells().to_vec();
+    material.push(island);
+    let shape = apply(&material, &[], Operation::Union);
+    let retained = shape.clone();
+    let components = shape.components();
+    assert_eq!(components.len(), 2);
+    assert_eq!(components[0].volume_mm3(), 488.);
+    assert_eq!(components[1].volume_mm3(), 1.);
+    assert_eq!(components[0].bounds(), shape.bounds());
+    assert_eq!(components[1].bounds(), island);
+    for part in &components {
+        assert_eq!(part.solid_count(), 1);
+        assert!(part.quads().iter().all(|q| q.component == 0));
+        let boundary = crate::orthogonal_boundary::build(part.quads()).unwrap();
+        assert!(boundary.faces.iter().all(|face| face.component == 0));
+        assert_eq!(
+            boundary.shell_count,
+            if part.volume_mm3() == 488. { 2 } else { 1 }
+        );
+        assert_eq!(part.components(), vec![part.clone()]);
+    }
+    assert_eq!(shape, retained);
+}
+
 fn rational(n: i64, d: i64) -> Rational {
     Rational::new(n, d).unwrap()
 }
