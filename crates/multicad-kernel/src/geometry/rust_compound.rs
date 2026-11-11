@@ -2,7 +2,7 @@
 
 use super::*;
 use multicad_core::references::{TopologyElement, TopologyKind, TopologySnapshot};
-use std::cell::Cell;
+use std::{cell::Cell, collections::BTreeSet};
 
 // Match the core snapshot budget before allocating aggregate topology.
 const MAX_TOPOLOGY_ELEMENTS: u32 = 100_000;
@@ -258,8 +258,21 @@ impl RustCompound {
         for member in &self.members {
             // Sample each retained child once. Its provider owns nonanalytic
             // curves, including the helical rails omitted from analytic DTOs.
-            let edges = member.solid.display_edges(deflection)?;
+            let remaining = point_limit - points;
+            if remaining == 0 && member.count[1] != 0 {
+                return Err(compound_error(
+                    GeometryErrorKind::Limit,
+                    "Compound edge sampling exceeds the point budget",
+                ));
+            }
+            let edges = if let Some(compound) = member.solid.rust_compound() {
+                compound.display_edges_with_budget(deflection, remaining)?
+            } else {
+                member.solid.display_edges(deflection)?
+            };
+            let unique: BTreeSet<_> = edges.iter().map(|edge| edge.index).collect();
             if edges.len() != member.count[1] as usize
+                || unique.len() != edges.len()
                 || edges.iter().any(|edge| edge.index >= member.count[1])
             {
                 return Err(compound_error(
@@ -475,6 +488,37 @@ mod tests {
         assert_eq!(
             compound.display_edges_with_budget(0.1, 48).unwrap().len(),
             24
+        );
+    }
+
+    #[test]
+    fn nested_display_sampling_retains_the_remaining_global_budget_and_retries() {
+        let policy = GeometryPolicy::default();
+        let source = stock(policy);
+        let pair =
+            RustCompound::assemble(&[&source, &source], EntityId::new(), policy, None).unwrap();
+        let nested =
+            RustCompound::assemble(&[&source, &pair], EntityId::new(), policy, None).unwrap();
+        let compound = nested.rust_compound().unwrap();
+        assert_eq!(
+            compound
+                .display_edges_with_budget(0.1, 71)
+                .unwrap_err()
+                .kind,
+            GeometryErrorKind::Limit
+        );
+        assert_eq!(
+            compound
+                .display_edges_with_budget(0.1, 24)
+                .unwrap_err()
+                .kind,
+            GeometryErrorKind::Limit
+        );
+        let edges = compound.display_edges_with_budget(0.1, 72).unwrap();
+        assert_eq!(edges.len(), 36);
+        assert_eq!(
+            edges.iter().map(|edge| edge.index).collect::<BTreeSet<_>>(),
+            (0..36).collect()
         );
     }
 
