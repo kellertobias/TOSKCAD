@@ -989,6 +989,17 @@ mod tests {
             },
             ..page.views[0].clone()
         });
+        let offset_id = EntityId::new();
+        page.views.push(drawings::DrawingView {
+            id: offset_id,
+            name: "Torus offset transverse section".into(),
+            kind: drawings::ViewKind::Section {
+                offset_mm: 4.5,
+                range: drawings::SectionRange::SectionOnly,
+                window: Default::default(),
+            },
+            ..page.views.last().unwrap().clone()
+        });
         let (_, prepared) = drawings::prepare_create(
             &session,
             session.revision(),
@@ -1032,6 +1043,18 @@ mod tests {
                     center: [x, y], major_mm: 1., minor_mm: 1., ..
                 } if x == expected && y == 0.)));
         }
+        let ViewEvaluation::Ready { vectors, .. } = &result.views[&offset_id] else {
+            panic!("{:?}", result.views[&offset_id]);
+        };
+        assert!(vectors.len() > 16);
+        assert!(vectors.iter().all(|edge| edge.source == torus_body
+            && edge.role == VectorRole::Section
+            && matches!(edge.curve, VectorCurve::Line { .. })));
+        assert!(vectors.iter().any(|edge| {
+            edge.preview_mm
+                .iter()
+                .any(|[u, v]| u.abs() < 1e-8 && (v.abs() - 0.75_f64.sqrt()).abs() < 1e-8)
+        }));
     }
 
     #[test]
