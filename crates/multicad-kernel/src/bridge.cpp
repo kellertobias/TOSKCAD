@@ -1412,6 +1412,17 @@ std::array<double,6> trimmed_support_bounds(const TopoDS_Shape &shape) {
   // Finite planes beyond it cover the complete orthogonal projection. Thus
   // nearest distance to each plane measures a directional support coordinate,
   // including trimming curves rather than the underlying surface's UV box.
+  // The support plane is outside a conservative enclosure, so the nearest
+  // occupied point lies on the physical boundary. Query exactly those faces.
+  // Passing the solid instead enables OCCT's separate containment classifier,
+  // which can falsely label an exterior plane inside a high-degree spline solid.
+  TopoDS_Compound boundary;BRep_Builder builder;builder.MakeCompound(boundary);
+  // Keep loose lower-dimensional geometry in legacy shape compounds too.
+  // Shared physical topology is deduplicated; no solid classifier is present.
+  for(const auto kind:{TopAbs_FACE,TopAbs_EDGE,TopAbs_VERTEX}) {
+    TopTools_IndexedMapOfShape parts;TopExp::MapShapes(shape,kind,parts);
+    for(int i=1;i<=parts.Extent();++i)builder.Add(boundary,parts(i));
+  }
   Bnd_Box box;BRepBndLib::Add(shape,box,false);
   if(box.IsVoid()||box.IsOpen())throw std::runtime_error("Shape has no finite support enclosure");
   double lo[3],hi[3];box.Get(lo[0],lo[1],lo[2],hi[0],hi[1],hi[2]);
@@ -1425,7 +1436,7 @@ std::array<double,6> trimmed_support_bounds(const TopoDS_Shape &shape) {
     for(int i=0;i<3;++i)center[i]=(lo[i]+hi[i])/2;
     center[axis]=side?hi[axis]+1:lo[axis]-1;normal[axis]=1;udir[u]=1;
     const auto plane=BRepBuilderAPI_MakeFace(gp_Pln(gp_Ax3(gp_Pnt(center[0],center[1],center[2]),gp_Dir(normal[0],normal[1],normal[2]),gp_Dir(udir[0],udir[1],udir[2]))),-(hi[u]-lo[u])/2-1,(hi[u]-lo[u])/2+1,-(hi[v]-lo[v])/2-1,(hi[v]-lo[v])/2+1).Face();
-    BRepExtrema_DistShapeShape query(shape,plane,tolerance);
+    BRepExtrema_DistShapeShape query(boundary,plane,tolerance);
     if(!query.IsDone()||query.NbSolution()<1||!std::isfinite(query.Value())||query.Value()<=0)
       throw std::runtime_error("Trimmed support query did not converge");
     const double extent=center[axis]+(side?-query.Value():query.Value());
