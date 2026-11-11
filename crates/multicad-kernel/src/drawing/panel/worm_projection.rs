@@ -1,18 +1,10 @@
 //! Exact axial drawings of Rust ZA worms and section cuts of generated
 //! worm wheels.
 //!
-//! Every boundary point of a worm is visible from an end exactly when no
-//! material lies between it and the viewer along the axis. A column at
-//! radius `r` and angle `θ` meets the nearest cap or cut face when
-//! `r ≤ R(θ, z_near)`. Otherwise `R(θ, z_near) < r < R_major` and the thread
-//! occupies a set of positive length at that radius in every pitch, so a
-//! retained length of at least one pitch puts material in front of every
-//! deeper point. Hence only the near boundary `R(θ, z_near)`, the crest
-//! circle (the silhouette of the crest land) and the near bore circle are
-//! visible. The far boundary, the root circle outside the near root land
-//! and the far bore circle are hidden; parts coincident with a visible
-//! circle are drawn once as visible. Flanks have a nonzero axial normal
-//! component everywhere, so there are no further silhouettes.
+//! Worm views follow the closed-form axial visibility of
+//! `worm_gear/section.rs`: along every axial line the thread is one phase
+//! interval per pitch, so the crest land, the root land and each far-face
+//! point are classified exactly for any retained length.
 //!
 //! A cut perpendicular to either axis is the exact planar section, drawn
 //! within the chord tolerance. Generated wheels viewed along their axis use
@@ -145,36 +137,7 @@ pub(in crate::drawing) fn project_worm_gearing(
             let curves = wheel
                 .axial_view([near_z, far_z], !cut, options.hidden_lines, chord, limit)
                 .map_err(view_error)?;
-            let mut edges = Vec::new();
-            for curve in curves {
-                match curve {
-                    ViewCurve::Arc {
-                        z_mm,
-                        radius_mm,
-                        start_rad,
-                        sweep_rad,
-                        hidden,
-                    } => edges.push(arc(
-                        &screen,
-                        place,
-                        z_mm,
-                        radius_mm,
-                        [start_rad, sweep_rad],
-                        hidden,
-                    )?),
-                    ViewCurve::Polyline { points_mm, hidden } => {
-                        for pair in points_mm.windows(2) {
-                            let [a, b] =
-                                [pair[0], pair[1]].map(|p| screen.point(place([p[0], p[1]], p[2])));
-                            edges.push(Edge {
-                                hidden,
-                                curve: Curve::Line([a, b]),
-                            });
-                        }
-                    }
-                }
-            }
-            publish_after(vectors, edges, options)
+            publish_after(vectors, view_edges(&screen, place, curves)?, options)
         })());
     };
     let half = worm.length_mm() / 2.;
@@ -184,70 +147,61 @@ pub(in crate::drawing) fn project_worm_gearing(
     if top - bottom <= policy.linear_tolerance_mm {
         return Some(Ok(Vec::new()));
     }
-    if top - bottom < worm.pitch_mm() {
-        return Some(Err(unsupported(
-            "Rust worm views need at least one thread pitch behind the near face",
-        )));
-    }
     let [near_z, far_z] = [top, bottom].map(|depth| local_height(depth).clamp(-half, half));
     let cut = top < ends[0].max(ends[1]) - policy.linear_tolerance_mm;
-    let far_end = bottom <= ends[0].min(ends[1]) + policy.linear_tolerance_mm;
     Some((|| {
-        let major = worm.major_radius_mm();
-        let root = worm.root_radius_mm();
-        let ring = worm.section_ring(near_z, chord, limit).map_err(budget)?;
-        let bore = worm.bore_radius_mm();
         let mut vectors = Vec::new();
-        let mut edges = Vec::new();
-        let on = |a: Point, b: Point, radius: f64| {
-            [a, b]
-                .iter()
-                .all(|p| (p[0].hypot(p[1]) - radius).abs() <= 1e-9 * radius)
-        };
-        let segments = |ring: &[Point], skip: &[f64]| -> Vec<[Point; 2]> {
-            (0..ring.len())
-                .map(|i| [ring[i], ring[(i + 1) % ring.len()]])
-                .filter(|&[a, b]| !skip.iter().any(|&radius| on(a, b, radius)))
-                .collect()
-        };
         if cut {
-            let mut rings = vec![ring];
-            rings.extend(bore.map(|radius| circle(radius, chord, true)));
+            let mut rings = vec![worm.section_ring(near_z, chord, limit).map_err(budget)?];
+            rings.extend(
+                worm.bore_radius_mm()
+                    .map(|radius| circle(radius, chord, true)),
+            );
             vectors = section::sampled::publish(input, project_rings(rings, near_z), options)?;
-        } else {
-            for [a, b] in segments(&ring, &[major]) {
-                edges.push(Edge {
-                    hidden: false,
-                    curve: Curve::Line([a, b].map(|p| screen.point(place(p, near_z)))),
-                });
-            }
-            if let Some(radius) = bore {
-                edges.push(arc(&screen, place, near_z, radius, [0., TAU], false)?);
-            }
         }
-        edges.push(arc(&screen, place, near_z, major, [0., TAU], false)?);
-        if options.hidden_lines {
-            let [start, sweep] = worm.root_span(near_z);
-            edges.push(arc(
-                &screen,
+        let curves = worm
+            .axial_view([near_z, far_z], !cut, options.hidden_lines, chord, limit)
+            .map_err(view_error)?;
+        publish_after(vectors, view_edges(&screen, place, curves)?, options)
+    })())
+}
+
+/// Screen edges of projected view curves.
+fn view_edges(
+    screen: &Screen,
+    place: impl Fn(Point, f64) -> [f64; 3] + Copy,
+    curves: Vec<ViewCurve>,
+) -> Result<Vec<Edge>, GeometryError> {
+    let mut edges = Vec::new();
+    for curve in curves {
+        match curve {
+            ViewCurve::Arc {
+                z_mm,
+                radius_mm,
+                start_rad,
+                sweep_rad,
+                hidden,
+            } => edges.push(arc(
+                screen,
                 place,
-                near_z,
-                root,
-                [start + sweep, TAU - sweep],
-                true,
-            )?);
-            if far_end {
-                let back = worm.section_ring(far_z, chord, limit).map_err(budget)?;
-                for [a, b] in segments(&back, &[major, root]) {
+                z_mm,
+                radius_mm,
+                [start_rad, sweep_rad],
+                hidden,
+            )?),
+            ViewCurve::Polyline { points_mm, hidden } => {
+                for pair in points_mm.windows(2) {
+                    let [a, b] =
+                        [pair[0], pair[1]].map(|p| screen.point(place([p[0], p[1]], p[2])));
                     edges.push(Edge {
-                        hidden: true,
-                        curve: Curve::Line([a, b].map(|p| screen.point(place(p, far_z)))),
+                        hidden,
+                        curve: Curve::Line([a, b]),
                     });
                 }
             }
         }
-        publish_after(vectors, edges, options)
-    })())
+    }
+    Ok(edges)
 }
 
 /// A closed circle polyline within `tolerance`, clockwise for a hole.
