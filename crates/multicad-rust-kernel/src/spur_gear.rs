@@ -7,6 +7,7 @@ use std::f64::consts::{FRAC_PI_2, PI, TAU};
 pub mod clearance;
 pub mod herringbone;
 mod hub;
+pub mod internal;
 mod involute;
 mod sweep;
 pub use hub::{Hub, HubExtension};

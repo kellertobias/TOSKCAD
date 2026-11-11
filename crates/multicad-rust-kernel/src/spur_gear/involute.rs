@@ -137,6 +137,26 @@ impl Involute {
         handedness * self.base_radius_mm.powi(2) * (b - a) * (b * b + b * a + a * a) / 6.
     }
 
+    /// Signed Green first moment, one third of the integral of p (p x dp),
+    /// about the base center. With dp = r t (cos t, sin t) dt the cross
+    /// product is r^2 t^2 dt, so the moments have closed-form primitives.
+    pub fn first_moment_mm3(self) -> Point {
+        let primitive = |t: f64| {
+            let (sin, cos) = t.sin_cos();
+            let square = t * t;
+            [
+                4. * square * sin + 8. * t * cos - 8. * sin - square * t * cos,
+                -4. * square * cos + 8. * t * sin + 8. * cos - square * t * sin,
+            ]
+        };
+        let [a, b] = self.interval.map(primitive);
+        let handedness = if self.mirrored { -1. } else { 1. };
+        scale(
+            self.map(sub(b, a)),
+            handedness * self.base_radius_mm.powi(3) / 3.,
+        )
+    }
+
     /// Composite cubic Hermite export with the requested geometric error.
     pub fn cubic_spline(self, tolerance_mm: f64) -> Result<CubicSpline, Error> {
         if !tolerance_mm.is_finite() || tolerance_mm <= 0. {
