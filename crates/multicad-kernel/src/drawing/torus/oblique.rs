@@ -260,7 +260,7 @@ impl Silhouette {
         u2.hypot(v2).hypot(self.s * self.major) * (hi - lo).powi(2) / 8.
     }
 
-    fn hidden(&self, angle: f64, side: f64) -> bool {
+    fn hidden(&self, angle: f64, side: f64, near: Option<f64>) -> bool {
         if side > 0. {
             return false;
         }
@@ -268,11 +268,18 @@ impl Silhouette {
         let normal = self.c.hypot(self.s * cos);
         // Deflate the viewing-ray quartic by its double silhouette root
         // z = R*s*cos(t). The remaining quadratic supplies the other lobe.
-        if cos < 0. {
+        let hidden = if cos < 0. {
             normal < self.minor / (self.major * self.c)
         } else {
             normal.powi(3) < self.c * self.minor / self.major
-        }
+        };
+        hidden
+            && near.is_none_or(|near| {
+                let half = (4. * self.major * self.c * (self.minor / normal - self.major * self.c))
+                    .max(0.)
+                    .sqrt();
+                -(self.s * self.major * cos) - half < near
+            })
     }
 }
 
@@ -299,9 +306,23 @@ pub(in crate::drawing) fn contours(
     let mut visible = Vec::new();
     let mut hidden = Vec::new();
     let mut remaining = (options.maximum_curves as usize).min(options.maximum_points as usize / 2);
+    let near = options.section_offset_mm.map(|depth| depth - center[2]);
+    let far = near
+        .zip(options.section_depth_mm)
+        .map(|(near, depth)| near - depth);
+    let depth_cuts: Vec<_> = [near, far]
+        .into_iter()
+        .flatten()
+        .filter_map(|depth| {
+            let cos = depth / (s * major);
+            (-1. ..=1.).contains(&cos).then(|| cos.acos())
+        })
+        .flat_map(|t| [t, TAU - t])
+        .collect();
     let quarters = [0., FRAC_PI_2, PI, 3. * FRAC_PI_2, TAU];
     for side in [1., -1.] {
         let mut cuts = quarters.to_vec();
+        cuts.extend_from_slice(&depth_cuts);
         if side < 0. {
             for normal in [minor / (major * shape.c), (shape.c * minor / major).cbrt()] {
                 if normal <= shape.c || normal >= 1. {
@@ -311,12 +332,25 @@ pub(in crate::drawing) fn contours(
                 let angle = cosine.clamp(0., 1.).acos();
                 cuts.extend([angle, PI - angle, PI + angle, TAU - angle]);
             }
-            cuts.sort_unstable_by(f64::total_cmp);
-            cuts.dedup_by(|a, b| (*a - *b).abs() <= ANGULAR);
+            if let Some(near) = near {
+                for cosine in
+                    AnalyticFace::oblique_torus_cap_crossings([major, minor], [s, shape.c], near)
+                {
+                    let angle = cosine.acos();
+                    cuts.extend([angle, TAU - angle]);
+                }
+            }
         }
+        cuts.sort_unstable_by(f64::total_cmp);
+        cuts.dedup_by(|a, b| (*a - *b).abs() <= ANGULAR);
         for pair in cuts.windows(2) {
             let span = [pair[0], pair[1]];
-            let is_hidden = shape.hidden(span[0].midpoint(span[1]), side);
+            let middle = span[0].midpoint(span[1]);
+            let depth = s * major * middle.cos();
+            if near.is_some_and(|near| depth > near) || far.is_some_and(|far| depth < far) {
+                continue;
+            }
+            let is_hidden = shape.hidden(middle, side, near);
             if is_hidden && !options.hidden_lines {
                 continue;
             }

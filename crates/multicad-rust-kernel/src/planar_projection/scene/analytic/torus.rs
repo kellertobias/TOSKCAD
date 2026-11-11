@@ -11,6 +11,28 @@ pub(super) struct Torus {
 }
 
 impl AnalyticFace {
+    /// Cosines of the oblique torus azimuth where a depth cap meets the
+    /// other material interval on an inner silhouette ray.
+    ///
+    /// Inclination is the nonnegative sine and cosine of an oblique view.
+    /// Depth is relative to the torus center.
+    pub fn oblique_torus_cap_crossings(
+        [major, minor]: [f64; 2],
+        [sine, cosine]: [f64; 2],
+        depth: f64,
+    ) -> Vec<f64> {
+        let depth = depth / major;
+        let ratio = minor / major;
+        let c2 = cosine * cosine;
+        let s2 = sine * sine;
+        // Divide the remaining viewing-ray quadratic by R². At a
+        // cap root, ((depth + s*t)² + 4*c²)*sqrt(c²+s²*t²) = 4*c*r/R.
+        let q = [depth.mul_add(depth, 4. * c2), 2. * depth * sine, s2];
+        let mut polynomial = product::<5, 9>(product::<3, 5>(q, q), [c2, 0., s2, 0., 0.]);
+        polynomial[0] -= 16. * c2 * ratio * ratio;
+        roots(&polynomial, [-1., 1.])
+    }
+
     /// A ring torus in drawing coordinates.
     pub fn torus(
         center: Point,

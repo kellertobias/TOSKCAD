@@ -2,8 +2,8 @@
 use super::*;
 use multicad_rust_kernel::{
     planar_projection::{
-        self, AnalyticFace, Body, DepthRange, FaceTrim, LineCandidate, SpatialEllipseCandidate,
-        SpatialRimCandidate,
+        self, AnalyticFace, Body, ContourCandidate, DepthRange, FaceTrim, HiddenCandidate,
+        LineCandidate, SpatialEllipseCandidate, SpatialRimCandidate,
     },
     planar_section, section_hatch,
     trim_curve::{Ellipse as SpatialEllipse, EllipseArc},
@@ -29,6 +29,8 @@ pub(in crate::drawing::section) fn project(
         let mut scene = Retained {
             options,
             lines: Vec::new(),
+            contours: Vec::new(),
+            hidden: Vec::new(),
             rims: Vec::new(),
             ellipses: Vec::new(),
             blockers: Vec::new(),
@@ -53,6 +55,15 @@ pub(in crate::drawing::section) fn project(
                 let (center, axis) = torus::drawing_frame(placement, options.frame);
                 if axis[0].hypot(axis[1]) <= torus::ANGULAR {
                     scene.axial_torus(input, placement, body.radii_mm(), source, depth)?;
+                } else if axis[2].abs() > torus::ANGULAR {
+                    scene.oblique_torus(
+                        input,
+                        placement,
+                        (center, axis),
+                        body.radii_mm(),
+                        source,
+                        depth,
+                    )?;
                 } else {
                     scene.transverse_torus(
                         input,
@@ -177,6 +188,8 @@ pub(in crate::drawing::section) fn project(
 struct Retained {
     options: DrawingProjection,
     lines: Vec<LineCandidate>,
+    contours: Vec<ContourCandidate>,
+    hidden: Vec<HiddenCandidate>,
     rims: Vec<SpatialRimCandidate>,
     ellipses: Vec<SpatialEllipseCandidate>,
     blockers: Vec<AnalyticFace>,
@@ -185,6 +198,56 @@ struct Retained {
 }
 
 impl Retained {
+    fn oblique_torus(
+        &mut self,
+        input: DrawingSolid<'_>,
+        placement: PlaneFrame,
+        (center, axis): (Point, Point),
+        radii: [f64; 2],
+        source: usize,
+        depth: DepthRange,
+    ) -> Result<(), GeometryError> {
+        let Some(blocker) = AnalyticFace::retained_torus(center, axis, radii, depth)
+            .map_err(planar::projection_error)?
+        else {
+            return Ok(());
+        };
+        let [major, minor] = radii;
+        let bounds: [[f64; 2]; 2] = std::array::from_fn(|i| {
+            let extent = major * axis[(i + 1) % 3].hypot(axis[(i + 2) % 3]) + minor;
+            [center[i] - extent, center[i] + extent]
+        });
+        if !self.torus_window_contains(bounds)? {
+            return Ok(());
+        }
+        let face = self.blockers.len();
+        self.blockers.push(blocker);
+        let used = (self.contours.len() + self.hidden.len()) as u32;
+        let (visible, hidden) = torus::oblique::contours(
+            center,
+            axis,
+            radii,
+            DrawingProjection {
+                maximum_curves: self.options.maximum_curves.saturating_sub(used),
+                maximum_points: self.options.maximum_points.saturating_sub(2 * used),
+                ..self.options
+            },
+            source,
+            face,
+        )?;
+        self.contours.extend(visible);
+        self.hidden.extend(hidden);
+        let near = self
+            .options
+            .section_offset_mm
+            .expect("retained section depth");
+        let far = self
+            .options
+            .section_depth_mm
+            .map(|distance| near - distance);
+        self.torus_caps(input, placement, radii, source, near, far)
+    }
+
     fn transverse_torus(
         &mut self,
         input: DrawingSolid<'_>,
@@ -228,23 +291,8 @@ impl Retained {
             let extent = axis[i].abs() * axial + across[i] * width;
             [center[i] - extent, center[i] + extent]
         });
-        let windows = [self.options.section_u_mm, self.options.section_v_mm];
-        if windows
-            .into_iter()
-            .zip(bounds)
-            .any(|(window, [min, max])| window.is_some_and(|[lo, hi]| lo >= max || hi <= min))
-        {
+        if !self.torus_window_contains(bounds)? {
             return Ok(());
-        }
-        if windows
-            .into_iter()
-            .zip(bounds)
-            .any(|(window, [min, max])| window.is_some_and(|[lo, hi]| lo > min || hi < max))
-        {
-            return Err(err(
-                GeometryErrorKind::Unsupported,
-                "Rust retained transverse torus sections require the window to contain the retained torus",
-            ));
         }
         self.blockers.push(blocker);
         let at_midplane = |z: f64| {
@@ -260,6 +308,40 @@ impl Retained {
                 self.add_torus_rail(rim, depth)?;
             }
         }
+        self.torus_caps(input, placement, radii, source, near, far)
+    }
+
+    fn torus_window_contains(&self, bounds: [[f64; 2]; 2]) -> Result<bool, GeometryError> {
+        let windows = [self.options.section_u_mm, self.options.section_v_mm];
+        if windows
+            .into_iter()
+            .zip(bounds)
+            .any(|(window, [min, max])| window.is_some_and(|[lo, hi]| lo >= max || hi <= min))
+        {
+            return Ok(false);
+        }
+        if windows
+            .into_iter()
+            .zip(bounds)
+            .any(|(window, [min, max])| window.is_some_and(|[lo, hi]| lo > min || hi < max))
+        {
+            return Err(err(
+                GeometryErrorKind::Unsupported,
+                "Rust retained torus sections require the window to contain the retained torus",
+            ));
+        }
+        Ok(true)
+    }
+
+    fn torus_caps(
+        &mut self,
+        input: DrawingSolid<'_>,
+        placement: PlaneFrame,
+        radii: [f64; 2],
+        source: usize,
+        near: f64,
+        far: Option<f64>,
+    ) -> Result<(), GeometryError> {
         let cut_options = |z, options: DrawingProjection| DrawingProjection {
             section_offset_mm: Some(z),
             section_only: true,
@@ -635,6 +717,8 @@ impl Retained {
     ) -> Result<Vec<ProjectedVector>, GeometryError> {
         if !bodies.is_empty()
             || !self.lines.is_empty()
+            || !self.contours.is_empty()
+            || !self.hidden.is_empty()
             || !self.rims.is_empty()
             || !self.ellipses.is_empty()
         {
@@ -648,6 +732,8 @@ impl Retained {
                 &[],
                 planar_projection::SceneExtras {
                     lines: &self.lines,
+                    contours: &self.contours,
+                    intrinsic_hidden: &self.hidden,
                     spatial_rims: &self.rims,
                     spatial_ellipses: &self.ellipses,
                     ..Default::default()

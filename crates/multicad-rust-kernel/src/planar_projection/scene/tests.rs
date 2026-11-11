@@ -1639,3 +1639,22 @@ fn silhouette_chords_skip_only_their_own_analytic_face() {
     contour[0].face = 3;
     assert!(matches!(project(&contour), Err(ProjectionError::Invalid)));
 }
+
+#[test]
+fn an_oblique_cap_splits_the_inner_silhouette_at_the_other_lobes_depth() {
+    let c = 0.1_f64;
+    let s = (1. - c * c).sqrt();
+    let t = -0.5;
+    let z = 5. * s * t;
+    let normal = c.hypot(s * t);
+    let half = (20. * c * (1. / normal - 5. * c)).sqrt();
+    let cap = -z - half;
+    let crossings = AnalyticFace::oblique_torus_cap_crossings([5., 1.], [s, c], cap);
+    assert!(crossings.iter().any(|root| (root - t).abs() < 1e-9));
+    assert!(crossings.iter().all(|&t| {
+        let z = 5. * s * t;
+        let normal = c.hypot(s * t);
+        (((cap + z).powi(2) + 100. * c * c) * normal - 20. * c).abs() < 1e-8
+    }));
+    assert!(AnalyticFace::oblique_torus_cap_crossings([5., 1.], [s, c], 30.).is_empty());
+}

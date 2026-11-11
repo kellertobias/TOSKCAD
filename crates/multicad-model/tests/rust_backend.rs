@@ -776,18 +776,52 @@ fn verify_torus_drawing_scene(torus: &multicad_kernel::Solid) {
     {
         assert!((actual - expected).abs() < 1e-6, "{actual} vs {expected}");
     }
+    let steep_frame = PlaneFrame {
+        u: [0.1, 0., 0.99_f64.sqrt()],
+        ..tilted_frame
+    };
     let steep = project(
         &[torus],
         DrawingProjection {
-            frame: PlaneFrame {
-                u: [0.1, 0., 0.99_f64.sqrt()],
-                ..tilted_frame
-            },
+            frame: steep_frame,
             ..options
         },
     );
     assert!(steep.iter().any(|edge| edge.role == VectorRole::Visible));
     assert!(steep.iter().any(|edge| edge.role == VectorRole::Hidden));
+    let c = 0.1_f64;
+    let s = 0.99_f64.sqrt();
+    let cosine = -0.5;
+    let normal = c.hypot(s * cosine);
+    let target = [
+        -cosine * (c * 5. - 1. / normal),
+        -0.75_f64.sqrt() * (5. - c / normal),
+    ];
+    let touches = |edge: &multicad_kernel::ProjectedVector, role| {
+        edge.source_index == 0
+            && edge.role == role
+            && edge
+                .preview_mm
+                .iter()
+                .any(|p| (p[0] - target[0]).hypot(p[1] - target[1]) < 0.025)
+    };
+    assert!(steep.iter().any(|edge| touches(edge, VectorRole::Hidden)));
+    let retained = project(
+        &[torus],
+        DrawingProjection {
+            frame: steep_frame,
+            section_offset_mm: Some(-1.8),
+            section_depth_mm: Some(1.4),
+            section_u_mm: Some([-7., 7.]),
+            ..options
+        },
+    );
+    assert!(
+        retained
+            .iter()
+            .any(|edge| touches(edge, VectorRole::Visible))
+    );
+    assert!(retained.iter().any(|edge| edge.role == VectorRole::Section));
     let transverse_cut = DrawingProjection {
         frame: screen,
         section_only: true,

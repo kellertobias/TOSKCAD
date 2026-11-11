@@ -153,7 +153,7 @@ pub(super) fn project(
                 depth,
             );
         }
-        return Err(unsupported());
+        return section::project(std::slice::from_ref(input), options, depth);
     }
     if !axial {
         return curved::project_scene(std::slice::from_ref(input), options);
