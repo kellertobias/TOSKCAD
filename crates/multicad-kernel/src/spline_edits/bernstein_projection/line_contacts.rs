@@ -73,11 +73,15 @@ struct Search<'a> {
     policy: GeometryPolicy,
     boundary: Boundary,
     steps: usize,
+    checkpoint: QueryCheckpoint<'a>,
     points: Vec<[f64; 2]>,
 }
 
 impl Search<'_> {
     fn record(&mut self, hull: Hull, parameter: f64) -> Result<(), GeometryError> {
+        if let Some(checkpoint) = self.checkpoint {
+            checkpoint()?;
+        }
         let point = self.spline.evaluate(parameter, self.policy)?.point;
         let tolerance = self.policy.linear_tolerance_mm;
         if hull.sample_error(point, self.boundary.start) > tolerance * 0.25
@@ -122,6 +126,9 @@ impl Search<'_> {
             depth: 0,
         }];
         while let Some(node) = stack.pop() {
+            if let Some(checkpoint) = self.checkpoint {
+                checkpoint()?;
+            }
             let coefficients = &node.derivative[..=degree];
             let variation = variation_upper(coefficients);
             if variation == Some(0) {
@@ -205,10 +212,19 @@ fn validate(spline: &BSpline2d, policy: GeometryPolicy) -> Result<usize, Geometr
     Ok(spline.degree as usize)
 }
 
+#[cfg(test)]
 pub(crate) fn contacts(
     spline: &BSpline2d,
     line: [[f64; 2]; 2],
     policy: GeometryPolicy,
+) -> Result<Vec<[f64; 2]>, GeometryError> {
+    contacts_controlled(spline, line, policy, None)
+}
+pub(crate) fn contacts_controlled(
+    spline: &BSpline2d,
+    line: [[f64; 2]; 2],
+    policy: GeometryPolicy,
+    checkpoint: QueryCheckpoint<'_>,
 ) -> Result<Vec<[f64; 2]>, GeometryError> {
     let degree = validate(spline, policy)?;
     let boundary = Boundary::new(line, policy)?;
@@ -217,6 +233,7 @@ pub(crate) fn contacts(
         policy,
         boundary,
         steps: MAX_STEPS,
+        checkpoint,
         points: Vec::new(),
     };
     let knots = expanded_knots(spline);
@@ -227,6 +244,9 @@ pub(crate) fn contacts(
         search.endpoint(&current, false, degree)?;
     }
     for mut next in spans {
+        if let Some(checkpoint) = checkpoint {
+            checkpoint()?;
+        }
         let shared_contact = search.join(&mut current, &mut next, degree)?;
         search.interior(&current, degree)?;
         if shared_contact {
@@ -414,6 +434,7 @@ mod tests {
             boundary,
             steps: MAX_STEPS,
             points: Vec::new(),
+            checkpoint: None,
         };
         let coordinate = Interval {
             lo: -1e-12,
@@ -448,6 +469,7 @@ mod tests {
             boundary,
             steps: MAX_STEPS,
             points: vec![[0., 0.]],
+            checkpoint: None,
         };
         let first = Hull([Interval::ZERO; 2]);
         assert_eq!(

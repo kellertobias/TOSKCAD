@@ -72,6 +72,20 @@ impl Solid {
         origins: &[Origin],
         policy: GeometryPolicy,
     ) -> Result<Self, GeometryError> {
+        if profile
+            .outer
+            .iter()
+            .chain(profile.holes.iter().flatten())
+            .any(|edge| matches!(edge, CurvedEdge2d::BSpline(_)))
+        {
+            return Self::rust_extrude_spline_profile_named(
+                profile,
+                signed_height_mm,
+                feature,
+                origins,
+                policy,
+            );
+        }
         Self::rust_extrude_normal_profile_with_path(
             profile,
             signed_height_mm,

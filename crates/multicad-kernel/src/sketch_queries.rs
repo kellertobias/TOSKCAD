@@ -1,6 +1,6 @@
 //! Exact worker-side sketch predicates. Elementary curves share their Rust
 //! parameter operations. Native spline calls stay on the calling thread.
-use crate::spline_edits::line_contacts;
+use crate::spline_edits::{QueryCheckpoint, line_contacts};
 use crate::{
     BSpline2d, CurvePointLocation, CurvedEdge2d, CurvedProfile, GeometryError, GeometryPolicy,
 };
@@ -10,6 +10,7 @@ use multicad_core::sketch_regions::{
 };
 
 mod linear_spline;
+pub(crate) mod spline_regions;
 
 #[derive(Clone, Copy, Debug)]
 pub struct NativeRegionQueries {
@@ -28,6 +29,27 @@ fn error(e: impl std::fmt::Display) -> QueryError {
     QueryError {
         message: e.to_string(),
     }
+}
+pub(crate) fn query_control_error(
+    cause: multicad_core::sketch_regions::QueryControlError,
+) -> GeometryError {
+    GeometryError {
+        operation: "sketch query",
+        kind: match cause {
+            multicad_core::sketch_regions::QueryControlError::Cancelled => {
+                crate::GeometryErrorKind::Cancelled
+            }
+            multicad_core::sketch_regions::QueryControlError::Limit => {
+                crate::GeometryErrorKind::Limit
+            }
+        },
+        message: cause.to_string(),
+    }
+}
+pub(crate) fn query_checkpoint(
+    control: &multicad_core::sketch_regions::QueryControl<'_>,
+) -> Result<(), GeometryError> {
+    control.step().map_err(query_control_error)
 }
 impl NativeRegionQueries {
     fn exact_spline(s: BSpline2d) -> ExactCurve {
@@ -140,12 +162,24 @@ impl NativeRegionQueries {
         }
     }
 }
-impl RegionQueries for NativeRegionQueries {
-    fn project_parameters(
+impl NativeRegionQueries {
+    fn controlled<T>(
+        &self,
+        control: &multicad_core::sketch_regions::QueryControl<'_>,
+        action: impl FnOnce(&dyn Fn() -> Result<(), GeometryError>) -> Result<T, QueryError>,
+    ) -> Result<T, QueryError> {
+        let checkpoint = || query_checkpoint(control);
+        checkpoint().map_err(error)?;
+        let result = action(&checkpoint);
+        checkpoint().map_err(error)?;
+        result
+    }
+    fn project_impl(
         &self,
         curve: &ExactCurve,
         point_mm: [f64; 2],
         tolerance_mm: f64,
+        checkpoint: QueryCheckpoint<'_>,
     ) -> Result<Vec<CurveProjection>, QueryError> {
         let policy = self.policy(tolerance_mm)?;
         let curve = Self::curve(curve);
@@ -153,7 +187,14 @@ impl RegionQueries for NativeRegionQueries {
         let projections = if self.native_splines {
             curve.project_parameters(point_mm, policy)
         } else {
-            curve.rust_project_parameters(point_mm, policy)
+            match &curve {
+                CurvedEdge2d::BSpline(spline) if (2..=3).contains(&spline.degree) => {
+                    crate::spline_edits::bernstein_project_controlled(
+                        spline, point_mm, policy, checkpoint,
+                    )
+                }
+                _ => curve.rust_project_parameters(point_mm, policy),
+            }
         };
         projections
             .map_err(error)?
@@ -179,6 +220,275 @@ impl RegionQueries for NativeRegionQueries {
                 })
             })
             .collect()
+    }
+    fn intersections_impl(
+        &self,
+        a: &ExactCurve,
+        b: &ExactCurve,
+        tolerance_mm: f64,
+        checkpoint: QueryCheckpoint<'_>,
+    ) -> Result<CurveHits, QueryError> {
+        if !matches!(a, ExactCurve::BSpline { .. }) && !matches!(b, ExactCurve::BSpline { .. }) {
+            return AnalyticQueries.intersections(a, b, tolerance_mm);
+        }
+        if !self.native_splines || !crate::OCCT_LINKED {
+            let policy = self.policy(tolerance_mm)?;
+            return match (a, b) {
+                (ExactCurve::BSpline { poles, basis }, ExactCurve::Line { a, b })
+                | (ExactCurve::Line { a, b }, ExactCurve::BSpline { poles, basis })
+                    if basis.degree > 1 =>
+                {
+                    let points = line_contacts::contacts_controlled(
+                        &Self::spline(poles, basis),
+                        [*a, *b],
+                        policy,
+                        checkpoint,
+                    )
+                    .map_err(error)?;
+                    Ok(CurveHits {
+                        points,
+                        overlap: false,
+                    })
+                }
+                (
+                    ExactCurve::BSpline { poles, basis },
+                    round @ (ExactCurve::Circle { .. } | ExactCurve::Arc { .. }),
+                )
+                | (
+                    round @ (ExactCurve::Circle { .. } | ExactCurve::Arc { .. }),
+                    ExactCurve::BSpline { poles, basis },
+                ) if basis.degree > 1 => {
+                    let (center, radius) = match round {
+                        ExactCurve::Circle { center, radius_mm } => (*center, *radius_mm),
+                        ExactCurve::Arc { center, a, .. } => {
+                            (*center, (a[0] - center[0]).hypot(a[1] - center[1]))
+                        }
+                        _ => unreachable!(),
+                    };
+                    let points = crate::spline_edits::regions::round_contacts(
+                        &Self::spline(poles, basis),
+                        center,
+                        radius,
+                        policy,
+                        checkpoint,
+                    )
+                    .map_err(error)?;
+                    let mut retained = Vec::new();
+                    for point in points {
+                        let projections = Self::curve(round)
+                            .rust_project_parameters(point, policy)
+                            .map_err(error)?;
+                        let residual = projections
+                            .iter()
+                            .map(|p| p.distance_mm)
+                            .fold(f64::INFINITY, f64::min);
+                        if residual <= policy.linear_tolerance_mm * 0.5 {
+                            retained.push(point);
+                        } else if residual < policy.linear_tolerance_mm * 2. {
+                            return Err(error("Spline contact with an arc endpoint is unresolved"));
+                        }
+                    }
+                    Ok(CurveHits {
+                        points: retained,
+                        overlap: false,
+                    })
+                }
+                (
+                    ExactCurve::BSpline {
+                        poles: a,
+                        basis: ab,
+                    },
+                    ExactCurve::BSpline {
+                        poles: b,
+                        basis: bb,
+                    },
+                ) if ab.degree > 1 || bb.degree > 1 => {
+                    let (points, overlap) = crate::spline_edits::regions::contacts(
+                        &Self::spline(a, ab),
+                        &Self::spline(b, bb),
+                        policy,
+                        checkpoint,
+                    )
+                    .map_err(error)?;
+                    Ok(CurveHits { points, overlap })
+                }
+                _ => linear_spline::intersections(a, b, policy),
+            };
+        }
+        let hits = Self::curve(a)
+            .intersections(&Self::curve(b), self.policy(tolerance_mm)?)
+            .map_err(error)?;
+        Ok(CurveHits {
+            points: hits.points.iter().map(|p| p.point).collect(),
+            overlap: hits.overlap_segments > 0,
+        })
+    }
+    fn self_intersections_impl(
+        &self,
+        curve: &ExactCurve,
+        tolerance_mm: f64,
+        checkpoint: QueryCheckpoint<'_>,
+    ) -> Result<CurveHits, QueryError> {
+        let ExactCurve::BSpline { poles, basis } = curve else {
+            return AnalyticQueries.self_intersections(curve, tolerance_mm);
+        };
+        if !self.native_splines || !crate::OCCT_LINKED {
+            let policy = self.policy(tolerance_mm)?;
+            if basis.degree == 1 {
+                return linear_spline::self_intersections(curve, policy);
+            }
+            let spline = Self::spline(poles, basis);
+            if line_contacts::certify_simple(&spline, policy).is_ok() {
+                return Ok(CurveHits::default());
+            }
+            return Ok(CurveHits {
+                points: crate::spline_edits::regions::self_contacts(&spline, policy, checkpoint)
+                    .map_err(error)?,
+                overlap: false,
+            });
+        }
+        let curve = Self::curve(curve);
+        let policy = self.policy(tolerance_mm)?;
+        let hits = curve.self_intersections(policy).map_err(error)?;
+        let [first, last] = curve.domain(policy).map_err(error)?;
+        let a = curve.evaluate(first, policy).map_err(error)?.point;
+        let b = curve.evaluate(last, policy).map_err(error)?.point;
+        let closed = (a[0] - b[0]).hypot(a[1] - b[1]) <= tolerance_mm;
+        let parameter_tolerance = (last - first) * 1e-12;
+        let points = hits
+            .points
+            .into_iter()
+            .filter(|h| {
+                let seam = closed
+                    && (h.point[0] - a[0]).hypot(h.point[1] - a[1]) <= tolerance_mm
+                    && (((h.first_parameter - first).abs() <= parameter_tolerance
+                        && (h.second_parameter - last).abs() <= parameter_tolerance)
+                        || ((h.second_parameter - first).abs() <= parameter_tolerance
+                            && (h.first_parameter - last).abs() <= parameter_tolerance));
+                !seam
+            })
+            .map(|h| h.point)
+            .collect();
+        Ok(CurveHits {
+            points,
+            overlap: hits.overlap_segments > 0,
+        })
+    }
+    fn area_impl(
+        &self,
+        edges: &[Edge],
+        tolerance_mm: f64,
+        checkpoint: QueryCheckpoint<'_>,
+    ) -> Result<f64, QueryError> {
+        if !edges
+            .iter()
+            .any(|edge| matches!(edge.curve, ExactCurve::BSpline { .. }))
+        {
+            return AnalyticQueries.signed_area(edges, tolerance_mm);
+        }
+        if !self.native_splines || !crate::OCCT_LINKED {
+            return spline_regions::signed_area(edges, self.policy(tolerance_mm)?, checkpoint);
+        }
+        Self::boundary(edges)
+            .signed_area_mm2(self.policy(tolerance_mm)?)
+            .map_err(error)
+    }
+    fn classify_impl(
+        &self,
+        edges: &[Edge],
+        point: [f64; 2],
+        tolerance_mm: f64,
+        checkpoint: QueryCheckpoint<'_>,
+    ) -> Result<PointLocation, QueryError> {
+        if !edges
+            .iter()
+            .any(|edge| matches!(edge.curve, ExactCurve::BSpline { .. }))
+        {
+            return AnalyticQueries.classify_boundary(edges, point, tolerance_mm);
+        }
+        if !self.native_splines || !crate::OCCT_LINKED {
+            return spline_regions::classify(
+                self,
+                edges,
+                point,
+                self.policy(tolerance_mm)?,
+                checkpoint,
+            );
+        }
+        Ok(
+            match Self::boundary(edges)
+                .classify(point, self.policy(tolerance_mm)?)
+                .map_err(error)?
+            {
+                CurvePointLocation::Outside => PointLocation::Outside,
+                CurvePointLocation::Boundary => PointLocation::Boundary,
+                CurvePointLocation::Inside => PointLocation::Inside,
+            },
+        )
+    }
+}
+impl RegionQueries for NativeRegionQueries {
+    fn project_parameters_with_control(
+        &self,
+        curve: &ExactCurve,
+        point_mm: [f64; 2],
+        tolerance_mm: f64,
+        control: &multicad_core::sketch_regions::QueryControl<'_>,
+    ) -> Result<Vec<CurveProjection>, QueryError> {
+        self.controlled(control, |checkpoint| {
+            self.project_impl(curve, point_mm, tolerance_mm, Some(checkpoint))
+        })
+    }
+    fn intersections_with_control(
+        &self,
+        a: &ExactCurve,
+        b: &ExactCurve,
+        tolerance_mm: f64,
+        control: &multicad_core::sketch_regions::QueryControl<'_>,
+    ) -> Result<CurveHits, QueryError> {
+        self.controlled(control, |checkpoint| {
+            self.intersections_impl(a, b, tolerance_mm, Some(checkpoint))
+        })
+    }
+    fn self_intersections_with_control(
+        &self,
+        curve: &ExactCurve,
+        tolerance_mm: f64,
+        control: &multicad_core::sketch_regions::QueryControl<'_>,
+    ) -> Result<CurveHits, QueryError> {
+        self.controlled(control, |checkpoint| {
+            self.self_intersections_impl(curve, tolerance_mm, Some(checkpoint))
+        })
+    }
+    fn signed_area_with_control(
+        &self,
+        edges: &[Edge],
+        tolerance_mm: f64,
+        control: &multicad_core::sketch_regions::QueryControl<'_>,
+    ) -> Result<f64, QueryError> {
+        self.controlled(control, |checkpoint| {
+            self.area_impl(edges, tolerance_mm, Some(checkpoint))
+        })
+    }
+    fn classify_boundary_with_control(
+        &self,
+        edges: &[Edge],
+        point: [f64; 2],
+        tolerance_mm: f64,
+        control: &multicad_core::sketch_regions::QueryControl<'_>,
+    ) -> Result<PointLocation, QueryError> {
+        self.controlled(control, |checkpoint| {
+            self.classify_impl(edges, point, tolerance_mm, Some(checkpoint))
+        })
+    }
+
+    fn project_parameters(
+        &self,
+        curve: &ExactCurve,
+        point_mm: [f64; 2],
+        tolerance_mm: f64,
+    ) -> Result<Vec<CurveProjection>, QueryError> {
+        self.project_impl(curve, point_mm, tolerance_mm, None)
     }
     fn curve_segment(
         &self,
@@ -297,92 +607,17 @@ impl RegionQueries for NativeRegionQueries {
         b: &ExactCurve,
         tolerance_mm: f64,
     ) -> Result<CurveHits, QueryError> {
-        if !matches!(a, ExactCurve::BSpline { .. }) && !matches!(b, ExactCurve::BSpline { .. }) {
-            return AnalyticQueries.intersections(a, b, tolerance_mm);
-        }
-        if !self.native_splines || !crate::OCCT_LINKED {
-            let policy = self.policy(tolerance_mm)?;
-            return match (a, b) {
-                (ExactCurve::BSpline { poles, basis }, ExactCurve::Line { a, b })
-                | (ExactCurve::Line { a, b }, ExactCurve::BSpline { poles, basis })
-                    if basis.degree > 1 =>
-                {
-                    let points =
-                        line_contacts::contacts(&Self::spline(poles, basis), [*a, *b], policy)
-                            .map_err(error)?;
-                    Ok(CurveHits {
-                        points,
-                        overlap: false,
-                    })
-                }
-                _ => linear_spline::intersections(a, b, policy),
-            };
-        }
-        let hits = Self::curve(a)
-            .intersections(&Self::curve(b), self.policy(tolerance_mm)?)
-            .map_err(error)?;
-        Ok(CurveHits {
-            points: hits.points.iter().map(|p| p.point).collect(),
-            overlap: hits.overlap_segments > 0,
-        })
+        self.intersections_impl(a, b, tolerance_mm, None)
     }
     fn self_intersections(
         &self,
         curve: &ExactCurve,
         tolerance_mm: f64,
     ) -> Result<CurveHits, QueryError> {
-        let ExactCurve::BSpline { poles, basis } = curve else {
-            return AnalyticQueries.self_intersections(curve, tolerance_mm);
-        };
-        if !self.native_splines || !crate::OCCT_LINKED {
-            let policy = self.policy(tolerance_mm)?;
-            if basis.degree == 1 {
-                return linear_spline::self_intersections(curve, policy);
-            }
-            line_contacts::certify_simple(&Self::spline(poles, basis), policy).map_err(error)?;
-            return Ok(CurveHits::default());
-        }
-        let curve = Self::curve(curve);
-        let policy = self.policy(tolerance_mm)?;
-        let hits = curve.self_intersections(policy).map_err(error)?;
-        let [first, last] = curve.domain(policy).map_err(error)?;
-        let a = curve.evaluate(first, policy).map_err(error)?.point;
-        let b = curve.evaluate(last, policy).map_err(error)?.point;
-        let closed = (a[0] - b[0]).hypot(a[1] - b[1]) <= tolerance_mm;
-        let parameter_tolerance = (last - first) * 1e-12;
-        let points = hits
-            .points
-            .into_iter()
-            .filter(|h| {
-                let seam = closed
-                    && (h.point[0] - a[0]).hypot(h.point[1] - a[1]) <= tolerance_mm
-                    && (((h.first_parameter - first).abs() <= parameter_tolerance
-                        && (h.second_parameter - last).abs() <= parameter_tolerance)
-                        || ((h.second_parameter - first).abs() <= parameter_tolerance
-                            && (h.first_parameter - last).abs() <= parameter_tolerance));
-                !seam
-            })
-            .map(|h| h.point)
-            .collect();
-        Ok(CurveHits {
-            points,
-            overlap: hits.overlap_segments > 0,
-        })
+        self.self_intersections_impl(curve, tolerance_mm, None)
     }
     fn signed_area(&self, edges: &[Edge], tolerance_mm: f64) -> Result<f64, QueryError> {
-        if !edges
-            .iter()
-            .any(|edge| matches!(edge.curve, ExactCurve::BSpline { .. }))
-        {
-            return AnalyticQueries.signed_area(edges, tolerance_mm);
-        }
-        if !self.native_splines || !crate::OCCT_LINKED {
-            let edges = linear_spline::boundary(edges, self.policy(tolerance_mm)?)?;
-            return AnalyticQueries.signed_area(&edges, tolerance_mm);
-        }
-        Self::boundary(edges)
-            .signed_area_mm2(self.policy(tolerance_mm)?)
-            .map_err(error)
+        self.area_impl(edges, tolerance_mm, None)
     }
     fn classify_boundary(
         &self,
@@ -390,26 +625,7 @@ impl RegionQueries for NativeRegionQueries {
         point: [f64; 2],
         tolerance_mm: f64,
     ) -> Result<PointLocation, QueryError> {
-        if !edges
-            .iter()
-            .any(|edge| matches!(edge.curve, ExactCurve::BSpline { .. }))
-        {
-            return AnalyticQueries.classify_boundary(edges, point, tolerance_mm);
-        }
-        if !self.native_splines || !crate::OCCT_LINKED {
-            let edges = linear_spline::boundary(edges, self.policy(tolerance_mm)?)?;
-            return AnalyticQueries.classify_boundary(&edges, point, tolerance_mm);
-        }
-        Ok(
-            match Self::boundary(edges)
-                .classify(point, self.policy(tolerance_mm)?)
-                .map_err(error)?
-            {
-                CurvePointLocation::Outside => PointLocation::Outside,
-                CurvePointLocation::Boundary => PointLocation::Boundary,
-                CurvePointLocation::Inside => PointLocation::Inside,
-            },
-        )
+        self.classify_impl(edges, point, tolerance_mm, None)
     }
 }
 
@@ -484,7 +700,7 @@ mod tests {
     }
 
     #[test]
-    fn rust_sketch_queries_reuse_exact_segments_and_refuse_unproved_intersections() {
+    fn rust_sketch_queries_reuse_exact_segments_and_certify_transverse_intersections() {
         let tolerance = GeometryPolicy::default().linear_tolerance_mm;
         let queries = NativeRegionQueries::analytic(GeometryPolicy::default()).unwrap();
         let circle = ExactCurve::Circle {
@@ -521,7 +737,9 @@ mod tests {
                 .project_parameters(&spline, [1., 0.], tolerance)
                 .is_ok()
         );
-        assert!(queries.intersections(&spline, &circle, tolerance).is_err());
+        let contacts = queries.intersections(&spline, &circle, tolerance).unwrap();
+        assert_eq!(contacts.points.len(), 1);
+        assert!((contacts.points[0][0].hypot(contacts.points[0][1]) - 4.).abs() < tolerance);
         assert_eq!(
             queries.self_intersections(&spline, tolerance).unwrap(),
             CurveHits::default()

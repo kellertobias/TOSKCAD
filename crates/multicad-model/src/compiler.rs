@@ -1072,6 +1072,7 @@ impl Compiler {
                             &origins,
                             context.parameters(),
                             self.policy,
+                            interrupt,
                         )?
                     } else {
                         let report = (associative && extent.taper_rad == 0.).then(|| {

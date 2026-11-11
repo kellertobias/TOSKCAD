@@ -36,6 +36,18 @@ pub fn extract_cells(
     queries: &dyn RegionQueries,
     interrupt: Option<&dyn Fn() -> bool>,
 ) -> Result<Extraction, QueryError> {
+    let control = QueryControl::new(interrupt);
+    let result = extract_cells_with_control(edges, tolerance_mm, queries, interrupt, &control);
+    control.finish()?;
+    result
+}
+pub(super) fn extract_cells_with_control(
+    edges: &[Edge],
+    tolerance_mm: f64,
+    queries: &dyn RegionQueries,
+    interrupt: Option<&dyn Fn() -> bool>,
+    control: &QueryControl<'_>,
+) -> Result<Extraction, QueryError> {
     if !tolerance_mm.is_finite() || !(1e-10..=1e-3).contains(&tolerance_mm) {
         return Err(fail("Invalid arrangement tolerance"));
     }
@@ -53,7 +65,7 @@ pub fn extract_cells(
         {
             return Err(fail("Invalid, duplicate or degenerate arrangement edge"));
         }
-        let hits = queries.self_intersections(&edge.curve, tolerance_mm)?;
+        let hits = queries.self_intersections_with_control(&edge.curve, tolerance_mm, control)?;
         if hits.overlap || !hits.points.is_empty() {
             return Err(fail("Self-intersecting arrangement edge requires repair"));
         }
@@ -62,7 +74,12 @@ pub fn extract_cells(
     for i in 0..edges.len() {
         for j in i + 1..edges.len() {
             check_interrupt(interrupt)?;
-            let hits = queries.intersections(&edges[i].curve, &edges[j].curve, tolerance_mm)?;
+            let hits = queries.intersections_with_control(
+                &edges[i].curve,
+                &edges[j].curve,
+                tolerance_mm,
+                control,
+            )?;
             if hits.overlap {
                 return Err(fail("Overlapping curves require explicit repair"));
             }
@@ -78,7 +95,7 @@ pub fn extract_cells(
                         dot(sub(point, *a), sub(*b, *a)) / dot(sub(*b, *a), sub(*b, *a))
                     } else {
                         let projections: Vec<_> = queries
-                            .project_parameters(curve, point, tolerance_mm)?
+                            .project_parameters_with_control(curve, point, tolerance_mm, control)?
                             .into_iter()
                             .filter(|p| p.distance_mm <= tolerance_mm)
                             .collect();
@@ -136,14 +153,14 @@ pub fn extract_cells(
             } else if from == 0. && to == 1. {
                 edge.curve.clone()
             } else {
-                queries.curve_segment(&edge.curve, from, to, tolerance_mm)?
+                queries.curve_segment_with_control(&edge.curve, from, to, tolerance_mm, control)?
             };
             if segments.len() == MAX_SEGMENTS {
                 return Err(fail("Arrangement exceeds its derived-segment budget"));
             }
             tangents.push([
-                tangent(&curve, false, queries, tolerance_mm)?,
-                tangent(&curve, true, queries, tolerance_mm)?.map(|v| -v),
+                tangent(&curve, false, queries, tolerance_mm, control)?,
+                tangent(&curve, true, queries, tolerance_mm, control)?.map(|v| -v),
             ]);
             spans.push((index, points.len() - 1));
             segments.push((
@@ -292,9 +309,11 @@ pub fn extract_cells(
             && matches!(wire[0].curve, ExactCurve::Circle { .. })
             && wire[0].reversed
         {
-            -queries.signed_area(&wire, tolerance_mm)?.abs()
+            -queries
+                .signed_area_with_control(&wire, tolerance_mm, control)?
+                .abs()
         } else {
-            queries.signed_area(&wire, tolerance_mm)?
+            queries.signed_area_with_control(&wire, tolerance_mm, control)?
         };
         // The unbounded exterior has clockwise winding. Zero-area strokes
         // also disappear; positive cells alone are selectable.
@@ -321,9 +340,14 @@ pub fn extract_cells(
             let mut outside = false;
             for edge in &child.edges {
                 let a = edge.curve.ends().0;
-                let middle = midpoint(&edge.curve, queries, tolerance_mm)?;
+                let middle = midpoint(&edge.curve, queries, tolerance_mm, control)?;
                 for point in [a, middle] {
-                    match queries.classify_boundary(&parent.edges, point, tolerance_mm)? {
+                    match queries.classify_boundary_with_control(
+                        &parent.edges,
+                        point,
+                        tolerance_mm,
+                        control,
+                    )? {
                         PointLocation::Inside => inside = true,
                         PointLocation::Outside => outside = true,
                         PointLocation::Boundary => {}
@@ -437,30 +461,36 @@ fn midpoint(
     curve: &ExactCurve,
     queries: &dyn RegionQueries,
     tolerance: f64,
+    control: &QueryControl<'_>,
 ) -> Result<Point, QueryError> {
     match curve {
         ExactCurve::Line { a, b } => Ok(along(*a, sub(*b, *a), 0.5)),
-        _ => Ok(queries.curve_segment(curve, 0., 0.5, tolerance)?.ends().1),
+        _ => Ok(queries
+            .curve_segment_with_control(curve, 0., 0.5, tolerance, control)?
+            .ends()
+            .1),
     }
 }
 
-pub(super) fn interior_point(
+pub(super) fn interior_point_controlled(
     region: &Region,
     queries: &dyn RegionQueries,
     interrupt: Option<&dyn Fn() -> bool>,
+    control: &QueryControl<'_>,
 ) -> Result<Point, QueryError> {
     let tolerance = queries.tolerance_mm();
     for edge in &region.outer.edges {
         check_interrupt(interrupt)?;
-        let point = midpoint(&edge.curve, queries, tolerance)?;
+        let point = midpoint(&edge.curve, queries, tolerance, control)?;
         let direction = if matches!(edge.curve, ExactCurve::Line { .. }) {
-            tangent(&edge.curve, false, queries, tolerance)?
+            tangent(&edge.curve, false, queries, tolerance, control)?
         } else {
             tangent(
-                &queries.curve_segment(&edge.curve, 0., 0.5, tolerance)?,
+                &queries.curve_segment_with_control(&edge.curve, 0., 0.5, tolerance, control)?,
                 true,
                 queries,
                 tolerance,
+                control,
             )?
         };
         let length = direction[0].hypot(direction[1]);
@@ -474,7 +504,7 @@ pub(super) fn interior_point(
                 point[0] - direction[1] / length * offset,
                 point[1] + direction[0] / length * offset,
             ];
-            if region.classify_with_queries_and_interrupt(candidate, queries, interrupt)?
+            if region.classify_controlled(candidate, queries, interrupt, control)?
                 == PointLocation::Inside
             {
                 return Ok(candidate);
@@ -491,6 +521,7 @@ fn tangent(
     end: bool,
     queries: &dyn RegionQueries,
     tolerance: f64,
+    control: &QueryControl<'_>,
 ) -> Result<Point, QueryError> {
     let (a, b) = curve.ends();
     let p = if end { b } else { a };
@@ -509,7 +540,7 @@ fn tangent(
         }
         ExactCurve::BSpline { .. } => {
             let projection = queries
-                .project_parameters(curve, p, tolerance)?
+                .project_parameters_with_control(curve, p, tolerance, control)?
                 .into_iter()
                 .find(|p| {
                     (p.parameter - if end { 1. } else { 0. }).abs() <= 1e-10

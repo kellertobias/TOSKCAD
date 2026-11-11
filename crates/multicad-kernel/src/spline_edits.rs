@@ -7,7 +7,10 @@ use crate::{BSpline2d, CurvedEdge2d, GeometryError, GeometryErrorKind, GeometryP
 mod bernstein_projection;
 mod linear_projection;
 
-pub(crate) use bernstein_projection::line_contacts;
+pub(crate) use bernstein_projection::{
+    line_contacts, project_controlled as bernstein_project_controlled, regions,
+};
+pub(crate) type QueryCheckpoint<'a> = Option<&'a dyn Fn() -> Result<(), GeometryError>>;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CurveProjection2d {

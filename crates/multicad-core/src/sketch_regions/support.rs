@@ -11,6 +11,19 @@ impl SketchSupport {
         queries: &dyn RegionQueries,
         interrupt: Option<&dyn Fn() -> bool>,
     ) -> Result<Extraction, QueryError> {
+        let control = QueryControl::new(interrupt);
+        let result = self.regions_controlled(geometry, construction, queries, interrupt, &control);
+        control.finish()?;
+        result
+    }
+    fn regions_controlled(
+        &self,
+        geometry: &[Geometry],
+        construction: &BTreeSet<EntityId>,
+        queries: &dyn RegionQueries,
+        interrupt: Option<&dyn Fn() -> bool>,
+        control: &QueryControl<'_>,
+    ) -> Result<Extraction, QueryError> {
         let tolerance = queries.tolerance_mm();
         self.contours
             .validate(tolerance)
@@ -115,15 +128,19 @@ impl SketchSupport {
                 .any(|edge| same_curve(&support.curve, &edge.curve, tolerance))
         });
         edges.extend(authored);
-        let mut result = extract_cells(&edges, tolerance, queries, interrupt)?;
+        let mut result = arrangement::extract_cells_with_control(
+            &edges, tolerance, queries, interrupt, control,
+        )?;
         let mut retained = vec![];
         for region in result.regions {
             check_interrupt(interrupt)?;
-            let point = arrangement::interior_point(&region, queries, interrupt)?;
+            let point =
+                arrangement::interior_point_controlled(&region, queries, interrupt, control)?;
             let mut material = false;
             for (outer, edges) in &loops {
-                let inside =
-                    queries.classify_boundary(edges, point, tolerance)? == PointLocation::Inside;
+                let inside = queries
+                    .classify_boundary_with_control(edges, point, tolerance, control)?
+                    == PointLocation::Inside;
                 if *outer {
                     material |= inside;
                 } else if inside {

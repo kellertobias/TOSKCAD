@@ -463,6 +463,7 @@ fn linear_sweep(
     .map_err(|cause| error(Some(id), cause))
 }
 
+#[allow(clippy::too_many_arguments)] // Canonical inputs plus the request's cancellation checkpoint.
 pub(crate) fn extrude(
     id: EntityId,
     source: &ExtrudeParameters,
@@ -471,12 +472,13 @@ pub(crate) fn extrude(
     origins: &[Origin],
     parameters: &EvaluatedParameters,
     policy: GeometryPolicy,
+    interrupt: Option<&dyn Fn() -> bool>,
 ) -> Result<Solid, ModelError> {
     let fail = |message: String| error(Some(id), message);
     if controls.taper_rad != 0. || controls.direction[0] != 0. || controls.direction[1] != 0. {
         return linear_sweep(id, controls, profile, origins, policy);
     }
-    if !has_partial_arcs(&profile)
+    if !has_curved_segments(&profile)
         && (matches!(profile.outer.as_slice(), [CurvedEdge2d::Circle { .. }])
             || profile
                 .outer
@@ -521,8 +523,24 @@ pub(crate) fn extrude(
     profile.frame.origin = std::array::from_fn(|i| {
         profile.frame.origin[i] + normal[i] * (controls.start_offset_mm - sign * backward)
     });
-    Solid::rust_extrude_normal_profile_named(&profile, sign * length, id, origins, policy)
-        .map_err(|cause| error(Some(id), cause))
+    if profile
+        .outer
+        .iter()
+        .chain(profile.holes.iter().flatten())
+        .any(|edge| matches!(edge, CurvedEdge2d::BSpline(_)))
+    {
+        Solid::rust_extrude_spline_profile_with_interrupt(
+            &profile,
+            sign * length,
+            id,
+            origins,
+            policy,
+            interrupt,
+        )
+    } else {
+        Solid::rust_extrude_normal_profile_named(&profile, sign * length, id, origins, policy)
+    }
+    .map_err(|cause| error(Some(id), cause))
 }
 
 pub(crate) fn associative_curved_extrude(
@@ -569,7 +587,7 @@ pub(crate) fn stock_profile(
     height_mm: f64,
     policy: GeometryPolicy,
 ) -> Result<Solid, ModelError> {
-    if has_partial_arcs(profile) {
+    if has_curved_segments(profile) {
         return Solid::rust_extrude_normal_profile_named(profile, height_mm, id, origins, policy)
             .map_err(|cause| error(Some(id), cause));
     }
@@ -581,12 +599,12 @@ pub(crate) fn stock_profile(
     normal_profile(id, profile, origins, sweep, policy)
 }
 
-fn has_partial_arcs(profile: &CurvedProfile) -> bool {
+fn has_curved_segments(profile: &CurvedProfile) -> bool {
     profile
         .outer
         .iter()
         .chain(profile.holes.iter().flatten())
-        .any(|edge| matches!(edge, CurvedEdge2d::Arc { .. }))
+        .any(|edge| matches!(edge, CurvedEdge2d::Arc { .. } | CurvedEdge2d::BSpline(_)))
 }
 
 fn normal_profile(

@@ -68,7 +68,7 @@ fn derivative(source: &[Interval]) -> impl Iterator<Item = Interval> + '_ {
         .map(move |pair| degree * (pair[1] - pair[0]))
 }
 
-fn product(a: &[Interval], b: &[Interval], result: &mut [Interval], subtract: bool) {
+pub(super) fn product(a: &[Interval], b: &[Interval], result: &mut [Interval], subtract: bool) {
     let m = a.len() - 1;
     let n = b.len() - 1;
     for (i, &a) in a.iter().enumerate() {

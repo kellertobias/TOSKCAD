@@ -1,12 +1,13 @@
 //! Bounded closest-point queries on degree-two and degree-three rational spans.
 use std::cmp::Ordering::{self, Equal, Greater, Less};
 
-use super::{CurveProjection2d, failure};
+use super::{CurveProjection2d, QueryCheckpoint, failure};
 use crate::{BSpline2d, GeometryError, GeometryErrorKind, GeometryPolicy};
 
 mod coefficients;
 mod interval;
 pub(crate) mod line_contacts;
+pub(crate) mod regions;
 #[cfg(test)]
 mod tests;
 
@@ -262,6 +263,7 @@ fn stationary_minima(
     tolerance: f64,
     steps: &mut usize,
     candidates: &mut Vec<Candidate>,
+    checkpoint: QueryCheckpoint<'_>,
 ) -> Result<(), GeometryError> {
     let coefficients = &span.derivative[..3 * degree];
     if coefficients.iter().all(|c| c.sign() == Some(Equal)) {
@@ -277,6 +279,9 @@ fn stationary_minima(
         depth: 0,
     }];
     while let Some(node) = stack.pop() {
+        if let Some(checkpoint) = checkpoint {
+            checkpoint()?;
+        }
         let coefficients = &node.derivative[..3 * degree];
         match variation_upper(coefficients) {
             Some(0) => continue,
@@ -351,6 +356,14 @@ pub(super) fn project(
     point: [f64; 2],
     policy: GeometryPolicy,
 ) -> Result<Vec<CurveProjection2d>, GeometryError> {
+    project_controlled(spline, point, policy, None)
+}
+pub(crate) fn project_controlled(
+    spline: &BSpline2d,
+    point: [f64; 2],
+    policy: GeometryPolicy,
+    checkpoint: QueryCheckpoint<'_>,
+) -> Result<Vec<CurveProjection2d>, GeometryError> {
     spline.validate(policy)?;
     let degree = spline.degree as usize;
     let knots = expanded_knots(spline);
@@ -365,6 +378,9 @@ pub(super) fn project(
     let mut steps = MAX_STEPS;
     let mut candidates = Vec::with_capacity(spline.knots.len() + 1);
     while let Some(span) = spans.next() {
+        if let Some(checkpoint) = checkpoint {
+            checkpoint()?;
+        }
         let outgoing = near_endpoint(span.derivative[..3 * degree].iter().copied());
         if span.knots[0] == spline.knots[0] || knot_minimum(previous, outgoing)? {
             candidates.push(Candidate {
@@ -379,6 +395,7 @@ pub(super) fn project(
             policy.linear_tolerance_mm,
             &mut steps,
             &mut candidates,
+            checkpoint,
         )?;
         previous = near_endpoint(span.derivative[..3 * degree].iter().rev().copied());
         if spans.peek().is_none() {
@@ -391,7 +408,7 @@ pub(super) fn project(
         }
     }
 
-    select_candidates(spline, point, policy, candidates)
+    select_candidates(spline, point, policy, candidates, checkpoint)
 }
 
 fn select_candidates(
@@ -399,6 +416,7 @@ fn select_candidates(
     point: [f64; 2],
     policy: GeometryPolicy,
     candidates: Vec<Candidate>,
+    checkpoint: QueryCheckpoint<'_>,
 ) -> Result<Vec<CurveProjection2d>, GeometryError> {
     let distances: Vec<_> = candidates.iter().map(|c| c.hull.distance()).collect();
     let nearest = distances.iter().fold(
@@ -414,6 +432,9 @@ fn select_candidates(
     let threshold = nearest + Interval::point(policy.linear_tolerance_mm);
     let mut result = Vec::new();
     for (candidate, d) in candidates.into_iter().zip(distances) {
+        if let Some(checkpoint) = checkpoint {
+            checkpoint()?;
+        }
         if d.hi <= threshold.lo {
             let projection = candidate.sample(spline, point, policy)?;
             if result.last().is_some_and(|previous: &CurveProjection2d| {

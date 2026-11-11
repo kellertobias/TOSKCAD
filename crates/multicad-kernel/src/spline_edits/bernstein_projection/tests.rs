@@ -240,7 +240,7 @@ fn interval_uncertainty_cannot_supply_a_knot_or_boundary_root() {
         derivative,
     };
     assert_eq!(variation_upper(&derivative[..6]), Some(1));
-    assert!(stationary_minima(&span, 2, 1e-7, &mut 0, &mut Vec::new()).is_err());
+    assert!(stationary_minima(&span, 2, 1e-7, &mut 0, &mut Vec::new(), None).is_err());
 
     let smallest = f64::from_bits(1);
     let tiny = Interval::point(smallest);
@@ -263,7 +263,7 @@ fn candidate_selection_rejects_overlapping_parameters_and_uncertain_tie_threshol
         hull: Hull([Interval::point(-1.), Interval::point(1.)]),
         regular_tangent: true,
     };
-    let error = select_candidates(&curve, query, policy, vec![start, start]).unwrap_err();
+    let error = select_candidates(&curve, query, policy, vec![start, start], None).unwrap_err();
     assert_eq!(error.kind, GeometryErrorKind::InvalidResult);
 
     let ambiguous = Candidate {
@@ -277,7 +277,7 @@ fn candidate_selection_rejects_overlapping_parameters_and_uncertain_tie_threshol
         ]),
         regular_tangent: true,
     };
-    let error = select_candidates(&curve, query, policy, vec![start, ambiguous]).unwrap_err();
+    let error = select_candidates(&curve, query, policy, vec![start, ambiguous], None).unwrap_err();
     assert_eq!(error.kind, GeometryErrorKind::InvalidResult);
 
     let inconsistent = Candidate {

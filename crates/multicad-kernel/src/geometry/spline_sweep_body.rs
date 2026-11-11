@@ -4,7 +4,7 @@ use super::{
 };
 use crate::{
     Bounds, Face,
-    rust_prism_topology::{Builder, position},
+    rust_prism_topology::{Builder, place_frame, position},
 };
 use multicad_core::{
     document::EntityId,
@@ -17,11 +17,20 @@ use multicad_rust_kernel::{
     step_read::SplineEdge,
 };
 
+mod authored;
+
 pub(crate) struct SplineSweepBody {
     pub(super) feature: EntityId,
     pub(super) sweep: Sweep,
     wall_areas: Vec<f64>,
-    wall_origins: Vec<Origin>,
+    wall_origins: Vec<Vec<Origin>>,
+    authored: Option<AuthoredFrames>,
+}
+
+struct AuthoredFrames {
+    reverse: bool,
+    walls: Vec<Option<ReferenceFrame>>,
+    source_error_mm: f64,
 }
 
 impl Solid {
@@ -41,10 +50,22 @@ impl SplineSweepBody {
         frame: PlaneFrame,
         tolerance: f64,
     ) -> Result<Self, GeometryError> {
+        Self::new_controlled(feature, sweep, frame, tolerance, None)
+    }
+    pub(super) fn new_controlled(
+        feature: EntityId,
+        sweep: Sweep,
+        frame: PlaneFrame,
+        tolerance: f64,
+        checkpoint: crate::spline_edits::QueryCheckpoint<'_>,
+    ) -> Result<Self, GeometryError> {
         let wall_areas = sweep
             .outline()
             .iter()
             .map(|edge| {
+                if let Some(checkpoint) = checkpoint {
+                    checkpoint()?;
+                }
                 let [_, upper] = edge.length_bounds_mm(tolerance).map_err(|cause| {
                     super::error(
                         "STEP import",
@@ -59,6 +80,9 @@ impl SplineSweepBody {
                         "Cannot bound the imported spline wall area",
                     )
                 })?;
+                if let Some(checkpoint) = checkpoint {
+                    checkpoint()?;
+                }
                 Ok(upper * sweep.height_mm())
             })
             .chain(
@@ -103,12 +127,14 @@ impl SplineSweepBody {
                         .chain(hole.radius_mm()),
                 )
             }))
+            .map(|origin| vec![origin])
             .collect();
         Ok(Self {
             feature,
             sweep,
             wall_areas,
             wall_origins,
+            authored: None,
         })
     }
 
@@ -210,8 +236,19 @@ impl SplineSweepBody {
     pub(super) fn mesh(
         &self,
         frame: PlaneFrame,
-        options: Tessellation,
+        mut options: Tessellation,
     ) -> Result<Mesh, GeometryError> {
+        if let Some(authored) = &self.authored {
+            options.deflection -= authored.source_error_mm;
+            options.angle -= 1e-6;
+            if options.deflection <= 0. || options.angle <= 0. {
+                return Err(super::error(
+                    "spline mesh",
+                    GeometryErrorKind::InvalidResult,
+                    "Requested mesh error is below the certified source conversion enclosure",
+                ));
+            }
+        }
         crate::rust_display::placed_mesh(self.sweep.mesh(options), frame, false)
     }
 
@@ -232,7 +269,7 @@ impl SplineSweepBody {
                     role,
                 }]
             })
-            .chain(self.wall_origins.iter().cloned().map(|origin| vec![origin]))
+            .chain(self.wall_origins.iter().cloned())
             .collect();
         let mut build = Builder::new(origins);
         for top in [false, true] {
@@ -246,7 +283,17 @@ impl SplineSweepBody {
                     ..cap
                 }
             };
-            build.face(cap_index, Some(outward), Some(cap), 2..wall_count + 2);
+            let anchor = ReferenceFrame {
+                v: cap.v.map(|v| {
+                    if self.authored.as_ref().is_some_and(|a| a.reverse) {
+                        -v
+                    } else {
+                        v
+                    }
+                }),
+                ..cap
+            };
+            build.face(cap_index, Some(outward), Some(anchor), 2..wall_count + 2);
             for (index, edge) in outline.iter().enumerate() {
                 let incident = [cap_index, index + 2];
                 match edge {
@@ -268,10 +315,35 @@ impl SplineSweepBody {
                 );
             }
             if let Some(hole) = self.sweep.hole() {
-                build.non_face(
-                    normal_sweep_body::rim_in_frame(hole, cap),
-                    &[cap_index, count + 2],
-                );
+                let rim = if let Some(authored) = &self.authored {
+                    let AnalyticEdge::Circle {
+                        center, radius_mm, ..
+                    } = hole
+                    else {
+                        unreachable!("certified circular hole");
+                    };
+                    normal_sweep_body::rim_in_frame(
+                        AnalyticEdge::Circle {
+                            center: [
+                                center[0],
+                                if authored.reverse {
+                                    -center[1]
+                                } else {
+                                    center[1]
+                                },
+                            ],
+                            radius_mm,
+                            clockwise: false,
+                        },
+                        ReferenceFrame {
+                            v: cap.v.map(|v| if authored.reverse { -v } else { v }),
+                            ..cap
+                        },
+                    )
+                } else {
+                    normal_sweep_body::rim_in_frame(hole, cap)
+                };
+                build.non_face(rim, &[cap_index, count + 2]);
             }
         }
         for (index, edge) in outline.iter().enumerate() {
@@ -279,7 +351,10 @@ impl SplineSweepBody {
             let previous = (index + count - 1) % count + 2;
             let next = (index + 1) % count + 2;
             let plane = Self::side_plane(frame, edge);
-            build.face(wall, plane, plane, [0, 1, previous, next]);
+            let anchor = self.authored.as_ref().map_or(plane, |authored| {
+                authored.walls[index].map(|anchor| place_frame(frame, anchor))
+            });
+            build.face(wall, plane, anchor, [0, 1, previous, next]);
             let [x, y] = edge.point(0.);
             build.non_face(
                 AnalyticGeometry::Line {

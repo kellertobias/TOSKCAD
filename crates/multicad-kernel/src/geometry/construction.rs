@@ -37,7 +37,7 @@ pub(crate) fn origins(feature: EntityId, count: usize) -> Vec<Origin> {
         })
         .collect()
 }
-fn validate_origins(
+pub(crate) fn validate_origins(
     feature: EntityId,
     origins: &[Origin],
     count: usize,

@@ -7,6 +7,10 @@ use crate::{
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeSet, f64::consts::TAU};
 
+mod control;
+use control::check_control;
+pub use control::{QueryControl, QueryControlError};
+
 mod arrangement;
 pub use arrangement::{extract_cells, extract_line_cells};
 mod support;
@@ -142,6 +146,77 @@ pub struct SplineContinuation {
 /// Exact predicates are injected by the application. Native implementations run
 /// on an evaluation worker; this boundary never accepts tessellated geometry.
 pub trait RegionQueries: Send + Sync {
+    fn intersections_with_control(
+        &self,
+        a: &ExactCurve,
+        b: &ExactCurve,
+        tolerance_mm: f64,
+        control: &QueryControl<'_>,
+    ) -> Result<CurveHits, QueryError> {
+        check_control(control)?;
+        let result = self.intersections(a, b, tolerance_mm);
+        check_control(control)?;
+        result
+    }
+    fn self_intersections_with_control(
+        &self,
+        curve: &ExactCurve,
+        tolerance_mm: f64,
+        control: &QueryControl<'_>,
+    ) -> Result<CurveHits, QueryError> {
+        check_control(control)?;
+        let result = self.self_intersections(curve, tolerance_mm);
+        check_control(control)?;
+        result
+    }
+    fn project_parameters_with_control(
+        &self,
+        curve: &ExactCurve,
+        point_mm: Point,
+        tolerance_mm: f64,
+        control: &QueryControl<'_>,
+    ) -> Result<Vec<CurveProjection>, QueryError> {
+        check_control(control)?;
+        let result = self.project_parameters(curve, point_mm, tolerance_mm);
+        check_control(control)?;
+        result
+    }
+    fn curve_segment_with_control(
+        &self,
+        curve: &ExactCurve,
+        from: f64,
+        to: f64,
+        tolerance_mm: f64,
+        control: &QueryControl<'_>,
+    ) -> Result<ExactCurve, QueryError> {
+        check_control(control)?;
+        let result = self.curve_segment(curve, from, to, tolerance_mm);
+        check_control(control)?;
+        result
+    }
+    fn signed_area_with_control(
+        &self,
+        edges: &[Edge],
+        tolerance_mm: f64,
+        control: &QueryControl<'_>,
+    ) -> Result<f64, QueryError> {
+        check_control(control)?;
+        let result = self.signed_area(edges, tolerance_mm);
+        check_control(control)?;
+        result
+    }
+    fn classify_boundary_with_control(
+        &self,
+        edges: &[Edge],
+        point: Point,
+        tolerance_mm: f64,
+        control: &QueryControl<'_>,
+    ) -> Result<PointLocation, QueryError> {
+        check_control(control)?;
+        let result = self.classify_boundary(edges, point, tolerance_mm);
+        check_control(control)?;
+        result
+    }
     fn tolerance_mm(&self) -> f64 {
         DEFAULT_TOLERANCE_MM
     }
@@ -290,15 +365,37 @@ impl Region {
         queries: &dyn RegionQueries,
         interrupt: Option<&dyn Fn() -> bool>,
     ) -> Result<PointLocation, QueryError> {
+        let control = QueryControl::new(interrupt);
+        let result = self.classify_controlled(point, queries, interrupt, &control);
+        control.finish()?;
+        result
+    }
+    fn classify_controlled(
+        &self,
+        point: Point,
+        queries: &dyn RegionQueries,
+        interrupt: Option<&dyn Fn() -> bool>,
+        control: &QueryControl<'_>,
+    ) -> Result<PointLocation, QueryError> {
         check_interrupt(interrupt)?;
-        let outer = queries.classify_boundary(&self.outer.edges, point, queries.tolerance_mm())?;
+        let outer = queries.classify_boundary_with_control(
+            &self.outer.edges,
+            point,
+            queries.tolerance_mm(),
+            control,
+        )?;
         check_interrupt(interrupt)?;
         if outer != PointLocation::Inside {
             return Ok(outer);
         }
         for hole in &self.holes {
             check_interrupt(interrupt)?;
-            let location = queries.classify_boundary(&hole.edges, point, queries.tolerance_mm())?;
+            let location = queries.classify_boundary_with_control(
+                &hole.edges,
+                point,
+                queries.tolerance_mm(),
+                control,
+            )?;
             check_interrupt(interrupt)?;
             match location {
                 PointLocation::Boundary => return Ok(PointLocation::Boundary),
@@ -819,6 +916,26 @@ fn extract_impl(
     evaluated_geometry: bool,
     interrupt: Option<&dyn Fn() -> bool>,
 ) -> Result<Extraction, QueryError> {
+    let control = QueryControl::new(interrupt);
+    let result = extract_impl_controlled(
+        source,
+        tolerance_mm,
+        queries,
+        evaluated_geometry,
+        interrupt,
+        &control,
+    );
+    control.finish()?;
+    result
+}
+fn extract_impl_controlled(
+    source: &Source,
+    tolerance_mm: f64,
+    queries: &dyn RegionQueries,
+    evaluated_geometry: bool,
+    interrupt: Option<&dyn Fn() -> bool>,
+    control: &QueryControl<'_>,
+) -> Result<Extraction, QueryError> {
     check_interrupt(interrupt)?;
     if source.has_expressions() || (source.has_splines() && !evaluated_geometry) {
         return Ok(Extraction {
@@ -1022,7 +1139,7 @@ fn extract_impl(
     }
     for (i, edge) in edges.iter().enumerate() {
         check_interrupt(interrupt)?;
-        match queries.self_intersections(&edge.curve, tolerance_mm) {
+        match queries.self_intersections_with_control(&edge.curve, tolerance_mm, control) {
             Ok(hits) if hits.overlap || !hits.points.is_empty() => {
                 invalid_edges.insert(i);
                 diagnostics.push(diagnostic(
@@ -1061,7 +1178,12 @@ fn extract_impl(
             {
                 continue;
             }
-            let hits = match queries.intersections(&edges[i].curve, &edges[j].curve, tolerance_mm) {
+            let hits = match queries.intersections_with_control(
+                &edges[i].curve,
+                &edges[j].curve,
+                tolerance_mm,
+                control,
+            ) {
                 Ok(hits) => hits,
                 Err(e) => {
                     invalid_edges.extend([i, j]);
@@ -1142,7 +1264,7 @@ fn extract_impl(
             reversed = at_end;
         }
         check_interrupt(interrupt)?;
-        let area = match queries.signed_area(&wire, tolerance_mm) {
+        let area = match queries.signed_area_with_control(&wire, tolerance_mm, control) {
             Ok(area) if area.is_finite() => area,
             Ok(_) => {
                 diagnostics.push(diagnostic(
@@ -1200,7 +1322,7 @@ fn extract_impl(
                 // Outside the convex bounds of the whole boundary: Outside.
                 continue;
             }
-            match queries.classify_boundary(&c.edges, p, tolerance_mm) {
+            match queries.classify_boundary_with_control(&c.edges, p, tolerance_mm, control) {
                 Ok(PointLocation::Inside) => candidates.push(j),
                 Ok(PointLocation::Outside) => {}
                 Ok(PointLocation::Boundary) => {
