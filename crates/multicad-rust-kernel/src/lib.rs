@@ -14,6 +14,7 @@ pub mod headed_screw;
 pub mod helical_receiver;
 pub mod helical_thread;
 pub mod helical_thread_mesh;
+pub mod threaded_shaft;
 pub mod helical_tube_cut;
 pub mod hex_nut;
 pub mod linear_sweep;
