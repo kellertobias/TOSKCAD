@@ -531,7 +531,10 @@ fn saved_poses_have_no_overlaps_between_moving_and_fixed_parts() {
         };
         let report = inspect_assembly(&m, &query).unwrap();
         for (evaluation, (a, b)) in report.pairs.iter().zip(&pairs) {
-            let values = evaluation.result.as_ref().unwrap();
+            let values = evaluation
+                .result
+                .as_ref()
+                .unwrap_or_else(|cause| panic!("{a} vs {b} in {pose}: {cause:?}"));
             assert_ne!(
                 values.relation,
                 PairRelation::Overlapping,

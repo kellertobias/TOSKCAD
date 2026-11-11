@@ -2,6 +2,7 @@
 //! be obtained by resolving a persistent reference against the current solid.
 use crate::{GeometryError, GeometryErrorKind, Solid, ffi};
 mod circular;
+mod machined;
 mod planar;
 mod rounded;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -68,6 +69,12 @@ pub(crate) fn measure(
             && let Some(result) = a.rust_parallel_cylinder_pair(b)
         {
             return result.map(|(distance, _)| distance);
+        }
+        if selection_a == BRepSelection::Whole
+            && selection_b == BRepSelection::Whole
+            && let Some(result) = machined::measure(a, b, tolerance)
+        {
+            return result;
         }
         return planar::measure(a, selection_a, b, selection_b, tolerance);
     }

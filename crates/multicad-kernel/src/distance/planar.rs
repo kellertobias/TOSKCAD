@@ -18,7 +18,15 @@ pub(super) fn measure(
 ) -> Result<MinimumDistance, GeometryError> {
     let left = prepare(a, selection_a)?;
     let right = prepare(b, selection_b)?;
-    let result = minimum(&left, &right, tolerance).map_err(|cause| match cause {
+    measure_prepared(&left, &right, tolerance)
+}
+
+pub(super) fn measure_prepared(
+    left: &[Shape],
+    right: &[Shape],
+    tolerance: f64,
+) -> Result<MinimumDistance, GeometryError> {
+    let result = minimum(left, right, tolerance).map_err(|cause| match cause {
         DistanceError::Invalid => error(
             GeometryErrorKind::InvalidResult,
             "Rust distance requires valid exact planar boundaries",
@@ -87,7 +95,10 @@ fn line(geometry: Option<AnalyticGeometry>) -> Result<Segment, GeometryError> {
     }
 }
 
-fn prepare(solid: &Solid, selection: BRepSelection) -> Result<Vec<Shape>, GeometryError> {
+pub(super) fn prepare(
+    solid: &Solid,
+    selection: BRepSelection,
+) -> Result<Vec<Shape>, GeometryError> {
     if selection == BRepSelection::Whole && solid.solid_count()? > MAX_SOLIDS {
         return Err(error(
             GeometryErrorKind::Limit,
