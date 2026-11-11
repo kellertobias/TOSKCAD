@@ -34,6 +34,7 @@ pub mod retained_section;
 pub mod revolution;
 pub mod revolution_mesh;
 pub mod round_occlusion;
+pub mod rounded_cylinder;
 pub mod section_hatch;
 pub mod sketch_reference;
 pub mod sphere;
