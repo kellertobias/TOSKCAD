@@ -253,7 +253,7 @@ fn saved_pair_exact_metrics_and_manufacturing_mesh_agree_with_native_readback() 
                         assert!(distance((start + end) * 0.5) <= OPTIONS.deflection);
                     }
                 }
-                Face::Bore => {}
+                Face::Bore | Face::HubWall { .. } | Face::HubCap { .. } => {}
             }
         }
         assert_eq!(seen.len(), topology.faces.len());

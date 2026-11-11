@@ -35,6 +35,8 @@ pub enum Face {
     Cap { end: bool },
     Tooth { band: Band, edge: ToothEdge },
     Bore,
+    HubWall { extension: HubExtension },
+    HubCap { extension: HubExtension },
 }
 
 impl Face {
@@ -43,6 +45,13 @@ impl Face {
             Self::Cap { end: false } => "gear/end.start".into(),
             Self::Cap { end: true } => "gear/end.end".into(),
             Self::Bore => "gear/bore".into(),
+            Self::HubWall { .. } => "gear/hub.side".into(),
+            Self::HubCap { extension } => if extension.end_z_mm < extension.gear_z_mm {
+                "gear/hub.end.start"
+            } else {
+                "gear/hub.end.end"
+            }
+            .into(),
             Self::Tooth { band, edge } => {
                 let band = match band {
                     Band::Lower => "lower",
@@ -70,6 +79,8 @@ pub enum Curve {
     Rail { band: Band, point: Point },
     BoreRim { end: bool, radius_mm: f64 },
     BoreSeam { radius_mm: f64 },
+    HubRim { radius_mm: f64, z_mm: f64 },
+    HubSeam { radius_mm: f64, span_mm: [f64; 2] },
 }
 impl Curve {
     pub fn point(self, gear: &Herringbone, fraction: f64) -> [f64; 3] {
@@ -84,9 +95,20 @@ impl Curve {
             }
             Self::BoreRim { end, radius_mm } => {
                 let [x, y] = rotate([radius_mm, 0.], -TAU * fraction);
-                [x, y, if end { height } else { 0. }]
+                [x, y, gear.axial_bounds()[usize::from(end)]]
             }
-            Self::BoreSeam { radius_mm } => [radius_mm, 0., fraction * height],
+            Self::BoreSeam { radius_mm } => {
+                let [lo, hi] = gear.axial_bounds();
+                [radius_mm, 0., (hi - lo).mul_add(fraction, lo)]
+            }
+            Self::HubRim { radius_mm, z_mm } => {
+                let [x, y] = rotate([radius_mm, 0.], TAU * fraction);
+                [x, y, z_mm]
+            }
+            Self::HubSeam {
+                radius_mm,
+                span_mm: [lo, hi],
+            } => [radius_mm, 0., (hi - lo).mul_add(fraction, lo)],
         }
     }
 }
@@ -111,7 +133,7 @@ impl Herringbone {
     pub fn topology(&self) -> Topology {
         let outline = self.profile.outline();
         let count = outline.len() as u32;
-        let height = self.profile.height_mm();
+        let extensions = self.hub_extensions();
         let mut result = Topology {
             vertices_mm: Vec::with_capacity(3 * outline.len() + 2),
             edges: Vec::with_capacity(5 * outline.len() + 3),
@@ -156,14 +178,16 @@ impl Herringbone {
             let face = result.faces.len() as u32;
             let start = result.vertices_mm.len() as u32;
             result.faces.push(Face::Bore);
+            let [lo, hi] = self.axial_bounds();
             result
                 .vertices_mm
-                .extend([[radius_mm, 0., 0.], [radius_mm, 0., height]]);
+                .extend([[radius_mm, 0., lo], [radius_mm, 0., hi]]);
             for (index, end) in [false, true].into_iter().enumerate() {
                 let vertex = start + index as u32;
+                let cap = extensions[index].map_or(index as u32, |extension| extension.cap_face);
                 result.edges.push(TopologyEdge {
                     vertices: [vertex, vertex],
-                    faces: if end { [1, face] } else { [face, 0] },
+                    faces: if end { [cap, face] } else { [face, cap] },
                     curve: Curve::BoreRim { end, radius_mm },
                 });
             }
@@ -171,6 +195,48 @@ impl Herringbone {
                 vertices: [start, start + 1],
                 faces: [face; 2],
                 curve: Curve::BoreSeam { radius_mm },
+            });
+        }
+        for extension in extensions.into_iter().flatten() {
+            result
+                .faces
+                .extend([Face::HubWall { extension }, Face::HubCap { extension }]);
+            let upper = extension.end_z_mm > extension.gear_z_mm;
+            let low = extension.gear_z_mm.min(extension.end_z_mm);
+            let high = extension.gear_z_mm.max(extension.end_z_mm);
+            let start = result.vertices_mm.len() as u32;
+            result.vertices_mm.extend([
+                [extension.radius_mm, 0., low],
+                [extension.radius_mm, 0., high],
+            ]);
+            let cap = u32::from(upper);
+            for (index, z_mm) in [low, high].into_iter().enumerate() {
+                let vertex = start + index as u32;
+                let adjacent = if z_mm == extension.gear_z_mm {
+                    cap
+                } else {
+                    extension.cap_face
+                };
+                result.edges.push(TopologyEdge {
+                    vertices: [vertex; 2],
+                    faces: if index == 0 {
+                        [extension.wall_face, adjacent]
+                    } else {
+                        [adjacent, extension.wall_face]
+                    },
+                    curve: Curve::HubRim {
+                        radius_mm: extension.radius_mm,
+                        z_mm,
+                    },
+                });
+            }
+            result.edges.push(TopologyEdge {
+                vertices: [start, start + 1],
+                faces: [extension.wall_face; 2],
+                curve: Curve::HubSeam {
+                    radius_mm: extension.radius_mm,
+                    span_mm: [low, high],
+                },
             });
         }
         result

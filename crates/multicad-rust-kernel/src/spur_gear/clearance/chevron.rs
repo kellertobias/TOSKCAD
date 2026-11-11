@@ -15,6 +15,11 @@ pub fn certify_herringbone(
     interrupt: Option<&dyn Fn() -> bool>,
 ) -> Result<ResultKind, Error> {
     let profiles = gears.map(Herringbone::profile);
+    // Added hubs stay strictly inside the root disk, which belongs to
+    // every transverse outer profile. A Clear result excludes intersecting
+    // outer Jordan regions and nesting, so these coaxial disks remain
+    // disjoint even beyond the aligned tooth bands. Interior witnesses
+    // continue to refer to real tooth material with the bore excluded.
     let height = profiles[0].height_mm();
     if height != profiles[1].height_mm()
         || placements.into_iter().any(|p| !p.valid(1e-3))
@@ -82,6 +87,49 @@ pub fn certify_herringbone(
 mod tests {
     use super::*;
     use crate::spur_gear::herringbone::tests::fixture;
+
+    #[test]
+    fn coaxial_hubs_preserve_clearance_outside_the_aligned_tooth_bands() {
+        use crate::spur_gear::Hub;
+        let phase = std::f64::consts::PI * (1. + 1. / 36.);
+        let (sin, cos) = phase.sin_cos();
+        let center = 60. / 15_f64.to_radians().cos();
+        let placements = [
+            Placement::default(),
+            Placement {
+                center_mm: [center, 0.],
+                axes: [[cos, sin], [-sin, cos]],
+                uncertainty_mm: 0.,
+            },
+        ];
+        for helical in [false, true] {
+            let gears = [24, 36].map(|teeth| {
+                let (spec, twist) = fixture(teeth);
+                let gear = if helical {
+                    Herringbone::new_helical(spec, twist, 1e-5, 1e7)
+                } else {
+                    Herringbone::new(spec, twist, 1e-5, 1e7)
+                }
+                .unwrap();
+                gear.with_hub(
+                    Hub {
+                        radius_mm: 8.,
+                        axial_start_mm: -10.,
+                        axial_end_mm: 20.,
+                    },
+                    1e-5,
+                    1e7,
+                )
+                .unwrap()
+            });
+            assert_eq!(
+                certify_herringbone([&gears[0], &gears[1]], placements, 1e-7, None),
+                Ok(ResultKind::Clear)
+            );
+            assert!(gears[0].axial_bounds()[0] < 0. && gears[1].axial_bounds()[1] > 4.);
+            assert!(center > 2. * 8.);
+        }
+    }
 
     #[test]
     fn single_hand_and_mixed_sweeps_check_material_past_the_middle_plane() {

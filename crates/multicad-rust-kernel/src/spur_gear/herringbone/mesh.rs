@@ -16,10 +16,14 @@ struct Boundary {
 }
 
 impl Boundary {
-    fn new(gear: &Herringbone, options: Tessellation) -> Result<Self, MeshError> {
+    fn new(
+        gear: &Herringbone,
+        options: Tessellation,
+        hub_radius: Option<f64>,
+    ) -> Result<Self, MeshError> {
         let profile = gear.profile();
-        let bore = profile.bore_radius_mm();
-        let samples = profile.outline_samples(options, bore)?;
+        let bore = profile.bore_radius_mm().filter(|_| hub_radius.is_none());
+        let samples = profile.outline_samples(options, hub_radius.or(bore))?;
         let bore_count = if let Some(radius) = bore {
             options.arc_segments(radius, TAU)?.max(3)
         } else {
@@ -164,12 +168,25 @@ impl Herringbone {
     /// the twist diagonal each consume at most a third of the deflection.
     pub fn mesh(&self, options: Tessellation) -> Result<DisplayMesh, MeshError> {
         options.check()?;
+        let extensions = self.hub_extensions();
+        // The tooth strips must also stay outside the continuous bore.
+        // A narrow hub/root annulus bounds their entire construction error.
+        let deflection =
+            extensions
+                .iter()
+                .flatten()
+                .next()
+                .map_or(options.deflection / 3., |extension| {
+                    (options.deflection / 3.)
+                        .min((self.profile.root_radius_mm - extension.radius_mm) / 6.)
+                });
         let section = Tessellation {
-            deflection: options.deflection / 3.,
+            deflection,
             angle: options.angle / 2.,
             ..options
         };
-        let boundary = Boundary::new(self, section)?;
+        let hubs = HubEnds::new(self, section)?;
+        let boundary = Boundary::new(self, section, hubs.as_ref().map(|ends| ends.hub.radius))?;
         let count = boundary.points.len();
         let caps_count = count + 2 * boundary.holes - 2;
         let mut segments = boundary
@@ -187,7 +204,10 @@ impl Herringbone {
             .min(section.angle)
             .min(4. * section.deflection / max_length);
         let required = (sweep / max_angle).ceil().max(1.);
-        let layer_budget = options.triangle_limit.saturating_sub(2 * caps_count) / (4 * count);
+        let cap_triangles = hubs
+            .as_ref()
+            .map_or(2 * caps_count, |ends| ends.triangles(count));
+        let layer_budget = options.triangle_limit.saturating_sub(cap_triangles) / (4 * count);
         if required > layer_budget as f64 {
             return Err(MeshError::BudgetExceeded);
         }
@@ -201,14 +221,8 @@ impl Herringbone {
             layer_budget,
         );
         let layers = refinement?;
-        let points = boundary
-            .points
-            .iter()
-            .map(|&[x, y]| Point2::new(x, y))
-            .collect();
-        let region = triangulate_region(points, &boundary.edges, boundary.holes)?;
         let cap_top = 2 * layers * count;
-        let triangles = 2 * caps_count + 4 * layers * count;
+        let triangles = cap_triangles + 4 * layers * count;
         let mut mesh = DisplayMesh {
             vertices: Vec::with_capacity((2 * layers + 1) * count * 3),
             indices: Vec::with_capacity(triangles * 3),
@@ -220,9 +234,29 @@ impl Herringbone {
                 mesh.vertices.extend(self.section_point(*point, z));
             }
         }
-        for [a, b, c] in region.triangles {
-            mesh.triangle([c, b, a], 0);
-            mesh.triangle([cap_top + a, cap_top + b, cap_top + c], 1);
+        if let Some(hubs) = hubs {
+            hubs.append(
+                self,
+                &mut mesh,
+                [
+                    Rim { start: 0, count },
+                    Rim {
+                        start: cap_top,
+                        count,
+                    },
+                ],
+            )?;
+        } else {
+            let points = boundary
+                .points
+                .iter()
+                .map(|&[x, y]| Point2::new(x, y))
+                .collect();
+            let region = triangulate_region(points, &boundary.edges, boundary.holes)?;
+            for [a, b, c] in region.triangles {
+                mesh.triangle([c, b, a], 0);
+                mesh.triangle([cap_top + a, cap_top + b, cap_top + c], 1);
+            }
         }
         let band_faces = self.profile.outline().len() as u32;
         let bore_face = 2 + 2 * band_faces;
@@ -242,9 +276,340 @@ impl Herringbone {
     }
 }
 
+#[derive(Clone, Copy)]
+struct Rim {
+    start: usize,
+    count: usize,
+}
+
+impl Rim {
+    fn edge(self, i: usize) -> [usize; 2] {
+        [self.start + i, self.start + (i + 1) % self.count]
+    }
+}
+
+#[derive(Clone, Copy)]
+struct Circle {
+    radius: f64,
+    count: usize,
+}
+
+impl Circle {
+    fn new(radius: f64, options: Tessellation) -> Result<Self, MeshError> {
+        Ok(Self {
+            radius,
+            count: options.arc_segments(radius, TAU)?.max(3),
+        })
+    }
+
+    fn at(self, mesh: &mut DisplayMesh, z: f64) -> Rim {
+        let ring = Rim {
+            start: mesh.vertices.len() / 3,
+            count: self.count,
+        };
+        for i in 0..self.count {
+            let angle = TAU * i as f64 / self.count as f64;
+            let (sin, cos) = angle.sin_cos();
+            mesh.vertices
+                .extend([self.radius * cos, self.radius * sin, z]);
+        }
+        ring
+    }
+}
+
+struct HubEnds {
+    extensions: [Option<super::super::HubExtension>; 2],
+    hub: Circle,
+    bore: Option<Circle>,
+}
+
+impl HubEnds {
+    fn new(gear: &Herringbone, options: Tessellation) -> Result<Option<Self>, MeshError> {
+        let extensions = gear.hub_extensions();
+        let Some(extension) = extensions.iter().flatten().next() else {
+            return Ok(None);
+        };
+        let bore = gear
+            .profile()
+            .bore_radius_mm()
+            .map(|radius| Circle::new(radius, options))
+            .transpose()?;
+        let hub_options = Tessellation {
+            deflection: bore.map_or(options.deflection, |bore| {
+                options
+                    .deflection
+                    .min((extension.radius_mm - bore.radius) / 2.)
+            }),
+            ..options
+        };
+        Ok(Some(Self {
+            extensions,
+            hub: Circle::new(extension.radius_mm, hub_options)?,
+            bore,
+        }))
+    }
+
+    fn triangles(&self, outer: usize) -> usize {
+        let bore = self.bore.map_or(0, |circle| circle.count);
+        let mut triangles = 2 * bore;
+        for extension in self.extensions {
+            let hole = if extension.is_some() {
+                self.hub.count
+            } else {
+                bore
+            };
+            triangles += outer + hole - if hole == 0 { 2 } else { 0 };
+            if extension.is_some() {
+                triangles += 3 * self.hub.count + bore - if bore == 0 { 2 } else { 0 };
+            }
+        }
+        triangles
+    }
+
+    fn append(
+        self,
+        gear: &Herringbone,
+        mesh: &mut DisplayMesh,
+        outer: [Rim; 2],
+    ) -> Result<(), MeshError> {
+        let limits = gear.profile().axial_bounds();
+        let mut bores = [None; 2];
+        for (i, extension) in self.extensions.into_iter().enumerate() {
+            let upwards = i == 1;
+            let bore = self.bore.map(|circle| circle.at(mesh, limits[i]));
+            bores[i] = bore;
+            let hole = if let Some(extension) = extension {
+                let opening = self.hub.at(mesh, extension.gear_z_mm);
+                let end = self.hub.at(mesh, extension.end_z_mm);
+                let [low, high] = if upwards {
+                    [opening, end]
+                } else {
+                    [end, opening]
+                };
+                for k in 0..self.hub.count {
+                    wall(mesh, low.edge(k), high.edge(k), extension.wall_face);
+                }
+                cap(mesh, end, bore, upwards, extension.cap_face)?;
+                Some(opening)
+            } else {
+                bore
+            };
+            cap(mesh, outer[i], hole, upwards, i as u32)?;
+        }
+        if let [Some(low), Some(high)] = bores {
+            let face = (2 + 2 * gear.profile().outline().len()) as u32;
+            for k in 0..low.count {
+                let [a, b] = low.edge(k);
+                let [c, d] = high.edge(k);
+                wall(mesh, [b, a], [d, c], face);
+            }
+        }
+        Ok(())
+    }
+}
+
+fn cap(
+    mesh: &mut DisplayMesh,
+    outer: Rim,
+    hole: Option<Rim>,
+    upwards: bool,
+    face: u32,
+) -> Result<(), MeshError> {
+    let indices = |rim: Rim| rim.start..rim.start + rim.count;
+    let boundary: Vec<_> = indices(outer)
+        .chain(hole.into_iter().flat_map(|rim| indices(rim).rev()))
+        .collect();
+    let points = boundary
+        .iter()
+        .map(|&i| Point2::new(mesh.vertices[3 * i], mesh.vertices[3 * i + 1]))
+        .collect();
+    let mut edges: Vec<_> = (0..outer.count)
+        .map(|i| [i, (i + 1) % outer.count])
+        .collect();
+    if let Some(hole) = hole {
+        edges
+            .extend((0..hole.count).map(|i| [outer.count + i, outer.count + (i + 1) % hole.count]));
+    }
+    for [a, b, c] in triangulate_region(points, &edges, usize::from(hole.is_some()))?.triangles {
+        let triangle = if upwards { [a, b, c] } else { [c, b, a] };
+        mesh.triangle(triangle.map(|i| boundary[i]), face);
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn inconsistent_hub_boundary_refuses_mesh_publication() {
+        let (spec, twist) = super::super::tests::fixture(24);
+        let mut gear = Herringbone::new_helical(spec, twist, 1e-5, 1e7).unwrap();
+        // Isolate the cap validator from the public constructor's wall
+        // guard. An inconsistent interior wire must propagate a typed
+        // failure instead of publishing a disconnected hub cap.
+        gear.profile.hub = Some(super::super::super::Hub {
+            radius_mm: 3.,
+            axial_start_mm: -2.,
+            axial_end_mm: 6.,
+        });
+        assert_eq!(
+            gear.mesh(Tessellation {
+                deflection: 0.005,
+                angle: 0.15,
+                triangle_limit: 100_000,
+            })
+            .err(),
+            Some(MeshError::UnresolvedBoundary)
+        );
+    }
+
+    #[test]
+    fn narrow_hub_root_clearance_limits_coarse_requested_strip_error() {
+        let (mut spec, _) = super::super::tests::fixture(24);
+        spec.bore_radius_mm = spec.root_radius_mm - 0.1;
+        let gear = Herringbone::new_helical(spec, 0.5, 1e-5, 1e7)
+            .unwrap()
+            .with_hub(
+                super::super::super::Hub {
+                    radius_mm: spec.root_radius_mm - 0.05,
+                    axial_start_mm: -2.,
+                    axial_end_mm: 6.,
+                },
+                1e-5,
+                1e7,
+            )
+            .unwrap();
+        let options = Tessellation {
+            deflection: 0.5,
+            angle: 0.5,
+            triangle_limit: 200_000,
+        };
+        let mesh = gear.mesh(options).unwrap();
+        crate::manufacturing::certify(&mesh).unwrap();
+        let tooth_end = 2 + 2 * gear.profile().outline().len() as u32;
+        for (triangle, &face) in mesh
+            .indices
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .zip(&mesh.face_indices)
+        {
+            if !(2..tooth_end).contains(&face) {
+                continue;
+            }
+            let points: Vec<_> = triangle
+                .iter()
+                .map(|&i| {
+                    [
+                        mesh.vertices[3 * i as usize],
+                        mesh.vertices[3 * i as usize + 1],
+                    ]
+                })
+                .collect();
+            for (a, b) in points.iter().zip(points.iter().cycle().skip(1)).take(3) {
+                assert!(
+                    crate::revolution::distance_to_segment([0.; 2], [*a, *b]) > spec.bore_radius_mm
+                );
+            }
+        }
+
+        let (mut thinner, _) = super::super::tests::fixture(24);
+        thinner.bore_radius_mm = thinner.root_radius_mm - 0.0002;
+        let thinner = Herringbone::new_helical(thinner, 0.5, 1e-5, 1e7)
+            .unwrap()
+            .with_hub(
+                super::super::super::Hub {
+                    radius_mm: thinner.root_radius_mm - 0.0001,
+                    axial_start_mm: -2.,
+                    axial_end_mm: 6.,
+                },
+                1e-5,
+                1e7,
+            )
+            .unwrap();
+        assert_eq!(thinner.mesh(options).err(), Some(MeshError::BudgetExceeded));
+    }
+
+    #[test]
+    fn twisted_hub_meshes_share_every_cap_wall_and_continuous_bore_edge() {
+        let options = Tessellation {
+            deflection: 0.005,
+            angle: 0.15,
+            triangle_limit: 100_000,
+        };
+        for helical in [false, true] {
+            for hand in [-1., 1.] {
+                for bore in [0., 4.] {
+                    let (mut spec, twist) = super::super::tests::fixture(24);
+                    spec.bore_radius_mm = bore;
+                    let construct = if helical {
+                        Herringbone::new_helical
+                    } else {
+                        Herringbone::new
+                    };
+                    let plain = construct(spec, hand * twist, 1e-5, 1e7).unwrap();
+                    for span in [[-2., 2.], [2., 6.], [-2., 6.], [1., 3.]] {
+                        let gear = plain
+                            .clone()
+                            .with_hub(
+                                super::super::super::Hub {
+                                    radius_mm: 12.,
+                                    axial_start_mm: span[0],
+                                    axial_end_mm: span[1],
+                                },
+                                1e-5,
+                                1e7,
+                            )
+                            .unwrap();
+                        let mesh = gear.mesh(options).unwrap();
+                        let proof = crate::manufacturing::certify(&mesh).unwrap();
+                        assert!((proof.signed_volume_mm3 - gear.volume_mm3()).abs() < 3.);
+                        let topology = gear.topology();
+                        assert!(
+                            mesh.face_indices
+                                .iter()
+                                .all(|&face| (face as usize) < topology.faces.len())
+                        );
+                        let faces: std::collections::BTreeSet<_> =
+                            mesh.face_indices.iter().copied().collect();
+                        assert_eq!(faces.len(), topology.faces.len());
+                        let bounds = gear.profile().axial_bounds();
+                        let low = mesh
+                            .vertices
+                            .as_chunks::<3>()
+                            .0
+                            .iter()
+                            .map(|v| v[2])
+                            .fold(f64::INFINITY, f64::min);
+                        let high = mesh
+                            .vertices
+                            .as_chunks::<3>()
+                            .0
+                            .iter()
+                            .map(|v| v[2])
+                            .fold(f64::NEG_INFINITY, f64::max);
+                        assert_eq!([low, high], bounds);
+                        if span == [1., 3.] {
+                            let unchanged = plain.mesh(options).unwrap();
+                            assert_eq!(mesh.vertices, unchanged.vertices);
+                            assert_eq!(mesh.indices, unchanged.indices);
+                            assert_eq!(mesh.face_indices, unchanged.face_indices);
+                        } else {
+                            assert_eq!(
+                                gear.mesh(Tessellation {
+                                    triangle_limit: mesh.indices.len() / 3 - 1,
+                                    ..options
+                                })
+                                .err(),
+                                Some(MeshError::BudgetExceeded)
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     #[test]
     fn strip_requires_separated_tubes_and_budget_for_refinement() {

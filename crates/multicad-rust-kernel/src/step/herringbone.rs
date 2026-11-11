@@ -257,7 +257,7 @@ pub(crate) fn prepare(
     let [lo, hi] = gear.bounds();
     let extent = |i: usize| lo[i].abs().max(hi[i].abs());
     let radius = extent(0).hypot(extent(1));
-    let scale = origin.into_iter().map(f64::abs).fold(0., f64::max) + radius + height + 1.;
+    let scale = origin.into_iter().map(f64::abs).fold(0., f64::max) + radius + extent(2) + 1.;
     if 128. * f64::EPSILON * scale > tolerance / 4. {
         return Err(StepError::Limit);
     }
@@ -432,11 +432,23 @@ pub(super) fn encode(
     }
 
     let centers = [0., height].map(|z| placement.point_f64([0.; 2], z));
-    let bore = profile
-        .bore()
-        .and_then(PlanarEdge::radius_mm)
-        .map(|radius| CylindricalTrim::new(file, centers, placement.normal, placement.u, radius))
+    let extensions = gear.hub_extensions();
+    let hub = extensions
+        .iter()
+        .any(Option::is_some)
+        .then(|| spur_gear::encode_hub(file, profile, extensions, &placement))
         .transpose()?;
+    let bore = if hub.is_none() {
+        profile
+            .bore()
+            .and_then(PlanarEdge::radius_mm)
+            .map(|radius| {
+                CylindricalTrim::new(file, centers, placement.normal, placement.u, radius)
+            })
+            .transpose()?
+    } else {
+        None
+    };
     for (end, ring) in [(&rims[0], false), (&rims[2], true)]
         .into_iter()
         .enumerate()
@@ -451,7 +463,9 @@ pub(super) fn encode(
         }
         let outer = file.bound(&edges, true);
         let mut loops = vec![outer];
-        if let Some(bore) = &bore {
+        if let Some(hub) = &hub {
+            loops.extend(hub.holes[end]);
+        } else if let Some(bore) = &bore {
             loops.push(bore.cap_bound(file, top, false));
         }
         let point = file.point(centers[end]);
@@ -460,6 +474,9 @@ pub(super) fn encode(
     }
     if let Some(bore) = bore {
         faces.push(bore.wall(file, false));
+    }
+    if let Some(hub) = hub {
+        faces.extend(hub.faces);
     }
     let solid = file.solid(&faces);
     if file.next + 128 > MAX_STEP_ENTITIES

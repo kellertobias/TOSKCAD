@@ -35,7 +35,12 @@ impl Herringbone {
         let q = length(radial);
         let height = self.profile.height_mm();
         if q == 0. {
-            return (height * dz).max(0.) * magnitude;
+            return self
+                .axial_bounds()
+                .map(|z| z * dz)
+                .into_iter()
+                .fold(f64::NEG_INFINITY, f64::max)
+                * magnitude;
         }
         let azimuth = angle(radial);
         let mid = height * 0.5;
@@ -78,6 +83,10 @@ impl Herringbone {
                     }
                 }
             }
+        }
+        if let Some(hub) = self.profile.hub() {
+            best =
+                best.max(q * hub.radius_mm + (dz * hub.axial_start_mm).max(dz * hub.axial_end_mm));
         }
         best * magnitude
     }

@@ -62,7 +62,7 @@ pub(super) fn encode(
     )
 }
 
-fn encode_hub(
+pub(super) fn encode_hub(
     file: &mut StepFile,
     profile: &Profile,
     extensions: [Option<HubExtension>; 2],

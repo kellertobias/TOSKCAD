@@ -75,10 +75,13 @@ impl Profile {
     /// Lower and upper protrusions. Tooth-band cap, tooth-wall and bore
     /// ordinals are unchanged. Each protrusion appends its wall and end cap.
     pub fn hub_extensions(&self) -> [Option<HubExtension>; 2] {
+        self.hub_extensions_from(self.outline.len() as u32 + 2 + u32::from(self.bore.is_some()))
+    }
+
+    pub(super) fn hub_extensions_from(&self, mut index: u32) -> [Option<HubExtension>; 2] {
         let Some(hub) = self.hub else {
             return [None; 2];
         };
-        let mut index = self.outline.len() as u32 + 2 + u32::from(self.bore.is_some());
         let [low, high] = self.axial_bounds();
         [(0., low), (self.height_mm, high)].map(|(gear_z_mm, end_z_mm)| {
             (gear_z_mm != end_z_mm).then(|| {

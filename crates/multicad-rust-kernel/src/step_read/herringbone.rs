@@ -55,11 +55,13 @@ pub fn verify_herringbone(
     };
     let plan = prepare(gear, origin, tolerance).map_err(step_error)?;
     let bore = gear.profile().bore().and_then(PlanarEdge::radius_mm);
+    let extensions = gear.hub_extensions();
+    let extension_count = extensions.iter().flatten().count();
     let n = plan.transverse.len();
     let result = compound::read_members_by(input, tolerance, true, true, |shell, solid, _| {
         let faces = shell.member_faces(solid)?;
         require(
-            faces.len() == 2 * n + 2 + usize::from(bore.is_some())
+            faces.len() == 2 * n + 2 + usize::from(bore.is_some()) + 2 * extension_count
                 && faces.iter().collect::<BTreeSet<_>>().len() == faces.len(),
         )?;
         let mut rims = [(); 3].map(|()| vec![None; n]);
@@ -127,21 +129,23 @@ pub fn verify_herringbone(
             }
         }
         let mut bore_rims = [0; 2];
+        let mut hub_rims = [[0; 2]; 2];
+        let mut circles = CircularChecks {
+            frame: &frame,
+            edges: &mut edge_ids,
+            vertices: &mut vertex_ids,
+        };
         for (end, station) in [0, 2].into_iter().enumerate() {
             let top = end == 1;
-            let (plane, outward, bounds) = face(shell, faces[2 * n + end])?;
-            require(outward && bounds.len() == 1 + usize::from(bore.is_some()))?;
-            let [Value::String(_), placement] = shell.args(plane, "PLANE")? else {
-                return Err(ReadError::Invalid);
-            };
             let z = plan.levels[station];
-            let center = frame.world([0.; 2], z);
-            check_axis(
+            let hole_radius = extensions[end].map(|hub| hub.radius_mm).or(bore);
+            let bounds = cap_bounds(
                 shell,
-                placement,
-                center,
-                frame.normal.map(|x| if top { x } else { -x }),
-                frame.u,
+                faces[2 * n + end],
+                &frame,
+                z,
+                top,
+                hole_radius.is_some(),
             )?;
             let outer = ring(shell, bounds[0], true)?;
             let expected = rims[station]
@@ -150,48 +154,140 @@ pub fn verify_herringbone(
                 .map(|id| (id, true))
                 .collect::<Vec<_>>();
             require(orient(&outer, top) == expected)?;
-            if let Some(radius) = bore {
-                let uses = ring(shell, bounds[1], false)?;
-                let [(id, sense)] = uses[..] else {
-                    return Err(ReadError::Invalid);
-                };
-                require(sense != top && edge_ids.insert(id))?;
-                let [a, b] = shell.edge(id)?;
-                let Curve::Circle(circle) = shell.edges[&id].curve else {
-                    return Err(ReadError::Invalid);
-                };
-                // A circle's seam is defined relative to its serialized axis
-                // center, which is already placed in the end plane.
-                let rim_vertex = std::array::from_fn(|i| center[i] + radius * frame.u[i]);
-                require(
-                    a == b
-                        && vertex_ids.insert(a)
-                        && circle.center_mm == center
-                        && circle.radius_mm == radius
-                        && length(sub(circle.normal, frame.normal)) < 1e-10
-                        && shell.vertex(a)? == rim_vertex,
-                )?;
-                bore_rims[end] = id;
+            if let Some(radius) = hole_radius {
+                let id = circles.rim(shell, bounds[1], radius, z, false, !top)?;
+                if extensions[end].is_some() {
+                    hub_rims[end][1 - end] = id;
+                } else {
+                    bore_rims[end] = id;
+                }
             }
         }
+        let mut added = 0.;
+        for (end, extension) in extensions.into_iter().enumerate() {
+            let Some(extension) = extension else {
+                continue;
+            };
+            let top = end == 1;
+            let z = extension.end_z_mm;
+            let bounds = cap_bounds(
+                shell,
+                faces[extension.cap_face as usize],
+                &frame,
+                z,
+                top,
+                bore.is_some(),
+            )?;
+            hub_rims[end][end] =
+                circles.rim(shell, bounds[0], extension.radius_mm, z, true, top)?;
+            if let Some(radius) = bore {
+                bore_rims[end] = circles.rim(shell, bounds[1], radius, z, false, !top)?;
+            }
+        }
+        for (end, extension) in extensions.into_iter().enumerate() {
+            let Some(extension) = extension else {
+                continue;
+            };
+            let span = if end == 0 {
+                [extension.end_z_mm, extension.gear_z_mm]
+            } else {
+                [extension.gear_z_mm, extension.end_z_mm]
+            };
+            let height = cylindrical_wall(
+                shell,
+                faces[extension.wall_face as usize],
+                (extension.radius_mm, span[0]),
+                hub_rims[end],
+                &frame,
+                true,
+                &mut edge_ids,
+            )?;
+            require((height - (span[1] - span[0])).abs() <= tolerance)?;
+            added += PI * extension.radius_mm.powi(2) * height;
+        }
         let void = if let Some(radius) = bore {
-            let height = bore_volume(
+            let height = cylindrical_wall(
                 shell,
                 faces[2 * n + 2],
+                (radius, gear.profile().axial_bounds()[0]),
                 bore_rims,
-                radius,
                 &frame,
+                false,
                 &mut edge_ids,
             )?;
             PI * radius * radius * height
         } else {
             0.
         };
-        let volume = area * integral - void;
+        let volume = area * integral + added - void;
         require(volume.is_finite() && volume > 0.)?;
         Ok(volume)
     })?;
-    result.into_iter().next().ok_or(ReadError::Invalid)
+    require(result.len() == 1)?;
+    Ok(result[0])
+}
+
+fn cap_bounds(
+    shell: &Shell<'_, '_>,
+    face_id: u32,
+    frame: &Frame,
+    z: f64,
+    top: bool,
+    hole: bool,
+) -> Result<Vec<u32>> {
+    let (plane, outward, bounds) = face(shell, face_id)?;
+    require(outward && bounds.len() == 1 + usize::from(hole))?;
+    let [Value::String(_), placement] = shell.args(plane, "PLANE")? else {
+        return Err(ReadError::Invalid);
+    };
+    check_axis(
+        shell,
+        placement,
+        frame.world([0.; 2], z),
+        frame.normal.map(|x| if top { x } else { -x }),
+        frame.u,
+    )?;
+    Ok(bounds)
+}
+
+struct CircularChecks<'a> {
+    frame: &'a Frame,
+    edges: &'a mut BTreeSet<u32>,
+    vertices: &'a mut BTreeSet<u32>,
+}
+
+impl CircularChecks<'_> {
+    fn rim(
+        &mut self,
+        shell: &mut Shell<'_, '_>,
+        bound: u32,
+        radius: f64,
+        z: f64,
+        outer: bool,
+        forward: bool,
+    ) -> Result<u32> {
+        let uses = ring(shell, bound, outer)?;
+        let [(id, sense)] = uses[..] else {
+            return Err(ReadError::Invalid);
+        };
+        require(sense == forward && self.edges.insert(id))?;
+        let [a, b] = shell.edge(id)?;
+        let Curve::Circle(circle) = shell.edges[&id].curve else {
+            return Err(ReadError::Invalid);
+        };
+        let center = self.frame.world([0.; 2], z);
+        // Full circular rims share one seam vertex in the placed radial chart.
+        let vertex = std::array::from_fn(|i| center[i] + radius * self.frame.u[i]);
+        require(
+            a == b
+                && self.vertices.insert(a)
+                && circle.center_mm == center
+                && circle.radius_mm == radius
+                && length(sub(circle.normal, self.frame.normal)) < 1e-10
+                && shell.vertex(a)? == vertex,
+        )?;
+        Ok(id)
+    }
 }
 
 fn register(slot: &mut Option<u32>, id: u32) -> Result<()> {
@@ -523,36 +619,50 @@ fn rotation_integral(
     Ok(result)
 }
 
-fn bore_volume(
+fn cylindrical_wall(
     shell: &mut Shell<'_, '_>,
     face_id: u32,
+    (radius, start_z): (f64, f64),
     rims: [u32; 2],
-    radius: f64,
     frame: &Frame,
+    outward: bool,
     edges: &mut BTreeSet<u32>,
 ) -> Result<f64> {
     let (surface, forward, bounds) = face(shell, face_id)?;
-    let ([bound], false) = (bounds.as_slice(), forward) else {
+    let [bound] = bounds.as_slice() else {
         return Err(ReadError::Invalid);
     };
+    require(forward == outward)?;
     let [Value::String(_), axis, Value::Number(actual)] =
         shell.args(surface, "CYLINDRICAL_SURFACE")?
     else {
         return Err(ReadError::Invalid);
     };
     require(*actual == radius)?;
-    check_axis(shell, axis, frame.origin, frame.normal, frame.u)?;
+    check_axis(
+        shell,
+        axis,
+        frame.world([0.; 2], start_z),
+        frame.normal,
+        frame.u,
+    )?;
     let uses = ring(shell, *bound, true)?;
     let [
-        (bottom, false),
+        (bottom, bottom_sense),
         (seam, true),
-        (top, true),
+        (top, top_sense),
         (repeated, false),
     ] = uses[..]
     else {
         return Err(ReadError::Invalid);
     };
-    require([bottom, top] == rims && seam == repeated && edges.insert(seam))?;
+    require(
+        [bottom, top] == rims
+            && bottom_sense == outward
+            && top_sense != outward
+            && seam == repeated
+            && edges.insert(seam),
+    )?;
     let ends = shell.edge(seam)?;
     require(
         matches!(shell.edges[&seam].curve, Curve::Line)

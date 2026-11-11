@@ -72,6 +72,140 @@ fn helical_readback_checks_both_bands_after_placement_and_preserves_the_bore() {
     }
 }
 
+#[test]
+fn twisted_hub_readback_checks_each_extension_and_the_continuous_bore() {
+    use crate::spur_gear::Hub;
+
+    let [origin, u, v] = [[13., -7., 20.], [0.8, 0., -0.6], [0., 1., 0.]];
+    for helical in [false, true] {
+        for hand in [-1., 1.] {
+            for bore in [0., 2.] {
+                let base = fixture_with_law(12, hand, bore, helical);
+                let band_volume = base.volume_mm3();
+                for [low, high] in [[-2., 3.], [1., 6.], [-2., 6.], [1., 3.]] {
+                    let hub = Hub {
+                        radius_mm: 8.,
+                        axial_start_mm: low,
+                        axial_end_mm: high,
+                    };
+                    let gear = base.clone().with_hub(hub, 1e-5, 1e7).unwrap();
+                    let text = write_herringbone(&gear, origin, u, v, TOL).unwrap();
+                    let volume = verify_herringbone(&text, &gear, origin, u, v, TOL).unwrap();
+                    let extension_length = (-low).max(0.) + (high - 4.).max(0.);
+                    let expected =
+                        band_volume + PI * (8_f64.powi(2) - bore * bore) * extension_length;
+                    assert!((volume - expected).abs() < 1e-5, "{volume} != {expected}");
+                    assert!((volume - gear.volume_mm3()).abs() < 1e-5);
+                    let count = gear.profile().outline().len();
+                    let protrusions = gear.hub_extensions().iter().flatten().count();
+                    assert_eq!(
+                        text.matches("ADVANCED_FACE(").count(),
+                        2 * count + 2 + usize::from(bore > 0.) + 2 * protrusions,
+                    );
+                    assert_eq!(text.matches("=MANIFOLD_SOLID_BREP(").count(), 1);
+                    if protrusions == 0 {
+                        assert!(verify_herringbone(&text, &base, origin, u, v, TOL).is_ok());
+                    } else {
+                        let wrong = base
+                            .clone()
+                            .with_hub(
+                                Hub {
+                                    radius_mm: 8.2,
+                                    ..hub
+                                },
+                                1e-5,
+                                1e7,
+                            )
+                            .unwrap();
+                        assert!(verify_herringbone(&text, &wrong, origin, u, v, TOL).is_err());
+                        let wrong_extent = base
+                            .clone()
+                            .with_hub(
+                                Hub {
+                                    axial_start_mm: if low < 0. { low - 0.5 } else { low },
+                                    axial_end_mm: if high > 4. { high + 0.5 } else { high },
+                                    ..hub
+                                },
+                                1e-5,
+                                1e7,
+                            )
+                            .unwrap();
+                        assert!(
+                            verify_herringbone(&text, &wrong_extent, origin, u, v, TOL).is_err()
+                        );
+                        assert!(verify_herringbone(&text, &base, origin, u, v, TOL).is_err());
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn hub_readback_refuses_missing_wall_bounds_wrong_axes_and_broken_periodic_seams() {
+    use crate::spur_gear::Hub;
+
+    let [origin, u, v] = XY;
+    let gear = fixture_with_law(12, 1., 2., true)
+        .with_hub(
+            Hub {
+                radius_mm: 8.,
+                axial_start_mm: -2.,
+                axial_end_mm: 6.,
+            },
+            1e-5,
+            1e7,
+        )
+        .unwrap();
+    let source = write_herringbone(&gear, origin, u, v, TOL).unwrap();
+    let entities = parse_entities(&source, TOL).unwrap();
+    let shell = Shell::new(&entities, TOL, true);
+    let solid = shell.represented_solids(true).unwrap()[0];
+    let faces = shell.member_faces(solid).unwrap();
+    let extension = gear.hub_extensions()[0].unwrap();
+    let wall_id = faces[extension.wall_face as usize];
+    let (surface_id, _, bounds) = face(&shell, wall_id).unwrap();
+    let (_, wire_id, _) = shell.bound(bounds[0], false).unwrap();
+    let record = |id| {
+        source
+            .lines()
+            .find(|line| {
+                line.split_once('=')
+                    .is_some_and(|(left, _)| left == format!("#{id}"))
+            })
+            .unwrap()
+    };
+    let wall = record(wall_id);
+    let surface = record(surface_id);
+    let wire = record(wire_id);
+    let cap = source
+        .lines()
+        .find(|line| line.contains("=PLANE("))
+        .unwrap();
+    let wrong_axis = &cap[argument(cap, "PLANE(", 1)];
+    let uses = &wire[argument(wire, "EDGE_LOOP(", 1)];
+    let uses = uses.trim_matches(['(', ')']).split(',').collect::<Vec<_>>();
+    assert_eq!(uses.len(), 4);
+    for (original, changed) in [
+        (wall, changed_argument(wall, "ADVANCED_FACE(", 1, "()")),
+        (
+            surface,
+            changed_argument(surface, "CYLINDRICAL_SURFACE(", 1, wrong_axis),
+        ),
+        (
+            wire,
+            changed_argument(wire, "EDGE_LOOP(", 1, &format!("({})", uses[..3].join(","))),
+        ),
+    ] {
+        assert_ne!(changed, original);
+        let damaged = source.replacen(original, &changed, 1);
+        assert_eq!(
+            verify_herringbone(&damaged, &gear, origin, u, v, TOL),
+            Err(ReadError::Invalid),
+        );
+    }
+}
+
 fn rewrite(
     source: &str,
     predicate: impl Fn(&str) -> bool,

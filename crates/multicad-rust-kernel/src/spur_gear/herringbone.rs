@@ -1,5 +1,7 @@
 //! A continuous twisted gear formed from one exact transverse tooth outline.
-use super::{Edge, Error, Point, Profile, Spec, TAU, ToothEdge, normal_sweep, rotate};
+use super::{
+    Edge, Error, Hub, HubExtension, Point, Profile, Spec, TAU, ToothEdge, normal_sweep, rotate,
+};
 use std::f64::consts::PI;
 
 mod mesh;
@@ -79,6 +81,30 @@ impl Herringbone {
         &self.profile
     }
 
+    /// Attach a coaxial hub contained radially within every tooth section.
+    pub fn with_hub(
+        mut self,
+        hub: Hub,
+        minimum_mm: f64,
+        maximum_coordinate_mm: f64,
+    ) -> Result<Self, Error> {
+        self.profile = self
+            .profile
+            .with_hub(hub, minimum_mm, maximum_coordinate_mm)?;
+        Ok(self)
+    }
+
+    pub fn axial_bounds(&self) -> [f64; 2] {
+        self.profile.axial_bounds()
+    }
+
+    /// Extensions append after the two caps, both tooth bands and the bore.
+    pub fn hub_extensions(&self) -> [Option<HubExtension>; 2] {
+        self.profile.hub_extensions_from(
+            2 + 2 * self.profile.outline().len() as u32 + u32::from(self.profile.bore().is_some()),
+        )
+    }
+
     pub fn tip_radius_mm(&self) -> f64 {
         self.tip_radius_mm
     }
@@ -131,5 +157,7 @@ impl Herringbone {
     }
 }
 
+#[cfg(test)]
+mod hub_tests;
 #[cfg(test)]
 pub(super) mod tests;
