@@ -340,3 +340,120 @@ fn standard_import_reads_mixed_members_and_refuses_unmodeled_hubs() {
         Err(ReadError::Unsupported)
     );
 }
+
+fn authored_profile() -> Vec<Edge> {
+    let source = parabola().bezier_spans().next().unwrap();
+    let midpoint = |a: Point, b: Point| std::array::from_fn(|i| a[i].midpoint(b[i]));
+    let [a, b, c, d] = source;
+    let [ab, bc, cd] = [midpoint(a, b), midpoint(b, c), midpoint(c, d)];
+    let [x, y] = [midpoint(ab, bc), midpoint(bc, cd)];
+    let m = midpoint(x, y);
+    vec![
+        line([0., 0.], [4., 0.]),
+        line([4., 0.], [4., 2.]),
+        Edge::Cubic(Cubic::new(vec![a, ab, x, m], vec![0., 0.5], false).unwrap()),
+        Edge::Cubic(Cubic::new(vec![m, y, cd, d], vec![0.5, 1.], false).unwrap()),
+        line([0., 2.], [0., 0.]),
+    ]
+}
+#[test]
+fn authored_section_proves_material_before_mesh_and_real_step_roundtrip() {
+    let holes = [
+        None,
+        Some(normal_sweep::Edge::Circle {
+            center: [2., 1.],
+            radius_mm: 0.25,
+            clockwise: true,
+        }),
+    ];
+    for hole in holes {
+        let shape = Sweep::new(authored_profile(), hole, 3., TOLERANCE).unwrap();
+        close(
+            shape.volume_mm3(),
+            30. - hole.map_or(0., |_| 3. * std::f64::consts::PI * 0.25_f64.powi(2)),
+            1e-10,
+        );
+        let mesh = shape.mesh(OPTIONS).unwrap();
+        let receipt = certify(&mesh).unwrap();
+        close(receipt.signed_volume_mm3, shape.volume_mm3(), 0.02);
+        let bytes =
+            step::write_spline_sweep(&shape, [0., 0., 0.], [1., 0., 0.], [0., 1., 0.], TOLERANCE)
+                .unwrap();
+        let (_, decoded) = read_import_solid(&bytes, TOLERANCE).unwrap();
+        let ImportProfile::SplineSweep { sweep } = decoded.profile else {
+            panic!("lost analytic source");
+        };
+        close(sweep.volume_mm3(), shape.volume_mm3(), 1e-9);
+        assert_eq!(shape.outline(), sweep.outline());
+    }
+}
+#[test]
+fn authored_section_refuses_invalid_uncertain_and_cancelled_work_atomically() {
+    use std::cell::Cell;
+    let source = authored_profile();
+    let snapshot = source.clone();
+    for tolerance in [0., f64::NAN] {
+        assert_eq!(
+            Sweep::new(source.clone(), None, 3., tolerance),
+            Err(ConstructionError::Invalid)
+        );
+    }
+    assert_eq!(
+        Sweep::new(source.clone(), None, -3., TOLERANCE),
+        Err(ConstructionError::Invalid)
+    );
+    assert_eq!(
+        Sweep::new(source.clone(), None, 1e9, TOLERANCE),
+        Err(ConstructionError::Limit)
+    );
+    assert_eq!(
+        Sweep::new(
+            vec![source[0].clone(); crate::polygon::MAX_VERTICES + 1],
+            None,
+            3.,
+            TOLERANCE
+        ),
+        Err(ConstructionError::Limit)
+    );
+    assert_eq!(
+        Sweep::new(profile(), None, 3., TOLERANCE),
+        Err(ConstructionError::Unresolved)
+    );
+    assert_eq!(
+        Sweep::new_with_interrupt(source.clone(), None, 3., TOLERANCE, Some(&|| true)),
+        Err(ConstructionError::Cancelled)
+    );
+    let count = Cell::new(0);
+    let interrupt = || {
+        count.set(count.get() + 1);
+        count.get() > source.len() + 3
+    };
+    assert_eq!(
+        Sweep::new_with_interrupt(source.clone(), None, 3., TOLERANCE, Some(&interrupt)),
+        Err(ConstructionError::Cancelled)
+    );
+    assert_eq!(source, snapshot);
+    let early = Cell::new(0);
+    let stop_during_span_count = || {
+        early.set(early.get() + 1);
+        early.get() == 3
+    };
+    assert_eq!(
+        Sweep::new_with_interrupt(
+            source.clone(),
+            None,
+            3.,
+            TOLERANCE,
+            Some(&stop_during_span_count)
+        ),
+        Err(ConstructionError::Cancelled)
+    );
+    let knots: Vec<_> = (0..128).map(f64::from).collect();
+    let poles: Vec<_> = (0..256).map(|i| [f64::from(i), 0.]).collect();
+    let many_spans = Edge::Cubic(Cubic::new(poles, knots, false).unwrap());
+    assert_eq!(
+        Sweep::new(vec![many_spans; 9], None, 3., TOLERANCE),
+        Err(ConstructionError::Limit)
+    );
+    assert!(Sweep::new(source, None, 3., TOLERANCE).is_ok());
+}

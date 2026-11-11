@@ -7,6 +7,7 @@ use crate::{
 };
 
 mod cubic;
+pub(crate) mod validation;
 pub use cubic::Cubic;
 
 type Point = [f64; 2];
@@ -15,6 +16,14 @@ type Point = [f64; 2];
 pub enum Error {
     Invalid,
     Limit,
+}
+/// Admission and cooperative control of an authored exact spline section.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConstructionError {
+    Invalid,
+    Unresolved,
+    Limit,
+    Cancelled,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -95,6 +104,51 @@ pub struct Sweep {
 }
 
 impl Sweep {
+    pub fn new(
+        outline: Vec<Edge>,
+        hole: Option<normal_sweep::Edge>,
+        height_mm: f64,
+        tolerance: f64,
+    ) -> Result<Self, ConstructionError> {
+        Self::new_with_interrupt(outline, hole, height_mm, tolerance, None)
+    }
+    pub fn new_with_interrupt(
+        outline: Vec<Edge>,
+        hole: Option<normal_sweep::Edge>,
+        height_mm: f64,
+        tolerance: f64,
+        interrupt: Option<&dyn Fn() -> bool>,
+    ) -> Result<Self, ConstructionError> {
+        if !tolerance.is_finite() || tolerance <= 0. {
+            return Err(ConstructionError::Invalid);
+        }
+        if interrupt.is_some_and(|interrupt| interrupt()) {
+            return Err(ConstructionError::Cancelled);
+        }
+        if outline.len() > crate::polygon::MAX_VERTICES || height_mm > 1e8 {
+            return Err(ConstructionError::Limit);
+        }
+        let mut spans = 0_usize;
+        for edge in &outline {
+            if interrupt.is_some_and(|interrupt| interrupt()) {
+                return Err(ConstructionError::Cancelled);
+            }
+            spans += match edge {
+                Edge::Cubic(curve) => curve.knots().len() - 1,
+                Edge::Analytic(_) => 1,
+            };
+            if spans > crate::polygon::MAX_VERTICES {
+                return Err(ConstructionError::Limit);
+            }
+        }
+
+        // This fixed-size metric pass has no resource failure; the controlled
+        // section certificate below owns the complete construction budget.
+        let result = Self::from_verified(outline, hole, height_mm, tolerance)
+            .map_err(|_| ConstructionError::Invalid)?;
+        validation::authored(&result.outline, result.hole, tolerance, interrupt)?;
+        Ok(result)
+    }
     /// The decoder has already proved the source rim simple, correctly
     /// oriented, nonoverlapping and matched to its translated opposite rim.
     pub(crate) fn from_verified(
