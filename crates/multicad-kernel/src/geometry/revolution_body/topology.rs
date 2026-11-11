@@ -127,7 +127,7 @@ impl RevolutionBody {
                     continue;
                 };
                 let segment = &self.segments[ring][edge];
-                let primary = if segment.cap_identity {
+                let primary = if segment.direct_identity {
                     segment.origin.clone()
                 } else {
                     Origin {
@@ -140,7 +140,7 @@ impl RevolutionBody {
                     TopologyKind::Face,
                     ordinal,
                     std::iter::once(primary.clone())
-                        .chain((!segment.cap_identity).then(|| segment.origin.clone()))
+                        .chain((!segment.direct_identity).then(|| segment.origin.clone()))
                         .chain(segment.inherited.iter().cloned())
                         .collect(),
                     plane.map(|frame| AnalyticGeometry::Plane { frame }),
@@ -152,14 +152,20 @@ impl RevolutionBody {
                         u = radial(self.sketch.v);
                     }
                     let u = unit(u);
-                    face.frames.push(AnchoredFrame {
-                        origin: primary,
-                        frame: ReferenceFrame {
-                            origin_mm: position(frame, spun(segment.authored_start, 0.)),
-                            u: world_direction(frame, u),
-                            v: world_direction(frame, cross([0., 0., 1.], u)),
-                        },
-                    });
+                    if !segment
+                        .inherited_frames
+                        .iter()
+                        .any(|anchor| anchor.origin == primary)
+                    {
+                        face.frames.push(AnchoredFrame {
+                            origin: primary,
+                            frame: ReferenceFrame {
+                                origin_mm: position(frame, spun(segment.authored_start, 0.)),
+                                u: world_direction(frame, u),
+                                v: world_direction(frame, cross([0., 0., 1.], u)),
+                            },
+                        });
+                    }
                     face.frames
                         .extend(segment.inherited_frames.iter().map(|anchor| AnchoredFrame {
                             origin: anchor.origin.clone(),
@@ -192,7 +198,11 @@ impl RevolutionBody {
                             frame: ReferenceFrame {
                                 origin_mm: position(frame, [0., 0., a[1]]),
                                 u: frame.u,
-                                v: frame.v,
+                                v: if self.reverse_rims {
+                                    frame.v.map(|value| -value)
+                                } else {
+                                    frame.v
+                                },
                             },
                             radius_mm: a[0],
                             start_rad: 0.,

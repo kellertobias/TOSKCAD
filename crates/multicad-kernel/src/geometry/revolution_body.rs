@@ -9,6 +9,7 @@ use multicad_rust_kernel::{
 };
 use std::collections::BTreeSet;
 
+mod chamfer;
 mod shell;
 mod topology;
 mod union;
@@ -23,11 +24,12 @@ pub(crate) struct RevolutionBody {
     sketch: PlaneFrame,
     segments: Vec<Vec<MeridianSegment>>,
     rings: Vec<topology::RingEdges>,
+    reverse_rims: bool,
 }
 
 struct MeridianSegment {
     origin: Origin,
-    cap_identity: bool,
+    direct_identity: bool,
     inherited: Vec<Origin>,
     inherited_frames: Vec<AnchoredFrame>,
     authored_start: MeridianPoint,
@@ -166,7 +168,7 @@ impl Solid {
                 .iter()
                 .map(|&authored_start| MeridianSegment {
                     authored_start,
-                    cap_identity: false,
+                    direct_identity: false,
                     inherited: vec![],
                     inherited_frames: vec![],
                     origin: next_origin
@@ -209,6 +211,7 @@ impl Solid {
             sketch,
             segments,
             rings,
+            reverse_rims: false,
         };
         let bounds = body.bounds(frame);
         policy.point(bounds.min)?;
@@ -249,7 +252,7 @@ impl Solid {
         };
         let cap = |role, level| MeridianSegment {
             origin: generated(role),
-            cap_identity: true,
+            direct_identity: true,
             inherited: vec![],
             inherited_frames: vec![],
             authored_start: [0., level],
@@ -259,7 +262,7 @@ impl Solid {
         if continuous {
             segments.push(MeridianSegment {
                 origin: origins[0].clone(),
-                cap_identity: false,
+                direct_identity: false,
                 inherited: origins[1..]
                     .iter()
                     .flat_map(|origin| [origin.clone(), side(origin)])
@@ -278,7 +281,7 @@ impl Solid {
                 }
                 segments.push(MeridianSegment {
                     origin: lower.clone(),
-                    cap_identity: false,
+                    direct_identity: false,
                     inherited,
                     inherited_frames: vec![],
                     authored_start: sections[i],
@@ -297,6 +300,7 @@ impl Solid {
             },
             segments: vec![segments],
             rings,
+            reverse_rims: false,
         };
         let bounds = body.bounds(frame);
         policy.point(bounds.min)?;

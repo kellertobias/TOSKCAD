@@ -176,6 +176,9 @@ fn build(
             v: [0., 0., 1.],
         },
         segments: vec![segments],
+        reverse_rims: source
+            .cylinder_sketch()
+            .is_some_and(|sketch| sketch.reverse),
     };
     let bounds = body.bounds(frame);
     policy.point(bounds.min)?;
@@ -206,7 +209,7 @@ fn segment(
             source: feature,
             role: "shell.axis".into(),
         },
-        cap_identity: false,
+        direct_identity: false,
         inherited: vec![],
         inherited_frames: vec![],
         authored_start,
@@ -215,7 +218,7 @@ fn segment(
         return result;
     };
     result.origin.role = surface.role.into();
-    result.cap_identity = surface.plane.is_some();
+    result.direct_identity = surface.plane.is_some();
     let source = faces[surface.source];
     for origin in &source.origins {
         let derived = if surface.offset {

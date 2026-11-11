@@ -92,16 +92,30 @@ impl Solid {
             ));
         }
         if self.uses_rust_geometry() {
+            let distance = if mode == 3 {
+                first * second.tan()
+            } else {
+                second
+            };
+            let faces: Vec<_> = edges
+                .iter()
+                .map(|selection| selection.reference_face)
+                .collect();
+            if let Some(result) = self.chamfer_cylinder_rims(
+                &selections,
+                Some(&faces),
+                [first, distance],
+                feature,
+                policy,
+                &topology,
+            ) {
+                return result;
+            }
             let [selection] = edges else {
                 return Err(failure(
                     GeometryErrorKind::Unsupported,
                     "Rust sided chamfer requires one straight edge",
                 ));
-            };
-            let distance = if mode == 3 {
-                first * second.tan()
-            } else {
-                second
             };
             return self.rust_chamfer_box_edge(
                 &selection.edge,
@@ -145,6 +159,18 @@ impl Solid {
         policy.length(size)?;
         let (indices, topology) = self.validate_treatment_edges(edges, feature)?;
         if self.uses_rust_geometry() {
+            if let EdgeTreatment::Chamfer { distance_mm } = treatment
+                && let Some(result) = self.chamfer_cylinder_rims(
+                    edges,
+                    None,
+                    [distance_mm; 2],
+                    feature,
+                    policy,
+                    &topology,
+                )
+            {
+                return result;
+            }
             return match treatment {
                 EdgeTreatment::Chamfer { distance_mm } => match edges {
                     [edge]
