@@ -21,6 +21,7 @@ mod concave;
 mod derived_identity;
 mod imported_convex;
 mod imported_identity;
+mod intrinsic_query;
 mod loft;
 mod miter_sweep;
 mod scale;
@@ -474,28 +475,51 @@ impl Solid {
         {
             return Err(planar_unsupported());
         }
+        let intrinsic_nonempty = match self.intrinsic_planar_overlap_empty(other, policy)? {
+            Some(true) => return Ok(None),
+            Some(false) => true,
+            None => false,
+        };
         let [a, b] = [self.bounds()?, other.bounds()?];
         if (0..3).any(|i| a.max[i] <= b.min[i] || b.max[i] <= a.min[i]) {
-            return Ok(None);
+            return if intrinsic_nonempty {
+                Err(error(
+                    "planar intersection",
+                    GeometryErrorKind::InvalidResult,
+                    "World bounds cannot certify retained positive planar material",
+                ))
+            } else {
+                Ok(None)
+            };
         }
-        if (self.has_certified_planar_material() || other.has_certified_planar_material())
+        let result = if (self.has_certified_planar_material()
+            || other.has_certified_planar_material())
             && let Some(common) =
                 self.default_certified_boolean(other, BooleanOperation::Intersect, policy)
         {
-            return common?
+            common?
                 .map(|solid| Ok((solid.volume_mm3()?, solid.bounds()?)))
-                .transpose();
+                .transpose()?
+        } else {
+            let mut left = Vec::new();
+            let mut right = Vec::new();
+            self.append_planar_material(&mut left, policy)?;
+            other.append_planar_material(&mut right, policy)?;
+            Union::intersect(&left, &right, policy.linear_tolerance_mm)
+                .map_err(planar_error)?
+                .map(|union| {
+                    let [min, max] = union.bounds();
+                    (union.volume_mm3(), Bounds { min, max })
+                })
+        };
+        if intrinsic_nonempty && result.is_none() {
+            return Err(error(
+                "planar intersection",
+                GeometryErrorKind::InvalidResult,
+                "World clipping cannot certify retained positive planar material",
+            ));
         }
-        let mut left = Vec::new();
-        let mut right = Vec::new();
-        self.append_planar_material(&mut left, policy)?;
-        other.append_planar_material(&mut right, policy)?;
-        Ok(Union::intersect(&left, &right, policy.linear_tolerance_mm)
-            .map_err(planar_error)?
-            .map(|union| {
-                let [min, max] = union.bounds();
-                (union.volume_mm3(), Bounds { min, max })
-            }))
+        Ok(result)
     }
 
     pub fn rust_planar_intersection_volume(

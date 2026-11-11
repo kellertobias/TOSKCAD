@@ -116,6 +116,9 @@ impl Solid {
                 "Rust occupied overlap requires two Rust solids",
             ));
         }
+        if self.has_common_placed_planar_query_chart(other)? {
+            return self.rust_planar_intersection_volume(other, policy);
+        }
         if let Some(result) = self.rust_parallel_cylinder_pair(other) {
             return result.map(|(_, volume)| volume);
         }

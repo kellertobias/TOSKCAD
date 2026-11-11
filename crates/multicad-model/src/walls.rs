@@ -189,11 +189,23 @@ fn ensure_disjoint_members(
             }) {
                 continue;
             }
-            if members[i]
-                .boolean(&members[j], BooleanOperation::Intersect, policy)
-                .map_err(|e| error(Some(id), e))?
-                .is_some()
-            {
+            let intersects =
+                if members[i].uses_rust_geometry() && members[j].uses_rust_geometry() {
+                    members[i]
+                        .rust_occupied_overlap_volume(&members[j], policy)
+                        .map(|volume| volume > 0.)
+                } else {
+                    members[i]
+                        .boolean(&members[j], BooleanOperation::Intersect, policy)
+                        .map(|common| common.is_some())
+                }
+                .map_err(|e| {
+                    error(
+                        Some(id),
+                        format!("Wall material-band intersection proof failed: {e}"),
+                    )
+                })?;
+            if intersects {
                 return Err(error(
                     Some(id),
                     "Material bands overlap for this wall path; adjust the construction or repair the corner geometry",
@@ -204,15 +216,23 @@ fn ensure_disjoint_members(
     Ok(())
 }
 
+#[derive(Clone, Copy)]
+struct WallChart {
+    frame: PlaneFrame,
+    offset: f64,
+    end: model::WallEnd,
+}
+
 fn extrude_region(
     wall: &model::ResolvedWall,
     plan: &model::WallPlan,
     id: EntityId,
     policy: GeometryPolicy,
     band: Option<&model::WallLayerBand>,
+    chart: Option<WallChart>,
     backend: GeometryBackend,
 ) -> Result<Solid, ModelError> {
-    let profile = CurvedProfile {
+    let mut profile = CurvedProfile {
         frame: PlaneFrame {
             origin: [0., 0., wall.base_z_mm],
             u: [1., 0., 0.],
@@ -247,6 +267,116 @@ fn extrude_region(
             role.clone()
         });
     let roles = origins(id, roles);
+    if backend == GeometryBackend::Rust
+        && plan.segments.len() == 1
+        && plan.outer.points.len() == 4
+        && plan.holes.is_empty()
+    {
+        let segment = plan.segments[0];
+        let (frame, local) = if let Some(chart) = chart {
+            let inverse = |p: [f64; 2]| {
+                let [x, y] = [p[0] - chart.frame.origin[0], p[1] - chart.frame.origin[1]];
+                let det = chart.frame.u[0] * chart.frame.v[1] - chart.frame.u[1] * chart.frame.v[0];
+                [
+                    (x * chart.frame.v[1] - y * chart.frame.v[0]) / det,
+                    (chart.frame.u[0] * y - chart.frame.u[1] * x) / det,
+                ]
+            };
+            let vector = |p: [f64; 2]| {
+                let det = chart.frame.u[0] * chart.frame.v[1] - chart.frame.u[1] * chart.frame.v[0];
+                [
+                    (p[0] * chart.frame.v[1] - p[1] * chart.frame.v[0]) / det,
+                    (chart.frame.u[0] * p[1] - chart.frame.u[1] * p[0]) / det,
+                ]
+            };
+            let start = inverse(segment.start);
+            let direction = vector(segment.direction);
+            let normal = vector(segment.normal);
+            let point = |x, y| std::array::from_fn(|i| start[i] + direction[i] * x + normal[i] * y);
+            let mut corners = [
+                point(0., plan.left_mm),
+                point(segment.length_mm, plan.left_mm),
+                point(segment.length_mm, plan.right_mm),
+                point(0., plan.right_mm),
+            ];
+            let indices = match chart.end {
+                model::WallEnd::Start => [(0, 1), (3, 2)],
+                model::WallEnd::End => [(1, 0), (2, 3)],
+            };
+            for (end, inside) in indices {
+                let [a, b] = [corners[inside], corners[end]];
+                let t = (chart.offset - a[1]) / (b[1] - a[1]);
+                corners[end] = [a[0] + (b[0] - a[0]) * t, chart.offset];
+            }
+            (chart.frame, corners)
+        } else if wall.junctions.is_empty() {
+            (
+                PlaneFrame {
+                    origin: [segment.start[0], segment.start[1], wall.base_z_mm],
+                    u: [segment.direction[0], segment.direction[1], 0.],
+                    v: [segment.normal[0], segment.normal[1], 0.],
+                },
+                [
+                    [0., plan.left_mm],
+                    [segment.length_mm, plan.left_mm],
+                    [segment.length_mm, plan.right_mm],
+                    [0., plan.right_mm],
+                ],
+            )
+        } else {
+            return sweep_wall_profile(
+                &profile,
+                [0., 0., wall.height_mm],
+                id,
+                &roles,
+                policy,
+                backend,
+            );
+        };
+        // These points are evaluated from the canonical segment/offset and
+        // explicit host-face termination, never fitted to a sampled outline.
+        // Refuse a chart whose evaluation cannot retain that source receipt.
+        for (point, planned) in local.iter().zip(&plan.outer.points) {
+            let actual = frame.point(*point);
+            let scale = actual
+                .into_iter()
+                .chain(planned.iter().copied())
+                .map(f64::abs)
+                .fold(1., f64::max);
+            if (actual[0] - planned[0]).hypot(actual[1] - planned[1])
+                > (128. * f64::EPSILON * scale).min(policy.linear_tolerance_mm / 16.)
+            {
+                return Err(error(
+                    Some(id),
+                    "Canonical wall chart cannot reproduce its planned boundary within arithmetic precision",
+                ));
+            }
+        }
+        profile.frame = frame;
+        profile.outer = local
+            .iter()
+            .zip(local.iter().cycle().skip(1))
+            .map(|(&a, &b)| CurvedEdge2d::Line { a, b })
+            .collect();
+        return Solid::rust_extrude_between_planes_named(
+            &profile,
+            [0., 0., 1.],
+            [
+                PlaneFrame {
+                    origin: [0., 0., wall.base_z_mm],
+                    ..Default::default()
+                },
+                PlaneFrame {
+                    origin: [0., 0., wall.base_z_mm + wall.height_mm],
+                    ..Default::default()
+                },
+            ],
+            id,
+            &roles,
+            policy,
+        )
+        .map_err(|e| error(Some(id), e));
+    }
     if backend == GeometryBackend::Rust && has_diagonal_segments(plan) {
         return Solid::rust_extrude_linear_named(
             &profile,
@@ -421,9 +551,13 @@ fn cut_region(
         if interrupt.is_some_and(|f| f()) {
             return Err(error(Some(id), "Wall evaluation superseded"));
         }
-        return solid
-            .rust_subtract_orthogonal_tools(tools, policy)
-            .map_err(|e| error(Some(id), e));
+        let cut = match solid.rust_subtract_orthogonal_tools(tools, policy) {
+            Err(cause) if cause.kind == multicad_kernel::GeometryErrorKind::Unsupported => {
+                solid.rust_subtract_planar_tools(&tools.iter().collect::<Vec<_>>(), id, policy)
+            }
+            result => result,
+        };
+        return cut.map_err(|e| error(Some(id), e));
     }
     for tool in tools {
         if interrupt.is_some_and(|f| f()) {
@@ -453,18 +587,6 @@ pub(crate) fn build(
     let wall = model::resolve_wall(document, parameters, &source).map_err(e)?;
     let plan = wall.plan().map_err(e)?;
     wall.check_openings(&plan).map_err(e)?;
-    if backend == GeometryBackend::Rust
-        && (!wall.junctions.is_empty()
-            || (has_diagonal_segments(&plan)
-                && (wall.layers.is_some()
-                    || !wall.openings.is_empty()
-                    || !wall.cutouts.is_empty())))
-    {
-        return Err(error(
-            Some(id),
-            "Rust wall geometry requires walls without junctions. Layers, openings and chases require axis-aligned segments",
-        ));
-    }
     if let Some(layers) = &wall.layers {
         for layer in &layers.stack.layers {
             if layer.thickness_mm > 0. && layer.thickness_mm < policy.minimum_feature_mm {
@@ -502,10 +624,40 @@ pub(crate) fn build(
             ));
         }
     }
+    let chart = if backend == GeometryBackend::Rust
+        && wall.junctions.len() == 1
+        && plan.segments.len() == 1
+    {
+        let junction = &wall.junctions[0];
+        let host_source = model::read_wall(document, junction.host_wall).map_err(e)?;
+        let host = model::resolve_wall(document, parameters, &host_source).map_err(e)?;
+        let segments = host.segments().map_err(e)?;
+        if segments.len() == 1 && host.junctions.is_empty() {
+            let segment = segments[0];
+            let (left, right) = host.physical_face_offsets().map_err(e)?;
+            Some(WallChart {
+                frame: PlaneFrame {
+                    origin: [segment.start[0], segment.start[1], host.base_z_mm],
+                    u: [segment.direction[0], segment.direction[1], 0.],
+                    v: [segment.normal[0], segment.normal[1], 0.],
+                },
+                offset: if junction.host_face == model::WallFace::Left {
+                    left
+                } else {
+                    right
+                },
+                end: junction.end,
+            })
+        } else {
+            None
+        }
+    } else {
+        None
+    };
     let tools = cut_tools_with_backend(&wall, &plan, id, policy, interrupt, backend)?;
     let Some(layers) = &wall.layers else {
         let solid = cut_region(
-            extrude_region(&wall, &plan, id, policy, None, backend)?,
+            extrude_region(&wall, &plan, id, policy, None, chart, backend)?,
             &tools,
             id,
             policy,
@@ -534,7 +686,7 @@ pub(crate) fn build(
                 band.outside_mm.min(band.inside_mm),
             )
             .map_err(e)?;
-        let solid = extrude_region(&wall, &layer_plan, id, policy, Some(band), backend)?;
+        let solid = extrude_region(&wall, &layer_plan, id, policy, Some(band), chart, backend)?;
         if let Some(solid) = cut_region(solid, &tools, id, policy, interrupt)? {
             members.push(
                 solid
@@ -566,7 +718,7 @@ pub(crate) fn build(
         })?;
         let pair = solid
             .inspect_pair(host, policy.linear_tolerance_mm, policy)
-            .map_err(|e| error(Some(id), e))?;
+            .map_err(|e| error(Some(id), format!("Wall junction contact proof failed: {e}")))?;
         if interrupt.is_some_and(|f| f()) {
             return Err(error(Some(id), "Wall evaluation superseded"));
         }

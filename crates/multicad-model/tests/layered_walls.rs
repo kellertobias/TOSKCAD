@@ -165,7 +165,9 @@ fn compound_cutout_retains_every_wall_layers_material_on_new_cut_faces() {
     )
     .unwrap();
     session.commit(prepared.prepared).unwrap();
-    for backend in [GeometryBackend::OpenCascade, GeometryBackend::Rust] {
+    for backend in std::iter::once(GeometryBackend::Rust)
+        .chain(cfg!(feature = "occt").then_some(GeometryBackend::OpenCascade))
+    {
         let after = Compiler::default()
             .compile_with_backend(session.document(), session.revision(), backend, None)
             .unwrap_or_else(|e| panic!("{backend:?}: {e}"));
@@ -1488,7 +1490,9 @@ fn perpendicular_t_contact_is_rigidly_invariant_under_rotation_and_translation()
     .unwrap();
     let compiled = Compiler::default()
         .compile(p.prepared.document(), session.revision())
-        .unwrap();
+        .unwrap_or_else(|error| {
+            panic!("host {}, branch {}: {error}", host.feature, branch.feature)
+        });
     near(
         compiled.solid(branch.body).unwrap().volume_mm3().unwrap(),
         352.5 * (3000. - 191.25) * 2700.,
