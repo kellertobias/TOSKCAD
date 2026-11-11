@@ -22,7 +22,8 @@ pub struct BlindThreadMating {
 
 pub(super) struct BlindStock {
     body: Rc<super::super::orthogonal_body::OrthogonalBody>,
-    stock_in_thread: PlaneFrame,
+    stock_in_thread: stock_frame::StoredFrame,
+    authored_frames: std::collections::BTreeMap<Origin, ReferenceFrame>,
     pocket: OrthogonalPocket,
     thread_axes: [Point; 2],
     protected_radius_mm: f64,
@@ -51,6 +52,7 @@ impl Solid {
             ));
         }
         let stock = self.orthogonal_stock()?;
+        let authored = self.topology_snapshot(feature, 0)?;
         let SolidBody::Orthogonal(body, stock_frame) = &stock.body else {
             unreachable!("orthogonal stock promotion");
         };
@@ -63,9 +65,9 @@ impl Solid {
         }
         let stock_frame = *stock_frame;
         let stock_axes = [stock_frame.u, stock_frame.v, stock_frame.normal()];
-        let local_vector = |world| stock_axes.map(|axis| dot(world, axis));
-        let local_point =
-            |world: Point| local_vector(std::array::from_fn(|i| world[i] - stock_frame.origin[i]));
+        let stock_chart = stock_frame::Chart::new(stock_frame);
+        let local_vector = |world| stock_chart.vector(world);
+        let local_point = |world| stock_chart.point(world);
         let tolerance = policy.linear_tolerance_mm;
         let overrun = policy.minimum_feature_mm.max(8. * tolerance);
         let protected_radius_mm =
@@ -102,18 +104,16 @@ impl Solid {
             u: direction(u),
             v: direction(v),
         };
-        let thread_axes = [placed.u, placed.v, placed.normal()];
-        let thread_vector = |world| thread_axes.map(|axis| dot(world, axis));
-        let stock_in_thread = PlaneFrame {
-            origin: thread_vector(std::array::from_fn(|i| {
-                stock_frame.origin[i] - placed.origin[i]
-            })),
-            u: thread_vector(stock_frame.u),
-            v: thread_vector(stock_frame.v),
-        };
+        let stock_in_thread = stock_frame::store(
+            placed,
+            stock_frame,
+            body.bounds(PlaneFrame::default()),
+            policy,
+        )?;
         let blind = BlindStock {
             body: Rc::clone(body),
             stock_in_thread,
+            authored_frames: stock_frame::store_anchors(placed, authored, policy)?,
             pocket: OrthogonalPocket {
                 radius_mm: cut.profile.major_radius_mm,
                 depth_mm: cut.profile.length_mm,
@@ -162,18 +162,12 @@ impl BlindStock {
     }
 
     fn stock_frame(&self, thread_frame: PlaneFrame) -> PlaneFrame {
-        let source = self.stock_in_thread;
-        let axes = [thread_frame.u, thread_frame.v, thread_frame.normal()];
-        let direction = |local| std::array::from_fn(|i| dot(local, axes.map(|axis| axis[i])));
-        PlaneFrame {
-            origin: position(thread_frame, source.origin),
-            u: direction(source.u),
-            v: direction(source.v),
-        }
+        self.stock_in_thread.placed(thread_frame)
     }
 
     pub(super) fn bounds(&self, frame: PlaneFrame) -> Bounds {
-        self.body.bounds(self.stock_frame(frame))
+        self.stock_in_thread
+            .bounds(frame, self.body.geometry.cells())
     }
 
     pub(super) fn volume_mm3(&self, geometry: Thread) -> f64 {
@@ -181,9 +175,7 @@ impl BlindStock {
     }
 
     pub(super) fn contains(&self, point: Point, tolerance: f64) -> bool {
-        let source = self.stock_in_thread;
-        let delta = std::array::from_fn(|i| point[i] - source.origin[i]);
-        let chart = [source.u, source.v, source.normal()].map(|axis| dot(axis, delta));
+        let chart = self.stock_in_thread.local(point);
         self.body.geometry.cells().iter().any(|cell| {
             (0..3)
                 .all(|i| cell.min[i] - tolerance <= chart[i] && chart[i] <= cell.max[i] + tolerance)
@@ -207,19 +199,20 @@ impl BlindStock {
     ) {
         for (index, face) in self
             .body
-            .faces(self.stock_in_thread)
+            .faces(PlaneFrame::default())
             .into_iter()
             .enumerate()
         {
+            let center = self.stock_in_thread.point(face.center_mm);
             if index == self.pocket.face {
                 let area = face.area_mm2 - hole_area;
-                let mut center = face.center_mm;
+                let mut center = center;
                 for i in 0..2 {
                     center[i] = (center[i] * face.area_mm2 - mouth_moment[i]) / area;
                 }
                 properties[0] = (center, area);
             } else {
-                properties.push((face.center_mm, face.area_mm2));
+                properties.push((center, face.area_mm2));
             }
         }
     }
@@ -230,9 +223,17 @@ impl BlindStock {
         owner: EntityId,
         revision: u64,
     ) -> Result<TopologySnapshot, GeometryError> {
-        self.body
+        let mut topology = self
+            .body
             .topology(self.stock_frame(frame), owner, revision)
-            .map_err(|cause| error(OPERATION, GeometryErrorKind::InvalidResult, cause))
+            .map_err(|cause| error(OPERATION, GeometryErrorKind::InvalidResult, cause))?;
+        for anchor in topology.elements.iter_mut().flat_map(|e| &mut e.frames) {
+            if let Some(authored) = self.authored_frames.get(&anchor.origin) {
+                anchor.frame =
+                    boundary::placed_frame(frame, authored.origin_mm, authored.u, authored.v);
+            }
+        }
+        Ok(topology)
     }
 
     pub(super) fn extend_topology(
@@ -277,7 +278,7 @@ impl BlindStock {
             options,
         )?;
         for point in mesh.vertices.as_chunks_mut::<3>().0 {
-            *point = position(self.stock_in_thread, *point);
+            *point = self.stock_in_thread.point(*point);
         }
         Ok(mesh)
     }

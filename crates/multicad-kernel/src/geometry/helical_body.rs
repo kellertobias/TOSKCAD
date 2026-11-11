@@ -23,6 +23,7 @@ mod blind;
 mod boundary;
 mod nut;
 mod screw;
+mod stock_frame;
 use blind::BlindStock;
 pub use blind::{BlindThreadCut, BlindThreadMating};
 
@@ -68,7 +69,7 @@ enum HelicalForm {
 
 struct BoreStock {
     cylinder: AxialCylinder,
-    frame_in_thread: PlaneFrame,
+    frame_in_thread: stock_frame::StoredFrame,
     sketch: Option<Rc<CylinderSketch>>,
     reversed: bool,
 }
@@ -84,14 +85,7 @@ impl BoreStock {
         owner: EntityId,
         revision: u64,
     ) -> Result<TopologySnapshot, GeometryError> {
-        let axes = [frame.u, frame.v, frame.normal()];
-        let direction =
-            |local: Point| std::array::from_fn(|i| dot(local, axes.map(|axis| axis[i])));
-        let placed = PlaneFrame {
-            origin: position(frame, self.frame_in_thread.origin),
-            u: direction(self.frame_in_thread.u),
-            v: direction(self.frame_in_thread.v),
-        };
+        let placed = self.frame_in_thread.placed(frame);
         cylinder_snapshot(
             &self.cylinder,
             placed,
@@ -167,7 +161,7 @@ impl Solid {
                     .map_err(|_| input("Invalid imported receiver cylinder"))?;
                     Ok(HelicalForm::Bore(BoreStock {
                         cylinder,
-                        frame_in_thread: PlaneFrame::default(),
+                        frame_in_thread: stock_frame::StoredFrame::identity(),
                         sketch: None,
                         reversed: false,
                     }))
@@ -370,26 +364,30 @@ impl Solid {
             ));
         }
 
-        // Match the stock caps exactly. Preserve the thread's angular clocking
-        // by projecting its authored U onto the stock plane.
-        let axis = stock_normal.map(|value| if reversed { -value } else { value });
-        let [x, y] = [dot(frame.u, stock_frame.u), dot(frame.u, stock_frame.v)];
+        // Clock in the retained stock chart. Its admitted metric residual
+        // makes a transpose projection or world-axis normalization lossy.
+        let chart = stock_frame::Chart::new(stock_frame);
+        let [x, y, _] = chart.vector(frame.u);
         let length = x.hypot(y);
-        let u = std::array::from_fn(|i| (x * stock_frame.u[i] + y * stock_frame.v[i]) / length);
-        let v = cross(axis, u);
+        let [c, s] = [x / length, y / length];
+        let sign = if reversed { -1. } else { 1. };
         let placed = PlaneFrame {
             origin: start,
-            u,
-            v,
+            u: std::array::from_fn(|i| c * stock_frame.u[i] + s * stock_frame.v[i]),
+            v: std::array::from_fn(|i| sign * (-s * stock_frame.u[i] + c * stock_frame.v[i])),
         };
-        let local_direction = |axis| [dot(u, axis), dot(v, axis), 0.];
+        let radius = cylinder.circle().radius().as_f64();
         let stock = BoreStock {
             cylinder: **cylinder,
-            frame_in_thread: PlaneFrame {
-                origin: [0., 0., cap],
-                u: local_direction(stock_frame.u),
-                v: local_direction(stock_frame.v),
-            },
+            frame_in_thread: stock_frame::store(
+                placed,
+                stock_frame,
+                Bounds {
+                    min: [-radius, -radius, 0.],
+                    max: [radius, radius, height],
+                },
+                policy,
+            )?,
             sketch: sketch.clone(),
             reversed,
         };
