@@ -90,6 +90,7 @@ impl Dimension {
             return Err("Incompatible sketch dimension units".into());
         }
         let value = match self {
+            Self::Literal { value, .. } if unit == target => *value,
             Self::Literal { value, .. } => *value * unit.scale() / target.scale(),
             Self::Expression { expression } => expression
                 .evaluate(

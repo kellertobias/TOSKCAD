@@ -45,6 +45,69 @@ fn thread_parameters(family: ThreadFamily, hand: ThreadHand, internal: bool) -> 
         ..Default::default()
     }
 }
+
+#[test]
+fn equal_authored_stock_and_tool_lengths_do_not_create_a_conversion_floor() {
+    let mut session = Session::new(Document::new("Literal through thread").unwrap()).unwrap();
+    let height = 1.956;
+    let blank = PrimitiveRequest::new(
+        "Stock",
+        PrimitiveParameters::Cylinder {
+            radius: length(5.),
+            height: length(height),
+            frame: Default::default(),
+        },
+    );
+    session
+        .commit(
+            model::prepare_primitive(&session, 0, actor(), &blank)
+                .unwrap()
+                .prepared,
+        )
+        .unwrap();
+    let mut parameters = thread_parameters(ThreadFamily::Unc, ThreadHand::Right, true);
+    parameters.length = length(height);
+    let request = ThreadRequest::receiving(
+        "Through",
+        ThreadMode::CutInternal,
+        BodyInput {
+            body: blank.body,
+            producer: blank.feature,
+        },
+        parameters.clone(),
+    )
+    .unwrap();
+    session
+        .commit(
+            model::prepare_thread(&session, session.revision(), actor(), &request)
+                .unwrap()
+                .prepared,
+        )
+        .unwrap();
+    let model = compile(&session);
+    let solid = model.solid(request.feature).unwrap();
+    let intervals = solid.rust_receiving_thread_intervals().unwrap();
+    assert_eq!(
+        intervals.requested_tool_length_mm.to_bits(),
+        height.to_bits()
+    );
+    assert_eq!(
+        intervals.physical_thread_length_mm.to_bits(),
+        height.to_bits()
+    );
+    assert_eq!(intervals.stock_length_mm.to_bits(), height.to_bits());
+    assert_eq!(
+        model::read_thread(session.document(), request.feature)
+            .unwrap()
+            .parameters,
+        parameters
+    );
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("through.step");
+    solid.write_step(&path).unwrap();
+    let reopened = multicad_kernel::Solid::read_step(&path, Default::default()).unwrap();
+    assert!((reopened.volume_mm3().unwrap() - solid.volume_mm3().unwrap()).abs() < 1e-3);
+}
 #[test]
 fn sourced_unc_unf_profiles_keep_fits_material_history_and_verified_manufacturing_export() {
     for family in [ThreadFamily::Unc, ThreadFamily::Unf] {
