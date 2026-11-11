@@ -23,6 +23,7 @@ mod linear_body;
 mod nonplanar_loft_body;
 mod normal_sweep_body;
 mod orthogonal_body;
+mod parallel_cylinder;
 mod planar_boolean_body;
 mod revolution_body;
 mod rounded_slot_body;

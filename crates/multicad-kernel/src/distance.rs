@@ -59,6 +59,12 @@ pub(crate) fn measure(
         if let Some(result) = circular::measure(a, selection_a, b, selection_b, tolerance) {
             return result;
         }
+        if selection_a == BRepSelection::Whole
+            && selection_b == BRepSelection::Whole
+            && let Some(result) = a.rust_parallel_cylinder_pair(b)
+        {
+            return result.map(|(distance, _)| distance);
+        }
         return planar::measure(a, selection_a, b, selection_b, tolerance);
     }
     let (ak, ai) = selection_a.native();

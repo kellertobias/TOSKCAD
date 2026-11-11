@@ -245,8 +245,14 @@ fn whole_compound_containment_classifies_members_independently_and_refuses_curve
     let cylinder =
         Solid::from_axial_cylinder(cylinder, PlaneFrame::default(), GeometryPolicy::default())
             .unwrap();
+    let finite = a
+        .minimum_distance(BRepSelection::Whole, &cylinder, BRepSelection::Whole)
+        .unwrap();
+    near(finite.distance_mm, 0.);
+    assert!(finite.inner_solution);
+    check_witnesses(&finite);
     assert_eq!(
-        a.minimum_distance(BRepSelection::Whole, &cylinder, BRepSelection::Whole)
+        a.minimum_distance(BRepSelection::Whole, &cylinder, BRepSelection::Face(2))
             .unwrap_err()
             .kind,
         GeometryErrorKind::Unsupported,

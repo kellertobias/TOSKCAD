@@ -54,6 +54,10 @@ impl Solid {
             ));
         }
         if self.uses_rust_geometry() {
+            if let Some(result) = self.rust_parallel_cylinder_pair(other) {
+                let (distance, volume) = result?;
+                return classify(volume, distance, contact_tolerance_mm);
+            }
             let distance =
                 self.minimum_distance(BRepSelection::Whole, other, BRepSelection::Whole)?;
             let volume = if distance.distance_mm > contact_tolerance_mm {
@@ -109,6 +113,9 @@ impl Solid {
                 GeometryErrorKind::Unsupported,
                 "Rust occupied overlap requires two Rust solids",
             ));
+        }
+        if let Some(result) = self.rust_parallel_cylinder_pair(other) {
+            return result.map(|(_, volume)| volume);
         }
         let left = self.bounds()?;
         let right = other.bounds()?;

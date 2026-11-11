@@ -484,6 +484,15 @@ fn linear_ring(
 }
 
 impl LinearBody {
+    pub(super) fn straight_section(&self) -> Option<(&[Vec<Point2>], f64)> {
+        match &self.geometry {
+            Geometry::Ruled(sweep) if sweep.base() == sweep.top() => {
+                Some((sweep.base(), sweep.height_mm()))
+            }
+            _ => None,
+        }
+    }
+
     pub(super) fn volume_mm3(&self) -> f64 {
         match &self.geometry {
             Geometry::Ruled(sweep) => sweep.volume_mm3(),
