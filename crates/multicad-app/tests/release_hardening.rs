@@ -104,6 +104,35 @@ fn interrupt_everywhere(session: &Session) {
 fn makerspace_compile_interrupts_at_every_boundary_and_recovers() {
     interrupt_everywhere(&makerspace::build().unwrap().session);
 }
+
+#[test]
+fn one_cancellation_signal_stops_nested_providers_and_a_new_request_recovers() {
+    let scenario = makerspace::build().unwrap();
+    let document = scenario.session.document();
+    let before = document.clone();
+    let revision = scenario.session.revision();
+    let compiler = Compiler::default();
+    let backend = multicad_model::GeometryBackend::Rust;
+    let baseline = compiler
+        .compile_with_backend(document, revision, backend, None)
+        .unwrap();
+    let calls = AtomicUsize::new(0);
+    let stop = 69;
+    // A caller can replace its cancellation token after signaling it. The
+    // already cancelled request must remain stopped through nested unwinding.
+    let interrupt = || calls.fetch_add(1, Ordering::Relaxed) + 1 == stop;
+    let error = compiler
+        .compile_with_backend(document, revision, backend, Some(&interrupt))
+        .err()
+        .expect("the one cancellation signal must stop the request");
+    assert!(is_superseded(&error), "{error}");
+    assert_eq!(calls.into_inner(), stop);
+    assert_eq!(document, &before);
+    let retry = compiler
+        .compile_with_backend(document, revision, backend, None)
+        .unwrap();
+    assert_eq!(fingerprints(&retry), fingerprints(&baseline));
+}
 #[test]
 fn tool_case_compile_interrupts_at_every_boundary_and_recovers() {
     interrupt_everywhere(&tool_case::build().unwrap().session);

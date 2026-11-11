@@ -539,6 +539,18 @@ impl Compiler {
         mut cache: Option<&mut crate::EvaluationCache>,
     ) -> Result<Model, ModelError> {
         let started = std::time::Instant::now();
+        // Cancellation belongs to the whole request. Nested providers can
+        // classify their errors without polling the caller after it cancelled.
+        let cancelled = std::cell::Cell::new(false);
+        let request_interrupt = || {
+            if cancelled.get() {
+                return true;
+            }
+            let value = interrupt.is_some_and(|probe| probe());
+            cancelled.set(value);
+            value
+        };
+        let interrupt = interrupt.map(|_| &request_interrupt as &dyn Fn() -> bool);
         let native_backend = mode.backend == GeometryBackend::OpenCascade;
         if native_backend && !multicad_kernel::OCCT_LINKED {
             return Err(error(None, "OpenCascade is unavailable in this build"));
