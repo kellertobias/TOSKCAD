@@ -48,7 +48,7 @@ impl MechanicalImportBackend for Backend {
         let interrupt = || cancel.load(Ordering::Relaxed);
         Compiler::default()
             .compile_with_backend(document, revision, self.geometry_backend, Some(&interrupt))
-            .map(|_| ())
+            .and_then(|model| multicad_model::imports::validate_references(document, &model))
             .map_err(|e| e.to_string())
     }
 }
@@ -490,5 +490,123 @@ mod tests {
         assert!(!import.can_apply(&session));
         assert_eq!(session.revision(), 0);
         assert!(step_sources(session.document()).next().is_none());
+    }
+    #[test]
+    fn import_inspector_refuses_changed_finite_face_without_committing_broken_datum() {
+        fn imported_tetra(length: f64) -> String {
+            let [a, b, c, d] = [[0., 0., 0.], [4., 0., 0.], [0., 4., 0.], [0., 0., length]];
+            let union = multicad_kernel::rust_kernel::planar_boolean::Union::from_planar_rings(
+                &[vec![a, c, b], vec![a, b, d], vec![a, d, c], vec![b, c, d]],
+                1e-7,
+            )
+            .unwrap();
+            multicad_kernel::rust_kernel::step::write_planar_union(
+                &union,
+                [0.; 3],
+                [1., 0., 0.],
+                [0., 1., 0.],
+            )
+            .unwrap()
+        }
+        fn attach_imported_datum(
+            session: &mut multicad_core::commands::Session,
+            producer: multicad_core::document::EntityId,
+        ) {
+            use multicad_core::{
+                commands::{Actor, Channel, Request},
+                document::{Entity, EntityData, Link, Mutation},
+                references::{Attachment, GeometryIntent, TopologyKind},
+            };
+            let model = multicad_model::Compiler::default()
+                .compile_with_backend(
+                    session.document(),
+                    session.revision(),
+                    GeometryBackend::Rust,
+                    None,
+                )
+                .unwrap();
+            let topology = &model.snapshot().shapes[&producer].topology;
+            let face = topology
+                .elements
+                .iter()
+                .find(|face| face.key.kind == TopologyKind::Face && matches!(face.geometry, Some(multicad_core::references::AnalyticGeometry::Plane {frame}) if frame.normal()[0] < -0.99))
+                .unwrap();
+            let mut intent = GeometryIntent::capture(topology, face.key).unwrap();
+            intent.boundary = Some(face.boundary.clone());
+            intent.attachment = Some(Attachment {
+                anchor: face.frames[0].origin.clone(),
+                offset_mm: [0.25, -0.5, 0.75],
+                angle_rad: 0.3,
+            });
+            session
+                .apply(Request {
+                    expected_revision: session.revision(),
+                    actor: Actor::local(Channel::Ui),
+                    label: "Attach imported face datum".into(),
+                    edits: vec![Mutation::Insert(Entity::new(
+                        "Imported datum",
+                        EntityData::Plane {
+                            origin_mm: [0.; 3],
+                            normal: [0., 0., 1.],
+                            anchor: Some(Link {
+                                target: producer,
+                                role: "face_attachment".into(),
+                                geometry: Some(intent),
+                            }),
+                        },
+                    ))],
+                })
+                .unwrap();
+        }
+
+        let scratch = tempfile::tempdir().unwrap();
+        let path = scratch.path().join("tetra.step");
+        std::fs::write(&path, imported_tetra(4.)).unwrap();
+        let mut session = Session::new(Document::new("Import update repair").unwrap()).unwrap();
+        let mut import = check_import(&session, &path, Target::New);
+        import.apply(&mut session).unwrap();
+        let source = step_sources(session.document()).next().unwrap().id;
+        let producer = step_bodies(session.document()).next().unwrap().id;
+        attach_imported_datum(&mut session, producer);
+        let before = session.document().clone();
+        let state = (
+            session.revision(),
+            session.activity().count(),
+            session.can_undo(),
+            session.can_redo(),
+        );
+        std::fs::write(&path, imported_tetra(5.)).unwrap();
+        let mut update = check_import(&session, &path, Target::Update(source));
+        assert!(
+            matches!(update.checked(), Some(Err(error)) if error.contains("reference repair")),
+            "{:?}",
+            update.checked()
+        );
+        assert!(!update.can_apply(&session));
+        assert!(update.apply(&mut session).is_err());
+        assert_eq!(session.document(), &before);
+        assert_eq!(
+            (
+                session.revision(),
+                session.activity().count(),
+                session.can_undo(),
+                session.can_redo()
+            ),
+            state
+        );
+        let mut equivalent = imported_tetra(4.);
+        let start = equivalent.find("=CLOSED_SHELL('',(").unwrap() + "=CLOSED_SHELL('',(".len();
+        let end = start + equivalent[start..].find("))").unwrap();
+        let refs = equivalent[start..end]
+            .split(',')
+            .rev()
+            .collect::<Vec<_>>()
+            .join(",");
+        equivalent.replace_range(start..end, &refs);
+        std::fs::write(&path, equivalent).unwrap();
+        let mut recovery = check_import(&session, &path, Target::Update(source));
+        assert!(recovery.can_apply(&session), "{:?}", recovery.error());
+        recovery.apply(&mut session).unwrap();
+        assert_eq!(session.revision(), state.0 + 1);
     }
 }

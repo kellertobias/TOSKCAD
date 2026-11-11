@@ -467,3 +467,145 @@ fn rust_mcp_reopens_mixed_pocket_step_with_a_persistent_floor_attachment() {
             .any(|face| { face.plane.is_none() && (face.area_mm2 - 4. * pi).abs() < 1e-7 })
     );
 }
+
+#[test]
+fn changed_imported_finite_face_is_refused_before_mcp_source_update_commits() {
+    fn imported_tetra(length: f64) -> String {
+        let [a, b, c, d] = [[0., 0., 0.], [4., 0., 0.], [0., 4., 0.], [0., 0., length]];
+        let union = multicad_kernel::rust_kernel::planar_boolean::Union::from_planar_rings(
+            &[vec![a, c, b], vec![a, b, d], vec![a, d, c], vec![b, c, d]],
+            1e-7,
+        )
+        .unwrap();
+        multicad_kernel::rust_kernel::step::write_planar_union(
+            &union,
+            [0.; 3],
+            [1., 0., 0.],
+            [0., 1., 0.],
+        )
+        .unwrap()
+    }
+    fn attach_imported_datum(
+        session: &mut multicad_core::commands::Session,
+        producer: multicad_core::document::EntityId,
+    ) {
+        use multicad_core::{
+            commands::{Actor, Channel, Request},
+            document::{Entity, EntityData, Link, Mutation},
+            references::{Attachment, GeometryIntent, TopologyKind},
+        };
+        let model = multicad_model::Compiler::default()
+            .compile_with_backend(
+                session.document(),
+                session.revision(),
+                GeometryBackend::Rust,
+                None,
+            )
+            .unwrap();
+        let topology = &model.snapshot().shapes[&producer].topology;
+        let face = topology
+            .elements
+            .iter()
+            .find(|face| face.key.kind == TopologyKind::Face && matches!(face.geometry, Some(multicad_core::references::AnalyticGeometry::Plane {frame}) if frame.normal()[0] < -0.99))
+            .unwrap();
+        let mut intent = GeometryIntent::capture(topology, face.key).unwrap();
+        intent.boundary = Some(face.boundary.clone());
+        intent.attachment = Some(Attachment {
+            anchor: face.frames[0].origin.clone(),
+            offset_mm: [0.25, -0.5, 0.75],
+            angle_rad: 0.3,
+        });
+        session
+            .apply(Request {
+                expected_revision: session.revision(),
+                actor: Actor::local(Channel::Ui),
+                label: "Attach imported face datum".into(),
+                edits: vec![Mutation::Insert(Entity::new(
+                    "Imported datum",
+                    EntityData::Plane {
+                        origin_mm: [0.; 3],
+                        normal: [0., 0., 1.],
+                        anchor: Some(Link {
+                            target: producer,
+                            role: "face_attachment".into(),
+                            geometry: Some(intent),
+                        }),
+                    },
+                ))],
+            })
+            .unwrap();
+    }
+
+    use multicad_core::commands::Session;
+    use multicad_core::model::imports::prepare_step_import;
+    use multicad_mcp::host::with;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("tetra.step");
+    std::fs::write(&path, imported_tetra(4.)).unwrap();
+    let mut session = Session::new(Document::new("Import update repair").unwrap()).unwrap();
+    let file =
+        multicad_model::imports::read_step_file_with_backend(&path, GeometryBackend::Rust).unwrap();
+    let import = prepare_step_import(&session, 0, Actor::local(Channel::Ui), &file).unwrap();
+    let source = import.source;
+    let producer = import.model.outputs[0].feature;
+    session.commit(import.model.prepared).unwrap();
+    attach_imported_datum(&mut session, producer);
+    let host = Headless::with_geometry_backend(
+        Workspace::new(session.document().clone()).unwrap(),
+        Some(dir.path().to_owned()),
+        false,
+        GeometryBackend::Rust,
+    );
+    let before = host.document();
+    let state = |target: &mut dyn multicad_mcp::host::Target| {
+        (
+            target.session().revision(),
+            target.session().activity().count(),
+            target.session().can_undo(),
+            target.session().can_redo(),
+        )
+    };
+    let prior = with(&host, state).unwrap();
+    std::fs::write(&path, imported_tetra(5.)).unwrap();
+    let error = dispatch(
+        &host,
+        &call(),
+        "import_step",
+        json!({"expected_revision":0,"file_name":"tetra.step","source":source}),
+    )
+    .unwrap_err();
+    assert!(error.message.contains("reference repair"), "{error:?}");
+    assert!(
+        error.message.contains("face_attachment") || error.message.contains("plane"),
+        "{error:?}"
+    );
+    assert_eq!(host.document(), before);
+    assert_eq!(with(&host, state).unwrap(), prior);
+    // The same command recovers once a source with the retained region returns.
+    let mut equivalent = imported_tetra(4.);
+    let start = equivalent.find("=CLOSED_SHELL('',(").unwrap() + "=CLOSED_SHELL('',(".len();
+    let end = start + equivalent[start..].find("))").unwrap();
+    let refs = equivalent[start..end]
+        .split(',')
+        .rev()
+        .collect::<Vec<_>>()
+        .join(",");
+    equivalent.replace_range(start..end, &refs);
+    std::fs::write(&path, equivalent).unwrap();
+    let updated = dispatch(
+        &host,
+        &call(),
+        "import_step",
+        json!({"expected_revision":0,"file_name":"tetra.step","source":source}),
+    )
+    .unwrap();
+    assert_eq!(updated["revision"], 1);
+    let model = dispatch(&host, &call(), "evaluate_model", json!({})).unwrap();
+    assert!(
+        model["parts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|part| (part["volume_mm3"].as_f64().unwrap() - 32. / 3.).abs() < 1e-7)
+    );
+}

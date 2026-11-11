@@ -17,6 +17,7 @@ use std::{
 mod chamfer;
 mod concave;
 mod imported_convex;
+mod imported_identity;
 mod loft;
 mod miter_sweep;
 mod scale;
@@ -607,7 +608,15 @@ impl Solid {
         feature: EntityId,
         policy: GeometryPolicy,
     ) -> Result<Self, GeometryError> {
-        PlanarBooleanBody::build(geometry, Vec::new(), &[], feature, policy, None)
+        let labels = imported_identity::labels(&geometry, feature)?;
+        PlanarBooleanBody::build_labeled(
+            geometry,
+            feature,
+            policy,
+            None,
+            PlaneFrame::default(),
+            |i, _, _| labels[i].clone(),
+        )
     }
 }
 

@@ -80,7 +80,11 @@ fn finish(
     revision: u64,
     mut out: Value,
 ) -> ToolResult {
-    compile(prepared.document(), revision, call)?;
+    let model = compile(prepared.document(), revision, call)?;
+    call.finish(multicad_model::imports::validate_references(
+        prepared.document(),
+        &model,
+    ))?;
     let call = call.clone();
     let committed = with(host, move |target| commit(target, &call, prepared))??;
     out["revision"] = json!(committed);

@@ -27,12 +27,9 @@ fn near(a: f64, b: f64) {
     assert!((a - b).abs() < 3e-5, "{a} != {b}");
 }
 fn tetra(length: f64) -> String {
-    let [a, b, c, d] = [
-        [0., 0., 0.],
-        [length, 0., 0.],
-        [0., length, 0.],
-        [0., 0., length],
-    ];
+    // Moving only the opposite vertex retains the complete finite x=0 face
+    // used by the saved datum; resizing that region would require repair.
+    let [a, b, c, d] = [[0., 0., 0.], [length, 0., 0.], [0., 4., 0.], [0., 0., 4.]];
     let piece = ConvexPiece::new(
         vec![vec![a, c, b], vec![a, b, d], vec![a, d, c], vec![b, c, d]],
         1e-7,
@@ -72,8 +69,8 @@ fn reopen(s: &Session) -> Session {
     .unwrap()
 }
 fn expected(operation: Operation, length: f64, height: f64) -> f64 {
-    let stock = length.powi(3) / 6.;
-    let overlap = (length - 1.5) * height - height * height / 2.;
+    let stock = length * 16. / 6.;
+    let overlap = (7. * length / 8. - 1.) * height - length * height * height / 8.;
     stock
         + if operation == Operation::Cut {
             -overlap

@@ -26,6 +26,43 @@ fn file_name(path: &Path) -> String {
         .unwrap_or_default()
 }
 
+/// Refuse an import candidate that would publish broken driving references.
+/// Compilation retains these diagnostics for inspection and repair; import
+/// transactions must check them before replacing the last valid source.
+pub fn validate_references(document: &Document, model: &crate::Model) -> Result<(), ModelError> {
+    let report = model
+        .snapshot()
+        .references
+        .for_model(document)
+        .map_err(|e| error(None, e))?;
+    if report.all_resolved() {
+        return Ok(());
+    }
+    if let Some(diagnostic) = report.entries.iter().find(|entry| {
+        !matches!(
+            entry.resolution,
+            multicad_core::references::Resolution::Resolved { .. }
+        )
+    }) {
+        return Err(error(
+            Some(diagnostic.address.owner),
+            format!(
+                "Import requires reference repair: {} ({})",
+                diagnostic.role, diagnostic.address.reference
+            ),
+        ));
+    }
+    let (&owner, cause) = report
+        .external_errors
+        .iter()
+        .next()
+        .expect("unresolved external reference");
+    Err(error(
+        Some(owner),
+        format!("Import requires reference repair: {cause}"),
+    ))
+}
+
 /// Read a STEP file into importable solids with their signatures.
 pub fn read_step_file(path: &Path) -> Result<StepFile, ModelError> {
     let bytes = std::fs::read(path)
