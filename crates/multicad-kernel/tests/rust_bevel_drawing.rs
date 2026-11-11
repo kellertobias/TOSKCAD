@@ -354,3 +354,59 @@ fn oblique_cropped_and_mixed_bevel_drawings_are_refused() {
     };
     assert_eq!(refused(&one, options), GeometryErrorKind::Limit);
 }
+
+/// Median wall time in milliseconds of five runs.
+fn median_ms(mut run: impl FnMut()) -> f64 {
+    let mut times: Vec<f64> = (0..5)
+        .map(|_| {
+            let started = std::time::Instant::now();
+            run();
+            started.elapsed().as_secs_f64() * 1e3
+        })
+        .collect();
+    times.sort_by(f64::total_cmp);
+    times[2]
+}
+
+#[test]
+fn matched_bevel_build_step_and_drawing_timings() {
+    let policy = GeometryPolicy::default();
+    let spec = specification(2., 32, 24, 6., 4.);
+    let directory = tempfile::tempdir().unwrap();
+    let options = DrawingProjection {
+        frame: axial_frame(true),
+        hidden_lines: true,
+        ..Default::default()
+    };
+    let mut stages = vec![];
+    let rust_build = median_ms(|| {
+        Solid::rust_spherical_bevel_gear_named(spec, EntityId::new(), policy).unwrap();
+    });
+    let (rust, native) = pair(spec);
+    let rust_step = median_ms(|| rust.write_step(&directory.path().join("r.step")).unwrap());
+    let rust_drawing = median_ms(|| {
+        project(&rust, options);
+    });
+    stages.push(("rust", [rust_build, rust_step, rust_drawing]));
+    if let Some(native) = native {
+        let native_build = median_ms(|| {
+            Solid::spherical_bevel_gear_named(spec, EntityId::new(), policy).unwrap();
+        });
+        let native_step =
+            median_ms(|| native.write_step(&directory.path().join("n.step")).unwrap());
+        let native_drawing = median_ms(|| {
+            project(&native, options);
+        });
+        stages.push(("native", [native_build, native_step, native_drawing]));
+    }
+    for (backend, [build, step, drawing]) in stages {
+        println!(
+            "{{\"backend\":\"{backend}\",\"profile\":\"{}\",\"build_ms\":{build},\"step_ms\":{step},\"axial_drawing_ms\":{drawing}}}",
+            if cfg!(debug_assertions) {
+                "debug"
+            } else {
+                "release"
+            }
+        );
+    }
+}
