@@ -167,12 +167,13 @@ fn rust_stdio_creates_drives_reopens_and_exports_a_24_32_bevel_pair() {
     );
     assert_eq!(driven["members"], created["members"]);
     check(&mut client, 4.);
-    // Zero thinning cannot be certified; the refused edit leaves revision 2.
+    // Zero total thinning cannot be certified; the refused edit leaves revision 2.
     let (refused, message) = client.call(
         "set_gear_pair",
         json!({
             "expected_revision":2,"pair":pair,
             "first":{"backlash":scalar(0.,"mm")},
+            "second":{"backlash":scalar(0.,"mm")},
         }),
     );
     println!(
