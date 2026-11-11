@@ -351,11 +351,7 @@ mod tests {
         assert!((coefficient(0) - g(x0)).abs() < 1e-12);
         assert!((coefficient(1) - d1).abs() < 1e-3);
         assert!((coefficient(2) - d2).abs() < 1e-3);
-        assert!(
-            (coefficient(4) - d4).abs() < 1e-1,
-            "{} {d4}",
-            coefficient(4)
-        );
+        assert!((coefficient(4) - d4).abs() < 1e-1, "{d4}");
         // An interval base point encloses every point coefficient.
         let wide = f(S5::variable(Interval::new(0.35, 0.45)));
         for x in [0.35, 0.4, 0.45] {

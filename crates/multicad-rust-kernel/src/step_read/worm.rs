@@ -150,10 +150,12 @@ fn sweep(ends: [Point; 2], center: Point, normal: Point) -> f64 {
 }
 
 impl Decoded {
-    fn point(&self, t: f64) -> Point {
+    /// Five points along an analytic edge; spline edges have none here
+    /// because their faces prove them.
+    fn samples(&self) -> Vec<Point> {
         let [a, b] = self.ends;
-        match &self.curve {
-            Curve::Line => std::array::from_fn(|i| a[i] + (b[i] - a[i]) * t),
+        let at = |t: f64| match &self.curve {
+            Curve::Line => Some(std::array::from_fn(|i| a[i] + (b[i] - a[i]) * t)),
             Curve::Circle {
                 center,
                 normal,
@@ -162,10 +164,16 @@ impl Decoded {
                 let e1 = sub(a, *center).map(|x| x / radius);
                 let e2 = cross(*normal, e1);
                 let (s, c) = (sweep(self.ends, *center, *normal) * t).sin_cos();
-                std::array::from_fn(|i| center[i] + radius * (c * e1[i] + s * e2[i]))
+                Some(std::array::from_fn(|i| {
+                    center[i] + radius * (c * e1[i] + s * e2[i])
+                }))
             }
-            Curve::Spline { .. } => a,
-        }
+            Curve::Spline { .. } => None,
+        };
+        [0., 0.25, 0.5, 0.75, 1.]
+            .into_iter()
+            .filter_map(at)
+            .collect()
     }
 
     /// `∫ (x dy - y dx) / 2` along the edge in the local axial projection.
@@ -266,11 +274,10 @@ fn decode(shell: &mut Shell<'_, '_>, frame: &Frame, id: u32) -> Result<Decoded> 
                 .into_iter()
                 .map(|p| shell.point(p).map(|p| frame.local(p)))
                 .collect::<Result<Vec<_>>>()?;
-            require(
-                poles.len() == spans * degree + 1
-                    && poles[0] == ends[0]
-                    && poles[poles.len() - 1] == ends[1],
-            )?;
+            let ends_match = poles.len() == spans * degree + 1
+                && poles[0] == ends[0]
+                && poles[poles.len() - 1] == ends[1];
+            require(ends_match)?;
             Curve::Spline { degree, poles }
         }
     };
@@ -415,9 +422,7 @@ pub(super) fn verify_wheel_member(
             }
             if let std::collections::btree_map::Entry::Vacant(slot) = decoded.entry(edge) {
                 let curve = decode(shell, &frame, edge)?;
-                let analytic = !matches!(curve.curve, Curve::Spline { .. });
-                for t in [0., 0.25, 0.5, 0.75, 1.].into_iter().filter(|_| analytic) {
-                    let p = curve.point(t);
+                for p in curve.samples() {
                     require(wheel.classify(p, tolerance) == Containment::Boundary)?;
                 }
                 for end in curve.ends {
@@ -442,14 +447,13 @@ pub(super) fn verify_wheel_member(
                 let z = frame.local(axis.origin)[2];
                 // The loop runs counterclockwise about the outward normal,
                 // and every spline edge lies in the plane.
-                require(
-                    forward
-                        && loops.len() == 1
-                        && normal.abs() > 1. - 1e-12
-                        && (z.abs() - h).abs() <= tolerance
-                        && z * normal > 0.
-                        && green * normal > 0.,
-                )?;
+                let end_plane = forward
+                    && loops.len() == 1
+                    && normal.abs() > 1. - 1e-12
+                    && (z.abs() - h).abs() <= tolerance
+                    && z * normal > 0.
+                    && green * normal > 0.;
+                require(end_plane)?;
                 for poles in splines {
                     require(poles.iter().all(|p| (p[2] - z).abs() <= tolerance))?;
                 }
@@ -468,13 +472,12 @@ pub(super) fn verify_wheel_member(
                 } else {
                     (wheel.bore_radius_mm().ok_or(ReadError::Invalid)?, 2)
                 };
-                require(
-                    center[0].abs() <= tolerance
-                        && center[1].abs() <= tolerance
-                        && frame.direction(axis.normal)[2] > 1. - 1e-12
-                        && (radius - expected).abs() <= tolerance
-                        && loops.len() == count,
-                )?;
+                let coaxial = center[0].abs() <= tolerance
+                    && center[1].abs() <= tolerance
+                    && frame.direction(axis.normal)[2] > 1. - 1e-12
+                    && (radius - expected).abs() <= tolerance
+                    && loops.len() == count;
+                require(coaxial)?;
             }
             _ => {
                 let patch = surface_patch(shell, &frame, surface)?;
@@ -529,7 +532,7 @@ pub(super) fn verify_wheel_member(
 mod tests {
     use super::*;
     use crate::{
-        step::write_worm_wheel,
+        step::{supports_worm_wheel, write_worm_wheel},
         worm_gear::{WheelSpec, wheel::tests::spec},
     };
 
@@ -570,5 +573,69 @@ mod tests {
                 Err(ReadError::Invalid)
             );
         }
+    }
+
+    /// Rewrite the first line declaring `kind` with `edit`.
+    fn mutate(text: &str, kind: &str, edit: impl Fn(&str) -> String) -> String {
+        let marker = format!("={kind}(");
+        let mut done = false;
+        text.lines()
+            .map(|line| {
+                if !done && line.contains(&marker) {
+                    done = true;
+                    edit(line)
+                } else {
+                    line.to_string()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn widened(line: &str) -> String {
+        line.replacen(");", ",0.);", 1)
+    }
+
+    #[test]
+    fn malformed_wheel_entities_are_refused() {
+        let frame = ([1., 2., 3.], [1., 0., 0.], [0., 1., 0.]);
+        let wheel = Wheel::new(spec(1., 32, 1., 3., 0.05), 1e-3, 1e7).unwrap();
+        let text = write_worm_wheel(&wheel, frame.0, frame.1, frame.2, 1e-5).unwrap();
+        assert!(verify_worm_wheel(&text, &wheel, frame.0, frame.1, frame.2, 1e-5).is_ok());
+        type Edit = fn(&str) -> String;
+        let cases: [(&str, Edit); 8] = [
+            ("EDGE_CURVE", |l| l.replacen(".T.);", ".F.);", 1)),
+            ("CIRCLE", widened),
+            ("B_SPLINE_CURVE_WITH_KNOTS", widened),
+            ("B_SPLINE_CURVE_WITH_KNOTS", |l| l.replacen("KNOTS('',", "KNOTS('',1", 1)),
+            ("B_SPLINE_SURFACE_WITH_KNOTS", widened),
+            ("PLANE", widened),
+            ("CYLINDRICAL_SURFACE", widened),
+            ("CYLINDRICAL_SURFACE", |l| l.replacen("E1)", "E2)", 1)),
+        ];
+        for (kind, edit) in cases {
+            let broken = mutate(&text, kind, edit);
+            assert_ne!(broken, text, "{kind}");
+            assert!(
+                verify_worm_wheel(&broken, &wheel, frame.0, frame.1, frame.2, 1e-5).is_err(),
+                "{kind}"
+            );
+        }
+        // Writer admission follows the placement and the tolerance.
+        assert!(supports_worm_wheel(&wheel, frame.0, frame.1, frame.2, 1e-5));
+        assert!(!supports_worm_wheel(
+            &wheel, frame.0, frame.1, frame.1, 1e-5
+        ));
+        assert!(!supports_worm_wheel(
+            &wheel,
+            frame.0,
+            frame.1,
+            frame.2,
+            f64::NAN
+        ));
+        assert!(!supports_worm_wheel(
+            &wheel, frame.0, frame.1, frame.2, 1e-300
+        ));
+        assert_eq!(wheel.clone(), wheel);
     }
 }

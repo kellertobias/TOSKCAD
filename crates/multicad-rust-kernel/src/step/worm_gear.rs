@@ -77,10 +77,9 @@ pub(crate) fn prepare_wheel(wheel: &Wheel, tolerance_mm: f64) -> Result<Fit, Ste
     let poles: usize = fit.charts.iter().map(|c| (c.degree + 1) * width).sum();
     // Poles dominate; each sector adds about 160 topology entities.
     let cost = (poles + 160) * wheel.teeth() as usize + 256;
-    if cost > MAX_STEP_ENTITIES {
-        return Err(StepError::Limit);
-    }
-    Ok(fit)
+    (cost <= MAX_STEP_ENTITIES)
+        .then_some(fit)
+        .ok_or(StepError::Limit)
 }
 
 /// Knot values and multiplicities of `spans` equal Bézier spans of `degree`.
