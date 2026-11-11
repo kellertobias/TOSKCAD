@@ -611,3 +611,57 @@ fn invalid_prism_placement_cannot_publish_or_change_an_existing_member() {
     assert_eq!(writer.file.data, before);
     assert_eq!(writer.solids.len(), 1);
 }
+
+#[test]
+fn outside_circle_caps_accept_line_and_cubic_cavities() {
+    use super::super::{
+        cubic_trim::CubicTrim,
+        normal_sweep::{ProfileEdge, encode_rings},
+    };
+    use crate::{normal_sweep::Edge as Planar, spur_gear::Involute};
+
+    // A clockwise cavity: three lines through P and Q and a reversed flank,
+    // with every join turning by less than a right angle and a quarter.
+    let flank = Involute::new(5., [0.2, 0.8], 0.).unwrap();
+    let [a, b] = [flank.point(0.), flank.point(1.)];
+    let p = [b[0] - 0.3, b[1] + 1.];
+    let q = [a[0] - 1., a[1] + 1.];
+    let mut writer = Writer::new();
+    writer
+        .append(|file| {
+            let cavity = vec![
+                ProfileEdge::Analytic(Planar::Line { a, b: q }),
+                ProfileEdge::Analytic(Planar::Line { a: q, b: p }),
+                ProfileEdge::Analytic(Planar::Line { a: p, b }),
+                ProfileEdge::Cubic(CubicTrim::flank(flank.reversed(), 1e-7)?),
+            ];
+            let rim = Planar::Circle {
+                center: [0.; 2],
+                radius_mm: 20.,
+                clockwise: false,
+            };
+            encode_rings(
+                file,
+                &mut [vec![ProfileEdge::Analytic(rim)], cavity].into_iter(),
+                1.,
+                &[],
+                Placement::new([3., -2., 1.], X, Y)?,
+                false,
+            )
+        })
+        .unwrap();
+    let step = writer.finish().unwrap();
+    let [member] = crate::step_read::read_analytic_compound(&step, 1e-7)
+        .unwrap()
+        .try_into()
+        .unwrap();
+    // Green integrals of the counterclockwise A, B, P, Q boundary.
+    let cross = crate::revolution::cross;
+    let cavity = flank.signed_area_mm2() + (cross(b, p) + cross(p, q) + cross(q, a)) / 2.;
+    assert!(
+        (member.volume_mm3 - (std::f64::consts::PI * 400. - cavity)).abs() < 1e-5,
+        "{} {cavity}",
+        member.volume_mm3
+    );
+    assert_eq!(member.edges_mm.len(), 2 * 3 + 4);
+}

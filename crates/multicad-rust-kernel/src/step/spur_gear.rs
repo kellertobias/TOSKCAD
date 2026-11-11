@@ -4,7 +4,7 @@ use super::{
     normal_sweep::{EndTrims, ProfileEdge},
     *,
 };
-use crate::spur_gear::{Edge, HubExtension, Profile};
+use crate::spur_gear::{Edge, HubExtension, Profile, ToothEdge, internal::Ring};
 
 /// Maximum geometric deviation of a STEP spur flank, in millimeters.
 /// The writer also honors smaller caller tolerances.
@@ -20,24 +20,59 @@ pub fn write_spur_gear(
     write_one(|writer| writer.append_spur_gear(profile, origin, u, v, tolerance_mm))
 }
 
+/// Write an internal ring as its outside cylinder and one clockwise
+/// cavity ring with certified cubic flanks.
+pub fn write_internal_ring(
+    ring: &Ring,
+    origin: Point,
+    u: Point,
+    v: Point,
+    tolerance_mm: f64,
+) -> Result<String, StepError> {
+    write_one(|writer| writer.append_internal_ring(ring, origin, u, v, tolerance_mm))
+}
+
+fn ring_edges(
+    edges: &[ToothEdge],
+    tolerance_mm: f64,
+) -> Result<Vec<ProfileEdge<'static>>, StepError> {
+    if !tolerance_mm.is_finite() || tolerance_mm <= 0. {
+        return Err(StepError::InvalidGeometry);
+    }
+    let tolerance = tolerance_mm.min(SPUR_STEP_MAX_ERROR_MM);
+    edges
+        .iter()
+        .map(|edge| match edge.edge {
+            Edge::Planar(edge) => Ok(ProfileEdge::Analytic(edge)),
+            Edge::Involute(flank) => CubicTrim::flank(flank, tolerance).map(ProfileEdge::Cubic),
+        })
+        .collect()
+}
+
+pub(super) fn encode_internal(
+    file: &mut StepFile,
+    ring: &Ring,
+    placement: Placement,
+    tolerance_mm: f64,
+) -> Result<Entity, StepError> {
+    let cavity = ring_edges(ring.cavity(), tolerance_mm)?;
+    normal_sweep::encode_rings(
+        file,
+        &mut [vec![ProfileEdge::Analytic(ring.rim())], cavity].into_iter(),
+        ring.height_mm(),
+        &[],
+        placement,
+        false,
+    )
+}
+
 pub(super) fn encode(
     file: &mut StepFile,
     profile: &Profile,
     placement: Placement,
     tolerance_mm: f64,
 ) -> Result<Entity, StepError> {
-    if !tolerance_mm.is_finite() || tolerance_mm <= 0. {
-        return Err(StepError::InvalidGeometry);
-    }
-    let tolerance = tolerance_mm.min(SPUR_STEP_MAX_ERROR_MM);
-    let outline = profile
-        .outline()
-        .iter()
-        .map(|edge| match edge.edge {
-            Edge::Planar(edge) => Ok(ProfileEdge::Analytic(edge)),
-            Edge::Involute(flank) => CubicTrim::flank(flank, tolerance).map(ProfileEdge::Cubic),
-        })
-        .collect::<Result<Vec<_>, _>>()?;
+    let outline = ring_edges(profile.outline(), tolerance_mm)?;
     let extensions = profile.hub_extensions();
     if extensions.iter().any(Option::is_some) {
         let trims = encode_hub(file, profile, extensions, &placement)?;

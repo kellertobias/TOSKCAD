@@ -71,7 +71,10 @@ fn read_member_with<T>(
         let face = read_face(reader, id, &mut edges)?;
         if let Some(cap) = normal_cap(reader, &face, normal)? {
             let side = usize::from(dot(cap.normal, normal) > 0.);
-            let destination = if face.outer.len() == 1 {
+            // A hub end has one circle and at most a circular bore. An
+            // internal ring cap has an outside circle around a cavity.
+            let ring_cap = face.hole.as_ref().is_some_and(|hole| hole.len() > 1);
+            let destination = if face.outer.len() == 1 && !ring_cap {
                 &mut ends[side]
             } else {
                 &mut caps[side]
@@ -322,16 +325,21 @@ fn verify_wall(
     {
         return Err(ReadError::Invalid);
     }
-    if (up.edge == down.edge) != low_bore {
+    // Only a full circle closes on one seam: a bore or an outside ring rim.
+    let full = matches!(
+        edges[&lower.edge].geometry,
+        Geometry::Analytic(Curve::Circle(_))
+    );
+    if (up.edge == down.edge) != full {
         return Err(ReadError::Invalid);
     }
-    if low_bore {
+    if full {
         seams.insert(up.edge);
     }
     let low = &edges[&lower.edge].geometry;
     let high = &edges[&upper.edge].geometry;
     match (low, high) {
-        (Geometry::Analytic(Curve::Line), Geometry::Analytic(Curve::Line)) if !low_bore => {
+        (Geometry::Analytic(Curve::Line), Geometry::Analytic(Curve::Line)) => {
             let plane = face_plane(reader, wall)?;
             let [a, b] = [lower.start, lower.end].map(|id| reader.points[&id]);
             let expected = unit(cross(sub(b, a), normal))?;
@@ -344,7 +352,7 @@ fn verify_wall(
                 return Err(ReadError::Invalid);
             }
         }
-        (Geometry::Cubic { id, curve }, Geometry::Cubic { curve: top, .. }) if !low_bore => {
+        (Geometry::Cubic { id, curve }, Geometry::Cubic { curve: top, .. }) => {
             let (support, axis) = reader.spline_extrusion(wall.surface)?;
             if support != *id
                 || wall.forward != lower.forward
@@ -367,8 +375,8 @@ fn verify_wall(
                 }
             };
             let sense = axis_sense(low, lower.forward);
-            if low.full != low_bore
-                || high.full != high_bore
+            if low.full != full
+                || high.full != full
                 || !same_direction(sense, axis_sense(high, !upper.forward))
                 || (low.sweep - high.sweep).abs() * low.radius > reader.tolerance
                 || (low.radius - high.radius).abs() > reader.tolerance
