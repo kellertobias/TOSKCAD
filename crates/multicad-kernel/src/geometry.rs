@@ -2086,6 +2086,8 @@ impl Solid {
                 self.validate_display_deflection(deflection)?;
                 let edges = if let Some((body, frame)) = self.helical_body() {
                     body.display_edges(frame, deflection)?
+                } else if let Some(compound) = self.rust_compound() {
+                    compound.display_edges(deflection)?
                 } else {
                     crate::rust_display::edges(Some(self), &topology, deflection)?
                 };
@@ -2114,6 +2116,9 @@ impl Solid {
         self.validate_display_deflection(deflection_mm)?;
         if let Some((body, frame)) = self.helical_body() {
             return body.display_edges(frame, deflection_mm);
+        }
+        if let Some(compound) = self.rust_compound() {
+            return compound.display_edges(deflection_mm);
         }
         if let Some(topology) = self.rust_topology() {
             return crate::rust_display::edges(Some(self), &topology?, deflection_mm);

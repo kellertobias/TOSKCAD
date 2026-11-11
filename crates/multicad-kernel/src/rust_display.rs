@@ -83,12 +83,13 @@ fn point_on_ellipse(frame: ReferenceFrame, [major, minor]: [f64; 2], angle: f64)
     })
 }
 
+pub(crate) const MAX_EDGE_POINTS: usize = 5_000_000;
+
 pub(crate) fn edges(
     solid: Option<&Solid>,
     topology: &TopologySnapshot,
     deflection: f64,
 ) -> Result<Vec<DisplayEdge>, GeometryError> {
-    const MAX_EDGE_POINTS: usize = 5_000_000;
     let mut total_points = 0;
     let sample = |frame, radii: [f64; 2], start, sweep: f64, total_points: &mut usize| {
         // Scaling a unit circle by the two semiaxes amplifies any chord

@@ -244,6 +244,46 @@ impl RustCompound {
         })
     }
 
+    pub(super) fn display_edges(&self, deflection: f64) -> Result<Vec<DisplayEdge>, GeometryError> {
+        self.display_edges_with_budget(deflection, crate::rust_display::MAX_EDGE_POINTS)
+    }
+
+    fn display_edges_with_budget(
+        &self,
+        deflection: f64,
+        point_limit: usize,
+    ) -> Result<Vec<DisplayEdge>, GeometryError> {
+        let mut output = Vec::new();
+        let mut points = 0usize;
+        for member in &self.members {
+            // Sample each retained child once. Its provider owns nonanalytic
+            // curves, including the helical rails omitted from analytic DTOs.
+            let edges = member.solid.display_edges(deflection)?;
+            if edges.len() != member.count[1] as usize
+                || edges.iter().any(|edge| edge.index >= member.count[1])
+            {
+                return Err(compound_error(
+                    GeometryErrorKind::InvalidResult,
+                    "Child display edges do not match the compound topology",
+                ));
+            }
+            for mut edge in edges {
+                points = points
+                    .checked_add(edge.points_mm.len())
+                    .filter(|&count| count <= point_limit)
+                    .ok_or_else(|| {
+                        compound_error(
+                            GeometryErrorKind::Limit,
+                            "Compound edge sampling exceeds the point budget",
+                        )
+                    })?;
+                edge.index += member.offset[1];
+                output.push(edge);
+            }
+        }
+        Ok(output)
+    }
+
     pub(super) fn edge_source(&self, ordinal: u32) -> Option<(&Solid, u32)> {
         let index = self
             .members
@@ -413,6 +453,28 @@ mod tests {
                 .unwrap()
                 .kind,
             GeometryErrorKind::Limit
+        );
+    }
+
+    #[test]
+    fn child_display_edges_share_one_compound_point_budget() {
+        let policy = GeometryPolicy::default();
+        let source = stock(policy);
+        let shape =
+            RustCompound::assemble(&[&source, &source], EntityId::new(), policy, None).unwrap();
+        let compound = shape.rust_compound().unwrap();
+        let edges = compound.display_edges_with_budget(0.1, 48).unwrap();
+        assert_eq!(edges.len(), 24);
+        assert_eq!(
+            compound
+                .display_edges_with_budget(0.1, 47)
+                .unwrap_err()
+                .kind,
+            GeometryErrorKind::Limit
+        );
+        assert_eq!(
+            compound.display_edges_with_budget(0.1, 48).unwrap().len(),
+            24
         );
     }
 
