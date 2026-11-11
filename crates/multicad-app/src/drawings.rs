@@ -1046,7 +1046,10 @@ mod tests {
             kind: drawings::ViewKind::Section {
                 offset_mm: -1.8,
                 range: drawings::SectionRange::Depth { depth_mm: 1.4 },
-                window: Default::default(),
+                window: drawings::SectionWindow {
+                    u_mm: None,
+                    v_mm: Some([-4.5, 4.5]),
+                },
             },
             ..page.views.last().unwrap().clone()
         });
@@ -1146,6 +1149,9 @@ mod tests {
                     .iter()
                     .any(|[u, v]| (u + 0.736).hypot(v + 4.159) < 0.05)
         }));
+        assert!(vectors.iter().any(|edge| edge.role == VectorRole::Visible
+            && matches!(edge.curve, VectorCurve::Line { a,b }
+                if (a[1]+4.5).abs() < 1e-8 && (b[1]+4.5).abs() < 1e-8)));
     }
 
     #[test]
