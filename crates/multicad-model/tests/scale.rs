@@ -903,3 +903,364 @@ fn saved_axis_aligned_scale_keeps_exact_rectangular_and_round_cut_providers() {
         );
     }
 }
+
+#[test]
+fn rust_compound_scale_rebuilds_saved_pattern_parts_and_owned_occurrences_atomically() {
+    use multicad_core::{
+        document::Link,
+        references::{
+            self, AnalyticGeometry, Attachment, GeometryIntent, Origin, Resolution, TopologyKind,
+        },
+    };
+    let compiler = Compiler {
+        omit_display: true,
+        ..Default::default()
+    };
+    for occurrence in [false, true] {
+        let (mut session, part, factor, instance, other) = fixture();
+        let pattern = AdvancedRequest::on_body(
+            BodyInput {
+                body: part.body,
+                producer: part.feature,
+            },
+            AdvancedParameters::LinearPattern(LinearPatternParameters {
+                count: Dimension::Literal {
+                    value: 3.,
+                    unit: "count".into(),
+                },
+                step: [10., 0., 0.].map(length),
+                merge: false,
+            }),
+            vec![],
+        );
+        let prepared = prepare_advanced(&session, session.revision(), actor(), &pattern).unwrap();
+        session.commit(prepared.prepared).unwrap();
+        let compile_rust = |session: &Session| {
+            compiler
+                .compile_with_backend(
+                    session.document(),
+                    session.revision(),
+                    GeometryBackend::Rust,
+                    None,
+                )
+                .unwrap()
+        };
+        let before = compile_rust(&session);
+        let original = if occurrence {
+            &before.snapshot().occurrences[&instance].topology
+        } else {
+            &before.snapshot().shapes[&pattern.feature].topology
+        };
+        assert_eq!(original.elements.len(), 78);
+        let mut intents = original
+            .elements
+            .iter()
+            .map(|element| {
+                let mut intent = GeometryIntent::capture(original, element.key).unwrap();
+                intent.boundary = Some(element.boundary.clone());
+                intent
+            })
+            .collect::<Vec<_>>();
+        let cap = Origin {
+            source: part.feature,
+            role: "cap.end".into(),
+        };
+        let cap_index = intents
+            .iter()
+            .position(|intent| {
+                intent.kind == TopologyKind::Face
+                    && intent.origins.contains(&cap)
+                    && intent.origins.contains(&Origin {
+                        source: pattern.feature,
+                        role: "member/1".into(),
+                    })
+            })
+            .unwrap();
+        intents[cap_index].attachment = Some(Attachment {
+            anchor: cap,
+            offset_mm: [0.; 3],
+            angle_rad: 0.,
+        });
+        let c = 0.5_f64.sqrt();
+        let parameters = ScaleParameters {
+            factors: [
+                Dimension::Expression {
+                    expression: BoundExpression::bind(
+                        session.document(),
+                        "=$factor",
+                        "ratio",
+                        None,
+                    )
+                    .unwrap(),
+                },
+                ratio(3.),
+                ratio(0.5),
+            ],
+            pivot: [3., 4., 5.].map(length),
+            axes: [[c, c, 0.], [-c, c, 0.], [0., 0., 1.]],
+        };
+        let target = if occurrence {
+            ScaleTarget::Instance { instance }
+        } else {
+            ScaleTarget::Part {
+                input: BodyInput {
+                    body: part.body,
+                    producer: pattern.feature,
+                },
+            }
+        };
+        let request =
+            ScaleBatchRequest::new(session.document(), vec![target], parameters, false).unwrap();
+        let old_document = session.document().clone();
+        let prepared =
+            prepare_scale_batch(&session, session.revision(), actor(), &request).unwrap();
+        let output = if occurrence {
+            pattern.feature
+        } else {
+            prepared.outputs[0].feature
+        };
+        session.commit(prepared.prepared).unwrap();
+        let scaled_document = session.document().clone();
+        session.undo(session.revision(), actor()).unwrap();
+        assert_eq!(session.document(), &old_document);
+        near(
+            compile_rust(&session)
+                .solid(instance)
+                .unwrap()
+                .volume_mm3()
+                .unwrap(),
+            72.,
+        );
+        session.redo(session.revision(), actor()).unwrap();
+        assert_eq!(session.document(), &scaled_document);
+        let datum = Entity::new(
+            "Scaled middle member cap",
+            EntityData::Plane {
+                origin_mm: [0.; 3],
+                normal: [0., 0., 1.],
+                anchor: Some(Link {
+                    target: if occurrence { instance } else { output },
+                    role: "face_attachment".into(),
+                    geometry: Some(intents[cap_index].clone()),
+                }),
+            },
+        );
+        let datum_id = datum.id;
+        session
+            .apply(Request {
+                expected_revision: session.revision(),
+                actor: actor(),
+                label: "Save scaled face reference".into(),
+                edits: vec![Mutation::Insert(datum)],
+            })
+            .unwrap();
+        for (factor_value, width, expected_volume) in
+            [(2., 2., 216.), (3., 2., 324.), (3., 4., 648.)]
+        {
+            let mut entity = session.document().get(factor).unwrap().clone();
+            let EntityData::Parameter { expression, .. } = &mut entity.data else {
+                panic!()
+            };
+            *expression = factor_value.to_string();
+            session
+                .apply(Request {
+                    expected_revision: session.revision(),
+                    actor: actor(),
+                    label: "Edit bound compound scale factor".into(),
+                    edits: vec![Mutation::Replace(entity)],
+                })
+                .unwrap();
+            let mut parameters = part.parameters.clone();
+            let PrimitiveParameters::Box { size, .. } = &mut parameters else {
+                panic!()
+            };
+            size[0] = length(width);
+            let prepared = prepare_primitive_edit(
+                &session,
+                session.revision(),
+                actor(),
+                part.feature,
+                &parameters,
+            )
+            .unwrap();
+            session.commit(prepared.prepared).unwrap();
+            let opened = reopen(&session);
+            let rust = compile_rust(&opened);
+            let topology = if occurrence {
+                &rust.snapshot().occurrences[&instance].topology
+            } else {
+                &rust.snapshot().shapes[&output].topology
+            };
+            let solid = rust
+                .solid(if occurrence { instance } else { output })
+                .unwrap();
+            near(solid.volume_mm3().unwrap(), expected_volume);
+            assert_eq!(solid.solid_count().unwrap(), 3);
+            assert_eq!(topology.elements.len(), 78);
+            for intent in &intents {
+                assert!(
+                    matches!(
+                        references::resolve(intent, topology, opened.revision()),
+                        Resolution::Resolved { .. }
+                    ),
+                    "lost saved member intent: {intent:?}"
+                );
+            }
+            assert!(opened.document().get(datum_id).is_some());
+            let expected_unscaled = 3. * width * 3. * 4.;
+            near(
+                rust.solid(other).unwrap().volume_mm3().unwrap(),
+                if occurrence {
+                    expected_unscaled
+                } else {
+                    expected_volume
+                },
+            );
+            if occurrence {
+                assert_eq!(
+                    rust.snapshot().occurrences[&instance].pose,
+                    before.snapshot().occurrences[&instance].pose
+                );
+                near(
+                    rust.solid(part.body).unwrap().volume_mm3().unwrap(),
+                    expected_unscaled,
+                );
+            }
+            // Independently transform the eight corners of all three input boxes.
+            let matrix = [
+                [(factor_value + 3.) / 2., (factor_value - 3.) / 2., 0.],
+                [(factor_value - 3.) / 2., (factor_value + 3.) / 2., 0.],
+                [0., 0., 0.5],
+            ];
+            let pivot = [3., 4., 5.];
+            let mut min = [f64::INFINITY; 3];
+            let mut max = [f64::NEG_INFINITY; 3];
+            for member in 0..3 {
+                for corner in 0..8 {
+                    let local = [
+                        member as f64 * 10. + if corner & 1 != 0 { width } else { 0. },
+                        if corner & 2 != 0 { 3. } else { 0. },
+                        if corner & 4 != 0 { 4. } else { 0. },
+                    ];
+                    let point = if occurrence {
+                        [100. - local[1], 50. + local[0], local[2]]
+                    } else {
+                        local
+                    };
+                    for i in 0..3 {
+                        let value = pivot[i]
+                            + (0..3)
+                                .map(|j| matrix[i][j] * (point[j] - pivot[j]))
+                                .sum::<f64>();
+                        min[i] = min[i].min(value);
+                        max[i] = max[i].max(value);
+                    }
+                }
+            }
+            bounds(solid.bounds().unwrap(), min, max);
+            assert!(
+                topology
+                    .elements
+                    .iter()
+                    .filter(|e| e.key.kind == TopologyKind::Face)
+                    .all(|e| matches!(e.geometry, Some(AnalyticGeometry::Plane { .. })))
+            );
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("compound-scale.step");
+            solid.write_step(&path).unwrap();
+            let imported = Solid::import_rust_step(
+                &std::fs::read_to_string(&path).unwrap(),
+                EntityId::new(),
+                GeometryPolicy::default(),
+            )
+            .unwrap();
+            near(imported.volume_mm3().unwrap(), expected_volume);
+            assert_eq!(imported.solid_count().unwrap(), 3);
+            bounds(imported.bounds().unwrap(), min, max);
+            #[cfg(feature = "occt")]
+            {
+                let native = compiler
+                    .compile_with_backend(
+                        opened.document(),
+                        opened.revision(),
+                        GeometryBackend::OpenCascade,
+                        None,
+                    )
+                    .unwrap();
+                let native = native
+                    .solid(if occurrence { instance } else { output })
+                    .unwrap();
+                near(native.volume_mm3().unwrap(), expected_volume);
+                bounds(native.bounds().unwrap(), min, max);
+                let readback = Solid::read_step(&path, GeometryPolicy::default()).unwrap();
+                near(readback.volume_mm3().unwrap(), expected_volume);
+                assert_eq!(readback.solid_count().unwrap(), 3);
+            }
+        }
+        let subject = if occurrence { instance } else { part.body };
+        let set = EntityId::new();
+        let prepared = exchange::prepare_set(
+            &session,
+            session.revision(),
+            actor(),
+            set,
+            "Scaled compound",
+            &SetDefinition {
+                scope: exchange::Scope {
+                    root: exchange::ScopeRoot::Explicit {
+                        entities: vec![subject],
+                    },
+                    tags: None,
+                },
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        session.commit(prepared).unwrap();
+        let worker =
+            ExportWorker::with_geometry_backend(Exporter::default(), GeometryBackend::Rust)
+                .unwrap();
+        worker
+            .preview(session.document(), session.revision(), set, actor())
+            .unwrap();
+        let ExportResult::Preview(preview) = export_reply(&worker).result else {
+            panic!("Expected compound export preview")
+        };
+        let preview = preview.unwrap();
+        assert!(preview.can_run(), "{preview:?}");
+        let directory = tempfile::tempdir().unwrap();
+        worker
+            .run(
+                session.document(),
+                session.revision(),
+                &preview.key,
+                directory.path(),
+                actor(),
+            )
+            .unwrap();
+        let ExportResult::Run(receipt) = export_reply(&worker).result else {
+            panic!("Expected compound export receipt")
+        };
+        let receipt = receipt.unwrap();
+        assert_eq!(receipt.files.len(), 1);
+        let file = &receipt.files[0];
+        let exchange::OutputSubject::Part(subject) = &file.artifact.output.subject else {
+            panic!("Expected exact Part attribution")
+        };
+        if occurrence {
+            assert_eq!(subject.occurrence_path, vec![instance]);
+        } else {
+            assert_eq!(subject.part, part.body);
+            assert!(subject.occurrence_path.is_empty());
+        }
+        let path = Path::new(&receipt.directory).join(&file.artifact.output.filename);
+        let imported = Solid::import_rust_step(
+            &std::fs::read_to_string(path).unwrap(),
+            EntityId::new(),
+            GeometryPolicy::default(),
+        )
+        .unwrap();
+        near(imported.volume_mm3().unwrap(), 648.);
+        assert_eq!(imported.solid_count().unwrap(), 3);
+    }
+}

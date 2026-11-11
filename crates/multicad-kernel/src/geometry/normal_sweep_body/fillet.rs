@@ -7,11 +7,46 @@ fn unsupported() -> GeometryError {
     error(
         "fillet",
         GeometryErrorKind::Unsupported,
-        "Rust fillet requires complete parallel straight edges of a world-aligned box",
+        "Rust fillet requires complete parallel straight edges of a rectangular box",
     )
 }
 
 impl Solid {
+    /// Keep the authored box chart exact while treating a rigidly placed body.
+    /// Inverting world coordinates would introduce residual skew in straight
+    /// edges that the box treatment deliberately checks without snapping.
+    pub(crate) fn local_box_treatment_source(
+        &self,
+    ) -> Result<Option<(Self, crate::RigidTransform)>, GeometryError> {
+        let frame = match &self.body {
+            SolidBody::Prism(_, frame)
+            | SolidBody::Linear(_, frame)
+            | SolidBody::Orthogonal(_, frame)
+            | SolidBody::PlanarBoolean(_, frame) => *frame,
+            SolidBody::PolygonPrism(body) => body.frame,
+            _ => return Ok(None),
+        };
+        if frame == PlaneFrame::default() {
+            return Ok(None);
+        }
+        let mut source = self.share()?;
+        match &mut source.body {
+            SolidBody::Prism(_, frame)
+            | SolidBody::Linear(_, frame)
+            | SolidBody::Orthogonal(_, frame)
+            | SolidBody::PlanarBoolean(_, frame) => *frame = PlaneFrame::default(),
+            SolidBody::PolygonPrism(body) => Rc::make_mut(body).frame = PlaneFrame::default(),
+            _ => unreachable!("checked box representation"),
+        }
+        Ok(Some((
+            source,
+            crate::RigidTransform {
+                rotation: std::array::from_fn(|i| [frame.u[i], frame.v[i], frame.normal()[i]]),
+                translation_mm: frame.origin,
+            },
+        )))
+    }
+
     pub(crate) fn rust_fillet_box_edges(
         &self,
         edges: &[TreatmentEdge],
@@ -22,6 +57,12 @@ impl Solid {
     ) -> Result<Self, GeometryError> {
         if self.policy != policy || policy.boolean_fuzzy_mm != 0. || edges.len() > 4 {
             return Err(unsupported());
+        }
+        if let Some((source, placement)) = self.local_box_treatment_source()? {
+            let local = source.topology_snapshot(topology.owner, topology.revision)?;
+            return source
+                .rust_fillet_box_edges(edges, radius, feature, policy, &local)?
+                .transformed(placement);
         }
         let cells = self.orthogonal_cells()?.ok_or_else(unsupported)?;
         let [stock] = cells.as_slice() else {

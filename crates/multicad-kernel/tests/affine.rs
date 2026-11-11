@@ -421,3 +421,163 @@ fn rust_affine_preserves_oblique_convex_sweep_ancestry_and_native_metrics() {
         GeometryErrorKind::Input
     );
 }
+
+#[test]
+fn rust_compound_affine_keeps_nested_member_order_and_all_boundary_intents() {
+    use multicad_rust_kernel::Rational;
+    let policy = GeometryPolicy::default();
+    let source_id = EntityId::new();
+    let pattern_id = EntityId::new();
+    let group_id = EntityId::new();
+    let make_box = |size: [i64; 3], origin| {
+        Solid::rust_box(
+            source_id.uuid_bits(),
+            size.map(|n| Rational::new(n, 1).unwrap()),
+            PlaneFrame {
+                origin,
+                ..Default::default()
+            },
+            policy,
+        )
+        .unwrap()
+    };
+    let a = make_box([2, 3, 4], [0.; 3])
+        .with_member_origin(pattern_id, 0)
+        .unwrap();
+    let b = make_box([3, 2, 5], [10., 4., 1.])
+        .with_member_origin(pattern_id, 1)
+        .unwrap();
+    let c = make_box([2, 3, 4], [0., 10., 0.])
+        .with_member_origin(pattern_id, 2)
+        .unwrap();
+    let inner = Solid::compound_named(&[&a, &b], EntityId::new(), policy)
+        .unwrap()
+        .with_member_origin(group_id, 0)
+        .unwrap();
+    let source = Solid::compound_named(&[&inner, &c], EntityId::new(), policy)
+        .unwrap()
+        .with_member_origin(group_id, 1)
+        .unwrap();
+    let before = source.topology_snapshot(source_id, 0).unwrap();
+    let transform = AffineTransform {
+        matrix: [[2.5, -0.5, 0.], [-0.5, 2.5, 0.], [0., 0., 0.5]],
+        translation_mm: [-2.5, -4.5, 2.5],
+    };
+    let output_id = EntityId::new();
+    let output = source
+        .affine_transformed_named(transform, output_id, policy)
+        .unwrap();
+    near(output.volume_mm3().unwrap(), 234.);
+    assert_eq!(output.solid_count().unwrap(), 3);
+    let after = output.topology_snapshot(output_id, 1).unwrap();
+    assert_eq!(counts(&after), [18, 36, 24]);
+    for element in &before.elements {
+        let mut intent = GeometryIntent::capture(&before, element.key).unwrap();
+        // Explicit boundary discriminators are also a saved-reference contract.
+        intent.boundary = Some(element.boundary.clone());
+        let Resolution::Resolved { key, .. } = resolve(&intent, &after, 1) else {
+            panic!("lost {:?}: {:?}", element.key, intent)
+        };
+        let current = after.elements.iter().find(|e| e.key == key).unwrap();
+        if let (
+            Some(AnalyticGeometry::Point {
+                position_mm: original,
+            }),
+            Some(AnalyticGeometry::Point {
+                position_mm: actual,
+            }),
+        ) = (element.geometry, current.geometry)
+        {
+            for (i, coordinate) in actual.into_iter().enumerate() {
+                near(
+                    coordinate,
+                    transform.translation_mm[i]
+                        + (0..3)
+                            .map(|j| transform.matrix[i][j] * original[j])
+                            .sum::<f64>(),
+                );
+            }
+        }
+    }
+    let components = output.solid_components(policy).unwrap();
+    for (i, (member, volume)) in components.iter().zip([72., 90., 72.]).enumerate() {
+        near(member.volume_mm3().unwrap(), volume);
+        assert!(
+            member
+                .topology_snapshot(output_id, 1)
+                .unwrap()
+                .elements
+                .iter()
+                .all(|e| e.origins.contains(&Origin {
+                    source: pattern_id,
+                    role: format!("member/{i}")
+                }))
+        );
+    }
+    assert_eq!(source.topology_snapshot(source_id, 0).unwrap(), before);
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("scaled-compound.step");
+    output.write_step(&path).unwrap();
+    let text = std::fs::read_to_string(&path).unwrap();
+    let reimported = Solid::import_rust_step(&text, EntityId::new(), policy).unwrap();
+    near(reimported.volume_mm3().unwrap(), 234.);
+    assert_eq!(reimported.solid_count().unwrap(), 3);
+    let expected = output.bounds().unwrap();
+    bounds(&reimported, expected.min, expected.max);
+    assert!(
+        !output
+            .manufacturing_mesh_with_receipt(MeshOptions::default())
+            .unwrap()
+            .mesh
+            .indices
+            .is_empty()
+    );
+    if OCCT_LINKED {
+        let native_source = Solid::read_step(&path, policy).unwrap();
+        near(native_source.volume_mm3().unwrap(), 234.);
+        bounds(&native_source, expected.min, expected.max);
+        assert_eq!(native_source.solid_count().unwrap(), 3);
+    }
+}
+
+#[test]
+fn rust_compound_affine_refuses_one_unsupported_leaf_atomically() {
+    use multicad_rust_kernel::Rational;
+    let policy = GeometryPolicy::default();
+    let id = EntityId::new();
+    let stock = Solid::rust_box(
+        id.uuid_bits(),
+        [2, 3, 4].map(|n| Rational::new(n, 1).unwrap()),
+        PlaneFrame::default(),
+        policy,
+    )
+    .unwrap();
+    let sphere = Solid::rust_sphere_named(
+        2.,
+        PlaneFrame {
+            origin: [10., 0., 0.],
+            ..Default::default()
+        },
+        EntityId::new(),
+        policy,
+    )
+    .unwrap();
+    for members in [[&stock, &sphere], [&sphere, &stock]] {
+        let source = Solid::compound_named(&members, id, policy).unwrap();
+        let before = source.topology_snapshot(id, 0).unwrap();
+        let transform = AffineTransform {
+            matrix: [[2., 0., 0.], [0., 3., 0.], [0., 0., 0.5]],
+            ..Default::default()
+        };
+        assert_eq!(
+            source
+                .affine_transformed_named(transform, EntityId::new(), policy)
+                .err()
+                .unwrap()
+                .kind,
+            GeometryErrorKind::Unsupported
+        );
+        assert_eq!(source.topology_snapshot(id, 0).unwrap(), before);
+        assert_eq!(source.solid_count().unwrap(), 2);
+    }
+}

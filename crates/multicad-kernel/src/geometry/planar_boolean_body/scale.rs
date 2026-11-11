@@ -49,6 +49,7 @@ struct BoundaryOrigin {
 }
 
 pub(super) struct Ancestry {
+    faces: Vec<BoundaryOrigin>,
     edges: Vec<BoundaryOrigin>,
     vertices: Vec<BoundaryOrigin>,
 }
@@ -57,6 +58,7 @@ impl Ancestry {
     fn match_boundary(
         body: &PlanarBooleanBody,
         mut sources: BTreeMap<BoundaryKey, BoundaryOrigin>,
+        faces: Vec<BoundaryOrigin>,
     ) -> Result<Self, GeometryError> {
         let mut take = |key| sources.remove(&key).ok_or_else(ancestry_error);
         let vertices = body
@@ -77,19 +79,25 @@ impl Ancestry {
         if !sources.is_empty() {
             return Err(ancestry_error());
         }
-        Ok(Self { edges, vertices })
+        Ok(Self {
+            faces,
+            edges,
+            vertices,
+        })
     }
 
     pub(super) fn restore(&self, elements: &mut [TopologyElement]) {
         for element in elements {
             let index = element.key.ordinal as usize;
             let source = match element.key.kind {
-                TopologyKind::Face => continue,
+                TopologyKind::Face => &self.faces[index],
                 TopologyKind::Edge => &self.edges[index],
                 TopologyKind::Vertex => &self.vertices[index],
             };
             element.origins.extend(source.origins.iter().cloned());
-            element.boundary.extend(source.boundary.iter().cloned());
+            // Scale is a one-to-one map. Reconstructed adjacency may include
+            // member aliases, which must not change an authored discriminator.
+            element.boundary.clone_from(&source.boundary);
         }
     }
 }
@@ -217,6 +225,17 @@ impl Solid {
                 "Rust Scale did not conserve the affine material volume",
             ));
         }
+        let face_origins = geometry
+            .faces()
+            .iter()
+            .map(|face| {
+                let source = &topology.elements[ancestry[face.source_face]];
+                BoundaryOrigin {
+                    origins: source.origins.clone(),
+                    boundary: source.boundary.clone(),
+                }
+            })
+            .collect();
         let mut result = PlanarBooleanBody::build(
             geometry,
             vec![SourcePart {
@@ -233,7 +252,7 @@ impl Solid {
             unreachable!("constructed planar scale")
         };
         let body = Rc::get_mut(body).expect("new planar scale");
-        body.scaled_ancestry = Some(Ancestry::match_boundary(body, boundary)?);
+        body.scaled_ancestry = Some(Ancestry::match_boundary(body, boundary, face_origins)?);
         Ok(result)
     }
 }

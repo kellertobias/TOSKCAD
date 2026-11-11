@@ -1,4 +1,4 @@
-//! Bevel one complete straight edge of a world-aligned rectangular solid.
+//! Bevel one complete straight edge of a rectangular solid.
 use super::*;
 use crate::TreatmentEdge;
 use multicad_core::references::{TopologyElement, TopologyKey};
@@ -7,7 +7,7 @@ fn unsupported() -> GeometryError {
     error(
         "chamfer",
         GeometryErrorKind::Unsupported,
-        "Rust straight chamfer requires one complete edge of a world-aligned rectangular solid",
+        "Rust straight chamfer requires one complete edge of a rectangular solid",
     )
 }
 
@@ -24,6 +24,12 @@ impl Solid {
     ) -> Result<Self, GeometryError> {
         if self.policy != policy || policy.boolean_fuzzy_mm != 0. {
             return Err(unsupported());
+        }
+        if let Some((source, placement)) = self.local_box_treatment_source()? {
+            let local = source.topology_snapshot(topology.owner, topology.revision)?;
+            return source
+                .rust_chamfer_box_edge(edge, reference_face, distances_mm, feature, policy, local)?
+                .transformed(placement);
         }
         let cells = self.orthogonal_cells()?.ok_or_else(unsupported)?;
         let [stock] = cells.as_slice() else {
