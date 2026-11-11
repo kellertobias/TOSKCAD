@@ -640,6 +640,18 @@ enum MeshUse {
     Manufacturing,
 }
 
+fn polygon_metric_extent(prism: &PolygonPrism) -> [f64; 3] {
+    let mut extent = [0., 0., prism.height().as_f64().abs()];
+    // Polygon coordinates remain authored UV coordinates, unlike centered
+    // cylinders/annuli. Interior holes cannot enlarge the outer envelope.
+    for point in &prism.rings()[0] {
+        for i in 0..2 {
+            extent[i] = f64::max(extent[i], point[i].as_f64().abs());
+        }
+    }
+    extent
+}
+
 impl Solid {
     /// Publish a straight-sided sketch extrusion with the original authored
     /// edge anchors, even if winding normalization reversed some edges.
@@ -668,6 +680,7 @@ impl Solid {
         policy.validate()?;
         frame.checked(policy)?;
         policy.length(prism.height().as_f64())?;
+        frame.checked_metric_extent(polygon_metric_extent(&prism), policy)?;
         let line_count = prism.rings().iter().map(Vec::len).sum::<usize>();
         let edge_count = line_count + prism.circular_holes().len();
         let unique: std::collections::BTreeSet<_> = origins.iter().collect();
@@ -753,6 +766,8 @@ impl Solid {
         for size in prism.dimensions() {
             policy.length(size.as_f64())?;
         }
+        // maximum includes a rounded end beyond the straight profile length.
+        frame.checked_metric_extent(prism.maximum().map(Rational::as_f64), policy)?;
         if let Some(end) = prism.rounded_end() {
             policy.length(end.radius().as_f64())?;
         }
@@ -1308,11 +1323,19 @@ impl Solid {
             }
             let body = match &self.body {
                 SolidBody::Prism(prism, frame) => {
-                    SolidBody::Prism(Rc::clone(prism), transform.frame(*frame))
+                    let frame = transform.frame(*frame);
+                    frame.checked_metric_extent(
+                        prism.maximum().map(Rational::as_f64),
+                        self.policy,
+                    )?;
+                    SolidBody::Prism(Rc::clone(prism), frame)
                 }
                 SolidBody::PolygonPrism(placed) => {
                     let mut placed = placed.as_ref().clone();
                     placed.frame = transform.frame(placed.frame);
+                    placed
+                        .frame
+                        .checked_metric_extent(polygon_metric_extent(&placed.prism), self.policy)?;
                     SolidBody::PolygonPrism(Rc::new(placed))
                 }
                 SolidBody::AxialCylinder(cylinder, frame, sketch) => {
@@ -1328,7 +1351,16 @@ impl Solid {
                     SolidBody::AxialCylinder(Rc::clone(cylinder), frame, sketch.clone())
                 }
                 SolidBody::Annulus(body, frame) => {
-                    SolidBody::Annulus(Rc::clone(body), transform.frame(*frame))
+                    let frame = transform.frame(*frame);
+                    frame.checked_metric_extent(
+                        [
+                            body.geometry.outer_radius_mm(),
+                            body.geometry.outer_radius_mm(),
+                            body.geometry.height_mm(),
+                        ],
+                        self.policy,
+                    )?;
+                    SolidBody::Annulus(Rc::clone(body), frame)
                 }
                 SolidBody::Helical(body, frame) => {
                     SolidBody::Helical(Rc::clone(body), transform.frame(*frame))
@@ -1367,10 +1399,19 @@ impl Solid {
                     SolidBody::Worm(Rc::clone(body), transform.frame(*frame))
                 }
                 SolidBody::Sphere(body, frame) => {
-                    SolidBody::Sphere(Rc::clone(body), transform.frame(*frame))
+                    let frame = transform.frame(*frame);
+                    frame.checked_metric_extent([body.geometry.radius_mm(); 3], self.policy)?;
+                    SolidBody::Sphere(Rc::clone(body), frame)
                 }
                 SolidBody::Torus(body, frame) => {
-                    SolidBody::Torus(Rc::clone(body), transform.frame(*frame))
+                    let frame = transform.frame(*frame);
+                    let major = body.geometry.major_radius_mm();
+                    let minor = body.geometry.minor_radius_mm();
+                    frame.checked_metric_extent(
+                        [major + minor, major + minor, minor],
+                        self.policy,
+                    )?;
+                    SolidBody::Torus(Rc::clone(body), frame)
                 }
                 SolidBody::RoundedCylinder(body, frame) => {
                     SolidBody::RoundedCylinder(Rc::clone(body), transform.frame(*frame))

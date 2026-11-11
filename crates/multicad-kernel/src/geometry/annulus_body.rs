@@ -105,6 +105,8 @@ impl Solid {
         let reverse = signed_height_mm < 0.;
         let geometry = Annulus::new(inner, outer, height)
             .map_err(|cause| input(format!("Invalid concentric circular solid: {cause:?}")))?;
+        // This stored frame is already at the concentric center/start cap.
+        frame.checked_metric_extent([outer, outer, height], policy)?;
         let body = AnnulusBody {
             geometry,
             feature,

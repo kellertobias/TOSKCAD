@@ -26,6 +26,7 @@ impl Solid {
         }
         let geometry =
             Sphere::new(radius_mm).ok_or_else(|| input("Invalid analytic sphere radius"))?;
+        frame.checked_metric_extent([radius_mm; 3], policy)?;
         let body = SphereBody { geometry, feature };
         let bounds = body.bounds(frame);
         policy.point(bounds.min)?;

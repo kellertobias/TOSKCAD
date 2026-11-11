@@ -27,6 +27,7 @@ impl Solid {
         policy.length(major - minor)?;
         let geometry =
             Torus::new(major, minor).ok_or_else(|| input("Invalid regular torus radii"))?;
+        frame.checked_metric_extent([major + minor, major + minor, minor], policy)?;
         let body = TorusBody {
             geometry,
             feature,
@@ -159,5 +160,33 @@ impl TorusBody {
             revision,
             elements: vec![face, equator, meridian, vertex],
         }
+    }
+}
+
+#[cfg(test)]
+mod metric_frame_tests {
+    use super::*;
+    #[test]
+    fn private_torus_constructor_applies_the_full_tube_envelope() {
+        let frame = PlaneFrame {
+            u: [(1. + 8e-11_f64).sqrt(), 0., 0.],
+            ..Default::default()
+        };
+        let id = EntityId::new();
+        let origin = Origin {
+            source: id,
+            role: "profile".into(),
+        };
+        let error = Solid::rust_torus_named(
+            [600_000., 100_000.],
+            frame,
+            id,
+            origin.clone(),
+            GeometryPolicy::default(),
+        )
+        .err()
+        .expect("large deformed torus must fail before publication");
+        assert_eq!(error.kind, GeometryErrorKind::Unsupported);
+        Solid::rust_torus_named([6., 1.], frame, id, origin, GeometryPolicy::default()).unwrap();
     }
 }
