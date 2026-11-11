@@ -97,3 +97,26 @@ fn actual_relief_constructor_refusals_retain_typed_reader_errors() {
     let error = Relief::new(source.base().clone(), vec![], Kind::Raised, 1e-7, 1e-5).unwrap_err();
     assert_eq!(relief_error(error), ReadError::Invalid);
 }
+#[test]
+fn an_ordinary_straight_extrusion_has_no_relief_cap() {
+    let mut writer = crate::step::Writer::new();
+    writer
+        .append_box(
+            [crate::Rational::new(2, 1).unwrap(); 3],
+            [0.; 3],
+            [1., 0., 0.],
+            [0., 1., 0.],
+        )
+        .unwrap();
+    let source = writer.finish().unwrap();
+    let entities = parse_entities(&source, 1e-7).unwrap();
+    let mut shell = Shell::new(&entities, 1e-7, true);
+    let ids = shell.shell_faces().unwrap();
+    let faces = shell.validate_faces(ids.clone()).unwrap();
+    let readback = shell.readback(&faces).unwrap();
+    assert!(
+        recognize(&shell, &ids, &faces, &readback)
+            .unwrap()
+            .is_none()
+    );
+}

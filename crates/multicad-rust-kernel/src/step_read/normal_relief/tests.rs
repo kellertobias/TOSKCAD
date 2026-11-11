@@ -353,3 +353,45 @@ fn close_vertices_alone_do_not_certify_skinny_body_support_directions() {
     );
     assert!(verify_normal_relief(&text, &relief, frame[0], frame[1], frame[2], TOL).is_err());
 }
+
+pub(super) mod external_fixture;
+#[test]
+fn external_limit_and_recovery_cover_the_same_reader_instance_as_regular_geometry() {
+    let base = Sweep::new(vec![rectangle([0.; 2], [100., 80.])], 4., TOL, MIN).unwrap();
+    let motif = |center| {
+        Sweep::new(
+            vec![vec![ProfileEdge::Circle {
+                center,
+                radius_mm: 0.5,
+                clockwise: false,
+            }]],
+            0.5,
+            TOL,
+            MIN,
+        )
+        .unwrap()
+    };
+    let many = Relief::new(
+        base.clone(),
+        (0..192)
+            .map(|i| motif([3. + (i % 16) as f64 * 6., 3. + (i / 16) as f64 * 6.]))
+            .collect(),
+        Kind::Raised,
+        TOL,
+        MIN,
+    )
+    .unwrap();
+    let one = Relief::new(base, vec![motif([3., 75.])], Kind::Raised, TOL, MIN).unwrap();
+    let mut writer = crate::step::Writer::new();
+    for relief in [&many, &one] {
+        writer.append_normal_relief(relief, [0.; 3], X, Y).unwrap();
+    }
+    let input = external_fixture::external_193_motif_input(&writer.finish().unwrap());
+    assert!(read_analytic_solid(&input, TOL).is_ok());
+    assert!(matches!(
+        read_import_solid(&input, TOL),
+        Err(ReadError::Limit)
+    ));
+    let valid = crate::step::write_normal_relief(&one, [0.; 3], X, Y).unwrap();
+    assert!(read_import_solid(&valid, TOL).is_ok());
+}
