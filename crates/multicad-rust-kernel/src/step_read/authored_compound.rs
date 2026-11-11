@@ -7,6 +7,12 @@ use crate::spur_gear::herringbone::Herringbone;
 #[derive(Clone, Copy, Debug)]
 pub enum ExpectedStepMember<'a> {
     Analytic,
+    NormalRelief {
+        relief: &'a crate::normal_relief::Relief,
+        origin: Point,
+        u: Point,
+        v: Point,
+    },
     TwistedGear {
         gear: &'a Herringbone,
         origin: Point,
@@ -23,6 +29,9 @@ pub enum VerifiedStepMember {
         imported: Option<Box<ImportSolid>>,
     },
     TwistedGear {
+        volume_mm3: f64,
+    },
+    NormalRelief {
         volume_mm3: f64,
     },
 }
@@ -49,6 +58,16 @@ pub fn verify_authored_compound(
                         imported: imported.map(Box::new),
                     })
                 }
+                ExpectedStepMember::NormalRelief {
+                    relief,
+                    origin,
+                    u,
+                    v,
+                } => {
+                    let volume_mm3 =
+                        normal_relief::verify_member(shell, solid, relief, [*origin, *u, *v])?;
+                    Ok(VerifiedStepMember::NormalRelief { volume_mm3 })
+                }
                 ExpectedStepMember::TwistedGear { gear, origin, u, v } => {
                     let volume_mm3 = herringbone::verify_member(
                         shell,
@@ -67,5 +86,7 @@ pub fn verify_authored_compound(
     Ok(members)
 }
 
+#[cfg(test)]
+mod relief_tests;
 #[cfg(test)]
 mod tests;

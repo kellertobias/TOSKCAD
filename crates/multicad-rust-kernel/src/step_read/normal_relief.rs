@@ -63,24 +63,32 @@ pub fn verify_normal_relief(
     v: Point,
     tolerance: f64,
 ) -> Result<f64> {
-    let frame = Frame::new(origin, u, v)?;
     compound::read_members_by(input, tolerance, true, true, |shell, solid, _| {
-        let ids = shell.member_faces(solid)?;
-        let faces = shell.validate_faces(ids.clone())?;
-        let readback = shell.readback(&faces)?;
-        proof::verify(
-            shell,
-            &ids,
-            &faces,
-            &readback,
-            relief,
-            frame,
-            &mut Work(MAX_WORK),
-        )?;
-        Ok(readback.volume_mm3)
+        verify_member(shell, solid, relief, [origin, u, v])
     })?
     .pop()
     .ok_or(ReadError::Invalid)
+}
+pub(super) fn verify_member(
+    shell: &mut Shell<'_, '_>,
+    solid: u32,
+    relief: &Relief,
+    [origin, u, v]: [Point; 3],
+) -> Result<f64> {
+    let frame = Frame::new(origin, u, v)?;
+    let ids = shell.member_faces(solid)?;
+    let faces = shell.validate_faces(ids.clone())?;
+    let readback = shell.readback(&faces)?;
+    proof::verify(
+        shell,
+        &ids,
+        &faces,
+        &readback,
+        relief,
+        frame,
+        &mut Work(MAX_WORK),
+    )?;
+    Ok(readback.volume_mm3)
 }
 
 type Wire = Vec<(u32, bool)>;

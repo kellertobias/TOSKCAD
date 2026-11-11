@@ -142,7 +142,8 @@ fn descriptor_matcher_proves_world_graph_and_refuses_changed_material() {
     assert!(!normal_relief_import_matches(
         &imported, &relief, frame, TOL
     ));
-    imported.u = X;
+    imported.u = frame[1];
+    imported.v = frame[2];
     imported.profile = ImportProfile::Cylinder { radius_mm: 3. };
     assert!(!normal_relief_import_matches(
         &imported, &relief, frame, TOL
