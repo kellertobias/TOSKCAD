@@ -1027,6 +1027,13 @@ mod tests {
             },
             ..page.views.last().unwrap().clone()
         });
+        let tilted_id = EntityId::new();
+        page.views.push(drawings::DrawingView {
+            id: tilted_id,
+            name: "Torus oblique projection".into(),
+            kind: drawings::ViewKind::Projection,
+            ..page.views.last().unwrap().clone()
+        });
         let (_, prepared) = drawings::prepare_create(
             &session,
             session.revision(),
@@ -1101,6 +1108,17 @@ mod tests {
                 let axial = 0.6_f64.mul_add(u, 2.8);
                 ((radius - 5.).hypot(axial) - 1.).abs() < 1e-7
             }))));
+        let ViewEvaluation::Ready { vectors, .. } = &result.views[&tilted_id] else {
+            panic!("{:?}", result.views[&tilted_id]);
+        };
+        for expected in [-5., -3., 3., 5.] {
+            assert!(vectors.iter().any(|v| {
+                v.role == VectorRole::Visible
+                    && v.preview_mm
+                        .iter()
+                        .any(|[u, v]| (u - expected).abs() < 1e-8 && v.abs() < 1e-8)
+            }));
+        }
     }
 
     #[test]
