@@ -2305,7 +2305,7 @@ impl Solid {
                 .members()
                 .all(|member| member.supports_step_shell(false)),
             SolidBody::Helical(body, frame) => {
-                (standalone || body.has_bare_step_closure())
+                (standalone || body.has_importable_step_closure())
                     && body.supports_step(*frame, self.policy)
             }
             SolidBody::Herringbone(body, frame) => body.supports_step(*frame, self.policy),

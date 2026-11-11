@@ -33,6 +33,11 @@ pub enum ImportProfile {
         spec: crate::helical_thread::Spec,
         stock_radius_mm: Option<f64>,
     },
+    /// Independently verified complete thread and planar screw head.
+    HelicalScrew {
+        spec: crate::helical_thread::Spec,
+        screw: crate::headed_screw::ScrewSpec,
+    },
     Polygon {
         /// Exterior counterclockwise, followed by clockwise straight holes.
         rings: Vec<Vec<[f64; 2]>>,

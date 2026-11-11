@@ -1,11 +1,14 @@
 //! Independently infer an authored thread from its complete spline
 //! shell, then prove every Bernstein net and shared physical boundary.
 use super::*;
+use crate::headed_screw::{Screw, ScrewHead, ScrewSpec};
 use crate::{
     helical_thread::{Spec, Thread},
     step::helical::{Closure, DEGREE},
 };
 use helical::{face, require};
+mod headed;
+pub use headed::helical_screw_import_matches;
 use std::f64::consts::TAU;
 
 pub(super) fn read_member(
@@ -32,13 +35,14 @@ pub(super) fn read_member(
         }
         count += 1;
     }
-    if !count.is_multiple_of(4) || !matches!(faces.len() - count, 2 | 3) {
+    if !count.is_multiple_of(4) || !matches!(faces.len() - count, 2 | 3 | 9) {
         return Ok(None);
     }
     if count > 32 {
         return Err(ReadError::Limit);
     }
     let starts = (count / 4) as u32;
+    let headed = faces.len() - count == 9;
     let mut grids = Vec::with_capacity(4);
     let mut radial = Vec::with_capacity(4);
     let mut axial = None;
@@ -85,8 +89,8 @@ pub(super) fn read_member(
     let top = plane(faces[count + 1])?;
     let origin = bottom.origin;
     let u = bottom.u;
-    let v = bottom.v.map(|n| -n);
-    let n = bottom.normal.map(|n| -n);
+    let v = bottom.v.map(|n| if headed { n } else { -n });
+    let n = bottom.normal.map(|n| if headed { n } else { -n });
     let height = dot(sub(top.origin, origin), n);
     require(height.is_finite() && height > shell.tolerance)?;
     require(
@@ -158,17 +162,36 @@ pub(super) fn read_member(
     // residual bounds the complete patch under piecewise affine chart maps;
     // independent knot lengths do not change a segment's geometric image.
     // Exact edge/surface control equality and shared vertices remain mandatory.
+    let screw = if headed {
+        Some(headed::hex(
+            shell,
+            faces[count + 2..].try_into().expect("seven hex head faces"),
+            &thread,
+            [origin, u, v],
+        )?)
+    } else {
+        None
+    };
+    let closure = screw
+        .as_ref()
+        .map_or_else(|| Ok(Closure::stock(stock)), Closure::screw)
+        .map_err(helical::step_error)?;
     let volume = helical::verify_member(
         shell,
         solid,
         &thread,
-        Closure::stock(stock),
+        closure,
         [origin, u, v],
         Some(shell.tolerance.min(1e-7) / 16.),
     )?;
     let support = |direction: Point| {
         stock.map_or_else(
-            || thread.support(direction),
+            || {
+                screw.as_ref().map_or_else(
+                    || thread.support(direction),
+                    |screw| screw.support(direction),
+                )
+            },
             |radius| radius * direction[0].hypot(direction[1]) + (height * direction[2]).max(0.),
         )
     };
@@ -206,10 +229,16 @@ pub(super) fn read_member(
             u,
             v,
             height_mm: height,
-            profile: ImportProfile::HelicalThread {
-                spec: thread.spec(),
-                stock_radius_mm: stock,
-            },
+            profile: screw.map_or_else(
+                || ImportProfile::HelicalThread {
+                    spec: thread.spec(),
+                    stock_radius_mm: stock,
+                },
+                |screw| ImportProfile::HelicalScrew {
+                    spec: thread.spec(),
+                    screw: screw.spec(),
+                },
+            ),
         },
     )))
 }

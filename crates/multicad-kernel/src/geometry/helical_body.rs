@@ -32,6 +32,21 @@ const CAP_NAMES: [&str; 2] = ["cap.start", "cap.end"];
 const BAND_NAMES: [&str; 4] = ["lower", "crest", "upper", "root"];
 const MAX_DISPLAY_EDGE_POINTS: usize = 500_000;
 
+fn imported_request(spec: Spec) -> HelicalThread {
+    HelicalThread {
+        major_radius_mm: spec.major_radius_mm,
+        pitch_mm: spec.pitch_mm,
+        length_mm: spec.length_mm,
+        depth_mm: spec.depth_mm,
+        crest_width_mm: spec.crest_width_mm,
+        lower_flank_deg: spec.lower_flank_deg,
+        upper_flank_deg: spec.upper_flank_deg,
+        radial_taper: 0.,
+        starts: spec.starts,
+        left_hand: spec.left_hand,
+    }
+}
+
 pub(crate) struct HelicalBody {
     geometry: Thread,
     pub(super) feature: EntityId,
@@ -124,18 +139,7 @@ impl Solid {
         feature: EntityId,
         policy: GeometryPolicy,
     ) -> Result<Self, GeometryError> {
-        let request = HelicalThread {
-            major_radius_mm: spec.major_radius_mm,
-            pitch_mm: spec.pitch_mm,
-            length_mm: spec.length_mm,
-            depth_mm: spec.depth_mm,
-            crest_width_mm: spec.crest_width_mm,
-            lower_flank_deg: spec.lower_flank_deg,
-            upper_flank_deg: spec.upper_flank_deg,
-            radial_taper: 0.,
-            starts: spec.starts,
-            left_hand: spec.left_hand,
-        };
+        let request = imported_request(spec);
         let mut solid = Self::rust_helical_body(
             request,
             spec.root_radius_mm,
@@ -202,6 +206,65 @@ impl Solid {
             .import_identity = Some(identity);
         Ok(solid)
     }
+    pub(super) fn import_helical_screw(
+        spec: Spec,
+        screw: multicad_rust_kernel::headed_screw::ScrewSpec,
+        frame: PlaneFrame,
+        feature: EntityId,
+        policy: GeometryPolicy,
+    ) -> Result<Self, GeometryError> {
+        let mut solid = Self::rust_machine_screw(
+            imported_request(spec),
+            spec.root_radius_mm,
+            screw,
+            feature,
+            frame,
+            policy,
+        )?;
+        let multicad_rust_kernel::headed_screw::ScrewHead::ExternalHex {
+            across_flats_mm,
+            height_mm,
+        } = screw.head
+        else {
+            return Err(error(
+                OPERATION,
+                GeometryErrorKind::Unsupported,
+                "Unproved imported screw head",
+            ));
+        };
+        let identity = super::step_import::feature_origin(
+            feature,
+            "helical-hex-material",
+            frame
+                .origin
+                .into_iter()
+                .chain(frame.u)
+                .chain(frame.v)
+                .chain([
+                    spec.major_radius_mm,
+                    spec.pitch_mm,
+                    spec.length_mm,
+                    spec.depth_mm,
+                    spec.crest_width_mm,
+                    spec.lower_flank_deg,
+                    spec.upper_flank_deg,
+                    spec.starts as f64,
+                    f64::from(spec.left_hand),
+                    spec.root_radius_mm.unwrap_or(0.),
+                    across_flats_mm,
+                    height_mm,
+                    screw.shank_length_mm,
+                ]),
+        );
+        let SolidBody::Helical(body, _) = &mut solid.body else {
+            unreachable!()
+        };
+        Rc::get_mut(body)
+            .expect("new unshared imported screw")
+            .import_identity = Some(identity);
+        Ok(solid)
+    }
+
     pub(super) fn matches_imported_helical_thread(
         &self,
         imported: &multicad_rust_kernel::step_read::ImportSolid,
@@ -210,6 +273,14 @@ impl Solid {
         let Some((body, frame)) = self.helical_body() else {
             return false;
         };
+        if let HelicalForm::Screw(screw) = &body.form {
+            return multicad_rust_kernel::step_read::helical_screw_import_matches(
+                imported,
+                screw,
+                [frame.origin, frame.u, frame.v],
+                tolerance,
+            );
+        }
         let Some(stock) = body.step_stock() else {
             return false;
         };
@@ -570,8 +641,11 @@ impl HelicalBody {
         }
     }
 
-    pub(super) fn has_bare_step_closure(&self) -> bool {
+    pub(super) fn has_importable_step_closure(&self) -> bool {
         self.step_stock().is_some()
+            || matches!(&self.form,
+            HelicalForm::Screw(screw) if screw.spec().shank_length_mm == 0.
+                && matches!(screw.spec().head, multicad_rust_kernel::headed_screw::ScrewHead::ExternalHex { .. }))
     }
     pub(super) fn supports_step(&self, frame: PlaneFrame, policy: GeometryPolicy) -> bool {
         if let HelicalForm::Screw(screw) = &self.form {

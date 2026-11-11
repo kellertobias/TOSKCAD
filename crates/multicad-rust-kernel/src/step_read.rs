@@ -10,7 +10,7 @@ mod compound;
 mod curve;
 mod helical;
 mod helical_import;
-pub use helical_import::helical_import_matches;
+pub use helical_import::{helical_import_matches, helical_screw_import_matches};
 mod herringbone;
 pub use authored_compound::{ExpectedStepMember, VerifiedStepMember, verify_authored_compound};
 mod worm;

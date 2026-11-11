@@ -13,7 +13,7 @@ pub(super) fn verify(
     shoulder: u32,
     shoulder_center: Point,
     [reference_dir, axis]: [Point; 2],
-    [across_flats_mm, height_mm]: [f64; 2],
+    (proof, [across_flats_mm, height_mm]): (Proof, [f64; 2]),
     world: impl Fn(Point2, f64) -> Point,
 ) -> Result<f64> {
     let (surface, forward, bounds) = face(shell, faces[0])?;
@@ -24,17 +24,26 @@ pub(super) fn verify(
     let center = world([0.; 2], -height_mm);
     let plane = plane(shell, surface)?;
     let down = axis.map(|n| -n);
-    let cap = check_axis(shell, plane, center, down, reference_dir)?;
+    let cap = proof.axis(shell, plane, center, down, reference_dir)?;
     let points = hex_vertices(across_flats_mm);
     let lower = hex_rim(
+        proof,
         shell,
         bottom,
         true,
         false,
         points.map(|p| world(p, -height_mm)),
     )?;
-    let upper = hex_rim(shell, shoulder, true, true, points.map(|p| world(p, 0.)))?;
+    let upper = hex_rim(
+        proof,
+        shell,
+        shoulder,
+        true,
+        true,
+        points.map(|p| world(p, 0.)),
+    )?;
     let area = walls_area(
+        proof,
         shell,
         &faces[1..],
         [&lower, &upper],
@@ -49,6 +58,7 @@ pub(super) fn verify(
 }
 
 pub(super) fn walls_area(
+    proof: Proof,
     shell: &mut Shell<'_, '_>,
     faces: &[u32],
     [lower, upper]: [&[LineUse]; 2],
@@ -68,7 +78,7 @@ pub(super) fn walls_area(
         let a = shell.vertex(start)?;
         let b = shell.vertex(end)?;
         let tangent = unit(sub(b, a))?;
-        check_axis(
+        proof.axis(
             shell,
             self::plane(shell, surface)?,
             a,
@@ -114,6 +124,7 @@ fn line(shell: &mut Shell<'_, '_>, oriented: EdgeRef) -> Result<LineUse> {
 }
 
 pub(super) fn hex_rim(
+    proof: Proof,
     shell: &mut Shell<'_, '_>,
     bound: u32,
     exterior: bool,
@@ -132,7 +143,10 @@ pub(super) fn hex_rim(
     for (i, edge) in edges.into_iter().enumerate() {
         let line = line(shell, edge)?;
         let [a, b] = line.vertices;
-        require(shell.vertex(a)? == expected[i] && shell.vertex(b)? == expected[(i + 1) % 6])?;
+        require(
+            proof.equal(shell.vertex(a)?, expected[i])
+                && proof.equal(shell.vertex(b)?, expected[(i + 1) % 6]),
+        )?;
         uses.push(line);
     }
     require((0..6).all(|i| uses[i].vertices[1] == uses[(i + 1) % 6].vertices[0]))?;
@@ -200,11 +214,17 @@ mod tests {
                 format!("AXIS2_PLACEMENT_3D('',#{origin},#{u},#{normal});"),
             ));
         }
+        let (_, _, shoulder) = face(&reader, faces[4]).unwrap();
+        let edge = ring(&reader, shoulder[0], true).unwrap()[0].0;
+        let vertex = reference(&reader.args(edge, "EDGE_CURVE").unwrap()[1]).unwrap();
+        let point = reference(&reader.args(vertex, "VERTEX_POINT").unwrap()[1]).unwrap();
+        rewrite.push((point, "CARTESIAN_POINT('',(123.,0.,0.));".into()));
         for (id, record) in rewrite {
             let key = format!("#{id}=");
             let original = encoded.lines().find(|line| line.starts_with(&key)).unwrap();
             let changed = encoded.replacen(original, &format!("{key}{record}"), 1);
             assert!(verify_helical_screw(&changed, &screw, origin, u, v, 1e-7).is_err());
+            assert!(crate::step_read::read_import_solid(&changed, 1e-7).is_err());
         }
     }
 
@@ -218,6 +238,18 @@ mod tests {
             let step = write(&screw).unwrap();
             let actual = verify_helical_screw(&step, &screw, origin, u, v, 1e-7).unwrap();
             assert!((actual - screw.volume_mm3()).abs() < 1e-6);
+            let wrong = Screw::new(
+                *screw.thread(),
+                ScrewSpec {
+                    head: ScrewHead::ExternalHex {
+                        across_flats_mm: 11.,
+                        height_mm: 4.,
+                    },
+                    ..screw.spec()
+                },
+            )
+            .unwrap();
+            assert!(verify_helical_screw(&step, &wrong, origin, u, v, 1e-7).is_err());
             assert_eq!(step.matches("ADVANCED_FACE").count(), 13);
             assert_eq!(step.matches("PLANE(").count(), 9);
         }

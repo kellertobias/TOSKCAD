@@ -86,7 +86,14 @@ pub(super) fn verify_member(
         extent: thread
             .spec()
             .major_radius_mm
-            .max(closure.cylinder().map_or(0., |(r, _)| r)),
+            .max(closure.cylinder().map_or(0., |(r, _)| r))
+            .max(match closure {
+                Closure::HexHead {
+                    across_flats_mm,
+                    height_mm,
+                } => across_flats_mm.max(height_mm),
+                _ => 0.,
+            }),
     };
     let splines = prepare(thread, closure, origin, tolerance).map_err(step_error)?;
     let normal = cross(u, v);
@@ -290,7 +297,7 @@ pub(super) fn verify_member(
             shoulder.ok_or(ReadError::Invalid)?,
             caps[0],
             [u, normal],
-            [across_flats_mm, height_mm],
+            (proof, [across_flats_mm, height_mm]),
             world,
         )?,
         Closure::SocketHead(head) => {

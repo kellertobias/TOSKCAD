@@ -241,6 +241,9 @@ impl Solid {
                 spec,
                 stock_radius_mm,
             } => Self::import_helical_thread(spec, stock_radius_mm, frame, feature, policy),
+            ImportProfile::HelicalScrew { spec, screw } => {
+                Self::import_helical_screw(spec, screw, frame, feature, policy)
+            }
             ImportProfile::Sphere { radius_mm } => {
                 Self::rust_sphere_named(radius_mm, frame, feature, policy)
             }

@@ -65,8 +65,22 @@ pub(super) fn verify(
         reference,
     )?;
     let hex = hex_vertices(head.across_flats_mm);
-    let lower_rim = hex_head::hex_rim(shell, mouth, false, true, hex.map(|p| world(p, lower)))?;
+    let lower_rim = hex_head::hex_rim(
+        Proof {
+            error: None,
+            extent: 1.,
+        },
+        shell,
+        mouth,
+        false,
+        true,
+        hex.map(|p| world(p, lower)),
+    )?;
     let upper_rim = hex_head::hex_rim(
+        Proof {
+            error: None,
+            extent: 1.,
+        },
         shell,
         socket_floor,
         true,
@@ -74,6 +88,10 @@ pub(super) fn verify(
         hex.map(|p| world(p, upper)),
     )?;
     let area = hex_head::walls_area(
+        Proof {
+            error: None,
+            extent: 1.,
+        },
         shell,
         &faces[3..],
         [&lower_rim, &upper_rim],
@@ -208,7 +226,12 @@ mod tests {
         let circle = reference(&reader.args(lower, "EDGE_CURVE").unwrap()[3]).unwrap();
         let axis = reference(&reader.args(circle, "CIRCLE").unwrap()[1]).unwrap();
         let direction = reference(&reader.args(axis, "AXIS2_PLACEMENT_3D").unwrap()[2]).unwrap();
+        let mouth_edge = ring(&reader, bounds[1], false).unwrap()[0].0;
+        let mouth_vertex = reference(&reader.args(mouth_edge, "EDGE_CURVE").unwrap()[1]).unwrap();
+        let mouth_point =
+            reference(&reader.args(mouth_vertex, "VERTEX_POINT").unwrap()[1]).unwrap();
         for (id, record) in [
+            (mouth_point, "CARTESIAN_POINT('',(123.,0.,0.));".into()),
             (faces[6], format!("ADVANCED_FACE('',(),#{end},.T.);")),
             (faces[8], format!("ADVANCED_FACE('',(),#{floor},.T.);")),
             (faces[9], format!("ADVANCED_FACE('',(),#{side},.T.);")),

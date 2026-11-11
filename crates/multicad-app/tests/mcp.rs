@@ -1310,6 +1310,36 @@ fn export_m6_hex_screw(fit: &str) {
             receipt["readback_volume_mm3"].as_f64().unwrap(),
         );
     }
+    drop(reopened);
+    let imported_project = directory.path().join("m6-hex-import.tcd");
+    let importer_arguments = [
+        "--rust-model",
+        "--project",
+        imported_project.to_str().unwrap(),
+        "--export-dir",
+        exports.to_str().unwrap(),
+    ];
+    let mut importer = Client::start(&importer_arguments);
+    let imported = importer.ok(
+        "import_step",
+        json!({"expected_revision":0,"file_name":"m6-hex.step"}),
+    );
+    let [part] = imported["parts"].as_array().unwrap().as_slice() else {
+        panic!("one imported screw: {imported}");
+    };
+    close(importer.part_volume(), authored_volume);
+    importer.ok("save_project", json!({"expected_revision":1}));
+    drop(importer);
+    let mut imported_reopened = Client::start(&importer_arguments);
+    close(imported_reopened.part_volume(), authored_volume);
+    let reexported = imported_reopened.ok(
+        "export_step",
+        json!({"part":part,"file_name":"m6-hex-reexport.step"}),
+    );
+    close(
+        reexported["readback_volume_mm3"].as_f64().unwrap(),
+        authored_volume,
+    );
     assert_eq!(std::fs::read(project).unwrap(), saved);
 }
 
