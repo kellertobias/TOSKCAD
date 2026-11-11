@@ -2,10 +2,10 @@
 use super::*;
 use multicad_rust_kernel::{
     planar_projection::{
-        self, AnalyticFace, DepthRange, FaceTrim, LineCandidate, SpatialEllipseCandidate,
+        self, AnalyticFace, Body, DepthRange, FaceTrim, LineCandidate, SpatialEllipseCandidate,
         SpatialRimCandidate,
     },
-    section_hatch,
+    planar_section, section_hatch,
     trim_curve::{Ellipse as SpatialEllipse, EllipseArc},
 };
 
@@ -14,13 +14,17 @@ pub(in crate::drawing::section) fn project(
     options: DrawingProjection,
     near: f64,
 ) -> Option<Result<Vec<ProjectedVector>, GeometryError>> {
-    let members = projection_members(solids)
-        .into_iter()
-        .map(|(source, solid)| {
-            let (shell, placement) = solid.drawing_warped_shell()?;
-            Some((source, shell, placement, solid.geometry_policy()))
-        })
-        .collect::<Option<Vec<_>>>()?;
+    let members = projection_members(solids);
+    let has_torus = members
+        .iter()
+        .any(|(_, solid)| solid.torus_body().is_some());
+    if !has_torus
+        && members
+            .iter()
+            .any(|(_, solid)| solid.drawing_warped_shell().is_none())
+    {
+        return None;
+    }
     Some((|| {
         let mut scene = Retained {
             options,
@@ -36,13 +40,32 @@ pub(in crate::drawing::section) fn project(
         let depth = DepthRange::new(near, far)
             .and_then(|depth| depth.with_lateral(windows))
             .map_err(planar::projection_error)?;
-        let mut tolerance = GeometryPolicy::default().linear_tolerance_mm;
-        for (source, shell, placement, policy) in members {
+        let tolerance = members.iter().fold(
+            GeometryPolicy::default().linear_tolerance_mm,
+            |tolerance, (_, solid)| tolerance.max(solid.geometry_policy().linear_tolerance_mm),
+        );
+        let mut planar = Vec::new();
+        for (source, solid) in members {
+            let policy = solid.geometry_policy();
+            let hatch = solids[source].hatch;
+            if let Some((body, placement)) = solid.torus_body() {
+                scene.axial_torus(
+                    DrawingSolid { solid, hatch },
+                    placement,
+                    body.radii_mm(),
+                    source,
+                    depth,
+                )?;
+                continue;
+            }
+            let Some((shell, placement)) = solid.drawing_warped_shell() else {
+                planar.push((source, DrawingSolid { solid, hatch }));
+                continue;
+            };
             let frame = Frame::new(placement, options.frame);
             let Some(sides) = window_sides(shell, &frame, windows, near, far) else {
                 continue;
             };
-            tolerance = tolerance.max(policy.linear_tolerance_mm);
             let elevation = curved::warped::elevation(
                 shell,
                 placement,
@@ -78,7 +101,7 @@ pub(in crate::drawing::section) fn project(
                 options,
                 policy,
             )?;
-            scene.near_cut(&frame, &cut, near, source, policy, solids[source].hatch)?;
+            scene.near_cut(&frame, &cut, near, source, policy, hatch)?;
             if let Some(far) = far {
                 let cut = frame.clip(
                     frame.intersection(shell, far, scene.options.maximum_curves, policy)?,
@@ -100,7 +123,47 @@ pub(in crate::drawing::section) fn project(
                 }
             }
         }
-        scene.finish(tolerance)
+        if planar.is_empty() {
+            return scene.finish(tolerance, &[], &[]);
+        }
+        let planar_inputs: Vec<_> = planar
+            .iter()
+            .map(|(_, input)| DrawingSolid {
+                solid: input.solid,
+                hatch: input.hatch,
+            })
+            .collect();
+        let (bodies, _) = planar::prepare(&planar_inputs, options.frame)?;
+        let retained = planar_section::retain(
+            bodies,
+            planar_section::Options {
+                depth: near,
+                windows,
+                tolerance,
+                segment_limit: (scene.options.maximum_curves as usize)
+                    .min(scene.options.maximum_points as usize / 2),
+            },
+            far,
+        )
+        .map_err(planar::projection_error)?;
+        let sources: Vec<_> = planar.iter().map(|(source, _)| *source).collect();
+        let cut_members = planar
+            .into_iter()
+            .zip(retained.trimmed)
+            .zip(&retained.bodies)
+            .filter_map(|((member, trimmed), body)| {
+                (trimmed && !body.faces.is_empty()).then_some(member)
+            });
+        scene.extend(machined::project_members(
+            cut_members,
+            DrawingProjection {
+                section_only: true,
+                section_depth_mm: None,
+                ..scene.options
+            },
+            near,
+        )?)?;
+        scene.finish(tolerance, &retained.bodies, &sources)
     })())
 }
 
@@ -115,6 +178,107 @@ struct Retained {
 }
 
 impl Retained {
+    fn axial_torus(
+        &mut self,
+        input: DrawingSolid<'_>,
+        placement: PlaneFrame,
+        radii: [f64; 2],
+        source: usize,
+        depth: DepthRange,
+    ) -> Result<(), GeometryError> {
+        let near = self
+            .options
+            .section_offset_mm
+            .expect("retained section depth");
+        let [x, y, center_depth] = torus::axial_center(placement, self.options.frame)?;
+        let center = [x, y];
+        let [_, minor] = radii;
+        let policy = input.solid.geometry_policy();
+        let near_delta = near - center_depth;
+        let far_delta = self
+            .options
+            .section_depth_mm
+            .map_or(f64::NEG_INFINITY, |distance| near_delta - distance);
+        if near_delta <= -minor || far_delta >= minor {
+            return Ok(());
+        }
+        let widest = 0_f64.clamp(far_delta, near_delta);
+        let outer = torus::section_radii(radii, widest)[0];
+        let windows = [self.options.section_u_mm, self.options.section_v_mm];
+        let distances = std::array::from_fn::<_, 2, _>(|axis| {
+            windows[axis].map_or(0., |[lo, hi]| center[axis] - center[axis].clamp(lo, hi))
+        });
+        if distances[0].hypot(distances[1]) >= outer {
+            return Ok(());
+        }
+        if windows.iter().enumerate().any(|(axis, window)| {
+            window.is_some_and(|[lo, hi]| center[axis] - outer < lo || center[axis] + outer > hi)
+        }) {
+            return Err(err(
+                GeometryErrorKind::Unsupported,
+                "Rust mixed axial torus sections require the window to contain the retained torus",
+            ));
+        }
+        self.blockers.extend(
+            AnalyticFace::torus([x, y, center_depth], [0., 0., 1.], radii)
+                .map_err(planar::projection_error)?
+                .retained(depth),
+        );
+        if near_delta.abs() < minor {
+            let cut_radii = torus::section_radii(radii, near_delta);
+            let rings = cut_radii
+                .into_iter()
+                .map(|radius| {
+                    let ellipse =
+                        SpatialEllipse::new([x, y, near], [0., 0., 1.], [1., 0., 0.], [radius; 2])
+                            .map_err(|_| invalid_cap())?;
+                    Ok(vec![FaceTrim::Arc(
+                        EllipseArc::new(ellipse, 0., TAU).map_err(|_| invalid_cap())?,
+                    )])
+                })
+                .collect::<Result<_, GeometryError>>()?;
+            self.blockers.extend(
+                AnalyticFace::plane(
+                    [x, y, near],
+                    [0., 0., 1.],
+                    rings,
+                    policy.linear_tolerance_mm,
+                )
+                .map_err(planar::projection_error)?,
+            );
+            let mut vectors = section::project_concentric(center, cut_radii, &input, self.options)?;
+            for vector in &mut vectors {
+                vector.source_index = source;
+            }
+            self.extend(vectors)?;
+        }
+        let mut add_rims = |delta: f64| {
+            self.rims
+                .extend(
+                    torus::section_radii(radii, delta).map(|radius| SpatialRimCandidate {
+                        source,
+                        ellipse: Ellipse {
+                            center,
+                            major: radius,
+                            minor: radius,
+                            u: [1., 0.],
+                            v: [0., 1.],
+                            trim: [0., TAU],
+                        },
+                        depth: center_depth + delta,
+                        depth_sine: 0.,
+                    }),
+                );
+        };
+        if widest != near_delta {
+            add_rims(widest);
+        }
+        if self.options.hidden_lines && far_delta.abs() < minor && far_delta != widest {
+            add_rims(far_delta);
+        }
+        Ok(())
+    }
+
     fn near_cut(
         &mut self,
         frame: &Frame,
@@ -286,15 +450,24 @@ impl Retained {
         Ok(())
     }
 
-    fn finish(mut self, tolerance: f64) -> Result<Vec<ProjectedVector>, GeometryError> {
-        if !self.lines.is_empty() || !self.rims.is_empty() || !self.ellipses.is_empty() {
+    fn finish(
+        mut self,
+        tolerance: f64,
+        bodies: &[Body],
+        sources: &[usize],
+    ) -> Result<Vec<ProjectedVector>, GeometryError> {
+        if !bodies.is_empty()
+            || !self.lines.is_empty()
+            || !self.rims.is_empty()
+            || !self.ellipses.is_empty()
+        {
             let segment_limit = (self.options.maximum_curves as usize)
                 .min(self.options.maximum_points as usize / 2);
             if segment_limit == 0 {
                 return Err(limit());
             }
             let result = planar_projection::project_scene_with_analytic_faces(
-                &[],
+                bodies,
                 &[],
                 planar_projection::SceneExtras {
                     lines: &self.lines,
@@ -313,7 +486,7 @@ impl Retained {
             )
             .map_err(planar::projection_error)?;
             self.output
-                .extend(curved::publish_scene(result, self.options, &[], &[])?);
+                .extend(curved::publish_scene(result, self.options, sources, &[])?);
         }
         self.output.sort_by_key(|vector| vector.source_index);
         Ok(self.output)

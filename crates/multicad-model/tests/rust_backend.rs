@@ -680,6 +680,64 @@ fn verify_torus_drawing_scene(torus: &multicad_kernel::Solid) {
                 .any(|range| (0..2).all(|i| (range[i] - expected[i]).abs() < 1e-6))
         );
     }
+    let retained = project_drawing(
+        &[
+            DrawingSolid {
+                solid: torus,
+                hatch: Some(multicad_kernel::DrawingHatch {
+                    angle_rad: 0.,
+                    spacing_mm: 0.5,
+                    line_width_mm: 0.2,
+                    pattern: multicad_core::materials::HatchPattern::Lines,
+                }),
+            },
+            DrawingSolid {
+                solid: &rear,
+                hatch: None,
+            },
+        ],
+        DrawingProjection {
+            section_offset_mm: Some(0.6),
+            section_depth_mm: Some(4.7),
+            section_u_mm: Some([-9., 9.]),
+            ..options
+        },
+    )
+    .unwrap();
+    let retained_stock = axial_spans(&retained, VectorRole::Visible);
+    assert_eq!(retained_stock.len(), 3);
+    for (actual, expected) in retained_stock
+        .iter()
+        .flatten()
+        .zip([-8., -6., -4., 4., 6., 8.])
+    {
+        assert!((actual - expected).abs() < 1e-6, "{retained_stock:?}");
+    }
+    for (role, radii) in [
+        (VectorRole::Section, [4.2, 5.8]),
+        (VectorRole::Visible, [4., 6.]),
+    ] {
+        for radius in radii {
+            assert!(retained.iter().any(|edge| edge.source_index == 0
+                && edge.role == role
+                && matches!(edge.curve, VectorCurve::Ellipse { major_mm, .. }
+                    if (major_mm - radius).abs() < 1e-8)));
+        }
+    }
+
+    let hatches: Vec<_> = retained
+        .iter()
+        .filter(|edge| edge.role == VectorRole::Hatch)
+        .collect();
+    assert!(!hatches.is_empty());
+    for hatch in hatches {
+        assert_eq!(hatch.source_index, 0);
+        let VectorCurve::Line { a, b } = hatch.curve else {
+            panic!("Expected straight hatch geometry");
+        };
+        let [u, v]: [f64; 2] = std::array::from_fn(|i| (a[i] + b[i]) / 2.);
+        assert!((4.199..=5.801).contains(&u.hypot(v)));
+    }
 
     let screen = PlaneFrame {
         u: [0., 1., 0.],

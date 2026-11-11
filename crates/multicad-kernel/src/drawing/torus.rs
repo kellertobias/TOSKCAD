@@ -24,6 +24,19 @@ fn drawing_frame(torus: PlaneFrame, view: PlaneFrame) -> ([f64; 3], [f64; 3]) {
     (local(offset), local(torus.normal()))
 }
 
+pub(super) fn axial_center(torus: PlaneFrame, view: PlaneFrame) -> Result<[f64; 3], GeometryError> {
+    let (center, [a, b, _]) = drawing_frame(torus, view);
+    if a.hypot(b) > ANGULAR {
+        return Err(unsupported());
+    }
+    Ok(center)
+}
+
+pub(super) fn section_radii([major, minor]: [f64; 2], delta: f64) -> [f64; 2] {
+    let half = ((minor - delta.abs()) * (minor + delta.abs())).sqrt();
+    [major + half, major - half]
+}
+
 fn circle(center: [f64; 2], radius: f64, u: [f64; 2], v: [f64; 2], trim: [f64; 2]) -> Ellipse {
     Ellipse {
         center,
@@ -135,10 +148,7 @@ fn axial_section(
     mut options: DrawingProjection,
 ) -> Result<Vec<ProjectedVector>, GeometryError> {
     let near = depth - z;
-    let radii = |delta: f64| {
-        let half = ((minor - delta.abs()) * (minor + delta.abs())).sqrt();
-        [major + half, major - half]
-    };
+    let radii = |delta| section_radii([major, minor], delta);
     let cuts_near = near.abs() < minor;
     if options.section_only {
         return if cuts_near {
