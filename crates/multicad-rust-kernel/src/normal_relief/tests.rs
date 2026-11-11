@@ -599,6 +599,12 @@ fn footprint_certificate_ignores_depth_and_preserves_source_profiles() {
     )
     .unwrap();
     let motif = Sweep::new(vec![rectangle([2., 2.], [4., 4.])], 1e7, TOL, MIN).unwrap();
+    let short = Sweep::new(motif.rings().to_vec(), 1e-6, 1e-9, 1e-8).unwrap();
+    Relief::certify_footprints(&base, std::slice::from_ref(&short), TOL, MIN, None).unwrap();
+    assert_eq!(
+        Relief::new(base.clone(), vec![short], Kind::Raised, TOL, MIN).err(),
+        Some(Error::Invalid)
+    );
     let before = (base.clone(), motif.clone());
     assert_eq!(
         Relief::new(base.clone(), vec![motif.clone()], Kind::Raised, TOL, MIN).err(),

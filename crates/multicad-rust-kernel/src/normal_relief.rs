@@ -147,7 +147,7 @@ impl Relief {
         let mut boundary_error = 0_f64;
         for motif in &motifs {
             check(interrupt)?;
-            if motif.rings().len() != 1 || motif.height_mm() < minimum_mm {
+            if motif.height_mm() < minimum_mm {
                 return Err(Error::Invalid);
             }
             let signed = if kind == Kind::Raised {
