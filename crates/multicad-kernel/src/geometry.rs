@@ -2538,6 +2538,9 @@ impl Solid {
     }
     pub fn read_step(path: &Path, policy: GeometryPolicy) -> Result<Self, GeometryError> {
         policy.validate()?;
+        if !crate::OCCT_LINKED {
+            return Self::read_rust_step_file(path, policy);
+        }
         let path = crate::step_path(path).map_err(|e| input(e.to_string()))?;
         Self::adopt(
             ffi::read_step(path).map_err(|e| native("read STEP", e))?,

@@ -124,6 +124,45 @@ fn pocket_origins(
 }
 
 impl Solid {
+    pub(super) fn read_rust_step_file(
+        path: &Path,
+        policy: GeometryPolicy,
+    ) -> Result<Self, GeometryError> {
+        use std::io::Read;
+        // Match the independent Part21 parser's 64 MiB input ceiling. Check
+        // the open file, then bound the read as well so concurrent growth
+        // cannot turn a checked input into an unbounded allocation.
+        const MAX_BYTES: u64 = 64 * 1024 * 1024;
+        let io_error =
+            |cause: std::io::Error| error("read STEP", GeometryErrorKind::Input, cause.to_string());
+        let file = std::fs::File::open(path).map_err(io_error)?;
+        let exceeded = || {
+            error(
+                "read STEP",
+                GeometryErrorKind::Limit,
+                "STEP file exceeds the Rust import byte budget",
+            )
+        };
+        if file.metadata().map_err(io_error)?.len() > MAX_BYTES {
+            return Err(exceeded());
+        }
+        let mut bytes = Vec::new();
+        file.take(MAX_BYTES + 1)
+            .read_to_end(&mut bytes)
+            .map_err(io_error)?;
+        if bytes.len() as u64 > MAX_BYTES {
+            return Err(exceeded());
+        }
+        let input = std::str::from_utf8(&bytes).map_err(|_| {
+            error(
+                "read STEP",
+                GeometryErrorKind::Input,
+                "STEP input must be UTF-8 text",
+            )
+        })?;
+        Self::import_rust_step(input, EntityId::new(), policy)?.without_authored_provenance()
+    }
+
     /// Import a verified analytic STEP solid or independent solid group in millimeters.
     pub fn import_rust_step(
         input: &str,
