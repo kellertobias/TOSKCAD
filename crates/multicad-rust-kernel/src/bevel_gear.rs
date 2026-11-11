@@ -243,9 +243,34 @@ impl Bevel {
         if toe * root.sin() / (root - pitch).cos() - bore < minimum_mm {
             return Err(Error::InvalidProfile);
         }
-        let rounding = (fillet / distance).asin();
+        let mut rounding = (fillet / distance).asin();
+        // The fillet touches the meridian plane at γ_t with
+        // cos γ_t = cos(root + ρ) / cos ρ. A meridian between γ_t and the base
+        // cone shorter than the minimum feature is absorbed, as natively:
+        // the rounding grows to the root ρ* of
+        // g(ρ) = cos(root + ρ) − cos β cos ρ, where γ_t = β exactly and the
+        // radially starting involute continues the fillet tangentially.
+        // g decreases, dγ_t/dρ = sin(root) / (sin γ_t cos²ρ), so the fillet
+        // radius changes by at most `minimum · sin β / sin(root)`.
+        let touch_of = |rho: f64| ((root + rho).cos() / rho.cos()).clamp(-1., 1.).acos();
+        let gap = |rho: f64| (root + rho).cos() - base.cos() * rho.cos();
+        let sliver = gap(rounding) >= 0.
+            && base - touch_of(rounding) > 0.
+            && base - touch_of(rounding) < minimum_mm / distance;
+        if sliver {
+            let (mut lo, mut hi) = (rounding, FRAC_PI_2 - root);
+            for _ in 0..200 {
+                let middle = (lo + hi) / 2.;
+                if gap(middle) >= 0. {
+                    lo = middle;
+                } else {
+                    hi = middle;
+                }
+            }
+            rounding = lo;
+        }
         let center_gamma = root + rounding;
-        let meridian = center_gamma <= (base.cos() * rounding.cos()).acos();
+        let meridian = sliver || center_gamma <= (base.cos() * rounding.cos()).acos();
         let mut gear = Self {
             spec,
             rounding,
@@ -263,7 +288,11 @@ impl Bevel {
             pieces: vec![],
         };
         let touch = if meridian {
-            gear.touch_gamma = (center_gamma.cos() / rounding.cos()).acos();
+            gear.touch_gamma = if sliver {
+                base
+            } else {
+                (center_gamma.cos() / rounding.cos()).acos()
+            };
             gear.center_phi = half + (rounding.sin() / center_gamma.sin()).asin();
             gear.center = polar(center_gamma, gear.center_phi);
             polar(gear.touch_gamma, half)

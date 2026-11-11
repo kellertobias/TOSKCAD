@@ -116,3 +116,69 @@ fn rust_bevels_match_native_solids_and_exchange_placed_step() {
         }
     }
 }
+
+#[test]
+fn sliver_meridian_specs_build_like_native_without_meridian_faces() {
+    let policy = GeometryPolicy::default();
+    let base = specification(1., 24, 64, 2., 0.);
+    let distance = base.outer_cone_distance_mm;
+    let root = base.root_cone_angle_rad;
+    let beta = base.base_cone_angle_rad;
+    let length = |fillet: f64| {
+        let rho = (fillet / distance).asin();
+        beta - ((root + rho).cos() / rho.cos()).acos()
+    };
+    let fillet_for = |target: f64| {
+        let (mut lo, mut hi) = (base.root_fillet_radius_mm, distance * 0.5);
+        for _ in 0..200 {
+            let middle = (lo + hi) / 2.;
+            if length(middle) > target * policy.minimum_feature_mm / distance {
+                lo = middle;
+            } else {
+                hi = middle;
+            }
+        }
+        lo
+    };
+    let lo = fillet_for(0.5);
+    let spec = SphericalBevelGear {
+        root_fillet_radius_mm: lo,
+        ..base
+    };
+    let feature = EntityId::new();
+    let rust = Solid::rust_spherical_bevel_gear_named(spec, feature, policy).unwrap();
+    let rust_roles = roles(&rust, feature);
+    assert!(rust_roles.iter().all(|role| !role.contains("meridian")));
+    if !multicad_kernel::OCCT_LINKED {
+        return;
+    }
+    // The native builder drops the sliver face and then cannot close the
+    // cap wire across the remaining gap; the Rust solid stays exact.
+    match Solid::spherical_bevel_gear_named(spec, feature, policy) {
+        Ok(native) => {
+            assert_eq!(rust_roles, roles(&native, feature));
+            let [r, n] = [&rust, &native].map(|s| s.volume_mm3().unwrap());
+            assert!((r - n).abs() / n < 1e-7, "{r} {n}");
+        }
+        Err(error) => println!(
+            "{{\"sliver_fillet_mm\":{lo},\"native\":{:?}}}",
+            error.message
+        ),
+    }
+    // A neighboring fillet keeps a meridian twenty minimum features long;
+    // both kernels build it and the absorbed sliver stays beside it.
+    let neighbor = SphericalBevelGear {
+        root_fillet_radius_mm: fillet_for(20.),
+        ..base
+    };
+    let near = Solid::rust_spherical_bevel_gear_named(neighbor, EntityId::new(), policy).unwrap();
+    // The neighbor's fillet is about 4e-4 mm smaller than the absorbed one.
+    let [r, n] = [&rust, &near].map(|s| s.volume_mm3().unwrap());
+    assert!((r - n).abs() / n < 2e-5, "{r} {n}");
+    let native = Solid::spherical_bevel_gear_named(neighbor, EntityId::new(), policy).unwrap();
+    let reference = native.volume_mm3().unwrap();
+    assert!((n - reference).abs() / reference < 1e-7, "{n} {reference}");
+    println!(
+        "{{\"sliver_volume_mm3\":{r},\"neighbor_rust_mm3\":{n},\"neighbor_native_mm3\":{reference}}}"
+    );
+}
