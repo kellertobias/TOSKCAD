@@ -162,10 +162,7 @@ impl Solid {
         }
         let normal = plane.normal();
         if normal.iter().filter(|&&n| n != 0.).count() != 1 {
-            return Err(mirror_error(
-                GeometryErrorKind::Unsupported,
-                "Rust Mirror requires a world-axis plane normal",
-            ));
+            return self.mirror_placed(plane, feature, policy);
         }
         let axis = axis(normal);
         let reflection = Reflection {
@@ -174,10 +171,7 @@ impl Solid {
         };
         let mut sources = Sources::default();
         let Some((_, cells)) = self.orthogonal_operand(false, &mut sources)? else {
-            return Err(mirror_error(
-                GeometryErrorKind::Unsupported,
-                "Rust Mirror requires world-aligned rectilinear stock without curved cuts",
-            ));
+            return self.mirror_placed(plane, feature, policy);
         };
         let cells: Vec<_> = cells
             .into_iter()
@@ -222,6 +216,66 @@ impl Solid {
             policy,
             provenance: vec![],
             rust_origins: vec![],
+        })
+    }
+
+    fn mirror_placed(
+        &self,
+        plane: PlaneFrame,
+        feature: EntityId,
+        policy: GeometryPolicy,
+    ) -> Result<Self, GeometryError> {
+        // Keep the exact cardinal reflection in the source chart. The two
+        // reflections M and J make M*R*J a proper rigid placement, retaining
+        // the existing boundary identities and outward attachment frames.
+        let mut local = self.share()?;
+        let placement = match &mut local.body {
+            SolidBody::Prism(_, frame)
+            | SolidBody::Linear(_, frame)
+            | SolidBody::Orthogonal(_, frame) => std::mem::take(frame),
+            SolidBody::PolygonPrism(body) => std::mem::take(&mut Rc::make_mut(body).frame),
+            _ => {
+                return Err(mirror_error(
+                    GeometryErrorKind::Unsupported,
+                    "Rust Mirror requires world-aligned rectilinear stock in its source chart without curved cuts",
+                ));
+            }
+        };
+        // Validate admission before recursing, including curved machining and
+        // nonrectilinear polygon profiles, which cannot use this exact chart.
+        if local.orthogonal_cells()?.is_none() {
+            return Err(mirror_error(
+                GeometryErrorKind::Unsupported,
+                "Rust Mirror requires world-aligned rectilinear stock in its source chart without curved cuts",
+            ));
+        }
+        let reflected = local.mirror_cardinal(
+            PlaneFrame {
+                u: [0., 1., 0.],
+                v: [0., 0., 1.],
+                ..Default::default()
+            },
+            feature,
+            policy,
+        )?;
+        let normal = plane.normal();
+        // Plane validation admits axes within an orthonormality tolerance.
+        // Reflection depends only on the direction, not that residual length.
+        let normal_squared = dot(normal, normal);
+        let reflect_vector = |vector: Point| -> Point {
+            let projection = 2. * dot(normal, vector) / normal_squared;
+            std::array::from_fn(|i| vector[i] - projection * normal[i])
+        };
+        let columns = [
+            reflect_vector(placement.u).map(|v| -v),
+            reflect_vector(placement.v),
+            reflect_vector(placement.normal()),
+        ];
+        let origin = reflect_vector(placement.origin);
+        let offset = 2. * dot(normal, plane.origin) / normal_squared;
+        reflected.transformed(RigidTransform {
+            rotation: std::array::from_fn(|i| std::array::from_fn(|j| columns[j][i])),
+            translation_mm: std::array::from_fn(|i| origin[i] + offset * normal[i]),
         })
     }
 }
