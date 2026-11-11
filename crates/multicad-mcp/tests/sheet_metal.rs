@@ -312,7 +312,7 @@ fn mcp_exports_a_developed_sheet_dxf_into_the_export_folder() {
 }
 
 #[test]
-fn mcp_rust_backend_builds_and_exports_flat_and_single_bend_sheets() {
+fn mcp_rust_backend_builds_and_exports_flat_single_and_adjacent_bend_sheets() {
     let folder = tempfile::tempdir().unwrap();
     let host = Headless::with_geometry_backend(
         Workspace::new(Document::new("Rust sheet DXF").unwrap()).unwrap(),
@@ -401,32 +401,65 @@ fn mcp_rust_backend_builds_and_exports_flat_and_single_bend_sheets() {
         &sheet(&listed, "Lid")["volume_mm3"],
         4000. + 76. * (10. + 0.75 * pi) - 9. * pi,
     );
-    let before = host.document();
-    let unsupported = [
-        (
-            json!([
+    let adjacent = run(
+        "set_sheet_forming",
+        json!({ "expected_revision": 5, "feature": blank["feature"],
+            "flanges": [
                 { "edge": 0, "kind": "bend", "length": mm(10.), "end_inset": mm(2.) },
                 { "edge": 1, "kind": "bend", "length": mm(10.), "start_inset": mm(2.) }
-            ]),
-            "two opposite bends",
-        ),
-        (
-            json!([
+            ],
+            "cutouts": [{ "shape": "circle", "center_mm": [40, 25], "diameter": mm(6.) }] }),
+    )
+    .unwrap();
+    assert_eq!(adjacent["status"], "applied");
+    assert_eq!(adjacent["revision"], 6);
+    let listed = run("sheet_metal", json!({})).unwrap();
+    let bracket = sheet(&listed, "Lid");
+    assert_eq!(bracket["solid_count"], 1);
+    near(
+        &bracket["volume_mm3"],
+        4000. + (78. + 48.) * (10. + 0.75 * pi) - 9. * pi,
+    );
+    let flat_area = 4000. + (78. + 48.) * (10. + 0.7 * pi) - 9. * pi;
+    near(&bracket["flat_area_mm2"], flat_area);
+    let bends = bracket["bends"].as_array().unwrap();
+    assert_eq!(bends.len(), 2);
+    for (bend, edge, length) in [(&bends[0], 0, 78.), (&bends[1], 1, 48.)] {
+        assert_eq!(bend["edge"], edge);
+        near(&bend["length_mm"], length);
+    }
+    let out = run(
+        "export_sheet_dxf",
+        json!({ "part": blank["part"], "file_name": "adjacent-lid.dxf" }),
+    )
+    .unwrap();
+    assert_eq!(out["revision"], 6);
+    assert_eq!(out["bends"].as_array().unwrap().len(), 2);
+    for (exported, reported) in out["bends"].as_array().unwrap().iter().zip(bends) {
+        assert_eq!(exported["edge"], reported["edge"]);
+        assert_eq!(exported["length_mm"], reported["length_mm"]);
+        assert_eq!(exported["line_mm"], reported["line_mm"]);
+    }
+    near(&out["area_mm2"], flat_area);
+    let bytes = std::fs::read(folder.path().join("adjacent-lid.dxf")).unwrap();
+    assert_eq!(out["bytes"], bytes.len());
+    let text = String::from_utf8(bytes).unwrap();
+    assert!(text.contains("\n8\nBEND_UP\n") && text.contains("\n8\nCUT_INNER\n"));
+    assert!(text.contains("cutout.0 D6.000"));
+
+    let before = host.document();
+    let refusal = run(
+        "set_sheet_forming",
+        json!({ "expected_revision": 6, "feature": blank["feature"],
+            "flanges": [
                 { "edge": 0, "kind": "bend", "length": mm(10.) },
                 { "edge": 1, "kind": "bend", "length": mm(10.) }
-            ]),
-            "touch",
-        ),
-    ];
-    for (flanges, reason) in unsupported {
-        let refusal = run(
-            "set_sheet_forming",
-            json!({ "expected_revision": 5, "feature": blank["feature"], "flanges": flanges }),
-        )
-        .unwrap_err();
-        assert!(refusal.message.contains(reason), "{refusal:?}");
-        assert_eq!(host.document(), before);
-    }
+            ] }),
+    )
+    .unwrap_err();
+    assert!(refusal.message.contains("touch"), "{refusal:?}");
+    assert_eq!(host.document(), before);
+    assert_eq!(run("sheet_metal", json!({})).unwrap()["revision"], 6);
 }
 
 #[test]
