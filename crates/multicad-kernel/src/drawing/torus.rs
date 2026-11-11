@@ -1,4 +1,4 @@
-//! Exact axial and transverse torus silhouettes and axial cuts.
+//! Exact axial and transverse torus silhouettes and principal plane cuts.
 use super::*;
 use multicad_rust_kernel::{
     curved_projection::{Curve, Detail, Edge, Ellipse},
@@ -11,7 +11,7 @@ const ANGULAR: f64 = 64. * f64::EPSILON;
 fn unsupported() -> GeometryError {
     err(
         GeometryErrorKind::Unsupported,
-        "Rust torus projections require an axial or transverse view. Torus sections require an axial view.",
+        "Rust torus drawings require an axial or transverse view. Retained sections require an axial view, and transverse cuts must pass through the torus axis.",
     )
 }
 
@@ -111,10 +111,25 @@ pub(super) fn project(
     let center = [x, y];
     let axial = a.hypot(b) <= ANGULAR;
     if let Some(depth) = options.section_offset_mm {
-        if !axial || options.detail.is_some() {
+        if options.detail.is_some() {
             return Err(unsupported());
         }
-        return axial_section(input, center, z, [major, minor], depth, options);
+        if axial {
+            return axial_section(input, center, z, [major, minor], depth, options);
+        }
+        if options.section_only && facing.abs() <= ANGULAR {
+            let delta = depth - z;
+            if delta.abs() >= major + minor {
+                return Ok(Vec::new());
+            }
+            let roundoff = ANGULAR * z.abs().max(depth.abs()).max(major);
+            if delta.abs() <= roundoff {
+                let length = a.hypot(b);
+                let across = [-b / length, a / length];
+                return diametral_cut(input, center, across, [major, minor], options);
+            }
+        }
+        return Err(unsupported());
     }
     if !axial {
         if facing.abs() > ANGULAR {
@@ -137,6 +152,33 @@ pub(super) fn project(
         })
         .collect();
     curved::publish(edges, options, 0)
+}
+
+fn diametral_cut(
+    input: &DrawingSolid<'_>,
+    center: [f64; 2],
+    across: [f64; 2],
+    [major, minor]: [f64; 2],
+    mut options: DrawingProjection,
+) -> Result<Vec<ProjectedVector>, GeometryError> {
+    let mut output = Vec::new();
+    // The plane through the revolution axis cuts one tube circle on each
+    // side. The material between those disjoint circles is empty.
+    for offset in [-major, major] {
+        let disk_center = std::array::from_fn(|i| across[i].mul_add(offset, center[i]));
+        let vectors = section::project_concentric(disk_center, [minor, 0.], input, options)?;
+        consume_vectors(&mut options, &vectors);
+        output.extend(vectors);
+    }
+    Ok(output)
+}
+
+fn consume_vectors(options: &mut DrawingProjection, vectors: &[ProjectedVector]) {
+    options.maximum_curves -= vectors.len() as u32;
+    options.maximum_points -= vectors
+        .iter()
+        .map(|vector| vector.preview_mm.len() as u32)
+        .sum::<u32>();
 }
 
 fn axial_section(
@@ -177,11 +219,7 @@ fn axial_section(
                 vector.role = role;
             }
         }
-        options.maximum_curves -= vectors.len() as u32;
-        options.maximum_points -= vectors
-            .iter()
-            .map(|vector| vector.preview_mm.len() as u32)
-            .sum::<u32>();
+        consume_vectors(&mut options, &vectors);
         output.extend(vectors);
         Ok(())
     };

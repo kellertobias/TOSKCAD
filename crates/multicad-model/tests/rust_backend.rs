@@ -744,6 +744,51 @@ fn verify_torus_drawing_scene(torus: &multicad_kernel::Solid) {
         v: [0., 0., 1.],
         ..Default::default()
     };
+    let transverse_cut = DrawingProjection {
+        frame: screen,
+        section_only: true,
+        section_offset_mm: Some(0.),
+        ..options
+    };
+    let middle = stock([-1., -2., -2.], [2, 4, 1]);
+    let transverse = project(&[torus, &middle], transverse_cut);
+    assert_eq!(transverse.len(), 6);
+    for x in [-5., 5.] {
+        assert!(transverse.iter().any(|edge| edge.source_index == 0
+            && edge.role == VectorRole::Section
+            && matches!(edge.curve, VectorCurve::Ellipse {
+                center: [u, v], major_mm: 1., minor_mm: 1., ..
+            } if u == x && v == 0.)));
+    }
+    let clipped = project(
+        &[torus],
+        DrawingProjection {
+            section_u_mm: Some([5., 7.]),
+            ..transverse_cut
+        },
+    );
+    assert!(
+        clipped
+            .iter()
+            .any(|edge| matches!(edge.curve, VectorCurve::Line { a, b }
+        if a[0] == 5. && b[0] == 5. && (a[1] - b[1]).abs() == 2.))
+    );
+    assert!(
+        clipped
+            .iter()
+            .flat_map(|edge| &edge.preview_mm)
+            .all(|p| p[0] >= 5. - 1e-7)
+    );
+    assert!(
+        project(
+            &[torus],
+            DrawingProjection {
+                section_offset_mm: Some(6.),
+                ..transverse_cut
+            }
+        )
+        .is_empty()
+    );
     let front = stock([3., -7., -2.], [1, 14, 4]);
     let side = project(
         &[torus, &front],
@@ -832,6 +877,18 @@ fn verify_torus_drawing_scene(torus: &multicad_kernel::Solid) {
         };
         let native_torus = native(torus, "torus.step");
         let bounds = native_torus.bounds().unwrap();
+        let native_transverse = project(&[&native_torus], transverse_cut);
+        for expected in [-5., 5.] {
+            assert!(
+                native_transverse
+                    .iter()
+                    .any(|edge| edge.role == VectorRole::Section
+                        && matches!(edge.curve, VectorCurve::Ellipse {
+                    center: [u, v], major_mm, minor_mm, ..
+                } if (u - expected).abs() < 1e-6 && v.abs() < 1e-6
+                    && (major_mm - 1.).abs() < 1e-6 && (minor_mm - 1.).abs() < 1e-6))
+            );
+        }
         assert!((bounds.min[0] + 6.).abs() < 1e-6 && (bounds.max[0] - 6.).abs() < 1e-6);
         let reference = project(&[&native_torus, &native(&rear, "stock.step")], options);
         let reference = axial_spans(&reference, VectorRole::Visible);
