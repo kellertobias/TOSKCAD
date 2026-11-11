@@ -84,6 +84,19 @@ impl Writer {
         }
     }
 
+    /// Append one exact rounded cylinder without changing generic import admission.
+    pub fn append_rounded_cylinder(
+        &mut self,
+        geometry: &crate::rounded_cylinder::RoundedCylinder,
+        origin: Point,
+        u: Point,
+        v: Point,
+        tolerance_mm: f64,
+    ) -> Result<(), StepError> {
+        let placement = Placement::new(origin, u, v)?;
+        self.append(|file| super::rounded_cylinder::encode(file, geometry, placement, tolerance_mm))
+    }
+
     /// Append a complete spherical face. The vertex loop denotes its
     /// collapsed south pole, while the surface chart supplies the seam.
     pub fn append_sphere(

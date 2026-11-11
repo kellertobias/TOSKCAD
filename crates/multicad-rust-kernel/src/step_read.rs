@@ -21,10 +21,14 @@ mod mixed;
 mod nonplanar_loft;
 mod part21;
 mod round;
+mod rounded_cylinder;
 mod sphere;
 mod spline;
 mod spline_sweep;
 mod torus;
+pub use rounded_cylinder::{
+    ImportedRoundedCylinder, read_rounded_cylinder, read_rounded_cylinder_compound,
+};
 pub use spline::SplineEdge;
 mod stadium;
 mod warped;
