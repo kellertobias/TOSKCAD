@@ -101,7 +101,7 @@ impl Wheel {
         let v = z_mm / m;
         let valid = tolerance_mm > 0. && v.abs() <= self.half_width();
         valid.then_some(()).ok_or(MeshError::InvalidOptions)?;
-        let [_, bend] = self.section_bounds().ok_or(MeshError::BudgetExceeded)?;
+        let [_, bend, _] = self.section_bounds().ok_or(MeshError::BudgetExceeded)?;
         let pieces = (bend * m / (8. * tolerance_mm)).sqrt().ceil().max(1.);
         let blank = self.blank() * m;
         let span = self.span();

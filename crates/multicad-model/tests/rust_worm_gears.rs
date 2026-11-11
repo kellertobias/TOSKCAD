@@ -411,4 +411,28 @@ fn rust_worm_pair_members_draw_along_their_placed_axes() {
     )
     .unwrap();
     assert!(cut.len() > 40 && cut.iter().all(|edge| edge.role == VectorRole::Section));
+    // The placed wheel viewed along its axis has visible near-face and
+    // far-side lines and hidden far-side lines.
+    let wheel_view = project_drawing(
+        &[DrawingSolid {
+            solid: wheel_solid,
+            hatch: None,
+        }],
+        DrawingProjection {
+            frame: axial(wheel_solid),
+            hidden_lines: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let count = |role: VectorRole| wheel_view.iter().filter(|edge| edge.role == role).count();
+    assert!(count(VectorRole::Visible) > 400 && count(VectorRole::Hidden) > 400);
+    let tip = wheel_view
+        .iter()
+        .filter(|edge| {
+            edge.role == VectorRole::Visible
+                && matches!(edge.curve, VectorCurve::Ellipse { major_mm, .. } if (major_mm - 21.).abs() < 1e-9)
+        })
+        .count();
+    assert!(tip >= 80, "{tip}");
 }

@@ -100,7 +100,9 @@ pub struct Wheel {
     half: f64,
     slope: f64,
     span: f64,
-    pub(crate) section_bounds: Cache<Option<[f64; 2]>>,
+    pub(crate) section_bounds: Cache<Option<[f64; 3]>>,
+    pub(crate) view_structure: Cache<bool>,
+    pub(crate) exit_monotone: Cache<[bool; 2]>,
     pub(crate) remainders: Cache<Option<Box<[super::wheel_bounds::Remainder; 5]>>>,
 }
 
@@ -151,6 +153,8 @@ impl Wheel {
             slope: super::worm::slope(),
             span: PI / f64::from(teeth),
             section_bounds: Cache::default(),
+            view_structure: Cache::default(),
+            exit_monotone: Cache::default(),
             remainders: Cache::default(),
         };
         wheel.check(minimum_mm)?;
@@ -243,7 +247,7 @@ impl Wheel {
         self.center - (CUTTER_TIP * CUTTER_TIP - v * v).sqrt()
     }
 
-    fn contact<T: Real>(&self, r: T, v: T, side: f64) -> [T; 3] {
+    pub(crate) fn contact<T: Real>(&self, r: T, v: T, side: f64) -> [T; 3] {
         let c = T::constant;
         let q = (r * r - v * v).sqrt();
         let z = c(side) * (c(self.half) - c(self.slope) * (r - c(5.))) - c(LEAD) * (v / r).asin();
@@ -329,7 +333,13 @@ impl Wheel {
     ) -> ([T; 2], T) {
         let c = T::constant;
         match piece {
-            Piece::FlankMinus => self.flank_polar(crossing + (c(CUTTER_TIP) - crossing) * u, v, 1.),
+            // The exit radius and `u` each enter once, which keeps interval
+            // enclosures tight.
+            Piece::FlankMinus => self.flank_polar(
+                c(CUTTER_TIP) - (c(CUTTER_TIP) - crossing) * (c(1.) - u),
+                v,
+                1.,
+            ),
             Piece::FlankPlus => {
                 self.flank_polar(c(CUTTER_TIP) - (c(CUTTER_TIP) - crossing) * u, v, -1.)
             }

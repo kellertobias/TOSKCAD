@@ -15,14 +15,30 @@
 //! component everywhere, so there are no further silhouettes.
 //!
 //! A cut perpendicular to either axis is the exact planar section, drawn
-//! within the chord tolerance. Views of a generated wheel along its axis
-//! need flank visibility inside the twisted tooth spaces and remain
-//! unavailable, as do non-axial views, details and lateral crops of views.
+//! within the chord tolerance. Generated wheels viewed along their axis use
+//! the proven visibility structure of `worm_gear/visibility.rs`: a boundary
+//! point is visible exactly when its projection lies in the open tooth space
+//! of the near face. Non-axial views, details and lateral crops of views
+//! remain unavailable.
 use super::*;
 use multicad_core::references::ReferenceFrame;
+use multicad_rust_kernel::worm_gear::{ViewCurve, ViewError};
 
 fn unsupported(message: &str) -> GeometryError {
     err(GeometryErrorKind::Unsupported, message)
+}
+
+fn view_error(cause: ViewError) -> GeometryError {
+    match cause {
+        ViewError::Unproven => unsupported(
+            "Rust worm-wheel views need the proven axial visibility structure, which this wheel does not satisfy",
+        ),
+        ViewError::Limit => err(
+            GeometryErrorKind::Limit,
+            "Rust worm-wheel view exceeded its curve budget",
+        ),
+        ViewError::Invalid => err(GeometryErrorKind::Input, "Invalid Rust worm-wheel view"),
+    }
 }
 
 fn budget(cause: multicad_rust_kernel::display::MeshError) -> GeometryError {
@@ -99,23 +115,70 @@ pub(in crate::drawing) fn project_worm_gearing(
             section::sampled::publish(input, project_rings(rings, z), options)
         })());
     }
-    let Some((worm, _)) = input.solid.rust_worm() else {
-        return Some(Err(unsupported(
-            "Rust generated worm-wheel drawings support section-only cuts perpendicular to the wheel axis",
-        )));
-    };
     if options.section_u_mm.is_some() || options.section_v_mm.is_some() {
         return Some(Err(unsupported(
-            "Rust worm views do not support lateral section crops",
+            "Rust worm and worm-wheel views do not support lateral section crops",
         )));
     }
     let policy = input.solid.geometry_policy();
-    let half = worm.length_mm() / 2.;
-    let ends = [-half, half].map(|z| offset + alignment * z);
     let near = options.section_offset_mm.unwrap_or(f64::INFINITY);
     let far = options
         .section_depth_mm
         .map_or(f64::NEG_INFINITY, |distance| near - distance);
+    let Some((worm, _)) = input.solid.rust_worm() else {
+        let (wheel, _) = input.solid.rust_worm_wheel()?;
+        let half = wheel.half_width_mm();
+        let ends = [-half, half].map(|z| offset + alignment * z);
+        let top = near.min(ends[0].max(ends[1]));
+        let bottom = far.max(ends[0].min(ends[1]));
+        if top - bottom <= policy.linear_tolerance_mm {
+            return Some(Ok(Vec::new()));
+        }
+        let [near_z, far_z] = [top, bottom].map(|depth| local_height(depth).clamp(-half, half));
+        let cut = top < ends[0].max(ends[1]) - policy.linear_tolerance_mm;
+        return Some((|| {
+            let mut vectors = Vec::new();
+            if cut {
+                let rings = wheel.section_rings(near_z, chord, limit).map_err(budget)?;
+                vectors = section::sampled::publish(input, project_rings(rings, near_z), options)?;
+            }
+            let curves = wheel
+                .axial_view([near_z, far_z], !cut, options.hidden_lines, chord, limit)
+                .map_err(view_error)?;
+            let mut edges = Vec::new();
+            for curve in curves {
+                match curve {
+                    ViewCurve::Arc {
+                        z_mm,
+                        radius_mm,
+                        start_rad,
+                        sweep_rad,
+                        hidden,
+                    } => edges.push(arc(
+                        &screen,
+                        place,
+                        z_mm,
+                        radius_mm,
+                        [start_rad, sweep_rad],
+                        hidden,
+                    )?),
+                    ViewCurve::Polyline { points_mm, hidden } => {
+                        for pair in points_mm.windows(2) {
+                            let [a, b] =
+                                [pair[0], pair[1]].map(|p| screen.point(place([p[0], p[1]], p[2])));
+                            edges.push(Edge {
+                                hidden,
+                                curve: Curve::Line([a, b]),
+                            });
+                        }
+                    }
+                }
+            }
+            publish_after(vectors, edges, options)
+        })());
+    };
+    let half = worm.length_mm() / 2.;
+    let ends = [-half, half].map(|z| offset + alignment * z);
     let top = near.min(ends[0].max(ends[1]));
     let bottom = far.max(ends[0].min(ends[1]));
     if top - bottom <= policy.linear_tolerance_mm {
@@ -183,17 +246,7 @@ pub(in crate::drawing) fn project_worm_gearing(
                 }
             }
         }
-        let mut remaining = options;
-        remaining.maximum_curves = remaining
-            .maximum_curves
-            .checked_sub(vectors.len() as u32)
-            .ok_or_else(|| budget(multicad_rust_kernel::display::MeshError::BudgetExceeded))?;
-        remaining.maximum_points -= vectors
-            .iter()
-            .map(|v| v.preview_mm.len() as u32)
-            .sum::<u32>();
-        vectors.extend(curved::publish(edges, remaining, 0)?);
-        Ok(vectors)
+        publish_after(vectors, edges, options)
     })())
 }
 
@@ -237,4 +290,23 @@ fn arc(
             sweep_rad: sweep,
         }))?,
     })
+}
+
+/// Publish projected edges after already published section vectors.
+fn publish_after(
+    mut vectors: Vec<ProjectedVector>,
+    edges: Vec<Edge>,
+    options: DrawingProjection,
+) -> Result<Vec<ProjectedVector>, GeometryError> {
+    let mut remaining = options;
+    remaining.maximum_curves = remaining
+        .maximum_curves
+        .checked_sub(vectors.len() as u32)
+        .ok_or_else(|| budget(multicad_rust_kernel::display::MeshError::BudgetExceeded))?;
+    remaining.maximum_points -= vectors
+        .iter()
+        .map(|v| v.preview_mm.len() as u32)
+        .sum::<u32>();
+    vectors.extend(curved::publish(edges, remaining, 0)?);
+    Ok(vectors)
 }
