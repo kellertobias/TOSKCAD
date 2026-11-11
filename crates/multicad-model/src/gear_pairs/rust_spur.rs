@@ -1,4 +1,5 @@
-//! Positive-clearance certificates for unshifted external rotary pairs.
+//! Positive-clearance certificates for unshifted external rotary pairs and
+//! internal ring/spur pinion pairs.
 use super::*;
 use multicad_core::model::GearFamily;
 use multicad_kernel::rust_kernel::spur_gear::clearance::ResultKind;
@@ -13,6 +14,8 @@ fn check(
 ) -> Result<(), ModelError> {
     let result = if matches!(family, GearFamily::Herringbone | GearFamily::Helical) {
         a.certify_rust_herringbone_pair(b, policy, interrupt)
+    } else if family == GearFamily::InternalRing {
+        a.certify_rust_internal_pair(b, policy, interrupt)
     } else {
         a.certify_rust_spur_pair(b, policy, interrupt)
     }
@@ -68,26 +71,48 @@ pub(crate) fn validate(
             );
             continue;
         }
+        // A ring/pinion pair is certified with the ring as the first operand.
+        let families = resolved.gears.each_ref().map(|gear| gear.family());
+        let ring = families
+            .iter()
+            .position(|&member| member == GearFamily::InternalRing);
+        let internal = ring.is_some();
+        let order = if ring == Some(1) { [1, 0] } else { [0, 1] };
+        let expected = |index: usize| {
+            if internal && index == order[0] {
+                GearFamily::InternalRing
+            } else if internal {
+                GearFamily::Spur
+            } else {
+                family
+            }
+        };
         if shifted_engagement(document, source.parameters.gears)
-            || !matches!(
-                family,
-                GearFamily::Spur | GearFamily::Herringbone | GearFamily::Helical
-            )
-            || resolved.gears.iter().any(|gear| {
+            || !(internal
+                || matches!(
+                    family,
+                    GearFamily::Spur | GearFamily::Herringbone | GearFamily::Helical
+                ))
+            || resolved.gears.iter().enumerate().any(|(index, gear)| {
                 !gear.rotary().is_some_and(|rotary| {
-                    rotary.family == family
+                    rotary.family == expected(index)
                         && rotary.profile_shift_coefficient == 0.
-                        && (rotary.hub.is_none() || family != GearFamily::Spur)
+                        && (rotary.hub.is_none() || rotary.family != GearFamily::Spur)
                 })
             })
         {
             return Err(error(
                 Some(pair),
-                "Rust gear-pair interference requires unshifted external spur, helical or continuous herringbone members; spur hubs require an additional certificate",
+                "Rust gear-pair interference requires unshifted external spur, helical or continuous herringbone members, or an internal ring with a spur pinion; spur hubs require an additional certificate",
             ));
         }
-        let [a, b] = source.parameters.gears;
-        let local = [solids.get(&a), solids.get(&b)];
+        let family = if internal {
+            GearFamily::InternalRing
+        } else {
+            family
+        };
+        let features = order.map(|index| source.parameters.gears[index]);
+        let local = features.map(|feature| solids.get(&feature));
         let [Some(a), Some(b)] = local else {
             return Err(error(
                 Some(pair),
@@ -101,8 +126,8 @@ pub(crate) fn validate(
         for &drive in &phases {
             checkpoint(interrupt)?;
             let sample = sample_document(document, pair, &source, drive)?;
-            let poses = source.outputs.instances.map(|instance| {
-                model::resolve_instance_pose(&sample, instance, evaluated)
+            let poses = order.map(|index| {
+                model::resolve_instance_pose(&sample, source.outputs.instances[index], evaluated)
                     .map_err(|e| error(Some(pair), e))
             });
             let [pa, pb] = poses;
@@ -128,8 +153,8 @@ pub(crate) fn validate(
         check(
             pair,
             [
-                inputs.current_member(pair, &source, 0)?,
-                inputs.current_member(pair, &source, 1)?,
+                inputs.current_member(pair, &source, order[0])?,
+                inputs.current_member(pair, &source, order[1])?,
             ],
             current,
             family,
@@ -154,6 +179,8 @@ pub(crate) fn validate(
                 "Rust full-axial positive-clearance certificates for the current pose and nine sampled phases of one unshifted continuous herringbone tooth cycle. Continuous motion, strength and manufacturing fit are outside this check."
             } else if family == GearFamily::Helical {
                 "Rust full-axial positive-clearance certificates for the current pose and nine sampled phases of one unshifted helical tooth cycle. Continuous motion, strength and manufacturing fit are outside this check."
+            } else if internal {
+                "Rust positive-clearance certificates for the current pose and nine sampled phases over one tooth cycle of an unshifted internal ring and spur pinion, including nesting of the pinion inside the ring cavity. Continuous motion, strength and manufacturing fit are outside this check."
             } else {
                 "Rust positive-clearance certificates for the current pose and nine sampled phases over one unshifted external spur tooth cycle. Continuous motion, strength and manufacturing fit are outside this check."
             },
