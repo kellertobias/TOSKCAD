@@ -1528,8 +1528,17 @@ fn rust_stdio_imports_updates_and_reopens_kicad_with_an_embedded_component() {
 
 #[test]
 fn rust_stdio_reopens_the_24_36_herringbone_pair_and_checks_the_current_drive() {
+    twisted_pair_stdio_roundtrip("herringbone");
+}
+
+#[test]
+fn rust_stdio_reopens_the_24_36_helical_pair_and_checks_the_current_drive() {
+    twisted_pair_stdio_roundtrip("helical");
+}
+
+fn twisted_pair_stdio_roundtrip(family: &str) {
     let directory = tempfile::tempdir().unwrap();
-    let project = directory.path().join("continuous-herringbone.tcd");
+    let project = directory.path().join(format!("continuous-{family}.tcd"));
     let arguments = [
         "--rust-model",
         "--project",
@@ -1540,7 +1549,7 @@ fn rust_stdio_reopens_the_24_36_herringbone_pair_and_checks_the_current_drive() 
     let scalar = |value: f64, unit: &str| json!({"value":value,"unit":unit});
     let recipe = |teeth, hand| {
         json!({
-            "family":"herringbone",
+            "family":family,
             "teeth":scalar(teeth,"count"),
             "hand":hand,
             "module":length(2.),
@@ -1555,7 +1564,7 @@ fn rust_stdio_reopens_the_24_36_herringbone_pair_and_checks_the_current_drive() 
         "set_gear_pair",
         json!({
             "expected_revision":0,
-            "name":"Continuous 24/36 herringbone pair",
+            "name":format!("Continuous 24/36 {family} pair"),
             "first":recipe(24.,"right"),
             "second":recipe(36.,"left")
         }),
@@ -1597,7 +1606,7 @@ fn rust_stdio_reopens_the_24_36_herringbone_pair_and_checks_the_current_drive() 
         .into_iter()
         .enumerate()
     {
-        let file_name = format!("herringbone-{index}.step");
+        let file_name = format!("{family}-{index}.step");
         let exported = reopened.ok(
             "export_step",
             json!({"part":created["members"][index]["part"],"file_name":file_name}),
