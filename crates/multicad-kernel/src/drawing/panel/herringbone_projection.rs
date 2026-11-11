@@ -28,14 +28,52 @@ pub(in crate::drawing) fn project_herringbone(
     );
     let height = body.profile().height_mm();
     let ends = [offset, height.mul_add(alignment, offset)];
+    let full_ends = body
+        .profile()
+        .axial_bounds()
+        .map(|z| z.mul_add(alignment, offset));
     let near = options.section_offset_mm.unwrap_or(f64::INFINITY);
     let far = options
         .section_depth_mm
         .map_or(f64::NEG_INFINITY, |distance| near - distance);
+    let full_top = near.min(full_ends[0].max(full_ends[1]));
+    let full_bottom = far.max(full_ends[0].min(full_ends[1]));
+    if full_top - full_bottom <= policy.linear_tolerance_mm {
+        return Some(Ok(Vec::new()));
+    }
     let top = near.min(ends[0].max(ends[1]));
     let bottom = far.max(ends[0].min(ends[1]));
     if top - bottom <= policy.linear_tolerance_mm {
-        return Some(Ok(Vec::new()));
+        let cut = full_top < full_ends[0].max(full_ends[1]) - policy.linear_tolerance_mm;
+        let cap = DrawingSolid {
+            solid: input.solid,
+            hatch: input.hatch.filter(|_| cut),
+        };
+        return Some(
+            section::project_concentric(
+                [
+                    dot(placement.origin, u) - dot(options.frame.origin, u),
+                    dot(placement.origin, v) - dot(options.frame.origin, v),
+                ],
+                [
+                    body.profile().hub().expect("retained hub").radius_mm,
+                    body.profile()
+                        .bore()
+                        .and_then(multicad_rust_kernel::normal_sweep::Edge::radius_mm)
+                        .unwrap_or(0.),
+                ],
+                &cap,
+                options,
+            )
+            .map(|mut vectors| {
+                if !cut {
+                    for vector in &mut vectors {
+                        vector.role = VectorRole::Visible;
+                    }
+                }
+                vectors
+            }),
+        );
     }
     let [near_z, far_z] =
         [top, bottom].map(|depth| ((depth - offset) / alignment).clamp(0., height));
@@ -122,6 +160,45 @@ pub(in crate::drawing) fn project_herringbone(
             for edge in profile.outline() {
                 output.rim_flank(*edge, pitch, front_span, &project)?;
             }
+        }
+        let hub_front = full_top > ends[0].max(ends[1]) + policy.linear_tolerance_mm;
+        let hub_rear = full_bottom < ends[0].min(ends[1]) - policy.linear_tolerance_mm;
+        if hub_front || (hub_rear && options.hidden_lines) {
+            let cut =
+                hub_front && full_top < full_ends[0].max(full_ends[1]) - policy.linear_tolerance_mm;
+            let cap = DrawingSolid {
+                solid: input.solid,
+                hatch: input.hatch.filter(|_| cut),
+            };
+            let bore = body
+                .profile()
+                .bore()
+                .and_then(multicad_rust_kernel::normal_sweep::Edge::radius_mm)
+                .unwrap_or(0.);
+            let mut rims = section::project_concentric(
+                screen.point(placement.origin),
+                [
+                    body.profile().hub().expect("hub extension").radius_mm,
+                    if cut { bore } else { 0. },
+                ],
+                &cap,
+                output.options,
+            )?;
+            if cut {
+                output.vectors.retain(|vector| !matches!(vector.curve, VectorCurve::Ellipse { major_mm, .. } if (major_mm - bore).abs() < policy.linear_tolerance_mm));
+            }
+            for rim in &mut rims {
+                if rim.role != VectorRole::Hatch {
+                    rim.role = if cut {
+                        VectorRole::Section
+                    } else if hub_front {
+                        VectorRole::Visible
+                    } else {
+                        VectorRole::Hidden
+                    };
+                }
+            }
+            output.vectors.extend(rims);
         }
         Ok(output.vectors)
     })())

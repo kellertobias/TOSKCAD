@@ -598,6 +598,11 @@ fn rotary_pair_roundtrip(family: GearFamily) {
         pinion.parameters.family = family;
         pinion.parameters.hand = GearHand::Right;
         pinion.parameters.helix_angle = angle(15.);
+        pinion.parameters.hub = Some(GearHub {
+            diameter: length(16.),
+            axial_start: length(-2.),
+            axial_end: length(7.),
+        });
     }
     let wheel = GearRequest::new(
         "Spur wheel",
@@ -920,5 +925,82 @@ fn rust_herringbone_sections_rotate_the_tooth_profile_and_preserve_the_bore() {
         };
         let [x, y]: [f64; 2] = std::array::from_fn(|i| a[i].midpoint(b[i]));
         assert!(x.hypot(y) >= 3.9999);
+    }
+}
+
+#[test]
+fn rust_twisted_hub_drawings_keep_the_bore_in_extended_and_retained_sections() {
+    use multicad_core::drawings::{VectorCurve, VectorRole};
+    use multicad_kernel::{DrawingProjection, DrawingSolid, project_drawing};
+    for family in [GearFamily::Helical, GearFamily::Herringbone] {
+        let mut session = Session::new(Document::new("Twisted hub").unwrap()).unwrap();
+        let request = GearRequest::new(
+            "Hubbed gear",
+            GearParameters {
+                family,
+                hand: GearHand::Right,
+                helix_angle: angle(20.),
+                face_width: length(8.),
+                hub: Some(GearHub {
+                    diameter: length(16.),
+                    axial_start: length(-2.),
+                    axial_end: length(10.),
+                }),
+                ..Default::default()
+            },
+        );
+        let prepared = model::prepare_gear(&session, 0, actor(), &request).unwrap();
+        session.commit(prepared.prepared).unwrap();
+        let compiled = Compiler::default()
+            .compile_with_backend(
+                session.document(),
+                session.revision(),
+                GeometryBackend::Rust,
+                None,
+            )
+            .unwrap();
+        let solid = compiled.solid(request.feature).unwrap();
+        let project =
+            |options| project_drawing(&[DrawingSolid { solid, hatch: None }], options).unwrap();
+        let circle = |vector: &multicad_kernel::ProjectedVector, radius: f64| matches!(vector.curve, VectorCurve::Ellipse { major_mm, minor_mm, .. } if (major_mm-radius).abs() < 1e-8 && (minor_mm-radius).abs()<1e-8);
+        for z in [-1., 9.] {
+            let section = project(DrawingProjection {
+                section_offset_mm: Some(z),
+                section_only: true,
+                ..Default::default()
+            });
+            assert_eq!(section.len(), 2);
+            assert!(
+                section
+                    .iter()
+                    .all(|vector| vector.role == VectorRole::Section)
+            );
+            assert!(section.iter().any(|vector| circle(vector, 8.)));
+            assert!(section.iter().any(|vector| circle(vector, 4.)));
+        }
+        for depth in [None, Some(0.5)] {
+            let retained = project(DrawingProjection {
+                section_offset_mm: Some(9.),
+                section_depth_mm: depth,
+                ..Default::default()
+            });
+            assert!(
+                retained
+                    .iter()
+                    .any(|vector| vector.role == VectorRole::Section && circle(vector, 8.))
+            );
+            assert!(
+                retained
+                    .iter()
+                    .any(|vector| vector.role == VectorRole::Section && circle(vector, 4.))
+            );
+        }
+        let view = project(DrawingProjection::default());
+        assert!(
+            view.iter()
+                .any(|vector| vector.role == VectorRole::Visible && circle(vector, 8.))
+        );
+        assert_eq!(solid.bounds().unwrap().min[2], -2.);
+        assert_eq!(solid.bounds().unwrap().max[2], 10.);
     }
 }

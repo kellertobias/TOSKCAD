@@ -50,11 +50,11 @@ impl Solid {
     ) -> Result<Self, GeometryError> {
         const OPERATION: &str = "twisted gear";
         policy.validate()?;
-        if spec.sweep != required_sweep || spec.hub.is_some() {
+        if spec.sweep != required_sweep {
             return Err(error(
                 OPERATION,
                 GeometryErrorKind::Unsupported,
-                "Rust twisted gear requires the requested continuous tooth bands without a hub",
+                "Rust twisted gear requires the requested continuous tooth bands",
             ));
         }
         if feature.is_nil() {
@@ -81,6 +81,18 @@ impl Solid {
             policy.minimum_feature_mm,
             policy.maximum_coordinate_mm,
         )
+        .and_then(|gear| match spec.hub {
+            Some(hub) => gear.with_hub(
+                multicad_rust_kernel::spur_gear::Hub {
+                    radius_mm: hub.radius_mm,
+                    axial_start_mm: hub.axial_start_mm,
+                    axial_end_mm: hub.axial_end_mm,
+                },
+                policy.minimum_feature_mm,
+                policy.maximum_coordinate_mm,
+            ),
+            None => Ok(gear),
+        })
         .map_err(|cause| {
             error(
                 OPERATION,
@@ -277,9 +289,28 @@ impl HerringboneBody {
                         radius_mm,
                         clockwise: true,
                     }),
-                    self.section(frame, if end { height } else { 0. }, 1.),
+                    ReferenceFrame {
+                        origin_mm: position(
+                            frame,
+                            [0., 0., self.profile().axial_bounds()[usize::from(end)]],
+                        ),
+                        u: frame.u,
+                        v: frame.v,
+                    },
                 )),
-                Curve::BoreSeam { .. } => Some(AnalyticGeometry::Line {
+                Curve::HubRim { radius_mm, z_mm } => Some(spur_gear_body::rim(
+                    Edge::Planar(normal_sweep::Edge::Circle {
+                        center: [0.; 2],
+                        radius_mm,
+                        clockwise: false,
+                    }),
+                    ReferenceFrame {
+                        origin_mm: position(frame, [0., 0., z_mm]),
+                        u: frame.u,
+                        v: frame.v,
+                    },
+                )),
+                Curve::BoreSeam { .. } | Curve::HubSeam { .. } => Some(AnalyticGeometry::Line {
                     a_mm: position(frame, t.vertices_mm[edge.vertices[0] as usize]),
                     b_mm: position(frame, t.vertices_mm[edge.vertices[1] as usize]),
                 }),
@@ -298,6 +329,17 @@ impl HerringboneBody {
                     if *end { height } else { 0. },
                     if *end { 1. } else { -1. },
                 )),
+                GearFace::HubCap { extension } => Some(ReferenceFrame {
+                    origin_mm: position(frame, [0., 0., extension.end_z_mm]),
+                    u: frame.u,
+                    v: frame.v.map(|x| {
+                        if extension.end_z_mm > extension.gear_z_mm {
+                            x
+                        } else {
+                            -x
+                        }
+                    }),
+                }),
                 _ => None,
             };
             build.face(i, plane, plane, neighbors[i].iter().copied());

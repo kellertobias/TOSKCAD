@@ -73,6 +73,24 @@ pub(super) fn section_herringbone(
     let height = body.profile().height_mm();
     let policy = input.solid.geometry_policy();
     if z < -policy.linear_tolerance_mm || z > height + policy.linear_tolerance_mm {
+        let bounds = body.profile().axial_bounds();
+        if z >= bounds[0] - policy.linear_tolerance_mm
+            && z <= bounds[1] + policy.linear_tolerance_mm
+            && let Some(hub) = body.profile().hub()
+        {
+            return Some(section::project_concentric(
+                [dot(offset, u), dot(offset, v)],
+                [
+                    hub.radius_mm,
+                    body.profile()
+                        .bore()
+                        .and_then(multicad_rust_kernel::normal_sweep::Edge::radius_mm)
+                        .unwrap_or(0.),
+                ],
+                input,
+                options,
+            ));
+        }
         return Some(Ok(Vec::new()));
     }
     let frame = body.section(placement, z.clamp(0., height), 1.);

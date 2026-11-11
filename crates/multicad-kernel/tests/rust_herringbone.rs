@@ -36,52 +36,66 @@ fn helical_gears_exchange_both_hands_with_placed_bores_and_solid_caps() {
         rotation: [[0.8, 0., 0.6], [0., 1., 0.], [-0.6, 0., 0.8]],
         translation_mm: [10., -20., 30.],
     };
-    for hand in [-1., 1.] {
-        for bore in [0., 4.] {
-            let mut spec = specification(24);
-            spec.sweep = GearSweep::Helical;
-            spec.twist_rad_per_mm *= hand;
-            spec.bore_radius_mm = bore;
-            let feature = EntityId::new();
-            let solid = Solid::rust_helical_gear_named(spec, feature, Default::default())
-                .unwrap()
-                .transformed(transform)
-                .unwrap();
-            solid
-                .topology_snapshot(feature, 1)
-                .unwrap()
-                .validate()
-                .unwrap();
-            let directory = tempfile::tempdir().unwrap();
-            let path = directory.path().join("placed-helical.step");
-            solid.write_step(&path).unwrap();
-            let text = std::fs::read_to_string(&path).unwrap();
-            let volume = solid.verify_herringbone_step(&text).unwrap().unwrap();
-            assert!((volume - solid.volume_mm3().unwrap()).abs() < 1e-5);
-            if multicad_kernel::OCCT_LINKED {
-                let native = Solid::involute_gear_named(spec, feature, Default::default())
-                    .unwrap()
-                    .transformed(transform)
-                    .unwrap();
-                let imported = multicad_kernel::Shape::read_step(&path).unwrap();
-                assert!(imported.valid().unwrap());
-                assert_eq!(Solid::step_solids(&path).unwrap().len(), 1);
-                assert!((imported.volume().unwrap() - volume).abs() < 2e-4);
-                assert!((native.volume_mm3().unwrap() - volume).abs() < 2e-4);
-                let area = |solid: &Solid| {
-                    solid
-                        .faces()
+    for sweep in [GearSweep::Helical, GearSweep::Chevron] {
+        for hub_span in [[-2., 2.], [2., 6.], [-2., 6.], [1., 3.]] {
+            for hand in [-1., 1.] {
+                for bore in [0., 4.] {
+                    let mut spec = specification(24);
+                    spec.sweep = sweep;
+                    spec.hub = Some(multicad_kernel::GearHub {
+                        radius_mm: 8.,
+                        axial_start_mm: hub_span[0],
+                        axial_end_mm: hub_span[1],
+                    });
+                    spec.twist_rad_per_mm *= hand;
+                    spec.bore_radius_mm = bore;
+                    let feature = EntityId::new();
+                    let construct = if sweep == GearSweep::Helical {
+                        Solid::rust_helical_gear_named
+                    } else {
+                        Solid::rust_herringbone_named
+                    };
+                    let solid = construct(spec, feature, Default::default())
                         .unwrap()
-                        .iter()
-                        .map(|face| face.area_mm2)
-                        .sum::<f64>()
-                };
-                assert!((area(&solid) - area(&native)).abs() < 2e-4);
-                for (a, b) in [solid.bounds().unwrap().min, solid.bounds().unwrap().max]
-                    .into_iter()
-                    .zip([native.bounds().unwrap().min, native.bounds().unwrap().max])
-                {
-                    assert!(a.into_iter().zip(b).all(|(a, b)| (a - b).abs() < 1e-5));
+                        .transformed(transform)
+                        .unwrap();
+                    solid
+                        .topology_snapshot(feature, 1)
+                        .unwrap()
+                        .validate()
+                        .unwrap();
+                    let directory = tempfile::tempdir().unwrap();
+                    let path = directory.path().join("placed-helical.step");
+                    solid.write_step(&path).unwrap();
+                    let text = std::fs::read_to_string(&path).unwrap();
+                    let volume = solid.verify_herringbone_step(&text).unwrap().unwrap();
+                    assert!((volume - solid.volume_mm3().unwrap()).abs() < 1e-5);
+                    if multicad_kernel::OCCT_LINKED {
+                        let native = Solid::involute_gear_named(spec, feature, Default::default())
+                            .unwrap()
+                            .transformed(transform)
+                            .unwrap();
+                        let imported = multicad_kernel::Shape::read_step(&path).unwrap();
+                        assert!(imported.valid().unwrap());
+                        assert_eq!(Solid::step_solids(&path).unwrap().len(), 1);
+                        assert!((imported.volume().unwrap() - volume).abs() < 2e-4);
+                        assert!((native.volume_mm3().unwrap() - volume).abs() < 2e-4);
+                        let area = |solid: &Solid| {
+                            solid
+                                .faces()
+                                .unwrap()
+                                .iter()
+                                .map(|face| face.area_mm2)
+                                .sum::<f64>()
+                        };
+                        assert!((area(&solid) - area(&native)).abs() < 2e-4);
+                        for (a, b) in [solid.bounds().unwrap().min, solid.bounds().unwrap().max]
+                            .into_iter()
+                            .zip([native.bounds().unwrap().min, native.bounds().unwrap().max])
+                        {
+                            assert!(a.into_iter().zip(b).all(|(a, b)| (a - b).abs() < 1e-5));
+                        }
+                    }
                 }
             }
         }

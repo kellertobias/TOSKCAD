@@ -63,13 +63,13 @@ pub(crate) fn validate(
                 !gear.rotary().is_some_and(|rotary| {
                     rotary.family == family
                         && rotary.profile_shift_coefficient == 0.
-                        && rotary.hub.is_none()
+                        && (rotary.hub.is_none() || family != GearFamily::Spur)
                 })
             })
         {
             return Err(error(
                 Some(pair),
-                "Rust gear-pair interference requires unshifted external spur, helical or continuous herringbone members without hubs",
+                "Rust gear-pair interference requires unshifted external spur, helical or continuous herringbone members; spur hubs require an additional certificate",
             ));
         }
         let [a, b] = source.parameters.gears;

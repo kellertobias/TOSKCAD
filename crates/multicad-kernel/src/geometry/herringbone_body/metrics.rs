@@ -79,7 +79,15 @@ pub(super) fn local_faces(gear: &Herringbone, topology: &Topology) -> Vec<Face> 
                     (
                         Some((origin, [0., 0., if *end { 1. } else { -1. }])),
                         origin,
-                        gear.profile().area_mm2(),
+                        gear.profile().area_mm2()
+                            - gear.hub_extensions()[usize::from(*end)].map_or(0., |hub| {
+                                let bore = gear
+                                    .profile()
+                                    .bore()
+                                    .and_then(normal_sweep::Edge::radius_mm)
+                                    .unwrap_or(0.);
+                                std::f64::consts::PI * (hub.radius_mm.powi(2) - bore.powi(2))
+                            }),
                     )
                 }
                 GearFace::Tooth { band, .. } => {
@@ -105,7 +113,34 @@ pub(super) fn local_faces(gear: &Herringbone, topology: &Topology) -> Vec<Face> 
                         .bore()
                         .and_then(normal_sweep::Edge::radius_mm)
                         .expect("named bore");
-                    (None, [0., 0., height / 2.], TAU * radius * height)
+                    let [low, high] = gear.axial_bounds();
+                    (
+                        None,
+                        [0., 0., low.midpoint(high)],
+                        TAU * radius * (high - low),
+                    )
+                }
+                GearFace::HubWall { extension } => {
+                    let length = (extension.end_z_mm - extension.gear_z_mm).abs();
+                    (
+                        None,
+                        [0., 0., extension.end_z_mm.midpoint(extension.gear_z_mm)],
+                        TAU * extension.radius_mm * length,
+                    )
+                }
+                GearFace::HubCap { extension } => {
+                    let bore = gear
+                        .profile()
+                        .bore()
+                        .and_then(normal_sweep::Edge::radius_mm)
+                        .unwrap_or(0.);
+                    let origin = [0., 0., extension.end_z_mm];
+                    let outward = (extension.end_z_mm - extension.gear_z_mm).signum();
+                    (
+                        Some((origin, [0., 0., outward])),
+                        origin,
+                        std::f64::consts::PI * (extension.radius_mm.powi(2) - bore.powi(2)),
+                    )
                 }
             };
             Face {
