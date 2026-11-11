@@ -625,7 +625,7 @@ pub(super) fn parameters(
 pub(super) fn thread_profiles(_: &dyn Host, call: &Request, _: NoArgs) -> ToolResult {
     let rust = call.backend == GeometryBackend::Rust;
     let families:Vec<_> = ThreadFamily::ALL.into_iter().map(|family| {
-        let fit_classes:Vec<_> = if rust && !matches!(family,ThreadFamily::IsoMetric|ThreadFamily::Custom) {
+        let fit_classes:Vec<_> = if rust && !multicad_model::rust_thread_family_supported(family) {
             vec![]
         } else if family.supported() && family.is_unified() {
             vec![ThreadFit::Unified2A, ThreadFit::Unified2B]
@@ -688,19 +688,20 @@ pub(super) fn thread_profiles(_: &dyn Host, call: &Request, _: NoArgs) -> ToolRe
         report["active_geometry_support"] = json!({
             "modes": ["new_external", "cut_internal"],
             "internal_receiving_stock": "coaxial solid cylinder over the full thread length",
-            "representations": ["modeled"],
+            "representations": ["modeled", "cosmetic_envelope"],
+            "cosmetic_scope": "new_external only; receiving cuts require modeled geometry",
             "end_treatments": false,
             "radial_taper": false,
             "step": true,
-            "step_scope": "Standalone straight single-start modeled shafts with flat or circular roots and through threads in round stock, within the bounded spline budget",
+            "step_scope": "Standalone straight modeled shafts with one to eight starts, flat or circular roots, and through threads in round stock, within the bounded spline budget",
             "manufacturing_mesh": true,
             "reference_data_includes_other_backends": true
         });
         report["fit"] = json!(
-            "ISO metric supports nominal basic and listed historical 6g external and 6H internal fits. Straight custom profiles use nominal basic dimensions."
+            "ISO metric supports nominal basic and listed historical 6g external and 6H internal fits. UNC/UNF use sourced 2A/2B fits. Straight custom, Trapezoidal, Acme and Buttress profiles use nominal basic dimensions."
         );
         report["manufacturing"] = json!(
-            "Modeled external shafts and internal through bores support certified mesh output. STEP is unavailable."
+            "Modeled external shafts and internal through bores support certified mesh and STEP output within the bounded geometry budget. Cosmetic envelopes are refused for manufacturing output."
         );
     }
     Ok(report)

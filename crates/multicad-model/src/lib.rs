@@ -56,6 +56,7 @@ mod surface_structure;
 mod symbols;
 mod targets;
 mod threads;
+pub use threads::rust_thread_family_supported;
 mod transfer;
 mod transform;
 mod walls;

@@ -55,7 +55,7 @@ fn profiles_report_supported_presets_and_explicitly_unavailable_families_without
     );
     assert_eq!(
         families.iter().find(|f| f["family"] == "npt").unwrap()["supported"],
-        true
+        multicad_kernel::OCCT_LINKED
     );
     assert_eq!(report["npt_presets"].as_array().unwrap().len(), 2);
     assert_eq!(report["npt_support"]["gauge"], "nbs1959_plain_face");
@@ -87,8 +87,10 @@ fn profiles_report_supported_presets_and_explicitly_unavailable_families_without
     }
     for family in ["bsw", "bsf", "bspp"] {
         let entry = families.iter().find(|f| f["family"] == family).unwrap();
-        assert_eq!(entry["supported"], true);
-        let expected = if family == "bspp" {
+        assert_eq!(entry["supported"], multicad_kernel::OCCT_LINKED);
+        let expected = if !multicad_kernel::OCCT_LINKED {
+            json!([])
+        } else if family == "bspp" {
             json!(["bspp_class_b_external", "bspp_internal"])
         } else {
             json!(["whitworth_medium_external", "whitworth_medium_internal"])
@@ -206,7 +208,32 @@ fn rust_mcp_models_edits_and_reopens_a_metric_thread_without_fallback() {
     assert!(
         families
             .iter()
-            .any(|entry| entry["family"] == "unc" && entry["supported"] == false)
+            .any(|entry| entry["family"] == "unc" && entry["supported"] == true)
+    );
+    for family in ["unc", "unf"] {
+        let entry = families
+            .iter()
+            .find(|entry| entry["family"] == family)
+            .unwrap();
+        assert_eq!(entry["fit_classes"], json!(["unified_2a", "unified_2b"]));
+    }
+    for family in ["trapezoidal", "acme", "buttress", "custom"] {
+        let entry = families
+            .iter()
+            .find(|entry| entry["family"] == family)
+            .unwrap();
+        assert_eq!(entry["supported"], true);
+        assert_eq!(entry["fit_classes"], json!(["nominal_basic"]));
+    }
+    assert_eq!(
+        profiles["active_geometry_support"]["representations"],
+        json!(["modeled", "cosmetic_envelope"])
+    );
+    assert!(
+        !profiles["manufacturing"]
+            .as_str()
+            .unwrap()
+            .contains("STEP is unavailable")
     );
     let request = json!({
         "expected_revision":0,"name":"M8 × 1.25","family":"iso_metric",
@@ -235,8 +262,8 @@ fn rust_mcp_models_edits_and_reopens_a_metric_thread_without_fallback() {
         &h,
         &call(false),
         "set_thread",
-        json!({"expected_revision":2,"name":"Unsupported UNC","family":"unc",
-            "fit":"unified_2a","major_diameter":{"value":0.25,"unit":"in"},
+        json!({"expected_revision":2,"name":"Unsupported BSW","family":"bsw",
+            "fit":"whitworth_medium_external","major_diameter":{"value":0.25,"unit":"in"},
             "pitch":{"value":0.05,"unit":"in"},"length":mm(2.5)}),
     )
     .unwrap_err();

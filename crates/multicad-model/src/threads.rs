@@ -169,7 +169,19 @@ pub(crate) fn validate_rust_family(
     feature: EntityId,
     family: ThreadFamily,
 ) -> Result<(), ModelError> {
-    if !matches!(
+    if !rust_thread_family_supported(family) {
+        return Err(error(
+            Some(feature),
+            "Rust thread geometry supports ISO metric, sourced UNC/UNF/Trapezoidal/Acme/Buttress and straight custom profiles",
+        ));
+    }
+    Ok(())
+}
+
+/// Families implemented by the owned kernel; individual source dimensions,
+/// representations and receiving stock still undergo geometry validation.
+pub fn rust_thread_family_supported(family: ThreadFamily) -> bool {
+    matches!(
         family,
         ThreadFamily::IsoMetric
             | ThreadFamily::Unc
@@ -178,13 +190,7 @@ pub(crate) fn validate_rust_family(
             | ThreadFamily::Acme
             | ThreadFamily::Buttress
             | ThreadFamily::Custom
-    ) {
-        return Err(error(
-            Some(feature),
-            "Rust thread geometry supports ISO metric, sourced UNC/UNF/Trapezoidal/Acme/Buttress and straight custom profiles",
-        ));
-    }
-    Ok(())
+    )
 }
 
 pub(crate) fn rust_profile(
