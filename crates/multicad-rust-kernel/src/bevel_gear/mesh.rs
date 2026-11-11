@@ -131,11 +131,7 @@ fn row(
 
 impl Bevel {
     /// Chord count for one boundary piece at the heel, the larger end.
-    pub(crate) fn piece_segments(
-        &self,
-        piece: Piece,
-        options: Tessellation,
-    ) -> Result<usize, MeshError> {
+    pub fn piece_segments(&self, piece: Piece, options: Tessellation) -> Result<usize, MeshError> {
         const FINE: usize = 64;
         let points: Vec<_> = (0..=FINE)
             .map(|i| {

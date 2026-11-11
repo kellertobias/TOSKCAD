@@ -108,6 +108,13 @@ fn contains_sphere(solid: &Solid) -> bool {
             .is_some_and(|compound| compound.members().any(contains_sphere))
 }
 
+fn contains_bevel(solid: &Solid) -> bool {
+    solid.bevel_body().is_some()
+        || solid
+            .rust_compound()
+            .is_some_and(|compound| compound.members().any(contains_bevel))
+}
+
 fn contains_herringbone(solid: &Solid) -> bool {
     solid.herringbone_body().is_some()
         || solid
@@ -202,6 +209,12 @@ pub fn project_drawing(
             && let Some(projection) = panel::project_herringbone(input, options)
         {
             return projection;
+        }
+        if solids.iter().any(|input| contains_bevel(input.solid)) {
+            return Err(err(
+                GeometryErrorKind::Unsupported,
+                "Rust exact drawing projection for spherical bevel gears is unavailable",
+            ));
         }
         if !options.section_only && solids.iter().any(|input| contains_herringbone(input.solid)) {
             return Err(err(
