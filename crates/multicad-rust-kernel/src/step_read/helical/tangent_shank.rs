@@ -50,8 +50,21 @@ pub(super) fn verify(
     require(forward)?;
     let center = std::array::from_fn(|i| origin[i] + axis[i] * -length_mm);
     let plane = check_axis(shell, hex_head::plane(shell, surface)?, center, axis, u)?;
-    let lower =
-        socket_head::circle_rim(shell, shank_rim, false, false, plane.origin, axis, radius)?;
+    let lower = socket_head::circle_rim(
+        shell,
+        shank_rim,
+        false,
+        false,
+        plane.origin,
+        axis,
+        (
+            Proof {
+                error: None,
+                extent: 1.,
+            },
+            radius,
+        ),
+    )?;
 
     let (surface, forward, bounds) = face(shell, wall)?;
     let [bound] = bounds[..] else {
@@ -209,6 +222,8 @@ mod tests {
         let [seam_start, seam_end, seam_line] = edge_geometry(seam);
         let (seat, _, seat_bounds) = face(&reader, faces[7]).unwrap();
 
+        let lower_edge = ring(&reader, seat_bounds[1], false).unwrap()[0].0;
+        let lower_circle = edge_geometry(lower_edge)[2];
         for (id, record) in [
             (
                 complement_use,
@@ -224,6 +239,7 @@ mod tests {
                     "EDGE_CURVE('',#{complement_start},#{complement_end},#{complement_circle},.F.);"
                 ),
             ),
+            (lower_circle, "CIRCLE('');".into()),
             (crest_circle, "CIRCLE('');".into()),
             (faces[6], format!("ADVANCED_FACE('',(),#{wall},.T.);")),
             (wall, "CYLINDRICAL_SURFACE('');".into()),

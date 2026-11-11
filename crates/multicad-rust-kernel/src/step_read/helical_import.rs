@@ -35,14 +35,14 @@ pub(super) fn read_member(
         }
         count += 1;
     }
-    if !count.is_multiple_of(4) || !matches!(faces.len() - count, 2 | 3 | 9) {
+    if !count.is_multiple_of(4) || !matches!(faces.len() - count, 2 | 3 | 9 | 11) {
         return Ok(None);
     }
     if count > 32 {
         return Err(ReadError::Limit);
     }
     let starts = (count / 4) as u32;
-    let headed = faces.len() - count == 9;
+    let headed = matches!(faces.len() - count, 9 | 11);
     let mut grids = Vec::with_capacity(4);
     let mut radial = Vec::with_capacity(4);
     let mut axial = None;
@@ -163,12 +163,23 @@ pub(super) fn read_member(
     // independent knot lengths do not change a segment's geometric image.
     // Exact edge/surface control equality and shared vertices remain mandatory.
     let screw = if headed {
-        Some(headed::hex(
-            shell,
-            faces[count + 2..].try_into().expect("seven hex head faces"),
-            &thread,
-            [origin, u, v],
-        )?)
+        Some(if faces.len() - count == 9 {
+            headed::hex(
+                shell,
+                faces[count + 2..].try_into().expect("seven hex head faces"),
+                &thread,
+                [origin, u, v],
+            )?
+        } else {
+            headed::socket(
+                shell,
+                faces[count + 2..]
+                    .try_into()
+                    .expect("nine socket head faces"),
+                &thread,
+                [origin, u, v],
+            )?
+        })
     } else {
         None
     };

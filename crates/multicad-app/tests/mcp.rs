@@ -1398,6 +1398,35 @@ fn export_shipped_m6_socket(source: &[u8], length_mm: f64, cylinders: usize, fac
         assert_eq!(multicad_kernel::Solid::step_solids(&path).unwrap().len(), 1);
         close(decoded.volume().unwrap(), measured);
     }
+    if faces == 15 {
+        drop(client);
+        let imported_project = directory.path().join("socket-import.tcd");
+        let args = [
+            "--rust-model",
+            "--project",
+            imported_project.to_str().unwrap(),
+            "--export-dir",
+            directory.path().to_str().unwrap(),
+        ];
+        let mut importer = Client::start(&args);
+        let imported = importer.ok(
+            "import_step",
+            json!({"expected_revision":0,"file_name":"socket.step"}),
+        );
+        let [part] = imported["parts"].as_array().unwrap().as_slice() else {
+            panic!("one socket screw: {imported}");
+        };
+        close(importer.part_volume(), measured);
+        importer.ok("save_project", json!({"expected_revision":1}));
+        drop(importer);
+        let mut reopened = Client::start(&args);
+        close(reopened.part_volume(), measured);
+        let receipt = reopened.ok(
+            "export_step",
+            json!({"part":part,"file_name":"socket-reexport.step"}),
+        );
+        close(receipt["readback_volume_mm3"].as_f64().unwrap(), measured);
+    }
 }
 
 #[test]

@@ -19,6 +19,13 @@ fn compile(s: &Session) -> multicad_model::Model {
 }
 #[test]
 fn saved_hex_screw_edits_and_history_retain_blind_step_importable_geometry() {
+    saved_screw(true);
+}
+#[test]
+fn saved_socket_screw_edits_and_history_retain_blind_step_importable_geometry() {
+    saved_screw(false);
+}
+fn saved_screw(hex: bool) {
     let actor = || Actor::local(Channel::Mcp);
     let mut s = Session::new(Document::new("Importable modeled hex screw").unwrap()).unwrap();
     let mut parameters = model::default_machine_screw();
@@ -33,11 +40,25 @@ fn saved_hex_screw_edits_and_history_retain_blind_step_importable_geometry() {
     else {
         panic!()
     };
-    *head = ScrewHead::ExternalHex {
-        across_flats: length(10.),
-        height: length(4.),
+    *head = if hex {
+        ScrewHead::ExternalHex {
+            across_flats: length(10.),
+            height: length(4.),
+        }
+    } else {
+        ScrewHead::SocketCap {
+            diameter: length(11.),
+            height: length(4.),
+        }
     };
-    *drive = ScrewDrive::ExternalHex;
+    *drive = if hex {
+        ScrewDrive::ExternalHex
+    } else {
+        ScrewDrive::HexSocket {
+            across_flats: length(4.),
+            depth: length(2.),
+        }
+    };
     *underhead_length = Some(length(8.));
     *shank_diameter = length(6.);
     thread.major_diameter = length(6.);
@@ -55,9 +76,16 @@ fn saved_hex_screw_edits_and_history_retain_blind_step_importable_geometry() {
     let MechanicalPartParameters::MachineScrew { head, .. } = &mut parameters else {
         panic!()
     };
-    *head = ScrewHead::ExternalHex {
-        across_flats: length(10.),
-        height: length(5.),
+    *head = if hex {
+        ScrewHead::ExternalHex {
+            across_flats: length(10.),
+            height: length(5.),
+        }
+    } else {
+        ScrewHead::SocketCap {
+            diameter: length(11.),
+            height: length(5.),
+        }
     };
     s.commit(
         model::prepare_mechanical_part_edit(
@@ -103,5 +131,5 @@ fn saved_hex_screw_edits_and_history_retain_blind_step_importable_geometry() {
     )
     .unwrap();
     assert!((imported.volume_mm3().unwrap() - source.volume_mm3().unwrap()).abs() < 1e-6);
-    assert_eq!(imported.faces().unwrap().len(), 13);
+    assert_eq!(imported.faces().unwrap().len(), if hex { 13 } else { 15 });
 }

@@ -221,20 +221,34 @@ impl Solid {
             frame,
             policy,
         )?;
-        let multicad_rust_kernel::headed_screw::ScrewHead::ExternalHex {
-            across_flats_mm,
-            height_mm,
-        } = screw.head
-        else {
-            return Err(error(
-                OPERATION,
-                GeometryErrorKind::Unsupported,
-                "Unproved imported screw head",
-            ));
+        use multicad_rust_kernel::headed_screw::ScrewHead;
+        let (tag, head) = match screw.head {
+            ScrewHead::ExternalHex {
+                across_flats_mm,
+                height_mm,
+            } => (
+                "helical-hex-material",
+                vec![across_flats_mm, height_mm, screw.shank_length_mm],
+            ),
+            ScrewHead::SocketCap {
+                radius_mm,
+                height_mm,
+                socket_across_flats_mm,
+                socket_depth_mm,
+            } => (
+                "helical-socket-material",
+                vec![
+                    radius_mm,
+                    height_mm,
+                    socket_across_flats_mm,
+                    socket_depth_mm,
+                    screw.shank_length_mm,
+                ],
+            ),
         };
         let identity = super::step_import::feature_origin(
             feature,
-            "helical-hex-material",
+            tag,
             frame
                 .origin
                 .into_iter()
@@ -251,10 +265,8 @@ impl Solid {
                     spec.starts as f64,
                     f64::from(spec.left_hand),
                     spec.root_radius_mm.unwrap_or(0.),
-                    across_flats_mm,
-                    height_mm,
-                    screw.shank_length_mm,
-                ]),
+                ])
+                .chain(head),
         );
         let SolidBody::Helical(body, _) = &mut solid.body else {
             unreachable!()
@@ -645,7 +657,7 @@ impl HelicalBody {
         self.step_stock().is_some()
             || matches!(&self.form,
             HelicalForm::Screw(screw) if screw.spec().shank_length_mm == 0.
-                && matches!(screw.spec().head, multicad_rust_kernel::headed_screw::ScrewHead::ExternalHex { .. }))
+                && matches!(screw.spec().head, multicad_rust_kernel::headed_screw::ScrewHead::ExternalHex { .. } | multicad_rust_kernel::headed_screw::ScrewHead::SocketCap { .. }))
     }
     pub(super) fn supports_step(&self, frame: PlaneFrame, policy: GeometryPolicy) -> bool {
         if let HelicalForm::Screw(screw) = &self.form {

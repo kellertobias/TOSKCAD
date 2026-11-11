@@ -92,6 +92,9 @@ pub(super) fn verify_member(
                     across_flats_mm,
                     height_mm,
                 } => across_flats_mm.max(height_mm),
+                Closure::SocketHead(head) => {
+                    head.radius_mm.max(head.height_mm + head.shank_length_mm)
+                }
                 _ => 0.,
             }),
     };
@@ -315,8 +318,15 @@ pub(super) fn verify_member(
             } else {
                 (shoulder.ok_or(ReadError::Invalid)?, caps[0], 0., 6)
             };
-            let head_volume =
-                socket_head::verify(shell, &faces[offset..], rim, seat, [u, normal], head, world)?;
+            let head_volume = socket_head::verify(
+                shell,
+                &faces[offset..],
+                rim,
+                seat,
+                [u, normal],
+                (proof, head),
+                world,
+            )?;
             head_volume + shank_volume
         }
     };
@@ -525,26 +535,6 @@ pub(super) fn check_axis(
             && length(sub(frame.u, u)) < 1e-10,
     )?;
     Ok(frame)
-}
-
-fn check_cylinder(
-    shell: &mut Shell<'_, '_>,
-    id: u32,
-    rims: [u32; 2],
-    (radius, outward): (f64, bool),
-    [origin, normal, u]: [Point; 3],
-) -> Result<(f64, Point)> {
-    check_cylinder_with_proof(
-        Proof {
-            error: None,
-            extent: 1.,
-        },
-        shell,
-        id,
-        rims,
-        (radius, outward),
-        [origin, normal, u],
-    )
 }
 
 fn check_cylinder_with_proof(

@@ -1,5 +1,7 @@
 //! Infer candidate head dimensions from physical finite face boundaries.
 use super::*;
+mod socket;
+pub(super) use socket::socket;
 
 pub(super) fn hex(
     shell: &mut Shell<'_, '_>,
@@ -14,11 +16,8 @@ pub(super) fn hex(
         return Err(ReadError::Invalid);
     };
     let cap = shell.placement(reference(placement)?)?;
-    let n = cross(u, v);
-    let rows = [cross(v, n), cross(n, u), cross(u, v)];
-    let determinant = dot(u, rows[0]);
-    require(determinant.is_finite() && determinant > 0.)?;
-    let local = |point| rows.map(|row| dot(row, sub(point, origin)) / determinant);
+    let chart = Chart::new([origin, u, v])?;
+    let local = |point| chart.local(point);
     let height = -local(cap.origin)[2];
     let edges = helical::ring(shell, bounds[0], true)?;
     require(edges.len() == 6)?;
@@ -45,6 +44,48 @@ pub(super) fn hex(
     })
 }
 
+struct Chart {
+    origin: Point,
+    rows: [Point; 3],
+    determinant: f64,
+}
+impl Chart {
+    fn new([origin, u, v]: [Point; 3]) -> Result<Self> {
+        let n = cross(u, v);
+        let rows = [cross(v, n), cross(n, u), cross(u, v)];
+        let determinant = dot(u, rows[0]);
+        require(determinant.is_finite() && determinant > 0.)?;
+        Ok(Self {
+            origin,
+            rows,
+            determinant,
+        })
+    }
+    fn local(&self, point: Point) -> Point {
+        self.rows
+            .map(|row| dot(row, sub(point, self.origin)) / self.determinant)
+    }
+}
+fn world([origin, u, v]: [Point; 3], p: Point2, z: f64) -> Point {
+    let n = cross(u, v);
+    std::array::from_fn(|i| origin[i] + u[i] * p[0] + v[i] * p[1] + n[i] * z)
+}
+fn circles_match(
+    radii: [f64; 2],
+    heights: [f64; 2],
+    frames: [[Point; 3]; 2],
+    tolerance: f64,
+) -> bool {
+    let [a, b] = radii;
+    let [[oa, ua, va], [ob, ub, vb]] = frames;
+    let error = length(sub(
+        world([oa, ua, va], [0.; 2], heights[0]),
+        world([ob, ub, vb], [0.; 2], heights[1]),
+    )) + a.max(b) * (length(sub(ua, ub)) + length(sub(va, vb)))
+        + (a - b).abs() * (length(ub) + length(vb));
+    error.is_finite() && error <= tolerance / 16.
+}
+
 pub fn helical_screw_import_matches(
     imported: &ImportSolid,
     source: &Screw,
@@ -52,19 +93,6 @@ pub fn helical_screw_import_matches(
     tolerance: f64,
 ) -> bool {
     let ImportProfile::HelicalScrew { spec, screw } = imported.profile else {
-        return false;
-    };
-    let (
-        ScrewHead::ExternalHex {
-            across_flats_mm: a,
-            height_mm: ha,
-        },
-        ScrewHead::ExternalHex {
-            across_flats_mm: b,
-            height_mm: hb,
-        },
-    ) = (source.spec().head, screw.head)
-    else {
         return false;
     };
     if source.spec().shank_length_mm != 0. || screw.shank_length_mm != 0. {
@@ -86,19 +114,47 @@ pub fn helical_screw_import_matches(
     ) {
         return false;
     }
-    let world = |origin: Point, u: Point, v: Point, p: Point2, z: f64| {
-        let n = cross(u, v);
-        std::array::from_fn(|i| origin[i] + u[i] * p[0] + v[i] * p[1] + n[i] * z)
+    let frames = [[origin, u, v], [imported.origin_mm, imported.u, imported.v]];
+    let (af, heights) = match (source.spec().head, screw.head) {
+        (
+            ScrewHead::ExternalHex {
+                across_flats_mm: a,
+                height_mm: ha,
+            },
+            ScrewHead::ExternalHex {
+                across_flats_mm: b,
+                height_mm: hb,
+            },
+        ) => ([a, b], [(0., 0.), (-ha, -hb)]),
+        (
+            ScrewHead::SocketCap {
+                radius_mm: ra,
+                height_mm: ha,
+                socket_across_flats_mm: a,
+                socket_depth_mm: da,
+            },
+            ScrewHead::SocketCap {
+                radius_mm: rb,
+                height_mm: hb,
+                socket_across_flats_mm: b,
+                socket_depth_mm: db,
+            },
+        ) => {
+            if !circles_match([ra, rb], [0., 0.], frames, tolerance)
+                || !circles_match([ra, rb], [-ha, -hb], frames, tolerance)
+            {
+                return false;
+            }
+            ([a, b], [(-ha, -hb), (-ha + da, -hb + db)])
+        }
+        _ => return false,
     };
-    for (a, b) in crate::headed_screw::hex_vertices(a)
+    for (a, b) in crate::headed_screw::hex_vertices(af[0])
         .into_iter()
-        .zip(crate::headed_screw::hex_vertices(b))
+        .zip(crate::headed_screw::hex_vertices(af[1]))
     {
-        for (za, zb) in [(0., 0.), (-ha, -hb)] {
-            let error = length(sub(
-                world(origin, u, v, a, za),
-                world(imported.origin_mm, imported.u, imported.v, b, zb),
-            ));
+        for (za, zb) in heights {
+            let error = length(sub(world(frames[0], a, za), world(frames[1], b, zb)));
             if !error.is_finite() || error > tolerance / 16. {
                 return false;
             }

@@ -8,7 +8,7 @@ pub(super) fn verify(
     shoulder: u32,
     shoulder_center: Point,
     [reference, axis]: [Point; 2],
-    head: SocketHead,
+    (proof, head): (Proof, SocketHead),
     world: impl Fn(Point2, f64) -> Point,
 ) -> Result<f64> {
     let lower = -head.shank_length_mm - head.height_mm;
@@ -19,7 +19,7 @@ pub(super) fn verify(
         return Err(ReadError::Invalid);
     };
     require(forward)?;
-    let bottom = check_axis(
+    let bottom = proof.axis(
         shell,
         hex_head::plane(shell, end)?,
         world([0.; 2], lower),
@@ -33,7 +33,7 @@ pub(super) fn verify(
         false,
         bottom.origin,
         axis,
-        head.radius_mm,
+        (proof, head.radius_mm),
     )?;
     let upper_rim = circle_rim(
         shell,
@@ -42,9 +42,10 @@ pub(super) fn verify(
         true,
         shoulder_center,
         axis,
-        head.radius_mm,
+        (proof, head.radius_mm),
     )?;
-    let (radius, cylinder_axis) = check_cylinder(
+    let (radius, cylinder_axis) = check_cylinder_with_proof(
+        proof,
         shell,
         faces[1],
         [lower_rim, upper_rim],
@@ -57,7 +58,7 @@ pub(super) fn verify(
         return Err(ReadError::Invalid);
     };
     require(forward)?;
-    let floor = check_axis(
+    let floor = proof.axis(
         shell,
         hex_head::plane(shell, floor)?,
         world([0.; 2], upper),
@@ -66,10 +67,7 @@ pub(super) fn verify(
     )?;
     let hex = hex_vertices(head.across_flats_mm);
     let lower_rim = hex_head::hex_rim(
-        Proof {
-            error: None,
-            extent: 1.,
-        },
+        proof,
         shell,
         mouth,
         false,
@@ -77,10 +75,7 @@ pub(super) fn verify(
         hex.map(|p| world(p, lower)),
     )?;
     let upper_rim = hex_head::hex_rim(
-        Proof {
-            error: None,
-            extent: 1.,
-        },
+        proof,
         shell,
         socket_floor,
         true,
@@ -88,10 +83,7 @@ pub(super) fn verify(
         hex.map(|p| world(p, upper)),
     )?;
     let area = hex_head::walls_area(
-        Proof {
-            error: None,
-            extent: 1.,
-        },
+        proof,
         shell,
         &faces[3..],
         [&lower_rim, &upper_rim],
@@ -113,7 +105,7 @@ pub(super) fn circle_rim(
     forward: bool,
     center: Point,
     normal: Point,
-    radius: f64,
+    (proof, radius): (Proof, f64),
 ) -> Result<u32> {
     let edges = ring(shell, bound, exterior)?;
     let [(edge, sense)] = edges[..] else {
@@ -125,8 +117,8 @@ pub(super) fn circle_rim(
         return Err(ReadError::Invalid);
     };
     require(
-        circle.center_mm == center
-            && length(sub(circle.normal, normal)) < 1e-10
+        proof.equal(circle.center_mm, center)
+            && length(sub(circle.normal, normal)) < proof.angular()
             && circle.radius_mm == radius,
     )?;
     Ok(edge)
@@ -250,6 +242,7 @@ mod tests {
             let original = encoded.lines().find(|line| line.starts_with(&key)).unwrap();
             let changed = encoded.replacen(original, &format!("{key}{record}"), 1);
             assert!(verify_helical_screw(&changed, &screw, origin, u, v, 1e-7).is_err());
+            assert!(crate::step_read::read_import_solid(&changed, 1e-7).is_err());
         }
     }
 }
