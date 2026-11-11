@@ -47,7 +47,7 @@ fn actual_panel_face_has_ordered_outer_and_hole_wires_with_exact_area_and_windin
     }
     let hole = contours.loops.iter().find(|l| !l.outer).unwrap();
     assert!(
-        matches!(hole.edges[0],multicad_core::manufacturing::PlanarEdge::Arc{sweep_rad,..} if (sweep_rad+std::f64::consts::TAU).abs()<1e-10)
+        matches!(hole.edges[0],multicad_core::manufacturing::PlanarEdge::Arc{a,b,sweep_rad,..} if a==b && sweep_rad == -std::f64::consts::TAU)
     );
     assert!(
         panel

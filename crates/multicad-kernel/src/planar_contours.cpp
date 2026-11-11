@@ -90,6 +90,11 @@ rust::Vec<PlanarWireData> planar_face_contours(const Shape &shape,uint32_t index
           if(std::abs(alignment)<1.-1e-10)throw std::runtime_error("Circular boundary is not coplanar with the selected manufacturing frame");
           data.center=local(circle.Location(),frame);
           data.sweep=(last-first)*(alignment>0.?1.:-1.);
+          // A topologically closed full circle has one endpoint. Evaluating
+          // sin/cos at parameters one turn apart can round them differently.
+          // Preserve partial arcs, even when their endpoint gap is small.
+          constexpr double full=6.2831853071795864769;
+          if(std::abs(data.sweep)==full && BRep_Tool::IsClosed(edge))data.b=data.a;
         } else throw std::runtime_error("Planar manufacturing boundary supports exact lines and circular arcs only; ellipse/spline conversion is not installed");
         output.segments.push_back(std::move(data));
       }
