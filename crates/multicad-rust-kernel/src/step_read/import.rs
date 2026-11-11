@@ -111,6 +111,10 @@ pub enum ImportProfile {
     Cylinder {
         radius_mm: f64,
     },
+    RoundedCylinder {
+        radius_mm: f64,
+        fillet_radii_mm: [Option<f64>; 2],
+    },
     Annulus {
         inner_radius_mm: f64,
         outer_radius_mm: f64,

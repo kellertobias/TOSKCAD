@@ -63,7 +63,7 @@ fn local(frame: PlaneFrame, point: Point) -> Point {
 // Attachment charts may retain distant authored UV origins. Checked frames
 // admit small metric residuals, so projecting onto their axes is not an inverse.
 // Keep geometric admission/projection separate from this lossless chart storage.
-fn local_attachment(
+pub(super) fn local_attachment(
     frame: PlaneFrame,
     anchor: ReferenceFrame,
     policy: GeometryPolicy,
@@ -371,6 +371,11 @@ impl Solid {
 
     pub fn rust_revolution_contains(&self, point_mm: Point) -> Result<bool, GeometryError> {
         self.policy.point(point_mm)?;
+        if let Some((body, frame)) = self.rounded_cylinder_body() {
+            return body
+                .point_projection(frame, point_mm, self.policy.linear_tolerance_mm)
+                .map(|(_, distance, _)| distance <= self.policy.linear_tolerance_mm);
+        }
         if let Some((body, frame)) = self.torus_body() {
             return Ok(body.geometry.signed_distance_mm(local(frame, point_mm))
                 <= self.policy.linear_tolerance_mm);

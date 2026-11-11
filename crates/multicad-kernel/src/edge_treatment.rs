@@ -159,6 +159,12 @@ impl Solid {
         policy.length(size)?;
         let (indices, topology) = self.validate_treatment_edges(edges, feature)?;
         if self.uses_rust_geometry() {
+            if let EdgeTreatment::Fillet { radius_mm } = treatment
+                && let Some(result) =
+                    self.fillet_cylinder_rims(edges, radius_mm, feature, policy, &topology)
+            {
+                return result;
+            }
             if let EdgeTreatment::Chamfer { distance_mm } = treatment
                 && let Some(result) = self.chamfer_cylinder_rims(
                     edges,

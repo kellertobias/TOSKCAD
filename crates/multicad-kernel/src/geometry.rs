@@ -26,6 +26,7 @@ mod orthogonal_body;
 mod parallel_cylinder;
 mod planar_boolean_body;
 mod revolution_body;
+mod rounded_cylinder_body;
 mod rounded_slot_body;
 mod rust_compound;
 mod sphere_body;
@@ -53,6 +54,7 @@ use orthogonal_body::OrthogonalBody;
 pub use orthogonal_body::slots::RoundedSlotTool;
 use planar_boolean_body::PlanarBooleanBody;
 use revolution_body::RevolutionBody;
+use rounded_cylinder_body::RoundedCylinderBody;
 use rounded_slot_body::RoundedSlotBody;
 use rust_compound::RustCompound;
 use sphere_body::SphereBody;
@@ -584,6 +586,7 @@ enum SolidBody {
     Worm(Rc<WormBody>, PlaneFrame),
     Sphere(Rc<SphereBody>, PlaneFrame),
     Torus(Rc<TorusBody>, PlaneFrame),
+    RoundedCylinder(Rc<RoundedCylinderBody>, PlaneFrame),
     AxialStack(Rc<AxialStackBody>, PlaneFrame),
     RustCompound(Rc<RustCompound>),
     Orthogonal(Rc<OrthogonalBody>, PlaneFrame),
@@ -988,6 +991,9 @@ impl Solid {
             SolidBody::Worm(body, frame) => SolidBody::Worm(Rc::clone(body), *frame),
             SolidBody::Sphere(body, frame) => SolidBody::Sphere(Rc::clone(body), *frame),
             SolidBody::Torus(body, frame) => SolidBody::Torus(Rc::clone(body), *frame),
+            SolidBody::RoundedCylinder(body, frame) => {
+                SolidBody::RoundedCylinder(Rc::clone(body), *frame)
+            }
             SolidBody::AxialStack(body, frame) => SolidBody::AxialStack(Rc::clone(body), *frame),
             SolidBody::PlanarBoolean(body, frame) => {
                 SolidBody::PlanarBoolean(Rc::clone(body), *frame)
@@ -1287,6 +1293,9 @@ impl Solid {
                 SolidBody::Torus(body, frame) => {
                     SolidBody::Torus(Rc::clone(body), transform.frame(*frame))
                 }
+                SolidBody::RoundedCylinder(body, frame) => {
+                    SolidBody::RoundedCylinder(Rc::clone(body), transform.frame(*frame))
+                }
                 SolidBody::AxialStack(body, frame) => {
                     SolidBody::AxialStack(Rc::clone(body), transform.frame(*frame))
                 }
@@ -1329,6 +1338,9 @@ impl Solid {
         Ok(result)
     }
     pub fn volume_mm3(&self) -> Result<f64, GeometryError> {
+        if let Some((body, _)) = self.rounded_cylinder_body() {
+            return Ok(body.geometry.volume_mm3());
+        }
         if let Some((body, _)) = self.helical_tube_cut_body() {
             return Ok(body.cut.volume_mm3());
         }
@@ -1428,6 +1440,9 @@ impl Solid {
         ffi::solid_count(self.occt()?).map_err(|e| native("solid count", e))
     }
     pub fn bounds(&self) -> Result<Bounds, GeometryError> {
+        if let Some((body, frame)) = self.rounded_cylinder_body() {
+            return Ok(body.bounds(frame));
+        }
         if let Some((body, frame)) = self.helical_tube_cut_body() {
             return body.bounds(frame);
         }
@@ -1573,6 +1588,9 @@ impl Solid {
         crate::planar_contours::extract(self, face, frame, self.policy)
     }
     pub fn faces(&self) -> Result<Vec<Face>, GeometryError> {
+        if let Some((body, frame)) = self.rounded_cylinder_body() {
+            return Ok(body.faces(frame));
+        }
         if let Some((body, frame)) = self.helical_tube_cut_body() {
             return Ok(body.faces(frame));
         }
@@ -1753,6 +1771,7 @@ impl Solid {
                 crate::rust_display::placed_mesh(body.mesh(rust_options), *frame, false)
             }
             SolidBody::Revolved(body, frame) => body.mesh(*frame, rust_options),
+            SolidBody::RoundedCylinder(body, frame) => body.mesh(*frame, rust_options),
             SolidBody::RoundedSlot(body, frame) => body.mesh(*frame, rust_options),
             SolidBody::NormalSweep(body, frame) => body.mesh(*frame, rust_options),
             SolidBody::SplineSweep(body, frame) => body.mesh(*frame, rust_options),
@@ -2105,6 +2124,7 @@ impl Solid {
             SolidBody::Worm(body, _) => body.feature,
             SolidBody::Sphere(body, _) => body.feature,
             SolidBody::Torus(body, _) => body.feature,
+            SolidBody::RoundedCylinder(body, _) => body.feature,
             SolidBody::AxialStack(body, _) => body.feature,
             SolidBody::PlanarBoolean(body, _) => body.feature,
             SolidBody::NonplanarLoft(body, _) => body.feature,
@@ -2158,6 +2178,16 @@ impl Solid {
             }
             SolidBody::PlanarBoolean(body, _) => {
                 multicad_rust_kernel::step::supports_planar_union(&body.geometry)
+            }
+            SolidBody::RoundedCylinder(body, frame) => {
+                multicad_rust_kernel::step::write_rounded_cylinder(
+                    &body.geometry,
+                    frame.origin,
+                    frame.u,
+                    frame.v,
+                    self.policy.linear_tolerance_mm,
+                )
+                .is_ok()
             }
             SolidBody::Revolved(body, _) => {
                 multicad_rust_kernel::step::supports_cylindrical_revolution(&body.geometry)
@@ -2319,6 +2349,13 @@ impl Solid {
             SolidBody::Sphere(body, frame) => {
                 writer.append_sphere(body.geometry, frame.origin, frame.u, frame.v)
             }
+            SolidBody::RoundedCylinder(body, frame) => writer.append_rounded_cylinder(
+                &body.geometry,
+                frame.origin,
+                frame.u,
+                frame.v,
+                self.policy.linear_tolerance_mm,
+            ),
             SolidBody::Torus(body, frame) => {
                 writer.append_torus(body.geometry, frame.origin, frame.u, frame.v)
             }

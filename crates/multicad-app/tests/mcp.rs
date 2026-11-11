@@ -2233,3 +2233,160 @@ fn twisted_pair_stdio_roundtrip(family: &str, hub: bool) {
     }
     assert_eq!(std::fs::read(project).unwrap(), bytes);
 }
+
+#[test]
+fn rust_stdio_edits_and_exports_a_saved_cylinder_fillet_transactionally() {
+    use multicad_core::{
+        commands::{Actor, Channel, Session},
+        constraint_sketch::Dimension,
+        document::{Document, Entity, EntityData},
+        model::{
+            self, BodyInput, EdgeTreatmentParameters, EdgeTreatmentProfile, EdgeTreatmentRequest,
+            PrimitiveFrame, PrimitiveParameters, PrimitiveRequest,
+        },
+        parameters::BoundExpression,
+        project_file::{self, ProjectFile},
+        references::{GeometryIntent, TopologyKind},
+    };
+    let directory = tempfile::tempdir().unwrap();
+    let project = directory.path().join("cylinder-fillet.tcd");
+    let mut document = Document::new("Cylinder fillet").unwrap();
+    document
+        .insert(Entity::new(
+            "distance",
+            EntityData::Parameter {
+                expression: "2".into(),
+                unit: "mm".into(),
+                exposed: true,
+                inputs: vec![],
+            },
+        ))
+        .unwrap();
+    let mut session = Session::new(document).unwrap();
+    let actor = Actor::local(Channel::Ui);
+    let source = PrimitiveRequest::new(
+        "Placed cylinder",
+        PrimitiveParameters::Cylinder {
+            radius: model::length(10.),
+            height: model::length(20.),
+            frame: PrimitiveFrame {
+                origin: [11., -7., 23.].map(model::length),
+                u: [0.8, 0., -0.6],
+                v: [0., 1., 0.],
+            },
+        },
+    );
+    session
+        .commit(
+            model::prepare_primitive(&session, session.revision(), actor.clone(), &source)
+                .unwrap()
+                .prepared,
+        )
+        .unwrap();
+    let model = multicad_model::Compiler::default()
+        .compile_with_backend(
+            session.document(),
+            session.revision(),
+            multicad_model::GeometryBackend::Rust,
+            None,
+        )
+        .unwrap();
+    let topology = &model.snapshot().shapes[&source.feature].topology;
+    let edges = topology
+        .elements
+        .iter()
+        .filter(|element| element.key.kind == TopologyKind::Edge)
+        .map(|element| GeometryIntent::capture(topology, element.key).unwrap())
+        .collect();
+    let treatment = EdgeTreatmentRequest::new(
+        BodyInput {
+            body: source.body,
+            producer: source.feature,
+        },
+        EdgeTreatmentParameters {
+            profile: EdgeTreatmentProfile::Fillet,
+            size: Dimension::Expression {
+                expression: BoundExpression::bind(session.document(), "=$distance", "mm", None)
+                    .unwrap(),
+            },
+        },
+        edges,
+    );
+    session
+        .commit(
+            model::prepare_edge_treatment(&session, session.revision(), actor, &treatment)
+                .unwrap()
+                .prepared,
+        )
+        .unwrap();
+    let mut bytes = vec![];
+    project_file::write(
+        &ProjectFile::new(session.document().clone()).unwrap(),
+        &mut bytes,
+        Default::default(),
+    )
+    .unwrap();
+    std::fs::write(&project, &bytes).unwrap();
+    let arguments = [
+        "--rust-model",
+        "--project",
+        project.to_str().unwrap(),
+        "--export-dir",
+        directory.path().to_str().unwrap(),
+    ];
+    let mut client = Client::start(&arguments);
+    let expected = |d: f64| {
+        multicad_kernel::rust_kernel::rounded_cylinder::RoundedCylinder::new(
+            10.,
+            20.,
+            [Some(d); 2],
+            1e-6,
+            1e7,
+        )
+        .unwrap()
+        .volume_mm3()
+    };
+    close(client.part_volume(), expected(2.));
+    let revision = client.revision();
+    client.fail(
+        "set_parameter",
+        json!({"expected_revision":revision,"name":"distance","expression":"10","unit":"mm"}),
+    );
+    assert_eq!(client.revision(), revision);
+    close(client.part_volume(), expected(2.));
+    assert_eq!(std::fs::read(&project).unwrap(), bytes);
+    client.ok(
+        "set_parameter",
+        json!({"expected_revision":revision,"name":"distance","expression":"3","unit":"mm"}),
+    );
+    let edited = client.revision();
+    close(client.part_volume(), expected(3.));
+    client.ok("undo", json!({"expected_revision":edited}));
+    close(client.part_volume(), expected(2.));
+    let revision = client.revision();
+    client.ok("redo", json!({"expected_revision":revision}));
+    close(client.part_volume(), expected(3.));
+    let revision = client.revision();
+    let receipt = client.ok(
+        "export_step",
+        json!({"part":source.body,"file_name":"fillet.step"}),
+    );
+    close(receipt["model_volume_mm3"].as_f64().unwrap(), expected(3.));
+    close(
+        receipt["readback_volume_mm3"].as_f64().unwrap(),
+        expected(3.),
+    );
+    let imported = multicad_kernel::Solid::import_rust_step(
+        &std::fs::read_to_string(directory.path().join("fillet.step")).unwrap(),
+        source.feature,
+        Default::default(),
+    )
+    .unwrap();
+    close(imported.volume_mm3().unwrap(), expected(3.));
+    assert_eq!(imported.solid_count().unwrap(), 1);
+    assert_eq!(client.revision(), revision);
+    client.ok("save_project", json!({"expected_revision":revision}));
+    drop(client);
+    let mut reopened = Client::start(&arguments);
+    close(reopened.part_volume(), expected(3.));
+}

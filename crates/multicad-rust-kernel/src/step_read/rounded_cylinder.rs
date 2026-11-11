@@ -1,5 +1,5 @@
 //! Independent recognition of closed rounded-cylinder analytic BREP members.
-//! This explicit API does not broaden generic analytic/import admission.
+//! Shared strict proof for specialized and canonical analytic/import admission.
 use super::*;
 use crate::rounded_cylinder::RoundedCylinder;
 mod topology;
@@ -32,6 +32,37 @@ pub fn read_rounded_cylinder_compound(
     compound::read_members_by(input, tolerance_mm, true, false, |shell, id, _| {
         read_member(shell, id)
     })
+}
+
+pub(super) fn recognize_member(
+    shell: &mut Shell<'_, '_>,
+    solid: u32,
+    faces: &[u32],
+) -> Result<Option<(Readback, ImportSolid)>> {
+    let mut rounded = false;
+    for &face in faces {
+        let [Value::String(_), _, support, _] = shell.args(face, "ADVANCED_FACE")? else {
+            return Err(ReadError::Invalid);
+        };
+        rounded |= shell.simple(reference(support)?)?.name == "TOROIDAL_SURFACE";
+    }
+    if !rounded {
+        return Ok(None);
+    }
+    let (proof, body) = read_member(shell, solid)?;
+    Ok(Some((
+        proof,
+        ImportSolid {
+            origin_mm: body.origin_mm,
+            u: body.u,
+            v: body.v,
+            height_mm: body.geometry.height_mm(),
+            profile: ImportProfile::RoundedCylinder {
+                radius_mm: body.geometry.radius_mm(),
+                fillet_radii_mm: body.geometry.fillet_radii_mm(),
+            },
+        },
+    )))
 }
 
 fn read_member(

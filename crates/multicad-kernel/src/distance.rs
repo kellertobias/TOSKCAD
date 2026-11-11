@@ -3,6 +3,7 @@
 use crate::{GeometryError, GeometryErrorKind, Solid, ffi};
 mod circular;
 mod planar;
+mod rounded;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BRepSelection {
     Whole,
@@ -55,6 +56,9 @@ pub(crate) fn measure(
                 GeometryErrorKind::Unsupported,
                 "Exact distance requires both selections to use the same geometry backend",
             ));
+        }
+        if let Some(result) = rounded::measure(a, selection_a, b, selection_b, tolerance) {
+            return result;
         }
         if let Some(result) = circular::measure(a, selection_a, b, selection_b, tolerance) {
             return result;

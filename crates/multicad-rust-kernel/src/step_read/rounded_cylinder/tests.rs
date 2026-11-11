@@ -1,13 +1,16 @@
 use super::*;
 #[test]
-fn specialized_reader_keeps_generic_import_admission_separate() {
+fn specialized_proof_is_shared_by_canonical_import() {
     let geometry = RoundedCylinder::new(5., 12., [Some(1.), Some(3.)], 1e-6, 1e7).unwrap();
     let text =
         crate::step::write_rounded_cylinder(&geometry, [0.; 3], [1., 0., 0.], [0., 1., 0.], 1e-7)
             .unwrap();
     assert!(read_rounded_cylinder(&text, 1e-7).is_ok());
-    assert!(read_analytic_solid(&text, 1e-7).is_err());
-    assert!(read_import_solid(&text, 1e-7).is_err());
+    assert!(read_analytic_solid(&text, 1e-7).is_ok());
+    assert!(matches!(
+        read_import_solid(&text, 1e-7).unwrap().1.profile,
+        ImportProfile::RoundedCylinder { radius_mm: 5., .. }
+    ));
 }
 
 fn specimen() -> String {
@@ -620,5 +623,25 @@ fn repeated_oriented_usage_and_mixed_member_publications_fail_atomically() {
     assert_eq!(
         read_rounded_cylinder_compound(&writer.finish().unwrap(), 1e-7).unwrap_err(),
         ReadError::Unsupported
+    );
+}
+
+#[test]
+fn malformed_shared_face_records_fail_every_analytic_entry_point() {
+    let source = specimen();
+    let face = ids(&source, "ADVANCED_FACE")[0];
+    let altered = edit(&source, face, |entity| entity.args.truncate(1));
+    assert_eq!(read_analytic_solid(&altered, 1e-7), Err(ReadError::Invalid));
+    assert_eq!(
+        read_import_solid(&altered, 1e-7).unwrap_err(),
+        ReadError::Invalid
+    );
+    assert_eq!(
+        read_rounded_cylinder(&altered, 1e-7).unwrap_err(),
+        ReadError::Invalid
+    );
+    assert_eq!(
+        read_nonplanar_loft_solid(&altered, 1e-7).unwrap_err(),
+        ReadError::Invalid
     );
 }

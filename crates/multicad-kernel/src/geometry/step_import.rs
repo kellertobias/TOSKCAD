@@ -214,6 +214,20 @@ impl Solid {
                 },
                 policy,
             ),
+            ImportProfile::RoundedCylinder {
+                radius_mm,
+                fillet_radii_mm,
+            } => {
+                let geometry = multicad_rust_kernel::rounded_cylinder::RoundedCylinder::new(
+                    radius_mm,
+                    height_mm,
+                    fillet_radii_mm,
+                    policy.minimum_feature_mm,
+                    policy.maximum_coordinate_mm,
+                )
+                .map_err(|_| invalid("rounded cylinder exceeds import policy"))?;
+                Self::import_rounded_cylinder(geometry, frame, feature, policy)
+            }
             ImportProfile::SplineSweep { sweep } => {
                 let body = SplineSweepBody::new(feature, sweep, frame, policy.linear_tolerance_mm)?;
                 Ok(Self {
