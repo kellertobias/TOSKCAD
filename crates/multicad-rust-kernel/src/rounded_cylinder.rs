@@ -144,6 +144,9 @@ impl RoundedCylinder {
     }
 
     /// Counterclockwise [radius, axial] profile, including its axis segment.
+    /// This interoperability view infers arc radii from floating endpoints.
+    /// The declared toroidal patches and analytic metrics remain authoritative
+    /// when large coordinates make a small endpoint difference less precise.
     pub fn meridian(&self) -> Vec<Edge> {
         let r = self.radius_mm;
         let h = self.height_mm;
