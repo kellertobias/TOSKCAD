@@ -91,13 +91,14 @@ fn occt_reads_placed_headed_screw_as_one_connected_solid() {
     let encoded = write_helical_screw(&screw, origin, u, v, 1e-7).unwrap();
     let measured = verify_helical_screw(&encoded, &screw, origin, u, v, 1e-7).unwrap();
     std::fs::write(&path, encoded).unwrap();
-    assert!(
-        multicad_kernel::rust_kernel::step_read::read_analytic_solid(
-            &std::fs::read_to_string(&path).unwrap(),
-            1e-7
-        )
-        .is_err()
-    );
+    let owned = multicad_kernel::rust_kernel::step_read::read_analytic_solid(
+        &std::fs::read_to_string(&path).unwrap(),
+        1e-7,
+    )
+    .unwrap();
+    assert_eq!(owned.solid_count, 1);
+    assert!((owned.volume_mm3 - measured).abs() < 1e-5);
+    assert!((owned.volume_mm3 - screw.volume_mm3()).abs() < 1e-5);
     // The legacy Solid wrapper also runs its exact trimmed-bounds solver.
     // Test the independently decoded OCCT B-rep directly for this oblique case.
     let read = multicad_kernel::Shape::read_step(&path).unwrap();

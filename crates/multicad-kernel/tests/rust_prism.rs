@@ -74,76 +74,87 @@ fn rust_bore_matches_the_independent_native_volume_and_all_face_centroids() {
         )
         .unwrap();
 
-    let profile = Profile {
-        frame: PlaneFrame::default(),
-        outer: vec![
-            ProfileEdge::Line {
-                a: [0., 0.],
-                b: [40., 0.],
-            },
-            ProfileEdge::Arc {
-                center: [40., 10.],
-                a: [40., 0.],
-                b: [40., 20.],
-                clockwise: false,
-            },
-            ProfileEdge::Line {
-                a: [40., 20.],
-                b: [0., 20.],
-            },
-            ProfileEdge::Line {
-                a: [0., 20.],
-                b: [0., 0.],
-            },
-        ],
-        holes: vec![vec![ProfileEdge::Circle {
-            center: [12., 10.],
-            radius_mm: 3.,
-        }]],
-    };
-    let policy = GeometryPolicy::default();
-    let native_uncut = Solid::extrude_profile(&profile, 8., policy).unwrap();
-    let native_cutter = Solid::cylinder(
-        PlaneFrame {
-            origin: [28., 10., -1.],
-            ..PlaneFrame::default()
-        },
-        4.,
-        10.,
-        policy,
-    )
-    .unwrap();
-    let native = native_uncut
-        .boolean(&native_cutter, BooleanOperation::Subtract, policy)
-        .unwrap()
-        .unwrap();
     near(
         uncut.volume_mm3().unwrap(),
-        native_uncut.volume_mm3().unwrap(),
+        (800. + 41. * std::f64::consts::PI) * 8.,
     );
-    near(rust.volume_mm3().unwrap(), native.volume_mm3().unwrap());
+    near(
+        rust.volume_mm3().unwrap(),
+        (800. + 25. * std::f64::consts::PI) * 8.,
+    );
     assert_eq!(rust.solid_count().unwrap(), 1);
     assert_eq!(rust.bounds().unwrap().min, [0.; 3]);
     assert_eq!(rust.bounds().unwrap().max, [50., 20., 8.]);
-    let native_faces = native.faces().unwrap();
-    let rust_faces = rust.faces().unwrap();
-    assert_eq!(rust_faces.len(), native_faces.len());
-    for face in rust_faces {
-        let matching: Vec<_> = native_faces
-            .iter()
-            .filter(|candidate| {
-                face.center_mm
-                    .iter()
-                    .zip(candidate.center_mm)
-                    .all(|(a, b)| (a - b).abs() < 1e-8)
-            })
-            .collect();
-        assert_eq!(matching.len(), 1, "{face:?}");
-        near(face.area_mm2, matching[0].area_mm2);
-        assert_eq!(face.plane.is_some(), matching[0].plane.is_some());
-        if let (Some((_, rust)), Some((_, native))) = (face.plane, matching[0].plane) {
-            for (a, b) in rust.into_iter().zip(native) {
-                near(a, b);
+    assert_eq!(rust.faces().unwrap().len(), 8);
+    if multicad_kernel::OCCT_LINKED {
+        let profile = Profile {
+            frame: PlaneFrame::default(),
+            outer: vec![
+                ProfileEdge::Line {
+                    a: [0., 0.],
+                    b: [40., 0.],
+                },
+                ProfileEdge::Arc {
+                    center: [40., 10.],
+                    a: [40., 0.],
+                    b: [40., 20.],
+                    clockwise: false,
+                },
+                ProfileEdge::Line {
+                    a: [40., 20.],
+                    b: [0., 20.],
+                },
+                ProfileEdge::Line {
+                    a: [0., 20.],
+                    b: [0., 0.],
+                },
+            ],
+            holes: vec![vec![ProfileEdge::Circle {
+                center: [12., 10.],
+                radius_mm: 3.,
+            }]],
+        };
+        let policy = GeometryPolicy::default();
+        let native_uncut = Solid::extrude_profile(&profile, 8., policy).unwrap();
+        let native_cutter = Solid::cylinder(
+            PlaneFrame {
+                origin: [28., 10., -1.],
+                ..PlaneFrame::default()
+            },
+            4.,
+            10.,
+            policy,
+        )
+        .unwrap();
+        let native = native_uncut
+            .boolean(&native_cutter, BooleanOperation::Subtract, policy)
+            .unwrap()
+            .unwrap();
+        near(
+            uncut.volume_mm3().unwrap(),
+            native_uncut.volume_mm3().unwrap(),
+        );
+        near(rust.volume_mm3().unwrap(), native.volume_mm3().unwrap());
+        let native_faces = native.faces().unwrap();
+        let rust_faces = rust.faces().unwrap();
+        assert_eq!(rust_faces.len(), native_faces.len());
+        for face in rust_faces {
+            let matching: Vec<_> = native_faces
+                .iter()
+                .filter(|candidate| {
+                    face.center_mm
+                        .iter()
+                        .zip(candidate.center_mm)
+                        .all(|(a, b)| (a - b).abs() < 1e-8)
+                })
+                .collect();
+            assert_eq!(matching.len(), 1, "{face:?}");
+            near(face.area_mm2, matching[0].area_mm2);
+            assert_eq!(face.plane.is_some(), matching[0].plane.is_some());
+            if let (Some((_, rust)), Some((_, native))) = (face.plane, matching[0].plane) {
+                for (a, b) in rust.into_iter().zip(native) {
+                    near(a, b);
+                }
             }
         }
     }
@@ -220,25 +231,27 @@ fn unsupported_and_invalid_operations_leave_the_rust_body_intact() {
     let owner = EntityId::new();
     let policy = GeometryPolicy::default();
     let body = adopt(prism(owner, integer(8)));
-    let native = Solid::box_solid([1.; 3], policy).unwrap();
-    assert!(native.rust_prism().is_none());
-    for (a, b) in [(&native, &body), (&body, &native)] {
-        let error = a
-            .boolean(b, BooleanOperation::Intersect, policy)
-            .err()
-            .unwrap();
-        assert_eq!(error.kind, GeometryErrorKind::Unsupported);
-    }
     let cutter = circle(28, 10, integer(4));
     let id = EntityId::new().uuid_bits();
-    assert_eq!(
-        native
-            .subtract_rust_prism_cylinder(id, cutter, integer(-1), integer(9))
-            .err()
-            .unwrap()
-            .kind,
-        GeometryErrorKind::Unsupported
-    );
+    if multicad_kernel::OCCT_LINKED {
+        let native = Solid::box_solid([1.; 3], policy).unwrap();
+        assert!(native.rust_prism().is_none());
+        for (a, b) in [(&native, &body), (&body, &native)] {
+            let error = a
+                .boolean(b, BooleanOperation::Intersect, policy)
+                .err()
+                .unwrap();
+            assert_eq!(error.kind, GeometryErrorKind::Unsupported);
+        }
+        assert_eq!(
+            native
+                .subtract_rust_prism_cylinder(id, cutter, integer(-1), integer(9))
+                .err()
+                .unwrap()
+                .kind,
+            GeometryErrorKind::Unsupported
+        );
+    }
     let cap_bore = body
         .subtract_rust_prism_cylinder(id, cutter, integer(0), integer(9))
         .unwrap();

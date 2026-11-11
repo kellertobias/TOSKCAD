@@ -488,7 +488,7 @@ fn rust_aids_match_native_contacts_and_use_the_lowest_material_over_the_footprin
 }
 
 #[test]
-fn rust_aids_report_missing_footprint_and_uncertified_curved_contact() {
+fn rust_aids_report_missing_footprint_and_measure_curved_tab_contact() {
     let mut f = fixture();
     let compiler = Compiler::default();
     let missing = AidRequest::new(
@@ -555,8 +555,17 @@ fn rust_aids_report_missing_footprint_and_uncertified_curved_contact() {
     let rust = compiler
         .compile_with_backend(f.s.document(), f.s.revision(), GeometryBackend::Rust, None)
         .unwrap();
-    let error = rust.snapshot().fdm_aids.as_ref().unwrap_err();
-    assert!(error.contains("Rust distance"), "{error}");
+    let report = rust.snapshot().fdm_aids.as_ref().unwrap();
+    let tab = inspection(report, "Tab on cylinder");
+    assert_eq!(tab.target.relation, SolidPairRelation::Overlapping);
+    let expected = (3. * 55_f64.sqrt() + 64. * (3_f64 / 8.).asin() - 36.) * 0.4;
+    near(tab.target.common_volume_mm3, expected);
+    assert!(tab.contact_issues.is_empty());
+    let contact = tab.exact_contact.unwrap();
+    near(contact.point_mm[0], 108.);
+    assert!((contact.point_mm[1] - 100.).abs() < 1e-4);
+    near(contact.point_mm[2], 15.);
+    assert!(contact.angle_deg.abs() < 1e-3);
 }
 
 #[test]

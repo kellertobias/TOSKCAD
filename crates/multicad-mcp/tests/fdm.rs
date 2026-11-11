@@ -29,13 +29,14 @@ fn mm(v: f64) -> Value {
 
 #[test]
 fn mcp_adds_inspects_edits_and_removes_fdm_aids() {
-    for backend in [GeometryBackend::OpenCascade, GeometryBackend::Rust] {
-        fdm_workflow(backend);
+    if multicad_kernel::OCCT_LINKED {
+        fdm_workflow(GeometryBackend::OpenCascade);
     }
+    fdm_workflow(GeometryBackend::Rust);
 }
 
 #[test]
-fn rust_mcp_refuses_uncertified_aid_contact_before_commit() {
+fn rust_mcp_certifies_curved_tab_overlap_and_rejects_invalid_edits_atomically() {
     let host = Headless::with_geometry_backend(
         Workspace::new(Document::new("Curved contact").unwrap()).unwrap(),
         None,
@@ -61,15 +62,27 @@ fn rust_mcp_refuses_uncertified_aid_contact_before_commit() {
             "distance": mm(10.), "operation": "new_body"}),
     )
     .unwrap();
-    let before = host.document();
-    let error = run(
+    let tab = run(
         "set_fdm_aid",
         json!({"expected_revision": 3, "name": "Tab", "kind": "tab",
             "target": disk["created"][0]["part"], "origin_mm": [10, 0, 0],
             "length": mm(5.), "width": mm(4.), "thickness": mm(0.4), "overlap": mm(1.)}),
     )
+    .unwrap();
+    assert_eq!(tab["revision"], 4);
+    let report = run("fdm_aid_report", json!({})).unwrap();
+    let aid = &report["aids"][0];
+    assert_eq!(aid["target"]["relation"], "overlapping");
+    let volume = aid["target"]["common_volume_mm3"].as_f64().unwrap();
+    let expected = (2. * 96_f64.sqrt() + 100. * 0.2_f64.asin() - 36.) * 0.4;
+    assert!((volume - expected).abs() < 1e-7, "{volume} != {expected}");
+    let before = host.document();
+    let error = run(
+        "set_fdm_aid",
+        json!({"expected_revision":4,"aid":tab["aid"],"thickness":mm(-0.4)}),
+    )
     .unwrap_err();
-    assert!(error.to_string().contains("planar"), "{error}");
+    assert!(!error.to_string().is_empty());
     assert_eq!(host.document(), before);
 }
 
