@@ -134,11 +134,19 @@ fn sourced_unc_unf_profiles_keep_fits_material_history_and_verified_manufacturin
             for (i, solid) in [screw, nut].into_iter().enumerate() {
                 let path = dir.path().join(format!("thread-{i}.step"));
                 solid.write_step(&path).unwrap();
-                let decoded = solid
-                    .verify_helical_step(&std::fs::read_to_string(&path).unwrap())
-                    .unwrap()
-                    .unwrap();
+                let source = std::fs::read_to_string(&path).unwrap();
+                let decoded = solid.verify_helical_step(&source).unwrap().unwrap();
                 assert!((decoded - solid.volume_mm3().unwrap()).abs() < 1e-3);
+                let imported = multicad_kernel::Solid::import_rust_step(
+                    &source,
+                    multicad_core::document::EntityId::new(),
+                    Default::default(),
+                )
+                .unwrap();
+                assert_eq!(imported.solid_count().unwrap(), 1);
+                assert!(
+                    (imported.volume_mm3().unwrap() - solid.volume_mm3().unwrap()).abs() < 1e-3
+                );
                 #[cfg(feature = "occt")]
                 {
                     let imported =
