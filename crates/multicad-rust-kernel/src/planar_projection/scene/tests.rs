@@ -1294,3 +1294,141 @@ fn sphere_hemisphere_hits_respect_finite_clip_planes() {
         close(actual, expected);
     }
 }
+
+#[test]
+fn axial_torus_preserves_its_bore_and_resolves_depth_on_lines_and_rims() {
+    let body = AnalyticFace::torus([0.; 3], [0., 0., 1.], [6., 2.]).unwrap();
+    let lines = [
+        LineCandidate {
+            source: 1,
+            points: [[-10., 0., -1.], [10., 0., -1.]],
+        },
+        LineCandidate {
+            source: 2,
+            points: [[-10., 0., 1.], [10., 0., 1.]],
+        },
+    ];
+    let mut partial = spherical_rim(5, [6., 0., 1.], 2.5);
+    partial.ellipse.trim = [1.1, 1.2];
+    let rims = [
+        spherical_rim(3, [6., 0., 1.], 2.5),
+        spherical_rim(4, [0., 0., -3.], 4.),
+        partial,
+    ];
+    let (_, _, result) = project_scene_with_analytic_faces(
+        &[],
+        &[],
+        SceneExtras {
+            lines: &lines,
+            spatial_rims: &rims,
+            ..Default::default()
+        },
+        &[body],
+        options(),
+    )
+    .unwrap();
+    let hidden = |source| {
+        result
+            .iter()
+            .filter_map(|span| match span.edge.curve {
+                Curve::Line(ends) if span.source == source && span.edge.hidden => {
+                    Some(ends.map(|p| p[0]))
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    let radial = 3_f64.sqrt();
+    for (source, expected) in [
+        (1, [-8., -4., 4., 8.]),
+        (2, [-6. - radial, -6. + radial, 6. - radial, 6. + radial]),
+    ] {
+        let spans = hidden(source);
+        assert_eq!(spans.len(), 2);
+        for (actual, expected) in spans.into_iter().flatten().zip(expected) {
+            close(actual, expected);
+        }
+    }
+    let projected_angle = |r: f64| ((r * r - 36. - 6.25) / 30.).acos();
+    let a = projected_angle(6. + radial);
+    let b = projected_angle(6. - radial);
+    intervals(
+        &circles(&result, 3, [6., 0.]),
+        &[
+            (false, [0., a]),
+            (true, [a, b]),
+            (false, [b, TAU - b]),
+            (true, [TAU - b, TAU - a]),
+            (false, [TAU - a, TAU]),
+        ],
+    );
+    intervals(&circles(&result, 4, [0.; 2]), &[(true, [0., TAU])]);
+    intervals(&circles(&result, 5, [6., 0.]), &[(true, [1.1, 1.2])]);
+}
+
+#[test]
+fn transverse_torus_resolves_the_curved_front_depth_and_respects_view_clips() {
+    let body = AnalyticFace::torus([0.; 3], [0., 1., 0.], [6., 2.]).unwrap();
+    let line = [LineCandidate {
+        source: 1,
+        points: [[-10., 0., 6.], [10., 0., 6.]],
+    }];
+    let (_, _, result) = project_scene_with_analytic_faces(
+        &[],
+        &[],
+        SceneExtras {
+            lines: &line,
+            ..Default::default()
+        },
+        &[body],
+        options(),
+    )
+    .unwrap();
+    let hidden = |segments: &[RoundSegment]| {
+        segments
+            .iter()
+            .filter_map(|segment| match segment.edge.curve {
+                Curve::Line(ends) if segment.edge.hidden => Some(ends.map(|p| p[0])),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    let spans = hidden(&result);
+    assert_eq!(spans.len(), 1);
+    close(spans[0][0], -28_f64.sqrt());
+    close(spans[0][1], 28_f64.sqrt());
+
+    let body = AnalyticFace::torus([0.; 3], [0., 1., 0.], [6., 2.])
+        .unwrap()
+        .retained(DepthRange::new(7., Some(6.5)).unwrap())
+        .unwrap();
+    let (_, _, result) = project_scene_with_analytic_faces(
+        &[],
+        &[],
+        SceneExtras {
+            lines: &line,
+            ..Default::default()
+        },
+        &[body],
+        options(),
+    )
+    .unwrap();
+    let spans = hidden(&result);
+    assert_eq!(spans.len(), 2);
+    let outer = (64_f64 - 6.5_f64.powi(2)).sqrt();
+    for (actual, expected) in
+        spans
+            .into_iter()
+            .flatten()
+            .zip([-outer, -15_f64.sqrt(), 15_f64.sqrt(), outer])
+    {
+        close(actual, expected);
+    }
+
+    for (axis, radii) in [([0., 0., 1.], [1., 2.]), ([0., 0.6, 0.8], [6., 2.])] {
+        assert!(matches!(
+            AnalyticFace::torus([0.; 3], axis, radii),
+            Err(ProjectionError::Invalid)
+        ));
+    }
+}

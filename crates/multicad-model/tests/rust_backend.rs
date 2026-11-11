@@ -529,6 +529,8 @@ fn rust_full_circle_revolution_preserves_exact_torus_geometry_and_saved_face_ide
         near(minor_mm, radius);
     }
 
+    verify_torus_drawing_scene(stock);
+
     parameters.axis_origin[0] = length(1.);
     parameters.angle = model::angle(-360.);
     let edit =
@@ -608,6 +610,186 @@ fn rust_full_circle_revolution_preserves_exact_torus_geometry_and_saved_face_ide
     };
     assert_eq!(error.entity, Some(feature));
     assert!(error.message.contains("straight"), "{error}");
+}
+
+fn verify_torus_drawing_scene(torus: &multicad_kernel::Solid) {
+    use multicad_core::drawings::{VectorCurve, VectorRole};
+    use multicad_kernel::{
+        DrawingProjection, DrawingSolid, PlaneFrame, Solid, project_drawing, rust_kernel::Rational,
+    };
+
+    let stock = |origin, size: [i64; 3]| {
+        Solid::rust_box(
+            EntityId::new().uuid_bits(),
+            size.map(|value| Rational::new(value, 1).unwrap()),
+            PlaneFrame {
+                origin,
+                ..Default::default()
+            },
+            Default::default(),
+        )
+        .unwrap()
+    };
+    let project = |solids: &[&Solid], options| {
+        let inputs: Vec<_> = solids
+            .iter()
+            .map(|&solid| DrawingSolid { solid, hatch: None })
+            .collect();
+        project_drawing(&inputs, options).unwrap()
+    };
+    let options = DrawingProjection {
+        hidden_lines: true,
+        chord_tolerance_mm: 1e-4,
+        ..Default::default()
+    };
+    let rear = stock([-8., 0., -4.], [16, 1, 1]);
+    let axial = project(&[torus, &rear], options);
+    let axial_spans = |edges: &[multicad_kernel::ProjectedVector], role| {
+        let mut ranges: Vec<_> = edges
+            .iter()
+            .filter_map(|edge| {
+                if edge.source_index == 1
+                    && edge.role == role
+                    && let VectorCurve::Line { a, b } = edge.curve
+                    && [a, b].into_iter().all(|p| p[1].abs() < 1e-8)
+                {
+                    return Some([a[0].min(b[0]), a[0].max(b[0])]);
+                }
+                None
+            })
+            .collect();
+        ranges.sort_unstable_by(|a, b| a[0].total_cmp(&b[0]));
+        ranges.dedup_by(|a, b| (0..2).all(|i| (a[i] - b[i]).abs() < 1e-6));
+        ranges
+    };
+    let visible = axial_spans(&axial, VectorRole::Visible);
+    let hidden = axial_spans(&axial, VectorRole::Hidden);
+    assert_eq!(visible.len(), 3);
+    for (a, b) in visible
+        .iter()
+        .flatten()
+        .copied()
+        .zip([-8., -6., -4., 4., 6., 8.])
+    {
+        assert!((a - b).abs() < 1e-6);
+    }
+    for expected in [[-6., -4.], [4., 6.]] {
+        assert!(
+            hidden
+                .iter()
+                .any(|range| (0..2).all(|i| (range[i] - expected[i]).abs() < 1e-6))
+        );
+    }
+
+    let screen = PlaneFrame {
+        u: [0., 1., 0.],
+        v: [0., 0., 1.],
+        ..Default::default()
+    };
+    let front = stock([3., -7., -2.], [1, 14, 4]);
+    let side = project(
+        &[torus, &front],
+        DrawingProjection {
+            frame: screen,
+            ..options
+        },
+    );
+    assert!(side.iter().any(|edge| edge.source_index == 0
+        && edge.role == VectorRole::Visible
+        && matches!(edge.curve, VectorCurve::Line { a,b }
+            if [a,b].into_iter().all(|p| (p[1]-1.).abs() < 1e-8)
+                && (a[0].min(b[0])+3.).abs() < 1e-6 && (a[0].max(b[0])-3.).abs() < 1e-6)));
+    let detail = project(
+        &[torus],
+        DrawingProjection {
+            frame: screen,
+            detail: Some(([0., 1.], 0.75)),
+            ..options
+        },
+    );
+    assert!(
+        detail
+            .iter()
+            .any(|edge| matches!(edge.curve, VectorCurve::Line { a,b }
+        if [a,b].into_iter().all(|p| (p[1]-1.).abs() < 1e-8)
+            && (a[0].min(b[0])+0.75).abs() < 1e-6 && (a[0].max(b[0])-0.75).abs() < 1e-6))
+    );
+
+    let depth = project(
+        &[torus],
+        DrawingProjection {
+            section_offset_mm: Some(0.6),
+            section_depth_mm: Some(0.9),
+            section_u_mm: Some([0., 7.]),
+            ..options
+        },
+    );
+    for role in [VectorRole::Section, VectorRole::Visible, VectorRole::Hidden] {
+        assert!(depth.iter().any(|edge| edge.role == role));
+    }
+    assert!(
+        depth
+            .iter()
+            .flat_map(|edge| &edge.preview_mm)
+            .all(|p| p[0] >= -1e-7)
+    );
+    assert!(depth.iter().any(|edge| edge.role == VectorRole::Visible
+        && matches!(edge.curve, VectorCurve::Ellipse { major_mm: 6., .. })));
+    let stock = stock([7., 0., 0.], [2, 2, 1]);
+    let mixed_cut = project(
+        &[torus, &stock],
+        DrawingProjection {
+            section_only: true,
+            section_offset_mm: Some(0.6),
+            ..options
+        },
+    );
+    assert!(
+        mixed_cut
+            .iter()
+            .all(|edge| edge.role == VectorRole::Section)
+    );
+    assert_eq!(
+        mixed_cut
+            .iter()
+            .filter(|edge| edge.source_index == 0)
+            .count(),
+        2
+    );
+    assert_eq!(
+        mixed_cut
+            .iter()
+            .filter(|edge| edge.source_index == 1)
+            .count(),
+        4
+    );
+
+    #[cfg(feature = "occt")]
+    {
+        let directory = tempfile::tempdir().unwrap();
+        let native = |solid: &Solid, name: &str| {
+            let path = directory.path().join(name);
+            solid.write_step(&path).unwrap();
+            Solid::read_step(&path, Default::default()).unwrap()
+        };
+        let native_torus = native(torus, "torus.step");
+        let bounds = native_torus.bounds().unwrap();
+        assert!((bounds.min[0] + 6.).abs() < 1e-6 && (bounds.max[0] - 6.).abs() < 1e-6);
+        let reference = project(&[&native_torus, &native(&rear, "stock.step")], options);
+        let reference = axial_spans(&reference, VectorRole::Visible);
+        assert!(reference.iter().any(|[lo, hi]| *lo < 0. && *hi > 0.));
+        // The native projection can omit an exterior stock span at the
+        // torus seam. The bounds and analytic intervals above certify
+        // both exterior spans independently of the native HLR output.
+        for expected in reference {
+            assert!(
+                visible.iter().any(|span| {
+                    (0..2).all(|i| (span[i] - expected[i]).abs() < 3. * options.chord_tolerance_mm)
+                }),
+                "native stock interval {expected:?}"
+            );
+        }
+    }
 }
 
 #[test]

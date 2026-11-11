@@ -1,9 +1,11 @@
 //! Finite plane and circular cylinder faces in drawing coordinates.
 use super::*;
 mod sphere;
+mod torus;
 use crate::{curved_projection::roots, trim_curve::EllipseArc};
 use sphere::Sphere;
 use std::f64::consts::{FRAC_PI_2, TAU};
+use torus::Torus;
 
 const ANGULAR: f64 = 64. * f64::EPSILON;
 const MAX_TRIMS: usize = 8192;
@@ -28,6 +30,7 @@ enum Surface {
     Plane(Plane),
     Cylinder(Cylinder),
     Sphere(Sphere),
+    Torus(Torus),
 }
 
 struct Plane {
@@ -383,7 +386,7 @@ impl AnalyticFace {
     pub(super) fn build_work(&self) -> usize {
         match &self.surface {
             Surface::Plane(plane) => plane.boundary.len(),
-            Surface::Cylinder(_) | Surface::Sphere(_) => 1,
+            Surface::Cylinder(_) | Surface::Sphere(_) | Surface::Torus(_) => 1,
         }
     }
 
@@ -431,6 +434,7 @@ impl AnalyticFace {
             Surface::Sphere(sphere) => {
                 sphere.hide(path, span, depth_gap, roundoff, self.depth, work)
             }
+            Surface::Torus(torus) => torus.hide(path, span, depth_gap, roundoff, self.depth, work),
         }
     }
 }
@@ -670,6 +674,18 @@ impl Path {
             ],
             harmonic: self.harmonic,
         }
+    }
+
+    fn coincident_circle(self, center: Point, radius: f64, gap: f64, roundoff: f64) -> bool {
+        let delta = sub(self.origin, center);
+        let [u, v] = [self.b, self.c];
+        self.harmonic
+            && delta[2] < -gap
+            && delta[0].hypot(delta[1]) <= roundoff
+            && u[2].abs().max(v[2].abs()) <= roundoff
+            && (length(u) - radius).abs() <= roundoff
+            && (length(v) - radius).abs() <= roundoff
+            && dot(u, v).abs() <= roundoff * radius
     }
 
     fn roundoff(self) -> f64 {

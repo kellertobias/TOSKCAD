@@ -37,7 +37,7 @@ impl Sphere {
             path.coordinate(self.center, std::array::from_fn(|i| f64::from(i == axis)))
         });
         let shifted = z.offset(gap);
-        if limits == [None; 2] && self.coincident_contour(path, gap, roundoff) {
+        if limits == [None; 2] && path.coincident_circle(self.center, self.radius, gap, roundoff) {
             work.hidden.push(span);
             return Ok(());
         }
@@ -67,17 +67,5 @@ impl Sphere {
             |span| work.hidden.push(span),
         );
         Ok(())
-    }
-
-    fn coincident_contour(&self, path: Path, gap: f64, roundoff: f64) -> bool {
-        let delta = sub(path.origin, self.center);
-        let [u, v] = [path.b, path.c];
-        path.harmonic
-            && delta[2] < -gap
-            && delta[0].hypot(delta[1]) <= roundoff
-            && u[2].abs().max(v[2].abs()) <= roundoff
-            && (length(u) - self.radius).abs() <= roundoff
-            && (length(v) - self.radius).abs() <= roundoff
-            && dot(u, v).abs() <= roundoff * self.radius
     }
 }

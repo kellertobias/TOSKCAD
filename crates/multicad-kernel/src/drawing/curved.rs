@@ -67,6 +67,7 @@ pub(super) fn is_round(solid: &Solid) -> bool {
 pub(super) fn needs_curved_scene(solid: &Solid) -> bool {
     is_round(solid)
         || solid.sphere_body().is_some()
+        || solid.torus_body().is_some()
         || pockets::has_machined_stock(solid)
         || apertures::has_through_bores(solid)
         || solid.rounded_slot_body().is_some()
@@ -179,6 +180,14 @@ fn project_members(
                 sphere::scene_member(frame.origin, body.radius_mm(), options.frame, source)?;
             shell_faces.push(blocker);
             rounded.rims.push(silhouette);
+            shell_tolerance = shell_tolerance.max(solid.geometry_policy().linear_tolerance_mm);
+            continue;
+        }
+        if let Some((body, frame)) = solid.torus_body() {
+            let (blocker, silhouettes) =
+                torus::scene_member(frame, body.radii_mm(), options.frame, source)?;
+            shell_faces.push(blocker);
+            rounded.rims.extend(silhouettes);
             shell_tolerance = shell_tolerance.max(solid.geometry_policy().linear_tolerance_mm);
             continue;
         }

@@ -20,6 +20,7 @@ pub(super) fn needs_analytic_section(solid: &Solid) -> bool {
         || solid.warped_union_body().is_some()
         || solid.nonplanar_loft_body().is_some()
         || solid.sphere_body().is_some()
+        || solid.torus_body().is_some()
         || curved::is_round(solid)
         || solid
             .rust_compound()
@@ -211,6 +212,8 @@ impl SectionOutput {
         let input = DrawingSolid { solid, hatch };
         let mut vectors = if let Some((body, frame)) = solid.sphere_body() {
             sphere::project(&input, frame.origin, body.radius_mm(), self.options)?
+        } else if let Some((body, frame)) = solid.torus_body() {
+            torus::project(&input, frame, body.radii_mm(), self.options)?
         } else if curved::is_round(solid) {
             project_circular(&input, self.options, depth)?
         } else {
