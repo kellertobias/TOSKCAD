@@ -41,6 +41,20 @@ pub fn verify_herringbone(
     v: Point,
     tolerance: f64,
 ) -> Result<f64> {
+    let mut volumes =
+        compound::read_members_by(input, tolerance, true, true, |shell, solid, _| {
+            verify_member(shell, solid, gear, [origin, u, v], tolerance)
+        })?;
+    volumes.pop().ok_or(ReadError::Invalid)
+}
+
+pub(super) fn verify_member(
+    shell: &mut Shell<'_, '_>,
+    solid: u32,
+    gear: &Herringbone,
+    [origin, u, v]: [Point; 3],
+    tolerance: f64,
+) -> Result<f64> {
     require(
         origin.into_iter().chain(u).chain(v).all(f64::is_finite)
             && (dot(u, u) - 1.).abs() <= 1e-10
@@ -58,173 +72,168 @@ pub fn verify_herringbone(
     let extensions = gear.hub_extensions();
     let extension_count = extensions.iter().flatten().count();
     let n = plan.transverse.len();
-    let result = compound::read_members_by(input, tolerance, true, true, |shell, solid, _| {
-        let faces = shell.member_faces(solid)?;
-        require(
-            faces.len() == 2 * n + 2 + usize::from(bore.is_some()) + 2 * extension_count
-                && faces.iter().collect::<BTreeSet<_>>().len() == faces.len(),
-        )?;
-        let mut rims = [(); 3].map(|()| vec![None; n]);
-        let mut rails = [(); 2].map(|()| vec![None; n]);
-        let mut integral = 0.;
-        for band in 0..2 {
-            let axial = &plan.spins[band];
-            let heights = &plan.heights[band];
-            for (index, radial) in plan.transverse.iter().enumerate() {
-                let (support, forward, bounds) = face(shell, faces[band * n + index])?;
-                let ([bound], true) = (bounds.as_slice(), forward) else {
-                    return Err(ReadError::Invalid);
-                };
-                let decoded = surface(shell, support, radial, axial, heights, &frame)?;
-                if index == 0 {
-                    integral += rotation_integral(&decoded, radial.poles[0], axial, &frame)?;
-                }
-                let uses = ring(shell, *bound, true)?;
-                let [(bottom, true), (next, true), (top, false), (prior, false)] = uses[..] else {
-                    return Err(ReadError::Invalid);
-                };
-                let next_index = (index + 1) % n;
-                register(&mut rims[band][index], bottom)?;
-                register(&mut rims[band + 1][index], top)?;
-                register(&mut rails[band][index], prior)?;
-                register(&mut rails[band][next_index], next)?;
+    let faces = shell.member_faces(solid)?;
+    require(
+        faces.len() == 2 * n + 2 + usize::from(bore.is_some()) + 2 * extension_count
+            && faces.iter().collect::<BTreeSet<_>>().len() == faces.len(),
+    )?;
+    let mut rims = [(); 3].map(|()| vec![None; n]);
+    let mut rails = [(); 2].map(|()| vec![None; n]);
+    let mut integral = 0.;
+    for band in 0..2 {
+        let axial = &plan.spins[band];
+        let heights = &plan.heights[band];
+        for (index, radial) in plan.transverse.iter().enumerate() {
+            let (support, forward, bounds) = face(shell, faces[band * n + index])?;
+            let ([bound], true) = (bounds.as_slice(), forward) else {
+                return Err(ReadError::Invalid);
+            };
+            let decoded = surface(shell, support, radial, axial, heights, &frame)?;
+            if index == 0 {
+                integral += rotation_integral(&decoded, radial.poles[0], axial, &frame)?;
             }
+            let uses = ring(shell, *bound, true)?;
+            let [(bottom, true), (next, true), (top, false), (prior, false)] = uses[..] else {
+                return Err(ReadError::Invalid);
+            };
+            let next_index = (index + 1) % n;
+            register(&mut rims[band][index], bottom)?;
+            register(&mut rims[band + 1][index], top)?;
+            register(&mut rails[band][index], prior)?;
+            register(&mut rails[band][next_index], next)?;
         }
-        let rims = resolved(rims)?;
-        let rails = resolved(rails)?;
-        let mut edge_ids: BTreeSet<_> = rims.iter().chain(&rails).flatten().copied().collect();
-        require(edge_ids.len() == 5 * n)?;
-        let mut vertices = [(); 3].map(|()| vec![None; n]);
-        let mut area = 0.;
-        for station in 0..3 {
-            let spin = plan.phases[station];
-            let z = plan.levels[station];
-            for (index, radial) in plan.transverse.iter().enumerate() {
-                let id = rims[station][index];
-                let points = radial
-                    .poles
-                    .iter()
-                    .map(|&p| frame.world(product(p, spin), z));
-                let (ends, decoded, curve) = trim(shell, id, radial, points)?;
-                register(&mut vertices[station][index], ends[0])?;
-                register(&mut vertices[station][(index + 1) % n], ends[1])?;
-                if station == 0 {
-                    area += section_area(shell, curve, radial, &decoded, &frame)?;
-                }
-            }
-        }
-        let vertices = resolved(vertices)?;
-        let mut vertex_ids: BTreeSet<_> = vertices.iter().flatten().copied().collect();
-        require(vertex_ids.len() == 3 * n)?;
-        for band in 0..2 {
-            let axial = &plan.spins[band];
-            for (index, radial) in plan.transverse.iter().enumerate() {
-                let points = axial
-                    .poles
-                    .iter()
-                    .zip(&plan.heights[band])
-                    .map(|(&spin, &z)| frame.world(product(radial.poles[0], spin), z));
-                let (ends, _, _) = trim(shell, rails[band][index], axial, points)?;
-                require(ends == [vertices[band][index], vertices[band + 1][index]])?;
-            }
-        }
-        let mut bore_rims = [0; 2];
-        let mut hub_rims = [[0; 2]; 2];
-        let mut circles = CircularChecks {
-            frame: &frame,
-            edges: &mut edge_ids,
-            vertices: &mut vertex_ids,
-        };
-        for (end, station) in [0, 2].into_iter().enumerate() {
-            let top = end == 1;
-            let z = plan.levels[station];
-            let hole_radius = extensions[end].map(|hub| hub.radius_mm).or(bore);
-            let bounds = cap_bounds(
-                shell,
-                faces[2 * n + end],
-                &frame,
-                z,
-                top,
-                hole_radius.is_some(),
-            )?;
-            let outer = ring(shell, bounds[0], true)?;
-            let expected = rims[station]
+    }
+    let rims = resolved(rims)?;
+    let rails = resolved(rails)?;
+    let mut edge_ids: BTreeSet<_> = rims.iter().chain(&rails).flatten().copied().collect();
+    require(edge_ids.len() == 5 * n)?;
+    let mut vertices = [(); 3].map(|()| vec![None; n]);
+    let mut area = 0.;
+    for station in 0..3 {
+        let spin = plan.phases[station];
+        let z = plan.levels[station];
+        for (index, radial) in plan.transverse.iter().enumerate() {
+            let id = rims[station][index];
+            let points = radial
+                .poles
                 .iter()
-                .copied()
-                .map(|id| (id, true))
-                .collect::<Vec<_>>();
-            require(orient(&outer, top) == expected)?;
-            if let Some(radius) = hole_radius {
-                let id = circles.rim(shell, bounds[1], radius, z, false, !top)?;
-                if extensions[end].is_some() {
-                    hub_rims[end][1 - end] = id;
-                } else {
-                    bore_rims[end] = id;
-                }
+                .map(|&p| frame.world(product(p, spin), z));
+            let (ends, decoded, curve) = trim(shell, id, radial, points)?;
+            register(&mut vertices[station][index], ends[0])?;
+            register(&mut vertices[station][(index + 1) % n], ends[1])?;
+            if station == 0 {
+                area += section_area(shell, curve, radial, &decoded, &frame)?;
             }
         }
-        let mut added = 0.;
-        for (end, extension) in extensions.into_iter().enumerate() {
-            let Some(extension) = extension else {
-                continue;
-            };
-            let top = end == 1;
-            let z = extension.end_z_mm;
-            let bounds = cap_bounds(
-                shell,
-                faces[extension.cap_face as usize],
-                &frame,
-                z,
-                top,
-                bore.is_some(),
-            )?;
-            hub_rims[end][end] =
-                circles.rim(shell, bounds[0], extension.radius_mm, z, true, top)?;
-            if let Some(radius) = bore {
-                bore_rims[end] = circles.rim(shell, bounds[1], radius, z, false, !top)?;
-            }
+    }
+    let vertices = resolved(vertices)?;
+    let mut vertex_ids: BTreeSet<_> = vertices.iter().flatten().copied().collect();
+    require(vertex_ids.len() == 3 * n)?;
+    for band in 0..2 {
+        let axial = &plan.spins[band];
+        for (index, radial) in plan.transverse.iter().enumerate() {
+            let points = axial
+                .poles
+                .iter()
+                .zip(&plan.heights[band])
+                .map(|(&spin, &z)| frame.world(product(radial.poles[0], spin), z));
+            let (ends, _, _) = trim(shell, rails[band][index], axial, points)?;
+            require(ends == [vertices[band][index], vertices[band + 1][index]])?;
         }
-        for (end, extension) in extensions.into_iter().enumerate() {
-            let Some(extension) = extension else {
-                continue;
-            };
-            let span = if end == 0 {
-                [extension.end_z_mm, extension.gear_z_mm]
+    }
+    let mut bore_rims = [0; 2];
+    let mut hub_rims = [[0; 2]; 2];
+    let mut circles = CircularChecks {
+        frame: &frame,
+        edges: &mut edge_ids,
+        vertices: &mut vertex_ids,
+    };
+    for (end, station) in [0, 2].into_iter().enumerate() {
+        let top = end == 1;
+        let z = plan.levels[station];
+        let hole_radius = extensions[end].map(|hub| hub.radius_mm).or(bore);
+        let bounds = cap_bounds(
+            shell,
+            faces[2 * n + end],
+            &frame,
+            z,
+            top,
+            hole_radius.is_some(),
+        )?;
+        let outer = ring(shell, bounds[0], true)?;
+        let expected = rims[station]
+            .iter()
+            .copied()
+            .map(|id| (id, true))
+            .collect::<Vec<_>>();
+        require(orient(&outer, top) == expected)?;
+        if let Some(radius) = hole_radius {
+            let id = circles.rim(shell, bounds[1], radius, z, false, !top)?;
+            if extensions[end].is_some() {
+                hub_rims[end][1 - end] = id;
             } else {
-                [extension.gear_z_mm, extension.end_z_mm]
-            };
-            let height = cylindrical_wall(
-                shell,
-                faces[extension.wall_face as usize],
-                (extension.radius_mm, span[0]),
-                hub_rims[end],
-                &frame,
-                true,
-                &mut edge_ids,
-            )?;
-            require((height - (span[1] - span[0])).abs() <= tolerance)?;
-            added += PI * extension.radius_mm.powi(2) * height;
+                bore_rims[end] = id;
+            }
         }
-        let void = if let Some(radius) = bore {
-            let height = cylindrical_wall(
-                shell,
-                faces[2 * n + 2],
-                (radius, gear.profile().axial_bounds()[0]),
-                bore_rims,
-                &frame,
-                false,
-                &mut edge_ids,
-            )?;
-            PI * radius * radius * height
-        } else {
-            0.
+    }
+    let mut added = 0.;
+    for (end, extension) in extensions.into_iter().enumerate() {
+        let Some(extension) = extension else {
+            continue;
         };
-        let volume = area * integral + added - void;
-        require(volume.is_finite() && volume > 0.)?;
-        Ok(volume)
-    })?;
-    require(result.len() == 1)?;
-    Ok(result[0])
+        let top = end == 1;
+        let z = extension.end_z_mm;
+        let bounds = cap_bounds(
+            shell,
+            faces[extension.cap_face as usize],
+            &frame,
+            z,
+            top,
+            bore.is_some(),
+        )?;
+        hub_rims[end][end] = circles.rim(shell, bounds[0], extension.radius_mm, z, true, top)?;
+        if let Some(radius) = bore {
+            bore_rims[end] = circles.rim(shell, bounds[1], radius, z, false, !top)?;
+        }
+    }
+    for (end, extension) in extensions.into_iter().enumerate() {
+        let Some(extension) = extension else {
+            continue;
+        };
+        let span = if end == 0 {
+            [extension.end_z_mm, extension.gear_z_mm]
+        } else {
+            [extension.gear_z_mm, extension.end_z_mm]
+        };
+        let height = cylindrical_wall(
+            shell,
+            faces[extension.wall_face as usize],
+            (extension.radius_mm, span[0]),
+            hub_rims[end],
+            &frame,
+            true,
+            &mut edge_ids,
+        )?;
+        require((height - (span[1] - span[0])).abs() <= tolerance)?;
+        added += PI * extension.radius_mm.powi(2) * height;
+    }
+    let void = if let Some(radius) = bore {
+        let height = cylindrical_wall(
+            shell,
+            faces[2 * n + 2],
+            (radius, gear.profile().axial_bounds()[0]),
+            bore_rims,
+            &frame,
+            false,
+            &mut edge_ids,
+        )?;
+        PI * radius * radius * height
+    } else {
+        0.
+    };
+    let volume = area * integral + added - void;
+    require(volume.is_finite() && volume > 0.)?;
+    Ok(volume)
 }
 
 fn cap_bounds(

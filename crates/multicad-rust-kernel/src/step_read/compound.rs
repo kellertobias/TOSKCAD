@@ -70,42 +70,42 @@ pub(super) fn read_analytic_with_helical_cuts(
     tolerance: f64,
     single: bool,
 ) -> Result<Vec<(Readback, Option<ImportSolid>)>> {
-    read_members_by(
-        input,
-        tolerance,
-        true,
-        single,
-        |shell, id, may_be_warped| {
-            let faces = shell.member_faces(id)?;
-            if let Some((proof, _)) = sphere::read_member(shell, &faces)? {
-                return Ok((proof, None));
-            }
-            if let Some((proof, _)) = torus::read_member(shell, &faces)? {
-                return Ok((proof, None));
-            }
-            if let Some((proof, cut)) = import::read_helical_cut_member(shell, &faces)? {
-                return Ok((proof, Some(cut)));
-            }
-            if let Some((proof, _)) = nonplanar_loft::read_member(shell, &faces)? {
-                return Ok((proof, None));
-            }
-            if faces
-                .iter()
-                .any(|&face| spline_sweep::has_extrusion_support(shell, face))
-            {
-                return spline_sweep::read_member(shell, faces).map(|proof| (proof, None));
-            }
-            let regular = shell
-                .validate_faces(faces)
-                .and_then(|faces| shell.readback(&faces));
-            match regular {
-                Err(error @ (ReadError::Invalid | ReadError::Unsupported)) if may_be_warped => {
-                    fallback_warped(shell, id, error).map(|(proof, _)| (proof, None))
-                }
-                _ => regular.map(|proof| (proof, None)),
-            }
-        },
-    )
+    read_members_by(input, tolerance, true, single, read_analytic_member)
+}
+
+pub(super) fn read_analytic_member(
+    shell: &mut Shell<'_, '_>,
+    id: u32,
+    may_be_warped: bool,
+) -> Result<(Readback, Option<ImportSolid>)> {
+    let faces = shell.member_faces(id)?;
+    if let Some((proof, _)) = sphere::read_member(shell, &faces)? {
+        return Ok((proof, None));
+    }
+    if let Some((proof, _)) = torus::read_member(shell, &faces)? {
+        return Ok((proof, None));
+    }
+    if let Some((proof, cut)) = import::read_helical_cut_member(shell, &faces)? {
+        return Ok((proof, Some(cut)));
+    }
+    if let Some((proof, _)) = nonplanar_loft::read_member(shell, &faces)? {
+        return Ok((proof, None));
+    }
+    if faces
+        .iter()
+        .any(|&face| spline_sweep::has_extrusion_support(shell, face))
+    {
+        return spline_sweep::read_member(shell, faces).map(|proof| (proof, None));
+    }
+    let regular = shell
+        .validate_faces(faces)
+        .and_then(|faces| shell.readback(&faces));
+    match regular {
+        Err(error @ (ReadError::Invalid | ReadError::Unsupported)) if may_be_warped => {
+            fallback_warped(shell, id, error).map(|(proof, _)| (proof, None))
+        }
+        _ => regular.map(|proof| (proof, None)),
+    }
 }
 
 fn fallback_warped(
@@ -127,7 +127,7 @@ pub(super) fn read_members_by<T>(
     tolerance: f64,
     allow_circles: bool,
     single: bool,
-    member: impl Fn(&mut Shell<'_, '_>, u32, bool) -> Result<T>,
+    mut member: impl FnMut(&mut Shell<'_, '_>, u32, bool) -> Result<T>,
 ) -> Result<Vec<T>> {
     let entities = parse_entities(input, tolerance)?;
     let solids = Shell::new(&entities, tolerance, allow_circles).represented_solids(single)?;
