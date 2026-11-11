@@ -113,7 +113,8 @@ pub struct PairValues {
     pub minimum_clearance_mm: f64,
     pub witnesses: Vec<InspectionWitness>,
     pub witnesses_complete: bool,
-    pub total_solutions: u32,
+    /// None when the certified minimum does not include an exhaustive count.
+    pub total_solutions: Option<u32>,
     pub inner_solution: bool,
     pub tolerance_mm: f64,
     pub boolean_fuzzy_mm: f64,
@@ -128,8 +129,11 @@ impl PairValues {
             || self.boolean_fuzzy_mm != 0.
             || self.witnesses.is_empty()
             || self.witnesses.len() > MAX_CLEARANCE_WITNESSES
-            || (self.total_solutions as usize) < self.witnesses.len()
-            || self.witnesses_complete != (self.total_solutions as usize == self.witnesses.len())
+            || !crate::inspection::valid_witness_metadata(
+                self.total_solutions,
+                self.witnesses_complete,
+                self.witnesses.len(),
+            )
         {
             return Err("Native pair result contains invalid values or witness metadata".into());
         }
@@ -565,7 +569,7 @@ mod tests {
                 b_mm: [1., 0., 0.],
             }],
             witnesses_complete: true,
-            total_solutions: 1,
+            total_solutions: Some(1),
             inner_solution: false,
             tolerance_mm: p.contact_tolerance_mm,
             boolean_fuzzy_mm: 0.,
@@ -579,6 +583,17 @@ mod tests {
             }],
         };
         report.validate_against(&p).unwrap();
+        let mut partial = values.clone();
+        partial.total_solutions = None;
+        partial.witnesses_complete = false;
+        partial.validate(&p).unwrap();
+        let json = serde_json::to_value(&partial).unwrap();
+        assert!(json["total_solutions"].is_null());
+        let restored: PairValues = serde_json::from_value(json).unwrap();
+        restored.validate(&p).unwrap();
+        assert_eq!(restored.total_solutions, None);
+        partial.witnesses_complete = true;
+        assert!(partial.validate(&p).is_err());
         let mut bad = report.clone();
         bad.pairs.clear();
         assert!(bad.validate_against(&p).is_err());

@@ -974,10 +974,18 @@ fn show_pairs(
                         "Overlap volume: {:.6} mm³",
                         values.overlap_volume_mm3
                     ));
+                    let witnesses = match values.total_solutions {
+                        Some(total) => format!(
+                            "{} / {total} closest-point witnesses",
+                            values.witnesses.len()
+                        ),
+                        None => format!(
+                            "{} certified witnesses · total not enumerated",
+                            values.witnesses.len()
+                        ),
+                    };
                     ui.small(format!(
-                        "{} / {} native witnesses · contact tolerance {} mm",
-                        values.witnesses.len(),
-                        values.total_solutions,
+                        "{witnesses} · contact tolerance {} mm",
                         values.tolerance_mm
                     ));
                 }

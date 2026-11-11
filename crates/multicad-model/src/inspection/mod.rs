@@ -206,7 +206,7 @@ pub(crate) fn measure_geometry(
             });
         let (angle, parallel_plane_separation) = analytic_metrics(geometry_a, geometry_b)
             .map_err(|e| fail(MeasurementFailureKind::Invalid, None, e))?;
-        Ok(MeasurementValues{minimum_mm:distance.distance_mm,witnesses,witnesses_complete:distance.witnesses_complete,total_solutions:distance.total_solutions,inner_solution:distance.inner_solution,axis_components_mm:consistent.then_some(first),axis_warning:(!consistent).then(||"Closest-point directions are nonunique or the witness budget was reached; axis components are not asserted".into()),angle,parallel_plane_separation,tolerance_mm:model.policy.linear_tolerance_mm,boolean_fuzzy_mm:model.policy.boolean_fuzzy_mm,key_a,key_b})
+        Ok(MeasurementValues{minimum_mm:distance.distance_mm,witnesses,witnesses_complete:distance.witnesses_complete,total_solutions:distance.total_solutions,inner_solution:distance.inner_solution,axis_components_mm:consistent.then_some(first),axis_warning:(!consistent).then(||"Closest-point directions are nonunique or the witness set is incomplete; axis components are not asserted".into()),angle,parallel_plane_separation,tolerance_mm:model.policy.linear_tolerance_mm,boolean_fuzzy_mm:model.policy.boolean_fuzzy_mm,key_a,key_b})
     })();
     MeasurementEvaluation {
         stamp: MeasurementStamp {

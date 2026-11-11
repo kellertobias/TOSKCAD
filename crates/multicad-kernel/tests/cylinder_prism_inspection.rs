@@ -153,7 +153,7 @@ fn analytic_parallel_queries_keep_concavity_holes_pose_and_real_native_metrics()
             assert_eq!(
                 result.minimum_distance.witnesses_complete,
                 result.minimum_distance.witnesses.len()
-                    == result.minimum_distance.total_solutions as usize
+                    == result.minimum_distance.total_solutions.unwrap() as usize
             );
             let reverse = part
                 .inspect_pair(&cylinder, 1e-3, GeometryPolicy::default())
@@ -309,7 +309,7 @@ fn rectangular_and_reversed_polygon_stock_use_the_same_occupied_query() {
         .minimum_distance(BRepSelection::Whole, &stock, BRepSelection::Whole)
         .unwrap();
     assert!(distance.witnesses_complete);
-    assert_eq!(distance.total_solutions, 4);
+    assert_eq!(distance.total_solutions, Some(4));
     near(distance.distance_mm, 1.);
     assert!(
         distance

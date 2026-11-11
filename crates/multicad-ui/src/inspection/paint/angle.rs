@@ -286,7 +286,7 @@ mod tests {
                 b_mm: rotated.translation_mm,
             }],
             witnesses_complete: true,
-            total_solutions: 1,
+            total_solutions: Some(1),
             inner_solution: false,
             axis_components_mm: None,
             axis_warning: None,

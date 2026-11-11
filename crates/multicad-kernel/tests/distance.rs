@@ -34,7 +34,7 @@ fn finite_selected_faces_do_not_become_infinite_supporting_planes() {
         .unwrap();
     near(result.distance_mm, 20.);
     assert!(result.witnesses_complete);
-    assert!(result.total_solutions > 0);
+    assert!(result.total_solutions.is_some_and(|total| total > 0));
     for w in result.witnesses {
         near(w.b_mm[0] - w.a_mm[0], 20.);
         near(w.b_mm[2], 10.);

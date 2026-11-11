@@ -92,7 +92,7 @@ fn finite_cylinder_point_projection_keeps_world_witnesses_and_selection_order() 
             assert!((result.distance_mm - d).abs() < 1e-8);
             assert_eq!(result.inner_solution, inside);
             assert!(result.witnesses_complete);
-            assert_eq!(result.total_solutions, 1);
+            assert_eq!(result.total_solutions, Some(1));
             near(result.witnesses[0].a_mm, expected);
             near(result.witnesses[0].b_mm, world);
             let reverse = probe

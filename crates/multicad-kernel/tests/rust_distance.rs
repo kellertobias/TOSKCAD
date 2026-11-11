@@ -86,7 +86,7 @@ fn check_witnesses(result: &MinimumDistance) {
     assert!(!result.witnesses.is_empty());
     assert_eq!(
         result.witnesses_complete,
-        result.total_solutions as usize == result.witnesses.len()
+        result.total_solutions.unwrap() as usize == result.witnesses.len()
     );
     for witness in &result.witnesses {
         let length = witness

@@ -236,7 +236,8 @@ fn rotated_intersecting_solids_keep_only_consistent_native_witnesses() {
     }
     assert!(!result.minimum_distance.witnesses_complete);
     assert!(
-        result.minimum_distance.total_solutions > result.minimum_distance.witnesses.len() as u32
+        result.minimum_distance.total_solutions.unwrap()
+            > result.minimum_distance.witnesses.len() as u32
     );
 }
 #[test]

@@ -50,7 +50,7 @@ pub(super) fn measure(
                 }
             }],
             witnesses_complete: true,
-            total_solutions: 1,
+            total_solutions: Some(1),
             inner_solution,
         })
     })())

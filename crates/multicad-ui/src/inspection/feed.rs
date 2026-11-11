@@ -226,8 +226,11 @@ fn validate_values(v: &MeasurementValues, query: &MeasurementQuery) -> Result<()
         || !(0. ..=v.tolerance_mm).contains(&v.boolean_fuzzy_mm)
         || v.witnesses.is_empty()
         || v.witnesses.len() > 64
-        || v.total_solutions < (v.witnesses.len() as u32)
-        || v.witnesses_complete != (v.total_solutions as usize == v.witnesses.len())
+        || !multicad_core::inspection::valid_witness_metadata(
+            v.total_solutions,
+            v.witnesses_complete,
+            v.witnesses.len(),
+        )
         || v.key_a.kind != query.a.intent.kind
         || v.key_b.kind != query.b.intent.kind
     {
@@ -247,7 +250,8 @@ fn validate_values(v: &MeasurementValues, query: &MeasurementQuery) -> Result<()
         }
     }
     if let Some(delta) = v.axis_components_mm
-        && (delta.iter().any(|x| !x.is_finite())
+        && (!v.witnesses_complete
+            || delta.iter().any(|x| !x.is_finite())
             || (delta.iter().map(|x| x * x).sum::<f64>().sqrt() - v.minimum_mm).abs()
                 > v.tolerance_mm * 4.
             || v.witnesses.iter().any(|w| {

@@ -178,7 +178,7 @@ impl Solid {
                 MinimumDistance {
                     distance_mm: contact.distance_mm,
                     witnesses_complete: witnesses.len() == contact.total_solutions as usize,
-                    total_solutions: contact.total_solutions,
+                    total_solutions: Some(contact.total_solutions),
                     witnesses,
                     inner_solution: contact.common_volume_mm3 > 0.,
                 },

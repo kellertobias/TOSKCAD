@@ -34,7 +34,9 @@ pub struct MinimumDistance {
     /// solutions may make axis components nonunique even when the scalar is valid.
     pub witnesses: Vec<DistanceWitness>,
     pub witnesses_complete: bool,
-    pub total_solutions: u32,
+    /// None when the scalar and retained witnesses are certified without
+    /// enumerating all closest pairs. Such witnesses are always incomplete.
+    pub total_solutions: Option<u32>,
     pub inner_solution: bool,
 }
 fn error(kind: GeometryErrorKind, message: impl ToString) -> GeometryError {
@@ -125,7 +127,7 @@ pub(crate) fn measure(
         distance_mm: result.distance,
         witnesses,
         witnesses_complete: result.complete,
-        total_solutions: result.total_solutions,
+        total_solutions: Some(result.total_solutions),
         inner_solution: result.inner,
     })
 }

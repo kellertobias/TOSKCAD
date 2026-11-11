@@ -615,6 +615,49 @@ fn a_pin_changed_elsewhere_requires_explicit_reload_before_update() {
     );
 }
 #[test]
+fn partial_publications_keep_unknown_counts_without_inventing_unique_components() {
+    for invalid in 0..3 {
+        let (s, _) = fixture();
+        let scene = native_scene(&s);
+        let (mut m, state) = inspector();
+        same_part_faces(&mut m, &s, &scene);
+        m.feed.retry();
+        m.tick(&s);
+        let mut replies = state.lock().unwrap();
+        let values = replies
+            .replies
+            .back_mut()
+            .unwrap()
+            .result
+            .as_mut()
+            .unwrap()
+            .transient
+            .as_mut()
+            .unwrap()
+            .result
+            .as_mut()
+            .unwrap();
+        values.total_solutions = None;
+        values.witnesses_complete = invalid == 2;
+        if invalid != 1 {
+            values.axis_components_mm = None;
+            values.axis_warning = Some("Total closest-point solutions were not enumerated".into());
+        }
+        drop(replies);
+        m.tick(&s);
+        if invalid == 0 {
+            let values = m.ready(&s).unwrap();
+            assert_eq!(values.total_solutions, None);
+            assert!(!values.witnesses_complete);
+            assert_eq!(values.axis_components_mm, None);
+        } else {
+            assert!(m.ready(&s).is_none());
+            assert!(m.feed.error.is_some());
+        }
+    }
+}
+
+#[test]
 fn foreign_stale_and_malformed_publications_never_enable_pin() {
     for corruption in 0..4 {
         let (s, _) = fixture();

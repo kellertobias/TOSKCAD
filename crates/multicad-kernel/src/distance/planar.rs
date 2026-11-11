@@ -62,7 +62,7 @@ pub(super) fn measure_prepared(
         distance_mm: result.distance,
         witnesses,
         witnesses_complete,
-        total_solutions: result.total_solutions,
+        total_solutions: Some(result.total_solutions),
         inner_solution: result.inner_solution,
     })
 }

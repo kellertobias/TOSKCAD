@@ -525,7 +525,14 @@ fn values(ui: &mut egui::Ui, v: &MeasurementValues) {
             crate::preferences::format_mm(value)
         ));
     }
-    ui.collapsing("Accuracy",|ui|{ui.small(format!("Tolerance {} mm · Boolean fuzz {} mm",v.tolerance_mm,v.boolean_fuzzy_mm));ui.small(format!("{} native closest-point solution(s){}",v.total_solutions,if v.witnesses_complete{""}else{" · bounded witness display"}));if v.inner_solution{ui.small("A solid contains the other selection; zero distance does not distinguish contact from penetration.");}});
+    ui.collapsing("Accuracy", |ui| {
+        ui.small(format!("Tolerance {} mm · Boolean fuzz {} mm", v.tolerance_mm, v.boolean_fuzzy_mm));
+        match v.total_solutions {
+            Some(total) => { ui.small(format!("{total} closest-point solution(s){}", if v.witnesses_complete { "" } else { " · bounded witness display" })); }
+            None => { ui.small(format!("{} certified witnesses · total solutions not enumerated", v.witnesses.len())); }
+        }
+        if v.inner_solution { ui.small("A solid contains the other selection; zero distance does not distinguish contact from penetration."); }
+    });
 }
 
 #[cfg(test)]

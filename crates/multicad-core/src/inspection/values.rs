@@ -64,13 +64,27 @@ pub struct MeasurementWitness {
     pub a_mm: [f64; 3],
     pub b_mm: [f64; 3],
 }
+
+/// Validate an enumerated count or an explicitly unknown total. Unknown totals
+/// cannot certify an exhaustive witness set, even when one point is retained.
+pub fn valid_witness_metadata(total: Option<u32>, complete: bool, retained: usize) -> bool {
+    match total {
+        Some(total) => {
+            let total = total as usize;
+            total >= retained && complete == (total == retained)
+        }
+        None => !complete,
+    }
+}
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MeasurementValues {
     pub minimum_mm: f64,
     pub witnesses: Vec<MeasurementWitness>,
     pub witnesses_complete: bool,
-    pub total_solutions: u32,
+    /// None means a certified minimum with an unenumerated total, serialized
+    /// as null. It must never imply complete witnesses or unique components.
+    pub total_solutions: Option<u32>,
     pub inner_solution: bool,
     pub axis_components_mm: Option<[f64; 3]>,
     pub axis_warning: Option<String>,

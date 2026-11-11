@@ -30,34 +30,28 @@ pub(super) fn measure(
     Some((|| {
         let a = prepare(a, tolerance)?;
         let b = prepare(b, tolerance)?;
-        let result = planar::measure_prepared(&a.shapes, &b.shapes, tolerance)?;
-        if !result.witnesses_complete {
-            return Err(error(
-                GeometryErrorKind::Unsupported,
-                format!(
-                    "Machined distance needs a complete finite stock witness enumeration (distance {}, witnesses {}/{})",
-                    result.distance_mm,
-                    result.witnesses.len(),
-                    result.total_solutions
-                ),
-            ));
-        }
+        let mut result = planar::measure_prepared(&a.shapes, &b.shapes, tolerance)?;
+        let original_count = result.witnesses.len();
         let clear = |point: Point, cuts: &[Bounds]| {
             cuts.iter()
                 .all(|cut| (0..3).any(|i| point[i] < cut.min[i] || point[i] > cut.max[i]))
         };
-        if result
+        result
             .witnesses
-            .iter()
-            .any(|w| !clear(w.a_mm, &a.cuts) || !clear(w.b_mm, &b.cuts))
-        {
+            .retain(|w| clear(w.a_mm, &a.cuts) && clear(w.b_mm, &b.cuts));
+        if result.witnesses.is_empty() {
             return Err(error(
                 GeometryErrorKind::Unsupported,
                 "Stock distance witnesses do not certify retained material outside the cuts",
             ));
         }
-        // Every finite stock candidate survives. A bounding-box rejection
-        // would be unproved survival, so never filter it and claim completeness.
+        if !result.witnesses_complete || result.witnesses.len() != original_count {
+            // A surviving witness proves the scalar. Other candidates remain
+            // unclassified, so no exhaustive count or unique direction follows.
+            result.total_solutions = None;
+            result.witnesses_complete = false;
+            result.inner_solution = false;
+        }
         Ok(result)
     })())
 }

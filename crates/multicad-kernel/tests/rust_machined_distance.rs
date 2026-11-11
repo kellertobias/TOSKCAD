@@ -110,7 +110,10 @@ fn separated_curved_stock_preserves_finite_witnesses_under_both_query_orders_and
                     .unwrap();
                 assert!((result.distance_mm - 4.).abs() < 1e-7);
                 assert!(result.witnesses_complete);
-                assert_eq!(result.total_solutions as usize, result.witnesses.len());
+                assert_eq!(
+                    result.total_solutions.unwrap() as usize,
+                    result.witnesses.len()
+                );
                 assert!(!result.inner_solution);
                 for witness in result.witnesses {
                     let d: [f64; 3] = std::array::from_fn(|i| witness.a_mm[i] - witness.b_mm[i]);
@@ -147,6 +150,59 @@ fn hidden_stock_witnesses_are_refused_and_unaffected_contact_is_retained() {
         .unwrap();
     assert_eq!(result.distance_mm, 0.);
     assert!(!result.inner_solution);
+}
+
+#[test]
+fn dense_planar_stock_has_more_finite_closest_pairs_than_the_display_budget() {
+    let owner = EntityId::new();
+    let exact = |n| Rational::new(n, 1).unwrap();
+    let mut rings = vec![
+        [[0, 0], [100, 0], [100, 100], [0, 100]]
+            .map(|p| p.map(exact))
+            .to_vec(),
+    ];
+    for row in 0..4 {
+        for column in 0..5 {
+            let x = 5 + column * 15;
+            let y = 5 + row * 15;
+            rings.push(
+                [[x, y], [x, y + 5], [x + 5, y + 5], [x + 5, y]]
+                    .map(|p| p.map(exact))
+                    .to_vec(),
+            );
+        }
+    }
+    let edges = rings.iter().map(Vec::len).sum::<usize>();
+    let prism = PolygonPrism::with_circular_holes(
+        rings,
+        vec![Circle::new([exact(90); 2], exact(1)).unwrap()],
+        exact(10),
+    )
+    .unwrap();
+    let origins: Vec<_> = (0..=edges)
+        .map(|i| Origin {
+            source: owner,
+            role: format!("edge/{i}"),
+        })
+        .collect();
+    let stock = Solid::from_polygon_prism_sweep(
+        prism,
+        PlaneFrame::default(),
+        false,
+        owner,
+        &origins,
+        &vec![false; edges + 1],
+        GeometryPolicy::default(),
+    )
+    .unwrap();
+    let probe = box_at([100, 100, 2], [0., 0., 14.]);
+    let result = stock
+        .minimum_distance(BRepSelection::Whole, &probe, BRepSelection::Whole)
+        .unwrap();
+    assert!((result.distance_mm - 4.).abs() < 1e-7);
+    assert_eq!(result.total_solutions, None);
+    assert!(!result.witnesses_complete);
+    assert!(!result.witnesses.is_empty() && result.witnesses.len() <= 64);
 }
 
 #[cfg(feature = "occt")]
