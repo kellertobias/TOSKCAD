@@ -17,7 +17,7 @@ use std::collections::BTreeSet;
 const OPERATION: &str = "spherical bevel gear";
 
 pub(crate) struct BevelBody {
-    pub(super) geometry: Bevel,
+    pub(crate) geometry: Bevel,
     pub(super) feature: EntityId,
     topology: Topology,
 }

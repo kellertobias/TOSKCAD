@@ -10,6 +10,7 @@ use std::f64::consts::{FRAC_PI_2, PI, TAU};
 pub mod clearance;
 mod mesh;
 mod topology;
+pub mod view;
 pub use topology::{Curve, Edge, Face, FaceKind, Shape, Topology};
 
 pub type Point = [f64; 3];
