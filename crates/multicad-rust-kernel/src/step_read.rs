@@ -4,11 +4,13 @@
 //! and integrates its boundary without tessellating it.
 
 mod authored_compound;
+mod bevel;
 mod compound;
 mod curve;
 mod helical;
 mod herringbone;
 pub use authored_compound::{ExpectedStepMember, VerifiedStepMember, verify_authored_compound};
+pub use bevel::verify_bevel;
 pub use helical::{verify_helical_screw, verify_helical_thread};
 pub use herringbone::verify_herringbone;
 mod import;
