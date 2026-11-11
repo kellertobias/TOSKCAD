@@ -458,7 +458,7 @@ fn rust_box_void_exports_one_logical_solid_after_saved_pose_and_dimension_edits(
         parameters::BoundExpression,
     };
     use multicad_model::export::verify_rust_step_shape;
-    for posed in [false, true] {
+    for (posed, cavity_count) in [(false, 1), (true, 1), (false, 3), (true, 3)] {
         let mut document = Document::new("Saved enclosed cavity").unwrap();
         let width = Entity::new(
             "width",
@@ -502,9 +502,25 @@ fn rust_box_void_exports_one_logical_solid_after_saved_pose_and_dimension_edits(
             body: outer.body,
             producer: outer.feature,
         };
-        let mut inner = box_at(&mut session, "Enclosed cavity", [5., 4., 3.], [2., 3., 1.]);
+        let mut tools = vec![box_at(
+            &mut session,
+            "Enclosed cavity",
+            [5., 4., 3.],
+            [2., 3., 1.],
+        )];
+        if cavity_count == 3 {
+            for x in [8., 11.] {
+                tools.push(box_at(
+                    &mut session,
+                    "Additional cavity",
+                    [1., 2., 2.],
+                    [x, 3., 2.],
+                ));
+            }
+        }
+        let removed = 60. + (cavity_count - 1) as f64 * 4.;
         if posed {
-            for input in [&mut base, &mut inner] {
+            for input in std::iter::once(&mut base).chain(&mut tools) {
                 let transform = model::TransformRequest::new(
                     input.clone(),
                     model::NumericTransform {
@@ -524,7 +540,18 @@ fn rust_box_void_exports_one_logical_solid_after_saved_pose_and_dimension_edits(
                 input.producer = transform.feature;
             }
         }
-        let cut = combine(&mut session, Operation::Cut, base, inner.clone());
+        let request = BooleanRequest::new(Operation::Cut, base.clone(), tools.clone());
+        session
+            .commit(
+                model::prepare_boolean(&session, session.revision(), actor(), &request)
+                    .unwrap()
+                    .prepared,
+            )
+            .unwrap();
+        let cut = BodyInput {
+            body: base.body,
+            producer: request.feature,
+        };
         let initial = compile(&session, GeometryBackend::Rust);
         let topology = &initial.snapshot().shapes[&cut.producer].topology;
         let captures: Vec<_> = topology
@@ -533,7 +560,7 @@ fn rust_box_void_exports_one_logical_solid_after_saved_pose_and_dimension_edits(
             .filter(|element| element.key.kind == TopologyKind::Face)
             .map(|element| GeometryIntent::capture(topology, element.key).unwrap())
             .collect();
-        assert_eq!(captures.len(), 12);
+        assert_eq!(captures.len(), 6 * (cavity_count + 1));
         let datums: Vec<_> = topology
             .elements
             .iter()
@@ -617,7 +644,7 @@ fn rust_box_void_exports_one_logical_solid_after_saved_pose_and_dimension_edits(
             let model = compile(&session, GeometryBackend::Rust);
             let shape = &model.snapshot().shapes[&cut.producer];
             let solid = model.solid(cut.body).unwrap();
-            let expected = width * 80. - 60.;
+            let expected = width * 80. - removed;
             near(solid.volume_mm3().unwrap(), expected);
             assert_eq!(solid.solid_count().unwrap(), 1);
             assert!(model.snapshot().references.all_resolved());
@@ -627,15 +654,17 @@ fn rust_box_void_exports_one_logical_solid_after_saved_pose_and_dimension_edits(
                     Resolution::Resolved { .. }
                 ));
             }
-            near(
-                solid
-                    .rust_occupied_overlap_volume(
-                        model.solid(inner.producer).unwrap(),
-                        Default::default(),
-                    )
-                    .unwrap(),
-                0.,
-            );
+            for inner in &tools {
+                near(
+                    solid
+                        .rust_occupied_overlap_volume(
+                            model.solid(inner.producer).unwrap(),
+                            Default::default(),
+                        )
+                        .unwrap(),
+                    0.,
+                );
+            }
             let before = session.document().clone();
             let revision = session.revision();
             let worker =
@@ -679,7 +708,10 @@ fn rust_box_void_exports_one_logical_solid_after_saved_pose_and_dimension_edits(
             let path = Path::new(&run.directory).join(&file.artifact.output.filename);
             let source = std::fs::read_to_string(&path).unwrap();
             assert_eq!(source.matches("BREP_WITH_VOIDS(").count(), 1);
-            assert_eq!(source.matches("CLOSED_SHELL(").count(), 3);
+            assert_eq!(
+                source.matches("CLOSED_SHELL(").count(),
+                1 + 2 * cavity_count
+            );
             near(
                 verify_rust_step_shape(&path, solid, shape, 1e-7).unwrap(),
                 expected,
@@ -688,15 +720,17 @@ fn rust_box_void_exports_one_logical_solid_after_saved_pose_and_dimension_edits(
                 Solid::import_rust_step(&source, EntityId::new(), Default::default()).unwrap();
             near(imported.volume_mm3().unwrap(), expected);
             assert_eq!(imported.solid_count().unwrap(), 1);
-            near(
-                imported
-                    .rust_occupied_overlap_volume(
-                        model.solid(inner.producer).unwrap(),
-                        Default::default(),
-                    )
-                    .unwrap(),
-                0.,
-            );
+            for inner in &tools {
+                near(
+                    imported
+                        .rust_occupied_overlap_volume(
+                            model.solid(inner.producer).unwrap(),
+                            Default::default(),
+                        )
+                        .unwrap(),
+                    0.,
+                );
+            }
             imported
                 .manufacturing_mesh_with_receipt(Default::default())
                 .unwrap();
@@ -704,28 +738,30 @@ fn rust_box_void_exports_one_logical_solid_after_saved_pose_and_dimension_edits(
                 let native = Solid::read_step(&path, Default::default()).unwrap();
                 near(native.volume_mm3().unwrap(), expected);
                 assert_eq!(native.solid_count().unwrap(), 1);
-                assert!(
-                    native
-                        .boolean(
-                            &Solid::read_step(
-                                &{
-                                    let probe = temporary.path().join("probe.step");
-                                    model
-                                        .solid(inner.producer)
-                                        .unwrap()
-                                        .write_step(&probe)
-                                        .unwrap();
-                                    probe
-                                },
+                for inner in &tools {
+                    assert!(
+                        native
+                            .boolean(
+                                &Solid::read_step(
+                                    &{
+                                        let probe = temporary.path().join("probe.step");
+                                        model
+                                            .solid(inner.producer)
+                                            .unwrap()
+                                            .write_step(&probe)
+                                            .unwrap();
+                                        probe
+                                    },
+                                    Default::default()
+                                )
+                                .unwrap(),
+                                multicad_kernel::BooleanOperation::Intersect,
                                 Default::default()
                             )
-                            .unwrap(),
-                            multicad_kernel::BooleanOperation::Intersect,
-                            Default::default()
-                        )
-                        .unwrap()
-                        .is_none()
-                );
+                            .unwrap()
+                            .is_none()
+                    );
+                }
             }
             assert_eq!(session.document(), &before);
             assert_eq!(session.revision(), revision);
@@ -737,7 +773,7 @@ fn rust_box_void_exports_one_logical_solid_after_saved_pose_and_dimension_edits(
                 .unwrap()
                 .volume_mm3()
                 .unwrap(),
-            1140.,
+            1200. - removed,
         );
         session.redo(session.revision(), actor()).unwrap();
         near(
@@ -746,7 +782,7 @@ fn rust_box_void_exports_one_logical_solid_after_saved_pose_and_dimension_edits(
                 .unwrap()
                 .volume_mm3()
                 .unwrap(),
-            1540.,
+            1600. - removed,
         );
     }
 }

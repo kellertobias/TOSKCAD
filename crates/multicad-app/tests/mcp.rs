@@ -1692,7 +1692,7 @@ fn rust_stdio_exports_saved_enclosed_voids_without_filling_the_cavity() {
         },
         project_file::{self, ProjectFile},
     };
-    for posed in [false, true] {
+    for (posed, cavity_count) in [(false, 1), (true, 1), (false, 3), (true, 3)] {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("enclosed-void.tcd");
         let frame = if posed {
@@ -1712,10 +1712,18 @@ fn rust_stdio_exports_saved_enclosed_voids_without_filling_the_cavity() {
         let actor = Actor::local(Channel::Ui);
         let mut session = Session::new(Document::new("Saved enclosed cavity").unwrap()).unwrap();
         let mut bodies = Vec::new();
-        for (name, size, origin) in [
+        let mut definitions = vec![
             ("Exterior", [15., 10., 8.], [0.; 3]),
             ("Cavity", [5., 4., 3.], [2., 3., 1.]),
-        ] {
+        ];
+        if cavity_count == 3 {
+            definitions.extend([
+                ("Second cavity", [1., 2., 2.], [8., 3., 2.]),
+                ("Third cavity", [1., 2., 2.], [11., 3., 2.]),
+            ]);
+        }
+        let expected = 1140. - (cavity_count - 1) as f64 * 4.;
+        for &(name, size, origin) in &definitions {
             let request = PrimitiveRequest::new(
                 name,
                 PrimitiveParameters::Box {
@@ -1739,7 +1747,7 @@ fn rust_stdio_exports_saved_enclosed_voids_without_filling_the_cavity() {
                 producer: request.feature,
             });
         }
-        let cut = BooleanRequest::new(Operation::Cut, bodies[0].clone(), vec![bodies[1].clone()]);
+        let cut = BooleanRequest::new(Operation::Cut, bodies[0].clone(), bodies[1..].to_vec());
         session
             .commit(
                 model::prepare_boolean(&session, session.revision(), actor, &cut)
@@ -1768,18 +1776,21 @@ fn rust_stdio_exports_saved_enclosed_voids_without_filling_the_cavity() {
         assert_eq!(parts.len(), 1);
         assert_eq!(parts[0]["part"], cut.target.body.to_string());
         assert_eq!(parts[0]["solid_count"], 1);
-        close(parts[0]["volume_mm3"].as_f64().unwrap(), 1140.);
+        close(parts[0]["volume_mm3"].as_f64().unwrap(), expected);
         let receipt = client.ok(
             "export_step",
             json!({"part":cut.target.body,"file_name":"cavity.step"}),
         );
         assert_eq!(receipt["revision"], revision);
-        close(receipt["model_volume_mm3"].as_f64().unwrap(), 1140.);
-        close(receipt["readback_volume_mm3"].as_f64().unwrap(), 1140.);
+        close(receipt["model_volume_mm3"].as_f64().unwrap(), expected);
+        close(receipt["readback_volume_mm3"].as_f64().unwrap(), expected);
         let output = directory.path().join("cavity.step");
         let source = std::fs::read_to_string(&output).unwrap();
         assert_eq!(source.matches("BREP_WITH_VOIDS(").count(), 1);
-        assert_eq!(source.matches("ORIENTED_CLOSED_SHELL(").count(), 1);
+        assert_eq!(
+            source.matches("ORIENTED_CLOSED_SHELL(").count(),
+            cavity_count
+        );
         assert!(!directory.path().join(".cavity.step.partial.step").exists());
         let imported = multicad_kernel::Solid::import_rust_step(
             &source,
@@ -1788,23 +1799,25 @@ fn rust_stdio_exports_saved_enclosed_voids_without_filling_the_cavity() {
         )
         .unwrap();
         assert_eq!(imported.solid_count().unwrap(), 1);
-        close(imported.volume_mm3().unwrap(), 1140.);
-        let probe = multicad_kernel::Solid::rust_box(
-            multicad_core::document::EntityId::new().uuid_bits(),
-            [5, 4, 3].map(|n| multicad_kernel::rust_kernel::Rational::new(n, 1).unwrap()),
-            multicad_kernel::PlaneFrame {
-                origin: point([2., 3., 1.]),
-                ..frame
-            },
-            Default::default(),
-        )
-        .unwrap();
-        close(
-            imported
-                .rust_occupied_overlap_volume(&probe, Default::default())
-                .unwrap(),
-            0.,
-        );
+        close(imported.volume_mm3().unwrap(), expected);
+        for &(_, size, origin) in &definitions[1..] {
+            let probe = multicad_kernel::Solid::rust_box(
+                multicad_core::document::EntityId::new().uuid_bits(),
+                size.map(|n| multicad_kernel::rust_kernel::Rational::new(n as i64, 1).unwrap()),
+                multicad_kernel::PlaneFrame {
+                    origin: point(origin),
+                    ..frame
+                },
+                Default::default(),
+            )
+            .unwrap();
+            close(
+                imported
+                    .rust_occupied_overlap_volume(&probe, Default::default())
+                    .unwrap(),
+                0.,
+            );
+        }
         if multicad_kernel::OCCT_LINKED {
             let native = multicad_kernel::Shape::read_step(&output).unwrap();
             assert!(native.valid().unwrap());
@@ -1812,7 +1825,7 @@ fn rust_stdio_exports_saved_enclosed_voids_without_filling_the_cavity() {
                 multicad_kernel::Solid::step_solids(&output).unwrap().len(),
                 1
             );
-            close(native.volume().unwrap(), 1140.);
+            close(native.volume().unwrap(), expected);
         }
         assert_eq!(client.revision(), revision);
         assert_eq!(std::fs::read(&path).unwrap(), bytes);
