@@ -329,9 +329,12 @@ mod tests {
         let wheel = wheel(spec(1., 40, 1.5, 4., 0.05));
         for cell in [Interval::new(0.2, 0.25), Interval::point(0.)] {
             for side in [1., -1.] {
+                let linear = wheel.crossing_enclosure::<2>(cell, side).unwrap();
                 let series = wheel.crossing_enclosure::<3>(cell, side).unwrap();
                 for v in [cell.lo, (cell.lo + cell.hi) / 2., cell.hi] {
                     let slope = wheel.crossing_slope(v, side);
+                    assert!(linear.0[0].contains(slope.0[0]));
+                    assert!(linear.0[1].contains(slope.0[1]));
                     assert!(series.0[0].contains(slope.0[0]));
                     assert!(series.0[1].contains(slope.0[1]));
                     // The slope matches a centered difference of the bisection.
@@ -352,6 +355,54 @@ mod tests {
                 .crossing_enclosure::<2>(Interval::new(5.9, 6.), 1.)
                 .is_none()
         );
+    }
+
+    #[test]
+    fn directional_orders_enclose_both_parameter_derivatives() {
+        let wheel = wheel(spec(1., 40, 1.5, 4., 0.05));
+        for (along_v, bounds) in [
+            (
+                true,
+                wheel
+                    .directional::<26>(Piece::Torus, true)
+                    .unwrap()
+                    .to_vec(),
+            ),
+            (
+                false,
+                wheel
+                    .directional::<10>(Piece::Torus, false)
+                    .unwrap()
+                    .to_vec(),
+            ),
+        ] {
+            let exit = wheel.crossing_slope(0., 1.);
+            let point = wheel.patch(
+                Piece::Torus,
+                if along_v {
+                    Jet::constant(0.5)
+                } else {
+                    Jet::variable(0.5, 0)
+                },
+                if along_v {
+                    Jet::variable(0., 0)
+                } else {
+                    Jet::constant(0.)
+                },
+                Jet {
+                    value: exit.0[0],
+                    d: [if along_v { exit.0[1] } else { 0. }, 0.],
+                },
+            );
+            assert!(
+                bounds
+                    .iter()
+                    .flatten()
+                    .all(|value| value.is_finite() && *value >= 0.)
+            );
+            assert!(bounds[0][0].hypot(bounds[0][1]) >= point[0].value.hypot(point[1].value));
+            assert!(bounds[1][0].hypot(bounds[1][1]) >= point[0].d[0].hypot(point[1].d[0]));
+        }
     }
 
     #[test]
