@@ -1,4 +1,5 @@
 //! Thread solids and receiving cuts use the same versioned source for UI/MCP.
+mod cosmetic;
 mod end_treatments;
 use crate::{ModelError, error};
 use multicad_core::{
@@ -148,6 +149,11 @@ pub(crate) fn build_rust(
         .parameters
         .resolve(parameters, source.mode)
         .map_err(|cause| error(Some(feature), cause))?;
+    if thread.representation == ThreadRepresentation::CosmeticEnvelope
+        && source.mode == ThreadMode::NewExternal
+    {
+        return cosmetic::shaft(feature, &thread, policy);
+    }
     let (spec, root_radius, frame) = rust_profile(feature, &thread)?;
     let solid = if source.mode == ThreadMode::CutInternal {
         let target = receiving_target(feature, source, solids)?

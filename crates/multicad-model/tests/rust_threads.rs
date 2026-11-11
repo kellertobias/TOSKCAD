@@ -347,6 +347,14 @@ fn rust_thread_compiler_refuses_unimplemented_variants_without_changing_source()
         "Cosmetic thread",
         ThreadParameters {
             representation: ThreadRepresentation::CosmeticEnvelope,
+            family: ThreadFamily::Custom,
+            custom: Some(CustomThreadProfile {
+                radial_taper: Dimension::Literal {
+                    value: 0.01,
+                    unit: "ratio".into(),
+                },
+                ..Default::default()
+            }),
             ..Default::default()
         },
     );
@@ -378,7 +386,7 @@ fn rust_thread_compiler_refuses_unimplemented_variants_without_changing_source()
     );
     for (request, diagnostic) in [
         (receiving, "receiving cuts"),
-        (cosmetic, "Modeled representation"),
+        (cosmetic, "untapered envelope"),
         (chamfer, "end treatments"),
         (tapered, "untapered profile"),
     ] {

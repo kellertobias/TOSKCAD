@@ -1032,6 +1032,67 @@ fn app_bridge_relays_stdio_to_a_listening_window_and_fails_clearly_without_one()
 }
 
 #[test]
+fn rust_stdio_cosmetic_thread_reopens_but_manufacturing_requires_modeled() {
+    let directory = tempfile::tempdir().unwrap();
+    let project = directory.path().join("cosmetic.tcd");
+    let arguments = [
+        "--rust-model",
+        "--project",
+        project.to_str().unwrap(),
+        "--export-dir",
+        directory.path().to_str().unwrap(),
+    ];
+    let mut client = Client::start(&arguments);
+    let created=client.ok("set_thread",json!({"expected_revision":0,"name":"Cosmetic shaft","family":"iso_metric","representation":"cosmetic_envelope","major_diameter":length(8.),"pitch":length(1.25),"length":length(3.7)}));
+    let part = created["part"].clone();
+    let feature = created["thread"].clone();
+    let envelope = client.ok("evaluate_model", json!({}))["parts"][0]["volume_mm3"]
+        .as_f64()
+        .unwrap();
+    close(envelope, PI * 16. * 3.7);
+    let refused = client.fail(
+        "export_step",
+        json!({"part":part,"file_name":"cosmetic.step"}),
+    );
+    assert!(
+        refused["message"].as_str().unwrap().contains("cosmetic"),
+        "{refused}"
+    );
+    assert!(!directory.path().join("cosmetic.step").exists());
+    client.ok("save_project", json!({"expected_revision":1}));
+    drop(client);
+    let mut reopened = Client::start(&arguments);
+    let evaluated = reopened.ok("evaluate_model", json!({}));
+    close(
+        evaluated["parts"][0]["volume_mm3"].as_f64().unwrap(),
+        envelope,
+    );
+    let refused = reopened.fail(
+        "export_step",
+        json!({"part":part,"file_name":"still-cosmetic.step"}),
+    );
+    assert!(refused["message"].as_str().unwrap().contains("Modeled"));
+    let modeled = reopened.ok(
+        "set_thread",
+        json!({"expected_revision":0,"thread":feature,"representation":"modeled"}),
+    );
+    assert_eq!(modeled["part"], part);
+    let modeled_volume = reopened.ok("evaluate_model", json!({}))["parts"][0]["volume_mm3"]
+        .as_f64()
+        .unwrap();
+    assert!(modeled_volume < envelope);
+    let receipt = reopened.ok(
+        "export_step",
+        json!({"part":part,"file_name":"modeled.step"}),
+    );
+    close(
+        receipt["readback_volume_mm3"].as_f64().unwrap(),
+        modeled_volume,
+    );
+    assert!(directory.path().join("modeled.step").exists());
+}
+
+#[test]
 fn rust_stdio_exports_verified_metric_shaft_and_receiving_thread_after_reopen() {
     export_thread_pair("iso_metric", length(6.), 1.);
 }
