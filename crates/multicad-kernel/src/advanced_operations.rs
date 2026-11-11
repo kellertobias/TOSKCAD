@@ -248,6 +248,11 @@ impl Solid {
         let indices = self.selected_faces(faces, feature, false)?;
         let checked_neutral = neutral.checked(policy)?;
         if self.uses_rust_geometry() {
+            if let Some(result) =
+                self.draft_cylinder_wall(faces, direction, neutral, angle_rad, feature, policy)
+            {
+                return result;
+            }
             return self.draft_rectangular(faces, direction, neutral, angle_rad, feature, policy);
         }
         let direction = ffi::Point3 {

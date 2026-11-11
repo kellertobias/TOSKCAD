@@ -286,6 +286,13 @@ impl RevolutionBody {
                 );
             }
         }
+        for (ordinal, boundary) in &self.retained_rim_boundaries {
+            if let Some(edge) = boundaries.iter_mut().find(|element| {
+                element.key.kind == TopologyKind::Edge && element.key.ordinal == *ordinal
+            }) {
+                edge.boundary = boundary.clone();
+            }
+        }
         TopologySnapshot {
             owner,
             revision,

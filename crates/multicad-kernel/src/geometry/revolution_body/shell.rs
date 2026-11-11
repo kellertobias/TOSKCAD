@@ -179,6 +179,7 @@ fn build(
         reverse_rims: source
             .cylinder_sketch()
             .is_some_and(|sketch| sketch.reverse),
+        retained_rim_boundaries: vec![],
     };
     let bounds = body.bounds(frame);
     policy.point(bounds.min)?;

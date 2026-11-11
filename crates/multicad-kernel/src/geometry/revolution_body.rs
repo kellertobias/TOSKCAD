@@ -10,6 +10,7 @@ use multicad_rust_kernel::{
 use std::collections::BTreeSet;
 
 mod chamfer;
+mod draft;
 mod shell;
 mod topology;
 mod union;
@@ -25,6 +26,7 @@ pub(crate) struct RevolutionBody {
     segments: Vec<Vec<MeridianSegment>>,
     rings: Vec<topology::RingEdges>,
     reverse_rims: bool,
+    retained_rim_boundaries: Vec<(u32, BTreeSet<Origin>)>,
 }
 
 struct MeridianSegment {
@@ -212,6 +214,7 @@ impl Solid {
             segments,
             rings,
             reverse_rims: false,
+            retained_rim_boundaries: vec![],
         };
         let bounds = body.bounds(frame);
         policy.point(bounds.min)?;
@@ -301,6 +304,7 @@ impl Solid {
             segments: vec![segments],
             rings,
             reverse_rims: false,
+            retained_rim_boundaries: vec![],
         };
         let bounds = body.bounds(frame);
         policy.point(bounds.min)?;
