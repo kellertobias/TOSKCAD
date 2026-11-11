@@ -3,6 +3,8 @@ use super::*;
 use std::cell::Cell;
 use std::collections::BTreeSet;
 
+mod separation;
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Operation {
     Union,
@@ -200,6 +202,9 @@ fn emit_boundary(
             lower >= upper
         })
     {
+        return Ok(None);
+    }
+    if op == Operation::Intersect && separation::empty(operands, tolerance, work)? {
         return Ok(None);
     }
     let charts = operands

@@ -194,7 +194,9 @@ fn raw_concave_cut_join_and_intersection_queries_use_the_authored_material_in_ev
                 assert!(
                     source
                         .rust_planar_intersection_metrics(&void, policy)
-                        .unwrap()
+                        .unwrap_or_else(|e| panic!(
+                            "linear={linear} reverse={reverse} pose={pose:?}: {e}"
+                        ))
                         .is_none()
                 );
                 if OCCT_LINKED {
