@@ -96,7 +96,7 @@ impl Ancestry {
                 TopologyKind::Edge => &self.edges[index],
                 TopologyKind::Vertex => &self.vertices[index],
             };
-            element.origins.extend(source.origins.iter().cloned());
+            element.origins.clone_from(&source.origins);
             // Scale is a one-to-one map. Reconstructed adjacency may include
             // member aliases, which must not change an authored discriminator.
             element.boundary.clone_from(&source.boundary);
@@ -354,12 +354,10 @@ impl Solid {
             PlaneFrame::default(),
             |i, _, _| {
                 let source = faces[i];
-                let mut origins = vec![Origin {
-                    source: feature,
-                    role: format!("planar-boolean.face.{i}"),
-                }];
-                origins.extend(source.origins.iter().cloned());
-                (origins, source.frames.clone())
+                (
+                    source.origins.iter().cloned().collect(),
+                    source.frames.clone(),
+                )
             },
         )?;
         let SolidBody::PlanarBoolean(body, _) = &mut result.body else {

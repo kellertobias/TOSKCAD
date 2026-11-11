@@ -2,7 +2,8 @@
 use super::*;
 use crate::rust_prism_topology::{Builder, position};
 use multicad_core::references::{
-    AnalyticGeometry, AnchoredFrame, MAX_GEOMETRY_ORIGINS, ReferenceFrame, TopologyKind,
+    AnalyticGeometry, AnchoredFrame, MAX_GEOMETRY_ORIGINS, ReferenceFrame, TopologyKey,
+    TopologyKind,
 };
 use multicad_rust_kernel::{
     display::Tessellation,
@@ -16,6 +17,7 @@ use std::{
 
 mod chamfer;
 mod concave;
+mod derived_identity;
 mod imported_convex;
 mod imported_identity;
 mod loft;
@@ -32,6 +34,7 @@ pub(crate) struct PlanarBooleanBody {
     pub(super) geometry: Union,
     material: Option<Material>,
     scaled_ancestry: Option<scale::Ancestry>,
+    finite_origins: BTreeMap<TopologyKey, Origin>,
     faces: Vec<Boundary>,
     edges: Vec<(Key, Vec<usize>)>,
 }
@@ -704,7 +707,10 @@ impl PlanarBooleanBody {
         material: Option<Material>,
     ) -> Result<Solid, GeometryError> {
         let component_origins: Vec<_> = topologies.iter().map(component_origins).collect();
-        Self::build_labeled(
+        let fallback =
+            imported_identity::labels_with_prefix(&geometry, feature, "derived-plane.v1.")?;
+        let mut source_boundaries = vec![None; geometry.faces().len()];
+        let mut result = Self::build_labeled(
             geometry,
             feature,
             policy,
@@ -712,10 +718,6 @@ impl PlanarBooleanBody {
             PlaneFrame::default(),
             |i, raw, vertices| {
                 let point = vertices[raw.vertices[0]];
-                let mut origins = vec![Origin {
-                    source: feature,
-                    role: format!("planar-boolean.face.{i}"),
-                }];
                 let part = sources.get(raw.source);
                 let source = part.and_then(|part| {
                     let topology = &topologies[part.operand];
@@ -735,16 +737,75 @@ impl PlanarBooleanBody {
                             matching.next().is_none().then_some(face)
                         })
                 });
-                let mut anchors = Vec::new();
                 if let Some(source) = source {
-                    origins.extend(source.origins.iter().cloned());
-                    anchors.clone_from(&source.frames);
-                } else if let Some(part) = part {
+                    source_boundaries[i] = Some((
+                        source.boundary.clone(),
+                        part.map_or(1., |part| part.normal_sign),
+                    ));
+                    // A current face ordinal is not persistent ancestry. In
+                    // particular it must not make two fragments of the same
+                    // source surface look uniquely named to intent capture.
+                    return (
+                        source.origins.iter().cloned().collect(),
+                        source.frames.clone(),
+                    );
+                }
+                let (mut origins, anchors) = fallback[i].clone();
+                if let Some(part) = part {
                     origins.extend(component_origins[part.operand].iter().cloned());
                 }
                 (origins, anchors)
             },
-        )
+        )?;
+        let SolidBody::PlanarBoolean(body, _) = &mut result.body else {
+            unreachable!("constructed planar Boolean")
+        };
+        let body = Rc::get_mut(body).expect("new planar Boolean");
+        // A trimmed source surface remains a fragment even if it is currently
+        // the sole survivor. Otherwise a subsequent opposite replacement can
+        // incorrectly inherit its unique, source-only reference. Compute every
+        // signature before adding any fragment labels, using source ancestry.
+        let signatures: Vec<BTreeSet<Origin>> = (0..body.faces.len())
+            .map(|i| {
+                body.faces[i]
+                    .edges
+                    .iter()
+                    .flat_map(|&(edge, _)| body.edges[edge as usize].1.iter().copied())
+                    .filter(|&neighbor| neighbor != i)
+                    .flat_map(|neighbor| body.faces[neighbor].origins.iter().cloned())
+                    .collect()
+            })
+            .collect();
+        for (i, source) in source_boundaries.into_iter().enumerate() {
+            if source
+                .as_ref()
+                .is_some_and(|(original, sign)| *sign < 0. || *original != signatures[i])
+            {
+                let (_, sign) = source.expect("selected inherited source");
+                let mut bytes = b"multicad.derived-fragment.v1\0".to_vec();
+                bytes.push(u8::from(sign < 0.));
+                for origins in [
+                    &body.faces[i].origins,
+                    &signatures[i].iter().cloned().collect(),
+                ] {
+                    bytes.extend_from_slice(&(origins.len() as u64).to_le_bytes());
+                    for origin in origins {
+                        bytes.extend_from_slice(&origin.source.uuid_bits().to_le_bytes());
+                        bytes.extend_from_slice(&(origin.role.len() as u64).to_le_bytes());
+                        bytes.extend_from_slice(origin.role.as_bytes());
+                    }
+                }
+                body.faces[i].origins.push(Origin {
+                    source: feature,
+                    role: format!(
+                        "derived-fragment.v1.{}",
+                        multicad_core::project_file::ContentHash::of(&bytes)
+                    ),
+                });
+            }
+        }
+        derived_identity::label_ambiguous(body, &fallback)?;
+        Ok(result)
     }
 
     fn build_labeled(
@@ -802,6 +863,7 @@ impl PlanarBooleanBody {
             geometry,
             material,
             scaled_ancestry: None,
+            finite_origins: BTreeMap::new(),
             faces,
             edges,
         };
@@ -973,6 +1035,25 @@ impl PlanarBooleanBody {
             builder.face_with_boundary(i, Some(plane), anchor, signature);
         }
         let mut elements = builder.into_elements();
+        // Split edges can share their two supporting source surfaces. Their
+        // endpoint stars retain the lateral/cutting surfaces that distinguish
+        // the finite segments without publishing an evaluation ordinal.
+        for element in elements
+            .iter_mut()
+            .filter(|e| e.key.kind == TopologyKind::Edge)
+        {
+            element.boundary = self.edges[element.key.ordinal as usize]
+                .0
+                .into_iter()
+                .flat_map(|vertex| vertex_faces[vertex].iter().copied())
+                .flat_map(|face| self.faces[face].origins.iter().cloned())
+                .collect();
+        }
+        for element in &mut elements {
+            if let Some(origin) = self.finite_origins.get(&element.key) {
+                element.origins.insert(origin.clone());
+            }
+        }
         if let Some(ancestry) = &self.scaled_ancestry {
             ancestry.restore(&mut elements);
         }

@@ -10,6 +10,14 @@ pub(super) fn labels(
     geometry: &Union,
     feature: EntityId,
 ) -> Result<Vec<FaceLabels>, GeometryError> {
+    labels_with_prefix(geometry, feature, "imported-plane.v1.")
+}
+
+pub(super) fn labels_with_prefix(
+    geometry: &Union,
+    feature: EntityId,
+    prefix: &str,
+) -> Result<Vec<FaceLabels>, GeometryError> {
     geometry
         .faces()
         .iter()
@@ -51,7 +59,7 @@ pub(super) fn labels(
             }
             let origin_id = Origin {
                 source: feature,
-                role: format!("imported-plane.v1.{}", ContentHash::of(&bytes)),
+                role: format!("{prefix}{}", ContentHash::of(&bytes)),
             };
             // The finite boundary is part of the identity. A changed region,
             // including a coplanar replacement, needs explicit reference repair.
