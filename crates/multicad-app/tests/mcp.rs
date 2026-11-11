@@ -2960,3 +2960,97 @@ fn rust_stdio_previews_exports_and_reopens_exact_surface_patterns_transactionall
         close(imported.volume_mm3().unwrap(), 4800. + delta);
     }
 }
+
+#[test]
+fn rust_stdio_tapered_cosmetic_envelopes_reopen_and_refuse_manufacturing_atomically() {
+    let custom_profile = |k: f64| json!({"depth":length(0.625),"crest_width":length(0.25),"lower_flank":{"value":15.,"unit":"deg"},"upper_flank":{"value":15.,"unit":"deg"},"radial_taper":{"value":k,"unit":"ratio"}});
+    let mut cases = Vec::new();
+    for k in [-0.03125, 0.03125] {
+        let end = 4. + k * 3.7;
+        let expected = PI * 3.7 * (16. + 4. * end + end * end) / 3.;
+        cases.push((json!({"family":"custom","major_diameter":length(8.),"pitch":length(1.25),"length":length(3.7),"custom_profile":custom_profile(k)}),expected,true));
+    }
+    let intent = multicad_core::model::NptThreadIntent {
+        form: multicad_core::model::NptThreadForm::External,
+        size: multicad_core::model::NptThreadSize::OneQuarter,
+        gauge: multicad_core::model::NptGaugeConvention::Nbs1959PlainFace,
+        truncation: multicad_core::model::NptTruncationTarget::MidpointConeParallel,
+    };
+    let source = multicad_core::commands::Session::new(
+        multicad_core::document::Document::new("NPT source").unwrap(),
+    )
+    .unwrap();
+    let resolved = intent
+        .parameters()
+        .resolve(
+            source.parameters(),
+            multicad_core::model::ThreadMode::NewExternal,
+        )
+        .unwrap();
+    let radius = resolved.major_radius_mm;
+    let limit = resolved
+        .npt
+        .as_ref()
+        .unwrap()
+        .stock_crest_radius_limit_mm
+        .unwrap();
+    let h = resolved.length_mm;
+    let z = ((limit - radius) / resolved.profile.radial_taper).clamp(0., h);
+    let top = radius + resolved.profile.radial_taper * z;
+    let expected =
+        PI * (z * (radius * radius + radius * top + top * top) / 3. + (h - z) * limit * limit);
+    cases.push((json!({"family":"npt","fit":"npt_historical_midpoint","npt":intent,"major_diameter":length(intent.base_major_mm()),"pitch":length(intent.preset().pitch_mm),"length":length(intent.default_length_mm())}),expected,false));
+    for (index, (mut args, expected, custom)) in cases.into_iter().enumerate() {
+        let directory = tempfile::tempdir().unwrap();
+        let project = directory.path().join(format!("cosmetic-{index}.tcd"));
+        let arguments = [
+            "--rust-model",
+            "--project",
+            project.to_str().unwrap(),
+            "--export-dir",
+            directory.path().to_str().unwrap(),
+        ];
+        args["name"] = json!("Cosmetic tapered envelope");
+        args["expected_revision"] = json!(0);
+        args["representation"] = json!("cosmetic_envelope");
+        let mut client = Client::start(&arguments);
+        let created = client.ok("set_thread", args);
+        let part = created["part"].clone();
+        let feature = created["thread"].clone();
+        close(client.part_volume(), expected);
+        let revision = client.revision();
+        let refused = client.fail(
+            "export_step",
+            json!({"part":part,"file_name":"cosmetic.step"}),
+        );
+        assert!(refused["message"].as_str().unwrap().contains("cosmetic"));
+        assert!(!directory.path().join("cosmetic.step").exists());
+        assert_eq!(client.revision(), revision);
+        client.ok("save_project", json!({"expected_revision":revision}));
+        let bytes = std::fs::read(&project).unwrap();
+        if custom {
+            client.fail("set_thread",json!({"expected_revision":revision,"thread":feature,"custom_profile":custom_profile(1e-20)}));
+            assert_eq!(client.revision(), revision);
+            close(client.part_volume(), expected);
+            assert_eq!(std::fs::read(&project).unwrap(), bytes);
+        }
+        drop(client);
+        let mut reopened = Client::start(&arguments);
+        close(reopened.part_volume(), expected);
+        let inspected = reopened.ok("inspect_thread", json!({"thread":feature}));
+        assert_eq!(inspected["resolved"]["representation"], "cosmetic_envelope");
+        reopened.fail(
+            "set_thread",
+            json!({"expected_revision":0,"thread":feature,"representation":"modeled"}),
+        );
+        assert_eq!(reopened.revision(), 0);
+        close(reopened.part_volume(), expected);
+        let refused = reopened.fail(
+            "export_step",
+            json!({"part":part,"file_name":"still-cosmetic.step"}),
+        );
+        assert!(refused["message"].as_str().unwrap().contains("Modeled"));
+        assert!(!directory.path().join("still-cosmetic.step").exists());
+        assert_eq!(std::fs::read(&project).unwrap(), bytes);
+    }
+}

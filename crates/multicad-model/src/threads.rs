@@ -144,7 +144,6 @@ pub(crate) fn build_rust(
             "Rust thread geometry does not yet support external receiving cuts",
         ));
     }
-    validate_rust_family(feature, source.parameters.family)?;
     let thread = source
         .parameters
         .resolve(parameters, source.mode)
@@ -154,6 +153,7 @@ pub(crate) fn build_rust(
     {
         return cosmetic::shaft(feature, &thread, policy);
     }
+    validate_rust_family(feature, source.parameters.family)?;
     let (spec, root_radius, frame) = rust_profile(feature, &thread)?;
     let solid = if source.mode == ThreadMode::CutInternal {
         let target = receiving_target(feature, source, solids)?
