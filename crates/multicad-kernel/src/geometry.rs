@@ -229,6 +229,37 @@ fn xyz(p: ffi::Point3) -> [f64; 3] {
     [p.x, p.y, p.z]
 }
 impl PlaneFrame {
+    fn checked_metric_extent(
+        self,
+        extent: [f64; 3],
+        policy: GeometryPolicy,
+    ) -> Result<(), GeometryError> {
+        self.checked(policy)?;
+        let norm = |p: [f64; 3]| p[0].hypot(p[1]).hypot(p[2]);
+        let unit = |p: [f64; 3]| {
+            let n = norm(p);
+            p.map(|x| x / n)
+        };
+        let u = unit(self.u);
+        let n = unit(self.normal());
+        let v = cross(n, u);
+        let residual = [self.u, self.v, self.normal()]
+            .into_iter()
+            .zip([u, v, n])
+            .zip(extent)
+            .map(|((actual, proper), size)| {
+                norm(std::array::from_fn(|i| actual[i] - proper[i])) * size
+            })
+            .sum::<f64>();
+        if !residual.is_finite() || residual > policy.linear_tolerance_mm / 4. {
+            return Err(error(
+                "placement",
+                GeometryErrorKind::Unsupported,
+                "Frame metric residual exceeds the geometry precision budget at this size",
+            ));
+        }
+        Ok(())
+    }
     pub fn normal(self) -> [f64; 3] {
         cross(self.u, self.v)
     }
@@ -812,7 +843,14 @@ impl Solid {
         }
         policy.length(cylinder.circle().radius().as_f64())?;
         policy.length(cylinder.height().as_f64())?;
-        frame.checked(policy)?;
+        frame.checked_metric_extent(
+            [
+                cylinder.circle().radius().as_f64(),
+                cylinder.circle().radius().as_f64(),
+                cylinder.height().as_f64(),
+            ],
+            policy,
+        )?;
         let solid = Self {
             body: SolidBody::AxialCylinder(Rc::new(cylinder), frame, sketch),
             policy,
@@ -1277,11 +1315,18 @@ impl Solid {
                     placed.frame = transform.frame(placed.frame);
                     SolidBody::PolygonPrism(Rc::new(placed))
                 }
-                SolidBody::AxialCylinder(cylinder, frame, sketch) => SolidBody::AxialCylinder(
-                    Rc::clone(cylinder),
-                    transform.frame(*frame),
-                    sketch.clone(),
-                ),
+                SolidBody::AxialCylinder(cylinder, frame, sketch) => {
+                    let frame = transform.frame(*frame);
+                    frame.checked_metric_extent(
+                        [
+                            cylinder.circle().radius().as_f64(),
+                            cylinder.circle().radius().as_f64(),
+                            cylinder.height().as_f64(),
+                        ],
+                        self.policy,
+                    )?;
+                    SolidBody::AxialCylinder(Rc::clone(cylinder), frame, sketch.clone())
+                }
                 SolidBody::Annulus(body, frame) => {
                     SolidBody::Annulus(Rc::clone(body), transform.frame(*frame))
                 }
