@@ -1645,7 +1645,16 @@ impl Compiler {
                         operands.push(tool);
                     }
                     let analytic = if backend == GeometryBackend::Rust {
-                        match operation {
+                        let certified = Solid::boolean_planar_certified(
+                            &operands, operation, id, self.policy, interrupt,
+                        ).map(|result| result.and_then(|solid| solid.ok_or_else(|| {
+                            multicad_kernel::GeometryError {
+                                operation: "planar Boolean",
+                                kind: multicad_kernel::GeometryErrorKind::InvalidResult,
+                                message: "Boolean removed all material; no output body can be committed".into(),
+                            }
+                        })));
+                        certified.or_else(|| match operation {
                             multicad_kernel::BooleanOperation::Union => {
                                 Solid::union_coaxial_cylinders(&operands, id, self.policy)
                                     .or_else(|| {
@@ -1673,7 +1682,7 @@ impl Compiler {
                             multicad_kernel::BooleanOperation::Intersect => {
                                 Solid::intersect_warped_box(&operands, id, self.policy)
                             }
-                        }
+                        })
                     } else {
                         None
                     };

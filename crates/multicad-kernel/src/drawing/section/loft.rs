@@ -44,6 +44,7 @@ pub(super) fn project(
                     Error::Invalid => GeometryErrorKind::Input,
                     Error::Unresolved => GeometryErrorKind::InvalidResult,
                     Error::Limit => GeometryErrorKind::Limit,
+                    Error::Cancelled => GeometryErrorKind::Cancelled,
                 },
                 format!("Rust loft section failed: {cause:?}"),
             )

@@ -1134,6 +1134,9 @@ impl Solid {
             }
         }
         if self.uses_rust_geometry() && other.uses_rust_geometry() {
+            if let Some(result) = self.default_certified_boolean(other, operation, policy) {
+                return result;
+            }
             return self.orthogonal_boolean(other, operation, policy);
         }
         let op = match operation {

@@ -245,6 +245,7 @@ impl Solid {
                     "Rust ruled loft could not certify the closed shell",
                 ),
                 Error::Limit => error(OPERATION, GeometryErrorKind::Limit, "Loft exceeds the planar geometry budget"),
+                Error::Cancelled => error(OPERATION, GeometryErrorKind::Cancelled, "Model evaluation superseded"),
             }
         })?;
         let material = Material::profile_cells(

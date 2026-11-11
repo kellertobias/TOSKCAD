@@ -88,6 +88,7 @@ pub(in crate::drawing) fn project_view(
                 GeometryErrorKind::InvalidResult,
                 "Invalid twisted loft projection",
             ),
+            Error::Cancelled => err(GeometryErrorKind::Cancelled, "Model evaluation superseded"),
             Error::Limit => limit(),
         })?;
     let mut output = publish(

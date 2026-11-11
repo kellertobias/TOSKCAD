@@ -15,6 +15,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
 };
 
+mod certified;
 mod chamfer;
 mod concave;
 mod derived_identity;
@@ -40,6 +41,7 @@ pub(crate) struct PlanarBooleanBody {
 }
 
 enum Material {
+    Certified(Box<CutMaterial>),
     Positive(Vec<ConvexPiece>),
     LabeledCells {
         pieces: Vec<ConvexPiece>,
@@ -129,7 +131,9 @@ fn planar_unsupported() -> GeometryError {
 }
 
 fn planar_error(cause: Error) -> GeometryError {
-    let kind = if cause == Error::Limit {
+    let kind = if cause == Error::Cancelled {
+        GeometryErrorKind::Cancelled
+    } else if cause == Error::Limit {
         GeometryErrorKind::Limit
     } else {
         GeometryErrorKind::InvalidResult
@@ -137,7 +141,11 @@ fn planar_error(cause: Error) -> GeometryError {
     error(
         "planar Boolean",
         kind,
-        format!("Planar Boolean did not produce certified material: {cause:?}"),
+        if cause == Error::Cancelled {
+            "Model evaluation superseded".into()
+        } else {
+            format!("Planar Boolean did not produce certified material: {cause:?}")
+        },
     )
 }
 
@@ -352,7 +360,7 @@ impl Solid {
                     pieces,
                     exterior_faces,
                 } => (pieces, Some(exterior_faces)),
-                Material::Cut(_) => return None,
+                Material::Cut(_) | Material::Certified(_) => return None,
             };
             let placed = PlanarBooleanBody::placed_pieces(pieces, frame, tolerance).ok()?;
             return Some(if let Some(exterior_faces) = exterior_faces {
@@ -426,7 +434,7 @@ impl Solid {
     }
 
     /// Exact positive common volume and bounds for the certified planar subset.
-    /// No geometry handle or display mesh is constructed for the caller.
+    /// Returns exact metrics without constructing a display mesh.
     pub fn rust_planar_intersection_metrics(
         &self,
         other: &Self,
@@ -447,6 +455,14 @@ impl Solid {
         let [a, b] = [self.bounds()?, other.bounds()?];
         if (0..3).any(|i| a.max[i] <= b.min[i] || b.max[i] <= a.min[i]) {
             return Ok(None);
+        }
+        if (self.has_certified_planar_material() || other.has_certified_planar_material())
+            && let Some(common) =
+                self.default_certified_boolean(other, BooleanOperation::Intersect, policy)
+        {
+            return common?
+                .map(|solid| Ok((solid.volume_mm3()?, solid.bounds()?)))
+                .transpose();
         }
         let mut left = Vec::new();
         let mut right = Vec::new();
@@ -485,6 +501,20 @@ impl Solid {
         }
         if tools.is_empty() {
             return self.share().map(Some);
+        }
+        if std::iter::once(self)
+            .chain(tools.iter().copied())
+            .any(Self::has_certified_planar_material)
+        {
+            let operands: Vec<_> = std::iter::once(self).chain(tools.iter().copied()).collect();
+            return Self::boolean_planar_certified(
+                &operands,
+                BooleanOperation::Subtract,
+                feature,
+                policy,
+                None,
+            )
+            .ok_or_else(planar_unsupported)?;
         }
         let tolerance = policy.linear_tolerance_mm;
         let mut operands = PlanarOperands::default();
@@ -562,6 +592,21 @@ impl Solid {
         feature: EntityId,
         policy: GeometryPolicy,
     ) -> Option<Result<Self, GeometryError>> {
+        if solids
+            .iter()
+            .any(|solid| solid.has_certified_planar_material())
+        {
+            return Self::boolean_planar_certified(
+                solids,
+                BooleanOperation::Union,
+                feature,
+                policy,
+                None,
+            )
+            .map(|result| {
+                result.and_then(|solid| solid.ok_or_else(|| planar_error(Error::Unresolved)))
+            });
+        }
         if solids.len() < 2
             || policy.boolean_fuzzy_mm != 0.
             || solids
@@ -674,6 +719,7 @@ impl PlanarBooleanBody {
             return Self::placed_pieces(&[piece], frame, tolerance);
         }
         let pieces = match self.material.as_ref().ok_or_else(planar_unsupported)? {
+            Material::Certified(material) => material.pieces(),
             Material::Positive(pieces) | Material::LabeledCells { pieces, .. } => pieces,
             Material::Cut(recipe) => recipe.certify(&self.geometry, tolerance)?.pieces(),
         };

@@ -295,6 +295,14 @@ impl Solid {
             .as_ref()
             .map(|material| {
                 Ok(match material {
+                    Material::Certified(material) => Material::Certified(Box::new(
+                        CutMaterial::certify_existing(
+                            &geometry,
+                            &pieces(material.pieces())?,
+                            tolerance,
+                        )
+                        .map_err(planar_error)?,
+                    )),
                     Material::Positive(original) => Material::Positive(pieces(original)?),
                     Material::LabeledCells {
                         pieces: original,

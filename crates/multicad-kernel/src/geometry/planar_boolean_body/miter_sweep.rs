@@ -110,6 +110,7 @@ impl Solid {
                     "Rust miter sweep could not certify the closed shell",
                 ),
                 Error::Limit => (GeometryErrorKind::Limit, "Sweep exceeds the planar geometry budget"),
+                Error::Cancelled => (GeometryErrorKind::Cancelled, "Model evaluation superseded"),
             };
             error(OPERATION, kind, message)
         })?;

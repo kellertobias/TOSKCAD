@@ -185,6 +185,7 @@ fn project(
             "Invalid loft drawing scene boundary",
         ),
         Error::Limit => limit(),
+        Error::Cancelled => err(GeometryErrorKind::Cancelled, "Model evaluation superseded"),
     })?;
     let mut points = options.maximum_points as usize;
     let vectors = edges
