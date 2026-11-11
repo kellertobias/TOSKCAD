@@ -10,6 +10,7 @@ use multicad_rust_kernel::annulus::Annulus;
 use std::{collections::BTreeSet, f64::consts::TAU};
 
 mod boolean;
+mod mirror;
 
 pub(crate) struct AnnulusBody {
     pub(crate) geometry: Annulus,
@@ -18,6 +19,7 @@ pub(crate) struct AnnulusBody {
     wall_origins: [Origin; 2],
     center_uv: [f64; 2],
     reverse: bool,
+    cap_anchors: Option<[ReferenceFrame; 2]>,
 }
 
 impl Solid {
@@ -109,6 +111,7 @@ impl Solid {
             wall_origins: origins,
             center_uv,
             reverse,
+            cap_anchors: None,
         };
         let bounds = body.bounds(frame);
         policy.point(bounds.min)?;
@@ -130,6 +133,35 @@ impl Solid {
 }
 
 impl AnnulusBody {
+    fn cap_anchor(
+        &self,
+        frame: PlaneFrame,
+        cap: usize,
+        center: [f64; 3],
+        authored_v: [f64; 3],
+    ) -> ReferenceFrame {
+        self.cap_anchors.map_or_else(
+            || ReferenceFrame {
+                origin_mm: std::array::from_fn(|i| {
+                    center[i] - frame.u[i] * self.center_uv[0] - authored_v[i] * self.center_uv[1]
+                }),
+                u: frame.u,
+                v: authored_v,
+            },
+            |anchors| {
+                let axes = [frame.u, frame.v, frame.normal()];
+                let vector = |direction: [f64; 3]| {
+                    std::array::from_fn(|i| (0..3).map(|j| axes[j][i] * direction[j]).sum())
+                };
+                let anchor = anchors[cap];
+                ReferenceFrame {
+                    origin_mm: position(frame, anchor.origin_mm),
+                    u: vector(anchor.u),
+                    v: vector(anchor.v),
+                }
+            },
+        )
+    }
     pub(super) fn bounds(&self, frame: PlaneFrame) -> Bounds {
         let normal = frame.normal();
         let support = |i: usize, sign: f64| {
@@ -205,9 +237,7 @@ impl AnnulusBody {
             position(frame, [0., 0., self.geometry.height_mm()]),
         ];
         for (cap, center) in centers.into_iter().enumerate() {
-            let authored_center = std::array::from_fn(|i| {
-                center[i] - frame.u[i] * self.center_uv[0] - authored_v[i] * self.center_uv[1]
-            });
+            let anchor = self.cap_anchor(frame, cap, center, authored_v);
             let outward = frame.v.map(|value| if cap == 0 { -value } else { value });
             elements.push(TopologyElement {
                 key: TopologyKey {
@@ -218,11 +248,7 @@ impl AnnulusBody {
                 boundary: walls.iter().flatten().cloned().collect(),
                 frames: vec![AnchoredFrame {
                     origin: caps[cap].clone(),
-                    frame: ReferenceFrame {
-                        origin_mm: authored_center,
-                        u: frame.u,
-                        v: authored_v,
-                    },
+                    frame: anchor,
                 }],
                 geometry: Some(AnalyticGeometry::Plane {
                     frame: ReferenceFrame {
