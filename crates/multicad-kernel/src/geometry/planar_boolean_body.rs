@@ -21,6 +21,7 @@ mod concave;
 mod derived_identity;
 mod imported_convex;
 mod imported_identity;
+mod intersection;
 mod intrinsic_query;
 mod loft;
 mod miter_sweep;
@@ -474,6 +475,9 @@ impl Solid {
             || !other.uses_rust_geometry()
         {
             return Err(planar_unsupported());
+        }
+        if intersection::excluded_by_closed_void(self, other, policy)? {
+            return Ok(None);
         }
         let intrinsic_nonempty = match self.intrinsic_planar_overlap_empty(other, policy)? {
             Some(true) => return Ok(None),
