@@ -75,6 +75,9 @@ pub struct Rational {
     denominator: i64,
 }
 
+#[cfg(test)]
+mod rational_float_tests;
+
 impl Rational {
     pub fn new(numerator: i64, denominator: i64) -> Result<Self, Error> {
         Self::normalize(numerator.into(), denominator.into())
@@ -90,9 +93,42 @@ impl Rational {
         decimal(text.trim())
     }
 
-    /// Approximate this value for consumers of floating-point coordinates.
+    /// Round the exact ratio once to the nearest binary64, ties to even.
     pub fn as_f64(self) -> f64 {
-        self.numerator as f64 / self.denominator as f64
+        let magnitude = self.numerator.unsigned_abs();
+        // These integer operands are exactly representable in binary64, so
+        // hardware division already rounds the exact ratio just once.
+        if magnitude <= 1_u64 << 53 && self.denominator <= 1_i64 << 53 {
+            return self.numerator as f64 / self.denominator as f64;
+        }
+        let numerator = u128::from(magnitude);
+        let denominator = self.denominator as u128;
+        let mut exponent = denominator.leading_zeros() as i32 - numerator.leading_zeros() as i32;
+        let below_power = if exponent >= 0 {
+            numerator < denominator << exponent
+        } else {
+            numerator << -exponent < denominator
+        };
+        exponent -= i32::from(below_power);
+        let shift = 52 - exponent;
+        let (scaled, divisor) = if shift >= 0 {
+            (numerator << shift, denominator)
+        } else {
+            (numerator, denominator << -shift)
+        };
+        // Components are bounded by 10^18: exponents lie in [-60,59],
+        // and the scaled numerator has at most 113 bits. No float conversion
+        // or approximate division participates in the rounding decision.
+        let quotient = scaled / divisor;
+        let twice_remainder = 2 * (scaled % divisor);
+        let round_up =
+            twice_remainder > divisor || (twice_remainder == divisor && quotient & 1 != 0);
+        let significand = (quotient + u128::from(round_up)) as u64;
+        // Keeping the implicit leading bit makes a rounded 53-bit carry
+        // advance the exponent automatically.
+        let magnitude = (((exponent + 1022) as u64) << 52) + significand;
+        let sign = u64::from(self.numerator < 0) << 63;
+        f64::from_bits(sign | magnitude)
     }
 
     fn normalize(numerator: i128, denominator: i128) -> Result<Self, Error> {
