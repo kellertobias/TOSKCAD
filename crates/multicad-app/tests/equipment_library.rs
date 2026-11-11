@@ -12,10 +12,12 @@ fn included_equipment_files_match_native_generation_and_graphical_tool_pins() {
         let project = library::build(kind).unwrap();
         let mut bytes = vec![];
         project_file::write(&project, &mut bytes, Default::default()).unwrap();
-        assert_eq!(
-            bytes,
-            std::fs::read(root.join(library::file_name(kind))).unwrap(),
-            "{kind:?}"
+        let retained = std::fs::read(root.join(library::file_name(kind))).unwrap();
+        assert!(
+            bytes == retained,
+            "{kind:?}: generated {}, retained {}",
+            project_file::ContentHash::of(&bytes),
+            project_file::ContentHash::of(&retained)
         );
         let definitions = symbols::definitions(&project.document).unwrap();
         assert_eq!(definitions.len(), 1);
