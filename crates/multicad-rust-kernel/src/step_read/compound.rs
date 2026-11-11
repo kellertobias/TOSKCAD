@@ -43,14 +43,20 @@ pub(super) fn read_import_members(
                     .map(|(proof, body)| import::recognize_spline(proof, body));
             }
             let regular = shell
-                .validate_faces(face_ids.clone())
-                .and_then(|faces| import::recognize_member(shell, &faces, &face_ids));
-            match regular {
+                .validate_faces(face_ids)
+                .and_then(|faces| import::recognize_member(shell, &faces));
+            let regular = match regular {
                 Err(error @ (ReadError::Invalid | ReadError::Unsupported)) if may_be_warped => {
                     fallback_warped(shell, id, error)
                         .map(|(readback, import)| import::recognize_warped(readback, import))
                 }
                 _ => regular,
+            };
+            match regular {
+                Err(ReadError::Unsupported) => {
+                    normal_relief::read_member(shell, id)?.ok_or(ReadError::Unsupported)
+                }
+                other => other,
             }
         },
     )

@@ -106,3 +106,142 @@ fn full_shared_analytic_relief_roundtrips_without_source_metadata() {
         }
     }
 }
+
+#[test]
+fn descriptor_matcher_proves_world_graph_and_refuses_changed_material() {
+    let relief = fixture(Kind::Raised);
+    let frame = [[80., 60., 20.], [0.8, 0.6, 0.], [-0.36, 0.48, 0.8]];
+    let text = crate::step::write_normal_relief(&relief, frame[0], frame[1], frame[2]).unwrap();
+    let (_, mut imported) = read_import_solid(&text, TOL).unwrap();
+    assert!(normal_relief_import_matches(&imported, &relief, frame, TOL));
+    assert!(!normal_relief_import_matches(
+        &imported,
+        &fixture(Kind::Recessed),
+        frame,
+        TOL
+    ));
+    assert!(!normal_relief_import_matches(
+        &imported,
+        &relief,
+        [[80.001, 60., 20.], frame[1], frame[2]],
+        TOL
+    ));
+    assert!(!normal_relief_import_matches(
+        &imported,
+        &relief,
+        frame,
+        f64::NAN
+    ));
+    assert!(!normal_relief_import_matches(
+        &imported,
+        &relief,
+        [[f64::NAN; 3], X, Y],
+        TOL
+    ));
+    imported.u = [0.; 3];
+    assert!(!normal_relief_import_matches(
+        &imported, &relief, frame, TOL
+    ));
+    imported.profile = ImportProfile::Cylinder { radius_mm: 3. };
+    assert!(!normal_relief_import_matches(
+        &imported, &relief, frame, TOL
+    ));
+}
+#[test]
+fn full_graph_proof_rejects_wrong_closure_and_has_bounded_recovery() {
+    let relief = fixture(Kind::Raised);
+    let text = crate::step::write_normal_relief(&relief, [0.; 3], X, Y).unwrap();
+    assert!(verify_normal_relief(&text, &fixture(Kind::Recessed), [0.; 3], X, Y, TOL).is_err());
+    assert!(verify_normal_relief(&text, &relief, [0.001, 0., 0.], X, Y, TOL).is_err());
+    assert!(verify_normal_relief(&text, &relief, [0.; 3], [0.; 3], Y, TOL).is_err());
+    let entities = parse_entities(&text, TOL).unwrap();
+    let mut shell = Shell::new(&entities, TOL, true);
+    let ids = shell.shell_faces().unwrap();
+    let faces = shell.validate_faces(ids.clone()).unwrap();
+    let readback = shell.readback(&faces).unwrap();
+    assert_eq!(
+        proof::verify(
+            &shell,
+            &ids,
+            &faces,
+            &readback,
+            &relief,
+            Frame::new([0.; 3], X, Y).unwrap(),
+            &mut Work(0)
+        ),
+        Err(ReadError::Limit)
+    );
+    assert!(
+        proof::verify(
+            &shell,
+            &ids,
+            &faces,
+            &readback,
+            &relief,
+            Frame::new([0.; 3], X, Y).unwrap(),
+            &mut Work(MAX_WORK)
+        )
+        .is_ok()
+    );
+    assert!(verify_normal_relief(&text, &relief, [0.; 3], X, Y, TOL).is_ok());
+}
+#[test]
+fn header_and_face_declaration_order_do_not_control_physical_proof() {
+    let relief = fixture(Kind::Recessed);
+    let text = crate::step::write_normal_relief(&relief, [0.; 3], X, Y).unwrap();
+    let mut lines = text.lines().map(str::to_owned).collect::<Vec<_>>();
+    let index = lines
+        .iter()
+        .position(|line| line.contains("CLOSED_SHELL("))
+        .unwrap();
+    let line = &lines[index];
+    let (prefix, refs) = line.split_once("('',(").unwrap();
+    let refs = refs.strip_suffix("));").unwrap();
+    let mut refs = refs.split(',').collect::<Vec<_>>();
+    refs.reverse();
+    lines[index] = format!("{prefix}('',({}));", refs.join(","));
+    let text = lines.join("\n");
+    assert!(verify_normal_relief(&text, &relief, [0.; 3], X, Y, TOL).is_ok());
+    let (_, decoded) = read_import_solid(&text, TOL).unwrap();
+    assert!(normal_relief_import_matches(
+        &decoded,
+        &relief,
+        [[0.; 3], X, Y],
+        TOL
+    ));
+}
+#[test]
+fn all_192_motifs_have_independent_full_graph_proof_and_blind_import() {
+    let base = Sweep::new(vec![rectangle([0.; 2], [100., 80.])], 4., TOL, MIN).unwrap();
+    let motifs = (0..192)
+        .map(|i| {
+            Sweep::new(
+                vec![vec![ProfileEdge::Circle {
+                    center: [3. + (i % 16) as f64 * 6., 3. + (i / 16) as f64 * 6.],
+                    radius_mm: 0.5,
+                    clockwise: false,
+                }]],
+                0.5 + (i % 3) as f64 * 0.1,
+                TOL,
+                MIN,
+            )
+            .unwrap()
+        })
+        .collect();
+    let relief = Relief::new(base, motifs, Kind::Raised, TOL, MIN).unwrap();
+    let started = std::time::Instant::now();
+    let text = crate::step::write_normal_relief(&relief, [80., 60., 20.], X, Y).unwrap();
+    assert!(verify_normal_relief(&text, &relief, [80., 60., 20.], X, Y, TOL).is_ok());
+    let (_, decoded) = read_import_solid(&text, TOL).unwrap();
+    assert!(normal_relief_import_matches(
+        &decoded,
+        &relief,
+        [[80., 60., 20.], X, Y],
+        TOL
+    ));
+    eprintln!(
+        "192 motif unoptimized writer + full proof + blind import + matcher: {:?}, {} bytes",
+        started.elapsed(),
+        text.len()
+    );
+}

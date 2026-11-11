@@ -174,6 +174,18 @@ fn infer(
         .iter()
         .map(|wire| profile(shell, wire, frame, true, 0., epsilon, work))
         .collect::<Result<Vec<_>>>()?;
+    let mut levels = faces
+        .iter()
+        .filter_map(planar)
+        .filter(|(_, n)| dot(*n, axis).abs() > 1. - 1e-10)
+        .map(|(p, _)| frame.local(p)[2])
+        .collect::<Vec<_>>();
+    levels.sort_unstable_by(f64::total_cmp);
+    require(
+        levels
+            .windows(2)
+            .all(|p| p[0] == p[1] || p[1] - p[0] > shell.tolerance),
+    )?;
     let minimum = shell.tolerance.next_up();
     let base =
         Sweep::new(base_rings, height, shell.tolerance, minimum).map_err(|_| ReadError::Invalid)?;

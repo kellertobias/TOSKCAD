@@ -6,7 +6,7 @@ fn near(a: Point, b: Point, epsilon: f64) -> bool {
 fn normal(a: Point, b: Point, extent: f64, epsilon: f64) -> bool {
     dot(a, b) > 0. && length(cross(a, b)) * extent.max(1.) <= epsilon
 }
-fn vertices(
+pub(super) fn vertices(
     shell: &Shell<'_, '_>,
     graph: &Boundary,
     frame: Frame,
@@ -88,7 +88,7 @@ fn curve_matches(
                 )
         )
 }
-fn edges(
+pub(super) fn edges(
     shell: &Shell<'_, '_>,
     graph: &Boundary,
     vertices: &[u32],

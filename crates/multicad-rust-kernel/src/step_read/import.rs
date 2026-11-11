@@ -261,12 +261,8 @@ pub(super) fn recognize_nonplanar_loft(
 pub(super) fn recognize_member(
     shell: &Shell<'_, '_>,
     faces: &[Face],
-    face_ids: &[u32],
 ) -> Result<(Readback, ImportSolid)> {
     let readback = shell.readback(faces)?;
-    if let Some(body) = normal_relief::recognize(shell, face_ids, faces, &readback)? {
-        return Ok((readback, body));
-    }
     if faces.iter().any(|face| matches!(face, Face::Conical(_))) {
         let solid = shell
             .chamfered_polygon(faces)

@@ -2,7 +2,9 @@
 use super::*;
 use crate::normal_relief::{Boundary, Curve as ReliefCurve, Relief, Surface};
 use crate::normal_sweep::Edge as ProfileEdge;
+mod matcher;
 mod proof;
+pub use matcher::normal_relief_import_matches;
 mod recognize;
 #[cfg(test)]
 mod tests;
@@ -126,11 +128,14 @@ fn loops(shell: &Shell<'_, '_>, id: u32, work: &mut Work) -> Result<Vec<Wire>> {
         })
         .collect()
 }
-pub(super) fn recognize(
+pub(super) fn read_member(
     shell: &Shell<'_, '_>,
-    ids: &[u32],
-    faces: &[Face],
-    readback: &Readback,
-) -> Result<Option<ImportSolid>> {
-    recognize::recognize(shell, ids, faces, readback)
+    id: u32,
+) -> Result<Option<(Readback, ImportSolid)>> {
+    let mut clean = Shell::new(shell.entities, shell.tolerance, true);
+    let ids = clean.member_faces(id)?;
+    let faces = clean.validate_faces(ids.clone())?;
+    let readback = clean.readback(&faces)?;
+    recognize::recognize(&clean, &ids, &faces, &readback)
+        .map(|body| body.map(|body| (readback, body)))
 }
