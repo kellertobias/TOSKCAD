@@ -499,7 +499,16 @@ impl Solid {
         }
         policy.length(spec.length_mm)?;
         if spec.length_mm < height {
-            policy.length(height - spec.length_mm)?;
+            policy.length(height - spec.length_mm).map_err(|cause| {
+                error(
+                    OPERATION,
+                    cause.kind,
+                    format!(
+                        "Receiving stock height {height:.17} mm and tool length {:.17} mm leave an inadmissible floor: {}",
+                        spec.length_mm, cause.message
+                    ),
+                )
+            })?;
         }
         if !minimum_wall_mm.is_finite()
             || minimum_wall_mm < 0.
