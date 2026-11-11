@@ -41,6 +41,23 @@ fn general_subtract_routes_a_blind_cylinder_to_the_pocket_provider() {
     let reopened = Solid::read_step(&path, policy).unwrap();
     assert!((reopened.volume_mm3().unwrap() - cut.volume_mm3().unwrap()).abs() < 1e-8);
     assert_eq!(reopened.faces().unwrap().len(), 8);
+    // A tiny residual floor must remain a refusal, never become a through cut
+    // when the specialized provider hands off to the general pocket provider.
+    let short = Solid::cylinder(
+        PlaneFrame {
+            origin: [10., 8., 0.],
+            ..Default::default()
+        },
+        2.,
+        10. - 1e-8,
+        policy,
+    )
+    .unwrap();
+    assert!(
+        stock
+            .boolean(&short, BooleanOperation::Subtract, policy)
+            .is_err()
+    );
     assert_eq!(stock.volume_mm3().unwrap(), 3200.);
 }
 
