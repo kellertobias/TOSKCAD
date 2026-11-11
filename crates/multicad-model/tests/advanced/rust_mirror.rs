@@ -321,7 +321,7 @@ fn rust_mirror_refuses_curved_geometry_without_moving_the_source() {
     use multicad_core::document::EntityId;
     use multicad_kernel::{
         GeometryErrorKind, GeometryPolicy, PlaneFrame, Solid,
-        rust_kernel::{Circle, Rational, cylinder::AxialCylinder, polygon::PolygonPrism},
+        rust_kernel::{Rational, polygon::PolygonPrism},
     };
 
     let policy = GeometryPolicy::default();
@@ -331,14 +331,7 @@ fn rust_mirror_refuses_curved_geometry_without_moving_the_source() {
     };
     let flat = PlaneFrame::default();
     let stock = box_at(flat);
-    let cylinder = AxialCylinder::new(
-        EntityId::new().uuid_bits(),
-        Circle::new([integer(0); 2], integer(1)).unwrap(),
-        integer(0),
-        integer(4),
-    )
-    .unwrap();
-    let curved = Solid::from_axial_cylinder(cylinder, flat, policy).unwrap();
+    let curved = Solid::rust_sphere_named(1., flat, EntityId::new(), policy).unwrap();
     let owner = EntityId::new();
     let triangle = Solid::from_polygon_prism(
         PolygonPrism::new(

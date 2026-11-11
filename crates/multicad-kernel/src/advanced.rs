@@ -37,7 +37,10 @@ impl Solid {
         }
         let checked = plane.checked(policy)?;
         if self.uses_rust_geometry() {
-            if let Some(result) = self.mirror_annulus(plane, policy) {
+            if let Some(result) = self
+                .mirror_annulus(plane, policy)
+                .or_else(|| self.mirror_cylinder(plane, policy))
+            {
                 return result;
             }
             return self.mirror_cardinal(plane, feature, policy);
