@@ -1,6 +1,7 @@
 use multicad_core::{document::EntityId, references::TopologyKind};
 use multicad_kernel::{
-    GeneratedZaWormWheel, GeometryPolicy, MeshOptions, RigidTransform, Solid, ZaWorm,
+    GeneratedZaWormWheel, GeometryPolicy, MeshOptions, PlaneFrame, RigidTransform, Solid, ZaWorm,
+    rust_kernel::Rational,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -205,6 +206,105 @@ fn rust_worms_and_wheels_match_native_solids() {
             feature,
             1e-4,
             &format!("wheel m{m} z{teeth} b{bore}"),
+        );
+    }
+}
+
+#[test]
+fn assembled_worm_pairs_export_verified_multi_solid_step() {
+    let policy = GeometryPolicy::default();
+    let worm = Solid::rust_za_worm_named(
+        ZaWorm {
+            axial_module_mm: 1.,
+            threaded_length_mm: 20.,
+            bore_radius_mm: 2.,
+            axial_thinning_mm: 0.04,
+        },
+        EntityId::new(),
+        policy,
+    )
+    .unwrap();
+    let wheel = Solid::rust_generated_za_worm_wheel_named(
+        GeneratedZaWormWheel {
+            teeth: 40,
+            axial_module_mm: 1.,
+            face_width_mm: 1.5,
+            bore_radius_mm: 4.,
+            pitch_thinning_mm: 0.04,
+        },
+        EntityId::new(),
+        policy,
+    )
+    .unwrap();
+    // Mating pose: worm axis along wheel +Y at center distance 25 mm, then
+    // the whole pair tilted and moved.
+    let mate = RigidTransform {
+        rotation: [[1., 0., 0.], [0., 0., 1.], [0., -1., 0.]],
+        translation_mm: [25., 0., 0.],
+    };
+    let tilt = RigidTransform {
+        rotation: [[0.8, 0., 0.6], [0., 1., 0.], [-0.6, 0., 0.8]],
+        translation_mm: [10., -20., 30.],
+    };
+    let worm = worm.transformed(mate).unwrap().transformed(tilt).unwrap();
+    let wheel = wheel.transformed(tilt).unwrap();
+    let (clearance, _) = worm
+        .certify_rust_worm_pair(&wheel, policy, 0.2, None)
+        .unwrap();
+    assert_ne!(
+        clearance,
+        multicad_kernel::rust_kernel::worm_gear::clearance::ResultKind::CommonInterior
+    );
+    let block = Solid::rust_box(
+        EntityId::new().uuid_bits(),
+        [4; 3].map(|n| Rational::new(n, 1).unwrap()),
+        PlaneFrame {
+            origin: [60., 0., 0.],
+            ..Default::default()
+        },
+        policy,
+    )
+    .unwrap();
+    let members = [&worm, &block, &wheel];
+    let compound = Solid::compound_named(&members, EntityId::new(), policy).unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("pair.step");
+    compound.write_step(&path).unwrap();
+    let source = std::fs::read_to_string(&path).unwrap();
+    assert_eq!(
+        source.matches("MANIFOLD_SOLID_BREP(").count(),
+        members.len()
+    );
+    let (count, volume, _) = compound
+        .verify_twisted_step_compound(&source, policy.linear_tolerance_mm)
+        .unwrap()
+        .unwrap();
+    assert_eq!(count as usize, members.len());
+    let expected: f64 = members.iter().map(|m| m.volume_mm3().unwrap()).sum();
+    assert!(
+        (volume - expected).abs() / expected < 1e-8,
+        "{volume} {expected}"
+    );
+    // Exchanging the members' placements breaks the proof.
+    let swapped = Solid::compound_named(&[&wheel, &worm], EntityId::new(), policy).unwrap();
+    assert!(
+        swapped
+            .verify_twisted_step_compound(&source, policy.linear_tolerance_mm)
+            .unwrap()
+            .is_err()
+    );
+    if multicad_kernel::OCCT_LINKED {
+        let native = multicad_kernel::Shape::read_step(&path).unwrap();
+        assert!(native.valid().unwrap());
+        assert_eq!(Solid::step_solids(&path).unwrap().len(), members.len());
+        let read = native.volume().unwrap();
+        assert!(
+            (read - expected).abs() / expected < 1e-6,
+            "{read} {expected}"
+        );
+        println!(
+            "{{\"case\":\"worm pair compound STEP\",\"members\":{},\"rust_decoded_volume\":{volume},\"occt_step_volume\":{read}}}",
+            members.len()
         );
     }
 }

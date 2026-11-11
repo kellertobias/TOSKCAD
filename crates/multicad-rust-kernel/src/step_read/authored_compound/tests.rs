@@ -230,3 +230,77 @@ fn duplicate_members_shared_shells_and_orphan_topology_fail_the_whole_proof() {
         assert!(verify_authored_compound(&invalid, &specification, TOLERANCE).is_err());
     }
 }
+
+#[test]
+fn worm_pairs_verify_each_member_beside_analytic_slots() {
+    use crate::worm_gear::{wheel::tests::spec as wheel_spec, worm::tests::spec as worm_spec};
+    let worm = Worm::new(worm_spec(1., 20., 2., 0.04), 1e-3).unwrap();
+    let wheel = Wheel::new(wheel_spec(1., 40, 1.5, 4., 0.04), 1e-3, 1e7).unwrap();
+    // Worm axis along wheel +Y at center distance 25, wheel tilted.
+    let worm_frame = [[25., 0., 0.], [1., 0., 0.], [0., 0., -1.]];
+    let wheel_frame = [[0.; 3], [0.8, 0.6, 0.], [-0.6, 0.8, 0.]];
+    let mut writer = Writer::new();
+    writer
+        .append_za_worm(
+            &worm,
+            worm_frame[0],
+            worm_frame[1],
+            worm_frame[2],
+            TOLERANCE,
+        )
+        .unwrap();
+    writer.append_box([number(4); 3], [40.; 3], U, V).unwrap();
+    writer
+        .append_worm_wheel(
+            &wheel,
+            wheel_frame[0],
+            wheel_frame[1],
+            wheel_frame[2],
+            TOLERANCE,
+        )
+        .unwrap();
+    let source = writer.finish().unwrap();
+    let [o, u, v] = worm_frame;
+    let [p, q, r] = wheel_frame;
+    let members = [
+        ExpectedStepMember::Worm {
+            worm: &worm,
+            origin: o,
+            u,
+            v,
+        },
+        ExpectedStepMember::Analytic,
+        ExpectedStepMember::WormWheel {
+            wheel: &wheel,
+            origin: p,
+            u: q,
+            v: r,
+        },
+    ];
+    let verified = verify_authored_compound(&source, &members, TOLERANCE).unwrap();
+    let [
+        VerifiedStepMember::Worm { volume_mm3: a },
+        VerifiedStepMember::Analytic { readback, .. },
+        VerifiedStepMember::WormWheel { volume_mm3: b },
+    ] = verified.as_slice()
+    else {
+        panic!("{verified:?}");
+    };
+    assert!((a - worm.volume_mm3()).abs() / a < 1e-8, "{a}");
+    assert!((b - wheel.volume_mm3()).abs() / b < 1e-8, "{b}");
+    assert!((readback.volume_mm3 - 64.).abs() < 1e-9);
+    // Swapped expectations and a moved wheel are refused.
+    let swapped = [members[2], members[1], members[0]];
+    assert!(verify_authored_compound(&source, &swapped, TOLERANCE).is_err());
+    let moved = [
+        members[0],
+        members[1],
+        ExpectedStepMember::WormWheel {
+            wheel: &wheel,
+            origin: [0., 0., 1.],
+            u: q,
+            v: r,
+        },
+    ];
+    assert!(verify_authored_compound(&source, &moved, TOLERANCE).is_err());
+}

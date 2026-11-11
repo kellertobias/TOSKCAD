@@ -390,6 +390,26 @@ impl Solid {
     }
 }
 
+impl Solid {
+    /// The authored compound slot of a placed Rust worm or wheel.
+    pub(crate) fn expected_worm_member(
+        &self,
+    ) -> Option<multicad_rust_kernel::step_read::ExpectedStepMember<'_>> {
+        use multicad_rust_kernel::step_read::ExpectedStepMember;
+        let (body, frame) = self.worm_body()?;
+        let [origin, u, v] = [frame.origin, frame.u, frame.v];
+        Some(match &body.geometry {
+            WormGeometry::Worm(worm) => ExpectedStepMember::Worm { worm, origin, u, v },
+            WormGeometry::Wheel(wheel) => ExpectedStepMember::WormWheel {
+                wheel,
+                origin,
+                u,
+                v,
+            },
+        })
+    }
+}
+
 impl WormBody {
     pub(super) fn supports_step(&self, frame: PlaneFrame, policy: GeometryPolicy) -> bool {
         match &self.geometry {

@@ -1,6 +1,9 @@
 //! Validate every emitted shell against its expected member in file order.
 use super::*;
-use crate::spur_gear::herringbone::Herringbone;
+use crate::{
+    spur_gear::herringbone::Herringbone,
+    worm_gear::{Wheel, Worm},
+};
 
 /// Expected slots follow the writer's flattened solid order. An analytic
 /// slot is independently decoded for subsequent source-topology comparison.
@@ -9,6 +12,18 @@ pub enum ExpectedStepMember<'a> {
     Analytic,
     TwistedGear {
         gear: &'a Herringbone,
+        origin: Point,
+        u: Point,
+        v: Point,
+    },
+    Worm {
+        worm: &'a Worm,
+        origin: Point,
+        u: Point,
+        v: Point,
+    },
+    WormWheel {
+        wheel: &'a Wheel,
         origin: Point,
         u: Point,
         v: Point,
@@ -23,6 +38,12 @@ pub enum VerifiedStepMember {
         imported: Option<Box<ImportSolid>>,
     },
     TwistedGear {
+        volume_mm3: f64,
+    },
+    Worm {
+        volume_mm3: f64,
+    },
+    WormWheel {
         volume_mm3: f64,
     },
 }
@@ -58,6 +79,26 @@ pub fn verify_authored_compound(
                         tolerance,
                     )?;
                     Ok(VerifiedStepMember::TwistedGear { volume_mm3 })
+                }
+                ExpectedStepMember::Worm { worm, origin, u, v } => {
+                    let volume_mm3 =
+                        worm::verify_worm_member(shell, solid, worm, [*origin, *u, *v])?;
+                    Ok(VerifiedStepMember::Worm { volume_mm3 })
+                }
+                ExpectedStepMember::WormWheel {
+                    wheel,
+                    origin,
+                    u,
+                    v,
+                } => {
+                    let volume_mm3 = worm::verify_wheel_member(
+                        shell,
+                        solid,
+                        wheel,
+                        [*origin, *u, *v],
+                        tolerance,
+                    )?;
+                    Ok(VerifiedStepMember::WormWheel { volume_mm3 })
                 }
             }
         })?;
