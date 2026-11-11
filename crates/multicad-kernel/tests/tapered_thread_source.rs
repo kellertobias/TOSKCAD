@@ -176,3 +176,89 @@ fn fresh_native_custom_transport_witness_source() {
         }
     }
 }
+
+#[test]
+fn owned_transport_matches_fresh_native_signed_taper_asymmetric_hands() {
+    use multicad_kernel::rust_kernel::tapered_thread::Thread as Tapered;
+    use multicad_kernel::{BooleanOperation, RigidTransform};
+    let policy = GeometryPolicy::default();
+    for (k, left, starts) in [
+        (0.1, false, 1),
+        (-0.1, true, 1),
+        (-0.03125, false, 3),
+        (0.03125, true, 3),
+    ] {
+        let source = Spec {
+            major_radius_mm: 4.,
+            pitch_mm: 1.25,
+            length_mm: 8.,
+            depth_mm: 0.5,
+            crest_width_mm: 0.25,
+            lower_flank_deg: 12.,
+            upper_flank_deg: 25.,
+            starts,
+            left_hand: left,
+            root_radius_mm: None,
+        };
+        let owned = Tapered::new(
+            source,
+            k,
+            policy.linear_tolerance_mm,
+            policy.minimum_feature_mm,
+        )
+        .unwrap();
+        let parameters = HelicalThread {
+            major_radius_mm: source.major_radius_mm,
+            pitch_mm: source.pitch_mm,
+            length_mm: source.length_mm,
+            depth_mm: source.depth_mm,
+            crest_width_mm: source.crest_width_mm,
+            lower_flank_deg: source.lower_flank_deg,
+            upper_flank_deg: source.upper_flank_deg,
+            radial_taper: k,
+            starts,
+            left_hand: left,
+        };
+        let native =
+            Solid::helical_thread_named_fresh(parameters, EntityId::new(), policy).unwrap();
+        let mut parts = native.solid_components(policy).unwrap();
+        assert_eq!(parts.len(), 1);
+        let native = parts.remove(0);
+        let [lo, hi] = owned.volume_bounds(0.01).unwrap();
+        let volume = native.volume_mm3().unwrap();
+        assert!(
+            volume >= lo - 1e-4 && volume <= hi + 1e-4,
+            "{k} {left} {starts} {lo} {volume} {hi}"
+        );
+        for (z, phase) in [(2., 0.21), (6., 1.04)] {
+            let [lo, hi] = owned.radial_bounds(phase, z, 1e-10).unwrap();
+            let boundary = (lo + hi) / 2.;
+            let rate = if left { -1. } else { 1. } * parameters.lead_mm() / TAU;
+            let theta = (z - phase) / rate;
+            for (offset, inside) in [(-0.0003, true), (0.0003, false)] {
+                let radius = boundary + offset;
+                let edge: f64 = 0.00005;
+                let center = [radius * theta.cos(), radius * theta.sin(), z];
+                let cube = Solid::box_solid([edge; 3], policy)
+                    .unwrap()
+                    .transformed(RigidTransform {
+                        translation_mm: center.map(|v| v - edge / 2.),
+                        ..Default::default()
+                    })
+                    .unwrap();
+                let overlap = native
+                    .boolean(&cube, BooleanOperation::Intersect, policy)
+                    .unwrap()
+                    .map_or(0., |s| s.volume_mm3().unwrap());
+                assert!(
+                    if inside {
+                        overlap / edge.powi(3) > 0.99
+                    } else {
+                        overlap == 0.
+                    },
+                    "{k} {left} {starts} {phase} offset{offset} overlap{overlap}"
+                );
+            }
+        }
+    }
+}
