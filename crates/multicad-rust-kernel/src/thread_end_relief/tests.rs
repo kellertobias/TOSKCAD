@@ -156,6 +156,26 @@ fn canonical_maximum_width_keeps_literal_rounded_station_instead_of_clamping() {
         [[0.; 3], [1., 0., 0.], [0., 1., 0.]],
         1e-7
     ));
+    let source = tool(0.324, 0.527, false, 1, true);
+    let width = 0.20300000000000004;
+    assert_eq!(width + source.spec().pitch_mm, source.spec().length_mm);
+    let body = Relief::new(source, width, 0.01).unwrap();
+    assert_eq!(body.material_length_mm(), 0.527 - width);
+    assert!(
+        source.spec().length_mm - body.material_length_mm() + source.spec().pitch_mm
+            > source.spec().length_mm
+    );
+    assert_eq!(body.intent().unwrap().width_mm, width);
+    let text =
+        crate::step::write_thread_end_relief(&body, [0.; 3], [1., 0., 0.], [0., 1., 0.], 1e-7)
+            .unwrap();
+    let (_, imported) = crate::step_read::read_import_solid(&text, 1e-7).unwrap();
+    assert!(crate::step_read::thread_end_relief_import_matches(
+        &imported,
+        &body,
+        [[0.; 3], [1., 0., 0.], [0., 1., 0.]],
+        1e-7
+    ));
 }
 #[test]
 fn invalid_or_unresolved_reliefs_leave_tool_and_mesh_budget_intact() {
@@ -174,7 +194,6 @@ fn invalid_or_unresolved_reliefs_leave_tool_and_mesh_budget_intact() {
         (f64::NAN, 1.),
         (-1., 1.),
         (6.6, 1.),
-        (0.5, 1.),
         (5., f64::NAN),
         (5., 0.),
         (5., source.root_radius_mm()),
@@ -236,5 +255,72 @@ fn invalid_or_unresolved_reliefs_leave_tool_and_mesh_budget_intact() {
             .unwrap()
             .len(),
         2
+    );
+}
+
+#[test]
+fn imported_finite_prefix_uses_actual_short_domain_without_inventing_end_intent() {
+    let source = tool(1., 6.6, false, 1, true);
+    let body = Relief::from_material(source, 0.1, source.root_radius_mm() / 2.).unwrap();
+    assert_eq!(body.intent(), None);
+    assert!(Relief::new(source, 6.5, source.root_radius_mm() / 2.).is_err());
+    let mut dense = 0_f64;
+    for i in 0..8192 {
+        let angle = std::f64::consts::TAU * i as f64 / 8192.;
+        for z in [0., body.material_length_mm()] {
+            dense = dense.max(source.radius(angle, z) * angle.sin());
+        }
+    }
+    let support = body.support([0., 1., 0.]);
+    assert!(support >= dense && support - dense < 1e-4);
+    assert!(support < source.spec().major_radius_mm - 0.1);
+    let mesh = helical_thread_mesh::tessellate_end_relief(
+        &body,
+        Tessellation {
+            deflection: 0.04,
+            angle: 0.3,
+            triangle_limit: 150_000,
+        },
+    )
+    .unwrap();
+    assert!(manufacturing::certify(&mesh).is_ok());
+    let frame = [[0.; 3], [1., 0., 0.], [0., 1., 0.]];
+    let text =
+        crate::step::write_thread_end_relief(&body, frame[0], frame[1], frame[2], 1e-7).unwrap();
+    let (_, imported) = crate::step_read::read_import_solid(&text, 1e-7).unwrap();
+    assert!(crate::step_read::thread_end_relief_import_matches(
+        &imported, &body, frame, 1e-7
+    ));
+}
+
+#[test]
+fn neck_cannot_cross_actual_rounded_root_support_via_depth_metadata_roundoff() {
+    let source = tool(1., 6.6, false, 1, true);
+    let altered = Thread::new(Spec {
+        depth_mm: source.spec().depth_mm - 2e-13,
+        ..source.spec()
+    })
+    .unwrap();
+    let actual = altered.radius_at_phase(0.5);
+    let neck = actual.midpoint(altered.root_radius_mm());
+    assert!(neck > actual && neck < altered.root_radius_mm());
+    assert_eq!(
+        Relief::from_material(altered, 0.1, neck),
+        Err(ThreadError::Invalid)
+    );
+    let near = Relief::from_material(source, 1., minimum_radius(source).next_down()).unwrap();
+    let mesh = helical_thread_mesh::tessellate_end_relief(
+        &near,
+        Tessellation {
+            deflection: 0.04,
+            angle: 0.3,
+            triangle_limit: 150_000,
+        },
+    )
+    .unwrap();
+    assert!(manufacturing::certify(&mesh).is_ok());
+    assert_eq!(
+        crate::step::write_thread_end_relief(&near, [0.; 3], [1., 0., 0.], [0., 1., 0.], 1e-7),
+        Err(crate::step::StepError::Limit)
     );
 }

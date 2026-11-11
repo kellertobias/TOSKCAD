@@ -4,6 +4,14 @@
 //! the terminal material is a plain neck of radius `root-radial_depth`.
 use crate::helical_thread::{AxialPrefix, Thread, ThreadError};
 
+pub(crate) fn minimum_radius(tool: Thread) -> f64 {
+    // Rounded-root parameters, rather than the separately tolerance-checked
+    // depth metadata, determine the actual circle's inner support.
+    tool.root_circle().map_or(tool.root_radius_mm(), |root| {
+        (root.center_radius - root.radius).next_down()
+    })
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Intent {
     pub width_mm: f64,
@@ -27,15 +35,18 @@ impl Relief {
             || radial_depth_mm < 0.001
             || width_mm + spec.pitch_mm > spec.length_mm
             || neck <= 0.001
+            || neck >= minimum_radius(tool)
         {
             return Err(ThreadError::Invalid);
         }
-        let mut relief = Self::from_material(tool, spec.length_mm - width_mm, neck)?;
-        relief.intent = Some(Intent {
-            width_mm,
-            radial_depth_mm,
-        });
-        Ok(relief)
+        Ok(Self {
+            prefix: tool.positive_axial_prefix(spec.length_mm - width_mm)?,
+            neck_radius_mm: neck,
+            intent: Some(Intent {
+                width_mm,
+                radial_depth_mm,
+            }),
+        })
     }
     /// Reconstruct the proved finite material from exchange. This preserves
     /// the actual shoulder station and neck radius; original width/depth
@@ -49,9 +60,8 @@ impl Relief {
         let width = spec.length_mm - material_length_mm;
         if !neck_radius_mm.is_finite()
             || neck_radius_mm <= 0.
-            || neck_radius_mm >= tool.root_radius_mm()
+            || neck_radius_mm >= minimum_radius(tool)
             || width <= 0.
-            || width + spec.pitch_mm > spec.length_mm
         {
             return Err(ThreadError::Invalid);
         }

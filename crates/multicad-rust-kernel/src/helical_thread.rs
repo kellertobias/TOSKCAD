@@ -301,7 +301,7 @@ impl Thread {
         let [x, y, z] = direction.map(|v| v / scale);
         let radial = x.hypot(y);
         let axial = (z * self.spec.length_mm).max(0.);
-        if radial == 0. || z == 0. {
+        if radial == 0. || (z == 0. && self.spec.length_mm >= self.spec.pitch_mm) {
             // Every angle meets a crest over the at-least-one-pitch trim.
             return scale * (radial * self.spec.major_radius_mm + axial);
         }
