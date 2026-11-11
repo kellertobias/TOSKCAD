@@ -16,6 +16,8 @@ mod receiver;
 pub use receiver::{receiver_volume_error_bound, tessellate_receiver};
 mod external;
 pub use external::{shaft_volume_error_bound, tessellate_shaft};
+mod thread_end_relief;
+pub use thread_end_relief::{end_relief_volume_error_bound, tessellate_end_relief};
 mod screw;
 pub use screw::{screw_volume_error_bound, tessellate_screw};
 

@@ -21,11 +21,18 @@ impl Thread {
     /// Intersect this tool with `0 <= z <= length_mm`. The validated tool
     /// remains unchanged. The existing minimum axial-domain budget is kept.
     pub fn axial_prefix(self, length_mm: f64) -> Result<AxialPrefix, ThreadError> {
-        if !length_mm.is_finite() || length_mm <= 0. || length_mm > self.spec.length_mm {
-            return Err(ThreadError::Invalid);
-        }
+        let prefix = self.positive_axial_prefix(length_mm)?;
         if length_mm < self.spec.pitch_mm {
             return Err(ThreadError::Limit);
+        }
+        Ok(prefix)
+    }
+
+    /// Retain an exact positive material trim after a feature has independently
+    /// certified its source interval. The public tool-prefix budget is unchanged.
+    pub(crate) fn positive_axial_prefix(self, length_mm: f64) -> Result<AxialPrefix, ThreadError> {
+        if !length_mm.is_finite() || length_mm <= 0. || length_mm > self.spec.length_mm {
+            return Err(ThreadError::Invalid);
         }
         let material = Self {
             spec: Spec {
