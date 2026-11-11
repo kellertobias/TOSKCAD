@@ -158,9 +158,7 @@ pub(super) fn project(
         minor,
         offset,
     };
-    let mut curves = options.maximum_curves as usize;
-    let mut points = options.maximum_points as usize;
-    let mut remaining = curves.min(points / 2);
+    let mut remaining = (options.maximum_curves as usize).min(options.maximum_points as usize / 2);
     let policy = input.solid.geometry_policy();
     let tolerance = policy.linear_tolerance_mm;
     let deflection = options.chord_tolerance_mm / 2.;
@@ -214,18 +212,34 @@ pub(super) fn project(
         }
     };
     let axial = [across[1], -across[0]];
-    let to_paper = |[x, y]: Point| {
-        let [u, v] = std::array::from_fn(|i| across[i].mul_add(x, axial[i].mul_add(y, center[i])));
-        [u, v, 0.]
-    };
+    let rings = rings
+        .into_iter()
+        .map(|ring| {
+            ring.into_iter()
+                .map(|[x, y]| {
+                    std::array::from_fn(|i| across[i].mul_add(x, axial[i].mul_add(y, center[i])))
+                })
+                .collect()
+        })
+        .collect();
+    publish(input, rings, options)
+}
+
+pub(super) fn publish(
+    input: &DrawingSolid<'_>,
+    rings: Vec<Vec<Point>>,
+    options: DrawingProjection,
+) -> Result<Vec<ProjectedVector>, GeometryError> {
+    let mut curves = options.maximum_curves as usize;
+    let mut points = options.maximum_points as usize;
+    let tolerance = input.solid.geometry_policy().linear_tolerance_mm;
     let loops = rings
         .into_iter()
         .map(|ring| {
-            let ring: Vec<_> = ring.into_iter().map(to_paper).collect();
             ring.iter()
                 .zip(ring.iter().cycle().skip(1))
                 .map(|(&a, &b)| SectionEdge {
-                    ends_mm: [a, b],
+                    ends_mm: [a, b].map(|[x, y]| [x, y, 0.]),
                     curve: warped_union::Curve::Line,
                 })
                 .collect()

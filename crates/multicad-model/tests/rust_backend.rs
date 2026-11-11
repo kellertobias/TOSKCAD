@@ -751,6 +751,7 @@ fn verify_torus_drawing_scene(torus: &multicad_kernel::Solid) {
         ..options
     };
     verify_offset_torus_sections(torus, transverse_cut);
+    verify_oblique_torus_sections(torus, transverse_cut);
     let behind = stock([-3., -8., 0.], [1, 16, 1]);
     let retained_transverse = project(
         &[torus, &behind],
@@ -931,6 +932,123 @@ fn verify_torus_drawing_scene(torus: &multicad_kernel::Solid) {
             );
         }
     }
+}
+
+fn verify_oblique_torus_sections(
+    torus: &multicad_kernel::Solid,
+    options: multicad_kernel::DrawingProjection,
+) {
+    use multicad_core::drawings::{VectorCurve, VectorRole};
+    use multicad_kernel::{
+        DrawingHatch, DrawingProjection, DrawingSolid, PlaneFrame, project_drawing,
+    };
+    let view = |s: f64, depth| DrawingProjection {
+        frame: PlaneFrame {
+            u: [(1. - s * s).sqrt(), 0., s],
+            v: [0., 1., 0.],
+            ..Default::default()
+        },
+        section_offset_mm: Some(depth),
+        ..options
+    };
+    let input = DrawingSolid {
+        solid: torus,
+        hatch: None,
+    };
+    for (s, depth, loops) in [(0.6, 0., 2), (0.6, 3.5, 1), (0.1, 0., 2), (0.1, -0.8, 1)] {
+        let result = project_drawing(std::slice::from_ref(&input), view(s, depth))
+            .unwrap_or_else(|e| panic!("Oblique cut at inclination {s}, offset {depth}: {e}"));
+        assert!(result.len() < 8_000);
+        let c = (1. - s * s).sqrt();
+        let mut first = None;
+        let mut signed_area = 0.;
+        let mut areas = Vec::new();
+        for edge in &result {
+            assert_eq!(edge.role, VectorRole::Section);
+            let VectorCurve::Line { a, b } = edge.curve else {
+                panic!("Expected bounded cut chords");
+            };
+            let [u, v]: [f64; 2] = std::array::from_fn(|i| a[i].midpoint(b[i]));
+            let radius = (c * u - s * depth).hypot(v);
+            let axial = s * u + c * depth;
+            assert!(
+                ((radius - 5.).hypot(axial) - 1.).abs() <= options.chord_tolerance_mm,
+                "Inclination {s}, offset {depth}, chord midpoint ({u}, {v})"
+            );
+            signed_area += a[0] * b[1] - a[1] * b[0];
+            if *first.get_or_insert(a) == b {
+                areas.push(signed_area);
+                signed_area = 0.;
+                first = None;
+            }
+        }
+        assert_eq!(areas.len(), loops);
+        assert!(first.is_none());
+        assert_eq!(
+            areas.iter().filter(|&&a| a < 0.).count(),
+            usize::from(s == 0.1 && depth == 0.)
+        );
+        // Sample the torus independently in its own axis coordinates,
+        // intersecting each tube angle with the plane before projecting.
+        for step in 0..180 {
+            let angle = f64::from(step) * std::f64::consts::TAU / 180.;
+            let (sin, cos) = angle.sin_cos();
+            let radial = 5. + cos;
+            let x = (c * sin - depth) / s;
+            if x.abs() >= radial {
+                continue;
+            }
+            let half = ((radial - x.abs()) * (radial + x.abs())).sqrt();
+            for v in [-half, half] {
+                let u = c * x + s * sin;
+                assert!(
+                    result.iter().any(|edge| {
+                        let VectorCurve::Line { a, b } = edge.curve else {
+                            return false;
+                        };
+                        let [dx, dy] = [b[0] - a[0], b[1] - a[1]];
+                        let [qx, qy] = [u - a[0], v - a[1]];
+                        let t = ((qx * dx + qy * dy) / (dx * dx + dy * dy)).clamp(0., 1.);
+                        (qx - t * dx).hypot(qy - t * dy) <= options.chord_tolerance_mm
+                    }),
+                    "Inclination {s}, offset {depth}, exact cut point ({u}, {v})"
+                );
+            }
+        }
+    }
+    let cropped = project_drawing(
+        &[DrawingSolid {
+            solid: torus,
+            hatch: Some(DrawingHatch {
+                angle_rad: 0.,
+                spacing_mm: 0.25,
+                line_width_mm: 0.05,
+                pattern: multicad_core::materials::HatchPattern::Lines,
+            }),
+        }],
+        DrawingProjection {
+            section_u_mm: Some([-0.5, 4.]),
+            ..view(0.1, 0.)
+        },
+    )
+    .unwrap();
+    let hatches: Vec<_> = cropped
+        .iter()
+        .filter(|edge| edge.role == VectorRole::Hatch)
+        .collect();
+    assert!(!hatches.is_empty());
+    for edge in hatches {
+        let VectorCurve::Line { a, b } = edge.curve else {
+            panic!("Expected hatch lines");
+        };
+        let [u, v]: [f64; 2] = std::array::from_fn(|i| a[i].midpoint(b[i]));
+        assert!(((0.99_f64.sqrt() * u).hypot(v) - 5.).hypot(0.1 * u) <= 1.001);
+    }
+    assert!(
+        project_drawing(&[input], view(0.6, 4.1))
+            .unwrap()
+            .is_empty()
+    );
 }
 
 fn verify_offset_torus_sections(
