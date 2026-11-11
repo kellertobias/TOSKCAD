@@ -425,24 +425,12 @@ fn rust_thread_compiler_refuses_unimplemented_variants_without_changing_source()
             body: stock.body,
             producer: stock.feature,
         },
-        ThreadParameters::default(),
-    )
-    .unwrap();
-    let cosmetic = ThreadRequest::new(
-        "Cosmetic thread",
         ThreadParameters {
             representation: ThreadRepresentation::CosmeticEnvelope,
-            family: ThreadFamily::Custom,
-            custom: Some(CustomThreadProfile {
-                radial_taper: Dimension::Literal {
-                    value: 0.01,
-                    unit: "ratio".into(),
-                },
-                ..Default::default()
-            }),
             ..Default::default()
         },
-    );
+    )
+    .unwrap();
     let chamfer = ThreadRequest::new(
         "Chamfered thread",
         ThreadParameters {
@@ -470,8 +458,10 @@ fn rust_thread_compiler_refuses_unimplemented_variants_without_changing_source()
         },
     );
     for (request, diagnostic) in [
-        (receiving, "receiving cuts"),
-        (cosmetic, "untapered envelope"),
+        (
+            receiving,
+            "external receiving cuts require a modeled thread",
+        ),
         (chamfer, "end treatments"),
         (tapered, "untapered profile"),
     ] {

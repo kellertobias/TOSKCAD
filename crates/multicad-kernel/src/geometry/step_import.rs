@@ -244,6 +244,18 @@ impl Solid {
                 spec,
                 stock_radius_mm,
             } => Self::import_helical_thread(spec, stock_radius_mm, frame, feature, policy),
+            ImportProfile::ThreadedShaft {
+                spec,
+                stock_radius_mm,
+                stock_length_mm,
+            } => Self::import_threaded_shaft(
+                spec,
+                stock_radius_mm,
+                stock_length_mm,
+                frame,
+                feature,
+                policy,
+            ),
             ImportProfile::HelicalReceiver {
                 spec,
                 stock_radius_mm,

@@ -193,7 +193,7 @@ fn rust_mcp_models_edits_and_reopens_a_metric_thread_without_fallback() {
     let profiles = run(&h, "thread_profiles", json!({}));
     assert_eq!(
         profiles["active_geometry_support"]["modes"],
-        json!(["new_external", "cut_internal"])
+        json!(["new_external", "cut_internal", "cut_external"])
     );
     assert_eq!(profiles["active_geometry_support"]["step"], true);
     let families = profiles["families"].as_array().unwrap();
@@ -1060,4 +1060,95 @@ fn engagement_expression_inspection_omission_and_failed_clear_are_atomic() {
         "normal_group_assumed"
     );
     assert!(report["resolved"]["metric_fit_engagement"]["intended_length_mm"].is_null());
+}
+
+#[test]
+fn rust_external_receiving_threads_commit_edit_export_and_reopen_without_source_rewrite() {
+    use multicad_mcp::Storage;
+    let mut session = Session::new(Document::new("External receiving shaft").unwrap()).unwrap();
+    let stock = PrimitiveRequest::new(
+        "Shaft",
+        PrimitiveParameters::Cylinder {
+            radius: length(3.),
+            height: length(8.),
+            frame: Default::default(),
+        },
+    );
+    let prepared = model::prepare_primitive(&session, 0, call(false).actor, &stock).unwrap();
+    session.commit(prepared.prepared).unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("shaft.tcd");
+    ProjectStore
+        .save(
+            &path,
+            &multicad_core::project_file::ProjectFile::new(session.document().clone()).unwrap(),
+        )
+        .unwrap();
+    let open = || {
+        Headless::with_geometry_backend(
+            Workspace::project(path.clone(), Box::new(ProjectStore)).unwrap(),
+            Some(directory.path().into()),
+            false,
+            multicad_model::GeometryBackend::Rust,
+        )
+    };
+    let h = open();
+    let before = h.document();
+    let args = json!({"expected_revision":0,"name":"M6 shaft","mode":"cut_external","target_part":stock.body,"family":"iso_metric","major_diameter":mm(6.),"pitch":mm(1.),"length":mm(3.75),"fit":"metric_6g_external"});
+    let mut invalid = args.clone();
+    invalid["origin"] = json!([mm(0.1), mm(0.), mm(0.)]);
+    assert_eq!(
+        dispatch(&h, &call(false), "set_thread", invalid)
+            .unwrap_err()
+            .code,
+        "model_failed"
+    );
+    assert_eq!(h.document(), before);
+    assert_eq!(
+        dispatch(&h, &call(true), "set_thread", args.clone())
+            .unwrap_err()
+            .code,
+        "cancelled"
+    );
+    assert_eq!(h.document(), before);
+    let created = run(&h, "set_thread", args);
+    let thread = feature(&created);
+    let initial = h.document();
+    run(
+        &h,
+        "set_thread",
+        json!({"expected_revision":1,"thread":thread,"length":mm(5.)}),
+    );
+    let source = model::read_thread(&h.document(), thread).unwrap();
+    assert_eq!(source.target.as_ref().unwrap().producer, stock.feature);
+    assert_eq!(source.mode, model::ThreadMode::CutExternal);
+    assert_eq!(source.parameters.fit, model::ThreadFit::Metric6gExternal);
+    let edited = h.document();
+    run(&h, "undo", json!({"expected_revision":2}));
+    assert_eq!(h.document(), initial);
+    run(&h, "redo", json!({"expected_revision":3}));
+    assert_eq!(h.document(), edited);
+    run(
+        &h,
+        "export_step",
+        json!({"part":stock.body,"file_name":"shaft.step"}),
+    );
+    assert!(directory.path().join("shaft.step").exists());
+    run(&h, "save_project", json!({"expected_revision":4}));
+    drop(h);
+    let reopened = open();
+    assert_eq!(reopened.document(), edited);
+    let report = run(&reopened, "thread_profiles", json!({}));
+    let npt = report["families"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["family"] == "npt")
+        .unwrap();
+    assert_eq!(npt["supported"], false);
+    assert_eq!(npt["cosmetic_new_external_supported"], true);
+    assert_eq!(
+        npt["cosmetic_fit_classes"],
+        json!(["npt_historical_midpoint"])
+    );
 }

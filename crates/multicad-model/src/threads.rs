@@ -139,11 +139,6 @@ pub(crate) fn build_rust(
     policy: GeometryPolicy,
 ) -> Result<Solid, ModelError> {
     let fail = |message| error(Some(feature), message);
-    if source.mode == ThreadMode::CutExternal {
-        return Err(fail(
-            "Rust thread geometry does not yet support external receiving cuts",
-        ));
-    }
     let thread = source
         .parameters
         .resolve(parameters, source.mode)
@@ -154,11 +149,22 @@ pub(crate) fn build_rust(
         return cosmetic::shaft(feature, &thread, policy);
     }
     validate_rust_family(feature, source.parameters.family)?;
+    if thread.representation == ThreadRepresentation::CosmeticEnvelope
+        && source.mode == ThreadMode::CutExternal
+    {
+        return Err(fail(
+            "Rust external receiving cuts require a modeled thread; cosmetic receiving envelopes are not yet certified",
+        ));
+    }
     let (spec, root_radius, frame) = rust_profile(feature, &thread)?;
     let solid = if source.mode == ThreadMode::CutInternal {
         let target = receiving_target(feature, source, solids)?
             .ok_or_else(|| fail("Receiving thread has no target predecessor"))?;
         target.rust_cut_internal_thread(spec, thread.minimum_wall_mm, feature, frame, policy)
+    } else if source.mode == ThreadMode::CutExternal {
+        let target = receiving_target(feature, source, solids)?
+            .ok_or_else(|| fail("Receiving thread has no target predecessor"))?;
+        target.rust_cut_external_thread(spec, root_radius, feature, frame, policy)
     } else {
         Solid::rust_helical_thread(spec, root_radius, feature, frame, policy)
     };

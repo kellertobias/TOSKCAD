@@ -625,9 +625,7 @@ pub(super) fn parameters(
 pub(super) fn thread_profiles(_: &dyn Host, call: &Request, _: NoArgs) -> ToolResult {
     let rust = call.backend == GeometryBackend::Rust;
     let families:Vec<_> = ThreadFamily::ALL.into_iter().map(|family| {
-        let fit_classes:Vec<_> = if rust && !multicad_model::rust_thread_family_supported(family) {
-            vec![]
-        } else if family.supported() && family.is_unified() {
+        let cosmetic_fit_classes:Vec<_> = if family.supported() && family.is_unified() {
             vec![ThreadFit::Unified2A, ThreadFit::Unified2B]
         } else if matches!(family,ThreadFamily::Bsw|ThreadFamily::Bsf) {
             vec![ThreadFit::WhitworthMediumExternal,ThreadFit::WhitworthMediumInternal]
@@ -642,7 +640,9 @@ pub(super) fn thread_profiles(_: &dyn Host, call: &Request, _: NoArgs) -> ToolRe
         } else if family.supported() {
             vec![ThreadFit::NominalBasic]
         } else {vec![]};
-        json!({"family":family,"label":family.label(),"supported":!fit_classes.is_empty(),"source":family.source(),"fit_classes":fit_classes})
+        let fit_classes = if rust && !multicad_model::rust_thread_family_supported(family) { vec![] } else { cosmetic_fit_classes.clone() };
+        json!({"family":family,"label":family.label(),"supported":!fit_classes.is_empty(),"source":family.source(),"fit_classes":fit_classes,
+            "cosmetic_new_external_supported":family.supported(),"cosmetic_fit_classes":cosmetic_fit_classes})
     }).collect();
     let unified_presets:Vec<_> = model::unified_thread_presets().into_iter().map(|p|json!({
         "family":p.family,"designation":p.designation,"diameter_mm":p.diameter_mm,"pitch_mm":p.pitch_mm,
@@ -686,15 +686,16 @@ pub(super) fn thread_profiles(_: &dyn Host, call: &Request, _: NoArgs) -> ToolRe
         "runout":"flat_cut_ends","manufacturing":"Cosmetic envelopes are refused for STEP, mesh and print output; select modeled"});
     if rust {
         report["active_geometry_support"] = json!({
-            "modes": ["new_external", "cut_internal"],
+            "modes": ["new_external", "cut_internal", "cut_external"],
             "internal_receiving_stock": "One coaxial solid cylinder entered from either cap; partial-depth tools retain a floor and overrun tools are restricted to stock",
+            "external_receiving_stock": "One coaxial solid cylinder entered from either cap, radius at least the thread major radius; partial cuts retain the exact tail and overrun tools are restricted to stock",
             "requested_tool_length_is_preserved": true,
             "representations": ["modeled", "cosmetic_envelope"],
             "cosmetic_scope": "new_external only; receiving cuts require modeled geometry",
             "end_treatments": false,
             "radial_taper": false,
             "step": true,
-            "step_scope": "Standalone straight modeled shafts with one to eight starts, flat or circular roots, and cap-entry blind or through threads in round stock, within the bounded spline budget",
+            "step_scope": "Standalone straight modeled shafts with one to eight starts, flat or circular roots, and partial, full or overrun cap-entry external cuts and blind or through internal threads in round stock, within the bounded spline budget",
             "manufacturing_mesh": true,
             "reference_data_includes_other_backends": true
         });

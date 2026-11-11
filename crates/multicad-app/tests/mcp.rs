@@ -3054,3 +3054,81 @@ fn rust_stdio_tapered_cosmetic_envelopes_reopen_and_refuse_manufacturing_atomica
         assert_eq!(std::fs::read(&project).unwrap(), bytes);
     }
 }
+
+#[test]
+fn rust_stdio_external_receiving_threads_preserve_stock_edit_export_and_reopen() {
+    use multicad_core::{
+        commands::{Actor, Channel, Session},
+        document::Document,
+        model::{self, PrimitiveParameters, PrimitiveRequest, length as mm},
+        project_file::{self, ProjectFile},
+    };
+    let directory = tempfile::tempdir().unwrap();
+    let project = directory.path().join("external-shaft.tcd");
+    let mut session = Session::new(Document::new("External shaft").unwrap()).unwrap();
+    let stock = PrimitiveRequest::new(
+        "Shaft",
+        PrimitiveParameters::Cylinder {
+            radius: mm(3.),
+            height: mm(8.),
+            frame: Default::default(),
+        },
+    );
+    let prepared =
+        model::prepare_primitive(&session, 0, Actor::local(Channel::Ui), &stock).unwrap();
+    session.commit(prepared.prepared).unwrap();
+    let mut bytes = Vec::new();
+    project_file::write(
+        &ProjectFile::new(session.document().clone()).unwrap(),
+        &mut bytes,
+        Default::default(),
+    )
+    .unwrap();
+    std::fs::write(&project, &bytes).unwrap();
+    let args = [
+        "--rust-model",
+        "--project",
+        project.to_str().unwrap(),
+        "--export-dir",
+        directory.path().to_str().unwrap(),
+    ];
+    let mut client = Client::start(&args);
+    let revision = client.revision();
+    let initial = client.part_volume();
+    client.fail("set_thread",json!({"expected_revision":revision,"name":"Offset request","mode":"cut_external","target_part":stock.body,"major_diameter":length(6.),"pitch":length(1.),"length":length(3.75),"fit":"metric_6g_external","origin":[length(0.1),length(0.),length(0.)]}));
+    assert_eq!(client.revision(), revision);
+    close(client.part_volume(), initial);
+    assert_eq!(std::fs::read(&project).unwrap(), bytes);
+    let created=client.ok("set_thread",json!({"expected_revision":revision,"name":"M6 shaft","mode":"cut_external","target_part":stock.body,"major_diameter":length(6.),"pitch":length(1.),"length":length(3.75),"fit":"metric_6g_external"}));
+    let first = client.part_volume();
+    assert!(first < initial);
+    let revision = client.revision();
+    client.ok(
+        "set_thread",
+        json!({"expected_revision":revision,"thread":created["thread"],"length":length(5.)}),
+    );
+    let edited = client.part_volume();
+    assert!(edited < first);
+    let revision = client.revision();
+    client.ok("undo", json!({"expected_revision":revision}));
+    close(client.part_volume(), first);
+    let revision = client.revision();
+    client.ok("redo", json!({"expected_revision":revision}));
+    close(client.part_volume(), edited);
+    let receipt = client.ok(
+        "export_step",
+        json!({"part":stock.body,"file_name":"external-shaft.step"}),
+    );
+    close(receipt["model_volume_mm3"].as_f64().unwrap(), edited);
+    close(receipt["readback_volume_mm3"].as_f64().unwrap(), edited);
+    let revision = client.revision();
+    client.ok("save_project", json!({"expected_revision":revision}));
+    drop(client);
+    let mut reopened = Client::start(&args);
+    close(reopened.part_volume(), edited);
+    let again = reopened.ok(
+        "export_step",
+        json!({"part":stock.body,"file_name":"external-shaft-again.step"}),
+    );
+    close(again["readback_volume_mm3"].as_f64().unwrap(), edited);
+}
