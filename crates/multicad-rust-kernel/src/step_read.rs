@@ -26,6 +26,8 @@ pub use worm::verify_za_worm;
 mod import;
 mod mixed;
 mod nonplanar_loft;
+mod normal_relief;
+pub use normal_relief::verify_normal_relief;
 mod part21;
 mod round;
 mod rounded_cylinder;
