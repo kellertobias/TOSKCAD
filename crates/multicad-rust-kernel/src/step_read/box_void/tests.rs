@@ -429,3 +429,249 @@ fn nonrectangular_and_multiple_wire_shells_are_rejected_as_cavities() {
         .unwrap();
     assert_refused(&enclose_pair(&writer.finish().unwrap()));
 }
+
+fn multi_fixture(count: usize) -> String {
+    let max = (2 * count + 2) as f64;
+    let holes = (0..count)
+        .map(|i| Box3 {
+            min: [(2 * i + 1) as f64; 3],
+            max: [(2 * i + 2) as f64; 3],
+        })
+        .collect::<Vec<_>>();
+    let solid = boolean(
+        &[Box3 {
+            min: [0.; 3],
+            max: [max; 3],
+        }],
+        &holes,
+        Operation::Subtract,
+        1e-7,
+    )
+    .unwrap()
+    .unwrap();
+    let boundary = crate::orthogonal_boundary::build(solid.quads()).unwrap();
+    let u = [0.8, 0.6, 0.];
+    let v = [-0.36, 0.48, 0.8];
+    let w = cross(u, v);
+    let origin = [13., -5., 41.];
+    crate::step::write_orthogonal(&boundary, |point| {
+        std::array::from_fn(|i| origin[i] + u[i] * point[0] + v[i] * point[1] + w[i] * point[2])
+    })
+    .unwrap()
+}
+fn multi_ids(text: &str) -> (u32, u32, Vec<(u32, u32)>) {
+    let entities = parse_entities(text, 1e-7).unwrap();
+    let shell = Shell::new(&entities, 1e-7, false);
+    let member = shell.represented_solids(true).unwrap()[0];
+    let [_, outer, voids] = shell.args(member, "BREP_WITH_VOIDS").unwrap() else {
+        panic!()
+    };
+    let voids = refs(voids)
+        .unwrap()
+        .into_iter()
+        .map(|wrapper| {
+            let [_, _, inner, _] = shell.args(wrapper, "ORIENTED_CLOSED_SHELL").unwrap() else {
+                panic!()
+            };
+            (wrapper, reference(inner).unwrap())
+        })
+        .collect();
+    (member, reference(outer).unwrap(), voids)
+}
+
+#[test]
+fn multiple_placed_cavities_preserve_physical_empty_regions_and_reexport() {
+    for count in [2, 3, 7] {
+        let text = multi_fixture(count);
+        assert_eq!(text.matches("=BREP_WITH_VOIDS(").count(), 1);
+        assert_eq!(text.matches("=ORIENTED_CLOSED_SHELL(").count(), count);
+        let (proof, import) = read_import_solid(&text, 1e-7).unwrap();
+        let expected = ((2 * count + 2).pow(3) - count) as f64;
+        assert!((proof.volume_mm3 - expected).abs() < 1e-7);
+        assert_eq!(proof.solid_count, 1);
+        assert_eq!(proof.face_count, (count + 1) * 6);
+        assert_eq!(proof.edges_mm.len(), (count + 1) * 12);
+        let ImportProfile::Orthogonal { solid } = import.profile else {
+            panic!()
+        };
+        let w = cross(import.u, import.v);
+        let u = [0.8, 0.6, 0.];
+        let v = [-0.36, 0.48, 0.8];
+        let original_w = cross(u, v);
+        for i in 0..count {
+            let coordinate = (2 * i + 1) as f64 + 0.5;
+            let world = std::array::from_fn(|axis| {
+                [13., -5., 41.][axis] + coordinate * (u[axis] + v[axis] + original_w[axis])
+            });
+            let local = [import.u, import.v, w].map(|axis| dot(sub(world, import.origin_mm), axis));
+            assert!(!solid.cells().iter().any(|cell| {
+                (0..3).all(|axis| local[axis] > cell.min[axis] && local[axis] < cell.max[axis])
+            }));
+        }
+        let boundary = crate::orthogonal_boundary::build(solid.quads()).unwrap();
+        assert_eq!(boundary.shell_count, count + 1);
+        let replay = crate::step::write_orthogonal(&boundary, |point| {
+            std::array::from_fn(|i| {
+                import.origin_mm[i]
+                    + import.u[i] * point[0]
+                    + import.v[i] * point[1]
+                    + w[i] * point[2]
+            })
+        })
+        .unwrap();
+        let replay = read_analytic_solid(&replay, 1e-7).unwrap();
+        assert!((replay.volume_mm3 - expected).abs() < 1e-7);
+        for (a, b) in replay
+            .bounds_mm
+            .into_iter()
+            .flatten()
+            .zip(proof.bounds_mm.into_iter().flatten())
+        {
+            assert!((a - b).abs() < 1e-7);
+        }
+        let (member, outer, voids) = multi_ids(&text);
+        let mut alternative = text.clone();
+        for &(wrapper, inner) in voids.iter().step_by(2) {
+            alternative = reverse_shell(&alternative, inner);
+            alternative = entity(
+                &alternative,
+                wrapper,
+                &format!("ORIENTED_CLOSED_SHELL('',*,#{inner},.T.)"),
+            );
+        }
+        alternative = entity(
+            &alternative,
+            member,
+            &format!(
+                "BREP_WITH_VOIDS('',#{outer},({}))",
+                voids
+                    .iter()
+                    .rev()
+                    .map(|(wrapper, _)| format!("#{wrapper}"))
+                    .collect::<Vec<_>>()
+                    .join(",")
+            ),
+        );
+        assert!(
+            (read_analytic_solid(&alternative, 1e-7).unwrap().volume_mm3 - expected).abs() < 1e-7
+        );
+    }
+}
+
+#[test]
+fn multiple_cavity_declarations_do_not_allow_duplicates_or_shared_owned_topology() {
+    let text = multi_fixture(3);
+    let (member, outer, voids) = multi_ids(&text);
+    assert_refused(&entity(
+        &text,
+        member,
+        &format!(
+            "BREP_WITH_VOIDS('',#{outer},(#{},#{},#{}))",
+            voids[0].0, voids[0].0, voids[2].0
+        ),
+    ));
+    assert_refused(&entity(
+        &text,
+        voids[1].0,
+        &format!("ORIENTED_CLOSED_SHELL('',*,#{},.F.)", voids[0].1),
+    ));
+    let entities = parse_entities(&text, 1e-7).unwrap();
+    let shell = Shell::new(&entities, 1e-7, false);
+    let [_, faces] = shell.args(voids[0].1, "CLOSED_SHELL").unwrap() else {
+        panic!()
+    };
+    assert_refused(&entity(
+        &text,
+        voids[1].1,
+        &format!(
+            "CLOSED_SHELL('',({}))",
+            refs(faces)
+                .unwrap()
+                .iter()
+                .map(|id| format!("#{id}"))
+                .collect::<Vec<_>>()
+                .join(",")
+        ),
+    ));
+}
+
+#[test]
+fn too_many_independent_grid_supports_report_a_read_limit() {
+    use crate::{Rational, step::Writer};
+    let n = |i| Rational::new(i, 1).unwrap();
+    let mut writer = Writer::new();
+    writer
+        .append_box([n(52); 3], [0.; 3], [1., 0., 0.], [0., 1., 0.])
+        .unwrap();
+    for i in 0..25 {
+        writer
+            .append_box(
+                [n(1); 3],
+                [(2 * i + 1) as f64; 3],
+                [1., 0., 0.],
+                [0., 1., 0.],
+            )
+            .unwrap();
+    }
+    let text = writer.finish().unwrap();
+    let entities = parse_entities(&text, 1e-7).unwrap();
+    let shell = Shell::new(&entities, 1e-7, false);
+    let members = shell.represented_solids(false).unwrap();
+    let [_, outer] = shell.args(members[0], "MANIFOLD_SOLID_BREP").unwrap() else {
+        panic!()
+    };
+    let mut converted = entity(
+        &text,
+        members[0],
+        &format!(
+            "BREP_WITH_VOIDS('',#{},({}))",
+            reference(outer).unwrap(),
+            members[1..]
+                .iter()
+                .map(|id| format!("#{id}"))
+                .collect::<Vec<_>>()
+                .join(",")
+        ),
+    );
+    for &member in &members[1..] {
+        let [_, inner] = shell.args(member, "MANIFOLD_SOLID_BREP").unwrap() else {
+            panic!()
+        };
+        converted = entity(
+            &converted,
+            member,
+            &format!(
+                "ORIENTED_CLOSED_SHELL('',*,#{},.F.)",
+                reference(inner).unwrap()
+            ),
+        );
+    }
+    let (&representation, parts) = entities
+        .iter()
+        .find(|(_, parts)| parts[0].name == "ADVANCED_BREP_SHAPE_REPRESENTATION")
+        .unwrap();
+    let [_, items, context] = parts[0].args.as_slice() else {
+        panic!()
+    };
+    let kept = refs(items)
+        .unwrap()
+        .into_iter()
+        .filter(|id| !members[1..].contains(id))
+        .map(|id| format!("#{id}"))
+        .collect::<Vec<_>>()
+        .join(",");
+    converted = entity(
+        &converted,
+        representation,
+        &format!(
+            "ADVANCED_BREP_SHAPE_REPRESENTATION('',({kept}),#{})",
+            reference(context).unwrap()
+        ),
+    );
+    assert_eq!(read_planar_solid(&converted, 1e-7), Err(ReadError::Limit));
+    assert_eq!(read_analytic_solid(&converted, 1e-7), Err(ReadError::Limit));
+    assert!(matches!(
+        read_import_solid(&converted, 1e-7),
+        Err(ReadError::Limit)
+    ));
+}

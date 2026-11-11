@@ -1,17 +1,30 @@
-//! Exact rectangular material with one strictly enclosed rectangular void.
+//! Exact rectangular material with strictly enclosed, mutually separated rectangular voids.
 use super::*;
-use crate::orthogonal::{OrientedFace, OrthogonalSolid, solid_from_oriented_faces};
+use crate::orthogonal::{BooleanError, OrientedFace, OrthogonalSolid, solid_from_oriented_faces};
 
 pub(crate) struct Certificate {
-    pub groups: [Vec<usize>; 2],
+    pub groups: Vec<Vec<usize>>,
     pub origin: Point,
     pub axes: [Point; 3],
     pub solid: OrthogonalSolid,
 }
 
+type ProofResult<T> = std::result::Result<T, BooleanError>;
+
 pub(crate) fn boundary(boundary: &Boundary) -> Option<Certificate> {
-    if boundary.shell_count != 2 || boundary.faces.iter().any(|face| face.rings.len() != 1) {
-        return None;
+    boundary_certificate(boundary).ok()
+}
+
+pub(crate) fn boundary_certificate(boundary: &Boundary) -> ProofResult<Certificate> {
+    budget(
+        boundary.faces.len(),
+        boundary
+            .faces
+            .iter()
+            .flat_map(|face| face.rings.iter().map(Vec::len)),
+    )?;
+    if boundary.shell_count < 2 || boundary.faces.iter().any(|face| face.rings.len() != 1) {
+        return Err(BooleanError::Invalid);
     }
     let faces = boundary
         .faces
@@ -21,7 +34,11 @@ pub(crate) fn boundary(boundary: &Boundary) -> Option<Certificate> {
             rings: face.rings.clone(),
         })
         .collect::<Vec<_>>();
-    recognize(&faces, 0.)
+    let certificate = certify(&faces, 0.)?;
+    if certificate.groups.len() != boundary.shell_count {
+        return Err(BooleanError::Invalid);
+    }
+    Ok(certificate)
 }
 
 fn dot(a: Point, b: Point) -> f64 {
@@ -34,34 +51,123 @@ fn cross([a, b, c]: Point, [d, e, f]: Point) -> Point {
     [b * f - c * e, c * d - a * f, a * e - b * d]
 }
 
-fn closed(faces: &[OrientedFace]) -> bool {
-    let mut edges = BTreeMap::<_, (bool, u8)>::new();
-    for ring in faces.iter().flat_map(|face| &face.rings) {
-        for (&a, &b) in ring.iter().zip(ring.iter().cycle().skip(1)) {
-            let [a, b] = [a, b].map(point_key);
-            if a == b {
-                return false;
-            }
-            let forward = a < b;
-            let key = if forward { [a, b] } else { [b, a] };
-            match edges.entry(key) {
-                std::collections::btree_map::Entry::Vacant(entry) => {
-                    entry.insert((forward, 1));
+// Bound the same boundary work domain as the consolidated quad provider.
+pub(crate) const MAX_WORK: usize = 4 * MAX_QUADS;
+
+struct Prepared {
+    groups: Vec<Vec<usize>>,
+    origin: Point,
+    axes: [Point; 3],
+    local: Vec<OrientedFace>,
+    voids: Vec<[Point; 2]>,
+}
+
+fn components(faces: &[OrientedFace]) -> Option<Vec<Vec<usize>>> {
+    let mut edges = BTreeMap::<_, (usize, bool, u8)>::new();
+    let mut adjacent = vec![Vec::new(); faces.len()];
+    for (face, source) in faces.iter().enumerate() {
+        for ring in &source.rings {
+            for (&a, &b) in ring.iter().zip(ring.iter().cycle().skip(1)) {
+                let [a, b] = [a, b].map(point_key);
+                if a == b {
+                    return None;
                 }
-                std::collections::btree_map::Entry::Occupied(mut entry) => {
-                    let (previous, count) = entry.get_mut();
-                    if *count != 1 || *previous == forward {
-                        return false;
+                let forward = a < b;
+                let key = if forward { [a, b] } else { [b, a] };
+                match edges.entry(key) {
+                    std::collections::btree_map::Entry::Vacant(entry) => {
+                        entry.insert((face, forward, 1));
                     }
-                    *count = 2;
+                    std::collections::btree_map::Entry::Occupied(mut entry) => {
+                        let (previous_face, previous, count) = entry.get_mut();
+                        if *count != 1 || *previous == forward || *previous_face == face {
+                            return None;
+                        }
+                        adjacent[*previous_face].push(face);
+                        adjacent[face].push(*previous_face);
+                        *count = 2;
+                    }
                 }
             }
         }
     }
-    edges.values().all(|&(_, count)| count == 2)
+    if edges.values().any(|&(_, _, count)| count != 2) {
+        return None;
+    }
+    let mut visited = vec![false; faces.len()];
+    let mut groups = Vec::new();
+    for first in 0..faces.len() {
+        if visited[first] {
+            continue;
+        }
+        let mut pending = vec![first];
+        let mut group = Vec::new();
+        visited[first] = true;
+        while let Some(face) = pending.pop() {
+            group.push(face);
+            for &other in &adjacent[face] {
+                if !visited[other] {
+                    visited[other] = true;
+                    pending.push(other);
+                }
+            }
+        }
+        group.sort_unstable();
+        groups.push(group);
+    }
+    Some(groups)
 }
 
 pub(crate) fn recognize(faces: &[OrientedFace], tolerance: f64) -> Option<Certificate> {
+    certify(faces, tolerance).ok()
+}
+
+fn budget(faces: usize, mut counts: impl Iterator<Item = usize>) -> ProofResult<usize> {
+    if faces > MAX_QUADS {
+        return Err(BooleanError::Limit);
+    }
+    counts
+        .try_fold(0usize, |count, next| {
+            count.checked_add(next).filter(|&count| count <= MAX_WORK)
+        })
+        .ok_or(BooleanError::Limit)
+}
+
+pub(crate) fn certify(faces: &[OrientedFace], tolerance: f64) -> ProofResult<Certificate> {
+    let vertices = budget(
+        faces.len(),
+        faces
+            .iter()
+            .flat_map(|face| face.rings.iter().map(Vec::len)),
+    )?;
+    let prepared = prepare(faces, tolerance).ok_or(BooleanError::Invalid)?;
+    let count = prepared.voids.len();
+    let pairs = count
+        .checked_mul(count.saturating_sub(1))
+        .and_then(|count| count.checked_div(2))
+        .ok_or(BooleanError::Limit)?;
+    if pairs > MAX_WORK - vertices {
+        return Err(BooleanError::Limit);
+    }
+    for (i, a) in prepared.voids.iter().enumerate() {
+        for b in &prepared.voids[..i] {
+            if !(0..3).any(|axis| {
+                b[0][axis] - a[1][axis] > tolerance || a[0][axis] - b[1][axis] > tolerance
+            }) {
+                return Err(BooleanError::Invalid);
+            }
+        }
+    }
+    let solid = solid_from_oriented_faces(&prepared.local, tolerance)?;
+    Ok(Certificate {
+        groups: prepared.groups,
+        origin: prepared.origin,
+        axes: prepared.axes,
+        solid,
+    })
+}
+
+fn prepare(faces: &[OrientedFace], tolerance: f64) -> Option<Prepared> {
     let first = faces.first()?;
     let mut origin = *first.rings.first()?.first()?;
     let u = first.normal;
@@ -196,49 +302,48 @@ pub(crate) fn recognize(faces: &[OrientedFace], tolerance: f64) -> Option<Certif
         bounds
     };
     let outer = extent(&(0..local.len()).collect::<Vec<_>>());
-    let mut groups = [Vec::new(), Vec::new()];
-    for (i, face) in local.iter().enumerate() {
-        let axis = face.normal.iter().position(|&n| n != 0.)?;
-        let exterior = usize::from(face.normal[axis] > 0.);
-        let coordinate = face.rings[0][0][axis];
-        groups[usize::from(coordinate != outer[exterior][axis])].push(i);
-    }
-    if groups.iter().any(Vec::is_empty) {
+    let mut groups = components(faces)?;
+    if groups.len() < 2 {
         return None;
     }
-    let inner = extent(&groups[1]);
-    if (0..3).any(|axis| {
-        inner[0][axis] - outer[0][axis] <= tolerance
-            || outer[1][axis] - inner[1][axis] <= tolerance
-            || inner[1][axis] - inner[0][axis] <= tolerance
-    }) {
-        return None;
-    }
-    for (group, indices) in groups.iter().enumerate() {
-        for &i in indices {
+    let supported = |indices: &[usize], bounds: [Point; 2], inward: bool| {
+        indices.iter().all(|&i| {
             let face = &local[i];
-            let axis = face.normal.iter().position(|&n| n != 0.)?;
-            let side = usize::from((face.normal[axis] > 0.) != (group == 1));
-            let bounds = if group == 0 { outer } else { inner };
-            if face.rings[0]
+            let axis = face
+                .normal
                 .iter()
-                .any(|point| point[axis] != bounds[side][axis])
-            {
-                return None;
-            }
+                .position(|&n| n != 0.)
+                .expect("normalized support");
+            let side = usize::from((face.normal[axis] > 0.) != inward);
+            face.rings[0]
+                .iter()
+                .all(|point| point[axis] == bounds[side][axis])
+        })
+    };
+    let exterior = groups
+        .iter()
+        .position(|indices| supported(indices, outer, false))?;
+    let exterior = groups.remove(exterior);
+    groups.insert(0, exterior);
+    let mut voids = Vec::new();
+    for indices in &groups[1..] {
+        let inner = extent(indices);
+        if (0..3).any(|axis| {
+            inner[0][axis] - outer[0][axis] <= tolerance
+                || outer[1][axis] - inner[1][axis] <= tolerance
+                || inner[1][axis] - inner[0][axis] <= tolerance
+        }) || !supported(indices, inner, true)
+        {
+            return None;
         }
+        voids.push(inner);
     }
-    // The material reconstruction permits collinear face subdivisions. STEP
-    // also requires the original exact edge pairs to close without T junctions.
-    if !closed(faces) {
-        return None;
-    }
-    let solid = solid_from_oriented_faces(&local, tolerance).ok()?;
-    Some(Certificate {
+    Some(Prepared {
         groups,
         origin,
         axes,
-        solid,
+        local,
+        voids,
     })
 }
 

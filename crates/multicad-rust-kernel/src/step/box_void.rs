@@ -1,4 +1,4 @@
-//! One logical planar solid whose second closed shell bounds an enclosed box.
+//! One logical planar solid with strictly enclosed rectangular cavity shells.
 use super::*;
 use crate::{orthogonal::OrientedFace, orthogonal_boundary::box_void};
 
@@ -34,7 +34,10 @@ pub(super) fn encode(
             rings: vec![ring],
         });
     }
-    let certificate = box_void::recognize(&placed, 0.).ok_or(StepError::InvalidGeometry)?;
+    let certificate = box_void::certify(&placed, 0.).map_err(|error| match error {
+        crate::orthogonal::BooleanError::Limit => StepError::Limit,
+        _ => StepError::InvalidGeometry,
+    })?;
     let mut shells = Vec::new();
     for (group, indices) in certificate.groups.iter().enumerate() {
         let mut points = Vec::new();
@@ -85,11 +88,15 @@ pub(super) fn encode(
                 .entity(format_args!("CLOSED_SHELL('',{})", Entities(&emitted))),
         );
     }
-    let void = file.entity(format_args!(
-        "ORIENTED_CLOSED_SHELL('',*,{},.F.)",
-        shells[1]
-    ));
-    Ok(file.entity(format_args!("BREP_WITH_VOIDS('',{},({void}))", shells[0])))
+    let voids = shells[1..]
+        .iter()
+        .map(|shell| file.entity(format_args!("ORIENTED_CLOSED_SHELL('',*,{shell},.F.)")))
+        .collect::<Vec<_>>();
+    Ok(file.entity(format_args!(
+        "BREP_WITH_VOIDS('',{},{})",
+        shells[0],
+        Entities(&voids)
+    )))
 }
 
 pub(super) fn union_faces(union: &crate::planar_boolean::Union) -> Vec<OrientedFace> {

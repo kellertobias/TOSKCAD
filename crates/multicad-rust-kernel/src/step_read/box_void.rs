@@ -1,4 +1,4 @@
-//! Independently validate the two closed shells of a rectangular cavity BRep.
+//! Independently validate the closed shells of a rectangular cavity BRep.
 use super::*;
 use crate::{orthogonal::OrientedFace, orthogonal_boundary::box_void};
 
@@ -13,26 +13,30 @@ pub(super) fn read_member(
         return Err(ReadError::Invalid);
     };
     let voids = refs(voids)?;
-    let [void] = voids.as_slice() else {
+    if voids.is_empty() {
         return Err(ReadError::Unsupported);
-    };
-    let [Value::String(_), Value::Derived, inner, orientation] =
-        shell.args(*void, "ORIENTED_CLOSED_SHELL")?
-    else {
-        return Err(ReadError::Invalid);
-    };
-    let inner = reference(inner)?;
-    let outer = reference(outer)?;
-    if outer == inner {
-        return Err(ReadError::Invalid);
     }
-    let orientations = [true, sense(orientation)?];
+    let outer = reference(outer)?;
+    let mut shells = vec![(outer, true)];
+    let mut shell_ids = BTreeSet::from([outer]);
+    for wrapper in voids {
+        let [Value::String(_), Value::Derived, inner, orientation] =
+            shell.args(wrapper, "ORIENTED_CLOSED_SHELL")?
+        else {
+            return Err(ReadError::Invalid);
+        };
+        let inner = reference(inner)?;
+        if !shell_ids.insert(inner) {
+            return Err(ReadError::Invalid);
+        }
+        shells.push((inner, sense(orientation)?));
+    }
     let mut physical = Vec::new();
-    let mut groups = [Vec::new(), Vec::new()];
+    let mut groups = vec![Vec::new(); shells.len()];
     let mut owned = BTreeSet::new();
     let mut edges_mm = Vec::new();
     let mut bounds = [[f64::INFINITY; 3], [f64::NEG_INFINITY; 3]];
-    for (group, id) in [outer, inner].into_iter().enumerate() {
+    for (group, (id, orientation)) in shells.into_iter().enumerate() {
         let [Value::String(_), faces] = shell.args(id, "CLOSED_SHELL")? else {
             return Err(ReadError::Invalid);
         };
@@ -85,7 +89,7 @@ pub(super) fn read_member(
             // Any nonrepresentable normalization is rejected by the enclosure proof.
             let norm = length(normal);
             let mut normal = normal.map(|component| component / norm);
-            if !orientations[group] {
+            if !orientation {
                 ring.reverse();
                 normal = normal.map(|n| -n);
             }
@@ -97,7 +101,10 @@ pub(super) fn read_member(
         }
     }
     let certificate =
-        box_void::recognize(&physical, shell.tolerance).ok_or(ReadError::Unsupported)?;
+        box_void::certify(&physical, shell.tolerance).map_err(|error| match error {
+            crate::orthogonal::BooleanError::Limit => ReadError::Limit,
+            _ => ReadError::Unsupported,
+        })?;
     if certificate.groups != groups {
         return Err(ReadError::Invalid);
     }

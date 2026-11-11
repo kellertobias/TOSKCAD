@@ -147,3 +147,187 @@ fn material_equivalence_does_not_admit_unpaired_duplicate_or_degenerate_edges() 
     source[0].rings[0].reverse();
     assert!(recognize(&source, 1e-7).is_none());
 }
+
+fn box_faces(bounds: Box3, inward: bool) -> Vec<OrientedFace> {
+    let solid = boolean(&[bounds], &[], Operation::Union, 0.)
+        .unwrap()
+        .unwrap();
+    super::super::build(solid.quads())
+        .unwrap()
+        .faces
+        .into_iter()
+        .map(|mut face| {
+            if inward {
+                face.normal = face.normal.map(|n| -n);
+                for ring in &mut face.rings {
+                    ring.reverse();
+                }
+            }
+            OrientedFace {
+                normal: face.normal,
+                rings: face.rings,
+            }
+        })
+        .collect()
+}
+fn enclosed(outer: Box3, holes: &[Box3]) -> Vec<OrientedFace> {
+    box_faces(outer, false)
+        .into_iter()
+        .chain(holes.iter().flat_map(|&bounds| box_faces(bounds, true)))
+        .collect()
+}
+
+#[test]
+fn any_admitted_count_of_separated_cavities_keeps_one_material_and_ordered_components() {
+    for count in [2, 5, 17] {
+        let outer = Box3 {
+            min: [0.; 3],
+            max: [(2 * count + 2) as f64, 4., 4.],
+        };
+        let holes = (0..count)
+            .map(|i| Box3 {
+                min: [(2 * i + 1) as f64, 1., 1.],
+                max: [(2 * i + 2) as f64, 2., 2.],
+            })
+            .collect::<Vec<_>>();
+        let mut faces = enclosed(outer, &holes);
+        // The first supplied component need not be the exterior.
+        faces.rotate_left(6);
+        let certificate = certify(&faces, 1e-7).unwrap();
+        assert_eq!(certificate.groups.len(), count + 1);
+        assert_eq!(
+            certificate.groups[0],
+            (count * 6..(count + 1) * 6).collect::<Vec<_>>()
+        );
+        assert_eq!(certificate.solid.solid_count(), 1);
+        assert!(
+            (certificate.solid.volume_mm3() - ((2 * count + 2) * 16 - count) as f64).abs() < 1e-7
+        );
+        assert_eq!(
+            super::super::build(certificate.solid.quads())
+                .unwrap()
+                .shell_count,
+            count + 1
+        );
+    }
+}
+
+#[test]
+fn touching_intersecting_nested_outside_and_inverted_cavities_are_not_material() {
+    let outer = Box3 {
+        min: [0.; 3],
+        max: [20.; 3],
+    };
+    let first = Box3 {
+        min: [2.; 3],
+        max: [6.; 3],
+    };
+    for second in [
+        Box3 {
+            min: [6., 2., 2.],
+            max: [8., 6., 6.],
+        },
+        Box3 {
+            min: [4.; 3],
+            max: [8.; 3],
+        },
+        Box3 {
+            min: [3.; 3],
+            max: [4.; 3],
+        },
+        Box3 {
+            min: [19.; 3],
+            max: [21.; 3],
+        },
+        Box3 {
+            min: [6. + 1e-8, 2., 2.],
+            max: [8., 6., 6.],
+        },
+    ] {
+        assert!(matches!(
+            certify(&enclosed(outer, &[first, second]), 1e-7),
+            Err(BooleanError::Invalid)
+        ));
+    }
+    let mut faces = enclosed(
+        outer,
+        &[
+            first,
+            Box3 {
+                min: [10.; 3],
+                max: [12.; 3],
+            },
+        ],
+    );
+    for face in &mut faces[12..] {
+        face.normal = face.normal.map(|n| -n);
+        face.rings[0].reverse();
+    }
+    assert!(certify(&faces, 1e-7).is_err());
+    assert!(certify(&enclosed(outer, &[first, first]), 1e-7).is_err());
+}
+
+#[test]
+fn resource_exhaustion_reports_limits_before_unbounded_copy_pair_or_grid_work() {
+    let mut faces = (0..MAX_QUADS + 1)
+        .map(|_| OrientedFace {
+            normal: [1., 0., 0.],
+            rings: Vec::new(),
+        })
+        .collect::<Vec<_>>();
+    assert!(matches!(certify(&faces, 0.), Err(BooleanError::Limit)));
+    faces.clear();
+    faces.push(OrientedFace {
+        normal: [1., 0., 0.],
+        rings: vec![vec![[0.; 3]; MAX_WORK + 1]],
+    });
+    assert!(matches!(certify(&faces, 0.), Err(BooleanError::Limit)));
+    let holes = (0..1250)
+        .map(|i| Box3 {
+            min: [(2 * i + 1) as f64, 1., 1.],
+            max: [(2 * i + 2) as f64, 2., 2.],
+        })
+        .collect::<Vec<_>>();
+    assert!(matches!(
+        certify(
+            &enclosed(
+                Box3 {
+                    min: [0.; 3],
+                    max: [2502., 4., 4.]
+                },
+                &holes
+            ),
+            0.
+        ),
+        Err(BooleanError::Limit)
+    ));
+    let holes = (0..25)
+        .map(|i| Box3 {
+            min: [(2 * i + 1) as f64; 3],
+            max: [(2 * i + 2) as f64; 3],
+        })
+        .collect::<Vec<_>>();
+    assert!(matches!(
+        certify(
+            &enclosed(
+                Box3 {
+                    min: [0.; 3],
+                    max: [52.; 3]
+                },
+                &holes
+            ),
+            0.
+        ),
+        Err(BooleanError::Limit)
+    ));
+}
+
+#[test]
+fn declared_shell_count_must_match_the_exact_discovered_components() {
+    let mut source = fixture();
+    source.shell_count = 3;
+    assert!(matches!(
+        boundary_certificate(&source),
+        Err(BooleanError::Invalid)
+    ));
+}

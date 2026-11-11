@@ -3,7 +3,7 @@
 use super::*;
 use crate::planar_boolean::Union;
 
-/// Whether the boundary has outward solids or one certified rectangular cavity.
+/// Whether the boundary has outward solids or certified separated rectangular cavities.
 pub fn supports_planar_union(union: &Union) -> bool {
     (union.shell_count() == union.solid_count()
         || crate::orthogonal_boundary::box_void::recognize(&box_void::union_faces(union), 0.)

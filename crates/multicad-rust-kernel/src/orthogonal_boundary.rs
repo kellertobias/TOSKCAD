@@ -24,7 +24,7 @@ pub struct Boundary {
 }
 
 impl Boundary {
-    /// The STEP profile supports one shell or one proved rectangular cavity.
+    /// The STEP profile supports one shell or proved separated rectangular cavities.
     pub fn supports_step(&self) -> bool {
         (self.shell_count == 1 || box_void::boundary(self).is_some())
             && self.faces.len() >= 4

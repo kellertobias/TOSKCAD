@@ -220,6 +220,12 @@ impl Writer {
         transform: impl Fn(Point) -> Point,
     ) -> Result<(), StepError> {
         if !boundary.supports_step() {
+            if matches!(
+                crate::orthogonal_boundary::box_void::boundary_certificate(boundary),
+                Err(crate::orthogonal::BooleanError::Limit)
+            ) {
+                return Err(StepError::Limit);
+            }
             return Err(StepError::Unsupported);
         }
         self.append(|file| encode_orthogonal(file, boundary, &[], &[], &[], &transform))
@@ -625,6 +631,12 @@ impl Writer {
         v: Point,
     ) -> Result<(), StepError> {
         if !supports_planar_union(union) {
+            if matches!(
+                crate::orthogonal_boundary::box_void::certify(&box_void::union_faces(union), 0.),
+                Err(crate::orthogonal::BooleanError::Limit)
+            ) {
+                return Err(StepError::Limit);
+            }
             return Err(StepError::Unsupported);
         }
         let placement = Placement::new(origin, u, v)?;

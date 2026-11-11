@@ -29,8 +29,12 @@ fn fixture() -> (Boundary, Union) {
 }
 #[test]
 fn planar_and_orthogonal_cavities_share_exact_one_solid_exchange() {
-    let (boundary, union) = fixture();
-    assert_eq!(union.shell_count(), 2);
+    let (boundary, _) = fixture();
+    let stock = ConvexPiece::from_box([0.; 3], [15., 10., 8.], 1e-7).unwrap();
+    let holes =
+        [2., 6., 10.].map(|x| ConvexPiece::from_box([x, 3., 1.], [x + 1., 4., 2.], 1e-7).unwrap());
+    let union = Union::subtract(&[stock], &holes, 1e-7).unwrap().unwrap();
+    assert_eq!(union.shell_count(), 4);
     assert_eq!(union.solid_count(), 1);
     let u = [0.8, 0.6, 0.];
     let v = [-0.36, 0.48, 0.8];
@@ -55,10 +59,11 @@ fn planar_and_orthogonal_cavities_share_exact_one_solid_exchange() {
         .unwrap();
     let text = writer.finish().unwrap();
     assert_eq!(text.matches("=BREP_WITH_VOIDS(").count(), 2);
+    assert_eq!(text.matches("=ORIENTED_CLOSED_SHELL(").count(), 4);
     assert_eq!(text.matches("=MANIFOLD_SOLID_BREP(").count(), 1);
     let members = read_analytic_compound(&text, 1e-7).unwrap();
     assert_eq!(members.len(), 3);
-    for (member, volume) in members.iter().zip([1140., 1140., 8.]) {
+    for (member, volume) in members.iter().zip([1140., 1197., 8.]) {
         assert!((member.volume_mm3 - volume).abs() < 1e-7);
         assert_eq!(member.solid_count, 1);
     }
@@ -110,7 +115,7 @@ fn rejected_void_transforms_and_added_recesses_leave_writer_unchanged() {
 }
 
 #[test]
-fn more_than_one_cavity_is_not_published_as_independent_material_solids() {
+fn several_cavities_are_published_as_one_material_solid() {
     let outer = Box3 {
         min: [0.; 3],
         max: [15., 10., 8.],
@@ -130,7 +135,7 @@ fn more_than_one_cavity_is_not_published_as_independent_material_solids() {
         .unwrap();
     let boundary = crate::orthogonal_boundary::build(solid.quads()).unwrap();
     assert_eq!(boundary.shell_count, 3);
-    assert!(!boundary.supports_step());
+    assert!(boundary.supports_step());
     let pieces = solid
         .cells()
         .iter()
@@ -139,11 +144,14 @@ fn more_than_one_cavity_is_not_published_as_independent_material_solids() {
     let union = Union::new(&pieces, 1e-7).unwrap();
     assert_eq!(union.solid_count(), 1);
     assert_eq!(union.shell_count(), 3);
-    assert!(!supports_planar_union(&union));
-    assert_eq!(
-        write_planar_union(&union, [0.; 3], [1., 0., 0.], [0., 1., 0.]),
-        Err(StepError::Unsupported)
-    );
+    assert!(supports_planar_union(&union));
+    let text = write_planar_union(&union, [0.; 3], [1., 0., 0.], [0., 1., 0.]).unwrap();
+    assert_eq!(text.matches("=BREP_WITH_VOIDS(").count(), 1);
+    assert_eq!(text.matches("=ORIENTED_CLOSED_SHELL(").count(), 2);
+    let read = read_analytic_compound(&text, 1e-7).unwrap();
+    assert_eq!(read.len(), 1);
+    assert_eq!(read[0].solid_count, 1);
+    assert_eq!(read[0].volume_mm3, 1128.);
 }
 
 #[test]
@@ -158,6 +166,12 @@ fn only_conforming_collinear_subdivisions_can_be_written_as_closed_shells() {
     assert_eq!(
         writer.append_orthogonal(&boundary, unchanged),
         Err(StepError::Unsupported)
+    );
+    let mut oversized = fixture().0;
+    oversized.faces[0].rings[0] = vec![[0.; 3]; crate::orthogonal_boundary::box_void::MAX_WORK + 1];
+    assert_eq!(
+        writer.append_orthogonal(&oversized, unchanged),
+        Err(StepError::Limit)
     );
     let adjacent = boundary.faces.iter_mut().skip(1).find_map(|face| {
         let ring = &mut face.rings[0];
@@ -187,5 +201,102 @@ fn a_retraced_same_face_spike_cannot_be_written_as_a_closed_box_boundary() {
     assert_eq!(
         write_orthogonal(&boundary, |p| p),
         Err(StepError::Unsupported)
+    );
+}
+
+#[test]
+fn resource_and_nonrectangular_refusals_keep_prior_members_and_typed_errors() {
+    let piece = |min, max| ConvexPiece::from_box(min, max, 1e-7).unwrap();
+    let stock = piece([0.; 3], [52.; 3]);
+    let holes = (0..25)
+        .map(|i| piece([(2 * i + 1) as f64; 3], [(2 * i + 2) as f64; 3]))
+        .collect::<Vec<_>>();
+    let limited = Union::subtract(&[stock], &holes, 1e-7).unwrap().unwrap();
+    let mut writer = Writer::new();
+    assert_eq!(
+        writer.append_planar_union(&limited, [0.; 3], [1., 0., 0.], [0., 1., 0.]),
+        Err(StepError::Limit)
+    );
+    let faces = union_faces(&limited);
+    let mut file = StepFile::new();
+    let before = file.data.clone();
+    assert_eq!(
+        encode(&mut file, &faces, &|p| p).err(),
+        Some(StepError::Limit)
+    );
+    assert_eq!(file.data, before);
+    let l_shaped = Union::subtract(
+        &[piece([0.; 3], [15.; 3])],
+        &[piece([2.; 3], [6.; 3]), piece([5., 2., 2.], [8., 4., 6.])],
+        1e-7,
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(
+        writer.append_planar_union(&l_shaped, [0.; 3], [1., 0., 0.], [0., 1., 0.]),
+        Err(StepError::Unsupported)
+    );
+    let valid = Union::subtract(
+        &[piece([0.; 3], [15.; 3])],
+        &[
+            piece([2.; 3], [4.; 3]),
+            piece([6.; 3], [8.; 3]),
+            piece([10.; 3], [12.; 3]),
+        ],
+        1e-7,
+    )
+    .unwrap()
+    .unwrap();
+    writer
+        .append_planar_union(&valid, [0.; 3], [1., 0., 0.], [0., 1., 0.])
+        .unwrap();
+    let text = writer.finish().unwrap();
+    let read = read_analytic_compound(&text, 1e-7).unwrap();
+    assert_eq!(read.len(), 1);
+    assert_eq!(read[0].volume_mm3, 3351.);
+}
+
+#[test]
+fn multiple_cavity_member_uses_one_slot_at_the_actual_compound_capacity() {
+    let stock = ConvexPiece::from_box([0.; 3], [15.; 3], 1e-7).unwrap();
+    let holes = [2., 6., 10.].map(|p| ConvexPiece::from_box([p; 3], [p + 2.; 3], 1e-7).unwrap());
+    let union = Union::subtract(&[stock], &holes, 1e-7).unwrap().unwrap();
+    let mut writer = Writer::new();
+    writer
+        .append_planar_union(&union, [0.; 3], [1., 0., 0.], [0., 1., 0.])
+        .unwrap();
+    for _ in 1..MAX_COMPOUND_SOLIDS {
+        writer
+            .append_box(
+                [Rational::new(2, 1).unwrap(); 3],
+                [50., 0., 0.],
+                [1., 0., 0.],
+                [0., 1., 0.],
+            )
+            .unwrap();
+    }
+    assert_eq!(
+        writer.append_planar_union(&union, [0.; 3], [1., 0., 0.], [0., 1., 0.]),
+        Err(StepError::Limit)
+    );
+    assert_eq!(
+        writer.append_box(
+            [Rational::new(2, 1).unwrap(); 3],
+            [50., 0., 0.],
+            [1., 0., 0.],
+            [0., 1., 0.]
+        ),
+        Err(StepError::Limit)
+    );
+    let text = writer.finish().unwrap();
+    assert_eq!(text.matches("=BREP_WITH_VOIDS(").count(), 1);
+    assert_eq!(text.matches("=ORIENTED_CLOSED_SHELL(").count(), 3);
+    let members = read_analytic_compound(&text, 1e-7).unwrap();
+    assert_eq!(members.len(), MAX_COMPOUND_SOLIDS);
+    assert_eq!(members[0].volume_mm3, 3351.);
+    assert!(
+        members[1..]
+            .iter()
+            .all(|member| member.solid_count == 1 && member.volume_mm3 == 8.)
     );
 }
