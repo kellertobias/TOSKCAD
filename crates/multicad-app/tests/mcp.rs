@@ -1543,6 +1543,144 @@ fn rust_stdio_reopens_the_24_36_hubbed_twisted_pairs_and_checks_the_current_driv
     }
 }
 
+#[test]
+fn rust_stdio_exports_saved_twisted_gear_compound_parts() {
+    use multicad_core::{
+        commands::{Actor, Channel, Session},
+        constraint_sketch::Dimension,
+        document::Document,
+        model::{
+            self, AdvancedParameters, AdvancedRequest, BodyInput, CircularPatternParameters,
+            GearFamily, GearHand, GearHub, GearParameters, GearRequest, PrimitiveFrame,
+            PrimitiveParameters, PrimitiveRequest,
+        },
+        project_file::{self, ProjectFile},
+    };
+
+    for family in [GearFamily::Helical, GearFamily::Herringbone] {
+        for hub in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let project = directory.path().join("patterned-gears.tcd");
+            let actor = Actor::local(Channel::Ui);
+            let mut session =
+                Session::new(Document::new("Patterned gears and stock").unwrap()).unwrap();
+            let gear = GearRequest::new(
+                "Twisted gear",
+                GearParameters {
+                    family,
+                    hand: GearHand::Right,
+                    helix_angle: model::angle(15.),
+                    face_width: model::length(4.),
+                    bore_diameter: model::length(8.),
+                    hub: hub.then_some(GearHub {
+                        diameter: model::length(16.),
+                        axial_start: model::length(-2.),
+                        axial_end: model::length(6.),
+                    }),
+                    frame: PrimitiveFrame {
+                        origin: [60., 0., 10.].map(model::length),
+                        u: [0., 1., 0.],
+                        v: [0., 0., 1.],
+                    },
+                    ..Default::default()
+                },
+            );
+            let prepared =
+                model::prepare_gear(&session, session.revision(), actor.clone(), &gear).unwrap();
+            session.commit(prepared.prepared).unwrap();
+            let pattern = AdvancedRequest::on_body(
+                BodyInput {
+                    body: gear.body,
+                    producer: gear.feature,
+                },
+                AdvancedParameters::CircularPattern(CircularPatternParameters {
+                    count: Dimension::Literal {
+                        value: 2.,
+                        unit: "count".into(),
+                    },
+                    step_angle: model::angle(90.),
+                    merge: false,
+                    ..Default::default()
+                }),
+                vec![],
+            );
+            let prepared =
+                model::prepare_advanced(&session, session.revision(), actor.clone(), &pattern)
+                    .unwrap();
+            session.commit(prepared.prepared).unwrap();
+            let stock = PrimitiveRequest::new(
+                "Independent stock",
+                PrimitiveParameters::Box {
+                    size: [10., 6., 4.].map(model::length),
+                    frame: PrimitiveFrame {
+                        origin: [200., 0., 0.].map(model::length),
+                        ..Default::default()
+                    },
+                },
+            );
+            let prepared =
+                model::prepare_primitive(&session, session.revision(), actor, &stock).unwrap();
+            session.commit(prepared.prepared).unwrap();
+            let mut bytes = Vec::new();
+            project_file::write(
+                &ProjectFile::new(session.document().clone()).unwrap(),
+                &mut bytes,
+                Default::default(),
+            )
+            .unwrap();
+            std::fs::write(&project, &bytes).unwrap();
+
+            let arguments = [
+                "--rust-model",
+                "--project",
+                project.to_str().unwrap(),
+                "--export-dir",
+                directory.path().to_str().unwrap(),
+            ];
+            let mut client = Client::start(&arguments);
+            let revision = client.revision();
+            let evaluated = client.ok("evaluate_model", json!({}));
+            let parts = evaluated["parts"].as_array().unwrap();
+            assert_eq!(parts.len(), 2);
+            let volume = 2. * (7_409.916_171_753_603 + if hub { 192. * PI } else { 0. });
+            for (part, count, expected, name) in [
+                (pattern.body, 2, volume, "twisted-compound.step"),
+                (stock.body, 1, 240., "stock.step"),
+            ] {
+                let part_id = part.to_string();
+                let evaluated = parts.iter().find(|part| part["part"] == part_id).unwrap();
+                assert_eq!(evaluated["solid_count"], count);
+                close(evaluated["volume_mm3"].as_f64().unwrap(), expected);
+                let receipt = client.ok("export_step", json!({"part": part, "file_name": name}));
+                assert_eq!(receipt["revision"], revision);
+                close(receipt["model_volume_mm3"].as_f64().unwrap(), expected);
+                close(receipt["readback_volume_mm3"].as_f64().unwrap(), expected);
+                let path = directory.path().join(name);
+                let text = std::fs::read_to_string(&path).unwrap();
+                assert_eq!(text.matches("MANIFOLD_SOLID_BREP").count(), count);
+                assert!(!text.contains("FACETED_BREP"));
+                assert!(
+                    !directory
+                        .path()
+                        .join(format!(".{name}.partial.step"))
+                        .exists()
+                );
+                if multicad_kernel::OCCT_LINKED {
+                    let read = multicad_kernel::Shape::read_step(&path).unwrap();
+                    assert!(read.valid().unwrap());
+                    assert_eq!(
+                        multicad_kernel::Solid::step_solids(&path).unwrap().len(),
+                        count
+                    );
+                    close(read.volume().unwrap(), expected);
+                }
+            }
+            assert_eq!(client.revision(), revision);
+            assert_eq!(std::fs::read(&project).unwrap(), bytes);
+        }
+    }
+}
+
 fn twisted_pair_stdio_roundtrip(family: &str, hub: bool) {
     let directory = tempfile::tempdir().unwrap();
     let project = directory.path().join(format!("continuous-{family}.tcd"));
