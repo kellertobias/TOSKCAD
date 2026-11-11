@@ -123,14 +123,43 @@ impl Chart {
                 Ok(parts) => parts,
                 Err(cause) => return Some(Err(cause)),
             };
-            for (piece, ancestry) in parts {
-                if let Err(cause) = self.append_piece(piece, &ancestry, operand, policy)? {
-                    return Some(Err(cause));
+            // A failed curved remap may have already appended earlier slabs.
+            // Keep both partitions private until the whole operand maps.
+            let staged = match self.stage_parts(&parts, operand, policy) {
+                Some(result) => result,
+                None => {
+                    let alternative =
+                        match solid.certified_legacy_planar_parts(&topology, &parts, policy)? {
+                            Ok(parts) => parts,
+                            Err(cause) => return Some(Err(cause)),
+                        };
+                    self.stage_parts(&alternative, operand, policy)?
                 }
-            }
+            };
+            let staged = match staged {
+                Ok(staged) => staged,
+                Err(cause) => return Some(Err(cause)),
+            };
+            self.pieces.extend(staged.pieces);
+            self.sources.extend(staged.sources);
         }
         self.topologies.push(Rc::new(topology));
         Some(Ok(()))
+    }
+
+    fn stage_parts(
+        &self,
+        parts: &[(ConvexPiece, Vec<Option<usize>>)],
+        operand: usize,
+        policy: GeometryPolicy,
+    ) -> Option<Result<Self, GeometryError>> {
+        let mut staged = Self::new(self.band);
+        for (piece, ancestry) in parts {
+            if let Err(cause) = staged.append_piece(piece.clone(), ancestry, operand, policy)? {
+                return Some(Err(cause));
+            }
+        }
+        Some(Ok(staged))
     }
 
     fn append_piece(
@@ -844,5 +873,142 @@ impl WarpedUnionBody {
         options: Tessellation,
     ) -> Result<Mesh, GeometryError> {
         crate::rust_display::placed_mesh(self.geometry.mesh(options), frame, false)
+    }
+}
+
+#[cfg(test)]
+mod partition_tests {
+    use super::*;
+    use multicad_rust_kernel::{Rational, polygon::PolygonPrism};
+
+    fn front_pull() -> Solid {
+        let owner = EntityId::new();
+        let n = |n| Rational::new(n, 2).unwrap();
+        let ring = [[20, 545], [6, 531], [-2, 525], [-2, 501], [20, 501]]
+            .map(|p| p.map(n))
+            .to_vec();
+        let origins: Vec<_> = (0..5)
+            .map(|i| Origin {
+                source: owner,
+                role: format!("pull.edge.{i}"),
+            })
+            .collect();
+        Solid::from_polygon_prism(
+            PolygonPrism::new(vec![ring], Rational::new(40, 1).unwrap()).unwrap(),
+            PlaneFrame {
+                origin: [97., 0., 0.],
+                u: [0., 1., 0.],
+                v: [0., 0., 1.],
+            },
+            owner,
+            &origins,
+            &[false; 5],
+            GeometryPolicy::default(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn certified_vertical_partition_maps_a_concave_pull_without_partial_append() {
+        let policy = GeometryPolicy::default();
+        let solid = front_pull();
+        let topology = solid.rust_topology().unwrap().unwrap();
+        let before = topology.clone();
+        let canonical = solid
+            .planar_convex_parts(&topology, policy)
+            .unwrap()
+            .unwrap();
+        let mut chart = Chart::new(Some(Band {
+            center_z_mm: 257.5,
+            radius_mm: 7.,
+        }));
+        assert!(chart.stage_parts(&canonical, 0, policy).is_none());
+        assert!(chart.pieces.is_empty() && chart.sources.is_empty());
+        let alternative = solid
+            .certified_legacy_planar_parts(&topology, &canonical, policy)
+            .unwrap()
+            .unwrap();
+        let expected = chart.stage_parts(&alternative, 0, policy).unwrap().unwrap();
+        chart.append(&solid, None, policy).unwrap().unwrap();
+        assert_eq!(chart.pieces.len(), expected.pieces.len());
+        assert_eq!(chart.sources.len(), expected.sources.len());
+        assert_eq!(chart.topologies.len(), 1);
+        assert!(chart.sources.iter().all(|source| source.operand == 0));
+        assert!(
+            chart
+                .sources
+                .iter()
+                .any(|source| source.faces.iter().any(Option::is_some))
+        );
+        assert_eq!(solid.rust_topology().unwrap().unwrap(), before);
+    }
+    #[test]
+    fn canonical_limit_and_failed_equivalence_never_publish_alternative_material() {
+        let policy = GeometryPolicy::default();
+        let solid = front_pull();
+        let topology = solid.rust_topology().unwrap().unwrap();
+        let wrong = vec![(
+            ConvexPiece::from_box([0.; 3], [1.; 3], policy.linear_tolerance_mm).unwrap(),
+            vec![],
+        )];
+        assert_eq!(
+            solid
+                .certified_legacy_planar_parts(&topology, &wrong, policy)
+                .unwrap()
+                .unwrap_err()
+                .kind,
+            GeometryErrorKind::InvalidResult
+        );
+        let owner = EntityId::new();
+        let n = |n| Rational::new(n, 1).unwrap();
+        let mut ring: Vec<_> = (0..=120)
+            .map(|i| [Rational::new(i, 20).unwrap(), n(0)])
+            .collect();
+        ring.extend([[6, 5], [4, 5], [4, 2], [2, 2], [2, 5], [0, 5]].map(|p| p.map(n)));
+        let origins: Vec<_> = (0..ring.len())
+            .map(|i| Origin {
+                source: owner,
+                role: format!("limit.edge.{i}"),
+            })
+            .collect();
+        let limited = Solid::from_polygon_prism(
+            PolygonPrism::new(vec![ring], n(4)).unwrap(),
+            PlaneFrame {
+                origin: [0.; 3],
+                u: [0., 1., 0.],
+                v: [0., 0., 1.],
+            },
+            owner,
+            &origins,
+            &[false; 127],
+            policy,
+        )
+        .unwrap();
+        let mut chart = Chart::new(Some(Band {
+            center_z_mm: 257.5,
+            radius_mm: 7.,
+        }));
+        chart.append(&solid, None, policy).unwrap().unwrap();
+        let sizes = [
+            chart.pieces.len(),
+            chart.sources.len(),
+            chart.topologies.len(),
+        ];
+        assert_eq!(
+            chart
+                .append(&limited, None, policy)
+                .unwrap()
+                .unwrap_err()
+                .kind,
+            GeometryErrorKind::Limit
+        );
+        assert_eq!(
+            [
+                chart.pieces.len(),
+                chart.sources.len(),
+                chart.topologies.len()
+            ],
+            sizes
+        );
     }
 }

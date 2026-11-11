@@ -347,6 +347,28 @@ impl Solid {
             .or_else(|| self.planar_convex_parts_legacy(topology, policy).map(Ok))
     }
 
+    /// A different internal partition is safe for a scoped geometric chart
+    /// only after proving that it occupies the canonical material exactly.
+    pub(super) fn certified_legacy_planar_parts(
+        &self,
+        topology: &TopologySnapshot,
+        canonical: &[ConvexPart],
+        policy: GeometryPolicy,
+    ) -> Option<Result<Vec<ConvexPart>, GeometryError>> {
+        let alternative = self.planar_convex_parts_legacy(topology, policy)?;
+        let tolerance = policy.linear_tolerance_mm;
+        Some((|| {
+            let canonical_pieces: Vec<_> =
+                canonical.iter().map(|(piece, _)| piece.clone()).collect();
+            let boundary = Union::new(&canonical_pieces, tolerance).map_err(planar_error)?;
+            let alternative_pieces: Vec<_> =
+                alternative.iter().map(|(piece, _)| piece.clone()).collect();
+            CutMaterial::certify_existing(&boundary, &alternative_pieces, tolerance)
+                .map_err(planar_error)?;
+            Ok(alternative)
+        })())
+    }
+
     fn planar_convex_parts_legacy(
         &self,
         topology: &TopologySnapshot,
