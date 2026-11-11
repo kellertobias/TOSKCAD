@@ -58,10 +58,10 @@ mod tests {
             assert!(supports_za_worm(&worm, o, u, v, 1e-7));
             let text = write_za_worm(&worm, o, u, v, 1e-7).unwrap();
             let volume = verify_za_worm(&text, &worm, o, u, v, 1e-7).unwrap();
+            let expected = worm.volume_mm3();
             assert!(
-                (volume - worm.volume_mm3()).abs() / worm.volume_mm3() < 1e-8,
-                "{volume} {}",
-                worm.volume_mm3()
+                (volume - expected).abs() / expected < 1e-8,
+                "{volume} {expected}"
             );
             // A different bore is rejected by the readback proof.
             let other = Worm::new(

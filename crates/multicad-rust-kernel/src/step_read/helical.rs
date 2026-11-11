@@ -435,19 +435,17 @@ fn check_cylinder(
     let uses = ring(shell, bound, true)?;
     let [
         (bottom, bottom_sense),
-        (seam, true),
+        (seam, seam_sense),
         (top, top_sense),
-        (repeated, false),
-    ] = uses[..]
-    else {
-        return Err(ReadError::Invalid);
-    };
-    require(
-        [bottom, top] == rims
-            && seam == repeated
-            && bottom_sense == outward
-            && top_sense != outward,
-    )?;
+        (repeated, repeated_sense),
+    ] = <[EdgeRef; 4]>::try_from(uses.as_slice()).map_err(|_| ReadError::Invalid)?;
+    let wall = [bottom, top] == rims
+        && seam == repeated
+        && seam_sense
+        && !repeated_sense
+        && bottom_sense == outward
+        && top_sense != outward;
+    require(wall)?;
     let seam_ends = shell.edge(seam)?;
     require(
         matches!(shell.edges[&seam].curve, Curve::Line)
