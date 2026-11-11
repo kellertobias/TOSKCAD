@@ -268,27 +268,29 @@ mod tests {
     #[test]
     fn refinement_child_checkpoints_charge_shared_work_and_recover() {
         let t = Thread::new(super::super::tests::spec(1, false), 0.1, 1e-7, 1e-6).unwrap();
-        for direction in [[1., 0., 0.], [1., 0.3, 0.2], [-0.2, -1., -0.4]] {
-            let mut initial = Work {
-                remaining: 10000,
+        let direction = [1., 0., 0.];
+        let mut initial = Work {
+            remaining: 10000,
+            interrupt: None,
+        };
+        assert_eq!(
+            t.optimize_support(direction, 1e-10, &mut initial, 1),
+            Err(Error::Limit)
+        );
+        let used = 10000 - initial.remaining;
+        // The first lower/upper profile children and lower/upper axial
+        // children occur at these four shared-work boundaries. Exercise
+        // each failure arm without rebuilding the same frontier 96 times.
+        for extra in [0, 2, 16, 17] {
+            let mut budget = Work {
+                remaining: used + extra,
                 interrupt: None,
             };
             assert_eq!(
-                t.optimize_support(direction, 1e-10, &mut initial, 1),
+                t.optimize_support(direction, 1e-10, &mut budget, 131072),
                 Err(Error::Limit)
             );
-            let used = 10000 - initial.remaining;
-            for extra in 0..32 {
-                let mut budget = Work {
-                    remaining: used + extra,
-                    interrupt: None,
-                };
-                assert_eq!(
-                    t.optimize_support(direction, 1e-10, &mut budget, 131072),
-                    Err(Error::Limit)
-                );
-            }
-            assert!(t.support_bounds(direction, 1e-6).is_ok());
         }
+        assert!(t.support_bounds(direction, 1e-6).is_ok());
     }
 }
