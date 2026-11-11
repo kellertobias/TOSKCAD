@@ -10,8 +10,12 @@
 //! sections.
 
 pub mod clearance;
+mod interval;
 mod jet;
+mod section;
 pub mod wheel;
+pub(crate) mod wheel_bounds;
+pub(crate) mod wheel_fit;
 mod wheel_mesh;
 mod wheel_topology;
 pub mod worm;

@@ -217,10 +217,15 @@ pub fn project_drawing(
         {
             return projection;
         }
+        if let [input] = solids
+            && let Some(projection) = panel::project_worm_gearing(input, options)
+        {
+            return projection;
+        }
         if solids.iter().any(|input| contains_worm(input.solid)) {
             return Err(err(
                 GeometryErrorKind::Unsupported,
-                "Rust exact drawing projection for ZA worms and generated worm wheels is unavailable",
+                "Rust worm and worm-wheel drawings support one placed gear at a time",
             ));
         }
         if let [input] = solids
