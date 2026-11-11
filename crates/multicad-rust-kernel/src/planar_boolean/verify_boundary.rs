@@ -33,37 +33,13 @@ impl Union {
         // Check intersections on convex charts while retaining the original
         // face loops. A partition only introduces diagonals between existing
         // vertices and cannot hide a contact absent from the shared topology.
-        for (index, face) in boundary.faces.iter().enumerate() {
-            charge(&mut budget, index)?;
-            for (other_index, other) in boundary.faces[..index].iter().enumerate() {
-                let (aabb, plane, triangles) = &charts[index];
-                let (other_aabb, other_plane, other_triangles) = &charts[other_index];
-                if (0..3).any(|i| {
-                    aabb[0][i] > other_aabb[1][i] + tolerance
-                        || other_aabb[0][i] > aabb[1][i] + tolerance
-                }) {
-                    continue;
-                }
-                for ring in convex_charts(face, triangles) {
-                    for other_ring in convex_charts(other, other_triangles) {
-                        charge(&mut budget, ring.len() * other_ring.len() * 2)?;
-                        let a = Polygon {
-                            plane: *plane,
-                            ring,
-                            authored_ring: &face.vertices,
-                            points: &boundary.vertices,
-                        };
-                        let b = Polygon {
-                            plane: *other_plane,
-                            ring: other_ring,
-                            authored_ring: &other.vertices,
-                            points: &boundary.vertices,
-                        };
-                        verify_pair(a, b, tolerance)?;
-                    }
-                }
-            }
-        }
+        verify_charts(
+            &boundary.vertices,
+            &boundary.faces,
+            &charts,
+            tolerance,
+            &mut budget,
+        )?;
         let bounds_mm = bounds(boundary.vertices.iter().copied());
         Ok(Self {
             vertices: boundary.vertices,
@@ -74,6 +50,82 @@ impl Union {
             shells: proof.shells,
         })
     }
+}
+
+type Chart = ([Point; 2], Plane, Vec<[usize; 3]>);
+
+/// Check geometric embedding while retaining every supplied vertex index.
+pub(super) fn verify_indexed_embedding(
+    vertices: &[Point],
+    faces: &[Face],
+    tolerance: f64,
+    budget: &mut usize,
+) -> Result<(), Error> {
+    let charts = faces
+        .iter()
+        .map(|face| {
+            charge(
+                budget,
+                face.vertices.len().saturating_mul(face.vertices.len()),
+            )?;
+            let ring: Vec<_> = face.vertices.iter().map(|&i| vertices[i]).collect();
+            let (plane, convex) = planar_ring(&ring, tolerance)?;
+            let triangles = if convex {
+                Vec::new()
+            } else {
+                shell::triangulate_face(vertices, face).map_err(|_| Error::Unresolved)?
+            };
+            Ok((bounds(ring.into_iter()), plane, triangles))
+        })
+        .collect::<Result<Vec<_>, Error>>()?;
+    verify_charts(vertices, faces, &charts, tolerance, budget).map_err(|cause| {
+        if cause == Error::Limit {
+            cause
+        } else {
+            Error::Unresolved
+        }
+    })
+}
+
+fn verify_charts(
+    vertices: &[Point],
+    faces: &[Face],
+    charts: &[Chart],
+    tolerance: f64,
+    budget: &mut usize,
+) -> Result<(), Error> {
+    for (index, face) in faces.iter().enumerate() {
+        charge(budget, index)?;
+        for (other_index, other) in faces[..index].iter().enumerate() {
+            let (aabb, plane, triangles) = &charts[index];
+            let (other_aabb, other_plane, other_triangles) = &charts[other_index];
+            if (0..3).any(|i| {
+                aabb[0][i] > other_aabb[1][i] + tolerance
+                    || other_aabb[0][i] > aabb[1][i] + tolerance
+            }) {
+                continue;
+            }
+            for ring in convex_charts(face, triangles) {
+                for other_ring in convex_charts(other, other_triangles) {
+                    charge(budget, ring.len() * other_ring.len() * 2)?;
+                    let a = Polygon {
+                        plane: *plane,
+                        ring,
+                        authored_ring: &face.vertices,
+                        points: vertices,
+                    };
+                    let b = Polygon {
+                        plane: *other_plane,
+                        ring: other_ring,
+                        authored_ring: &other.vertices,
+                        points: vertices,
+                    };
+                    verify_pair(a, b, tolerance)?;
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 fn convex_charts<'a>(

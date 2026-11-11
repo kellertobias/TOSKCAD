@@ -581,3 +581,358 @@ fn rust_compound_affine_refuses_one_unsupported_leaf_atomically() {
         assert_eq!(source.solid_count().unwrap(), 2);
     }
 }
+
+fn indexed_u_loft(origin: [f64; 3]) -> Solid {
+    let points = [
+        [0., 0.],
+        [6., 0.],
+        [6., 5.],
+        [4., 5.],
+        [4., 2.],
+        [2., 2.],
+        [2., 5.],
+        [0., 5.],
+    ];
+    let profiles: Vec<_> = [0., 4.]
+        .map(|z| CurvedProfile {
+            frame: PlaneFrame {
+                origin: [origin[0], origin[1], origin[2] + z],
+                ..Default::default()
+            },
+            outer: points
+                .into_iter()
+                .zip(points.into_iter().cycle().skip(1))
+                .map(|(a, b)| CurvedEdge2d::Line { a, b })
+                .collect(),
+            holes: vec![],
+        })
+        .into();
+    let feature = EntityId::new();
+    let origins: Vec<Vec<_>> = (0..2)
+        .map(|station| {
+            (0..points.len())
+                .map(|edge| Origin {
+                    source: EntityId::new(),
+                    role: format!("section.{station}.edge.{edge}"),
+                })
+                .collect()
+        })
+        .collect();
+    Solid::rust_loft_ruled_polygons_named(&profiles, feature, &origins, GeometryPolicy::default())
+        .unwrap()
+}
+
+#[test]
+fn indexed_affine_scales_concave_disconnected_and_cut_material_with_every_boundary_intent() {
+    use multicad_rust_kernel::Rational;
+    let policy = GeometryPolicy::default();
+    let number = |n| Rational::new(n, 1).unwrap();
+    let stock = Solid::rust_box(
+        EntityId::new().uuid_bits(),
+        [12, 10, 8].map(number),
+        PlaneFrame::default(),
+        policy,
+    )
+    .unwrap();
+    let cutter = |origin| {
+        Solid::rust_box(
+            EntityId::new().uuid_bits(),
+            [3, 3, 3].map(number),
+            PlaneFrame {
+                origin,
+                ..Default::default()
+            },
+            policy,
+        )
+        .unwrap()
+    };
+    let pocket = stock
+        .rust_subtract_planar_tools(&[&cutter([2., 2., 6.])], EntityId::new(), policy)
+        .unwrap()
+        .unwrap();
+    let cavity = stock
+        .rust_subtract_planar_tools(&[&cutter([2., 2., 2.])], EntityId::new(), policy)
+        .unwrap()
+        .unwrap();
+    let loft = indexed_u_loft([0.; 3]);
+    let other = indexed_u_loft([20., 0., 0.]);
+    let disconnected = Solid::union_planar_pieces(&[&loft, &other], EntityId::new(), policy)
+        .unwrap()
+        .unwrap();
+    let profile = CurvedProfile {
+        frame: PlaneFrame::default(),
+        outer: [[0., 0.], [4., 0.], [4., 1.], [1., 1.], [1., 3.], [0., 3.]]
+            .into_iter()
+            .zip(
+                [[0., 0.], [4., 0.], [4., 1.], [1., 1.], [1., 3.], [0., 3.]]
+                    .into_iter()
+                    .cycle()
+                    .skip(1),
+            )
+            .map(|(a, b)| CurvedEdge2d::Line { a, b })
+            .collect(),
+        holes: vec![],
+    };
+    let origin = || Origin {
+        source: EntityId::new(),
+        role: "curve".into(),
+    };
+    let miter = Solid::rust_sweep_polyline_named(
+        &profile,
+        &[[0.; 3], [0., 0., 10.], [10., 0., 10.]],
+        EntityId::new(),
+        &(0..6).map(|_| origin()).collect::<Vec<_>>(),
+        &[origin(), origin()],
+        policy,
+    )
+    .unwrap();
+    for (source, void) in [
+        (&loft, false),
+        (&disconnected, false),
+        (&pocket, false),
+        (&cavity, true),
+        (&miter, false),
+    ] {
+        for matrix in [
+            [[2., 0., 0.], [0., 3., 0.], [0., 0., 0.5]],
+            [[2., 0.5, 0.], [0., 3., 0.25], [0., 0., 0.5]],
+        ] {
+            let transform = AffineTransform {
+                matrix,
+                translation_mm: [-3., 5., 11.],
+            };
+            let feature = EntityId::new();
+            let before = source.topology_snapshot(feature, 0).unwrap();
+            let point = |p: [f64; 3]| {
+                std::array::from_fn(|i| {
+                    matrix[i]
+                        .into_iter()
+                        .zip(p)
+                        .map(|(a, b)| a * b)
+                        .sum::<f64>()
+                        + transform.translation_mm[i]
+                })
+            };
+            let result = source
+                .affine_transformed_named(transform, EntityId::new(), policy)
+                .unwrap();
+            let current = result.topology_snapshot(feature, 1).unwrap();
+            assert_eq!(counts(&current), counts(&before));
+            near(
+                result.volume_mm3().unwrap(),
+                source.volume_mm3().unwrap() * 3.,
+            );
+            assert_eq!(result.solid_count().unwrap(), source.solid_count().unwrap());
+            for element in &before.elements {
+                let intent = GeometryIntent::capture(&before, element.key).unwrap();
+                let Resolution::Resolved {
+                    key,
+                    geometry: Some(actual),
+                    ..
+                } = resolve(&intent, &current, 1)
+                else {
+                    panic!("lost indexed boundary {intent:?}")
+                };
+                assert_eq!(key, element.key);
+                let close = |a: [f64; 3], b: [f64; 3]| {
+                    for (a, b) in a.into_iter().zip(b) {
+                        near(a, b)
+                    }
+                };
+                match (element.geometry.unwrap(), actual) {
+                    (
+                        AnalyticGeometry::Point { position_mm: a },
+                        AnalyticGeometry::Point { position_mm: b },
+                    ) => close(point(a), b),
+                    (
+                        AnalyticGeometry::Line { a_mm: a, b_mm: b },
+                        AnalyticGeometry::Line { a_mm: c, b_mm: d },
+                    ) => {
+                        close(point(a), c);
+                        close(point(b), d);
+                    }
+                    (AnalyticGeometry::Plane { .. }, AnalyticGeometry::Plane { frame }) => {
+                        let old = &source.faces().unwrap()[element.key.ordinal as usize];
+                        let new = &result.faces().unwrap()[key.ordinal as usize];
+                        close(point(old.center_mm), new.center_mm);
+                        assert!(
+                            frame
+                                .normal()
+                                .into_iter()
+                                .zip(new.plane.unwrap().1)
+                                .map(|(a, b)| a * b)
+                                .sum::<f64>()
+                                > 1. - 1e-10
+                        );
+                        let e = current.elements.iter().find(|e| e.key == key).unwrap();
+                        for anchor in &element.frames {
+                            let mapped =
+                                e.frames.iter().find(|a| a.origin == anchor.origin).unwrap();
+                            close(point(anchor.frame.origin_mm), mapped.frame.origin_mm);
+                        }
+                    }
+                    pair => panic!("unexpected indexed map {pair:?}"),
+                }
+            }
+            result
+                .manufacturing_mesh_with_receipt(MeshOptions::default())
+                .unwrap();
+            let second = result
+                .affine_transformed_named(transform, EntityId::new(), policy)
+                .unwrap();
+            near(
+                second.volume_mm3().unwrap(),
+                source.volume_mm3().unwrap() * 9.,
+            );
+            let folder = tempfile::tempdir().unwrap();
+            let source_path = folder.path().join("source.step");
+            source.write_step(&source_path).unwrap();
+            if OCCT_LINKED {
+                let native = Solid::read_step(&source_path, policy)
+                    .unwrap()
+                    .affine_transformed_named(transform, EntityId::new(), policy)
+                    .unwrap();
+                let expected = native.bounds().unwrap();
+                bounds(&result, expected.min, expected.max);
+                near(result.volume_mm3().unwrap(), native.volume_mm3().unwrap());
+                near(
+                    result.faces().unwrap().iter().map(|f| f.area_mm2).sum(),
+                    native.faces().unwrap().iter().map(|f| f.area_mm2).sum(),
+                );
+            }
+            let path = folder.path().join("scaled.step");
+            if void && matrix[0][1] != 0. {
+                assert_eq!(
+                    result.write_step(&path).unwrap_err().kind,
+                    GeometryErrorKind::Unsupported
+                );
+            } else {
+                result.write_step(&path).unwrap();
+                let read = Solid::import_rust_step(
+                    &std::fs::read_to_string(&path).unwrap(),
+                    EntityId::new(),
+                    policy,
+                )
+                .unwrap();
+                near(read.volume_mm3().unwrap(), result.volume_mm3().unwrap());
+            }
+            assert_eq!(source.topology_snapshot(feature, 0).unwrap(), before);
+        }
+    }
+    // A new Boolean must consume the transformed material, not stale source cells.
+    let transform = AffineTransform {
+        matrix: [[2., 0.5, 0.], [0., 3., 0.25], [0., 0., 0.5]],
+        translation_mm: [-3., 5., 11.],
+    };
+    for source in [&loft, &disconnected, &pocket, &cavity, &miter] {
+        let scaled = source
+            .affine_transformed_named(transform, EntityId::new(), policy)
+            .unwrap();
+        let tool = cutter([0.5, 0.5, 0.5]);
+        let mapped_tool = tool
+            .affine_transformed_named(transform, EntityId::new(), policy)
+            .unwrap();
+        let original = source
+            .rust_subtract_planar_tools(&[&tool], EntityId::new(), policy)
+            .unwrap()
+            .unwrap();
+        let actual = scaled
+            .rust_subtract_planar_tools(&[&mapped_tool], EntityId::new(), policy)
+            .unwrap()
+            .unwrap();
+        near(
+            actual.volume_mm3().unwrap(),
+            original.volume_mm3().unwrap() * 3.,
+        );
+    }
+}
+
+#[test]
+fn indexed_affine_composes_a_source_pose_and_refuses_uncertified_multiloop_stock_atomically() {
+    use multicad_rust_kernel::Rational;
+    let policy = GeometryPolicy::default();
+    let posed = indexed_u_loft([0.; 3])
+        .transformed(RigidTransform {
+            rotation: [[0.8, 0., 0.6], [0., 1., 0.], [-0.6, 0., 0.8]],
+            translation_mm: [7., -11., 3.],
+        })
+        .unwrap();
+    let feature = EntityId::new();
+    let before = posed.topology_snapshot(feature, 0).unwrap();
+    let transform = AffineTransform {
+        matrix: [[2., 0.5, 0.], [0., 3., 0.25], [0., 0., 0.5]],
+        translation_mm: [-3., 5., 11.],
+    };
+    let mapped = posed
+        .affine_transformed_named(transform, EntityId::new(), policy)
+        .unwrap();
+    near(
+        mapped.volume_mm3().unwrap(),
+        posed.volume_mm3().unwrap() * 3.,
+    );
+    let after = mapped.topology_snapshot(feature, 1).unwrap();
+    for element in &before.elements {
+        let intent = GeometryIntent::capture(&before, element.key).unwrap();
+        assert!(matches!(
+            resolve(&intent, &after, 1),
+            Resolution::Resolved { .. }
+        ));
+    }
+    mapped
+        .manufacturing_mesh_with_receipt(MeshOptions::default())
+        .unwrap();
+    assert_eq!(posed.topology_snapshot(feature, 0).unwrap(), before);
+    let stock = Solid::rust_box(
+        EntityId::new().uuid_bits(),
+        [12, 10, 8].map(|n| Rational::new(n, 1).unwrap()),
+        PlaneFrame::default(),
+        policy,
+    )
+    .unwrap();
+    let tool = Solid::rust_box(
+        EntityId::new().uuid_bits(),
+        [3, 3, 3].map(|n| Rational::new(n, 1).unwrap()),
+        PlaneFrame {
+            origin: [2., 2., 6.],
+            ..Default::default()
+        },
+        policy,
+    )
+    .unwrap();
+    let pocket = stock
+        .boolean(&tool, BooleanOperation::Subtract, policy)
+        .unwrap()
+        .unwrap();
+    let before = pocket.topology_snapshot(feature, 0).unwrap();
+    assert_eq!(
+        pocket
+            .affine_transformed_named(transform, EntityId::new(), policy)
+            .err()
+            .unwrap()
+            .kind,
+        GeometryErrorKind::Unsupported
+    );
+    assert_eq!(pocket.topology_snapshot(feature, 0).unwrap(), before);
+}
+
+#[test]
+fn indexed_affine_does_not_apply_public_bounds_to_a_composed_pose_matrix() {
+    let c = 0.5_f64.sqrt();
+    let source = indexed_u_loft([0.; 3])
+        .transformed(RigidTransform {
+            rotation: [[c, -c, 0.], [c, c, 0.], [0., 0., 1.]],
+            ..Default::default()
+        })
+        .unwrap();
+    let transform = AffineTransform {
+        matrix: [[1e6, 1e6, 0.], [-1e6, 1e6, 0.], [0., 0., 1.]],
+        ..Default::default()
+    };
+    transform.validate().unwrap();
+    let mapped = source
+        .affine_transformed_named(transform, EntityId::new(), GeometryPolicy::default())
+        .unwrap();
+    assert!(
+        (mapped.volume_mm3().unwrap() / (source.volume_mm3().unwrap() * 2e12) - 1.).abs() < 1e-8
+    );
+}

@@ -157,6 +157,9 @@ impl Solid {
         feature: EntityId,
         policy: GeometryPolicy,
     ) -> Result<Self, GeometryError> {
+        if let Some((body, placement)) = self.planar_boolean_body() {
+            return self.rust_scale_indexed(body, placement, transform, feature, policy);
+        }
         if self.solid_count()? != 1 {
             return Err(unsupported());
         }
@@ -254,5 +257,155 @@ impl Solid {
         let body = Rc::get_mut(body).expect("new planar scale");
         body.scaled_ancestry = Some(Ancestry::match_boundary(body, boundary, face_origins)?);
         Ok(result)
+    }
+    fn rust_scale_indexed(
+        &self,
+        source: &PlanarBooleanBody,
+        placement: PlaneFrame,
+        transform: AffineTransform,
+        feature: EntityId,
+        policy: GeometryPolicy,
+    ) -> Result<Self, GeometryError> {
+        use multicad_rust_kernel::planar_boolean::AffineMap;
+        let map = AffineMap::new(transform.matrix, transform.translation_mm)
+            .and_then(|map| map.with_rigid_input(placement.origin, placement.u, placement.v))
+            .map_err(planar_error)?;
+        let tolerance = policy.linear_tolerance_mm;
+        let geometry = source
+            .geometry
+            .affine_transformed(map, tolerance)
+            .map_err(planar_error)?;
+        let pieces = |pieces: &[ConvexPiece]| {
+            pieces
+                .iter()
+                .map(|piece| {
+                    piece
+                        .transformed(|p| map.point(p), tolerance)
+                        .map_err(planar_error)
+                })
+                .collect::<Result<Vec<_>, _>>()
+        };
+        let material = source
+            .material
+            .as_ref()
+            .map(|material| {
+                Ok(match material {
+                    Material::Positive(original) => Material::Positive(pieces(original)?),
+                    Material::LabeledCells {
+                        pieces: original,
+                        exterior_faces,
+                    } => Material::LabeledCells {
+                        pieces: pieces(original)?,
+                        exterior_faces: exterior_faces.clone(),
+                    },
+                    Material::Cut(recipe) => Material::Cut(Box::new(CutRecipe {
+                        stock: pieces(&recipe.stock)?,
+                        tools: pieces(&recipe.tools)?,
+                        certified: OnceCell::new(),
+                    })),
+                })
+            })
+            .transpose()?;
+        let mut topology = self.rust_topology().ok_or_else(unsupported)??;
+        for element in &mut topology.elements {
+            element.geometry = Some(
+                transform
+                    .analytic(element.geometry.ok_or_else(unsupported)?)?
+                    .ok_or_else(unsupported)?,
+            );
+            for anchor in &mut element.frames {
+                anchor.frame = transform.frame(anchor.frame)?;
+            }
+            if let Some(AnalyticGeometry::Line { a_mm, b_mm }) = element.geometry {
+                policy.length(norm(subtract(a_mm, b_mm)))?;
+            }
+        }
+        let by_kind = |kind| {
+            topology
+                .elements
+                .iter()
+                .filter(|e| e.key.kind == kind)
+                .map(|element| BoundaryOrigin {
+                    origins: element.origins.clone(),
+                    boundary: element.boundary.clone(),
+                })
+                .collect::<Vec<_>>()
+        };
+        let ancestry = Ancestry {
+            faces: by_kind(TopologyKind::Face),
+            edges: by_kind(TopologyKind::Edge),
+            vertices: by_kind(TopologyKind::Vertex),
+        };
+        let faces: Vec<_> = topology
+            .elements
+            .iter()
+            .filter(|e| e.key.kind == TopologyKind::Face)
+            .collect();
+        let mut result = PlanarBooleanBody::build_labeled(
+            geometry,
+            feature,
+            policy,
+            material,
+            PlaneFrame::default(),
+            |i, _, _| {
+                let source = faces[i];
+                let mut origins = vec![Origin {
+                    source: feature,
+                    role: format!("planar-boolean.face.{i}"),
+                }];
+                origins.extend(source.origins.iter().cloned());
+                (origins, source.frames.clone())
+            },
+        )?;
+        let SolidBody::PlanarBoolean(body, _) = &mut result.body else {
+            unreachable!("constructed indexed planar scale")
+        };
+        let body = Rc::get_mut(body).expect("new indexed planar scale");
+        if body
+            .edges
+            .iter()
+            .map(|(key, _)| key)
+            .ne(source.edges.iter().map(|(key, _)| key))
+        {
+            return Err(ancestry_error());
+        }
+        body.scaled_ancestry = Some(ancestry);
+        Ok(result)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn indexed_import_scale_does_not_fabricate_boolean_material() {
+        let policy = GeometryPolicy::default();
+        let geometry = Union::new(
+            &[ConvexPiece::from_box([0.; 3], [2.; 3], policy.linear_tolerance_mm).unwrap()],
+            policy.linear_tolerance_mm,
+        )
+        .unwrap();
+        let source =
+            Solid::from_imported_planar_boundary(geometry, EntityId::new(), policy).unwrap();
+        let result = source
+            .affine_transformed_named(
+                AffineTransform {
+                    matrix: [[2., 0.5, 0.], [0., 1., 0.], [0., 0., 1.]],
+                    ..Default::default()
+                },
+                EntityId::new(),
+                policy,
+            )
+            .unwrap();
+        assert!(result.planar_boolean_body().unwrap().0.material.is_none());
+        assert_eq!(
+            result
+                .rust_subtract_planar_tools(&[&source], EntityId::new(), policy)
+                .err()
+                .unwrap()
+                .kind,
+            GeometryErrorKind::Unsupported
+        );
+        assert_eq!(source.volume_mm3().unwrap(), 8.);
     }
 }

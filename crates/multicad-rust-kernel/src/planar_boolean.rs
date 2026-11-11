@@ -8,6 +8,8 @@ use crate::{
 };
 use std::collections::BTreeMap;
 
+mod affine;
+pub use affine::AffineMap;
 mod clipping;
 mod difference;
 mod intersection;

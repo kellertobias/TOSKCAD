@@ -1264,3 +1264,196 @@ fn rust_compound_scale_rebuilds_saved_pattern_parts_and_owned_occurrences_atomic
         assert_eq!(imported.solid_count().unwrap(), 3);
     }
 }
+
+#[test]
+fn indexed_planar_scale_rebuilds_saved_cut_part_occurrences_datums_and_parameter_edits() {
+    use multicad_core::references::{
+        self, Attachment, GeometryIntent, ReferenceAddress, Resolution, TopologyKind,
+    };
+    let (mut session, part, factor, instance, other) = fixture();
+    let tool = PrimitiveRequest::new(
+        "Angled pocket tool",
+        PrimitiveParameters::Box {
+            size: [0.5, 1., 1.].map(length),
+            frame: PrimitiveFrame {
+                origin: [0.5, 0.5, 3.5].map(length),
+                u: [0.8, 0., -0.6],
+                v: [0., 1., 0.],
+            },
+        },
+    );
+    session
+        .commit(
+            prepare_primitive(&session, session.revision(), actor(), &tool)
+                .unwrap()
+                .prepared,
+        )
+        .unwrap();
+    let cut = BooleanRequest::new(
+        Operation::Cut,
+        BodyInput {
+            body: part.body,
+            producer: part.feature,
+        },
+        vec![BodyInput {
+            body: tool.body,
+            producer: tool.feature,
+        }],
+    );
+    session
+        .commit(
+            prepare_boolean(&session, session.revision(), actor(), &cut)
+                .unwrap()
+                .prepared,
+        )
+        .unwrap();
+    let compiler = Compiler::default();
+    let build = |s: &Session, backend| {
+        compiler
+            .compile_with_backend(s.document(), s.revision(), backend, None)
+            .unwrap()
+    };
+    let before = build(&session, GeometryBackend::Rust);
+    let original = &before.snapshot().shapes[&cut.feature].topology;
+    let intents: Vec<_> = original
+        .elements
+        .iter()
+        .map(|e| GeometryIntent::capture(original, e.key).unwrap())
+        .collect();
+    let occurrence_intents: Vec<_> = [instance, other]
+        .map(|id| {
+            let topology = &before.snapshot().occurrences[&id].topology;
+            (
+                id,
+                topology
+                    .elements
+                    .iter()
+                    .map(|e| GeometryIntent::capture(topology, e.key).unwrap())
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .into();
+    let request = ScaleBatchRequest::new(
+        session.document(),
+        vec![ScaleTarget::Part {
+            input: BodyInput {
+                body: part.body,
+                producer: cut.feature,
+            },
+        }],
+        bound(&session),
+        false,
+    )
+    .unwrap();
+    let prepared = prepare_scale_batch(&session, session.revision(), actor(), &request).unwrap();
+    let feature = prepared.outputs[0].feature;
+    session.commit(prepared.prepared).unwrap();
+    let scaled = build(&session, GeometryBackend::Rust);
+    let topology = &scaled.snapshot().shapes[&feature].topology;
+    let face = topology
+        .elements
+        .iter()
+        .find(|e| e.key.kind == TopologyKind::Face && !e.frames.is_empty())
+        .unwrap();
+    let mut intent = GeometryIntent::capture(topology, face.key).unwrap();
+    intent.attachment = Some(Attachment {
+        anchor: face.frames[0].origin.clone(),
+        offset_mm: [0.; 3],
+        angle_rad: 0.,
+    });
+    let reference = intent.id;
+    let datum = Entity::new(
+        "Scaled pocket datum",
+        EntityData::Plane {
+            origin_mm: [0.; 3],
+            normal: [0., 0., 1.],
+            anchor: Some(multicad_core::document::Link {
+                target: feature,
+                role: "face_attachment".into(),
+                geometry: Some(intent),
+            }),
+        },
+    );
+    let owner = datum.id;
+    session
+        .apply(Request {
+            expected_revision: session.revision(),
+            actor: actor(),
+            label: "Attach scaled pocket datum".into(),
+            edits: vec![Mutation::Insert(datum)],
+        })
+        .unwrap();
+    for value in ["2", "3"] {
+        let mut parameter = session.document().get(factor).unwrap().clone();
+        let EntityData::Parameter { expression, .. } = &mut parameter.data else {
+            panic!()
+        };
+        *expression = value.into();
+        session
+            .apply(Request {
+                expected_revision: session.revision(),
+                actor: actor(),
+                label: "Edit scale factor".into(),
+                edits: vec![Mutation::Replace(parameter)],
+            })
+            .unwrap();
+        let opened = reopen(&session);
+        let rust = build(&opened, GeometryBackend::Rust);
+        let scale: f64 = value.parse().unwrap();
+        let volume = before.solid(part.body).unwrap().volume_mm3().unwrap() * scale.powi(3);
+        for id in [part.body, instance, other] {
+            near(rust.solid(id).unwrap().volume_mm3().unwrap(), volume);
+        }
+        let topology = &rust.snapshot().shapes[&feature].topology;
+        for intent in &intents {
+            assert!(matches!(
+                references::resolve(intent, topology, opened.revision()),
+                Resolution::Resolved { .. }
+            ));
+        }
+        for (id, intents) in &occurrence_intents {
+            let topology = &rust.snapshot().occurrences[id].topology;
+            for intent in intents {
+                assert!(matches!(
+                    references::resolve(intent, topology, opened.revision()),
+                    Resolution::Resolved { .. }
+                ));
+            }
+        }
+        assert!(matches!(
+            rust.snapshot()
+                .references
+                .get(ReferenceAddress { owner, reference })
+                .unwrap()
+                .resolution,
+            Resolution::Resolved { frame: Some(_), .. }
+        ));
+        rust.solid(part.body)
+            .unwrap()
+            .manufacturing_mesh_with_receipt(Default::default())
+            .unwrap();
+        #[cfg(feature = "occt")]
+        {
+            let native = build(&opened, GeometryBackend::OpenCascade);
+            near(
+                native.solid(part.body).unwrap().volume_mm3().unwrap(),
+                volume,
+            );
+            let expected = native.solid(part.body).unwrap().bounds().unwrap();
+            bounds(
+                rust.solid(part.body).unwrap().bounds().unwrap(),
+                expected.min,
+                expected.max,
+            );
+        }
+    }
+    let final_document = session.document().clone();
+    session.undo(session.revision(), actor()).unwrap();
+    session.redo(session.revision(), actor()).unwrap();
+    assert_eq!(session.document(), &final_document);
+    let rebuilt = build(&session, GeometryBackend::Rust);
+    near(
+        rebuilt.solid(part.body).unwrap().volume_mm3().unwrap(),
+        before.solid(part.body).unwrap().volume_mm3().unwrap() * 27.,
+    );
+}
