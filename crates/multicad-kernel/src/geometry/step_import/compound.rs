@@ -258,7 +258,10 @@ impl Solid {
         self.rust_compound()?;
         let mut leaves = Vec::new();
         self.step_leaf_members(&mut leaves);
-        if !leaves.iter().any(|leaf| leaf.herringbone_body().is_some()) {
+        if !leaves
+            .iter()
+            .any(|leaf| leaf.herringbone_body().is_some() || leaf.bevel_body().is_some())
+        {
             return None;
         }
         Some((|| {
@@ -268,6 +271,14 @@ impl Solid {
                 if let Some((body, frame)) = leaf.herringbone_body() {
                     member_counts.push(1);
                     expected.push(ExpectedStepMember::TwistedGear {
+                        gear: &body.geometry,
+                        origin: frame.origin,
+                        u: frame.u,
+                        v: frame.v,
+                    });
+                } else if let Some((body, frame)) = leaf.bevel_body() {
+                    member_counts.push(1);
+                    expected.push(ExpectedStepMember::Bevel {
                         gear: &body.geometry,
                         origin: frame.origin,
                         u: frame.u,
@@ -290,44 +301,46 @@ impl Solid {
                 step_read::verify_authored_compound(input, &expected, tolerance)?.into_iter();
             let mut result = (0_u32, 0_f64, [[f64::INFINITY; 3], [f64::NEG_INFINITY; 3]]);
             for (leaf, member_count) in leaves.into_iter().zip(member_counts) {
-                let (count, volume, bounds) = if leaf.herringbone_body().is_some() {
-                    let Some(VerifiedStepMember::TwistedGear { volume_mm3 }) = decoded.next()
-                    else {
-                        return Err(ReadError::Invalid);
-                    };
-                    let bounds = leaf.bounds().map_err(|_| ReadError::Invalid)?;
-                    (1, volume_mm3, [bounds.min, bounds.max])
-                } else {
-                    let mut members = Vec::with_capacity(member_count);
-                    for _ in 0..member_count {
-                        let Some(VerifiedStepMember::Analytic { readback, imported }) =
-                            decoded.next()
+                let (count, volume, bounds) =
+                    if leaf.herringbone_body().is_some() || leaf.bevel_body().is_some() {
+                        let (Some(VerifiedStepMember::TwistedGear { volume_mm3 })
+                        | Some(VerifiedStepMember::Bevel { volume_mm3 })) = decoded.next()
                         else {
                             return Err(ReadError::Invalid);
                         };
-                        members.push((*readback, imported.map(|value| *value)));
-                    }
-                    let topology = leaf
-                        .rust_topology()
-                        .ok_or(ReadError::Invalid)?
-                        .map_err(|_| ReadError::Invalid)?;
-                    if !leaf.step_readback_matches(&topology, &members, tolerance * 2.) {
-                        return Err(ReadError::Invalid);
-                    }
-                    members.into_iter().fold(
-                        (0_u32, 0., [[f64::INFINITY; 3], [f64::NEG_INFINITY; 3]]),
-                        |(count, volume, [min, max]), (member, _)| {
-                            (
-                                count + member.solid_count,
-                                volume + member.volume_mm3,
-                                [
-                                    std::array::from_fn(|i| min[i].min(member.bounds_mm[0][i])),
-                                    std::array::from_fn(|i| max[i].max(member.bounds_mm[1][i])),
-                                ],
-                            )
-                        },
-                    )
-                };
+                        let bounds = leaf.bounds().map_err(|_| ReadError::Invalid)?;
+                        (1, volume_mm3, [bounds.min, bounds.max])
+                    } else {
+                        let mut members = Vec::with_capacity(member_count);
+                        for _ in 0..member_count {
+                            let Some(VerifiedStepMember::Analytic { readback, imported }) =
+                                decoded.next()
+                            else {
+                                return Err(ReadError::Invalid);
+                            };
+                            members.push((*readback, imported.map(|value| *value)));
+                        }
+                        let topology = leaf
+                            .rust_topology()
+                            .ok_or(ReadError::Invalid)?
+                            .map_err(|_| ReadError::Invalid)?;
+                        if !leaf.step_readback_matches(&topology, &members, tolerance * 2.) {
+                            return Err(ReadError::Invalid);
+                        }
+                        members.into_iter().fold(
+                            (0_u32, 0., [[f64::INFINITY; 3], [f64::NEG_INFINITY; 3]]),
+                            |(count, volume, [min, max]), (member, _)| {
+                                (
+                                    count + member.solid_count,
+                                    volume + member.volume_mm3,
+                                    [
+                                        std::array::from_fn(|i| min[i].min(member.bounds_mm[0][i])),
+                                        std::array::from_fn(|i| max[i].max(member.bounds_mm[1][i])),
+                                    ],
+                                )
+                            },
+                        )
+                    };
                 result.0 = result.0.checked_add(count).ok_or(ReadError::Limit)?;
                 result.1 += volume;
                 if !result.1.is_finite() {

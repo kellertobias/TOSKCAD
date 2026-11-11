@@ -200,6 +200,21 @@ pub fn verify_bevel(
     v: Point,
     tolerance: f64,
 ) -> Result<f64> {
+    let mut volumes =
+        compound::read_members_by(input, tolerance, true, true, |shell, solid, _| {
+            verify_member(shell, solid, gear, [origin, u, v], tolerance)
+        })?;
+    volumes.pop().ok_or(ReadError::Invalid)
+}
+
+/// Verify one decoded shell against the authored bevel at its placement.
+pub(super) fn verify_member(
+    shell: &mut Shell<'_, '_>,
+    solid: u32,
+    gear: &Bevel,
+    [origin, u, v]: [Point; 3],
+    tolerance: f64,
+) -> Result<f64> {
     require(
         origin.into_iter().chain(u).chain(v).all(f64::is_finite)
             && (dot(u, u) - 1.).abs() <= 1e-10
@@ -213,135 +228,130 @@ pub fn verify_bevel(
     };
     let topology = gear.topology();
     let band = tolerance * 16.;
-    let mut volumes =
-        compound::read_members_by(input, tolerance, true, true, |shell, solid, _| {
-            let faces = shell.member_faces(solid)?;
-            require(faces.len() == topology.faces.len())?;
-            let mut uses: BTreeMap<u32, (u32, u32)> = BTreeMap::new();
-            let mut vertices = BTreeSet::new();
-            let mut decoded = BTreeMap::new();
-            let mut flux = 0.;
-            for face_id in faces {
-                let (surface, forward, bounds) = face(shell, face_id)?;
-                let [bound] = bounds[..] else {
+    let faces = shell.member_faces(solid)?;
+    require(faces.len() == topology.faces.len())?;
+    let mut uses: BTreeMap<u32, (u32, u32)> = BTreeMap::new();
+    let mut vertices = BTreeSet::new();
+    let mut decoded = BTreeMap::new();
+    let mut flux = 0.;
+    for face_id in faces {
+        let (surface, forward, bounds) = face(shell, face_id)?;
+        let [bound] = bounds[..] else {
+            return Err(ReadError::Invalid);
+        };
+        let edges = ring(shell, bound, true)?;
+        let mut green = 0.;
+        let mut heights = [f64::INFINITY, f64::NEG_INFINITY];
+        for &(edge, same) in &edges {
+            let entry = uses.entry(edge).or_default();
+            if same {
+                entry.0 += 1;
+            } else {
+                entry.1 += 1;
+            }
+            if let std::collections::btree_map::Entry::Vacant(slot) = decoded.entry(edge) {
+                let curve = decode(shell, &frame, edge)?;
+                let [lo, hi] = curve.range();
+                for t in [0., 0.25, 0.5, 0.75, 1.] {
+                    let p = curve.point(lo + (hi - lo) * t);
+                    require(gear.classify(p, band) == Containment::Boundary)?;
+                }
+                for end in curve.ends {
+                    vertices.insert(end.map(f64::to_bits));
+                }
+                slot.insert(curve);
+            }
+            let curve = &decoded[&edge];
+            let sign = if same { 1. } else { -1. };
+            green += sign * curve.green();
+            for end in curve.ends {
+                heights = [heights[0].min(end[2]), heights[1].max(end[2])];
+            }
+        }
+        let entity = shell.simple(surface)?;
+        match entity.name {
+            "CONICAL_SURFACE" => {
+                let [
+                    Value::String(_),
+                    axis,
+                    Value::Number(radius),
+                    Value::Number(semi),
+                ] = shell.args(surface, "CONICAL_SURFACE")?
+                else {
                     return Err(ReadError::Invalid);
                 };
-                let edges = ring(shell, bound, true)?;
-                let mut green = 0.;
-                let mut heights = [f64::INFINITY, f64::NEG_INFINITY];
-                for &(edge, same) in &edges {
-                    let entry = uses.entry(edge).or_default();
-                    if same {
-                        entry.0 += 1;
-                    } else {
-                        entry.1 += 1;
-                    }
-                    if let std::collections::btree_map::Entry::Vacant(slot) = decoded.entry(edge) {
-                        let curve = decode(shell, &frame, edge)?;
-                        let [lo, hi] = curve.range();
-                        for t in [0., 0.25, 0.5, 0.75, 1.] {
-                            let p = curve.point(lo + (hi - lo) * t);
-                            require(gear.classify(p, band) == Containment::Boundary)?;
-                        }
-                        for end in curve.ends {
-                            vertices.insert(end.map(f64::to_bits));
-                        }
-                        slot.insert(curve);
-                    }
-                    let curve = &decoded[&edge];
-                    let sign = if same { 1. } else { -1. };
-                    green += sign * curve.green();
-                    for end in curve.ends {
-                        heights = [heights[0].min(end[2]), heights[1].max(end[2])];
-                    }
-                }
-                let entity = shell.simple(surface)?;
-                match entity.name {
-                    "CONICAL_SURFACE" => {
-                        let [
-                            Value::String(_),
-                            axis,
-                            Value::Number(radius),
-                            Value::Number(semi),
-                        ] = shell.args(surface, "CONICAL_SURFACE")?
-                        else {
-                            return Err(ReadError::Invalid);
-                        };
-                        let placement = shell.placement(reference(axis)?)?;
-                        let apex = frame.local(placement.origin);
-                        let axis = frame.direction(placement.normal);
-                        require(*radius == 0. && apex[0].abs() <= band && apex[1].abs() <= band)?;
-                        if apex[2].abs() > band {
-                            // Back cone: p · n is the cone distance a cos δ.
-                            require(axis[2] < -1. + 1e-12)?;
-                            let delta = std::f64::consts::FRAC_PI_2 - semi;
-                            flux += apex[2] * delta.cos() * green / delta.cos();
-                        } else {
-                            require(axis[2] > 1. - 1e-12 && forward)?;
-                        }
-                    }
-                    "PLANE" => {
-                        let [Value::String(_), axis] = shell.args(surface, "PLANE")? else {
-                            return Err(ReadError::Invalid);
-                        };
-                        let placement = shell.placement(reference(axis)?)?;
-                        let through = dot(
-                            frame.direction(placement.normal),
-                            frame.local(placement.origin),
-                        );
-                        require(through.abs() <= band && forward)?;
-                    }
-                    "CYLINDRICAL_SURFACE" => {
-                        let [Value::String(_), axis, Value::Number(radius)] =
-                            shell.args(surface, "CYLINDRICAL_SURFACE")?
-                        else {
-                            return Err(ReadError::Invalid);
-                        };
-                        let placement = shell.placement(reference(axis)?)?;
-                        let center = frame.local(placement.origin);
-                        let coaxial = !forward
-                            && center[0].abs() <= band
-                            && center[1].abs() <= band
-                            && frame.direction(placement.normal)[2] > 1. - 1e-12;
-                        require(coaxial)?;
-                        let height = heights[1] - heights[0];
-                        flux -= radius * std::f64::consts::TAU * radius * height;
-                    }
-                    _ => {
-                        let [
-                            Value::String(_),
-                            Value::Number(du),
-                            Value::Number(dv),
-                            Value::List(rows),
-                            ..,
-                        ] = shell.args(surface, "B_SPLINE_SURFACE_WITH_KNOTS")?
-                        else {
-                            return Err(ReadError::Invalid);
-                        };
-                        require(*du == 3. && *dv == 1. && forward)?;
-                        let ratio =
-                            gear.end_distance_mm(End::Toe) / gear.end_distance_mm(End::Heel);
-                        for row in rows {
-                            let [toe, heel] = refs(row)?[..] else {
-                                return Err(ReadError::Invalid);
-                            };
-                            let [toe, heel] =
-                                [shell.point(toe)?, shell.point(heel)?].map(|p| frame.local(p));
-                            // Collinear with the apex: a cone through the apex.
-                            require(length(sub(toe, scale(heel, ratio))) <= band)?;
-                        }
-                    }
+                let placement = shell.placement(reference(axis)?)?;
+                let apex = frame.local(placement.origin);
+                let axis = frame.direction(placement.normal);
+                require(*radius == 0. && apex[0].abs() <= band && apex[1].abs() <= band)?;
+                if apex[2].abs() > band {
+                    // Back cone: p · n is the cone distance a cos δ.
+                    require(axis[2] < -1. + 1e-12)?;
+                    let delta = std::f64::consts::FRAC_PI_2 - semi;
+                    flux += apex[2] * delta.cos() * green / delta.cos();
+                } else {
+                    require(axis[2] > 1. - 1e-12 && forward)?;
                 }
             }
-            let manifold = uses.len() == topology.edges.len()
-                && uses.values().all(|&(a, b)| a == 1 && b == 1)
-                && vertices.len() == topology.vertices_mm.len();
-            require(manifold)?;
-            let volume = flux / 3.;
-            require(volume.is_finite() && volume > 0.)?;
-            Ok(volume)
-        })?;
-    volumes.pop().ok_or(ReadError::Invalid)
+            "PLANE" => {
+                let [Value::String(_), axis] = shell.args(surface, "PLANE")? else {
+                    return Err(ReadError::Invalid);
+                };
+                let placement = shell.placement(reference(axis)?)?;
+                let through = dot(
+                    frame.direction(placement.normal),
+                    frame.local(placement.origin),
+                );
+                require(through.abs() <= band && forward)?;
+            }
+            "CYLINDRICAL_SURFACE" => {
+                let [Value::String(_), axis, Value::Number(radius)] =
+                    shell.args(surface, "CYLINDRICAL_SURFACE")?
+                else {
+                    return Err(ReadError::Invalid);
+                };
+                let placement = shell.placement(reference(axis)?)?;
+                let center = frame.local(placement.origin);
+                let coaxial = !forward
+                    && center[0].abs() <= band
+                    && center[1].abs() <= band
+                    && frame.direction(placement.normal)[2] > 1. - 1e-12;
+                require(coaxial)?;
+                let height = heights[1] - heights[0];
+                flux -= radius * std::f64::consts::TAU * radius * height;
+            }
+            _ => {
+                let [
+                    Value::String(_),
+                    Value::Number(du),
+                    Value::Number(dv),
+                    Value::List(rows),
+                    ..,
+                ] = shell.args(surface, "B_SPLINE_SURFACE_WITH_KNOTS")?
+                else {
+                    return Err(ReadError::Invalid);
+                };
+                require(*du == 3. && *dv == 1. && forward)?;
+                let ratio = gear.end_distance_mm(End::Toe) / gear.end_distance_mm(End::Heel);
+                for row in rows {
+                    let [toe, heel] = refs(row)?[..] else {
+                        return Err(ReadError::Invalid);
+                    };
+                    let [toe, heel] =
+                        [shell.point(toe)?, shell.point(heel)?].map(|p| frame.local(p));
+                    // Collinear with the apex: a cone through the apex.
+                    require(length(sub(toe, scale(heel, ratio))) <= band)?;
+                }
+            }
+        }
+    }
+    let manifold = uses.len() == topology.edges.len()
+        && uses.values().all(|&(a, b)| a == 1 && b == 1)
+        && vertices.len() == topology.vertices_mm.len();
+    require(manifold)?;
+    let volume = flux / 3.;
+    require(volume.is_finite() && volume > 0.)?;
+    Ok(volume)
 }
 
 #[cfg(test)]

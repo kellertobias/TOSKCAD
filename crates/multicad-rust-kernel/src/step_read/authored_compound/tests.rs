@@ -135,6 +135,83 @@ fn mixed_compounds_verify_each_placed_twisted_gear_and_decode_the_analytic_slots
 }
 
 #[test]
+fn bevel_slots_verify_each_placed_pair_member_beside_other_members() {
+    use crate::bevel_gear::{Bevel, tests::spec};
+    let pinion = Bevel::new(spec(2., 24, 32, 6., 4., 0.2), 1e-3, 1e7).unwrap();
+    let wheel = Bevel::new(spec(2., 32, 24, 6., 0., 0.2), 1e-3, 1e7).unwrap();
+    let twisted = gear(true, 1., 2.);
+    let frames = [
+        [[10., -20., 30.], [0.8, 0., -0.6], V],
+        [[10., -20., 30.], [0., 0.6, 0.8], [1., 0., 0.]],
+        [[-40., 0., 0.], U, V],
+    ];
+    let mut writer = Writer::new();
+    writer.append_box([number(4); 3], [0.; 3], U, V).unwrap();
+    for (gear, [origin, u, v]) in [&pinion, &wheel].into_iter().zip(frames) {
+        writer.append_bevel(gear, origin, u, v, TOLERANCE).unwrap();
+    }
+    let [origin, u, v] = frames[2];
+    writer
+        .append_herringbone(&twisted, origin, u, v, TOLERANCE)
+        .unwrap();
+    let source = writer.finish().unwrap();
+    let bevel = |gear, [origin, u, v]: [Point; 3]| ExpectedStepMember::Bevel { gear, origin, u, v };
+    let specification = [
+        ExpectedStepMember::Analytic,
+        bevel(&pinion, frames[0]),
+        bevel(&wheel, frames[1]),
+        expected(&twisted, frames[2]),
+    ];
+    let verified = verify_authored_compound(&source, &specification, TOLERANCE).unwrap();
+    let [
+        VerifiedStepMember::Analytic { readback, .. },
+        VerifiedStepMember::Bevel { volume_mm3: first },
+        VerifiedStepMember::Bevel { volume_mm3: second },
+        VerifiedStepMember::TwistedGear { volume_mm3: third },
+    ] = verified.as_slice()
+    else {
+        panic!("expected stock, both bevels and the twisted gear");
+    };
+    assert_eq!(readback.volume_mm3, 64.);
+    for (actual, expected) in [
+        (*first, pinion.volume_mm3()),
+        (*second, wheel.volume_mm3()),
+        (*third, twisted.volume_mm3()),
+    ] {
+        assert!(
+            (actual - expected).abs() / expected < 1e-8,
+            "{actual} {expected}"
+        );
+    }
+    // Swapped members or placements cannot certify the same file.
+    for wrong in [
+        [
+            ExpectedStepMember::Analytic,
+            bevel(&wheel, frames[1]),
+            bevel(&pinion, frames[0]),
+            expected(&twisted, frames[2]),
+        ],
+        [
+            ExpectedStepMember::Analytic,
+            bevel(&pinion, frames[1]),
+            bevel(&wheel, frames[0]),
+            expected(&twisted, frames[2]),
+        ],
+        [
+            ExpectedStepMember::Analytic,
+            bevel(&pinion, frames[0]),
+            expected(&twisted, frames[2]),
+            bevel(&wheel, frames[1]),
+        ],
+    ] {
+        assert!(verify_authored_compound(&source, &wrong, TOLERANCE).is_err());
+    }
+    // A single-solid bevel proof rejects the compound.
+    let [origin, u, v] = frames[0];
+    assert!(crate::step_read::verify_bevel(&source, &pinion, origin, u, v, TOLERANCE).is_err());
+}
+
+#[test]
 fn analytic_slots_keep_the_independently_reconstructed_helical_cut() {
     let cut = Cut::new(
         CutSpec {
