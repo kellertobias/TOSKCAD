@@ -653,3 +653,60 @@ fn rust_worm_drawings_follow_exact_axial_visibility_and_sections() {
         "{section} {wheel_section}"
     );
 }
+
+#[test]
+fn matched_worm_and_wheel_build_and_step_export_latency() {
+    if !multicad_kernel::OCCT_LINKED {
+        return;
+    }
+    let policy = GeometryPolicy::default();
+    let worm_spec = ZaWorm {
+        axial_module_mm: 1.,
+        threaded_length_mm: 20.,
+        bore_radius_mm: 1.,
+        axial_thinning_mm: 0.05,
+    };
+    let wheel_spec = GeneratedZaWormWheel {
+        teeth: 40,
+        axial_module_mm: 1.,
+        face_width_mm: 1.5,
+        bore_radius_mm: 3.,
+        pitch_thinning_mm: 0.05,
+    };
+    let directory = tempfile::tempdir().unwrap();
+    let time = |run: &mut dyn FnMut()| {
+        let started = std::time::Instant::now();
+        run();
+        started.elapsed().as_secs_f64() * 1e3
+    };
+    let feature = EntityId::new();
+    let mut solids: Vec<(&str, Solid)> = Vec::new();
+    let mut builds = Vec::new();
+    for (name, rust) in [
+        ("worm", true),
+        ("worm", false),
+        ("wheel", true),
+        ("wheel", false),
+    ] {
+        let mut built = None;
+        let ms = time(&mut || {
+            built = Some(match (name, rust) {
+                ("worm", true) => Solid::rust_za_worm_named(worm_spec, feature, policy),
+                ("worm", false) => Solid::za_worm_named(worm_spec, feature, policy),
+                (_, true) => Solid::rust_generated_za_worm_wheel_named(wheel_spec, feature, policy),
+                _ => Solid::generated_za_worm_wheel_named(wheel_spec, feature, policy),
+            });
+        });
+        builds.push(ms);
+        solids.push((name, built.unwrap().unwrap()));
+    }
+    let mut exports = Vec::new();
+    for (index, (name, solid)) in solids.iter().enumerate() {
+        let path = directory.path().join(format!("{name}{index}.step"));
+        exports.push(time(&mut || solid.write_step(&path).unwrap()));
+    }
+    println!(
+        "{{\"case\":\"worm build and STEP latency\",\"rust_worm_build_ms\":{},\"native_worm_build_ms\":{},\"rust_wheel_build_ms\":{},\"native_wheel_build_ms\":{},\"rust_worm_step_ms\":{},\"native_worm_step_ms\":{},\"rust_wheel_step_ms\":{},\"native_wheel_step_ms\":{}}}",
+        builds[0], builds[1], builds[2], builds[3], exports[0], exports[1], exports[2], exports[3]
+    );
+}
