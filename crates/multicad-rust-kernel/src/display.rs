@@ -112,6 +112,16 @@ impl Footprint {
         Ok(())
     }
 
+    /// Add one clockwise inner boundary of arbitrary shape.
+    pub(crate) fn hole(
+        &mut self,
+        samples: impl ExactSizeIterator<Item = ([f64; 2], u32)>,
+        options: Tessellation,
+    ) -> Result<(), MeshError> {
+        self.holes += 1;
+        self.ring(samples, options)
+    }
+
     pub(crate) fn circle(
         &mut self,
         [x, y]: [f64; 2],

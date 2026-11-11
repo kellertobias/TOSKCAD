@@ -16,6 +16,11 @@ pub(super) fn verify(
     plane: &Plane,
     face: &FaceWire,
 ) -> Result<f64> {
+    if let ([rim], Some(hole)) = (face.outer.as_slice(), &face.hole)
+        && let Geometry::Analytic(Curve::Circle(circle)) = edges[&rim.edge].geometry
+    {
+        return verify_ring(reader, edges, plane, (circle, rim.forward), hole);
+    }
     if face.outer.len() < 3
         || face
             .outer
@@ -72,6 +77,62 @@ pub(super) fn verify(
         area -= PI * circle.radius_mm.powi(2);
     }
     if !area.is_finite() || area <= tolerance.powi(2) {
+        return Err(ReadError::Invalid);
+    }
+    Ok(area)
+}
+
+/// An internal ring cap: one counterclockwise outside circle around a
+/// simple clockwise cavity with at least one cubic flank. Every cavity piece
+/// stays strictly inside the circle by its analytic radial reach.
+fn verify_ring(
+    reader: &Shell<'_, '_>,
+    edges: &Edges,
+    plane: &Plane,
+    (circle, forward): (CircleEdge, bool),
+    hole: &[Traversal],
+) -> Result<f64> {
+    let tolerance = reader.tolerance;
+    let section = hole
+        .iter()
+        .map(|edge| boundary(reader, &edges[&edge.edge].geometry, plane, edge))
+        .collect::<Result<Vec<_>>>()?;
+    let mut budget = Budget {
+        remaining: MAX_PAIR_WORK,
+        interrupt: None,
+    };
+    simple(&section, tolerance, &mut budget).map_err(certificate_error)?;
+    let center = project(plane, circle.center_mm);
+    let distance = |p: Point2| norm(sub2(p, center));
+    let reach = |piece: &Piece| match *piece {
+        Piece::Line(points) => points.map(distance).into_iter().fold(0., f64::max),
+        Piece::Arc(arc) => distance(arc.center) + arc.radius,
+        Piece::Bezier(points) => points.map(distance).into_iter().fold(0., f64::max),
+    };
+    let cavity = hole
+        .iter()
+        .map(|edge| section_area(reader, &edges[&edge.edge].geometry, plane, edge))
+        .sum::<Result<f64>>()?;
+    let area = PI * circle.radius_mm.powi(2) + cavity;
+    if !circle.within_plane(plane, tolerance)
+        || (dot(circle.normal, plane.normal) > 0.) != forward
+        || hole
+            .iter()
+            .map(|edge| edge.start)
+            .collect::<BTreeSet<_>>()
+            .len()
+            != hole.len()
+        || !hole
+            .iter()
+            .any(|edge| matches!(edges[&edge.edge].geometry, Geometry::Cubic { .. }))
+        || section
+            .iter()
+            .flat_map(|edge| &edge.pieces)
+            .any(|piece| reach(piece) >= circle.radius_mm - tolerance)
+        || cavity >= 0.
+        || !area.is_finite()
+        || area <= tolerance.powi(2)
+    {
         return Err(ReadError::Invalid);
     }
     Ok(area)

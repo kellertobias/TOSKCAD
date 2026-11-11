@@ -148,6 +148,11 @@ pub(crate) fn build_rust(
         NativeSpecification::Rotary(spec) if spec.sweep == GearSweep::Helical => {
             Solid::rust_helical_gear_named(spec, feature, policy)
         }
+        NativeSpecification::Rotary(spec)
+            if matches!(spec.sweep, GearSweep::InternalSpur { .. }) =>
+        {
+            Solid::rust_internal_ring_named(spec, feature, policy)
+        }
         NativeSpecification::Bevel(spec) => {
             Solid::rust_spherical_bevel_gear_named(spec, feature, policy)
         }
@@ -158,7 +163,7 @@ pub(crate) fn build_rust(
         _ => {
             return Err(error(
                 Some(feature),
-                "Rust gear geometry currently requires an external spur gear, a helical gear, a continuous herringbone, a spherical bevel gear, a ZA worm or generated wheel, or a straight rack",
+                "Rust gear geometry currently requires an external spur gear, an internal spur ring, a helical gear, a continuous herringbone, a spherical bevel gear, a ZA worm or generated wheel, or a straight rack",
             ));
         }
     };

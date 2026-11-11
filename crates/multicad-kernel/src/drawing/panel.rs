@@ -57,6 +57,35 @@ pub(super) fn project_spur_gear(
     })())
 }
 
+/// Axial view of a Rust internal ring: the cavity and outside rim from the
+/// near cap. Both caps project onto the same exact curves.
+pub(super) fn project_internal_ring(
+    input: &DrawingSolid<'_>,
+    options: DrawingProjection,
+) -> Option<Result<Vec<ProjectedVector>, GeometryError>> {
+    let (body, frame) = input.solid.internal_ring_body()?;
+    let [u, v, toward_viewer] = planar::view_axes(options.frame);
+    let axis = frame.normal();
+    if dot(axis, u).hypot(dot(axis, v)) > 32. * f64::EPSILON || options.detail.is_some() {
+        return Some(Err(err(
+            GeometryErrorKind::Unsupported,
+            "Rust internal ring drawing currently requires an uncropped axial view",
+        )));
+    }
+    let screen = Screen {
+        origin: options.frame.origin,
+        axes: [u, v],
+        toward_viewer,
+    };
+    Some(publish_rotary_rims(
+        &screen,
+        body.end_on_rims(frame),
+        |p| screen.point(frame.point(p)),
+        Vec::new(),
+        options,
+    ))
+}
+
 pub(super) fn section_herringbone(
     input: &DrawingSolid<'_>,
     options: DrawingProjection,

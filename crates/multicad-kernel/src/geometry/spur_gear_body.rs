@@ -12,6 +12,7 @@ use multicad_rust_kernel::{
 use std::f64::consts::{PI, TAU};
 
 mod clearance;
+pub(super) use clearance::{Support, coaxial_placements};
 
 pub(crate) struct SpurGearBody {
     pub(super) profile: Profile,
@@ -405,7 +406,7 @@ fn side_plane(frame: PlaneFrame, edge: Edge) -> Option<ReferenceFrame> {
     })
 }
 
-fn side_role(role: ToothRole) -> &'static str {
+pub(super) fn side_role(role: ToothRole) -> &'static str {
     match role {
         ToothRole::LeftFillet => "fillet.left",
         ToothRole::LeftRadial => "continuation.left",

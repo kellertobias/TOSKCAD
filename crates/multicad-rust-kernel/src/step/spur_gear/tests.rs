@@ -202,3 +202,89 @@ fn collapsed_hub_at_world_coordinates_does_not_commit_partial_step() {
         write_spur_gear(&base, ORIGIN, U, V, SPUR_STEP_MAX_ERROR_MM)
     );
 }
+
+fn ring(teeth: u32) -> Ring {
+    thin_ring(teeth, 4.)
+}
+
+fn thin_ring(teeth: u32, rim: f64) -> Ring {
+    use crate::spur_gear::internal::RingSpec;
+    let a = 20_f64.to_radians();
+    let pitch = f64::from(teeth) / 2.;
+    Ring::new(
+        RingSpec {
+            teeth,
+            pitch_radius_mm: pitch,
+            base_radius_mm: pitch * a.cos(),
+            tip_radius_mm: pitch - 1.,
+            root_radius_mm: pitch + 1.25,
+            root_fillet_radius_mm: 0.2,
+            half_base_angle_rad: (PI / 2. - 0.05) / (2. * pitch) - a.tan() + a,
+            face_width_mm: 2.,
+            outer_radius_mm: pitch + rim,
+        },
+        1e-5,
+        1e7,
+        1e-7,
+    )
+    .unwrap()
+}
+
+#[test]
+fn internal_ring_export_reads_back_as_one_exact_annular_shell() {
+    for teeth in [48, 60] {
+        let ring = ring(teeth);
+        let step = write_internal_ring(&ring, ORIGIN, U, V, SPUR_STEP_MAX_ERROR_MM).unwrap();
+        assert_eq!(step.matches("=CLOSED_SHELL(").count(), 1);
+        assert_eq!(
+            step.matches("=ADVANCED_FACE(").count(),
+            3 + ring.cavity().len()
+        );
+        assert_eq!(
+            step.matches("=SURFACE_OF_LINEAR_EXTRUSION(").count(),
+            2 * teeth as usize
+        );
+        // Four fillet and root/tip walls per tooth, plus the outside rim.
+        assert_eq!(
+            step.matches("=CYLINDRICAL_SURFACE(").count(),
+            4 * teeth as usize + 1
+        );
+        assert_eq!(step.matches("=FACE_BOUND(").count(), 2);
+        let members = crate::step_read::read_analytic_compound(&step, 1e-7).unwrap();
+        let [member] = members.as_slice() else {
+            panic!("one solid")
+        };
+        assert_eq!(member.solid_count, 1);
+        assert_eq!(member.face_count, 3 + ring.cavity().len());
+        assert_eq!(member.splines.len(), 4 * teeth as usize);
+        assert!(
+            (member.volume_mm3 - ring.volume_mm3()).abs() < 1e-4,
+            "{} vs {}",
+            member.volume_mm3,
+            ring.volume_mm3()
+        );
+    }
+    // A rim one micrometre past the outward roots still reads back; a
+    // decoder tolerance that cannot separate them refuses the cap.
+    let thin = thin_ring(48, 1.25 + 1e-3);
+    let step = write_internal_ring(&thin, ORIGIN, U, V, SPUR_STEP_MAX_ERROR_MM).unwrap();
+    let [member] = crate::step_read::read_analytic_compound(&step, 1e-7)
+        .unwrap()
+        .try_into()
+        .unwrap();
+    assert!((member.volume_mm3 - thin.volume_mm3()).abs() < 1e-4);
+    assert_eq!(
+        crate::step_read::read_analytic_compound(&step, 2e-3).unwrap_err(),
+        crate::step_read::ReadError::Invalid
+    );
+    let ring = ring(48);
+    let mut writer = Writer::new();
+    assert_eq!(
+        writer.append_internal_ring(&ring, ORIGIN, U, U, 1e-7),
+        Err(StepError::InvalidPlacement)
+    );
+    assert_eq!(
+        writer.append_internal_ring(&ring, ORIGIN, U, V, f64::NAN),
+        Err(StepError::InvalidGeometry)
+    );
+}
