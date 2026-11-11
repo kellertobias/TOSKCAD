@@ -328,3 +328,70 @@ fn bisection_requires_a_strictly_representable_interior_point() {
         assert!(t.support_bounds(direction, 1e-7).is_ok());
     }
 }
+
+#[test]
+fn reconstructed_period_endpoints_never_escape_the_actual_crest_circle() {
+    for degrees in [1_f64, 15., 27.5] {
+        let a = degrees.to_radians();
+        let crest = 8.5e-16;
+        let root = 0.49 / a.cos();
+        let pitch = 1.;
+        let s = Spec {
+            major_radius_mm: 3.,
+            pitch_mm: pitch,
+            length_mm: 2.,
+            depth_mm: pitch / (2. * a.tan()) - (crest + root) * (1. / a.sin() - 1.),
+            crest_radius_mm: crest,
+            root_radius_mm: root,
+            flank_angle_deg: degrees,
+            starts: 1,
+            left_hand: false,
+        };
+        assert_eq!(Thread::new(s), Err(Error::Unresolved));
+    }
+    let t = Thread::new(whitworth()).unwrap();
+    for &phase in &t.profile_breaks() {
+        assert!(t.radius_and_slope_at_phase(phase)[1].is_finite());
+    }
+    assert!(t.support_bounds([1., 0.4, -0.6], 1e-7).is_ok());
+}
+
+#[test]
+fn symbolic_peak_and_center_receipt_survive_large_circle_center_cancellation() {
+    let a = 80_f64.to_radians();
+    let total = 0.8 / (2. * a.cos());
+    let rc = 0.99 * total;
+    let rr = total - rc;
+    let depth = 1. / (2. * a.tan()) - total * (1. / a.sin() - 1.);
+    let mut radius = depth * (1. + 1e-5);
+    let mut nonzero = false;
+    let mut uncharged_center_overshoot = false;
+    for _ in 0..64 {
+        let t = Thread::new(Spec {
+            major_radius_mm: radius,
+            pitch_mm: 1.,
+            length_mm: 2.,
+            depth_mm: depth,
+            crest_radius_mm: rc,
+            root_radius_mm: rr,
+            flank_angle_deg: 80.,
+            starts: 1,
+            left_hand: false,
+        })
+        .unwrap();
+        assert_eq!(t.radius_at_phase(0.), radius);
+        let c = t.profile_circle(0).unwrap();
+        let recovered = c.center_radius_mm + c.radius_mm;
+        assert!((recovered - radius).abs() <= c.center_error_mm);
+        nonzero |= c.center_error_mm > 0.;
+        let support = t.support_bounds([1., 0., 0.], 1e-12).unwrap();
+        assert!(support[0] <= radius && support[1] >= radius);
+        uncharged_center_overshoot |= recovered > support[1];
+        for i in 0..200 {
+            assert!(t.radius_at_phase(i as f64 / 200.) <= support[1]);
+        }
+        radius = radius.next_up();
+    }
+    assert!(nonzero);
+    assert!(uncharged_center_overshoot);
+}

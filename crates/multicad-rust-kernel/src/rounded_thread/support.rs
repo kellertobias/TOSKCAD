@@ -47,18 +47,9 @@ impl Thread {
         let rate = self.helical_rate();
         let angle = y.atan2(x);
         let a = self.breaks[1];
-        let h = height(s.crest_radius_mm, a);
-        let slope = (a / h).max(-self.slope).max(
-            (s.root_radius_mm * (s.flank_angle_deg.to_radians().cos()))
-                / height(
-                    s.root_radius_mm,
-                    s.root_radius_mm * s.flank_angle_deg.to_radians().cos(),
-                ),
-        );
-        let curvature = radial
-            * (s.major_radius_mm
-                + 2. * rate.abs() * slope
-                + rate.powi(2) * s.crest_radius_mm.powi(2) / h.powi(3));
+        let (slope, crest_curvature) = self.profile_limits();
+        let curvature =
+            radial * (s.major_radius_mm + 2. * rate.abs() * slope + rate.powi(2) * crest_curvature);
         let curvature = (curvature * (1. + 32. * f64::EPSILON)).next_up();
         // Each cap has at most one half-period of phase on this angular domain.
         // The finite tangent residual bounds possible downward derivative jumps.

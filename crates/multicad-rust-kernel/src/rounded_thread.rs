@@ -29,6 +29,9 @@ pub enum Error {
 pub struct Circle {
     pub center_phase_mm: f64,
     pub center_radius_mm: f64,
+    /// Outward coefficient error relative to the literal symbolic circle center.
+    /// STEP conversion must charge this separately from finite-curve fitting.
+    pub center_error_mm: f64,
     pub radius_mm: f64,
     /// +1 for the outward crest arc, -1 for the inward root arc.
     pub radial_sign: f64,
@@ -75,8 +78,9 @@ impl Thread {
         if b - a <= 128. * f64::EPSILON * p || a <= 0. || b >= p / 2. || a >= rc || rr * cos >= rr {
             return Err(Error::Unresolved);
         }
-        let ca = r - rc + height(rc, a);
-        let rb = r - d + rr - height(rr, rr * cos);
+        let ca = r - a * a / (rc + height(rc, a));
+        let x = rr * cos;
+        let rb = (r - d) + x * x / (rr + height(rr, x));
         let slope = (rb - ca) / (b - a);
         let tangent = cos / sin;
         let slope_jump = (slope + tangent).abs();
@@ -87,13 +91,31 @@ impl Thread {
         if breaks.windows(2).any(|pair| pair[0] >= pair[1]) {
             return Err(Error::Unresolved);
         }
-        Ok(Self {
+        let mut thread = Self {
             spec,
             breaks,
             tangent_radius: [ca, rb],
             slope,
             slope_jump,
-        })
+        };
+        // End phases are stored as finite period coordinates. Check the actual
+        // recovered offsets too: subtracting a tiny crest span from the pitch
+        // must not move a later circle endpoint beyond its tangent domain.
+        for (band, phase, expected) in [
+            (0, a, slope),
+            (2, b, slope),
+            (2, p - b, -slope),
+            (4, p - a, -slope),
+        ] {
+            let circle = thread.profile_circle(band).expect("fixed circular bands");
+            let actual = circle_slope_curvature(circle, phase).0;
+            let jump = (actual - expected).abs();
+            if !actual.is_finite() || jump > 256. * f64::EPSILON * tangent.max(1.) {
+                return Err(Error::Unresolved);
+            }
+            thread.slope_jump = thread.slope_jump.max(jump);
+        }
+        Ok(thread)
     }
     pub fn spec(&self) -> Spec {
         self.spec
@@ -117,17 +139,40 @@ impl Thread {
             0 | 4 => Some(Circle {
                 center_phase_mm: if band == 0 { 0. } else { s.pitch_mm },
                 center_radius_mm: s.major_radius_mm - s.crest_radius_mm,
+                center_error_mm: difference_error(s.major_radius_mm, s.crest_radius_mm),
                 radius_mm: s.crest_radius_mm,
                 radial_sign: 1.,
             }),
             2 => Some(Circle {
                 center_phase_mm: s.pitch_mm / 2.,
                 center_radius_mm: self.root_radius_mm() + s.root_radius_mm,
+                center_error_mm: combined_error(
+                    difference_error(s.major_radius_mm, s.depth_mm),
+                    difference_error(self.root_radius_mm(), -s.root_radius_mm),
+                ),
                 radius_mm: s.root_radius_mm,
                 radial_sign: -1.,
             }),
             _ => None,
         }
+    }
+    fn profile_limits(&self) -> (f64, f64) {
+        let mut slope = self.slope.abs();
+        let mut crest_curvature = 0_f64;
+        for (band, phase) in [
+            (0, self.breaks[1]),
+            (2, self.breaks[2]),
+            (2, self.breaks[3]),
+            (4, self.breaks[4]),
+        ] {
+            let circle = self.profile_circle(band).expect("fixed circular bands");
+            let (d, k) = circle_slope_curvature(circle, phase);
+            slope = slope.max(d.abs());
+            if circle.radial_sign > 0. {
+                crest_curvature = crest_curvature.max(k);
+            }
+        }
+        (slope, crest_curvature)
     }
     pub fn radius_and_slope_at_phase(&self, phase: f64) -> [f64; 2] {
         if !phase.is_finite() {
@@ -148,8 +193,13 @@ impl Thread {
         if let Some(c) = self.profile_circle(band) {
             let x = phase - c.center_phase_mm;
             let h = height(c.radius_mm, x);
+            let drop = x * x / (c.radius_mm + h);
             [
-                c.center_radius_mm + c.radial_sign * h,
+                if c.radial_sign > 0. {
+                    self.spec.major_radius_mm - drop
+                } else {
+                    self.root_radius_mm() + drop
+                },
                 -c.radial_sign * x / h,
             ]
         } else if band == 1 {
@@ -228,6 +278,23 @@ impl Thread {
             })
             .sum()
     }
+}
+fn difference_error(a: f64, b: f64) -> f64 {
+    let value = a - b;
+    let z = value - a;
+    ((a - (value - z)) - (b + z)).abs()
+}
+fn combined_error(a: f64, b: f64) -> f64 {
+    let sum = a + b;
+    if sum == 0. { 0. } else { sum.next_up() }
+}
+fn circle_slope_curvature(circle: Circle, phase: f64) -> (f64, f64) {
+    let x = phase - circle.center_phase_mm;
+    let h = height(circle.radius_mm, x);
+    (
+        -circle.radial_sign * x / h,
+        circle.radius_mm.powi(2) / h.powi(3),
+    )
 }
 fn height(radius: f64, x: f64) -> f64 {
     ((radius - x) * (radius + x)).max(0.).sqrt()
