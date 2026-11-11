@@ -19,6 +19,68 @@ impl Solid {
                 "Rust Draft requires the source geometry policy",
             ));
         }
+        if let Some((source, placement)) = self.local_box_treatment_source()? {
+            let axes: [Point; 3] = std::array::from_fn(|i| placement.rotation.map(|row| row[i]));
+            let local = |direction| axes.map(|axis| dot(axis, direction));
+            let bounds = source.bounds()?;
+            let neutral_origin = local(subtract(neutral.origin, placement.translation_mm));
+            let extent = (0..3)
+                .map(|i| {
+                    (bounds.max[i] - bounds.min[i])
+                        .abs()
+                        .max((bounds.min[i] - neutral_origin[i]).abs())
+                        .max((bounds.max[i] - neutral_origin[i]).abs())
+                })
+                .sum::<f64>()
+                .max(1.);
+            // Remote plane origins and steep slopes amplify chart restoration
+            // error; bound their resulting wall displacement before snapping.
+            let amplification = (1. + angle.tan().abs()).powi(2);
+            // Only restore roundoff introduced by the retained rigid chart.
+            // An oblique pull or neutral plane needs a different Draft proof.
+            let aligned = |direction: Point| {
+                let up = (0..3)
+                    .max_by(|&a, &b| direction[a].abs().total_cmp(&direction[b].abs()))
+                    .expect("three axes");
+                let residual = (0..3)
+                    .map(|i| {
+                        (direction[i] - if i == up { direction[i].signum() } else { 0. }).abs()
+                    })
+                    .fold(0_f64, f64::max);
+                if residual > 64. * f64::EPSILON
+                    || residual * extent * amplification > policy.linear_tolerance_mm * 0.25
+                {
+                    return Err(draft_error(
+                        GeometryErrorKind::Unsupported,
+                        "Rust Draft requires pull and neutral plane aligned with the source box chart",
+                    ));
+                }
+                Ok((up, direction[up].signum()))
+            };
+            let (up, sense) = aligned(local(pull))?;
+            if aligned(local(neutral.normal()))?.0 != up {
+                return Err(draft_error(
+                    GeometryErrorKind::Unsupported,
+                    "Rust Draft requires pull normal to the neutral plane",
+                ));
+            }
+            let basis = |axis| std::array::from_fn(|i| if i == axis { 1. } else { 0. });
+            let neutral = PlaneFrame {
+                origin: neutral_origin,
+                u: basis((up + 1) % 3),
+                v: basis((up + 2) % 3),
+            };
+            return source
+                .draft_rectangular(
+                    faces,
+                    basis(up).map(|v| v * sense),
+                    neutral,
+                    angle,
+                    feature,
+                    policy,
+                )?
+                .transformed(placement);
+        }
         let neutral_normal = neutral.normal();
         let up = axis(pull);
         if pull[up].abs() != 1.
