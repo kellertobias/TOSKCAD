@@ -751,6 +751,31 @@ fn verify_torus_drawing_scene(torus: &multicad_kernel::Solid) {
         ..options
     };
     verify_offset_torus_sections(torus, transverse_cut);
+    let behind = stock([-3., -8., 0.], [1, 16, 1]);
+    let retained_transverse = project(
+        &[torus, &behind],
+        DrawingProjection {
+            section_only: false,
+            section_offset_mm: Some(-0.5),
+            section_depth_mm: Some(2.5),
+            section_u_mm: Some([-9., 9.]),
+            ..transverse_cut
+        },
+    );
+    assert!(retained_transverse.iter().any(|edge| edge.source_index == 0
+        && edge.role == VectorRole::Section
+        && matches!(edge.curve, VectorCurve::Line { .. })));
+    assert!(retained_transverse.iter().any(|edge| edge.source_index == 0
+        && edge.role == VectorRole::Visible
+        && matches!(edge.curve, VectorCurve::Line { a, b }
+            if (a[1] - 1.).abs() < 1e-8 && (b[1] - 1.).abs() < 1e-8)));
+    let retained_visible = axial_spans(&retained_transverse, VectorRole::Visible);
+    assert!(
+        retained_visible
+            .iter()
+            .any(|[a, b]| (a + 12_f64.sqrt()).abs() < 1e-6 && (b - 12_f64.sqrt()).abs() < 1e-6),
+        "{retained_visible:?}"
+    );
     let middle = stock([-1., -2., -2.], [2, 4, 1]);
     let transverse = project(&[torus, &middle], transverse_cut);
     assert_eq!(transverse.len(), 6);

@@ -49,13 +49,20 @@ pub(in crate::drawing::section) fn project(
             let policy = solid.geometry_policy();
             let hatch = solids[source].hatch;
             if let Some((body, placement)) = solid.torus_body() {
-                scene.axial_torus(
-                    DrawingSolid { solid, hatch },
-                    placement,
-                    body.radii_mm(),
-                    source,
-                    depth,
-                )?;
+                let input = DrawingSolid { solid, hatch };
+                let (center, axis) = torus::drawing_frame(placement, options.frame);
+                if axis[0].hypot(axis[1]) <= torus::ANGULAR {
+                    scene.axial_torus(input, placement, body.radii_mm(), source, depth)?;
+                } else {
+                    scene.transverse_torus(
+                        input,
+                        placement,
+                        center,
+                        body.radii_mm(),
+                        source,
+                        depth,
+                    )?;
+                }
                 continue;
             }
             let Some((shell, placement)) = solid.drawing_warped_shell() else {
@@ -178,6 +185,176 @@ struct Retained {
 }
 
 impl Retained {
+    fn transverse_torus(
+        &mut self,
+        input: DrawingSolid<'_>,
+        placement: PlaneFrame,
+        center: Point,
+        radii: [f64; 2],
+        source: usize,
+        depth: DepthRange,
+    ) -> Result<(), GeometryError> {
+        let near = self
+            .options
+            .section_offset_mm
+            .expect("retained section depth");
+        let far = self
+            .options
+            .section_depth_mm
+            .map(|distance| near - distance);
+        let (_, rims) = torus::scene_member(placement, radii, self.options.frame, source)?;
+        let [major, minor] = radii;
+        let outer = major + minor;
+        let nearest = center[2].clamp(far.unwrap_or(f64::NEG_INFINITY), near);
+        let delta = (nearest - center[2]).abs();
+        if delta >= outer {
+            return Ok(());
+        }
+        let (_, axis) = torus::drawing_frame(placement, self.options.frame);
+        let Some(blocker) = AnalyticFace::retained_torus(center, axis, radii, depth)
+            .map_err(planar::projection_error)?
+        else {
+            return Ok(());
+        };
+        let [a, b, _] = axis;
+        let across = [b.abs(), a.abs()];
+        let width = ((outer - delta) * (outer + delta)).sqrt();
+        let axial = if delta <= major {
+            minor
+        } else {
+            ((outer - delta) * (delta - major + minor)).sqrt()
+        };
+        let bounds: [[f64; 2]; 2] = std::array::from_fn(|i| {
+            let extent = axis[i].abs() * axial + across[i] * width;
+            [center[i] - extent, center[i] + extent]
+        });
+        let windows = [self.options.section_u_mm, self.options.section_v_mm];
+        if windows
+            .into_iter()
+            .zip(bounds)
+            .any(|(window, [min, max])| window.is_some_and(|[lo, hi]| lo >= max || hi <= min))
+        {
+            return Ok(());
+        }
+        if windows
+            .into_iter()
+            .zip(bounds)
+            .any(|(window, [min, max])| window.is_some_and(|[lo, hi]| lo > min || hi < max))
+        {
+            return Err(err(
+                GeometryErrorKind::Unsupported,
+                "Rust retained transverse torus sections require the window to contain the retained torus",
+            ));
+        }
+        self.blockers.push(blocker);
+        let at_midplane = |z: f64| {
+            (z - center[2]).abs() <= torus::ANGULAR * z.abs().max(center[2].abs()).max(major)
+        };
+        for rim in rims {
+            if rim.depth_sine == 0. {
+                if !at_midplane(near) && !far.is_some_and(at_midplane) {
+                    self.rims
+                        .extend(depth.clip_rim(rim).map_err(planar::projection_error)?);
+                }
+            } else {
+                self.add_torus_rail(rim, depth)?;
+            }
+        }
+        let cut_options = |z, options: DrawingProjection| DrawingProjection {
+            section_offset_mm: Some(z),
+            section_only: true,
+            section_depth_mm: None,
+            ..options
+        };
+        let mut near_vectors =
+            torus::project(&input, placement, radii, cut_options(near, self.options))?;
+        for vector in &mut near_vectors {
+            vector.source_index = source;
+        }
+        self.extend(near_vectors)?;
+        if let Some(far) = far {
+            let far_input = DrawingSolid {
+                hatch: None,
+                ..input
+            };
+            for vector in
+                torus::project(&far_input, placement, radii, cut_options(far, self.options))?
+            {
+                match vector.curve {
+                    VectorCurve::Line { a, b } => self.lines.push(LineCandidate {
+                        source,
+                        points: [a, b].map(|[x, y]| [x, y, far]),
+                    }),
+                    VectorCurve::Ellipse {
+                        center,
+                        u,
+                        v,
+                        major_mm,
+                        minor_mm,
+                        start_rad,
+                        end_rad,
+                    } => {
+                        self.rims.push(SpatialRimCandidate {
+                            source,
+                            ellipse: Ellipse {
+                                center,
+                                u,
+                                v,
+                                major: major_mm,
+                                minor: minor_mm,
+                                trim: [start_rad, end_rad],
+                            },
+                            depth: far,
+                            depth_sine: 0.,
+                        });
+                    }
+                    _ => return Err(invalid_cap()),
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn add_torus_rail(
+        &mut self,
+        rim: SpatialRimCandidate,
+        depth: DepthRange,
+    ) -> Result<(), GeometryError> {
+        let front = depth.clip_rim(rim).map_err(planar::projection_error)?;
+        let rear = depth
+            .clip_rim(SpatialRimCandidate {
+                depth_sine: -rim.depth_sine,
+                ..rim
+            })
+            .map_err(planar::projection_error)?;
+        // Both 3D rails project onto the same line. Keep the nearer rail
+        // where both survive and the rear rail where clipping removed it.
+        for rear in rear {
+            let [mut lo, hi] = rear.ellipse.trim;
+            let mut add = |trim| {
+                self.rims.push(SpatialRimCandidate {
+                    ellipse: Ellipse {
+                        trim,
+                        ..rear.ellipse
+                    },
+                    ..rear
+                })
+            };
+            for edge in &front {
+                let [a, b] = edge.ellipse.trim;
+                if lo < a.min(hi) {
+                    add([lo, a.min(hi)]);
+                }
+                lo = lo.max(b);
+            }
+            if lo < hi {
+                add([lo, hi]);
+            }
+        }
+        self.rims.extend(front);
+        Ok(())
+    }
+
     fn axial_torus(
         &mut self,
         input: DrawingSolid<'_>,

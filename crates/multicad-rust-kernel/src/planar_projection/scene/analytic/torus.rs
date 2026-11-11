@@ -6,6 +6,7 @@ pub(super) struct Torus {
     major: f64,
     minor: f64,
     axis: Point,
+    solid_depth_clip: bool,
 }
 
 impl AnalyticFace {
@@ -14,6 +15,25 @@ impl AnalyticFace {
         center: Point,
         axis: Point,
         [major, minor]: [f64; 2],
+    ) -> Result<Self, ProjectionError> {
+        Self::torus_face(center, axis, [major, minor], false)
+    }
+
+    /// A retained ring torus, including material on the exposed depth caps.
+    pub fn retained_torus(
+        center: Point,
+        axis: Point,
+        radii: [f64; 2],
+        depth: DepthRange,
+    ) -> Result<Option<Self>, ProjectionError> {
+        Ok(Self::torus_face(center, axis, radii, true)?.retained(depth))
+    }
+
+    fn torus_face(
+        center: Point,
+        axis: Point,
+        [major, minor]: [f64; 2],
+        solid_depth_clip: bool,
     ) -> Result<Self, ProjectionError> {
         if !bounded(center)
             || !(1. - 1e-9..=1. + 1e-9).contains(&dot(axis, axis))
@@ -38,6 +58,7 @@ impl AnalyticFace {
                 major,
                 minor,
                 axis,
+                solid_depth_clip,
             }),
             bounds: Bounds {
                 min: sub(center, extent),
@@ -106,24 +127,43 @@ impl Torus {
                 harmonic: path.harmonic,
             });
         }
-        let front = |t| {
-            let [u, v] = [u.at(t), v.at(t)];
-            if axial {
-                chord(self.minor, (u.hypot(v) - self.major).abs(), roundoff)
-            } else {
-                chord(self.minor, v.abs(), roundoff)
-                    .and_then(|radius| chord(self.major + radius, u.abs(), roundoff))
-            }
-        };
         drawing_events::spans(
             &mut work.crossings,
             span,
             |t| {
-                front(t).is_some_and(|hit| {
-                    hit > gap_depth.at(t)
-                        && low.is_none_or(|low| hit >= low)
-                        && high.is_none_or(|high| hit <= high)
-                })
+                let [u, v] = [u.at(t), v.at(t)];
+                let radial_offset = if axial {
+                    (u.hypot(v) - self.major).abs()
+                } else {
+                    v.abs()
+                };
+                let Some(half) = chord(self.minor, radial_offset, roundoff) else {
+                    return false;
+                };
+                let outer = if axial {
+                    half
+                } else {
+                    let Some(outer) = chord(self.major + half, u.abs(), roundoff) else {
+                        return false;
+                    };
+                    outer
+                };
+                let candidate = gap_depth.at(t);
+                if !self.solid_depth_clip {
+                    return outer > candidate
+                        && low.is_none_or(|low| outer >= low)
+                        && high.is_none_or(|high| outer <= high);
+                }
+                let inner = if axial {
+                    0.
+                } else {
+                    chord(self.major - half, u.abs(), 0.).unwrap_or(0.)
+                };
+                let low = low.unwrap_or(f64::NEG_INFINITY).max(candidate);
+                let high = high.unwrap_or(f64::INFINITY);
+                [[-outer, -inner], [inner, outer]]
+                    .into_iter()
+                    .any(|[lo, hi]| hi.min(high) > lo.max(low))
             },
             |span| work.hidden.push(span),
         );

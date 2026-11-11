@@ -1432,3 +1432,63 @@ fn transverse_torus_resolves_the_curved_front_depth_and_respects_view_clips() {
         ));
     }
 }
+
+#[test]
+fn retained_torus_depth_caps_hide_stock_without_filling_the_bore() {
+    for (axis, depth, expected) in [
+        (
+            [0., 1., 0.],
+            [-0.5, -1.],
+            [(64_f64 - 0.25).sqrt(), 15_f64.sqrt()],
+        ),
+        (
+            [0., 0., 1.],
+            [-0.5, -1.],
+            [6. + 3.75_f64.sqrt(), 6. - 3.75_f64.sqrt()],
+        ),
+    ] {
+        let body = AnalyticFace::retained_torus(
+            [0.; 3],
+            axis,
+            [6., 2.],
+            DepthRange::new(depth[0], Some(depth[1])).unwrap(),
+        )
+        .unwrap()
+        .unwrap();
+        let lines = [-2., 0.].map(|z| LineCandidate {
+            source: usize::from(z == 0.),
+            points: [[-10., 0., z], [10., 0., z]],
+        });
+        let (_, _, result) = project_scene_with_analytic_faces(
+            &[],
+            &[],
+            SceneExtras {
+                lines: &lines,
+                ..Default::default()
+            },
+            &[body],
+            options(),
+        )
+        .unwrap();
+        let hidden: Vec<_> = result
+            .iter()
+            .filter(|segment| segment.edge.hidden)
+            .map(|segment| {
+                assert_eq!(segment.source, 0);
+                let Curve::Line(ends) = segment.edge.curve else {
+                    panic!("Expected stock lines")
+                };
+                ends.map(|p| p[0])
+            })
+            .collect();
+        assert_eq!(hidden.len(), 2);
+        let [outer, inner] = expected;
+        for (actual, expected) in hidden
+            .into_iter()
+            .flatten()
+            .zip([-outer, -inner, inner, outer])
+        {
+            close(actual, expected);
+        }
+    }
+}

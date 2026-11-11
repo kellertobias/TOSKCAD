@@ -8,16 +8,16 @@ use std::f64::consts::{PI, TAU};
 
 mod transverse;
 
-const ANGULAR: f64 = 64. * f64::EPSILON;
+pub(super) const ANGULAR: f64 = 64. * f64::EPSILON;
 
 fn unsupported() -> GeometryError {
     err(
         GeometryErrorKind::Unsupported,
-        "Rust torus drawings require an axial or transverse view. Retained sections require an axial view.",
+        "Rust torus drawings require an axial or transverse view.",
     )
 }
 
-fn drawing_frame(torus: PlaneFrame, view: PlaneFrame) -> ([f64; 3], [f64; 3]) {
+pub(super) fn drawing_frame(torus: PlaneFrame, view: PlaneFrame) -> ([f64; 3], [f64; 3]) {
     let axes = planar::view_axes(view);
     let local = |point: [f64; 3]| {
         axes.map(|axis| axis.into_iter().zip(point).map(|(a, b)| a * b).sum::<f64>())
@@ -119,7 +119,10 @@ pub(super) fn project(
         if axial {
             return axial_section(input, center, z, [major, minor], depth, options);
         }
-        if options.section_only && facing.abs() <= ANGULAR {
+        if facing.abs() <= ANGULAR {
+            if !options.section_only {
+                return section::project(std::slice::from_ref(input), options, depth);
+            }
             let delta = depth - z;
             if delta.abs() >= major + minor {
                 return Ok(Vec::new());
