@@ -449,6 +449,18 @@ impl Writer {
         self.append(|file| normal_sweep::encode(file, sweep, &[], placement, reverse_sweep))
     }
 
+    /// Append the single shared shell of certified normal cap relief.
+    pub fn append_normal_relief(
+        &mut self,
+        relief: &crate::normal_relief::Relief,
+        origin: Point,
+        u: Point,
+        v: Point,
+    ) -> Result<(), StepError> {
+        let placement = Placement::new(origin, u, v)?;
+        self.append(|file| normal_relief::encode(file, relief, placement))
+    }
+
     /// Append the exact cubic and analytic trims of a verified normal sweep.
     pub fn append_spline_sweep(
         &mut self,

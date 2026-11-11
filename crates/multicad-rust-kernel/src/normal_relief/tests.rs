@@ -135,6 +135,69 @@ fn all_192_motifs_are_certified_without_iterated_solid_booleans() {
     assert_eq!(relief.boundary().faces.len(), 390);
     certify(&relief.mesh(options()).unwrap()).unwrap();
 }
+
+#[test]
+fn full_public_density_keeps_fifty_exact_line_segments_per_motif() {
+    let corners = [[-50., -40.], [50., -40.], [50., 40.], [-50., 40.]];
+    let points = (0..1024)
+        .map(|i| {
+            let a = corners[i / 256];
+            let b = corners[(i / 256 + 1) % 4];
+            let t = (i % 256) as f64 / 256.;
+            std::array::from_fn(|j| a[j] + (b[j] - a[j]) * t)
+        })
+        .collect::<Vec<_>>();
+    let base = Sweep::new(
+        vec![
+            (0..1024)
+                .map(|i| Edge::Line {
+                    a: points[i],
+                    b: points[(i + 1) % 1024],
+                })
+                .collect(),
+        ],
+        4.,
+        TOL,
+        MIN,
+    )
+    .unwrap();
+    let motifs = (0..192)
+        .map(|i| {
+            let center = [-47. + (i % 16) as f64 * 6., -37. + (i / 16) as f64 * 6.];
+            let points = (0..50)
+                .map(|j| {
+                    let (s, c) = (std::f64::consts::TAU * j as f64 / 50.).sin_cos();
+                    [center[0] + 0.5 * c, center[1] + 0.5 * s]
+                })
+                .collect::<Vec<_>>();
+            // The authored profile is an exact polygon, not a sampled circle.
+            let ring = (0..50)
+                .map(|j| Edge::Line {
+                    a: points[j],
+                    b: points[(j + 1) % 50],
+                })
+                .collect();
+            Sweep::new(vec![ring], 0.5, TOL, MIN).unwrap()
+        })
+        .collect::<Vec<_>>();
+    let started = std::time::Instant::now();
+    let relief = Relief::new(base, motifs, Kind::Raised, TOL, MIN).unwrap();
+    eprintln!("192x50-edge cap proof: {:?}", started.elapsed());
+    assert_eq!(
+        relief
+            .exposed_cap()
+            .rings()
+            .iter()
+            .map(Vec::len)
+            .sum::<usize>(),
+        10624
+    );
+    assert_eq!(
+        Sweep::new(relief.exposed_cap().rings().to_vec(), 4., TOL, MIN),
+        Err(crate::normal_sweep::Error::Limit)
+    );
+    certify(&relief.mesh(options()).unwrap()).unwrap();
+}
 #[test]
 fn bad_contact_overlap_holes_floor_and_cancellation_leave_inputs_unchanged() {
     let base = base();

@@ -52,7 +52,18 @@ fn tree(
         item: ids[0],
     });
     if ids.len() > 1 {
-        let axis = usize::from(bounds.max[1] - bounds.min[1] > bounds.max[0] - bounds.min[0]);
+        // Long parallel edges can have equal X centers despite spanning a
+        // wide box. Split their centers, not their physical edge lengths.
+        let centers = ids
+            .iter()
+            .map(|&i| {
+                let b = items[i].bounds;
+                let p = std::array::from_fn(|j| b.min[j].midpoint(b.max[j]));
+                Bounds { min: p, max: p }
+            })
+            .reduce(merged)
+            .expect("nonempty source centers");
+        let axis = usize::from(centers.max[1] - centers.min[1] > centers.max[0] - centers.min[0]);
         budget.spend(ids.len() * ((usize::BITS - ids.len().leading_zeros()) as usize))?;
         ids.sort_unstable_by(|&a, &b| {
             items[a].bounds.min[axis]

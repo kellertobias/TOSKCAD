@@ -168,33 +168,45 @@ impl Relief {
         }
         let cap = Sweep::relief_cap(rings, base.height_mm(), tolerance_mm, minimum_mm, interrupt)
             .map_err(cap_error)?;
+        // Integrate positive columns for recesses. Subtracting two nearly
+        // equal full-height solids would needlessly cancel both mass and
+        // first moments; the certified exposed cap gives an exact partition.
+        let anchor = [
+            base.centroid()[0],
+            base.centroid()[1],
+            base.height_mm() / 2.,
+        ];
         let mut sums = [Sum::default(); 4];
-        let bv = base.volume_mm3();
-        let bc = base.centroid();
-        for (sum, value) in
-            sums.iter_mut()
-                .zip([bv, bv * bc[0], bv * bc[1], bv * base.height_mm() / 2.])
-        {
-            sum.add(value);
-        }
+        let mut add_column = |volume: f64, center: Point| {
+            sums[0].add(volume);
+            for i in 0..3 {
+                sums[i + 1].add(volume * (center[i] - anchor[i]));
+            }
+        };
+        let initial = if kind == Kind::Raised { &base } else { &cap };
+        add_column(
+            initial.volume_mm3(),
+            [
+                initial.centroid()[0],
+                initial.centroid()[1],
+                base.height_mm() / 2.,
+            ],
+        );
         let mut area = 2. * base.area_mm2() + base.height_mm() * perimeter(&base);
         for motif in &motifs {
             check(interrupt)?;
-            let volume = motif.volume_mm3();
+            let (height, z) = if kind == Kind::Raised {
+                (motif.height_mm(), base.height_mm() + motif.height_mm() / 2.)
+            } else {
+                let floor = base.height_mm() - motif.height_mm();
+                (floor, floor / 2.)
+            };
             let center = motif.centroid();
-            let sign = if kind == Kind::Raised { 1. } else { -1. };
-            for (sum, value) in sums.iter_mut().zip([
-                volume,
-                volume * center[0],
-                volume * center[1],
-                volume * (base.height_mm() + sign * motif.height_mm() / 2.),
-            ]) {
-                sum.add(sign * value);
-            }
+            add_column(motif.area_mm2() * height, [center[0], center[1], z]);
             area += motif.height_mm() * perimeter(motif);
         }
         let [volume, x, y, z] = sums.map(Sum::value);
-        let centroid = [x / volume, y / volume, z / volume];
+        let centroid = std::array::from_fn(|i| anchor[i] + [x, y, z][i] / volume);
         if !volume.is_finite()
             || volume <= 0.
             || !area.is_finite()
