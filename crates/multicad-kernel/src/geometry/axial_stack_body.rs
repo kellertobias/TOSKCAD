@@ -224,6 +224,7 @@ impl AxialStackBody {
             geometry,
             origins,
         };
+        frame.checked_metric_bounds(body.bounds(PlaneFrame::default()), policy)?;
         let bounds = body.bounds(frame);
         policy.point(bounds.min)?;
         policy.point(bounds.max)?;
@@ -419,5 +420,53 @@ impl AxialStackBody {
             frame,
             false,
         )
+    }
+}
+
+#[cfg(test)]
+mod metric_frame_tests {
+    use super::*;
+    #[test]
+    fn axial_stack_constructor_checks_negative_local_levels() {
+        let policy = GeometryPolicy::default();
+        let frame = PlaneFrame {
+            u: [1. + 4e-11, 0., 0.],
+            ..Default::default()
+        };
+        for length in [10., 1_000_000.] {
+            let geometry = ProfileStack::union(
+                &[
+                    Operand {
+                        span_mm: [-length, 1.],
+                        profile: Profile::Rectangle {
+                            min: [-1.; 2],
+                            max: [1.; 2],
+                        },
+                    },
+                    Operand {
+                        span_mm: [0., 2.],
+                        profile: Profile::Circle {
+                            center: [0.; 2],
+                            radius_mm: 1.,
+                        },
+                    },
+                ],
+                policy.linear_tolerance_mm,
+                policy.minimum_feature_mm,
+            )
+            .unwrap();
+            let result = Solid::from_imported_axial_stack(geometry, frame, EntityId::new(), policy);
+            if length > 100. {
+                assert_eq!(
+                    result
+                        .err()
+                        .expect("remote negative level metric displacement")
+                        .kind,
+                    GeometryErrorKind::Unsupported
+                );
+            } else {
+                result.unwrap();
+            }
+        }
     }
 }

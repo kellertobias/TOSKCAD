@@ -260,6 +260,18 @@ impl PlaneFrame {
         }
         Ok(())
     }
+    // Callers supply the analytic enclosure in the body's retained local
+    // chart, not an authored descriptor that may have been recentered.
+    fn checked_metric_bounds(
+        self,
+        bounds: Bounds,
+        policy: GeometryPolicy,
+    ) -> Result<(), GeometryError> {
+        self.checked_metric_extent(
+            std::array::from_fn(|i| bounds.min[i].abs().max(bounds.max[i].abs())),
+            policy,
+        )
+    }
     pub fn normal(self) -> [f64; 3] {
         cross(self.u, self.v)
     }
@@ -1372,7 +1384,9 @@ impl Solid {
                     SolidBody::CosmeticFastener(Rc::clone(body), transform.frame(*frame))
                 }
                 SolidBody::Linear(body, frame) => {
-                    SolidBody::Linear(Rc::clone(body), transform.frame(*frame))
+                    let frame = transform.frame(*frame);
+                    frame.checked_metric_bounds(body.bounds(PlaneFrame::default()), self.policy)?;
+                    SolidBody::Linear(Rc::clone(body), frame)
                 }
                 SolidBody::Revolved(body, frame) => {
                     SolidBody::Revolved(Rc::clone(body), transform.frame(*frame))
@@ -1384,7 +1398,9 @@ impl Solid {
                     SolidBody::SplineSweep(Rc::clone(body), transform.frame(*frame))
                 }
                 SolidBody::NormalSweep(body, frame) => {
-                    SolidBody::NormalSweep(Rc::clone(body), transform.frame(*frame))
+                    let frame = transform.frame(*frame);
+                    frame.checked_metric_bounds(body.bounds(PlaneFrame::default()), self.policy)?;
+                    SolidBody::NormalSweep(Rc::clone(body), frame)
                 }
                 SolidBody::SpurGear(body, frame) => {
                     SolidBody::SpurGear(Rc::clone(body), transform.frame(*frame))
@@ -1414,10 +1430,14 @@ impl Solid {
                     SolidBody::Torus(Rc::clone(body), frame)
                 }
                 SolidBody::RoundedCylinder(body, frame) => {
-                    SolidBody::RoundedCylinder(Rc::clone(body), transform.frame(*frame))
+                    let frame = transform.frame(*frame);
+                    frame.checked_metric_bounds(body.bounds(PlaneFrame::default()), self.policy)?;
+                    SolidBody::RoundedCylinder(Rc::clone(body), frame)
                 }
                 SolidBody::AxialStack(body, frame) => {
-                    SolidBody::AxialStack(Rc::clone(body), transform.frame(*frame))
+                    let frame = transform.frame(*frame);
+                    frame.checked_metric_bounds(body.bounds(PlaneFrame::default()), self.policy)?;
+                    SolidBody::AxialStack(Rc::clone(body), frame)
                 }
                 SolidBody::PlanarBoolean(body, frame) => {
                     SolidBody::PlanarBoolean(Rc::clone(body), transform.frame(*frame))

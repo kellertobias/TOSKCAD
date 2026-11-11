@@ -466,6 +466,7 @@ impl Solid {
         policy: GeometryPolicy,
     ) -> Result<Self, GeometryError> {
         frame.checked(policy)?;
+        frame.checked_metric_bounds(body.bounds(PlaneFrame::default()), policy)?;
         let bounds = body.bounds(frame);
         policy.point(bounds.min)?;
         policy.point(bounds.max)?;

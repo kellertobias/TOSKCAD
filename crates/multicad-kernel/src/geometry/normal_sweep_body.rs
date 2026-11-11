@@ -175,6 +175,9 @@ impl Solid {
             stock_history: None,
             cap_anchors: None,
         };
+        profile
+            .frame
+            .checked_metric_bounds(body.bounds(PlaneFrame::default()), policy)?;
         let bounds = body.bounds(profile.frame);
         policy.point(bounds.min)?;
         policy.point(bounds.max)?;
