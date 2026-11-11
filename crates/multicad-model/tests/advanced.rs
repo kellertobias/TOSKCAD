@@ -4,6 +4,8 @@ mod common;
 mod parts;
 #[path = "advanced/profiles.rs"]
 mod profiles;
+#[path = "advanced/rust_cylindrical_shell.rs"]
+mod rust_cylindrical_shell;
 #[path = "advanced/rust_draft.rs"]
 mod rust_draft;
 #[path = "advanced/rust_mirror.rs"]

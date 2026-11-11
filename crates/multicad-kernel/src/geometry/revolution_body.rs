@@ -9,6 +9,7 @@ use multicad_rust_kernel::{
 };
 use std::collections::BTreeSet;
 
+mod shell;
 mod topology;
 mod union;
 

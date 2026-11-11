@@ -150,8 +150,8 @@ impl Solid {
         }
         Ok(faces.iter().map(|f| f.key.ordinal).collect())
     }
-    /// Positive thickness builds inward; negative builds outward. Rust
-    /// handles one rectangular opening with sharp offset intersections.
+    /// Positive thickness builds inward; negative builds outward. Rust handles
+    /// selected rectangular sides and cylindrical cap openings with sharp offsets.
     pub fn shell_named(
         &self,
         openings: &[TreatmentFace],
@@ -163,6 +163,9 @@ impl Solid {
         policy.length(thickness_mm.abs())?;
         let indices = self.selected_faces(openings, feature, true)?;
         if self.uses_rust_geometry() {
+            if let Some(result) = self.shell_cylindrical(openings, thickness_mm, feature, policy) {
+                return result;
+            }
             return self.shell_rectangular(openings, thickness_mm, feature, policy);
         }
         let handle = ffi::shell_solid(
