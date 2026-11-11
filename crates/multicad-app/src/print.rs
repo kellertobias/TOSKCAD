@@ -14,9 +14,7 @@ pub struct Backend {
 }
 impl Backend {
     pub fn new() -> Self {
-        Self {
-            worker: PrintWorker::new(Exporter::default()),
-        }
+        Self::with_geometry_backend(GeometryBackend::default())
     }
     pub fn with_geometry_backend(backend: GeometryBackend) -> Self {
         Self {

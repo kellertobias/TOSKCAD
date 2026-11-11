@@ -3140,3 +3140,30 @@ fn rust_model_worker_picks_a_sketch_extrusion_around_its_holes_and_notch() {
         );
     }
 }
+
+#[test]
+fn default_scene_backend_publishes_with_the_linked_geometry_provider() {
+    let (session, stock) = box_session();
+    let mut backend = Backend::new();
+    assert_eq!(backend.geometry_backend, GeometryBackend::default());
+    assert_eq!(
+        backend.supports_fast_hardware_preview(),
+        !multicad_kernel::OCCT_LINKED
+    );
+    let stamp = SceneStamp {
+        document: session.document().id(),
+        revision: session.revision(),
+        generation: 1,
+    };
+    backend.request(session.document(), stamp).unwrap();
+    let scene = receive(&mut backend).result.unwrap();
+    assert_eq!(scene.stamp(), stamp);
+    assert!(scene.is_full_model());
+    assert!(scene.geometries().contains_key(&stock.feature));
+    if !multicad_kernel::OCCT_LINKED {
+        let mut native = Backend::factory(GeometryBackend::OpenCascade).unwrap()();
+        native.request(session.document(), stamp).unwrap();
+        let failure = wait_for_scene(&mut *native).result.err().unwrap();
+        assert!(failure.contains("OpenCascade is unavailable"), "{failure}");
+    }
+}

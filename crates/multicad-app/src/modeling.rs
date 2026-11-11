@@ -108,18 +108,20 @@ impl Backend {
         )
     }
     pub fn new() -> Self {
+        let geometry_backend = GeometryBackend::default();
         Self {
-            runtime: Self::runtime(GeometryBackend::OpenCascade),
+            runtime: Self::runtime(geometry_backend),
             expected: None,
-            geometry_backend: GeometryBackend::OpenCascade,
+            geometry_backend,
         }
     }
     /// Each backend publishes independently while exact geometry remains on
     /// one app-owned native worker across preview and canonical requests.
     pub fn factory(backend: GeometryBackend) -> Result<viewport::BackendFactory, String> {
-        let owner = match backend {
-            GeometryBackend::OpenCascade => Self::new().runtime?,
-            GeometryBackend::Rust => Self::runtime(backend)?,
+        let owner = if backend == GeometryBackend::default() {
+            Self::new().runtime?
+        } else {
+            Self::runtime(backend)?
         };
         Ok(Arc::new(move || {
             Box::new(Self {

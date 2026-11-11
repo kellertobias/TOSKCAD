@@ -303,7 +303,7 @@ impl Backend {
         Self {
             worker: None,
             generation: 0,
-            geometry_backend: GeometryBackend::OpenCascade,
+            geometry_backend: GeometryBackend::default(),
         }
     }
     pub fn with_geometry_backend(geometry_backend: GeometryBackend) -> Self {
