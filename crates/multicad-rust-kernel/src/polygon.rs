@@ -6,17 +6,17 @@ use std::cmp::Ordering;
 type Point = [Rational; 2];
 type Segment = [Point; 2];
 
-const ZERO: Rational = Rational {
-    numerator: 0,
-    denominator: 1,
+const ZERO: Rational = match Rational::new(0, 1) {
+    Ok(value) => value,
+    Err(_) => panic!("Small integer is representable"),
 };
-const TWO: Rational = Rational {
-    numerator: 2,
-    denominator: 1,
+const TWO: Rational = match Rational::new(2, 1) {
+    Ok(value) => value,
+    Err(_) => panic!("Small integer is representable"),
 };
-const SIX: Rational = Rational {
-    numerator: 6,
-    denominator: 1,
+const SIX: Rational = match Rational::new(6, 1) {
+    Ok(value) => value,
+    Err(_) => panic!("Small integer is representable"),
 };
 // The exact topology check compares edge pairs. Bound that work before any
 // pairwise validation, including comparisons between distinct rings.

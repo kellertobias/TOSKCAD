@@ -10,4 +10,5 @@ license.workspace = true
 workspace = true
 
 [dependencies]
+multicad-precision.workspace = true
 spade = "=2.15.1"

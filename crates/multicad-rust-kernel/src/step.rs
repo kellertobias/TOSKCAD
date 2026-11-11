@@ -554,14 +554,14 @@ fn encode_rectangle(
     placement: Placement,
 ) -> Result<Entity, StepError> {
     let [length, width, height] = size;
-    if size.iter().any(|extent| extent.numerator <= 0) {
+    if size.iter().any(|extent| extent.ratio().0 <= 0) {
         return Err(StepError::InvalidGeometry);
     }
-    let zero = Rational {
-        numerator: 0,
-        denominator: 1,
+    const ZERO: Rational = match Rational::new(0, 1) {
+        Ok(value) => value,
+        Err(_) => panic!("Small integer is representable"),
     };
-    let ring = [[zero, zero], [length, zero], [length, width], [zero, width]];
+    let ring = [[ZERO, ZERO], [length, ZERO], [length, width], [ZERO, width]];
     encode_prism(
         file,
         &mut [ring.as_slice()].into_iter(),

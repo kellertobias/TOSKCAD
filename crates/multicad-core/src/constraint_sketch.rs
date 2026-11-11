@@ -90,16 +90,35 @@ impl Dimension {
             return Err("Incompatible sketch dimension units".into());
         }
         let value = match self {
-            Self::Literal { value, .. } if unit == target => *value,
-            Self::Literal { value, .. } => *value * unit.scale() / target.scale(),
-            Self::Expression { expression } => expression
-                .evaluate(
-                    parameters
-                        .ok_or("Parameter-driven sketch requires an evaluated parameter context")?,
+            Self::Literal { value, .. }
+                if unit == target && unit.dimension() == crate::parameters::Dimension::LENGTH =>
+            {
+                *value
+            }
+            Self::Literal { value, .. } => {
+                let exact = (unit.dimension() == crate::parameters::Dimension::LENGTH)
+                    .then(|| crate::parameters::literal_length_in(*value, unit, target))
+                    .and_then(Result::ok);
+                exact.map_or_else(
+                    || *value * unit.scale() / target.scale(),
+                    |value| value.as_f64(),
                 )
-                .map_err(|e| e.to_string())?
-                .in_unit(target)
-                .ok_or("Incompatible expression dimension")?,
+            }
+            Self::Expression { expression } => {
+                let parameters = parameters
+                    .ok_or("Parameter-driven sketch requires an evaluated parameter context")?;
+                let exact = (unit.dimension() == crate::parameters::Dimension::LENGTH)
+                    .then(|| crate::parameters::exact_length_in(self, target, parameters))
+                    .and_then(Result::ok);
+                match exact {
+                    Some(value) => value.as_f64(),
+                    None => expression
+                        .evaluate(parameters)
+                        .map_err(|e| e.to_string())?
+                        .in_unit(target)
+                        .ok_or("Incompatible expression dimension")?,
+                }
+            }
         };
         if !value.is_finite() || value.abs() > 1e9 {
             return Err("Sketch dimension result is nonfinite or exceeds limits".into());

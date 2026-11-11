@@ -1,7 +1,7 @@
 use multicad_core::{
     commands::{Actor, Channel, Session},
     constraint_sketch::Dimension,
-    document::Document,
+    document::{Document, Entity, EntityData, Mutation},
     model::{
         self, BodyInput, PrimitiveParameters, PrimitiveRequest, ThreadFamily, ThreadFit,
         ThreadHand, ThreadMode, ThreadParameters, ThreadRequest, length,
@@ -48,13 +48,62 @@ fn thread_parameters(family: ThreadFamily, hand: ThreadHand, internal: bool) -> 
 
 #[test]
 fn equal_authored_stock_and_tool_lengths_do_not_create_a_conversion_floor() {
-    let mut session = Session::new(Document::new("Literal through thread").unwrap()).unwrap();
-    let height = 1.956;
+    equal_length_case(None);
+}
+
+#[test]
+fn equal_expression_stock_and_tool_lengths_share_one_exact_evaluation() {
+    equal_length_case(Some("=1.956 mm"));
+    equal_length_case(Some("=$stock_height"));
+}
+
+#[test]
+fn shared_approximate_length_is_retained_when_exact_formula_limits_are_reached() {
+    let text = "=7.43 mm + 1 mm / 99999991 + 1 mm / 100000007 + 1 mm / 100000037";
+    let document = Document::new("Bounded arithmetic").unwrap();
+    let parameters = multicad_core::parameters::evaluate(&document).unwrap();
+    let dimension = Dimension::Expression {
+        expression: multicad_core::parameters::BoundExpression::bind(&document, text, "mm", None)
+            .unwrap(),
+    };
+    assert!(multicad_core::parameters::exact_length_mm(&dimension, &parameters).is_err());
+    equal_length_case(Some(text));
+}
+
+fn equal_length_case(expression: Option<&str>) {
+    let document = Document::new("Exact through thread")
+        .unwrap()
+        .edited(&[Mutation::Insert(Entity::new(
+            "stock_height",
+            EntityData::Parameter {
+                expression: "1.956".into(),
+                unit: "mm".into(),
+                inputs: vec![],
+                exposed: false,
+            },
+        ))])
+        .unwrap();
+    let dimension = expression.map_or_else(
+        || length(1.956),
+        |text| Dimension::Expression {
+            expression: multicad_core::parameters::BoundExpression::bind(
+                &document, text, "mm", None,
+            )
+            .unwrap(),
+        },
+    );
+    let mut session = Session::new(document).unwrap();
+    let height = dimension
+        .value_in(
+            multicad_core::parameters::Unit::Millimeter,
+            Some(session.parameters()),
+        )
+        .unwrap();
     let blank = PrimitiveRequest::new(
         "Stock",
         PrimitiveParameters::Cylinder {
             radius: length(5.),
-            height: length(height),
+            height: dimension.clone(),
             frame: Default::default(),
         },
     );
@@ -66,7 +115,7 @@ fn equal_authored_stock_and_tool_lengths_do_not_create_a_conversion_floor() {
         )
         .unwrap();
     let mut parameters = thread_parameters(ThreadFamily::Unc, ThreadHand::Right, true);
-    parameters.length = length(height);
+    parameters.length = dimension;
     let request = ThreadRequest::receiving(
         "Through",
         ThreadMode::CutInternal,

@@ -1,6 +1,10 @@
 //! Typed, bounded expression evaluation over the canonical document.
 mod bound;
+mod exact_length;
 mod expression;
+pub(crate) use exact_length::exact_length_in;
+pub use exact_length::exact_length_mm;
+pub(crate) use exact_length::literal_length_in;
 mod length_display;
 pub use bound::*;
 pub use length_display::*;

@@ -22,7 +22,7 @@ impl AxialCylinder {
         bottom: Rational,
         height: Rational,
     ) -> Result<Self, Error> {
-        if height.numerator <= 0 {
+        if height.ratio().0 <= 0 {
             return Err(Error::InvalidLength);
         }
         let top = bottom.checked_add(height)?;

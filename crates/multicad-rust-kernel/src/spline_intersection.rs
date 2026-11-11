@@ -9,17 +9,17 @@ pub use trace::{Branch, Branches, Endpoint, Trace};
 type Uv = [Rational; 2];
 type Heights = [[Rational; 3]; 3];
 
-const ZERO: Rational = Rational {
-    numerator: 0,
-    denominator: 1,
+const ZERO: Rational = match Rational::new(0, 1) {
+    Ok(value) => value,
+    Err(_) => panic!("Small integer is representable"),
 };
-const ONE: Rational = Rational {
-    numerator: 1,
-    denominator: 1,
+const ONE: Rational = match Rational::new(1, 1) {
+    Ok(value) => value,
+    Err(_) => panic!("Small integer is representable"),
 };
-const TWO: Rational = Rational {
-    numerator: 2,
-    denominator: 1,
+const TWO: Rational = match Rational::new(2, 1) {
+    Ok(value) => value,
+    Err(_) => panic!("Small integer is representable"),
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -245,10 +245,7 @@ impl Quadratic {
             return Err(Error::NonQuadratic);
         }
         let [a, b, c, d, e, f] = if a < ZERO {
-            [a, mixed, c, d, e, f].map(|value| Rational {
-                numerator: -value.numerator,
-                ..value
-            })
+            [a, mixed, c, d, e, f].map(|value| -value)
         } else {
             [a, mixed, c, d, e, f]
         };

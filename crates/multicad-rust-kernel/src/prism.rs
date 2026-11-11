@@ -7,13 +7,13 @@ use crate::{Circle, Error, Rational};
 use std::cmp::Ordering;
 
 type Point = [Rational; 2];
-const ZERO: Rational = Rational {
-    numerator: 0,
-    denominator: 1,
+const ZERO: Rational = match Rational::new(0, 1) {
+    Ok(value) => value,
+    Err(_) => panic!("Small integer is representable"),
 };
-const TWO: Rational = Rational {
-    numerator: 2,
-    denominator: 1,
+const TWO: Rational = match Rational::new(2, 1) {
+    Ok(value) => value,
+    Err(_) => panic!("Small integer is representable"),
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

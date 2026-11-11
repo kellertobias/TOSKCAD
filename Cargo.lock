@@ -2134,6 +2134,7 @@ name = "multicad-core"
 version = "0.1.0-dev"
 dependencies = [
  "epaint_default_fonts",
+ "multicad-precision",
  "quick-xml",
  "serde",
  "serde_json",
@@ -2201,9 +2202,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "multicad-precision"
+version = "0.1.0-dev"
+
+[[package]]
 name = "multicad-rust-kernel"
 version = "0.1.0-dev"
 dependencies = [
+ "multicad-precision",
  "spade",
 ]
 
