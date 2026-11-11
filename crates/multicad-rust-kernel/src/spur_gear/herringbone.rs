@@ -1,4 +1,4 @@
-//! A continuous chevron formed from one exact transverse tooth outline.
+//! A continuous twisted gear formed from one exact transverse tooth outline.
 use super::{Edge, Error, Point, Profile, Spec, TAU, ToothEdge, normal_sweep, rotate};
 use std::f64::consts::PI;
 
@@ -8,13 +8,14 @@ mod topology;
 
 pub use topology::{Band, Curve, Face, Ring, Topology, TopologyEdge};
 
-/// A zero-gap, single solid with two opposite-hand bands and optional bore.
+/// A zero-gap, single solid with two continuous tooth bands and optional bore.
 /// Each section is exactly the shared transverse profile rotated about Z.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Herringbone {
     profile: Profile,
     tip_radius_mm: f64,
     twist_rad_per_mm: f64,
+    helical: bool,
 }
 
 impl Herringbone {
@@ -23,6 +24,39 @@ impl Herringbone {
         twist_rad_per_mm: f64,
         minimum_mm: f64,
         maximum_coordinate_mm: f64,
+    ) -> Result<Self, Error> {
+        Self::with_sweep(
+            spec,
+            twist_rad_per_mm,
+            minimum_mm,
+            maximum_coordinate_mm,
+            false,
+        )
+    }
+
+    /// A single-hand helical sweep. The middle ring is shared by two
+    /// smoothly joined bands so topology remains stable across both laws.
+    pub fn new_helical(
+        spec: Spec,
+        twist_rad_per_mm: f64,
+        minimum_mm: f64,
+        maximum_coordinate_mm: f64,
+    ) -> Result<Self, Error> {
+        Self::with_sweep(
+            spec,
+            twist_rad_per_mm,
+            minimum_mm,
+            maximum_coordinate_mm,
+            true,
+        )
+    }
+
+    fn with_sweep(
+        spec: Spec,
+        twist_rad_per_mm: f64,
+        minimum_mm: f64,
+        maximum_coordinate_mm: f64,
+        helical: bool,
     ) -> Result<Self, Error> {
         if !twist_rad_per_mm.is_finite()
             || twist_rad_per_mm == 0.
@@ -37,6 +71,7 @@ impl Herringbone {
             profile,
             tip_radius_mm: spec.tip_radius_mm,
             twist_rad_per_mm,
+            helical,
         })
     }
 
@@ -52,6 +87,18 @@ impl Herringbone {
         self.twist_rad_per_mm
     }
 
+    pub fn is_helical(&self) -> bool {
+        self.helical
+    }
+
+    pub fn band_twist_rad_per_mm(&self, band: Band) -> f64 {
+        if band == Band::Upper && !self.helical {
+            -self.twist_rad_per_mm
+        } else {
+            self.twist_rad_per_mm
+        }
+    }
+
     pub fn volume_mm3(&self) -> f64 {
         // Every transverse section has the same area; a rigid rotation
         // through depth leaves the sweep's Jacobian determinant equal to one.
@@ -60,7 +107,12 @@ impl Herringbone {
 
     pub fn phase_at(&self, z_mm: f64) -> f64 {
         let height = self.profile.height_mm();
-        self.twist_rad_per_mm * z_mm.min(height - z_mm)
+        self.twist_rad_per_mm
+            * if self.helical {
+                z_mm
+            } else {
+                z_mm.min(height - z_mm)
+            }
     }
 
     pub fn section_point(&self, point: Point, z_mm: f64) -> [f64; 3] {

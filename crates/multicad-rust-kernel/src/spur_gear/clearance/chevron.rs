@@ -25,10 +25,15 @@ pub fn certify_herringbone(
     let rate = gears.map(Herringbone::twist_rad_per_mm);
     let radial_speed = std::array::from_fn::<_, 2, _>(|i| gears[i].tip_radius_mm() * rate[i].abs());
 
-    // Both upper bands repeat the lower sections in exact reverse order.
-    // Cover the lower closed interval; the reflected interval uses the same
-    // material bounds. Samples alone never certify a swept slab.
-    let mut pending = vec![[0., height / 2.]];
+    // Two chevrons repeat their lower sections in exact reverse order.
+    // A single-hand sweep requires the full width. The absolute twist
+    // rate bounds displacement even across a chevron's middle plane.
+    let width = if gears.iter().any(|gear| gear.is_helical()) {
+        height
+    } else {
+        height / 2.
+    };
+    let mut pending = vec![[0., width]];
     let mut remaining = MAX_INTERVALS;
     while let Some([start, end]) = pending.pop() {
         checkpoint(interrupt)?;
@@ -38,7 +43,7 @@ pub fn certify_herringbone(
         let placed = std::array::from_fn(|i| {
             let base = placements[i];
             let [u, v] = base.axes;
-            let (sin, cos) = (rate[i] * midpoint).sin_cos();
+            let (sin, cos) = gears[i].phase_at(midpoint).sin_cos();
             Placement {
                 center_mm: base.center_mm,
                 axes: [
@@ -77,6 +82,73 @@ pub fn certify_herringbone(
 mod tests {
     use super::*;
     use crate::spur_gear::herringbone::tests::fixture;
+
+    #[test]
+    fn single_hand_and_mixed_sweeps_check_material_past_the_middle_plane() {
+        let (spec_a, twist_a) = fixture(24);
+        let (spec_b, twist_b) = fixture(36);
+        let center = spec_a.pitch_radius_mm + spec_b.pitch_radius_mm;
+        let nominal = std::f64::consts::PI * (1. + 1. / 36.);
+        let at_phase = |phase: f64| {
+            let (sin, cos) = phase.sin_cos();
+            [
+                Placement::default(),
+                Placement {
+                    center_mm: [center, 0.],
+                    axes: [[cos, sin], [-sin, cos]],
+                    uncertainty_mm: 0.,
+                },
+            ]
+        };
+        let tolerance = 1e-7;
+
+        let linear_a = Herringbone::new_helical(spec_a, twist_a, 1e-5, 1e7).unwrap();
+        let linear_b = Herringbone::new_helical(spec_b, twist_b, 1e-5, 1e7).unwrap();
+        let placement = at_phase(nominal);
+        assert_eq!(
+            certify_herringbone([&linear_a, &linear_b], placement, tolerance, None),
+            Ok(ResultKind::Clear)
+        );
+        assert_eq!(
+            certify_herringbone(
+                [&linear_a, &linear_b],
+                at_phase(std::f64::consts::PI),
+                tolerance,
+                None
+            ),
+            Ok(ResultKind::CommonInterior)
+        );
+
+        let chevron_b = Herringbone::new(spec_b, twist_b, 1e-5, 1e7).unwrap();
+        let reflected_a = Herringbone::new(spec_a, twist_a, 1e-5, 1e7).unwrap();
+        assert_eq!(
+            certify_herringbone([&reflected_a, &chevron_b], placement, tolerance, None),
+            Ok(ResultKind::Clear)
+        );
+        assert_eq!(
+            certify_herringbone([&linear_a, &chevron_b], placement, tolerance, None),
+            Ok(ResultKind::Unresolved)
+        );
+        // The fixed pitch witness lies in B's gap. An independent point
+        // above it lies strictly in both real outlines at the far cap.
+        // The slab proof must preserve uncertainty about this collision.
+        let (sin, cos) = linear_a.phase_at(spec_a.face_width_mm).sin_cos();
+        let end_a = Placement {
+            axes: [[cos, sin], [-sin, cos]],
+            ..placement[0]
+        };
+        let witness = [spec_a.pitch_radius_mm, 1.8];
+        assert!(
+            Rim::build(linear_a.profile(), end_a, 1e-3, None)
+                .unwrap()
+                .contains_strictly(witness)
+        );
+        assert!(
+            Rim::build(chevron_b.profile(), placement[1], 1e-3, None)
+                .unwrap()
+                .contains_strictly(witness)
+        );
+    }
 
     #[test]
     fn full_width_clearance_separates_contact_from_material_overlap() {

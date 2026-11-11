@@ -5,11 +5,20 @@ const TOL: f64 = 1e-7;
 const XY: [Point; 3] = [[0.; 3], [1., 0., 0.], [0., 1., 0.]];
 
 fn fixture(teeth: u32, hand: f64, bore: f64) -> Herringbone {
+    fixture_with_law(teeth, hand, bore, false)
+}
+
+fn fixture_with_law(teeth: u32, hand: f64, bore: f64, helical: bool) -> Herringbone {
     let beta = 15_f64.to_radians();
     let pressure = (20_f64.to_radians().tan() / beta.cos()).atan();
     let module = 2. / beta.cos();
     let pitch = f64::from(teeth) * module / 2.;
-    Herringbone::new(
+    let create = if helical {
+        Herringbone::new_helical
+    } else {
+        Herringbone::new
+    };
+    create(
         Spec {
             teeth,
             pitch_radius_mm: pitch,
@@ -41,6 +50,25 @@ fn readback_integrates_actual_authored_bands_and_optional_bore() {
         let volume = verify_herringbone(&step, &gear, origin, u, v, TOL).unwrap();
         let expected = gear.volume_mm3();
         assert!((volume - expected).abs() < 1e-5, "{volume} != {expected}");
+    }
+}
+
+#[test]
+fn helical_readback_checks_both_bands_after_placement_and_preserves_the_bore() {
+    for (teeth, hand, bore, [origin, u, v]) in [
+        (24, 1., 4., XY),
+        (36, -1., 4., XY),
+        (24, 1., 0., [[13., -7., 20.], [1., 0., 0.], [0., 0.6, 0.8]]),
+        (24, -1., 4., [[-9., 11., 3.], [0., 0., 1.], [0.8, 0.6, 0.]]),
+    ] {
+        let gear = fixture_with_law(teeth, hand, bore, true);
+        let text = write_herringbone(&gear, origin, u, v, TOL).unwrap();
+        let volume = verify_herringbone(&text, &gear, origin, u, v, TOL).unwrap();
+        assert!((volume - gear.volume_mm3()).abs() < 1e-5);
+        let chevron = fixture(teeth, hand, bore);
+        assert!(verify_herringbone(&text, &chevron, origin, u, v, TOL).is_err());
+        let other = write_herringbone(&chevron, origin, u, v, TOL).unwrap();
+        assert!(verify_herringbone(&other, &gear, origin, u, v, TOL).is_err());
     }
 }
 

@@ -1,4 +1,4 @@
-//! One closed chevron with shared seam edges and bounded tensor surfaces.
+//! Closed helical and chevron gears with shared edges and bounded tensor surfaces.
 use super::{
     helical::{DEGREE, Spline, product},
     *,
@@ -263,14 +263,31 @@ pub(crate) fn prepare(
     }
 
     // A common complex rotation polynomial keeps every section in a band a
-    // single scaled rotation of one transverse section. The two bands share
-    // the same interpolant in reverse and therefore meet at the same apex.
+    // single scaled rotation of one transverse section. Chevron bands share
+    // that interpolant in reverse. Helical bands continue the same rotation
+    // from its endpoint so both patches share exactly the same middle rim.
     let angle = gear.phase_at(middle);
     let (spin, z) = axial_rotation(angle, middle, tolerance / (16. * radius))?;
-    let upper_z = z.iter().rev().map(|z| height - z).collect::<Vec<_>>();
-    let spins = [spin.clone(), spin.reversed()];
+    let (upper, upper_z) = if gear.is_helical() {
+        let phase = *spin.poles.last().expect("rotation endpoints");
+        let mut upper = spin.clone();
+        for pole in &mut upper.poles {
+            *pole = product(*pole, phase);
+        }
+        (upper, z.iter().map(|z| middle + z).collect::<Vec<_>>())
+    } else {
+        (
+            spin.clone().reversed(),
+            z.iter().rev().map(|z| height - z).collect::<Vec<_>>(),
+        )
+    };
+    let phases = [
+        [1., 0.],
+        upper.poles[0],
+        *upper.poles.last().expect("rotation endpoints"),
+    ];
+    let spins = [spin, upper];
     let heights = [z, upper_z];
-    let phases = [[1., 0.], spins[1].poles[0], [1., 0.]];
     let levels = [0., middle, height];
     let outline = profile.outline();
     let count = outline.len();

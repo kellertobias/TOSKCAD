@@ -110,6 +110,40 @@ fn bounded_writer_keeps_one_shell_and_shared_three_station_boundaries() {
     );
     assert!(text.contains("RATIONAL_B_SPLINE_SURFACE"));
     assert!(text.len() < crate::step_read::MAX_PLANAR_STEP_BYTES);
+    for hand in [-1., 1.] {
+        let rate = hand * beta.tan() / pitch;
+        let helical = Herringbone::new_helical(spec, rate, 1e-5, 1e7).unwrap();
+        let plan = prepare(&helical, [0.; 3], 1e-7).unwrap();
+        assert_eq!(plan.spins[0].poles.last(), plan.spins[1].poles.first());
+        assert_eq!(plan.heights[0].last(), plan.heights[1].first());
+        for (band, axial) in plan.spins.iter().enumerate() {
+            for fraction in [0., 0.25, 0.5, 0.75, 1.] {
+                let parameter = axial.knots[axial.knots.len() - 1] * fraction;
+                let index = axial
+                    .knots
+                    .partition_point(|value| *value <= parameter)
+                    .saturating_sub(1)
+                    .min(axial.knots.len() - 2);
+                let [a, b] = [axial.knots[index], axial.knots[index + 1]];
+                let t = (parameter - a) / (b - a);
+                let start = index * axial.degree;
+                let mut poles = axial.poles[start..=start + axial.degree].to_vec();
+                for degree in (1..poles.len()).rev() {
+                    for i in 0..degree {
+                        poles[i] = std::array::from_fn(|axis| {
+                            poles[i][axis] * (1. - t) + poles[i + 1][axis] * t
+                        });
+                    }
+                }
+                let z = (band as f64 + fraction) * spec.face_width_mm / 2.;
+                let phase = rate * z;
+                assert!((poles[0][0] - phase.cos()).hypot(poles[0][1] - phase.sin()) < 1e-9);
+            }
+        }
+        let text = write_herringbone(&helical, [0.; 3], [1., 0., 0.], [0., 1., 0.], 1e-7).unwrap();
+        assert_eq!(text.matches("=MANIFOLD_SOLID_BREP(").count(), 1);
+        assert_eq!(text.matches("ADVANCED_FACE(").count(), 2 * count + 3);
+    }
 }
 
 #[test]

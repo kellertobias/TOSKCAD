@@ -44,6 +44,62 @@ fn close(a: f64, b: f64, tolerance: f64) {
 }
 
 #[test]
+fn single_hand_sweeps_keep_the_full_linear_phase_and_closed_named_shell() {
+    for hand in [-1., 1.] {
+        let (spec, twist) = fixture(24);
+        let twist = hand * twist;
+        let gear = Herringbone::new_helical(spec, twist, MINIMUM, MAXIMUM).unwrap();
+        assert!(gear.is_helical());
+        assert!(
+            !Herringbone::new(spec, twist, MINIMUM, MAXIMUM)
+                .unwrap()
+                .is_helical()
+        );
+        for band in [Band::Lower, Band::Upper] {
+            assert_eq!(gear.band_twist_rad_per_mm(band), twist);
+        }
+        let point = [spec.tip_radius_mm, 0.];
+        for z in [0., 1., 2., 3., 4.] {
+            assert_eq!(gear.phase_at(z), twist * z);
+            let actual = gear.section_point(point, z);
+            let (sin, cos) = (twist * z).sin_cos();
+            close(actual[0], spec.tip_radius_mm * cos, 1e-12);
+            close(actual[1], spec.tip_radius_mm * sin, 1e-12);
+            assert_eq!(actual[2], z);
+        }
+        let topology = gear.topology();
+        assert_eq!(topology.faces.len(), 3 + 2 * gear.profile().outline().len());
+        for edge in topology.edges {
+            for (fraction, vertex) in [0., 1.].into_iter().zip(edge.vertices) {
+                for (actual, expected) in edge
+                    .curve
+                    .point(&gear, fraction)
+                    .into_iter()
+                    .zip(topology.vertices_mm[vertex as usize])
+                {
+                    close(actual, expected, 1e-12);
+                }
+            }
+        }
+        let mesh = gear.mesh(OPTIONS).unwrap();
+        let certificate = certify(&mesh).unwrap();
+        close(certificate.signed_volume_mm3, gear.volume_mm3(), 2.);
+        close(gear.volume_mm3(), gear.profile().volume_mm3(), 1e-12);
+    }
+    let (spec, twist) = fixture(24);
+    for invalid in [0., f64::NAN, f64::INFINITY, 2., 1e-10] {
+        assert_eq!(
+            Herringbone::new_helical(spec, invalid, MINIMUM, MAXIMUM),
+            Err(Error::InvalidDimensions)
+        );
+    }
+    assert_eq!(
+        Herringbone::new_helical(Spec { teeth: 0, ..spec }, twist, MINIMUM, MAXIMUM),
+        Err(Error::Limit)
+    );
+}
+
+#[test]
 fn continuous_shell_shares_its_apex_and_keeps_named_native_faces() {
     for teeth in [24, 36] {
         let (spec, twist) = fixture(teeth);
@@ -208,29 +264,33 @@ fn saved_pair_exact_metrics_and_manufacturing_mesh_agree_with_native_readback() 
 fn support_encloses_all_dense_axial_sections_in_oblique_directions() {
     for teeth in [24, 36] {
         let (spec, twist) = fixture(teeth);
-        let gear = Herringbone::new(spec, twist, MINIMUM, MAXIMUM).unwrap();
-        for [dx, dy, dz] in [
-            [1., 0.2, 0.12],
-            [0.1, -1., -0.21],
-            [-1., 0.9, 0.],
-            [0.5, 0.5, 0.6],
+        for gear in [
+            Herringbone::new(spec, twist, MINIMUM, MAXIMUM).unwrap(),
+            Herringbone::new_helical(spec, twist, MINIMUM, MAXIMUM).unwrap(),
         ] {
-            let support = gear.support([dx, dy, dz]);
-            let intervals = 1000;
-            let sampled = (0..=intervals)
-                .map(|i| {
-                    let z = i as f64 * spec.face_width_mm / intervals as f64;
-                    let [x, y] = rotate([dx, dy], -gear.phase_at(z));
-                    gear.profile.support([x, y, 0.]) + dz * z
-                })
-                .fold(f64::NEG_INFINITY, f64::max);
-            let maximum_sampling_gap = spec.face_width_mm / (2. * intervals as f64)
-                * (length([dx, dy]) * spec.tip_radius_mm * twist.abs() + dz.abs());
-            assert!(support + 1e-12 >= sampled);
-            assert!(support - sampled <= maximum_sampling_gap + 1e-12);
+            for [dx, dy, dz] in [
+                [1., 0.2, 0.12],
+                [0.1, -1., -0.21],
+                [-1., 0.9, 0.],
+                [0.5, 0.5, 0.6],
+            ] {
+                let support = gear.support([dx, dy, dz]);
+                let intervals = 1000;
+                let sampled = (0..=intervals)
+                    .map(|i| {
+                        let z = i as f64 * spec.face_width_mm / intervals as f64;
+                        let [x, y] = rotate([dx, dy], -gear.phase_at(z));
+                        gear.profile.support([x, y, 0.]) + dz * z
+                    })
+                    .fold(f64::NEG_INFINITY, f64::max);
+                let maximum_sampling_gap = spec.face_width_mm / (2. * intervals as f64)
+                    * (length([dx, dy]) * spec.tip_radius_mm * twist.abs() + dz.abs());
+                assert!(support + 1e-12 >= sampled);
+                assert!(support - sampled <= maximum_sampling_gap + 1e-12);
+            }
+            assert!(gear.support([0., 0., f64::NAN]).is_nan());
+            assert_eq!(gear.support([0.; 3]), 0.);
         }
-        assert!(gear.support([0., 0., f64::NAN]).is_nan());
-        assert_eq!(gear.support([0.; 3]), 0.);
     }
 }
 

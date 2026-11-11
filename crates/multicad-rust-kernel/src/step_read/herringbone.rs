@@ -1,4 +1,4 @@
-//! Certify the decoded tensor-product B-rep of a known analytic chevron.
+//! Certify the decoded tensor-product B-rep of a known analytic twisted gear.
 use super::{
     helical::{check_axis, face, orient, poles, require, ring, step_error},
     *,

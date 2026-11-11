@@ -39,18 +39,19 @@ impl Herringbone {
         }
         let azimuth = angle(radial);
         let mid = height * 0.5;
-        let slope = self.twist_rad_per_mm;
-        let phase_mid = slope * mid;
         let mut best = f64::NEG_INFINITY;
-        for (z, phase) in [(0., 0.), (mid, phase_mid), (height, 0.)] {
+        for z in [0., mid, height] {
+            let phase = self.phase_at(z);
             let projected = rotate(radial, -phase);
             for item in self.profile.outline() {
                 best = best.max(item.edge.support(projected) + dz * z);
             }
         }
-        for (low, phase, high_phase, slope) in
-            [(0., 0., phase_mid, slope), (mid, phase_mid, 0., -slope)]
-        {
+        for band in [Band::Lower, Band::Upper] {
+            let [low, high] = band.axial_interval_mm(height);
+            let phase = self.phase_at(low);
+            let high_phase = self.phase_at(high);
+            let slope = self.band_twist_rad_per_mm(band);
             let mut check = |p: Point, a| {
                 if let Some(a) = in_interval(a, phase, high_phase) {
                     let z = low + (a - phase) / slope;
