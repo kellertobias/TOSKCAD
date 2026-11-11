@@ -441,6 +441,16 @@ mod tests {
             certify(refs, placements, 1e-6, 0.2, Some(&late)),
             Err(Error::Cancelled)
         );
+        // Cancel after the first gear's sectors, while the second side builds.
+        let calls = std::cell::Cell::new(0);
+        let second = || {
+            calls.set(calls.get() + 1);
+            calls.get() > 24
+        };
+        assert_eq!(
+            certify(refs, placements, 1e-6, 0.2, Some(&second)),
+            Err(Error::Cancelled)
+        );
         let side = Side::new(
             &gears[0],
             placements[0],

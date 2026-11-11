@@ -64,24 +64,11 @@ impl Decoded {
             } => {
                 let e1 = scale(sub(a, *center), 1. / radius);
                 let e2 = cross(*normal, e1);
-                let sweep = self.sweep();
+                let sweep = sweep(self.ends, *center, *normal);
                 let (s, c) = (sweep * t).sin_cos();
                 std::array::from_fn(|i| center[i] + radius * (c * e1[i] + s * e2[i]))
             }
             Curve::Spline { poles, knots } => de_boor(poles, knots, t),
-        }
-    }
-
-    fn sweep(&self) -> f64 {
-        let Curve::Circle { center, normal, .. } = &self.curve else {
-            return 0.;
-        };
-        let [a, b] = self.ends.map(|p| sub(p, *center));
-        let angle = dot(cross(a, b), *normal).atan2(dot(a, b));
-        if angle <= 1e-12 {
-            angle + std::f64::consts::TAU
-        } else {
-            angle
         }
     }
 
@@ -95,7 +82,7 @@ impl Decoded {
                 normal,
                 radius,
             } => {
-                let sweep = self.sweep();
+                let sweep = sweep(self.ends, *center, *normal);
                 (radius * radius * sweep * normal[2].signum() + center[0] * (b[1] - a[1])
                     - center[1] * (b[0] - a[0]))
                     / 2.
@@ -120,6 +107,14 @@ impl Decoded {
     }
 }
 
+/// Positive counterclockwise sweep about `normal` from one end to the other.
+fn sweep(ends: [Point; 2], center: Point, normal: Point) -> f64 {
+    let [a, b] = ends.map(|p| sub(p, center));
+    dot(cross(a, b), normal)
+        .atan2(dot(a, b))
+        .rem_euclid(std::f64::consts::TAU)
+}
+
 fn scale(a: Point, s: f64) -> Point {
     a.map(|v| v * s)
 }
@@ -133,11 +128,8 @@ fn de_boor(poles: &[Point], knots: &[f64], t: f64) -> Point {
         for j in (r..=P).rev() {
             let i = j + span - P;
             let denominator = knots[i + P + 1 - r] - knots[i];
-            let alpha = if denominator == 0. {
-                0.
-            } else {
-                (t - knots[i]) / denominator
-            };
+            // A repeated knot has a zero span and a zero numerator.
+            let alpha = (t - knots[i]) / denominator.max(f64::MIN_POSITIVE);
             d[j] = std::array::from_fn(|k| (1. - alpha) * d[j - 1][k] + alpha * d[j][k]);
         }
     }
@@ -307,12 +299,11 @@ pub fn verify_bevel(
                         };
                         let placement = shell.placement(reference(axis)?)?;
                         let center = frame.local(placement.origin);
-                        require(
-                            !forward
-                                && center[0].abs() <= band
-                                && center[1].abs() <= band
-                                && frame.direction(placement.normal)[2] > 1. - 1e-12,
-                        )?;
+                        let coaxial = !forward
+                            && center[0].abs() <= band
+                            && center[1].abs() <= band
+                            && frame.direction(placement.normal)[2] > 1. - 1e-12;
+                        require(coaxial)?;
                         let height = heights[1] - heights[0];
                         flux -= radius * std::f64::consts::TAU * radius * height;
                     }
@@ -342,11 +333,10 @@ pub fn verify_bevel(
                     }
                 }
             }
-            require(
-                uses.len() == topology.edges.len()
-                    && uses.values().all(|&(a, b)| a == 1 && b == 1)
-                    && vertices.len() == topology.vertices_mm.len(),
-            )?;
+            let manifold = uses.len() == topology.edges.len()
+                && uses.values().all(|&(a, b)| a == 1 && b == 1)
+                && vertices.len() == topology.vertices_mm.len();
+            require(manifold)?;
             let volume = flux / 3.;
             require(volume.is_finite() && volume > 0.)?;
             Ok(volume)
@@ -376,6 +366,70 @@ mod tests {
             assert_eq!(
                 verify_bevel(&text, &gear, frame.0, frame.1, frame.1, 1e-6),
                 Err(ReadError::Invalid)
+            );
+        }
+    }
+
+    /// Rewrite the first line declaring `kind` with `edit`.
+    fn mutate(text: &str, kind: &str, edit: impl Fn(&str) -> String) -> String {
+        let marker = format!("={kind}(");
+        let mut done = false;
+        text.lines()
+            .map(|line| {
+                if !done && line.contains(&marker) {
+                    done = true;
+                    edit(line)
+                } else {
+                    line.to_string()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn widened(line: &str) -> String {
+        line.replacen(");", ",0.);", 1)
+    }
+
+    /// Duplicate the first `(#a` reference list item of a line as `(#a,#a`.
+    fn doubled(line: &str, prefix: &str) -> String {
+        let start = line.find(prefix).unwrap() + prefix.len();
+        let end = start + line[start..].find([',', ')']).unwrap();
+        let id = &line[start..end];
+        format!("{}{id},{}", &line[..start], &line[start..])
+    }
+
+    #[test]
+    fn malformed_bevel_entities_are_refused() {
+        let frame = ([1., 2., 3.], [1., 0., 0.], [0., 1., 0.]);
+        let bored = Bevel::new(spec(2., 24, 32, 6., 4., 0.2), 1e-3, 1e7).unwrap();
+        let meridian = Bevel::new(spec(1., 24, 64, 2., 0., 0.2), 1e-3, 1e7).unwrap();
+        assert!(meridian.has_meridian());
+        type Edit = fn(&str) -> String;
+        let cases: [(&Bevel, &str, Edit); 10] = [
+            (&bored, "EDGE_CURVE", |l| l.replacen(".T.);", ".F.);", 1)),
+            (&bored, "CIRCLE", widened),
+            (&bored, "B_SPLINE_CURVE_WITH_KNOTS", widened),
+            (&bored, "B_SPLINE_CURVE_WITH_KNOTS", |l| {
+                l.replacen(",(4,", ",($,", 1)
+            }),
+            (&bored, "ADVANCED_FACE", |l| doubled(l, "('',(")),
+            (&bored, "CONICAL_SURFACE", widened),
+            (&meridian, "PLANE", widened),
+            (&bored, "CYLINDRICAL_SURFACE", widened),
+            (&bored, "B_SPLINE_SURFACE_WITH_KNOTS", |l| {
+                l.replacen("WITH_KNOTS('',3,", "WITH_KNOTS('',$,", 1)
+            }),
+            (&bored, "B_SPLINE_SURFACE_WITH_KNOTS", |l| doubled(l, ",((")),
+        ];
+        for (gear, kind, edit) in cases {
+            let text = write_bevel(gear, frame.0, frame.1, frame.2, 1e-6).unwrap();
+            assert!(verify_bevel(&text, gear, frame.0, frame.1, frame.2, 1e-6).is_ok());
+            let broken = mutate(&text, kind, edit);
+            assert_ne!(broken, text, "{kind}");
+            assert!(
+                verify_bevel(&broken, gear, frame.0, frame.1, frame.2, 1e-6).is_err(),
+                "{kind}"
             );
         }
     }

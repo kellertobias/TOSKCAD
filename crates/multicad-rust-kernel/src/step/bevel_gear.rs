@@ -118,13 +118,9 @@ pub(crate) fn prepare(gear: &Bevel, tolerance: f64) -> Result<Prepared, StepErro
         }
     }
     let faces = gear.pieces().len() + 4;
-    if (poles * 6 + faces * 40)
-        .checked_mul(gear.teeth() as usize)
-        .is_none_or(|cost| cost + 256 > MAX_STEP_ENTITIES)
-    {
-        return Err(StepError::Limit);
-    }
-    Ok(Prepared { rails })
+    let cost = (poles * 6 + faces * 40).checked_mul(gear.teeth() as usize);
+    let within = cost.is_some_and(|cost| cost + 256 <= MAX_STEP_ENTITIES);
+    within.then_some(Prepared { rails }).ok_or(StepError::Limit)
 }
 
 /// Whether this authored bevel fits the placement and spline budget.
@@ -177,7 +173,7 @@ pub(super) fn encode(
                 sweep_rad,
             } => {
                 let reference = placement.vector([start_rad.cos(), start_rad.sin(), 0.]);
-                circular_arc_edge(
+                let arc = circular_arc_edge(
                     file,
                     [a, b],
                     world([0., 0., z_mm]),
@@ -185,8 +181,8 @@ pub(super) fn encode(
                     reference,
                     radius_mm,
                     sweep_rad,
-                )?
-                .0
+                );
+                arc?.0
             }
             Shape::Sampled { sector, piece, end } => {
                 let rail = &rails[&piece];
@@ -405,12 +401,9 @@ pub(super) fn encode(
         faces.push(file.face_on(&[bound], surface, false));
     }
     let solid = file.solid(&faces);
-    if file.next + 128 > MAX_STEP_ENTITIES
-        || file.data.len() + 4096 > crate::step_read::MAX_PLANAR_STEP_BYTES
-    {
-        return Err(StepError::Limit);
-    }
-    Ok(solid)
+    let within = file.next + 128 <= MAX_STEP_ENTITIES
+        && file.data.len() + 4096 <= crate::step_read::MAX_PLANAR_STEP_BYTES;
+    within.then_some(solid).ok_or(StepError::Limit)
 }
 
 #[cfg(test)]

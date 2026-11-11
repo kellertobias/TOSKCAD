@@ -266,6 +266,12 @@ fn a_bore_wider_than_the_inner_arc_removes_one_or_both_cores() {
         let euler = topology.vertices_mm.len() as i64 - topology.edges.len() as i64
             + topology.faces.len() as i64;
         assert_eq!(euler, 0);
+        let exact: f64 = topology.faces.iter().map(|f| gear.face_metrics(*f).1).sum();
+        let measured = mesh_area(&mesh, None);
+        assert!(
+            (measured - exact).abs() / exact < 5e-4,
+            "{measured} {exact}"
+        );
     }
     spec.bore_radius_mm = toe_inner;
     assert_eq!(Bevel::new(spec, 1e-3, 1e7), Err(Error::InvalidProfile));
