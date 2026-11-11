@@ -388,7 +388,8 @@ mod tests {
         for r in wheel.remainders().unwrap() {
             // More degree and more spans only tighten the remainder.
             assert!(r.bound(16, 2) < r.bound(12, 1) && r.bound(24, 8) < r.bound(16, 2));
-            assert!(r.bound(24, 8) < 1e-9, "{}", r.bound(24, 8));
+            let finest = r.bound(24, 8);
+            assert!(finest < 1e-9, "{finest}");
         }
         assert!(lebesgue(16) < 3.);
         let nodes = lobatto(2);
