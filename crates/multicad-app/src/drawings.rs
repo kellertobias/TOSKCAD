@@ -1011,6 +1011,22 @@ mod tests {
             },
             ..page.views.last().unwrap().clone()
         });
+        let oblique_id = EntityId::new();
+        page.views.push(drawings::DrawingView {
+            id: oblique_id,
+            name: "Torus oblique section".into(),
+            frame: multicad_core::references::ReferenceFrame {
+                origin_mm: [0.; 3],
+                u: [0.8, 0., 0.6],
+                v: [0., 1., 0.],
+            },
+            kind: drawings::ViewKind::Section {
+                offset_mm: 3.5,
+                range: drawings::SectionRange::SectionOnly,
+                window: Default::default(),
+            },
+            ..page.views.last().unwrap().clone()
+        });
         let (_, prepared) = drawings::prepare_create(
             &session,
             session.revision(),
@@ -1073,6 +1089,18 @@ mod tests {
         assert!(vectors.iter().any(|v| v.role == VectorRole::Visible
             && matches!(v.curve, VectorCurve::Line { a, b }
                 if (a[1] - 1.).abs() < 1e-8 && (b[1] - 1.).abs() < 1e-8)));
+        let ViewEvaluation::Ready { vectors, .. } = &result.views[&oblique_id] else {
+            panic!("{:?}", result.views[&oblique_id]);
+        };
+        assert!(vectors.len() > 16);
+        assert!(vectors.iter().all(|v| v.source == torus_body
+            && v.role == VectorRole::Section
+            && matches!(v.curve, VectorCurve::Line { a, b }
+            if [a,b].into_iter().all(|[u,v]| {
+                let radius = 0.8_f64.mul_add(u, -2.1).hypot(v);
+                let axial = 0.6_f64.mul_add(u, 2.8);
+                ((radius - 5.).hypot(axial) - 1.).abs() < 1e-7
+            }))));
     }
 
     #[test]
