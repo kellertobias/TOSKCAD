@@ -305,7 +305,7 @@ tools! {
         "Every project parameter with its expression, declared unit, evaluated value in that unit, role (driving or derived) and exposure. Parameters private to placed symbols are omitted; change them through the instance's exposed overrides.",
         list_parameters;
     "set_parameter" => SetParameter, "Create or edit parameter", false,
-        "Create a parameter, or edit the one with this name. Literal values are plain numbers ('40'); formulas start with '=' and reference parameters with '$' ('=$width/2'). The unit is required. Commits one transaction.",
+        "Create a parameter, or edit the one with this name. Literal values are plain numbers ('40'); formulas start with '=' and reference parameters with '$' ('=$width/2'). The unit is required. Validates affected modeling consumers before committing one transaction or queueing owner review. Invalid geometry, cancellation or a stale revision leaves the document unchanged; unrelated parts are excluded.",
         set_parameter;
     "create_sketch" => CreateSketch, "Create sketch", false,
         "Create an empty constrained sketch on an origin datum plane (xy, xz or yz). Commits one transaction and returns the sketch ID.",
@@ -1306,8 +1306,10 @@ fn list_parameters(host: &dyn Host, _: &Request, _: NoArgs) -> ToolResult {
 }
 
 fn set_parameter(host: &dyn Host, call: &Request, args: SetParameter) -> ToolResult {
-    let call = call.clone();
-    with(host, move |target| {
+    let expected_revision = args.expected_revision;
+    let unit = args.unit.clone();
+    let prepare_call = call.clone();
+    let (prepared, parameter, created, value) = with(host, move |target| {
         revision_guard(target, args.expected_revision)?;
         let document = target.session().document();
         let existing = document
@@ -1353,18 +1355,66 @@ fn set_parameter(host: &dyn Host, call: &Request, args: SetParameter) -> ToolRes
         };
         let prepared = target.session().prepare(SessionRequest {
             expected_revision: args.expected_revision,
-            actor: call.actor.clone(),
+            actor: prepare_call.actor.clone(),
             label: format!("Set parameter {}", args.name),
             edits: vec![mutation],
         })?;
-        let value = prepared.parameters().values.get(&parameter).cloned();
+        let value = prepared
+            .parameters()
+            .values
+            .get(&parameter)
+            .and_then(|v| v.quantity.in_unit(v.unit));
+        Ok::<_, ToolError>((prepared, parameter, created, value))
+    })??;
+    // Parameter expressions can change any downstream modeling recipe. Prove
+    // only their consumers, outside the document owner and before commit/review.
+    let document = prepared.document();
+    let roots: Vec<_> = document
+        .affected([parameter])?
+        .into_iter()
+        .filter(|id| {
+            matches!(
+                document.get(*id).map(|entity| &entity.data),
+                Some(
+                    EntityData::Feature {
+                        suppressed: false,
+                        ..
+                    } | EntityData::Instance { .. }
+                        | EntityData::Plane {
+                            anchor: Some(_),
+                            ..
+                        }
+                )
+            )
+        })
+        .collect();
+    let compiler = Compiler {
+        omit_display: true,
+        ..Default::default()
+    };
+    let interrupt = || call.cancelled();
+    // Source admission is bounded to 128 roots per request. Batches preserve
+    // isolation from unfinished unrelated Parts even for larger parameter edits.
+    for roots in roots.chunks(128) {
+        call.finish(compiler.compile_sources_with_backend(
+            document,
+            expected_revision.saturating_add(1),
+            roots,
+            call.backend,
+            Some(&interrupt),
+        ))
+        .map_err(|error| error.at_revision(expected_revision))?;
+    }
+    let call = call.clone();
+    with(host, move |target| {
+        revision_guard(target, expected_revision)?;
         let revision = commit(target, &call, prepared)?;
         Ok(json!({
             "revision": revision,
             "parameter": parameter,
             "created": created,
-            "value": value.as_ref().and_then(|v| v.quantity.in_unit(v.unit)),
-            "unit": args.unit,
+            "value": value,
+            "unit": unit,
         }))
     })?
 }
