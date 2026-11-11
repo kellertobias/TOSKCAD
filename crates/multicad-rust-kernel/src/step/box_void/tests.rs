@@ -153,8 +153,10 @@ fn only_conforming_collinear_subdivisions_can_be_written_as_closed_shells() {
     let midpoint = std::array::from_fn(|i| a[i].midpoint(b[i]));
     boundary.faces[0].rings[0].insert(1, midpoint);
     assert!(!boundary.supports_step());
+    let mut writer = Writer::new();
+    let unchanged = |point: Point| point;
     assert_eq!(
-        write_orthogonal(&boundary, |p| p),
+        writer.append_orthogonal(&boundary, unchanged),
         Err(StepError::Unsupported)
     );
     let adjacent = boundary.faces.iter_mut().skip(1).find_map(|face| {
@@ -165,7 +167,8 @@ fn only_conforming_collinear_subdivisions_can_be_written_as_closed_shells() {
     });
     assert!(adjacent.is_some());
     assert!(boundary.supports_step());
-    let text = write_orthogonal(&boundary, |p| p).unwrap();
+    writer.append_orthogonal(&boundary, unchanged).unwrap();
+    let text = writer.finish().unwrap();
     let read = read_analytic_compound(&text, 1e-7).unwrap();
     assert_eq!(read.len(), 1);
     assert_eq!(read[0].solid_count, 1);
