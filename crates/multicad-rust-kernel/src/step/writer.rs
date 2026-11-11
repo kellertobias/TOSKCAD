@@ -147,6 +147,19 @@ impl Writer {
         self.append(|file| herringbone::encode(file, gear, placement, tolerance))
     }
 
+    /// Append one spherical bevel with exact cones and ruled spline flanks.
+    pub fn append_bevel(
+        &mut self,
+        gear: &crate::bevel_gear::Bevel,
+        origin: Point,
+        u: Point,
+        v: Point,
+        tolerance: f64,
+    ) -> Result<(), StepError> {
+        let placement = Placement::new(origin, u, v)?;
+        self.append(|file| bevel_gear::encode(file, gear, placement, tolerance))
+    }
+
     pub fn append_helical_thread(
         &mut self,
         thread: &crate::helical_thread::Thread,

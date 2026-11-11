@@ -18,6 +18,8 @@ use crate::{
 use std::{collections::BTreeMap, fmt, fmt::Write, ops::Range};
 
 mod axial_stack;
+mod bevel_gear;
+pub use bevel_gear::{supports_bevel, write_bevel};
 mod cubic_trim;
 mod cylindrical_revolution;
 pub(crate) mod helical;
