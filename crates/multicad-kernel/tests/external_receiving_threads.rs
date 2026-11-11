@@ -2,8 +2,10 @@ use multicad_core::{
     document::EntityId,
     references::{GeometryIntent, Origin, Resolution, TopologyKind, resolve},
 };
+#[cfg(feature = "occt")]
+use multicad_kernel::RigidTransform;
 use multicad_kernel::{
-    GeometryPolicy, HelicalThread, MeshOptions, PlaneFrame, RigidTransform, Solid,
+    GeometryPolicy, HelicalThread, MeshOptions, PlaneFrame, Solid,
     rust_kernel::{Circle, Rational, cylinder::AxialCylinder},
 };
 fn spec(length: f64, left: bool, starts: u32) -> HelicalThread {
